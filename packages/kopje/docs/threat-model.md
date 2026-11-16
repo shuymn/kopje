@@ -3491,15 +3491,19 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the status's origin, stored or not")). A completion stores at most two statuses (the reply and the self-quote
   it embeds) and one author, each status with its notifications only within the real-time window and within the
   per-status figure above, inserts at most 200 nodes and updates at most 400 (`src/domain/reply-walks.ts`;
-  `test/reply-walks.test.ts` ("prunes at most WALK_PRUNE_BATCH finished walks a claim", "records at most
-  WALK_STATUSES nodes", "stores a reply and its embedded self-quote … within the figure")). Migration
-  `0106_reply_walk_debts` adds `reply_walk_cursors`, at most one row per stored status, and `reply_walk_debts`, at most
-  one row per root and owed status and one per status and depth (so at most `WALK_STATUSES` × S rows), neither dumped
-  (a restored Store scans from each status's first reply again), both deleted with their statuses by
-  `STATUS_CHILDREN`'s child steps within the batch budget, the cascades only a backstop (`test/cascade-guard.test.ts`
-  ("deletes a status's cursor and debts before it within the budget", "deletes 450 debts of a root over batches, each
-  within PURGE_BATCH, before the status"), `test/dump-import.test.ts` ("leaves a replies walk's cursors and debts out,
-  and an import with both empty")).
+  `test/reply-walks.test.ts` ("prunes at most WALK_PRUNE_BATCH finished walks a claim", "records at most WALK_STATUSES
+  nodes", "stores a reply and its embedded self-quote … within the figure")). Besides these, a completion that applies a
+  stored node's document writes at most what an inbound `Update` at its caps writes, and one that starts a node's
+  removal at most what that start writes (its job, the streamed delete, `HIDE_ROWS`, the quote's retirement, its
+  parent's count), each with at most two debts paid and one collection debt owed after one replacement delete
+  (`test/reply-walk-debt-bounds.test.ts` ("updates a node at every cap of updateRemoteStatus within the figure", "starts
+  a node's removal within the figure")). Migration `0106_reply_walk_debts` adds `reply_walk_cursors`, at most one row
+  per stored status, and `reply_walk_debts`, at most one row per root and owed status and one per status and depth (so
+  at most `WALK_STATUSES` × S rows), neither dumped (a restored Store scans from each status's first reply again), both
+  deleted with their statuses by `STATUS_CHILDREN`'s child steps within the batch budget, the cascades only a backstop
+  (`test/cascade-guard.test.ts` ("deletes a status's cursor and debts before it within the budget", "deletes 450 debts
+  of a root over batches, each within PURGE_BATCH, before the status"), `test/dump-import.test.ts` ("leaves a replies
+  walk's cursors and debts out, and an import with both empty")).
 - **RES-5: retries are bounded, but maintenance is not a failure.** Waiting out maintenance consumes no processing
   retry; real processing errors count against `max_retries`. _Enforced (main):_ `src/jobs/queue.ts`; `test/gate.test.ts`
   ("spool consumer"). Deliveries give up after 15 attempts (`min(30s·2^n, 12h)`, n the attempts so far) or at once on a
@@ -4216,22 +4220,23 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   reads (the walk's node; the status, its account and local account; its walk as a root), each scan with one cursor
   write and at most 200 row-debt inserts each after at most one replacement delete: at most 40,000 row-debt inserts and
   80,000 row-debt changes a walk, 3,200 a turn, and with at most 200 collection debts written or re-keyed and at most
-  600 payments and drops, at most 81,000 debt-row changes a walk. A consideration reads one debt index entry and its
-  row and at most `WALK_STATUSES` − 2 ancestors, and records at most `WALK_STATUSES` − 1 nodes within the walk's cap. A
-  debt is unique by root and owed status, and by status and depth (depths 0 to `WALK_STATUSES` − 1): a walk owing a
-  status at a depth another root's debt holds replaces it, so a status is named by at most `WALK_STATUSES` debts and all
-  number at most `WALK_STATUSES` × S at all times. A root's walks take its oldest debt first, a walk reaches at most
+  600 payments and drops, at most 81,000 debt-row changes a walk. A consideration reads one debt index entry and its row
+  and at most `WALK_STATUSES` − 2 ancestors, and records at most `WALK_STATUSES` − 1 nodes within the walk's cap. A debt
+  is unique by root and owed status, and by status and depth (depths 0 to `WALK_STATUSES` − 1): a walk owing a status at
+  a depth another root's debt holds replaces it, so a status is named by at most `WALK_STATUSES` debts and all number at
+  most `WALK_STATUSES` × S at all times. A root's walks take its oldest debt first, a walk reaches at most
   `WALK_STATUSES` − 1 links below its root, and no cursor or debt is written for a status or root whose removal has
   begun (`test/reply-walk-debt-bounds.test.ts` ("owes exactly 40,000 row debts over 200 scans, each its own step of at
   most 200 inserts, no request for them", "changes 80,000 debt rows when another root holds a debt at every status and
   depth it owes, at most 3,200 a turn", "changes 80,198 debt rows in a thread of cut collections, within 81,000",
-  "records a 197-status path and the owed status in one consideration, within WALK_STATUSES + 2 rows", "ends 199
-  nodes at spent WALK_PAGES in one hand-out, owing each its collection debt within 3 rows a node", the plans of the
-  scans and debts), `test/reply-walk-debts.test.ts` ("owes a reply to one root at a time while its parent moves from
-  root to root, each owing it at the same depth", "owes no cut collection of a status whose %s's removal began
-  during its fetch, and scans a removed status without a cursor", "owes nothing from a scan once its root's removal
-  began in the scan's turn", "fetches no status more than WALK_STATUSES - 1 links below the root, and owes nothing for
-  them"), `test/reply-walk-generated.test.ts`).
+  "records a 197-status path and the owed status in one consideration, within WALK_STATUSES + 2 rows", "ends 199 nodes
+  at spent WALK_PAGES in one hand-out, owing each its collection debt within 3 rows a node", "examines each scanned row
+  with at most six key reads, in one scan of REPLY_SCAN_ROWS rows a hand-out", the plans of the scans and debts),
+  `test/reply-walk-debts.test.ts` ("owes a reply to one root at a time while its parent moves from root to root, each
+  owing it at the same depth", "owes no cut collection of a status whose %s's removal began during its fetch, and scans
+  a removed status without a cursor", "owes nothing from a scan once its root's removal began in the scan's turn",
+  "fetches no status more than WALK_STATUSES - 1 links below the root, and owes nothing for them"),
+  `test/reply-walk-generated.test.ts`).
   Create walks: _Enforced (main):_ a remote status a store creates has its replies walked (a create walk, Mastodon's
   `Create#fetch_replies`; `src/domain/reply-walk-create.ts`) only when the store's context sets `readReplies`, which
   only the stores of what was delivered or what a user asked for do (an inbound `Create` or `Update`, an `Announce`'s

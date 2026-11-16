@@ -2,21 +2,39 @@ import { runInDurableObject } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Db } from "../src/db/sql";
+import { HIDE_ROWS } from "../src/domain/remote-removal";
+import { MAX_STATUS_MENTION_TAGS } from "../src/domain/remote-statuses";
 import { DONE, PENDING } from "../src/domain/reply-walk-create";
 import { COLLECTION_DEBT, debtEpoch, nextDebt, REPLY_SCAN_ROWS, scanWindow } from "../src/domain/reply-walk-debts";
 import { REPLIES_COOLDOWN_MS } from "../src/domain/reply-walk-reads";
 import { claimReplyWalk, WALK_PAGES, WALK_STATUSES } from "../src/domain/reply-walks";
+import { MAX_STATUS_MEDIA, MAX_STATUS_MENTION_ROWS, MAX_STATUS_TAGS } from "../src/domain/status-bounds";
+import { MAX_STATUS_EDITS } from "../src/domain/statuses";
 import { REPLY_STEPS_PER_WALK, walkReplies } from "../src/federation/replies";
+import { MAX_REMOTE_OPTIONS } from "../src/platform/stored-bounds";
 import { sql } from "./api-helpers";
 import { inboxDeps } from "./app-helpers";
 import { BUILD } from "./helpers";
-import { accountId, mastodonNote } from "./inbox-status-helpers";
-import { plannedRun, plannedSql, type PlannedStatement } from "./read-helpers";
+import { type TestActor } from "./inbox-helpers";
+import {
+  accountId,
+  ALICE,
+  ALICE_URI,
+  create,
+  DAVE_URI,
+  localStatus,
+  mastodonNote,
+  type Note,
+  statusRow,
+  token,
+} from "./inbox-status-helpers";
+import { plannedRun, plannedSql, type PlannedStatement, scansOf } from "./read-helpers";
 import {
   bulkReplies,
   type MeasuredCall,
   measuringStore,
   OTHER_ORIGIN,
+  owedDebt,
   served,
   servedReply,
   storedId,
@@ -248,7 +266,16 @@ describe("a hand-out's rows at the caps (D12, Bounds)", () => {
     expect(claim).toMatchObject({ step: { uri: `${BULK}70000`, stage: "status" } });
     // The claim's token; 197 path nodes and the owed status recorded; the first charged; the walk's counters.
     expect(measuring.calls).toEqual([
-      { name: "claim", stage: null, retried: false, changes: 1 + (WALK_STATUSES - 3) + 1 + 1 + 1, debts: 0, owed: 0 },
+      {
+        name: "claim",
+        stage: null,
+        uri: null,
+        retried: false,
+        changes: 1 + (WALK_STATUSES - 3) + 1 + 1 + 1,
+        tables: { reply_walks: 1 + 1, reply_walk_nodes: WALK_STATUSES - 3 + 1 + 1 },
+        debts: 0,
+        owed: 0,
+      },
     ]);
     expect(measuring.calls[0]!.changes).toBeLessThanOrEqual(WALK_STATUSES + 2);
   });
@@ -332,6 +359,47 @@ describe("the plans of the scans and debts (D12, section 5)", () => {
     }
     // At the end, the scan wraps: two range reads.
     expect(before.map((result) => result.plans)).toEqual([1, 1, 2]);
+  });
+
+  // T's walk with T's reading ended (its node done and scan-due) and REPLY_SCAN_ROWS stored eligible replies of bob in
+  // its window: the claim's hand-out runs T's scan, which examines every row through the three lookups of an eligible
+  // one (the walk's node; the status, its account and local account; its walk as a root), admits 199 and owes one.
+  it("examines each scanned row with at most six key reads, in one scan of REPLY_SCAN_ROWS rows a hand-out", async () => {
+    const { t, root, bob } = await threadWorld();
+    const note = mastodonNote(root);
+    const rootId = await threadRoot(t, root, note);
+    await bulkReplies(t, rootId, note.id, REPLY_SCAN_ROWS, 95_000, {
+      account: (await accountId(t.store, bob.uri))!,
+      prefix: BULK,
+    });
+    vi.setSystemTime(Date.now() + REPLIES_COOLDOWN_MS + 1);
+    await startWalk(t.store, rootId, Date.now());
+    await sql(t.store, `UPDATE reply_walk_nodes SET state = ${DONE}, scan_due = 1 WHERE status_id = ?`, rootId);
+    const lookups =
+      /FROM reply_walk_nodes WHERE status_id = \? AND uri = \?|SELECT s\.uri, s\.in_reply_to_id AS parent|WHERE s\.id = \?1 AND EXISTS \(SELECT 1 FROM reply_walks/;
+    const { plans } = await plannedRun(
+      t,
+      new RegExp(`${lookups.source}|statuses_public_replies`),
+      claimReplyWalk,
+      {
+        now: Date.now(),
+      },
+      true,
+    );
+    const window = plans.filter((plan) => plan.query.includes("statuses_public_replies"));
+    const rows = plans.filter((plan) => !plan.query.includes("statuses_public_replies"));
+    // One scan: its window's one range read; each row three lookups of six key searches in all, none a scan (and the
+    // scan-due node's own row, read once).
+    expect(window).toHaveLength(1);
+    expect(rows).toHaveLength(3 * REPLY_SCAN_ROWS + 1);
+    const searches = rows.flatMap((plan) =>
+      plan.plan.filter((detail) => /^SEARCH \S+ (?:EXISTS )?USING .*=\?/.test(detail)),
+    );
+    expect(searches).toHaveLength(6 * REPLY_SCAN_ROWS + 1);
+    for (const plan of rows) {
+      expect(scansOf(plan.plan, ["reply_walk_nodes", "s", "a", "l", "w"]), plan.query).toEqual([]);
+    }
+    expect(await debtCount(t, rootId)).toBe(1);
   });
 
   it("finds a root's epoch and next debt reading one index entry and its row, among 3,000 debts of 7 roots", async () => {
@@ -428,4 +496,222 @@ describe("the plans of the scans and debts (D12, section 5)", () => {
       }
     },
   );
+});
+
+describe("a walk completion's rows at the caps (D12, Bounds: a walk completion's rows)", () => {
+  type T = Awaited<ReturnType<typeof threadWorld>>["t"];
+
+  // `count` remote accounts on other.example from `from` on, which statuses address and mention; their URIs.
+  async function remoteAccounts(t: T, count: number, from: number) {
+    await sql(
+      t.store,
+      `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+			INSERT INTO accounts (id, uri, username, domain)
+			SELECT printf('3%017d', CAST(?2 AS INTEGER) + i), ?3 || (CAST(?2 AS INTEGER) + i),
+				'm' || (CAST(?2 AS INTEGER) + i), 'other.example' FROM n`,
+      count,
+      from,
+      `${OTHER_ORIGIN}/users/m`,
+    );
+    return Array.from({ length: count }, (_, i) => `${OTHER_ORIGIN}/users/m${from + i}`);
+  }
+
+  // Version k of bob's reply S at every cap updateRemoteStatus writes, all of it new at each version:
+  // MAX_STATUS_TAGS hashtags, MAX_STATUS_MEDIA attachments, a poll of MAX_REMOTE_OPTIONS choices, a link (its card),
+  // MAX_STATUS_MENTION_TAGS mentions, the local `local` first, and `accounts` with it in cc, past
+  // MAX_STATUS_MENTION_ROWS.
+  function version(bob: TestActor, base: Note, k: number, local: string, accounts: readonly string[]): Note {
+    const content = `<p>version ${k} <a href="https://cards.example/v${k}">a link</a></p>`;
+    return {
+      ...base,
+      type: "Question",
+      content,
+      contentMap: { en: content },
+      ...(k === 0 ? {} : { updated: `2026-10-11T1${2 + k}:00:00Z` }),
+      cc: [`${bob.uri}/followers`, local, ...accounts],
+      tag: [
+        ...Array.from({ length: MAX_STATUS_TAGS }, (_, i) => ({
+          type: "Hashtag",
+          href: `${OTHER_ORIGIN}/tags/v${k}t${i}`,
+          name: `#v${k}t${i}`,
+        })),
+        ...[local, ...accounts]
+          .slice(0, MAX_STATUS_MENTION_TAGS)
+          .map((href) => ({ type: "Mention", href, name: "@m" })),
+      ],
+      attachment: Array.from({ length: MAX_STATUS_MEDIA }, (_, i) => ({
+        type: "Document",
+        mediaType: "image/png",
+        url: `${OTHER_ORIGIN}/media/v${k}-${i}.png`,
+        name: `v${k} ${i}`,
+      })),
+      oneOf: Array.from({ length: MAX_REMOTE_OPTIONS }, (_, i) => ({
+        type: "Note",
+        name: `v${k} ${i}`,
+        replies: { type: "Collection", totalItems: 0 },
+      })),
+      endTime: "2026-10-20T00:00:00Z",
+      votersCount: 0,
+    };
+  }
+
+  // T, and S, bob's reply to it at every cap (version 0: MAX_STATUS_MENTION_ROWS mention rows, alice's first), its
+  // history at MAX_STATUS_EDITS versions, its card, boosted by every local account; T owes S a row debt (so S is the
+  // walk's first node, in the owed lane). bob's document is fresh, so the completion needs no author step (#1592's
+  // completion witness measures one).
+  async function capped() {
+    const { t, root, bob } = await threadWorld();
+    const locals = (await sql<{ id: string }>(t.store, "SELECT account_id AS id FROM local_accounts")).map((r) => r.id);
+    const first = await remoteAccounts(t, MAX_STATUS_MENTION_ROWS, 0);
+    const second = await remoteAccounts(t, MAX_STATUS_MENTION_ROWS, MAX_STATUS_MENTION_ROWS);
+    const note = mastodonNote(root);
+    const base = mastodonNote(bob, { inReplyTo: note.id });
+    const rootId = await threadRoot(t, root, note);
+    expect(await t.post(bob, create(bob, version(bob, base, 0, ALICE_URI, first)))).toBe(202);
+    const sId = (await statusRow(t.store, base.id))!.id;
+    const count = async (table: string) =>
+      (await sql<{ n: number }>(t.store, `SELECT count(*) AS n FROM ${table} WHERE status_id = ?`, sId))[0]!.n;
+    expect([await count("status_mentions"), await count("status_tags"), await count("media_attachments")]).toEqual([
+      MAX_STATUS_MENTION_ROWS,
+      MAX_STATUS_TAGS,
+      MAX_STATUS_MEDIA,
+    ]);
+    await sql(
+      t.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+			INSERT INTO status_edits (status_id, content, created_at) SELECT ?1, '<p>v' || i || '</p>', ?3 FROM n`,
+      sId,
+      MAX_STATUS_EDITS,
+      "2026-10-11T12:00:00.000Z",
+    );
+    for (const id of locals) {
+      await sql(t.store, "DELETE FROM oauth_tokens WHERE account_id = ?", id);
+      const response = await t.request(`/api/v1/statuses/${sId}/reblog`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${await token(t.store, id)}` },
+      });
+      expect(response.status).toBe(200);
+    }
+    await owedDebt(t.store, rootId, sId, { depth: 1, key: [1, 0, 1] });
+    await sql(
+      t.store,
+      "INSERT INTO status_cards (status_id, url, due_at, enqueued_at, generation) VALUES (?, 'https://cards.example/v0', ?2, ?2, 1)",
+      sId,
+      Date.now(),
+    );
+    vi.setSystemTime(Date.now() + REPLIES_COOLDOWN_MS + 1);
+    await sql(t.store, "UPDATE accounts SET fetched_at = ? WHERE uri = ?", new Date().toISOString(), bob.uri);
+    return { t, bob, base, second, rootId, sId, locals: locals.length };
+  }
+
+  // The completion of S's status step, measured, in a walk of T run to its end.
+  async function completion(t: T, rootId: string, uri: string): Promise<MeasuredCall> {
+    await startWalk(t.store, rootId, Date.now());
+    const measuring = measuringStore(t);
+    const deps = inboxDeps(() => measuring.stub, t.web.loader);
+    for (let round = 0; await walkReplies(t.env, deps); round++) {
+      expect(round).toBeLessThan(500);
+    }
+    const calls = measuring.calls.filter((call) => call.uri === uri && call.stage === "status");
+    expect(calls.map((call) => call.retried)).toEqual([false]);
+    return calls[0]!;
+  }
+
+  // The figure's terms by table. #1592's (its section 5.1): ≤ WALK_STATUSES node inserts and ≤ 2 × WALK_STATUSES
+  // node updates (the node's own, its scan-due flag with them, the deferrals it returns, the hand-out's ends and
+  // charge), the walk's row. D12's: ≤ 2 debts paid (the status's row debt, its collection debt), ≤ 1 collection debt
+  // owed after ≤ 1 replacement delete.
+  const WALK = { reply_walk_nodes: 3 * WALK_STATUSES, reply_walks: 1, reply_walk_debts: 2 + 1 + 1 };
+  const total = (terms: Record<string, number>) => Object.values(terms).reduce((a, n) => a + n, 0);
+  // Every table the completion wrote has a term, within it, and the whole within the figure; and every term of `own`
+  // (what the walk adds to #1592's completion) was reached, so the figure without it would be passed.
+  function within(call: MeasuredCall, terms: Record<string, number>, own: Record<string, number>) {
+    for (const [table, rows] of Object.entries(call.tables)) {
+      expect(rows, table).toBeLessThanOrEqual(terms[table] ?? 0);
+    }
+    expect(call.changes).toBeLessThanOrEqual(total(terms));
+    for (const table of Object.keys(own)) {
+      expect(call.tables[table] ?? 0, table).toBeGreaterThan(0);
+    }
+  }
+
+  it("updates a node at every cap of updateRemoteStatus within the figure", { timeout: 120_000 }, async () => {
+    const { t, bob, base, second, rootId, locals } = await capped();
+    // S's newer version at every cap, dave newly mentioned and addressed, its page listing more items than the walk
+    // has slots for.
+    const items = Array.from({ length: WALK_STATUSES }, () => servedReply(t.web, bob, base.id));
+    served(t.web, version(bob, base, 1, DAVE_URI, second), { items: items.map((n) => n.id) });
+    const call = await completion(t, rootId, base.id);
+    // updateRemoteStatus at its caps (a significant edit), L the local accounts: the status's row and its filter text;
+    // the history at MAX_STATUS_EDITS, its newest version replaced and the edit recorded; the poll reset, its choices
+    // and its fetch mark, each moving polls_revision; the mention rows, each evicted, made silent or kept, and those
+    // admitted (≤ MAX_STATUS_MENTION_ROWS each); the hashtags replaced; each attachment written or deleted with its
+    // remote_media and remote_media_usage rows; the card's row; and the fan-out (edit-fan-out.test.ts's formula with
+    // no push subscription: the quote's 3, each local mention's 7, each booster's and quoter's 3) with the replaced
+    // poll's notifications.
+    const update = {
+      statuses: 2,
+      status_edits: 2,
+      polls: 3 * 2,
+      status_mentions: 2 * MAX_STATUS_MENTION_ROWS,
+      status_tags: 2 * MAX_STATUS_TAGS,
+      media_attachments: 2 * MAX_STATUS_MEDIA,
+      remote_media: 2 * MAX_STATUS_MEDIA,
+      remote_media_usage: 2 * MAX_STATUS_MEDIA,
+      status_cards: 1,
+      notifications: 3 + locals * (7 + 3 + 3) + locals,
+    };
+    within(call, { ...WALK, ...update }, update);
+    // What reached its caps: the walk full (S's row debt paid, its reading cut and owed), every tag and attachment
+    // replaced, the history kept at MAX_STATUS_EDITS.
+    expect(call.tables).toMatchObject({
+      reply_walk_nodes: WALK_STATUSES - 2 + 3,
+      reply_walk_debts: 2,
+      status_tags: 2 * MAX_STATUS_TAGS,
+      media_attachments: 2 * MAX_STATUS_MEDIA,
+      status_edits: 2,
+    });
+  });
+
+  it("starts a node's removal within the figure", { timeout: 120_000 }, async () => {
+    const { t, base, rootId, sId, locals } = await capped();
+    // S quotes alice's status, accepted with Kopje's authorization and marked local (as an import marks one), and
+    // every local account listens on its user stream, alice on the public one too.
+    const quoted = await localStatus(t, { status: "quoted", visibility: "public" });
+    await sql(
+      t.store,
+      `INSERT INTO quotes (status_id, quoted_uri, quoted_status_id, quoted_account_id, state, local, authorization_id,
+				updated_at)
+			VALUES (?, ?, ?, ?, 'accepted', 1, 'authorization', ?)`,
+      sId,
+      quoted.uri,
+      quoted.id,
+      ALICE,
+      new Date().toISOString(),
+    );
+    await sql(
+      t.store,
+      `INSERT INTO stream_subscriptions (account_id, stream_key, sockets)
+			SELECT account_id, 'user', 1 FROM local_accounts UNION ALL SELECT ?, 'public', 1`,
+      ALICE,
+    );
+    t.web.fail(base.id, 404);
+    const call = await completion(t, rootId, base.id);
+    // The removal's start (remote-removal.ts startRemoval, removeGone), by the statement that writes each row: its job;
+    // the streamed delete (streaming.ts streamDelete: its event, a viewer row for each local account listening, the
+    // tombstone); the hide (HIDE_ROWS: the status, with its account's last status and its local quote row's copy by
+    // their triggers, and its card); the quote's retirement (≤ 3: the quote, its target's count and the revocation by
+    // their triggers); and its parent's replies_count.
+    const removal = {
+      inbound_jobs: 1,
+      stream_events: 1,
+      stream_delete_viewers: locals,
+      stream_delete_tombstones: 1,
+      statuses: HIDE_ROWS - 1 + 1,
+      status_cards: 1,
+      quotes: 3,
+    };
+    within(call, { ...WALK, ...removal }, removal);
+    expect(await sql(t.store, "SELECT withdrawn FROM statuses WHERE id = ?", sId)).toEqual([{ withdrawn: 1 }]);
+  });
 });

@@ -316,15 +316,18 @@ export async function walkSteps(t: Setup, rootId: string): Promise<{ uri: string
 }
 
 // One call of the walk's Store operations, measured in its transaction: the rows it changed (total_changes(), triggers
-// and cascades included), those of reply_walk_debts, and the debts it inserted. stage: the completed step's (null for
-// a claim); retried: a completion sent again with the author its first answer needed (the same step).
+// and cascades included), those of reply_walk_debts, and the debts it inserted; and the rows by the table each writing
+// statement names (its triggers' and cascades' rows counted with it). stage and uri: the completed step's (null for a
+// claim); retried: a completion sent again with the author its first answer needed (the same step).
 export type MeasuredCall = {
   name: "claim" | "complete";
   stage: string | null;
+  uri: string | null;
   retried: boolean;
   changes: number;
   debts: number;
   owed: number;
+  tables: Record<string, number>;
 };
 
 // A Store whose claims and completions run measured (MeasuredCall), in the order the rounds make them.
@@ -333,7 +336,7 @@ export function measuringStore(t: Setup): { stub: StoreStub; calls: MeasuredCall
   const measured = <I, O>(
     operation: { run: (sql: SqlStorage, input: I, savepoint: <T>(fn: () => T) => T) => O },
     name: MeasuredCall["name"],
-    stage: string | null,
+    step: { stage: string; uri: string } | null,
     input: I,
     retried = false,
   ) =>
@@ -341,18 +344,39 @@ export function measuringStore(t: Setup): { stub: StoreStub; calls: MeasuredCall
       state.storage.transactionSync(() => {
         const real = state.storage.sql;
         const changes = () => real.exec<{ n: number }>("SELECT total_changes() AS n").one().n;
-        const call = { name, stage, retried, changes: 0, debts: 0, owed: 0 };
+        const call: MeasuredCall = {
+          name,
+          stage: step?.stage ?? null,
+          uri: step?.uri ?? null,
+          retried,
+          changes: 0,
+          debts: 0,
+          owed: 0,
+          tables: {},
+        };
         const counted = {
           exec: (query: string, ...params: SqlStorageValue[]) => {
-            if (!/^\s*(INSERT INTO|DELETE FROM|UPDATE) reply_walk_debts\b/.test(query)) {
+            const write = /^\s*(INSERT(?: OR \w+)? INTO|DELETE FROM|UPDATE)\s+(\w+)/.exec(query);
+            if (write === null) {
               return real.exec(query, ...params);
             }
+            // A statement with RETURNING runs as its cursor steps: its rows are read here, and handed out after.
             const before = changes();
             const cursor = real.exec(query, ...params);
+            const rows = cursor.toArray();
             const changed = changes() - before;
-            call.debts += changed;
-            call.owed += /^\s*INSERT/.test(query) ? changed : 0;
-            return cursor;
+            const table = write[2]!;
+            call.tables[table] = (call.tables[table] ?? 0) + changed;
+            if (table === "reply_walk_debts") {
+              call.debts += changed;
+              call.owed += write[1]!.startsWith("INSERT") ? changed : 0;
+            }
+            return {
+              toArray: () => rows,
+              one: () => rows[0],
+              rowsWritten: cursor.rowsWritten,
+              [Symbol.iterator]: () => rows[Symbol.iterator](),
+            };
           },
         } as unknown as SqlStorage;
         const before = changes();
@@ -372,7 +396,7 @@ export function measuringStore(t: Setup): { stub: StoreStub; calls: MeasuredCall
           measured(
             completeReplyStep,
             "complete",
-            input.step.stage,
+            input.step,
             { ...input, now: Date.now() },
             input.author !== undefined,
           );
