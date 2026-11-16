@@ -385,10 +385,13 @@ timeline's not replies to others (a hashtag's keeps them, as Mastodon's `TagFeed
 the viewer neither blocks, mutes nor domain-blocks and who do not block the viewer (R8). Positioned at x, the read is
 the status's own row: the public timeline's by its key, a hashtag's by the status's row of the hashtag. Mastodon's
 streaming server also drops, per connection, a status that mentions an account the viewer blocks or mutes; Kopje does
-the same (`mentionsFilteredFor`), which only narrows R33. Mastodon sends nothing on these streams for a silenced
-account; Kopje has no silencing. A `delete` on them is the status's alone: Mastodon's `RemoveStatusService` publishes
-a public status's delete on `public`, its local or remote stream, their media streams when it had media, and the
-hashtag streams of its hashtags (`:local` for a local status), and none for a boost; Kopje's tombstone holds those
+the same (`mentionsFilteredFor`), which only narrows R33. A status on them is presented as REST presents it to the
+viewer, as on every stream (its flags, poll votes, quote approval and quote state, R35, and `filtered` are the
+viewer's), unlike Mastodon's rendering of these streams for no viewer
+([mastodon-deviations.md](mastodon-deviations.md), feed streams). Mastodon sends nothing on these streams for a
+silenced account; Kopje has no silencing. A `delete` on them is the status's alone: Mastodon's `RemoveStatusService`
+publishes a public status's delete on `public`, its local or remote stream, their media streams when it had media, and
+the hashtag streams of its hashtags (`:local` for a local status), and none for a boost; Kopje's tombstone holds those
 facts from before the delete, and the hashtags only some account subscribed to then. Unlike Mastodon, the viewer must
 have been able to view the status at capture (R3): an author who blocks the viewer sends them no `delete`.
 
