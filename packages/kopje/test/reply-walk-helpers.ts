@@ -66,19 +66,24 @@ export async function storedRoot(t: Setup, actor: TestActor, note: Note): Promis
 let refreshes = 0;
 
 // A context walk of the status, started as startRepliesRefresh starts one: a running row with a refresh id, queued and
-// due at `now`, and its root node, valid, at the status stage.
+// due at `now`, its debt epoch above its root's debts, and its root node, valid, at the status stage, in place of a
+// create walk its Create recorded.
 export async function startWalk(store: StoreStub, statusId: string, now: number): Promise<string> {
   const uri = (await sql<{ uri: string }>(store, "SELECT uri FROM statuses WHERE id = ?", statusId))[0]!.uri;
   const id = (++refreshes).toString(16).padStart(32, "0");
   await sql(
     store,
-    `INSERT INTO reply_walks (status_id, kind, refresh_id, queued_at, due_at, next_seq, nodes)
-		VALUES (?, 0, ?, ?, ?, 1, 1)`,
+    `INSERT INTO reply_walks (status_id, kind, refresh_id, queued_at, due_at, next_seq, nodes, debt_walk)
+		VALUES (?1, 0, ?2, ?3, ?3, 1, 1, (SELECT COALESCE(max(owed_walk), 0) + 1 FROM reply_walk_debts WHERE root_id = ?1))
+		ON CONFLICT (status_id) DO UPDATE SET kind = 0, refresh_id = excluded.refresh_id, queued_at = ?3, due_at = ?3,
+			finished_at = NULL, token = NULL, next_seq = 1, nodes = 1, pages = 0, result_count = 0, handouts = 0,
+			handout = NULL, debt_walk = excluded.debt_walk, debt_after_walk = NULL, debt_after_seq = NULL,
+			debt_after_pos = NULL, debts_seen = 0`,
     statusId,
     id,
     now,
-    now,
   );
+  await sql(store, "DELETE FROM reply_walk_nodes WHERE status_id = ?", statusId);
   await sql(store, "INSERT INTO reply_walk_nodes (status_id, uri, seq, valid) VALUES (?, ?, 0, 1)", statusId, uri);
   return id;
 }

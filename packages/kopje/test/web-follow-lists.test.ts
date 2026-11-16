@@ -425,15 +425,16 @@ describe("the follow lists as pages", () => {
     }
   });
 
-  it("mark a page with a cursor noindex, follow, with its cursor-less URL canonical, and send no script", async () => {
+  // Every page is noindex, as Mastodon's (follower_accounts/index.html.haml, following_accounts/index.html.haml).
+  it("mark every page noindex, with its cursor-less URL canonical, and send no script", async () => {
     const h = await community(["alice"]);
     for (const direction of ["followers", "following"] as const) {
       const path = `/@alice/${direction}`;
       for (const [query, robots] of [
-        ["", []],
-        ["?max_id=200000000000000000", ["noindex, follow"]],
-        ["?min_id=1", ["noindex, follow"]],
-        ["?max_id=x1", []],
+        ["", ["noindex"]],
+        ["?max_id=200000000000000000", ["noindex"]],
+        ["?min_id=1", ["noindex"]],
+        ["?max_id=x1", ["noindex"]],
       ] as const) {
         const response = await h.request(path + query);
         const doc = parseHtml(await response.text());
@@ -462,15 +463,17 @@ describe("the follow lists as pages", () => {
     const h = await community(["alice", "bob"]);
     await remote(h, "carol");
     const missing = await (await h.request("/@nobody")).text();
-    for (const path of [
-      "/@nobody/followers",
-      "/@nobody/following",
-      "/@carol@remote.example/followers",
-      "/@alice@other.example/following",
-      "/@/followers",
-    ]) {
+    // Where Mastodon serves its web app's shell, the same 404 with `noindex` (test/web-robots.test.ts).
+    const missingShell = await (await h.request("/@nobody@kopje.test")).text();
+    for (const [path, bytes] of [
+      ["/@nobody/followers", missing],
+      ["/@nobody/following", missing],
+      ["/@carol@remote.example/followers", missingShell],
+      ["/@alice@other.example/following", missingShell],
+      ["/@/followers", missing],
+    ] as const) {
       const response = await h.request(path);
-      expect([path, response.status, await response.text()]).toEqual([path, 404, missing]);
+      expect([path, response.status, await response.text()]).toEqual([path, 404, bytes]);
     }
     // The guarded branch: the same shapes of a served account answer.
     expect((await h.request("/@alice@kopje.test/followers")).status).toBe(200);

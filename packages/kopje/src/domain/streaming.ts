@@ -14,7 +14,7 @@ import { readOperation, sessionOperation } from "./operation";
 import { instanceOrigin } from "./push";
 import { withinRealTimeWindow } from "./real-time-window";
 import { presentStatus } from "./status-presenter";
-import { journalFull } from "./stream-journal";
+import { journalFull, QUIET_EDIT_SUBJECT } from "./stream-journal";
 import { homeStatus, listStatus, ownListStatus, type PublicFeed, publicStatus, tagStatus } from "./timelines";
 
 // The streaming API's operations on the Store's data (Mastodon 4.5's streaming server; the sockets themselves are
@@ -150,8 +150,9 @@ function carriesNotifications(grant: StreamGrant, key: string): boolean {
 }
 
 // Whether a subscription with the key `key` may carry an event of `kind` (the journal's: a notification inserted, a
-// status inserted, a status edited, a delete captured, a merge done; or a conversation changed) for a token with
-// `grant`, before any reference is read: the streams and scopes each event goes to.
+// status inserted, a status edited or its quote's state or quote policy changed, or a quote policy changed quietly
+// (stream-journal.ts QUIET_EDIT_SUBJECT: no mention reference), a delete captured, a merge done; or a conversation
+// changed) for a token with `grant`, before any reference is read: the streams and scopes each event goes to.
 export function mayCarry(kind: string, grant: StreamGrant, key: string): boolean {
   const timeline = key === "user" || keyList(key) !== null || isFeedKey(key);
   switch (kind) {
@@ -159,6 +160,7 @@ export function mayCarry(kind: string, grant: StreamGrant, key: string): boolean
     case "merged":
       return carriesNotifications(grant, key);
     case "status":
+    case "quiet_edit":
     case "delete":
       return timeline && grant.statuses;
     case "edit":
@@ -238,11 +240,12 @@ export type StreamSubject = { index: string; id: string };
 export type StreamEvent = { id: string; kind: string; subject: string; viewers: string[] };
 
 // The journal after `position`, oldest first, at most `limit` events, each with the accounts that may be sent it in
-// unit order: for a notification, its recipient while it exists; for a merge, its recipient; for a status, every
-// account listening on `user` or a list, and for an edit on `user`, `user:notification` or a list (the registry's, at
-// most 256, read once a scan), and for either, while the status is public and not a boost, every account listening on
-// a `public*` stream (read once a scan) or on a hashtag of the status (each of its hashtags, a
-// seek of stream_subscriptions_key for each of the two hashtag streams, once a scan for each status). A delete's units
+// unit order: for a notification, its recipient while it exists; for a merge, its recipient; for a status or a quiet
+// edit (an `edit` row whose subject is QUIET_EDIT_SUBJECT and the status id, read as the kind `quiet_edit` and the id),
+// every account listening on `user` or a list, and for an edit on `user`, `user:notification` or a list (the
+// registry's, at most 256, read once a scan), and for each, while the status is public and not a boost, every account
+// listening on a `public*` stream (read once a scan) or on a hashtag of the status (each of its hashtags, a seek of
+// stream_subscriptions_key for each of the two hashtag streams, once a scan for each status). A delete's units
 // are not read here. The event of a position within an event is read again (for its units after the position's), and a
 // finished one is not, so a full window means more may follow. Also the journal's span.
 export const streamEvents = readOperation<
@@ -316,20 +319,24 @@ export const streamEvents = readOperation<
   };
   const merged = (...lists: string[][]) => [...new Set(lists.flat())].toSorted();
   const events = rows.map((row): StreamEvent => {
+    const quiet = row.kind === "edit" && row.subject.startsWith(QUIET_EDIT_SUBJECT);
+    const kind = quiet ? "quiet_edit" : row.kind;
+    const subject = quiet ? row.subject.slice(QUIET_EDIT_SUBJECT.length) : row.subject;
     let viewers: string[];
-    switch (row.kind) {
+    switch (kind) {
       case "notification":
         viewers = row.recipient === null ? [] : [row.recipient];
         break;
       case "merged":
       case "conversation":
-        viewers = [row.subject];
+        viewers = [subject];
         break;
       case "status":
-        viewers = merged(listening(["user"]), fed(row.subject));
+      case "quiet_edit":
+        viewers = merged(listening(["user"]), fed(subject));
         break;
       case "edit":
-        viewers = merged(listening(["user", "user:notification"]), fed(row.subject));
+        viewers = merged(listening(["user", "user:notification"]), fed(subject));
         break;
       case "announcement":
       case "announcement_reaction":
@@ -349,7 +356,7 @@ export const streamEvents = readOperation<
     if (after !== null) {
       viewers = viewers.filter((viewer) => viewer > after);
     }
-    return { id: row.id, kind: row.kind, subject: row.subject, viewers };
+    return { id: row.id, kind, subject, viewers };
   });
   // Each bound its own subquery: one seek each (min and max together would scan the journal).
   const span = db.first<{ head: string; tail: string }>(
@@ -400,11 +407,25 @@ export const streamDeleteUnits = readOperation<
   };
 });
 
-// What a unit sends: one event, its payload (presented once), and the streams it goes on (by key), each with the
-// scopes a socket's token needs for it; and the reference reads it made.
+// The events a unit sends, as Mastodon's streaming server names them; the longest is part of the largest frame a socket
+// is sent (RES-6, test/status-bounds.test.ts "bounds a stream unit's isolate peak by the most a subject presents").
+export const STREAM_EVENT_NAMES = [
+  "update",
+  "status.update",
+  "delete",
+  "notification",
+  "notifications_merged",
+  "conversation",
+  "announcement",
+  "announcement.delete",
+  "announcement.reaction",
+] as const;
+
+// What a unit sends: one event ("" when it sends nothing), its payload (presented once), and the streams it goes on
+// (by key), each with the scopes a socket's token needs for it; and the reference reads it made.
 export type StreamUnit = {
   grants: Record<string, StreamGrant>;
-  event: string;
+  event: (typeof STREAM_EVENT_NAMES)[number] | "";
   payload: unknown;
   streams: { stream: string; needs: StreamGrant }[];
   checks: number;
@@ -451,7 +472,7 @@ function unitOf(
 ): StreamUnit {
   const { scopes, context } = authorizeStream(db, accountId, tokenHashes, now);
   const grants = Object.fromEntries([...scopes].map(([hash, granted]) => [hash, streamGrant(granted)]));
-  const none = { grants, event: "", payload: null, streams: [], checks: 0 };
+  const none: StreamUnit = { grants, event: "", payload: null, streams: [], checks: 0 };
   const origin = instanceOrigin(db);
   if (context === null || origin === null) {
     return none;
@@ -495,14 +516,17 @@ function unitOf(
         checks,
       };
     }
-    case "edit": {
+    case "edit":
+    case "quiet_edit": {
+      // A quiet edit reads no mention: Mastodon's skip_notifications sends the mentioned accounts nothing.
+      const readsMention = notified && kind === "edit";
       const home = homeStatus(db, context, subject);
-      const mention = notified ? mentionedStatus(db, context, subject) : null;
+      const mention = readsMention ? mentionedStatus(db, context, subject) : null;
       const listed = listedIn(db, context, lists, subject);
       const fed = fedIn(db, context, feeds, subject);
       const shown = home ?? mention ?? listed[0]?.status ?? fed.status;
       const status = shown === null ? null : presentStatus(db, shown, { origin, viewer: context, streamed: true });
-      const checks = (notified ? 2 : 1) + lists.length + fed.checks;
+      const checks = (readsMention ? 2 : 1) + lists.length + fed.checks;
       if (status === null) {
         return { ...none, checks };
       }

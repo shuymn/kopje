@@ -75,11 +75,11 @@ const WRITING_TRIGGERS: Record<string, string> = {
     "fires on an update of quotes.withdrawn, status_id or local: no batched delete or purge makes one itself (a detach sets quoted_status_id only), and when quotes_withdrawn_status_changed's copy fires it, the copy already equals its rule, so it writes no row",
   quotes_count_inserted: "fires on a quote insert, which no batched delete or purge makes",
   quotes_count_changed:
-    "one statuses row per accepted quote that leaves its count or changes its target, two at most: a detach (STATUS_CHILDREN's quoted_status_id entry) takes an accepted one off the status being deleted, and takes a third of the rows left (with quotes_authorization_retired), a revocation batch (quotes.ts) half",
+    "one statuses row per accepted quote that leaves its count or changes its target, two at most: a detach (STATUS_CHILDREN's quoted_status_id entry) takes an accepted one off the status being deleted, and takes a fourth of the rows left (with quotes_authorization_retired and stream_quote_state), a revocation batch (quotes.ts) a third (with stream_quote_state)",
   quotes_count_deleted:
     "one statuses row per accepted quote deleted: STATUS_CHILDREN's status_id entry takes a third of the rows left",
   quotes_authorization_retired:
-    "one quote_revocations row per authorization of Kopje's cleared: only quotes of local statuses hold one, which a local status's removal detaches in STATUS_CHILDREN's quoted_status_id entry, a third of the rows left (the quote, its target's count and this row); a Delete of the quoting status clears its own before batching (retireQuoteOf)",
+    "one quote_revocations row per authorization of Kopje's cleared: only quotes of local statuses hold one, which a local status's removal detaches in STATUS_CHILDREN's quoted_status_id entry, a fourth of the rows left (the quote, its target's count, this row and stream_quote_state's); a Delete of the quoting status clears its own before batching (retireQuoteOf)",
   quotes_authorization_deleted:
     "one quote_revocations row per quote deleted while holding an authorization of Kopje's (a purge of its quoting author): STATUS_CHILDREN's status_id entry takes a third of the rows left",
   stream_notification_inserted:
@@ -90,6 +90,8 @@ const WRITING_TRIGGERS: Record<string, string> = {
     "one journal row when an owner's mark moves, at most one per owner ahead of the position: counted with conversation_statuses_removed, a fourth row per link",
   stream_status_edited:
     "fires only when edited_at changes, which no batched delete or purge does: hiding a status writes its visibility and content (the exact-budget cases below run with `user`, a list and the feeds listening, and with the feeds alone)",
+  stream_quote_state:
+    "one journal row per quote whose state changes, while someone listens: a detach (STATUS_CHILDREN's quoted_status_id entry) moves an accepted one to deleted within a fourth of the rows left, a revocation batch (quotes.ts revocationBatch) within a third, and a Delete's retirement (retireQuoteOf) counts it in its fixed rows (test/forward-delete.test.ts DELETE_HANDLER_ROWS); the status_id entry deletes, firing nothing",
   outbound_activities_staging_ended:
     "one retraction_stagings row per superseded retraction still staging with a staging row: a batch's supersedeEarlier runs below the oldest one still staging (inbox.ts deleteLocalStatusBatch), so it meets none, and beginRetraction counts them (headed) before it supersedes",
   handshake_replays_generation:
@@ -687,6 +689,70 @@ describe("a status's own delete within a batch", () => {
   );
 });
 
+describe("a quoted status's detach while someone listens", () => {
+  // 400 accepted quotes of one status, each holding an authorization of Kopje's, by remote statuses the listener's
+  // `user` stream arms: each detach writes the quote, its target's count (quotes_count_changed), the authorization's
+  // revocation (quotes_authorization_retired) and the journal row (stream_quote_state), so a batch takes a fourth of
+  // the rows left (STATUS_CHILDREN's quoted_status_id entry). A local status's removal meets the same rows
+  // (test/local-delete.test.ts, its worst case).
+  it("writes at most PURGE_BATCH rows a batch, four a quote", async () => {
+    const h = await community(["alice"]);
+    await listen(h.store, true, h.users.alice.id);
+    const carol = await remoteAccount(h.store, "carol");
+    const quoted = await seedStatus(h.store, { accountId: carol, visibility: "public" });
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 400)
+			INSERT INTO statuses (id, uri, account_id, visibility, published_at)
+			SELECT printf('7%017d', i), 'https://remote.example/quotes/' || i, ?1, 'public', '2026-10-12T00:00:00.000Z' FROM n`,
+      await remoteAccount(h.store, "bob"),
+    );
+    await sql(
+      h.store,
+      `INSERT INTO quotes (status_id, quoted_uri, quoted_status_id, quoted_account_id, state, authorization_id, updated_at)
+			SELECT s.id, q.uri, q.id, q.account_id, 'accepted', hex(randomblob(16)), '2026-10-12T00:00:00.000Z'
+			FROM statuses s, statuses q WHERE s.id GLOB '7*' AND q.id = ?`,
+      quoted,
+    );
+    const counted = async () =>
+      (
+        await sql<{ deleted: number; journaled: number; retired: number }>(
+          h.store,
+          `SELECT (SELECT count(*) FROM quotes WHERE state = 'deleted') AS deleted,
+				(SELECT count(*) FROM stream_events WHERE kind = 'edit') AS journaled,
+				(SELECT count(*) FROM quote_revocations) AS retired`,
+        )
+      )[0]!;
+    const batches: { wrote: number; deleted: number; journaled: number; retired: number }[] = [];
+    for (let i = 0; i < 10; i++) {
+      const { wrote, remaining } = await runInDurableObject(h.store, (_instance, state) => {
+        const db = new Db(state.storage.sql);
+        const changes = () => db.first<{ n: number }>("SELECT total_changes() AS n")!.n;
+        const before = changes();
+        const more = state.storage.transactionSync(() => deleteStatusBatch(db, quoted, NOW));
+        return { wrote: changes() - before, remaining: more };
+      });
+      batches.push({ wrote, ...(await counted()) });
+      if (!remaining) {
+        break;
+      }
+    }
+    expect(batches.every((batch) => batch.wrote <= PURGE_BATCH)).toBe(true);
+    // Each quote at its four rows. The first batch also hides the status (as its Delete's request would have); the
+    // second, its whole budget left, detaches a fourth of PURGE_BATCH.
+    const [first, second] = batches;
+    expect(first!.wrote).toBeGreaterThanOrEqual(4 * first!.deleted);
+    expect([second!.deleted - first!.deleted, second!.journaled - first!.journaled]).toEqual([
+      PURGE_BATCH / 4,
+      PURGE_BATCH / 4,
+    ]);
+    expect(second!.wrote).toBe(PURGE_BATCH);
+    expect(batches.every((batch) => batch.deleted === batch.journaled && batch.deleted === batch.retired)).toBe(true);
+    expect(batches.at(-1)).toMatchObject({ deleted: 400, journaled: 400, retired: 400 });
+    expect(await sql(h.store, "SELECT count(*) AS n FROM statuses WHERE id = ?", quoted)).toEqual([{ n: 0 }]);
+  }, 60_000);
+});
+
 describe("trend and card rows within a batch (0057_trends, 0067_status_cards)", () => {
   // The status's final delete reserves 7 rows: the status, its poll, its trend_statuses, status_trend_reviews and
   // status_cards rows, the account's last status (0021_directory moves it back: the status is the account's newest) and
@@ -790,4 +856,154 @@ describe("trend and card rows within a batch (0057_trends, 0067_status_cards)", 
     expect(wrote).toBe(left === 3 ? PURGE_BATCH : PURGE_BATCH - 2);
     expect(await sql(h.store, "SELECT count(*) AS n FROM account_trend_reviews")).toEqual([{ n: left === 3 ? 0 : 1 }]);
   });
+});
+
+describe("replies walk rows within a batch (0106_reply_walk_debts)", () => {
+  // The rows of a status's scans and debts (reply-walk-debts.ts): its cursor, the debts it holds as a root and those
+  // naming it, n rows, which STATUS_CHILDREN's steps delete before it within the batch's budget. With the 7 rows its
+  // final delete reserves (above) and n more left, the status goes in this batch; with 6 and n, the steps take the n
+  // and the status waits for the next.
+  it.each([7, 6])("deletes a status's cursor and debts before it within the budget (left: %i + n)", async (left) => {
+    const h = await community(["alice"]);
+    const parent = await seedStatus(h.store, { accountId: h.users.alice.id, visibility: "public" });
+    const other = await seedStatus(h.store, { accountId: h.users.alice.id, visibility: "public" });
+    const remote = await remoteAccount(h.store, "carol");
+    const uri = "https://remote.example/users/carol";
+    const reply = await seedStatus(h.store, { accountId: remote, visibility: "public", inReplyToId: parent });
+    await sql(h.store, `INSERT INTO polls (status_id, options, tallies) VALUES (?, '["a","b"]', '[0,0]')`, reply);
+    await sql(h.store, "INSERT INTO trend_statuses (status_id, account_id, score) VALUES (?, ?, 9)", reply, remote);
+    await sql(
+      h.store,
+      "INSERT INTO status_trend_reviews (status_id, trendable, reviewed_at) VALUES (?, 1, '2026-10-12T00:00:00.000Z')",
+      reply,
+    );
+    await sql(
+      h.store,
+      `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at)
+			VALUES (?, 'https://a.example/', 0, 0, 't', 0)`,
+      reply,
+    );
+    await sql(h.store, "INSERT INTO reply_walk_cursors (status_id, after_id) VALUES (?, ?)", reply, parent);
+    await sql(
+      h.store,
+      `INSERT INTO reply_walk_debts (root_id, status_id, kind, owed_walk, owed_seq, owed_pos, depth)
+			VALUES (?1, ?2, 0, 1, 1, 1, 1), (?1, ?3, 0, 1, 1, 2, 1), (?2, ?1, 0, 1, 1, 1, 1)`,
+      reply,
+      parent,
+      other,
+    );
+    const walkRows = async () =>
+      (
+        await sql<{ n: number }>(
+          h.store,
+          "SELECT (SELECT count(*) FROM reply_walk_cursors) + (SELECT count(*) FROM reply_walk_debts) AS n",
+        )
+      )[0]!.n;
+    const n = await walkRows();
+    expect(n).toBe(4);
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO accounts (id, uri, username, domain)
+			SELECT printf('6%017d', i), 'https://many.example/users/m' || i, 'm' || i, 'many.example' FROM n`,
+      PURGE_BATCH - left - n,
+    );
+    await sql(
+      h.store,
+      "INSERT INTO status_mentions (status_id, account_id) SELECT ?, id FROM accounts WHERE id GLOB '6*'",
+      reply,
+    );
+    const batch = () =>
+      runInDurableObject(h.store, (_instance, state) => {
+        const db = new Db(state.storage.sql);
+        const changes = () => db.first<{ n: number }>("SELECT total_changes() AS n")!.n;
+        const before = changes();
+        const more = state.storage.transactionSync(() => purgeBatch(db, uri, NOW));
+        return { wrote: changes() - before, more };
+      });
+    const first = await batch();
+    expect(await walkRows()).toBe(0);
+    const gone = (await sql(h.store, "SELECT count(*) AS n FROM statuses WHERE id = ?", reply))[0]!.n === 0;
+    expect(gone).toBe(left === 7);
+    expect(first).toEqual({ wrote: left === 7 ? PURGE_BATCH : PURGE_BATCH - 6, more: true });
+    if (left === 6) {
+      expect((await batch()).wrote).toBe(8);
+    }
+  });
+
+  // A status holding 450 debts as a root, named by 3 of other roots, with its cursor: 100 rows left in the first batch.
+  it.each(["the status's delete", "its author's purge"] as const)(
+    "deletes 450 debts of a root over batches, each within PURGE_BATCH, before the status (%s)",
+    async (how) => {
+      const h = await community(["alice"]);
+      const remote = await remoteAccount(h.store, "carol");
+      const uri = "https://remote.example/users/carol";
+      const status = await seedStatus(h.store, { accountId: remote, visibility: "public" });
+      await sql(
+        h.store,
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 453)
+				INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+				SELECT printf('7%017d', i), 'https://kopje.test/ap/o/d' || i, ?, 'public', '<p>d</p>',
+					'2026-10-11T12:00:00.000Z' FROM n`,
+        h.users.alice.id,
+      );
+      await sql(
+        h.store,
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 449)
+				INSERT INTO reply_walk_debts (root_id, status_id, kind, owed_walk, owed_seq, owed_pos, depth)
+				SELECT ?1, printf('7%017d', i + 1), 0, 1, i / 200, i % 200 + 1, 1 FROM n`,
+        status,
+      );
+      await sql(
+        h.store,
+        `INSERT INTO reply_walk_debts (root_id, status_id, kind, owed_walk, owed_seq, owed_pos, depth)
+				SELECT printf('7%017d', 450 + d), ?1, 0, 1, 0, 1, d FROM (SELECT 1 AS d UNION ALL SELECT 2 UNION ALL SELECT 3)`,
+        status,
+      );
+      await sql(
+        h.store,
+        "INSERT INTO reply_walk_cursors (status_id, after_id) VALUES (?, '700000000000000001')",
+        status,
+      );
+      await sql(
+        h.store,
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+				INSERT INTO accounts (id, uri, username, domain)
+				SELECT printf('6%017d', i), 'https://many.example/users/m' || i, 'm' || i, 'many.example' FROM n`,
+        PURGE_BATCH - 100,
+      );
+      await sql(
+        h.store,
+        "INSERT INTO status_mentions (status_id, account_id) SELECT ?, id FROM accounts WHERE id GLOB '6*'",
+        status,
+      );
+      const batches: number[] = [];
+      for (let i = 0; i < 20; i++) {
+        const { wrote, more } = await runInDurableObject(h.store, (_instance, state) => {
+          const db = new Db(state.storage.sql);
+          const changes = () => db.first<{ n: number }>("SELECT total_changes() AS n")!.n;
+          const before = changes();
+          const remaining = state.storage.transactionSync(() =>
+            how === "its author's purge" ? purgeBatch(db, uri, NOW) : deleteStatusBatch(db, status, NOW),
+          );
+          return { wrote: changes() - before, more: remaining };
+        });
+        batches.push(wrote);
+        if (!more) {
+          break;
+        }
+      }
+      // The first batch spends its budget on the mentions and 100 walk rows; the rest go in the next.
+      expect(batches[0]).toBe(PURGE_BATCH);
+      expect(batches.length).toBeGreaterThan(1);
+      expect(batches.every((wrote) => wrote <= PURGE_BATCH)).toBe(true);
+      expect(await sql(h.store, "SELECT count(*) AS n FROM statuses WHERE id = ?", status)).toEqual([{ n: 0 }]);
+      expect(
+        await sql(
+          h.store,
+          `SELECT (SELECT count(*) FROM reply_walk_debts) AS debts, (SELECT count(*) FROM reply_walk_cursors) AS cursors`,
+        ),
+      ).toEqual([{ debts: 0, cursors: 0 }]);
+    },
+  );
 });

@@ -86,42 +86,61 @@ jobs:
             mutation($input: CreateCommitOnBranchInput!) {
               createCommitOnBranch(input: $input) { commit { oid } }
             }
-          AUTO_MERGE_QUERY: >-
-            mutation($id: ID!) {
-              enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: MERGE}) { clientMutationId }
-            }
         run: |
           set -eu
-          # An existing branch with the same lockfile is already proposed (or was
-          # rejected by closing its PR). Otherwise start over from the current base;
-          # deleting the branch closes its stale PR.
-          if proposed=$(gh api "repos/$GITHUB_REPOSITORY/contents/$LOCK?ref=$BRANCH" --jq .sha 2>/dev/null); then
+          repo=$GITHUB_REPOSITORY
+          # A branch with the same lockfile is already proposed. Otherwise start
+          # over from the current base; deleting the branch closes its stale PR.
+          current=false
+          if proposed=$(gh api "repos/$repo/contents/$LOCK?ref=$BRANCH" --jq .sha 2>/dev/null); then
             if [ "$proposed" = "$(git hash-object "$LOCK")" ]; then
-              echo "$BRANCH already proposes this lockfile"
+              current=true
+            else
+              gh api -X DELETE "repos/$repo/git/refs/heads/$BRANCH"
+            fi
+          fi
+
+          pr=
+          if [ "$current" = true ]; then
+            # Closing the branch's PR (and keeping the branch) rejects this
+            # lockfile. A run that stopped after the commit left no PR, so this
+            # one opens it.
+            head=$(gh api "repos/$repo/git/ref/heads/$BRANCH" --jq .object.sha)
+            pr=$(gh api "repos/$repo/commits/$head/pulls" \
+              --jq "map(select(.head.ref == \"$BRANCH\" and .head.sha == \"$head\"))[0] // empty")
+            if [ -n "$pr" ] && [ "$(printf '%s' "$pr" | jq -r .state)" = closed ]; then
+              echo "$BRANCH proposes this lockfile; its PR was closed"
               exit 0
             fi
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH"
+          else
+            gh api -X POST "repos/$repo/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$GITHUB_SHA" >/dev/null
+
+            # createCommitOnBranch produces a signed (verified) commit.
+            jq -n \
+              --arg query "$COMMIT_QUERY" \
+              --arg repository "$repo" \
+              --arg branch "$BRANCH" \
+              --arg head "$GITHUB_SHA" \
+              --arg path "$LOCK" \
+              --rawfile lock "$LOCK" \
+              '{query: $query, variables: {input: {branch: {repositoryNameWithOwner: $repository, branchName: $branch}, expectedHeadOid: $head, message: {headline: "Update mise tools"}, fileChanges: {additions: [{path: $path, contents: ($lock | @base64)}]}}}}' \
+              >"$RUNNER_TEMP/commit.json"
+            gh api graphql --input "$RUNNER_TEMP/commit.json" >/dev/null
           fi
-          gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$GITHUB_SHA" >/dev/null
 
-          # createCommitOnBranch produces a signed (verified) commit.
-          jq -n \
-            --arg query "$COMMIT_QUERY" \
-            --arg repository "$GITHUB_REPOSITORY" \
-            --arg branch "$BRANCH" \
-            --arg head "$GITHUB_SHA" \
-            --arg path "$LOCK" \
-            --rawfile lock "$LOCK" \
-            '{query: $query, variables: {input: {branch: {repositoryNameWithOwner: $repository, branchName: $branch}, expectedHeadOid: $head, message: {headline: "Update mise tools"}, fileChanges: {additions: [{path: $path, contents: ($lock | @base64)}]}}}}' \
-            >"$RUNNER_TEMP/commit.json"
-          gh api graphql --input "$RUNNER_TEMP/commit.json" >/dev/null
-
-          pr=$(gh api -X POST "repos/$GITHUB_REPOSITORY/pulls" \
-            -f title="Update mise tools" \
-            -f head="$BRANCH" \
-            -f base="$BASE_BRANCH" \
-            -F body=@"$RUNNER_TEMP/body.md")
-          number=$(printf '%s' "$pr" | jq -r '.number')
-          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/$number/labels" -f 'labels[]=dependencies' >/dev/null
-          gh api graphql -f query="$AUTO_MERGE_QUERY" -f id="$(printf '%s' "$pr" | jq -r '.node_id')" >/dev/null
-          echo "opened #$number"
+          if [ -z "$pr" ]; then
+            pr=$(gh api -X POST "repos/$repo/pulls" \
+              -f title="Update mise tools" \
+              -f head="$BRANCH" \
+              -f base="$BASE_BRANCH" \
+              -F body=@"$RUNNER_TEMP/body.md")
+            echo "opened #$(printf '%s' "$pr" | jq -r .number)"
+          fi
+          # Each step below is safe to repeat, so a later run finishes what a
+          # failed one left. --auto enables auto-merge, or merges at once when
+          # the PR already meets the required checks.
+          number=$(printf '%s' "$pr" | jq -r .number)
+          gh api -X POST "repos/$repo/issues/$number/labels" -f 'labels[]=dependencies' >/dev/null
+          if [ "$(printf '%s' "$pr" | jq '.auto_merge == null')" = true ]; then
+            gh pr merge -R "$repo" --auto --merge "$number"
+          fi

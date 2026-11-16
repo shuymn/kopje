@@ -54,7 +54,8 @@ export class Params {
     readonly emptyLists: ReadonlySet<string> = new Set(),
     // Undeclared file parts of a multipart body in body order; `at` indexes the body's prefix of `entries`.
     private readonly fileParts: readonly FilePart[] = [],
-    // The names a JSON body sent as null, which read as blank (objects' `nulls` option reads them as absent).
+    // The names a JSON body sent as null, which read as blank (sentNull tells them apart; objects' `nulls` option reads
+    // them as absent).
     private readonly nulls: ReadonlySet<string> = new Set(),
   ) {}
 
@@ -81,6 +82,12 @@ export class Params {
   // undefined, and the other way round.
   file(name: string): File | undefined {
     return this.files.get(name);
+  }
+
+  // Whether a JSON body sent `name` as null, which get(name) reads as blank: Rails assigns nil, where a blank string
+  // stays a string.
+  sentNull(name: string): boolean {
+    return this.nulls.has(name) && this.get(name) === "";
   }
 
   // Whether `name` or `name[]` was sent at all, even with no value: an explicitly empty list is not an absent one.
@@ -380,6 +387,14 @@ function flatten(value: unknown, state: Flattening, prefix = "", depth = 0): voi
 // `offset` as Mastodon's offset endpoints read it (params[:offset].to_i): a negative or unreadable one is 0.
 export function offsetParam(p: Params): number {
   return Math.max(Number.parseInt(p.get("offset") ?? "0", 10) || 0, 0);
+}
+
+// Whether Ruby's String#to_i reads `value` as negative (rb_int_parse_cstr in Ruby 4.0.9's bignum.c, Mastodon 4.7.5's
+// Ruby): after ASCII whitespace (ISSPACE), a `-`, an optional `0d` prefix, then digits with single underscores between
+// them, one of them not 0; whatever follows is ignored, so `-2abc` and ` -1` are negative and `-_1` or `--1` are 0.
+const RUBY_NEGATIVE = /^[\t\n\v\f\r ]*-(?:0[dD])?[0-9]+(?:_[0-9]+)*/;
+export function rubyNegative(value: string): boolean {
+  return /[1-9]/.test(RUBY_NEGATIVE.exec(value)?.[0] ?? "");
 }
 
 // `limit` as Api::BaseController#limit_param reads it: `fallback` when absent, else the absolute value, at most `max`

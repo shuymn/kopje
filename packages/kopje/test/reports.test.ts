@@ -5,14 +5,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
-import { MAX_FORWARD_DOMAINS, MAX_REPORT_STATUSES } from "../src/domain/reports";
+import { createReport, MAX_FORWARD_DOMAINS, MAX_REPORT_COLLECTIONS, MAX_REPORT_STATUSES } from "../src/domain/reports";
 import { deliveryRound } from "../src/jobs/deliver";
 import type { StoreStub } from "../src/platform/store-client";
 import { bytesToBase64 } from "../src/security/key-wrap";
+import { sha256Hex } from "../src/security/tokens";
 import { bearer, json, setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { fixtureKeyGen, LEGACY } from "./federation-helpers";
-import { scopedToken } from "./read-helpers";
+import { measuredRead, scopedToken } from "./read-helpers";
 import { block, community, outbound, remoteAccount, seedStatus, type User } from "./status-helpers";
 
 // POST /api/v1/reports (Mastodon 4.5's ReportService; R34, R11, R23, DATA-7): the answer, Report's validations, the
@@ -86,6 +87,7 @@ describe("POST /api/v1/reports", () => {
       "created_at",
       "status_ids",
       "rule_ids",
+      "collection_ids",
       "target_account",
     ]);
     expect(body).toMatchObject({
@@ -98,6 +100,7 @@ describe("POST /api/v1/reports", () => {
       created_at: new Date(NOW).toISOString(),
       status_ids: [status],
       rule_ids: null,
+      collection_ids: [],
       target_account: { id: carol, acct: "carol@remote.example" },
     });
     expect(
@@ -119,6 +122,96 @@ describe("POST /api/v1/reports", () => {
     ]);
     // Without forward nothing federates.
     expect(await outbound(h.store)).toEqual([]);
+  });
+
+  // ReportService#reported_collection_ids (Mastodon 4.7.5): `@target_account.collections.find(collection_ids)`.
+  it("takes collection_ids[] of the account's collections in any visibility, and refuses another's or more than 50", async () => {
+    const { h, alice, bob, carol } = await reporting();
+    const at = new Date(NOW).toISOString();
+    for (const [id, owner, local, discoverable] of [
+      ["710000000000000001", carol, 0, 1],
+      ["710000000000000002", carol, 0, 0],
+      ["710000000000000003", bob.id, 1, 1],
+    ] as const) {
+      await sql(
+        h.store,
+        `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, uri, created_at, updated_at)
+				VALUES (?1, ?2, ?3, 'c', 0, ?4, CASE WHEN ?3 = 0 THEN 'https://remote.example/c/' || ?1 END, ?5, ?5)`,
+        id,
+        owner,
+        local,
+        discoverable,
+        at,
+      );
+    }
+    const reported = await report(h, alice, {
+      account_id: carol,
+      collection_ids: ["710000000000000002", "710000000000000001", "710000000000000002"],
+    });
+    expect(reported.status).toBe(200);
+    expect(reported.body.collection_ids).toEqual(["710000000000000002", "710000000000000001"]);
+    expect(await sql(h.store, "SELECT collection_ids FROM reports")).toEqual([
+      { collection_ids: '["710000000000000002","710000000000000001"]' },
+    ]);
+    // Another account's collection, an unknown one, or two ids naming one collection: the whole report is not found.
+    for (const ids of [
+      ["710000000000000001", "710000000000000003"],
+      ["710000000000000009"],
+      ["710000000000000001", " 710000000000000001"],
+    ]) {
+      expect(await report(h, alice, { account_id: carol, collection_ids: ids })).toEqual({
+        status: 404,
+        body: { error: "Record not found" },
+      });
+    }
+    expect(await count(h.store, "SELECT 1 FROM reports")).toBe(1);
+    // More than 50 distinct ids are refused before any collection is read: no more rows than for one unknown id.
+    const tokenHash = await sha256Hex(alice.token);
+    const input = (collectionIds: string[]) => ({
+      credential: { tokenHash, scope: "write:reports", now: NOW } as const,
+      account: carol,
+      statusIds: [],
+      collectionIds,
+      comment: undefined,
+      category: undefined,
+      ruleIds: [],
+      forward: false,
+      forwardToDomains: null,
+      present: { origin: "https://kopje.test" },
+      now: NOW,
+    });
+    const many = Array.from({ length: MAX_REPORT_COLLECTIONS + 1 }, (_, i) => String(720000000000000000n + BigInt(i)));
+    const one = await measuredRead(h, createReport, input(["720000000000000000"]));
+    const past = await measuredRead(h, createReport, input(many));
+    expect([one.output, past.output]).toEqual([
+      { status: "ok", value: { status: "not_found" } },
+      { status: "ok", value: { status: "not_found" } },
+    ]);
+    expect(past.rows).toBeLessThan(one.rows);
+  });
+
+  it("lists the reported collections' URIs after the statuses in a forwarded Flag", async () => {
+    const { h, alice, carol, status } = await reporting();
+    await sql(
+      h.store,
+      `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, uri, created_at, updated_at)
+			VALUES ('710000000000000001', ?, 0, 'c', 0, 1, 'https://remote.example/c/1', ?2, ?2)`,
+      carol,
+      new Date(NOW).toISOString(),
+    );
+    await report(h, alice, {
+      account_id: carol,
+      status_ids: [status],
+      collection_ids: ["710000000000000001"],
+      forward: true,
+    });
+    const [statusUri] = (await sql<{ uri: string }>(h.store, "SELECT uri FROM statuses WHERE id = ?", status)).map(
+      (r) => r.uri,
+    );
+    expect((await outbound(h.store))[0]?.activity).toMatchObject({
+      type: "Flag",
+      object: ["https://remote.example/users/carol", statusUri, "https://remote.example/c/1"],
+    });
   });
 
   it("takes a blank comment and category as empty and other, and repeated status ids once", async () => {

@@ -101,6 +101,14 @@ export type Messages = {
     noHashtags: string;
     noAccounts: string;
   };
+  // A local collection's page: its title (the collection's name), the heading of its members, the line of a
+  // collection with none, and the summary of a sensitive collection's disclosure.
+  collection: {
+    title: (name: string) => string;
+    accounts: string;
+    noAccounts: string;
+    sensitive: string;
+  };
   post: {
     inReplyTo: string;
     sensitiveMedia: string;

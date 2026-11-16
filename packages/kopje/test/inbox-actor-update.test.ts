@@ -165,6 +165,24 @@ describe("an Update(Person) embedding its actor, signed with a fresh key (ID-1)"
     ]);
   });
 
+  it("applies an embedded actor whose header is a Document (#1672)", async () => {
+    const { t, bob } = await bobWorld();
+    const update = updateOf(
+      bob,
+      embedded(bob, {
+        name: "embedded name",
+        icon: { type: "Image", mediaType: "image/png", url: avatar("embedded") },
+        image: { type: "Document", mediaType: "image/png", url: `${MASTODON}/system/headers/embedded.png` },
+      }),
+    );
+    expect(await receive(t, bob, update)).toMatchObject({ status: 202, reason: "actor-updated" });
+    expect(t.web.fetched).toEqual([]);
+    expect(await row(t, bob.uri)).toMatchObject({ display_name: "embedded name", avatar_url: avatar("embedded") });
+    expect(await sql(t.store, "SELECT header_url, header_description FROM accounts WHERE uri = ?", bob.uri)).toEqual([
+      { header_url: null, header_description: "" },
+    ]);
+  });
+
   it("keeps the stored keys and inboxes whatever the embedded actor lists", async () => {
     const { t, bob } = await bobWorld();
     const before = { row: await row(t, bob.uri), keys: await keys(t, bob.uri) };

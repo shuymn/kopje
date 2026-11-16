@@ -36,6 +36,43 @@ states the rules every page follows.
   acting. The edit history's notice that older versions are left out is the one exception (VIS-4).
 - **The system colour scheme.** Pages follow `prefers-color-scheme` and declare `color-scheme`. There is no theme
   switch.
+- **Robots as Mastodon answers the same URL.** See [Robots](#robots).
+
+## Robots
+
+A page, and its 404 or 410, carries the robots meta that Mastodon 4.7.5's answer at the same URL carries. `Robots`
+(`src/web/components/layout.tsx`) writes it; `mastodonShell` (`src/app/public-pages.tsx`) matches the path as
+Mastodon's router matches it (`config/routes.rb:160-179`); `test/web-robots.test.ts` holds each row below, error answers
+included.
+
+- **`noindex` where Mastodon serves its web app's shell** (`home#index`, which marks every path but `/`): any `/@…`
+  path that none of its account routes takes. Those take a name of `[^@/.]+` only, so a post's Boosts, Favourites and
+  Quotes tabs, every page under `/@username@domain` and every page under a stored username with a dot (cutover keeps
+  one) are the shell's; a 404 or 410 there carries `noindex` too.
+- **`noindex` where Mastodon's own page sends it**: the hashtag, followers and following pages and the embed; a
+  collection's page sends `noindex, noarchive`.
+- **Otherwise as Mastodon's own page**: none on a first page, and `noindex, follow` on a page with a cursor, which
+  Mastodon does not serve ([mastodon-deviations.md](mastodon-deviations.md), "Public pages"). A 404 or 410 there carries
+  none, as Mastodon's error page.
+- **The handoff pages carry `noindex`**: Mastodon serves no page at either path.
+
+| Kopje path                                                                                 | Mastodon 4.7.5                                                      | Robots: first page / with a cursor                                                          |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `/@u`, `/@u/with_replies`, `/@u/media`, `/@u/tagged/:tag`, `/@u/featured`                  | `accounts#show`                                                     | none / `noindex, follow`                                                                    |
+| `/@u/:id`                                                                                  | `statuses#show`                                                     | none / `noindex, follow`                                                                    |
+| `/@u/:id/reblogs`, `/@u/:id/favourites`, `/@u/:id/quotes`                                  | `home#index`                                                        | `noindex` / `noindex`                                                                       |
+| `/@u/:id/embed`                                                                            | `statuses#embed`                                                    | `noindex`                                                                                   |
+| `/@u/followers`, `/@u/following`                                                           | `follower_accounts#index`, `following_accounts#index`               | `noindex` / `noindex`                                                                       |
+| `/tags/:name`                                                                              | `tags#show`                                                         | `noindex` / `noindex`                                                                       |
+| `/collections/:id`                                                                         | `collections#show`                                                  | `noindex, noarchive`                                                                        |
+| `/@u/interact`                                                                             | `statuses#show`, which reads `interact` as a status id (a 404)      | `noindex`                                                                                   |
+| `/@u/:id/interact`                                                                         | `home#index`                                                        | `noindex`                                                                                   |
+| `/about`, `/privacy-policy`, `/terms-of-service`, `/terms-of-service/:date`                | `about#show`, `privacy#show`, `terms_of_service#show`               | none                                                                                        |
+| `/authorize_interaction`                                                                   | `authorize_interactions#show`, which signs the viewer in first      | none: Kopje's form ([mastodon-deviations.md](mastodon-deviations.md), "Remote interaction") |
+| `/`                                                                                        | `home#index`, without `noindex` at `/`                              | a 302 to `/about`                                                                           |
+| any `/@u…` page above spelled `/@u@<this domain>…`, or under a name with a dot (`/@u.x/…`) | `home#index`                                                        | `noindex` / `noindex`                                                                       |
+| `/@u.x`                                                                                    | `accounts#show`, which reads `u` and the format `x`                 | none / `noindex, follow`                                                                    |
+| `/@user@remote.example…`                                                                   | `home#index`, which sends an anonymous viewer on to a known account | a 404 with `noindex`; a known account's `tagged` URL a 302 to its own server                |
 
 ## UI rules
 

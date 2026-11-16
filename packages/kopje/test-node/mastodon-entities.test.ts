@@ -66,10 +66,10 @@ const MAPPING: Record<string, Mapping> = {
   "REST::AnnualReportSerializer": { file: "src/domain/annual-reports.ts", typeName: "AnnualReport" },
   "REST::PartialAccountSerializer": { file: "src/domain/accounts.ts", typeName: "PartialAccount" },
   "REST::ProfileSerializer": { file: "src/domain/accounts.ts", typeName: "Profile" },
-  "REST::CollectionSerializer": { deferred: 1589 },
-  "REST::CollectionItemSerializer": { deferred: 1589 },
-  "REST::CollectionWithAccountsSerializer": { deferred: 1589 },
-  "REST::ShallowTagSerializer": { deferred: 1589 },
+  "REST::CollectionSerializer": { file: "src/domain/collections.ts", typeName: "Collection" },
+  "REST::CollectionItemSerializer": { file: "src/domain/collections.ts", typeName: "CollectionItem" },
+  "REST::CollectionWithAccountsSerializer": { file: "src/domain/collections.ts", typeName: "CollectionWithAccounts" },
+  "REST::ShallowTagSerializer": { file: "src/domain/collections.ts", typeName: "ShallowTag" },
   "REST::NotificationPolicySerializer": {
     file: "src/mastodon/notification-requests.ts",
     typeName: "NotificationPolicyV2",
@@ -107,9 +107,6 @@ const ENTITY_EXCEPTIONS: Exceptions = {
     ...accepted("MD-9", "annual_report"),
   },
   "REST::AnnouncementSerializer": accepted("MD-4", "statuses"),
-  "REST::ReportSerializer": open(1589, "collections", "collection_ids"),
-  "REST::RoleSerializer": open(1589, "collections", "collection_limit"),
-  "REST::SearchSerializer": open(1589, "collections", "collections"),
   // No share page.
   "REST::AnnualReportSerializer": accepted("MD-9", "share_url"),
 };

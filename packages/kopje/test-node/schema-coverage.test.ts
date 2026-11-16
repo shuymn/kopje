@@ -22,8 +22,11 @@ const NOT_DUMPED: Record<string, string> = {
   remote_media: "a cache of remote files; an imported or restored Store starts it empty and fills it again",
   remote_media_objects: "the cache's R2 ledger; remote/ is not backed up, and an empty ledger's orphans are swept",
   remote_media_usage: "the cache's sums, one row the migration inserts; an empty cache counts nothing",
+  reply_walk_cursors:
+    "where a replies walk's next scan of a status starts; a restored Store scans from the first reply",
+  reply_walk_debts: "the work replies walks had no room for; a restored Store owes it again at the walk that cuts it",
   reply_walk_nodes: "the statuses of a walk of replies collections under way; a restored Store starts none",
-  reply_walks: "walks of replies collections Kopje runs for a context read; a restored Store starts none",
+  reply_walks: "walks of replies collections Kopje runs for a context read or a Create; a restored Store starts none",
   stream_conversation_marks:
     "the streaming conversation marks of one object; a restored Store makes them again from the conversations' stream_seq",
   stream_cursor: "the streaming fan-out's position, over the journal of one object",
@@ -53,6 +56,8 @@ const NOT_CARRIED: Record<string, string> = {
   card_images: "card images Kopje's image round stores; legacy Wildebeest has none, and a carried status gets no card",
   card_oembed_endpoints: "oEmbed endpoints Kopje's card round discovers; legacy Wildebeest has none",
   collection_pins_pending: "pinned statuses a sync of Kopje has yet to fetch; legacy has none",
+  collection_items: "the members of collections made in Kopje; legacy Wildebeest has no collections",
+  collections: "collections made in Kopje; legacy Wildebeest has no collections",
   conversation_mutes:
     "legacy never wrote its conversation_mutes table, and a legacy row there stops the conversion (UNUSED_LEGACY_TABLES)",
   custom_emojis: "local custom emoji of Kopje; legacy Wildebeest has none (verify-actual fails on any row)",
@@ -105,6 +110,8 @@ const NOT_CARRIED: Record<string, string> = {
   remote_media: "Kopje's cache of remote files; legacy Wildebeest has none, and a converted Store fills it again",
   remote_media_objects: "the cache's R2 ledger; legacy Wildebeest has none",
   remote_media_usage: "the cache's sums; the migration inserts the one row a converted Store starts from",
+  reply_walk_cursors: "the scans of replies walks; work Kopje asks for, legacy has none, and they are not dumped",
+  reply_walk_debts: "the work replies walks owe; work Kopje asks for, legacy has none, and they are not dumped",
   reply_walk_nodes: "the statuses of a walk of replies collections; work Kopje asks for, and legacy has none",
   reply_walks: "walks of replies collections; work Kopje asks for, legacy has none, and they are not dumped",
   reports: "reports made in Kopje; legacy Wildebeest has no reports",

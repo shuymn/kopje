@@ -1,7 +1,7 @@
 // search_text: plain text, NFKC, lowercase, whitespace collapsed, variation selectors removed. Rows are
 // matched with instr; there is no virtual table. Kana and long-vowel variants are expanded on the query side only.
 
-const VARIATION_SELECTORS = /[︀-️]|\uDB40[\uDD00-\uDDEF]/g;
+const VARIATION_SELECTORS = /[\uFE00-\uFE0F]|\uDB40[\uDD00-\uDDEF]/g;
 
 export function normalizeSearchText(text: string): string {
   return text.normalize("NFKC").toLowerCase().replace(VARIATION_SELECTORS, "").replace(/\s+/g, " ").trim();
@@ -25,8 +25,8 @@ export function queryTerms(query: string): string[][] {
       const variants = new Set([term, toHiragana(term), toKatakana(term)]);
       // oxlint-disable-next-line unicorn/no-useless-spread -- a copy: the loop adds to the set it reads
       for (const variant of [...variants]) {
-        if (/[ァ-ヺ]ー+$/.test(variant)) {
-          variants.add(variant.replace(/ー+$/, ""));
+        if (/[\u30A1-\u30FA]\u30FC+$/.test(variant)) {
+          variants.add(variant.replace(/\u30FC+$/, ""));
         }
       }
       return [...variants];
@@ -49,9 +49,9 @@ export function statusQueryTerms(query: string): { include: string[][]; exclude:
 }
 
 function toHiragana(text: string): string {
-  return text.replace(/[ァ-ヶ]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60));
+  return text.replace(/[\u30A1-\u30F6]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0x60));
 }
 
 function toKatakana(text: string): string {
-  return text.replace(/[ぁ-ゖ]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x60));
+  return text.replace(/[\u3041-\u3096]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x60));
 }

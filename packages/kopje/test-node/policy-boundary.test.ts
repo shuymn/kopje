@@ -229,8 +229,25 @@ const RULES: readonly Rule[] = [
         "quotes, their verification work, revocations, answered QuoteRequests and Kopje’s authorizations",
       "src/domain/inbox.ts":
         "a status’s batched delete detaches the quotes of it and deletes its own (STATUS_CHILDREN), never a revocation",
+      "src/domain/update-fan-out.ts":
+        "reads only: the accepted quotes an update notifies (localQuotedAccount, quotedUpdates), never a quote's state",
       "src/platform/store-import.ts":
         "an import's verification reads the imported quotes to restore their quoted statuses' dumped quotes_count (correctQuoteCounts), never a quote's state",
+    },
+  },
+  {
+    // The readers of quotes (audience.ts, update-fan-out.ts, store-import.ts) never write one: only quotes.ts decides a
+    // quote's state, and a status's batched delete detaches or deletes the quotes it leaves (inbox.ts).
+    name: "writes quotes",
+    pattern: new RegExp(
+      `\\b(?:INTO|UPDATE|DELETE\\s+FROM)\\s+${table(["quotes", "quote_revocations", "quote_requests"])}`,
+      "i",
+    ),
+    allowed: {
+      "src/domain/quotes.ts":
+        "quotes, their verification work, revocations, answered QuoteRequests and Kopje’s authorizations",
+      "src/domain/inbox.ts":
+        "a status’s batched delete detaches the quotes of it and deletes its own (STATUS_CHILDREN)",
     },
   },
   {
@@ -414,6 +431,11 @@ const RULE_FIXTURES: readonly [name: string, flagged: string, passed: string][] 
     "db.all('SELECT quotes_count FROM statuses')",
   ],
   [
+    "writes quotes",
+    "db.run(\"UPDATE quotes SET state = 'revoked' WHERE status_id = ?\")",
+    "db.run('UPDATE quotes_archive SET x = 1')",
+  ],
+  [
     "reads or writes announcements",
     "db.run('INSERT OR IGNORE INTO announcement_dismissals (id) VALUES (1)')",
     "db.all('SELECT announcements_count FROM x')",
@@ -534,6 +556,20 @@ describe("policy boundary", () => {
       passed: {},
     },
     { path: "src/domain/admin-measures.ts", over: SOURCES },
+  );
+  // The update fan-out reads the accepted quotes it notifies, and is refused a write of one.
+  guardFixtures(
+    violations,
+    {
+      flagged: {
+        "a quote's state written by the update fan-out": [
+          "db.all('SELECT 1 FROM quotes q')\ndb.run(\"UPDATE quotes SET state = 'revoked' WHERE status_id = ?\")",
+          "src/domain/update-fan-out.ts writes quotes",
+        ],
+      },
+      passed: {},
+    },
+    { path: "src/domain/update-fan-out.ts", over: SOURCES },
   );
 });
 

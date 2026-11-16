@@ -1,5 +1,6 @@
 import type { DocumentLoader } from "@fedify/fedify";
 
+import type { RemoteRepliesInput } from "../domain/remote-status-reads";
 import {
   type AuthorNeed,
   type ClaimedWalk,
@@ -15,8 +16,8 @@ import { readConfig, userKek } from "../platform/config";
 import { errorFields } from "../platform/error-message";
 import { callStore, type StoreStub } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
-import { goneSettler, type SettleGone } from "./actor-gone";
-import { documentOn, itemsOf } from "./collections";
+import { goneAt, goneSettler, type SettleGone } from "./actor-gone";
+import { documentOn } from "./collections";
 import {
   afterRevisionRead,
   createRemoteLoaders,
@@ -25,10 +26,11 @@ import {
   type RemoteLoaders,
 } from "./federation";
 import type { InboxDeps } from "./inbox";
+import { isObject, itemsOf } from "./json-shapes";
 import { REQUEST_DEADLINE_MS, requestBudget } from "./loader";
 import { loadActor } from "./quotes";
 import type { FetchedActor } from "./remote-actor";
-import { fetchRemoteStatus, idOf, statusIdentity } from "./remote-status";
+import { createPageItems, createRepliesOf, fetchRemoteStatus, idOf, statusIdentity } from "./remote-status";
 
 // The Worker's part of a walk of a remote replies collection (domain/reply-walks.ts; Mastodon 4.7.5's
 // FetchAllRepliesWorker and FetchReplyWorker), run only by the job rounds (jobs/queue.ts, from the Queue and cron). A
@@ -37,10 +39,13 @@ import { fetchRemoteStatus, idOf, statusIdentity } from "./remote-status";
 // and the status's author when the Store asks for it, through the safe loader (NET-1) within a whole fetch budget of
 // its own (RES-6), signed by the instance actor, as Mastodon's representative signs these fetches (DATA-7), and never
 // from the signed-document cache (NET-4); then the Store applies it and hands out the next node, which the step has
-// already been charged for. Embedded replies and pages are read in the step that holds them, at most
+// already been charged for. A step the Store hands out at the stage `store` (a scan of stored replies or a debt's
+// consideration ran in the hand-out: domain/reply-walk-debts.ts) fetches nothing and is one of the turn's steps all the
+// same. Embedded replies and pages are read in the step that holds them, at most
 // REPLY_READ_ENTRIES entries past the step's skip; the Store has the rest read by a step that reads the same document
 // again (RepliesRead). Nothing of this instance's origin is fetched, and a collection or page only on its node's
-// origin.
+// origin. A create walk's steps read as Create#fetch_replies reads (remote-status.ts createRepliesOf): a node's first
+// page only, its first items on the node's origin.
 
 // Walks one round runs, and the steps of each.
 export const REPLY_WALKS_PER_ROUND = 2;
@@ -51,10 +56,6 @@ if (REPLY_WALK_LEASE_MS < 2 * REPLY_STEPS_PER_WALK * REQUEST_DEADLINE_MS) {
 }
 
 type Json = Record<string, unknown>;
-
-function isObject(value: unknown): value is Json {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function originOf(uri: string): string | null {
   try {
@@ -117,10 +118,31 @@ function repliesOf(value: unknown, skip: number): RepliesRead | null {
   return uri === null ? null : { entries: [], from: null, next: { stage: "collection", uri } };
 }
 
+// A create walk's reading of a status's replies or of a collection document (createRepliesOf): its first page's items
+// now, or the URI to read in the next step.
+function createRead(replies: RemoteRepliesInput | null): RepliesRead | null {
+  if (replies === null) {
+    return null;
+  }
+  return "items" in replies
+    ? { entries: replies.items, from: 0, next: null }
+    : { entries: [], from: null, next: { stage: replies.stage, uri: replies.uri } };
+}
+
 // One step's document: the node's status (parsed as inbound statuses are; its id is checked by the Store) and its
 // replies, or a collection or page document, or the status again for its replies only, fetched only on the node's
-// origin (documentOn: Mastodon's non_matching_uri_hosts? refusal). Nothing of this instance's origin is fetched.
-async function fetchStep(step: ReplyStep, origin: string, loader: DocumentLoader): Promise<StepFetched> {
+// origin (documentOn: Mastodon's non_matching_uri_hosts? refusal), and read as the walk's kind reads. Nothing of this
+// instance's origin is fetched.
+async function fetchStep(
+  step: ReplyStep,
+  origin: string,
+  loader: DocumentLoader,
+  kind: ClaimedWalk["kind"],
+): Promise<StepFetched> {
+  // A Store-only step (a scan or a debt's consideration ran in its hand-out) fetches nothing.
+  if (step.stage === "store") {
+    return { kind: "none" };
+  }
   const nodeOrigin = originOf(step.uri);
   if (nodeOrigin === null || nodeOrigin === origin) {
     return { kind: "failed" };
@@ -133,9 +155,17 @@ async function fetchStep(step: ReplyStep, origin: string, loader: DocumentLoader
       return loaded;
     });
     if (fetched.kind !== "ok") {
-      return { kind: fetched.kind === "transient" ? "transient" : "failed" };
+      // Only a 404 the status's own URI answered, with no redirect, may remove it (the Store judges which node).
+      return goneAt(fetched, step.uri, 404)
+        ? { kind: "gone" }
+        : { kind: fetched.kind === "transient" ? "transient" : "failed" };
     }
-    const replies = isObject(document) ? repliesOf(document.replies, step.skip) : null;
+    const replies =
+      kind === "create"
+        ? createRead(fetched.status.replies ?? null)
+        : isObject(document)
+          ? repliesOf(document.replies, step.skip)
+          : null;
     return { kind: "status", status: fetched.status, replies };
   }
   const read = await documentOn(step.fetch, nodeOrigin, loader);
@@ -146,11 +176,15 @@ async function fetchStep(step: ReplyStep, origin: string, loader: DocumentLoader
     return { kind: "failed" };
   }
   const replies =
-    step.stage === "collection"
-      ? readCollection(read, step.skip)
-      : step.stage === "page"
-        ? readPages(read, step.skip)
-        : (repliesOf(read.replies, step.skip) ?? { entries: [], from: null, next: null });
+    kind === "create"
+      ? step.stage === "collection"
+        ? (createRead(createRepliesOf(read, nodeOrigin)) ?? { entries: [], from: 0, next: null })
+        : { entries: createPageItems(read, nodeOrigin), from: 0, next: null }
+      : step.stage === "collection"
+        ? readCollection(read, step.skip)
+        : step.stage === "page"
+          ? readPages(read, step.skip)
+          : (repliesOf(read.replies, step.skip) ?? { entries: [], from: null, next: null });
   return { kind: "replies", replies };
 }
 
@@ -189,6 +223,8 @@ type Turn = {
   state: FederationState;
   // What a gone author's document does (actor-gone.ts).
   settle: SettleGone;
+  // A step started a status's removal (domain/remote-removal.ts removeGone), whose batches the inbound job rounds run.
+  removed: () => void;
 };
 
 // A round's turn of one claimed walk: up to REPLY_STEPS_PER_WALK steps, each with loaders and a fetch budget of its
@@ -201,7 +237,7 @@ async function walkTurn(turn: Turn, claim: ClaimedWalk): Promise<boolean> {
   let step: ReplyStep | null = claim.step;
   for (let n = 0; step !== null; n++) {
     const loaders = createRemoteLoaders(federation, state, null, requestBudget(Date.now()));
-    const fetched = await fetchStep(step, origin, loaders.document);
+    const fetched = await fetchStep(step, origin, loaders.document, claim.kind);
     rethrowStoreError(state);
     const input = {
       origin,
@@ -238,14 +274,18 @@ async function walkTurn(turn: Turn, claim: ClaimedWalk): Promise<boolean> {
       console.error({ event: "kopje.replies.step.failed", ...errorFields(error) });
       break;
     }
+    if (answer.jobsPending) {
+      turn.removed();
+    }
     step = answer.need === null ? answer.next : null;
   }
   return callStore(() => store().releaseReplyWalk(build, { statusId: claim.statusId, token: claim.token }));
 }
 
 // One job round (jobs/queue.ts): up to REPLY_WALKS_PER_ROUND walks, claimed one after another. Returns whether a walk
-// is due, or a deletion a gone author's 410 started has its purge a batch left. A Store refusal surfaces as
-// StoreUnavailableError for the caller; a walk whose round died is claimed again after its lease, its charges kept.
+// is due, or a deletion a gone author's 410 started has its purge a batch left, or a step started a status's removal. A
+// Store refusal surfaces as StoreUnavailableError for the caller; a walk whose round died is claimed again after its
+// lease, its charges kept.
 export async function walkReplies(env: Env, deps: InboxDeps): Promise<boolean> {
   const build = deps.build(env);
   const store = () => deps.store(env);
@@ -254,7 +294,8 @@ export async function walkReplies(env: Env, deps: InboxDeps): Promise<boolean> {
     return false;
   }
   const config = readConfig(env);
-  // Whether a deletion a 410 started (actor-gone.ts) left its purge a batch: the round asks for another.
+  // Whether a deletion a 410 started (actor-gone.ts) left its purge a batch, or a step started a status's removal: the
+  // round asks for another.
   let goneJobs = false;
   const settled = goneSettler(store, build, deps.now);
   const turn: Turn = {
@@ -275,6 +316,9 @@ export async function walkReplies(env: Env, deps: InboxDeps): Promise<boolean> {
       const gone = await settled(fetched, uri, revision);
       goneJobs ||= gone.jobsPending;
       return gone;
+    },
+    removed: () => {
+      goneJobs = true;
     },
   };
   let pending = false;

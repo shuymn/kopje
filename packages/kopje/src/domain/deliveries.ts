@@ -133,6 +133,32 @@ export type Target = { inbox: string; addressee: string | null } & Provenance;
 
 export { PROVENANCE_MAX };
 
+// The most a row's stored provenance (recipient_accounts) may hold, in UTF-8 bytes: PROVENANCE_MAX account ids of 18
+// digits (accounts.id's CHECK, migration 0000_initial), each quoted, the commas between them and the brackets, which is
+// the longest value Kopje's writers store (expansion copies a target's minified `accounts`; moveToPersonal one id).
+export const PROVENANCE_BYTES = PROVENANCE_MAX * (18 + 2) + (PROVENANCE_MAX - 1) + 2;
+
+// The audience accounts the shared-inbox fallback reads of an activity (personalFallback): the most Kopje writes for an
+// activity it moves a row of (no to, not a forward), a Flag's, the reported account and an account each reported
+// status replies to, distinct (reportForwardees in audience.ts): 1 + MAX_REPORT_STATUSES (reports.ts, which loads this
+// module, so the figure is restated here and test/deliveries.test.ts holds the two equal). Every other such activity
+// names one account or none. A longer audience is only imported; its accounts past these are no candidates.
+export const FALLBACK_AUDIENCE_MAX = 101;
+
+// A row's provenance (VIS-30) as every reader takes it (sendRefused through DUE_ROW, personalFallback,
+// forwardFallback): `column` when it is TEXT of at most PROVENANCE_BYTES bytes, then valid JSON, then an array, then of
+// at most PROVENANCE_MAX values, each tested only once the one before it holds (nested CASEs: nothing past
+// PROVENANCE_BYTES is parsed); NULL otherwise, a row without provenance. The column has no CHECK (migration
+// 0044_delivery_provenance) and an import stores it as given (platform/store-import.ts), so the bound is this read's,
+// whatever value a row holds.
+export function rowProvenanceSql(column: string): string {
+  return `(CASE WHEN typeof(${column}) = 'text'
+		THEN CASE WHEN length(CAST(${column} AS BLOB)) <= ${PROVENANCE_BYTES}
+		THEN CASE WHEN json_valid(${column})
+		THEN CASE WHEN json_type(${column}) = 'array'
+		THEN CASE WHEN json_array_length(${column}) <= ${PROVENANCE_MAX} THEN ${column} END END END END END)`;
+}
+
 function uris(value: unknown): string[] {
   if (typeof value === "string") {
     return [value];
@@ -2556,7 +2582,8 @@ function staleAnswer(type: string, at: "cancel" | "claim" | "confirm" | "failure
   console.warn({ event: "kopje.delivery.stale_follow_answer", type, at });
 }
 
-// A due row (`d`) with its activity (`o`, LEFT JOINed: found is 0 when it is gone) as the send-time check reads it.
+// A due row (`d`) with its activity (`o`, LEFT JOINed: found is 0 when it is gone) as the send-time check reads it,
+// its provenance as rowProvenanceSql admits it.
 type DueRow = LaneRow & {
   addressee: string | null;
   recipient_accounts: string | null;
@@ -2572,7 +2599,8 @@ type DueRow = LaneRow & {
 };
 
 const DUE_ROW = `CAST(d.id AS TEXT) AS id, CAST(d.activity_id AS TEXT) AS activity_id, d.account_id, d.lane, d.inbox_url,
-	d.attempts, d.addressee, d.recipient_accounts, d.recipient_domains, o.id IS NOT NULL AS found, o.retracts,
+	d.attempts, d.addressee, ${rowProvenanceSql("d.recipient_accounts")} AS recipient_accounts, d.recipient_domains,
+	o.id IS NOT NULL AS found, o.retracts,
 	${REFUSED_SENDER} AS refused_sender, json_extract(o.body, '$.signedBy') AS signed_by,
 	CASE json_extract(o.body, '$.activity.type') WHEN 'Announce' THEN json_extract(o.body, '$.activity.object') END
 		AS boosted, ${STALE_ANSWER} AS stale_answer, ${ANSWER_TYPE} AS answer_type`;
@@ -2961,6 +2989,15 @@ const SHARED_INBOX_MISSING = new Set([404, 405, 410]);
 // addressed activity (followers, accounts named in to/cc) and personal copies (addressee) never move. A moved row
 // serves that recipient alone, and its provenance (VIS-30) says so. A forward's row (Audience.shares; its addressing is
 // the remote author's) moves by its provenance instead (forwardFallback).
+// The recipient is an account the activity's audience names that the row's provenance names too (rowProvenanceSql,
+// recipients_many unset), whatever shared inbox it names since: an actor's document read again may name another or none
+// (remote-actor.ts sharedInboxUri); so a row sent to a personal inbox the recipient has since moved on the same origin
+// follows it too. A follower the provenance names is no candidate, so a row of an activity without to that reaches
+// followers (an Add or Remove of a pin) never moves, as without provenance. A row without one (queued
+// before migration 0044_delivery_provenance and restored or still queued, recipients_many, a value the read does not
+// admit) takes an audience account whose shared inbox the row's inbox still is, or gives up: the audience of an
+// activity without to may hold several accounts of one origin (a Flag's, reports.ts), and nothing tells which of them
+// the row was written for.
 function personalFallback(db: Db, row: LaneRow, now: number, status: number | null, error: string): boolean {
   if (status === null || !SHARED_INBOX_MISSING.has(status) || row.attempts >= MAX_ATTEMPTS) {
     return false;
@@ -2972,12 +3009,40 @@ function personalFallback(db: Db, row: LaneRow, now: number, status: number | nu
   if (forward?.forward === 1) {
     return forwardFallback(db, row, now, status, error);
   }
-  // The audience's accounts at this shared inbox, in id order (as many as the activity addresses). For content, the
-  // first one the send-time check would still send to (sendRefused): one it would refuse would lose the delivery at
-  // the next claim, though another recipient there may be available. A retraction takes the first, as it is never
-  // refused. Each account is sought by id from the audience (RES-7).
-  const candidates = db.all<{ inbox: string; id: string; uri: string; retracts: number; available: number }>(
-    `SELECT a.inbox_url AS inbox, a.id, a.uri, o.retracts, ${availableSql("a.id")} AS available
+  const named =
+    db.first(
+      `SELECT 1 AS yes FROM deliveries WHERE id = CAST(? AS INTEGER) AND recipients_many IS NULL
+				AND ${rowProvenanceSql("recipient_accounts")} IS NOT NULL`,
+      row.id,
+    ) !== undefined;
+  // The candidates in id order: the audience's accounts, of its first FALLBACK_AUDIENCE_MAX, that the row's provenance
+  // names (at most PROVENANCE_MAX entries, an id possibly more than once), or the audience's at this shared inbox (as
+  // many as the activity addresses). For content, the first one the send-time check would still send to (sendRefused):
+  // one it would refuse would lose the delivery at the next claim, though another recipient there may be available. A
+  // retraction takes the first, as it is never refused. Each account is sought by id (RES-7), and each candidate's row
+  // and target check reads the activity's own rows and chunks.
+  type Candidate = { inbox: string; id: string; uri: string; retracts: number; available: number };
+  const candidates = named
+    ? db.all<Candidate>(
+        `SELECT a.inbox_url AS inbox, a.id, a.uri, o.retracts, ${availableSql("a.id")} AS available
+			FROM (SELECT addressee, inbox_url, ${rowProvenanceSql("recipient_accounts")} AS provenance
+					FROM deliveries WHERE id = CAST(?1 AS INTEGER) LIMIT 1) d
+				CROSS JOIN (SELECT id, retracts, body FROM outbound_activities WHERE id = CAST(?2 AS INTEGER) LIMIT 1) o
+				CROSS JOIN json_each(d.provenance) r CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = r.value
+			WHERE d.addressee IS NULL AND json_type(o.body, '$.activity.to') IS NOT 'array'
+				AND EXISTS (SELECT 1 FROM (SELECT value FROM json_each(o.body, '$.audience.accounts')
+					LIMIT ${FALLBACK_AUDIENCE_MAX}) n WHERE n.value = r.value)
+				AND a.domain IS NOT NULL AND a.inbox_url <> d.inbox_url
+				AND NOT EXISTS (SELECT 1 FROM deliveries e INDEXED BY deliveries_activity
+					WHERE e.activity_id = o.id AND e.inbox_url = a.inbox_url)
+				AND NOT EXISTS (SELECT 1 FROM outbound_targets c INDEXED BY outbound_targets_activity, json_each(c.targets) t
+					WHERE c.activity_id = o.id AND t.key >= c.next AND json_extract(t.value, '$.inbox') = a.inbox_url)
+			ORDER BY a.id`,
+        row.id,
+        row.activity_id,
+      )
+    : db.all<Candidate>(
+        `SELECT a.inbox_url AS inbox, a.id, a.uri, o.retracts, ${availableSql("a.id")} AS available
 		FROM deliveries d CROSS JOIN outbound_activities o ON o.id = d.activity_id
 			CROSS JOIN json_each(o.body, '$.audience.accounts') r CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = r.value
 		WHERE d.id = CAST(?1 AS INTEGER) AND d.addressee IS NULL AND json_type(o.body, '$.activity.to') IS NOT 'array'
@@ -2986,12 +3051,9 @@ function personalFallback(db: Db, row: LaneRow, now: number, status: number | nu
 			AND NOT EXISTS (SELECT 1 FROM outbound_targets c, json_each(c.targets) t
 				WHERE c.activity_id = o.id AND t.key >= c.next AND json_extract(t.value, '$.inbox') = a.inbox_url)
 		ORDER BY a.id`,
-    row.id,
-  );
-  const personal = candidates.find((c) => {
-    const host = hostOf(c.uri);
-    return c.retracts === 1 || (c.available === 1 && (host === null || !hostCovered(db, host)));
-  });
+        row.id,
+      );
+  const personal = candidates.find((c) => c.retracts === 1 || (c.available === 1 && !inboxCovered(db, c.uri)));
   if (personal === undefined || !isDeliverableInbox(personal.inbox) || laneOf(personal.inbox) !== row.lane) {
     return false;
   }
@@ -3025,22 +3087,21 @@ function moveToPersonal(
   console.warn({ event: "kopje.delivery.shared_inbox_fallback", status });
 }
 
-// personalFallback for a forward's row: it moves in place, as there, only when its provenance (recipient_accounts, at
-// most PROVENANCE_MAX ids, each sought by id: RES-7) names exactly one account behind this shared inbox with a
-// different personal inbox on the same origin, which the activity has no row or unexpanded target for. A row serving
-// several such accounts, more than PROVENANCE_MAX (recipients_many), or unknown ones (an earlier receiver of a
-// reference) does not move and gives up visibly: one row moved to several inboxes would let a later activity of its lane (the
-// boost's Undo) overtake the copies written behind it.
+// personalFallback for a forward's row: it moves in place, as there, only when its provenance (rowProvenanceSql: at
+// most PROVENANCE_MAX ids, each sought by id: RES-7) names exactly one account with a different personal inbox on the
+// same origin, which the activity has no row or unexpanded target for, whatever shared inbox that account names since.
+// A row serving several such accounts, more than PROVENANCE_MAX (recipients_many), or unknown ones (an earlier receiver
+// of a reference, a stored value rowProvenanceSql does not admit) does not move and gives up visibly: one row moved to
+// several inboxes would let a later activity of its lane (the boost's Undo) overtake the copies written behind it.
 function forwardFallback(db: Db, row: LaneRow, now: number, status: number, error: string): boolean {
   const candidates = db.all<{ inbox: string; id: string; uri: string }>(
     `SELECT a.inbox_url AS inbox, a.id, a.uri
-		FROM (SELECT addressee, inbox_url, recipient_accounts, recipients_many FROM deliveries
-				WHERE id = CAST(?1 AS INTEGER) LIMIT 1) row
+		FROM (SELECT addressee, inbox_url, ${rowProvenanceSql("recipient_accounts")} AS recipient_accounts, recipients_many
+				FROM deliveries WHERE id = CAST(?1 AS INTEGER) LIMIT 1) row
 			CROSS JOIN json_each(row.recipient_accounts) r
 			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = r.value
 		WHERE row.addressee IS NULL AND row.recipient_accounts IS NOT NULL
-			AND row.recipients_many IS NULL AND a.domain IS NOT NULL AND a.shared_inbox_url = row.inbox_url
-			AND a.inbox_url <> row.inbox_url
+			AND row.recipients_many IS NULL AND a.domain IS NOT NULL AND a.inbox_url <> row.inbox_url
 		ORDER BY a.id`,
     row.id,
   );
