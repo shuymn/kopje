@@ -19,8 +19,8 @@ import { FEDERATION_PATHS, requireSetup } from "../federation/setup-gate";
 import { rescueFromSnapshot } from "../federation/snapshot";
 import { createAdmission, INBOX_BODY_LIMIT, spoolInbox } from "../federation/spool";
 import { ActivityMemo } from "../mastodon/activity";
-import { apiHeaders } from "../mastodon/caching";
-import type { AuthorSignature } from "../mastodon/context";
+import { type ApiHeadersEnv, apiHeaders, markSuspendedAnswer } from "../mastodon/caching";
+import { type AuthorSignature, SuspendedRefusal } from "../mastodon/context";
 import { maintenanceError, mastodonError, recordNotFound } from "../mastodon/errors";
 import { mastodonApi } from "../mastodon/routes";
 import { streamingRoutes } from "../mastodon/streaming";
@@ -83,7 +83,10 @@ const API_HEADER_PATHS = ["/api/*", "/oauth/userinfo"];
 // As Mastodon v4.5.11 opens them (config/initializers/cors.rb).
 const DOCUMENT_CORS_PATHS = ["/.well-known/*", "/nodeinfo/*", "/ap/users/:username"];
 
-type AppEnv = { Bindings: Env; Variables: { requestClass: RequestClass; inboxBody: Uint8Array; domain: string } };
+type AppEnv = {
+  Bindings: Env;
+  Variables: { requestClass: RequestClass; inboxBody: Uint8Array; domain: string } & ApiHeadersEnv["Variables"];
+};
 
 export function createApp({
   build,
@@ -326,6 +329,9 @@ export function createApp({
       return failed(c, 503, maintenanceError());
     }
     if (error instanceof HTTPException) {
+      if (error instanceof SuspendedRefusal) {
+        markSuspendedAnswer(c);
+      }
       return error.res === undefined ? mastodonError(error.status, error.message || "Error") : error.getResponse();
     }
     // The route template, not the URL: a path or query can carry a token or content (DATA-5). A middleware that failed

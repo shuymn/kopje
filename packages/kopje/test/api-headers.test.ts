@@ -1,16 +1,23 @@
+import { createExecutionContext } from "cloudflare:test";
+import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 
+import { apiHeaders } from "../src/mastodon/caching";
+import { DEPRECATED_ROUTES, mastodonApi, ROUTES } from "../src/mastodon/routes";
+import { imagesCodec } from "../src/platform/images";
 import type { StoreStub } from "../src/platform/store-client";
 import { StoreUnavailableError } from "../src/platform/store-errors";
 import { type ApiHarness, bearer, json, sql } from "./api-helpers";
 import { harness, NOW } from "./app-helpers";
+import { BUILD } from "./helpers";
 import { scopedToken } from "./read-helpers";
 import { storeWith } from "./setup-helpers";
 import { community, post } from "./status-helpers";
 
 // WEB-5: the security headers of every Mastodon API answer (mastodon/caching.ts apiHeaders), as Mastodon's
-// Api::BaseController (Api::ContentSecurityPolicy) and Rails' default headers send them. The paths that reach an
-// API answer are those of test/api-caching.test.ts.
+// Api::BaseController (Api::ContentSecurityPolicy) and Rails' default headers send them, and the Deprecation of the
+// routes Mastodon deprecates (DEPRECATED_ROUTES), AUTH-2's 403 excepted. The paths that reach an API answer are those
+// of test/api-caching.test.ts.
 
 const SECURITY = {
   "content-security-policy": "default-src 'none'; frame-ancestors 'none'; form-action 'none'",
@@ -116,5 +123,151 @@ describe("the API's security headers", () => {
     for (const [label, expected, response] of answers) {
       expect(securityOf(response), label).toEqual({ status: expected, headers: NONE });
     }
+  });
+});
+
+const deprecationOf = (response: Response) => ({
+  status: response.status,
+  deprecation: response.headers.get("deprecation"),
+});
+
+// The suspended owner's 403 (AUTH-2), as its body shows it.
+async function refusedAsSuspended(response: Response) {
+  return { ...deprecationOf(response), body: await response.json() };
+}
+const SUSPENDED = { status: 403, deprecation: null, body: { error: "Your login is currently disabled" } };
+
+const deps = (store: () => StoreStub) => ({
+  build: () => BUILD,
+  now: () => NOW,
+  store,
+  randomToken: () => "unused",
+  images: (e: Env) => imagesCodec(e.IMAGES),
+});
+
+describe("Deprecation", () => {
+  it("deprecated routes carry Mastodon's Deprecation", async () => {
+    const h = await world();
+    const { alice } = h.users;
+    const created = await h.request("/api/v1/filters", bearer(alice.token, json({ phrase: "cat", context: ["home"] })));
+    const { id } = await created.json<{ id: string }>();
+    const filter = `/api/v1/filters/${id}`;
+    const update = (method: string) => bearer(alice.token, { ...json({ phrase: "dog", context: ["home"] }), method });
+    const NOVEMBER_2022 = "@1668384000";
+    const MARCH_2022 = "@1648598400";
+    const answers: [string, Response, { status: number; deprecation: string | null }][] = [
+      ["POST /api/v1/filters", created, { status: 200, deprecation: NOVEMBER_2022 }],
+      ["GET /api/v1/instance", await h.request("/api/v1/instance"), { status: 200, deprecation: NOVEMBER_2022 }],
+      [
+        "GET /api/v1/filters",
+        await h.request("/api/v1/filters", bearer(alice.token)),
+        { status: 200, deprecation: NOVEMBER_2022 },
+      ],
+      [
+        "GET /api/v1/filters/:id",
+        await h.request(filter, bearer(alice.token)),
+        { status: 200, deprecation: NOVEMBER_2022 },
+      ],
+      ["PUT /api/v1/filters/:id", await h.request(filter, update("PUT")), { status: 200, deprecation: NOVEMBER_2022 }],
+      [
+        "PATCH /api/v1/filters/:id",
+        await h.request(filter, update("PATCH")),
+        { status: 200, deprecation: NOVEMBER_2022 },
+      ],
+      [
+        "DELETE /api/v1/filters/:id",
+        await h.request(filter, bearer(alice.token, { method: "DELETE" })),
+        { status: 200, deprecation: NOVEMBER_2022 },
+      ],
+      [
+        "GET /api/v1/accounts/:id/identity_proofs",
+        await h.request(`/api/v1/accounts/${alice.id}/identity_proofs`, bearer(alice.token)),
+        { status: 200, deprecation: MARCH_2022 },
+      ],
+      ["GET /api/v1/trends", await h.request("/api/v1/trends"), { status: 200, deprecation: MARCH_2022 }],
+      [
+        "GET /api/v1/suggestions",
+        await h.request("/api/v1/suggestions", bearer(alice.token)),
+        { status: 200, deprecation: "@1621123200" },
+      ],
+      // Their successors, the alias's own path, a sibling of an index Mastodon deprecates alone, and paths under a
+      // deprecated one.
+      ["GET /api/v2/instance", await h.request("/api/v2/instance"), { status: 200, deprecation: null }],
+      ["GET /api/v1/instance/rules", await h.request("/api/v1/instance/rules"), { status: 200, deprecation: null }],
+      [
+        "GET /api/v2/filters",
+        await h.request("/api/v2/filters", bearer(alice.token)),
+        { status: 200, deprecation: null },
+      ],
+      ["GET /api/v1/trends/tags", await h.request("/api/v1/trends/tags"), { status: 200, deprecation: null }],
+      [
+        "DELETE /api/v1/suggestions/:id",
+        await h.request(`/api/v1/suggestions/${h.users.bob.id}`, bearer(alice.token, { method: "DELETE" })),
+        { status: 200, deprecation: null },
+      ],
+      [
+        "GET /api/v2/suggestions",
+        await h.request("/api/v2/suggestions", bearer(alice.token)),
+        { status: 200, deprecation: null },
+      ],
+    ];
+    for (const [label, response, expected] of answers) {
+      expect(deprecationOf(response), label).toEqual(expected);
+    }
+    // The table holds these ten routes and no other.
+    const deprecated = answers.filter(([, , expected]) => expected.deprecation !== null).map(([label]) => label);
+    expect([...DEPRECATED_ROUTES.keys()].toSorted()).toEqual(deprecated.toSorted());
+  });
+
+  it("an early refusal carries it; a suspended owner's 403 does not", async () => {
+    const h = await world();
+    await suspendBob(h);
+    const readOnly = await scopedToken(h, "read");
+    expect(deprecationOf(await h.request("/api/v1/filters"))).toEqual({ status: 401, deprecation: "@1668384000" });
+    expect(
+      deprecationOf(await h.request("/api/v1/filters", bearer(readOnly, json({ phrase: "cat", context: ["home"] })))),
+    ).toEqual({ status: 403, deprecation: "@1668384000" });
+    // Thrown by the operation's judgment, on a scope route and on a route whose token is optional.
+    for (const path of ["/api/v1/filters", "/api/v1/trends"]) {
+      expect(await refusedAsSuspended(await h.request(path, bearer(h.users.bob.token))), path).toEqual(SUSPENDED);
+    }
+  });
+
+  it("a suspended owner's replaced answer carries none", async () => {
+    // No deprecated route is anonymous: one is declared for the access middleware's replacement of the answer.
+    const h = await world();
+    await suspendBob(h);
+    const app = new Hono<{ Bindings: Env }>();
+    app.use("/api/*", apiHeaders);
+    const deprecated = new Map([...DEPRECATED_ROUTES, ["GET /api/v1/instance/languages", "2022-11-14"]]);
+    app.route(
+      "/",
+      mastodonApi(
+        deps(() => h.store),
+        ROUTES,
+        deprecated,
+      ),
+    );
+    const languages = (init: RequestInit) =>
+      app.fetch(new Request("https://kopje.test/api/v1/instance/languages", init), h.env, createExecutionContext());
+    expect(deprecationOf(await languages({}))).toEqual({ status: 200, deprecation: "@1668384000" });
+    expect(await refusedAsSuspended(await languages(bearer(h.users.bob.token)))).toEqual(SUSPENDED);
+  });
+
+  it("the table names routed routes only", () => {
+    const store = () => {
+      throw new Error("no Store");
+    };
+    expect(() => mastodonApi(deps(store), ROUTES, new Map([["GET /api/v1/instance/", "2022-11-14"]]))).toThrow(
+      "GET /api/v1/instance/ is deprecated but names no route",
+    );
+    expect(() => mastodonApi(deps(store), ROUTES, new Map([["HEAD /api/v1/instance", "2022-11-14"]]))).toThrow(
+      "HEAD /api/v1/instance is deprecated but names no route",
+    );
+    expect(() => mastodonApi(deps(store), ROUTES, new Map([["GET /api/v1/instance", "14 November 2022"]]))).toThrow(
+      "14 November 2022 is not a date",
+    );
+    // The branch ran on the table itself.
+    expect(() => mastodonApi(deps(store))).not.toThrow();
   });
 });

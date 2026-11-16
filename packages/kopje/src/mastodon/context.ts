@@ -13,7 +13,7 @@ import { callStore, type StoreResolver, type StoreStub } from "../platform/store
 import type { RequiredScope } from "../security/scopes";
 import type { TokenGenerator } from "../security/tokens";
 import type { ActivityMemo } from "./activity";
-import type { CachingEnv } from "./caching";
+import type { ApiHeadersEnv } from "./caching";
 import { INVALID_TOKEN, invalidTokenError, mastodonError } from "./errors";
 import { type Params, type ReadOptions, readParams } from "./params";
 
@@ -45,10 +45,10 @@ export type AuthorSignature = { activity: Record<string, unknown>; keyId: string
 type RequestCredential = { tokenHash: string; scope: RequiredScope | null; admin?: true };
 
 // ownerJudged: on an anonymous route with a token, whether an operation judged the token's owner (judged), so the
-// access middleware does not judge the answer again. caching: the route's declaration (mastodon/caching.ts).
+// access middleware does not judge the answer again. caching, deprecation, suspendedAnswer: mastodon/caching.ts.
 export type ApiEnv = {
   Bindings: Env;
-  Variables: { credential: RequestCredential | null; ownerJudged: boolean } & CachingEnv["Variables"];
+  Variables: { credential: RequestCredential | null; ownerJudged: boolean } & ApiHeadersEnv["Variables"];
 };
 
 export type ApiContext = Context<ApiEnv>;
@@ -139,10 +139,17 @@ export function adminForbiddenError(): Response {
   return mastodonError(status, message);
 }
 
+// AUTH-2's 403 to a suspended owner's token, thrown by an operation's judgment: the app's error handler marks its
+// answer (mastodon/caching.ts markSuspendedAnswer).
+export class SuspendedRefusal extends HTTPException {}
+
 // The error answer to an authorization failure, carried to the app's error handler; an invalid token's carries its
 // Bearer challenge.
 function authError(failure: AuthFailure["status"]): HTTPException {
   const { status, message } = AUTH_ERRORS[failure];
+  if (failure === "suspended") {
+    return new SuspendedRefusal(status, { message });
+  }
   return new HTTPException(status, {
     message,
     ...(failure === "unauthenticated" ? { res: invalidTokenError() } : {}),
