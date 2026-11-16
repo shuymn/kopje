@@ -3,14 +3,19 @@ import { describe, expect, it, vi } from "vitest";
 
 import { Db } from "../src/db/sql";
 import type { Relationship } from "../src/domain/accounts";
-import { canView } from "../src/domain/audience";
+import { canView, reachFollowerInboxes } from "../src/domain/audience";
 import {
   blockDomain as blockDomainOperation,
   DOMAIN_BLOCK_BATCHES_PER_RUN,
   DOMAIN_BLOCK_WINDOW,
   runDomainBlockCleanups,
 } from "../src/domain/blocks";
-import { COLLECTION_REACH_ROUND, COLLECTION_ROUNDS, runCollectionJobs } from "../src/domain/collection-jobs";
+import {
+  COLLECTION_REACH_INBOX_BYTES,
+  COLLECTION_REACH_ROUND,
+  COLLECTION_ROUNDS,
+  runCollectionJobs,
+} from "../src/domain/collection-jobs";
 import { severCollections } from "../src/domain/collections";
 import { JOB_RETRY_DELAYS_MS } from "../src/domain/job-attempts";
 import { publicTimeline } from "../src/domain/timelines";
@@ -34,6 +39,25 @@ import {
   seedStatus,
   type User,
 } from "./status-helpers";
+
+// Records the longest TEXT value, in UTF-8 bytes, that the statements return.
+function longestValueSql(real: SqlStorage): { sql: SqlStorage; longest: () => number } {
+  const utf8 = new TextEncoder();
+  let longest = 0;
+  const sql = {
+    exec: (query: string, ...params: SqlStorageValue[]) => {
+      const cursor = real.exec(query, ...params);
+      const rows = cursor.toArray();
+      for (const value of rows.flatMap((row) => Object.values(row))) {
+        if (typeof value === "string") {
+          longest = Math.max(longest, utf8.encode(value).byteLength);
+        }
+      }
+      return { toArray: () => rows, [Symbol.iterator]: () => rows[Symbol.iterator](), rowsWritten: cursor.rowsWritten };
+    },
+  } as unknown as SqlStorage;
+  return { sql, longest: () => longest };
+}
 
 // Blocks, mutes and domain blocks through the API (domain/blocks.ts, mastodon/blocks.ts): the endpoints, their scopes
 // and errors, the relationships they end and the activities they send, and how they filter timelines, search and
@@ -422,10 +446,10 @@ describe("blocks", () => {
       state.storage.transactionSync(() => severCollections(new Db(counting), alice.id, bob.id, NOW));
       return read();
     });
-    // The two statements' 14 rows (with what they return), and the two Removes' with their jobs' 23, each Remove
+    // The two statements' 14 rows (with what they return), and the two Removes' with their jobs' 21, each Remove
     // reading its collection with its owner, its members, an id and its addressed accounts, and no follower (the jobs
     // read them, collection-jobs.ts). None is carol's.
-    expect(read).toBe(37);
+    expect(read).toBe(35);
   });
 
   // `count` remote followers of `accountId`, each on a host of its own with its own inbox, ids from `base`.
@@ -547,6 +571,122 @@ describe("blocks", () => {
 				AS n`,
       ),
     ).toEqual([{ n: 0 }]);
+  });
+
+  // One call of the collection jobs at `now`; whether a job may run a round now.
+  async function runRemovals(h: ApiHarness, now: number, real?: (sql: SqlStorage) => SqlStorage): Promise<boolean> {
+    return runInDurableObject(h.store, (_instance, state) =>
+      state.storage.transactionSync(
+        () =>
+          runCollectionJobs.run(real?.(state.storage.sql) ?? state.storage.sql, { now }, (fn) =>
+            state.storage.transactionSync(fn),
+          ).pending,
+      ),
+    );
+  }
+
+  // The inboxes each Remove was expanded to, by Remove.
+  async function removeInboxes(h: ApiHarness): Promise<string[][]> {
+    await settleDeliveries(h.store);
+    const rows = await sql<{ id: number; inbox_url: string }>(
+      h.store,
+      `SELECT o.id, d.inbox_url FROM outbound_activities o JOIN deliveries d ON d.activity_id = o.id
+			WHERE json_extract(o.body, '$.activity.type') = 'Remove' ORDER BY o.id, d.inbox_url`,
+    );
+    return [...Map.groupBy(rows, (row) => row.id).values()].map((group) => group.map((row) => row.inbox_url));
+  }
+
+  // accounts.inbox_url and shared_inbox_url have no stored bound, so a followers round judges an inbox against the
+  // CHECK collection_reach_inbox in SQL before it reads it: a follower past COLLECTION_REACH_INBOX_BYTES or holding a NUL
+  // (an import's) is left out unread, and the statements return no value longer than the bound. Fails if the round
+  // reads an inbox into JavaScript to judge it (a 32 KiB inbox then comes back whole).
+  it("reads no follower's inbox past the staged bound while a block's Removes reach its followers (RES-6)", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    await seedRemoteFollowers(h, alice.id, 3, 700000000000000000n);
+    await seedRemoteFollowers(h, alice.id, 100, 710000000000000000n);
+    await sql(
+      h.store,
+      `UPDATE accounts SET inbox_url = substr(inbox_url || replace(hex(zeroblob(16384)), '0', 'a'), 1, 32768)
+			WHERE id > '710000000000000000'`,
+    );
+    await seedRemoteFollowers(h, alice.id, 1, 720000000000000000n);
+    await sql(
+      h.store,
+      "UPDATE accounts SET shared_inbox_url = 'https://n.example/in' || char(0) || 'box' WHERE id > ?",
+      "720000000000000000",
+    );
+    await seedFeaturing(h, alice.id, bob.id, 1, 0);
+    // The projection: each follow, an inbox only where it is within the rule.
+    const projected = await runInDurableObject(h.store, (_instance, state) =>
+      reachFollowerInboxes(
+        new Db(state.storage.sql),
+        alice.id,
+        "-9223372036854775808",
+        "9223372036854775807",
+        COLLECTION_REACH_ROUND,
+        COLLECTION_REACH_INBOX_BYTES,
+      ).map((row) => row.inbox),
+    );
+    const kept = [1, 2, 3].map((i) => `https://h700000000000000000${i}.example/inbox`);
+    expect(projected).toEqual([...kept, ...Array<null>(101).fill(null)]);
+    expect((await act(h, alice, `/api/v1/accounts/${bob.id}/block`)).status).toBe(200);
+    let longest = 0;
+    for (let call = 0; call < 10; call++) {
+      const measured = longestValueSql;
+      let read: ReturnType<typeof measured> | undefined;
+      const pending = await runRemovals(h, NOW, (real) => (read = measured(real)).sql);
+      longest = Math.max(longest, read!.longest());
+      if (!pending) {
+        break;
+      }
+    }
+    expect(longest).toBeLessThanOrEqual(COLLECTION_REACH_INBOX_BYTES);
+    expect(await removeInboxes(h)).toEqual([kept]);
+    expect(await sql(h.store, "SELECT count(*) AS n FROM collection_jobs")).toEqual([{ n: 0 }]);
+  });
+
+  // The followers a block's Removes reach are the owner's when its job's first followers round runs, as Mastodon's
+  // CollectionRawDistributionWorker reads them when it runs: the job takes its follow bound there, keeps it in its row
+  // over its later rounds, which so end, and a round that fails takes none (it rolls back with the round, and the retry
+  // takes it). Fails if the bound is taken at the block, or again at each round.
+  it("reaches the owner's followers of when its job starts, keeping its bound from then on (RES-6)", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    // More followers than one call's rounds read, so the followers phase spans calls.
+    const early = COLLECTION_ROUNDS * COLLECTION_REACH_ROUND + 1;
+    await seedRemoteFollowers(h, alice.id, early, 700000000000000000n);
+    await seedFeaturing(h, alice.id, bob.id, 1, 0);
+    expect((await act(h, alice, `/api/v1/accounts/${bob.id}/block`)).status).toBe(200);
+    await seedRemoteFollowers(h, alice.id, 1, 710000000000000000n);
+    await sql(
+      h.store,
+      "CREATE TRIGGER no_bound BEFORE UPDATE OF follow_bound ON collection_jobs BEGIN SELECT RAISE(ABORT, 'test: no bound'); END",
+    );
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    await runRemovals(h, NOW);
+    errors.mockRestore();
+    expect(await sql(h.store, "SELECT follow_bound, attempts FROM collection_jobs")).toEqual([
+      { follow_bound: null, attempts: 1 },
+    ]);
+    await sql(h.store, "DROP TRIGGER no_bound");
+    await seedRemoteFollowers(h, alice.id, 1, 720000000000000000n);
+    const retry = NOW + JOB_RETRY_DELAYS_MS[0]!;
+    expect(await runRemovals(h, retry)).toBe(true);
+    expect(await sql(h.store, "SELECT phase, follow_bound IS NOT NULL AS bounded FROM collection_jobs")).toEqual([
+      { phase: "followers", bounded: 1 },
+    ]);
+    await seedRemoteFollowers(h, alice.id, 1, 730000000000000000n);
+    let pending = true;
+    for (let call = 0; call < 20 && pending; call++) {
+      pending = await runRemovals(h, retry);
+    }
+    expect(pending).toBe(false);
+    const [followers] = await removeInboxes(h);
+    expect(followers).toHaveLength(early + 2);
+    expect(followers).toEqual(expect.arrayContaining(["https://h7100000000000000001.example/inbox"]));
+    expect(followers).toEqual(expect.arrayContaining(["https://h7200000000000000001.example/inbox"]));
+    expect(followers).not.toContain("https://h7300000000000000001.example/inbox");
   });
 });
 

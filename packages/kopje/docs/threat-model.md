@@ -3602,17 +3602,19 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (`pruneCollectionItems` in `src/domain/collections.ts`). A block's step reads the blocker's and the target's
   collections (at most 50 each) and writes at most 50 items each way, recording each item's `Remove` with its
   collection's member targets and reading no follower; one `collection_jobs` row per owner (migration
-  `0108_collection_jobs`) then stages the owner's followers up to the block's follow bound into `collection_reach`,
-  writes them to each `Remove` and deletes them, a round reading at most 500 rows of its phase's kind
-  (`COLLECTION_REACH_ROUND`), at most 4 rounds a run, as a job family of its own (RES-5;
-  `src/domain/collection-jobs.ts`). The purge of a remote account deletes its items,
-  the items of its collections and then its collections, each step counted against the batch's budget
-  (`src/domain/inbox.ts`). `test/collections.test.ts` ("evicts the oldest retired item when an add meets the stored
-  bound", "deletes retired items a day old, RETIRED_ROWS_PER_ROUND a round, keeping younger and live ones"),
-  `test/blocks.test.ts` ("revokes and deletes the collection memberships a block severs", "reads no follower to record
-  a block's collection Removes, however many followers (RES-6, RES-7)", "delivers a block's collection Removes to every
-  follower in bounded rounds (RES-6)"), `test/inbox-regressions.test.ts` ("purges a remote account's collections and
-  memberships within the batch budget"), `test/cascade-guard.test.ts`.
+  `0108_collection_jobs`) then stages the owner's followers into `collection_reach` up to the follow bound its first
+  followers round takes and keeps, writes them to each `Remove` and deletes them, a round reading at most 500 rows of
+  its phase's kind (`COLLECTION_REACH_ROUND`) and no inbox past the staged bound of 4,096 UTF-8 bytes (`accounts`' inbox
+  columns have none, so `reachFollowerInboxes` judges each in SQL before reading it), at most 4 rounds a run, as a job
+  family of its own (RES-5; `src/domain/collection-jobs.ts`). The purge of a remote account deletes its items, the items
+  of its collections and then its collections, each step counted against the batch's budget (`src/domain/inbox.ts`).
+  `test/collections.test.ts` ("evicts the oldest retired item when an add meets the stored bound", "deletes retired
+  items a day old, RETIRED_ROWS_PER_ROUND a round, keeping younger and live ones"), `test/blocks.test.ts` ("revokes and
+  deletes the collection memberships a block severs", "reads no follower to record a block's collection Removes, however
+  many followers (RES-6, RES-7)", "delivers a block's collection Removes to every follower in bounded rounds (RES-6)",
+  "reads no follower's inbox past the staged bound while a block's Removes reach its followers (RES-6)", "reaches the
+  owner's followers of when its job starts, keeping its bound from then on (RES-6)"), `test/inbox-regressions.test.ts`
+  ("purges a remote account's collections and memberships within the batch budget"), `test/cascade-guard.test.ts`.
 - **RES-5: retries are bounded, but maintenance is not a failure.** Waiting out maintenance consumes no processing
   retry; real processing errors count against `max_retries`. _Enforced (main):_ `src/jobs/queue.ts`; `test/gate.test.ts`
   ("spool consumer"). Deliveries give up after 15 attempts (`min(30s·2^n, 12h)`, n the attempts so far) or at once on a

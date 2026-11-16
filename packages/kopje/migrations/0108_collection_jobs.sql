@@ -6,9 +6,10 @@
 -- moderation_reach (0034_admin_suspension):
 --
 --   collection_jobs          one row per local owner and block: the owner (account_id), the follows it reads (up to
---                            follow_bound, the highest follows.id when the block committed, any 64-bit integer) and
---                            where it stands: phase 'followers' while it reads the owner's accepted followers in id
---                            order into collection_reach (follow_cursor: the last follow read, NULL before the first);
+--                            follow_bound, the highest follows.id when its first followers round ran, any 64-bit
+--                            integer; NULL before) and where it stands: phase 'followers' while it reads the owner's
+--                            accepted followers in id order into collection_reach (follow_cursor: the last follow
+--                            read, NULL before the first);
 --                            'write' while it writes them to each of its Removes in turn (inbox_cursor: the last inbox
 --                            written to the first of them, NULL before the first); 'drop' while it deletes its staged
 --                            rows. The retry columns of a job table, as src/domain/job-attempts.ts
@@ -34,7 +35,8 @@
 CREATE TABLE collection_jobs (
   id INTEGER PRIMARY KEY,
   account_id TEXT NOT NULL REFERENCES local_accounts (account_id) ON DELETE CASCADE,
-  follow_bound INTEGER NOT NULL CONSTRAINT collection_jobs_follow_bound CHECK (typeof(follow_bound) = 'integer'),
+  follow_bound INTEGER CONSTRAINT collection_jobs_follow_bound
+    CHECK (follow_bound IS NULL OR typeof(follow_bound) = 'integer'),
   phase TEXT NOT NULL CONSTRAINT collection_jobs_phase CHECK (phase IN ('followers', 'write', 'drop')),
   follow_cursor INTEGER CONSTRAINT collection_jobs_follow_cursor
     CHECK (follow_cursor IS NULL OR typeof(follow_cursor) = 'integer'),

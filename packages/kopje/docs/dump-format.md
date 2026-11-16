@@ -142,9 +142,10 @@ written before may get its retraction twice.
 A block's collection `Remove` still reaching its owner's followers (RES-6) is, from migration `0108_collection_jobs`
 on, its `outbound_activities` row with `staged` `''`, named by a `collection_job_intents` row of its owner's
 `collection_jobs` row, with the followers' inboxes gathered so far in `collection_reach`. Each column has the CHECK the
-migration gives it (a `phase` it knows, INTEGER follow ids and intent ids, an inbox cursor and a staged inbox of 1 to
-4,096 UTF-8 bytes without NUL), and both child tables name an existing job. A dump carries them as they are, so a
-restored Store goes on from the same phase and cursors. A round writes only to an intent that is a staged `Remove` of
+migration gives it (a `phase` it knows, INTEGER follow ids and intent ids, the follow bound NULL until the job's first
+followers round takes it, an inbox cursor and a staged inbox of 1 to 4,096 UTF-8 bytes without NUL), and both child
+tables name an existing job. A dump carries them as they are, so a restored Store goes on from the same phase, bound
+and cursors. A round writes only to an intent that is a staged `Remove` of
 the job's own owner; any other intent a row names gets no target and leaves the job.
 
 An `outbound_activities.body` is checked as JSON only (`json_valid`). The `Delete` of a public or unlisted status

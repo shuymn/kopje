@@ -2134,6 +2134,33 @@ export function reachFollowers(
   );
 }
 
+// reachFollowers' range, each follow's id with its follower's REACH_INBOX only where the follower is remote and the
+// inbox is TEXT of 1 to `bytes` UTF-8 bytes without NUL, judged in SQL before it is read (accounts' inbox columns have
+// no stored bound); else null.
+export function reachFollowerInboxes(
+  db: Db,
+  accountId: string,
+  after: string,
+  bound: string,
+  limit: number,
+  bytes: number,
+): { id: string; inbox: string | null }[] {
+  return db.all<{ id: string; inbox: string | null }>(
+    `SELECT CAST(w.id AS TEXT) AS id, CASE WHEN a.domain IS NOT NULL AND typeof(${REACH_INBOX}) = 'text'
+				AND length(CAST(${REACH_INBOX} AS BLOB)) BETWEEN 1 AND ?5 AND instr(CAST(${REACH_INBOX} AS BLOB), x'00') = 0
+			THEN ${REACH_INBOX} END AS inbox
+		FROM (SELECT f.id, f.account_id FROM main.follows f INDEXED BY follows_target
+			WHERE f.target_account_id = ?1 AND f.state = 'accepted' AND f.id > CAST(?2 AS INTEGER)
+				AND f.id <= CAST(?3 AS INTEGER) ORDER BY f.id LIMIT ?4) w
+		LEFT JOIN main.accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = w.account_id ORDER BY w.id`,
+    accountId,
+    after,
+    bound,
+    limit,
+    bytes,
+  );
+}
+
 // The account's own follows and requests after the target `after`, in target order (follows_pair), with their state
 // and time, which the caller bounds, and whether their id is at most `bound` (decimal TEXT, compared in SQL: DATA-6).
 export function reachFollowing(

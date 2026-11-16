@@ -1,5 +1,5 @@
 import type { Db } from "../db/sql";
-import { type ReachedAccount, reachFollowers } from "./audience";
+import { reachFollowerInboxes } from "./audience";
 import { endStaging, isDeliverableInbox, stageTargets } from "./deliveries";
 import { COLLECTION_JOBS, nextJob, runJobItem } from "./job-attempts";
 import { writeOperation } from "./operation";
@@ -10,7 +10,9 @@ import { writeOperation } from "./operation";
 // beginFollowerStaging), and one job per local owner naming its Removes (beginCollectionJobs), so its transaction
 // reads no follower. A round of a job reads or writes at most COLLECTION_REACH_ROUND rows of one kind:
 //   - followers: the owner's accepted followers up to the job's follow_bound, in id order after the cursor
-//     (audience.ts reachFollowers, follows_target's range), staged by inbox in collection_reach, as moderation_reach;
+//     (audience.ts reachFollowerInboxes, follows_target's range), staged by inbox in collection_reach, as
+//     moderation_reach. Its first round takes the bound, the highest follows.id then, so the followers are those of
+//     when the job starts, as Mastodon's worker reads them when it runs; the later rounds keep it, so they end;
 //   - write: the staged inboxes after the cursor, in inbox order, written as neutral copies to the job's first Remove
 //     (the lowest intent id it names); once they run out the Remove is released (endStaging) and leaves the job, and
 //     the next starts from the first inbox. A Remove the row names that is not a staged Remove of the owner (an
@@ -23,18 +25,16 @@ import { writeOperation } from "./operation";
 export const COLLECTION_REACH_ROUND = 500;
 // The rounds one call runs at most, the jobs taking turns (as MODERATION_ROUNDS).
 export const COLLECTION_ROUNDS = 4;
-// A staged inbox's bound in UTF-8 bytes: the CHECK collection_reach_inbox, so a round reads at most
-// COLLECTION_REACH_ROUND × 4,096 bytes of them.
+// A staged inbox's bound in UTF-8 bytes: the CHECK collection_reach_inbox, whose rule a followers round judges in SQL
+// before it reads an inbox, so a round reads at most COLLECTION_REACH_ROUND × 4,096 bytes of them.
 export const COLLECTION_REACH_INBOX_BYTES = 4096;
 // Below every follow id but SQLite's least INTEGER.
 const BEFORE_FOLLOWS = "-9223372036854775808";
 
-const utf8 = new TextEncoder();
-
 type Job = {
   id: string;
   account_id: string;
-  follow_bound: string;
+  follow_bound: string | null;
   phase: "followers" | "write" | "drop";
   follow_cursor: string | null;
   inbox_cursor: string | null;
@@ -43,9 +43,8 @@ type Job = {
 const JOB_COLUMNS = `CAST(id AS TEXT) AS id, account_id, CAST(follow_bound AS TEXT) AS follow_bound, phase,
 	CAST(follow_cursor AS TEXT) AS follow_cursor, inbox_cursor`;
 
-// The jobs of a block's staged Removes (collections.ts severCollections): one per owner, naming its Removes, reading
-// its followers up to the highest follows.id now (an index end). Writes a row per owner and per Remove; returns whether
-// it wrote any.
+// The jobs of a block's staged Removes (collections.ts severCollections): one per owner, naming its Removes; its first
+// round takes its follow bound. Writes a row per owner and per Remove; returns whether it wrote any.
 export function beginCollectionJobs(db: Db, removes: readonly { owner: string; intent: string }[]): boolean {
   const owners = new Map<string, string[]>();
   for (const { owner, intent } of removes) {
@@ -53,8 +52,7 @@ export function beginCollectionJobs(db: Db, removes: readonly { owner: string; i
   }
   for (const [owner, intents] of owners) {
     const job = db.first<{ id: string }>(
-      `INSERT INTO collection_jobs (account_id, follow_bound, phase)
-			VALUES (?, (SELECT coalesce(max(id), 0) FROM follows), 'followers') RETURNING CAST(id AS TEXT) AS id`,
+      "INSERT INTO collection_jobs (account_id, phase) VALUES (?, 'followers') RETURNING CAST(id AS TEXT) AS id",
       owner,
     )!.id;
     for (const intent of intents) {
@@ -68,19 +66,23 @@ export function beginCollectionJobs(db: Db, removes: readonly { owner: string; i
   return owners.size > 0;
 }
 
-// The remote followers' inboxes collection_reach keeps: deliverable (isDeliverableInbox) and within the CHECK
-// collection_reach_inbox's rule (COLLECTION_REACH_INBOX_BYTES, no NUL), which the staging shares so a write never fails
-// on it; any other is left out.
-function stage(db: Db, job: Job, rows: readonly ReachedAccount[]): void {
-  for (const inbox of new Set(rows.filter((row) => row.domain !== null).map((row) => row.inbox))) {
-    if (
-      isDeliverableInbox(inbox) &&
-      !inbox.includes("\0") &&
-      utf8.encode(inbox).byteLength <= COLLECTION_REACH_INBOX_BYTES
-    ) {
+// The remote followers' inboxes collection_reach keeps: within the CHECK collection_reach_inbox's rule (read so, in
+// SQL: reachFollowerInboxes) and deliverable (isDeliverableInbox); any other is left out.
+function stage(db: Db, job: Job, rows: readonly { inbox: string | null }[]): void {
+  for (const inbox of new Set(rows.map((row) => row.inbox))) {
+    if (inbox !== null && isDeliverableInbox(inbox)) {
       db.run("INSERT OR IGNORE INTO collection_reach (job_id, inbox) VALUES (CAST(? AS INTEGER), ?)", job.id, inbox);
     }
   }
+}
+
+// The job's follow bound from its first followers round on: the highest follows.id then (an index end), kept.
+function takeFollowBound(db: Db, job: Job): string {
+  return db.first<{ bound: string }>(
+    `UPDATE collection_jobs SET follow_bound = (SELECT coalesce(max(id), 0) FROM follows) WHERE id = CAST(? AS INTEGER)
+			RETURNING CAST(follow_bound AS TEXT) AS bound`,
+    job.id,
+  )!.bound;
 }
 
 // Whether the intent, sought by its key, is a Remove of the job's owner still staging (CASE reads the body's JSON only
@@ -156,12 +158,13 @@ function dropRound(db: Db, job: Job): void {
 function round(db: Db, job: Job): boolean {
   switch (job.phase) {
     case "followers": {
-      const rows = reachFollowers(
+      const rows = reachFollowerInboxes(
         db,
         job.account_id,
         job.follow_cursor ?? BEFORE_FOLLOWS,
-        job.follow_bound,
+        job.follow_bound ?? takeFollowBound(db, job),
         COLLECTION_REACH_ROUND,
+        COLLECTION_REACH_INBOX_BYTES,
       );
       stage(db, job, rows);
       if (rows.length < COLLECTION_REACH_ROUND) {

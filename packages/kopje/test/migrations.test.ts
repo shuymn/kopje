@@ -13999,7 +13999,7 @@ describe("0108_collection_jobs", () => {
   const MIN = "-9223372036854775808";
   const inbox = (bytes: number) => `'https://${"h".repeat(bytes - 8)}'`;
   it.each([
-    ["collection_jobs", "follow_bound", [MIN, MAX], ["1.5", "'x'", "X'01'", "NULL"]],
+    ["collection_jobs", "follow_bound", [MIN, MAX, "NULL"], ["1.5", "'x'", "X'01'"]],
     ["collection_jobs", "phase", ["'write'", "'drop'"], ["'end'", "''", "NULL"]],
     ["collection_jobs", "follow_cursor", [MIN, MAX, "NULL"], ["1.5", "'x'", "X'01'"]],
     [
