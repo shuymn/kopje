@@ -921,7 +921,7 @@ function authorFound(
         };
   const found = fetchedAuthor(db, authorUri, prefetched, input.origin, input.now);
   if (!("reason" in found)) {
-    return { store: found.store };
+    return found;
   }
   if (found.need === undefined) {
     return null;

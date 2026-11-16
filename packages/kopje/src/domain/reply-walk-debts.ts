@@ -140,7 +140,7 @@ export function settle(db: Db, rootId: string, statusId: string, kinds: readonly
 // statuses_public_replies, those after its cursor, then, while the allowance lasts, those from its first up to the
 // cursor, each with whether it was published at `waited` or before (a time that is not a stored one: not). Every
 // eligibility test is the caller's, on the rows read.
-export type ScanRow = { id: string; uri: string; waited: number };
+type ScanRow = { id: string; uri: string; waited: number };
 export function scanWindow(db: Db, statusId: string, waited: string): ScanRow[] {
   const cursor =
     db.first<{ after_id: string }>("SELECT after_id FROM reply_walk_cursors WHERE status_id = ?", statusId)?.after_id ??
@@ -181,7 +181,7 @@ export function moveCursor(db: Db, statusId: string, rows: readonly ScanRow[]): 
 
 // One step of a debt's path, or a scanned row: a stored status's URI, the status its in_reply_to_id links, and whether
 // a walk may record or owe it (a remote original, public or unlisted, whose removal has not begun). Three key reads.
-export type PathStep = { uri: string; parent: string | null; recordable: boolean };
+type PathStep = { uri: string; parent: string | null; recordable: boolean };
 export function pathStep(db: Db, statusId: string): PathStep | undefined {
   const row = db.first<{ uri: string; parent: string | null; recordable: number }>(
     `SELECT s.uri, s.in_reply_to_id AS parent,
