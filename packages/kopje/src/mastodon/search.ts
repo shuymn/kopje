@@ -1,8 +1,9 @@
+import { localCollectionId } from "../domain/collections";
 import { isUrlQuery } from "../domain/remote-statuses";
 import type { SearchType } from "../domain/search";
 import { envInMaintenance } from "../platform/config";
 import { parseAddress } from "../platform/domain-name";
-import { type MaintenanceReason, StoreUnavailableError } from "../platform/store-errors";
+import { StoreUnavailableError, WRITE_REFUSALS } from "../platform/store-errors";
 import {
   type ApiHandler,
   authorized,
@@ -14,19 +15,33 @@ import {
 } from "./context";
 import { mastodonError } from "./errors";
 import { pageQuery } from "./pagination";
-import { offsetParam, type Params, parseBoolean } from "./params";
+import { limitParam, offsetParam, type Params, parseBoolean, rubyNegative } from "./params";
 
 // GET /api/v2/search: accounts, statuses and hashtags from local data (domain/search.ts). Hashtags are recent
-// autocomplete over the viewer's library and the newest public statuses, not a catalogue of every tag.
+// autocomplete over the viewer's library and the newest public statuses, not a catalogue of every tag. Collections
+// are found only by resolve=true.
 //
-// resolve=true (Mastodon's SearchService): after the token is verified, a URL or user@domain query is fetched
-// (federation/resolve.ts, signed by the instance actor) and stored by the Store with inbound validation. A URL query
-// answers with what it resolved to alone, if the viewer may see it; an address query answers the account search with
-// the resolved account first, which the Store's search puts there (resolvedAccountId), so the answer budget (RES-3)
-// covers it. Unauthenticated requests are refused before anything is fetched (401, the route's scope), and a request
-// the Store could not store for (resolveQuery) is answered as without resolve=true. The final search takes a fresh
-// credential, so a token that expired while resolving is refused. GET /api/v1/accounts/search
-// resolves addresses only, through the same resolveQuery (mastodon/accounts.ts).
+// Limit and offset are Mastodon 4.7.5's: a `limit` or `offset` that Ruby's to_i reads as negative is refused (400) after
+// a missing q, as Api::V2::SearchController's before_actions order them (require_valid_pagination_options!,
+// api/pagination.rb); a limit of 0 (limit_param keeps it) answers nothing and resolves nothing (search_service.rb:17),
+// and the offset counts only with a type (`:11`). The token is judged first (refuseAfterAuth); the route takes no
+// anonymous request, so the controller's 401s for an anonymous offset or resolve never apply.
+//
+// resolve=true: a URL query is answered by its lookup alone, if the viewer may see what it resolved to, never by the
+// plain search, and by nothing past offset 0 or for a type the lookup did not find (`:19-20`). A local collection's URL
+// (its uri or url) answers that collection when R45 shows it to the viewer (ResolveURLService#process_local_url), with
+// no fetch. Otherwise, after the token is verified, a URL or user@domain query is fetched (federation/resolve.ts,
+// signed by the instance actor) and stored by the Store with inbound validation; a URL of this instance is never
+// fetched, and the Store finds what it names on Kopje's routes (remote-statuses.ts localSearchTarget). A URL lookup
+// whose answer is empty whatever it finds (an offset past 0, a type other than accounts and statuses) fetches nothing,
+// where Mastodon fetches and stores first (docs/mastodon-deviations.md, Search). An address is resolved only when
+// accounts are searched at offset 0, as only AccountSearchService resolves one (`:90-100`,
+// account_search_service.rb:206), and answers the account search with the resolved account first, which the Store's
+// search puts there (resolvedAccountId), so the answer budget (RES-3) covers it. Unauthenticated requests are refused
+// before anything is fetched (401, the route's scope), and a request the Store could not store for (resolveQuery) is
+// answered as without resolve=true. The final search takes a fresh credential, so a token that expired while resolving
+// is refused. GET /api/v1/accounts/search resolves addresses only, through the same resolveQuery
+// (mastodon/accounts.ts).
 
 // The raw bound of q before it is normalized and split (RES-1). Terms beyond the eighth are ignored (search-text.ts).
 const MAX_QUERY_LENGTH = 500;
@@ -34,6 +49,8 @@ const MAX_QUERY_LENGTH = 500;
 export const MAX_SEARCH_OFFSET = 10_000;
 
 const TYPES: readonly SearchType[] = ["accounts", "statuses", "hashtags"];
+
+const NOTHING = { accounts: [], statuses: [], hashtags: [], collections: [] };
 
 export type SearchParams = { query: string; offset: number } | { error: Response };
 
@@ -51,33 +68,67 @@ export function searchParams(p: Params): SearchParams {
 
 export const search: ApiHandler = withParams(async (c, deps, p) => {
   // Rails' params.require refuses a blank q here (the account search answers it with an empty list).
-  const parsed = p.get("q")?.trim() === "" ? { error: mastodonError(400, "Missing parameter q") } : searchParams(p);
+  const q = p.get("q");
+  if (q === undefined || q.trim() === "") {
+    return refuseAfterAuth(c, deps, mastodonError(400, "Missing parameter q"));
+  }
+  if ([p.get("limit"), p.get("offset")].some((value) => value !== undefined && rubyNegative(value))) {
+    return refuseAfterAuth(c, deps, mastodonError(400, "Pagination values for `offset` and `limit` must be positive"));
+  }
+  const parsed = searchParams(p);
   if ("error" in parsed) {
     return refuseAfterAuth(c, deps, parsed.error);
   }
   // Mastodon: 20 by default, at most 40, per type. An unknown type finds nothing.
-  const { limit, maxId, minId } = pageQuery(p, 20, 40);
+  const limit = limitParam(p, 20, 40);
+  const { maxId, minId } = pageQuery(p, 20, 40);
   const type = p.get("type");
-  const types = type === undefined || type === "" ? TYPES : TYPES.filter((t) => t === type);
+  const anyType = type === undefined || type === "";
+  const types = anyType ? TYPES : TYPES.filter((t) => t === type);
+  const collections = anyType || type === "collections";
   const excludeUnreviewed = parseBoolean(p.get("exclude_unreviewed")) === true;
-  const offset = parsed.offset > MAX_SEARCH_OFFSET ? null : parsed.offset;
-  if (offset === null || types.length === 0) {
-    authorized(await storeCall(c, deps, (s, b) => s.checkCredential(b, userCredential(c, deps))));
-    return c.json({ accounts: [], statuses: [], hashtags: [] });
-  }
+  const offset = anyType ? 0 : parsed.offset;
   const query = parsed.query.trim();
-  const resolving = (parseBoolean(p.get("resolve")) ?? false) && offset === 0;
-  let resolved: Found | null = null;
-  if (resolving && (isUrlQuery(query) || parseAddress(query) !== null)) {
-    resolved = await resolveQuery(c, deps, query);
-    if (resolved !== null && isUrlQuery(query)) {
+  const resolve = parseBoolean(p.get("resolve")) ?? false;
+  const urlQuery = resolve && isUrlQuery(query);
+  const nothing = async () => {
+    authorized(await storeCall(c, deps, (s, b) => s.checkCredential(b, userCredential(c, deps))));
+    return c.json(NOTHING);
+  };
+  if (limit === 0) {
+    return nothing();
+  }
+  if (urlQuery) {
+    if (offset > 0) {
+      return nothing();
+    }
+    const collection = localCollectionId(query, new URL(c.req.url).origin);
+    if (collection !== null) {
+      if (!collections) {
+        return nothing();
+      }
+      const input = { credential: userCredential(c, deps), id: collection, present: present(c) };
+      const found = authorized(await storeCall(c, deps, (s, b) => s.resolvedCollection(b, input)));
+      return c.json({ ...NOTHING, collections: found === null ? [] : [found] });
+    }
+    // Any other URL resolves to an account or a status only (resolveQuery).
+    if (!types.includes("accounts") && !types.includes("statuses")) {
+      return nothing();
+    }
+    const looked = await resolveQuery(c, deps, query);
+    if (looked !== null) {
       return c.json({
-        accounts: types.includes("accounts") ? resolved.accounts : [],
-        statuses: types.includes("statuses") ? resolved.statuses : [],
-        hashtags: [],
+        ...NOTHING,
+        accounts: types.includes("accounts") ? looked.accounts : [],
+        statuses: types.includes("statuses") ? looked.statuses : [],
       });
     }
   }
+  if (offset > MAX_SEARCH_OFFSET || types.length === 0) {
+    return nothing();
+  }
+  const address = resolve && !urlQuery && offset === 0 && types.includes("accounts") && parseAddress(query) !== null;
+  const resolved = address ? await resolveQuery(c, deps, query) : null;
   const accountId = p.get("account_id");
   const results = await storeCall(c, deps, (s, b) =>
     s.search(b, {
@@ -101,19 +152,6 @@ export const search: ApiHandler = withParams(async (c, deps, p) => {
 
 // What resolve=true found, as the Store presented it.
 type Found = { accounts: { id: string }[]; statuses: unknown[] };
-
-// The reasons a Store refuses a write while it still serves reads (store-kernel.ts refusalOf under a hold or an
-// upgrade, store-flags.ts flagRefusal): readonly maintenance, a dump's freeze, an unpublished import, a held or
-// upgrading Store. The plain search can still answer then.
-const WRITE_REFUSALS: ReadonlySet<MaintenanceReason> = new Set<MaintenanceReason>([
-  "maintenance",
-  "dump-in-progress",
-  "unpublished",
-  "upgrade-in-progress",
-  "upgrade-failed",
-  "bookmark-failed",
-  "verify-failed",
-]);
 
 // Fetches and stores the query's target; null: nothing was resolved for a reason that is not the query's, and the
 // caller answers as a plain search (resolve=false), whose own Store call judges the token again at its time. That is so

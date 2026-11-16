@@ -64,13 +64,12 @@ const MAPPING: Record<string, Mapping> = {
   "REST::SearchSerializer": { file: "src/domain/search.ts", typeName: "SearchResults" },
   "REST::CustomEmojiSerializer": { file: "src/domain/local-emojis.ts", typeName: "ListedEmoji" },
   "REST::AnnualReportSerializer": { file: "src/domain/annual-reports.ts", typeName: "AnnualReport" },
-  // No Kopje type yet. PartialAccount is a Pick<...> the reader cannot follow; #1583 writes it as a literal.
-  "REST::ProfileSerializer": { deferred: 1583 },
-  "REST::PartialAccountSerializer": { deferred: 1583 },
-  "REST::CollectionSerializer": { deferred: 1589 },
-  "REST::CollectionItemSerializer": { deferred: 1589 },
-  "REST::CollectionWithAccountsSerializer": { deferred: 1589 },
-  "REST::ShallowTagSerializer": { deferred: 1589 },
+  "REST::PartialAccountSerializer": { file: "src/domain/accounts.ts", typeName: "PartialAccount" },
+  "REST::ProfileSerializer": { file: "src/domain/accounts.ts", typeName: "Profile" },
+  "REST::CollectionSerializer": { file: "src/domain/collections.ts", typeName: "Collection" },
+  "REST::CollectionItemSerializer": { file: "src/domain/collections.ts", typeName: "CollectionItem" },
+  "REST::CollectionWithAccountsSerializer": { file: "src/domain/collections.ts", typeName: "CollectionWithAccounts" },
+  "REST::ShallowTagSerializer": { file: "src/domain/collections.ts", typeName: "ShallowTag" },
   "REST::NotificationPolicySerializer": {
     file: "src/mastodon/notification-requests.ts",
     typeName: "NotificationPolicyV2",
@@ -84,15 +83,6 @@ const MAPPING: Record<string, Mapping> = {
 const ACCOUNT: Record<string, Exception> = {
   // No silencing or memorializing.
   ...accepted("MD-2", "limited", "memorial"),
-  ...open(
-    1583,
-    "the profile fields of Mastodon 4.6",
-    "avatar_description",
-    "header_description",
-    "show_featured",
-    "show_media",
-    "show_media_replies",
-  ),
   ...open(1589, "collections", "feature_approval"),
   // Left out, as with e-mail subscriptions off.
   ...accepted("MD-3", "email_subscriptions"),
@@ -109,7 +99,6 @@ const ENTITY_EXCEPTIONS: Exceptions = {
   "REST::AccountSerializer": ACCOUNT,
   "REST::CredentialAccountSerializer": ACCOUNT,
   "REST::StatusSerializer": open(1589, "collections", "tagged_collections"),
-  "REST::PreviewCardSerializer": open(1586, "attribution of a link's author", "missing_attribution"),
   "REST::MediaAttachmentSerializer": accepted("MD-6", "text_url"),
   "REST::NotificationSerializer": NOTIFICATION,
   "REST::NotificationGroupSerializer": {
@@ -118,9 +107,6 @@ const ENTITY_EXCEPTIONS: Exceptions = {
     ...accepted("MD-9", "annual_report"),
   },
   "REST::AnnouncementSerializer": accepted("MD-4", "statuses"),
-  "REST::ReportSerializer": open(1589, "collections", "collection_ids"),
-  "REST::RoleSerializer": open(1589, "collections", "collection_limit"),
-  "REST::SearchSerializer": open(1589, "collections", "collections"),
   // No share page.
   "REST::AnnualReportSerializer": accepted("MD-9", "share_url"),
 };

@@ -1,3 +1,4 @@
+import { ACCOUNTS_ID_INDEX } from "../../db/indexes";
 import type { Db } from "../../db/sql";
 import { normalizeDomain } from "../../platform/domain-name";
 import { LOCAL_ROW_JOIN } from "../account-columns";
@@ -139,17 +140,38 @@ export function profilePageWithin(db: Db, input: ProfileInput, site: Site, answe
 // The local account of a page's URL (its profile tabs, its follow lists, its Featured tab), by username in any case
 // through accounts_local_username (RES-7), with its stored id and its presentation on the stored domain: not found, or
 // gone when it is suspended (Mastodon answers 410).
-export function localPageAccount(
-  db: Db,
-  username: string,
-  site: Site,
-): { id: string; account: Account } | { status: "not_found" } | { status: "suspended" } {
-  const row = db.first<{ id: string; available: number }>(
-    `SELECT a.id, ${availableJoinedSql("a", "l")} AS available
-		FROM accounts a INDEXED BY accounts_local_username ${LOCAL_ROW_JOIN}
-		WHERE a.domain IS NULL AND lower(a.username) = lower(?) LIMIT 1`,
-    username,
+export function localPageAccount(db: Db, username: string, site: Site): PageAccount {
+  return pageAccount(
+    db,
+    db.first<{ id: string; available: number }>(
+      `SELECT a.id, ${availableJoinedSql("a", "l")} AS available
+			FROM accounts a INDEXED BY accounts_local_username ${LOCAL_ROW_JOIN}
+			WHERE a.domain IS NULL AND lower(a.username) = lower(?) LIMIT 1`,
+      username,
+    ),
+    site,
   );
+}
+
+// The account `id` as localPageAccount answers for a local account, read by key: a local collection's owner (web-pages/
+// collection.ts), whose page answers as the owner's profile does. Only a local account owns a local collection, which
+// the collection's read requires (`local = 1`).
+export function pageAccountById(db: Db, id: string, site: Site): PageAccount {
+  return pageAccount(
+    db,
+    db.first<{ id: string; available: number }>(
+      `SELECT a.id, ${availableJoinedSql("a", "l")} AS available
+			FROM accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ${LOCAL_ROW_JOIN}
+			WHERE a.id = ?`,
+      id,
+    ),
+    site,
+  );
+}
+
+type PageAccount = { id: string; account: Account } | { status: "not_found" } | { status: "suspended" };
+
+function pageAccount(db: Db, row: { id: string; available: number } | undefined, site: Site): PageAccount {
   if (row === undefined) {
     return { status: "not_found" };
   }

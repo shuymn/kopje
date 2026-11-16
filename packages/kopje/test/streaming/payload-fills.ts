@@ -2,7 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { expect } from "vitest";
 
 import { Db } from "../../src/db/sql";
-import { MAX_DISPLAY_NAME, MAX_NOTE } from "../../src/domain/accounts";
+import { MAX_DISPLAY_NAME } from "../../src/domain/accounts";
 import { MAX_OPTION_CHARS, MAX_OPTIONS, writePoll } from "../../src/domain/polls";
 import { postStatus } from "../../src/domain/scheduled-statuses";
 import { MAX_STATUS_MEDIA } from "../../src/domain/status-bounds";
@@ -17,6 +17,7 @@ import {
 import { sha256Hex } from "../../src/security/tokens";
 import { type ApiHarness, bearer, json, sql } from "../api-helpers";
 import { NOW } from "../app-helpers";
+import { PLAIN_NOTE, WIDEST_NOTE } from "../note-fills";
 import type { User } from "../status-helpers";
 
 // The fills of docs/mastodon-deviations.md's "Streaming." entry (D8 of #1584): local statuses whose media descriptions
@@ -38,6 +39,8 @@ export type Fill = {
   spoiler: string;
   // A field's name and value, each of the account's MAX_FIELDS.
   field: { name: string; value: string };
+  // The account's note, at the raw bound (test/note-fills.ts).
+  note: string;
   // The poll's MAX_OPTIONS choices.
   choices: string[];
 };
@@ -45,22 +48,25 @@ export type Fill = {
 const PLAIN_PROFILE = { name: "あ".repeat(MAX_FIELD_NAME), value: "あ".repeat(MAX_FIELD_VALUE) };
 const PLAIN_CHOICES = Array.from({ length: MAX_OPTIONS }, (_, i) => `${i}${"あ".repeat(MAX_OPTION_CHARS - 1)}`);
 
-// plain: text and warning at the raw bound in plain three-byte characters within the 500 counted, plain profiles and
-// choices. links: the text three URLs of '&' (3,332, 3,333 and 3,333 code units; 71 counted), no warning. every:
-// links, with each field's name of '&' and its value a link of '&', and each choice of '"' (escaped twice as the
-// payload encodes it, four bytes).
+// plain: text and warning at the raw bound in plain three-byte characters within the 500 counted, plain profiles (the
+// note PLAIN_NOTE) and choices. links: the text three URLs of '&' (3,332, 3,333 and 3,333 code units; 71 counted), no
+// warning. every: links, with each field's name of '&' and its value a link of '&', the note WIDEST_NOTE (two links of
+// '&' and clusters of '"', the writer's widest note), and each choice of '"' (escaped twice as the payload encodes it,
+// four bytes).
 export const FILLS = {
-  plain: { text: HALF, spoiler: HALF, field: PLAIN_PROFILE, choices: PLAIN_CHOICES },
+  plain: { text: HALF, spoiler: HALF, field: PLAIN_PROFILE, note: PLAIN_NOTE, choices: PLAIN_CHOICES },
   links: {
     text: [link(3332), link(3333), link(3333)].join(" "),
     spoiler: "",
     field: PLAIN_PROFILE,
+    note: PLAIN_NOTE,
     choices: PLAIN_CHOICES,
   },
   every: {
     text: [link(3332), link(3333), link(3333)].join(" "),
     spoiler: "",
     field: { name: "&".repeat(MAX_FIELD_NAME), value: link(MAX_FIELD_VALUE) },
+    note: WIDEST_NOTE,
     choices: Array.from({ length: MAX_OPTIONS }, (_, i) => `${i}${'"'.repeat(MAX_OPTION_CHARS - 1)}`),
   },
 } as const satisfies Record<string, Fill>;
@@ -83,7 +89,7 @@ export async function fillProfile(h: ApiHarness, user: User, fill: Fill): Promis
     bearer(user.token, {
       ...json({
         display_name: "あ".repeat(MAX_DISPLAY_NAME),
-        note: "あ".repeat(MAX_NOTE),
+        note: fill.note,
         fields_attributes: Array.from({ length: MAX_FIELDS }, (_, i) => ({
           ...fill.field,
           name: `${i}${fill.field.name.slice(1)}`,
@@ -149,7 +155,8 @@ export async function writeFilled(
     }
     const { id } = posted.value;
     // Written two days back, so it has ended both by the test's clock (REST) and by the real one (the hub's).
-    const poll = { options: [...fill.choices], expiresIn: 86_400, multiple: false, hideTotals: false };
+    const options = [...fill.choices];
+    const poll = { options, expiresIn: 86_400, multiple: false, hideTotals: false, sent: { options, multiple: false } };
     writePoll(new Db(state.storage.sql), id, poll, NOW - 2 * 86_400_000);
     return id;
   });

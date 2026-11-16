@@ -1,14 +1,18 @@
-import { type DocumentLoader, exportSpki, FetchError } from "@fedify/fedify";
-import { type Actor, getActorTypeName, type Image, isActor, Link, lookupObject, Multikey } from "@fedify/vocab";
+import { type DocumentLoader, exportSpki, FetchError, type RemoteDocument } from "@fedify/fedify";
+import { type Actor, getActorTypeName, isActor, Link, lookupObject, Multikey } from "@fedify/vocab";
 
+import { collectionValue } from "../domain/collection-requests";
 import { ACTOR_URI_LIMIT } from "../domain/profile-bounds";
 import type { Handle, RemoteActorInput } from "../domain/remote-actors";
 import { hostDomain, normalizeDomain } from "../platform/domain-name";
-import { httpUrl } from "../platform/http-url";
+import { boundedHref, httpUrl } from "../platform/http-url";
 import { DOMAIN_BYTES, isRemoteUsername, isStorableActorId, REMOTE_USERNAME_LIMIT } from "../platform/identity-bounds";
-import { storedDisplayName, storedProfileUrl, storedText } from "../platform/stored-bounds";
+import { railsBlank } from "../platform/rails-blank";
+import { storedDisplayName, storedProfileDescription, storedProfileUrl, storedText } from "../platform/stored-bounds";
 import { sanitizeRemoteBio } from "../security/html";
-import { MAX_PUBLIC_KEYS } from "./key-entries";
+import { isObject } from "./json-shapes";
+import { MAX_PUBLIC_KEYS, readableKeys } from "./key-entries";
+import { remoteDescription } from "./lang-string";
 import { isTransientLoadError, loadFailureOf } from "./loader";
 import { emojiCandidates } from "./remote-emoji";
 
@@ -49,14 +53,16 @@ export async function fetchActor(
     : loaded;
 }
 
+type ReadActor = { kind: "ok"; actor: Actor; document: unknown } | { kind: "transient" } | { kind: "unusable" };
+
 // fetchActor's load and parse, without reading the document into a remote account's columns: the parsed actor and
 // the document as loaded.
 export async function loadActor(
   uri: string,
   loader: DocumentLoader,
   contextLoader: DocumentLoader,
-): Promise<{ kind: "ok"; actor: Actor; document: unknown } | Exclude<FetchedActor, { kind: "ok" }>> {
-  let remote: Awaited<ReturnType<DocumentLoader>>;
+): Promise<ReadActor | Extract<FetchedActor, { kind: "gone" }>> {
+  let remote: RemoteDocument;
   try {
     remote = await loader(uri);
   } catch (error) {
@@ -66,12 +72,47 @@ export async function loadActor(
     }
     return { kind: isTransientLoadError(error) ? "transient" : "unusable" };
   }
+  return readActor(uri, remote, contextLoader);
+}
+
+// The members of an actor document Kopje reads by spelling, as Mastodon 4.7 does (profileImage, collection-requests.ts
+// collectionUri, sharedInboxUri), and Fedify would parse by type: Fedify 2.4.5 fails the whole actor on an `icon` or
+// `image` that is not an Image or a Link, a `followers` or `following` that is not a collection, or an `endpoints`
+// typed other than Endpoints or holding a `sharedInbox` or `proxyUrl` that is not a URL, where Mastodon stores the
+// account.
+const SPELLED_MEMBERS: readonly string[] = ["icon", "image", "followers", "following", "endpoints"];
+
+// The only form of an actor document Fedify is handed (readActor, actorViewLoader, author-proof.ts verifyAuthorProof):
+// a shallow copy without SPELLED_MEMBERS, so none of them can refuse the actor. Removing a member never grants
+// anything: the id Fedify checks (ID-2) and the keys it finds (ID-1) are the document's own, or none. Anything that is
+// not an object is returned as it is.
+export function fedifyActorView(document: unknown): unknown {
+  if (!isObject(document)) {
+    return document;
+  }
+  return Object.fromEntries(Object.entries(document).filter(([key]) => !SPELLED_MEMBERS.includes(key)));
+}
+
+// `loader` answering each document as fedifyActorView gives it: the loader Fedify is handed where it loads documents
+// itself (inbound.ts verifyHttpSignature: a key it fetches, at the key's URL or as its owner's document). A document
+// that is not an actor's loses nothing it reads.
+export function actorViewLoader(loader: DocumentLoader): DocumentLoader {
+  return async (url, options) => {
+    const remote = await loader(url, options);
+    return { ...remote, document: fedifyActorView(remote.document) };
+  };
+}
+
+// An actor document as served at `uri`, parsed by Fedify's lookupObject over a loader that answers its view
+// (fedifyActorView) alone: nothing is fetched but its JSON-LD contexts, through `contextLoader`. lookupObject asks its
+// loader only for the URI it was given (as it parses it: without verifyPortableObject it takes no portable path), and
+// never falls back to its own WebFinger lookup, which would fetch outside the safe loader. An actor whose id is not
+// exactly uri is unusable. The document answered is the one served.
+async function readActor(uri: string, served: RemoteDocument, contextLoader: DocumentLoader): Promise<ReadActor> {
+  const view = { ...served, document: fedifyActorView(served.document) };
   let object: unknown;
   try {
-    object = await lookupObject(uri, {
-      documentLoader: (url, options) => (url === uri ? Promise.resolve(remote) : loader(url, options)),
-      contextLoader,
-    });
+    object = await lookupObject(uri, { documentLoader: () => Promise.resolve(view), contextLoader });
   } catch (error) {
     // A JSON-LD context that failed to load for a reason that may pass is transient too; only a document that
     // cannot be read as served is unusable.
@@ -81,7 +122,31 @@ export async function loadActor(
   if (!isActor(object) || object.id?.href !== uri) {
     return { kind: "unusable" };
   }
-  return { kind: "ok", actor: object, document: remote.document };
+  return { kind: "ok", actor: object, document: served.document };
+}
+
+// The actor document an activity embeds (an Update(Person)'s object, docs/threat-model.md ID-1), read as a fetched one
+// is: its key entries as the safe loader reads a fetched document's (key-entries.ts readableKeys), then readActor and
+// remoteActorInput. It is served under the actor's URI with the activity's @context before its own (`context`), as
+// JSON-LD nests the object in the activity and Mastodon reads it under the activity's compacted context. Nothing is
+// fetched but its JSON-LD contexts, through the request's context loader and budget (RES-6); its size is the
+// activity's (inbound.ts parseActivity, RES-2). Unusable: no actor of exactly `uri`, or one remoteActorInput refuses.
+export async function readEmbeddedActor(
+  uri: string,
+  object: Record<string, unknown>,
+  context: unknown,
+  contextLoader: DocumentLoader,
+): Promise<{ kind: "ok"; input: RemoteActorInput } | { kind: "transient" } | { kind: "unusable" }> {
+  const own = object["@context"];
+  const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : [value]);
+  const document = { ...object, "@context": own === undefined ? context : [...list(context), ...list(own)] };
+  const served = { contextUrl: null, documentUrl: uri, document: await readableKeys(document) };
+  const read = await readActor(uri, served, contextLoader);
+  if (read.kind !== "ok") {
+    return read;
+  }
+  const input = await remoteActorInput(read.actor, read.document);
+  return input === null ? { kind: "unusable" } : { kind: "ok", input };
 }
 
 // A natural-language value: a plain string or Fedify's LanguageString (a String with a language tag).
@@ -89,26 +154,52 @@ function text(value: string | { toString(): string } | null | undefined): string
   return value === null || value === undefined ? null : value.toString();
 }
 
-// A profile URL (url, icon, image): http(s) (HTML-3) and within its stored bound, else none, as an invalid one.
-function href(value: URL | Link | null | undefined): string | null {
-  const target = value instanceof Link ? value.href : value;
-  return storedProfileUrl(httpUrl(target?.href ?? null)?.href ?? null);
+// A profile URL: http(s) (HTML-3) and within its stored bound, else none, as an invalid one.
+function storedHref(value: string | null): string | null {
+  return storedProfileUrl(httpUrl(value)?.href ?? null);
 }
 
-// Icons and headers are taken only when embedded: a reference would cost another fetch per actor (RES-6).
+// The actor's url, as Fedify parsed it (a Link gives its href).
+function href(value: URL | Link | null | undefined): string | null {
+  const target = value instanceof Link ? value.href : value;
+  return storedHref(target?.href ?? null);
+}
+
+// Keys are taken only when embedded: a reference would cost another fetch per actor (RES-6).
 const NO_FETCH: DocumentLoader = () => Promise.reject(new Error("not fetched"));
 
-type Images = Record<
-  "getIcon" | "getImage",
-  (options: { documentLoader: DocumentLoader; contextLoader: DocumentLoader }) => Promise<Image | null>
->;
-
-async function imageUrl(get: () => Promise<{ url: URL | Link | null } | null>): Promise<string | null> {
-  try {
-    return href((await get())?.url);
-  } catch {
-    return null;
+// An icon or image (avatar or header) as Mastodon 4.7 reads it from the document's JSON by spelling
+// (ProcessAccountService#image_url_and_description, process_account_service.rb:354-379): the member's first value; an
+// object whose type is the string "Image" gives its url's first value (a Link's href) and its description, read by
+// remoteDescription (summary, else name) and cut to PROFILE_DESCRIPTION_LIMIT code points (Mastodon cuts at 10,000;
+// docs/mastodon-deviations.md); any other object gives its own href and no description; an href is unwrapped once
+// more, as Mastodon unwraps it after either branch. A reference (a string) is not fetched (RES-6), so it gives none,
+// where Mastodon fetches it. The URL is kept as storedHref keeps it (HTML-3, RES-2): a relative one is none, as
+// Mastodon's avatar_remote_url= refuses a URL without a scheme and host. Mastodon assigns `url || ''` and
+// `description || ''` on every processing, so a document without them clears the stored ones.
+export function profileImage(value: unknown): { url: string | null; description: string } {
+  const first: unknown = Array.isArray(value) ? value[0] : value;
+  if (!isObject(first)) {
+    return { url: null, description: "" };
   }
+  let url: unknown = first;
+  let description = "";
+  if (first.type === "Image") {
+    url = Array.isArray(first.url) ? first.url[0] : first.url;
+    url = isObject(url) ? url.href : url;
+    description = storedProfileDescription(remoteDescription(first));
+  }
+  url = isObject(url) ? url.href : url;
+  return { url: typeof url === "string" ? storedHref(url) : null, description };
+}
+
+// A display setting (Mastodon 4.6's showFeatured, showMedia, showRepliesInMedia, read from the document's JSON by
+// spelling, process_account_service.rb:258-260) when the document holds a JSON boolean for it; else null, and the
+// stored value is kept, as Mastodon keeps it when the key is absent (docs/mastodon-deviations.md: it casts any other
+// value, and fails on null).
+function displaySetting(document: Record<string, unknown>, key: string): boolean | null {
+  const value = document[key];
+  return typeof value === "boolean" ? value : null;
 }
 
 // The keys of this actor (ID-1): its FEP-521a Multikeys (assertionMethod), then its legacy keys (publicKey), embedded
@@ -180,13 +271,90 @@ export function claimedHandle(document: unknown, uri: string, preferredUsername:
     : null;
 }
 
+// Whether the document's own `inbox` member is blank as Mastodon 4.7 reads it (`json['inbox'].blank?`,
+// ProcessAccountService#call, process_account_service.rb:24): missing, null, false, a string of whitespace alone
+// (railsBlank), an empty array or an empty object. A value that is not blank but no inbox URL is not refused here
+// (Mastodon stores no inbox for it, valid_collection_uri).
+function blankInbox(document: unknown): boolean {
+  const inbox = typeof document === "object" && document !== null ? (document as { inbox?: unknown }).inbox : undefined;
+  return (
+    inbox === undefined ||
+    inbox === null ||
+    inbox === false ||
+    (typeof inbox === "string" && railsBlank(inbox)) ||
+    (Array.isArray(inbox) && inbox.length === 0) ||
+    (typeof inbox === "object" && !Array.isArray(inbox) && Object.keys(inbox).length === 0)
+  );
+}
+
+// The actor's shared inbox as Mastodon 4.7.5 reads it (process_account_service.rb:225): `endpoints.sharedInbox` when
+// `endpoints` is an object (not an array, not null), else the document's own `sharedInbox`, unwrapped as
+// valid_collection_uri unwraps it (collection-requests.ts collectionValue). It is kept only when Kopje POSTs where
+// Mastodon POSTs (sharedInboxSpelling), as the URL parser writes it, within INBOX_URL_LIMIT; else it is none and the
+// personal inbox is used, never a guessed one (docs/mastodon-deviations.md).
+function sharedInboxUri(document: Record<string, unknown>): string | null {
+  const member = isObject(document.endpoints) ? document.endpoints.sharedInbox : document.sharedInbox;
+  const value = collectionValue(member);
+  return value !== null && sharedInboxSpelling(value) ? boundedHref(value, INBOX_URL_LIMIT) : null;
+}
+
+// RFC 3986's pchar literals: unreserved, sub-delims, ":" and "@".
+const PCHAR = /^[A-Za-z0-9\-._~!$&'()*+,;=:@]$/;
+// A scheme, an authority of host and port, and a path; nothing else (no userinfo, query or fragment). Each part's
+// pattern is anchored by the next part's first character, so it matches in linear time.
+const SPELLING = /^https?:\/\/([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)(?::([0-9]*))?((?:\/[^/]*)*)$/;
+
+// Whether `value` is a spelling on which Mastodon's delivery URL (Request#initialize, request.rb:97: Addressable
+// 2.9.2's `parse(url).normalize`, :212-214, a query aside) and the URL parser's href are the same URL. Each rule
+// removes a class of spellings on which they differ or are not shown alike (test/fixtures/shared-inbox/spellings.json,
+// captured by its capture.rb): the scheme lower-case with `//`; the host of ASCII letters, digits and hyphens in
+// labels, none empty (a trailing dot), the last beginning with a letter (no IP address, nothing the URL parser reads as
+// one); no userinfo; a port of digits whose value is 1 to 65535 (empty and leading zeros are written alike); a path of
+// pchar literals and `%HH` escapes, no segment `.` or `..`, each escape upper-case, below %80 and not of a pchar literal
+// (neither side decodes, re-cases or re-encodes it); no query or fragment.
+function sharedInboxSpelling(value: string): boolean {
+  const parts = SPELLING.exec(value);
+  if (parts === null) {
+    return false;
+  }
+  const [, host = "", port = "", path = ""] = parts;
+  if (!/^[A-Za-z]/.test(host.slice(host.lastIndexOf(".") + 1))) {
+    return false;
+  }
+  if (port !== "" && !(Number(port) >= 1 && Number(port) <= 65535)) {
+    return false;
+  }
+  return path
+    .split("/")
+    .slice(1)
+    .every((segment) => segment !== "." && segment !== ".." && pcharSegment(segment));
+}
+
+function pcharSegment(segment: string): boolean {
+  for (let i = 0; i < segment.length; i++) {
+    if (segment[i] !== "%") {
+      if (!PCHAR.test(segment[i]!)) {
+        return false;
+      }
+      continue;
+    }
+    const escape = segment.slice(i + 1, i + 3);
+    if (!/^[0-7][0-9A-F]$/.test(escape) || PCHAR.test(String.fromCharCode(Number.parseInt(escape, 16)))) {
+      return false;
+    }
+    i += 2;
+  }
+  return true;
+}
+
 // The columns of a remote account (null if the document cannot be one). Display names are plain text; the bio is
 // sanitized HTML (HTML-1); URLs are http(s) or null (HTML-3). Misskey's extensions (_misskey_summary, isCat, ...) are
 // not interpreted; they stay in raw with the rest of the document. confirmed is left null: the Worker's path that
-// stores the document confirms the claim (federation/resolve.ts confirmedInput).
+// stores the document confirms the claim (federation/resolve.ts confirmedInput). A document whose inbox is blank is
+// none, fetched or embedded, as Mastodon raises before it touches the account (blankInbox): nothing of it is stored.
 export async function remoteActorInput(actor: Actor, document: unknown): Promise<RemoteActorInput | null> {
   const uri = actor.id;
-  if (uri === null || !isStorableActorId(uri.href)) {
+  if (uri === null || !isStorableActorId(uri.href) || blankInbox(document)) {
     return null;
   }
   const claim = claimedHandle(document, uri.href, text(actor.preferredUsername));
@@ -194,14 +362,14 @@ export async function remoteActorInput(actor: Actor, document: unknown): Promise
     return null;
   }
   const inboxUrl = httpUrl(actor.inboxId?.href ?? null)?.href ?? null;
-  // By Kopje's policy, an over-long inbox makes the actor unusable (nothing could be delivered to it), and an
-  // over-long shared inbox is ignored, so its personal inbox is used.
+  // By Kopje's policy, an over-long inbox makes the actor unusable (nothing could be delivered to it); an over-long
+  // shared inbox is none (sharedInboxUri), so its personal inbox is used.
   if (inboxUrl !== null && inboxUrl.length > INBOX_URL_LIMIT) {
     return null;
   }
-  const sharedInboxUrl = httpUrl(actor.endpoints?.sharedInbox?.href ?? null)?.href ?? null;
-  const options = { documentLoader: NO_FETCH, contextLoader: NO_FETCH };
-  const images: Images = actor;
+  const json = isObject(document) ? document : {};
+  const avatar = profileImage(json.icon);
+  const header = profileImage(json.image);
   return {
     uri: uri.href,
     claim,
@@ -210,13 +378,18 @@ export async function remoteActorInput(actor: Actor, document: unknown): Promise
     displayName: storedDisplayName(text(actor.name) ?? ""),
     note: sanitizeRemoteBio(storedText(text(actor.summary) ?? "")),
     url: href(actor.url),
-    avatarUrl: await imageUrl(() => images.getIcon(options)),
-    headerUrl: await imageUrl(() => images.getImage(options)),
+    avatarUrl: avatar.url,
+    headerUrl: header.url,
+    avatarDescription: avatar.description,
+    headerDescription: header.description,
+    showFeatured: displaySetting(json, "showFeatured"),
+    showMedia: displaySetting(json, "showMedia"),
+    showRepliesInMedia: displaySetting(json, "showRepliesInMedia"),
     locked: actor.manuallyApprovesFollowers === true,
     discoverable: actor.discoverable,
     indexable: actor.indexable === true,
     inboxUrl,
-    sharedInboxUrl: sharedInboxUrl !== null && sharedInboxUrl.length <= INBOX_URL_LIMIT ? sharedInboxUrl : null,
+    sharedInboxUrl: sharedInboxUri(json),
     // A Temporal.Instant, whose type the polyfill's globals leave unresolved for the linter.
     keys: await ownKeys(actor, uri),
     published: (actor.published as { toString(): string } | null)?.toString() ?? null,

@@ -94,7 +94,7 @@ export class RefusedFetchError extends FetchError {}
 // above, and fetching it again under the same caps would not help.
 export class CappedFetchError extends RefusedFetchError {}
 
-// A 2xx answer read within the rules whose body is no usable document: not JSON, a root that is not an object (ID-8),
+// A 200 answer read within the rules whose body is no usable document: not JSON, a root that is not an object (ID-8),
 // or an id on another origin (ID-2). Search resolution tells it from the refusals above (federation/resolve.ts).
 export class UnusableDocumentError extends RefusedFetchError {}
 
@@ -154,6 +154,9 @@ export type LoaderDeps = {
   // host (a normalized domain) before any request. The answer may come from the Store answer that decided the fetch,
   // for its first request only (federation.ts refusesHost). Advisory: the Store's writes decide what is stored.
   refusesHost?: (host: string) => Promise<boolean>;
+  // A caller's own refusal of a document read within the rules (RES-2's JSON bounds, federation.ts withinBounds), run
+  // as part of reading its answer, so that its error carries the answer's status (answeredStatus).
+  checkDocument?: (remote: RemoteDocument) => RemoteDocument;
 } & DocumentCaps;
 
 // Tighter per-document caps than the loader's own, for a caller whose documents must fit a round's budget together
@@ -214,11 +217,26 @@ function createLoader(deps: LoaderDeps, kind: Kind, signing?: Signing): Document
     const target = new URL(url);
     const cap = deps.documentBytes ?? DOCUMENT_BODY_LIMIT;
     return withinDeadline(deps, target, options?.signal, (signal) =>
-      load(deps, kind, signing, target, signal, (response, final) =>
-        readDocument(response, kind, final, target, deps.budget, cap),
+      load(deps, kind, signing, target, signal, async (response, final) =>
+        checked(deps, await readDocument(response, kind, final, target, deps.budget, cap)),
       ),
     );
   };
+}
+
+function checked(deps: LoaderDeps, remote: RemoteDocument): RemoteDocument {
+  return deps.checkDocument === undefined ? remote : deps.checkDocument(remote);
+}
+
+// The status of the answer whose reading threw `error` (load marks it, `answered`): any but 200, or a 200 refused for its
+// type, its size (the document's cap or the request's remaining bytes, RES-6), its root or its id. Null for a request
+// that got no answer: refused before it was sent (NET-1, the domain policy, the request's fetches or deadline), a
+// network error, a timeout, or a redirect refused. Search resolution reads it as Mastodon's
+// FetchResourceService#response_code (federation/resolve.ts), set before the body is read within its limit.
+const answered = new WeakMap<object, number>();
+
+export function answeredStatus(error: unknown): number | null {
+  return typeof error === "object" && error !== null ? (answered.get(error) ?? null) : null;
 }
 
 // `run` under the load's timeout and the request's deadline, given up at either or at an abort of `outer`.
@@ -257,7 +275,8 @@ async function withinDeadline<T>(
 }
 
 // The hops of one load from `target`, the last answer handed to `read`; `follow` false hands a redirect over as any
-// answer.
+// answer. An error `read` throws is marked with that answer's status (answeredStatus), unless the load was given up
+// (its timeout or deadline).
 async function load<T>(
   deps: LoaderDeps,
   kind: Kind,
@@ -289,7 +308,14 @@ async function load<T>(
       current = next;
       continue;
     }
-    return read(response, response.url === "" ? current : new URL(response.url));
+    try {
+      return await read(response, response.url === "" ? current : new URL(response.url));
+    } catch (error) {
+      if (!signal.aborted && typeof error === "object" && error !== null) {
+        answered.set(error, response.status);
+      }
+      throw error;
+    }
   }
 }
 
@@ -330,7 +356,10 @@ export function createResolveLoader(
           return otherAnswer(response, media, final, deps);
         }
       }
-      return { kind: "document", remote: await readDocument(response, RESOLVE, final, target, deps.budget, cap) };
+      return {
+        kind: "document",
+        remote: checked(deps, await readDocument(response, RESOLVE, final, target, deps.budget, cap)),
+      };
     };
     return withinDeadline(deps, target, undefined, (signal) =>
       load(deps, RESOLVE, signing, target, signal, read, !terminal),
@@ -387,8 +416,7 @@ async function readPage(response: Response, media: MediaType, final: URL, deps: 
   return html;
 }
 
-// A status the caller does not take (non-ok, or a terminal resolve request's 2xx other than 200), as Fedify reads one:
-// the status and headers kept, not the body.
+// A status the caller does not take (any but 200), as Fedify reads one: the status and headers kept, not the body.
 function statusError(response: Response, final: URL): FetchError {
   return new FetchError(
     final,
@@ -443,9 +471,12 @@ async function readDocument(
     await response.body?.cancel();
     throw new RefusedFetchError(final, `Refused document redirected to ${final.origin}`);
   }
-  if (!response.ok) {
+  // A document, a WebFinger answer or a JSON-LD context is taken only from a 200, as Mastodon 4.7.5 takes each
+  // (fetch_resource_service.rb:47, json_ld_helper.rb:284 and :396, webfinger.rb:72 and :89): another 2xx is a failed
+  // fetch of its status. Keep the status for Fedify (it treats 404 and 410 differently from transient failures), not
+  // the body.
+  if (response.status !== 200) {
     await response.body?.cancel();
-    // Keep the status for Fedify (it treats 404 and 410 differently from transient failures), not the body.
     throw statusError(response, final);
   }
   const media = parseMediaType(response.headers.get("content-type") ?? "");

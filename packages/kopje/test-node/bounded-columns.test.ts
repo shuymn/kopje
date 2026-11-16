@@ -384,6 +384,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "foundSql",
   "hidesCollectionsSql",
   "hostCoveredSql",
+  // R45, whether an item lists its collection among those featuring the viewer: a predicate (domain/audience.ts).
+  "inCollectionsSql",
   // A stored time read as its 24-byte ISO form, or NULL (platform/stored-bounds.ts).
   "isoTimeSql",
   // A status's publication and edit times read as 24-byte ISO times (platform/stored-bounds.ts).
@@ -391,6 +393,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "statusPublishedSql",
   // A counter or time as read, within its range, or NULL (platform/stored-bounds.ts), a number.
   "storedCountSql",
+  // Whether a status's removal has begun: a predicate (domain/audience.ts).
+  "removalBegunSql",
   // Whether a value is no remote field link list or link back: predicates (platform/stored-bounds.ts).
   "remoteFieldLinksPastBoundSql",
   "remoteLinkBackPastBoundSql",
@@ -418,8 +422,12 @@ const SAFE_INTERPOLATIONS = new Set([
   "REQUIRES_MENTION_SQL",
   // The heap of one row of a column map, a number.
   "rowHeapSql",
+  // A delivery row's provenance within its written bound (domain/deliveries.ts), a JSON array of account ids or NULL.
+  "rowProvenanceSql",
   // A column map's select list: its values are checked where the map names them (`column <alias.column>`).
   "selectSql",
+  // A content warning cut to its read bytes (platform/stored-bounds.ts), no bounded column.
+  "spoilerReadSql",
   // As rowHeapSql: the heap of the rows one status reads (status-rows.ts), a number.
   "statusRowTerms",
   // statuses.url read through its stored bound (platform/stored-bounds.ts).
@@ -525,6 +533,9 @@ const STAGED =
   "a staged retraction's target (an inbox, or an addressee's identity), sent in an activity, never presented";
 
 const REMOTE_ATTACHMENT = "a remote account's attachment entry and its original value (src), from its stored document";
+const COLLECTION =
+  "the string a member of a remote actor's stored document names (collectionSql), read as a collection URI compared " +
+  "with addressing: one string, never an object, at most the stored document's bytes";
 
 const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/trends.ts interpolation TREND_OBSERVED_MAX": { count: 2, reason: NUMBER },
@@ -538,6 +549,18 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   },
   // A held Reject's Follow id judged against its stored bound: a predicate (deliveries.ts heldFollowUriSql).
   'src/domain/deliveries.ts interpolation heldFollowUriSql("uri")': { count: 2, reason: PREDICATE },
+  'src/domain/remote-status-reads.ts interpolation collectionSql("raw", "followers")': {
+    count: 1,
+    reason: COLLECTION,
+  },
+  'src/domain/remote-statuses.ts interpolation collectionSql("raw", "followers")': {
+    count: 1,
+    reason: COLLECTION,
+  },
+  'src/domain/remote-statuses.ts interpolation collectionSql("raw", "following")': {
+    count: 1,
+    reason: COLLECTION,
+  },
   // actorState's stored handle, cut to what a claim can be (remote-actors.ts).
   "src/domain/remote-actors.ts interpolation REMOTE_USERNAME_LIMIT": {
     count: 1,
@@ -666,13 +689,15 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/activities.ts accounts.uri": { count: 3, reason: ACTIVITYPUB },
   "src/domain/local-notes.ts statuses.uri": { count: 3, reason: ACTIVITYPUB },
   "src/domain/local-notes.ts accounts.uri": { count: 2, reason: ACTIVITYPUB },
-  "src/domain/actor-update.ts accounts.uri": { count: 1, reason: ACTIVITYPUB },
-  "src/domain/actors.ts accounts.uri": { count: 2, reason: ACTIVITYPUB },
+  // The actor documents' row (ACTOR_ROW_COLUMN_MAP), which actors.ts and actor-update.ts select.
+  "src/domain/actor-row.ts column a.uri": { count: 1, reason: ACTIVITYPUB },
+  "src/domain/actors.ts accounts.uri": { count: 1, reason: ACTIVITYPUB },
   "src/domain/blocks.ts accounts.uri": { count: 2, reason: IDENTITY },
   // The fourth: a staged retraction compares a uri past TARGET_CHUNK_BYTES with the activity's named ones in SQL; the
   // fifth and sixth: a held Reject's prefix, the local actor's uri compared with its id by bytes (HELD_REJECT); the
-  // seventh: a signed Delete's staged addressing compared with the signer's followers collection (stagedAddressing).
-  "src/domain/deliveries.ts accounts.uri": { count: 7, reason: IDENTITY },
+  // seventh: a signed Delete's staged addressing compared with the signer's followers collection (stagedAddressing);
+  // the eighth: a shared-inbox fallback's candidate by its row's provenance, whose host is compared (personalFallback).
+  "src/domain/deliveries.ts accounts.uri": { count: 8, reason: IDENTITY },
   "src/domain/featured-tags.ts accounts.uri": { count: 1, reason: IDENTITY },
   // The last two: a held Reject's actor uris, read as bytes and decoded strictly (replayReject).
   "src/domain/handshake-replays.ts accounts.uri": { count: 4, reason: IDENTITY },
@@ -681,13 +706,23 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/inbox.ts statuses.uri": { count: 2, reason: IDENTITY },
   "src/domain/local-emojis.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/media.ts accounts.uri": { count: 1, reason: IDENTITY },
-  "src/domain/polls.ts statuses.uri": { count: 1, reason: IDENTITY },
-  "src/domain/polls.ts accounts.uri": { count: 2, reason: IDENTITY },
+  // The poll refresh's reservation: the status to fetch and its author, sent and compared with the document.
+  "src/domain/polls.ts statuses.uri": { count: 2, reason: IDENTITY },
+  "src/domain/polls.ts accounts.uri": { count: 3, reason: IDENTITY },
   "src/domain/quotes.ts statuses.uri": { count: 7, reason: IDENTITY },
   "src/domain/quotes.ts accounts.uri": { count: 7, reason: IDENTITY },
   "src/domain/remote-collections.ts accounts.uri": { count: 3, reason: IDENTITY },
   "src/domain/remote-collections.ts statuses.uri": { count: 1, reason: IDENTITY },
-  "src/domain/remote-statuses.ts accounts.uri": { count: 1, reason: IDENTITY },
+  // A 404 removal's job names the status's author (removeGone).
+  "src/domain/remote-removal.ts accounts.uri": { count: 1, reason: IDENTITY },
+  "src/domain/remote-statuses.ts accounts.uri": { count: 2, reason: IDENTITY },
+  "src/domain/reply-walk-reads.ts statuses.uri": { count: 1, reason: IDENTITY },
+  // A node's parent (storedPlace) and the root a Store-only step names (storeStep).
+  "src/domain/reply-walks.ts statuses.uri": { count: 2, reason: IDENTITY },
+  // A scanned reply recorded or owed by its URI, and a debt's path compared with the walk's nodes (#1607 D12).
+  "src/domain/reply-walk-debts.ts statuses.uri": { count: 2, reason: IDENTITY },
+  // A stored node's author, compared with its fetched document's (storedPlace).
+  "src/domain/reply-walks.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/reports.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/status-actions.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/status-actions.ts statuses.uri": { count: 1, reason: IDENTITY },
@@ -700,8 +735,8 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
 			contact_username, never presented`,
   },
   "src/domain/activities.ts accounts.username": { count: 1, reason: ACTIVITYPUB },
-  "src/domain/actor-update.ts accounts.username": { count: 1, reason: ACTIVITYPUB },
-  "src/domain/actors.ts accounts.username": { count: 7, reason: LOCAL },
+  "src/domain/actor-row.ts column a.username": { count: 1, reason: ACTIVITYPUB },
+  "src/domain/actors.ts accounts.username": { count: 6, reason: LOCAL },
   "src/domain/admin-accounts.ts accounts.username": { count: 2, reason: LOCAL },
   "src/domain/admin-authority.ts column a.username": { count: 1, reason: LOCAL },
   "src/domain/deliveries.ts accounts.username": {
@@ -713,6 +748,7 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
     reason: "compared with the author's featured tags to count them, never presented",
   },
   "src/domain/oauth.ts accounts.username": { count: 1, reason: LOCAL },
+  "src/domain/polls.ts accounts.username": { count: 1, reason: `the reader who signs a poll refresh (${LOCAL})` },
   "src/domain/polls.ts polls.options": { count: 3, reason: POLL },
   "src/domain/status-bounds.ts interpolation mediaUrlSql(text('url'))": { count: 1, reason: SNAPSHOT },
   "src/domain/status-bounds.ts interpolation mediaUrlSql(text('preview_url'))": { count: 1, reason: SNAPSHOT },

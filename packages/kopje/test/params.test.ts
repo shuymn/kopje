@@ -7,11 +7,57 @@ import {
   MAX_PARAM_PATHS,
   PARAM_PATH_BUDGET,
   Params,
+  parseBoolean,
   type ReadOptions,
   readParams,
+  rubyNegative,
   SENT_FILE,
 } from "../src/mastodon/params";
 import { multipartForm } from "./media-helpers";
+
+// Ruby's String#to_i (rb_int_parse_cstr, bignum.c of Ruby 4.0.9, Mastodon 4.7.5's Ruby), each value as Ruby reads it.
+describe("rubyNegative", () => {
+  it.each([
+    ["-2", -2],
+    ["-2abc", -2],
+    [" -1", -1],
+    ["\t\n\v\f\r-3", -3],
+    ["  \t-0_0_1x", -1],
+    ["-1e3", -1],
+    ["-2.5", -2],
+    ["-0_1", -1],
+    ["-1__2", -1],
+    ["-1_", -1],
+    ["-0d5", -5],
+    ["-0D5", -5],
+    ["-0d0_1", -1],
+    ["-", 0],
+    ["", 0],
+    ["2", 2],
+    ["-abc", 0],
+    ["--1", 0],
+    ["+-1", 0],
+    ["- 1", 0],
+    ["\u00a0-1", 0],
+    ["-0", 0],
+    ["-00", 0],
+    ["-0.5", 0],
+    ["-_1", 0],
+    ["-0_", 0],
+    ["-0__1", 0],
+    ["-0_ 1", 0],
+    ["-0d", 0],
+    ["-0dx5", 0],
+    ["-0d_5", 0],
+    ["-0d0d5", 0],
+    ["-0x5", 0],
+    ["-0b1", 0],
+    ["-0o7", 0],
+    ["-\u0663", 0],
+  ])("reads %j as Ruby's to_i reads it, %i", (value, toI) => {
+    expect(rubyNegative(value)).toBe(toI < 0);
+  });
+});
 
 describe("Params#objects", () => {
   it("reads indexed (JSON) and sequential (form) objects", () => {
@@ -215,6 +261,25 @@ describe("Params#objects with file fields", () => {
     const form = await read(post("media_attributes[][thumbnail]=x", "application/x-www-form-urlencoded"));
     expect(form.objects("media_attributes", THUMBNAIL)).toEqual([{ thumbnail: "x" }]);
   });
+
+  it("reads a JSON null as blank, and as not sent with nulls: absent", async () => {
+    const body = {
+      o: [
+        { a: null, b: "1" },
+        { a: "", b: null },
+      ],
+      s: null,
+    };
+    const p = await read(post(JSON.stringify(body), "application/json"));
+    expect(p.get("s")).toBe("");
+    expect(p.objects("o")).toEqual([
+      { a: "", b: "1" },
+      { a: "", b: "" },
+    ]);
+    expect(p.objects("o", { nulls: "absent" })).toEqual([{ b: "1" }, { a: "" }]);
+    const form = await read(post("o[][a]=&o[][b]=1", "application/x-www-form-urlencoded"));
+    expect(form.objects("o", { nulls: "absent" })).toEqual([{ a: "", b: "1" }]);
+  });
 });
 
 describe("readParams: body and text bounds", () => {
@@ -364,5 +429,31 @@ describe("Params#list", () => {
     const p = await json({ a: [] });
     expect(p.has("a")).toBe(true);
     expect(p.getAll("a")).toEqual([""]);
+  });
+});
+
+describe("parseBoolean", () => {
+  // ActiveModel::Type::Boolean: only these spellings are false; another case of them is true, as Rails casts it.
+  it.each([
+    ["0", false],
+    ["f", false],
+    ["F", false],
+    ["false", false],
+    ["FALSE", false],
+    ["off", false],
+    ["OFF", false],
+    ["False", true],
+    ["Off", true],
+    ["fAlSe", true],
+    ["true", true],
+    ["1", true],
+    [" ", true],
+  ] as const)("casts %j to %s", (value, cast) => {
+    expect(parseBoolean(value)).toBe(cast);
+  });
+
+  it("reads blank as absent", () => {
+    expect(parseBoolean("")).toBeUndefined();
+    expect(parseBoolean(undefined)).toBeUndefined();
   });
 });

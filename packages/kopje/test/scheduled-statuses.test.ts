@@ -1065,12 +1065,12 @@ describe("nothing leaks before publication", () => {
   }, 60_000);
 });
 
-// ---- RES-6: a scheduled status holds at most MAX_STATUS_MEDIA uploads (0103_scheduled_media_cap).
+// ---- RES-6: a scheduled status holds at most MAX_STATUS_MEDIA uploads (0109_scheduled_media_cap).
 
 const HELD_REFUSED = /media_attachments: more media than a scheduled status may hold/;
-const CAP_FILE = MIGRATIONS.find((m) => m.name === "0103_scheduled_media_cap")?.sql ?? "";
+const CAP_FILE = MIGRATIONS.find((m) => m.name === "0109_scheduled_media_cap")?.sql ?? "";
 
-// Runs `write` as a Store before 0103 could (its triggers dropped), then the file's statements, as its upgrade runs
+// Runs `write` as a Store before 0109 could (its triggers dropped), then the file's statements, as its upgrade runs
 // them: the detach of the uploads past each scheduled status's first four, and the triggers made again.
 async function beforeCap(h: ApiHarness, write: (sql: SqlStorage) => void): Promise<void> {
   await runInDurableObject(h.store, (_instance, state) => {
@@ -1085,7 +1085,7 @@ async function beforeCap(h: ApiHarness, write: (sql: SqlStorage) => void): Promi
 // The upload `i` of the restored scheduled status `n`.
 const heldUpload = (n: number, i: number) => String(810000000000000000n + BigInt(n * 1_000 + i));
 
-// A scheduled status `n` of `owner`, due a minute before NOW + HOUR, as a restore before 0103 may hold it: `held`
+// A scheduled status `n` of `owner`, due a minute before NOW + HOUR, as a restore before 0109 may hold it: `held`
 // uploads of the owner's at positions held - 1 down to 0, so the first by position are the last written, and params
 // naming the first `named` by position; after `attempts` failed publications, the next due at NOW + HOUR.
 async function restoredHolding(
@@ -1358,7 +1358,7 @@ async function maximalScheduled(
       );
     }
   };
-  // Past MAX_STATUS_MEDIA, only a restore from before 0103 holds them, and its upgrade keeps the first four.
+  // Past MAX_STATUS_MEDIA, only a restore from before 0109 holds them, and its upgrade keeps the first four.
   if (held > MAX_STATUS_MEDIA) {
     await beforeCap(h, write);
   } else {
@@ -1496,7 +1496,7 @@ describe("a scheduled status at its caps (RES-3)", () => {
   }, 120_000);
 
   // A restored row that held more keeps its first MAX_STATUS_MEDIA by (position, id) through the upgrade of
-  // 0103_scheduled_media_cap, and the media read takes them through media_attachments_scheduled: it reads no more.
+  // 0109_scheduled_media_cap, and the media read takes them through media_attachments_scheduled: it reads no more.
   it("shows the first 4 held media by position, reading as many entries however many it held", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;

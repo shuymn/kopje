@@ -1,10 +1,11 @@
 import type { Db } from "../db/sql";
+import { reportCollectionIdsOf } from "../platform/stored-bounds";
 import { type Account, type Present, presentAccountById } from "./accounts";
 
 // The reporter's Report entity, for reports.ts and the notifications that carry one (notifications.ts). Reads only;
 // reports.ts writes reports (R34).
 
-// REST::ReportSerializer (app/serializers/rest/report_serializer.rb:3-20).
+// REST::ReportSerializer (Mastodon 4.7.5's app/serializers/rest/report_serializer.rb).
 export type Report = {
   id: string;
   action_taken: boolean;
@@ -15,6 +16,7 @@ export type Report = {
   created_at: string;
   status_ids: string[];
   rule_ids: string[] | null;
+  collection_ids: string[];
   target_account: Account;
 };
 
@@ -35,6 +37,8 @@ export type ReportRow = {
   comment: string;
   category: string;
   rule_ids: string | null;
+  // Migration 0103_collections: NULL for none, and on every report filed before it.
+  collection_ids: string | null;
   forwarded: number;
   created_at: string;
   action_taken_at: string | null;
@@ -46,7 +50,7 @@ export type ReportRow = {
 };
 
 export const REPORT_COLUMNS = `CAST(id AS TEXT) AS id, account_id, target_account_id, status_ids, comment, category, rule_ids,
-	forwarded, created_at, action_taken_at, action_taken_by_account_id, assigned_account_id, updated_at,
+	collection_ids, forwarded, created_at, action_taken_at, action_taken_by_account_id, assigned_account_id, updated_at,
 	(SELECT domain FROM accounts WHERE accounts.id = reports.account_id) AS reporter_domain`;
 
 // The reporter's Report entity (REST::ReportSerializer): action_taken once the OAuth admin resolved it.
@@ -61,6 +65,7 @@ export function userReport(row: ReportRow, targetAccount: Account): Report {
     created_at: row.created_at,
     status_ids: JSON.parse(row.status_ids) as string[],
     rule_ids: row.rule_ids === null ? null : (JSON.parse(row.rule_ids) as string[]),
+    collection_ids: reportCollectionIdsOf(row.collection_ids),
     target_account: targetAccount,
   };
 }

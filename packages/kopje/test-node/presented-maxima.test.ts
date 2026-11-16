@@ -8,16 +8,19 @@ import {
   FILL_SHAPES,
   FILLS,
   HEAP_PEAKS,
+  MESSAGE_MAX,
   MOVED_ACCOUNT_MAXIMA,
   NOTE_MAXIMA,
   type Peaks,
+  PROFILE_MAXIMA,
   type Shape,
   type ShapeName,
+  STREAM_UNIT_PEAKS,
 } from "../test/presented-maxima.js";
 
 // docs/threat-model.md "Maxima of presented units" and "Heap at 8 MiB per answer" (RES-3) state the figures
 // test/status-bounds.test.ts asserts from test/presented-maxima.ts: each cell of their tables equals the module's
-// figure, written as the document writes it.
+// figure, written as the document writes it, and so do the stream unit's figures in its prose and RES-6.
 
 const DOCUMENT = readFileSync(new URL("../docs/threat-model.md", import.meta.url), "utf8");
 const ANSWER_BYTES = 8 * 1024 * 1024;
@@ -64,6 +67,19 @@ const ANSWER_HEADER = [
   "A single item",
 ];
 const PHASE_HEADER = ["Phase", "Store isolate", "Worker isolate"];
+const UNIT_HEADER = [
+  "Stream unit (Store isolate)",
+  "Rows, with 25% headroom",
+  "Presented objects",
+  "Strings and scratch",
+  "Peak",
+];
+const UNITS: [string, keyof typeof STREAM_UNIT_PEAKS][] = [
+  ["Status (`update`, `status.update`: a boost of a quote)", "status"],
+  ["Conversation (its last status a quote)", "conversation"],
+  ["Notification (its status, report and warning together)", "notification"],
+  ["Announcement", "announcement"],
+];
 const PHASES = [
   "RPC copy (serialized; deserialized in the Worker)",
   "The Worker's JSON string and the body",
@@ -158,6 +174,15 @@ function maximaRows(): Map<string, string[]> {
     share(note.note),
   ]);
   rows.set("Its Create (the Note and its addressing again)", ["", count(note.create), "", "", "", share(note.create)]);
+  const profile = PROFILE_MAXIMA;
+  rows.set("Profile, derived from its caps", [
+    "",
+    count(profile.json),
+    count(profile.conservative),
+    "",
+    "",
+    share(profile.conservative),
+  ]);
   return rows;
 }
 
@@ -217,5 +242,27 @@ describe("the heap tables (RES-3)", () => {
       mb(HEAP_PEAKS.timelines.normal),
       mb(HEAP_PEAKS.timelines.backstop),
     ]);
+  });
+});
+
+describe("the stream unit's peaks (RES-3, RES-6)", () => {
+  // The document's prose, its line breaks as spaces.
+  const prose = DOCUMENT.replace(/\s+/g, " ");
+
+  it("states each kind's peak, the largest frame and the largest peak the peak test asserts", () => {
+    const rows = table(UNIT_HEADER);
+    expect(rows.map((row) => row.label)).toEqual(UNITS.map(([label]) => label));
+    compare(
+      rows,
+      new Map(
+        UNITS.map(([label, kind]) => {
+          const p = STREAM_UNIT_PEAKS[kind];
+          return [label, [mb(p.rows), mb(p.objects), mb(p.transient), mb(p.peak)]];
+        }),
+      ),
+    );
+    expect(prose).toContain(`\`MESSAGE_MAX\` is the largest frame, ${count(MESSAGE_MAX)} bytes`);
+    const most = Math.max(...Object.values(STREAM_UNIT_PEAKS).map((p) => p.peak));
+    expect(prose).toContain(`four frames of the largest at most, ${count(most)} bytes`);
   });
 });

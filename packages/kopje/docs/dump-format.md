@@ -60,8 +60,8 @@ dump with the Store's own catalog and literals (`src/platform/dump-catalog.ts` a
   `GET /admin/catalog` (or `kopje-admin catalog`) and copy `migrations` and `tables` from there.
 - The catalog is read from the live schema:
   - All tables are included except `kopje_migrations`, `media_orphans`, `card_images`, `remote_media`,
-    `remote_media_objects`, `remote_media_usage`, `backup_media`, `stream_*`, `_cf_*`, and `sqlite_*` other than
-    `sqlite_sequence`.
+    `remote_media_objects`, `remote_media_usage`, `backup_media`, `reply_walk*`, `stream_*`, `_cf_*`, and `sqlite_*`
+    other than `sqlite_sequence`.
     The moderation log (`admin_actions`, migration `0029_admin_reports`) is included like any other table: a
     restored Store keeps who did what, and its ids, so the log keeps pruning its oldest rows.
   - Columns are in declaration order.
@@ -155,6 +155,13 @@ of them is stored as that integer by the column's affinity, and anything else fa
 dump carries it as it is, so a restored Store's work keeps its count. A dump taken before 0094 has no such column: it
 restores into a Store at its own migrations, whose upgrade gives every quote `0`. A file built from legacy data has no
 quotes.
+
+A received quote's `broadcast` (migration `0104_quote_broadcast`) is the integer `0`, `1` or `2`: whether its current
+verification work notifies when its decision moves the quote's state (`2` while a failure that may pass waits for the
+next verification). Text that reads as one of them is stored as that integer by the column's affinity, and anything
+else fails with `CHECK constraint failed`. A dump carries it as it is, so a restored Store's work decides as it would
+have. A dump taken before 0104 has no such column: it restores into a Store at its own migrations, whose upgrade gives
+every quote `0`, so a work under way then decides without notifying. A file built from legacy data has no quotes.
 
 Authorized apps (migration `0086_authorized_apps`): `oauth_clients.authorized` is the integer `1` for an app a user
 has authorized (a code was issued for it) and `0` otherwise. Text or a real that reads as one of them is stored as
@@ -310,6 +317,12 @@ of 1 to 5 each (its index i in that alphabet: x = i mod 9 + 1, y = floor(i / 9) 
 anything else fails with `media_attachments: blurhash past its stored bound`. A dump taken before 0065 has no such
 column: it restores into a Store at its own migrations, which then upgrades. A file built from legacy data writes NULL.
 
+Media descriptions (migration `0105_media_description_bytes`): `media_attachments.description` is text of at most
+40,000 UTF-8 bytes and 10,000 characters as SQLite counts them (a malformed UTF-8 run counts as one); a longer one, or a
+BLOB, fails with `media_attachments: a value past its stored bound`. Malformed text within the bound is kept byte for
+byte, and presented as its first 10,000 code points once decoded. A dump taken before 0105 may hold a longer one or a
+BLOB: it restores into a Store at its own migrations, whose upgrade then cuts it to the bound, as text.
+
 Field verification (migration `0066_field_verification`): `local_accounts.links_due_at` and `links_hold_until` are NULL
 or non-negative integers (milliseconds), `links_claim` a non-negative integer and `links_attempts` an integer from 0 to
 2 (CHECKs `links_due_at_time`, `links_hold_until_time`, `links_claim_count` and `links_attempts_count`); a restored open
@@ -342,9 +355,9 @@ constraint is). A dump taken before 0089 restores into a Store at its own migrat
 keeps each account's newest pins in pin order (`created_at` descending, then `status_id` descending) and deletes the
 rest.
 
-Scheduled statuses' uploads (migration `0103_scheduled_media_cap`): at most 4 `media_attachments` rows name one
+Scheduled statuses' uploads (migration `0109_scheduled_media_cap`): at most 4 `media_attachments` rows name one
 `scheduled_status_id`; a chunk that holds a fifth for one fails with `media_attachments: more media than a scheduled
-status may hold`, refused as `chunk-failed`. A dump taken before 0103 restores into a Store at its own migrations,
+status may hold`, refused as `chunk-failed`. A dump taken before 0109 restores into a Store at its own migrations,
 whose upgrade keeps each scheduled status's first four by `position`, then `id`, and detaches the rest (no scheduled
 status, `position` 0, `gc_at` a day after the upgrade).
 
@@ -411,6 +424,12 @@ a snapshot: the next cron round works the links out again, and since a dump hold
 qualifies and a link trends again only from cards recorded after the restore. A file built from legacy data has no
 row.
 
+Card attribution (migration `0098_card_attribution`): a `status_cards` row also holds `unverified_author_account_id`,
+NULL or 18 ASCII digits as text (no foreign key: a restored one may name no account, and then no viewer sees the flag),
+NULL on a pending row; anything else fails with `status_cards: a value past its stored bound`. A row of a dump taken
+before 0098 takes NULL. A restored value is presented as it was dumped; nothing judges a card again until its next
+fetch.
+
 Instance activity (migration `0072_activity_tracking`): an `activity_counts` row holds a `kind` (`statuses` or
 `registrations`), a `day` (text of exactly 10 bytes, a calendar date `YYYY-MM-DD` with no NUL) and a `value` (an
 integer from 1 to 1e12), one per kind and day; an `activity_logins` row holds a `day` by the same rule and an
@@ -458,12 +477,51 @@ Notification policies' bot condition (migration `0095_notification_policy_bots`)
 restores into a Store at its own migrations, which then upgrades, giving every policy `accept`. A file built from
 legacy data has no row.
 
+Profile image descriptions and display settings (migration `0097_profile_descriptions`): `accounts.avatar_description`
+and `header_description` are text of at most 600 UTF-8 bytes, with no NUL and at most 150 characters as SQLite counts
+them, `''` for none; `show_featured`, `show_media` and `show_media_replies` are the integer 0 or 1. Column affinity
+applies first, so a number written to a description is stored as its text, and numeric text (`'1'`, `' 1'`, `'1.0'`)
+written to a setting as the integer. Anything else, NULL included, fails with `accounts: profile setting past its
+stored bound`. A description of malformed bytes that SQLite counts as fewer characters is presented cut at 150 code
+points after decoding. A dump taken before 0097 has none of these columns: it restores into a Store at its own
+migrations, which then upgrades, giving every account `''` and `1`. A file built from legacy data writes the defaults.
+
+Poll refresh state (migration `0100_poll_refresh`): `polls.fetched_at` and `refresh_at` are NULL or an integer from
+0 to 2^53 - 1 (epoch milliseconds, the Store's clock), and `revision` is an integer from 0 to 2^53 - 1. Column
+affinity applies first, so numeric text or an integral REAL is stored as the integer. Anything else fails with the
+CHECK's text for the two times and with `polls: revision past its stored bound` for the revision. A restored value is
+kept as dumped: a time after the Store's clock reads as none, so that poll is due for a refresh at its next signed-in
+read, and the next write of the poll issues another revision, the maximum included. A dump taken before 0100 has none
+of these columns: it restores into a Store at its own migrations, which then upgrades, giving every poll NULL, NULL
+and 0. A file built from legacy data writes the defaults.
+Collections (migration `0103_collections`): a `collections` row names its owner (`account_id`, whose delete cascades
+to it), and holds `local` (0 or 1), a `name` of 1 to 40 characters for a local collection and 1 to 256 for a remote
+one, a `description` (NULL, or at most 100 and 2,048 characters), each at most 4 UTF-8 bytes a character with no NUL,
+a `language` (NULL or a supported locale), `sensitive` and `discoverable` (0 or 1), a `tag` (NULL, or a hashtag's
+display name of 1 to 1,024 bytes and at most 256 characters), `uri`, `url` and `total_items` (NULL on a local row; on
+a remote one an https URL of printable ASCII within 2,048 bytes, NULL or such a URL, and NULL or an integer to
+2^31 - 1), and a 24-byte ISO `created_at` and `updated_at`. A `collection_items` row names its collection (whose
+delete cascades to it) and its member (`account_id`, whose delete cascades to it; NULL only on a remote item not yet
+resolved, `object_uri` then naming it), one row per member and collection, and holds a `state` (0 pending, 1
+accepted, 2 rejected, 3 revoked), a `position` from 1 to 2^31 - 1, its remote URIs and item-check columns, and the
+two times; its CHECKs tie the columns to each other (an accepted row has an account, a
+verified authorization has an account and is unique per member, a retraction is held only by a pending row without
+either authorization, the check's token and watched answer only by a queued check). An account holds at most 50
+collections, and a collection at most 50 items, of which at most 25 pending or accepted. Anything else fails with the
+CHECK's name (`collection_name`, `collection_item_state`, `collection_item_accepted` and the others),
+`UNIQUE constraint failed`, `collections: past the per-account bound`, `collection_items: past the per-collection
+bound` or `collection_items: past the live bound`. A restored row is presented as it was dumped; the cron deletes a
+rejected or revoked item a day after its `updated_at`. A dump taken before 0103 has no such table: it restores into a
+Store at its own migrations, which then upgrades. A file built from legacy data has no row.
+
 A report (migration `0054_remote_reports`) names any account as its reporter (`account_id`), once per `uri` and
 reported account, with `status_ids` of at most 100 ids within 2,101 UTF-8 bytes (compact JSON of 18-digit ids), a
 `uri` within 4,096 JSON-escaped UTF-8 bytes and a `comment` within 20,000 UTF-8 bytes (and 5,000 code points up to any
-NUL). A chunk past these fails with `report_status_ids_within_100_ids_and_2101_bytes`,
-`report_uri_within_4096_json_bytes`, `report_comment_within_20000_bytes` or
-`UNIQUE constraint failed: reports.uri, reports.target_account_id`. `sqlite_sequence` carries the report id counter,
+NUL), and `collection_ids` (migration `0103_collections`: NULL, or compact JSON of at most 50 ids of 18 ASCII digits,
+which name no row by foreign key). A chunk past these fails with `report_status_ids_within_100_ids_and_2101_bytes`,
+`report_uri_within_4096_json_bytes`, `report_comment_within_20000_bytes`, `reports: collection_ids past its stored
+bound` or `UNIQUE constraint failed: reports.uri, reports.target_account_id`. A dump taken before 0103 has no
+`collection_ids`: every report then reads NULL. `sqlite_sequence` carries the report id counter,
 so a restored Store never gives a report id twice.
 
 ### Body order
@@ -486,16 +544,17 @@ renames it with the table), hold no other row.
 
 These are excluded because they must not be restored blindly:
 
-| Excluded                                                   | Why                                                                                                                                                    |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `kopje_migrations`                                         | The header carries it. The target's own migration runner recreates it                                                                                  |
-| `kopje_state` except `last_local_id` and `profile_updates` | `hold`, `upgrade` and `upgrade_bookmark` (a bookmark belongs to the source object), `maintenance`, `dump` and `import` describe one object at one time |
-| `media_orphans`                                            | Tombstones of R2 objects to delete; a restored Store must not delete what it restores                                                                  |
-| `card_images`                                              | Card images, re-encoded with no original kept; a restored Store shows its cards without them (`status_cards` keeps the links)                          |
-| `remote_media*`                                            | The cache of remote media and its R2 ledger: a target starts with an empty cache, shows remote URLs, and fetches them again                            |
-| `backup_media`                                             | The scheduled backup's media index for one bucket ([backup.md](backup.md)); a restored Store starts a fresh media baseline                             |
-| `stream_*`                                                 | The streaming API's registry of subscriptions, journal of events and position: state of the open sockets of one object                                 |
-| `_cf_*`, `sqlite_*` (except `sqlite_sequence`)             | Platform and SQLite internals                                                                                                                          |
+| Excluded                                                   | Why                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kopje_migrations`                                         | The header carries it. The target's own migration runner recreates it                                                                                                                                                                                                                                                                                                                           |
+| `kopje_state` except `last_local_id` and `profile_updates` | `hold`, `upgrade` and `upgrade_bookmark` (a bookmark belongs to the source object), `maintenance`, `dump` and `import` describe one object at one time                                                                                                                                                                                                                                          |
+| `media_orphans`                                            | Tombstones of R2 objects to delete; a restored Store must not delete what it restores                                                                                                                                                                                                                                                                                                           |
+| `card_images`                                              | Card images, re-encoded with no original kept; a restored Store shows its cards without them (`status_cards` keeps the links)                                                                                                                                                                                                                                                                   |
+| `remote_media*`                                            | The cache of remote media and its R2 ledger: a target starts with an empty cache, shows remote URLs, and fetches them again                                                                                                                                                                                                                                                                     |
+| `backup_media`                                             | The scheduled backup's media index for one bucket ([backup.md](backup.md)); a restored Store starts a fresh media baseline                                                                                                                                                                                                                                                                      |
+| `reply_walk*`                                              | Walks of remote replies collections under way (context or Create walks, migration `0099_reply_walks`), and where their scans of each status's stored replies stand and the work they owe a thread's next walks (`0106_reply_walk_debts`): job state; a restored Store starts no walk, scans each status from its first reply again, and owes again what the walk that next has no room for cuts |
+| `stream_*`                                                 | The streaming API's registry of subscriptions, journal of events and position: state of the open sockets of one object                                                                                                                                                                                                                                                                          |
+| `_cf_*`, `sqlite_*` (except `sqlite_sequence`)             | Platform and SQLite internals                                                                                                                                                                                                                                                                                                                                                                   |
 
 The importer refuses a `kopje_state` row whose name is not allowlisted. `profile_updates` is written only by
 `convert --images`: a JSON array of the ids of the local accounts whose avatar or header the conversion changed

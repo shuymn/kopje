@@ -21,9 +21,10 @@ import {
   statusStream,
   storedSearchableText,
 } from "../src/domain/status-presenter";
+import { STATUS_COLUMN_MAP } from "../src/domain/status-rows";
 import { parseRemoteStatus } from "../src/federation/remote-status";
 import type { StoreStub } from "../src/platform/store-client";
-import { pollOptionsSql } from "../src/platform/stored-bounds";
+import { pollOptionsSql, SPOILER_READ_BYTES } from "../src/platform/stored-bounds";
 import { remotePlainText } from "../src/security/html";
 import { apiHarness, bearer, json, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
@@ -121,7 +122,7 @@ function question(n: number | string, choices: readonly string[], extra: Record<
   });
 }
 
-const CTX = { now: NOW, origin: "https://kopje.test", deliveredTo: null, fetched: true };
+const CTX = { now: NOW, storeNow: NOW, origin: "https://kopje.test", deliveredTo: null, fetched: true };
 
 function storeNote(db: Db, author: string, object: Record<string, unknown>): string {
   const input = parseRemoteStatus(object);
@@ -445,13 +446,37 @@ describe("the bound of an unmeasured status (property P)", () => {
         }),
         { numRuns: 400 },
       );
+      // A warning of 0xFF and 1,048,575 continuation bytes, one character to spoilerSql's cut: the measure takes the
+      // warning the presenter reads (STATUS_COLUMN_MAP, cut to SPOILER_READ_BYTES), and the bound is at least it.
+      const warning = new Uint8Array(1_048_576).fill(0x80);
+      warning[0] = 0xff;
+      for (const author of [local, remote]) {
+        const id = writeFixture(sql, author, {
+          spoiler: warning.buffer,
+          content: "<p>x</p>",
+          source: null,
+          poll: null,
+          media: [],
+        });
+        const read = sql
+          .exec<{ spoiler: string }>(
+            `SELECT ${STATUS_COLUMN_MAP.spoiler_text} AS spoiler FROM statuses s WHERE s.id = ?`,
+            id,
+          )
+          .one().spoiler;
+        expect(read).toHaveLength(SPOILER_READ_BYTES);
+        const text = storedSearchableText(db, id, NOW_ISO)!;
+        expect(text.startsWith(`${read}\n\n`)).toBe(true);
+        expect(boundOf(sql, id)).toBeGreaterThanOrEqual(text.length);
+      }
     });
   }, 120_000);
 
   it("is MAX_FILTER_TEXT for an odd input, whose measure is NULL with no JavaScript run on it", async () => {
     const { h, local, remote } = await authors();
     // After affinity: a BLOB in a text column (a number there is stored as its text), and a poll choice that is not
-    // a JSON string.
+    // a JSON string. A media description is no odd input: a BLOB is not a fixed point of mediaDescriptionSql, so
+    // the stored bound refuses the write.
     const oddPoll = fc.constantFrom("1e20", "true", "false", "null", "[1]", '["a"]', '{"toString":null}', "{}", "-0");
     const odd = fc.oneof(
       fc.record({ column: fc.constantFrom("spoiler", "content", "source", "media"), poll: fc.constant(null) }),
@@ -465,18 +490,24 @@ describe("the bound of an unmeasured status (property P)", () => {
           if (o.poll !== null) {
             choices[at] = o.poll;
           }
-          const id = writeFixture(
-            sql,
-            isLocal ? local : remote,
-            {
-              spoiler: o.column === "spoiler" ? blob : "",
-              content: o.column === "content" ? blob : "<p>x</p>",
-              source: o.column === "source" ? blob : null,
-              poll: `[${choices.join(",")}]`,
-              media: o.column === "media" ? ["a", blob] : ["a"],
-            },
-            false,
-          );
+          const write = () =>
+            writeFixture(
+              sql,
+              isLocal ? local : remote,
+              {
+                spoiler: o.column === "spoiler" ? blob : "",
+                content: o.column === "content" ? blob : "<p>x</p>",
+                source: o.column === "source" ? blob : null,
+                poll: `[${choices.join(",")}]`,
+                media: o.column === "media" ? ["a", blob] : ["a"],
+              },
+              false,
+            );
+          if (o.column === "media") {
+            expect(write).toThrow(/media_attachments: a value past its stored bound/);
+            return;
+          }
+          const id = write();
           expect(boundOf(sql, id)).toBe(MAX_FILTER_TEXT);
           sql.exec("UPDATE statuses SET filter_text_units = 0 WHERE id = ?", id);
           measureFilterText(db, id, NOW_ISO);

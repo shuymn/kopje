@@ -1,10 +1,15 @@
 import { runInDurableObject } from "cloudflare:test";
 import fc from "fast-check";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { STAGING_READ } from "../src/domain/deliveries";
+import type { RemoteActorInput } from "../src/domain/remote-actors";
+import { ALL_PARTS } from "../src/domain/remote-collections";
 import type { RemoteStatusInput } from "../src/domain/remote-status-reads";
+import type { Resolved } from "../src/domain/remote-statuses";
 import { MAX_RETRACTIONS_PER_ACTOR } from "../src/domain/retractions";
+import { pinFetched } from "../src/federation/collections";
+import { sha256Hex } from "../src/security/tokens";
 import { bearer, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD, runStoreJobs, drainDeliveries } from "./helpers";
@@ -21,6 +26,7 @@ import {
   type Obj,
   Peer,
   Policy,
+  type PollReservation,
   RETRACTION_TTL_MS,
   RETRY_WINDOW_MS,
   type Snapshot,
@@ -32,7 +38,11 @@ import { community, remoteAccount, seedReceipts } from "./status-helpers";
 // sender, delivered in any order and again), L's favourites and boosts of R's status, Kopje's job rounds and its
 // delivery steps run through the Store and the API; after every step the Store's projection and each answer must equal
 // the policy's (test/status-delete-model.ts), and once everything has settled Kopje must hold the author's final
-// state, except where an accepted risk names the messages that differ (`exception`). A second property sends what
+// state, except where an accepted risk names the messages that differ (`exception`). Every status is a poll, whose
+// votes the author's server sends as Updates from a job 3 minutes later (`race` puts an edit between one and its
+// delivery), L searches R's statuses, which R's server serves from its render cache, and reads their polls, each
+// read that refreshes one a reservation, its fetch and, as a later step or never, its refresh, and syncs of R's
+// featured collection, which lists the whole pool, fetch each listed status from it. A second property sends what
 // Mastodon would not: forgeries, stale, version-less and future Updates, the retraction cap and replays across the
 // retraction TTL.
 
@@ -87,7 +97,15 @@ type Shown = ReturnType<typeof shown>;
 
 let leaseSequence = 0;
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 async function setup() {
+  // The Store reads its own clock (a poll's refresh state is the Store's time), so Date is the world's clock.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+  let clock = NOW;
   const h = await community(["alice"]);
   const store = h.store;
   const l = h.users.alice;
@@ -106,7 +124,13 @@ async function setup() {
     store,
     l,
     accounts: { [R]: r, [F]: f, [X]: x } as Record<string, string>,
-    clock: NOW,
+    get clock() {
+      return clock;
+    },
+    set clock(value: number) {
+      clock = value;
+      vi.setSystemTime(value);
+    },
     step: 0,
     policy: new Policy({ l: L, r: R, s1: S1, s2: S2 }, MAX_RETRACTIONS_PER_ACTOR),
     peer: new Peer(R, POOL, PARENTS),
@@ -126,6 +150,8 @@ async function setup() {
     // The id each intent (by the policy's sequence) went out with, and back (activityIdentity).
     activityIds: new Map<number, string>(),
     intentOfId: new Map<string, number>(),
+    // L's poll reads whose refresh has not run: the policy's reservation, the Store's, and what R's server served.
+    reservations: [] as { policy: PollReservation; statusId: string; revision: string; served: Obj | "gone" }[],
     trace: [] as string[],
     stats: {} as Stats,
   };
@@ -153,6 +179,7 @@ async function project(w: World) {
         withdrawn: number;
         content: string;
         sensitive: number;
+        tally: number | null;
         version: string | null;
         edited_at: string | null;
         linked: number;
@@ -161,14 +188,20 @@ async function project(w: World) {
         favourites_count: number;
         reblogs_count: number;
         replies_count: number;
+        fetched_at: number | null;
+        refresh_at: number | null;
       }>(
-        `SELECT s.id, s.uri, a.uri AS author, s.withdrawn, s.content, s.sensitive, s.remote_version AS version,
+        `SELECT s.id, s.uri, a.uri AS author, s.withdrawn, s.content, s.sensitive,
+					(SELECT json_extract(p.tallies, '$[0]') FROM polls p WHERE p.status_id = s.id) AS tally,
+					s.remote_version AS version,
 					s.edited_at, s.in_reply_to_id IS NOT NULL AS linked,
 					(SELECT json_group_array(json_object('content', e.content, 'sensitive', e.sensitive, 'media', e.media_json,
 						'at', e.created_at)) FROM (SELECT * FROM status_edits WHERE status_id = s.id ORDER BY id) e) AS history,
 					(SELECT json_group_array(url) FROM (SELECT url FROM media_attachments
 						WHERE status_id = s.id ORDER BY position, id)) AS media,
-					s.favourites_count, s.reblogs_count, s.replies_count
+					s.favourites_count, s.reblogs_count, s.replies_count,
+					(SELECT p.fetched_at FROM polls p WHERE p.status_id = s.id) AS fetched_at,
+					(SELECT p.refresh_at FROM polls p WHERE p.status_id = s.id) AS refresh_at
 				FROM statuses s JOIN accounts a ON a.id = s.account_id
 				WHERE a.domain IS NOT NULL AND s.reblog_of_id IS NULL ORDER BY s.uri`,
       ),
@@ -209,6 +242,10 @@ async function project(w: World) {
       deliveries: q<{ id: number; lane: string; state: string; token: string | null; activity: number }>(
         "SELECT id, lane, state, lease_token AS token, activity_id AS activity FROM deliveries ORDER BY id",
       ),
+      pinRows: q<{ uri: string; refresh: number }>(
+        "SELECT uri, refresh FROM collection_pins_pending WHERE account_id = ? ORDER BY uri",
+        w.accounts[R]!,
+      ),
     };
   });
   for (const s of raw.statuses) {
@@ -233,6 +270,7 @@ async function project(w: World) {
       author: s.author,
       withdrawn: s.withdrawn === 1,
       snapshot: { content: letter(s.content), sensitive: s.sensitive === 1, media: JSON.parse(s.media) as string[] },
+      tally: s.tally,
       version: s.version,
       editedAt: s.edited_at,
       history: (JSON.parse(s.history) as { content: string; sensitive: number; media: string; at: string }[]).map(
@@ -246,6 +284,8 @@ async function project(w: World) {
         }),
       ),
       linked: s.linked === 1,
+      fetchedAt: s.fetched_at,
+      refreshAt: s.refresh_at,
     })),
     counts:
       s1 === undefined
@@ -263,6 +303,7 @@ async function project(w: World) {
       superseded: i.superseded === 1,
       stage: i.targets > 0 ? "staged" : i.staged !== null ? "waiting" : "expanded",
     })),
+    pinRows: raw.pinRows.map((row) => ({ uri: row.uri, kind: row.refresh === 1 ? "refresh" : "pending" })),
     lanes: Object.fromEntries(
       LANES.map((lane) => [
         lane,
@@ -325,10 +366,13 @@ function expected(w: World) {
         author: s.author,
         withdrawn: s.withdrawn,
         snapshot: shown(s.snapshot),
+        tally: s.tally,
         version: s.version,
         editedAt: s.editedAt,
         history: s.history.map((v) => ({ snapshot: shown(v.snapshot), at: v.at })),
         linked: s.linked,
+        fetchedAt: s.fetchedAt,
+        refreshAt: s.refreshAt,
       })),
     counts:
       s1 === undefined
@@ -355,6 +399,7 @@ function expected(w: World) {
       .map((j) => ({ ref: j.ref, done: j.doneAt }))
       .toSorted((a, b) => a.ref.localeCompare(b.ref)),
     intents: p.intents.map((i) => ({ identity: `${i.type} ${i.ref}`, superseded: i.superseded, stage: i.stage })),
+    pinRows: [...p.pinRows.entries()].toSorted(([a], [b]) => a.localeCompare(b)).map(([uri, kind]) => ({ uri, kind })),
     lanes: Object.fromEntries(
       LANES.map((lane) => [
         lane,
@@ -417,6 +462,15 @@ function input(o: Obj): RemoteStatusInput {
           },
         ]
       : [],
+    poll: {
+      options: ["yes", "no"],
+      tallies: [o.tally, 0],
+      multiple: false,
+      expiresAt: null,
+      closedNow: false,
+      votersCount: null,
+      cut: [],
+    },
     raw: "{}",
   };
 }
@@ -450,10 +504,18 @@ function activityOf(actor: string, msg: Msg) {
 const describeMsg = (actor: string, msg: Msg) =>
   `${actor.split("/").at(-1)} ${msg.type}${msg.type === "Delete" && msg.proven ? " (proven)" : ""} ${
     msg.type === "Delete" ? msg.object : msg.object.uri
-  }${msg.type === "Delete" ? "" : ` ${JSON.stringify(msg.object.snapshot)} p=${msg.object.published} u=${msg.object.updated}`}`;
+  }${msg.type === "Delete" ? "" : ` ${JSON.stringify(msg.object.snapshot)} t=${msg.object.tally} p=${msg.object.published} u=${msg.object.updated}`}`;
 
 async function receive(w: World, actor: string, msg: Msg, label: string): Promise<Answer> {
   log(w, `${label} ${describeMsg(actor, msg)} at +${w.clock - NOW}`);
+  const held = msg.type === "Update" ? w.policy.statuses.get(msg.object.uri) : undefined;
+  if (msg.type === "Update" && msg.object.updated === null && held !== undefined && held.editedAt !== null) {
+    tally(w.stats, "Update without a version of an edited status");
+    // Only older counts show whether it was refused (an implicit update of equal counts changes nothing either).
+    if (msg.object.tally !== held.tally) {
+      tally(w.stats, "Update without a version of an edited status, other counts");
+    }
+  }
   const result = await storeReceive(w.store, actor, activityOf(actor, msg), w.clock);
   const predicted = w.policy.receive(actor, msg, w.clock);
   const actual = {
@@ -467,6 +529,299 @@ async function receive(w: World, actor: string, msg: Msg, label: string): Promis
   tally(w.stats, `${msg.type} ${result.reason}`);
   await check(w, { actual, predicted });
   return predicted;
+}
+
+// R's actor as a search fetches it. Its revision never holds (null: no stored row expected), so the Store keeps R's
+// stored row (storeResolved's superseded document) and the search tests only the status.
+const R_ACTOR: RemoteActorInput = {
+  uri: R,
+  claim: { username: "r", domain: new URL(R_ORIGIN).host },
+  confirmed: null,
+  actorType: "Person",
+  displayName: "",
+  note: "",
+  url: null,
+  avatarUrl: null,
+  headerUrl: null,
+  locked: false,
+  discoverable: null,
+  indexable: false,
+  inboxUrl: null,
+  sharedInboxUrl: null,
+  published: null,
+  keys: [],
+  emojiTags: [],
+  raw: "{}",
+  movedTo: null,
+  avatarDescription: "",
+  headerDescription: "",
+  showFeatured: null,
+  showMedia: null,
+  showRepliesInMedia: null,
+};
+
+// L's search of `uri` with resolve=true, through the Store's resolution (the Worker's fetch replaced by what R's
+// server serves now, parsed as `input` stands for): a 404 fetches nothing (`none`). Its answer and the Store must
+// agree with the policy's refetch.
+async function search(w: World, uri: string): Promise<void> {
+  const served = w.peer.serve(uri, w.clock);
+  const cached =
+    served !== "gone" &&
+    JSON.stringify(served) !== JSON.stringify(w.peer.statuses.get(uri)!.state === "posted" ? current(w, uri) : null);
+  log(
+    w,
+    `L searches ${uri} at +${w.clock - NOW}: ${served === "gone" ? "404" : `${cached ? "cached " : ""}${JSON.stringify(served.snapshot)} t=${served.tally} u=${served.updated}`}`,
+  );
+  tally(
+    w.stats,
+    served === "gone" ? "search 404" : cached ? "search served a cached copy" : "search served the current",
+  );
+  const resolved: Resolved =
+    served === "gone"
+      ? { kind: "none", last: 404 }
+      : { kind: "status", status: input(served), author: R_ACTOR, revision: null };
+  const result = await w.store.resolveSearch(BUILD, {
+    credential: { tokenHash: await sha256Hex(w.l.token), scope: "read:search", now: w.clock },
+    query: uri,
+    resolved,
+    now: w.clock,
+    origin: LOCAL,
+    present: { origin: LOCAL },
+  });
+  if (result.status !== "ok") {
+    throw new Error(`search refused: ${result.status}`);
+  }
+  w.policy.refetch(R, served, w.clock);
+  const actual = result.value.statuses.map((s) => s.uri);
+  w.trace.push(`  -> ${JSON.stringify(actual)}`);
+  await check(w, { actual, predicted: w.policy.shown(uri) ? [uri] : [] });
+}
+
+// L's read of the poll of `uri` (GET /api/v1/polls/:id) as the Worker makes it, through the Store: the read, and for a
+// due poll its reservation and the fetch of what R's server serves now. The refresh is its own action (`refresh`), so
+// any step may come between a reservation and its refresh, or none (a Worker that stopped). Each answer and the Store
+// must agree with the policy.
+async function readPoll(w: World, uri: string): Promise<void> {
+  const id = (await sql<{ id: string }>(w.store, "SELECT id FROM statuses WHERE uri = ?", uri))[0]?.id;
+  log(w, `L reads the poll of ${uri} at +${w.clock - NOW}`);
+  const credential = { tokenHash: await sha256Hex(w.l.token), scope: "read:statuses" as const, now: w.clock };
+  const read =
+    id === undefined
+      ? null
+      : await w.store.getPoll(BUILD, { credential, id, now: w.clock, present: { origin: LOCAL } });
+  if (read !== null && read.status !== "ok") {
+    throw new Error(`poll read refused: ${read.status}`);
+  }
+  const value = read?.value ?? null;
+  const actual = value === null ? null : { due: value.due, tally: value.poll.options[0]!.votes_count };
+  const p = w.policy;
+  const predicted = p.shown(uri) ? { due: p.pollDue(uri, w.clock), tally: p.statuses.get(uri)!.tally } : null;
+  w.trace.push(`  -> ${JSON.stringify(actual)}`);
+  tally(w.stats, actual === null ? "poll read 404" : actual.due ? "poll read due" : "poll read not due");
+  if (value === null || !value.due || id === undefined) {
+    await check(w, { actual, predicted });
+    return;
+  }
+  expect(actual, w.trace.join("\n")).toEqual(predicted);
+  const reserved = await w.store.reservePollRefresh(BUILD, { credential, id });
+  if (reserved.status !== "ok") {
+    throw new Error(`poll reservation refused: ${reserved.status}`);
+  }
+  const reservation = p.reservePoll(uri, w.clock);
+  w.trace.push(`  -> reserved ${reserved.value?.revision ?? null}`);
+  if (reserved.value !== null && reservation !== null) {
+    const served = w.peer.serve(uri, w.clock);
+    w.trace.push(`  fetched ${served === "gone" ? "404" : `${JSON.stringify(served.snapshot)} t=${served.tally}`}`);
+    w.reservations.push({ policy: reservation, statusId: id, revision: reserved.value.revision, served });
+  }
+  await check(w, { actual: reserved.value !== null, predicted: reservation !== null });
+}
+
+// The refresh of a poll read's reservation, with the document its fetch got: nothing for a 404, else the Store applies
+// it only while nothing has written the poll since. Its answer (the poll's count as L sees it, or none) and the Store
+// must agree with the policy.
+async function refreshPoll(w: World, i: number): Promise<void> {
+  if (w.reservations.length === 0) {
+    return;
+  }
+  const [r] = w.reservations.splice(i % w.reservations.length, 1);
+  log(w, `L's refresh of ${r!.policy.uri} at +${w.clock - NOW}`);
+  if (r!.served === "gone") {
+    tally(w.stats, "poll refresh fetched 404");
+    await check(w);
+    return;
+  }
+  const p = w.policy;
+  const current = p.shown(r!.policy.uri) && p.statuses.get(r!.policy.uri)!.revision === r!.policy.revision;
+  const result = await w.store.refreshPoll(BUILD, {
+    credential: { tokenHash: await sha256Hex(w.l.token), scope: "read:statuses", now: w.clock },
+    statusId: r!.statusId,
+    revision: r!.revision,
+    status: input(r!.served),
+    now: w.clock,
+    origin: LOCAL,
+    present: { origin: LOCAL },
+  });
+  if (result.status !== "ok") {
+    throw new Error(`poll refresh refused: ${result.status}`);
+  }
+  const predicted = p.refreshPoll(r!.policy, r!.served, w.clock);
+  const actual = result.value.poll === null ? null : result.value.poll.options[0]!.votes_count;
+  w.trace.push(`  -> ${JSON.stringify(actual)}`);
+  tally(
+    w.stats,
+    current ? "poll refresh applied" : p.shown(r!.policy.uri) ? "poll refresh after a write" : "poll refresh hidden",
+  );
+  await check(w, { actual, predicted });
+}
+
+// A sync of R's featured collection reads it (phase 1), through the Store as the Worker's round hands it back
+// (federation/collections.ts): the round's claim of a sync asked for now, then its end with the whole pool listed.
+async function pinRead(w: World): Promise<void> {
+  log(w, "a sync reads R's featured collection");
+  const account = w.accounts[R]!;
+  await sql(w.store, "DELETE FROM collection_syncs WHERE account_id = ?", account);
+  await sql(w.store, "INSERT INTO collection_syncs (account_id, due_at) VALUES (?, 0)", account);
+  const claimed = await w.store.claimCollectionSync(BUILD, { now: w.clock });
+  if (claimed === null || claimed === "more" || claimed.phase !== "read") {
+    throw new Error(`no read claimed: ${JSON.stringify(claimed)}`);
+  }
+  await w.store.completeCollectionRead(BUILD, {
+    now: w.clock,
+    origin: LOCAL,
+    accountUri: R,
+    generation: claimed.generation,
+    token: claimed.token,
+    parts: ALL_PARTS,
+    pins: { uris: [...POOL] },
+    tags: null,
+    hideCollections: null,
+    counts: { statuses: null, following: null, followers: null },
+  });
+  w.policy.pinRead(POOL);
+  await check(w);
+}
+
+// The sync's fetch of `uri` (phase 2), its document what R's server serves now, its cache included, and a status it
+// no longer serves answering `gone` (404 or 410) at its own URI, handed back as the Worker's round hands it
+// (federation/collections.ts pinFetched). A uri the open sync holds no row of is read first (a new sync). The harness
+// makes the sync due with fresh attempts before each claim, so its rounds' schedule, which this model does not check,
+// never drops it.
+async function pinFetch(w: World, uri: string, gone: 404 | 410 = 404): Promise<void> {
+  if (!w.policy.pinRows.has(uri)) {
+    await pinRead(w);
+  }
+  const rendered = w.peer.serve(uri, w.clock);
+  const served = rendered === "gone" ? { gone } : rendered;
+  log(
+    w,
+    `a sync fetches ${uri} (${w.policy.pinRows.get(uri)}) at +${w.clock - NOW}: ${"gone" in served ? served.gone : `${JSON.stringify(served.snapshot)} t=${served.tally} u=${served.updated}`}`,
+  );
+  await sql(w.store, "UPDATE collection_syncs SET due_at = 0, attempts = 0 WHERE account_id = ?", w.accounts[R]!);
+  const claimed = await w.store.claimCollectionSync(BUILD, { now: w.clock });
+  if (claimed === null || claimed === "more" || claimed.phase !== "pins" || !claimed.uris.includes(uri)) {
+    throw new Error(`no pin fetch of ${uri} claimed: ${JSON.stringify(claimed)}\n${w.trace.join("\n")}`);
+  }
+  const result = await w.store.completePinFetches(BUILD, {
+    now: w.clock,
+    origin: LOCAL,
+    accountUri: R,
+    generation: claimed.generation,
+    token: claimed.token,
+    fetched: {
+      [uri]: "gone" in served ? pinFetched({ kind: "gone", status: served.gone, url: uri }, uri) : input(served),
+    },
+  });
+  const started = w.policy.pinFetch(R, uri, served, w.clock);
+  tally(w.stats, "gone" in served ? `pin fetch ${served.gone} ${started ? "removed" : "kept"}` : "pin fetch served");
+  w.trace.push(`  -> ${JSON.stringify(result)}`);
+  await check(w, { actual: result.jobsPending, predicted: started });
+}
+
+// A replies walk of s1 with one fetch, through the Store as the Worker's round hands it back (federation/replies.ts):
+// the walk started as a context read starts one, then claimed, handing out s1's own status step (`root`) or a node of
+// s2, s1's reply, stored or not, after s1's (`item`), completed with what R's server serves now: its document, or, for
+// a status it no longer serves, a 404 at its own URI (`gone`, as the Worker reads it with goneAt). R's document is kept
+// fresh, so no step needs its author. A walk whose root is not a walk root is finished at its claim, fetching nothing.
+async function walkFetch(w: World, which: "root" | "item"): Promise<void> {
+  const uri = which === "root" ? S1 : S2;
+  const root = (await sql<{ id: string }>(w.store, "SELECT id FROM statuses WHERE uri = ?", S1))[0]?.id;
+  const walkable = w.policy.walkable(S1);
+  log(w, `a walk of ${S1} fetches ${uri} at +${w.clock - NOW}${walkable ? "" : " (no walk root)"}`);
+  if (root === undefined) {
+    expect(walkable, w.trace.join("\n")).toBe(false);
+    tally(w.stats, "walk without a root");
+    await check(w);
+    return;
+  }
+  await sql(w.store, "UPDATE accounts SET fetched_at = ? WHERE id = ?", iso(w.clock), w.accounts[R]!);
+  await sql(
+    w.store,
+    `INSERT INTO reply_walks (status_id, kind, refresh_id, queued_at, due_at, next_seq, nodes) VALUES (?1, 0, ?2, ?3, ?3, ?4, ?4)
+		ON CONFLICT (status_id) DO UPDATE SET kind = 0, refresh_id = excluded.refresh_id, queued_at = ?3, due_at = ?3,
+			finished_at = NULL, token = NULL, next_seq = ?4, nodes = ?4, pages = 0, result_count = 0, handouts = 0,
+			handout = NULL`,
+    root,
+    "a".repeat(32),
+    w.clock,
+    which === "root" ? 1 : 2,
+  );
+  await sql(w.store, "DELETE FROM reply_walk_nodes WHERE status_id = ?", root);
+  await sql(
+    w.store,
+    "INSERT INTO reply_walk_nodes (status_id, uri, seq, state, valid) VALUES (?, ?, 0, ?, 1)",
+    root,
+    S1,
+    which === "root" ? 0 : 1,
+  );
+  if (which === "item") {
+    await sql(w.store, "INSERT INTO reply_walk_nodes (status_id, uri, seq) VALUES (?, ?, 1)", root, S2);
+  }
+  const claimed = await w.store.claimReplyWalk(BUILD);
+  if (!walkable) {
+    w.trace.push(`  -> ${JSON.stringify(claimed)}`);
+    tally(w.stats, "walk without a root");
+    await check(w, { actual: claimed === null || claimed === "more" ? null : claimed.statusId, predicted: null });
+    return;
+  }
+  if (claimed === null || claimed === "more" || claimed.statusId !== root || claimed.step.uri !== uri) {
+    throw new Error(`no walk step of ${uri} claimed: ${JSON.stringify(claimed)}\n${w.trace.join("\n")}`);
+  }
+  const served = w.peer.serve(uri, w.clock);
+  w.trace.push(
+    `  served ${served === "gone" ? "404" : `${JSON.stringify(served.snapshot)} t=${served.tally} u=${served.updated}`}`,
+  );
+  const answer = await w.store.completeReplyStep(BUILD, {
+    origin: LOCAL,
+    statusId: root,
+    token: claimed.token,
+    step: claimed.step,
+    more: false,
+    fetched: served === "gone" ? { kind: "gone" } : { kind: "status", status: input(served), replies: null },
+  });
+  expect(answer.need, w.trace.join("\n")).toBeNull();
+  const started = w.policy.walkFetch(R, S1, uri, served, w.clock);
+  tally(w.stats, `walk ${which} ${served === "gone" ? (started ? "404 removed" : "404 kept") : "served"}`);
+  w.trace.push(`  -> ${JSON.stringify(answer)}`);
+  await check(w, { actual: answer.jobsPending, predicted: started });
+}
+
+// What R's server renders for `uri` now (its cache aside).
+function current(w: World, uri: string): Obj {
+  const status = w.peer.statuses.get(uri)!;
+  if (status.state !== "posted") {
+    throw new Error(`${uri} is not posted`);
+  }
+  const last = status.versions.at(-1)!;
+  return {
+    uri,
+    attributedTo: R,
+    snapshot: last.snapshot,
+    tally: status.tally,
+    published: status.published,
+    updated: status.versions.length > 1 ? last.at : null,
+    inReplyTo: PARENTS.get(uri) ?? null,
+  };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -730,9 +1085,12 @@ type Action =
   | { k: "post"; s: number; snapshot: Snapshot }
   | { k: "edit"; s: number; snapshot: Snapshot }
   | { k: "delete"; s: number; proven: boolean }
-  | { k: "deliver" | "redeliver" | "confirm" | "complete"; i: number }
+  | { k: "vote" | "search" | "race" | "read"; s: number }
+  | { k: "pinFetch"; s: number; gone?: 404 | 410 }
+  | { k: "walk"; which: "root" | "item" }
+  | { k: "deliver" | "redeliver" | "confirm" | "complete" | "refresh"; i: number }
   | { k: LocalKind }
-  | { k: "jobs" | "claim" | "send" }
+  | { k: "jobs" | "claim" | "send" | "pinRead" }
   | { k: "tick"; ms: number };
 
 const snapshotArb: fc.Arbitrary<Snapshot> = fc.record({
@@ -757,6 +1115,24 @@ const actionArb: fc.Arbitrary<Action> = fc.oneof(
   { arbitrary: fc.record({ k: fc.constant("post" as const), s: statusArb, snapshot: snapshotArb }), weight: 2 },
   { arbitrary: fc.record({ k: fc.constant("edit" as const), s: statusArb, snapshot: snapshotArb }), weight: 4 },
   { arbitrary: fc.record({ k: fc.constant("delete" as const), s: statusArb, proven: fc.boolean() }), weight: 3 },
+  { arbitrary: fc.record({ k: fc.constant("vote" as const), s: statusArb }), weight: 2 },
+  { arbitrary: fc.record({ k: fc.constant("search" as const), s: statusArb }), weight: 4 },
+  { arbitrary: fc.record({ k: fc.constant("race" as const), s: statusArb }), weight: 2 },
+  { arbitrary: fc.record({ k: fc.constant("read" as const), s: statusArb }), weight: 3 },
+  indexed("refresh", 3),
+  {
+    arbitrary: fc.record({
+      k: fc.constant("pinFetch" as const),
+      s: statusArb,
+      gone: fc.constantFrom(404 as const, 404 as const, 410 as const),
+    }),
+    weight: 4,
+  },
+  simple("pinRead", 1),
+  {
+    arbitrary: fc.record({ k: fc.constant("walk" as const), which: fc.constantFrom("root" as const, "item" as const) }),
+    weight: 3,
+  },
   indexed("deliver", 10),
   indexed("redeliver", 2),
   simple("favourite", 2),
@@ -794,6 +1170,32 @@ async function act(w: World, a: Action): Promise<void> {
       if (peer.delete(POOL[a.s]!, w.clock, a.proven)) {
         log(w, `R deletes ${POOL[a.s]}${a.proven ? " (proven)" : ""}`);
       }
+      return;
+    case "vote":
+      if (peer.vote(POOL[a.s]!, w.clock)) {
+        log(w, `a vote in ${POOL[a.s]}`);
+      }
+      return;
+    case "search":
+      await search(w, POOL[a.s]!);
+      return;
+    case "race":
+      await race(w, a.s);
+      return;
+    case "read":
+      await readPoll(w, POOL[a.s]!);
+      return;
+    case "refresh":
+      await refreshPoll(w, a.i);
+      return;
+    case "pinRead":
+      await pinRead(w);
+      return;
+    case "pinFetch":
+      await pinFetch(w, POOL[a.s]!, a.gone);
+      return;
+    case "walk":
+      await walkFetch(w, a.which);
       return;
     case "deliver":
       if (peer.outbox.length > 0) {
@@ -847,12 +1249,47 @@ async function act(w: World, a: Action): Promise<void> {
       return;
     }
     case "tick":
-      // Mastodon retries a message for about 3.1 days at most: no undelivered one is held longer.
+      // Mastodon retries a message for about 3.1 days at most: no undelivered one is held longer. The poll Updates due
+      // meanwhile run at their time.
       if (peer.oldest(w.clock + a.ms) <= RETRY_WINDOW_MS) {
+        distribute(w, w.clock + a.ms);
         w.clock += a.ms;
         log(w, `tick ${a.ms}`);
       }
       return;
+  }
+}
+
+// The D14 ordering with counts that differ (ID-7): a vote whose Update R's poll job writes while the status is
+// unedited (no `updated`), then another vote and an edit, whose Update (with the newer counts) is delivered at once; the
+// job's Update, delivered later, names no version of an edited status and older counts. Each step is R's as the actions
+// take it, so a status not posted, a tick past the retry window or an edit refused leaves the rest as it falls.
+async function race(w: World, s: number): Promise<void> {
+  const uri = POOL[s]!;
+  const status = w.peer.statuses.get(uri)!;
+  if (status.state !== "posted") {
+    return;
+  }
+  await act(w, { k: "vote", s });
+  await act(w, { k: "tick", ms: 6 * MINUTE });
+  await act(w, { k: "vote", s });
+  const last = status.versions.at(-1)!.snapshot;
+  const content = ({ A: "B", B: "C", C: "A", "": "A" } as const)[last.content];
+  await act(w, { k: "edit", s, snapshot: { ...last, content } });
+  const edit = w.peer.outbox.findIndex(
+    (sent) => sent === w.peer.sent.at(-1) && sent.msg.id.startsWith(`${uri}#updates/`),
+  );
+  if (edit >= 0) {
+    await deliverSent(w, w.peer.take(edit).msg, "deliver");
+  }
+}
+
+// R's server runs the poll Updates due by `until` (Peer.distribute).
+function distribute(w: World, until: number): void {
+  const before = w.peer.sent.length;
+  w.peer.distribute(until);
+  for (const sent of w.peer.sent.slice(before)) {
+    log(w, `R's poll job sends ${describeMsg(R, sent.msg)} at +${sent.at - NOW}`);
   }
 }
 
@@ -909,8 +1346,9 @@ async function settleKopje(w: World): Promise<void> {
 
 // The accepted risk of an Update that reaches Kopje before its Create, more than 24 hours after publication
 // (Mastodon parity: update.rb:36 drops it through object_too_old?): Kopje dropped it as `unknown-object` and stored the
-// earlier version the Create carried. Allowed only for that status, while every newer version of it was answered
-// `unknown-object` each time it arrived, and the version Kopje holds is one the author sent.
+// earlier version the Create carried. Allowed only for that status, while every message sent later with a newer version
+// of it (an edit, or a vote's Update naming the edit) was answered `unknown-object` each time it arrived, and the
+// version Kopje holds is one the author sent.
 function updateBeforeCreate(w: World, uri: string, held: { snapshot: Shown; version: string | null }): boolean {
   const versions = w.peer.sent.filter((s) => s.msg.type !== "Delete" && s.msg.object.uri === uri);
   const mine = versions.find(
@@ -922,7 +1360,8 @@ function updateBeforeCreate(w: World, uri: string, held: { snapshot: Shown; vers
   if (mine === undefined) {
     return false;
   }
-  const newer = versions.filter((s) => s.at > mine.at);
+  const versionOf = (msg: Msg) => (msg.type === "Delete" ? null : iso(msg.object.updated ?? msg.object.published!));
+  const newer = versions.filter((s) => s.at > mine.at && versionOf(s.msg) !== held.version);
   return (
     newer.length > 0 &&
     newer.every((s) => {
@@ -940,12 +1379,13 @@ async function quiescence(w: World): Promise<void> {
     const status = w.peer.statuses.get(uri)!;
     const held = state.statuses.find((s) => s.uri === uri);
     if (status.state === "deleted") {
-      // Each deleted status is gone and stays retracted; `*` too once it had been stored.
+      // Each deleted status is gone and stays retracted; `*` too once its Delete found it stored (a pin sync's 404
+      // that removed it first recorded nothing, and its Delete then found no row).
       expect({ uri, held: held ?? null, own: live(R, uri), any: live(ANY, uri) }, context).toEqual({
         uri,
         held: null,
         own: true,
-        any: w.everStored.has(uri),
+        any: (w.answers.get(`${uri}#delete`) ?? []).includes("status-deleted"),
       });
       continue;
     }
@@ -1005,7 +1445,9 @@ async function run(actions: readonly Action[], order: readonly number[] = []): P
     await act(w, a);
   }
   w.trace.push("-- settle");
-  // Every message the author sent is delivered at least once, in a generated order.
+  // The poll Updates still scheduled run, and every message the author sent is delivered at least once, in a
+  // generated order.
+  distribute(w, Number.POSITIVE_INFINITY);
   for (let k = 0; w.peer.outbox.length > 0; k++) {
     await deliverSent(w, w.peer.take((order[k] ?? 0) % w.peer.outbox.length).msg, "deliver");
   }
@@ -1064,6 +1506,7 @@ type InAction =
       // attributedTo: the actor itself, or R.
       own: boolean;
       snapshot: Snapshot;
+      tally: number;
       // Offsets from the clock (null: the field is absent).
       published: number | null;
       updated: number | null;
@@ -1081,6 +1524,7 @@ const inArb: fc.Arbitrary<InAction> = fc.oneof(
       s: fc.constantFrom(0, 0, 1, 2),
       own: fc.boolean(),
       snapshot: snapshotArb,
+      tally: fc.nat(2),
       published: fc.constantFrom(0, -MINUTE, -2 * HOUR, -DAY, -25 * HOUR, null),
       updated: fc.constantFrom(null, -10 * MINUTE, -MINUTE, 0, MINUTE, 6 * MINUTE, 10 * MINUTE),
       proven: fc.boolean(),
@@ -1110,6 +1554,7 @@ function inMessage(w: World, a: InAction & { k: "in" }): { actor: string; msg: M
     uri,
     attributedTo: a.own ? actor : R,
     snapshot: a.snapshot,
+    tally: a.tally,
     published: a.published === null ? null : w.clock + a.published,
     updated: a.updated === null ? null : w.clock + a.updated,
     inReplyTo: PARENTS.get(uri) ?? null,
@@ -1262,6 +1707,286 @@ describe("status deletes: the author's orders", () => {
     ]);
     expect(answersOf(w, "Update", S1)).toEqual(["updated", "stale"].toReversed());
     expect((await project(w)).statuses.find((s) => s.uri === S1)?.snapshot).toEqual(shown(A));
+  });
+
+  // ID-7: a vote's Update names no version while the status was never edited, and refreshes the counts; one its job
+  // wrote before the edit and delivered after it changes nothing (Kopje holds the newer counts a later vote's Update
+  // carried, which names the edit's version). Each job runs 3 minutes after its vote (the ticks).
+  it("a vote's Update without a version: applied before any edit, not after one", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "vote", s: 0 },
+      { k: "tick", ms: 6 * MINUTE },
+      deliver(),
+      { k: "vote", s: 0 },
+      { k: "vote", s: 0 },
+      { k: "tick", ms: 6 * MINUTE },
+      { k: "edit", s: 0, snapshot: B },
+      { k: "vote", s: 0 },
+      { k: "tick", ms: 6 * MINUTE },
+      deliver(1),
+      deliver(1),
+      deliver(0),
+    ]);
+    expect(answersOf(w, "Update", S1)).toEqual(["poll-updated", "stale", "edited", "poll-updated"]);
+    expect(w.stats["Update without a version of an edited status"]).toBe(1);
+    expect((await project(w)).statuses.find((s) => s.uri === S1)?.tally).toBe(4);
+  });
+
+  // VoteService schedules the poll's Update 3 minutes after the vote (vote_service.rb:48), and the job writes it from
+  // the status as it is when it runs (distribute_poll_update_worker.rb:9-22): an edit within the 3 minutes is in it, a
+  // vote while it waits adds only its count (the job's lock, :7), an edit after it is not in it, and a status deleted
+  // before it runs sends nothing.
+  it("a vote's Update is written when its job runs, 3 minutes after the vote", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      { k: "post", s: 2, snapshot: A },
+      deliver(),
+      deliver(),
+      { k: "vote", s: 0 },
+      { k: "tick", ms: 2 * MINUTE },
+      { k: "vote", s: 0 },
+      { k: "edit", s: 0, snapshot: B },
+      { k: "tick", ms: 2 * MINUTE },
+      { k: "edit", s: 0, snapshot: C },
+      { k: "vote", s: 2 },
+      { k: "delete", s: 2, proven: false },
+      { k: "tick", ms: 6 * MINUTE },
+    ]);
+    const edit = w.peer.sent.find((s) => s.msg.type === "Update" && s.msg.object.snapshot.content === "B")!;
+    const votes = w.peer.sent.flatMap((s) =>
+      s.msg.type === "Update" && s.msg.id.includes("#votes/")
+        ? [{ uri: s.msg.object.uri, content: s.msg.object.snapshot.content, tally: s.msg.object.tally, at: s.at }]
+        : [],
+    );
+    // The first vote is R's write after both Creates; its job runs 3 minutes later.
+    const voted = w.peer.sent[1]!.at + 1000;
+    expect(votes).toEqual([{ uri: S1, content: "B", tally: 2, at: voted + 3 * MINUTE }]);
+    expect(edit.msg.type === "Update" && edit.msg.object.updated).toBe(edit.at);
+    // The edit B carried the same counts: the job's Update changes nothing.
+    expect(answersOf(w, "Update", S1)).toEqual(["edited", "stale", "edited"]);
+  });
+
+  // ID-7: L searches s1 (R's server renders it, unedited, and caches it), a vote and R's edit follow and the edit's
+  // Update is delivered; a search within the cache window reads the cached copy (no `updated`, no votes), which changes
+  // nothing; one after the window reads the current version, the same Kopje holds.
+  it("a search of a cached copy from before the delivered edit and a vote", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "search", s: 0 },
+      { k: "vote", s: 0 },
+      { k: "edit", s: 0, snapshot: B },
+      deliver(1),
+      { k: "tick", ms: MINUTE },
+      { k: "search", s: 0 },
+      { k: "tick", ms: 6 * MINUTE },
+      { k: "search", s: 0 },
+    ]);
+    expect(w.stats["search served a cached copy"]).toBe(1);
+    expect(w.stats["search served the current"]).toBe(2);
+    expect((await project(w)).statuses.find((s) => s.uri === S1)).toMatchObject({ snapshot: shown(B), tally: 1 });
+  });
+
+  // ID-7: a search reads R's edit before its Update arrives, and applies it with its history; the Update then names
+  // the version Kopje holds.
+  it("a search applies an edit its Update has not brought", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "edit", s: 0, snapshot: B },
+      { k: "search", s: 0 },
+      deliver(),
+    ]);
+    expect(answersOf(w, "Update", S1)).toEqual(["stale"]);
+    expect((await project(w)).statuses.find((s) => s.uri === S1)?.history).toHaveLength(2);
+  });
+
+  // A search finds a status before its Create and stores it; R's deleted status answers 404 and stays as Kopje holds it.
+  it("a search stores a status before its Create, and a 404 changes nothing", async () => {
+    const w = await run([
+      { k: "post", s: 2, snapshot: A },
+      { k: "search", s: 2 },
+      { k: "delete", s: 2, proven: false },
+      { k: "search", s: 2 },
+      deliver(0),
+      deliver(0),
+    ]);
+    expect(w.stats["search 404"]).toBe(1);
+    expect(answersOf(w, "Create", S3)).toEqual(["duplicate"]);
+  });
+
+  // ID-7 and RES-6: L's read of s1's poll reserves its refresh and fetches the counts R's server renders then; R's vote
+  // Update is delivered before the refresh, and a read finds the poll not due. The refresh then applies nothing, since
+  // the Update wrote the poll after the reservation; a read two minutes after the Update refreshes it with the newer
+  // count.
+  it("a poll refresh after a delivered Update applies nothing", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "read", s: 0 },
+      { k: "vote", s: 0 },
+      { k: "tick", ms: 6 * MINUTE },
+      deliver(),
+      { k: "read", s: 0 },
+      { k: "refresh", i: 0 },
+      { k: "tick", ms: 2 * MINUTE },
+      { k: "vote", s: 0 },
+      { k: "read", s: 0 },
+      { k: "refresh", i: 0 },
+    ]);
+    expect(w.stats).toMatchObject({
+      "poll read due": 2,
+      "poll read not due": 1,
+      "poll refresh after a write": 1,
+      "poll refresh applied": 1,
+    });
+    expect((await project(w)).statuses.find((s) => s.uri === S1)).toMatchObject({ tally: 2 });
+  });
+
+  // ID-7: a pin sync's read leaves s1 pending; R deletes s1, and its delayed Create arrives before the sync's fetch,
+  // which answers 404: the status stored then is removed with no retraction, so R's Delete finds no row and is recorded
+  // as an unknown object's.
+  it("a pending pin, its delayed Create, then its 404", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      { k: "pinRead" },
+      { k: "delete", s: 0, proven: false },
+      deliver(0),
+      { k: "pinFetch", s: 0 },
+      { k: "jobs" },
+      deliver(0),
+    ]);
+    expect(w.stats["pin fetch 404 removed"]).toBe(1);
+    expect(answersOf(w, "Create", S1)).toEqual(["created"]);
+    expect(answersOf(w, "Delete", S1)).toEqual(["retraction-recorded"]);
+  });
+
+  // ID-7: a refresh row's 404 removes s1 with no retraction; R's Create delivered again once the removal ended stores
+  // it again, and R's Delete then removes it.
+  it("a refetch's 404 before a delayed Create retry", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "delete", s: 0, proven: false },
+      { k: "pinRead" },
+      { k: "pinFetch", s: 0 },
+      { k: "jobs" },
+      { k: "redeliver", ...at(0) },
+      deliver(0),
+    ]);
+    expect(w.stats["pin fetch 404 removed"]).toBe(1);
+    expect(answersOf(w, "Create", S1)).toEqual(["created", "created"]);
+    expect(answersOf(w, "Delete", S1)).toEqual(["status-deleted"]);
+  });
+
+  // ID-7: a refresh row's 410 removes nothing (Mastodon's fetch_status acts on a 404 only): s1 stays until R's Delete
+  // removes it.
+  it("a refetch's 410 before the Delete", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "delete", s: 0, proven: false },
+      { k: "pinRead" },
+      { k: "pinFetch", s: 0, gone: 410 },
+      deliver(0),
+    ]);
+    expect(w.stats["pin fetch 410 kept"]).toBe(1);
+    expect(answersOf(w, "Delete", S1)).toEqual(["status-deleted"]);
+  });
+
+  // ID-7: R's edit and its proven Delete of s1, which L boosted, delivered while a pin sync's 404 removes s1 and after
+  // the removal ended: the edit applies to the hidden row (which notifies no booster, VIS-1) and goes with it; delivered
+  // again after the removal, it creates s1 anew (no retraction kept it out), which the Delete then removes.
+  it("an Update and the Delete while a 404's removal runs, and after it", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "reblog" },
+      { k: "edit", s: 0, snapshot: B },
+      { k: "delete", s: 0, proven: true },
+      { k: "pinRead" },
+      { k: "pinFetch", s: 0 },
+      deliver(0),
+      { k: "jobs" },
+      { k: "redeliver", ...at(1) },
+      deliver(0),
+    ]);
+    expect(w.stats["pin fetch 404 removed"]).toBe(1);
+    expect([answersOf(w, "Update", S1), answersOf(w, "Delete", S1)]).toEqual([
+      ["edited", "created"],
+      ["status-deleted"],
+    ]);
+  });
+
+  // ID-7: a walk of s1 reads R's edit of it before its Update arrives, as its author's Update; once R deleted s1, the
+  // walk's fetch of its root answers 404 and removes nothing (the root's body goes to FetchReplyWorker), and R's Delete
+  // then removes it.
+  it("a walk applies its root's edit, and its root's 404 removes nothing", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "edit", s: 0, snapshot: B },
+      { k: "tick", ms: 6 * MINUTE },
+      { k: "walk", which: "root" },
+      { k: "delete", s: 0, proven: false },
+      { k: "walk", which: "root" },
+    ]);
+    expect(w.stats).toMatchObject({ "walk root served": 1, "walk root 404 kept": 1 });
+    expect(answersOf(w, "Update", S1)).toEqual(["stale"]);
+    expect(answersOf(w, "Delete", S1)).toEqual(["status-deleted"]);
+  });
+
+  // ID-7: s2, s1's reply, is stored; R deletes it, and a walk of s1 fetches it: the 404 removes it with no retraction,
+  // so R's Delete finds no row and is recorded as an unknown object's, and its Create delivered again once the removal
+  // ended stores it again, which the recorded Delete refuses.
+  it("a walk's 404 of a stored reply before its Delete and a Create retry", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "post", s: 1, snapshot: A },
+      deliver(),
+      { k: "delete", s: 1, proven: false },
+      { k: "walk", which: "item" },
+      { k: "jobs" },
+      deliver(),
+      { k: "redeliver", ...at(1) },
+    ]);
+    expect(w.stats["walk item 404 removed"]).toBe(1);
+    expect(answersOf(w, "Delete", S2)).toEqual(["retraction-recorded"]);
+    expect(answersOf(w, "Create", S2)).toEqual(["created", "retracted"]);
+  });
+
+  // ID-7: a walk of s1 fetches s2 before its Create: stored as fetched, linked under s1; the Create then is a
+  // duplicate.
+  it("a walk stores a reply before its Create", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "post", s: 1, snapshot: A },
+      { k: "walk", which: "item" },
+      deliver(),
+    ]);
+    expect(w.stats["walk item served"]).toBe(1);
+    expect(answersOf(w, "Create", S2)).toEqual(["duplicate"]);
+  });
+
+  // ID-7: s2, s1's reply, is stored and linked; R deletes it, and a pin sync's fetch of it answers 404: the hide counts
+  // it off s1's replies at once (Mastodon's RemoveStatusService decrements it), before the removal's batch, whose
+  // recount of s1 sets the same count.
+  it("a pin sync's 404 of a stored reply counts it off its parent at once", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "post", s: 1, snapshot: A },
+      deliver(),
+      { k: "delete", s: 1, proven: false },
+      { k: "pinRead" },
+      { k: "pinFetch", s: 1 },
+      { k: "jobs" },
+    ]);
+    expect(w.stats["pin fetch 404 removed"]).toBe(1);
   });
 
   it("a metadata Update, then an older content Update", async () => {
@@ -1443,6 +2168,7 @@ const inbox = (
   s,
   own: true,
   snapshot: A,
+  tally: 0,
   published: 0,
   updated: null,
   proven: false,
@@ -1491,7 +2217,7 @@ describe("status deletes: forgeries and the retraction's scope", () => {
     const msg: Msg = {
       type: "Create",
       id: `${FRESH}/activity`,
-      object: { uri: FRESH, attributedTo: F, snapshot: A, published: NOW, updated: null, inReplyTo: null },
+      object: { uri: FRESH, attributedTo: F, snapshot: A, tally: 0, published: NOW, updated: null, inReplyTo: null },
     };
     expect((await receive(w, F, msg, "receive")).reason).toBe("created");
   });
@@ -1583,7 +2309,7 @@ describe("status deletes: the cap and the TTL", () => {
       {
         type: "Update",
         id: `${S1}#late`,
-        object: { uri: S1, attributedTo: R, snapshot: B, published: NOW, updated: w.clock, inReplyTo: null },
+        object: { uri: S1, attributedTo: R, snapshot: B, tally: 0, published: NOW, updated: w.clock, inReplyTo: null },
       },
       "late",
     );
@@ -1633,7 +2359,7 @@ async function boostedWithReceipts(w: World): Promise<{ original: string; boost:
   const create: Msg = {
     type: "Create",
     id: `${S1}/activity`,
-    object: { uri: S1, attributedTo: R, snapshot: A, published: NOW, updated: null, inReplyTo: null },
+    object: { uri: S1, attributedTo: R, snapshot: A, tally: 0, published: NOW, updated: null, inReplyTo: null },
   };
   await storeReceive(w.store, R, activityOf(R, create), NOW);
   const original = await s1Id(w);

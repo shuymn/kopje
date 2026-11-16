@@ -297,7 +297,7 @@ function releaseKey(db: Db, accountId: string, key: string): void {
 
 // Whether the scheduled status `scheduled` (SQL, NULL for none) holds MAX_STATUS_MEDIA uploads other than `media`: one
 // more would pass what a scheduled status may hold, imports included (RES-6). Reads at most MAX_STATUS_MEDIA + 1 rows
-// through media_attachments_scheduled. The WHEN of 0103_scheduled_media_cap's triggers (domain/stored-triggers.ts).
+// through media_attachments_scheduled. The WHEN of 0109_scheduled_media_cap's triggers (domain/stored-triggers.ts).
 export function heldFullSql(scheduled: string, media: string): string {
   return `${scheduled} IS NOT NULL
   AND (SELECT count(*) FROM (SELECT 1 FROM media_attachments WHERE scheduled_status_id = ${scheduled} AND id <> ${media}

@@ -51,7 +51,7 @@ import {
   withParams,
 } from "./context";
 import { mastodonError, moderatingError, recordNotFound as notFound } from "./errors";
-import { Params, parseBoolean } from "./params";
+import { Params, parseBoolean, RAILS_FALSE } from "./params";
 import { reportResponse } from "./reports";
 import * as trends from "./trends";
 
@@ -118,10 +118,6 @@ function adminPage(p: Params, fallback = ADMIN_REPORTS_LIMIT, max = MAX_ADMIN_RE
     limit: Math.min(Math.max(limit, 1), max),
   };
 }
-
-// ActiveModel::Type::Boolean#cast's false values with blank (cast to nil, which is false too; JSON null reads as
-// blank), each in its own case only: parseBoolean folds case, so 'False' would be false there; Rails casts it to true.
-const RAILS_FALSE: readonly string[] = ["", "0", "f", "F", "false", "FALSE", "off", "OFF"];
 
 // A parameter as ActiveModel::Type::Boolean casts it, true or not: absent is nil.
 function railsTrue(value: string | null | undefined): boolean {

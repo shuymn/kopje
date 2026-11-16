@@ -1,4 +1,4 @@
--- Kopje Store schema 0103: the uploads a scheduled status holds bounded. Never edit after release (checksummed).
+-- Kopje Store schema 0109: the uploads a scheduled status holds bounded. Never edit after release (checksummed).
 --
 --   media_attachments.scheduled_status_id   at most MAX_STATUS_MEDIA (4) rows per scheduled status, imports included,
 --                                            so detaching them (a delete, a publication, a terminal failure) is at

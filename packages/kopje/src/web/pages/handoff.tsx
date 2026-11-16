@@ -2,7 +2,7 @@ import type { FC } from "hono/jsx";
 
 import type { Site } from "../../domain/web-pages/site";
 import { BackLink } from "../components/basics";
-import { Layout } from "../components/layout";
+import { Layout, Robots } from "../components/layout";
 import { InlineText, Who } from "../components/post";
 import { Panel, RemoteChoice, remoteTitle, SearchField } from "../components/remote";
 import { useUi } from "../ui";
@@ -12,7 +12,9 @@ import { authorizeInteraction, type RemoteTarget, type TargetPreview } from "../
 // a server, or with one refused, the dialog's form as a page of its own; with a server, a link to its
 // /authorize_interaction with the target's id, after the target itself (`preview`: the account's row, or the post's
 // author's row and the start of its text, two lines at most). The page goes nowhere by itself: it never redirects,
-// fetches, stores or signs in.
+// fetches, stores or signs in. Neither is indexed (Robots): Mastodon 4.7.5 serves no page at either path, its web app's
+// shell at the status's (home#index, config/routes.rb:179) and a 404 at the account's, whose `interact` its status
+// route reads as a status id (:174).
 
 export const HandoffFormPage: FC<{ site: Site; target: RemoteTarget; problem: boolean }> = ({
   site,
@@ -22,7 +24,7 @@ export const HandoffFormPage: FC<{ site: Site; target: RemoteTarget; problem: bo
   const { m } = useUi();
   const { title, heading } = remoteTitle(target, m);
   return (
-    <Layout title={title} chrome={site}>
+    <Layout title={title} chrome={site} head={<Robots shell paged={false} />}>
       <Panel title={heading}>
         <RemoteChoice target={target} field="server" autofocus={false} problem={problem} />
       </Panel>
@@ -39,7 +41,7 @@ export const HandoffPage: FC<{ site: Site; target: RemoteTarget; preview: Target
   const { m } = useUi();
   const title = m.remote.continueTo(host);
   return (
-    <Layout title={title} chrome={site}>
+    <Layout title={title} chrome={site} head={<Robots shell paged={false} />}>
       <BackLink href={target.path} label={m.remote.back} />
       <Panel title={title} oneLine>
         <Who account={preview.author} size={40} />

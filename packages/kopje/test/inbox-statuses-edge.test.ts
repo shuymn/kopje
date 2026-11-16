@@ -7,6 +7,7 @@ import { STAGING_READ } from "../src/domain/deliveries";
 import { deleteStatusBatch, PURGE_BATCH } from "../src/domain/inbox";
 import { MAX_LINKED_REPLIES, MAX_STATUS_MENTION_ROWS } from "../src/domain/remote-statuses";
 import { MAX_STATUS_EDITS } from "../src/domain/statuses";
+import { verifyQuotes } from "../src/federation/quotes";
 import { handleQueue } from "../src/jobs/queue";
 import type { StoreStub } from "../src/platform/store-client";
 import { sha256Hex } from "../src/security/tokens";
@@ -14,7 +15,15 @@ import { seedAccount, sql } from "./api-helpers";
 import { countingStore, harness, inboxDeps, NOW, seedInstanceKey } from "./app-helpers";
 import { fixtureKeyGen } from "./federation-helpers";
 import { BUILD, runStoreJobs } from "./helpers";
-import { LOCAL, MASTODON, mastodonActor, MISSKEY_CONTEXT, misskeyActor, signedInit } from "./inbox-helpers";
+import {
+  LOCAL,
+  MASTODON,
+  mastodonActor,
+  MISSKEY_CONTEXT,
+  misskeyActor,
+  signedInit,
+  type TestActor,
+} from "./inbox-helpers";
 import {
   accountId,
   ALICE,
@@ -29,6 +38,7 @@ import {
   localStatus,
   mastodonNote,
   misskeyNote,
+  nextId,
   type Note,
   notifications,
   OTHER,
@@ -42,6 +52,7 @@ import {
   update,
   retractionsAtCap,
 } from "./inbox-status-helpers";
+import { quoting, serveStamp } from "./quote-helpers";
 import { seedReceipts } from "./status-helpers";
 
 // Inbound statuses' boundaries and orderings: the Update watermark, retractions at the cap, Undo of a Like
@@ -137,6 +148,105 @@ describe("ID-7: the Update watermark", () => {
         order,
       ).toEqual([{ target_uri: note.id }]);
     }
+  });
+});
+
+describe("ID-7: an Update that names no version, of an edited status", () => {
+  const choices = (cats: number) => [
+    { type: "Note", name: "cats", replies: { type: "Collection", totalItems: cats } },
+    { type: "Note", name: "dogs", replies: { type: "Collection", totalItems: 0 } },
+  ];
+
+  // bob's poll quoting carol's status with an accepted stamp, tagging alice; dave follows bob. With `edited`, bob's
+  // significant edit (version at(60)) is applied, which sets edited_at. Then dave boosts it.
+  async function world(edited: boolean) {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob, DAVE);
+    const carol = await mastodonActor(t.web, "carol", { origin: OTHER, key: 2 });
+    const target = mastodonNote(carol);
+    t.web.serve(target.id, { "@context": AS, ...target });
+    const stamp = () => `${carol.uri}/quote_authorizations/${nextId()}`;
+    const first = stamp();
+    const note = quoting(bob, target.id, first, {
+      type: "Question",
+      endTime: "2026-10-13T00:00:00Z",
+      votersCount: 0,
+      oneOf: choices(0),
+      cc: [`${bob.uri}/followers`, ALICE_URI],
+      tag: [{ type: "Mention", href: ALICE_URI, name: "@alice" }],
+    });
+    serveStamp(t.web, first, carol, note.id, target.id);
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    const deps = { ...inboxDeps(() => t.store, t.web.loader), now: () => NOW };
+    for (let round = 0; await verifyQuotes(t.env, deps); round++) {
+      expect(round).toBeLessThan(20);
+    }
+    const id = (await statusRow(t.store, note.id))!.id;
+    if (edited) {
+      expect(await t.post(bob, update(bob, { ...note, content: "<p>edited</p>" }, at(60)))).toBe(202);
+      expect(await statusRow(t.store, note.id)).toMatchObject({ content: "<p>edited</p>", edited_at: at(60) });
+    }
+    const boosted = await t.request(`/api/v1/statuses/${id}/reblog`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${t.tokens.dave}` },
+    });
+    expect(boosted.status).toBe(200);
+    const state = () =>
+      sql(
+        t.store,
+        `SELECT s.content, s.edited_at, s.quote_policy, p.votes_count, q.state, q.approval_uri,
+				(SELECT json_group_array(CAST(id AS TEXT) || ' ' || type) FROM notifications) AS notifications
+			FROM statuses s JOIN polls p ON p.status_id = s.id JOIN quotes q ON q.status_id = s.id WHERE s.id = ?`,
+        id,
+      );
+    expect(await state()).toMatchObject([{ votes_count: 0, state: "accepted", approval_uri: first }]);
+    return { t, bob, note, stamp, state };
+  }
+
+  // bob's Update of `note` with new counts, a quote policy and a new stamp, naming no `updated`: a delivered poll
+  // Update of a status never edited, or a peer's cached copy of `note` from before its edit.
+  const unversioned = (bob: TestActor, note: Note, stamp: string) => {
+    const activity = update(bob, note, at(0));
+    return {
+      ...activity,
+      id: `${note.id}#updates/unversioned`,
+      object: {
+        ...note,
+        votersCount: 1,
+        oneOf: choices(1),
+        quoteAuthorization: stamp,
+        interactionPolicy: { canQuote: { automaticApproval: [PUBLIC] } },
+      },
+    };
+  };
+
+  it("changes nothing of an edited status: counts, policy, stamp, notifications", async () => {
+    const { t, bob, note, stamp, state } = await world(true);
+    const before = await state();
+    expect(await t.post(bob, unversioned(bob, note, stamp()))).toBe(202);
+    expect(await state()).toEqual(before);
+  });
+
+  // The branch ran: the same Update of a status never edited is the implicit update.
+  it("refreshes a status never edited: the counts, the policy and the stamp, which notifies the booster", async () => {
+    const { t, bob, note, stamp, state } = await world(false);
+    const before = (await state())[0]!;
+    expect(await t.post(bob, unversioned(bob, note, stamp()))).toBe(202);
+    const after = (await state())[0]!;
+    expect(after).toMatchObject({ content: note.content, edited_at: null, votes_count: 1, state: "pending" });
+    expect(after.quote_policy).not.toBe(before.quote_policy);
+    expect(await sql(t.store, "SELECT account_id FROM notifications WHERE type = 'update'")).toEqual([
+      { account_id: DAVE },
+    ]);
+  });
+
+  it("refreshes an edited status's counts from an Update naming its stored version", async () => {
+    const { t, bob, note, state } = await world(true);
+    const same = update(bob, { ...note, content: "<p>edited</p>", votersCount: 2, oneOf: choices(2) }, at(60));
+    expect(await t.post(bob, { ...same, id: `${note.id}#updates/counts` })).toBe(202);
+    expect(await state()).toMatchObject([{ content: "<p>edited</p>", edited_at: at(60), votes_count: 2 }]);
+    expect(await sql(t.store, "SELECT count(*) AS n FROM status_edits")).toEqual([{ n: 2 }]);
   });
 });
 

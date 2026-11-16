@@ -1,3 +1,4 @@
+import { encodedTwiceBytes, jsonBytes } from "./domain/answer-budget";
 import { compareIntegers, isIntegerText } from "./domain/ids";
 import { keepInstanceActivity, noteActivity } from "./domain/instance-activity";
 import { JOURNAL_SPAN } from "./domain/stream-journal";
@@ -33,7 +34,6 @@ import {
   type StreamUnitAfter,
 } from "./domain/streaming";
 import { normalizeTag } from "./domain/tag-name";
-import { utf8Length } from "./platform/dump-format";
 import { errorFields } from "./platform/error-message";
 import { toStoreUnavailable } from "./platform/store-errors";
 import type { StoreKernel, StoreOperation } from "./platform/store-kernel";
@@ -65,8 +65,9 @@ export const STREAM_LIMITS = {
   attachmentBytes: 12 * 1024,
   // A hashtag stream's `tag`, as sent and normalized, at most this many UTF-8 bytes.
   tagBytes: 256,
-  // A presented subject whose payload passes this many UTF-8 bytes is skipped and logged; the events media descriptions
-  // at their length can push past it are an accepted departure (docs/mastodon-deviations.md, "Streaming.").
+  // A presented subject whose payload passes this many UTF-8 bytes, measured before it is encoded, is skipped and
+  // logged; the events media descriptions at their length can push past it are an accepted departure
+  // (docs/mastodon-deviations.md, "Streaming.").
   payloadBytes: 512 * 1024,
 };
 
@@ -782,23 +783,14 @@ export class StreamHub {
       return false;
     }
     budget.charge({ checks: tokenHashes.length + made.checks });
-    let payload: string | null = null;
-    if (made.streams.length > 0) {
-      payload = JSON.stringify(typeof made.payload === "string" ? made.payload : JSON.stringify(made.payload));
-      // One measure for the charge and the limit: the payload's UTF-8 bytes, charged whole, sent or skipped.
-      const bytes = utf8Length(payload);
-      if (typeof made.payload !== "string") {
-        budget.charge({ presentations: 1, bytes });
-      }
-      if (bytes > STREAM_LIMITS.payloadBytes) {
-        console.warn({ event: "kopje.stream.payload-skipped", kind });
-        payload = null;
-      }
-    }
+    const payload = made.streams.length > 0 ? encodedPayload(kind, made.payload, budget) : null;
     const revoked: Socket[] = [];
-    const messages: { ws: WebSocket; text: string }[] = [];
-    // One envelope per stream as the client named it: every socket of the unit is sent the same presentation.
-    const envelopes = new Map<string, string>();
+    // The unit's frames grouped by the stream as each client named it (streamOf), in the order of the unit's sockets and
+    // their subscriptions: each stream's envelope is made, sent to every socket that subscribes with that name, and
+    // dropped before the next stream's, so the isolate holds one envelope at a time (RES-6). `owed` counts each
+    // socket's frames not yet sent.
+    const streams = new Map<string, WebSocket[]>();
+    const owed = new Map<WebSocket, number>();
     for (const socket of unit.sockets) {
       const grant = made.grants[socket.at.tokenHash];
       if (grant === undefined) {
@@ -810,12 +802,13 @@ export class StreamHub {
           const target = made.streams.find(({ stream }) => stream === sub);
           if (target !== undefined && grants(grant, target.needs)) {
             const stream = streamOf(sub, socket.at.tags[sub]);
-            let text = envelopes.get(stream);
-            if (text === undefined) {
-              text = envelope(stream, made.event, payload);
-              envelopes.set(stream, text);
+            const recipients = streams.get(stream);
+            if (recipients === undefined) {
+              streams.set(stream, [socket.ws]);
+            } else {
+              recipients.push(socket.ws);
             }
-            messages.push({ ws: socket.ws, text });
+            owed.set(socket.ws, (owed.get(socket.ws) ?? 0) + 1);
           }
         }
       }
@@ -828,16 +821,24 @@ export class StreamHub {
         }));
       }
     }
-    let sent = 0;
-    try {
-      for (; sent < messages.length; sent++) {
-        messages[sent]!.ws.send(messages[sent]!.text);
-        budget.charge({ sends: 1 });
-      }
-    } catch (error) {
-      console.warn({ event: "kopje.stream.send-failed", ...errorFields(error) });
-      for (const { ws } of messages.slice(sent)) {
-        close(ws, 1011, "send failed");
+    if (payload !== null) {
+      try {
+        for (const [stream, recipients] of streams) {
+          const text = envelope(stream, made.event, payload);
+          for (const ws of recipients) {
+            ws.send(text);
+            owed.set(ws, owed.get(ws)! - 1);
+            budget.charge({ sends: 1 });
+          }
+        }
+      } catch (error) {
+        // The sockets left without one of the unit's frames, the one whose send threw included.
+        console.warn({ event: "kopje.stream.send-failed", ...errorFields(error) });
+        for (const [ws, left] of owed) {
+          if (left > 0) {
+            close(ws, 1011, "send failed");
+          }
+        }
       }
     }
     await this.#revoke(revoked);
@@ -999,6 +1000,23 @@ function streamOf(key: string, raw: string | undefined): string {
 // payload, a JSON string already encoded once for all envelopes.
 function envelope(stream: string, event: string, encodedPayload: string): string {
   return `{"stream":${stream},"event":${JSON.stringify(event)},"payload":${encodedPayload}}`;
+}
+
+// A unit's payload as its frames carry it, or null when it is skipped (RES-6): an object as its JSON encoded again as a
+// JSON string, a string (a deleted status's id) encoded once. An object is measured from its presented form
+// (encodedTwiceBytes), with no string made, and charged whole, sent or skipped; a payload past payloadBytes is skipped
+// and logged before any of it is encoded.
+function encodedPayload(kind: string, payload: unknown, budget: Budget): string | null {
+  const object = typeof payload !== "string";
+  const bytes = object ? encodedTwiceBytes(payload) : jsonBytes(payload);
+  if (object) {
+    budget.charge({ presentations: 1, bytes });
+  }
+  if (bytes > STREAM_LIMITS.payloadBytes) {
+    console.warn({ event: "kopje.stream.payload-skipped", kind });
+    return null;
+  }
+  return JSON.stringify(object ? JSON.stringify(payload) : payload);
 }
 
 function send(ws: WebSocket, message: Record<string, unknown>): void {

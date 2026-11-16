@@ -83,6 +83,12 @@ export const STRINGS: Messages = {
     noHashtags: "No hashtags yet.",
     noAccounts: "No accounts yet.",
   },
+  collection: {
+    title: (name) => name,
+    accounts: "Accounts",
+    noAccounts: "No accounts yet.",
+    sensitive: "Sensitive content",
+  },
   post: {
     inReplyTo: "In reply to",
     sensitiveMedia: "Sensitive media",
@@ -296,6 +302,10 @@ export const STRINGS: Messages = {
     headerFile: "Header image",
     upload: "Upload",
     imageHint: "JPEG, PNG, GIF or WebP, up to 8 MB",
+    avatarDescription: "Avatar description",
+    headerDescription: "Header description",
+    descriptionHint: (limit) => `For people who cannot see the image, up to ${count(limit)} characters`,
+    saveDescription: "Save description",
     authorizedApps: "Authorized apps",
     noApps: "No authorized apps yet.",
     authorizedAt: "Authorized",

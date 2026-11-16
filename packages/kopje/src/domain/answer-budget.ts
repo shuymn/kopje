@@ -1,7 +1,7 @@
 import type { Page } from "./accounts";
 
 // RES-3: the UTF-8 bytes of one answer's JSON, containers and separators included; a composite answer's parts share
-// it. Owners and admission: docs/response-inventory.md. Every atomic item is within 85% of it (docs/threat-model.md,
+// it. Owners and admission: docs/response-inventory.md. Every atomic item is within 86% of it (docs/threat-model.md,
 // "Maxima of presented units", which test/status-bounds.test.ts measures), so an answer always admits its first item.
 export const ANSWER_BYTES = 8 * 1024 * 1024;
 
@@ -12,14 +12,27 @@ export const ARRAY_ANSWER_BYTES = ANSWER_BYTES - 1;
 // JSON.stringify's UTF-8 size without building its string, so measuring a multi-MB item holds no copy ("Heap at 8 MiB
 // per answer" in docs/threat-model.md). Plain presenter data: toJSON applies (a Date); no BigInt or boxed primitives.
 export function jsonBytes(value: unknown): number {
-  return valueBytes(value) ?? 0;
+  return valueBytes(value, { marks: 0 }) ?? 0;
 }
 
+// The UTF-8 size of JSON.stringify(JSON.stringify(value)), a stream payload as stream-hub.ts encodes it, without
+// building either string (RES-6). Encoding the JSON text again escapes each `"` and `\` in it, the only characters of
+// that text it escapes (JSON.stringify writes control characters and lone surrogates as escapes, which are ASCII), and
+// adds two quotes. 0 where JSON.stringify writes nothing, as jsonBytes.
+export function encodedTwiceBytes(value: unknown): number {
+  const marks = { marks: 0 };
+  const bytes = valueBytes(value, marks);
+  return bytes === undefined ? 0 : bytes + marks.marks + 2;
+}
+
+// The quotes and backslashes of a value's JSON text, which the same walk counts beside its bytes.
+type Marks = { marks: number };
+
 // undefined where JSON.stringify leaves the value out (an object's property) or writes null (an array's element).
-function valueBytes(value: unknown): number | undefined {
+function valueBytes(value: unknown, marks: Marks): number | undefined {
   switch (typeof value) {
     case "string":
-      return stringBytes(value);
+      return stringBytes(value, marks);
     case "number":
       return Number.isFinite(value) ? String(value).length : 4;
     case "boolean":
@@ -36,39 +49,44 @@ function valueBytes(value: unknown): number | undefined {
   }
   const json = (value as { toJSON?: unknown }).toJSON;
   if (typeof json === "function") {
-    return valueBytes((json as () => unknown).call(value));
+    return valueBytes((json as () => unknown).call(value), marks);
   }
   if (Array.isArray(value)) {
     let bytes = 2 + Math.max(value.length - 1, 0);
     for (const item of value as unknown[]) {
-      bytes += valueBytes(item) ?? 4;
+      bytes += valueBytes(item, marks) ?? 4;
     }
     return bytes;
   }
   let bytes = 2;
   let members = 0;
   for (const [key, item] of Object.entries(value as object)) {
-    const size = valueBytes(item);
+    const size = valueBytes(item, marks);
     if (size !== undefined) {
-      bytes += (members++ > 0 ? 1 : 0) + stringBytes(key) + 1 + size;
+      bytes += (members++ > 0 ? 1 : 0) + stringBytes(key, marks) + 1 + size;
     }
   }
   return bytes;
 }
 
 // A string as JSON: its quotes, two-character escapes, \u00XX for other control characters and lone surrogates (as
-// JSON.stringify writes them), and UTF-8 for the rest.
-function stringBytes(text: string): number {
+// JSON.stringify writes them), and UTF-8 for the rest. Counts its quotes and backslashes into `marks`.
+function stringBytes(text: string, marks: Marks): number {
   let bytes = 2;
+  let marked = 2;
   for (let i = 0; i < text.length; i++) {
     const c = text.charCodeAt(i);
     if (c >= 0xd800 && c <= 0xdbff && (text.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
       bytes += 4;
       i++;
     } else {
-      bytes += unitJsonBytes(c);
+      const unit = unitJsonBytes(c);
+      bytes += unit;
+      // `\"` and `\\` are two marks; any other escape (a short one or \uXXXX) is one backslash.
+      marked += c === 0x22 || c === 0x5c ? 2 : unit === 6 || (unit === 2 && c < 0x80) ? 1 : 0;
     }
   }
+  marks.marks += marked;
   return bytes;
 }
 

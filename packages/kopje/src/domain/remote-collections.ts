@@ -22,8 +22,9 @@ import {
   type RemoteActorInput,
   upsertRemoteActor,
 } from "./remote-actors";
+import { removeGone } from "./remote-removal";
 import { type RemoteStatusInput, statusByUri } from "./remote-status-reads";
-import { storeRemoteStatus } from "./remote-statuses";
+import { storeFetchedStatus } from "./remote-statuses";
 import { isHashtagName } from "./status-text";
 import { normalizeTag } from "./tag-name";
 
@@ -38,14 +39,15 @@ import { normalizeTag } from "./tag-name";
 //
 // When the account's document is stored (remote-actors.ts upsertRemoteActor, every path that stores one), a sync is
 // requested (collection_syncs, one row per account): the Worker's inbound job rounds (jobs/queue.ts) claim a few, read
-// the collections and then fetch the pinned statuses Kopje does not have, through the safe loader within one request's
-// fetch budget each (federation/collections.ts), and hand back what they read (completeCollectionRead,
-// completePinFetches). An Add or a Remove whose target is the actor's own featured or
-// featuredTags collection changes one row (inbox.ts add and remove).
+// the collections and then fetch every status the featured collection lists on the account's origin, those Kopje does
+// not have and those it does, through the safe loader within one request's fetch budget each
+// (federation/collections.ts), and hand back what they read (completeCollectionRead, completePinFetches). An Add or a
+// Remove whose target is the actor's own featured or featuredTags collection changes one row (inbox.ts add and remove).
 //
-// Every input is the remote server's: a collection is read only on the actor's own host, an item only when it is the
-// actor's own status on that host, at most MAX_REMOTE_PINS pins and MAX_FEATURED_TAGS hashtags are kept, and a hashtag
-// must be a valid name.
+// Every input is the remote server's: a collection is read only on the actor's own host, an item is fetched only on
+// that host and applied only when it is the actor's own status there (a 404 at its own URI removes it whoever's, as
+// Mastodon's), at most MAX_REMOTE_PINS pins and MAX_FEATURED_TAGS hashtags are kept, and a hashtag must be a valid
+// name.
 
 // The most pins a remote account keeps. Mastodon keeps any number for a remote account (StatusPinValidator limits
 // local accounts to five) but reads only the first page of the collection; Kopje bounds them, so the pinned read of a
@@ -120,22 +122,30 @@ export function pinRemote(db: Db, accountId: string, statusId: string, now: numb
 }
 
 // Whether the account's pins, stored and pending, leave a slot below MAX_REMOTE_PINS for the status `uri`: the slot
-// a pending pin of that very status holds counts as free, since pinning it converts that slot. Each count reads at most
-// MAX_REMOTE_PINS rows.
+// a pending pin of that very status holds counts as free, since pinning it converts that slot, and a refresh row holds
+// none. The pins read at most MAX_REMOTE_PINS rows and the sync rows at most MAX_REMOTE_PINS + 1: replacePins writes
+// at most MAX_REMOTE_PINS, so a window past that holds an imported excess and counts as full whatever its kinds (it can
+// then only refuse a pin, never admit one past the cap), and one at or under it counts its pending rows only.
 function pinsBelowCap(db: Db, accountId: string, uri: string): boolean {
-  const used = db.first<{ n: number }>(
-    `SELECT (SELECT count(*) FROM (SELECT 1 FROM status_pins WHERE account_id = ?1 LIMIT ?3))
-			+ (SELECT count(*) FROM (SELECT 1 FROM collection_pins_pending WHERE account_id = ?1 AND uri <> ?2 LIMIT ?3)) AS n`,
+  const used = db.first<{ pins: number; raw: number; pending: number | null }>(
+    `SELECT (SELECT count(*) FROM (SELECT 1 FROM status_pins WHERE account_id = ?1 LIMIT ?3)) AS pins, w.raw, w.pending
+		FROM (SELECT count(*) AS raw, sum(refresh = 0) AS pending
+			FROM (SELECT refresh FROM collection_pins_pending WHERE account_id = ?1 AND uri <> ?2 LIMIT ?3 + 1)) w`,
     accountId,
     uri,
     MAX_REMOTE_PINS,
   );
-  return (used?.n ?? 0) < MAX_REMOTE_PINS;
+  if (used === undefined) {
+    return true;
+  }
+  const pending = used.raw > MAX_REMOTE_PINS ? MAX_REMOTE_PINS : (used.pending ?? 0);
+  return used.pins + pending < MAX_REMOTE_PINS;
 }
 
 // Remove#remove_featured: the account's pin of its status, if any.
 // A pin a sync left pending (its status not fetched yet) goes too, in the same transaction, so a later round does not
-// pin it again; a round that fetched it pins nothing once its pending row is gone (completePinFetches).
+// pin it again, and so does a refresh row of the status; a round that fetched either changes nothing once its row is
+// gone (completePinFetches).
 export function unpinRemote(db: Db, accountId: string, statusUri: string): boolean {
   const pending = db.run("DELETE FROM collection_pins_pending WHERE account_id = ? AND uri = ?", accountId, statusUri);
   const pinned = db.run(
@@ -186,11 +196,16 @@ export function unfeatureRemote(db: Db, accountId: string, name: string): boolea
 //      following and outbox collections (hide_collections and the counts) and the featuredTags collection (the
 //      featured hashtags), each applied as soon as a round has read it through and recorded in parts_read, so a later
 //      round reads only the parts left.
-//      The listed statuses Kopje stores are pinned at once; those it does not go in collection_pins_pending.
-//   2. pins: later rounds fetch the pending statuses within their budgets; one fetched is stored and pinned, one that
-//      cannot be used is dropped, and one that may be fetched later stays. The metadata is never read again for them.
-// A round makes progress when it reads a part not read before or the pending statuses shrink; MAX_SYNC_ATTEMPTS
-// claims without progress give up the read (its pending statuses are still fetched) or drop the sync.
+//      The listed statuses Kopje stores that are pinnable are pinned at once. Every listed status on the account's
+//      origin gets a row in collection_pins_pending: a pending row (refresh 0) for one Kopje does not store, which holds
+//      a pin slot, and a refresh row (refresh 1) for one it stores, which holds none (migration 0101_pin_refresh).
+//   2. pins: later rounds fetch the rows' statuses within their budgets, as Mastodon's FetchFeaturedCollectionService
+//      fetches every listed status at every sync (v4.7.5 fetch_featured_collection_service.rb:27-41): one fetched is
+//      applied as the account's own (storeFetchedStatus) and, for a pending row, pinned; one gone at its own URI is
+//      removed (removeGone); one that cannot be used is dropped, and one that may be fetched later stays. The metadata
+//      is never read again for them.
+// A round makes progress when it reads a part not read before or the rows shrink; MAX_SYNC_ATTEMPTS claims without
+// progress give up the read (its rows are still fetched) or drop the sync.
 // A sync asked for with refresh (an invalidated account, remote-actors.ts) first runs a document part (D9, Mastodon's
 // AccountRefreshWorker): a round refetches the account's document and confirms its claim (federation/collections.ts),
 // and completeDocumentRefresh stores it under the revision the claim read, as any store of the actor; that store's own
@@ -198,8 +213,8 @@ export function unfeatureRemote(db: Db, accountId: string, name: string): boolea
 // remote account whose handle is invalidated; a refresh asked for one that is not any more is dropped at the claim.
 // A failure that may pass leaves the part to a later round; MAX_SYNC_ATTEMPTS claims without progress give it up.
 
-// A sync a round claimed: the account, the collections its stored document names, the phase, the pending statuses
-// (phase pins, in order), and the local follower whose key signs the fetches (FetchFeaturedCollectionService#
+// A sync a round claimed: the account, the collections its stored document names, the phase, the statuses of its
+// pending and refresh rows (phase pins, in order), and the local follower whose key signs the fetches (FetchFeaturedCollectionService#
 // local_follower: the first available one), or null for the instance actor. generation: the request the round read;
 // token: the claim, unique to this round. Both are handed back. pending: another sync is due.
 export type CollectionSync = ActorCollections & {
@@ -241,7 +256,8 @@ function claimable(db: Db, now: number): SyncRow | undefined {
   );
 }
 
-// The account's pending statuses, in the collection's order (the first listed has the latest pin time).
+// The statuses of the account's pending and refresh rows, in the collection's order (the first listed has the latest
+// pin time).
 function pendingUris(db: Db, accountId: string): string[] {
   return db
     .all<{ uri: string }>(
@@ -284,8 +300,8 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
       row.attempts = 0;
     }
     let read = row.unread === 1;
-    // A read that ran out of attempts with pinned statuses pending gives way to them: the read is given up, the
-    // pending statuses get attempts of their own.
+    // A read that ran out of attempts with rows left to fetch gives way to them: the read is given up, the rows get
+    // attempts of their own.
     if (read && row.attempts >= MAX_SYNC_ATTEMPTS && pendingUris(db, row.account_id).length > 0) {
       db.run(
         "UPDATE collection_syncs SET read_through = generation, parts_read = 0, attempts = 0 WHERE account_id = ?",
@@ -456,56 +472,71 @@ function writeCounts(db: Db, accountId: string, counts: CollectionCounts): void 
   );
 }
 
-// What phase 2 fetched of the pending statuses: a usable status, or null for one that is not (refused, gone, not a
-// status). One that may be fetched later is left out.
-export type PinFetchesInput = RoundInput & { fetched: Record<string, RemoteStatusInput | null> };
+// What phase 2 fetched of the rows' statuses: a usable status; 'gone' for a 404 that the status's own URI answered,
+// without a redirect (federation/actor-gone.ts goneAt); or null for one that cannot be used (refused, a 410, a 404
+// after a redirect, not a status). One that may be fetched later is left out.
+export type PinFetchesInput = RoundInput & { fetched: Record<string, RemoteStatusInput | "gone" | null> };
 
-// Phase 2's end: each pending status fetched is stored as a fetched status (Mastodon's FetchRemoteStatusService with
-// expected_actor_uri) and pinned when it is the account's own and pinnable, with the time phase 1 gave it; one that
-// cannot be used is dropped. The round progressed when the pending statuses shrank. Returns whether a sync is due.
+// Phase 2's end, each row as it stands now (a row unpinRemote deleted since the claim is skipped): a status fetched is
+// stored or updated as the account's own (storeFetchedStatus with the account as the author, as Mastodon's
+// FetchRemoteStatusService with expected_actor_uri: a document of another author changes nothing), and a pending row's
+// status is then pinned when it is the account's own and pinnable, with the time phase 1 gave it (a refresh row pins
+// nothing: phase 1 decided its pin, and an update changes neither author nor visibility); 'gone' removes the status
+// stored under the row's URI then, whichever row it was (removeGone); one that cannot be used drops the row and keeps
+// the status. The round progressed when the rows shrank. pending: whether a sync is due; jobsPending: a removal started,
+// whose batches the inbound job rounds run (inbox.ts runJobBatch).
 //
-// A pin is stored with no quote budget (quoteHops 0: its quote is recorded with no work, and no quoted status it embeds
-// is stored), and one Kopje already holds is not promoted (replacePins), so a sync stores only the account's own
-// statuses and leads to no other author, sync or status (RES-6). A pin's quote is verified when its status arrives
-// another way (a delivery, a boost, an Add, a search).
-export const completePinFetches = writeOperation<PinFetchesInput, boolean>((db, input) => {
+// A pin is stored or updated with no quote budget (quoteHops 0: its quote is recorded with no work, no quoted status it
+// embeds is stored, and one Kopje already holds is not promoted: quotes.ts promoteQuote), so a sync stores only the
+// account's own statuses and leads to no other author, sync or status (RES-6). A pin's quote is verified when its
+// status arrives another way (a delivery, a boost, an Add, a search).
+export const completePinFetches = writeOperation.atStoreTime("storeNow")<
+  PinFetchesInput & { storeNow: number },
+  { pending: boolean; jobsPending: boolean }
+>((db, input) => {
   const account = roundAccount(db, input);
   if (account === null) {
-    return claimable(db, input.now) !== undefined;
+    return { pending: claimable(db, input.now) !== undefined, jobsPending: false };
   }
   let done = 0;
+  let removed = false;
   for (const [uri, fetched] of Object.entries(input.fetched)) {
-    const pending = db.first<{ pinned_at: string }>(
-      "SELECT pinned_at FROM collection_pins_pending WHERE account_id = ? AND uri = ?",
+    const row = db.first<{ pinned_at: string; refresh: number }>(
+      "SELECT pinned_at, refresh FROM collection_pins_pending WHERE account_id = ? AND uri = ?",
       account.id,
       uri,
     );
-    if (pending === undefined) {
+    if (row === undefined) {
       continue;
     }
-    if (fetched !== null && fetched.uri === uri) {
-      const stored = storeRemoteStatus(db, account, fetched, {
+    if (fetched === "gone") {
+      removed = removeGone(db, uri, input.now) || removed;
+    } else if (fetched !== null && fetched.uri === uri) {
+      const stored = storeFetchedStatus(db, account, fetched, {
         now: input.now,
+        storeNow: input.storeNow,
         origin: input.origin,
         deliveredTo: null,
         fetched: true,
         quoteHops: 0,
       });
-      // The status stored, or the one it matched by its atomUri (its own id may name no row); the pending entry's slot
-      // is the one it takes.
-      const status = stored.statusId === undefined ? undefined : pinnableStatus(db, stored.statusId);
-      if (pinnable(status, account.id) && pinsBelowCap(db, account.id, uri)) {
-        db.run(
-          "INSERT INTO status_pins (account_id, status_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-          account.id,
-          status.id,
-          pending.pinned_at,
-        );
+      if (row.refresh === 0) {
+        // The status stored, or the one it matched by its atomUri (its own id may name no row); the pending entry's
+        // slot is the one it takes.
+        const status = stored.statusId === undefined ? undefined : pinnableStatus(db, stored.statusId);
+        if (pinnable(status, account.id) && pinsBelowCap(db, account.id, uri)) {
+          db.run(
+            "INSERT INTO status_pins (account_id, status_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+            account.id,
+            status.id,
+            row.pinned_at,
+          );
+        }
       }
     }
     done += db.run("DELETE FROM collection_pins_pending WHERE account_id = ? AND uri = ?", account.id, uri);
   }
-  return endRound(db, account.id, input.generation, done > 0, input.now);
+  return { pending: endRound(db, account.id, input.generation, done > 0, input.now), jobsPending: removed };
 });
 
 // What the document part fetched of the account (federation/collections.ts): its document with its claim confirmed or
@@ -539,22 +570,24 @@ export const completeDocumentRefresh = writeOperation<DocumentRefreshInput, bool
 
 // The account's pins become the statuses the collection lists that are its own and pinnable, the first
 // MAX_REMOTE_PINS of them on its origin: those Kopje stores at once, those it does not left pending for phase 2; the
-// others are unpinned, and what was pending before is replaced. Every pin listed, kept or new, stored or pending, takes
-// the time of its position in the collection (the first listed is the newest), so the profile shows the collection's
-// order however its pins were learned and whichever of them phase 2 pins later. A stored pin's quote is not promoted
-// (completePinFetches says why).
+// others are unpinned. Every listed status on the origin among those first MAX_REMOTE_PINS gets a row for phase 2,
+// which replaces the rows before: a pending row for one Kopje does not store, a refresh row for one it stores, pinned
+// or not (the account's direct or limited status, another author's on its origin), so that phase 2 fetches each as
+// Mastodon's FetchFeaturedCollectionService does before it decides the pins. Every pin listed, kept or new, stored or
+// pending, takes the time of its position in the collection (the first listed is the newest), so the profile shows
+// the collection's order however its pins were learned and whichever of them phase 2 pins later. A stored pin's quote
+// is not promoted (completePinFetches says why).
 function replacePins(db: Db, account: { id: string; uri: string }, uris: readonly string[], now: number): void {
   const pinned: { id: string; at: string }[] = [];
-  const pending: { uri: string; at: string }[] = [];
+  const rows: { uri: string; at: string; refresh: 0 | 1 }[] = [];
   [...new Set(uris)].slice(0, MAX_REMOTE_PINS).forEach((uri, i) => {
     if (!sameOrigin(uri, account.uri)) {
       return;
     }
     const at = new Date(now - i).toISOString();
     const status = statusByUri(db, uri);
-    if (status === undefined) {
-      pending.push({ uri, at });
-    } else if (pinnable(status, account.id)) {
+    rows.push({ uri, at, refresh: status === undefined ? 0 : 1 });
+    if (pinnable(status, account.id)) {
       pinned.push({ id: status.id, at });
     }
   });
@@ -573,12 +606,13 @@ function replacePins(db: Db, account: { id: string; uri: string }, uris: readonl
     );
   }
   db.run("DELETE FROM collection_pins_pending WHERE account_id = ?", account.id);
-  for (const pin of pending) {
+  for (const row of rows) {
     db.run(
-      "INSERT INTO collection_pins_pending (account_id, uri, pinned_at) VALUES (?, ?, ?)",
+      "INSERT INTO collection_pins_pending (account_id, uri, pinned_at, refresh) VALUES (?, ?, ?, ?)",
       account.id,
-      pin.uri,
-      pin.at,
+      row.uri,
+      row.at,
+      row.refresh,
     );
   }
 }

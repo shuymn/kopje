@@ -5,6 +5,7 @@ import {
   MAX_FIELDS,
   presentedCountSql,
   storedDisplayName,
+  storedProfileDescription,
   storedText,
 } from "../platform/stored-bounds";
 import {
@@ -19,12 +20,15 @@ import {
   type Present,
   fieldSources,
   credentialAccount,
+  type Profile,
+  presentProfile,
 } from "./accounts";
 import { followActivity, followAnswerActivity, followUri, recordOutbound } from "./activities";
 import { actorSnapshot, recordActorUpdate } from "./actor-update";
 import { availableSql, followableBySql, type QuotePolicyName } from "./audience";
-import { userMediaDeleteOperation, userWriteOperation } from "./auth";
+import { userMediaDeleteOperation, userReadOperation, userWriteOperation } from "./auth";
 import { localEmojiSnapshot } from "./custom-emojis";
+import { accountFeaturedTagsOf, MAX_FEATURED_TAGS } from "./featured-tags";
 import { armFieldLinks } from "./field-links";
 import { applyProfileImage, PROFILE_IMAGES, type ProfileImage, profileUploadReady } from "./media";
 import { END_FOLLOW_NOTIFICATIONS_SQL, notify } from "./notifications";
@@ -52,14 +56,22 @@ export type CredentialChanges = {
   fields?: FieldSource[] | undefined;
   // Replaces every attribution domain; normalized and validated by the caller.
   attributionDomains?: string[];
+  // The image descriptions as sent ('' clears one), validated by the caller (migration 0097_profile_descriptions).
+  avatarDescription?: string | undefined;
+  headerDescription?: string | undefined;
+  // The display settings, which only the profile update sets.
+  showFeatured?: boolean | undefined;
+  showMedia?: boolean | undefined;
+  showMediaReplies?: boolean | undefined;
 };
 
 // The uploads (completed, unattached, media.ts) a credentials update makes the account's avatar or header.
 export type ProfileImages = Partial<Record<ProfileImage, string>>;
 
-export type CredentialsUpdated =
+// `account`: the CredentialAccount of update_credentials, or the Profile of the profile update.
+export type CredentialsUpdated<A = CredentialAccount> =
   // accepting: the update unlocked the account, so the unlock job has pending requests to accept (unlock-accepts.ts).
-  | { status: "ok"; account: CredentialAccount; accepting: boolean }
+  | { status: "ok"; account: A; accepting: boolean }
   | { status: "not_found" }
   // An upload is no longer the viewer's own live upload (swept, deleted or attached since): nothing changed.
   | { status: "upload_gone" };
@@ -86,14 +98,18 @@ function unlockChanged(db: Db, accountId: string, wasLocked: boolean, locked: bo
   );
 }
 
-// Lengths and values are validated by the caller. display_name and the note are plain text: display_name is stored
-// as is (JSON consumers escape it), the note is stored as escaped paragraphs. Everything applies in this transaction,
-// images included, with one Update(Person), or nothing does (Mastodon's single update!). A media-delete operation:
-// replacing an image dooms the upload behind it (MEDIA-2).
-export const updateCredentials = userMediaDeleteOperation<
-  { changes: CredentialChanges; images?: ProfileImages; present: Present; now: number },
-  CredentialsUpdated
->((db, { changes, images = {}, present, now }, { accountId }) => {
+// The changes update_credentials and the profile update apply, in their operation's transaction. Lengths and values
+// are validated by the caller. display_name and the note are plain text: display_name is stored as is (JSON consumers
+// escape it), the note is stored as escaped paragraphs; the descriptions are stored as sent, within their bound
+// (storedProfileDescription). Everything applies, images included, with one Update(Person), or nothing does
+// (Mastodon's single update!). accepting: as CredentialsUpdated's.
+function applyAccountChanges(
+  db: Db,
+  accountId: string,
+  changes: CredentialChanges,
+  images: ProfileImages,
+  now: number,
+): { status: "ok"; accepting: boolean } | { status: "not_found" } | { status: "upload_gone" } {
   const current = db.first<{
     username: string;
     display_name: string;
@@ -130,7 +146,10 @@ export const updateCredentials = userMediaDeleteOperation<
   // surrogate bytes would come back as three U+FFFD for each, past its bound.
   db.run(
     `UPDATE accounts SET display_name = COALESCE(?, display_name), note = COALESCE(?, note), locked = COALESCE(?, locked),
-			discoverable = COALESCE(?, discoverable), indexable = COALESCE(?, indexable), actor_type = ?, search_text = ?
+			discoverable = COALESCE(?, discoverable), indexable = COALESCE(?, indexable), actor_type = ?, search_text = ?,
+			avatar_description = COALESCE(?, avatar_description), header_description = COALESCE(?, header_description),
+			show_featured = COALESCE(?, show_featured), show_media = COALESCE(?, show_media),
+			show_media_replies = COALESCE(?, show_media_replies)
 		WHERE id = ?`,
     changedName,
     changes.note === undefined ? null : plainTextToHtml(storedText(changes.note)),
@@ -139,6 +158,11 @@ export const updateCredentials = userMediaDeleteOperation<
     bit(changes.indexable),
     actorType,
     accountSearchText(current.username, null, displayName),
+    changes.avatarDescription === undefined ? null : storedProfileDescription(changes.avatarDescription),
+    changes.headerDescription === undefined ? null : storedProfileDescription(changes.headerDescription),
+    bit(changes.showFeatured),
+    bit(changes.showMedia),
+    bit(changes.showMediaReplies),
     accountId,
   );
   db.run(
@@ -184,10 +208,46 @@ export const updateCredentials = userMediaDeleteOperation<
   // collections again and learns it from them, as Mastodon's ProcessAccountService does.
   const hideChanged = hide !== null && hide !== current.hide_collections;
   recordActorUpdate(db, accountId, hideChanged ? null : before, now);
-  const accepting = unlockChanged(db, accountId, current.locked === 1, changes.locked);
-  const account = credentialAccount(db, accountId, present);
-  return account === null ? { status: "not_found" } : { status: "ok", account, accepting };
-});
+  return { status: "ok", accepting: unlockChanged(db, accountId, current.locked === 1, changes.locked) };
+}
+
+export type AccountUpdate = { changes: CredentialChanges; images?: ProfileImages; present: Present; now: number };
+
+// applyAccountChanges, then the account as `presented` shows it.
+function updated<A>(
+  db: Db,
+  accountId: string,
+  { changes, images = {}, now }: AccountUpdate,
+  presented: () => A | null,
+): CredentialsUpdated<A> {
+  const applied = applyAccountChanges(db, accountId, changes, images, now);
+  if (applied.status !== "ok") {
+    return applied;
+  }
+  const account = presented();
+  return account === null ? { status: "not_found" } : { status: "ok", account, accepting: applied.accepting };
+}
+
+// update_credentials and the profile update (Api::V1::ProfilesController#update), answered with the CredentialAccount
+// and the Profile. Media-delete operations: replacing an image dooms the upload behind it (MEDIA-2).
+export const updateCredentials = userMediaDeleteOperation<AccountUpdate, CredentialsUpdated>(
+  (db, input, { accountId }) => updated(db, accountId, input, () => credentialAccount(db, accountId, input.present)),
+);
+
+export const updateProfile = userMediaDeleteOperation<AccountUpdate, CredentialsUpdated<Profile>>(
+  (db, input, { accountId }) => updated(db, accountId, input, () => profileOf(db, accountId, input.present)),
+);
+
+// The Profile with the account's first MAX_FEATURED_TAGS featured hashtags in id order (ACCOUNT_FEATURED_SQL, at most
+// that many rows read): Mastodon's association has no order, and creation order is the closest stable one.
+function profileOf(db: Db, accountId: string, present: Present): Profile | null {
+  return presentProfile(db, accountId, accountFeaturedTagsOf(db, accountId, present.origin, MAX_FEATURED_TAGS));
+}
+
+// GET /api/v1/profile.
+export const profile = userReadOperation<{ present: Present }, Profile | null>((db, { present }, { accountId }) =>
+  profileOf(db, accountId, present),
+);
 
 function bit(value: boolean | undefined): number | null {
   return value === undefined ? null : value ? 1 : 0;

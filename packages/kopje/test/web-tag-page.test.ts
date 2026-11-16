@@ -181,7 +181,8 @@ describe("the hashtag page", () => {
     expect(rows.n).toBeGreaterThan(200);
   }, 300_000);
 
-  it("serves any spelling of a name, its normalized path canonical, and marks a cursor page noindex", async () => {
+  // Every page is noindex, as Mastodon's (tags/show.html.haml).
+  it("serves any spelling of a name, its normalized path canonical, and marks every page noindex", async () => {
     const h = await community(["alice"]);
     await seedStatus(h.store, { accountId: h.users.alice.id, visibility: "public", tags: ["cafe"] });
     await seedStatus(h.store, { accountId: h.users.alice.id, visibility: "public", tags: ["自宅サーバー"] });
@@ -209,7 +210,15 @@ describe("the hashtag page", () => {
     for (const path of ["/tags/cafe", "/tags/CAFE", `/tags/${encodeURIComponent("Café")}`]) {
       expect([path, await head(path)]).toEqual([
         path,
-        { h1: "#cafe", title: "#cafe", ogTitle: ["#cafe"], cards: 1, robots: [], ogUrl: [cafe], canonical: [cafe] },
+        {
+          h1: "#cafe",
+          title: "#cafe",
+          ogTitle: ["#cafe"],
+          cards: 1,
+          robots: ["noindex"],
+          ogUrl: [cafe],
+          canonical: [cafe],
+        },
       ]);
     }
     const jp = `https://kopje.test/tags/${encodeURIComponent("自宅サーバー")}`;
@@ -218,7 +227,7 @@ describe("the hashtag page", () => {
       title: "#自宅サーバー",
       ogTitle: ["#自宅サーバー"],
       cards: 1,
-      robots: [],
+      robots: ["noindex"],
       ogUrl: [jp],
       canonical: [jp],
     });
@@ -230,14 +239,14 @@ describe("the hashtag page", () => {
           title: "#cafe",
           ogTitle: ["#cafe"],
           cards: 1,
-          robots: ["noindex, follow"],
+          robots: ["noindex"],
           ogUrl: [cafe],
           canonical: [cafe],
         },
       ]);
     }
     // An invalid cursor serves the first page.
-    expect((await head("/tags/cafe?max_id=x1")).robots).toEqual([]);
+    expect((await head("/tags/cafe?max_id=x1")).robots).toEqual(["noindex"]);
     // A name at the bound of the hashtags Kopje lists (256 code points) is a page; past it, the same 404 as any
     // other miss (test/web-read-seam.test.ts).
     expect((await head(`/tags/${"a".repeat(256)}`)).h1).toBe(`#${"a".repeat(256)}`);

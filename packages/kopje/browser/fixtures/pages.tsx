@@ -3,6 +3,7 @@ import type { Child, JSXNode } from "hono/jsx";
 import { ErrorPage } from "../../src/app/error-pages";
 import type { Account, CredentialAccount } from "../../src/domain/accounts";
 import { OWNER_ROLE } from "../../src/domain/auth";
+import type { Collection } from "../../src/domain/collections";
 import type { Poll } from "../../src/domain/poll-presenter";
 import type { MediaAttachment, Status } from "../../src/domain/status-presenter";
 import type { Site } from "../../src/domain/web-pages/site";
@@ -12,6 +13,7 @@ import { APP_NAME_LIMIT, APP_WEBSITE_LIMIT, LOCAL_USERNAME_BYTES } from "../../s
 import { SCOPES } from "../../src/security/scopes";
 import { HostContext, L1Context } from "../../src/web/components/layout";
 import { AboutPage } from "../../src/web/pages/about";
+import { CollectionPage } from "../../src/web/pages/collection";
 import { DocumentPage } from "../../src/web/pages/document";
 import { EmbedPage } from "../../src/web/pages/embed";
 import { FeaturedPage } from "../../src/web/pages/featured";
@@ -218,9 +220,41 @@ const replyTarget = statusTarget({ uri: reply.uri, url: reply.url ?? "", path: "
 // The site facts every page read loads (domain/web-pages/site.ts): both documents exist, so every footer links them.
 const site: Site = { domain: DOMAIN, documents: { privacyPolicy: true, termsOfService: true } };
 
-// The signed-in account as the settings page reads it: alice with her profile's source.
+// A local collection's members: bob (another server's) and dana; and alice's collection of them, tagged #walks.
+const dana: Account = {
+  ...alice,
+  id: "3",
+  username: "dana",
+  acct: "dana",
+  display_name: "Dana",
+  url: `${ORIGIN}/@dana`,
+};
+const collection: Collection = {
+  id: "500000000000000001",
+  uri: `${ORIGIN}/ap/users/alice/collections/500000000000000001`,
+  name: "Walking companions",
+  description: "People to walk with on a long afternoon, and what they write about the paths they take.",
+  language: "en",
+  account_id: alice.id,
+  local: true,
+  sensitive: false,
+  discoverable: true,
+  url: `${ORIGIN}/collections/500000000000000001`,
+  item_count: 2,
+  created_at: CREATED,
+  updated_at: CREATED,
+  tag: { name: "walks", url: `${ORIGIN}/tags/walks` },
+  items: [
+    { id: "1", state: "accepted", created_at: CREATED, account_id: bob.id },
+    { id: "2", state: "accepted", created_at: CREATED, account_id: dana.id },
+  ],
+};
+
+// The signed-in account as the settings page reads it: alice with her profile's source, an avatar description and no
+// header description, so the image cards show a filled and an empty form.
 const credential: CredentialAccount = {
   ...alice,
+  avatar_description: "A grey cat asleep on a windowsill in the afternoon sun",
   source: {
     privacy: "public",
     sensitive: false,
@@ -237,9 +271,41 @@ const credential: CredentialAccount = {
   role: OWNER_ROLE,
 };
 
+// Settings after a save: the notice, two authorized apps (the second with a long name and every scope) and other
+// sessions to sign out.
+const settingsOf = (account: CredentialAccount) => (
+  <SettingsPage
+    chrome={site}
+    account={account}
+    authorizations={{
+      apps: [
+        {
+          clientId: "client-1",
+          name: "A client",
+          website: "https://client.example/",
+          scopes: ["read", "write"],
+          authorizedAt: CREATED,
+        },
+        {
+          clientId: "client-2",
+          name: "An application with a remarkably long name for its authorized row",
+          website: null,
+          scopes: [...SCOPES],
+          authorizedAt: CREATED,
+        },
+      ],
+      otherSessions: 2,
+    }}
+    csrf={CSRF}
+    notice="saved"
+    problems={[]}
+  />
+);
+
 const ELEMENTS: Record<PageName, Child> = {
   profile: (
     <ProfilePage
+      shell={false}
       account={alice}
       tab={{ kind: "posts" }}
       pins={[pinned]}
@@ -268,6 +334,7 @@ const ELEMENTS: Record<PageName, Child> = {
   // The status page: its parent above it, and a Replies tab with no replies.
   status: (
     <StatusPage
+      shell={false}
       status={reply}
       parent={{ url: `${ORIGIN}/@alice/101`, acct: "alice" }}
       history={history}
@@ -285,6 +352,7 @@ const ELEMENTS: Record<PageName, Child> = {
   // cursor, the first too large to show (a remote one's stub), and both pager links.
   thread: (
     <StatusPage
+      shell={false}
       status={further}
       parent={{ url: `${ORIGIN}/@alice/102`, acct: "alice" }}
       history={null}
@@ -305,6 +373,7 @@ const ELEMENTS: Record<PageName, Child> = {
   // A later page of a post's Boosts tab: two accounts (one on another server) and both pager links.
   boosts: (
     <StatusPage
+      shell={false}
       status={plain}
       parent={null}
       history={null}
@@ -328,6 +397,7 @@ const ELEMENTS: Record<PageName, Child> = {
   // warning, each nesting the post; the older pager link only.
   quotes: (
     <StatusPage
+      shell={false}
       status={{ ...plain, quotes_count: 3 }}
       parent={null}
       history={null}
@@ -419,6 +489,7 @@ const ELEMENTS: Record<PageName, Child> = {
   // server) and a page past them.
   featured: (
     <FeaturedPage
+      shell={false}
       account={alice}
       tags={[
         {
@@ -448,6 +519,23 @@ const ELEMENTS: Record<PageName, Child> = {
       ]}
       cursor={null}
       paging={{ newest: "3", oldest: "2", more: true }}
+      site={site}
+    />
+  ),
+  // A local collection of alice's: its hashtag linked, two members (one on another server).
+  collection: <CollectionPage collection={collection} owner={alice} tag="walks" accounts={[bob, dana]} site={site} />,
+  // The same, sensitive: its description and members behind a disclosure.
+  "collection-sensitive": (
+    <CollectionPage
+      collection={{
+        ...collection,
+        id: "500000000000000002",
+        url: `${ORIGIN}/collections/500000000000000002`,
+        sensitive: true,
+      }}
+      owner={alice}
+      tag="walks"
+      accounts={[bob, dana]}
       site={site}
     />
   ),
@@ -500,36 +588,7 @@ const ELEMENTS: Record<PageName, Child> = {
       host={LONGEST_HOST}
     />
   ),
-  // Settings after a save: the notice, two authorized apps (the second with a long name and every scope) and other
-  // sessions to sign out.
-  settings: (
-    <SettingsPage
-      chrome={site}
-      account={credential}
-      authorizations={{
-        apps: [
-          {
-            clientId: "client-1",
-            name: "A client",
-            website: "https://client.example/",
-            scopes: ["read", "write"],
-            authorizedAt: CREATED,
-          },
-          {
-            clientId: "client-2",
-            name: "An application with a remarkably long name for its authorized row",
-            website: null,
-            scopes: [...SCOPES],
-            authorizedAt: CREATED,
-          },
-        ],
-        otherSessions: 2,
-      }}
-      csrf={CSRF}
-      notice="saved"
-      problems={[]}
-    />
-  ),
+  settings: settingsOf(credential),
   "setup-login": <SetupLoginPage problem="The setup session ended. Enter the setup token again." />,
   // The wizard with the domain confirmed and Access ready: a passed step, a warning with its hint and a failure.
   setup: (
@@ -610,6 +669,13 @@ const ELEMENTS: Record<PageName, Child> = {
 // The bytes the Worker sends for each page: c.html writes the rendered element as it is, inside L1Context on the
 // pages that load the L1 bundle (l1Page in src/app/public-pages.tsx), and in HostContext with the request's host, which
 // the routes of the pages without the site's chrome set (onHost) and no other page reads.
+// The settings page as the fixture's, with these of the account's values, for a check that needs others.
+export async function renderSettings(changes: Partial<CredentialAccount>): Promise<string> {
+  const page = <HostContext.Provider value={DOMAIN}>{settingsOf({ ...credential, ...changes })}</HostContext.Provider>;
+  // oxlint-disable-next-line typescript/no-unnecessary-type-conversion
+  return String(await (page as Child as JSXNode).toString());
+}
+
 export async function renderPages(): Promise<Record<PageName, string>> {
   const html = {} as Record<PageName, string>;
   for (const [name, element] of Object.entries(ELEMENTS) as [PageName, Child][]) {
