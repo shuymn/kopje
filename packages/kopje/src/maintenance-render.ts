@@ -13,7 +13,7 @@ export { backfillConversations } from "./domain/conversation-rows";
 export { languageOf } from "./domain/language";
 export { normalizeSearchText } from "./domain/search-text";
 export { hashtagObjectName, normalizeTag } from "./domain/tag-name";
-export { blockedDomain } from "./platform/domain-name";
+export { blockedDomain, hostDomain } from "./platform/domain-name";
 export { MAX_PROFILE_UPDATES, readCatalog } from "./platform/dump-catalog";
 export { quoteIdentifier, readColumn, valueLiteral } from "./platform/dump-literals";
 export {

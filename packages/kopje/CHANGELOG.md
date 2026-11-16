@@ -301,6 +301,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- The cutover stores a remote account's domain without the port or trailing dot of its actor id's host, as Kopje
+  stores one, and `verify-conversion` compares the domain. A Store converted before keeps such domains until a refresh
+  confirms each account; the query in [docs/cutover.md](docs/cutover.md) (Verification) lists them (#1725). A remote
+  actor id that is not an http or https URL, which the Worker never stores, now stops the conversion
+  (`remote-actor-uri-not-http`). No Store migration and no `wrangler.jsonc` change.
 - Integer parameters are read as Rails reads them: the last of repeated values, the query's before the body's, as
   Ruby's `String#to_i` reads it (underscores, a `0d` prefix, ASCII whitespace only), and a negative `limit` as its
   absolute value (#1729). A `limit` of 0, or one that is not a number, answers no statuses and no `Link` on the home,
