@@ -17,6 +17,7 @@ import {
   backfillConversations,
   blockedDomain,
   hashtagObjectName,
+  hostDomain,
   isRemoteUsername,
   isStorableActorId,
   languageOf,
@@ -606,8 +607,10 @@ export function convertLegacy(
         count(problems, "accounts:local-username-is-domain");
       }
     } else {
+      // The domain the Worker gives an actor id's host (hostDomain: no port, no trailing dot), so that address lookup,
+      // the handle index and the domain filters read a converted account as they read a fetched one.
       try {
-        host = new URL(uri).host.toLowerCase();
+        host = hostDomain(uri);
       } catch {
         count(problems, "remote-actor-uri-invalid");
         continue;

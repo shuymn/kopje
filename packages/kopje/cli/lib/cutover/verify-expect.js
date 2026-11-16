@@ -206,6 +206,14 @@ function blockedDomainOf(raw) {
   return /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(ascii) && !/^\d{1,3}(\.\d{1,3}){3}$/.test(ascii) ? ascii : null;
 }
 
+// A remote account's domain as Kopje stores it, worked out here on its own: the actor id's hostname (the URL parser's,
+// so lowercase and without the port), IDNA to ASCII, one trailing dot dropped.
+/** @param {string} uri */
+function accountDomainOf(uri) {
+  const host = new URL(uri).hostname.replace(/\.$/, "");
+  return domainToASCII(host) || host;
+}
+
 /**
  * The stored author's followers as legacy's detectVisibility sees them: actorFromRow keeps the property as spelled and
  * builds `<id>/followers` from the parsed actor id only when the property is missing; then followers.toString(). Undefined
@@ -487,12 +495,14 @@ export function expectedFromLegacy(db, { originalActorIds, source, notificationS
     // An identity the Worker would refuse, as the converter refuses it (src/platform/identity-bounds.ts).
     const username =
       text(p.preferredUsername) || uri.replace(/\/+$/, "").slice(uri.replace(/\/+$/, "").lastIndexOf("/") + 1);
-    if (!isLocal && (!isStorableActorId(uri) || !isRemoteUsername(username))) {
+    // A refused id is no account, so it has no domain (and may not parse).
+    const remoteDomain = isLocal || !isStorableActorId(uri) ? null : accountDomainOf(uri);
+    if (!isLocal && (remoteDomain === null || !isRemoteUsername(username))) {
       identities++;
     } else if (!isLocal) {
       // One remote account per address (migration 0096_remote_handles): a row after the first of its address is
       // invalidated, and its refresh is requested (collection_syncs.refresh).
-      const handle = `${new URL(uri).host.toLowerCase()} ${username.toLowerCase()}`;
+      const handle = `${remoteDomain} ${username.toLowerCase()}`;
       if (handles.has(handle)) {
         put("handle_refreshes", uri, 1);
       } else {
@@ -531,6 +541,7 @@ export function expectedFromLegacy(db, { originalActorIds, source, notificationS
       typeof p.discoverable === "boolean" ? (p.discoverable ? 1 : 0) : isLocal ? 0 : null,
       // A remote profile's URL, as the Worker stores it (none past its bound).
       isLocal ? null : storedProfileUrl(href(p.url)),
+      remoteDomain,
     ]);
     if (!isLocal) {
       put("raw", `account ${uri}`, String(actor.properties));

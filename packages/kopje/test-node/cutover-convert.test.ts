@@ -739,6 +739,78 @@ describe("remote actors that share an address", () => {
   });
 });
 
+describe("remote actors whose ids spell the host otherwise", () => {
+  it("store the domain the Worker gives the id's host, address and search text with it, and verify", async () => {
+    const exportPath = await exportOf({ level: 39, hostSpellings: true });
+    const { ok, manifest, dumpPath } = await convert(exportPath);
+    expect(manifest.stop).toBeUndefined();
+    expect(ok).toBe(true);
+    // The independent check works the domains and the shared address out on its own.
+    const { ok: verified, categories } = await verifyWith(exportPath, dumpPath);
+    expect(failing(categories)).toEqual([]);
+    expect(categories.handle_refreshes?.expected).toBe(1);
+    expect(verified).toBe(true);
+    const db = await opened(dumpPath);
+    const accounts = db
+      .prepare(
+        `SELECT uri, domain, username = '! ' || id AS invalidated, search_text, c.refresh
+				FROM accounts a LEFT JOIN collection_syncs c ON c.account_id = a.id
+				WHERE display_name LIKE 'Spelled %' ORDER BY a.rowid`,
+      )
+      .all();
+    db.close();
+    // The port, the capitals and the trailing dot are dropped and a Unicode host is punycode, as hostDomain gives
+    // them; h.example:8443's a and h.example's a are then one address, so the later is invalidated and refreshed.
+    expect(accounts).toEqual([
+      {
+        uri: "https://Example.COM:8443/users/a",
+        domain: "example.com",
+        invalidated: 0,
+        search_text: "spelled 0 a@example.com",
+        refresh: null,
+      },
+      {
+        uri: "https://bücher.example/u/b",
+        domain: "xn--bcher-kva.example",
+        invalidated: 0,
+        search_text: "spelled 1 b@xn--bcher-kva.example",
+        refresh: null,
+      },
+      {
+        uri: "https://example.com./u/c",
+        domain: "example.com",
+        invalidated: 0,
+        search_text: "spelled 2 c@example.com",
+        refresh: null,
+      },
+      {
+        uri: "https://h.example:8443/u/a",
+        domain: "h.example",
+        invalidated: 0,
+        search_text: "spelled 3 a@h.example",
+        refresh: null,
+      },
+      {
+        uri: "https://h.example/u/a",
+        domain: "h.example",
+        invalidated: 1,
+        search_text: expect.any(String),
+        refresh: 1,
+      },
+    ]);
+    // A stored domain that keeps the id's port, as the converter once wrote it, is reported.
+    const ported = await verifyWith(
+      exportPath,
+      await tampered(
+        dumpPath,
+        "UPDATE accounts SET domain = 'example.com:8443' WHERE uri = 'https://Example.COM:8443/users/a'",
+      ),
+    );
+    expect(failing(ported.categories)).toEqual(["accounts"]);
+    expect(ported.ok).toBe(false);
+  });
+});
+
 describe("the expected threads", () => {
   it("walk each status once, so a 50,000-status chain is quick, and give a cycle each status’s own", () => {
     const uri = (i: number) => `https://remote.example/objects/${i}`;
