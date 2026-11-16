@@ -26,6 +26,7 @@ import {
   CARD_TYPES,
   CARD_URL_LIMIT,
   isoTimeSql,
+  spoilerReadSql,
   statusEditedSql,
   statusPublishedSql,
   storedCountSql,
@@ -53,7 +54,8 @@ import {
 // parent: they belong to the reply, whose ActivityPub object carries inReplyTo to every recipient anyway, and its
 // author chose to publish them. The parent itself (content, author profile, context entry) stays behind the audience
 // rule. in_reply_to_account_id is the conversation partner carried through self-replies.
-// The text and URLs are bounded as stored (platform/stored-bounds.ts), the uri and author as read (RES-2).
+// The text and URLs are bounded as stored (platform/stored-bounds.ts), the content warning, uri and author as read
+// (RES-2; the warning: "Status text as presented").
 export const STATUS_COLUMN_MAP = {
   id: "s.id",
   uri: statusUriSql("s.uri"),
@@ -63,7 +65,7 @@ export const STATUS_COLUMN_MAP = {
   in_reply_to_id: "s.in_reply_to_id",
   in_reply_to_account_id: "s.in_reply_to_account_id",
   visibility: "s.visibility",
-  spoiler_text: "s.spoiler_text",
+  spoiler_text: spoilerReadSql("s.spoiler_text"),
   content: "s.content",
   source_text: "s.source_text",
   sensitive: "s.sensitive",

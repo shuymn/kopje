@@ -1281,6 +1281,57 @@ export function annualReportCountedSql(s: string): string {
   return `${s}.withdrawn = 0`;
 }
 
+// ---- Collections (R45). `c` is a collections row, `i` a collection_items row, `viewer` an expression for the viewer's
+// account id, NULL when anonymous or app-only (Mastodon's nil current_account).
+
+// R45 (with R1): whether the collection `c` is found: its owner is available. An unavailable owner's collection is
+// found nowhere, where Mastodon shows a suspended owner's (docs/mastodon-deviations.md, "Collections").
+export function collectionFoundSql(c: string): string {
+  return availableSql(`${c}.account_id`);
+}
+
+// R45 (CollectionPolicy#show?, AccountPolicy#index_collections?): whether `viewer` is shown the collection `c`: it is
+// found, and its owner neither blocks the viewer nor blocks the viewer's domain. A found collection not shown answers
+// 403 by its id; every other read leaves it out.
+export function collectionShownSql(c: string, viewer: string): string {
+  return `(${collectionFoundSql(c)} AND (${viewer} IS NULL OR NOT ${blockedSql(`${c}.account_id`, viewer)}))`;
+}
+
+// R45 (CollectionsController#set_collections): whether the collection `c` is listed among its owner's to `viewer`:
+// shown, and discoverable unless the viewer is the owner.
+export function collectionListedSql(c: string, viewer: string): string {
+  return `(${collectionShownSql(c, viewer)} AND (${c}.discoverable = 1 OR ${c}.account_id IS ${viewer}))`;
+}
+
+// R45 (Collection#items_for): whether the item `i` of the collection `c` is shown to `viewer`: its account is known
+// and available; the owner sees it pending or accepted, anyone else accepted; and the viewer does not block its account
+// (not_blocked_by: blocks only). An unavailable member is left out where Mastodon shows it (the departure above).
+export function collectionItemShownSql(i: string, c: string, viewer: string): string {
+  return `(${i}.account_id IS NOT NULL AND ${availableSql(`${i}.account_id`)}
+		AND (${i}.state = 1 OR (${i}.state = 0 AND ${c}.account_id IS ${viewer}))
+		AND (${viewer} IS NULL OR NOT ${blocksSql(viewer, `${i}.account_id`)}))`;
+}
+
+// R45 (AccountPolicy#feature?, Account#featureable_by?): whether `owner` may feature the account `member`: the member
+// is available, neither blocks the other, and the member is local, discoverable, and unlocked, followed (accepted) by
+// the owner, or the owner itself. A remote member has no policy Kopje reads yet, so it is refused (Mastodon's
+// `missing`).
+export function mayFeatureSql(owner: string, member: string): string {
+  return `(${availableSql(member)} AND NOT ${blocksSql(owner, member)} AND NOT ${blocksSql(member, owner)}
+		AND EXISTS (SELECT 1 FROM main.accounts pfm INDEXED BY ${ACCOUNTS_ID_INDEX}
+			WHERE pfm.id = ${member} AND pfm.domain IS NULL AND pfm.discoverable = 1
+				AND (pfm.id = ${owner} OR pfm.locked = 0 OR EXISTS (SELECT 1 FROM main.follows pff
+					WHERE pff.account_id = ${owner} AND pff.target_account_id = ${member} AND pff.state = 'accepted'))))`;
+}
+
+// R45 (Account#featured_in_collections, AccountPolicy#index_featured_in_collections?): whether the item `i` of the
+// collection `c` lists `c` among the collections featuring `viewer`: the item is the viewer's, in any state, and the
+// collection is found. The items are the viewer's own, so the owner's availability only hides a candidate ("Read
+// bounds", docs/visibility.md).
+export function inCollectionsSql(i: string, c: string, viewer: string): string {
+  return `(${i}.account_id = ${viewer} AND ${collectionFoundSql(c)})`;
+}
+
 // R27 (PollPolicy#vote?): whether `voter` may vote in the poll of the status `s`: may see the status by itself (R3),
 // and blocks neither its author (an author who blocks the voter hides the status already) nor the author's domain, to
 // which a remote poll's vote would not be delivered (R23 leaves such an account out). Votes are their voters' own

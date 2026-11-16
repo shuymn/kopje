@@ -13,3 +13,15 @@ export function asArray(value: unknown): unknown[] {
 export function typeIs(value: unknown, types: readonly string[]): boolean {
   return asArray(value).some((type) => typeof type === "string" && types.includes(type));
 }
+
+// A collection page's items (JsonLdHelper#collection_page_items: Collection and CollectionPage, items; the ordered
+// ones, orderedItems), or null for anything else.
+export function itemsOf(collection: Record<string, unknown>): unknown[] | null {
+  const items =
+    collection.type === "Collection" || collection.type === "CollectionPage"
+      ? collection.items
+      : collection.type === "OrderedCollection" || collection.type === "OrderedCollectionPage"
+        ? collection.orderedItems
+        : undefined;
+  return items === undefined ? null : Array.isArray(items) ? items : items === null ? [] : [items];
+}

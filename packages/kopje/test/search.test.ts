@@ -16,6 +16,7 @@ type Results = {
     following?: boolean;
     featuring?: boolean;
   }[];
+  collections: { id: string; uri: string; url: string }[];
 };
 
 async function fixture() {
@@ -188,8 +189,54 @@ describe("GET /api/v2/search", () => {
     expect(all.accounts.map((a) => a.acct).toSorted()).toEqual(["alice", "alicia@remote.example"]);
     expect(all.statuses).toHaveLength(1);
     expect(all.hashtags.map((t) => t.name)).toEqual(["alicetag"]);
-    expect(await search("alic", "&type=lists")).toEqual({ accounts: [], statuses: [], hashtags: [] });
+    expect(await search("alic", "&type=lists")).toEqual({ accounts: [], statuses: [], hashtags: [], collections: [] });
     expect((await search("alic", "&type=accounts&following=true")).accounts).toEqual([]);
+  });
+
+  // SearchService#url_resource with ResolveURLService#process_local_url (Mastodon 4.7.5): a local collection's uri or
+  // url, when CollectionPolicy#show? lets the viewer see it.
+  it("resolves a local collection's uri and url when R45 shows it, and lists collections no other way", async () => {
+    const { h, search } = await fixture();
+    const { alice, bob } = h.users;
+    const made = await act(h, bob, "/api/v1/collections", { name: "picks", sensitive: false, discoverable: false });
+    const collection = (await made.json<{ collection: { id: string; uri: string; url: string } }>()).collection;
+    expect(collection.uri).toBe(`https://kopje.test/ap/users/bob/collections/${collection.id}`);
+    expect(collection.url).toBe(`https://kopje.test/collections/${collection.id}`);
+    const nothing = { accounts: [], statuses: [], hashtags: [], collections: [] };
+    for (const url of [collection.uri, collection.url]) {
+      expect(await search(url, "&resolve=true")).toMatchObject({ ...nothing, collections: [{ id: collection.id }] });
+      expect((await search(url, "&resolve=true&type=collections")).collections.map((c) => c.id)).toEqual([
+        collection.id,
+      ]);
+      expect(await search(url, "&resolve=true&type=accounts")).toEqual(nothing);
+      expect((await search(url)).collections).toEqual([]);
+      expect((await search(url, "&resolve=true&offset=1&type=collections")).collections).toEqual([]);
+    }
+    expect(await search("https://kopje.test/collections/999999999999999999", "&resolve=true")).toEqual(nothing);
+    expect(await search("collections", "&type=collections")).toEqual(nothing);
+    // An owner who blocks the viewer: not shown, so not found.
+    await block(h.store, bob.id, alice.id);
+    expect(await search(collection.url, "&resolve=true")).toEqual(nothing);
+  });
+
+  // SearchService#call (Mastodon 4.7.5, search_service.rb:11, :17): nothing for a limit of 0; an offset counts only with
+  // a type, so without one a URL resolves at any offset, and with one past 0 it finds nothing.
+  it("answers a local collection's URL under SearchService's limit and offset", async () => {
+    const { h, search } = await fixture();
+    const made = await act(h, h.users.bob, "/api/v1/collections", {
+      name: "picks",
+      sensitive: false,
+      discoverable: true,
+    });
+    const { id, url } = (await made.json<{ collection: { id: string; url: string } }>()).collection;
+    const ids = async (extra: string) => (await search(url, `&resolve=true${extra}`)).collections.map((c) => c.id);
+    expect(await ids("&limit=0")).toEqual([]);
+    expect(await ids("&limit=0&type=collections")).toEqual([]);
+    expect(await ids("&limit=")).toEqual([]);
+    expect(await ids("&offset=1")).toEqual([id]);
+    expect(await ids("&offset=1&type=")).toEqual([id]);
+    expect(await ids("&offset=1&type=collections")).toEqual([]);
+    expect(await ids("&limit=-1&type=collections")).toEqual([id]);
   });
 
   it("answers resolve=true from local data when the query is neither a URL nor an address", async () => {

@@ -280,7 +280,7 @@ describe("GET /api/v1/admin/reports/:id", () => {
       invite_request: null,
       ips: [],
       account: { id: alice.id, acct: "alice" },
-      role: { id: "-99", name: "", permissions: "0", color: "", highlighted: false },
+      role: { id: "-99", name: "", permissions: "0", color: "", highlighted: false, collection_limit: 10 },
     });
     // A remote account: what a missing User gives.
     expect(body.target_account).toMatchObject({
@@ -303,7 +303,7 @@ describe("GET /api/v1/admin/reports/:id", () => {
     expect(assigned.assigned_account).toMatchObject({
       id: owner.id,
       email: OWNER,
-      role: { id: "3", name: "Owner", permissions: "1080", color: "", highlighted: true },
+      role: { id: "3", name: "Owner", permissions: "1080", color: "", highlighted: true, collection_limit: 10 },
     });
   });
 

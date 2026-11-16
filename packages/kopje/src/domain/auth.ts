@@ -249,14 +249,11 @@ export const checkNotSuspended = readOperation<Credential, Suspended | { status:
   (db, credential) => refuseSuspended(db, credential) ?? { status: "ok" },
 );
 
-// Operations of a route whose token is optional (Mastodon's authorize_if_got_token!): no credential reads as an
-// anonymous viewer; a credential must be valid and cover the route's scope (if it declares one), and an app token (no
-// user) is anonymous. The context's time is the credential's request time, or the request time the input carries
-// when there is no credential.
-export function optionalUserReadOperation<I, O>(
-  run: (db: Db, input: I, context: ViewerContext) => O,
-): StoreOperation<I & { credential: Credential | null; now: number }, Authorized<O>> {
-  return readOperation<I & { credential: Credential | null; now: number }, Authorized<O>>((db, input) => {
+type OptionalUserInput = { credential: Credential | null; now: number };
+
+// The credential checked as a route whose token is optional judges it, then `run` with the viewer it names.
+function asOptionalUser<I extends OptionalUserInput, O>(run: (db: Db, input: I, context: ViewerContext) => O) {
+  return (db: Db, input: I): Authorized<O> => {
     if (input.credential === null) {
       return { status: "ok", value: run(db, input, contextOf(null, input.now)) };
     }
@@ -269,8 +266,25 @@ export function optionalUserReadOperation<I, O>(
       return auth;
     }
     return { status: "ok", value: run(db, input, contextOf(auth.viewer.accountId, now)) };
-  });
+  };
 }
+
+// Operations of a route whose token is optional (Mastodon's authorize_if_got_token!): no credential reads as an
+// anonymous viewer; a credential must be valid and cover the route's scope (if it declares one), and an app token (no
+// user) is anonymous. The context's time is the credential's request time, or the request time the input carries
+// when there is no credential. `.atStoreTime(field)` declares one that also takes the Store's own time in `field`.
+export function optionalUserReadOperation<I, O>(
+  run: (db: Db, input: I, context: ViewerContext) => O,
+): StoreOperation<I & OptionalUserInput, Authorized<O>> {
+  return readOperation<I & OptionalUserInput, Authorized<O>>(asOptionalUser<I & OptionalUserInput, O>(run));
+}
+
+optionalUserReadOperation.atStoreTime =
+  <C extends StoreClock>(clock: C) =>
+  <I extends Record<C, number>, O>(
+    run: (db: Db, input: I & OptionalUserInput, context: ViewerContext) => O,
+  ): TimedOperation<I & OptionalUserInput, Authorized<O>, C> =>
+    readOperation.atStoreTime(clock)<I & OptionalUserInput, Authorized<O>>(asOptionalUser(run));
 
 // Mastodon's permission bits (app/models/user_role.rb) of the admin API's route groups.
 export const ADMIN_PERMISSION = {
@@ -295,8 +309,18 @@ export const ADMIN_PERMISSIONS: number =
   ADMIN_PERMISSION.manageFederation |
   ADMIN_PERMISSION.viewDashboard;
 
+// UserRole#collection_limit of every role (Mastodon's default, user_role.rb:8): Kopje has no role editor.
+export const COLLECTION_LIMIT = 10;
+
 // A role as Mastodon's REST::RoleSerializer presents it (permissions is a string).
-export type Role = { id: string; name: string; permissions: string; color: string; highlighted: boolean };
+export type Role = {
+  id: string;
+  name: string;
+  permissions: string;
+  color: string;
+  highlighted: boolean;
+  collection_limit: number;
+};
 
 // The OAuth admin's role: Mastodon's Owner (id 3 on a default install, db/seeds/03_roles.rb), with exactly the
 // permissions Kopje serves. Not `administrator` (bit 1), which implies every permission (UserRole#can?).
@@ -306,10 +330,18 @@ export const OWNER_ROLE: Role = {
   permissions: String(ADMIN_PERMISSIONS),
   color: "",
   highlighted: true,
+  collection_limit: COLLECTION_LIMIT,
 };
 
 // Every other local account's role: Mastodon's default (everyone) role, id -99.
-export const EVERYONE_ROLE: Role = { id: "-99", name: "", permissions: "0", color: "", highlighted: false };
+export const EVERYONE_ROLE: Role = {
+  id: "-99",
+  name: "",
+  permissions: "0",
+  color: "",
+  highlighted: false,
+  collection_limit: COLLECTION_LIMIT,
+};
 
 // The role a local account's credential account presents: Owner for the OAuth admin, read in the transaction that
 // presents it through the operation's one lookup (adminAccountIdOnce, which its `roles` shares), and the everyone role

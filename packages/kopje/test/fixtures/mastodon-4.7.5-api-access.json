@@ -7,6 +7,8 @@
     "scopes: any one of them is accepted (null: no scope check). user: a token without a user is refused.",
     "Not read: instance settings (DISALLOW_UNAUTHENTICATED_API_ACCESS, limited federation mode), serializers that read the current user.",
     "unresolved: the Ruby could not be read with certainty; the route is not compared until an exception says why.",
+    "cache: public is the Cache-Control helper the action runs (anonymous: cache_if_unauthenticated!, everyone: cache_even_if_authenticated!, null: neither), vary its vary_by (null: empty); cache.unresolved: what could not be read.",
+    "deprecation: date is the date of the deprecate_api that marks the action's answers (null: none); deprecation.unresolved: what could not be read.",
     "params: the request parameters the action reads (names in Params form: a, a[], a[b], a[][b]); params.unresolved: reads it could not name.",
     "entities: the fields each serializer of ENTITIES emits (optional: an if:/unless: decides); entities.unresolved: what could not be read.",
     "On a Mastodon version bump: regenerate, review the new exceptions the tests report, and run a Claude + Codex audit for read-but-dropped parameters."
@@ -20,6 +22,8 @@
       "token": "required",
       "scopes": ["profile"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -30,6 +34,8 @@
       "token": "required",
       "scopes": ["profile"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -41,6 +47,8 @@
       "scopes": null,
       "user": false,
       "guards": ["require_public_status!"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["maxheight", "maxwidth", "url"], "unresolved": [] }
     },
     {
@@ -51,6 +59,8 @@
       "token": "required",
       "scopes": ["read"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -62,6 +72,13 @@
       "scopes": ["read", "read:collections"],
       "user": false,
       "unresolved": ["Pundit policy: authorize @account, :index_collections?; verify_authorized"],
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/collections_controller.rb: `deprecate_api '2026-06-10', if: :alpha_path?`"
+        ]
+      },
       "params": { "names": ["limit", "offset"], "unresolved": [] }
     },
     {
@@ -72,6 +89,8 @@
       "token": "required",
       "scopes": ["read", "read:collections"],
       "user": true,
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "offset"], "unresolved": [] }
     },
     {
@@ -82,6 +101,13 @@
       "token": "required",
       "scopes": ["write", "write:collections"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/collection_items_controller.rb: `deprecate_api '2026-06-10', if: :alpha_path?`"
+        ]
+      },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -92,6 +118,13 @@
       "token": "required",
       "scopes": ["write", "write:collections"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/collection_items_controller.rb: `deprecate_api '2026-06-10', if: :alpha_path?`"
+        ]
+      },
       "params": { "names": ["account_id"], "unresolved": [] }
     },
     {
@@ -102,6 +135,13 @@
       "token": "required",
       "scopes": ["write", "write:collections"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/collection_items_controller.rb: `deprecate_api '2026-06-10', if: :alpha_path?`"
+        ]
+      },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -112,6 +152,13 @@
       "token": "required",
       "scopes": ["write", "write:collections"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/collections_controller.rb: `deprecate_api '2026-06-10', if: :alpha_path?`"
+        ]
+      },
       "params": {
         "names": ["account_ids[]", "description", "discoverable", "language", "name", "sensitive", "tag_name"],
         "unresolved": []
@@ -126,6 +173,13 @@
       "scopes": ["read", "read:collections"],
       "user": false,
       "unresolved": ["Pundit policy: authorize @collection, :show?; verify_authorized"],
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/collections_controller.rb: `deprecate_api '2026-06-10', if: :alpha_path?`"
+        ]
+      },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -136,6 +190,13 @@
       "token": "required",
       "scopes": ["write", "write:collections"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/collections_controller.rb: `deprecate_api '2026-06-10', if: :alpha_path?`"
+        ]
+      },
       "params": {
         "names": ["description", "discoverable", "language", "name", "sensitive", "tag_name"],
         "unresolved": []
@@ -149,6 +210,13 @@
       "token": "required",
       "scopes": ["write", "write:collections"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/collections_controller.rb: `deprecate_api '2026-06-10', if: :alpha_path?`"
+        ]
+      },
       "params": {
         "names": ["description", "discoverable", "language", "name", "sensitive", "tag_name"],
         "unresolved": []
@@ -162,6 +230,13 @@
       "token": "required",
       "scopes": ["write", "write:collections"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/collections_controller.rb: `deprecate_api '2026-06-10', if: :alpha_path?`"
+        ]
+      },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -173,6 +248,8 @@
       "scopes": ["read", "read:accounts"],
       "user": false,
       "unresolved": ["Pundit policy: authorize @status, :show?"],
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "since_id"], "unresolved": [] }
     },
     {
@@ -184,6 +261,8 @@
       "scopes": ["read", "read:accounts"],
       "user": false,
       "unresolved": ["Pundit policy: authorize @status, :show?"],
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "since_id"], "unresolved": [] }
     },
     {
@@ -194,6 +273,8 @@
       "token": "required",
       "scopes": ["write", "write:statuses"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["visibility"], "unresolved": [] }
     },
     {
@@ -205,6 +286,8 @@
       "scopes": ["read", "read:statuses"],
       "user": false,
       "unresolved": ["Pundit policy: authorize @status, :show?"],
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -215,6 +298,8 @@
       "token": "required",
       "scopes": ["write", "write:statuses"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -226,6 +311,8 @@
       "scopes": ["write", "write:statuses"],
       "user": false,
       "unresolved": ["Pundit policy: authorize @quote, :revoke?; authorize @status, :show?"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -237,6 +324,8 @@
       "scopes": ["read", "read:statuses"],
       "user": false,
       "unresolved": ["Pundit policy: authorize @status, :show?"],
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "since_id"], "unresolved": [] }
     },
     {
@@ -247,6 +336,8 @@
       "token": "required",
       "scopes": ["write", "write:favourites"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -257,6 +348,8 @@
       "token": "required",
       "scopes": ["write", "write:favourites"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -267,6 +360,8 @@
       "token": "required",
       "scopes": ["write", "write:bookmarks"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -277,6 +372,8 @@
       "token": "required",
       "scopes": ["write", "write:bookmarks"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -287,6 +384,8 @@
       "token": "required",
       "scopes": ["write", "write:mutes"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -297,6 +396,8 @@
       "token": "required",
       "scopes": ["write", "write:mutes"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -307,6 +408,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -317,6 +420,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -328,6 +433,8 @@
       "scopes": ["read", "read:statuses"],
       "user": false,
       "unresolved": ["Pundit policy: authorize @status, :show?"],
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -339,6 +446,8 @@
       "scopes": ["read", "read:statuses"],
       "user": false,
       "unresolved": ["Pundit policy: authorize @status, :show?"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -350,6 +459,8 @@
       "scopes": ["write", "write:statuses"],
       "user": false,
       "unresolved": ["Pundit policy: authorize @status, :update?; authorize @status, :show?"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["quote_approval_policy"], "unresolved": [] }
     },
     {
@@ -361,6 +472,8 @@
       "scopes": ["write", "write:statuses"],
       "user": false,
       "unresolved": ["Pundit policy: authorize @status, :update?; authorize @status, :show?"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["quote_approval_policy"], "unresolved": [] }
     },
     {
@@ -371,6 +484,8 @@
       "token": "required",
       "scopes": ["read", "read:statuses"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -381,6 +496,8 @@
       "token": "optional",
       "scopes": ["read", "read:statuses"],
       "user": false,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["id[]"], "unresolved": [] }
     },
     {
@@ -391,6 +508,8 @@
       "token": "required",
       "scopes": ["write", "write:statuses"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "allowed_mentions[]",
@@ -421,6 +540,8 @@
       "scopes": ["read", "read:statuses"],
       "user": false,
       "unresolved": ["Pundit policy: authorize @status, :show?"],
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -431,6 +552,8 @@
       "token": "required",
       "scopes": ["write", "write:statuses"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "language",
@@ -459,6 +582,8 @@
       "token": "required",
       "scopes": ["write", "write:statuses"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "language",
@@ -487,6 +612,8 @@
       "token": "required",
       "scopes": ["write", "write:statuses"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["delete_media"], "unresolved": [] }
     },
     {
@@ -497,6 +624,8 @@
       "token": "required",
       "scopes": ["read", "read:statuses"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "min_id", "since_id"], "unresolved": [] }
     },
     {
@@ -508,6 +637,8 @@
       "scopes": ["read", "read:statuses"],
       "user": true,
       "unresolved": ["require_user! if: \"require_auth?\""],
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": ["limit", "local", "max_id", "min_id", "only_media", "remote", "since_id"],
         "unresolved": []
@@ -522,6 +653,8 @@
       "scopes": ["read", "read:statuses"],
       "user": true,
       "unresolved": ["require_user! if: \"require_auth?\""],
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "local", "max_id", "min_id", "remote", "since_id", "url"], "unresolved": [] }
     },
     {
@@ -533,6 +666,8 @@
       "scopes": ["read", "read:statuses"],
       "user": true,
       "unresolved": ["require_user! if: \"require_auth?\""],
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": ["all[]", "any[]", "limit", "local", "max_id", "min_id", "none[]", "only_media", "remote", "since_id"],
         "unresolved": []
@@ -546,6 +681,8 @@
       "token": "required",
       "scopes": ["read", "read:lists"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "min_id", "since_id"], "unresolved": [] }
     },
     {
@@ -556,6 +693,8 @@
       "token": "none",
       "scopes": null,
       "user": false,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -566,6 +705,8 @@
       "token": "none",
       "scopes": null,
       "user": false,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -576,6 +717,15 @@
       "token": "none",
       "scopes": null,
       "user": false,
+      "cache": {
+        "public": null,
+        "vary": null,
+        "unresolved": [
+          "app/controllers/api/v1/custom_emojis_controller.rb: `vary_by '', unless: :disallow_unauthenticated_api_access?`",
+          "cache_even_if_authenticated! under a condition"
+        ]
+      },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -586,6 +736,8 @@
       "token": "required",
       "scopes": ["read", "read:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": "2021-05-16" },
       "params": { "names": ["limit", "offset"], "unresolved": [] }
     },
     {
@@ -596,6 +748,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -606,6 +760,8 @@
       "token": "required",
       "scopes": ["read", "read:statuses"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "min_id", "since_id"], "unresolved": [] }
     },
     {
@@ -616,6 +772,8 @@
       "token": "required",
       "scopes": ["read", "read:statuses"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -626,6 +784,8 @@
       "token": "required",
       "scopes": ["write", "write:statuses"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["scheduled_at"], "unresolved": [] }
     },
     {
@@ -636,6 +796,8 @@
       "token": "required",
       "scopes": ["write", "write:statuses"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["scheduled_at"], "unresolved": [] }
     },
     {
@@ -646,6 +808,8 @@
       "token": "required",
       "scopes": ["write", "write:statuses"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -656,6 +820,8 @@
       "token": "required",
       "scopes": ["read", "read:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -666,6 +832,8 @@
       "token": "required",
       "scopes": null,
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -676,6 +844,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -686,6 +856,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -696,6 +868,8 @@
       "token": "required",
       "scopes": ["read", "read:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -706,6 +880,8 @@
       "token": "required",
       "scopes": ["read", "read:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -716,6 +892,8 @@
       "token": "required",
       "scopes": ["read", "read:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -726,6 +904,8 @@
       "token": "required",
       "scopes": ["write", "write:favourites"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -736,6 +916,8 @@
       "token": "required",
       "scopes": ["write", "write:favourites"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -746,6 +928,8 @@
       "token": "required",
       "scopes": ["write", "write:favourites"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -756,6 +940,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -766,6 +952,8 @@
       "token": "required",
       "scopes": null,
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -776,6 +964,8 @@
       "token": "required",
       "scopes": ["write", "write:conversations"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -786,6 +976,8 @@
       "token": "required",
       "scopes": ["write", "write:conversations"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -796,6 +988,8 @@
       "token": "required",
       "scopes": ["read", "read:statuses"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "min_id", "since_id"], "unresolved": [] }
     },
     {
@@ -806,6 +1000,8 @@
       "token": "required",
       "scopes": ["write", "write:conversations"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -816,6 +1012,8 @@
       "token": "required",
       "scopes": ["write", "write:media"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["description", "file", "focus", "thumbnail"], "unresolved": [] }
     },
     {
@@ -826,6 +1024,8 @@
       "token": "required",
       "scopes": ["write", "write:media"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -836,6 +1036,8 @@
       "token": "required",
       "scopes": ["write", "write:media"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["description", "focus", "thumbnail"], "unresolved": [] }
     },
     {
@@ -846,6 +1048,8 @@
       "token": "required",
       "scopes": ["write", "write:media"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["description", "focus", "thumbnail"], "unresolved": [] }
     },
     {
@@ -856,6 +1060,8 @@
       "token": "required",
       "scopes": ["write", "write:media"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -866,6 +1072,8 @@
       "token": "required",
       "scopes": ["follow", "read", "read:blocks"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "since_id"], "unresolved": [] }
     },
     {
@@ -876,6 +1084,8 @@
       "token": "required",
       "scopes": ["follow", "read", "read:mutes"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "since_id"], "unresolved": [] }
     },
     {
@@ -886,6 +1096,8 @@
       "token": "required",
       "scopes": ["read", "read:favourites"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "min_id", "since_id"], "unresolved": [] }
     },
     {
@@ -896,6 +1108,8 @@
       "token": "required",
       "scopes": ["read", "read:bookmarks"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "min_id", "since_id"], "unresolved": [] }
     },
     {
@@ -906,6 +1120,8 @@
       "token": "required",
       "scopes": ["write", "write:reports"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "account_id",
@@ -928,6 +1144,13 @@
       "token": "optional",
       "scopes": null,
       "user": false,
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/trends/tags_controller.rb: `deprecate_api '2022-03-30', only: :index, if: -> { request.path == '/api/v1/trends' }`"
+        ]
+      },
       "params": { "names": ["limit", "offset"], "unresolved": [] }
     },
     {
@@ -938,6 +1161,8 @@
       "token": "required",
       "scopes": ["read", "read:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": "2022-11-14" },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -948,6 +1173,8 @@
       "token": "required",
       "scopes": ["write", "write:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": "2022-11-14" },
       "params": { "names": ["context[]", "expires_in", "irreversible", "phrase", "whole_word"], "unresolved": [] }
     },
     {
@@ -958,6 +1185,8 @@
       "token": "required",
       "scopes": ["read", "read:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": "2022-11-14" },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -968,6 +1197,8 @@
       "token": "required",
       "scopes": ["write", "write:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": "2022-11-14" },
       "params": { "names": ["context[]", "expires_in", "irreversible", "phrase", "whole_word"], "unresolved": [] }
     },
     {
@@ -978,6 +1209,8 @@
       "token": "required",
       "scopes": ["write", "write:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": "2022-11-14" },
       "params": { "names": ["context[]", "expires_in", "irreversible", "phrase", "whole_word"], "unresolved": [] }
     },
     {
@@ -988,6 +1221,8 @@
       "token": "required",
       "scopes": ["write", "write:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": "2022-11-14" },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -998,6 +1233,8 @@
       "token": "required",
       "scopes": ["read", "read:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "since_id"], "unresolved": [] }
     },
     {
@@ -1008,6 +1245,8 @@
       "token": "required",
       "scopes": ["read", "read:statuses"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["timeline[]"], "unresolved": [] }
     },
     {
@@ -1018,6 +1257,8 @@
       "token": "required",
       "scopes": ["write", "write:statuses"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["home[last_read_id]", "notifications[last_read_id]"], "unresolved": [] }
     },
     {
@@ -1028,6 +1269,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1038,6 +1281,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1048,6 +1293,8 @@
       "token": "required",
       "scopes": ["profile", "read", "read:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1058,6 +1305,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "attribution_domains[]",
@@ -1089,6 +1338,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "attribution_domains[]",
@@ -1120,6 +1371,8 @@
       "token": "required",
       "scopes": null,
       "user": false,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1130,6 +1383,8 @@
       "token": "none",
       "scopes": null,
       "user": false,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["client_name", "redirect_uris", "redirect_uris[]", "scopes", "website"], "unresolved": [] }
     },
     {
@@ -1140,6 +1395,13 @@
       "token": "optional",
       "scopes": null,
       "user": false,
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/trends/tags_controller.rb: `deprecate_api '2022-03-30', only: :index, if: -> { request.path == '/api/v1/trends' }`"
+        ]
+      },
       "params": { "names": ["limit", "offset"], "unresolved": [] }
     },
     {
@@ -1150,6 +1412,8 @@
       "token": "optional",
       "scopes": null,
       "user": false,
+      "cache": { "public": "anonymous", "vary": "Authorization, Accept-Language" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "offset"], "unresolved": [] }
     },
     {
@@ -1160,6 +1424,8 @@
       "token": "optional",
       "scopes": null,
       "user": false,
+      "cache": { "public": "anonymous", "vary": "Authorization, Accept-Language" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "offset"], "unresolved": [] }
     },
     {
@@ -1171,6 +1437,8 @@
       "scopes": ["write", "write:accounts"],
       "user": false,
       "guards": ["require_user_owned_by_application!", "require_user_not_confirmed!"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["email"], "unresolved": [] }
     },
     {
@@ -1181,6 +1449,8 @@
       "token": "required",
       "scopes": ["read", "read:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1192,6 +1462,8 @@
       "scopes": null,
       "user": false,
       "guards": ["require_enabled_api!"],
+      "cache": { "public": "everyone", "vary": null },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1202,6 +1474,8 @@
       "token": "none",
       "scopes": null,
       "user": false,
+      "cache": { "public": "everyone", "vary": null },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1213,6 +1487,16 @@
       "scopes": null,
       "user": false,
       "guards": ["require_enabled_api!"],
+      "cache": {
+        "public": null,
+        "vary": null,
+        "unresolved": [
+          "app/controllers/api/v1/instances/domain_blocks_controller.rb: `vary_by '', if: -> { Setting.show_domain_blocks == 'all' }`",
+          "cache_even_if_authenticated! under a condition",
+          "cache_if_unauthenticated! under a condition"
+        ]
+      },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1223,6 +1507,8 @@
       "token": "none",
       "scopes": null,
       "user": false,
+      "cache": { "public": "everyone", "vary": null },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1233,6 +1519,8 @@
       "token": "none",
       "scopes": null,
       "user": false,
+      "cache": { "public": "everyone", "vary": null },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1243,6 +1531,8 @@
       "token": "none",
       "scopes": null,
       "user": false,
+      "cache": { "public": "everyone", "vary": null },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1253,6 +1543,8 @@
       "token": "none",
       "scopes": null,
       "user": false,
+      "cache": { "public": "everyone", "vary": null },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1263,6 +1555,8 @@
       "token": "none",
       "scopes": null,
       "user": false,
+      "cache": { "public": "everyone", "vary": null },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1273,6 +1567,8 @@
       "token": "none",
       "scopes": null,
       "user": false,
+      "cache": { "public": "everyone", "vary": null },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1284,6 +1580,8 @@
       "scopes": null,
       "user": false,
       "guards": ["require_enabled_api!"],
+      "cache": { "public": "everyone", "vary": null },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1294,6 +1592,8 @@
       "token": "none",
       "scopes": null,
       "user": false,
+      "cache": { "public": "everyone", "vary": null },
+      "deprecation": { "date": "2022-11-14" },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1305,6 +1605,8 @@
       "scopes": null,
       "user": false,
       "guards": ["require_enabled_api!"],
+      "cache": { "public": "everyone", "vary": null },
+      "deprecation": { "date": null },
       "params": { "names": ["q"], "unresolved": [] }
     },
     {
@@ -1315,6 +1617,8 @@
       "token": "required",
       "scopes": ["follow", "write", "write:blocks"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["domain"], "unresolved": [] }
     },
     {
@@ -1325,6 +1629,8 @@
       "token": "required",
       "scopes": ["follow", "write", "write:blocks"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["domain"], "unresolved": [] }
     },
     {
@@ -1335,6 +1641,8 @@
       "token": "required",
       "scopes": ["follow", "read", "read:blocks"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "since_id"], "unresolved": [] }
     },
     {
@@ -1345,6 +1653,8 @@
       "token": "required",
       "scopes": ["follow", "write", "write:blocks"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["domain"], "unresolved": [] }
     },
     {
@@ -1356,6 +1666,8 @@
       "scopes": null,
       "user": false,
       "guards": ["require_enabled!"],
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "local", "offset", "order"], "unresolved": [] }
     },
     {
@@ -1366,6 +1678,8 @@
       "token": "required",
       "scopes": ["follow", "write", "write:follows"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1376,6 +1690,8 @@
       "token": "required",
       "scopes": ["follow", "write", "write:follows"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1386,6 +1702,8 @@
       "token": "required",
       "scopes": ["follow", "read", "read:follows"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "since_id"], "unresolved": [] }
     },
     {
@@ -1396,6 +1714,8 @@
       "token": "required",
       "scopes": ["write", "write:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["id[]"], "unresolved": [] }
     },
     {
@@ -1406,6 +1726,8 @@
       "token": "required",
       "scopes": ["write", "write:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["id[]"], "unresolved": [] }
     },
     {
@@ -1416,6 +1738,8 @@
       "token": "required",
       "scopes": ["read", "read:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1426,6 +1750,8 @@
       "token": "required",
       "scopes": ["write", "write:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1436,6 +1762,8 @@
       "token": "required",
       "scopes": ["write", "write:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1446,6 +1774,8 @@
       "token": "required",
       "scopes": ["read", "read:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "min_id", "since_id"], "unresolved": [] }
     },
     {
@@ -1456,6 +1786,8 @@
       "token": "required",
       "scopes": ["read", "read:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1466,6 +1798,8 @@
       "token": "required",
       "scopes": ["read", "read:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1476,6 +1810,8 @@
       "token": "required",
       "scopes": ["write", "write:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "filter_bots",
@@ -1495,6 +1831,8 @@
       "token": "required",
       "scopes": ["write", "write:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "filter_bots",
@@ -1514,6 +1852,8 @@
       "token": "required",
       "scopes": ["write", "write:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1524,6 +1864,8 @@
       "token": "required",
       "scopes": ["read", "read:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["account_id", "exclude_types[]", "include_filtered", "limit", "types[]"], "unresolved": [] }
     },
     {
@@ -1534,6 +1876,8 @@
       "token": "required",
       "scopes": ["write", "write:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1544,6 +1888,8 @@
       "token": "required",
       "scopes": ["read", "read:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "account_id",
@@ -1567,6 +1913,8 @@
       "token": "required",
       "scopes": ["read", "read:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["supported_types[]"], "unresolved": [] }
     },
     {
@@ -1577,6 +1925,8 @@
       "token": "required",
       "scopes": ["profile", "read", "read:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1587,6 +1937,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "attribution_domains[]",
@@ -1619,6 +1971,8 @@
       "token": "required",
       "scopes": ["read", "read:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["following", "limit", "offset", "q", "resolve"], "unresolved": [] }
     },
     {
@@ -1629,6 +1983,8 @@
       "token": "optional",
       "scopes": ["read", "read:accounts"],
       "user": false,
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["acct"], "unresolved": [] }
     },
     {
@@ -1639,6 +1995,8 @@
       "token": "required",
       "scopes": ["read", "read:follows"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["id[]", "with_suspended"], "unresolved": [] }
     },
     {
@@ -1649,6 +2007,8 @@
       "token": "required",
       "scopes": ["read", "read:follows"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["id[]"], "unresolved": [] }
     },
     {
@@ -1659,6 +2019,8 @@
       "token": "optional",
       "scopes": ["read", "read:statuses"],
       "user": false,
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "exclude_direct",
@@ -1683,6 +2045,8 @@
       "token": "optional",
       "scopes": ["read", "read:accounts"],
       "user": false,
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "since_id"], "unresolved": [] }
     },
     {
@@ -1693,6 +2057,8 @@
       "token": "optional",
       "scopes": ["read", "read:accounts"],
       "user": false,
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "since_id"], "unresolved": [] }
     },
     {
@@ -1703,6 +2069,8 @@
       "token": "required",
       "scopes": ["read", "read:lists"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1713,6 +2081,8 @@
       "token": "required",
       "scopes": null,
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": "2022-03-30" },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1723,6 +2093,8 @@
       "token": "none",
       "scopes": null,
       "user": false,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1733,6 +2105,8 @@
       "token": "optional",
       "scopes": ["read", "read:accounts"],
       "user": false,
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "since_id"], "unresolved": [] }
     },
     {
@@ -1744,6 +2118,8 @@
       "scopes": null,
       "user": false,
       "guards": ["require_feature_enabled!", "require_account_permissions!"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["email"], "unresolved": [] }
     },
     {
@@ -1755,6 +2131,13 @@
       "scopes": ["read", "read:collections"],
       "user": false,
       "unresolved": ["Pundit policy: authorize @account, :index_collections?; verify_authorized"],
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/collections_controller.rb: `deprecate_api '2026-06-10', if: :alpha_path?`"
+        ]
+      },
       "params": { "names": ["limit", "offset"], "unresolved": [] }
     },
     {
@@ -1765,6 +2148,8 @@
       "token": "required",
       "scopes": ["read", "read:collections"],
       "user": true,
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "offset"], "unresolved": [] }
     },
     {
@@ -1775,6 +2160,8 @@
       "token": "required",
       "scopes": ["follow", "write", "write:follows"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["languages[]", "notify", "reblogs"], "unresolved": [] }
     },
     {
@@ -1785,6 +2172,8 @@
       "token": "required",
       "scopes": ["follow", "write", "write:follows"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1795,6 +2184,8 @@
       "token": "required",
       "scopes": ["follow", "write", "write:follows"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1805,6 +2196,8 @@
       "token": "required",
       "scopes": ["follow", "write", "write:blocks"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1815,6 +2208,8 @@
       "token": "required",
       "scopes": ["follow", "write", "write:blocks"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1825,6 +2220,8 @@
       "token": "required",
       "scopes": ["follow", "write", "write:mutes"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["duration", "notifications"], "unresolved": [] }
     },
     {
@@ -1835,6 +2232,8 @@
       "token": "required",
       "scopes": ["follow", "write", "write:mutes"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1845,6 +2244,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1855,6 +2256,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1865,6 +2268,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1875,6 +2280,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1885,6 +2292,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["comment"], "unresolved": [] }
     },
     {
@@ -1895,6 +2304,8 @@
       "token": "optional",
       "scopes": ["read", "read:accounts"],
       "user": false,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["id[]"], "unresolved": [] }
     },
     {
@@ -1906,6 +2317,8 @@
       "scopes": ["write", "write:accounts"],
       "user": false,
       "guards": ["require_client_credentials!"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "agreement",
@@ -1929,6 +2342,8 @@
       "token": "optional",
       "scopes": ["read", "read:accounts"],
       "user": false,
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1939,6 +2354,8 @@
       "token": "required",
       "scopes": ["follow", "write", "write:follows"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1949,6 +2366,8 @@
       "token": "required",
       "scopes": ["follow", "write", "write:follows"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1959,6 +2378,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1969,6 +2390,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1979,6 +2402,8 @@
       "token": "optional",
       "scopes": null,
       "user": false,
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -1989,6 +2414,8 @@
       "token": "required",
       "scopes": ["follow", "read", "read:follows"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "min_id", "since_id"], "unresolved": [] }
     },
     {
@@ -1999,6 +2426,8 @@
       "token": "required",
       "scopes": ["write", "write:lists"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["account_ids[]"], "unresolved": [] }
     },
     {
@@ -2009,6 +2438,8 @@
       "token": "required",
       "scopes": ["read", "read:lists"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "since_id"], "unresolved": [] }
     },
     {
@@ -2019,6 +2450,8 @@
       "token": "required",
       "scopes": ["write", "write:lists"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["account_ids[]"], "unresolved": [] }
     },
     {
@@ -2029,6 +2462,8 @@
       "token": "required",
       "scopes": ["read", "read:lists"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2039,6 +2474,8 @@
       "token": "required",
       "scopes": ["write", "write:lists"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["exclusive", "replies_policy", "title"], "unresolved": [] }
     },
     {
@@ -2049,6 +2486,8 @@
       "token": "required",
       "scopes": ["read", "read:lists"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2059,6 +2498,8 @@
       "token": "required",
       "scopes": ["write", "write:lists"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["exclusive", "replies_policy", "title"], "unresolved": [] }
     },
     {
@@ -2069,6 +2510,8 @@
       "token": "required",
       "scopes": ["write", "write:lists"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["exclusive", "replies_policy", "title"], "unresolved": [] }
     },
     {
@@ -2079,6 +2522,8 @@
       "token": "required",
       "scopes": ["write", "write:lists"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2089,6 +2534,8 @@
       "token": "required",
       "scopes": ["read", "read:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2099,6 +2546,8 @@
       "token": "required",
       "scopes": ["read", "read:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2109,6 +2558,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["name"], "unresolved": [] }
     },
     {
@@ -2119,6 +2570,8 @@
       "token": "required",
       "scopes": ["write", "write:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2129,6 +2582,8 @@
       "token": "required",
       "scopes": ["write", "write:statuses"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["choices[]"], "unresolved": [] }
     },
     {
@@ -2140,6 +2595,8 @@
       "scopes": ["read", "read:statuses"],
       "user": false,
       "unresolved": ["Pundit policy: authorize @poll.status, :show?"],
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2150,6 +2607,8 @@
       "token": "required",
       "scopes": ["push"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "data[alerts][added_to_collection]",
@@ -2186,6 +2645,8 @@
       "token": "required",
       "scopes": ["push"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2196,6 +2657,8 @@
       "token": "required",
       "scopes": ["push"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "data[alerts][added_to_collection]",
@@ -2228,6 +2691,8 @@
       "token": "required",
       "scopes": ["push"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "data[alerts][added_to_collection]",
@@ -2260,6 +2725,8 @@
       "token": "required",
       "scopes": ["push"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2272,6 +2739,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions", "require_local_account!"],
       "unresolved": ["Pundit policy: authorize @account.user, :enable?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2284,6 +2753,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @account, :unsensitive?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2296,6 +2767,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @account, :unsilence?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2308,6 +2781,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @account, :unsuspend?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2320,6 +2795,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions", "require_local_account!"],
       "unresolved": ["Pundit policy: authorize @account.user, :approve?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2332,6 +2809,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions", "require_local_account!"],
       "unresolved": ["Pundit policy: authorize @account.user, :reject?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2344,6 +2823,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @account, :show?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": ["report_id", "send_email_notification", "text", "type", "warning_preset_id"],
         "unresolved": []
@@ -2359,6 +2840,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :account, :index?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "active",
@@ -2393,6 +2876,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @account, :show?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2405,6 +2890,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @account, :destroy?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2417,6 +2904,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @report, :update?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2429,6 +2918,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @report, :update?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2441,6 +2932,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @report, :update?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2453,6 +2946,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @report, :update?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2465,6 +2960,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :report, :index?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": ["account_id", "limit", "max_id", "min_id", "resolved", "since_id", "target_account_id", "unresolved"],
         "unresolved": []
@@ -2480,6 +2977,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @report, :show?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2492,6 +2991,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @report, :update?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["category", "rule_ids[]"], "unresolved": [] }
     },
     {
@@ -2504,6 +3005,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @report, :update?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["category", "rule_ids[]"], "unresolved": [] }
     },
     {
@@ -2516,6 +3019,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :domain_allow, :index?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "min_id", "since_id"], "unresolved": [] }
     },
     {
@@ -2528,6 +3033,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :domain_allow, :create?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["domain"], "unresolved": [] }
     },
     {
@@ -2540,6 +3047,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @domain_allow, :show?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2552,6 +3061,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @domain_allow, :destroy?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2564,6 +3075,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :domain_block, :index?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "min_id", "since_id"], "unresolved": [] }
     },
     {
@@ -2576,6 +3089,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :domain_block, :create?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "domain",
@@ -2599,6 +3114,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @domain_block, :show?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2611,6 +3128,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @domain_block, :update?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": ["obfuscate", "private_comment", "public_comment", "reject_media", "reject_reports", "severity"],
         "unresolved": []
@@ -2626,6 +3145,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @domain_block, :update?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": ["obfuscate", "private_comment", "public_comment", "reject_media", "reject_reports", "severity"],
         "unresolved": []
@@ -2641,6 +3162,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @domain_block, :destroy?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2653,6 +3176,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :email_domain_block, :index?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "min_id", "since_id"], "unresolved": [] }
     },
     {
@@ -2665,6 +3190,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :email_domain_block, :create?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["allow_with_approval", "domain"], "unresolved": [] }
     },
     {
@@ -2677,6 +3204,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @email_domain_block, :show?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2689,6 +3218,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @email_domain_block, :destroy?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2701,6 +3232,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :ip_block, :index?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "min_id", "since_id"], "unresolved": [] }
     },
     {
@@ -2713,6 +3246,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :ip_block, :create?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["comment", "expires_in", "ip", "severity"], "unresolved": [] }
     },
     {
@@ -2725,6 +3260,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @ip_block, :show?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2737,6 +3274,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @ip_block, :update?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["comment", "expires_in", "ip", "severity"], "unresolved": [] }
     },
     {
@@ -2749,6 +3288,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @ip_block, :update?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["comment", "expires_in", "ip", "severity"], "unresolved": [] }
     },
     {
@@ -2761,6 +3302,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @ip_block, :destroy?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2773,6 +3316,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :tag, :review?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2785,6 +3330,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :tag, :review?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2796,6 +3343,17 @@
       "scopes": ["admin:read"],
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
+      "cache": {
+        "public": null,
+        "vary": "Authorization",
+        "unresolved": ["cache_if_unauthenticated! under a condition"]
+      },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/trends/tags_controller.rb: `deprecate_api '2022-03-30', only: :index, if: -> { request.path == '/api/v1/trends' }`"
+        ]
+      },
       "params": { "names": ["limit", "offset"], "unresolved": [] }
     },
     {
@@ -2808,6 +3366,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :preview_card, :review?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization, Accept-Language" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2820,6 +3380,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :preview_card, :review?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization, Accept-Language" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2831,6 +3393,12 @@
       "scopes": ["admin:read"],
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
+      "cache": {
+        "public": null,
+        "vary": "Authorization, Accept-Language",
+        "unresolved": ["cache_if_unauthenticated! under a condition"]
+      },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "offset"], "unresolved": [] }
     },
     {
@@ -2843,6 +3411,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize [:admin, :status], :review?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization, Accept-Language" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2855,6 +3425,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize [:admin, :status], :review?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization, Accept-Language" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2866,6 +3438,12 @@
       "scopes": ["admin:read"],
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
+      "cache": {
+        "public": null,
+        "vary": "Authorization, Accept-Language",
+        "unresolved": ["cache_if_unauthenticated! under a condition"]
+      },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "offset"], "unresolved": [] }
     },
     {
@@ -2878,6 +3456,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :preview_card_provider, :review?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2890,6 +3470,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :preview_card_provider, :review?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -2902,6 +3484,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :preview_card_provider, :index?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "min_id", "since_id"], "unresolved": [] }
     },
     {
@@ -2914,6 +3498,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :dashboard, :index?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": ["end_at", "keys[]", "start_at"],
         "unresolved": ["app/controllers/api/v1/admin/measures_controller.rb set_measures: params used whole `params`"]
@@ -2929,6 +3515,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :dashboard, :index?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": ["end_at", "keys[]", "limit", "start_at"],
         "unresolved": [
@@ -2946,6 +3534,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :dashboard, :index?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["end_at", "frequency", "start_at"], "unresolved": [] }
     },
     {
@@ -2958,6 +3548,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :canonical_email_block, :test?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["email"], "unresolved": [] }
     },
     {
@@ -2970,6 +3562,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :canonical_email_block, :index?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "min_id", "since_id"], "unresolved": [] }
     },
     {
@@ -2982,6 +3576,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :canonical_email_block, :create?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["canonical_email_hash", "email"], "unresolved": [] }
     },
     {
@@ -2994,6 +3590,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @canonical_email_block, :show?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3006,6 +3604,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @canonical_email_block, :destroy?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3018,6 +3618,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :tag, :index?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "min_id", "since_id"], "unresolved": [] }
     },
     {
@@ -3030,6 +3632,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @tag, :show?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3042,6 +3646,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @tag, :update?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["display_name", "listable", "trendable", "usable"], "unresolved": [] }
     },
     {
@@ -3054,6 +3660,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize @tag, :update?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["display_name", "listable", "trendable", "usable"], "unresolved": [] }
     },
     {
@@ -3064,6 +3672,13 @@
       "token": "required",
       "scopes": ["write", "write:collections"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/collection_items_controller.rb: `deprecate_api '2026-06-10', if: :alpha_path?`"
+        ]
+      },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3074,6 +3689,13 @@
       "token": "required",
       "scopes": ["write", "write:collections"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/collection_items_controller.rb: `deprecate_api '2026-06-10', if: :alpha_path?`"
+        ]
+      },
       "params": { "names": ["account_id"], "unresolved": [] }
     },
     {
@@ -3084,6 +3706,13 @@
       "token": "required",
       "scopes": ["write", "write:collections"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/collection_items_controller.rb: `deprecate_api '2026-06-10', if: :alpha_path?`"
+        ]
+      },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3094,6 +3723,13 @@
       "token": "required",
       "scopes": ["write", "write:collections"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/collections_controller.rb: `deprecate_api '2026-06-10', if: :alpha_path?`"
+        ]
+      },
       "params": {
         "names": ["account_ids[]", "description", "discoverable", "language", "name", "sensitive", "tag_name"],
         "unresolved": []
@@ -3108,6 +3744,13 @@
       "scopes": ["read", "read:collections"],
       "user": false,
       "unresolved": ["Pundit policy: authorize @collection, :show?; verify_authorized"],
+      "cache": { "public": "anonymous", "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/collections_controller.rb: `deprecate_api '2026-06-10', if: :alpha_path?`"
+        ]
+      },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3118,6 +3761,13 @@
       "token": "required",
       "scopes": ["write", "write:collections"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/collections_controller.rb: `deprecate_api '2026-06-10', if: :alpha_path?`"
+        ]
+      },
       "params": {
         "names": ["description", "discoverable", "language", "name", "sensitive", "tag_name"],
         "unresolved": []
@@ -3131,6 +3781,13 @@
       "token": "required",
       "scopes": ["write", "write:collections"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/collections_controller.rb: `deprecate_api '2026-06-10', if: :alpha_path?`"
+        ]
+      },
       "params": {
         "names": ["description", "discoverable", "language", "name", "sensitive", "tag_name"],
         "unresolved": []
@@ -3144,6 +3801,13 @@
       "token": "required",
       "scopes": ["write", "write:collections"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": {
+        "date": null,
+        "unresolved": [
+          "app/controllers/api/v1/collections_controller.rb: `deprecate_api '2026-06-10', if: :alpha_path?`"
+        ]
+      },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3155,6 +3819,8 @@
       "scopes": ["read", "read:search"],
       "user": false,
       "guards": ["require_valid_pagination_options!"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "account_id",
@@ -3179,6 +3845,8 @@
       "token": "required",
       "scopes": ["write", "write:media"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["description", "file", "focus", "thumbnail"], "unresolved": [] }
     },
     {
@@ -3189,6 +3857,8 @@
       "token": "required",
       "scopes": ["read", "read:accounts"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "offset"], "unresolved": [] }
     },
     {
@@ -3199,6 +3869,8 @@
       "token": "none",
       "scopes": null,
       "user": false,
+      "cache": { "public": "everyone", "vary": null },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3209,6 +3881,8 @@
       "token": "required",
       "scopes": ["read", "read:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3219,6 +3893,8 @@
       "token": "required",
       "scopes": ["write", "write:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["keyword", "whole_word"], "unresolved": [] }
     },
     {
@@ -3229,6 +3905,8 @@
       "token": "required",
       "scopes": ["read", "read:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3239,6 +3917,8 @@
       "token": "required",
       "scopes": ["write", "write:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["status_id"], "unresolved": [] }
     },
     {
@@ -3249,6 +3929,8 @@
       "token": "required",
       "scopes": ["read", "read:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3259,6 +3941,8 @@
       "token": "required",
       "scopes": ["write", "write:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "context[]",
@@ -3281,6 +3965,8 @@
       "token": "required",
       "scopes": ["read", "read:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3291,6 +3977,8 @@
       "token": "required",
       "scopes": ["write", "write:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "context[]",
@@ -3313,6 +4001,8 @@
       "token": "required",
       "scopes": ["write", "write:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "context[]",
@@ -3335,6 +4025,8 @@
       "token": "required",
       "scopes": ["write", "write:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3345,6 +4037,8 @@
       "token": "required",
       "scopes": ["read", "read:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3355,6 +4049,8 @@
       "token": "required",
       "scopes": ["write", "write:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["keyword", "whole_word"], "unresolved": [] }
     },
     {
@@ -3365,6 +4061,8 @@
       "token": "required",
       "scopes": ["write", "write:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["keyword", "whole_word"], "unresolved": [] }
     },
     {
@@ -3375,6 +4073,8 @@
       "token": "required",
       "scopes": ["write", "write:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3385,6 +4085,8 @@
       "token": "required",
       "scopes": ["read", "read:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3395,6 +4097,8 @@
       "token": "required",
       "scopes": ["write", "write:filters"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3407,6 +4111,8 @@
       "user": false,
       "guards": ["require_moderator_or_admin_permissions"],
       "unresolved": ["Pundit policy: authorize :account, :index?; verify_authorized"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "by_domain",
@@ -3436,6 +4142,8 @@
       "token": "required",
       "scopes": ["read", "read:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3446,6 +4154,8 @@
       "token": "required",
       "scopes": ["write", "write:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "for_bots",
@@ -3466,6 +4176,8 @@
       "token": "required",
       "scopes": ["write", "write:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "for_bots",
@@ -3486,6 +4198,8 @@
       "token": "required",
       "scopes": ["write", "write:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3496,6 +4210,8 @@
       "token": "required",
       "scopes": ["read", "read:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": ["exclude_types[]", "grouped_types", "include_filtered", "limit", "types[]"],
         "unresolved": []
@@ -3509,6 +4225,8 @@
       "token": "required",
       "scopes": ["write", "write:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3519,6 +4237,8 @@
       "token": "required",
       "scopes": ["read", "read:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["limit", "max_id", "since_id"], "unresolved": [] }
     },
     {
@@ -3529,6 +4249,8 @@
       "token": "required",
       "scopes": ["read", "read:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "exclude_types[]",
@@ -3554,6 +4276,8 @@
       "token": "required",
       "scopes": ["read", "read:notifications"],
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["supported_types[]"], "unresolved": [] }
     },
     {
@@ -3564,6 +4288,8 @@
       "token": "required",
       "scopes": null,
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["data"], "unresolved": [] }
     },
     {
@@ -3574,6 +4300,8 @@
       "token": "required",
       "scopes": null,
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": ["data"], "unresolved": [] }
     },
     {
@@ -3585,6 +4313,8 @@
       "scopes": null,
       "user": false,
       "unresolved": ["Pundit policy: authorize @status, :show?"],
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3595,6 +4325,8 @@
       "token": "required",
       "scopes": null,
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "data[alerts][added_to_collection]",
@@ -3631,6 +4363,8 @@
       "token": "required",
       "scopes": null,
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "data[alerts][added_to_collection]",
@@ -3663,6 +4397,8 @@
       "token": "required",
       "scopes": null,
       "user": true,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": {
         "names": [
           "data[alerts][added_to_collection]",
@@ -3695,6 +4431,8 @@
       "token": "none",
       "scopes": null,
       "user": false,
+      "cache": { "public": null, "vary": "Authorization" },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3706,6 +4444,8 @@
       "scopes": null,
       "user": false,
       "guards": ["require_authentication"],
+      "cache": { "public": null, "vary": null },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3717,6 +4457,8 @@
       "scopes": null,
       "user": false,
       "guards": ["require_authentication"],
+      "cache": { "public": null, "vary": null },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3728,6 +4470,8 @@
       "scopes": null,
       "user": false,
       "guards": ["require_authentication"],
+      "cache": { "public": null, "vary": null },
+      "deprecation": { "date": null },
       "params": { "names": ["category", "maxCount"], "unresolved": [] }
     },
     {
@@ -3739,6 +4483,8 @@
       "scopes": null,
       "user": false,
       "guards": ["require_authentication"],
+      "cache": { "public": null, "vary": null },
+      "deprecation": { "date": null },
       "params": {
         "names": ["category", "maxBatchSize", "subscriptionType"],
         "unresolved": [
@@ -3755,6 +4501,8 @@
       "scopes": null,
       "user": false,
       "guards": ["require_authentication"],
+      "cache": { "public": null, "vary": null },
+      "deprecation": { "date": null },
       "params": { "names": [], "unresolved": [] }
     },
     {
@@ -3765,6 +4513,8 @@
       "token": "none",
       "scopes": null,
       "user": false,
+      "cache": { "public": null, "vary": null },
+      "deprecation": { "date": null },
       "params": { "names": ["baseUrl", "name", "publicKey", "serverId"], "unresolved": [] }
     }
   ],
