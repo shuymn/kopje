@@ -1,12 +1,14 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { addToConversation, listConversations } from "../src/domain/conversations";
+import { Db } from "../src/db/sql";
+import { addToConversation, listConversations, streamedConversation } from "../src/domain/conversations";
 import { writeOperation } from "../src/domain/operation";
 import { parseRemoteStatus } from "../src/federation/remote-status";
 import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, bearer, json, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { acceptQuote } from "./budget-helpers";
 import { mastodonActor, type TestActor } from "./inbox-helpers";
 import {
   accountId,
@@ -343,6 +345,69 @@ describe("conversations", () => {
     await sql(h.store, "UPDATE local_accounts SET suspended_at = ? WHERE account_id = ?", "2026-01-01", alice.id);
     const [theirs] = await list(h, bob);
     expect(theirs).toMatchObject({ unread: true, last_status: null, accounts: [{ id: alice.id, suspended: true }] });
+  });
+
+  // No writer links a boost (addToConversation), so only a restored row names one: as a conversation's stored last
+  // status, or as a link the trigger moves the last status back to (RES-3).
+  it("presents no boost as a conversation's last status", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    // Bob's public quote of his public status, and his boost of the quote: statuses Alice may see.
+    const quoted = await post(h, bob, { status: "quoted", visibility: "public" });
+    const quoting = await post(h, bob, { status: "quoting", visibility: "public" });
+    await acceptQuote(h, quoting.id, quoted.id);
+    const boosted = await act(h, bob, `/api/v1/statuses/${quoting.id}/reblog`);
+    expect(boosted.status).toBe(200);
+    const boost = (await boosted.json<Status>()).id;
+    const streamed = (id: string) =>
+      runInDurableObject(h.store, (_instance, state) =>
+        streamedConversation(new Db(state.storage.sql), { accountId: alice.id, now: new Date(NOW).toISOString() }, id, {
+          origin: "https://kopje.test",
+        }),
+      );
+
+    // A restored row whose last status is the boost: listed and sent on `direct` with its accounts, and no status.
+    const [restored] = await sql<{ id: string }>(
+      h.store,
+      `INSERT INTO conversations (account_id, thread, participants, last_status_id, unread)
+			VALUES (?, 'https://remote.example/objects/restored', json_array(?), ?, 1) RETURNING CAST(id AS TEXT) AS id`,
+      alice.id,
+      bob.id,
+      boost,
+    );
+    const shownWithout = { id: restored!.id, unread: true, accounts: [{ id: bob.id }], last_status: null };
+    const listed = await list(h, alice);
+    expect(listed).toMatchObject([shownWithout]);
+    expect(await streamed(restored!.id)).toEqual(listed[0]);
+    // The same row naming the boost's original presents it, quote and all.
+    await sql(h.store, "UPDATE conversations SET last_status_id = ? WHERE id = ?", quoting.id, restored!.id);
+    const original = { id: quoting.id, quote: { state: "accepted", quoted_status: { id: quoted.id } } };
+    expect(await list(h, alice)).toMatchObject([{ ...shownWithout, last_status: original }]);
+    expect(await streamed(restored!.id)).toMatchObject({ ...shownWithout, last_status: original });
+    await sql(h.store, "DELETE FROM conversations WHERE id = ?", restored!.id);
+
+    // A restored link to the boost below Bob's direct status: once the direct status goes, the trigger makes the boost
+    // the last status, which is not shown either.
+    const message = await direct(h, bob, "@alice hi");
+    const [linked] = await list(h, alice);
+    expect(linked?.last_status?.id).toBe(message.id);
+    await sql(
+      h.store,
+      "INSERT INTO conversation_statuses (conversation_id, status_id) VALUES (CAST(? AS INTEGER), ?)",
+      linked!.id,
+      boost,
+    );
+    expect((await send(h, bob, "DELETE", `/api/v1/statuses/${message.id}`)).status).toBe(200);
+    await settle(h.store);
+    expect(await sql(h.store, "SELECT last_status_id FROM conversations WHERE id = ?", linked!.id)).toEqual([
+      { last_status_id: boost },
+    ]);
+    const moved = await list(h, alice);
+    expect(moved).toMatchObject([{ id: linked!.id, unread: true, accounts: [{ id: bob.id }], last_status: null }]);
+    expect(await streamed(linked!.id)).toEqual(moved[0]);
+    // Marking it answers it as the list presents it.
+    const read = await send(h, alice, "POST", `/api/v1/conversations/${linked!.id}/read`);
+    expect([read.status, await read.json()]).toEqual([200, { ...moved[0], unread: false }]);
   });
 
   it("pages by the last status, 20 by default and at most 40, with Link headers", async () => {

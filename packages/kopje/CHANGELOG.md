@@ -70,6 +70,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A remote post's FEP-8967 `Link` attachment is the link its card is fetched from, as Mastodon 4.7 reads it; the
   content's links are used only without one. An attachment with an empty `href` is now read as media. No Store
   migration and no `wrangler.jsonc` change.
+- Accounts show `avatar_description`, `header_description`, `show_featured`, `show_media` and `show_media_replies`,
+  and grouped notifications' partial accounts `avatar_description`, as Mastodon 4.6. `update_credentials` and the
+  settings page set the descriptions, up to 150 characters, which `/api/v2/instance` advertises; the display settings
+  keep their defaults, as nothing sets them yet. Migration `0097_profile_descriptions` adds the five columns with
+  their defaults and two triggers that bound them; the upgrade checks no reference (17 ms for this file in one local
+  run of the migration bench, at a load average of 4 to 7). `wrangler.jsonc`: unchanged. This adds a Store migration,
+  so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
 
 ### Changed
 
@@ -269,6 +276,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   Store migration and no `wrangler.jsonc` change.
 - Text stripping, the removal of CDATA lines from a link card's structured data, and the matching of usernames take
   linear time on long input. No Store migration and no `wrangler.jsonc` change.
+- The settings page's bio shows a stored note that starts with a line break whole, where the browser dropped that
+  line break. No Store migration and no `wrangler.jsonc` change.
+- A conversation whose stored last status is a boost (only a restored row can name one) shows no last status instead
+  of the boost, in `GET /api/v1/conversations`, its read and unread answers and on the `direct` stream. No Store
+  migration and no `wrangler.jsonc` change.
 - An actor document whose `inbox` is missing, null or blank is refused, as Mastodon refuses it: its activities are
   answered without effect and nothing of it is stored. Kopje stored such an actor with no inbox (or, for an empty
   string, with a URL resolved from the document's own), and a refetch of a stored actor cleared its inbox. No Store
