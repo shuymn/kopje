@@ -1,6 +1,7 @@
 import { preloadedContexts } from "@fedify/fedify";
 import jsonld from "jsonld/dist/jsonld.esm.js";
 
+import { FEDIFY_CONTEXT_TERMS } from "./fedify-context";
 import { isObject } from "./json-shapes";
 import { MASTODON_CONTEXT_TERMS, MASTODON_NAMED_CONTEXTS } from "./mastodon-context";
 
@@ -20,10 +21,17 @@ import { MASTODON_CONTEXT_TERMS, MASTODON_NAMED_CONTEXTS } from "./mastodon-cont
 //      and @container (@set or @list) only, each IRI absolute or compact over a namespace prefix of the active context
 //      written as an absolute IRI: a name of ACTIVITY_VOCABULARY its IRI there, any other name an IRI outside it;
 //   3. every key of the body but the top-level @context, signature and proof is a plain name;
-//   4. no `type` or `@type` in it, outside the signature (which the compaction leaves out) and a @context, is an array
-//      of two values or more one of which is not a string (typesSortable): Ruby's json-ld sorts such an array before
-//      it reads the node, comparing a string with any other value raises an ArgumentError Mastodon does not rescue,
-//      and its job raises and applies nothing.
+//   4. no node in it, outside the signature (which the compaction leaves out) and a @context, gives Ruby's json-ld
+//      types it cannot sort or a @set it cannot read (typesSortable), which raise an error Mastodon does not rescue, so
+//      that its job applies nothing;
+//   5. it holds only what real senders write (senderShaped): no key with a control character or a line break, no key
+//      that starts with @ but a keyword of JSON-LD 1.1, no inline definition but one Mastodon or Fedify writes, exactly
+//      (MASTODON_CONTEXT_TERMS, FEDIFY_CONTEXT_TERMS), no type but a plain term or an absolute IRI, and a proof only as
+//      Fedify writes one: an object, or an array of them, of a @context and of plain names given strings.
+//
+// Rule (5) is the primary guard against a form neither reader expects, where Ruby's json-ld and jsonld.js part or a
+// proof's expansion grows: rule (4) and the proof's comparison (comparableProof) are a second layer under it, refusing
+// or reading as named the forms it already refuses, and test/ld-signed-proof-shapes.test.ts holds that layer alone.
 //
 // Then every name of the vocabulary means what full_context makes it, no other name or keyword alias reaches one of its
 // IRIs, and no base or vocabulary is set: no key Kopje reads is renamed, aliased or given another meaning by the
@@ -667,9 +675,9 @@ const preloaded = (url: string) => {
 const PROOF_CONTEXTS: ReadonlySet<string> = new Set([AS, ...SIGNED_CONTEXT_URLS.keys()]);
 
 // The contexts a body and its proof may give before the proof is expanded, each URL or object of a @context, each type
-// (whose context, if it has one, applies in its node) and each key of SCOPED_NAMES (whose context applies in its
-// value): jsonld.js processes a context again in each node whose active context differs, so their number, more than
-// their size, makes the expansion's cost. A real body and its proof give a dozen.
+// (whose context, if it has one, applies in its node) and each value under a key of SCOPED_NAMES (whose context
+// applies in each): jsonld.js processes a context again in each node whose active context differs, so their number,
+// more than their size, makes the expansion's cost. A real body and its proof give a dozen.
 const PROOF_CONTEXT_LIMIT = 32;
 
 const contextEntries = (value: unknown) => (Array.isArray(value) ? value.length : value === undefined ? 0 : 1);
@@ -696,7 +704,11 @@ const SCOPED_NAMES: ReadonlySet<string> = [...URL_DEFINITIONS.values()].reduce(
 // The keywords a node, value, list or set object holds that both expanders read alike; a @graph, @included or
 // @reverse key has Mastodon read the body as received before anything is expanded (jsonLdValues). Every other key that
 // starts with @ (a keyword of contexts and frames such as @version, @vocab, @none or @json, or a string shaped like a
-// keyword) Ruby's json-ld drops and jsonld.js keeps as a member, so a proof with one is not compared.
+// keyword) Ruby's json-ld drops and jsonld.js keeps as a member, so a proof with one is not compared; and Ruby's
+// json-ld drops a key or a type any line of which is shaped like a keyword (RUBY_KEYWORD_LIKE: its ^ and $ match at
+// each line, context.rb), which jsonld.js reads as a term ("x\n@abc" defined inline) or an IRI. JavaScript's m flag
+// also ends a line at \r, U+2028 and U+2029, so it matches more lines than Ruby's, never fewer.
+const RUBY_KEYWORD_LIKE = /^@[a-zA-Z]+$/m;
 const NODE_KEYWORDS: ReadonlySet<string> = new Set([
   "@context",
   "@id",
@@ -712,8 +724,9 @@ const NODE_KEYWORDS: ReadonlySet<string> = new Set([
 
 // A proof as Mastodon's JSON-LD library and jsonld.js both expand it, or undefined: each @context in it, at any depth,
 // one the rules (1, 2) read, or URLs of PROOF_CONTEXTS alone, so that no name there is a keyword but @id and @type and
-// no context is fetched; no more contexts, types and keys of SCOPED_NAMES than `contexts` leaves; no key of an object
-// that starts with @ but NODE_KEYWORDS; and each @set object (with an @index or not) its value, which Mastodon's
+// no context is fetched; no more contexts, types and values under keys of SCOPED_NAMES than `contexts` leaves (each
+// value counts, its object reverting a type's context first); no key of an object that starts with @, or that has a
+// line shaped like a keyword, but NODE_KEYWORDS; and each @set object (with an @index or not) its value, which Mastodon's
 // library reads it as, so that one of nothing leaves nothing where jsonld.js leaves an empty node. A @value is left as
 // it is (a JSON literal's value is data), and so is a language map, an object under a name of LANGUAGE_MAPS (its keys
 // are tags, its values strings, and jsonld.js refuses any other); an array there holds values and nodes, compared as
@@ -755,10 +768,10 @@ function comparableProof(value: unknown, contexts: { left: number }, nested = fa
   }
   const members: [string, unknown][] = [];
   for (const [key, member] of Object.entries(value)) {
-    if (key.startsWith("@") && !NODE_KEYWORDS.has(key)) {
+    if (!NODE_KEYWORDS.has(key) && (key.startsWith("@") || RUBY_KEYWORD_LIKE.test(key))) {
       return undefined;
     }
-    if (SCOPED_NAMES.has(key) && --contexts.left < 0) {
+    if (SCOPED_NAMES.has(key) && (contexts.left -= Math.max(1, leaves(member).length)) < 0) {
       return undefined;
     }
     const comparable =
@@ -825,13 +838,15 @@ async function mastodonReadsAsReceived(json: Json, meanings: ReadonlyMap<string,
 // the rules hold it to; any other type, and every type of a body outside that shape, is read as given.
 export type TypeReader = (type: string) => string;
 
-// Rule (4): no `type` or `@type` of the body (its proof included) outside the signature and a @context is an array of
-// two values or more one of which is not a string. Ruby's json-ld sorts the values of every key that expands to @type
-// before it reads the object (expand.rb, the type-scoped contexts), and a string compared with a null, a number, a
-// boolean, an object or an array raises an ArgumentError, which ProcessActivityService does not rescue, so Mastodon's
-// job raises and applies nothing. An array of such values alone may sort, and JSON::LD then refuses it (Mastodon reads
-// the body as received), as may one past Mastodon's JSON-LD limits, which it reads as received unexpanded: Kopje
-// refuses those too, and reads less. Each value is visited once.
+// Rule (4), under rule (5): no node of the body (its proof included) outside the signature and a @context gives, under
+// `type` and `@type` together, two types or more one of which is not a string or is one Ruby's json-ld expands to
+// nothing (RUBY_KEYWORD_LIKE: "@foo", "x\n@abc"), nor a type beside a @set. Ruby's json-ld sorts the values of every
+// key that expands to @type (expand.rb, the type-scoped contexts), merges a node's `type` and `@type` into one array,
+// and sorts its types again as it compacts them (compact.rb), and a string compared with any other value or a nil
+// raises an ArgumentError; a @set beside a single type is kept as a node and raises a NoMethodError. Neither is one
+// ProcessActivityService rescues, so Mastodon's job raises and applies nothing. Such types may sort, and JSON::LD then
+// refuse them (Mastodon reads the body as received), as may a @set with a value, or a body past Mastodon's JSON-LD
+// limits, which it reads as received unexpanded: Kopje refuses those too, and reads less. Each value is visited once.
 function typesSortable(json: Json): boolean {
   const pending: unknown[] = [json];
   while (pending.length > 0) {
@@ -839,16 +854,133 @@ function typesSortable(json: Json): boolean {
     if (Array.isArray(value)) {
       pending.push(...(value as unknown[]));
     } else if (isObject(value)) {
+      // As Ruby's Array(): an array as it is, any other value as one.
+      const types = ["type", "@type"].flatMap((key) => (Object.hasOwn(value, key) ? [value[key]].flat() : []));
+      if (
+        (types.length > 1 && types.some((type) => typeof type !== "string" || RUBY_KEYWORD_LIKE.test(type))) ||
+        (types.length > 0 && Object.hasOwn(value, "@set"))
+      ) {
+        return false;
+      }
       for (const [key, member] of Object.entries(value)) {
-        if (key === "@context" || (value === json && key === "signature")) {
+        if (key !== "@context" && !(value === json && key === "signature")) {
+          pending.push(member);
+        }
+      }
+    }
+  }
+  return true;
+}
+
+// JSON-LD 1.1's keywords (its §1.7).
+const JSONLD_KEYWORDS: ReadonlySet<string> = new Set([
+  "@base",
+  "@container",
+  "@context",
+  "@direction",
+  "@graph",
+  "@id",
+  "@import",
+  "@included",
+  "@index",
+  "@json",
+  "@language",
+  "@list",
+  "@nest",
+  "@none",
+  "@prefix",
+  "@propagate",
+  "@protected",
+  "@reverse",
+  "@set",
+  "@type",
+  "@value",
+  "@version",
+  "@vocab",
+]);
+
+// A control character (C0, DEL, C1) or a line break (\n and \r among C0, U+2028, U+2029).
+function controlOrBreak(text: string): boolean {
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if (code < 0x20 || (code >= 0x7f && code < 0xa0) || code === 0x2028 || code === 0x2029) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Each inline definition Mastodon or Fedify writes, by name.
+const SENDER_DEFINITIONS = new Map<string, readonly unknown[]>();
+for (const terms of [MASTODON_CONTEXT_TERMS, FEDIFY_CONTEXT_TERMS]) {
+  for (const [name, definitions] of Object.entries(terms)) {
+    SENDER_DEFINITIONS.set(name, [...(SENDER_DEFINITIONS.get(name) ?? []), ...definitions]);
+  }
+}
+
+// A @context whose every inline definition is one a real sender writes for that name.
+const contextAsSent = (context: unknown) =>
+  [context]
+    .flat()
+    .every(
+      (entry) =>
+        typeof entry === "string" ||
+        (isObject(entry) &&
+          Object.entries(entry).every(([name, definition]) =>
+            (SENDER_DEFINITIONS.get(name) ?? []).some((written) => sameDefinition(written, definition)),
+          )),
+    );
+
+// A type as real senders write one: a plain term (letters, digits, _ and -) or an absolute IRI with no space or
+// control character.
+const PLAIN_TERM = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+const NO_SPACE = /^\S+$/;
+const typeAsSent = (type: unknown) =>
+  typeof type === "string" &&
+  (PLAIN_TERM.test(type) || (ABSOLUTE_IRI.test(type) && NO_SPACE.test(type) && !controlOrBreak(type)));
+
+// A proof as Fedify writes one: an object, or an array of them, of plain names given strings and of a @context the
+// rules (1, 2, 5) read.
+function proofAsSent(proof: unknown): boolean {
+  const items = [proof].flat();
+  return (
+    items.length > 0 &&
+    items.every(
+      (item) =>
+        isObject(item) &&
+        Object.entries(item).every(([key, value]) =>
+          key === "@context"
+            ? readContext(value) !== null && contextAsSent(value)
+            : isName(key) && typeof value === "string",
+        ),
+    )
+  );
+}
+
+// Rule (5): the body holds only what real senders write, the primary guard against forms where Ruby's json-ld and
+// jsonld.js part (ID-1) or a proof's expansion grows (RES-6). Mastodon, Fedify (Kopje's own LD-signed deliveries among
+// them) and every corpus sender write no key with a control character or a line break, no key that starts with @ but
+// a keyword, an inline definition only from their own tables, types only as plain terms or absolute IRIs, and a proof
+// (Fedify's FEP-8b32 one) of a @context and of names given strings: a body outside that is refused, so that it
+// applies nothing, where Mastodon may apply it, and the deviations page lists the forms. Each value is visited once.
+function senderShaped(json: Json): boolean {
+  if (!contextAsSent(json["@context"]) || (Object.hasOwn(json, "proof") && !proofAsSent(json.proof))) {
+    return false;
+  }
+  const pending: unknown[] = [json];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (Array.isArray(value)) {
+      pending.push(...(value as unknown[]));
+    } else if (isObject(value)) {
+      for (const [key, member] of Object.entries(value)) {
+        if (controlOrBreak(key) || (key.startsWith("@") && !JSONLD_KEYWORDS.has(key))) {
+          return false;
+        }
+        if (key === "@context") {
           continue;
         }
-        if (
-          (key === "type" || key === "@type") &&
-          Array.isArray(member) &&
-          member.length > 1 &&
-          member.some((item) => typeof item !== "string")
-        ) {
+        if ((key === "type" || key === "@type") && ![member].flat().every(typeAsSent)) {
           return false;
         }
         pending.push(member);
@@ -858,13 +990,23 @@ function typesSortable(json: Json): boolean {
   return true;
 }
 
+// The rules a body is read under: all of them, or, for tests of the second layer, all but rule (5).
+export type Rules = { senderShapes?: boolean };
+
+function rulesRefuse(json: Json, { senderShapes = true }: Rules): boolean {
+  return (senderShapes && !senderShaped(json)) || !bodyKeysReadable(json) || !typesSortable(json);
+}
+
 // Whether an LD-signed activity is read (its signature an object), and then how its types are read and its body as
 // Mastodon's compaction names its members (namedAsCompacted): null when the rules refuse it. Run after
 // withinJsonBounds, so the work is bounded by its values, and a proof's expansion by Mastodon's 1,000 values and
 // PROOF_CONTEXT_LIMIT too.
-export async function ldSignedReading(json: Json): Promise<{ readType: TypeReader; body: Json } | null> {
+export async function ldSignedReading(
+  json: Json,
+  rules: Rules = {},
+): Promise<{ readType: TypeReader; body: Json } | null> {
   const context = readContext(json["@context"]);
-  if (context === null || !bodyKeysReadable(json) || !typesSortable(json)) {
+  if (context === null || rulesRefuse(json, rules)) {
     return null;
   }
   let compacts: boolean | undefined;
@@ -881,7 +1023,7 @@ export async function ldSignedReading(json: Json): Promise<{ readType: TypeReade
   return { readType, body: asReceived ? json : namedAsCompacted(json, context.meanings) };
 }
 
-// Whether the rules (1-4) read an LD-signed body at all (ldSignedReading is null for no other).
-export function ldSignedBodyReadable(json: Json): boolean {
-  return readContext(json["@context"]) !== null && bodyKeysReadable(json) && typesSortable(json);
+// Whether the rules (1-5) read an LD-signed body at all (ldSignedReading is null for no other).
+export function ldSignedBodyReadable(json: Json, rules: Rules = {}): boolean {
+  return readContext(json["@context"]) !== null && !rulesRefuse(json, rules);
 }

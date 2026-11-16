@@ -1,9 +1,10 @@
 // LD-signed bodies where jsonld.js and Mastodon's json-ld part (ld-signed-proof-shapes.test.ts): the proof of a
 // QuoteRequest left undefined holding each key that starts with @ (every keyword of JSON-LD 1.1 and of its framing,
-// those jsonld.js adds, and strings shaped like one), which Mastodon's json-ld drops where jsonld.js may keep it; and a
-// type array of two values or more one of which is not a string, in each place of a body, which Mastodon's json-ld
-// sorts and raises on. edge-shapes.json holds Mastodon's reading of each, in this order. To capture it, from
-// packages/kopje:
+// those jsonld.js adds, and strings shaped like one), which Mastodon's json-ld drops where jsonld.js may keep it; a type
+// array of two values or more one of which is not a string or is shaped like a keyword on a line, in each place of a
+// body, which Mastodon's json-ld sorts and raises on; a name with a line shaped like a keyword, defined in the body's
+// context or not, in such a proof (Ruby's ^ and $ match at each line); and a @set beside a type in such a proof.
+// edge-shapes.json holds Mastodon's reading of each, in this order. To capture it, from packages/kopje:
 //
 //   node test/fixtures/ld-signed/edge-shapes-in.mjs > edge-shapes-in.json
 //   docker run --rm --network none -v "$PWD/test/fixtures/ld-signed:/f:ro" -v "$PWD:/w" --entrypoint bundle \
@@ -109,19 +110,30 @@ export const TYPE_PLACES = {
     type: "RsaSignature2017",
     body: (type) => quoteRequest({ signature: signature({ type }) }),
   },
-  "a Delete's object's type": {
-    type: "Tombstone",
-    body: (type) => ({
-      "@context": [AS, SEC],
-      id: `${BOB}/activities/edge-delete`,
-      type: "Delete",
-      actor: BOB,
-      to: [`${AS}#Public`],
-      object: { id: `${BOB}/statuses/deleted`, type },
-      signature: signature(),
-    }),
+  "a Delete's object's type": { type: "Tombstone", body: (type) => deleteOf({ id: `${BOB}/statuses/deleted`, type }) },
+  "a Delete's object's tag's type": {
+    type: "Hashtag",
+    body: (type) => deleteOf({ id: `${BOB}/statuses/deleted`, type: "Tombstone", tag: [{ type, name: "#x" }] }),
+  },
+  // Given under @type beside the proof's type, which Ruby's json-ld merges into one array.
+  "the proof's @type beside its type": {
+    type: "DataIntegrityProof",
+    body: (type) => quoteRequest({ proof: { type: "DataIntegrityProof", "@type": type } }),
   },
 };
+
+/** @param {Record<string, unknown>} object */
+function deleteOf(object) {
+  return {
+    "@context": [AS, SEC],
+    id: `${BOB}/activities/edge-delete`,
+    type: "Delete",
+    actor: BOB,
+    to: [`${AS}#Public`],
+    object,
+    signature: signature(),
+  };
+}
 
 /** @param {Record<string, unknown>} extra */
 function quoteRequest(extra) {
@@ -139,6 +151,7 @@ function quoteRequest(extra) {
 
 // The arrays given, from the string the place's type is otherwise: Ruby sorts an array before it reads it, and a
 // string compared with any other value raises; an array of other values alone may sort, and one value is not sorted.
+// A string any line of which is shaped like a keyword (but a keyword) Ruby expands to nil, which raises as it sorts.
 /** @type {(type: string) => [string, unknown][]} */
 export const typeArrays = (type) => [
   ["[null, type]", [null, type]],
@@ -152,6 +165,28 @@ export const typeArrays = (type) => [
   ["[type, y]", [type, "y"]],
   ["[null]", [null]],
   ["type", type],
+  ['[type, "@foo"]', [type, "@foo"]],
+  ['[type, "x\\n@abc"]', [type, "x\n@abc"]],
+  ['[type, "@foo\\n"]', [type, "@foo\n"]],
+  ['["@foo"]', ["@foo"]],
+];
+
+// Names with a line shaped like a keyword (and a plain one), each defined in the body's context as an IRI or not, given
+// in a proof beside a @language, nested, and alone: Ruby's json-ld drops such a name before it reads its definition.
+const KEYWORD_LINES = ["x\n@abc", "\n@abc", "x\n@abc\ny", "x\n@a", "x\r\n@abc", "x\n@version", "x\n@id"].concat([
+  "x\n@context",
+  "x\n@graph",
+  "ok",
+]);
+
+// A @set beside a type in a proof, at its top and nested: Ruby's json-ld keeps a node of one type and a @set of nothing,
+// and raises as it reads the @set.
+const SETS = [null, { "@value": null }, { "@language": "en" }, { "@set": null }, [], "x"];
+/** @type {[string, Record<string, unknown>][]} */
+const SET_TYPES = [
+  ["type", { type: "DataIntegrityProof" }],
+  ["@type", { "@type": "DataIntegrityProof" }],
+  ["type [DataIntegrityProof]", { type: ["DataIntegrityProof"] }],
 ];
 
 // Every shape, as { name, body }, in the order of edge-shapes.json.
@@ -176,6 +211,36 @@ export function edgeShapes() {
   for (const [place, { type, body }] of Object.entries(TYPE_PLACES)) {
     for (const [given, value] of typeArrays(type)) {
       shapes.push({ name: `${place}: ${given}`, body: body(value) });
+    }
+  }
+  for (const name of KEYWORD_LINES) {
+    for (const defined of [true, false]) {
+      const context = [AS, SEC, DI2, { QuoteRequest: "https://w3id.org/fep/044f#QuoteRequest" }];
+      if (defined) {
+        context.push({ [name]: "https://example.org/p" });
+      }
+      for (const { form, proof } of [
+        { form: "beside a @language", proof: { "@language": "en", [name]: "v" } },
+        { form: "nested", proof: { "@language": "en", foo: { "@language": "en", [name]: "v" } } },
+        { form: "alone", proof: { [name]: "v" } },
+      ]) {
+        shapes.push({
+          name: `${JSON.stringify(name)} ${defined ? "defined" : "undefined"}, ${form}`,
+          body: { ...quoteRequest({ proof }), "@context": context },
+        });
+      }
+    }
+  }
+  for (const set of SETS) {
+    for (const [given, type] of SET_TYPES) {
+      shapes.push({
+        name: `${given} beside @set ${JSON.stringify(set)}`,
+        body: quoteRequest({ proof: { ...type, "@set": set } }),
+      });
+      shapes.push({
+        name: `nested: ${given} beside @set ${JSON.stringify(set)}`,
+        body: quoteRequest({ proof: { type: "DataIntegrityProof", n: [{ ...type, "@set": set }] } }),
+      });
     }
   }
   return shapes;

@@ -126,13 +126,20 @@ against their own instance. TLS is assumed between all parties.
   to the body's one-element arrays and public collection IRI): its contexts give every ActivityStreams term and every
   name of Mastodon's `full_context` that context's meaning, give no other name one of those meanings or a keyword's,
   set no keyword and name only the preloaded contexts that keep them, and every key of its body but the top-level
-  `@context`, `signature` and `proof` is a plain name. Any other is ignored before the gate, on the inbox, its replay
+  `@context`, `signature` and `proof` is a plain name. Above all, it holds only what real senders write
+  (`senderShaped`, the primary guard): no key with a control character or a line break, no key that starts with `@`
+  but a JSON-LD 1.1 keyword, an inline definition only as Mastodon (4.4 to 4.7.5) or Fedify 2.4.5 writes it for that
+  name (`MASTODON_CONTEXT_TERMS`, `FEDIFY_CONTEXT_TERMS`, compared exactly), a type only as a plain term or an absolute
+  IRI, and a proof only as Fedify writes one (an object, or an array of them, of a `@context` and names given strings).
+  Mastodon and Fedify write nothing else, Kopje's own LD-signed deletions included, and the forms where Ruby's json-ld
+  and jsonld.js part lie outside it. Any other is ignored before the gate, on the inbox, its replay
   and the rollback drain alike (`ldSignedReading` in `src/federation/ld-signed-body.ts`, called by the envelope check of
   `src/federation/inbound.ts`); the inbox and its replay log it once, as `kopje.inbox.refused` with reason `ld-context`
   and nothing of the body (DATA-5). No context can then readdress it, alias its type, actor or object, or redefine a
   mention: this keeps meanings, and does not make the two readings equal. Its type and its embedded object's, given as
-  an IRI, are read as the name Mastodon's compaction gives them only in a body of a closed shape whose compaction Kopje
-  can show succeeds (`mastodonCompacts`), and as given in any other, which Mastodon may read as received: a body its
+  an absolute IRI, are read as the name Mastodon's compaction gives them only in a body of a closed shape whose
+  compaction Kopje can show succeeds (`mastodonCompacts`), and as given in any other, which Mastodon may read as
+  received: a body its
   JSON-LD limits or processing refuse is never one Kopje renames a type in. Kopje reads a name, as a member or as a
   type, only where the compaction writes it so, whatever the body's shape (`namedAsCompacted`): where it means in the
   body's contexts what it means in `full_context` (a type, where the IRI they give it is the one `full_context` names
@@ -148,12 +155,16 @@ against their own instance. TLS is assumed between all parties.
   JSON-LD expands it, as jsonld.js expands it with the preloaded contexts alone (`proofExpandsToSomething`; of a proof
   that expands to nothing, a null value or a `@language` beside members that do, the compaction stands); a proof with a
   key that starts with `@` but those a node holds (a keyword of contexts or frames, which Mastodon's json-ld drops and
-  jsonld.js keeps) is read as named. That expansion runs before any signature is verified, within Mastodon's 1,000
-  values and at most 32 contexts of the body and its proof, each URL or object of a `@context`, each type and each key
-  whose definition carries a context of its own counting one, in every node, a language map's array included
-  (`PROOF_CONTEXT_LIMIT`, RES-6); a proof past them or naming another context, and one whose expansion raises, is read
-  as named. A body with a type array of two values or more one of which is not a string, which Mastodon's json-ld sorts
-  and raises on so that its job applies nothing, is refused (`typesSortable`). Where Mastodon gives up the compaction of
+  jsonld.js keeps), or a key a line of which is shaped like a keyword (Mastodon's json-ld tests each line), is read as
+  named. That expansion runs before any signature is verified, within Mastodon's 1,000 values and at most 32 contexts
+  of the body and its proof, each URL or object of a `@context`, each type and each value under a key whose definition
+  carries a context of its own counting one, in every node, a language map's array included (`PROOF_CONTEXT_LIMIT`,
+  RES-6); a proof past them or naming another context, and one whose expansion raises, is read as named. A body with a
+  node whose `type` and `@type` together give two types or more one of which is not a string or is shaped like a
+  keyword on a line (`["Tombstone", "@foo"]`, `"x\n@abc"`), or that gives a type beside `@set`, on which Mastodon's
+  json-ld raises so that its job applies nothing, is refused (`typesSortable`). Those rules and the proof's comparison
+  are the second layer, held alone to Mastodon's reading by the sweeps below; under the first, no such key or type is
+  written, and a proof holds no nested node. Where Mastodon gives up the compaction of
   another, or still writes under a name the body defines otherwise a value of a shape that definition does not coerce,
   Kopje reads less, but for `sensitive`, which marks the status wherever Mastodon may. The readings still differ in
   shapes, values and readers, each listed in `docs/mastodon-deviations.md` ("Reading inbound activities"). None of those
@@ -205,10 +216,13 @@ against their own instance. TLS is assumed between all parties.
   an LD-signed activity Kopje's inbox ignores"), `test/inbox-signed-forms.test.ts` ("ignores an LD-signed activity whose
   context rebases its IRIs", "ignores an LD-signed activity that aliases a keyword or a member beside the literal one",
   "a spooled LD-signed activity outside the vocabulary is ignored on replay", "reads an LD-signed activity in a real
-  sender's vocabulary"), `test/ld-signed-vocabulary.test.ts` ("the vocabulary is jsonld.js's processing", "the allowed
-  context URLs are the preloaded ones"), `test/ld-signed-proof-shapes.test.ts` ("reads as received no body Mastodon
-  compacts, and as named none whose proof it keeps but those listed" and "reads as received no body Mastodon compacts,
-  and refuses each whose job raises"). A stored key list
+  sender's vocabulary", "rule (5): an LD-signed activity outside what real senders write is ignored"),
+  `test/ld-signed-vocabulary.test.ts` ("the vocabulary is jsonld.js's processing", "the allowed context URLs are the
+  preloaded ones", "FEDIFY_CONTEXT_TERMS is every inline definition @fedify/vocab writes, by name"),
+  `test/ld-signed-proof-shapes.test.ts` ("… reads as received no body Mastodon compacts, and as named none whose proof
+  it keeps but those listed", "… refuses each but a proof as Fedify writes one, and reads more than Mastodon nowhere"
+  and "… reads as received no body Mastodon compacts, and refuses each whose job raises", each under the second layer
+  and under every rule). A stored key list
   and the inboxes beside it are replaced only by a document fetched after the last one stored; the profile, the handle
   and `movedTo` also by the actor's own `Update(Person)` embedding its document (an object of an actor type whose `id`
   is the activity's `actor`, its signer), read as a fetched document is (`readEmbeddedActor`) and stored under the
@@ -3812,12 +3826,20 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   jsonld.js with the preloaded contexts alone, and only within Mastodon's 1,000 values and `PROOF_CONTEXT_LIMIT` (32)
   contexts, types and keys whose definition carries a context (`service`, `DataIntegrityProof`, `proofPurpose`,
   `Multikey`, `JsonWebKey`), counted in every node of the proof, a language map's array included, with the body's
-  context and type (ID-1). The worst body measured at those bounds, a proof of 28 typed nodes filled to 1,000 values, is
-  answered by the workerd inbox in 13 ms and read in 11 ms (an isolate's first request in 22 ms), under the load lock;
-  past them the proof is not expanded (`test/inbox-signed-forms.test.ts`, "a data-integrity proof expanded within
-  Mastodon's values" for each path to the bound, and "… past PROOF_CONTEXT_LIMIT is not expanded, and the body is read
-  as named"). The revision fence (ID-1) adds no additional inbox receive round; a stale-author refresh fetches its actor
-  again after reading the revision, within the fetch budget. Search resolution makes one more Store call (`actorState`)
+  context and type (ID-1), each value under such a key counting one. A proof as rule (5) of ID-1 reads it (a context
+  and names given strings, in up to 28 typed nodes of an array) is expanded with its contexts processed once a node, at
+  most 32 in all, and its values at most 1,000; jsonld.js fetches at most 11 context URLs for one `@context`, raising
+  past them. The worst bodies measured through the workerd inbox, under the load lock (6 runs each), answer in at most
+  11 ms (an isolate's first request in 23 ms) and are read in at most 6 ms: a proof of names filled to 1,000 values, one
+  under every context its body and it may name, an array of 27 typed nodes, and a body of plain keys at the JSON
+  bounds. Under the second layer alone, which no inbox request reaches, the worst is a typed node holding about 1,000
+  objects in an array under a plain name, each of which reverts the type's context so that jsonld.js processes it
+  again: read in 19–21 ms (37 ms first), and 16–19 ms for 14 nested typed nodes alternating two contexts; past the
+  bound the proof is not expanded (`test/inbox-signed-forms.test.ts`, "a data-integrity proof expanded within
+  Mastodon's values", "a proof of … is expanded in time" for each path to the bound under the second layer, and "… past
+  PROOF_CONTEXT_LIMIT is not expanded, and the body is read as named"). The revision fence (ID-1) adds no additional
+  inbox receive round; a stale-author refresh fetches its actor again after reading the revision, within the fetch
+  budget. Search resolution makes one more Store call (`actorState`)
   before each actor fetch and before a URL's probe, and fetches the actor document a probe or an alternate found a
   second time after it (within the request's fetch budget of 8). It fetches nothing for `limit=0`, for a URL whose
   answer is empty whatever it finds (a `type` with an offset past 0, a `type` other than `accounts` and `statuses`), or

@@ -40,7 +40,7 @@ import {
 } from "./federation";
 import { typeIs } from "./json-shapes";
 import { MAX_PUBLIC_KEYS } from "./key-entries";
-import { ldSignedReading, type TypeReader } from "./ld-signed-body";
+import { ldSignedReading, type Rules, type TypeReader } from "./ld-signed-body";
 import {
   createContextLoader,
   createSafeLoader,
@@ -237,6 +237,7 @@ const AS_GIVEN: TypeReader = (type) => type;
 // Shared by the inbox and the cutover rollback's drain, so neither hands on an activity the other would ignore.
 async function activityEnvelope(
   json: Json,
+  rules: Rules = {},
 ): Promise<
   | { ok: true; actor: string; id: string; type: string; readType: TypeReader; read: Json }
   | { ok: false; reason: "no-context" | "ld-context" | "incomplete" }
@@ -244,7 +245,7 @@ async function activityEnvelope(
   if (!hasActivityStreamsContext(json["@context"])) {
     return { ok: false, reason: "no-context" };
   }
-  const reading = isObject(json.signature) ? await ldSignedReading(json) : { readType: AS_GIVEN, body: json };
+  const reading = isObject(json.signature) ? await ldSignedReading(json, rules) : { readType: AS_GIVEN, body: json };
   if (reading === null) {
     return { ok: false, reason: "ld-context" };
   }
@@ -258,7 +259,8 @@ async function activityEnvelope(
   return { ok: true, actor, id, type, readType, read };
 }
 
-export async function parseActivity(body: Uint8Array): Promise<Parsed> {
+// `rules` is for tests of the reading's second layer (ldSignedReading); every caller reads under all of them.
+export async function parseActivity(body: Uint8Array, rules: Rules = {}): Promise<Parsed> {
   let json: unknown;
   try {
     json = JSON.parse(new TextDecoder().decode(body));
@@ -274,7 +276,7 @@ export async function parseActivity(body: Uint8Array): Promise<Parsed> {
   }
   const object = idOf(json.object);
   const deleteOfSelf = json.type === "Delete" && idOf(json.actor) !== null && object === idOf(json.actor);
-  const envelope = await activityEnvelope(json);
+  const envelope = await activityEnvelope(json, rules);
   if (!envelope.ok) {
     return { ok: false, reason: envelope.reason, deleteOfSelf };
   }

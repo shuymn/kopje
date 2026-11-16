@@ -1433,9 +1433,10 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   otherwise than `full_context`, which neither reads (below); a Fedify activity with a proof Mastodon reads as received,
   and so does Kopje, which reads an `EmojiReact` as a favourite, as it does unsigned, where Mastodon has no reader for
   one. The fixtures and their capture scripts are in `test/fixtures/ld-signed/` (`test/inbox-signed-forms.test.ts`). The
-  activity's `type` and its embedded object's (an `Undo`'s, a `Reject`'s or an `Accept`'s) given as an IRI (`as:Follow`,
-  or the absolute one) are read as the name the compaction gives them, as Mastodon reads them, only in a body of a
-  closed shape whose compaction Kopje can show succeeds: under the ActivityStreams context, alone or with security/v1's,
+  activity's `type` and its embedded object's (an `Undo`'s, a `Reject`'s or an `Accept`'s) given as an absolute IRI
+  (a compact one such as `as:Follow` is ignored, below) are read as the name the compaction gives them, as Mastodon
+  reads them, only in a body of a closed shape whose compaction Kopje can show succeeds: under the ActivityStreams
+  context, alone or with security/v1's,
   and without a proof; at most 1,000 values as received, and at most 1,000 once compacted, counting `full_context` for
   its context, its signature once as received, and three for each other value; every `id`, and every value of an
   IRI-typed property but a null or an object, an http(s) IRI as written or over a prefix of the body's context; every
@@ -1488,12 +1489,15 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   nothing, which Kopje reads as Mastodon's library does, as nothing). It reads as named one whose expansion raises (a
   keyword in a proof given a value of the wrong shape, a datatype given as such a compact IRI), one whose proof holds a
   key that starts with `@` but those a node holds (a keyword of contexts or frames such as `@version`, `@vocab` or
-  `@none`, which Mastodon's library drops and jsonld.js keeps, or a string shaped like one), one whose proof Mastodon's
+  `@none`, which Mastodon's library drops and jsonld.js keeps, or a string shaped like one), or a key a line of which
+  is shaped like one (`"x\n@abc"` defined in the body's context, which Mastodon's library drops, as it tests each line),
+  one whose proof Mastodon's
   library keeps where jsonld.js drops it (an empty type list, a `@set` under `@nest`, a language map holding an array in
   an array), one whose proof names a context a body may not, or an inline one the rules refuse (a keyword alias), one
-  whose body and proof give more than 32 contexts, types and keys whose definition carries a context (each node of a
-  language map's array counted), and one with a proof elsewhere than at the top, as #1717 tracks. Otherwise the readings
-  differ only for forms none of these writes, and Kopje reads each as written: a status's or a mention's `type` given as
+  whose body and proof give more than 32 contexts, types and values under keys whose definition carries a context (each
+  node of a language map's array counted), and one with a proof elsewhere than at the top, as #1717 tracks. Otherwise
+  the readings differ only for forms none of these writes, and Kopje reads each as written: a status's or a mention's
+  `type` given as
   an IRI is read as given, so such a status is refused and such a mention read as absent, where Mastodon reads the type
   the compaction gives it. A one-element array both read as received, and each reader then reads it as it reads the same
   body unsigned: an `actor` given so is refused, where Mastodon applies the activity for the request's signer (so such a
@@ -1520,11 +1524,29 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   Mastodon would not. A retraction so ignored (a `Reject`, `Undo` or `Delete` whose `object` is given as `{"@id": …}`)
   leaves in place the follow, the block or the status Mastodon's ends (#1717). This keeps the meaning of what Kopje
   reads; it does not make the two readings equal, and the shapes and values above still differ. It is ignored too where
-  a `type` (in its proof, an `@type` too) is an array of two values or more one of which is not a string (`[null,
-  "Tombstone"]`): Mastodon's JSON-LD library sorts such an array and raises, so that its job applies nothing. Kopje
+  a node's `type` and `@type` together give two types or more one of which is not a string or is shaped like a keyword
+  on any line (`[null, "Tombstone"]`, `["Tombstone", "@foo"]`, `"x\n@abc"`), or a type beside `@set`: Mastodon's
+  JSON-LD library sorts such types and raises, or keeps such a node and raises, so that its job applies nothing. Kopje
   ignores as well an array of such values alone (`[null, null]`), or one under `@nest`, a language map or a `@value`,
-  which Mastodon's library refuses, and one in a body past Mastodon's JSON-LD limits, each of which Mastodon reads as
-  received, and so reads less there. Every sender above, Misskey's context included, passes. Accepted, 2026-11-16.
+  and a `@set` with a value, which Mastodon's library refuses, and one in a body past Mastodon's JSON-LD limits, each of
+  which Mastodon reads as received, and so reads less there. Accepted, 2026-11-16.
+- An LD-signed activity is ignored as well (answered 202) where it holds anything Mastodon 4.7.5 and Fedify 2.4.5 do
+  not write (Kopje's own LD-signed deletions are Fedify's): a key with a control character or a line break; a key that
+  starts with `@` but is no JSON-LD 1.1 keyword; an inline definition in its `@context` other than one Mastodon (4.4 to
+  4.7.5: `full_context` and its serializers' contexts) or Fedify 2.4.5 (`@fedify/vocab`) writes for that name, compared
+  exactly; a type other than a plain name or an absolute IRI; or a proof other than an object, or an array of them, of
+  a `@context` that names ActivityStreams and of names given strings (FEP-8b32 as Fedify writes it). Each form where
+  Ruby's json-ld and jsonld.js part lies outside what those senders write, so none is read. Where Mastodon applies
+  something of such an activity, Kopje applies nothing: one typed, or with its object typed, as a compact IRI
+  (`as:Like`, `as:Undo`, `as:Block`, `as:Reject`, `as:Follow`, `as:Delete`, `as:Accept`, `as:Note`, `as:Mention`), so
+  such a retraction
+  leaves the follow, the block or the status Mastodon's ends (#1717); one whose context holds a definition another
+  sender writes (Misskey's, whose `featured` is untyped and which defines `Key`, `freeText`, `vcard` and its own
+  `_misskey_*` names, so that Misskey's LD-signed relay deliveries are ignored; an inline name of the sender's own given
+  a key; a prefix named `https`); a status whose context defines `sensitive` otherwise (typed `@id` or as a boolean),
+  which is not stored; and one whose data-integrity proof names a context without ActivityStreams. Of the 147
+  LD-signed forms the captures hold, 50 are so ignored, and Mastodon applies something of 26; every body Mastodon
+  4.6.11 and 4.7.5 and Fedify 2.4.5 send in the captures passes. Accepted, 2026-11-17.
 
 Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NET-1 in `docs/threat-model.md`):
 

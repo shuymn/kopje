@@ -824,11 +824,11 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
     const store = await importedStore();
     const r = await rollback(store);
     const signature = { type: "RsaSignature2017", creator: `${r.carol.uri}#main-key`, signatureValue: "placeholder" };
-    // Mastodon reads a body whose proof JSON-LD refuses as received, so Kopje reads its type as given and its inbox
-    // applies nothing; the drain checks the same envelope, which passes, and hands the activity on as received, for
-    // the legacy instance to read as it does any type Kopje does not apply.
-    const compacted = { ...follow(r.carol.uri, 1), type: "as:Follow", signature };
-    const typed = { ...compacted, proof: { "@type": 5 } };
+    // Kopje renames an absolute IRI type only in a body it can show Mastodon compacts, one without a proof, so it reads
+    // this one's type as given and its inbox applies nothing; the drain checks the same envelope, which passes, and
+    // hands the activity on as received, for the legacy instance to read as it does any type Kopje does not apply.
+    const compacted = { ...follow(r.carol.uri, 1), type: "https://www.w3.org/ns/activitystreams#Follow", signature };
+    const typed = { ...compacted, proof: { type: "DataIntegrityProof", proofValue: "placeholder" } };
     expect(await parseActivity(new TextEncoder().encode(JSON.stringify(typed)))).toMatchObject({
       ok: false,
       reason: "unsupported",
@@ -841,7 +841,7 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
     await r.consume();
     expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 0, noRecipient: 0 });
     expect(r.legacy.pending.map((m) => (m.body as LegacyInboxMessage).activity)).toMatchObject([
-      { id: `${r.carol.uri}#follows/1`, type: "as:Follow" },
+      { id: `${r.carol.uri}#follows/1`, type: "https://www.w3.org/ns/activitystreams#Follow" },
     ]);
   });
 

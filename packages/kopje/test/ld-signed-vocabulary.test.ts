@@ -1,12 +1,15 @@
 import { preloadedContexts } from "@fedify/fedify";
+import * as vocab from "@fedify/vocab";
 import jsonld from "jsonld/dist/jsonld.esm.js";
 import { describe, expect, it } from "vitest";
 
+import { FEDIFY_CONTEXT_TERMS } from "../src/federation/fedify-context";
 import {
   ACTIVITY_VOCABULARY,
   FULL_CONTEXT_VALUES,
   inlineDefinitionIris,
   ldSignedReading,
+  type Rules,
   SIGNED_CONTEXT_URLS,
 } from "../src/federation/ld-signed-body";
 import corpus from "./fixtures/ld-signed/corpus.json";
@@ -17,6 +20,9 @@ import forms from "./fixtures/ld-signed/forms.json";
 // what that processing gives (ID-1, docs/mastodon-deviations.md "Reading inbound activities").
 
 type Json = Record<string, unknown>;
+// The bodies here define names otherwise to hold the tables: they are read under the rules but (5), which refuses any
+// inline definition no real sender writes.
+const SECOND_LAYER: Rules = { senderShapes: false };
 type ActiveContext = Awaited<ReturnType<typeof jsonld.processContext>>;
 
 const AS = "https://www.w3.org/ns/activitystreams";
@@ -153,7 +159,7 @@ describe("ldSignedBodyReadable's tables", () => {
   // IRI is read as given.
   it("reads a type given as a vocabulary IRI as jsonld.js's compaction under full_context names it", async () => {
     const context = [AS, "https://w3id.org/security/v1"];
-    const { readType } = (await ldSignedReading({ "@context": context }))!;
+    const { readType } = (await ldSignedReading({ "@context": context }, SECOND_LAYER))!;
     const named: string[] = [];
     for (const iri of new Set(ACTIVITY_VOCABULARY.values())) {
       if (iri.startsWith("@")) {
@@ -220,7 +226,7 @@ describe("ldSignedBodyReadable's tables", () => {
         { "@context": fullContext },
         options,
       )) as Json;
-      const read = (await ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } }))!.body;
+      const read = (await ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } }, SECOND_LAYER))!.body;
       const keys = (json: Json) => Object.keys(json.object as Json).toSorted();
       const types = (json: Json) => (json.tag as Json[]).map((tag) => tag.type);
       expect(keys(read), JSON.stringify(context)).toEqual(keys(compacted));
@@ -271,7 +277,8 @@ describe("ldSignedBodyReadable's tables", () => {
           options,
         )) as Json;
         const read = (
-          (await ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } }))!.body.object as Json
+          (await ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } }, SECOND_LAYER))!.body
+            .object as Json
         )[name];
         const written = (compacted.object as Json)[name];
         const values = (v: unknown) => (v === undefined ? 0 : [v].flat(Infinity).filter((x) => x !== null).length);
@@ -329,7 +336,8 @@ describe("ldSignedBodyReadable's tables", () => {
         { "@context": fullContext },
         options,
       )) as Json;
-      const read = (await ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } }))!.body.object as Json;
+      const read = (await ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } }, SECOND_LAYER))!.body
+        .object as Json;
       // Each node wherever the compaction put it (under its member's name or IRI), by its name.
       const nodeNamed = (object: Json, name: string) =>
         Object.values(object)
@@ -395,7 +403,7 @@ describe("ldSignedBodyReadable's tables", () => {
         { "@context": fullContext },
         options,
       )) as Json;
-      const read = (await ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } }))!.body;
+      const read = (await ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } }, SECOND_LAYER))!.body;
       const names = (json: Json) => Object.keys(json.object as Json).filter((name) => flippable.includes(name));
       const types = (json: Json) => (json.tag as Json[]).map((tag) => tag.type);
       expect(names(read)).toEqual(["sensitive"]);
@@ -424,5 +432,29 @@ describe("ldSignedBodyReadable's tables", () => {
       }
     }
     expect(checked).toBeGreaterThan(1_000);
+  });
+  it("FEDIFY_CONTEXT_TERMS is every inline definition @fedify/vocab writes, by name", async () => {
+    const written = new Map<string, unknown[]>();
+    let classes = 0;
+    for (const value of Object.values(vocab)) {
+      const type = value as { typeId?: unknown; prototype?: { toJsonLd?: unknown } } & (new (values: Json) => {
+        toJsonLd(options: { format: "compact" }): Promise<unknown>;
+      });
+      if (typeof value !== "function" || type.typeId === undefined || typeof type.prototype?.toJsonLd !== "function") {
+        continue;
+      }
+      classes++;
+      const json = (await new type({}).toJsonLd({ format: "compact" })) as Json;
+      for (const entry of [json["@context"]].flat()) {
+        for (const [name, definition] of Object.entries((isObject(entry) ? entry : {}) as Json)) {
+          const definitions = written.get(name) ?? [];
+          if (!definitions.some((other) => JSON.stringify(other) === JSON.stringify(definition))) {
+            written.set(name, [...definitions, definition]);
+          }
+        }
+      }
+    }
+    expect(classes).toBeGreaterThan(80);
+    expect(Object.fromEntries([...written].toSorted(([a], [b]) => (a < b ? -1 : 1)))).toEqual(FEDIFY_CONTEXT_TERMS);
   });
 });

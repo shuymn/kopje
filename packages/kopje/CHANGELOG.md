@@ -303,8 +303,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   no `@base`, `@vocab` or other keyword, only preloaded contexts that keep them) and its properties are plain names (no
   `@id`, `@type`, `@value`, nested `@context`, or IRI as a key)
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Reading inbound activities), and logged once as
-  `kopje.inbox.refused` with reason `ld-context`. Mastodon, Fedify, Misskey and Kopje bodies all pass. The type of one
-  that passes, and its embedded object's, given as an IRI (`as:Follow`, or the absolute one) are read as the name
+  `kopje.inbox.refused` with reason `ld-context`. It is ignored too where it holds anything Mastodon 4.7.5 and Fedify
+  2.4.5 do not write: a key with a control character or a line break, a key that starts with `@` but is no JSON-LD
+  keyword, an inline context definition neither writes for that name (Misskey's LD-signed relay deliveries among them),
+  a type other than a plain name or an absolute IRI (`as:Follow` among them), or a proof other than an object of a
+  context and names given strings; such a `Reject`, `Undo`, `Block` or `Delete` leaves what Mastodon's ends, as the
+  deviations page lists. Mastodon's and Fedify's bodies, Kopje's own among them, pass. The type of one that passes, and
+  its embedded object's, given as an absolute IRI are read as the name
   Mastodon's compaction gives them only in a body of a closed shape whose compaction Kopje can show succeeds, and as
   given in any other (Mastodon reads a body its JSON-LD limits or processing refuse as received; one it compacts outside
   that shape applies less, as the deviations page lists): such a `Reject`, `Undo`, `Block` or `Delete` now ends the
@@ -319,11 +324,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   wherever Mastodon may, given an empty array or a `0` too. A body Mastodon reads as received (past its JSON-LD limits,
   or with a data-integrity proof that keeps something once JSON-LD expands it, which Kopje tells by expanding the proof
   with jsonld.js and the preloaded contexts, within Mastodon's 1,000 values and 32 contexts, types and keys whose
-  definition carries a context, counted in every node, and only where each key of the proof that starts with `@` is one
-  a node holds) is read as received, so a proof that expands to nothing (a null value, or a `@language` beside a null
-  member or beside a keyword of contexts such as `@version`) no longer has such a `QuoteRequest` read as received. An
-  LD-signed activity with a type array of two values or more one of which is not a string, on which Mastodon's job
-  raises and applies nothing, is ignored. No Store migration and no `wrangler.jsonc` change.
+  definition carries a context, counted in every node and for each value, and only where each key of the proof that
+  starts with `@` is one a node holds and none has a line shaped like a keyword) is read as received, so a proof that
+  expands to nothing (a null value, or a `@language` beside a null member or beside a keyword of contexts such as
+  `@version`) no longer has such a `QuoteRequest` read as received. An
+  LD-signed activity with a node whose `type` and `@type` together give two types or more one of which is not a string
+  or is shaped like a keyword on a line, or a type beside `@set`, on which Mastodon's job raises and applies nothing, is
+  ignored. No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 
