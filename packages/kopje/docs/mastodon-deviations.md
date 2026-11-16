@@ -926,8 +926,9 @@ Request parameters:
   `media_attributes[][thumbnail]` (on a status edit) answer 422 `Validation failed: Thumbnail must be blank`, as
   Mastodon validates an image's thumbnail. Any file part or non-empty text is a thumbnail; empty text or JSON `null`
   is none. Text that is not a data URI answers 422, where Mastodon answers 500. The check runs before the file is
-  processed on an upload, before the media lookup on `/api/v1/media/:id`, and on an edit after the status is found and
-  before `media_ids` are looked up, for any entry with an `id` (Mastodon reads only entries for the post's media).
+  processed on an upload, after the media is found on `/api/v1/media/:id` (as Mastodon: media that is not the caller's
+  unattached media answers 404 first), and on an edit after the status is found and before `media_ids` are looked up,
+  for any entry with an `id` (Mastodon reads only entries for the post's media).
   Mastodon may report other validation errors first or alongside it. On `/api/v1/media/:id`, a multipart body larger
   than 1 MiB plus 16 KiB answers 413.
 - A multipart part with an empty filename is read as a text value, as workerd's parser reads it (Rack drops it as an

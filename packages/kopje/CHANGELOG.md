@@ -325,6 +325,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   longer marks the post sensitive, as in Mastodon; a poll choice of only U+0085 is dropped and one of U+FEFF kept; a
   remote post whose content or content warning is only whitespace reads its language map; a remote account's profile
   fields are shown without surrounding whitespace. No Store migration and no `wrangler.jsonc` change.
+- `PUT /api/v1/media/:id` answers 404 for media attached to a post before it checks the parameters, as Mastodon does.
+  No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 
