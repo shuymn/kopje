@@ -212,14 +212,15 @@ settings page):
   Without a cached copy they equal the remote URLs. The cache's bytes are capped by `REMOTE_MEDIA_CACHE_BYTES` (default
   4 GiB), and a profile image is kept while its account shows it. A suspended account's copies are deleted, where
   Mastodon keeps them private.
-- A remote account's `avatar_description` and `header_description` are read from its actor's `icon` and `image` as
-  Mastodon 4.7 reads them (the first value, an embedded `Image`, its `summary` else its `name`), but cut at 150 code
-  points, where Mastodon keeps 10,000 (`process_account_service.rb:368`). Every description Mastodon writes is within
-  150, its limit for a local account, and an account is embedded in nearly every answer (a conversation shows 14, a
-  boosted quote 3), so 10,000 would put one conversation past the 8 MiB answer budget and a timeline's heap past half
-  the isolate's memory. An image given by reference rather than embedded gives no description, as Kopje fetches no
-  image; a value Mastodon cannot read (a numeric `@value`) is none, where Mastodon fails the document. Accepted,
-  2026-11-15.
+- A remote account's `avatar`, `header`, `avatar_description` and `header_description` are read from its actor's
+  `icon` and `image` as Mastodon 4.7 reads them (`process_account_service.rb:354-379`: the first value; an embedded
+  `Image`'s `url` and its `summary` else its `name`; any other object's `href` and no description), but a description
+  is cut at 150 code points, where Mastodon keeps 10,000 (`process_account_service.rb:368`). Every description Mastodon
+  writes is within 150, its limit for a local account, and an account is embedded in nearly every answer (a
+  conversation shows 14, a boosted quote 3), so 10,000 would put one conversation past the 8 MiB answer budget and a
+  timeline's heap past half the isolate's memory. An image given by reference rather than embedded is not fetched, so
+  the account has neither the image nor its description; Mastodon fetches it. A value Mastodon cannot read (a numeric
+  `@value`) is none, where Mastodon fails the document. Accepted, 2026-11-15.
 - A remote account's `show_featured`, `show_media` and `show_media_replies` change only when its actor's
   `showFeatured`, `showMedia` or `showRepliesInMedia` is a JSON boolean, and keep their stored values otherwise, as
   when the key is absent (`process_account_service.rb:258-260`). Mastodon casts any other value as a form value (a
@@ -579,6 +580,24 @@ Mastodon's `JsonLdHelper#collection_items`; RES-6 in [threat-model.md](threat-mo
   each count expiring 5 minutes after its last increment). Kopje gives quote verification work only to statuses that a
   delivery or a user's request brought, so that reading an account's collections leads to no other account (RES-6).
   Accepted, 2026-11-15.
+
+- An actor's collection (its `followers`, `following`, `featured`, `featuredTags` or `outbox`) is the URI Mastodon
+  4.7.5's `valid_collection_uri` stores for it (`process_account_service.rb:235-245`: Addressable's parse, written back,
+  or `''` for none, which an addressing or quote policy entry `""` matches as in Mastodon), but Kopje cannot tell that
+  URI for a value holding a NUL (PostgreSQL refuses it, so Mastodon stores no account), a lone surrogate or U+FFFD, a
+  line feed in its authority, or a port that percent-decodes to one holding a line feed. Mastodon stores some of these
+  (a line feed in the userinfo as spelled, the port `4%0A` as `:4`). The Store's JSON functions read a lone surrogate's
+  escape as bytes that come back as U+FFFD, so its SQL readers and `JSON.parse` would read two strings, and a line feed
+  moves the splits of Ruby's line-anchored expressions. No addressing names such a collection, so a status addressed to
+  it is direct where Mastodon may make it private. A quote policy's entries are read in Mastodon's order (the public
+  collection, then the followers collection, then the following one, each match taken before the next,
+  `status_parser.rb:179-196`), and past such a collection an entry adds nothing but the public collection's flag, and a
+  value that is not a string `unsupported_policy`: Mastodon may store the collection as the very string a later entry
+  lists and read the entry as it, so neither a later collection's flag nor `unsupported_policy` (which lets anyone ask)
+  is known to be Mastodon's. Every string entry is compared as Mastodon compares it, whatever its length (a policy's
+  strings are the received object's, within its 1 MiB body bound; the stored collection compared with them has no fixed
+  bound), so each entry's flags are within Mastodon's, and no one may quote or ask where Mastodon refuses them.
+  Accepted, 2026-11-16.
 
 Followers synchronisation (Mastodon's `Collection-Synchronization` header and
 `/users/:username/followers_synchronization`):

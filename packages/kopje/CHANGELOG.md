@@ -429,6 +429,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Editing a post's poll clears its votes as Mastodon does when the edit leaves out `poll[multiple]`, or sends choices
   that differ from the stored ones before blanks and surrounding whitespace are removed. No Store migration and no
   `wrangler.jsonc` change.
+- A remote actor whose `icon` or `image` is not an embedded `Image` (a `Document`, say), or whose `followers` or
+  `following` is an object of another type, is stored without that image, where its documents, its signed activities
+  and the author proofs of its `Delete`s were refused. Avatars and headers are read as Mastodon 4.7 reads them, and an
+  actor's `followers` and `following` as Mastodon stores them (an object's `id`, an array's first value, a URI as
+  Mastodon's parser writes it back), for the visibility of its posts, quote policies and the follower sync. No Store
+  migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

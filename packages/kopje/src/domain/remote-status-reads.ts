@@ -1,6 +1,7 @@
 import type { Db } from "../db/sql";
 import { spoilerReadSql, statusEditedSql, statusPublishedSql } from "../platform/stored-bounds";
 import { isPublicCollection, type Visibility } from "./audience";
+import { collectionSql, collectionUri } from "./collection-requests";
 import { type EmojiCandidate } from "./custom-emojis";
 import { type CardCandidate, type CardLink } from "./link-cards";
 import { type RemotePollInput } from "./polls";
@@ -82,8 +83,9 @@ export type RemoteQuoteInput = {
   embedded?: RemoteStatusInput | null;
 };
 
-// interactionPolicy.canQuote as the Worker read it: the URIs each half lists ('' for an entry that is not one).
-export type RemoteQuotePolicyInput = { automatic: string[]; manual: string[] };
+// interactionPolicy.canQuote as the Worker read it: the strings each half lists, as listed ("" included, any length),
+// and null for an entry that is not a string.
+export type RemoteQuotePolicyInput = { automatic: (string | null)[]; manual: (string | null)[] };
 
 export type StoredStatus = {
   id: string;
@@ -114,15 +116,14 @@ export function statusByUri(db: Db, uri: string): StoredStatus | undefined {
   );
 }
 
-// The author's followers collection, as its stored document names it.
+// The author's followers collection, as its stored document names it (collection-requests.ts collectionUri: '' for
+// none, as Mastodon stores it, and null for an unreadable one, which no addressing names).
 export function followersUri(db: Db, accountId: string): string | null {
-  return (
-    db.first<{ followers: string | null }>(
-      `SELECT CASE WHEN json_type(raw, '$.followers') = 'text' THEN json_extract(raw, '$.followers') END AS followers
-			FROM accounts WHERE id = ?`,
-      accountId,
-    )?.followers ?? null
+  const row = db.first<{ followers: string | null }>(
+    `SELECT ${collectionSql("raw", "followers")} AS followers FROM accounts WHERE id = ?`,
+    accountId,
   );
+  return collectionUri(row?.followers ?? null);
 }
 
 // The visibility a fetched original would be stored with (before silent mentions), for VIS-6's check before anything

@@ -51,7 +51,7 @@ import {
   requestBudget,
   requireObjectRoot,
 } from "./loader";
-import { type FetchedActor, fetchActor, loadActor, ownKeys, readEmbeddedActor } from "./remote-actor";
+import { actorViewLoader, type FetchedActor, fetchActor, loadActor, ownKeys, readEmbeddedActor } from "./remote-actor";
 import {
   ACTOR_TYPES,
   CONVERTED_TYPES,
@@ -514,13 +514,18 @@ const COVERED_WITH_BODY = [...COVERED, "content-digest"];
 // or refetched, and WebCrypto's verify throws InvalidAccessError for a key of another algorithm; on that path it is
 // the only WebCrypto call on a remote key, so the exception means exactly that the key cannot verify the signature,
 // which is answered as a signature that does not verify. Any other error propagates.
+// ID-1: a document Fedify loads itself (a key it fetches when the keyCache answers none, at the key's URL or as its
+// owner's document) is read through the actor view (remote-actor.ts actorViewLoader), as every actor Kopje reads.
 async function verifyHttpSignature(
   signed: Request,
-  options: VerifyRequestOptions,
+  options: VerifyRequestOptions & { documentLoader: DocumentLoader },
 ): Promise<VerifyRequestDetailedResult> {
   let verified: VerifyRequestDetailedResult;
   try {
-    verified = await verifyRequestDetailed(signed, options);
+    verified = await verifyRequestDetailed(signed, {
+      ...options,
+      documentLoader: actorViewLoader(options.documentLoader),
+    });
   } catch (error) {
     if (
       signed.headers.has("Signature-Input") ||

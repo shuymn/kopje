@@ -3,8 +3,11 @@ import { Delete } from "@fedify/vocab";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { deleteSigning, stampDeleteActivity } from "../src/domain/activities";
+import { forwardSubject } from "../src/domain/deliveries";
 import { PROFILES, type ProofVerifiers, verifyAuthorProof } from "../src/federation/author-proof";
 import { MASTODON_CONTEXT_TERMS, MASTODON_NAMED_CONTEXTS } from "../src/federation/mastodon-context";
+import { fedifyActorView } from "../src/federation/remote-actor";
+import { bearer, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import {
   fepActor,
@@ -19,8 +22,8 @@ import {
   mastodonStampDelete,
   signTime,
 } from "./author-proof-helpers";
-import { mastodonActor, RemoteWeb, type TestActor } from "./inbox-helpers";
-import { AS, PUBLIC } from "./inbox-status-helpers";
+import { loggedRefusals, mastodonActor, RemoteWeb, type TestActor } from "./inbox-helpers";
+import { ALICE, AS, create, followed, mastodonNote, nextId, PUBLIC, setup } from "./inbox-status-helpers";
 import { contexts } from "./quote-helpers";
 
 // ID-1: an author proof is considered only on a body in one of the sender profiles (federation/author-proof.ts
@@ -859,5 +862,124 @@ describe("a signature altered after signing (ID-1)", () => {
     await forged({ ...withExpires, signature: removed }, bob, status, "removed");
     const added = { ...(without.signature as Json), expires: signTime(NOW + 2 * DAY) };
     await forged({ ...without, signature: added }, bob, status, "added");
+  });
+});
+
+// #1672: Fedify parses an actor document whose icon or followers is not of the type it expects only in the view
+// Kopje hands it (federation/remote-actor.ts fedifyActorView), so the author proof's key is found in that view, as
+// the HTTP signature's is, and is still one the actor's document embeds.
+describe("the author proof reads the actor's document as the HTTP signature does (#1672, ID-1)", () => {
+  // erin of fepActor (an RSA key for HTTP and LD signatures, an Ed25519 Multikey for FEP-8b32 proofs), her document's
+  // icon and followers typed Document, served on `web`.
+  async function documentActor(web: RemoteWeb, username = "erin") {
+    const fep = await fepActor(web, username);
+    const { uri } = fep.actor;
+    const document: Json = {
+      ...fep.actor.document,
+      icon: { type: "Document", mediaType: "image/png", url: `${uri}/avatar.png` },
+      followers: { type: "Document", id: `${uri}/followers` },
+    };
+    web.serve(uri, document);
+    return { ...fep, actor: { ...fep.actor, document } };
+  }
+
+  // erin's Deletes of `status`, one in each proof form: Mastodon's RsaSignature2017, and Fedify's FEP-8b32 proof.
+  async function deletes(erin: Awaited<ReturnType<typeof documentActor>>, status: string): Promise<[string, Json][]> {
+    return [
+      [
+        "LD signature",
+        await mastodonSigned(mastodonDelete(erin.actor, status, `${status}#delete-${nextId()}`), erin.actor),
+      ],
+      ["FEP-8b32 proof", await erin.fedify(`${status}#delete-${nextId()}`, status)],
+    ];
+  }
+
+  it("proves a Delete by an actor whose icon is a Document, in both proof forms", async () => {
+    const web = new RemoteWeb();
+    const erin = await documentActor(web);
+    const status = `${erin.actor.uri}/statuses/1`;
+    for (const [form, body] of await deletes(erin, status)) {
+      expect(await proves(body, erin.actor, status), form).toBe(true);
+    }
+    // Through the inbox: relayed by dan, the Delete applies; as her own, it is proven, so it is forwarded through
+    // alice's boost of the status (inbox.ts recordForwards).
+    for (const index of [0, 1]) {
+      for (const route of ["relayed", "own"] as const) {
+        const t = await setup();
+        const author = await documentActor(t.web);
+        await followed(t, author.actor);
+        const note = mastodonNote(author.actor);
+        expect(await t.post(author.actor, create(author.actor, note))).toBe(202);
+        const [row] = await sql<{ id: string }>(t.store, "SELECT id FROM statuses WHERE uri = ?", note.id);
+        const boosted = await t.request(
+          `/api/v1/statuses/${row!.id}/reblog`,
+          bearer(t.tokens.alice, { method: "POST" }),
+        );
+        expect(boosted.status).toBe(200);
+        const [form, body] = (await deletes(author, note.id))[index]!;
+        const dan = await mastodonActor(t.web, "dan", { origin: RELAY, key: 6 });
+        const { status: answered, refused: logged } = await loggedRefusals(() =>
+          t.post(route === "relayed" ? dan : author.actor, body),
+        );
+        expect({ answered, logged }, `${form}, ${route}`).toEqual({ answered: 202, logged: [] });
+        await settle(t.store);
+        expect(await sql(t.store, "SELECT id FROM statuses WHERE uri = ?", note.id), `${form}, ${route}`).toEqual([]);
+        if (route === "own") {
+          const forwards = await sql(
+            t.store,
+            "SELECT account_id FROM outbound_activities WHERE object_uri = ?",
+            forwardSubject(note.id),
+          );
+          expect(forwards, form).toEqual([{ account_id: ALICE }]);
+        }
+      }
+    }
+  }, 60_000);
+
+  it("refuses a proof by a key the actor does not embed", async () => {
+    const web = new RemoteWeb();
+    const erin = await documentActor(web);
+    const other = await fepActor(web, "other");
+    const status = `${erin.actor.uri}/statuses/1`;
+    // Keys at erin's URL that her document does not embed: other's RSA and Ed25519 keys.
+    const rsaId = `${erin.actor.uri}#other-key`;
+    const edId = `${erin.actor.uri}#other-ed25519-key`;
+    const ld = await mastodonSigned(mastodonDelete(erin.actor, status), { ...other.actor, keyId: rsaId });
+    const { proof: _proof, ...unsigned } = await erin.fedify(`${status}#delete`, status);
+    const fep = await other.sign(unsigned, { extra: { verificationMethod: edId } });
+    // A document of erin's that embeds them, without the members Fedify refuses, which the network answers: a
+    // verification that read anything but the document it was given would find them, and Fedify alone, given it,
+    // accepts both.
+    const multikey = [other.actor.document.assertionMethod].flat()[0] as Json;
+    const embedding = {
+      ...(fedifyActorView(erin.actor.document) as Json),
+      publicKey: [erin.actor.document.publicKey, { id: rsaId, owner: erin.actor.uri, publicKeyPem: other.actor.pem }],
+      assertionMethod: [erin.actor.document.assertionMethod, { ...multikey, id: edId, controller: erin.actor.uri }],
+    };
+    const fetched = network({ [erin.actor.uri]: embedding });
+    for (const [form, body] of [
+      ["LD signature", ld],
+      ["FEP-8b32 proof", fep],
+    ] as const) {
+      expect(await fedifyAccepts(body, { ...erin.actor, document: embedding }), form).toBe(true);
+      expect(await proves(body, erin.actor, status), form).toBe(false);
+    }
+    expect(fetched).not.toHaveBeenCalled();
+    // A key id at another actor is refused before any verifier runs.
+    const { verifiers, calls } = countingVerifiers();
+    for (const body of [
+      await mastodonSigned(mastodonDelete(erin.actor, status), other.actor),
+      await other.sign(unsigned),
+    ]) {
+      const expected = { id: body.id as string, actor: erin.actor.uri, object: status };
+      expect(await verifyAuthorProof(body, expected, erin.actor.document, NOW, verifiers)).toBe(false);
+    }
+    expect(calls).toEqual({ verifyObject: 0, verifyJsonLd: 0 });
+    // The control: erin's own proofs run each verifier once and pass.
+    for (const [, body] of await deletes(erin, status)) {
+      const expected = { id: body.id as string, actor: erin.actor.uri, object: status };
+      expect(await verifyAuthorProof(body, expected, erin.actor.document, NOW, verifiers)).toBe(true);
+    }
+    expect(calls).toEqual({ verifyObject: 1, verifyJsonLd: 1 });
   });
 });
