@@ -689,8 +689,10 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/polls.ts accounts.uri": { count: 3, reason: IDENTITY },
   "src/domain/quotes.ts statuses.uri": { count: 7, reason: IDENTITY },
   "src/domain/quotes.ts accounts.uri": { count: 7, reason: IDENTITY },
-  "src/domain/remote-collections.ts accounts.uri": { count: 4, reason: IDENTITY },
+  "src/domain/remote-collections.ts accounts.uri": { count: 3, reason: IDENTITY },
   "src/domain/remote-collections.ts statuses.uri": { count: 1, reason: IDENTITY },
+  // A 404 removal's job names the status's author (removeGone).
+  "src/domain/remote-removal.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/remote-statuses.ts accounts.uri": { count: 2, reason: IDENTITY },
   "src/domain/reply-walk-reads.ts statuses.uri": { count: 1, reason: IDENTITY },
   "src/domain/reply-walks.ts statuses.uri": { count: 1, reason: IDENTITY },

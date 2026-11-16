@@ -381,9 +381,14 @@ export class Policy {
       this.refetch(actor, served, now);
       return false;
     }
-    if (served.gone !== 404) {
-      return false;
-    }
+    return served.gone === 404 && this.removeGone(uri, now);
+  }
+
+  // ID-7: a 404 at a status's own uri removes the public or unlisted original stored under it then (every status of the
+  // pool is one) unless its removal runs already, recording no retraction and leaving the removal's batches to the job
+  // rounds; the hidden reply no longer counts in its parent's replies (the projection's count). Whether a removal
+  // started.
+  private removeGone(uri: string, now: number): boolean {
     const stored = this.statuses.get(uri);
     if (stored === undefined || stored.withdrawn) {
       return false;

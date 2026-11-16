@@ -324,7 +324,7 @@ against their own instance. TLS is assumed between all parties.
   URI's origin, ID-2) removes it whoever's, as Mastodon's `fetch_status` does; so a local status is never created,
   updated or deleted from outside (`storeRemoteStatus` and `updateRemoteStatus` in
   `src/domain/remote-statuses.ts`, `deleteObject` in `src/domain/inbox.ts`, `removeGone` in
-  `src/domain/remote-collections.ts`, which skips a local author's row); `test/inbox-statuses.test.ts` ("nobody
+  `src/domain/remote-removal.ts`, which skips a local author's row); `test/inbox-statuses.test.ts` ("nobody
   remote updates a local one (ID-3)", "nothing of anyone else’s (ID-6, ID-3)"). A status matched by an object's
   `atomUri` (Mastodon's `Create#find_existing_status`, which `Update#update_status` also reaches, `Delete#delete_status`
   and `Undo#undo_announce`) keeps the rule: a `Create` or an `Update` whose `atomUri` names another author's status, a
@@ -466,10 +466,12 @@ against their own instance. TLS is assumed between all parties.
   status whose `Create` arrived after the sync's read included), when it is a remote original, public or unlisted, and
   not withdrawn, whoever its author, as Mastodon's `fetch_status` (`fetch_remote_status_service.rb:86-98`): its removal
   starts as a `Delete`'s does but records no retraction and no deleted object and forwards nothing, as Mastodon's
-  `RemoveStatusService` keeps no tombstone, so a later `Create` of the uri stores it again once the removal ended; a
-  410, a 404 after a redirect, and a private status's 404 remove nothing (`removeGone` in
-  `src/domain/remote-collections.ts`, `goneAt` in `src/federation/actor-gone.ts`; `test/remote-collections.test.ts`
-  ("a sync's fetch of every listed status")).
+  `RemoveStatusService` keeps no tombstone, so a later `Create` of the uri stores it again once the removal ended, and
+  the hidden reply leaves its parent's `replies_count` at once (one key write; the removal's last batch recounts the
+  parent to the same value), as `RemoveStatusService` decrements it; a 410, a 404 after a redirect, and a private
+  status's 404 remove nothing (`removeGone` in `src/domain/remote-removal.ts`, `goneAt` in
+  `src/federation/actor-gone.ts`; `test/remote-collections.test.ts` ("a sync's fetch of every listed status"),
+  `test/status-delete.test.ts` ("a pin sync's 404 of a stored reply counts it off its parent at once")).
   An `Update` whose poll is accepted, its values changed or not, records the Store's time as the poll's last fetch
   (`polls.fetched_at`); a refused or removed poll and a `Create` record none (`test/polls-federation.test.ts` ("marks
   the poll fetched on an accepted Update, not on a Create or a refused one")). A poll read's refresh applies its

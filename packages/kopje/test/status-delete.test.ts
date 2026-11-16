@@ -1844,6 +1844,23 @@ describe("status deletes: the author's orders", () => {
     ]);
   });
 
+  // ID-7: s2, s1's reply, is stored and linked; R deletes it, and a pin sync's fetch of it answers 404: the hide counts
+  // it off s1's replies at once (Mastodon's RemoveStatusService decrements it), before the removal's batch, whose
+  // recount of s1 sets the same count.
+  it("a pin sync's 404 of a stored reply counts it off its parent at once", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "post", s: 1, snapshot: A },
+      deliver(),
+      { k: "delete", s: 1, proven: false },
+      { k: "pinRead" },
+      { k: "pinFetch", s: 1 },
+      { k: "jobs" },
+    ]);
+    expect(w.stats["pin fetch 404 removed"]).toBe(1);
+  });
+
   it("a metadata Update, then an older content Update", async () => {
     const w = await run([
       { k: "post", s: 0, snapshot: A },
