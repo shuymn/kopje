@@ -18,10 +18,12 @@ import {
   PROVENANCE_MAX,
   retryDelay,
   rowProvenanceSql,
+  TARGET_CHUNK_SIZE,
 } from "../src/domain/deliveries";
 import { readOperation } from "../src/domain/operation";
 import { noteQuote } from "../src/domain/quotes";
 import { hasLocalFollowers } from "../src/domain/remote-statuses";
+import { MAX_REPORT_STATUSES } from "../src/domain/reports";
 import { sha256Hex } from "../src/platform/sha256";
 import type { StoreStub } from "../src/platform/store-client";
 import { bearer, json, settleDeliveries, sql } from "./api-helpers";
@@ -793,46 +795,53 @@ describe("outbound reach with stale statistics (RES-7)", () => {
 // A row's provenance as stored (recipient_accounts), read by every reader within its written bound (rowProvenanceSql):
 // a value an import leaves (the column has no CHECK) that is not TEXT of at most PROVENANCE_BYTES bytes holding a JSON
 // array of at most PROVENANCE_MAX values reads as a row without provenance (NET-2, VIS-30, RES-7).
+// EP-T8's stored values (below).
+// The rows personalFallback's provenance candidates read with every input at its cap (RES-7; the witness below): for
+// each of PROVENANCE_MAX candidates, its account, the activity's rows (one per audience inbox of a Flag, at most
+// 1 + MAX_REPORT_STATUSES) and one index entry past them, its chunk and one past it, and the chunk's TARGET_CHUNK_SIZE
+// targets; and 4 for the row, its activity and the ends of their reads.
+const EP_CANDIDATES_CEILING = PROVENANCE_MAX * (1 + (1 + MAX_REPORT_STATUSES + 1) + 2 + TARGET_CHUNK_SIZE) + 4;
+// Ids no account holds, of an account id's 18 digits.
+const absent = (n: number) => Array.from({ length: n }, (_, i) => String(900_000_000_000_000_001n + BigInt(i)));
+// A JSON array of `id` and an astral string, `bytes` UTF-8 bytes long (`["id","…"]`, each astral 4 bytes).
+const astral = (id: string, bytes: number) => {
+  const pad = bytes - (2 + 18 + 3 + 2);
+  return JSON.stringify([id, "\u{1F600}".repeat(Math.floor(pad / 4)) + "x".repeat(pad % 4)]);
+};
+// Each stored value, as an SQL expression over its parameter, naming `id` among absent ones; `admitted`: whether the
+// readers take it. The sharp ones pass every test but one, and name `id` as a string, as an account id is stored
+// (an unquoted integer matches no TEXT id): 338 bytes of 16 values (bytes), 17 values in 54 bytes (count), an object
+// (array), unterminated JSON (JSON), a BLOB of an array's text (TEXT).
+function epT8Cases(id: string): { name: string; sql: string; value: string | null; admitted: boolean }[] {
+  const sixteen = [id, ...absent(15)];
+  return [
+    { name: "16 ids, 337 bytes", sql: "?", value: JSON.stringify(sixteen), admitted: true },
+    { name: "astral, 337 bytes", sql: "?", value: astral(id, PROVENANCE_BYTES), admitted: true },
+    { name: "16 ids, 338 bytes", sql: "?", value: ` ${JSON.stringify(sixteen)}`, admitted: false },
+    { name: "astral, 338 bytes", sql: "?", value: astral(id, PROVENANCE_BYTES + 1), admitted: false },
+    { name: "17 ids", sql: "?", value: JSON.stringify([...sixteen, ...absent(17).slice(16)]), admitted: false },
+    {
+      name: "17 values, 54 bytes",
+      sql: "?",
+      value: JSON.stringify([id, ...Array<number>(16).fill(0)]),
+      admitted: false,
+    },
+    { name: "an object", sql: "?", value: JSON.stringify({ a: id }), admitted: false },
+    { name: "invalid JSON", sql: "?", value: `["${id}"`, admitted: false },
+    // SQLite's JSON functions read TEXT up to a NUL, every reader alike: the array before it.
+    { name: "a NUL", sql: "?", value: `["${id}"]\0x`, admitted: true },
+    { name: "a BLOB", sql: "CAST(? AS BLOB)", value: JSON.stringify([id]), admitted: false },
+    { name: "an integer", sql: "CAST(? AS INTEGER)", value: id, admitted: false },
+  ];
+}
+const EP_T8_NAMES = epT8Cases("").map((c) => c.name);
+
 describe("a row's stored provenance is read within its written bound (EP-T8)", () => {
   const SHARED = "https://remote.example/inbox";
   const PERSONAL = "https://remote.example/users/dave/inbox";
-  // Ids no account holds, of an account id's 18 digits.
-  const absent = (n: number) => Array.from({ length: n }, (_, i) => String(900_000_000_000_000_001n + BigInt(i)));
-  // A JSON array of `id` and an astral string, `bytes` UTF-8 bytes long (`["id","…"]`, each astral 4 bytes).
-  const astral = (id: string, bytes: number) => {
-    const pad = bytes - (2 + 18 + 3 + 2);
-    return JSON.stringify([id, "\u{1F600}".repeat(Math.floor(pad / 4)) + "x".repeat(pad % 4)]);
-  };
-  // Each stored value, as an SQL expression over its parameter, naming `id` among absent ones; `admitted`: whether the
-  // readers take it. The sharp ones pass every test but one, and name `id` as a string, as an account id is stored
-  // (an unquoted integer matches no TEXT id): 338 bytes of 16 values (bytes), 17 values in 54 bytes (count), an object
-  // (array), unterminated JSON (JSON), a BLOB of an array's text (TEXT).
-  const cases = (id: string): { name: string; sql: string; value: string | null; admitted: boolean }[] => {
-    const sixteen = [id, ...absent(15)];
-    return [
-      { name: "16 ids, 337 bytes", sql: "?", value: JSON.stringify(sixteen), admitted: true },
-      { name: "astral, 337 bytes", sql: "?", value: astral(id, PROVENANCE_BYTES), admitted: true },
-      { name: "16 ids, 338 bytes", sql: "?", value: ` ${JSON.stringify(sixteen)}`, admitted: false },
-      { name: "astral, 338 bytes", sql: "?", value: astral(id, PROVENANCE_BYTES + 1), admitted: false },
-      { name: "17 ids", sql: "?", value: JSON.stringify([...sixteen, ...absent(17).slice(16)]), admitted: false },
-      {
-        name: "17 values, 54 bytes",
-        sql: "?",
-        value: JSON.stringify([id, ...Array<number>(16).fill(0)]),
-        admitted: false,
-      },
-      { name: "an object", sql: "?", value: JSON.stringify({ a: id }), admitted: false },
-      { name: "invalid JSON", sql: "?", value: `["${id}"`, admitted: false },
-      // SQLite's JSON functions read TEXT up to a NUL, every reader alike: the array before it.
-      { name: "a NUL", sql: "?", value: `["${id}"]\0x`, admitted: true },
-      { name: "a BLOB", sql: "CAST(? AS BLOB)", value: JSON.stringify([id]), admitted: false },
-      { name: "an integer", sql: "CAST(? AS INTEGER)", value: id, admitted: false },
-    ];
-  };
-
   it("measures the sharp cases in bytes and values", () => {
     const id = "100000000000000002";
-    const byName = Object.fromEntries(cases(id).map((c) => [c.name, c.value ?? ""]));
+    const byName = Object.fromEntries(epT8Cases(id).map((c) => [c.name, c.value ?? ""]));
     const bytes = (name: string) => new TextEncoder().encode(byName[name]).length;
     expect(PROVENANCE_BYTES).toBe(337);
     expect([bytes("16 ids, 337 bytes"), bytes("astral, 337 bytes")]).toEqual([337, 337]);
@@ -846,7 +855,7 @@ describe("a row's stored provenance is read within its written bound (EP-T8)", (
   // The send-time check (VIS-30) reads the row's provenance from the due-row read: a row naming only an unavailable
   // recipient is dropped when admitted, and checked by its inbox host only (sent) otherwise.
   it("is the send-time check's provenance only when admitted", async () => {
-    for (const c of cases("")) {
+    for (const c of epT8Cases("")) {
       const h = await community(["alice"]);
       const { alice } = h.users;
       const dave = await remoteAccount(h.store, "dave", "remote.example");
@@ -854,7 +863,7 @@ describe("a row's stored provenance is read within its written bound (EP-T8)", (
       await claim(h.store, NOW, "settle");
       await sql(h.store, "UPDATE deliveries SET state = 'pending', lease_token = NULL, next_attempt_at = ?", NOW);
       await sql(h.store, "UPDATE accounts SET deleted_at = ? WHERE id = ?", new Date(NOW).toISOString(), dave);
-      const value = cases(dave).find((d) => d.name === c.name)!;
+      const value = epT8Cases(dave).find((d) => d.name === c.name)!;
       await sql(h.store, `UPDATE deliveries SET recipient_accounts = ${value.sql}`, value.value);
       const round = await claim(h.store, NOW, "a");
       expect(
@@ -866,12 +875,12 @@ describe("a row's stored provenance is read within its written bound (EP-T8)", (
 
   // A forward's row (Audience.shares) moves only by an admitted provenance naming one account behind its inbox.
   it("is a forward's fallback provenance only when admitted", async () => {
-    for (const c of cases("")) {
+    for (const c of epT8Cases("")) {
       const h = await community(["alice"]);
       const { alice } = h.users;
       const dave = await remoteAccount(h.store, "dave", "remote.example");
-      const value = cases(dave).find((d) => d.name === c.name)!;
-      await forwardRow(h.store, alice.id, value);
+      const value = epT8Cases(dave).find((d) => d.name === c.name)!;
+      await queuedRow(h.store, alice.id, value);
       const round = await claim(h.store, NOW, "a");
       expect(round.deliveries.map((d) => d.inbox)).toEqual([SHARED]);
       expect(await complete(h.store, round.deliveries[0]!.id, "a", NOW, MISSING), c.name).toMatchObject({
@@ -916,19 +925,338 @@ describe("a row's stored provenance is read within its written bound (EP-T8)", (
   });
 });
 
-// A pending forward's row (a forwarded Delete: Audience.shares, a retraction, so the send-time check passes it) of
-// `account` to remote.example's shared inbox, its provenance stored as `value` is.
-async function forwardRow(store: StoreStub, account: string, value: { sql: string; value: string | null }) {
+// NET-2's shared-inbox fallback by the row's provenance: a row that recorded its recipients moves to the personal inbox
+// of one it names, whatever shared inbox that recipient names since (an actor document read again under #1686 may name
+// none: here its stored shared inbox is cleared, as upsertRemoteActor stores what remoteActorInput reads); a row
+// without provenance moves by today's rule alone.
+describe("the shared-inbox fallback by the row's provenance (#1686, NET-2)", () => {
+  const SHARED = "https://remote.example/inbox";
+  const personal = (name: string) => `https://remote.example/users/${name}/inbox`;
+  const unshare = (h: { store: StoreStub }, id: string) =>
+    sql(h.store, "UPDATE accounts SET shared_inbox_url = NULL WHERE id = ?", id);
+  const provenance = (ids: readonly string[]) => ({ sql: "?", value: JSON.stringify(ids) });
+  // A Follow of `target` by alice, leased at the shared inbox under token "a", its provenance as expansion wrote it.
+  async function leasedFollow(h: Awaited<ReturnType<typeof community>>, target: string) {
+    await act(h, h.users.alice!, `/api/v1/accounts/${target}/follow`);
+    const round = await claim(h.store, NOW, "a");
+    expect(round.deliveries.map((d) => d.inbox)).toEqual([SHARED]);
+    return round.deliveries[0]!.id;
+  }
+  const failed = (h: { store: StoreStub }, id: string) => complete(h.store, id, "a", NOW, MISSING);
+  const state = async (h: { store: StoreStub }) => (await rows(h.store)).map((r) => [r.type, r.inbox_url, r.state]);
+
+  // EP-T6: rows queued before the actor's shared inbox changed.
+  it("moves a Follow whose provenance names the recipient, though it names no shared inbox since (EP-T6)", async () => {
+    const h = await community(["alice"]);
+    const dave = await remoteAccount(h.store, "dave", "remote.example");
+    const id = await leasedFollow(h, dave);
+    expect(await sql(h.store, "SELECT recipient_accounts AS r FROM deliveries")).toEqual([
+      { r: JSON.stringify([dave]) },
+    ]);
+    await unshare(h, dave);
+    expect(await failed(h, id)).toMatchObject({ status: "retry", retryAt: NOW });
+    expect(await state(h)).toEqual([["Follow", personal("dave"), "pending"]]);
+    const again = await claim(h.store, NOW, "b");
+    expect(again.deliveries.map((d) => d.inbox)).toEqual([personal("dave")]);
+    expect(await complete(h.store, again.deliveries[0]!.id, "b", NOW, OK)).toMatchObject({ status: "delivered" });
+    expect(await rows(h.store)).toEqual([]);
+  });
+
+  it("moves a Flag's row without provenance by today's rule alone (EP-T6)", async () => {
+    for (const shared of [true, false]) {
+      const h = await community(["alice"]);
+      // `other`, of a lower id, has its personal inbox on the shared inbox's origin and another shared inbox.
+      const other = await remoteAccount(h.store, "other", "remote.example");
+      const dave = await remoteAccount(h.store, "dave", "remote.example");
+      expect(BigInt(other)).toBeLessThan(BigInt(dave));
+      await sql(h.store, "UPDATE accounts SET shared_inbox_url = 'https://remote.example/other' WHERE id = ?", other);
+      if (!shared) {
+        await unshare(h, dave);
+      }
+      // As a dump from before migration 0044 restores it: no recipients recorded.
+      await queuedRow(
+        h.store,
+        h.users.alice.id,
+        { sql: "NULL", value: null },
+        { kind: "flag", accounts: [other, dave] },
+      );
+      const round = await claim(h.store, NOW, "a");
+      expect(await failed(h, round.deliveries[0]!.id), String(shared)).toMatchObject({
+        status: shared ? "retry" : "gave_up",
+      });
+      expect(await state(h), String(shared)).toEqual([
+        ["Flag", shared ? personal("dave") : SHARED, shared ? "pending" : "gave_up"],
+      ]);
+    }
+  });
+
+  it("moves a forward's row whose provenance names one recipient, though it names no shared inbox since (EP-T6)", async () => {
+    const h = await community(["alice"]);
+    const dave = await remoteAccount(h.store, "dave", "remote.example");
+    await unshare(h, dave);
+    await queuedRow(h.store, h.users.alice.id, provenance([dave]));
+    const round = await claim(h.store, NOW, "a");
+    expect(await failed(h, round.deliveries[0]!.id)).toMatchObject({ status: "retry" });
+    expect(await state(h)).toEqual([["Delete", personal("dave"), "pending"]]);
+  });
+
+  // EP-T7: what still keeps a row from moving.
+  it("moves no row to another origin, an inbox the activity has, two recipients, or one its provenance does not name (EP-T7)", async () => {
+    const cases: [string, (h: Awaited<ReturnType<typeof community>>) => Promise<string>][] = [
+      [
+        "a personal inbox on another origin",
+        async (h) => {
+          const dave = await remoteAccount(h.store, "dave", "remote.example");
+          await sql(
+            h.store,
+            "UPDATE accounts SET inbox_url = 'https://elsewhere.example/users/dave/inbox' WHERE id = ?",
+            dave,
+          );
+          const id = await leasedFollow(h, dave);
+          await unshare(h, dave);
+          return id;
+        },
+      ],
+      [
+        "a row of the activity at the personal inbox",
+        async (h) => {
+          const dave = await remoteAccount(h.store, "dave", "remote.example");
+          const id = await leasedFollow(h, dave);
+          await unshare(h, dave);
+          await sql(
+            h.store,
+            `INSERT INTO deliveries (activity_id, account_id, inbox_url, lane, state, next_attempt_at, updated_at)
+							SELECT activity_id, account_id, ?, lane, 'gave_up', next_attempt_at, updated_at FROM deliveries`,
+            personal("dave"),
+          );
+          return id;
+        },
+      ],
+      [
+        "an unexpanded target of the activity at the personal inbox",
+        async (h) => {
+          const dave = await remoteAccount(h.store, "dave", "remote.example");
+          const id = await leasedFollow(h, dave);
+          await unshare(h, dave);
+          await sql(
+            h.store,
+            "INSERT INTO outbound_targets (activity_id, targets) SELECT activity_id, json_array(json_object('inbox', ?)) FROM deliveries",
+            personal("dave"),
+          );
+          return id;
+        },
+      ],
+      [
+        "a forward's row naming two movable recipients",
+        async (h) => {
+          const dave = await remoteAccount(h.store, "dave", "remote.example");
+          const erin = await remoteAccount(h.store, "erin", "remote.example");
+          await queuedRow(h.store, h.users.alice!.id, provenance([dave, erin]));
+          return (await claim(h.store, NOW, "a")).deliveries[0]!.id;
+        },
+      ],
+      [
+        "a forward's row without provenance, its audience naming one at the shared inbox",
+        async (h) => {
+          const dave = await remoteAccount(h.store, "dave", "remote.example");
+          await queuedRow(h.store, h.users.alice!.id, { sql: "NULL", value: null }, { accounts: [dave] });
+          return (await claim(h.store, NOW, "a")).deliveries[0]!.id;
+        },
+      ],
+      [
+        "a recipient at the shared inbox the provenance does not name",
+        async (h) => {
+          const dave = await remoteAccount(h.store, "dave", "remote.example");
+          const id = await leasedFollow(h, dave);
+          await sql(h.store, "UPDATE deliveries SET recipient_accounts = json_array('900000000000000001')");
+          return id;
+        },
+      ],
+    ];
+    for (const [name, arrange] of cases) {
+      const h = await community(["alice"]);
+      const id = await arrange(h);
+      expect(await failed(h, id), name).toMatchObject({ status: "gave_up" });
+      expect(
+        (await rows(h.store)).filter((r) => r.state !== "gave_up" || r.inbox_url !== SHARED),
+        name,
+      ).toEqual(
+        name.startsWith("a row of the activity") ? [expect.objectContaining({ inbox_url: personal("dave") })] : [],
+      );
+    }
+  });
+
+  // EP-T8, the personal fallback: a stored value it does not admit, or recipients_many, reads as no provenance (today's
+  // rule: dave, re-read to no shared inbox, is no candidate), and an admitted one moves the row to dave.
+  it("reads the row's provenance within its written bound (EP-T8)", async () => {
+    const values = [...EP_T8_NAMES.map((name) => ({ name, many: false })), { name: "16 ids, 337 bytes", many: true }];
+    for (const { name, many } of values) {
+      const h = await community(["alice"]);
+      const dave = await remoteAccount(h.store, "dave", "remote.example");
+      const id = await leasedFollow(h, dave);
+      await unshare(h, dave);
+      const value = epT8Cases(dave).find((c) => c.name === name)!;
+      await sql(
+        h.store,
+        `UPDATE deliveries SET recipient_accounts = ${value.sql}, recipients_many = ${many ? 1 : "NULL"}`,
+        value.value,
+      );
+      const label = `${name}${many ? ", recipients_many" : ""}`;
+      expect(await failed(h, id), label).toMatchObject({ status: value.admitted && !many ? "retry" : "gave_up" });
+    }
+  });
+
+  // RES-7: the provenance's candidates, every input at its cap at once: the provenance at PROVENANCE_MAX ids in
+  // PROVENANCE_BYTES bytes, each a candidate that reaches both checks; the activity (a Flag) at its audience's cap
+  // (1 + MAX_REPORT_STATUSES accounts), with a row at each audience inbox and an unexpanded chunk of TARGET_CHUNK_SIZE
+  // targets, none at a candidate's inbox, so each check walks them all. After ANALYZE, other activities' rows and chunks
+  // and other accounts grow; the statement reads the same rows, by key.
+  it("reads the provenance's candidates by key, flat as other rows grow (RES-7)", async () => {
+    const h = await community(["alice"]);
+    const audience = 1 + MAX_REPORT_STATUSES;
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO accounts (id, uri, username, domain, inbox_url, shared_inbox_url)
+			SELECT printf('%018d', 700000000000000000 + i), 'https://remote.example/users/u' || i, 'u' || i, 'remote.example',
+				'https://remote.example/users/u' || i || '/inbox', NULL FROM n`,
+      audience,
+    );
+    const ids = (
+      await sql<{ id: string }>(h.store, "SELECT id FROM accounts WHERE domain = 'remote.example' ORDER BY id")
+    ).map((r) => r.id);
+    const named = ids.slice(0, PROVENANCE_MAX);
+    expect(JSON.stringify(named)).toHaveLength(PROVENANCE_BYTES);
+    const activity = await queuedRow(h.store, h.users.alice.id, provenance(named), { kind: "flag", accounts: ids });
+    await sql(
+      h.store,
+      `INSERT INTO deliveries (activity_id, account_id, inbox_url, lane, state, next_attempt_at, updated_at)
+			SELECT CAST(?1 AS INTEGER), ?2, 'https://x' || value || '.example/inbox', 'https://x' || value || '.example',
+				'gave_up', ?3, ?3 FROM json_each(?4)`,
+      activity,
+      h.users.alice.id,
+      NOW,
+      JSON.stringify(ids.slice(1)),
+    );
+    await sql(
+      h.store,
+      `INSERT INTO outbound_targets (activity_id, targets) SELECT CAST(?1 AS INTEGER), json_group_array(json_object('inbox',
+				'https://t' || value || '.example/inbox')) FROM json_each(?2)`,
+      activity,
+      JSON.stringify(Array.from({ length: TARGET_CHUNK_SIZE }, (_, i) => i)),
+    );
+    expect(
+      await sql(h.store, "SELECT count(*) AS rows FROM deliveries WHERE activity_id = CAST(? AS INTEGER)", activity),
+    ).toEqual([{ rows: audience }]);
+    // A newer activity with a row and a chunk, so each range the candidates walk ends at an entry of another activity
+    // from the start (one index entry past each range), as it would among the neighbours grown below.
+    const newer = await queuedRow(h.store, h.users.alice.id, { sql: "NULL", value: null }, { kind: "flag" });
+    await sql(h.store, "UPDATE deliveries SET state = 'gave_up' WHERE activity_id = CAST(? AS INTEGER)", newer);
+    await sql(
+      h.store,
+      "INSERT INTO outbound_targets (activity_id, targets) VALUES (CAST(? AS INTEGER), json_array(json_object('inbox', ?)))",
+      newer,
+      "https://n.example/inbox",
+    );
+    const subject = (await claim(h.store, NOW, "a")).deliveries[0]!;
+    expect(subject.inbox).toBe(SHARED);
+    const { before, after } = await staleStatistics(h, {
+      capture: async () => {
+        const run = await plannedRun(h, /json_each\(d\.provenance\)/, completeDelivery, {
+          id: subject.id,
+          leaseToken: "a",
+          now: NOW,
+          outcome: MISSING,
+        });
+        // Put the row back as it was, leased at the shared inbox.
+        await sql(
+          h.store,
+          `UPDATE deliveries SET state = 'leased', lease_token = 'a', inbox_url = ?2, recipient_accounts = ?3
+						WHERE id = CAST(?1 AS INTEGER)`,
+          subject.id,
+          SHARED,
+          JSON.stringify(named),
+        );
+        return run;
+      },
+      grow: async () => {
+        await sql(
+          h.store,
+          `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000)
+					INSERT INTO accounts (id, uri, username, domain, inbox_url, shared_inbox_url)
+					SELECT printf('%018d', 800000000000000000 + i), 'https://g.example/users/g' || i, 'g' || i, 'g.example',
+						'https://g.example/users/g' || i || '/inbox', 'https://g.example/inbox' FROM n`,
+        );
+        await sql(
+          h.store,
+          `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200)
+					INSERT INTO outbound_activities (account_id, body, object_uri, created_at)
+					SELECT ?1, json_object('activity', json_object('type', 'Flag')), 'https://g.example/' || i, ?2 FROM n`,
+          h.users.alice.id,
+          NOW,
+        );
+        await sql(
+          h.store,
+          `INSERT INTO deliveries (activity_id, account_id, inbox_url, lane, state, next_attempt_at, updated_at)
+					SELECT o.id, o.account_id, 'https://g.example/users/' || n.i || '/inbox', 'https://g.example', 'gave_up', ?1, ?1
+					FROM outbound_activities o CROSS JOIN (SELECT value AS i FROM json_each(?2)) n
+					WHERE o.object_uri GLOB 'https://g.example/*'`,
+          NOW,
+          JSON.stringify(Array.from({ length: 20 }, (_, i) => i)),
+        );
+        await sql(
+          h.store,
+          `INSERT INTO outbound_targets (activity_id, targets) SELECT id, json_array(json_object('inbox', 'https://g.example/inbox'))
+					FROM outbound_activities WHERE object_uri GLOB 'https://g.example/*'`,
+        );
+      },
+    });
+    for (const [phase, run] of Object.entries({ before, after })) {
+      expect(run.result, phase).toMatchObject({ status: "retry" });
+      expect(run.plans, phase).toHaveLength(1);
+      // d and o are the row and its activity, one each, read by key.
+      expect(
+        scansOf(run.plans[0]!.plan, ["a", "e", "c", "deliveries", "outbound_activities", "accounts"]),
+        phase,
+      ).toEqual([]);
+      expect(
+        run.plans[0]!.plan.filter((detail) =>
+          /^SEARCH (deliveries|outbound_activities) USING INTEGER PRIMARY KEY/.test(detail),
+        ),
+      ).toHaveLength(2);
+    }
+    expect(after.plans[0]!.rows).toBe(before.plans[0]!.rows);
+    // The ceiling at these caps: each of PROVENANCE_MAX candidates walks the activity's rows and its chunk's targets.
+    expect(before.plans[0]!.rows).toBe(EP_CANDIDATES_CEILING);
+    expect(before.plans[0]!.rows).toBeGreaterThan(PROVENANCE_MAX * (audience + TARGET_CHUNK_SIZE));
+  }, 120_000);
+});
+
+// A pending row of `account` to remote.example's shared inbox, its provenance stored as `value` is: a forward's (a
+// forwarded Delete: Audience.shares, a retraction, so the send-time check passes it), or a Flag's (no `to`, as
+// reports.ts writes it, its audience `accounts`). Returns the activity's id.
+async function queuedRow(
+  store: StoreStub,
+  account: string,
+  value: { sql: string; value: string | null },
+  options: { kind?: "forward" | "flag"; accounts?: readonly string[] } = {},
+): Promise<string> {
+  const flag = options.kind === "flag";
   const [activity] = await sql<{ id: string }>(
     store,
     `INSERT INTO outbound_activities (account_id, body, object_uri, retracts, created_at)
-			VALUES (?1, json_object('activity', json_object('type', 'Delete', 'id', 'https://other.example/notes/1#delete',
+			VALUES (?1, json_object('activity', json_object('type', ?3, 'id', 'https://other.example/notes/1#' || ?3,
 				'actor', 'https://other.example/users/o', 'object', 'https://other.example/notes/1'),
-				'audience', json_object('shares', json_array('https://kopje.test/ap/o/1'), 'accounts', json_array())),
-				'https://other.example/notes/1', 1, ?2)
+				'audience', CASE WHEN ?4 THEN json_object('followers', json('false'), 'accounts', json(?5))
+					ELSE json_object('shares', json_array('https://kopje.test/ap/o/1'), 'accounts', json(?5)) END),
+				'https://other.example/notes/1', ?6, ?2)
 			RETURNING CAST(id AS TEXT) AS id`,
     account,
     NOW,
+    flag ? "Flag" : "Delete",
+    flag ? 1 : 0,
+    JSON.stringify(options.accounts ?? []),
+    flag ? 0 : 1,
   );
   await sql(
     store,
@@ -939,6 +1267,7 @@ async function forwardRow(store: StoreStub, account: string, value: { sql: strin
     activity!.id,
     account,
     NOW,
-    value.value,
+    ...(value.sql.includes("?") ? [value.value] : []),
   );
+  return activity!.id;
 }

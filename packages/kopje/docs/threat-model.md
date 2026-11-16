@@ -736,9 +736,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `Announce` still unsent may be dropped once the original is gone). A forward has a subject of its own: it neither
   supersedes nor is superseded by another activity, the stamp's forward (VIS-28), a quoting status's `Update` or
   `Delete` and a withdrawing `Reject` of a `Follow` with the same id included. Its shared-inbox fallback (NET-2) moves
-  a row only when the row's provenance names exactly one recipient behind that inbox with a personal inbox on the same
-  origin; a row serving several recipients, more than 16, or unknown ones (an inbox a reference reached already, or
-  whose delivery of it gave up and is kept) gives up visibly. _Gap (accepted):_ a server that has the boost or the
+  a row only when the row's provenance names exactly one recipient with a personal inbox on the same origin, whatever
+  shared inbox it names since; a row serving several recipients, more than 16, or unknown ones (an inbox a reference
+  reached already, or whose delivery of it gave up and is kept) gives up visibly. _Gap (accepted):_ a server that has
+  the boost or the
   quote only from the outbox or a fetch is not reached, nor are a quoting status's poll voters or wider reach; an
   inbox whose `Create` of a direct or limited quote is still in flight when the forward stages is not reached (it may
   get the quote and later find the original gone). The staging resolves the references one at a time, the shares then
@@ -2191,8 +2192,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   4.7.5 reads, kept only when Kopje POSTs to the URL Mastodon POSTs to for its spelling, else none, so the personal
   inbox is used and nothing goes to a guessed inbox (`sharedInboxUri` in `src/federation/remote-actor.ts`;
   `test/remote-actor-images.test.ts` ("keeps a spelling only where Kopje POSTs to Mastodon's URL")). Such a row moves
-  to its recipient's distinct personal inbox on the same origin (same lane, within the row's attempts) if the shared
-  inbox answers 404, 405 or 410; targets pass NET-3; a non-public activity is never sent to a redirect target. Claims
+  to a distinct personal inbox on the same origin (same lane, within the row's attempts) if the shared inbox answers
+  404, 405 or 410: for a row whose provenance names its recipients (VIS-30, read only within 337 bytes and 16 ids), the
+  first available one it names, whatever shared inbox that one names since; for a row without, an audience account
+  whose shared inbox the row's inbox still is, so a row whose recipient names another shared inbox since gives up (a
+  `Flag`'s audience may hold several accounts of one origin, and nothing tells which the row was for); a forward's row
+  without provenance does not move (`personalFallback` and `forwardFallback` in `src/domain/deliveries.ts`;
+  `test/deliveries.test.ts` ("the shared-inbox fallback by the row's provenance")). Targets pass NET-3; a non-public
+  activity is never sent to a redirect target. Claims
   serialize each lane; the POST timeout (30 s) is shorter than the lease (60 s), and completion requires the current
   lease token, so a stale completion cannot settle a later claim. A POST answered 400 or 401 is sent once more at once,
   signed with RFC 9421 by the same key (`@method`, `@target-uri`, `content-digest`), as Mastodon 4.7's `Request#perform`

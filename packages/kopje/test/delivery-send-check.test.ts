@@ -756,7 +756,7 @@ describe("confirmDelivery in the round (VIS-30)", () => {
 describe("delivery reads with stale statistics (RES-7)", () => {
   const PRESENT = { origin: "https://kopje.test" };
   const RECIPIENTS =
-    /json_each\(\?\) r CROSS JOIN|json_each\(o\.body, '\$\.audience\.accounts'\) r|FROM statuses s INDEXED BY sqlite_autoindex_statuses_2/;
+    /json_each\(\?\) r CROSS JOIN|json_each\(o\.body, '\$\.audience\.accounts'\) r|json_each\(d\.provenance\) r|FROM statuses s INDEXED BY sqlite_autoindex_statuses_2/;
 
   it("checks each recipient by id at the claim and at the fallback, the accounts grown after ANALYZE", async () => {
     const h = await community(["alice"]);
@@ -810,7 +810,23 @@ describe("delivery reads with stale statistics (RES-7)", () => {
         plan.filter((d) => /^SEARCH a USING (COVERING )?INDEX sqlite_autoindex_accounts_1 \(id=\?\)$/.test(d)),
         name,
       ).toHaveLength(1);
-      expect(scansOf(plan, ["a", "d", "o"]), name).toEqual([]);
+      // The fallback reads the row's provenance (personalFallback): `d` and `o` are the row and its activity, each a
+      // one-row subquery read by key.
+      const keyed = ["d", "o"].filter((alias) =>
+        plan.some((d) => new RegExp(`^(CO-ROUTINE|MATERIALIZE) ${alias}$`).test(d)),
+      );
+      expect(keyed, name).toEqual(name === "complete" ? ["d", "o"] : []);
+      expect(
+        plan.filter((d) => /^SEARCH (deliveries|outbound_activities) USING INTEGER PRIMARY KEY/.test(d)),
+        name,
+      ).toHaveLength(keyed.length);
+      expect(
+        scansOf(
+          plan,
+          ["a", "d", "o"].filter((alias) => !keyed.includes(alias)),
+        ),
+        name,
+      ).toEqual([]);
       expect(rows, name).toBe(before[name][0]!.rows);
     }
   }, 60_000);

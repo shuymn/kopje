@@ -279,9 +279,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 - A remote actor whose `endpoints` has an unexpected type or value is no longer refused, and its shared inbox is read
   as Mastodon reads it, and kept only when Kopje would send to the same URL as Mastodon
-  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts). A delivery's recorded recipients are read
-  only within the bound Kopje writes them in (an imported value past it is read as none, as for a delivery queued
-  before they were recorded). No Store migration and no `wrangler.jsonc` change.
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts). A delivery queued to a shared inbox that
+  answers 404, 405 or 410 moves to the recipient's personal inbox even when the actor no longer names that shared
+  inbox, when the delivery recorded its recipients; one queued before they were recorded moves as before, and gives up
+  when its recipient names another shared inbox since, as before. A queued forward without recorded recipients does
+  not move, as before. A delivery's recorded recipients are read only within the bound Kopje writes them in (an
+  imported value past it is read as none, as for a delivery queued before they were recorded). No Store migration and
+  no `wrangler.jsonc` change.
 - A fetched ActivityPub document, WebFinger answer or JSON-LD context is taken only from a 200 answer, as Mastodon takes
   them; another 2xx answer is a failed fetch. No Store migration and no `wrangler.jsonc` change.
 - Boolean parameters of the Mastodon API are read as Rails casts them in every endpoint: only `0`, `f`, `F`, `false`,
