@@ -1286,6 +1286,83 @@ describe("dump", () => {
     );
   }, 120_000);
 
+  it("restores a dump taken before 0098_card_attribution, which then upgrades through it", async () => {
+    await restoredBefore(
+      "0098_card_attribution",
+      (sql) => {
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username) VALUES ('100000000000000001', 'https://kopje.test/ap/users/a', 'a')",
+        );
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+					VALUES ('100000000000000002', 'https://kopje.test/s/2', '100000000000000001', 'public', 'x',
+						'2026-11-16T00:00:00.000Z')`,
+        );
+        sql.exec(
+          `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at)
+					VALUES ('100000000000000002', 'https://a.example/', 5, 7, 't', 9)`,
+        );
+      },
+      async (sql, upgrade) => {
+        expect(await upgrade()).toMatchObject({ ok: true, applied: ["0098_card_attribution"] });
+        expect(sql.exec("SELECT title, unverified_author_account_id FROM status_cards").toArray()).toEqual([
+          { title: "t", unverified_author_account_id: null },
+        ]);
+      },
+    );
+  }, 120_000);
+
+  it("round-trips a card's unverified author (0098), and refuses one past its stored bound on import", async () => {
+    const source = await seeded(1);
+    const [account, status] = await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      const row = sql
+        .exec<{ id: string; account_id: string }>("SELECT id, account_id FROM statuses ORDER BY id LIMIT 1")
+        .one();
+      sql.exec(
+        `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at, unverified_author_account_id)
+				VALUES (?, 'https://a.example/', 5, 7, 't', 9, ?)`,
+        row.id,
+        row.account_id,
+      );
+      return [row.account_id, row.id];
+    });
+    const { text } = await dumpViaRpc(source);
+    const restored = await migratedStore();
+    await copyConfig(source, restored);
+    expect((await importViaRpc(restored, text)).report).toMatchObject({ ok: true, problems: [] });
+    const authors = (store: StoreStub) =>
+      runInDurableObject(store, (_instance, state) =>
+        state.storage.sql
+          .exec(
+            "SELECT status_id, unverified_author_account_id AS a, typeof(unverified_author_account_id) AS t FROM status_cards",
+          )
+          .toArray(),
+      );
+    expect(await authors(restored)).toEqual([{ status_id: status, a: account, t: "text" }]);
+    // A dump from elsewhere, as its text could hold it: 17 digits, a BLOB of 18 digits, and an author on a pending row.
+    const line = text.split("\n").find((l) => l.startsWith('INSERT INTO "status_cards"'));
+    expect(line).toContain(`'${account}');`);
+    // The row made pending: due_at 5 and fetched_at NULL (its title is judged on attached rows only, and the triggers
+    // refuse nothing else of it: test/migrations.test.ts "0098_card_attribution").
+    const pending = line!
+      .replace("'https://a.example/',NULL,5,", "'https://a.example/',5,5,")
+      .replace("NULL,NULL,9,0,", "NULL,NULL,NULL,0,");
+    expect(pending.match(/NULL/g)?.length).toBe(line!.match(/NULL/g)!.length);
+    for (const changed of [
+      line!.replace(`'${account}');`, `'${account.slice(1)}');`),
+      line!.replace(`'${account}');`, `X'${[...account].map((c) => c.charCodeAt(0).toString(16)).join("")}');`),
+      pending,
+    ]) {
+      expect(changed).not.toBe(line);
+      const target = await migratedStore();
+      await copyConfig(source, target);
+      expect(String(await rejectionOf(importViaRpc(target, text.replace(line!, changed))))).toMatch(
+        /status_cards: a value past its stored bound/,
+      );
+    }
+  }, 120_000);
+
   it("writes the documented format and leaves out bookkeeping", async () => {
     const { text } = await dumpViaRpc(await seeded(0));
     const lines = text.split("\n");

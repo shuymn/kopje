@@ -648,3 +648,47 @@ describe("verified handles through an alternate (NET-4, RES-6)", () => {
     }
   });
 });
+
+// A resolution that ends with nothing after a 410, the last answer of the probe's fetches, is `gone` (resolve.ts
+// resolveUrl), and the search then answers no stored status (storeResolved): Mastodon's process_url_from_db reads the
+// last fetch's response code (fetch_resource_service.rb:47) and answers a stored status only after a 401, 403 or 404
+// (resolve_url_service.rb:44).
+describe("a resolution gone after a 410", () => {
+  const ALT = "https://blog.example/alt";
+  const answer = (status: number) => () => new Response("", { status });
+  const resolve = (t: World, url = PAGE) =>
+    t.resolver({ fetches: REQUEST_MAX_FETCHES, bytes: REQUEST_MAX_BYTES, deadline: Date.now() + REQUEST_DEADLINE_MS })(
+      t.h.env,
+      url,
+    );
+
+  it("is gone when the probe answers 410, and when the id its document names does", async () => {
+    const t = await world();
+    t.routes.set(PAGE, answer(410));
+    expect(await resolve(t)).toEqual({ kind: "none", gone: true });
+    t.routes.set(PAGE, answer(404));
+    expect(await resolve(t)).toEqual({ kind: "none" });
+    // The note's own origin serves it at another URL (the loader refuses an id on another origin).
+    const note = t.note();
+    const other = `${new URL(note.id).origin}/other`;
+    t.routes.set(other, () => Response.json({ "@context": AS, ...note }, { headers: { "content-type": AP } }));
+    t.routes.set(note.id, answer(410));
+    expect(await resolve(t, other)).toEqual({ kind: "none", gone: true });
+    expect(t.fetched().slice(-2)).toEqual([other, note.id]);
+  });
+
+  // The header alternate answers 410; the page alternate's answer comes last.
+  it.each<[string, Route]>([
+    ["404", answer(404)],
+    ["an HTML 200", () => html(page())],
+  ])("is not gone when a later alternate answers %s", async (_label, last) => {
+    const t = await world();
+    t.routes.set(PAGE, () =>
+      html(page(linkTag(ALT)), { link: `<${PAGE}/gone>; rel="alternate"; type="application/activity+json"` }),
+    );
+    t.routes.set(`${PAGE}/gone`, answer(410));
+    t.routes.set(ALT, last);
+    expect(await resolve(t)).toEqual({ kind: "none" });
+    expect(t.fetched()).toEqual([PAGE, `${PAGE}/gone`, ALT]);
+  });
+});

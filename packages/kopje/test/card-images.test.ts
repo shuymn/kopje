@@ -70,6 +70,7 @@ const FIELDS = {
   imageDescription: "",
   linkType: "unknown",
   finalUrl: "",
+  creator: null,
 } as const;
 
 const claim = (w: CardWorld, tokens: string[], share = 1000) =>

@@ -7,6 +7,7 @@ import { NOW } from "./app-helpers";
 import { answer } from "./budget-helpers";
 import { BUILD } from "./helpers";
 import { ACCESS, setAccess } from "./ops-helpers";
+import { appToken } from "./read-helpers";
 import { getJson } from "./status-helpers";
 import { authors, linkCopies, reviewLink, setTrendSetting, storedLink, trendStatuses } from "./trend-helpers";
 
@@ -170,6 +171,45 @@ describe("GET /api/v1/trends/links", () => {
       ["POST", "/api/v1/admin/trends/links/publishers/1/reject"],
     ] as const) {
       expect((await h.request(path, bearer(token, { method }))).status, path).toBe(403);
+    }
+  });
+});
+
+describe("missing_attribution on trend links (Mastodon 4.6)", () => {
+  it("shows it to a signed-in viewer at both routes, true for the copy's unverified author only", async () => {
+    const h: ApiHarness = await apiHarness();
+    const owner = await seedAccount(h.store, { username: "owner", email: "owner@example.com" });
+    await seedAccount(h.store, { username: "alice", email: "alice@example.com" });
+    await setSetting(h.store, "admin_email", "owner@example.com");
+    const scope = "read admin:read";
+    const app = await registerApp(h, { scopes: scope });
+    const token = (await login(h, { app, scope, email: "owner@example.com" })).token;
+    const alice = (await login(h, { app, scope, email: "alice@example.com" })).token;
+    await listedLinks(h.store, 2);
+    // The first link's copy does not credit the owner.
+    await sql(h.store, "UPDATE status_cards SET unverified_author_account_id = ? WHERE final_url = ?", owner, url(0));
+    const flags = async (path: string, caller?: string) => {
+      const { status, body } = await getJson(h, path, caller);
+      expect(status, path).toBe(200);
+      return (body as Record<string, unknown>[]).map((card) => [card.url, card.missing_attribution]);
+    };
+    for (const path of ["/api/v1/trends/links", "/api/v1/admin/trends/links"]) {
+      expect(await flags(path, token), path).toEqual([
+        [url(0), true],
+        [url(1), false],
+      ]);
+    }
+    expect(await flags("/api/v1/trends/links", alice)).toEqual([
+      [url(0), false],
+      [url(1), false],
+    ]);
+    // An anonymous request and an app token (no user): no key.
+    for (const caller of [undefined, await appToken(h)]) {
+      const { body } = await getJson(h, "/api/v1/trends/links", caller);
+      for (const card of body as Record<string, unknown>[]) {
+        expect(card, String(caller)).not.toHaveProperty("missing_attribution");
+        expect(card.url).toMatch(/^https:\/\/l00[01]\.example\/a$/);
+      }
     }
   });
 });
