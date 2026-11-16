@@ -1367,13 +1367,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   {
     id: "883afee3d9b87bd9",
     scans: [
+      "?: SCAN collection_jobs",
       "?: SCAN quotes",
       "announcement_reactions: SCAN announcement_reactions USING COVERING INDEX announcement_reactions_name",
     ],
     site: "src/domain/setup.ts#insertLocalAccount < src/domain/setup.ts#<anonymous> in bootstrapInstance",
     disposition: "deliberate",
     reason:
-      "the child-key lookups SQLite plans for a new parent row run only while a deferred foreign-key violation is outstanding (OP_FkIfZero); the Store's keys are immediate, so a new local account reads no quotes nor announcement_reactions",
+      "the child-key lookups SQLite plans for a new parent row run only while a deferred foreign-key violation is outstanding (OP_FkIfZero); the Store's keys are immediate, so a new local account reads no collection_jobs, quotes nor announcement_reactions",
     witness: "test/other-request-plans.test.ts",
   },
   {
