@@ -384,10 +384,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   longer waits for the sender's actor cache (3 minutes on Mastodon). Keys and inboxes still come only from the actor
   document Kopje fetches ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts). No Store migration and
   no `wrangler.jsonc` change.
-- An `Accept` or `Reject` that names a local account's follow by its id applies to that follow whatever type its
-  embedded object gives, as Mastodon's do: one typed otherwise than `Follow` (`as:Follow`, say) was ignored, so a
-  rejected follow stayed and kept its access to the rejecting account's followers-only posts. The id still names only
-  a follow of the answering actor. No Store migration and no `wrangler.jsonc` change.
+- An `Accept` or `Reject` that names a local account's follow by its id applies to that follow whatever its embedded
+  object gives, as Mastodon's do, before it is read as the answer to a quote request: one typed otherwise than
+  `Follow` (`as:Follow` or `QuoteRequest`, say) was ignored, so a rejected follow stayed and kept its access to the
+  rejecting account's followers-only posts. The id still names only a follow of the answering actor. No Store
+  migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 
