@@ -192,6 +192,11 @@ describe("the members Fedify is handed (#1709)", () => {
           "const { outboxId } = loaded.actor;",
           `${INBOUND} outboxId: an accessor ACCESSORS does not map`,
         ],
+        // #1710: published is read from the JSON (json-shapes.ts railsTime), never from Fedify's object.
+        "a read of published": [
+          "function f(actor: Actor) { return actor.published; }",
+          `${INBOUND} published: reads published, which FEDIFY_MEMBERS lacks`,
+        ],
       },
       passed: {
         "a mapped accessor": "if (!fetched.actor.aliasIds.some((a) => a.href === x)) {}",

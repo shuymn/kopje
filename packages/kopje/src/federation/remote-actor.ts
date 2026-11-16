@@ -10,7 +10,7 @@ import { DOMAIN_BYTES, isRemoteUsername, isStorableActorId, REMOTE_USERNAME_LIMI
 import { railsBlank } from "../platform/rails-blank";
 import { storedDisplayName, storedProfileDescription, storedProfileUrl, storedText } from "../platform/stored-bounds";
 import { sanitizeRemoteBio } from "../security/html";
-import { isObject } from "./json-shapes";
+import { isObject, railsTime } from "./json-shapes";
 import { MAX_PUBLIC_KEYS, readableKeys } from "./key-entries";
 import { remoteDescription } from "./lang-string";
 import { isTransientLoadError, loadFailureOf } from "./loader";
@@ -94,7 +94,6 @@ const FEDIFY_MEMBERS: Readonly<Record<string, string>> = {
   manuallyApprovesFollowers: "remoteActorInput",
   discoverable: "remoteActorInput",
   indexable: "remoteActorInput",
-  published: "remoteActorInput",
   movedTo: "storableActorId",
   alsoKnownAs: "inbound.ts Move",
   publicKey: "ownKeys; the HTTP signature's and the LD signature's key (ID-1)",
@@ -415,9 +414,10 @@ export async function remoteActorInput(actor: Actor, document: unknown): Promise
     indexable: actor.indexable === true,
     inboxUrl,
     sharedInboxUrl: sharedInboxUri(json),
-    // A Temporal.Instant, whose type the polyfill's globals leave unresolved for the linter.
     keys: await ownKeys(actor, uri),
-    published: (actor.published as { toString(): string } | null)?.toString() ?? null,
+    // Read by spelling, as Mastodon casts it (json-shapes.ts railsTime); the Store creates the account now when it is
+    // none (remote-actors.ts).
+    published: railsTime(json.published),
     // The document's own tag, as ProcessAccountService#process_tags reads @json['tag'].
     emojiTags: emojiCandidates(
       typeof document === "object" && document !== null ? (document as { tag?: unknown }).tag : null,

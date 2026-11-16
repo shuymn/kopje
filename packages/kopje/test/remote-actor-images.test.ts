@@ -194,7 +194,7 @@ describe("an actor whose icon or image is not an Image is stored (#1672)", () =>
   const mentioned = async (t: Setup) =>
     sql(t.store, "SELECT account_id FROM notifications WHERE type = 'mention'").then((rows) => rows.length);
 
-  it("verifies a signature by an actor whose duration is unreadable, its key at the actor's URL", async () => {
+  it("verifies a signature by an actor whose published is unreadable, its key at the actor's URL", async () => {
     // GoToSocial's key form: no key under the document at the key's URL (D4 answers none), so Fedify fetches the key
     // itself through actorViewLoader, live, on replay and in the rollback drain's check.
     const keyed = async (t: Setup) => {
@@ -202,7 +202,7 @@ describe("an actor whose icon or image is not an Image is stored (#1672)", () =>
       const keyId = `${actor.uri}/main-key`;
       const document = {
         ...actor.document,
-        duration: "garbage",
+        published: "garbage",
         publicKey: { id: keyId, owner: actor.uri, publicKeyPem: actor.pem },
       };
       t.web.serve(actor.uri, document);

@@ -1,15 +1,19 @@
 import { describe, expect, it } from "vitest";
 
+import { railsTime } from "../src/federation/json-shapes";
 import { createContextLoader, createSafeLoader } from "../src/federation/loader";
 import { fedifyActorView, fetchActor } from "../src/federation/remote-actor";
 import { sql } from "./api-helpers";
+import { NOW } from "./app-helpers";
 import { GOTOSOCIAL_ACTOR, MASTODON_ACTOR, MISSKEY_ACTOR } from "./fixtures/actor-documents";
+import railsTimes from "./fixtures/rails-time.json";
 import { MASTODON, mastodonActor, type TestActor } from "./inbox-helpers";
 import { type Acct, AS, type Setup, setup } from "./inbox-status-helpers";
 
 // #1709: Fedify parses an actor document holding only the members Kopje reads from Fedify's object, by their literal
 // spelling (federation/remote-actor.ts FEDIFY_MEMBERS, fedifyActorView); every other member, in any spelling, is read
 // from the JSON by spelling or not at all, as Mastodon 4.7 reads every member, so none refuses the actor (ID-1, ID-2).
+// #1710: `published` among them, read as Rails casts it (federation/json-shapes.ts railsTime).
 
 type Json = Record<string, unknown>;
 
@@ -27,7 +31,6 @@ const INVENTORY = [
   "manuallyApprovesFollowers",
   "discoverable",
   "indexable",
-  "published",
   "movedTo",
   "alsoKnownAs",
   "publicKey",
@@ -96,7 +99,8 @@ describe("members Kopje does not read from Fedify refuse no actor (#1709, ID-1)"
         });
       }
     }
-    // Spelled alone, even an Image gives no avatar or header: only the literal members are read, as Mastodon reads them.
+    // Spelled alone, even an Image gives no avatar or header: only the literal members are read, as Mastodon reads
+    // them.
     for (const member of ["icon", "image"]) {
       for (const spelling of spellings(member)) {
         const name = `spelled${++n}`;
@@ -193,6 +197,87 @@ describe("what Fedify is handed (#1709, ID-1, ID-2)", () => {
       const actor = await mastodonActor(t.web, label.split(" ")[0]!.toLowerCase());
       expect(await resolved(t, actor, (d) => ({ ...d, ...change(d) })), label).toEqual([]);
       expect(await row(t, actor.uri), label).toBeUndefined();
+    }
+  });
+});
+
+// The instant an ISO 8601 time as Ruby writes it names (a year of four digits or more, signed when negative;
+// microseconds), cut to milliseconds as the Store keeps it.
+function railsInstant(iso: string): number {
+  const parts = /^(-?\d{4,})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3})\d{3}Z$/.exec(iso);
+  if (parts === null) {
+    throw new Error(`not a Rails time: ${iso}`);
+  }
+  const [year, month, day, hour, minute, second, ms] = parts.slice(1).map(Number) as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  const time = new Date(0);
+  time.setUTCFullYear(year, month - 1, day);
+  time.setUTCHours(hour, minute, second, ms);
+  return time.getTime();
+}
+
+describe("an actor's published, as Mastodon assigns it (#1710)", () => {
+  // test/fixtures/rails-time.json: what ActiveRecord 8.1.3.1 assigns for each string (rails-time.rb captures it).
+  it("reads an actor's published as Rails casts it", () => {
+    expect([railsTimes.activerecord, railsTimes.ruby]).toEqual(["8.1.3.1", "4.0.9"]);
+    const counts = { read: 0, none: 0, listed: 0 };
+    for (const row of railsTimes.rows) {
+      const kopje = railsTime(row.value);
+      if (row.listed) {
+        // A form only Rails reads (docs/mastodon-deviations.md): Rails assigns a value, Kopje none.
+        counts.listed++;
+        expect(kopje, row.value).toBeNull();
+        expect(row.rails === null || row.rails === "blank", row.value).toBe(false);
+      } else if (row.rails === null || row.rails === "blank") {
+        counts.none++;
+        expect(kopje, row.value).toBeNull();
+      } else {
+        counts.read++;
+        expect(kopje === null ? null : Date.parse(kopje), row.value).toBe(railsInstant(row.rails));
+      }
+    }
+    expect(counts.read).toBeGreaterThan(50);
+    expect(counts.none).toBeGreaterThan(15);
+    expect(counts.listed).toBeGreaterThan(35);
+    // Those Date.parse reads otherwise: Rails' cast is not Date.parse.
+    expect(["0", "2020", "01/02/2020"].map(railsTime)).toEqual([null, null, null]);
+    expect(railsTime("2021-02-29T00:00:00Z")).toBe("2021-03-01T00:00:00.000Z");
+    for (const value of [5, {}, [], null, true]) {
+      expect(railsTime(value)).toBeNull();
+    }
+  });
+
+  it("stores an actor whose published Rails would not read, created at the Store's now", async () => {
+    const t = await setup();
+    const cases: [string, (document: Json) => Json, string][] = [
+      ["a number", (d) => ({ ...d, published: 5 }), new Date(NOW).toISOString()],
+      ["an object", (d) => ({ ...d, published: {} }), new Date(NOW).toISOString()],
+      ["an array", (d) => ({ ...d, published: [] }), new Date(NOW).toISOString()],
+      ["garbage", (d) => ({ ...d, published: "garbage" }), new Date(NOW).toISOString()],
+      [
+        "as:published",
+        ({ published: _published, ...d }) => ({ ...d, "as:published": "garbage" }),
+        new Date(NOW).toISOString(),
+      ],
+      // A date alone, which Fedify refused, and a day past the month's end, rolled over as Rails rolls it.
+      ["a date", (d) => ({ ...d, published: "2020-01-05" }), "2020-01-05T00:00:00.000Z"],
+      ["February 29", (d) => ({ ...d, published: "2021-02-29T00:00:00Z" }), "2021-03-01T00:00:00.000Z"],
+    ];
+    let n = 0;
+    for (const [label, change, created] of cases) {
+      const name = `published${++n}`;
+      const actor = await mastodonActor(t.web, name);
+      expect(await resolved(t, actor, change), label).toEqual([`${name}@mastodon.example`]);
+      expect(await sql(t.store, "SELECT created_at FROM accounts WHERE uri = ?", actor.uri), label).toEqual([
+        { created_at: created },
+      ]);
     }
   });
 });

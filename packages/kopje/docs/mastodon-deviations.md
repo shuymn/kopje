@@ -230,6 +230,24 @@ settings page):
   and a member the inventory keeps whose name the document's own context maps to another member's IRI (`name` mapped to
   `icon` and holding a `Document`). A name or bio given only as `nameMap` or `summaryMap` is not read, as Mastodon
   reads only `name` and `summary`.
+- A new remote account's `created_at` is its actor's `published` as Mastodon assigns it
+  (`process_account_service.rb:231`, ActiveRecord's time-zone-aware cast in UTC) on the forms `railsTime` in
+  `src/federation/json-shapes.ts` reads: a date, then optionally a time, its seconds and fraction, and a zone (`Z`,
+  `±HH`, `±HHMM` or `±HH:MM`), with a day past the month's end rolled over (`2021-02-29` is 1 March), `24:00` the next
+  midnight and second 60 the next minute; the fraction is cut to milliseconds, where Mastodon keeps microseconds. Any
+  other value is none and the account is created at the Store's time, as Mastodon creates it when its cast is nil, a
+  value past 128 characters included. Mastodon reads more forms (`test/fixtures/rails-time.json` lists each with its
+  value), and stores their time where Kopje stores its own: a day-first or named date (`01/02/2020` is 1 February,
+  `Jan 2 2020`, RFC 2822), `20200105T100000Z`, fields of one digit (`2020-1-5`, `T1:00`), a signed, longer or `BC` year
+  (`2020-01-05 BC` is the year -2019), text after the date or time, week and ordinal dates (read against the current
+  day), an hour alone (`T10Z` is midnight), `infinity`, an offset it ignores (`+24:00`, `+09:60`) or reads otherwise
+  (`+9`, `+090` as +01:30, `+0960` as +10:00, `+09:00:30`, a zone name such as `UTC` or `JST`), a zone after a date
+  alone (`2020-01-05+09:00` is 09:00 UTC, `2020-01-05Z` midnight), a `.` with no digits or a fraction after the minutes
+  (ignored), and other spacing (two spaces or a tab before the time or the zone, spaces around a colon, a Unicode
+  space); and it assigns a JSON number as it is. A known account's `created_at` stays the first one Kopje stored and is
+  never later than the time it was stored, where Mastodon assigns `published` on every update, a future time included;
+  so an update whose `published` it cannot cast is applied here, where Mastodon writes nil into the `NOT NULL` column
+  and drops the update.
 - A remote account's `show_featured`, `show_media` and `show_media_replies` change only when its actor's
   `showFeatured`, `showMedia` or `showRepliesInMedia` is a JSON boolean, and keep their stored values otherwise, as
   when the key is absent (`process_account_service.rb:258-260`). Mastodon casts any other value as a form value (a
