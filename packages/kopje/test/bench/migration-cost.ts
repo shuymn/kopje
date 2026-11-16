@@ -117,10 +117,12 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // column's CHECK on every notification_policies row; 0096_remote_handles reads every remote account twice (its
 // reserved-form pass, and its shared-address pass with a seek of accounts_domain_username each), rebuilds that index
 // UNIQUE and reads the pending collection syncs (10,000 seeded while it is pending; KOPJE_BENCH_SHARED_HANDLES=0.1 also
-// seeds the shared addresses and reserved-form usernames it rewrites, 100,000 and 1,000 of the remote accounts). A
-// migration that reads another table must add it here before it is measured. The measured time is the whole upgrade,
-// from before the bookmark to after the verification: Date.now() in workerd moves only between I/O events, so the clock
-// is read across an await on each side.
+// seeds the shared addresses and reserved-form usernames it rewrites, 100,000 and 1,000 of the remote accounts);
+// 0097_profile_descriptions reads no row (five columns of accounts with constant defaults and no CHECK, and two
+// triggers); 0098_card_attribution adds a column to status_cards and recreates its triggers (no row read, the attached
+// and pending cards seeded). A migration that reads another table must add it here before it is measured. The measured
+// time is the whole upgrade, from before the bookmark to after the verification: Date.now() in workerd moves only
+// between I/O events, so the clock is read across an await on each side.
 
 export const UPGRADE_BUDGET_MS = 20_000;
 
@@ -1045,6 +1047,10 @@ it("applies the migration to the benchmark store within the budget", async () =>
     const authorFetches = has("quotes", "author_fetches")
       ? { quotes: count("quotes"), zero: count("quotes WHERE author_fetches = 0") }
       : undefined;
+    // 0098_card_attribution: the column, and the cards holding NULL.
+    const cardAuthors = has("status_cards", "unverified_author_account_id")
+      ? { cards: count("status_cards"), none: count("status_cards WHERE unverified_author_account_id IS NULL") }
+      : undefined;
     // 0092_reject_replays: its table, indexes (the unique key's included) and triggers, made and empty.
     const rejectReplays = has("reject_replays")
       ? {
@@ -1074,6 +1080,27 @@ it("applies the migration to the benchmark store within the budget", async () =>
             .one().unique,
         }
       : undefined;
+    // 0097_profile_descriptions: its columns and triggers, and the accounts holding the columns' defaults.
+    const profileSettings = has("accounts", "show_media_replies")
+      ? {
+          accounts: count(
+            `accounts WHERE avatar_description = '' AND header_description = '' AND show_featured = 1 AND show_media = 1
+							AND show_media_replies = 1`,
+          ),
+          columns: sql
+            .exec<{ name: string }>(
+              "SELECT name FROM pragma_table_info('accounts') WHERE name LIKE '%description' OR name LIKE 'show_%' ORDER BY cid",
+            )
+            .toArray()
+            .map((row) => row.name),
+          triggers: sql
+            .exec<{ name: string }>(
+              "SELECT name FROM sqlite_schema WHERE type = 'trigger' AND name LIKE 'accounts_profile_settings_%' ORDER BY name",
+            )
+            .toArray()
+            .map((row) => row.name),
+        }
+      : undefined;
     if (foreignKeyCheck !== "skipped") {
       return {
         seeded,
@@ -1089,6 +1116,8 @@ it("applies the migration to the benchmark store within the budget", async () =>
           authorFetches,
           botPolicies,
           remoteHandles,
+          profileSettings,
+          cardAuthors,
         },
       };
     }
@@ -1122,6 +1151,8 @@ it("applies the migration to the benchmark store within the budget", async () =>
         authorFetches,
         botPolicies,
         remoteHandles,
+        profileSettings,
+        cardAuthors,
       },
     };
   });
@@ -1206,6 +1237,20 @@ it("applies the migration to the benchmark store within the budget", async () =>
     const rewritten = seeded.sharedHandles + seeded.reservedHandles;
     expect(measured.remoteHandles).toEqual({ invalidated: rewritten, refresh: rewritten, unique: 1 });
     expect(measured.foreignKeyCheck).toBe("store");
+  }
+  // 0097 added the five columns and two triggers, every account holding the defaults, and checked no reference.
+  if (applied.includes("0097_profile_descriptions")) {
+    expect(measured.profileSettings).toEqual({
+      accounts,
+      columns: ["avatar_description", "header_description", "show_featured", "show_media", "show_media_replies"],
+      triggers: ["accounts_profile_settings_insert", "accounts_profile_settings_update"],
+    });
+  }
+  // 0098 added the column to every seeded card, attached and pending, each holding NULL.
+  if (applied.includes("0098_card_attribution")) {
+    expect(seeded.cards).toBeGreaterThan(0);
+    const cards = seeded.cards + seeded.pendingCards;
+    expect(measured.cardAuthors).toEqual({ cards, none: cards });
   }
   const { ms, foreignKeyCheck, retryEstimateMs } = measured;
   console.log(

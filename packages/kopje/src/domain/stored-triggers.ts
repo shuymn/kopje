@@ -16,6 +16,9 @@ import {
   MAX_TREND_REVIEWS,
   movedToPastBoundSql,
   oembedEndpointPastBoundSql,
+  PROFILE_DESCRIPTION_COLUMNS,
+  PROFILE_SETTING_COLUMNS,
+  profileSettingsPastBoundSql,
   remoteFieldLinkRowPastBoundSql,
   remoteMediaObjectPastBoundSql,
   remoteMediaSlotPastBoundSql,
@@ -83,7 +86,7 @@ const CARD_COLUMNS =
   "status_id, url, due_at, enqueued_at, claim, attempts, generation, title, description, author_name, " +
   "author_url, provider_name, provider_url, language, published_at, fetched_at, card_type, width, " +
   "height, embed_src, iframe_width, iframe_height, image_url, image_id, image_description, link_type, " +
-  "final_url, public";
+  "final_url, public, unverified_author_account_id";
 const REMOTE_FIELD_LINK_COLUMNS =
   "account_id, link_back, links, generation, claim, attempts, due_at, armed_at, hold_until, checked_at";
 const CARD_IMAGE_COLUMNS =
@@ -229,7 +232,7 @@ const STATEMENTS: readonly string[] = [
     cardImagePastBoundSql("NEW"),
     "card_images: a value past its stored bound",
   ),
-  // 0071_link_trends (status_cards' triggers recreated over every column 0067, 0069, 0070 and 0071 add)
+  // 0098_card_attribution (status_cards' triggers recreated over every column 0067, 0069, 0070, 0071 and 0098 add)
   ...boundTriggers(
     "status_cards_bounds",
     "status_cards",
@@ -334,6 +337,14 @@ END;`,
     "name, value",
     "NEW.name = 'wrapstodon' AND NEW.value IS NOT 'true' AND NEW.value IS NOT 'false'",
     SETTING_REFUSED,
+  ),
+  // 0097_profile_descriptions
+  ...boundTriggers(
+    "accounts_profile_settings",
+    "accounts",
+    [...PROFILE_DESCRIPTION_COLUMNS, ...PROFILE_SETTING_COLUMNS].join(", "),
+    profileSettingsPastBoundSql("NEW"),
+    "accounts: profile setting past its stored bound",
   ),
 ];
 

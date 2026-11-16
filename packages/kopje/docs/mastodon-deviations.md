@@ -223,6 +223,10 @@ Profile credentials (`PATCH /api/v1/accounts/update_credentials`, the settings p
   saved before this check or imported, stay stored and are hidden from `source.attribution_domains` and the actor's
   `attributionDomains`: an entry whose JSON string passes 1,022 bytes is left out, and a list past 102,302 bytes in all
   (100 such domains pass it) is shown as none. Accepted, 2026-11-15.
+- A JSON `true` or `false` sent as `avatar_description` or `header_description` is stored and shown as `true` or
+  `false`, as Kopje reads every JSON scalar where it expects text (a number as JSON writes it, as Mastodon stores it
+  too); Mastodon casts a boolean to `t` or `f`. Either is a client's error, `true` is what the client sent, and a
+  description reads JSON as the other text parameters do. Accepted, 2026-11-16.
 - A bio that is only whitespace once stripped (Rails' `blank?`, Unicode spaces included) is stored empty, so its
   `source.note` is `''`, where Mastodon gives the whitespace back; its `note` is `''` in both. Kopje stores the bio
   once, as the HTML it presents and federates.
@@ -281,6 +285,11 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
   account's attribution domains cover the page's host. An Account in every status's card would take the status lists
   past their answer budgets (RES-3), and Kopje stores neither the handle nor remote accounts' attribution domains.
   Clients lose only the card's link to the author's profile. Accepted, 2026-10-23.
+- `missing_attribution` is `true` only for the local account a page's `fediverse:creator` names directly: by its
+  username alone or with the instance's domain (in any ASCII case, with one trailing `/`). A creator naming the
+  instance by another spelling (the Unicode form of its domain, an explicit port) or by an alias domain names no
+  account, so the card's `missing_attribution` is `false` for everyone, where Mastodon's WebFinger lookup may resolve
+  such a name to the local account.
 - A quoted status (a status's `quote.quoted_status`) shows no card, where Mastodon's `ShallowStatusSerializer` shows
   it, so a status with its quote stays within the answer budgets (RES-3); the quoted status's own read shows it.
 - A local status's Note lists its card as a FEP-8967 `Link` after its media, as Mastodon 4.7 does, only where the API
@@ -442,13 +451,14 @@ Accounts (the `Account` and credential account entities):
   last (`process_account_service.rb:95-103`). So an `Update(Person)` whose fetch raced another store answers 503,
   having written nothing, and a retry is judged afresh; a `Move` whose target was stored meanwhile answers 503 too;
   another activity, a stale-author refresh and a search resolution use the stored account.
-- The account `moved` nests is a bounded projection, not the full account: its identity, counts, flags and images,
-  `note` `''` and `fields` `[]`, the display name cut at 100 code points, URLs and `uri` read as unset past 512 bytes,
-  and only the emojis its display name references within 2,048 bytes of JSON; it never shows a `moved` of its own,
-  as in Mastodon. A target whose domain passes 253 bytes, or an id that names no account, shows no `moved`. Mastodon's
-  web client stores a nested account as the target's own entity (`actions/importer/index.js:39-40`, which
-  `reducers/accounts.ts` replaces), so it shows the target with an empty bio and no fields until it fetches the target
-  again, and each later import of the source does so again.
+- The account `moved` nests is a bounded projection, not the full account: its identity, counts, flags, display
+  settings and images, `note`, `avatar_description` and `header_description` `''` and `fields` `[]`, the display name
+  cut at 100 code points, URLs and `uri` read as unset past 512 bytes, and only the emojis its display name references
+  within 2,048 bytes of JSON; it never shows a `moved` of its own, as in Mastodon. A target whose domain passes 253
+  bytes, or an id that names no account, shows no `moved`. Mastodon's web client stores a nested account as the
+  target's own entity (`actions/importer/index.js:39-40`, which `reducers/accounts.ts` replaces), so it shows the target
+  with an empty bio, no image descriptions and no fields until it fetches the target again, and each later import of
+  the source does so again.
 - A remote account's `followers_count`, `following_count` and `statuses_count` are the `totalItems` of its followers,
   following and outbox collections, as `ProcessAccountService#set_fetchable_attributes!` sets them
   (`process_account_service.rb:162-164`), but read by the background collection sync that each stored actor document

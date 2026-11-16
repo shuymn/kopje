@@ -14,6 +14,7 @@ import {
   appWebsiteSql,
   BLURHASH_BYTES,
   byteBoundSql,
+  cardAuthorPastSql,
   CARD_DIMENSION_MAX,
   CARD_EMBED_SRC_BYTES,
   CARD_IMAGE_DESCRIPTION_JSON_BYTES,
@@ -190,6 +191,9 @@ export const CARD_COLUMN_MAP = {
   image_width: storedCountSql("i.width", CARD_IMAGE_EDGE_MAX),
   image_height: storedCountSql("i.height", CARD_IMAGE_EDGE_MAX),
   blurhash: cardText("i.blurhash", BLURHASH_BYTES),
+  // 0098_card_attribution: the account the card does not credit, by the stored rule (18 digits as TEXT), else NULL.
+  unverified_author_account_id: `CASE WHEN NOT (${cardAuthorPastSql("c.unverified_author_account_id")})
+		THEN c.unverified_author_account_id END`,
 } as const satisfies ColumnMap;
 
 // The join of a card and its stored image to `j` (card_images, by its key; none while pending or gone), as `c` and

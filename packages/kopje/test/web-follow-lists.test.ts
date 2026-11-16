@@ -36,8 +36,9 @@ type Harness = Awaited<ReturnType<typeof community>>;
 const SITE: Site = { domain: "kopje.test", documents: { privacyPolicy: false, termsOfService: false } };
 
 // The conservative JSON of one presented account, every column at its bound ("Maxima of presented units" in
-// docs/threat-model.md; test/status-bounds.test.ts, "keeps the conservative JSON of every shape within 85%").
-const ACCOUNT_JSON_MAX = 147_990;
+// docs/threat-model.md; test/status-bounds.test.ts, "keeps the conservative JSON of every shape within the ceiling,
+// above every fill").
+const ACCOUNT_JSON_MAX = 150_022;
 
 let nextAccount = 700_000_000_000_000_000n;
 

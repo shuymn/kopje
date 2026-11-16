@@ -1046,8 +1046,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   deletes all of its rows in one transaction (a few reads and a write each, no recount of its last status), and a block
   reads the blocker's conversations to find those with the blocked account; both are a local user's action on their
   own data, and rare. Its last
-  status is shown only while the read rule (VIS-1) lets the owner see it, else as null; a block ends the blocker's
-  conversations with the blocked account. _Enforced (main):_ `src/domain/conversations.ts`,
+  status is shown only while the read rule (VIS-1) lets the owner see it and it is not a boost, which no writer links
+  and only a restored row can name (RES-3), else as null; a block ends the blocker's conversations with the blocked
+  account. _Enforced (main):_ `src/domain/conversations.ts`,
   `src/domain/conversation-rows.ts`, migration `0009_conversations` (triggers `statuses_thread` and
   `conversation_statuses_removed`);
   `test/conversations.test.ts`, `test/migrations.test.ts`, `test/policy-endpoints.test.ts`,
@@ -1445,8 +1446,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   pair, at most `HELD_REJECTS_PER_ACCOUNT` a local account), and the same family records it again with its original
   id; nothing else is confirmed for sending while the recipient is unavailable (docs/visibility.md, "Held
   handshakes"). An account that
-  moved to an unavailable one shows it redacted in `moved` (`suspended: true`, no name, note, fields or
-  emojis, the default images), and an unavailable account shows `moved: null` with its target not read, as
+  moved to an unavailable one shows it redacted in `moved` (`suspended: true`, no name, note, fields, emojis or
+  image descriptions, the default images), and an unavailable account shows `moved: null` with its target not read, as
   REST::AccountSerializer does (`test/account-moved.test.ts`). _Enforced (main)._ Implementation, for accounts:
   `src/domain/remote-suspension.ts`, `actOnAccount` and `unsuspendAdminAccount` in `src/domain/admin-accounts.ts`,
   `availableSql` in `src/domain/audience.ts`, the gate in `receive` in `src/domain/inbox.ts`, `upsertRemoteActor` in
@@ -1506,16 +1507,20 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   deletes its row in the same step; edits never change a visibility. The linked site learns that the instance holds a
   public status naming it, as a reader of that status would. A card is presented only on a public or unlisted status,
   whatever a row holds (an import's), never on a boost's own row or a quoted status, and with each text and URL judged
-  as decoded (`presentCard` in `src/domain/status-presenter.ts`). A local status's Note (the object endpoint, the
-  outbox, the featured collection, every `Create` and `Update`) lists the card's URL as a FEP-8967 `Link` only where
-  the card is presented: an attached row, judged by the presenter's own rule (`shownCardUrl`, shared with
-  `presentCard`; `statusFacts` in `src/domain/activities.ts`). _Enforced (main):_ `cardEligibleSql` in
-  `src/domain/audience.ts`, `src/domain/link-cards.ts`, `deleteStatusBatch` in `src/domain/inbox.ts`;
+  as decoded (`presentCard` in `src/domain/status-presenter.ts`). Its `missing_attribution` is presented to a signed-in
+  viewer only, and is `true` only for the viewer the card's unverified author is: no viewer learns that a page names
+  another account. A local status's Note (the object endpoint, the outbox, the featured collection, every `Create` and
+  `Update`) lists the card's URL as a FEP-8967 `Link` only where the card is presented: an attached row, judged by the
+  presenter's own rule (`shownCardUrl`, shared with `presentCard`; `statusFacts` in `src/domain/activities.ts`).
+  _Enforced (main):_ `cardEligibleSql` in `src/domain/audience.ts`, `src/domain/link-cards.ts`, `deleteStatusBatch` in
+  `src/domain/inbox.ts`;
   `test/link-cards.test.ts` ("enqueues public and unlisted posts only, and resets on a text edit", "enqueues a remote
-  status on creation, resets it on a significant update only, never a private one", "deletes the card with the hide
-  when %i rows are left", "shows no card on a status that is not public or unlisted, even from an imported row",
-  "lists none where the API shows none: a private status's imported card, a blank title", "lists none while the card
-  is pending: the Create at posting, a text edit's Update and an imported row"),
+  status on creation, resets it on a significant update only, never a private one", "deletes the card with the hide when
+  %i rows are left", "shows no card on a status that is not public or unlisted, even from an imported row", "lists none
+  where the API shows none: a private status's imported card, a blank title", "lists none while the card is pending: the
+  Create at posting, a text edit's Update and an imported row", "shows missing_attribution to a signed-in viewer only,
+  true for the card's unverified author"), `test/trend-links.test.ts` ("shows it to a signed-in viewer at both routes,
+  true for the copy's unverified author only"),
   `test/policy-oracle.test.ts` (against `cardEligible` in `test/policy-model.ts`),
   `test-node/policy-boundary.test.ts`.
 
@@ -2194,7 +2199,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   failure kind and reason, the chain and the hostname only. Its records are writes fenced by the claim token, the row's
   generation (a reset draws a new one), an open claim, a pending row and the status's eligibility now
   (`cardEligibleSql`, R43), so an edit, a delete, a hide or a suspension still in force at the record lets nothing be
-  attached (one lifted within the round is an accepted risk). `test/link-card-rounds.test.ts` ("gives
+  attached (one lifted within the round is an accepted risk). A page's `fediverse:creator` is judged at the record
+  against a local account only, with no request (`unverifiedAuthor` in `src/domain/link-cards.ts`: one seek of the
+  account by name, its attribution domains read within `ATTRIBUTION_DOMAINS_BYTES`, at most 127 variants of a final
+  URL's host within 253 bytes); a name of another server, or of the instance by another spelling, names no account.
+  `test/link-card-rounds.test.ts` ("records the local account a page names and does not credit, judged by the final
+  URL's host", "reads one account row, its domains within ATTRIBUTION_DOMAINS_BYTES, with every input at its cap"),
+  `test/link-cards.test.ts` ("reads a creator as ResolveAccountService does up to its direct-local resolution, and
+  fetches nothing"). `test/link-card-rounds.test.ts` ("gives
   no card for a blank title, a failed fetch or a refused URL, without retrying", "drops the record of a claim whose
   status was edited or deleted during the fetch", "drops the record of a status suspended during the fetch", "starts no
   fetch and follows no redirect once maintenance is entered during a DNS check", "releases a claim unattempted when a
@@ -2977,7 +2989,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   whose status is public, judged against the parent the dump restores first); the card writers set `public` from the
   status and the final URL they write (`cardPublicSql`), never from a donor; `test/migrations.test.ts`
   ("0071_link_trends"), `test/link-card-rounds.test.ts` ("the trend identity of a card"), `test/trend-dump.test.ts`
-  ("link trends in dumps").
+  ("link trends in dumps"). A card's `unverified_author_account_id`, imports included, is NULL or 18 ASCII digits as
+  text, NULL on a pending row, enforced by migration `0098_card_attribution` (`cardAuthorPastSql`); the record writes
+  it through the same rule, only with the final URL it writes, and a reset clears it; `test/migrations.test.ts`
+  ("0098_card_attribution"), `test/dump-import.test.ts` ("round-trips a card's unverified author (0098), and refuses
+  one past its stored bound on import").
   _Enforced (main)_ for remote field verification: `remote_field_links` rows, imports included, meet the
   [stored bounds](dump-format.md#stored-bounds), enforced by migration `0068_remote_field_verification`, whose triggers
   judge in order the storage classes, the raw bytes, a raw NUL, `json_valid` and the canonical form (no padding or
@@ -3141,27 +3157,32 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   U+FFFD of three bytes), so the display name is read through a cut of 8,192 stored bytes (`displayNameReadSql`, which
   cuts no value a writer stores) and both are bounded again after decoding: the display name at 2,048 code points
   (`presentedDisplayName`) and the bio `''` past 64 KiB of JSON (`presentedNote`), in every Account and in
-  CredentialAccount's `source.note` (`test/account-text-bounds.test.ts`). The local actor's `name` and `summary` read
-  both as stored (#1583). Mentions read the username through the same projection (`src/domain/profile-bounds.ts`) and
-  derive `acct` and a fallback url from the cut username; the admin account search reads candidates' ids and flags only
-  and tests their text in SQL. The actor URI is bounded as stored (`ACTOR_URI_LIMIT`), read through `actorUriSql`, and
+  CredentialAccount's `source.note` (`test/account-text-bounds.test.ts`). The image descriptions are stored within 150
+  characters, 600 UTF-8 bytes and no NUL, and the display settings as the integer 0 or 1 (the triggers of migration
+  `0097_profile_descriptions`, for imports too), and read as stored; since 0xFF and 599 continuation bytes pass as one
+  character and decode to 600 U+FFFD, each description is cut again at 150 code points after decoding
+  (`presentedProfileDescription`), at most 902 JSON bytes, and is `''` while the account is unavailable
+  (`test/profile-descriptions.test.ts`). The local actor's `name` and `summary` read both as stored (#1583). Mentions
+  read the username through the same projection (`src/domain/profile-bounds.ts`) and derive `acct` and a fallback url
+  from the cut username; the admin account search reads candidates' ids and flags only and tests their text in SQL. The
+  actor URI is bounded as stored (`ACTOR_URI_LIMIT`), read through `actorUriSql`, and
   refused at the cutover; the account's `uri` shows it only while its JSON is within `ACTOR_URI_LIMIT` bytes too
   (`withinIdentityBound`), and '' otherwise. An account that moved shows the account it moved to one level deep, read
   through `MOVED_ACCOUNT_COLUMNS` (`src/domain/account-columns.ts`): every text cut in SQL by its raw bytes and in the
-  presenter by its decoded limit (the display name at 100 code points), URLs and actor id within 512 bytes, no note or
-  fields, and the emojis its display name references within 2,048 bytes of JSON; one such row reads at most 12,432 bytes
-  from SQLite (25,536 of heap, its cached emoji included) and presents at most 11,021 bytes of JSON, a target past
-  every profile bound included
+  presenter by its decoded limit (the display name at 100 code points), URLs and actor id within 512 bytes, no note,
+  fields or image descriptions, and the emojis its display name references within 2,048 bytes of JSON; one such row
+  reads at most 12,456 bytes from SQLite (25,632 of heap, its cached emoji included) and presents at most 11,137 bytes
+  of JSON, a target past every profile bound included
   (`test/status-bounds.test.ts` ("the moved-to account"), `test/account-moved.test.ts`). The chunk's targets are read in
   one query, each account presented with its target only when admission reaches it. One account is then at most the
-  account occurrence of "Maxima of presented units" below, so a page of 80 serializes to at most 11.84 MB; realistic
+  account occurrence of "Maxima of presented units" below, so a page of 80 serializes to at most 12.00 MB; realistic
   bios (Mastodon's 500 characters, Misskey's 1,500, Pleroma's and GoToSocial's 5,000 of
   Japanese with links) render to at most about 28 KB. Windowed account reads (followers, following, follow requests,
   `favourited_by`, `reblogged_by`) select ids for their window and read the profiles of the page only
   (`test/account-answer-bytes.test.ts`, `test/admin-accounts.test.ts`). _Enforced (main)_ for answers of many accounts
   (a list's members and endorsements with `limit=0`, familiar followers): the whole response body is at most
   `ANSWER_BYTES` (8 MiB, `src/domain/answer-budget.ts`), its own JSON reserved first, only an answer's first account
-  standing alone past it; accounts are read in chunks of 50 that stop once it is reached, so at most one chunk (6.84 MB
+  standing alone past it; accounts are read in chunks of 50 that stop once it is reached, so at most one chunk (6.91 MB
   with their static images, their remote verification times and the accounts they moved to) is read past it. A
   `limit=0` answer cut there links `next` to the rest with `max_id`, a deliberate deviation (Mastodon ignores `max_id`
   with `limit=0`). Familiar followers share the bytes among the requested accounts with followers to show, in rounds
@@ -3238,7 +3259,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   admitted within `ARRAY_ANSWER_BYTES` as a backstop that never cuts; the Access admin's page holds at most 50;
   `test/announcement-bounds.test.ts`. _Enforced (main)_ for trends: `GET /api/v1/trends/tags` holds at most 20 hashtags
   (Count), `/statuses` at most 40 statuses within the answer budget, continued at the statuses it consumed (Budget,
-  Offset), `/links` at most 20 links of at most 10,268 bytes each (205,381 a page); the Access admin's pages hold at
+  Offset), `/links` at most 20 links of at most 10,296 bytes each (205,941 a page); the Access admin's pages hold at
   most 20 hashtags, 40 statuses, 20 links and 100 publishers, each field through its bounded projection;
   `test/trends-maxima.test.ts`, `test/trends.test.ts` ("reaches every status once"). _Enforced (main)_ for scheduled
   statuses: a page reads the ids of at most 40 and admits whole scheduled statuses within `ARRAY_ANSWER_BYTES`, each
@@ -4007,8 +4028,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   filter; one presentation, 512 KiB of payload, 256 sends) and leaves the rest to the next turn. A payload is counted
   in UTF-8 bytes, the measure of the 512 KiB past which it is skipped and logged, and a unit is charged its whole
   payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit: a
-  turn presents at most 18,745,008 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
-  JSON again at most doubles it), S = 7,537,495 being the most JSON a streamed subject presents (`update` and
+  turn presents at most 18,806,024 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
+  JSON again at most doubles it), S = 7,568,003 being the most JSON a streamed subject presents (`update` and
   `status.update` a boost of a quote, `conversation` one whose last status is a boost of a quote, `notification` its
   status, report and warning together, an announcement), derived from the maxima table
   (`test/status-bounds.test.ts`, `test/streaming/split.test.ts`). The journal records nothing once it spans 4,096 ids,
@@ -4393,12 +4414,13 @@ text escaped (below). The figures are `test/presented-maxima.ts`, which the test
 operation. No one fill holds a status's emoji arrays and its polls' at their bounds at once (the references a poll's
 choices need displace escaped characters), so the conservative JSON of a shape is the escaped fill's plus 12,286 bytes
 for each poll it shows, at least every fill's (`test/status-bounds.test.ts` ("keeps the conservative JSON of every shape
-within 85%, above every fill")); shares are of it. Each remote account of the fills carries its actor id (`uri`) at its
-bound, 2,048 bytes as JSON, the most it presents. An imported account whose display name and bio hold malformed UTF-8
-(0xFF and 1,048,575 continuation bytes, and 65,534 continuation bytes) is no fill, since a fill measures decoded values
-in UTF-8, which triples such a byte: it is checked in each unit on its own, reading the raw fill's 8,192 and 65,534
-bytes of the two (SQL `octet_length` of the projected values), holding a decoded row within `rowHeapSql` of the row and
-that within the raw fill's, and presenting within the escaped fill's account occurrence (`test/status-bounds.test.ts`
+within the ceiling, above every fill")); shares are of it. Each remote account of the fills carries its actor id
+(`uri`) at its bound, 2,048 bytes as JSON, the most it presents. An imported account whose display name and bio hold
+malformed UTF-8 (0xFF and 1,048,575 continuation bytes, and 65,534 continuation bytes) is no fill, since a fill measures
+decoded values in UTF-8, which triples such a byte: it is checked in each unit on its own, reading the raw fill's 8,192
+and 65,534 bytes of the two (SQL `octet_length` of the projected values), holding a decoded row within `rowHeapSql` of
+the row and that within the raw fill's, and presenting within the escaped fill's account occurrence
+(`test/status-bounds.test.ts`
 ("an account of malformed imported text")). A local account also shows `noindex` and `roles`, at most the Owner's
 badge: the account occurrence's conservative JSON adds those keys (63 bytes) to the remote one measured, and what a
 local account's four fields at their derived most (37,677 bytes: names of six-byte escapes, each value at 7,822 and
@@ -4409,37 +4431,37 @@ each nested account counts at the conservative JSON its caps derive, the table's
 its derived 2,399 bytes (a name of 60 code points escaped to six bytes each and a website of 2,000 bytes, which JSON
 writes unescaped, with the key), witnessed by a local original and a local quote whose apps are at those bounds,
 escaped, raw and as malformed imported bytes (`test/status-bounds.test.ts` ("status applications")). Each status and
-boosted original of the fills holds a card at its stored bounds (texts escaped, or ASCII in the raw fill; the boost's
-own row one too, which is not read), and each status a shape shows that may show one (not a boost, and not a quoted
-status, which shows none) counts it at its derived 9,899 bytes (`CARD_JSON_MAX`, `test/link-cards.test.ts`; its image
-URL at 342 bytes, its blurhash at 54 and its alt text at 256 JSON bytes included). The notification shapes are read
-with every fallback type (`supported_types`), and each `admin.report` and `moderation_warning` notification and group
-counts its `fallback` at its derived 28,521 bytes (`FALLBACK_JSON_MAX`, `test/notification-fallback.test.ts`: two
-links, each href at 2,048 characters and username at 255 bytes, every byte escaped to six, and the instance origin
-at a domain of 253 octets: the origin is the stored domain, which `/setup` and `/admin/config` refuse past 253 octets
-and which a request reaches only as a DNS name of at most 253, so a Store configured earlier with a longer name
-receives no request for it). Through the real Store
-RPC, a public timeline page, a context and a search answer of statuses of about 0.98 MB each, each cut at the budget,
-return 7.82 MB of JSON each (`test/answer-budgets.test.ts` ("the Store RPC returns a maximal answer")), and the boost
-of a quote above, alone or as the one status a lookup of it, the quote and the quoted status admits, returns within
-`ANSWER_BYTES` (8 MiB), well under the 32 MiB RPC limit, which `test/status-bounds.test.ts` asserts for the escaped and
-the raw fill; the sizes it logs (5.77 MB escaped, 4.66 MB raw, the fill of the largest SQLite read) are measurements,
-not asserted.
+boosted original of the fills holds a card at its stored bounds (texts escaped, or ASCII in the raw fill, and an
+unverified author other than the viewer; the boost's own row one too, which is not read), and each status a shape shows
+that may show one (not a boost, and not a quoted status, which shows none) counts it at its derived 9,927 bytes
+(`CARD_JSON_MAX`, `test/link-cards.test.ts`; its image URL at 342 bytes, its blurhash at 54, its alt text at 256 JSON
+bytes and a signed-in viewer's `missing_attribution` included). The notification shapes are read with every fallback
+type (`supported_types`), and each `admin.report` and `moderation_warning` notification and group counts its `fallback`
+at its derived 28,521 bytes (`FALLBACK_JSON_MAX`, `test/notification-fallback.test.ts`: two links, each href at 2,048
+characters and username at 255 bytes, every byte escaped to six, and the instance origin at a domain of 253 octets: the
+origin is the stored domain, which `/setup` and `/admin/config` refuse past 253 octets and which a request reaches only
+as a DNS name of at most 253, so a Store configured earlier with a longer name receives no request for it). Through the
+real Store RPC, a public timeline page, a context and a search answer of statuses of about 0.98 MB each, each cut at the
+budget, return 7.82 MB of JSON each (`test/answer-budgets.test.ts` ("the Store RPC returns a maximal answer")), and the
+boost of a quote above, alone or as the one status a lookup of it, the quote and the quoted status admits, returns
+within `ANSWER_BYTES` (8 MiB), well under the 32 MiB RPC limit, which `test/status-bounds.test.ts` asserts for the
+escaped and the raw fill; the sizes it logs (5.77 MB escaped, 4.66 MB raw, the fill of the largest SQLite read) are
+measurements, not asserted.
 
 | Shape                                                            | Most SQLite bytes | Most JSON bytes | Conservative JSON | Rows read | Nodes | Share of 8 MiB |
 | ---------------------------------------------------------------- | ----------------- | --------------- | ----------------- | --------- | ----- | -------------- |
-| Account occurrence, with the account it moved to                 | 123,267           | 140,430         | 147,990           | 1         | 204   | 1.8%           |
-| Moved-to account (nested), derived from its caps                 | 12,432            |                 | 11,021            | 1         |       | 0.1%           |
-| Status                                                           | 4,453,581         | 2,697,497       | 2,703,965         | 1,490     | 2,723 | 32.2%          |
-| Quote (the status and its quoted status)                         | 6,828,568         | 5,385,375       | 5,398,068         | 1,927     | 5,428 | 64.3%          |
-| Boost of a quote                                                 | 7,123,563         | 5,794,309       | 5,812,706         | 1,988     | 6,499 | 69.3%          |
-| Conversation: 12 participants presented, its last status a quote | 8,510,724         | 7,070,504       | 7,122,857         | 2,001     | 7,867 | 84.9%          |
-| Notification group: 8 sample accounts, its status a quote        | 7,893,450         | 6,509,239       | 6,548,372         | 1,994     | 7,072 | 78.1%          |
-| Report: its first status a quote past the 2 MiB allowance        | 7,209,180         | 5,981,808       | 6,001,111         | 1,948     | 6,423 | 71.5%          |
-| An admin.report notification of that report                      | 2,366,450         | 406,117         | 438,407           | 1,070     | 521   | 5.2%           |
-| A moderation_warning notification, its local account at bounds   | 133,178           | 290,594         | 360,727           | 7         | 682   | 4.3%           |
-| Its notification group                                           | 133,178           | 290,783         | 360,916           | 7         | 689   | 4.3%           |
-| A filtered favourite of the quote, as include_filtered lists it  | 6,962,591         | 5,525,931       | 5,541,929         | 1,952     | 5,636 | 66.1%          |
+| Account occurrence, with the account it moved to                 | 124,491           | 142,462         | 150,022           | 1         | 208   | 1.8%           |
+| Moved-to account (nested), derived from its caps                 | 12,456            |                 | 11,137            | 1         |       | 0.1%           |
+| Status                                                           | 4,454,847         | 2,699,557       | 2,706,025         | 1,490     | 2,727 | 32.3%          |
+| Quote (the status and its quoted status)                         | 6,831,082         | 5,389,467       | 5,402,160         | 1,927     | 5,436 | 64.4%          |
+| Boost of a quote                                                 | 7,127,325         | 5,800,433       | 5,818,830         | 1,988     | 6,511 | 69.4%          |
+| Conversation: 12 participants presented, its last status a quote | 8,529,438         | 7,098,980       | 7,151,333         | 2,001     | 7,923 | 85.3%          |
+| Notification group: 8 sample accounts, its status a quote        | 7,905,948         | 6,529,587       | 6,568,720         | 1,994     | 7,112 | 78.3%          |
+| Report: its first status a quote past the 2 MiB allowance        | 7,215,414         | 5,993,796       | 6,013,099         | 1,948     | 6,443 | 71.7%          |
+| An admin.report notification of that report                      | 2,368,946         | 410,181         | 442,471           | 1,070     | 529   | 5.3%           |
+| A moderation_warning notification, its local account at bounds   | 134,402           | 294,426         | 364,559           | 7         | 686   | 4.3%           |
+| Its notification group                                           | 134,402           | 294,615         | 364,748           | 7         | 693   | 4.3%           |
+| A filtered favourite of the quote, as include_filtered lists it  | 6,966,353         | 5,532,055       | 5,548,053         | 1,952     | 5,648 | 66.1%          |
 | ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,700,089         | 4,245,597       |                   | 1,338     | 3,172 | 50.6%          |
 | Its Create (the Note and its addressing again)                   |                   | 6,301,685       |                   |           |       | 75.1%          |
 | Announcement: each part derived from its caps                    |                   | 121,774         | 248,997           |           |       | 3.0%           |
@@ -4447,7 +4469,7 @@ not asserted.
 | Listed hashtag (search, followed, suggested), from its caps      |                   | 4,543           | 5,070             |           |       | 0.1%           |
 | Access admin's trending hashtag, derived from its caps           |                   | 4,551           | 4,625             |           |       | 0.1%           |
 | Access admin's trending status, derived from its caps            |                   | 27,748          | 29,060            |           |       | 0.3%           |
-| Trending link (TrendsLink), derived from its caps                |                   | 4,783           | 10,268            |           |       | 0.1%           |
+| Trending link (TrendsLink), derived from its caps                |                   | 4,783           | 10,296            |           |       | 0.1%           |
 | Access admin's trending link, derived from its caps              |                   | 4,166           | 4,217             |           |       | 0.1%           |
 | Instance activity (12 weeks), derived from its caps              |                   | 1,189           | 1,189             | 8,592     |       | 0.0%           |
 | Scheduled status, derived from its caps                          |                   | 884,345         | 884,889           | 5         |       | 10.5%          |
@@ -4458,14 +4480,19 @@ four local fields at their limits, each value a verified 255-character link whos
 (U+0001, or malformed bytes read back as U+FFFD) and 100 status ids. Its conservative JSON counts each of the eight
 fields shown at the most a value presents, 7,822 bytes derived from the value bound (every character twice as a
 six-byte escape, and one link's markup per 9 characters). As a stream payload, which carries no fallback, encoded again
-as a string, it is at most 332,952 bytes measured and 471,650 conservative (the encoding at most doubles a byte), under
-the hub's 512 KiB. The
-conversation's conservative JSON is 7,459 bytes within 85% of 8 MiB (7,130,316), above the 4,096 bytes a change may not
-cross without a review (#1142). Every remote account shown but the account occurrence counts its fields at 33,485 JSON
-bytes, derived from the constants (32 KiB of names and values as presented, 16 fields' keys, 4 verification times of 31
-bytes and 12 nulls: 565 bytes past the fill's 8 fields); the account occurrence keeps the larger of the local and remote
-fields' maxima. Each account row reads its remote verification times (`remote_verified`) at most 129 bytes, counted at
-its 290-byte heap whatever the fills hold (`test/status-bounds.test.ts`, "remote field verification (RES-3)").
+as a string, it is at most 337,412 bytes measured and 476,110 conservative (the encoding at most doubles a byte), under
+the hub's 512 KiB. A
+conversation never shows a boost as its last status: no writer links one (`addToConversation`), and its read shows a
+boost that a restored row names, or that the trigger moves back to through a restored link, as `last_status: null`
+(`conversationStream`; `test/conversations.test.ts` ("presents no boost as a conversation's last status")), so the
+quote is the largest last status it shows. The
+conversation's conservative JSON is 62,869 bytes within 86% of 8 MiB (7,214,202), the least whole percent that keeps
+it at least the 4,096 bytes a change may not cross without a review (#1142). Every remote account shown but the
+account occurrence counts its fields at 33,485 JSON bytes, derived from the constants (32 KiB of names and values as
+presented, 16 fields' keys, 4 verification times of 31 bytes and 12 nulls: 565 bytes past the fill's 8 fields); the
+account occurrence keeps the larger of the local and remote fields' maxima. Each account row reads its remote
+verification times (`remote_verified`) at most 129 bytes, counted at its 290-byte heap whatever the fills hold
+(`test/status-bounds.test.ts`, "remote field verification (RES-3)").
 The Note's local emoji snapshot is at its 12,288-byte bound with as many entries as fit
 (61, every url at its shortest), resolved to 14,850 bytes of `Emoji` tags (at most 64 × 44 bytes past the
 snapshot); an actor's at 6,144 bytes resolves to 30 tags of 7,404 bytes (`test/local-emoji-api.test.ts`).
@@ -4477,8 +4504,8 @@ escaped to six bytes (a malformed one decodes to a three-byte U+FFFD), a 200-uni
 supported language and a 24-byte time. Pages: 20 hashtags (91,461 bytes at most; 90,178 filled through the Store
 RPC), 20 admin hashtags, 40 admin statuses (1,162,440 at most; 1,093,041 filled through the Store RPC by imported
 rows whose parents pass every bound, half of them with malformed bytes in the username, domain and content). A
-trending link is its card at `CARD_JSON_MAX` (9,899 bytes) with its history (seven days at 400 uses: 358 bytes) and
-the key (11), 10,268 bytes, so a page of 20 is at most 205,381 bytes; 20 links of 2,048-byte URLs with texts of
+trending link is its card at `CARD_JSON_MAX` (9,927 bytes) with its history (seven days at 400 uses: 358 bytes) and
+the key (11), 10,296 bytes, so a page of 20 is at most 205,941 bytes; 20 links of 2,048-byte URLs with texts of
 control characters at their bounds fill 95,681 through the Store RPC. An admin link takes a 2,048-byte URL, the
 title and provider name at their JSON bounds, a 253-byte domain, its publisher's review and the history. A listed
 hashtag (v2 search, `followed_tags`, `featured_tags/suggestions`) takes the lists' name bound instead: 256 code points
@@ -4536,8 +4563,8 @@ most a quote. A report's statuses after the first stop at 2 MiB, so a report is 
 (a quote) and nothing more, or a small first status and 2 MiB; its staff accounts are local, and its reporter (a remote
 one, from a `Flag`) and its comment are at their bounds: the comment's CHECK (migration `0054_remote_reports`) holds
 20,000 bytes, which a stored NUL followed by U+0001 makes about 120 KB of JSON (Kopje's writers make about 30 KB: 5,000
-code points). Every shape stays within 85% of an answer of 8 MiB with filter results included, measured and conservative
-alike, so an answer that admits whole items always fits its first. The 85% ceiling accommodates the conversation's 14
+code points). Every shape stays within 86% of an answer of 8 MiB with filter results included, measured and conservative
+alike, so an answer that admits whole items always fits its first. The 86% ceiling accommodates the conversation's 14
 account arrays and four status/poll arrays, allowing 40 typical emoji per status and 20 per profile. Through the real
 Store RPC, maximal answers of plain notifications, grouped notifications, conversations, admin reports and the directory
 return 7.83, 7.82, 7.83, 7.14 and 8.30 MB of JSON (`test/rpc-budgets.test.ts`).
@@ -4571,7 +4598,7 @@ a local account, also counts the OAuth admin's lookup whole (the `admin_email` r
 the operator-sized `local_accounts`, each account sought by key: `OAUTH_ADMIN_HEAP_SQL` in
 `src/domain/admin-authority.ts`), which a local account's Owner role reads at most once per operation, in whichever
 chunk first shows one; R reads neither for an answer without one. A chunk holds
-statuses while their R sums to at most its target, at most 80 and at least one: 416 KiB of heap for pages, contexts,
+statuses while their R sums to at most its target, at most 80 and at least one: 392 KiB of heap for pages, contexts,
 search, histories and lookups (`PAGE_CHUNKS`), and 1 MiB for grouped notifications and admin reports
 (`LARGE_ITEM_CHUNKS`). A chunk of several is read through a `RowMeter` (`src/db/sql.ts`), which adds each
 row's heap under the model as the cursor returns it (workerd's cursor runs the statement lazily, one row ahead of the
@@ -4593,34 +4620,39 @@ where the meter counts its UTF-16 code units twice, so it overstates text that i
 and plans such chunks smaller than the cap; it never understates.
 
 A page of 40 statuses, each with 3 Misskey-shaped emoji and its author with 2, presented through `presentation` and
-`presentStatusesWithin`, mean of two sets of 20 runs at a load average of 6 (measured at a 768 KiB target; the
-ordinary page plans the same one chunk at 416 KiB, and the realistic page was not timed again);
+`presentStatusesWithin`, mean of two sets of 20 runs at a load average of 6 (measured at a 768 KiB target, where the
+ordinary page plans one chunk; at 392 KiB it plans two, below, and neither page was timed again);
 `test/status-rows.test.ts`
-("read an ordinary page of 40 statuses in one chunk of at most 14 queries", "a context of 200 statuses reads its
-statuses in planned chunks", "a page of 80 groups reads its statuses in planned chunks") holds the planned queries to
-their ceilings:
+("read an ordinary page of 40 statuses in the chunks its R plans, one chunk without emoji", "a context of 200
+statuses reads its statuses in planned chunks", "a page of 80 groups reads its statuses in planned chunks") holds the
+planned queries to their ceilings:
 
 | Page                                                                    | Chunks of 2          | Planned             | One chunk          |
 | ----------------------------------------------------------------------- | -------------------- | ------------------- | ------------------ |
 | Ordinary: short posts with a hashtag and a mention, every other a quote | 220 queries, 9.1 ms  | 12 queries, 6.8 ms  | 11 queries, 5.6 ms |
 | Realistic: 5,000 Japanese characters, a poll of 4, 4 described media    | 200 queries, 11.3 ms | 41 queries, 10.1 ms | 10 queries, 8.6 ms |
 
-The ordinary page's R is 430,160 bytes (368,840 without emoji) as stated, 418,160 as planned (the planner counts a
-filter row for each of the viewer's filters that names statuses, none here, where the stated R counts one a status), one
-chunk within the 425,984-byte target. With every status and author at the stored emoji caps it is 2,581,160 (at most
-85,972 a status, far below the target), planned in 7 chunks (six of 387,174 bytes and one of 258,116), as few as the
+The ordinary page's R is 440,120 bytes (378,800 without emoji) as stated, 428,120 as planned (the planner counts a
+filter row for each of the viewer's filters that names statuses, none here, where the stated R counts one a status),
+past the 401,408-byte target, so it plans two chunks and 27 statements (its window of R and 13 a chunk), all in the
+same Store operation; without emoji (366,800 as planned) it plans one chunk of 14. Each account row's R includes the
+five profile columns of migration `0097_profile_descriptions`, 166 bytes at their defaults (32 a value and twice its
+bytes), about 10 KB of this page's. With every status and author at the stored emoji caps it is 2,591,120 (at most
+86,304 a status, far below the target), planned in 7 chunks (six of 388,668 bytes and one of 259,112), as few as the
 target allows, with the backstop never fired ("read a saturated page of 40 statuses in planned chunks"); the packing
-bound allows 7. A context of 200 short replies plans 5 chunks in its 3 windows of R, 57 statements ("a context of 200
+bound (one more than R over the target less the largest status's R) allows 9. A context of 200 short replies plans 5
+chunks in its 3 windows of R, 67 statements ("a context of 200
 statuses reads its statuses in planned chunks"). Each chunk also reads its accounts' cached profile images in one more
 statement outside the row heap (MEDIA-7, `cachedImagesSql` in `src/domain/remote-media.ts`), which the ceilings count:
-13 + 1 for the ordinary page, 65 plus one a chunk for the context.
+13 + 1 for the ordinary page without emoji, its window and 13 a chunk with them, 65 plus one a chunk for the context.
 
-How many chunks the 416 KiB target adds depends on the workload: statuses that each take a little more than half the
-target pair no two of them. 80 statuses of R 229,372 bytes each (a 37,548-character post with 200 mentions) plan 80
-chunks of one and 881 statements at 416 KiB, where a 480 KiB target plans 40 pairs and 441 statements; every chunk's
+How many chunks the 392 KiB target adds depends on the workload: statuses that each take a little more than half the
+target pair no two of them. 80 statuses of R 217,082 bytes each (a 31,116-character post with 200 mentions) plan 80
+chunks of one and 881 statements at 392 KiB, where a 456 KiB target plans 40 pairs and 441 statements; every chunk's
 statements run in the same Store operation, so no Store RPC is added, and R is still one query a window. Presented
-unobserved, alternating the two targets, the mean of 10 runs each took 97.6 ms at 416 KiB and 97.4 ms at 480 KiB at
-load averages of 14 to 18: the rows (the same at both targets) dominate, and a chunk of one is read without a meter
+unobserved, alternating the two targets, the mean of 10 runs each took 257.7 ms at 392 KiB and 188.1 ms at 456 KiB at
+load averages of 16 to 17 (294.0 and 227.7 ms in the run before): the 40 hydrations more cost about 70 ms, and a
+chunk of one is read without a meter
 (`test/status-rows.test.ts`, "hydrates 80 statuses just past half of the page target one at a time, and in pairs
 64 KiB above it").
 
@@ -4641,9 +4673,9 @@ two Store tables below (the rows, the rejected items and the answers' peaks) and
 
 | Item                                           | Rows, with 25% headroom | Rejected-item objects |
 | ---------------------------------------------- | ----------------------- | --------------------- |
-| Boost of a quote (the largest timeline item)   | 19.33 MB                | 17.44 MB              |
-| Group: its status (a quote), 8 sample accounts | 21.36 MB                | 19.65 MB              |
-| Report: its status and 4 accounts              | 19.55 MB                | 18.00 MB              |
+| Boost of a quote (the largest timeline item)   | 19.34 MB                | 17.46 MB              |
+| Group: its status (a quote), 8 sample accounts | 21.39 MB                | 19.71 MB              |
+| Report: its status and 4 accounts              | 19.57 MB                | 18.04 MB              |
 
 Groups and reports also keep the presentation's state: the compiled filters (50 filters of 20 keywords, about
 0.5 MB) and the filter results cached by status (at most 50 results of about 1.2 KB each, 60 KB a status) for the
@@ -4654,16 +4686,16 @@ pass, and the passes are at most four), 200 for a page of reports (its at most 1
 
 | Answer (Store isolate)                      | Normal   | Backstop fired, the dropped chunk still live | A single item |
 | ------------------------------------------- | -------- | -------------------------------------------- | ------------- |
-| Timelines (largest item a boost of a quote) | 61.95 MB | 63.99 MB                                     | 61.95 MB      |
-| Groups                                      | 76.29 MB | 79.11 MB                                     | 76.29 MB      |
-| Reports                                     | 75.24 MB | 78.05 MB                                     | 75.24 MB      |
+| Timelines (largest item a boost of a quote) | 61.98 MB | 63.99 MB                                     | 61.98 MB      |
+| Groups                                      | 76.38 MB | 79.20 MB                                     | 76.38 MB      |
+| Reports                                     | 75.29 MB | 78.11 MB                                     | 75.29 MB      |
 
-A chunk of several takes at most its target of heap: 416 KiB (0.43 MB) for timelines, 1 MiB (1.05 MB) for groups and
+A chunk of several takes at most its target of heap: 392 KiB (0.40 MB) for timelines, 1 MiB (1.05 MB) for groups and
 reports. Normal: the rows are the larger of 1.25 × the target and the item's rows, plus the admitted answer, the
 rejected item and, for groups and reports, their state. With the backstop fired, 1.25 × (the target + 1.20 MB) of
-dropped rows more. The 416 KiB timeline cap, the largest multiple of 8 KiB that does, keeps the fallback below half
+dropped rows more. The 392 KiB timeline cap, the largest multiple of 8 KiB that does, keeps the fallback below half
 the isolate's memory even while the dropped chunk remains live, with at least 4,096 bytes to
-spare under 64 MB (asserted, as above, and exact in `HEAP_PEAKS`; the conversation's JSON keeps 7,459 under its
+spare under 64 MB (asserted, as above, and exact in `HEAP_PEAKS`; the conversation's JSON keeps 62,869 under its
 ceiling): each remote account row's and moved-to account's cached profile images (two rows at their caps, MEDIA-7),
 each status, account and moved-to account row's cached emoji (its first 16 entries, read with the row: `emojiCacheSql`;
 the emoji-cache fill caches every entry of snapshots at their most entries, and a moved-to account counts its at their
@@ -4673,7 +4705,7 @@ not read), each account row's static images count at their stored bound (1,056 b
 hold), each status row's app name and website at their raw bounds (4,544 bytes of heap), each attachment row's blurhash
 at 140 bytes, whether it is remote at 32 and its cached file and icon (two slots at the packed cap, read with the row:
 `mediaCacheSql`; the raw fill caches both of every remote attachment), each presented attachment's four URLs at 4,098
-JSON bytes and its blurhash at 56, each moved-to account's row at its 25,536-byte heap cap and its JSON at 11,021 bytes,
+JSON bytes and its blurhash at 56, each moved-to account's row at its 25,632-byte heap cap and its JSON at 11,137 bytes,
 and its emojis' presentation holds one entry past those it admits at a time (18,060 bytes at three times its literals,
 decoded strings and the larger of its entity and an href normalization makes before rejecting it: `referencedEmojis` in
 `src/domain/custom-emojis.ts`), counted once per answer. Every row term carries 25% headroom; the peak test rejects
@@ -4685,7 +4717,7 @@ a timeline's largest item pass half at a chunk of one; it shows none.
 | ------------------------------------------------- | ------------- | -------------- |
 | RPC copy (serialized; deserialized in the Worker) | 8.4 MB        | 25.2 MB        |
 | The Worker's JSON string and the body             |               | 25.2 MB        |
-| Peak, normal                                      | 61.95 MB      | 50 MB          |
+| Peak, normal                                      | 61.98 MB      | 50 MB          |
 | Peak, the backstop fired                          | 63.99 MB      | 50 MB          |
 
 The Store's peak is the timelines' (the answer table above, normal and with the backstop fired and the dropped chunk

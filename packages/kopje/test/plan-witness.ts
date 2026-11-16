@@ -22,14 +22,18 @@ export type Statistics = (typeof STATISTICS)[number];
 // text, whitespace collapsed, back to main's) or `text` (the rewrite exactly, whitespace collapsed). `writes`: a query
 // listing the rows the statement writes, read before and after it on both sides. `result`: where the rewrite returns
 // rows of another shape that its caller turns into the same answer (mergedWindow's rows and their bound), each side's
-// rows as its caller reads them, compared in their place. `params`: main's parameters, taken from the rewrite's where
-// the rewrite binds more than main's statement takes (a bound it adds), since a statement refuses a binding it lacks.
+// rows as its caller reads them, given the parameters that side ran with, compared in their place. `params`: main's
+// parameters, taken from the rewrite's where the rewrite binds more than main's statement takes (a bound it adds),
+// since a statement refuses a binding it lacks.
 export type Baseline = {
   sql: string;
   pins?: (text: string) => string;
   text?: string;
   writes?: string;
-  result?: { main: (rows: SqlRow[]) => unknown; mine: (rows: SqlRow[]) => unknown };
+  result?: {
+    main: (rows: SqlRow[], params: readonly SqlStorageValue[]) => unknown;
+    mine: (rows: SqlRow[], params: readonly SqlStorageValue[]) => unknown;
+  };
   params?: (mine: readonly SqlStorageValue[]) => SqlStorageValue[];
 };
 
@@ -154,9 +158,10 @@ export class PlanWitness {
         };
         try {
           transact(() => {
-            const cursor = real.exec<SqlRow>(baseline.sql, ...(baseline.params?.(params) ?? params));
+            const bound = baseline.params?.(params) ?? params;
+            const cursor = real.exec<SqlRow>(baseline.sql, ...bound);
             const rows = cursor.toArray();
-            side.main.result = baseline.result === undefined ? rows : baseline.result.main(rows);
+            side.main.result = baseline.result === undefined ? rows : baseline.result.main(rows, bound);
             side.main.rows = cursor.rowsRead;
             side.main.written = cursor.rowsWritten;
             changes(side.main);
@@ -179,7 +184,8 @@ export class PlanWitness {
               delete side.fault;
             }
           },
-          (result) => (side.mine.result = baseline.result === undefined ? result : baseline.result.mine(result)),
+          (result) =>
+            (side.mine.result = baseline.result === undefined ? result : baseline.result.mine(result, params)),
         );
       },
     } as unknown as SqlStorage;
