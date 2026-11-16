@@ -153,11 +153,13 @@ describe("a suspended actor's cleanups while its job waits", () => {
     await suspend(t.store, bobId);
     const before = await row(t.store, bobId);
     const keysBefore = await keys(t.store);
-    // bob's verified Update names a new inbox (and a new name).
+    // bob's verified Update fetches his document, which names a new inbox (and a new name). Naming its actor by URI, it
+    // fetches the document whatever its key; one embedding the document takes no routing from it
+    // (test/inbox-actor-update.test.ts, "a suspended actor's Update(Person)").
     const inbox = `${MASTODON}/users/bob/inbox2`;
     const moved = { ...bob.document, inbox, name: "Renamed", endpoints: { sharedInbox: `${MASTODON}/inbox2` } };
     t.web.serve(bob.uri, moved);
-    const update = { "@context": AS, id: `${bob.uri}#updates/1`, type: "Update", actor: bob.uri, object: moved };
+    const update = { "@context": AS, id: `${bob.uri}#updates/1`, type: "Update", actor: bob.uri, object: bob.uri };
     expect(await t.post(bob, update)).toBe(202);
     expect(await row(t.store, bobId)).toEqual({ ...before, inbox_url: inbox, shared_inbox_url: `${MASTODON}/inbox2` });
     expect(await keys(t.store)).toEqual(keysBefore);

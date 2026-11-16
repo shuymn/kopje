@@ -563,7 +563,9 @@ async function search(w: World, uri: string): Promise<void> {
     served === "gone" ? "search 404" : cached ? "search served a cached copy" : "search served the current",
   );
   const resolved: Resolved =
-    served === "gone" ? { kind: "none" } : { kind: "status", status: input(served), author: R_ACTOR, revision: null };
+    served === "gone"
+      ? { kind: "none", last: 404 }
+      : { kind: "status", status: input(served), author: R_ACTOR, revision: null };
   const result = await w.store.resolveSearch(BUILD, {
     credential: { tokenHash: await sha256Hex(w.l.token), scope: "read:search", now: w.clock },
     query: uri,

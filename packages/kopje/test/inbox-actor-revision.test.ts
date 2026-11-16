@@ -132,6 +132,9 @@ const updateOf = (actor: TestActor) => ({
   actor: actor.uri,
   object: actor.document,
 });
+// An Update(Person) naming its actor by URI (Mastodon's dereference_object!): it fetches the actor's document whatever
+// its key, where one embedding the document fetches only for its key (test/inbox-actor-update.test.ts).
+const fetchingUpdateOf = (actor: TestActor) => ({ ...updateOf(actor), object: actor.uri });
 const followOf = (actor: TestActor) => ({
   "@context": AS,
   id: `${actor.uri}#follows/${nextId()}`,
@@ -247,11 +250,11 @@ describe("a document fetched before another store committed (ID-1)", () => {
       // A's Update fetches v2 and is held; B's Update, which read the same revision, fetches v3 and is held too.
       await bobAt(t, 2);
       const first = hold(t, bob.uri, { snapshot: true });
-      const a = track(t.post(bob, updateOf(bob)));
+      const a = track(t.post(bob, fetchingUpdateOf(bob)));
       await first.reached;
       await bobAt(t, 3);
       const second = hold(t, bob.uri, { snapshot: true });
-      const b = track(t.post(bob, updateOf(bob)));
+      const b = track(t.post(bob, fetchingUpdateOf(bob)));
       await second.reached;
       first.release();
       expect(await a).toBe(202);
@@ -262,7 +265,7 @@ describe("a document fetched before another store committed (ID-1)", () => {
       expect(await b).toBe(503);
       expect(await row(t, bob.uri)).toEqual(stored);
       // The retry fetches the current document and stores it.
-      expect(await t.post(bob, updateOf(bob))).toBe(202);
+      expect(await t.post(bob, fetchingUpdateOf(bob))).toBe(202);
       expect((await row(t, bob.uri)).avatar_url).toBe(avatar(3));
     },
   );
@@ -325,10 +328,10 @@ describe("a document fetched before another store committed (ID-1)", () => {
     );
     await bobAt(t, 1, 0, { inbox: `${bob.uri}/inbox-2` });
     const old = hold(t, bob.uri, { snapshot: true });
-    const a = track(t.post(bob, updateOf(bob)));
+    const a = track(t.post(bob, fetchingUpdateOf(bob)));
     await old.reached;
     await bobAt(t, 1, 0, { inbox: `${bob.uri}/inbox-3` });
-    expect(await t.post(bob, updateOf(bob))).toBe(202);
+    expect(await t.post(bob, fetchingUpdateOf(bob))).toBe(202);
     const refreshed = await row(t, bob.uri);
     expect(refreshed.inbox_url).toBe(`${bob.uri}/inbox-3`);
     old.release();
@@ -341,7 +344,7 @@ describe("a document fetched before another store committed (ID-1)", () => {
     const bob = await bobAt(t, 1);
     await followed(t, bob);
     await bobAt(t, 2);
-    const init = await signedInit(bob, "/inbox", updateOf(bob));
+    const init = await signedInit(bob, "/inbox", fetchingUpdateOf(bob));
     const request = {
       url: "https://kopje.test/inbox",
       method: "POST",
@@ -360,7 +363,7 @@ describe("a document fetched before another store committed (ID-1)", () => {
     );
     await fetch.reached;
     await bobAt(t, 3);
-    expect(await t.post(bob, updateOf(bob))).toBe(202);
+    expect(await t.post(bob, fetchingUpdateOf(bob))).toBe(202);
     fetch.release();
     expect(await replay).toMatchObject({ status: 503, reason: "actor-changed" });
     expect((await row(t, bob.uri)).avatar_url).toBe(avatar(3));
@@ -396,8 +399,8 @@ describe("a document fetched before another store committed (ID-1)", () => {
     const fetch = hold(t, carol.uri, { snapshot: true });
     const relayed = track(t.post(dan, await deletion()));
     await fetch.reached;
-    await carolAt(t, 4);
-    expect(await t.post(carol, updateOf(carol))).toBe(202);
+    const current = await carolAt(t, 4);
+    expect(await t.post(carol, updateOf(current))).toBe(202);
     fetch.release();
     expect(await relayed).toBe(202);
     expect((await row(t, carol.uri)).avatar_url).toBe(`${OTHER}/avatars/carol-4.png`);
@@ -423,8 +426,8 @@ describe("the Move target and search resolution (ID-1, ID-4)", () => {
     const target = hold(t, carol.uri, { snapshot: true });
     const a = track(t.post(bob, move));
     await target.reached;
-    await aliased(2);
-    expect(await t.post(carol, updateOf(carol))).toBe(202);
+    const current = await aliased(2);
+    expect(await t.post(carol, updateOf(current))).toBe(202);
     const updated = await row(t, carol.uri);
     target.release();
     expect(await a).toBe(503);
@@ -452,8 +455,8 @@ describe("the Move target and search resolution (ID-1, ID-4)", () => {
       ),
     );
     await webfinger.reached;
-    await carolAt(t, 3);
-    expect(await t.post(carol, updateOf(carol))).toBe(202);
+    const current = await carolAt(t, 3);
+    expect(await t.post(carol, updateOf(current))).toBe(202);
     const updated = await row(t, carol.uri);
     webfinger.release();
     const found = await search;

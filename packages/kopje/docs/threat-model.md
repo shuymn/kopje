@@ -157,12 +157,20 @@ against their own instance. TLS is assumed between all parties.
   meaning"), `test/inbox.test.ts` ("hands on through the rollback drain's check an Ed25519 RFC 9421 request", "answers
   the rollback drain's check of a draft-cavage request naming a key that is not RSA as unverified"),
   `test/cutover-rollback.test.ts` ("sets aside a draft-cavage request naming a key that is not RSA"). A stored key list
-  (with the profile, `movedTo` and routing beside it) is replaced only by a document fetched after the last one stored:
-  every store of a remote actor's document issues a new Store revision
+  and the inboxes beside it are replaced only by a document fetched after the last one stored; the profile, the handle
+  and `movedTo` also by the actor's own `Update(Person)` embedding its document (an object of an actor type whose `id`
+  is the activity's `actor`, its signer), read as a fetched document is (`readEmbeddedActor`) and stored under the
+  revision the inbox gate read before the request's first fetch, in one store with the keys and inboxes of the document
+  the request fetched for its key when it fetched one, else the stored row's (`upsertEmbeddedActor`). Such an
+  `Update(Person)` fetches the actor's document only when its key needs one, as any activity; an embedded document never
+  writes keys, inboxes or a key's freshness (`remote_keys.fetched_at`), so a key's trust still runs from the last
+  fetched document, and it sets `accounts.fetched_at` (the stale-author refresh's clock); one Kopje cannot read applies
+  nothing. Every store of a remote actor's document issues a new Store revision
   (`accounts.document_revision`, never the same value twice in a row, so an imported maximum does not stop it), and
   every writer that fetches a whole document reads the revision before the fetch and stores the document only while it
   still holds, compared in the transaction that would store it. Those writers are the inbox sender in every Store round
-  of its request (a later round never stores its document again), its routing while it is suspended (VIS-30), a relayed
+  of its request (a later round never stores its document again), the embedded document of its `Update(Person)`, its
+  routing while it is suspended (VIS-30, from a fetched document only), a relayed
   `Delete`'s actor (by the actor's revision, not the signer's), a `Move` target, search resolution (which reads a URL's
   revision before its probe and fetches a stored actor's id as that actor, and fetches the actor document a probe or its
   alternate found again after reading its revision, so neither is ever stored), the refresh of a stale boosted or quoted
@@ -189,8 +197,10 @@ against their own instance. TLS is assumed between all parties.
   `upsertRemoteActor`, `applyRefresh`, `receive`, `inboxGate` and `actorGone` in `src/domain/inbox.ts`, `quoteWork` in
   `src/domain/quotes.ts`, `resolveSearch` in `src/domain/remote-statuses.ts`, `src/federation/resolve.ts`,
   `src/federation/actor-gone.ts`, `refetchDocument` in `src/federation/collections.ts`, `completeDocumentRefresh` in
-  `src/domain/remote-collections.ts`, `walkTurn` in `src/federation/replies.ts`; `test/inbox-actor-revision.test.ts`,
-  `test/inbox-gone.test.ts`, `test/quotes.test.ts` ("keeps a Move committed during a stale-author stage’s fetch"),
+  `src/domain/remote-collections.ts`, `walkTurn` in `src/federation/replies.ts`, `upsertEmbeddedActor` in
+  `src/domain/remote-actors.ts`, `readEmbeddedActor` in `src/federation/remote-actor.ts`;
+  `test/inbox-actor-revision.test.ts`, `test/inbox-actor-update.test.ts`, `test/inbox-gone.test.ts`,
+  `test/quotes.test.ts` ("keeps a Move committed during a stale-author stage’s fetch"),
   `test/remote-collections.test.ts` ("the document part of a refresh (D9)"), `test/reply-walk-rounds.test.ts` ("a walk's
   author whose URI answers 410"). A second exception: a `Delete` another server relays, signed with its own key (a
   booster or quoter forwarding the author's `Delete` of a status, or a server holding the quoting status forwarding the
@@ -443,9 +453,11 @@ against their own instance. TLS is assumed between all parties.
   `src/domain/remote-statuses.ts`), is applied as
   that author's `Update` under these rules, as Mastodon's `FetchRemoteStatusService` turns it into one, and one it does
   not store is its `Create`, its document taken only from its `id` (ID-2); a 404 or 410 to such a fetch removes
-  nothing, and a 410 answers nothing, as Mastodon answers a stored status only after a 401, 403 or 404
-  (`resolve_url_service.rb:44`) (`test/search-refetch.test.ts`, `test/interaction.test.ts` ("applies a newer version
-  of a stored status it finds again", "finds nothing for a stored status whose fetch answers 410, and keeps it")).
+  nothing; a failed fetch answers a stored status only after a 401, 403 or 404 and a stored account only after a 5xx
+  or no answer (`resolve_url_service.rb:38-63`), and the interaction page never a stored status
+  (`test/search-refetch.test.ts`, `test/search-fallback.test.ts`, `test/interaction.test.ts` ("applies a newer version
+  of a stored status it finds again", "finds nothing for a stored status whose fetch answers 410, and keeps it",
+  "shows no stored status after a failed fetch")).
   An `Update` whose poll is accepted, its values changed or not, records the Store's time as the poll's last fetch
   (`polls.fetched_at`); a refused or removed poll and a `Create` record none (`test/polls-federation.test.ts` ("marks
   the poll fetched on an accepted Update, not on a Create or a refused one")). A poll read's refresh applies its
@@ -1414,11 +1426,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   suspended (R38) is unavailable (R1) from the suspension's commit: shown to nobody (as any unavailable account), sent
   nothing but retractions (a forwarded `Delete` of a remote original it boosted or quoted among them, VIS-3,
   `test/forward-delete.test.ts` ("sends a forward through a quote to an instance-suspended follower")), and its inbound
-  activity is not applied but for its `Delete`, `DeleteActor`, `Undo` and
-  `Reject`, after a routing refresh of its inbox from a verified document (fenced by its revision as any document,
-  ID-1); no path refreshes its profile, keys or domain, or stores or updates a status of it (a search's included,
-  `test/search-refetch.test.ts`). Its accepted follows of local
-  accounts are severed in bounded, generation-bound rounds (R38), each with a withdrawing `Reject` to the follower's
+  activity is not applied but for its `Delete`, `DeleteActor`, `Undo` and `Reject`, after a routing refresh of its
+  inbox from a verified document it fetched (never an embedded one; fenced by its revision as any document, ID-1); no
+  path refreshes its profile, keys or domain, or stores or updates a status of it (a search's included,
+  `test/search-refetch.test.ts`). Its accepted follows of local accounts are severed in bounded, generation-bound
+  rounds (R38), each with a withdrawing `Reject` to the follower's
   current personal inbox alone, as Mastodon's `reject_remote_follows!` sends it (a retraction, never refused, but not
   sent to the earlier receivers of what it withdraws); its requests to local accounts are kept, unlisted and
   unanswerable while it is unavailable, as Mastodon keeps `FollowRequest`s; local follows of it are kept.
@@ -1569,10 +1581,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   translation languages, privacy policy and terms of service; fourteen routes) needs no token, and a token sent is read
   only for its owner's suspension, as Mastodon's `Api::BaseController#require_not_suspended!` reads it: every answer to
   a request whose token's owner is suspended (AUTH-1's order) is 403 `Your login is currently disabled`, an early 4xx
-  and an error's answer included, with none of the answer's headers (no `Cache-Control`), so the token holder learns of
-  the suspension, as on Mastodon; any other token (unknown, expired or stale of an available owner, an app token)
-  changes nothing, and no activity is recorded (RES-6). The judgment precedes every Store write such a request can make:
-  app registration judges it in the transaction that inserts the app (`registerApp`), and
+  and an error's answer included, with none of the answer's headers; it carries the API's `private, no-store`, and
+  since every route that judges the owner varies by `Authorization` and answers a token only privately, no cache
+  serves the suspended owner's token a stored answer (WEB-7; `test/suspended-tokens.test.ts` ("drops the replaced
+  answer's headers"), `test/api-caching.test.ts` ("a token-reading instance route varies by Authorization")). The token
+  holder learns of the suspension, as on Mastodon; any other token (unknown, expired or stale of an available owner,
+  an app token) changes nothing, and no activity is recorded (RES-6). The judgment precedes every Store write such a
+  request can make: app registration judges it in the transaction that inserts the app (`registerApp`), and
   `GET /api/v1/instance/activity` in the read that runs before either path that keeps the day's answer
   (`instanceActivity`). The hot reads (custom emoji and the public account reads) judge it in their one operation
   (`refuseSuspended` in `src/domain/auth.ts`); every other answer is judged after the handler by the access middleware
@@ -1959,6 +1974,27 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   host", "changes nothing before setup has fixed the domain", "reads the domain once more only where the route does not
   read it", "drops a spooled inbox request to another host at replay, applying nothing", "serves a rescued snapshot
   only on the domain it records, or a legacy one on the stored domain").
+- **WEB-7: no cache hands one caller's API answer to a caller whose answer differs.** Every answer under `/api/*` (the
+  streaming endpoints excepted, which keep Mastodon's streaming server's headers, MD-8) and of `/oauth/userinfo`
+  carries `Cache-Control: private, no-store`, errors, maintenance and gate answers included, but a 2xx answer the
+  route table declares public; a CORS preflight is answered before it and carries none. The answer of every route that
+  reads the bearer token (any access but `public`, AUTH-2), which can depend on the token through sign-in, a setting
+  (the domain-block list under `show_domain_blocks` and `show_domain_blocks_rationale`) or the owner's suspension
+  (AUTH-2's 403), is public only to a request without an `Authorization` header and carries `Vary: Authorization`
+  (with `Accept-Language` where the content reads it); a request with any `Authorization` header, whatever it holds,
+  is answered `private, no-store`, as Mastodon's `enforce_cache_control!` answers it. Only a route that never reads a
+  token may be public to every request, without `Vary`, and the route table refuses any other at registration. The
+  API reads no cookie. A cache that honours `Vary` and `private` or `no-store` (RFC 9111; Cloudflare's Workers cache,
+  were it enabled) therefore never serves a stored answer to a caller it does not fit. _Enforced (main):_
+  `src/mastodon/caching.ts`, `src/mastodon/routes.ts`, `src/app/app.ts`; `test/api-caching.test.ts` ("an
+  authenticated read is private", "the app registration is private", "an error answer is private", "a refused token
+  is private and varies by Authorization", "a thrown error is private", "an unavailable Store's answer is private", "a
+  maintenance answer is private", "an unknown API path is private", "an off-domain answer stays private", "userinfo
+  is private", "an anonymous public read", "any Authorization header makes it private", "trending statuses vary by
+  language", "an everyone read", "a token-reading instance route varies by Authorization", "the block list varies by
+  Authorization under every setting", "a preflight carries no Cache-Control", "streaming keeps its own headers", "only
+  routes that never read a token declare EVERYONE", "decides every declaration, status class and Authorization"),
+  `test/suspended-tokens.test.ts` ("drops the replaced answer's headers").
 
 ### Setup (SETUP)
 
@@ -2859,18 +2895,18 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 ### Resources (RES)
 
 - **RES-1: input is bounded before it is parsed.** API parameter bodies and inbox bodies stop at 1 MiB, by
-  `Content-Length` or while streaming. Each text field has a raw cap before parsing or counting (status text: 10,000
-  code units). Media uploads have their own limit. _Enforced (main)_ for bodies: `src/platform/body.ts`,
-  `src/mastodon/params.ts`; `test/gate.test.ts` ("refuses an inbox body over 1 MiB", "stops reading a streamed inbox
-  body"). _Enforced (main)_ for API bodies: a route's body stops at its limit (1 MiB unless the route sets one), and a
-  route that reads files (`readParams`' file rule: `update_credentials`' avatar and header, the settings page's
-  image) takes a multipart body of the limit plus each file and its part headers (17,858,560 bytes for
-  `update_credentials`), chosen from `Content-Type` before any byte is read, while its text stays within the limit in
-  UTF-8 bytes; a JSON body is refused past 10,000 generated parameter paths (object members, array objects and empty
+  `Content-Length` or while streaming. Each text field has a raw cap before parsing or counting (status text and a
+  local bio: 10,000 code units). Media uploads have their own limit. _Enforced (main)_ for bodies:
+  `src/platform/body.ts`, `src/mastodon/params.ts`; `test/gate.test.ts` ("refuses an inbox body over 1 MiB", "stops
+  reading a streamed inbox body"). _Enforced (main)_ for API bodies: a route's body stops at its limit (1 MiB unless
+  the route sets one), and a route that reads files (`readParams`' file rule: `update_credentials`' avatar and header,
+  the settings page's image) takes a multipart body of the limit plus each file and its part headers (17,858,560 bytes
+  for `update_credentials`), chosen from `Content-Type` before any byte is read, while its text stays within the limit
+  in UTF-8 bytes; a JSON body is refused past 10,000 generated parameter paths (object members, array objects and empty
   arrays) or 2,097,152 UTF-16 code units of all its keys, charged before each key is built, and past 32 levels of
-  nesting; `update_credentials` checks the token before reading a multipart
-  body; `test/params.test.ts`, `test/profile-images.test.ts` ("takes a multipart body up to the text limit plus two
-  files and refuses one byte more", "answers an invalid or under-scoped token without reading a multipart body").
+  nesting; `update_credentials` checks the token before reading a multipart body; `test/params.test.ts`,
+  `test/profile-images.test.ts` ("takes a multipart body up to the text limit plus two files and refuses one byte
+  more", "answers an invalid or under-scoped token without reading a multipart body").
   _Enforced (main)_ for status text: `test/status-text.test.ts` ("raw input bound"); the Store checks the raw bound of
   the text and warning as sent before it judges a blank text or moves its warning into the text (`convertedPost`, which
   `postStatus` calls, and `editStatus`, in `src/domain/statuses.ts`), and an edit to a blank text checks it again on
@@ -2878,7 +2914,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   in the Store, before the warning moves, posted now or scheduled", "counts the text and the kept warning as written,
   as one string"). _Enforced (main)_ for search terms (500 characters) and media (16 MB and 16,777,216 pixels, read
   with the body bound before parsing): `src/mastodon/search.ts`, `src/mastodon/media.ts`; `test/search.test.ts`
-  ("bounds the query"), `test/media.test.ts` ("refuses a file over 16 MB"). _Enforced (main)_ for remote profiles:
+  ("bounds the query"), `test/media.test.ts` ("refuses a file over 16 MB"). _Enforced (main)_ for a local bio: the
+  note as sent is refused past the status text's raw bound before its links are found and counted (`accountChanges` in
+  `src/mastodon/accounts.ts`, for `update_credentials` and the settings page alike; `test/accounts.test.ts` ("refuses
+  a note past the raw bound before parsing it")). _Enforced (main)_ for remote profiles:
   bios are cut at 50,000 code units before sanitizing and display names at 2,048 (`src/security/html.ts`,
   `src/federation/remote-actor.ts`). _Enforced (main):_ a
   timeline marker's `last_read_id` stops at 255 characters, which Mastodon bounds as a bigint (`src/domain/markers.ts`;
@@ -2938,7 +2977,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/platform/json-bounds.ts`, applied by `parseActivity` and by the loaders of `createRemoteLoaders`); JSON-LD
   contexts too, before they are cached and again on every cache hit (an entry may predate the check; `boundedContexts`
   in `src/federation/federation.ts`); and one request fetches at most 8 documents (the fetch budget), so one activity's
-  JSON-LD work is at most 8 bounded documents and their bounded contexts; the Store asks the Worker for documents at
+  JSON-LD work is at most 8 bounded documents and their bounded contexts, besides the activity itself (an
+  `Update(Person)`'s embedded actor is read through JSON-LD within the activity's bounds, its contexts loaded within the
+  same budget: `readEmbeddedActor`, `test/inbox-actor-update.test.ts`); the Store asks the Worker for documents at
   most 3 times per activity, and the revision fence (ID-1) adds no fetch beyond that budget (a stale-author refresh may
   fetch its actor again); statuses are read as compacted JSON, without JSON-LD, as Mastodon reads them;
   `test/inbox-statuses.test.ts` ("refuses an activity or a fetched document past the JSON bounds before reading it",
@@ -3242,10 +3283,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `hydrate` in status-presenter.ts, `presentAccountsById` and `presentAccount` in accounts.ts) are not exported, so the
   compiler refuses direct use outside their module; the exported paths present one unit or admit within a budget.
   _Enforced (main)_ for each presented status: the status columns of `STORED_COLUMNS` hold their stored bounds
-  (RES-2, stored values) and are read as stored: content and source text within 128 KiB as a
+  (RES-2, stored values) and are read as stored, but the content warning, read through a cut of 16,382 stored bytes
+  (`spoilerReadSql`, which cuts no value a writer stores): content and source text within 128 KiB as a
   JSON string, a content warning within 16 KiB, a status url within 4,096 bytes, attachment URLs within 2,048,
   descriptions within 10,000 code points and meta within 1 KiB, a blurhash within 54 bytes, and an edit's content,
-  warning and choices the same. Columns that keep a read-time projection are read through their helper in
+  warning and choices the same. An import may still hold malformed UTF-8 that passes the triggers' counts and decodes
+  past them (0xFF and any number of continuation bytes is one character to the warning's `substr`; `json_quote`
+  counts a malformed byte as one, and it decodes to a U+FFFD of three bytes), so content, source text and the warning
+  are bounded again after decoding: `''` past 128 KiB of JSON (`presentedContent`) and the warning cut to 2,730 code
+  points past 16 KiB (`presentedSpoiler`), in every presented status, edit version, `/source` answer and Note
+  (`test/status-text-bounds.test.ts`). Columns that keep a read-time projection are read through their helper in
   `src/domain/status-bounds.ts` (accounts and actor ids through `src/domain/profile-bounds.ts`): a uri over 4,096 bytes
   reads as ''; at most 4 attachments per status; at most 200 mentions and 70 hashtags (of the 100 stored) per status,
   the first by account id and by name; at most 100 poll choices of 1,000 code points; each edit-history snapshot's first
@@ -3546,8 +3593,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   status's author's fetch after its state read, and two WebFinger answers for a claim confirmed through another
   subject. Each reads up to `DOCUMENT_BODY_LIMIT` (1 MiB), 6 MiB against the request's 2 MiB (`REQUEST_MAX_BYTES`), and
   each hop, retry or uncached context takes one more of the 8 fetches. Past either, the next request is refused as a
-  transient failure: a cut probe, alternate or actor fetch resolves nothing (the search answers as without
-  `resolve=true`), and a cut confirmation stores no new actor and leaves a stored one its handle;
+  transient failure: a cut probe, alternate or actor fetch resolves nothing; one refused before it is sent counts as
+  no answer for the stored account of the URL and keeps the earlier answer, and an answer whose body the request's
+  bytes cut counts as its status (`test/search-fallback.test.ts`, "a budget refusal is no answer, a cut read its
+  answer's status"); a cut confirmation stores no new actor and leaves a stored one its handle;
   `test/resolve-alternate.test.ts` ("stops at the request's budget when the alternates and the confirmation need
   more"). A signed-in read of a remote poll (`GET /api/v1/polls/:id`) refreshes it at most once a minute, however many
   users read it: the attempt is reserved in a Store write before its fetch (`reservePollRefresh` in
@@ -3796,7 +3845,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   interoperability policy, not another server's behaviour, an actor id and an inbox or shared inbox URL from a remote
   actor document are at most 2,048 bytes (`ACTOR_URI_LIMIT` and `INBOX_URL_LIMIT` in
   `src/federation/remote-actor.ts`): an over-long id or inbox makes the actor unusable, and an over-long shared inbox
-  is ignored. Mastodon sets no length limit; Misskey stores inbox URLs in 512-character columns.
+  is ignored. Mastodon sets no length limit; Misskey stores inbox URLs in 512-character columns. A document whose own
+  `inbox` member is blank (missing, null, false, whitespace alone, `[]` or `{}`) is no actor either, fetched or
+  embedded, as Mastodon's `ProcessAccountService` raises for one (`process_account_service.rb:24`), so it stores
+  nothing, a stored row's inbox included (`remoteActorInput`; `test/inbox-actor-update.test.ts` ("an actor document
+  whose inbox is blank")).
   `test/inbox-verify4.test.ts` ("enqueues and fully expands an audience whose targets exceed what one row can hold",
   "refuses an actor whose inbox URL is over the cap", "refuses an actor whose id is over the cap"),
   `test/delivery-chunks.test.ts` (the chunk boundary, lane order across intents, an Update replacing a partly expanded
@@ -4500,7 +4553,12 @@ decoded values in UTF-8, which triples such a byte: it is checked in each unit o
 and 65,534 bytes of the two (SQL `octet_length` of the projected values), holding a decoded row within `rowHeapSql` of
 the row and that within the raw fill's, and presenting within the escaped fill's account occurrence
 (`test/status-bounds.test.ts`
-("an account of malformed imported text")). A local account also shows `noindex` and `roles`, at most the Owner's
+("an account of malformed imported text")). A status whose content and source text (0xFF and 131,069 continuation
+bytes) and warning (0xFF and 1,048,575) are malformed, and an edit of it, are checked the same way: they read the raw
+fill's 131,070 bytes of content and source text and 16,382 of the warning, hold a decoded row within `rowHeapSql` of
+the row and that within the raw fill's, and present within the escaped fill's occurrence of each shape
+(`test/status-bounds.test.ts` ("a status of malformed imported text")).
+A local account also shows `noindex` and `roles`, at most the Owner's
 badge: the account occurrence's conservative JSON adds those keys (63 bytes) to the remote one measured, and what a
 local account's four fields at their derived most (37,677 bytes: names of six-byte escapes, each value at 7,822 and
 verified) present past the remote one's fields. Every presented account but the viewer's moved to an account of its own
@@ -5290,8 +5348,10 @@ The negative cases each area requires, in tests named with the invariant IDs; a 
 
 ## IDs to check by change type
 
-- **Mastodon API endpoint:** AUTH-1, AUTH-2, AUTH-6, VIS-1, VIS-5, VIS-12, RES-1, RES-3, RES-7, DATA-6. Test a wrong
-  scope, a revoked token, another account's resource, and a status the viewer may not see.
+- **Mastodon API endpoint:** AUTH-1, AUTH-2, AUTH-6, VIS-1, VIS-5, VIS-12, RES-1, RES-3, RES-7, DATA-6, WEB-7 (its
+  caching declaration). Test a wrong scope, a revoked token, another account's resource, and a status the viewer may
+  not see.
+- **API middleware or gate:** WEB-5, WEB-6, WEB-7.
 - **Inbound activity handler:** ID-1, ID-3, ID-6, ID-7, ID-8, VIS-2, HTML-1, RES-1, RES-2, RES-6, OPS-1; the inbox
   precheck and the spool also OPS-6 (the cutover's maintenance worker shares them).
 - **Outbound activity or delivery:** VIS-3, VIS-30, NET-2, NET-3, DATA-1, DATA-7, RES-5, RES-6.

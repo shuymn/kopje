@@ -2,6 +2,7 @@ import { writeEach } from "../db/by-ids";
 import { ACCOUNTS_ID_INDEX, POLL_VOTES_KEY_INDEX, POLLS_STATUS_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
+import { railsBlank } from "../platform/rails-blank";
 import { nextDocumentRevisionSql, pollTimeReadSql, yieldsMoreThan } from "../platform/stored-bounds";
 import { rubyStrip } from "../platform/strip";
 import { type Present, resolveApiId } from "./accounts";
@@ -55,11 +56,6 @@ export type PollRequest = {
 // A local poll as it is checked and written: its choices, its duration in seconds and its options.
 export type PollInput = { options: string[]; expiresIn: number; multiple: boolean; hideTotals: boolean };
 
-// Object#blank? (Unicode whitespace only), applied after Ruby's String#strip (rubyStrip).
-function isBlank(value: string | undefined): boolean {
-  return value === undefined || /^\s*$/u.test(value);
-}
-
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 // Whether `value` has more than `max` grapheme clusters, counting no further than that.
@@ -87,12 +83,14 @@ function rubyInteger(value: string): number {
 // most MAX_OPTIONS, each at most MAX_OPTION_CHARS grapheme clusters, no two alike; the duration present (expires_in,
 // read as Ruby's to_i) and between MIN_EXPIRATION_S and MAX_EXPIRATION_S.
 export function checkPoll(request: PollRequest): PollInput | { error: string } {
-  const options = request.options.map(rubyStrip).filter((option) => !isBlank(option));
+  // Poll#prepare_options (options.map(&:strip).compact_blank) and Expireable#expires_in= (interval.present?).
+  const options = request.options.map(rubyStrip).filter((option) => !railsBlank(option));
   const errors: string[] = [];
   if (options.length === 0) {
     errors.push("Choices can't be blank");
   }
-  const expiresIn = isBlank(request.expiresIn) ? null : rubyInteger(request.expiresIn ?? "");
+  const expiresIn =
+    request.expiresIn === undefined || railsBlank(request.expiresIn) ? null : rubyInteger(request.expiresIn);
   if (expiresIn === null) {
     errors.push("Deadline can't be blank");
   }
