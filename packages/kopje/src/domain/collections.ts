@@ -42,7 +42,7 @@ import { ABOVE_EVERY_ID, BELOW_EVERY_ID, readWindow, statusCursor, windowOf, win
 // CollectionItemsController and InCollectionsController; REST::CollectionSerializer, CollectionItemSerializer and
 // CollectionWithAccountsSerializer). A local account features up to COLLECTION_MAX_ITEMS accounts in each of up to
 // COLLECTION_LIMIT collections; who sees what is R45 (audience.ts, docs/visibility.md). Only local accounts can be
-// featured yet: a remote one fails the consent rule (mayFeatureSql). The stored bounds are migration 0099's CHECKs and
+// featured yet: a remote one fails the consent rule (mayFeatureSql). The stored bounds are migration 0100's CHECKs and
 // triggers (stored-bounds.ts, stored-triggers.ts).
 
 // in_collections honours `offset` as a raw skip of candidates up to this many (ten default pages); past it the page is

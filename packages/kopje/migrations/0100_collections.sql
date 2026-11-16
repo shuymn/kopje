@@ -1,4 +1,4 @@
--- Kopje Store schema 0099: collections (Mastodon 4.6's Collection and CollectionItem, for /api/v1/collections;
+-- Kopje Store schema 0100: collections (Mastodon 4.6's Collection and CollectionItem, for /api/v1/collections;
 -- src/domain/collections.ts). Never edit after release (checksummed).
 --
 --   collections                   one row per collection: its owner (the account's delete cascades), local, the name,

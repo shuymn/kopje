@@ -3,8 +3,9 @@
 // its verification apply. The triggers of 0048_stored_bounds refuse what is not a fixed point of P
 // (domain/stored-triggers.ts), and reads take the columns of STORED_COLUMNS as stored; pollOptionsSql is also the read projection of polls.options. Every writer's
 // output, as SQLite stores it, is a fixed point of the column's P, and P(P(x)) = P(x) for any stored string
-// (test/stored-bounds.test.ts). An account's display name and note, which malformed UTF-8 can pass P with, are read
-// and presented through their own bounds ("Account text as presented").
+// (test/stored-bounds.test.ts). An account's display name and note, and a status's content, source text and content
+// warning, which malformed UTF-8 can pass P with, are read and presented through their own bounds ("Account text as
+// presented", "Status text as presented").
 //
 // Text writers replace a lone surrogate with U+FFFD and remove U+0000 (storedText), then cut by code points, as
 // SQLite's substr and length count them. JSON-bounded columns (bio, content, content warning, source text) keep the
@@ -106,10 +107,14 @@ export function sourceTextSql(column: string): string {
   return jsonBoundSql(column, CONTENT_JSON_BYTES, "''");
 }
 
-// statuses.spoiler_text and status_edits.spoiler_text: past SPOILER_JSON_BYTES, cut to the code points that fit
-// however they escape (6 bytes each at most), so the warning stays.
+// The code points a content warning past SPOILER_JSON_BYTES is cut to: those that fit however they escape (6 bytes
+// each at most).
+export const SPOILER_CUT_LIMIT = Math.floor((SPOILER_JSON_BYTES - 2) / 6);
+
+// statuses.spoiler_text and status_edits.spoiler_text: past SPOILER_JSON_BYTES, cut to SPOILER_CUT_LIMIT code points,
+// so the warning stays.
 export function spoilerSql(column: string): string {
-  return jsonBoundSql(column, SPOILER_JSON_BYTES, `substr(${column}, 1, ${Math.floor((SPOILER_JSON_BYTES - 2) / 6)})`);
+  return jsonBoundSql(column, SPOILER_JSON_BYTES, `substr(${column}, 1, ${SPOILER_CUT_LIMIT})`);
 }
 
 // statuses.url: NULL past STATUS_URL_LIMIT, so it reads as its uri.
@@ -255,6 +260,43 @@ export function presentedNote(stored: string): string {
 // to 600 U+FFFD, which this cuts to PROFILE_DESCRIPTION_LIMIT.
 export function presentedProfileDescription(stored: string): string {
   return cutCodePoints(stored, PROFILE_DESCRIPTION_LIMIT);
+}
+
+// ---- Status text as presented (RES-3)
+
+// An imported content, source text or content warning (statuses, status_edits) may hold malformed UTF-8 that passes
+// contentSql's, sourceTextSql's and spoilerSql's counts and decodes past them: json_quote copies a malformed byte as
+// one, and it decodes to a U+FFFD of three bytes; 0xFF and any number of continuation bytes is one character to
+// spoilerSql's substr, so the warning has no stored ceiling but the Store's value limit. The warning is read through a
+// byte cut, and the presenters bound all three again after decoding, as an account's text is.
+
+// The stored bytes a content warning is read with: a writer's is at most this (its JSON string, quotes included,
+// within SPOILER_JSON_BYTES), so none is cut. Content and source text need no read cut: their trigger's byte branch
+// already holds a malformed value to CONTENT_JSON_BYTES - 2 bytes.
+export const SPOILER_READ_BYTES = SPOILER_JSON_BYTES - 2;
+
+// statuses.spoiler_text and status_edits.spoiler_text as every read into JavaScript takes them: the column itself
+// within SPOILER_READ_BYTES stored bytes (NULL, an outer join's missing row, included), else its first
+// SPOILER_READ_BYTES bytes as text, SQL octet_length of the projected value. Statements that copy, compare or measure
+// the warning in SQL read the column, so a stored value is never written back cut.
+export function spoilerReadSql(column: string): string {
+  return `CASE WHEN length(CAST(${column} AS BLOB)) <= ${SPOILER_READ_BYTES} THEN ${column}
+		ELSE ${byteCut(column, SPOILER_READ_BYTES)} END`;
+}
+
+// A content or source text as presented: contentSql's rule after decoding, '' when its JSON string passes
+// CONTENT_JSON_BYTES. For well-formed text JSON.stringify and json_quote write the same bytes, so no value a writer
+// stored changes.
+export function presentedContent(stored: string): string {
+  return ENCODER.encode(JSON.stringify(stored)).length <= CONTENT_JSON_BYTES ? stored : "";
+}
+
+// A content warning as presented: spoilerSql's rule after decoding, its first SPOILER_CUT_LIMIT code points when its
+// JSON string passes SPOILER_JSON_BYTES.
+export function presentedSpoiler(stored: string): string {
+  return ENCODER.encode(JSON.stringify(stored)).length <= SPOILER_JSON_BYTES
+    ? stored
+    : cutCodePoints(stored, SPOILER_CUT_LIMIT);
 }
 
 // ---- Attribution domains (local_accounts.attribution_domains)
@@ -2373,7 +2415,7 @@ WHERE name = 'wrapstodon' AND value IS NOT 'true' AND value IS NOT 'false';
 `;
 }
 
-// ---- Collections: migration 0099_collections (domain/collections.ts)
+// ---- Collections: migration 0100_collections (domain/collections.ts)
 
 // collections and collection_items hold Mastodon 4.7.5's Collection and CollectionItem (FEP-7aa9): a local
 // collection's name and description as its owner wrote them, and the columns a remote one (#1589's PR 5) and its
@@ -2442,13 +2484,13 @@ function integerWhen(column: string, min: number, max: number | string): string[
   return [`WHEN typeof(${column}) <> 'integer' THEN 0`, `WHEN ${column} BETWEEN ${min} AND ${max} THEN 1`];
 }
 
-// A CHECK of 0099 (as reportCheck: `when` as a CASE yielding 1 or 0, written `(...) = 1`).
+// A CHECK of 0100 (as reportCheck: `when` as a CASE yielding 1 or 0, written `(...) = 1`).
 const collectionCheck = reportCheck;
 
 // The bound of a local collection's or a remote one's column (`local` the row's locality).
 const byLocality = (local: number, remote: number) => `CASE WHEN local = 1 THEN ${local} ELSE ${remote} END`;
 
-// The statements of 0099 before its triggers (domain/stored-triggers.ts): the two tables and their indexes, and the
+// The statements of 0100 before its triggers (domain/stored-triggers.ts): the two tables and their indexes, and the
 // column reports.collection_ids. `languages`: Mastodon's SUPPORTED_LOCALES (domain/trend-languages.ts TREND_LANGUAGES),
 // `tag` the hashtag name bound (domain/status-bounds.ts TAG_NAME_BYTES, MAX_TAG_LENGTH), which this module cannot
 // import; test/migrations.test.ts compares the file with it. A local collection holds no uri, url or total_items; a
@@ -2602,7 +2644,7 @@ ALTER TABLE reports ADD COLUMN collection_ids TEXT;
 
 // True when `column` is no stored reports.collection_ids: NULL is one; else a JSON array of at most
 // REPORT_COLLECTION_IDS 18-digit ids as TEXT, judged in order (the storage class, the bytes, NUL, the JSON, the array,
-// its length, each element). The triggers of 0099 and the writer (collectionIdsOf) share it.
+// its length, each element). The triggers of 0100 and the writer (collectionIdsOf) share it.
 export function reportCollectionIdsPastBoundSql(column: string): string {
   return `CASE WHEN ${column} IS NULL THEN 0
 	WHEN typeof(${column}) <> 'text' THEN 1

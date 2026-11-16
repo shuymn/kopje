@@ -1363,7 +1363,7 @@ describe("dump", () => {
     }
   }, 120_000);
 
-  it("round-trips collections and a report's collection ids (0099), and refuses a dump past their bounds", async () => {
+  it("round-trips collections and a report's collection ids (0100), and refuses a dump past their bounds", async () => {
     const source = await seeded(1);
     const at = "2026-11-16T00:00:00.000Z";
     await runInDurableObject(source, (_instance, state) => {

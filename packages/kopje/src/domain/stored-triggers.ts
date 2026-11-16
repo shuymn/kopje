@@ -118,7 +118,7 @@ function reviewTriggers(table: string, key: "url" | "domain"): string[] {
 
 const PIN_CAP_REFUSED = "status_pins: more pins than the account may keep";
 
-// A count trigger of 0099_collections: `<name>` refuses an insert, and `<name>_move` an update of `key` that moves a
+// A count trigger of 0100_collections: `<name>` refuses an insert, and `<name>_move` an update of `key` that moves a
 // row to another parent, when the parent holds `max` rows already (rows other than the moved one). The count reads at
 // most `max` entries of the parent's index.
 function countTriggers(name: string, table: string, key: string, max: number, message: string): string[] {
@@ -366,7 +366,7 @@ END;`,
     profileSettingsPastBoundSql("NEW"),
     "accounts: profile setting past its stored bound",
   ),
-  // 0099_collections: the per-account and per-collection counts, the live items (an insert or a change into pending
+  // 0100_collections: the per-account and per-collection counts, the live items (an insert or a change into pending
   // or accepted), and reports.collection_ids.
   ...countTriggers(
     "collections_per_account",

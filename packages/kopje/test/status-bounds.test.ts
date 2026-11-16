@@ -61,7 +61,7 @@ import {
   presentedMediaUrl,
   presentStatusesWithin,
 } from "../src/domain/status-presenter";
-import { statusRowBoundSql } from "../src/domain/status-rows";
+import { STATUS_COLUMN_MAP, STATUS_FROM, statusRowBoundSql } from "../src/domain/status-rows";
 import { renderFieldValue } from "../src/domain/status-text";
 import { getStatus, getStatuses, statusHistory } from "../src/domain/statuses";
 import { streamUnit } from "../src/domain/streaming";
@@ -107,6 +107,8 @@ import {
   REMOTE_FIELD_LINKS_BYTES,
   REMOTE_VERIFIED_SHOWN,
   REPORT_COLLECTION_IDS,
+  SPOILER_CUT_LIMIT,
+  SPOILER_READ_BYTES,
   STATIC_URL_LIMIT,
   STATUS_EMOJIS_BYTES,
   VERIFIED_LINKS_BYTES,
@@ -2655,6 +2657,138 @@ describe("an account of malformed imported text (RES-3)", () => {
         avatar: "\uFFFD".repeat(PROFILE_DESCRIPTION_LIMIT),
         header: "\uFFFD".repeat(PROFILE_DESCRIPTION_LIMIT),
       });
+    }
+  }, 300_000);
+});
+
+describe("a status of malformed imported text (RES-3)", () => {
+  it("reads and presents within the fills' maxima", async () => {
+    // The raw fill's statuses. The quoted one takes content and source text of 0xFF and 131,069 continuation bytes
+    // (the raw fill's 131,070 bytes; json_quote's 131,072, within contentSql's bound) and a warning of 0xFF and
+    // 1,048,575 continuation bytes (one character to spoilerSql's cut), and two versions of the same; the quote, of the
+    // raw fill as it is, with a version of its own text, is the reference.
+    const { t, quoted, quote, boost } = await maximalStatuses("raw");
+    const text = new Uint8Array(STATUS_CONTENT_BYTES - 2).fill(0x80);
+    text[0] = 0xff;
+    const warning = new Uint8Array(1_048_576).fill(0x80);
+    warning[0] = 0xff;
+    await sql(
+      t.store,
+      `UPDATE statuses SET content = CAST(?1 AS TEXT), source_text = CAST(?1 AS TEXT), spoiler_text = CAST(?2 AS TEXT)
+			WHERE id = ?3`,
+      text.buffer,
+      warning.buffer,
+      quoted,
+    );
+    for (const id of [quoted, quoted, quote]) {
+      await sql(
+        t.store,
+        `INSERT INTO status_edits (status_id, content, spoiler_text, media_json, created_at)
+				SELECT id, content, spoiler_text, '[]', ?2 FROM statuses WHERE id = ?1`,
+        id,
+        new Date(NOW).toISOString(),
+      );
+    }
+    const [own, reference] = await runInDurableObject(t.store, (_instance, state) =>
+      [quoted, quote].map((id) => {
+        const bounds = state.storage.sql
+          .exec<{ stored: number; spoiler: number; content: number; source: number; heap: number }>(
+            `SELECT octet_length(s.spoiler_text) AS stored, octet_length(${STATUS_COLUMN_MAP.spoiler_text}) AS spoiler,
+							octet_length(${STATUS_COLUMN_MAP.content}) AS content,
+							octet_length(${STATUS_COLUMN_MAP.source_text}) AS source, ${rowHeapSql(STATUS_COLUMN_MAP)} AS heap
+						FROM ${STATUS_FROM} WHERE s.id = ?`,
+            id,
+          )
+          .one();
+        const row = state.storage.sql
+          .exec<{ spoiler_text: string; content: string; source_text: string }>(
+            `SELECT ${selectSql(STATUS_COLUMN_MAP)} FROM ${STATUS_FROM} WHERE s.id = ?`,
+            id,
+          )
+          .one();
+        return {
+          ...bounds,
+          decoded: rowHeapBytes(row),
+          spoilers: row.spoiler_text.length,
+          contents: row.content.length,
+          sources: row.source_text.length,
+        };
+      }),
+    );
+    expect(reference).toMatchObject({
+      stored: SPOILER_BYTES - 2,
+      spoiler: SPOILER_BYTES - 2,
+      content: STATUS_CONTENT_BYTES - 2,
+      source: STATUS_CONTENT_BYTES - 2,
+    });
+    // Read: the raw fill's bytes, the warning's SPOILER_READ_BYTES of the 1,048,576 stored.
+    expect(own).toMatchObject({
+      stored: 1_048_576,
+      spoiler: reference!.spoiler,
+      content: reference!.content,
+      source: reference!.source,
+    });
+    // Heap: a malformed byte decodes to one code unit, so each text equals its SQL bound and the row is within it;
+    // that bound is the reference's.
+    expect({ spoilers: own!.spoilers, contents: own!.contents, sources: own!.sources }).toEqual({
+      spoilers: own!.spoiler,
+      contents: own!.content,
+      sources: own!.source,
+    });
+    expect(own!.decoded).toBeLessThanOrEqual(own!.heap);
+    expect(own!.heap).toBeLessThanOrEqual(reference!.heap);
+    // What the three statuses and the quoted one's history read of each text column (decoded, in code units): within
+    // the raw fill's bytes, the versions' warnings too.
+    const viewer = { ...(await credential(t)), scope: "read" as const };
+    const longest = new Map<string, number>();
+    const [items, history] = await runInDurableObject(t.store, (_instance, state) => {
+      const counting = observedSql(state.storage.sql, (rows) => {
+        for (const row of rows) {
+          for (const column of ["spoiler_text", "content", "source_text"]) {
+            const value = row[column];
+            if (typeof value === "string") {
+              longest.set(column, Math.max(longest.get(column) ?? 0, value.length));
+            }
+          }
+        }
+      });
+      const unwrap = (answer: unknown): unknown => {
+        let value = answer as Record<string, unknown>;
+        while (value.status === "ok" && "value" in value) {
+          value = value.value as Record<string, unknown>;
+        }
+        return value;
+      };
+      const present = { origin: ORIGIN };
+      return [
+        [quoted, quote, boost].map((id) =>
+          unwrap(getStatus.run(counting, { credential: viewer, now: NOW, id, present })),
+        ) as Presented[],
+        unwrap(statusHistory.run(counting, { credential: viewer, now: NOW, id: quoted, present })) as Presented[],
+      ] as const;
+    });
+    expect(Object.fromEntries(longest)).toEqual({
+      spoiler_text: SPOILER_READ_BYTES,
+      content: STATUS_CONTENT_BYTES - 2,
+      source_text: STATUS_CONTENT_BYTES - 2,
+    });
+    // Presented: each status within the escaped fill's occurrence of its shape, and the quoted one's text, as a status,
+    // as the quote's and the boost's, and in both versions of its history, within its bounds: content '' and the
+    // warning 2,730 U+FFFD (8,192 JSON bytes).
+    expect(items.map((item) => item.id)).toEqual([quoted, quote, boost]);
+    const shapes = [FILL_SHAPES.escaped.status, FILL_SHAPES.escaped.quote, FILL_SHAPES.escaped.boostOfQuote];
+    for (const [i, item] of items.entries()) {
+      expect(jsonBytes(item)).toBeLessThanOrEqual(shapes[i]!.json);
+    }
+    const shown = [...presentedStatuses(items).filter((status) => status.id === quoted), ...history];
+    expect(shown).toHaveLength(5);
+    for (const status of shown) {
+      expect({ content: status.content, spoiler: status.spoiler_text }).toEqual({
+        content: "",
+        spoiler: "�".repeat(SPOILER_CUT_LIMIT),
+      });
+      expect(jsonBytes(status.content)).toBeLessThanOrEqual(STATUS_CONTENT_BYTES);
+      expect(jsonBytes(status.spoiler_text)).toBeLessThanOrEqual(SPOILER_BYTES);
     }
   }, 300_000);
 });

@@ -60,8 +60,8 @@ dump with the Store's own catalog and literals (`src/platform/dump-catalog.ts` a
   `GET /admin/catalog` (or `kopje-admin catalog`) and copy `migrations` and `tables` from there.
 - The catalog is read from the live schema:
   - All tables are included except `kopje_migrations`, `media_orphans`, `card_images`, `remote_media`,
-    `remote_media_objects`, `remote_media_usage`, `backup_media`, `stream_*`, `_cf_*`, and `sqlite_*` other than
-    `sqlite_sequence`.
+    `remote_media_objects`, `remote_media_usage`, `backup_media`, `reply_walk*`, `stream_*`, `_cf_*`, and `sqlite_*`
+    other than `sqlite_sequence`.
     The moderation log (`admin_actions`, migration `0029_admin_reports`) is included like any other table: a
     restored Store keeps who did what, and its ids, so the log keeps pruning its oldest rows.
   - Columns are in declaration order.
@@ -467,7 +467,7 @@ stored bound`. A description of malformed bytes that SQLite counts as fewer char
 points after decoding. A dump taken before 0097 has none of these columns: it restores into a Store at its own
 migrations, which then upgrades, giving every account `''` and `1`. A file built from legacy data writes the defaults.
 
-Collections (migration `0099_collections`): a `collections` row names its owner (`account_id`, whose delete cascades
+Collections (migration `0100_collections`): a `collections` row names its owner (`account_id`, whose delete cascades
 to it), and holds `local` (0 or 1), a `name` of 1 to 40 characters for a local collection and 1 to 256 for a remote
 one, a `description` (NULL, or at most 100 and 2,048 characters), each at most 4 UTF-8 bytes a character with no NUL,
 a `language` (NULL or a supported locale), `sensitive` and `discoverable` (0 or 1), a `tag` (NULL, or a hashtag's
@@ -484,16 +484,16 @@ collections, and a collection at most 50 items, of which at most 25 pending or a
 CHECK's name (`collection_name`, `collection_item_state`, `collection_item_accepted` and the others),
 `UNIQUE constraint failed`, `collections: past the per-account bound`, `collection_items: past the per-collection
 bound` or `collection_items: past the live bound`. A restored row is presented as it was dumped; the cron deletes a
-rejected or revoked item a day after its `updated_at`. A dump taken before 0099 has no such table: it restores into a
+rejected or revoked item a day after its `updated_at`. A dump taken before 0100 has no such table: it restores into a
 Store at its own migrations, which then upgrades. A file built from legacy data has no row.
 
 A report (migration `0054_remote_reports`) names any account as its reporter (`account_id`), once per `uri` and
 reported account, with `status_ids` of at most 100 ids within 2,101 UTF-8 bytes (compact JSON of 18-digit ids), a
 `uri` within 4,096 JSON-escaped UTF-8 bytes and a `comment` within 20,000 UTF-8 bytes (and 5,000 code points up to any
-NUL), and `collection_ids` (migration `0099_collections`: NULL, or compact JSON of at most 50 ids of 18 ASCII digits,
+NUL), and `collection_ids` (migration `0100_collections`: NULL, or compact JSON of at most 50 ids of 18 ASCII digits,
 which name no row by foreign key). A chunk past these fails with `report_status_ids_within_100_ids_and_2101_bytes`,
 `report_uri_within_4096_json_bytes`, `report_comment_within_20000_bytes`, `reports: collection_ids past its stored
-bound` or `UNIQUE constraint failed: reports.uri, reports.target_account_id`. A dump taken before 0099 has no
+bound` or `UNIQUE constraint failed: reports.uri, reports.target_account_id`. A dump taken before 0100 has no
 `collection_ids`: every report then reads NULL. `sqlite_sequence` carries the report id counter,
 so a restored Store never gives a report id twice.
 
@@ -525,6 +525,7 @@ These are excluded because they must not be restored blindly:
 | `card_images`                                              | Card images, re-encoded with no original kept; a restored Store shows its cards without them (`status_cards` keeps the links)                          |
 | `remote_media*`                                            | The cache of remote media and its R2 ledger: a target starts with an empty cache, shows remote URLs, and fetches them again                            |
 | `backup_media`                                             | The scheduled backup's media index for one bucket ([backup.md](backup.md)); a restored Store starts a fresh media baseline                             |
+| `reply_walk*`                                              | Walks of remote replies collections under way (the context's refresh, migration `0099_reply_walks`): job state; a restored Store starts none           |
 | `stream_*`                                                 | The streaming API's registry of subscriptions, journal of events and position: state of the open sockets of one object                                 |
 | `_cf_*`, `sqlite_*` (except `sqlite_sequence`)             | Platform and SQLite internals                                                                                                                          |
 

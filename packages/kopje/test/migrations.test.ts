@@ -27,6 +27,7 @@ import { readOperation, sessionOperation, writeOperation } from "../src/domain/o
 import { QUOTE_AUTHOR_FETCHES } from "../src/domain/quotes";
 import { MAX_REMOTE_PINS } from "../src/domain/remote-collections";
 import { storeRemoteStatus } from "../src/domain/remote-statuses";
+import { NODE_ATTEMPTS, REPLY_READ_ENTRIES, WALK_PAGES, WALK_STATUSES } from "../src/domain/reply-walks";
 import { actOnReport, fileRemoteReports, getAdminReport } from "../src/domain/reports";
 import { accountSearchText } from "../src/domain/search-text";
 import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
@@ -13060,8 +13061,197 @@ describe("0098_card_attribution", () => {
   });
 });
 
-describe("0099_collections", () => {
-  const NAME = "0099_collections";
+describe("0099_reply_walks", () => {
+  const NAME = "0099_reply_walks";
+  const at = NAMES.indexOf(NAME);
+  const ROOT = "100000000000000001";
+  const HEX = "0123456789abcdef0123456789abcdef";
+  const TOKEN = "00000000-0000-4000-8000-000000000000";
+  const SAFE = String(SAFE_MS);
+  const refused = /constraint failed/;
+
+  // A context walk of ROOT, running, and a node of it.
+  const seed = (sql: SqlStorage) => {
+    sql.exec(
+      "INSERT INTO reply_walks (status_id, kind, refresh_id, queued_at, due_at) VALUES (?, 0, ?, 0, 0)",
+      ROOT,
+      HEX,
+    );
+    sql.exec("INSERT INTO reply_walk_nodes (status_id, uri, seq) VALUES (?, 'https://r.example/s/1', 0)", ROOT);
+  };
+
+  it("follows 0098, creates two tables and five indexes, no trigger, and checks every reference", async () => {
+    expect(NAMES[at - 1]).toBe("0098_card_attribution");
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      const schema = () =>
+        sql
+          .exec<{ type: string; name: string }>(
+            "SELECT type, name FROM sqlite_master WHERE name LIKE 'reply_walk%' ORDER BY type, name",
+          )
+          .toArray();
+      expect(schema()).toEqual([]);
+      const triggers = sql.exec("SELECT count(*) AS n FROM sqlite_master WHERE type = 'trigger'").one().n;
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      expect(schema()).toEqual([
+        { type: "index", name: "reply_walk_nodes_parent" },
+        { type: "index", name: "reply_walk_nodes_pending" },
+        { type: "index", name: "reply_walks_due" },
+        { type: "index", name: "reply_walks_finished" },
+        { type: "index", name: "reply_walks_refresh" },
+        { type: "table", name: "reply_walk_nodes" },
+        { type: "table", name: "reply_walks" },
+      ]);
+      expect(sql.exec("SELECT count(*) AS n FROM sqlite_master WHERE type = 'trigger'").one().n).toBe(triggers);
+      // No reference to statuses: a walk of a status the Store does not hold is stored.
+      seed(sql);
+      expect(sql.exec("SELECT count(*) AS n FROM reply_walk_nodes").one().n).toBe(1);
+    });
+  });
+
+  it.each([
+    [
+      "status_id",
+      ["'100000000000000002'"],
+      ["'10000000000000000x'", "'1000000000000000001'", "'10000000000000001'", "NULL"],
+    ],
+    ["kind", ["1"], ["2", "-1", "'0'", "0.5"]],
+    ["queued_at", ["0", SAFE], [`${SAFE_MS + 1}`, "-1", "1.5", "NULL"]],
+    ["next_seq", ["0", "2147483647"], ["2147483648", "-1", "1.5"]],
+    ["nodes", ["0", "100000"], ["100001", "-1"]],
+    ["pages", ["0", "100000"], ["100001", "-1"]],
+    ["result_count", ["0", "100000"], ["100001", "-1"]],
+    ["handouts", ["0", "100000"], ["100001", "-1", "1.5"]],
+    ["token", [`'${TOKEN}'`, "NULL"], [`'${TOKEN}0'`, "X'00'", "36"]],
+  ])("holds reply_walks.%s to its domain at each end", async (column, admitted, others) => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      seed(sql);
+      // The node references the walk's key.
+      sql.exec("DELETE FROM reply_walk_nodes");
+      // A kind 1 walk has no refresh id.
+      const set = (value: string) =>
+        sql.exec(
+          `UPDATE reply_walks SET ${column} = ${value}${column === "kind" ? `, refresh_id = CASE WHEN ${value} = 0 THEN refresh_id END` : ""}`,
+        );
+      for (const value of admitted) {
+        set(value);
+      }
+      for (const value of others) {
+        expect(() => set(value), value).toThrow(refused);
+      }
+    });
+  });
+
+  it("holds the refresh id to 32 lowercase hex characters for a context walk only, and due_at to running walks", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      seed(sql);
+      for (const value of [`'${HEX.toUpperCase()}'`, `'${HEX}0'`, `'${HEX.slice(1)}'`, `'${HEX.slice(1)}g'`, "NULL"]) {
+        expect(() => sql.exec(`UPDATE reply_walks SET refresh_id = ${value}`), value).toThrow(refused);
+      }
+      // One id per walk.
+      expect(() =>
+        sql.exec(
+          "INSERT INTO reply_walks (status_id, kind, refresh_id, queued_at, due_at) VALUES ('100000000000000002', 0, ?, 0, 0)",
+          HEX,
+        ),
+      ).toThrow(/UNIQUE constraint failed/);
+      // Finished: due_at NULL and finished_at set, never one without the other.
+      sql.exec("UPDATE reply_walks SET due_at = NULL, finished_at = ?", SAFE);
+      sql.exec("UPDATE reply_walks SET due_at = 0, finished_at = NULL");
+      for (const pair of ["due_at = NULL, finished_at = NULL", "due_at = 0, finished_at = 0", "finished_at = -1"]) {
+        expect(() => sql.exec(`UPDATE reply_walks SET ${pair}`), pair).toThrow(refused);
+      }
+    });
+  });
+
+  it("holds the awaited hand-out's number to 1 to the walk's handouts, or NULL", async () => {
+    // A walk hands out at most NODE_ATTEMPTS × WALK_STATUSES + WALK_PAGES nodes a start (reply-walks.ts).
+    expect(NODE_ATTEMPTS * WALK_STATUSES + WALK_PAGES).toBeLessThanOrEqual(100_000);
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      seed(sql);
+      for (const pair of [
+        "handouts = 0",
+        "handouts = 5, handout = 5",
+        "handout = 1",
+        "handout = NULL",
+        "handout = 5",
+      ]) {
+        sql.exec(`UPDATE reply_walks SET ${pair}`);
+      }
+      for (const pair of ["handout = 6", "handouts = 4", "handout = 0", "handout = 1.5", "handout = 'x'"]) {
+        expect(() => sql.exec(`UPDATE reply_walks SET ${pair}`), pair).toThrow(refused);
+      }
+    });
+  });
+
+  it("holds a node's state, stage, validity, parent and fetch together, and its attempts to 0 to NODE_ATTEMPTS", async () => {
+    // The CHECK's upper end is NODE_ATTEMPTS, the hand-outs of one document a walk charges (reply-walks.ts); a node's
+    // skip grows by at most REPLY_READ_ENTRIES a collection document, of which a walk reads at most WALK_PAGES.
+    expect(NODE_ATTEMPTS).toBe(2);
+    expect(WALK_PAGES * REPLY_READ_ENTRIES).toBeLessThanOrEqual(100_000);
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      seed(sql);
+      const P = "'https://r.example/s/0'";
+      const F = "'https://r.example/s/1/replies'";
+      for (const columns of [
+        "state = 2, parent = " + P,
+        "state = 0, parent = NULL, valid = 1, stage = 1, fetch = " + F,
+        "stage = 2",
+        "stage = 3, fetch = 'https://r.example/s/1', skip = 100000",
+        "skip = 0",
+        "state = 1",
+        `attempts = ${NODE_ATTEMPTS}`,
+        "attempts = 0, stage = 0, fetch = NULL, valid = 0",
+      ]) {
+        sql.exec(`UPDATE reply_walk_nodes SET ${columns}`);
+      }
+      for (const columns of [
+        // Only a deferred node names a parent, and a deferred one names one.
+        "parent = " + P,
+        "state = 2",
+        // A deferred node is a status that is not valid yet.
+        "state = 2, parent = " + P + ", valid = 1",
+        // Only a valid node's collection is read, and only a collection stage has a document to fetch.
+        "stage = 1, fetch = " + F,
+        "valid = 1, stage = 1",
+        "fetch = " + F,
+        `attempts = ${NODE_ATTEMPTS + 1}`,
+        "attempts = -1",
+        "stage = 4",
+        "skip = 100001",
+        "skip = -1",
+        "skip = 1.5",
+        "state = 3",
+        "seq = -1",
+        "seq = 2147483648",
+        "uri = ''",
+        `uri = 'https://r.example/' || char(0)`,
+        `uri = 'https://r.example/' || hex(zeroblob(2040))`,
+      ]) {
+        expect(() => sql.exec(`UPDATE reply_walk_nodes SET ${columns}`), columns).toThrow(refused);
+      }
+      // A uri of 4096 bytes is stored.
+      sql.exec(`UPDATE reply_walk_nodes SET uri = 'https://r.example/' || substr(hex(zeroblob(2040)), 1, 4078)`);
+      expect(sql.exec("SELECT length(CAST(uri AS BLOB)) AS n FROM reply_walk_nodes").one().n).toBe(4096);
+      // The walk's deletion takes its nodes.
+      sql.exec("DELETE FROM reply_walks");
+      expect(sql.exec("SELECT count(*) AS n FROM reply_walk_nodes").one().n).toBe(0);
+    });
+  });
+});
+
+describe("0100_collections", () => {
+  const NAME = "0100_collections";
   const at = NAMES.indexOf(NAME);
   const [OWNER, OTHER] = ["100000000000000001", "100000000000000002"];
   const T = "2026-11-16T00:00:00.000Z";
@@ -13085,7 +13275,7 @@ describe("0099_collections", () => {
     "reports_collection_ids_update",
   ];
 
-  // A Store at 0099 with a local owner and a remote account, and helpers inserting rows of the two tables.
+  // A Store at 0100 with a local owner and a remote account, and helpers inserting rows of the two tables.
   async function migrated(run: (sql: SqlStorage) => void) {
     await runInDurableObject(freshStore(), async (_instance, state) => {
       const sql = state.storage.sql;
@@ -13136,8 +13326,8 @@ describe("0099_collections", () => {
       ...fields,
     });
 
-  it("follows 0098, checks every reference, and writes the generator's statements and triggers", () => {
-    expect(NAMES[at - 1]).toBe("0098_card_attribution");
+  it("follows 0099, checks every reference, and writes the generator's statements and triggers", () => {
+    expect(NAMES[at - 1]).toBe("0099_reply_walks");
     // New tables: the upgrade checks every reference of the Store.
     expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
     const sql = MIGRATIONS[at]?.sql ?? "";

@@ -22,6 +22,8 @@ const NOT_DUMPED: Record<string, string> = {
   remote_media: "a cache of remote files; an imported or restored Store starts it empty and fills it again",
   remote_media_objects: "the cache's R2 ledger; remote/ is not backed up, and an empty ledger's orphans are swept",
   remote_media_usage: "the cache's sums, one row the migration inserts; an empty cache counts nothing",
+  reply_walk_nodes: "the statuses of a walk of replies collections under way; a restored Store starts none",
+  reply_walks: "walks of replies collections Kopje runs for a context read; a restored Store starts none",
   stream_conversation_marks:
     "the streaming conversation marks of one object; a restored Store makes them again from the conversations' stream_seq",
   stream_cursor: "the streaming fan-out's position, over the journal of one object",
@@ -105,6 +107,8 @@ const NOT_CARRIED: Record<string, string> = {
   remote_media: "Kopje's cache of remote files; legacy Wildebeest has none, and a converted Store fills it again",
   remote_media_objects: "the cache's R2 ledger; legacy Wildebeest has none",
   remote_media_usage: "the cache's sums; the migration inserts the one row a converted Store starts from",
+  reply_walk_nodes: "the statuses of a walk of replies collections; work Kopje asks for, and legacy has none",
+  reply_walks: "walks of replies collections; work Kopje asks for, legacy has none, and they are not dumped",
   reports: "reports made in Kopje; legacy Wildebeest has no reports",
   scheduled_statuses: "posts scheduled in Kopje; legacy Wildebeest has no scheduled statuses",
   status_cards: "link cards Kopje's round fetches; legacy Wildebeest has none, and a carried status gets none",

@@ -115,8 +115,8 @@ A pull request that fixes a gap removes the exceptions that cite it.
   silencing or memorializing, admin operations of Mastodon (`silence` answers 422), and moderation that severs
   relationships writes no `severed_relationships` notification, so an Account's `limited` and `memorial` and a
   notification's `event` are never sent. Accepted, 2026-11-15.
-- **MD-3: Features not built yet answer as Mastodon with the feature off.** Translation, async refreshes and the
-  admin domain allows list answer empty or 404 until the feature is built; the backlog tracks them. Donation
+- **MD-3: Features not built yet answer as Mastodon with the feature off.** Translation and the admin domain allows
+  list answer empty or 404 until the feature is built; the backlog tracks them. Donation
   campaigns answer as with no campaign source configured: `GET /api/v1/donation_campaigns` answers 204 to a signed-in
   user. E-mail subscriptions answer as with the setting off: `POST /api/v1/accounts/:account_id/email_subscriptions`
   answers 404 (`Record not found` for an id that names no local account, an empty body otherwise), and Account has no
@@ -162,8 +162,8 @@ A pull request that fixes a gap removes the exceptions that cite it.
   the public posts whose card has the link as its URL after redirects, each page read from a window of the link's public
   cards (an empty page cut at its window links on, as Kopje's other timelines); `local` and `remote` are not read, since
   Mastodon reads them only to require a user when a topic feed is not public. Its answer may be cached publicly only
-  when no token was sent, as Kopje's trends lists and directory; Mastodon also caches an answer to an app token, which
-  has no user. Accepted, 2026-10-20; the link rules, 2026-10-24.
+  when no token was sent: as Mastodon, any request with an `Authorization` header gets a private answer (WEB-7).
+  Accepted, 2026-10-20; the link rules, 2026-10-24.
 - **MD-6: Media have no short link.** MediaAttachment `text_url` is always null. Mastodon shows it only for a local
   attachment with a shortcode, and has assigned no shortcode to new media since v3.5.0, so only its older local media
   show one; Kopje assigns none and serves no short link route. Accepted, 2026-10-22.
@@ -388,6 +388,11 @@ Accounts (the `Account` and credential account entities):
   stored entries, those that are a name and a value of strings within 255 code points each, in their order; a stored
   value past 16 KiB of JSON, or one that is not a JSON array, shows none. Mastodon presents every stored field.
   Kopje's own writer stores at most 4 within those limits, so only a converted or imported row can differ.
+- A remote account shows at most its first 16 fields, within 32 KiB of names and values as presented, each name cut at
+  255 UTF-16 code units and each value at 4,096 before it is sanitized (`remoteAttachmentSql` in
+  `src/domain/account-columns.ts`); Mastodon keeps 50 and cuts each at 2,047 characters. Each name and value is
+  stripped as Ruby's `strip` strips it, as Mastodon's `Account::Field` does, but after Kopje's cut where Mastodon
+  strips first, so a name or value whose leading whitespace pushes its text past the cut keeps less of it.
 - `noindex` is `false` for every local account, Mastodon's default: no setting stores it, and the profile and status
   pages do not ask search engines to skip them. A remote account shows none, as in Mastodon.
 - `roles` of a local account is the OAuth admin's Owner role (`id`, `name` and `color`) while that account is
@@ -531,6 +536,37 @@ Followers synchronisation (Mastodon's `Collection-Synchronization` header and
   repaired by a later delivery; each server keeps delivering and distributing by its own follow records. Mastodon 4.6
   also stopped sending it from 25,000 followers (`mastodon#37302`). Accepted, 2026-11-15.
 
+Replies collections (the context's refresh and `GET /api/v1_alpha/async_refreshes/:id`; Mastodon's
+`ContextsController#show`, `FetchAllRepliesWorker` and `AsyncRefresh`; RES-6 in [threat-model.md](threat-model.md)):
+
+- A signed-in reader's context read of a remote public or unlisted status starts a refresh of its replies, as Mastodon
+  4.7.5's does, from 5 minutes after the status was published and at most every 15 minutes, and answers
+  `Mastodon-Async-Refresh` while it runs. Kopje also starts none while 16 run, where Mastodon has no such cap, nor while
+  the instance does not accept writes (the env's `MAINTENANCE=readonly`, the Store's readonly maintenance, an
+  unpublished import), a state Mastodon does not have; a read then answers as one not due. Kopje starts none for a
+  boost, whose URI names its Announce activity, not a status; Mastodon starts one for a remote boost as for an original
+  (`should_fetch_replies?` does not exclude it), its job fetching the boost's URI, and answers `Mastodon-Async-Refresh`
+  while it runs. Accepted, 2026-11-16.
+- A refresh records at most 200 statuses, the root included, and reads at most 100 collection documents, each fetched
+  at most twice (Mastodon's `FetchAllRepliesWorker`: 1,000 statuses and 500 pages). It reads each collection until it
+  ends or those caps are spent, where Mastodon takes the first 5 items of a reply's collection: the caps bound the
+  work, and the 5-item stop loses replies Mastodon itself means to fetch. Accepted, 2026-11-16.
+- A refresh stores only the replies its stored rows link to the status, each under a reply it stored or found stored; a
+  status listed whose parent is not such a reply by the refresh's end is not stored, and a stored one is judged by its
+  stored parent. Mastodon stores every status a collection lists. Items are taken from any server, and their collections
+  only from the replying status's own server, as Mastodon's. Accepted, 2026-11-16.
+- Only the refreshed status is paced: the replies a refresh reaches record nothing, so opening one of them later may
+  refresh it at once, where Mastodon skips each fetched status for 15 minutes. A reply a refresh stores verifies its
+  quote one hop short of a delivered status's, so its quoted status is stored with no quote work of its own.
+  Accepted, 2026-11-16.
+- A refresh's id belongs to the status, as Mastodon's: a refresh started again while its record is kept (until an hour
+  after it finished, or a day after a start it never finished) keeps the id, running again with `result_count` 0. Once
+  the record is gone, the next refresh has a new id, where Mastodon's repeats; in between, the id answers 404 in both.
+  `result_count` counts the statuses the latest refresh created, whoever may see them, as Mastodon's. Accepted,
+  2026-11-16.
+- A refresh does not update the statuses it finds stored, the refreshed one included, nor delete one whose document
+  is gone, nor refetch stored replies the collection no longer lists, all of which Mastodon does (#1607). Gap.
+
 Annual reports (`/api/v1/annual_reports`, `wrapstodon` of `/api/v2/instance`; MD-9):
 
 - Kopje makes the report within the `generate` request and answers 200 `{}`; Mastodon answers 202 with
@@ -586,6 +622,30 @@ Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model
   the domain only (no alternate domains), from setup on: a GET or HEAD on another host moves to the same path and
   query on the domain (301), any other method answers 421 Misdirected Request, and a port other than 443 is another
   host. Besides `/health`, it answers the admin API, media URLs and `/` on any host, and streaming is covered.
+
+API caching (`Cache-Control` and `Vary` of the Mastodon API; threat model WEB-7):
+
+- `Vary` names what the route declares. Mastodon's also names `Origin` on every answer (rack-cors) and `Accept` where
+  its controller declares an empty `vary_by` (Rails adds it to a rendered answer). Kopje's CORS answer is `*` for every
+  origin, and an API answer is JSON whatever `Accept` says. Accepted, 2026-11-16.
+- No `ETag` and no 304: every request gets the full answer. Mastodon (Rack's `ETag` and `ConditionalGet`) tags every
+  200 or 201 with a body with a weak ETag and answers an exact `If-None-Match` on a GET or HEAD with 304; a client's
+  cache revalidates the public answers below after their 15 seconds or 5 minutes, and the OAuth answers Rack marks
+  `max-age=0, private, must-revalidate` (revocation, introspection, token info, server metadata) on each use, and gets
+  200 from Kopje each time. A full 200 is always a correct answer to a conditional request, and matching would hash
+  every answer body for a saving only on repeated identical reads. Accepted, 2026-11-16.
+- An error answer is never public; Mastodon's terms of service answer their 404 publicly for 5 minutes (the caching
+  runs in a `before_action`). Accepted, 2026-11-16.
+- Of the instance reads Mastodon lets caches keep for everyone, the nine that read the token (custom emoji,
+  languages, privacy policy, terms of service and their dated form, translation languages, activity, domain blocks,
+  peer search) answer an anonymous request public for 5 minutes with `Vary: Authorization` and a request with
+  `Authorization` `private, no-store`. Mastodon answers both public for 5 minutes and leaves `Authorization` out of
+  `Vary`, so a cache may serve an anonymous answer to a suspended owner's token, whose answer is 403 (custom emoji
+  where the instance answers unauthenticated API requests), and, where the instance shows domain blocks to everyone
+  and their comments to users only, a user's domain-block list, comments included, to anyone. Accepted, 2026-11-16.
+- OAuth endpoints keep Doorkeeper's `no-store` on tokens, token info and introspection, and add `Pragma: no-cache` to
+  errors too; a revocation's `{}` and the authorization server metadata carry none, where Mastodon's Rack adds
+  `max-age=0, private, must-revalidate` and an ETag, and `no-cache` to a revocation's error. Accepted, 2026-11-16.
 
 Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`):
 
@@ -889,8 +949,9 @@ Request parameters:
   `media_attributes[][thumbnail]` (on a status edit) answer 422 `Validation failed: Thumbnail must be blank`, as
   Mastodon validates an image's thumbnail. Any file part or non-empty text is a thumbnail; empty text or JSON `null`
   is none. Text that is not a data URI answers 422, where Mastodon answers 500. The check runs before the file is
-  processed on an upload, before the media lookup on `/api/v1/media/:id`, and on an edit after the status is found and
-  before `media_ids` are looked up, for any entry with an `id` (Mastodon reads only entries for the post's media).
+  processed on an upload, after the media is found on `/api/v1/media/:id` (as Mastodon: media that is not the caller's
+  unattached media answers 404 first), and on an edit after the status is found and before `media_ids` are looked up,
+  for any entry with an `id` (Mastodon reads only entries for the post's media).
   Mastodon may report other validation errors first or alongside it. On `/api/v1/media/:id`, a multipart body larger
   than 1 MiB plus 16 KiB answers 413.
 - A multipart part with an empty filename is read as a text value, as workerd's parser reads it (Rack drops it as an
@@ -955,6 +1016,18 @@ Home and lists (`/api/v1/timelines/home`, `/api/v1/timelines/list/:id` and their
   boost of it is among the 80 newest entries of the feed as the boost arrives (`REBLOG_FALLOFF`; 40 before 4.7), unless
   the user turned off its web preference `aggregate_reblogs` (on by default). Kopje reads home and lists from stored
   statuses on each request and keeps no record of a feed's order at the time a boost arrived. Accepted, 2026-11-15.
+
+Feed streams (the `public*` and `hashtag*` streams of `/api/v1/streaming`; Mastodon's `FanOutOnWriteService` and its
+streaming server's per-connection filter; R33 in [visibility.md](visibility.md)):
+
+- A status on `public*` and `hashtag*` is presented as REST presents it to the subscriber: its `favourited`,
+  `reblogged`, `muted`, `bookmarked`, `pinned`, poll `voted` and `own_votes`, quote approval, quote state and card
+  `missing_attribution` are the subscriber's, and `filtered` follows REST's filters (keyword and status filters, every
+  match). Mastodon renders these streams once with no viewer (the flags and votes absent, quote approval `denied`,
+  quotes judged for a signed-out reader) and adds `filtered` from keyword filters alone; Mastodon's web client, which
+  replaces the status on `status.update`, then shows the subscriber's favourite and bookmark as unset (Elk replaces the
+  text and keeps its marks).
+  Kopje's payload is what the subscriber's next read shows (`test/streaming/public.test.ts`). Accepted, 2026-11-16.
 
 Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; the keys not served are MD-2):
 
