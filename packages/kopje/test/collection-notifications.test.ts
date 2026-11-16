@@ -517,7 +517,7 @@ describe("deletions with pushes waiting (2-T9)", () => {
     await pushes(h, notifications[0]!, MAX_PUSH_BACKLOG / 2);
     await pushes(h, updates[0]!, MAX_PUSH_BACKLOG / 2);
     expect(await backlog(h)).toBe(MAX_PUSH_BACKLOG);
-    const input = { credential: await credential(alice), id: collection };
+    const input = { credential: await credential(alice), id: collection, now: NOW };
     const { answer, wrote } = await measured(h, (s) => deleteCollection.run(s, input));
     expect(answer).toEqual({ status: "ok", value: "ok" });
     const locals = (await sql<{ n: number }>(h.store, "SELECT count(*) AS n FROM local_accounts"))[0]!.n;
@@ -534,7 +534,7 @@ describe("deletions with pushes waiting (2-T9)", () => {
     const collection = await seedCollection(h, alice.id, 1);
     const item = await seedItem(h, collection, 0, bob.id, 1);
     await pushes(h, await seedNotification(h, bob.id, alice.id, { item }), MAX_PUSH_BACKLOG);
-    const input = { credential: await credential(alice), collection, item };
+    const input = { credential: await credential(alice), collection, item, now: NOW };
     const { answer, wrote } = await measured(h, (s) => removeCollectionItem.run(s, input));
     expect(answer).toEqual({ status: "ok", value: "ok" });
     expect(wrote).toBe(1 + 1 + MAX_PUSH_BACKLOG);
@@ -660,7 +660,7 @@ describe("deletions with pushes waiting (2-T9)", () => {
       h.store,
       "UPDATE push_deliveries SET state = 'leased', lease_token = 'held' RETURNING CAST(id AS TEXT) AS id, lease_token",
     );
-    const input = { credential: await credential(alice), collection, item };
+    const input = { credential: await credential(alice), collection, item, now: NOW };
     expect((await measured(h, (s) => removeCollectionItem.run(s, input))).answer).toEqual({
       status: "ok",
       value: "ok",
