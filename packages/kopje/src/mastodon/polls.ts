@@ -1,6 +1,6 @@
 import type { Poll } from "../domain/poll-presenter";
 import { envInMaintenance } from "../platform/config";
-import { StoreUnavailableError } from "../platform/store-errors";
+import { StoreUnavailableError, WRITE_REFUSALS } from "../platform/store-errors";
 import {
   type ApiContext,
   type ApiDeps,
@@ -13,7 +13,6 @@ import {
   withParams,
 } from "./context";
 import { mastodonError, recordNotFound } from "./errors";
-import { WRITE_REFUSALS } from "./search";
 
 // Polls (Mastodon 4.5's Api::V1::PollsController and Api::V1::Polls::VotesController); the Store decides who may see
 // and vote (domain/polls.ts).

@@ -109,7 +109,7 @@ export function createApp({
 
   // Browser clients call the API and the token endpoints cross-origin; errors and maintenance answers carry the
   // headers too. The consent page (/oauth/authorize) is not opened to other origins.
-  const apiCors = cors({ origin: "*", exposeHeaders: ["Link"], maxAge: 86400 });
+  const apiCors = cors({ origin: "*", exposeHeaders: ["Link", "Mastodon-Async-Refresh"], maxAge: 86400 });
   for (const path of API_CORS_PATHS) {
     app.use(path, apiCors);
   }

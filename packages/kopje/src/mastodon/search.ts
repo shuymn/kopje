@@ -2,7 +2,7 @@ import { isUrlQuery } from "../domain/remote-statuses";
 import type { SearchType } from "../domain/search";
 import { envInMaintenance } from "../platform/config";
 import { parseAddress } from "../platform/domain-name";
-import { type MaintenanceReason, StoreUnavailableError } from "../platform/store-errors";
+import { StoreUnavailableError, WRITE_REFUSALS } from "../platform/store-errors";
 import {
   type ApiHandler,
   authorized,
@@ -101,19 +101,6 @@ export const search: ApiHandler = withParams(async (c, deps, p) => {
 
 // What resolve=true found, as the Store presented it.
 type Found = { accounts: { id: string }[]; statuses: unknown[] };
-
-// The reasons a Store refuses a write while it still serves reads (store-kernel.ts refusalOf under a hold or an
-// upgrade, store-flags.ts flagRefusal): readonly maintenance, a dump's freeze, an unpublished import, a held or
-// upgrading Store. The plain search can still answer then, and a poll read its stored poll (mastodon/polls.ts).
-export const WRITE_REFUSALS: ReadonlySet<MaintenanceReason> = new Set<MaintenanceReason>([
-  "maintenance",
-  "dump-in-progress",
-  "unpublished",
-  "upgrade-in-progress",
-  "upgrade-failed",
-  "bookmark-failed",
-  "verify-failed",
-]);
 
 // Fetches and stores the query's target; null: nothing was resolved for a reason that is not the query's, and the
 // caller answers as a plain search (resolve=false), whose own Store call judges the token again at its time. That is so
