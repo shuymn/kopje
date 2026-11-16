@@ -778,15 +778,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   anonymous viewer, whatever session the browser holds: its one Store call is a page read whose input has no credential,
   and its routes read no cookie, so a page is the same with and without a session. A reply's parent is linked only when
   an anonymous viewer may see it, and a hidden parent leaves nothing in the page. Every path of a page's shape that no
-  page serves answers the same 404 page as a hidden case. The profile's posts tab leaves out replies to others and lists
-  the account's boosts whose boost and original an anonymous viewer may see (VIS-6), its first page led by the pins an
-  anonymous viewer may see; its posts-and-replies tab lists replies but no boosts, its media tab posts with media, and
-  its tagged tab includes replies. Each tab pages both ways by the ids of the read's candidates or by a boundary derived
-  from the request alone ([visibility.md](visibility.md), "Read bounds"), so a status hidden by its visibility never
-  supplies a cursor. `/tags/:name` lists the hashtag's local public statuses only, replies included and boosts not, by
-  the hashtag timeline's rule for an anonymous viewer, paged the same way. A hashtag whose posts are all hidden shows
-  none of them: no hidden post, its text or its author's name appears, though its pager may move on by the id of a
-  public post whose author is unavailable, as any window does (RES-7).
+  page serves answers the same 404 page as a hidden case. The 404 page carries `noindex` where Mastodon serves its web
+  app's shell at the URL, which the path alone decides (`mastodonShell`, [web-pages.md](web-pages.md), "Robots"), so a
+  hidden case answers the same bytes as an unknown one at a URL of the same shape. The profile's posts tab leaves out
+  replies to others and lists the account's boosts whose boost and original an anonymous viewer may see (VIS-6), its
+  first page led by the pins an anonymous viewer may see; its posts-and-replies tab lists replies but no boosts, its
+  media tab posts with media, and its tagged tab includes replies. Each tab pages both ways by the ids of the read's
+  candidates or by a boundary derived from the request alone ([visibility.md](visibility.md), "Read bounds"), so a
+  status hidden by its visibility never supplies a cursor. `/tags/:name` lists the hashtag's local public statuses only,
+  replies included and boosts not, by the hashtag timeline's rule for an anonymous viewer, paged the same way. A hashtag
+  whose posts are all hidden shows none of them: no hidden post, its text or its author's name appears, though its pager
+  may move on by the id of a public post whose author is unavailable, as any window does (RES-7).
   The followers and following pages are listed under VIS-8 and page both ways by follow id. The Featured tab
   (`/@user/featured`) shows the account's featured hashtags as the API lists them, at most ten, and the accounts it
   endorses that R28 lists (VIS-19), paged both ways by account id as the API pages them; its pager may move on by the
@@ -1946,8 +1948,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   together by one route helper. The bundle writes no HTML, script or script URL, and is served directly (no redirect) as
   JavaScript with `nosniff`. Their 404 and 410 pages and every other page keep the script-free CSP.
   `src/app/web-headers.ts`, `src/app/public-pages.tsx`, `scripts/build-assets.mjs`; `test/web-pages.test.ts` ("sends a
-  CSP naming only the L1 bundle"), `test/web-interaction-tabs.test.ts` ("mark a page with a cursor noindex, follow, with
-  the tab’s cursor-less URL canonical, and load the L1 bundle"), `test-node/client-assets.test.ts` ("is committed as the
+  CSP naming only the L1 bundle"), `test/web-interaction-tabs.test.ts` ("mark every page noindex, with the tab’s
+  cursor-less URL canonical, and load the L1 bundle"), `test-node/client-assets.test.ts` ("is committed as the
   bytes a rebuild gives"), `test-node/stylesheet.test.ts` ("serves the fingerprinted assets as immutable"). The copy
   control: _Enforced (main):_ every public page reads, links and submits its forms without script, and the bundle's one
   control is the copy button of a handle, a status URL or embed code ([web-pages.md](web-pages.md)): rendered `hidden`

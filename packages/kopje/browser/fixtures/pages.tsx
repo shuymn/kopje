@@ -305,6 +305,7 @@ const settingsOf = (account: CredentialAccount) => (
 const ELEMENTS: Record<PageName, Child> = {
   profile: (
     <ProfilePage
+      shell={false}
       account={alice}
       tab={{ kind: "posts" }}
       pins={[pinned]}
@@ -333,6 +334,7 @@ const ELEMENTS: Record<PageName, Child> = {
   // The status page: its parent above it, and a Replies tab with no replies.
   status: (
     <StatusPage
+      shell={false}
       status={reply}
       parent={{ url: `${ORIGIN}/@alice/101`, acct: "alice" }}
       history={history}
@@ -350,6 +352,7 @@ const ELEMENTS: Record<PageName, Child> = {
   // cursor, the first too large to show (a remote one's stub), and both pager links.
   thread: (
     <StatusPage
+      shell={false}
       status={further}
       parent={{ url: `${ORIGIN}/@alice/102`, acct: "alice" }}
       history={null}
@@ -370,6 +373,7 @@ const ELEMENTS: Record<PageName, Child> = {
   // A later page of a post's Boosts tab: two accounts (one on another server) and both pager links.
   boosts: (
     <StatusPage
+      shell={false}
       status={plain}
       parent={null}
       history={null}
@@ -393,6 +397,7 @@ const ELEMENTS: Record<PageName, Child> = {
   // warning, each nesting the post; the older pager link only.
   quotes: (
     <StatusPage
+      shell={false}
       status={{ ...plain, quotes_count: 3 }}
       parent={null}
       history={null}
@@ -484,6 +489,7 @@ const ELEMENTS: Record<PageName, Child> = {
   // server) and a page past them.
   featured: (
     <FeaturedPage
+      shell={false}
       account={alice}
       tags={[
         {

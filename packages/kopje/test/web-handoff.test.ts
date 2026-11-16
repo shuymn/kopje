@@ -470,10 +470,14 @@ describe("the handoff pages", () => {
     const carol = await remoteAccount(h.store, "carol", "carol.example");
     const missing = await page(h, "/@nobody");
     expect(missing.response.status).toBe(404);
+    // A status's handoff, and any under `/@username@domain`, is at a URL where Mastodon serves its web app's shell: the
+    // same 404 with `noindex` (test/web-robots.test.ts).
+    const missingShell = await page(h, "/@alice/100000000000000001/interact");
+    expect(missingShell.response.status).toBe(404);
     const shown = await post(h, alice, { status: "public" });
-    const paths = ["/@nobody/interact", "/@carol@carol.example/interact", "/@alice@other.example/interact"];
+    const shellPaths = ["/@carol@carol.example/interact", "/@alice@other.example/interact"];
     for (const visibility of ["private", "direct"]) {
-      paths.push(
+      shellPaths.push(
         `${pathOf(String((await post(h, alice, { status: `@bob ${visibility}`, visibility })).url))}/interact`,
       );
     }
@@ -481,7 +485,7 @@ describe("the handoff pages", () => {
     const bobs = await post(h, bob, { status: "bob public" });
     const boost = await h.request(`/api/v1/statuses/${bobs.id}/reblog`, bearer(alice.token, { method: "POST" }));
     const remote = await seedStatus(h.store, { accountId: carol, visibility: "public" });
-    paths.push(
+    shellPaths.push(
       `/@alice/${limited}/interact`,
       `/@alice/${(await boost.json<{ id: string }>()).id}/interact`,
       `/@alice/${bobs.id}/interact`,
@@ -491,21 +495,25 @@ describe("the handoff pages", () => {
       // A legacy id has no handoff of its own: the dialog names the status by its API id.
       "/@alice/3f1c2b9e-0000-4000-8000-000000000001/interact",
     );
-    const hidden = async (path: string) => {
+    const hidden = async (path: string, expected: typeof missing) => {
       for (const query of ["", "?server=social.example", "?server=192.0.2.1"]) {
         const answer = await page(h, `${path}${query}`);
         expect(answer.response.status, `${path}${query}`).toBe(404);
-        expect(answer.html, `${path}${query}`).toBe(missing.html);
+        expect(answer.html, `${path}${query}`).toBe(expected.html);
       }
     };
     // With alice active, so each refusal is its target's own: the guarded branch runs, as the same requests for
     // what the pages show answer 200.
-    const visible = ["/@alice/interact", `${pathOf(String(shown.url))}/interact`];
-    for (const path of visible) {
+    const visible = [
+      ["/@alice/interact", missing],
+      [`${pathOf(String(shown.url))}/interact`, missingShell],
+    ] as const;
+    for (const [path] of visible) {
       expect((await h.request(`${path}?server=social.example`)).status, path).toBe(200);
     }
-    for (const path of paths) {
-      await hidden(path);
+    await hidden("/@nobody/interact", missing);
+    for (const path of shellPaths) {
+      await hidden(path, missingShell);
     }
     // A suspended account, and its status that was shown before: the same 404.
     await sql(
@@ -514,8 +522,8 @@ describe("the handoff pages", () => {
       new Date(NOW).toISOString(),
       alice.id,
     );
-    for (const path of visible) {
-      await hidden(path);
+    for (const [path, expected] of visible) {
+      await hidden(path, expected);
     }
   });
 
