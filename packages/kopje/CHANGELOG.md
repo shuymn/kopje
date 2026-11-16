@@ -212,6 +212,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- Boolean parameters of the Mastodon API are read as Rails casts them in every endpoint: only `0`, `f`, `F`, `false`,
+  `FALSE`, `off`, `OFF` and a blank value are false, so `False` or `Off` is now true, as in Mastodon (it was read as
+  false). No Store migration and no `wrangler.jsonc` change.
 - Searching the URL of a remote post Kopje already holds, or looking it up on the interaction page, applies the
   version its server serves now as an edit, as Mastodon does: a newer version replaces the post and adds to its
   history, and a poll's counts are refreshed. As in Mastodon, a document served at another URL than its `id`, or
