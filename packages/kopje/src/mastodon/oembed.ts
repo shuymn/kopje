@@ -1,5 +1,6 @@
 import { escapeHtml } from "../domain/plain-text";
 import type { Status } from "../domain/status-presenter";
+import { railsBlank } from "../platform/rails-blank";
 import { rubyToI } from "../platform/ruby-to-i";
 import { type ApiHandler, present, storeCall } from "./context";
 import { recordNotFound } from "./errors";
@@ -46,9 +47,10 @@ export const oembed: ApiHandler = async (c, deps) => {
     provider_url: `https://${domain}/`,
     cache_age: CACHE_AGE,
     html: embedHtml(status, domain),
-    // OEmbedSerializer#width and #height: Ruby's to_i of the parameter; an empty maxheight is no height.
+    // OEmbedSerializer#width and #height: Ruby's to_i of the parameter; a blank maxheight (Rails' blank?, U+0085 among
+    // its spaces and U+FEFF not) is no height.
     width: rubyToI(c.req.queries("maxwidth")?.at(-1) ?? String(DEFAULT_WIDTH)),
-    height: maxheight === undefined || maxheight.trim() === "" ? null : rubyToI(maxheight),
+    height: maxheight === undefined || railsBlank(maxheight) ? null : rubyToI(maxheight),
   });
 };
 

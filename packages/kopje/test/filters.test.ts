@@ -136,6 +136,18 @@ describe("filters API", () => {
     }
   });
 
+  // Expireable#expires_in= reads a blank interval (Rails' blank?: U+0085 is a space, U+FEFF is not) as no expiry.
+  it("reads expires_in blank as Rails' blank? reads it", async () => {
+    const h = await community(["alice"]);
+    for (const [expires_in, expected] of [
+      ["\u0085", null],
+      ["\ufeff", new Date(NOW).toISOString()],
+    ] as const) {
+      const created = await createFilter(h, h.users.alice, { title: "t", context: ["home"], expires_in });
+      expect([expires_in, created.expires_at]).toEqual([expires_in, expected]);
+    }
+  });
+
   // Rails' JSON params keep a number as a Float, which Expireable#expires_in= reads by Ruby's to_i; the same text sent
   // as a string is read by String#to_i.
   it("reads a JSON number expires_in by Ruby's to_i of the number", async () => {
