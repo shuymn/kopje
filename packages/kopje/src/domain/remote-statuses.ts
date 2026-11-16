@@ -1,4 +1,11 @@
-import { ACCOUNTS_URI_INDEX, LOCAL_ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX, STATUSES_URI_INDEX } from "../db/indexes";
+import {
+  ACCOUNTS_ID_INDEX,
+  ACCOUNTS_URI_INDEX,
+  LOCAL_ACCOUNTS_ID_INDEX,
+  POLLS_STATUS_INDEX,
+  STATUSES_ID_INDEX,
+  STATUSES_URI_INDEX,
+} from "../db/indexes";
 import type { Db } from "../db/sql";
 import { parseAddress } from "../platform/domain-name";
 import { sameOrigin } from "../platform/http-url";
@@ -24,7 +31,8 @@ import { emojiSnapshot } from "./custom-emojis";
 import { insertWithFreshId, remoteId } from "./ids";
 import { enqueueCard, remoteCardLink } from "./link-cards";
 import { notify } from "./notifications";
-import { isLocalPoll, receiveVote, remotePollChanges, storeRemotePoll } from "./polls";
+import { type Poll, presentPoll } from "./poll-presenter";
+import { isLocalPoll, markPollFetched, receiveVote, remotePollChanges, storeRemotePoll } from "./polls";
 import { linkQuotes, promoteQuote, QUOTE_HOPS, quoteArrival, quoteDue, recordQuote, refreshQuote } from "./quotes";
 import { withinRealTimeWindow } from "./real-time-window";
 import {
@@ -87,6 +95,10 @@ export type StoreContext = {
   // quoting status's when it is stored as a quoted target during verification.
   quoteHops?: number;
 };
+
+// The context of a path that may update a stored status (updateRemoteStatus): also the Store's own time, which an
+// accepted poll records as fetched (polls.ts markPollFetched).
+export type UpdateContext = StoreContext & { storeNow: number };
 
 export type StatusOutcome = { applied: boolean; reason: string; statusId?: string };
 
@@ -626,7 +638,12 @@ function extendAudience(db: Db, existing: StoredStatus, deliveredTo: string | nu
 //     names a stored status: Update#update_status reaches Create#create_status, which finds that status
 //     (find_existing_status) and treats it as a Create of it would, and ProcessStatusUpdateService updates it as by its
 //     id, under that status's uri.
-export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusInput, ctx: StoreContext): StatusOutcome {
+export function updateRemoteStatus(
+  db: Db,
+  author: Author,
+  input: RemoteStatusInput,
+  ctx: UpdateContext,
+): StatusOutcome {
   if (!sameOrigin(input.uri, author.uri)) {
     return { applied: false, reason: "foreign-object" };
   }
@@ -691,7 +708,11 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
         remoteQuotePolicy(db, author, input.quotePolicy),
         existing.id,
       ) > 0;
-    const pollUpdated = input.poll !== undefined && storeRemotePoll(db, existing.id, input.poll, false, ctx.now);
+    const poll = input.poll === undefined ? undefined : storeRemotePoll(db, existing.id, input.poll, false, ctx.now);
+    if (poll !== undefined) {
+      markPollFetched(db, existing.id, poll, ctx.storeNow);
+    }
+    const pollUpdated = poll === "written";
     // It broadcasts the update when it moved the quote's state (:82 in v4.7.5): a changed stamp, which resets the quote
     // (refreshQuote). Not a legacy form alone, the same stamp, the poll or the quote policy.
     if (restamped) {
@@ -726,7 +747,7 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
   if (significant && versions === 0) {
     recordEdit(db, existing.id, existing.published_at);
   }
-  storeRemotePoll(db, existing.id, input.poll ?? null, true, ctx.now);
+  markPollFetched(db, existing.id, storeRemotePoll(db, existing.id, input.poll ?? null, true, ctx.now), ctx.storeNow);
   db.run(
     `UPDATE statuses SET content = ?, spoiler_text = ?, sensitive = ?, language = ?, raw = ?, search_text = ?,
 			remote_version = ?, edited_at = CASE WHEN ? THEN ? ELSE edited_at END, quote_policy = ?, emojis = ?,
@@ -784,7 +805,7 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
 // whose lookup by atomUri keeps what it finds). An update that stops before its quote step (an older version, one
 // past the skew, or none for an edited status) still has the status arrive again as a root, as storeRemoteStatus's
 // known branch does (promoteQuote), and its outcome names the stored status unless that is retracted.
-function storeFetchedStatus(db: Db, author: Author, input: RemoteStatusInput, ctx: StoreContext): StatusOutcome {
+function storeFetchedStatus(db: Db, author: Author, input: RemoteStatusInput, ctx: UpdateContext): StatusOutcome {
   if (db.first(`SELECT 1 AS x WHERE ${availableSql("?1")}`, author.id) === undefined) {
     return { applied: false, reason: "author-unavailable" };
   }
@@ -800,6 +821,64 @@ function storeFetchedStatus(db: Db, author: Author, input: RemoteStatusInput, ct
   }
   return outcome;
 }
+
+// The refresh of a remote poll on read (Mastodon 4.7.5's FetchRemotePollService), after its reservation
+// (polls.ts reservePollRefresh) and the Worker's fetch of the status's own document (federation/poll-refresh.ts).
+// revision: the poll's revision as the reservation set it (TEXT, DATA-6).
+export type PollRefreshInput = {
+  statusId: string;
+  revision: string;
+  status: RemoteStatusInput;
+  now: number;
+  storeNow: number;
+  origin: string;
+  present: Present;
+};
+
+// poll: the poll as the reader sees it now, null when its status is gone or no longer visible to them (404).
+// quotesDue: the status has a quote whose verification is due (the Worker asks the Queue for a job round).
+export type PollRefreshResult = { poll: Poll | null; quotesDue: boolean };
+
+// Applies the fetched document as its author's Update (storeFetchedStatus: the Update's version rules, its fan-out, its
+// quote and R38), only while the reader may see the status (R3) and the poll's revision is still the reservation's:
+// nothing has written the poll since (a vote, an Update delivered or fetched, its end, a reset or a newer
+// reservation), so a refresh never overwrites a state committed during its fetch (ID-7). Otherwise it applies
+// nothing. Either way it answers the poll as stored now, judged again for the reader.
+export const refreshPoll = userWriteOperation.atStoreTime("storeNow")<PollRefreshInput, PollRefreshResult>((
+  db,
+  input,
+  { accountId },
+  { now },
+) => {
+  const { statusId } = input;
+  const current =
+    viewableStatusId(db, accountId, statusId) === null
+      ? undefined
+      : db.first<{ author_id: string; author_uri: string }>(
+          `SELECT s.account_id AS author_id, a.uri AS author_uri
+					FROM polls p INDEXED BY ${POLLS_STATUS_INDEX}
+					CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = p.status_id
+					CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = s.account_id
+				WHERE p.status_id = ?1 AND p.revision = CAST(?2 AS INTEGER) AND s.uri = ?3`,
+          statusId,
+          input.revision,
+          input.status.uri,
+        );
+  if (current !== undefined) {
+    storeFetchedStatus(db, { id: current.author_id, uri: current.author_uri }, input.status, {
+      now: input.now,
+      storeNow: input.storeNow,
+      origin: input.origin,
+      deliveredTo: null,
+      fetched: true,
+    });
+  }
+  const visible = viewableStatusId(db, accountId, statusId);
+  return {
+    poll: visible === null ? null : presentPoll(db, visible, accountId, now, input.present.origin),
+    quotesDue: current !== undefined && quoteDue(db, statusId, input.now),
+  };
+});
 
 // ProcessStatusUpdateService#update_mentions!, with the audience of a non-public status kept (see updateRemoteStatus).
 // At the MAX_STATUS_MENTION_ROWS cap, a public or unlisted status admits a newly mentioned local account it addresses
@@ -902,7 +981,15 @@ export function firstRequestOf(target: FetchTarget): string {
   return target.kind === "address" ? webfingerUrl(target.username, target.domain) : target.href;
 }
 
-export type ResolveInput = { query: string; resolved: Resolved; now: number; origin: string; present: Present };
+// storeNow: the Store's own time (atStoreTime), which a fetched poll records (UpdateContext).
+export type ResolveInput = {
+  query: string;
+  resolved: Resolved;
+  now: number;
+  storeNow: number;
+  origin: string;
+  present: Present;
+};
 
 // quotesDue: the status found has a quote whose verification is due (the Worker asks the Queue for a job round).
 export type ResolveResult = { accounts: Account[]; statuses: Status[]; quotesDue?: boolean };
@@ -977,7 +1064,7 @@ function storedStatus(db: Db, uri: string, guessed: string | null, now: number):
 // (ID-7).
 export function storeResolved(
   db: Db,
-  { query, resolved, now, origin }: Pick<ResolveInput, "query" | "resolved" | "now" | "origin">,
+  { query, resolved, now, storeNow, origin }: Pick<ResolveInput, "query" | "resolved" | "now" | "storeNow" | "origin">,
   viewer: boolean,
 ): StoredResolution {
   const storedActor = (actor: RemoteActorInput, revision: DocumentRevision): RemoteRow | undefined => {
@@ -994,6 +1081,7 @@ export function storeResolved(
       }
       const stored = storeFetchedStatus(db, author, resolved.status, {
         now,
+        storeNow,
         origin,
         deliveredTo: null,
         fetched: true,
@@ -1022,7 +1110,12 @@ export function storeResolved(
 // if account search would find it (findableBySql, R14), a status by the rule of a single status (canView, R3, as
 // Mastodon's ResolveURLService authorizes show?), unless the viewer blocks its author's domain. A private object a
 // server answered the instance actor with is stored with its audience and shown to nobody else.
-export const resolveSearch = userWriteOperation<ResolveInput, ResolveResult>((db, input, { accountId }, viewer) => {
+export const resolveSearch = userWriteOperation.atStoreTime("storeNow")<ResolveInput, ResolveResult>((
+  db,
+  input,
+  { accountId },
+  viewer,
+) => {
   const options = { ...input.present, viewer };
   const account = (id: string | undefined): ResolveResult => {
     const findable =

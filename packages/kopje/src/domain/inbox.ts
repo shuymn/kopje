@@ -25,7 +25,7 @@ import {
   storedTime,
 } from "../platform/stored-bounds";
 import { followActivity, followAnswerActivity, followUri, recordOutbound } from "./activities";
-import { type FetchSigner, fetchSignerOf, instanceDomainOf } from "./actors";
+import { instanceDomainOf } from "./actors";
 import {
   activeMuteSql,
   availableLocalSql,
@@ -57,6 +57,7 @@ import {
   supersedeEarlier,
 } from "./deliveries";
 import { recountFeatured } from "./featured-tags";
+import { type FetchPreparation, fetchPreparation } from "./fetch-preparation";
 import { type FollowerSigner, localFollower } from "./follower-signer";
 import { insertWithFreshId, NEW_GENERATION, remoteId } from "./ids";
 import { actorDomainBlocked, type PolicyTicket, ticketFor } from "./instance-domain-blocks";
@@ -118,7 +119,7 @@ import {
   MAX_STATUS_MENTION_ROWS,
   firstRequestOf,
   resolutionTarget,
-  type StoreContext,
+  type UpdateContext,
   storeRemoteStatus,
   updateRemoteStatus,
 } from "./remote-statuses";
@@ -2771,8 +2772,14 @@ function deliveredTo(db: Db, recipient: string | null | undefined): string | nul
   );
 }
 
-function storeContext(db: Db, input: ReceiveInput): StoreContext {
-  return { now: input.now, origin: input.origin, deliveredTo: deliveredTo(db, input.recipient), fetched: false };
+function storeContext(db: Db, input: StoreReceiveInput): UpdateContext {
+  return {
+    now: input.now,
+    storeNow: input.storeNow,
+    origin: input.origin,
+    deliveredTo: deliveredTo(db, input.recipient),
+    fetched: false,
+  };
 }
 
 function outcome(result: { applied: boolean; reason: string }): ReceiveResult {
@@ -3689,25 +3696,6 @@ function ownerExists(db: Db, username: string): boolean {
 export const inboxOwnerExists = readOperation<{ username: string }, boolean>((db, { username }) =>
   ownerExists(db, username),
 );
-
-// What a fetch a Store answer decided needs, read in that answer (docs/engineering.md, "How a request talks to the
-// Store"): its signer by DATA-7's rule (fetchSignerOf), wrapped (DATA-1), and the domain policy's verdict for its
-// first request (ticketFor; null when the loader would refuse the target anyway). Optional: the Worker reads what is
-// missing itself, as it would without it.
-export type FetchPreparation = { signer: FetchSigner; ticket: PolicyTicket | null };
-
-// The one producer of FetchPreparation, for the three answers that decide a fetch: the inbox gate, a receiveActivity
-// need and a search resolution's gate (resolutionGate). Null for a target of this instance's own origin: the paths it
-// serves never fetch one (federation/inbound.ts fetchNeeded and prepare; resolutionTarget), so no key leaves the
-// Store for it; a signature key at this origin, which Fedify may still fetch, then costs the Worker its own signer and
-// policy reads.
-function fetchPreparation(db: Db, by: string | FollowerSigner | null, target: string): FetchPreparation | null {
-  const domain = instanceDomainOf(db);
-  if (domain !== null && originOf(target) === `https://${domain}`) {
-    return null;
-  }
-  return { signer: fetchSignerOf(db, by), ticket: ticketFor(db, target) };
-}
 
 // What a search resolution (federation/resolve.ts) is decided on before any network work, in one read, in this order:
 // the credential (as checkCredential judges it, so a failing token is answered first); then whether writes are refused

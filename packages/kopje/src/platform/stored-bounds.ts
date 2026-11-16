@@ -2068,6 +2068,61 @@ export function nextDocumentRevisionSql(current: string | null): string {
     : `(${current} + 1 + ${draw} % ${DOCUMENT_REVISION_MAX}) % ${DOCUMENT_REVISION_MAX + 1}`;
 }
 
+// ---- A remote poll's refresh: migration 0100_poll_refresh (domain/polls.ts pollDueSql)
+
+// polls.fetched_at and refresh_at: NULL, or a time in ms on the Store's clock, an integer from 0 to 2^53 - 1 (the
+// columns' CHECK, emitted by pollRefreshMigrationSql).
+function pollTimeCheckSql(column: string): string {
+  return `${column} IS NULL OR (typeof(${column}) = 'integer' AND ${column} BETWEEN 0 AND ${SAFE_INTEGER_MAX})`;
+}
+
+// The stored poll time `column` as a refresh's due check reads it at the Store's time `now`: the value, or NULL when
+// it is not an integer or lies after `now` (an imported or skewed time), so such a poll is due as one never fetched.
+export function pollTimeReadSql(column: string, now: string): string {
+  return `CASE WHEN typeof(${column}) = 'integer' AND ${column} <= ${now} THEN ${column} END`;
+}
+
+// polls.revision: an integer from 0 to POLL_REVISION_MAX, the fence of a poll's refresh (domain/polls.ts), issued anew
+// by the trigger polls_revision on every write of the poll's values and by a refresh's reservation, as
+// nextDocumentRevisionSql issues accounts.document_revision. A row the upgrade carries holds 0.
+/** @alias */
+export const POLL_REVISION_MAX = SAFE_INTEGER_MAX;
+
+// True when `row` holds a revision past its stored bound: not an integer, or outside 0..POLL_REVISION_MAX.
+export function pollRevisionPastBoundSql(row: string): string {
+  const column = `${row}.revision`;
+  return `CASE WHEN typeof(${column}) <> 'integer' THEN 1
+	WHEN ${column} NOT BETWEEN 0 AND ${POLL_REVISION_MAX} THEN 1
+	ELSE 0 END`;
+}
+
+// The columns of a poll whose write moves its revision (the trigger polls_revision): everything a refresh would
+// overwrite or a reader shows, and fetched_at, which an accepted Update writes even when it changes no value. Not
+// refresh_at (the reservation sets the revision itself), update_due_at, stale, hide_totals or created_at.
+export const POLL_REVISION_COLUMNS = [
+  "options",
+  "cut_options",
+  "tallies",
+  "multiple",
+  "expires_at",
+  "votes_count",
+  "voters_count",
+  "ended",
+  "generation",
+  "removed",
+  "fetched_at",
+] as const;
+
+// The statements of 0100_poll_refresh before its triggers (domain/stored-triggers.ts): the two times, each with a CHECK
+// that reads every existing row once, and the revision, with a constant default and no CHECK, which reads none.
+// test/migrations.test.ts compares the file with it.
+export function pollRefreshMigrationSql(): string {
+  return `ALTER TABLE polls ADD COLUMN fetched_at INTEGER CHECK (${pollTimeCheckSql("fetched_at")});
+ALTER TABLE polls ADD COLUMN refresh_at INTEGER CHECK (${pollTimeCheckSql("refresh_at")});
+ALTER TABLE polls ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+`;
+}
+
 // ---- Filter text units: migration 0079_filter_text_units (domain/status-presenter.ts measureFilterText)
 
 // statuses.filter_text_units: NULL (not measured), or an integer from 0 to FILTER_TEXT_UNITS_MAX, the UTF-16 code units

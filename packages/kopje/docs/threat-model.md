@@ -449,7 +449,8 @@ against their own instance. TLS is assumed between all parties.
   a peer's cached copy from before an edit rolls nothing back; an `Update` dated more than 5 minutes ahead
   of the clock is ignored (no change, history or notification), and its edit waits for another delivery; a status whose
   `Delete` was recorded takes no `Update`. A status Kopje fetches again that it stores under the document's id, by its
-  author (search and `/authorize_interaction`: `storeFetchedStatus` in `src/domain/remote-statuses.ts`), is applied as
+  author (search, `/authorize_interaction` and a signed-in poll read: `storeFetchedStatus` in
+  `src/domain/remote-statuses.ts`), is applied as
   that author's `Update` under these rules, as Mastodon's `FetchRemoteStatusService` turns it into one, and one it does
   not store is its `Create`, its document taken only from its `id` (ID-2); a 404 or 410 to such a fetch removes
   nothing; a failed fetch answers a stored status only after a 401, 403 or 404 and a stored account only after a 5xx
@@ -457,6 +458,14 @@ against their own instance. TLS is assumed between all parties.
   (`test/search-refetch.test.ts`, `test/search-fallback.test.ts`, `test/interaction.test.ts` ("applies a newer version
   of a stored status it finds again", "finds nothing for a stored status whose fetch answers 410, and keeps it",
   "shows no stored status after a failed fetch")).
+  An `Update` whose poll is accepted, its values changed or not, records the Store's time as the poll's last fetch
+  (`polls.fetched_at`); a refused or removed poll and a `Create` record none (`test/polls-federation.test.ts` ("marks
+  the poll fetched on an accepted Update, not on a Create or a refused one")). A poll read's refresh applies its
+  document only while the poll's revision is still the one its reservation took: every write of the poll moves it to
+  another value within 0 to 2^53 − 1 (the `polls_revision` trigger, the reservation included), so a refresh never
+  overwrites a vote, an `Update` or a newer reservation committed during its fetch (`refreshPoll` in
+  `src/domain/remote-statuses.ts`; `test/poll-refresh.test.ts` ("keeps what commits during the fetch", "only the
+  reservation's own refresh applies", "revisions from the maximum")).
   A stored status is also known by an object's `atomUri` when no status has
   the object's id (an http(s) URI within `STATUS_URI_LIMIT`, `statusIdentity` in `src/federation/remote-status.ts`): a
   `Create` or `Update` whose id or `atomUri` was retracted or deleted is not applied, an `Update` found by `atomUri`
@@ -524,8 +533,9 @@ against their own instance. TLS is assumed between all parties.
   "Like ids are unique instance-wide, and bounded", "Undos at the retraction cap", "records no
   tombstone, unless a stored favourite needs it removed", "a legacy favourite of a local status").
   `test/status-delete.test.ts` (generated sequences of a remote author's `Create`, `Update` and `Delete`, the `Update`s
-  its poll jobs write 3 minutes after a vote, L's searches of them served from the author's render cache, local
-  favourites and boosts, job rounds and deliveries, checked after every step against the rules in
+  its poll jobs write 3 minutes after a vote, L's searches of them served from the author's render cache, L's reads of
+  their polls, each refresh a later step than its reservation and fetch, local favourites and boosts, job rounds and
+  deliveries, checked after every step against the rules in
   `test/status-delete-model.ts` and, once settled, against the author's final state as a Mastodon v4.7.5 sender holds
   it). A change to a status `Create`, `Update` or `Delete` rule here changes `test/status-delete-model.ts` with it.
   A proven `Delete` of a status delivered again records no second forward (VIS-3): the job's key, read before the
@@ -1429,12 +1439,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   domain or its actor host) is unavailable from the block's commit, read live; nothing is fetched from a covered host
   (advisory: the writes refuse to store a covered account or its statuses, and refresh no covered row). The verdict for
   the first request after a Store answer that decided the fetch (`inboxGate`, a `receiveActivity` need, a search
-  resolution's `resolutionGate` and its `actorState` before the actor's fetch) comes with that answer and is spent
-  on that request alone; every other request, redirect hops and RFC 9421 retries included, reads it anew
-  (`fetchPreparation` in `src/domain/inbox.ts`, `refusesHost` in
+  resolution's `resolutionGate` and its `actorState` before the actor's fetch, a poll refresh's `reservePollRefresh`)
+  comes with that answer and is spent on that request alone; every other request, redirect hops and RFC 9421 retries
+  included, reads it anew (`fetchPreparation` in `src/domain/fetch-preparation.ts`, `refusesHost` in
   `src/federation/federation.ts`; `test/signed-fetch.test.ts` "fetch preparations in the loaders", "asks the domain
   policy again before the retry", `test/inbox.test.ts` "Store calls on the inbox cold path",
-  `test/search-resolution-store-calls.test.ts`). Its inbound
+  `test/search-resolution-store-calls.test.ts`, `test/poll-refresh-store-calls.test.ts`). Its inbound
   activity is ignored before any fetch but `Delete`, `DeleteActor`, `Undo` and `Reject` verified with a key already
   stored. A block's `reject_media`, whatever its severity, keeps media out of the remote media cache (MEDIA-7;
   [visibility.md](visibility.md), "Instance domain blocks"). It is judged by the account's stored domain only, as
@@ -2366,7 +2376,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   owner's key or the instance actor's, never from the signed-document cache; search with `resolve=true`
   (`GET /api/v2/search`, and `GET /api/v1/accounts/search` for addresses) fetches as the instance actor only, for a
   request whose token is valid, has the scope and names a user (401, 403 or 422 otherwise, before anything is fetched),
-  with WebFinger unsigned; the search after the fetch judges the token again at its own time. A URL that answers 200
+  with WebFinger unsigned; the search after the fetch judges the token again at its own time. A signed-in poll read's
+  refresh fetches the post's document by its signer's key (DATA-7) through the request's own memo, never from the
+  signed-document cache (`createPollFetcher` in `src/federation/poll-refresh.ts`;
+  `test/poll-refresh-store-calls.test.ts` ("Store calls of a poll read")). A URL that answers 200
   with another type is followed as Mastodon 4.7.5's `FetchResourceService` follows it (`process_link_headers ||
   process_html`): to the document its `Link` header names (`rel` exactly `alternate`, `type` exactly
   `application/activity+json`, else the ActivityStreams-profiled `application/ld+json`) and, when that alternate gives
@@ -3585,8 +3598,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   bytes cut counts as its status (`test/search-fallback.test.ts`, "a budget refusal is no answer, a cut read its
   answer's status"); a cut confirmation stores no new actor and leaves a stored one its handle;
   `test/resolve-alternate.test.ts` ("stops at the request's budget when the alternates and the confirmation need
-  more"). A collection sync's document part, the refresh of an invalidated account, reads at most three documents with
-  the other parts' room for a redirect or a retry each (`PART_DOCUMENTS` in `src/federation/collections.ts`). Every
+  more"). A signed-in read of a remote poll (`GET /api/v1/polls/:id`) refreshes it at most once a minute, however many
+  users read it: the attempt is reserved in a Store write before its fetch (`reservePollRefresh` in
+  `src/domain/polls.ts`), and the next is due once more than a minute has passed, whatever its outcome. The refresh
+  sends one request for the post's document, two with the RFC 9421 retry of a 400 or 401, follows no redirect and
+  loads no JSON-LD context, within the request's budget, and the read makes at most five Store calls after the host
+  check's and none to the KV store (`test/poll-refresh.test.ts` ("reserves the attempt before the fetch", "waits a full
+  minute after any attempt"), `test/poll-refresh-store-calls.test.ts` ("Store calls of a poll read")). A collection
+  sync's document part, the refresh of an invalidated account, reads at most three documents with the other parts'
+  room for a redirect or a retry each (`PART_DOCUMENTS` in `src/federation/collections.ts`). Every
   actor state read (revision and stored handle) is one seek by `accounts`' uri index, pinned with `INDEXED BY` (RES-7):
   the inbox gate's actor and `Move` target, a refresh need's and a quote's author stage's author, a search
   resolution's actor, a sync's document part, and the comparison in the writing transaction
@@ -4958,18 +4978,25 @@ heap).
   account's, and its key is chosen only while it is available and still follows the remote account, which is checked
   again then; otherwise the instance actor signs (`localFollower` in `src/domain/follower-signer.ts`,
   `fetchSignerOf` in `src/domain/actors.ts`, the one home of this rule, read by `fetchSigner` and by the fetch
-  preparation of `inboxGate`, of a `receiveActivity` need and of `resolutionGate` (a search resolution, the instance
-  actor); `src/federation/collections.ts`, `receiveInbound` in `src/federation/inbound.ts`;
+  preparation of `inboxGate`, of a `receiveActivity` need, of `resolutionGate` (a search resolution, the instance
+  actor) and of `reservePollRefresh`; `src/federation/collections.ts`, `receiveInbound` in `src/federation/inbound.ts`;
   `test/remote-collections.test.ts`, `test/signed-fetch.test.ts` "the signer of a fetch"). A replies walk's fetches (its
   statuses, their collections and pages, and their authors) have no recipient: the instance actor signs them, as
   Mastodon's representative signs them, but for the WebFinger lookup that confirms an author's handle, unsigned as every
   WebFinger request (`JsonLdHelper#fetch_resource_without_id_validation`; `src/federation/replies.ts`;
   `test/reply-walk-rounds.test.ts` ("signed by the instance actor")).
+  A signed-in read of a remote poll refreshes it from its post's document, fetched as the instance actor for a public
+  or unlisted post, which then tells its server nothing about who read it, and by the reader's key for a private,
+  direct or limited one, which its server reaches only with the reader's access; a fetch refused by the remote or by
+  the domain policy is not sent again by the other signer (`reservePollRefresh` in `src/domain/polls.ts`, whose answer
+  prepares the fetch; [mastodon-deviations.md](mastodon-deviations.md), "Polls").
   A signer is judged when it is chosen: a suspension or unfollow committed after the Store answer that chose it costs
   at most that request's fetches, and the next Store round refuses what they bring (`test/quote-requests.test.ts`);
   activities by their author's key. The instance key never signs an activity attributed to a user: the one activity it
   signs is a forwarded report's `Flag`, whose actor is the instance actor (Mastodon's `Account.representative`).
-  _Enforced (main)_ for fetches: `src/federation/federation.ts`; `test/signed-fetch.test.ts` ("signed fetches").
+  _Enforced (main)_ for fetches: `src/federation/federation.ts`; `test/signed-fetch.test.ts` ("signed fetches"),
+  `test/poll-refresh.test.ts` ("signs a public or unlisted post's fetch as the instance actor, another's as the
+  reader", "a refused fetch answers the stored poll and waits a minute").
   Activities: _Enforced (main):_ a delivery is signed with the key of its lane's account, its RFC 9421 retry included,
   unwrapped once per round (`src/jobs/deliver.ts`); `test/delivery-post.test.ts` ("signs the activity with its author
   key", "confirms the row again right before the retry and sends the body it returns, signed by the author").

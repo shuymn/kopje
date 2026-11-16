@@ -3,12 +3,14 @@
 //
 // - Policy: Kopje's documented rules, written from the docs and never from src/: docs/threat-model.md ID-7 (its status
 //   paragraph: the Update watermark, the 5-minute skew, the retractions of a Delete, the cap, local boosts withdrawn
-//   once and the 404s while a removal runs, which Update refreshes a poll's counts, and a status fetched again by a
-//   search applied as its author's Update), ID-6 (the authorization table: Create, Update and Delete of statuses),
-//   RES-6 (a remote status's removal in bounded batches after its hide), VIS-3 (a proven Delete forwarded through the
-//   local boosts, and the Undo of an unboost staged by its job) and docs/mastodon-deviations.md ("Forwarded deletes").
-//   It holds each status by uri, the live retractions, the local account L's notifications and reactions, the delete
-//   jobs, and Kopje's outbound intents with their deliveries in each lane.
+//   once and the 404s while a removal runs, which Update refreshes a poll's counts, a status fetched again by a
+//   search applied as its author's Update, and a poll refreshed on read under its revision fence), ID-6 (the
+//   authorization table: Create, Update and Delete of statuses), RES-6 (a remote status's removal in bounded batches
+//   after its hide, and a poll's refresh attempt reserved before its fetch, one a minute), VIS-3 (a proven Delete
+//   forwarded through the local boosts, and the Undo of an unboost staged by its job) and docs/mastodon-deviations.md
+//   ("Forwarded deletes", and "Polls": when a read refreshes a poll). It holds each status by uri with its poll's
+//   refresh state, the live retractions, the local account L's notifications and reactions, the delete jobs, and
+//   Kopje's outbound intents with their deliveries in each lane.
 // - Peer: the author R's server, Mastodon v4.7.5, as a sender and a server of its statuses (each rule cites the file
 //   and line it models): the statuses it posted, edited and deleted, the votes in their polls and the poll Updates they
 //   scheduled, every message it sent, each an independent delivery job, and the documents it serves from its render
@@ -38,6 +40,9 @@ export const REAL_TIME_WINDOW_MS = 6 * HOUR;
 export const RENDER_CACHE_MS = 3 * MINUTE;
 // VoteService schedules the poll's Update 3 minutes after a vote (vote_service.rb:48 in v4.7.5).
 export const POLL_UPDATE_DELAY_MS = 3 * MINUTE;
+// docs/mastodon-deviations.md "Polls": a read refreshes a poll when no Update was applied to it, and no attempt was
+// reserved for it, in the last full minute (one exactly a minute ago still counts).
+export const POLL_REFRESH_AFTER_MS = MINUTE;
 
 // The ANY_ACTOR row of ID-7: "the Delete of a stored status or boost is also recorded for every actor".
 export const ANY = "*";
@@ -94,7 +99,16 @@ export type Stored = {
   inReplyTo: string | null;
   // Its in_reply_to_id is set (the parent was stored, and not hidden, when either arrived).
   linked: boolean;
+  // Its poll's refresh state (docs/mastodon-deviations.md "Polls", ID-7): when an Update whose poll was accepted was
+  // last applied (none since its Create), when the last refresh attempt was reserved, and the poll's revision, here a
+  // count of its writes (the Store's moves to another value on each; only equality is compared).
+  fetchedAt: number | null;
+  refreshAt: number | null;
+  revision: number;
 };
+
+// A reservation of a poll's refresh: the status, and the revision its refresh must still find.
+export type PollReservation = { uri: string; revision: number };
 
 export type Lane = "fans" | "remote";
 export const LANES: readonly Lane[] = ["fans", "remote"];
@@ -247,6 +261,9 @@ export class Policy {
       withdrawn: false,
       inReplyTo: o.inReplyTo,
       linked: parent !== undefined && !parent.withdrawn,
+      fetchedAt: null,
+      refreshAt: null,
+      revision: 0,
     });
     // Replies that arrived before it are linked to it now.
     for (const reply of this.statuses.values()) {
@@ -293,6 +310,10 @@ export class Policy {
     if (o.updated === null ? stored.editedAt !== null : o.updated < watermark) {
       return { applied: false, reason: "stale" };
     }
+    // From here the Update's poll is accepted, its counts changed or not: the time it was applied is recorded, which
+    // writes the poll (ID-7).
+    stored.fetchedAt = now;
+    stored.revision++;
     if (o.updated === null || o.updated === watermark) {
       if (o.tally === stored.tally) {
         return { applied: false, reason: "stale" };
@@ -340,6 +361,37 @@ export class Policy {
   shown(uri: string): boolean {
     const stored = this.statuses.get(uri);
     return stored !== undefined && !stored.withdrawn;
+  }
+
+  // ---- L's read of a poll (docs/mastodon-deviations.md "Polls", ID-7, RES-6) ----
+
+  // Whether L's read of the poll of `uri`, shown to L, refreshes it: no Update applied to it, and no attempt reserved
+  // for it, in the last minute. R's polls have no end.
+  pollDue(uri: string, now: number): boolean {
+    const stored = this.statuses.get(uri);
+    const since = (t: number | null) => t === null || t < now - POLL_REFRESH_AFTER_MS;
+    return this.shown(uri) && since(stored!.fetchedAt) && since(stored!.refreshAt);
+  }
+
+  // The attempt's reservation, before its fetch: the time, and a write of the poll.
+  reservePoll(uri: string, now: number): PollReservation | null {
+    if (!this.pollDue(uri, now)) {
+      return null;
+    }
+    const stored = this.statuses.get(uri)!;
+    stored.refreshAt = now;
+    stored.revision++;
+    return { uri, revision: stored.revision };
+  }
+
+  // The refresh of a reservation with the document R's server served: applied as R's Update only while nothing has
+  // written the poll since the reservation and the status is shown. The poll's count as L then sees it, or none.
+  refreshPoll(reservation: PollReservation, served: Obj, now: number): number | null {
+    const stored = this.statuses.get(reservation.uri);
+    if (this.shown(reservation.uri) && stored!.revision === reservation.revision) {
+      this.update(stored!.author, served, now);
+    }
+    return this.shown(reservation.uri) ? this.statuses.get(reservation.uri)!.tally : null;
   }
 
   // ID-6: "Delete [requires] the stored status's author (a refused Delete records no retraction)"; ID-7: an unknown

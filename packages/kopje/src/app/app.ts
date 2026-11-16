@@ -8,6 +8,7 @@ import { ringDoorbell } from "../federation/delivery";
 import { inboxHandler, precheckInbox, requestInboundJobs } from "../federation/inbox";
 import { activityStreamsRequest, INBOX_ROUTES } from "../federation/inbox-request";
 import { signAsAuthor } from "../federation/ld-sign";
+import { createPollFetcher } from "../federation/poll-refresh";
 import { createResolver } from "../federation/resolve";
 import {
   FEDERATION_GET_ROUTES,
@@ -254,6 +255,7 @@ export function createApp({
     randomToken: seams.randomToken ?? randomToken,
     images,
     resolve: createResolver({ build, store, now, keygen, loader, requestJobs: jobs }),
+    fetchPoll: createPollFetcher({ build, store, now, keygen, loader }),
     requestJobs: jobs,
     activity,
     signAsAuthor:

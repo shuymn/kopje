@@ -449,9 +449,11 @@ checks after each that no other table changed and that each account sees only it
 
 A poll (`src/domain/polls.ts`, migration `0013_polls`) is shown with its status, to whoever may see the status, and
 its API id is its status's: `GET /api/v1/polls/:id` and its votes answer 404 for a poll on a status the viewer may
-not see by itself (R3). Who may vote is R27 (`mayVoteSql`, Mastodon's `PollPolicy#vote?`): the status is viewable and
-the voter blocks neither its author (an author who blocks the voter hides it already) nor the author's domain
-(where the vote would not be delivered); a remote vote, a Note naming a
+not see by itself (R3). A signed-in read of a remote poll refreshes it from its post's document only for a reader who
+may see the status, judged again when the attempt is reserved, and the answer after the refresh is judged again
+([mastodon-deviations.md](mastodon-deviations.md), "Polls"). Who may vote is R27 (`mayVoteSql`, Mastodon's
+`PollPolicy#vote?`): the status is viewable and the voter blocks neither its author (an author who blocks the voter
+hides it already) nor the author's domain (where the vote would not be delivered); a remote vote, a Note naming a
 choice in reply to a local poll, passes the same rule (Mastodon checks none for it) and is never stored as a status.
 Votes are their voters' own: a poll shows its counts (`votes_count`, `voters_count`, and each choice's, which
 `hide_totals` hides from everyone, the author included, until the poll ends, as `Poll#show_totals_now?`), and the

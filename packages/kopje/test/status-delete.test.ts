@@ -1,6 +1,6 @@
 import { runInDurableObject } from "cloudflare:test";
 import fc from "fast-check";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { STAGING_READ } from "../src/domain/deliveries";
 import type { RemoteActorInput } from "../src/domain/remote-actors";
@@ -24,6 +24,7 @@ import {
   type Obj,
   Peer,
   Policy,
+  type PollReservation,
   RETRACTION_TTL_MS,
   RETRY_WINDOW_MS,
   type Snapshot,
@@ -37,8 +38,10 @@ import { community, remoteAccount, seedReceipts } from "./status-helpers";
 // the policy's (test/status-delete-model.ts), and once everything has settled Kopje must hold the author's final
 // state, except where an accepted risk names the messages that differ (`exception`). Every status is a poll, whose
 // votes the author's server sends as Updates from a job 3 minutes later (`race` puts an edit between one and its
-// delivery), and L searches R's statuses, which R's server serves from its render cache. A second property sends what Mastodon would not: forgeries, stale, version-less and future Updates, the
-// retraction cap and replays across the retraction TTL.
+// delivery), and L searches R's statuses, which R's server serves from its render cache, and reads their polls, each
+// read that refreshes one a reservation, its fetch and, as a later step or never, its refresh. A second property sends
+// what Mastodon would not: forgeries, stale, version-less and future Updates, the retraction cap and replays across the
+// retraction TTL.
 
 const AS = "https://www.w3.org/ns/activitystreams";
 const PUBLIC = `${AS}#Public`;
@@ -91,7 +94,15 @@ type Shown = ReturnType<typeof shown>;
 
 let leaseSequence = 0;
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 async function setup() {
+  // The Store reads its own clock (a poll's refresh state is the Store's time), so Date is the world's clock.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+  let clock = NOW;
   const h = await community(["alice"]);
   const store = h.store;
   const l = h.users.alice;
@@ -110,7 +121,13 @@ async function setup() {
     store,
     l,
     accounts: { [R]: r, [F]: f, [X]: x } as Record<string, string>,
-    clock: NOW,
+    get clock() {
+      return clock;
+    },
+    set clock(value: number) {
+      clock = value;
+      vi.setSystemTime(value);
+    },
     step: 0,
     policy: new Policy({ l: L, r: R, s1: S1, s2: S2 }, MAX_RETRACTIONS_PER_ACTOR),
     peer: new Peer(R, POOL, PARENTS),
@@ -130,6 +147,8 @@ async function setup() {
     // The id each intent (by the policy's sequence) went out with, and back (activityIdentity).
     activityIds: new Map<number, string>(),
     intentOfId: new Map<string, number>(),
+    // L's poll reads whose refresh has not run: the policy's reservation, the Store's, and what R's server served.
+    reservations: [] as { policy: PollReservation; statusId: string; revision: string; served: Obj | "gone" }[],
     trace: [] as string[],
     stats: {} as Stats,
   };
@@ -166,6 +185,8 @@ async function project(w: World) {
         favourites_count: number;
         reblogs_count: number;
         replies_count: number;
+        fetched_at: number | null;
+        refresh_at: number | null;
       }>(
         `SELECT s.id, s.uri, a.uri AS author, s.withdrawn, s.content, s.sensitive,
 					(SELECT json_extract(p.tallies, '$[0]') FROM polls p WHERE p.status_id = s.id) AS tally,
@@ -175,7 +196,9 @@ async function project(w: World) {
 						'at', e.created_at)) FROM (SELECT * FROM status_edits WHERE status_id = s.id ORDER BY id) e) AS history,
 					(SELECT json_group_array(url) FROM (SELECT url FROM media_attachments
 						WHERE status_id = s.id ORDER BY position, id)) AS media,
-					s.favourites_count, s.reblogs_count, s.replies_count
+					s.favourites_count, s.reblogs_count, s.replies_count,
+					(SELECT p.fetched_at FROM polls p WHERE p.status_id = s.id) AS fetched_at,
+					(SELECT p.refresh_at FROM polls p WHERE p.status_id = s.id) AS refresh_at
 				FROM statuses s JOIN accounts a ON a.id = s.account_id
 				WHERE a.domain IS NOT NULL AND s.reblog_of_id IS NULL ORDER BY s.uri`,
       ),
@@ -254,6 +277,8 @@ async function project(w: World) {
         }),
       ),
       linked: s.linked === 1,
+      fetchedAt: s.fetched_at,
+      refreshAt: s.refresh_at,
     })),
     counts:
       s1 === undefined
@@ -338,6 +363,8 @@ function expected(w: World) {
         editedAt: s.editedAt,
         history: s.history.map((v) => ({ snapshot: shown(v.snapshot), at: v.at })),
         linked: s.linked,
+        fetchedAt: s.fetchedAt,
+        refreshAt: s.refreshAt,
       })),
     counts:
       s1 === undefined
@@ -554,6 +581,84 @@ async function search(w: World, uri: string): Promise<void> {
   const actual = result.value.statuses.map((s) => s.uri);
   w.trace.push(`  -> ${JSON.stringify(actual)}`);
   await check(w, { actual, predicted: w.policy.shown(uri) ? [uri] : [] });
+}
+
+// L's read of the poll of `uri` (GET /api/v1/polls/:id) as the Worker makes it, through the Store: the read, and for a
+// due poll its reservation and the fetch of what R's server serves now. The refresh is its own action (`refresh`), so
+// any step may come between a reservation and its refresh, or none (a Worker that stopped). Each answer and the Store
+// must agree with the policy.
+async function readPoll(w: World, uri: string): Promise<void> {
+  const id = (await sql<{ id: string }>(w.store, "SELECT id FROM statuses WHERE uri = ?", uri))[0]?.id;
+  log(w, `L reads the poll of ${uri} at +${w.clock - NOW}`);
+  const credential = { tokenHash: await sha256Hex(w.l.token), scope: "read:statuses" as const, now: w.clock };
+  const read =
+    id === undefined
+      ? null
+      : await w.store.getPoll(BUILD, { credential, id, now: w.clock, present: { origin: LOCAL } });
+  if (read !== null && read.status !== "ok") {
+    throw new Error(`poll read refused: ${read.status}`);
+  }
+  const value = read?.value ?? null;
+  const actual = value === null ? null : { due: value.due, tally: value.poll.options[0]!.votes_count };
+  const p = w.policy;
+  const predicted = p.shown(uri) ? { due: p.pollDue(uri, w.clock), tally: p.statuses.get(uri)!.tally } : null;
+  w.trace.push(`  -> ${JSON.stringify(actual)}`);
+  tally(w.stats, actual === null ? "poll read 404" : actual.due ? "poll read due" : "poll read not due");
+  if (value === null || !value.due || id === undefined) {
+    await check(w, { actual, predicted });
+    return;
+  }
+  expect(actual, w.trace.join("\n")).toEqual(predicted);
+  const reserved = await w.store.reservePollRefresh(BUILD, { credential, id });
+  if (reserved.status !== "ok") {
+    throw new Error(`poll reservation refused: ${reserved.status}`);
+  }
+  const reservation = p.reservePoll(uri, w.clock);
+  w.trace.push(`  -> reserved ${reserved.value?.revision ?? null}`);
+  if (reserved.value !== null && reservation !== null) {
+    const served = w.peer.serve(uri, w.clock);
+    w.trace.push(`  fetched ${served === "gone" ? "404" : `${JSON.stringify(served.snapshot)} t=${served.tally}`}`);
+    w.reservations.push({ policy: reservation, statusId: id, revision: reserved.value.revision, served });
+  }
+  await check(w, { actual: reserved.value !== null, predicted: reservation !== null });
+}
+
+// The refresh of a poll read's reservation, with the document its fetch got: nothing for a 404, else the Store applies
+// it only while nothing has written the poll since. Its answer (the poll's count as L sees it, or none) and the Store
+// must agree with the policy.
+async function refreshPoll(w: World, i: number): Promise<void> {
+  if (w.reservations.length === 0) {
+    return;
+  }
+  const [r] = w.reservations.splice(i % w.reservations.length, 1);
+  log(w, `L's refresh of ${r!.policy.uri} at +${w.clock - NOW}`);
+  if (r!.served === "gone") {
+    tally(w.stats, "poll refresh fetched 404");
+    await check(w);
+    return;
+  }
+  const p = w.policy;
+  const current = p.shown(r!.policy.uri) && p.statuses.get(r!.policy.uri)!.revision === r!.policy.revision;
+  const result = await w.store.refreshPoll(BUILD, {
+    credential: { tokenHash: await sha256Hex(w.l.token), scope: "read:statuses", now: w.clock },
+    statusId: r!.statusId,
+    revision: r!.revision,
+    status: input(r!.served),
+    now: w.clock,
+    origin: LOCAL,
+    present: { origin: LOCAL },
+  });
+  if (result.status !== "ok") {
+    throw new Error(`poll refresh refused: ${result.status}`);
+  }
+  const predicted = p.refreshPoll(r!.policy, r!.served, w.clock);
+  const actual = result.value.poll === null ? null : result.value.poll.options[0]!.votes_count;
+  w.trace.push(`  -> ${JSON.stringify(actual)}`);
+  tally(
+    w.stats,
+    current ? "poll refresh applied" : p.shown(r!.policy.uri) ? "poll refresh after a write" : "poll refresh hidden",
+  );
+  await check(w, { actual, predicted });
 }
 
 // What R's server renders for `uri` now (its cache aside).
@@ -835,8 +940,8 @@ type Action =
   | { k: "post"; s: number; snapshot: Snapshot }
   | { k: "edit"; s: number; snapshot: Snapshot }
   | { k: "delete"; s: number; proven: boolean }
-  | { k: "vote" | "search" | "race"; s: number }
-  | { k: "deliver" | "redeliver" | "confirm" | "complete"; i: number }
+  | { k: "vote" | "search" | "race" | "read"; s: number }
+  | { k: "deliver" | "redeliver" | "confirm" | "complete" | "refresh"; i: number }
   | { k: LocalKind }
   | { k: "jobs" | "claim" | "send" }
   | { k: "tick"; ms: number };
@@ -866,6 +971,8 @@ const actionArb: fc.Arbitrary<Action> = fc.oneof(
   { arbitrary: fc.record({ k: fc.constant("vote" as const), s: statusArb }), weight: 2 },
   { arbitrary: fc.record({ k: fc.constant("search" as const), s: statusArb }), weight: 4 },
   { arbitrary: fc.record({ k: fc.constant("race" as const), s: statusArb }), weight: 2 },
+  { arbitrary: fc.record({ k: fc.constant("read" as const), s: statusArb }), weight: 3 },
+  indexed("refresh", 3),
   indexed("deliver", 10),
   indexed("redeliver", 2),
   simple("favourite", 2),
@@ -914,6 +1021,12 @@ async function act(w: World, a: Action): Promise<void> {
       return;
     case "race":
       await race(w, a.s);
+      return;
+    case "read":
+      await readPoll(w, POOL[a.s]!);
+      return;
+    case "refresh":
+      await refreshPoll(w, a.i);
       return;
     case "deliver":
       if (peer.outbox.length > 0) {
@@ -1532,6 +1645,34 @@ describe("status deletes: the author's orders", () => {
     ]);
     expect(w.stats["search 404"]).toBe(1);
     expect(answersOf(w, "Create", S3)).toEqual(["duplicate"]);
+  });
+
+  // ID-7 and RES-6: L's read of s1's poll reserves its refresh and fetches the counts R's server renders then; R's vote
+  // Update is delivered before the refresh, and a read finds the poll not due. The refresh then applies nothing, since
+  // the Update wrote the poll after the reservation; a read two minutes after the Update refreshes it with the newer
+  // count.
+  it("a poll refresh after a delivered Update applies nothing", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "read", s: 0 },
+      { k: "vote", s: 0 },
+      { k: "tick", ms: 6 * MINUTE },
+      deliver(),
+      { k: "read", s: 0 },
+      { k: "refresh", i: 0 },
+      { k: "tick", ms: 2 * MINUTE },
+      { k: "vote", s: 0 },
+      { k: "read", s: 0 },
+      { k: "refresh", i: 0 },
+    ]);
+    expect(w.stats).toMatchObject({
+      "poll read due": 2,
+      "poll read not due": 1,
+      "poll refresh after a write": 1,
+      "poll refresh applied": 1,
+    });
+    expect((await project(w)).statuses.find((s) => s.uri === S1)).toMatchObject({ tally: 2 });
   });
 
   it("a metadata Update, then an older content Update", async () => {

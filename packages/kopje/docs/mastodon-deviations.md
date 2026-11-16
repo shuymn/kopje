@@ -825,6 +825,22 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
   the status before it reads the body within its limit. A boost is never answered (Mastodon's lookup by uri may find
   one by its `Announce` id).
 
+Polls (`GET /api/v1/polls/:id`):
+
+- A signed-in read of a remote poll refreshes it from its post's document, applied as its author's `Update`, when
+  Mastodon 4.7.5's `Poll#possibly_stale?` holds (no `Update` applied since its end, and the last one applied more than
+  a minute ago). An attempt is reserved before its fetch, so a poll is fetched at most once a minute however many users
+  read it, and after an attempt of any outcome the next waits more than a minute too; Mastodon tries again at every
+  read until one applies. A refresh whose poll was written after its attempt began (a vote, another `Update`) applies
+  nothing.
+- A refresh that fails answers the poll as stored, where Mastodon answers 503 after a connection error or timeout.
+- A public or unlisted post's document is fetched as the instance actor, another's as the reader, where Mastodon signs
+  every refresh as the reader: the refresh of a poll anyone may see then tells its server nothing about who read it,
+  as search's fetches do, while a private, direct or limited post is reached only with the reader's access, which its
+  server already knows. When the fetch is refused (by the remote server, or by Kopje's domain policy), nothing is
+  refreshed, the poll is answered as stored, and the next refresh waits a minute; the other signer is not tried.
+- Nothing is fetched while the instance does not accept writes.
+
 Hashtags (the `Tag` entity):
 
 - A hashtag's name is Mastodon's `HashtagNormalizer#normalize` applied twice (`normalizeTag`), so that normalizing a
