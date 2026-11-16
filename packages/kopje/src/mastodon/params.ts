@@ -36,8 +36,9 @@ type FilePart = readonly [name: string, at: number];
 // The value objects(name, { files }) reads for a listed field sent as a file part: presence only, never the file.
 export const SENT_FILE = "(file)";
 
-// `files`: fields of the objects whose file parts are read, as SENT_FILE, at their place in the body.
-export type ObjectOptions = { files?: readonly string[] };
+// `files`: fields of the objects whose file parts are read, as SENT_FILE, at their place in the body. `nulls:
+// "absent"`: a field a JSON body sent as null is read as not sent, where other reads take it as blank.
+export type ObjectOptions = { files?: readonly string[]; nulls?: "absent" };
 
 // A file part's value while objects() groups the parts; no text value equals it.
 const FILE_VALUE: unique symbol = Symbol("file part");
@@ -53,6 +54,8 @@ export class Params {
     readonly emptyLists: ReadonlySet<string> = new Set(),
     // Undeclared file parts of a multipart body in body order; `at` indexes the body's prefix of `entries`.
     private readonly fileParts: readonly FilePart[] = [],
+    // The names a JSON body sent as null, which read as blank (objects' `nulls` option reads them as absent).
+    private readonly nulls: ReadonlySet<string> = new Set(),
   ) {}
 
   // These body parameters with the query's merged in: the body wins for a declared name, whose effective value is
@@ -66,7 +69,7 @@ export class Params {
       return value === undefined ? [] : [[name, value]];
     });
     const entries = [...this.entries, ...query.filter(([key]) => !names.has(key)), ...declaredQuery];
-    return new Params(entries, this.files, this.objectPrefixes, this.emptyLists, this.fileParts);
+    return new Params(entries, this.files, this.objectPrefixes, this.emptyLists, this.fileParts, this.nulls);
   }
 
   // The body's value wins over the query's.
@@ -110,6 +113,7 @@ export class Params {
   objects(name: string, options: ObjectOptions = {}): Record<string, string>[] {
     const prefix = `${name}[`;
     const files = options.files === undefined ? null : new Set(options.files);
+    const absent = options.nulls === "absent" ? this.nulls : new Set<string>();
     const indexed = new Map<string, Record<string, Value>>();
     const sequential: Record<string, Value>[] = [];
     const add = (key: string, value: Value) => {
@@ -141,7 +145,9 @@ export class Params {
     };
     this.entries.forEach(([key, value], at) => {
       partsBefore(at);
-      add(key, value);
+      if (!absent.has(key)) {
+        add(key, value);
+      }
     });
     partsBefore(Infinity);
     const project = (object: Record<string, Value>): Record<string, string> =>
@@ -257,10 +263,11 @@ async function parseCounted(
     const entries: [string, string][] = [];
     const objects = new Set<string>();
     const empty = new Set<string>();
+    const nulls = new Set<string>();
     // JSON.parse keeps the last of duplicate keys, so repeated() sees form and query duplicates only. RFC 6749 defines
     // form bodies alone, and Doorkeeper (Mastodon) lets the last JSON key win as well.
-    flatten(JSON.parse(new TextDecoder().decode(body)), { entries, objects, empty, paths: 0, units: 0 });
-    return { params: selectDeclared(entries, new Map(), objects, empty, declared), formText: null };
+    flatten(JSON.parse(new TextDecoder().decode(body)), { entries, objects, empty, nulls, paths: 0, units: 0 });
+    return { params: selectDeclared(entries, new Map(), objects, empty, nulls, declared), formText: null };
   }
   if (type === "application/x-www-form-urlencoded" || type === "multipart/form-data") {
     const form = await new Response(body, { headers: { "content-type": contentType } }).formData();
@@ -300,10 +307,11 @@ function selectDeclared(
   files: Map<string, File>,
   objects: Set<string>,
   empty: Set<string>,
+  nulls: Set<string>,
   declared: ReadonlySet<string>,
 ): Params {
   if (declared.size === 0) {
-    return new Params(entries, files, objects, empty);
+    return new Params(entries, files, objects, empty, [], nulls);
   }
   const last = new Map<string, string>();
   for (const [key, value] of entries) {
@@ -311,13 +319,14 @@ function selectDeclared(
       last.set(key, value);
     }
   }
-  return new Params([...entries.filter(([key]) => !declared.has(key)), ...last], files, objects, empty);
+  return new Params([...entries.filter(([key]) => !declared.has(key)), ...last], files, objects, empty, [], nulls);
 }
 
 type Flattening = {
   entries: [string, string][];
   objects: Set<string>;
   empty: Set<string>;
+  nulls: Set<string>;
   paths: number;
   units: number;
 };
@@ -360,7 +369,10 @@ function flatten(value: unknown, state: Flattening, prefix = "", depth = 0): voi
       flatten(item, state, prefix === "" ? key : `${prefix}[${key}]`, depth + 1);
     }
   } else if (prefix !== "") {
-    // Scalars only here: strings as they are, numbers and booleans as JSON writes them, null as blank.
+    // Scalars only here: strings as they are, numbers and booleans as JSON writes them, null as blank (and noted).
+    if (value === null) {
+      state.nulls.add(prefix);
+    }
     state.entries.push([prefix, typeof value === "string" ? value : value === null ? "" : JSON.stringify(value)]);
   }
 }
@@ -377,10 +389,13 @@ export function limitParam(p: Params, fallback: number, max: number): number {
   return limit === undefined ? fallback : Math.min(Math.abs(Number.parseInt(limit, 10) || 0), max);
 }
 
-// Rails' boolean casting: blank is absent, "0", "f", "false" and "off" are false, anything else is true.
+// ActiveModel::Type::Boolean#cast's false values, each in its own case only ('False' casts to true), with blank.
+export const RAILS_FALSE: readonly string[] = ["", "0", "f", "F", "false", "FALSE", "off", "OFF"];
+
+// Rails' boolean casting: blank is absent, a value of RAILS_FALSE is false, anything else is true.
 export function parseBoolean(value: string | undefined): boolean | undefined {
   if (value === undefined || value === "") {
     return undefined;
   }
-  return !["0", "f", "false", "off"].includes(value.toLowerCase());
+  return !RAILS_FALSE.includes(value);
 }

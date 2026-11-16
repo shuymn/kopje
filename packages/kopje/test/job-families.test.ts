@@ -15,6 +15,7 @@ import { ALICE, create, followed, mastodonNote, remove, setup, statusRow } from 
 import { failItem } from "./job-item-helpers";
 import { QueueSim } from "./queue-sim";
 import { act, world } from "./remote-suspension-helpers";
+import { reply, serveNote, startWalk, storedOf, storedRoot, withReplies } from "./reply-walk-helpers";
 import { remoteAccount } from "./status-helpers";
 
 // The families of a jobs round (jobsRound in src/jobs/queue.ts) are separate Store calls and error boundaries: one
@@ -634,6 +635,62 @@ describe("Worker isolation of the round", () => {
     expect(await sql(t.store, claimedQuotes)).toHaveLength(QUOTE_ROUND);
     expect(t.queue.retries).toBe(0);
     expect(t.queue.pending.map((m) => m.body)).toEqual([JOBS]);
+  }, 60_000);
+});
+
+describe("the replies family (RES-5)", () => {
+  // A walk with one reply to store, a collection sync (bob's Follow stored him) and more quotes than one round.
+  async function walking() {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const bobId = await followed(t, bob);
+    await dueQuotes(t, bobId, QUOTE_ROUND + 1);
+    const note = mastodonNote(bob);
+    const answer = reply(t.web, bob, note.id);
+    serveNote(t.web, withReplies(t.web, note, [answer.id]));
+    // Started at the Store's time (the real clock here), not NOW: a walk older than a day is dropped at its claim.
+    await startWalk(t.store, await storedRoot(t, bob, note), Date.now());
+    return { t, answer };
+  }
+
+  const syncs = "SELECT account_id, due_at, attempts FROM collection_syncs";
+  const claimedQuotes = "SELECT 1 FROM quotes WHERE generation > 0";
+  const env = (t: Awaited<ReturnType<typeof setup>>) => ({ ...t.env, MAINTENANCE: "off" }) as unknown as Env;
+
+  it("walks when every other family throws: nine boundaries, each logged once", async () => {
+    const { t, answer } = await walking();
+    const failing = failingStore(t.store, [...STORE_CALLS, "claimCollectionSync", "claimQuotes"], () => {
+      return new Error("test: fails");
+    });
+    const failures = await failuresOf(() =>
+      jobsRound(
+        env(t),
+        inboxDeps(() => failing, t.web.loader),
+      ),
+    );
+    expect(failures).toEqual(
+      [...STORE_JOB_FAMILIES.map(({ family }) => family), "collections", "quotes"].map(
+        (family) => expect.objectContaining({ family }) as unknown,
+      ),
+    );
+    expect(failures.length + 1).toBe(9);
+    expect(await storedOf(t.store, [answer.id])).toEqual([answer.id]);
+  }, 60_000);
+
+  it("stops no other family when it throws", async () => {
+    const { t, answer } = await walking();
+    const before = await sql(t.store, syncs);
+    const failing = failingStore(t.store, ["claimReplyWalk"], () => new Error("test: fails"));
+    const failures = await failuresOf(() =>
+      jobsRound(
+        env(t),
+        inboxDeps(() => failing, t.web.loader),
+      ),
+    );
+    expect(failures).toEqual([expect.objectContaining({ family: "replies" })]);
+    expect(await sql(t.store, syncs)).not.toEqual(before);
+    expect(await sql(t.store, claimedQuotes)).toHaveLength(QUOTE_ROUND);
+    expect(await storedOf(t.store, [answer.id])).toEqual([]);
   }, 60_000);
 });
 
