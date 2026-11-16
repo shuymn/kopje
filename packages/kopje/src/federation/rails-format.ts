@@ -244,7 +244,7 @@ function names(header: string): string[] {
     const type = cut === -1 ? header : rubyStrip(header.slice(0, cut));
     return BLANK.test(type) ? [] : [...(starred(type) ?? [type])];
   }
-  const items: { index: number; name: string; q: number }[] = [];
+  const items: { name: string; q: number }[] = [];
   for (const raw of header.match(ITEM) ?? []) {
     const parts = raw.split(Q_SEPARATOR);
     while (parts.at(-1) === "") {
@@ -255,10 +255,11 @@ function names(header: string): string[] {
       continue;
     }
     for (const name of starred(type) ?? [type]) {
-      items.push({ index: items.length, name, q: weight(name, parts[1]) });
+      items.push({ name, q: weight(name, parts[1]) });
     }
   }
-  items.sort((a, b) => b.q - a.q || a.index - b.index);
+  // Array#sort is stable, so items of equal q (two infinities included: NaN compares as equal) keep their order.
+  items.sort((a, b) => b.q - a.q);
   const xml = items.findIndex((item) => item.name === "text/xml");
   if (xml !== -1) {
     items.splice(xml, 1);
