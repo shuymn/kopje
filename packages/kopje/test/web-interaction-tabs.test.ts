@@ -744,7 +744,8 @@ describe("a status page’s tabs as pages", () => {
     });
   });
 
-  it("mark a page with a cursor noindex, follow, with the tab’s cursor-less URL canonical, and load the L1 bundle", async () => {
+  // Every page of these tabs is noindex: Mastodon 4.7.5 serves its web app's shell at their URLs (home#index).
+  it("mark every page noindex, with the tab’s cursor-less URL canonical, and load the L1 bundle", async () => {
     const h = await community(["alice"]);
     const focal = await seedStatus(h.store, { accountId: h.users.alice.id, visibility: "public" });
     const replies = await h.request(`/@alice/${focal}`);
@@ -753,10 +754,10 @@ describe("a status page’s tabs as pages", () => {
     for (const kind of ["reblogs", "favourites", "quotes"] as const) {
       const path = `/@alice/${focal}/${kind}`;
       for (const [q, robots] of [
-        ["", []],
-        ["?max_id=200000000000000000", ["noindex, follow"]],
-        ["?min_id=1", ["noindex, follow"]],
-        ["?max_id=x1", []],
+        ["", ["noindex"]],
+        ["?max_id=200000000000000000", ["noindex"]],
+        ["?min_id=1", ["noindex"]],
+        ["?max_id=x1", ["noindex"]],
       ] as const) {
         const response = await h.request(path + q);
         const doc = parseHtml(await response.text());

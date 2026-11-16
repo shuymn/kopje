@@ -36,6 +36,14 @@ states the rules every page follows.
   acting. The edit history's notice that older versions are left out is the one exception (VIS-4).
 - **The system colour scheme.** Pages follow `prefers-color-scheme` and declare `color-scheme`. There is no theme
   switch.
+- **Robots as Mastodon answers the same URL.** A page carries `noindex` on every page where Mastodon 4.7.5 serves its
+  web app's shell at the same URL (`home#index`: a post's Boosts, Favourites and Quotes tabs, the handoff pages, and
+  every page under the `/@username@domain` spelling) or its own page sends it (the hashtag, followers and following
+  pages and the embed; a collection's page sends `noindex, noarchive`, as Mastodon's). Where Mastodon renders its own
+  page without it (a profile and its tabs, the Featured tab, a post's page, about, the privacy policy and the terms of
+  service), the first page carries none, and a page with a cursor, which Mastodon does not serve, `noindex, follow`
+  ([mastodon-deviations.md](mastodon-deviations.md), "Public pages"). The rule is `Robots`
+  (`src/web/components/layout.tsx`); `test/web-robots.test.ts` holds each page's Mastodon route.
 
 ## UI rules
 

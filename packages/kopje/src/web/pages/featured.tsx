@@ -7,7 +7,7 @@ import type { Site } from "../../domain/web-pages/site";
 import { AccountFeed } from "../components/accounts";
 import { Tabs } from "../components/basics";
 import { FeaturedTags } from "../components/featured";
-import { Layout } from "../components/layout";
+import { Layout, Robots } from "../components/layout";
 import { ProfileHead } from "../components/profile";
 import { plainText } from "../safe-html";
 import { useUi } from "../ui";
@@ -26,15 +26,17 @@ export type FeaturedView = {
   cursor: PageCursor;
   paging: Paging;
   site: Site;
+  // Mastodon serves its web app's shell at this URL (app/public-pages.tsx appShellHandle).
+  shell: boolean;
 };
 
 // /@username/featured: the profile's head and tabs, the account's featured hashtags, then the accounts it endorses,
 // paged both ways.
-export const FeaturedPage: FC<FeaturedView> = ({ account, tags, accounts, cursor, paging, site }) => {
+export const FeaturedPage: FC<FeaturedView> = ({ account, tags, accounts, cursor, paging, site, shell }) => {
   const { m } = useUi();
   const { domain } = site;
   const base = featuredPath(account.username);
-  // A page with a cursor names its cursor-less page as canonical, and is not indexed.
+  // A page with a cursor names its cursor-less page as canonical.
   const canonical = `https://${domain}${base}`;
   // The page's emoji allowance, spent in document order: the profile card, then the endorsed accounts.
   const allowance = emojiAllowance();
@@ -49,7 +51,7 @@ export const FeaturedPage: FC<FeaturedView> = ({ account, tags, accounts, cursor
       head={
         <>
           <meta name="description" content={plainText(account.note)} />
-          {cursor === null ? null : <meta name="robots" content="noindex, follow" />}
+          <Robots shell={shell} paged={cursor !== null} />
           <link rel="canonical" href={canonical} />
         </>
       }

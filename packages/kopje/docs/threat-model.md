@@ -1928,8 +1928,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   together by one route helper. The bundle writes no HTML, script or script URL, and is served directly (no redirect) as
   JavaScript with `nosniff`. Their 404 and 410 pages and every other page keep the script-free CSP.
   `src/app/web-headers.ts`, `src/app/public-pages.tsx`, `scripts/build-assets.mjs`; `test/web-pages.test.ts` ("sends a
-  CSP naming only the L1 bundle"), `test/web-interaction-tabs.test.ts` ("mark a page with a cursor noindex, follow, with
-  the tab’s cursor-less URL canonical, and load the L1 bundle"), `test-node/client-assets.test.ts` ("is committed as the
+  CSP naming only the L1 bundle"), `test/web-interaction-tabs.test.ts` ("mark every page noindex, with the tab’s
+  cursor-less URL canonical, and load the L1 bundle"), `test-node/client-assets.test.ts` ("is committed as the
   bytes a rebuild gives"), `test-node/stylesheet.test.ts` ("serves the fingerprinted assets as immutable"). The copy
   control: _Enforced (main):_ every public page reads, links and submits its forms without script, and the bundle's one
   control is the copy button of a handle, a status URL or embed code ([web-pages.md](web-pages.md)): rendered `hidden`

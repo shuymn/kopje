@@ -732,9 +732,11 @@ WEB-5, WEB-7):
 
 Public pages ([web-pages.md](web-pages.md)):
 
-- A profile, a post (with its tabs) and the featured page send no `robots` meta on their first page, as Mastodon's for
-  an account that does not ask for `noindex` (none does, see Accounts); their pages with a cursor, which Mastodon does
-  not serve, send `noindex, follow`. Accepted, 2026-11-16.
+- A profile (with its tabs), the Featured tab and a post's page send no `robots` meta on their first page, as
+  Mastodon's own pages for an account that does not ask for `noindex` (none does, see Accounts); their pages with a
+  cursor, which Mastodon does not serve, send `noindex, follow`. A post's other tabs, the handoff pages and the
+  `/@username@domain` spelling send `noindex` on every page, as Mastodon's web app shell does at those URLs
+  ([web-pages.md](web-pages.md), "Robots"). Accepted, 2026-11-16.
 
 Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`):
 

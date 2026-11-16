@@ -92,6 +92,13 @@ function withVary(response: Response): Response {
   return copy;
 }
 
+// Whether Mastodon 4.7.5 answers a page under this handle with its web app's shell (Robots): its account and status
+// routes take a username without `@` or `.` (config/routes.rb:160-177), so `/@username@domain/…` reaches home#index
+// (:179). A local username has neither (LOCAL_USERNAME), so only the spelling with the domain does.
+function appShellHandle(handle: string): boolean {
+  return handle.slice(1).includes("@");
+}
+
 export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
   const app = new Hono<{ Bindings: Env }>();
   // A page whose first Store call is a page read through pageCall, which decides the host (WEB-6, app/app.ts).
@@ -205,6 +212,7 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
         paging={page.paging}
         site={site}
         actorUri={`https://${site.domain}/ap/users/${page.account.username}`}
+        shell={appShellHandle(handle)}
       />,
     );
   };
@@ -288,6 +296,7 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
         cursor={cursor}
         paging={page.paging}
         site={page.site}
+        shell={appShellHandle(c.req.param("handle") ?? "")}
       />,
     );
   });
@@ -357,6 +366,7 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
         site={page.site}
         embed={embedHtml(page.value, page.site.domain)}
         thread={page.thread === null ? undefined : { ...page.thread, cursor }}
+        shell={appShellHandle(c.req.param("handle") ?? "")}
       />,
     );
   };
