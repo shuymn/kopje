@@ -335,7 +335,16 @@ describe("the route table's declarations", () => {
         "GET /api/v1/peers/search",
       ].toSorted(),
     );
-    expect(declared(ANONYMOUS)).toHaveLength(20);
+    expect(declared(ANONYMOUS)).toHaveLength(26);
+    // Of them, the collections reads (cache_if_unauthenticated! in CollectionsController#index and #show and
+    // InCollectionsController#index), under both prefixes.
+    expect(declared(ANONYMOUS).filter((name) => name.includes("collections"))).toEqual(
+      ["/api/v1", "/api/v1_alpha"].flatMap((prefix) => [
+        `GET ${prefix}/accounts/:id/collections`,
+        `GET ${prefix}/accounts/:id/in_collections`,
+        `GET ${prefix}/collections/:id`,
+      ]),
+    );
     expect(declared(ANONYMOUS_BY_LANGUAGE).toSorted()).toEqual([
       "GET /api/v1/trends/links",
       "GET /api/v1/trends/statuses",
@@ -345,7 +354,7 @@ describe("the route table's declarations", () => {
       "GET /api/v1/admin/trends/statuses",
     ]);
     // Every other route is private.
-    expect(declared(PRIVATE)).toHaveLength(ROUTES.length - 38);
+    expect(declared(PRIVATE)).toHaveLength(ROUTES.length - 44);
   });
 
   it("only routes that never read a token declare EVERYONE", () => {

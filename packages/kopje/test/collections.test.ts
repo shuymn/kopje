@@ -273,6 +273,45 @@ describe("collections: routes", () => {
     }
   });
 
+  // WEB-7: CollectionsController#index and #show, and InCollectionsController#index, run cache_if_unauthenticated!
+  // (Mastodon 4.7.5): a 2xx without Authorization is public for 15 s; with one, an error, or a write, private; each
+  // varies by Authorization.
+  it("caches the anonymous reads as Mastodon's index and show, and nothing else", async () => {
+    const { h, alice, bob } = await world();
+    const PUBLIC = "max-age=15, public, stale-while-revalidate=30, stale-if-error=86400";
+    const PRIVATE = "private, no-store";
+    for (const prefix of PREFIXES) {
+      const made = await create(h, alice, { account_ids: [bob.id] }, prefix);
+      const id = made.body.collection.id;
+      const missing = "900000000000000000";
+      const seen: [string, Answer][] = [
+        ["create", made],
+        ["show", await call(h, "GET", `${prefix}/collections/${id}`)],
+        ["list", await call(h, "GET", `${prefix}/accounts/${alice.id}/collections`)],
+        ["show, signed in", await call(h, "GET", `${prefix}/collections/${id}`, bob.token)],
+        ["list, signed in", await call(h, "GET", `${prefix}/accounts/${alice.id}/collections`, bob.token)],
+        ["show, not found", await call(h, "GET", `${prefix}/collections/${missing}`)],
+        ["in_collections, no user", await call(h, "GET", `${prefix}/accounts/${bob.id}/in_collections`)],
+        ["in_collections", await call(h, "GET", `${prefix}/accounts/${bob.id}/in_collections`, bob.token)],
+        ["update", await call(h, "PATCH", `${prefix}/collections/${id}`, alice.token, { name: "n" })],
+      ];
+      expect(seen.map(([name, answer]) => [name, answer.status, answer.headers.get("cache-control")])).toEqual([
+        ["create", 200, PRIVATE],
+        ["show", 200, PUBLIC],
+        ["list", 200, PUBLIC],
+        ["show, signed in", 200, PRIVATE],
+        ["list, signed in", 200, PRIVATE],
+        ["show, not found", 404, PRIVATE],
+        ["in_collections, no user", 422, PRIVATE],
+        ["in_collections", 200, PRIVATE],
+        ["update", 200, PRIVATE],
+      ]);
+      expect(seen.map(([name, answer]) => [name, answer.headers.get("vary")])).toEqual(
+        seen.map(([name]) => [name, "Authorization"]),
+      );
+    }
+  });
+
   it("presents a collection as REST::CollectionSerializer, its tag shallow", async () => {
     const { h, alice, bob } = await world();
     const collection = await created(h, alice, {

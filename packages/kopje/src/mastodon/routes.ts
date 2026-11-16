@@ -76,16 +76,17 @@ const del = route("DELETE");
 
 // Collections (mastodon/collections.ts) under `prefix`: /api/v1, and /api/v1_alpha, where every collections and items
 // route is deprecated (`deprecate_api '2026-06-10', if: :alpha_path?`) but in_collections, whose controller has no
-// DeprecationConcern.
+// DeprecationConcern. The reads are cached as Mastodon's index and show (cache_if_unauthenticated!): in_collections
+// needs a user, so it is never public in practice.
 function collectionRoutes(prefix: "/api/v1" | "/api/v1_alpha"): Route[] {
   const deprecated = (r: Route): Route => (prefix === "/api/v1_alpha" ? { ...r, deprecation: "@1781049600" } : r);
   const read = { scope: "read:collections", optional: true } as const;
   const write = { scope: "write:collections" } as const;
   return [
-    deprecated(get(`${prefix}/accounts/:id/collections`, read, collections.accountCollections)),
-    get(`${prefix}/accounts/:id/in_collections`, read, collections.inCollections),
+    deprecated(get(`${prefix}/accounts/:id/collections`, read, collections.accountCollections, ANONYMOUS)),
+    get(`${prefix}/accounts/:id/in_collections`, read, collections.inCollections, ANONYMOUS),
     deprecated(post(`${prefix}/collections`, write, collections.createCollection)),
-    deprecated(get(`${prefix}/collections/:id`, read, collections.showCollection)),
+    deprecated(get(`${prefix}/collections/:id`, read, collections.showCollection, ANONYMOUS)),
     deprecated(patch(`${prefix}/collections/:id`, write, collections.updateCollection)),
     deprecated(put(`${prefix}/collections/:id`, write, collections.updateCollection)),
     deprecated(del(`${prefix}/collections/:id`, write, collections.deleteCollection)),
