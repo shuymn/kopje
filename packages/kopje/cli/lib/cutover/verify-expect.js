@@ -207,15 +207,20 @@ function blockedDomainOf(raw) {
 }
 
 // A remote account's domain as Kopje stores it, worked out here on its own: the actor id's hostname (the URL parser's,
-// so lowercase and without the port), IDNA to ASCII, one trailing dot dropped. null for an id that is not http or
-// https, which the converter refuses (the Worker fetches actors over https only, and such a host is no domain name).
+// so lowercase and without the port), IDNA to ASCII, every trailing dot dropped (its empty last labels, which costs
+// no more than the labels themselves). null for an id that is not http or https, which the converter refuses (the
+// Worker fetches actors over https only, and such a host is no domain name).
 /** @param {string} uri @returns {string | null} */
 function accountDomainOf(uri) {
   const url = new URL(uri);
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     return null;
   }
-  const host = url.hostname.replace(/\.$/, "");
+  const labels = url.hostname.split(".");
+  while (labels.length > 1 && labels.at(-1) === "") {
+    labels.pop();
+  }
+  const host = labels.join(".");
   return domainToASCII(host) || host;
 }
 

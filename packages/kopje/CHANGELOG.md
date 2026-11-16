@@ -306,11 +306,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   of `example.com` covers a fetch, an inbox, an actor and a delivery on `example.com..`, and an actor whose id is there
   claims its handle at `example.com`, where Mastodon drops a single trailing dot
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Remote suspension and instance domain blocks") (#1734).
-  Actor ids, inboxes and stored handles keep their spelling. No Store migration and no `wrangler.jsonc` change.
+  The cutover converts such an actor's domain the same way, and `verify-conversion` expects it. Actor ids, inboxes and
+  stored handles keep their spelling: a Store converted before keeps the domains it holds until a refresh confirms
+  each account ([docs/cutover.md](docs/cutover.md), Verification). No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 
-- The cutover stores a remote account's domain without the port or trailing dot of its actor id's host, as Kopje
+- The cutover stores a remote account's domain without the port or trailing dots of its actor id's host, as Kopje
   stores one, and `verify-conversion` compares the domain. A Store converted before keeps such domains until a refresh
   confirms each account; the query in [docs/cutover.md](docs/cutover.md) (Verification) lists them (#1725). A remote
   actor id that is not an http or https URL, which the Worker never stores, now stops the conversion
