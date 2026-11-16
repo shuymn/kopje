@@ -912,6 +912,54 @@ describe("editing", () => {
     expect((await getJson(h, `${path}/source`, alice.token)).body).toMatchObject({ text: "fourth", spoiler_text: "" });
   });
 
+  // UpdateStatusService: significant_changes? judges the text as sent, before Status#prepare_contents strips it on
+  // save, so surrounding whitespace alone makes an edit.
+  it("records an edit that differs only by surrounding whitespace, as Mastodon judges it", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const status = await post(h, alice, { status: "same" });
+    const path = `/api/v1/statuses/${status.id}`;
+    h.now.mockReturnValue(NOW + 60_000);
+    const edited = await posting(h, alice.token, { status: " same " }, { method: "PUT", path });
+    expect(edited).toMatchObject({
+      status: 200,
+      body: { content: "<p>same</p>", edited_at: new Date(NOW + 60_000).toISOString() },
+    });
+    const history = await getJson<{ content: string }[]>(h, `${path}/history`);
+    expect(history.body.map((entry) => entry.content)).toEqual(["<p>same</p>", "<p>same</p>"]);
+    expect((await getJson(h, `${path}/source`, alice.token)).body).toMatchObject({ text: "same" });
+  });
+
+  // A warning a blank-text edit keeps is the stored one, compared, counted and written as stored: a warning stored
+  // with surrounding whitespace (an imported row, or one written before posts were stripped) stays, and the same
+  // request sent again changes nothing.
+  it("keeps a stored warning a blank-text edit keeps, and records a repeated edit once", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const status = await post(h, alice, { status: "same", spoiler_text: "cw", sensitive: false });
+    await sql(h.store, "UPDATE statuses SET spoiler_text = ' cw ', sensitive = 0 WHERE id = ?", status.id);
+    const path = `/api/v1/statuses/${status.id}`;
+    const edit = async (spoiler_text: string) => {
+      const answer = await posting(h, alice.token, { status: "", spoiler_text }, { method: "PUT", path });
+      expect(answer.status).toBe(200);
+      const [row] = await sql<{ spoiler_text: string; edited_at: string | null; edits: number }>(
+        h.store,
+        `SELECT spoiler_text, edited_at, (SELECT count(*) FROM status_edits WHERE status_id = s.id) AS edits
+				FROM statuses s WHERE id = ?`,
+        status.id,
+      );
+      return row;
+    };
+    // The text the warning sent becomes is the stored text, and the kept warning is the stored one: no change.
+    expect(await edit("same")).toEqual({ spoiler_text: " cw ", edited_at: null, edits: 0 });
+    expect(await edit("same")).toEqual({ spoiler_text: " cw ", edited_at: null, edits: 0 });
+    h.now.mockReturnValue(NOW + 60_000);
+    const changed = { spoiler_text: " cw ", edited_at: new Date(NOW + 60_000).toISOString(), edits: 2 };
+    expect(await edit("other")).toEqual(changed);
+    h.now.mockReturnValue(NOW + 120_000);
+    expect(await edit("other")).toEqual(changed);
+  });
+
   it("keeps a removed mention as a silent one, and cannot edit someone else's status", async () => {
     const h = await community(["alice", "bob"]);
     const { alice, bob } = h.users;

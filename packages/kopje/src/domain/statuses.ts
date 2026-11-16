@@ -1040,9 +1040,13 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   // converted so by such an edit, as Mastodon converts its own. Every later step uses the pair written.
   const blankSent = blankText(sentText);
   const keepsWarning = blankSent && quote === undefined;
-  // Status#prepare_contents: the pair written is stripped.
-  const text = rubyStrip(keepsWarning ? sentSpoiler : sentText);
-  const spoilerText = rubyStrip(keepsWarning ? current.spoiler_text : sentSpoiler);
+  // The pair as update_immediate_attributes! assigns it, on which significant_changes? judges whether the edit
+  // changes the status; Status#prepare_contents strips it only as it is saved, so the pair written is stripped. A kept
+  // warning is the stored one, compared, counted and written as stored (an imported one is not rewritten).
+  const assignedText = keepsWarning ? sentSpoiler : sentText;
+  const assignedSpoiler = keepsWarning ? current.spoiler_text : sentSpoiler;
+  const text = rubyStrip(assignedText);
+  const spoilerText = keepsWarning ? current.spoiler_text : rubyStrip(sentSpoiler);
   // The counted length of a blank text, which the Worker leaves to the Store, and the raw bound (RES-1), on the pair
   // written: a kept warning is the stored one.
   if (blankSent && (exceedsRawLength(text, spoilerText) || statusLength(text, spoilerText) > MAX_STATUS_CHARACTERS)) {
@@ -1070,8 +1074,8 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
     );
   };
   const unchanged =
-    text === (current.source_text ?? "") &&
-    spoilerText === current.spoiler_text &&
+    assignedText === (current.source_text ?? "") &&
+    assignedSpoiler === current.spoiler_text &&
     (sensitive ? 1 : 0) === current.sensitive &&
     language === current.language &&
     JSON.stringify(media) === JSON.stringify(currentMedia.map((m) => m.id)) &&
