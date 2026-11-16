@@ -898,6 +898,13 @@ describe("reading a collection: raw entries, skips and reading again (RepliesRea
 
   const readsOf = (inputs: readonly ReplyStepInput[], uri: string) =>
     inputs.filter((input) => input.step.uri === uri).map(({ step }) => ({ stage: step.stage, skip: step.skip }));
+  // A step as handed out, without its number.
+  const placeOf = ({ step }: ReplyStepInput) => ({
+    uri: step.uri,
+    stage: step.stage,
+    fetch: step.fetch,
+    skip: step.skip,
+  });
 
   it("reads a page of 400 entries with no next past its first 200 in the same walk", async () => {
     const { t, root, bob } = await world();
@@ -996,9 +1003,7 @@ describe("reading a collection: raw entries, skips and reading again (RepliesRea
     t.web.serve(next, { "@context": AS, id: next, type: "CollectionPage", items: [v.id] });
     const { first } = await pagedWalk(t, root, note, [entries], next);
     const inputs = await countedRounds(t);
-    expect(
-      inputs.filter((input) => input.step.uri === note.id && input.step.stage === "page").map(({ step }) => step),
-    ).toEqual([
+    expect(inputs.filter((input) => input.step.uri === note.id && input.step.stage === "page").map(placeOf)).toEqual([
       { uri: note.id, stage: "page", fetch: first, skip: 0 },
       { uri: note.id, stage: "page", fetch: first, skip: REPLY_READ_ENTRIES },
       { uri: note.id, stage: "page", fetch: next, skip: 0 },
@@ -1016,7 +1021,7 @@ describe("reading a collection: raw entries, skips and reading again (RepliesRea
     serveNote(t.web, withReplies(t.web, x, entries as string[]));
     const { id } = await walkOf(t, root, note, [x.id]);
     const inputs = await countedRounds(t);
-    expect(inputs.filter((input) => input.step.uri === x.id).map(({ step }) => step)).toEqual([
+    expect(inputs.filter((input) => input.step.uri === x.id).map(placeOf)).toEqual([
       { uri: x.id, stage: "status", fetch: x.id, skip: 0 },
       { uri: x.id, stage: "replies", fetch: x.id, skip: REPLY_READ_ENTRIES },
     ]);
@@ -1055,7 +1060,7 @@ describe("reading a collection: raw entries, skips and reading again (RepliesRea
       }) as typeof fetch,
     };
     const inputs = await countedRounds(t, loader);
-    expect(inputs.filter((input) => input.step.uri === x.id).map(({ step }) => step)).toEqual([
+    expect(inputs.filter((input) => input.step.uri === x.id).map(placeOf)).toEqual([
       { uri: x.id, stage: "status", fetch: x.id, skip: 0 },
       { uri: x.id, stage: "replies", fetch: x.id, skip: REPLY_READ_ENTRIES },
       { uri: x.id, stage: "collection", fetch: collection, skip: REPLY_READ_ENTRIES },

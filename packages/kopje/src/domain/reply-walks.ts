@@ -39,7 +39,8 @@ import { viewable } from "./statuses";
 // reads, and at every stage but the status one of the walk's WALK_PAGES. A charge stays whatever the step's outcome, a
 // lost lease or a round that died included, so a walk takes at most NODE_ATTEMPTS × WALK_STATUSES + WALK_PAGES steps
 // however its rounds end, with no counter of claims. A completion hands out a next node only when the Worker says it
-// will fetch it (`more`); the round's last hands out nothing.
+// will fetch it (`more`); the round's last hands out nothing. Each hand-out takes the walk's next number, and only the
+// completion carrying the number of the one awaited is applied, once.
 //
 // Only statuses linked to the root are stored (ID-2): a node is valid once its parent is a valid node of the same walk
 // and its stored row links to that node's status (in_reply_to_id, the link the context follows). The root is valid
@@ -75,9 +76,10 @@ const STAGES = ["status", "collection", "page", "replies"] as const;
 type WalkStage = (typeof STAGES)[number];
 const [PENDING, DONE, DEFERRED] = [0, 1, 2];
 
-// A node handed out: its URI, its stage, the document the step fetches (the URI itself at the status stage) and the
-// raw entries of that document's chain the step passes over (`skip`, RepliesRead).
-export type ReplyStep = { uri: string; stage: WalkStage; fetch: string; skip: number };
+// A node handed out: its URI, its stage, the document the step fetches (the URI itself at the status stage), the raw
+// entries of that document's chain the step passes over (`skip`, RepliesRead), and the hand-out's number in the walk,
+// which its completion hands back.
+export type ReplyStep = { uri: string; stage: WalkStage; fetch: string; skip: number; handout: number };
 
 // A walk a round claimed: the claim's token, which every completion hands back, and its first node, charged. pending:
 // another walk is due.
@@ -127,8 +129,17 @@ export type ReplyStepInput = {
 export type AuthorNeed = { uri: string; refresh: boolean; revision?: DocumentRevision };
 export type ReplyStepAnswer = { next: ReplyStep | null; need: AuthorNeed | null; done: boolean };
 
-// The walk's counters, changed in memory by a step and written once (saveWalk).
-type Walk = { id: string; nextSeq: number; nodes: number; pages: number; resultCount: number };
+// The walk's counters, changed in memory by a step and written once (saveWalk); handout: the number of the hand-out
+// whose completion is awaited, null once it is applied.
+type Walk = {
+  id: string;
+  nextSeq: number;
+  nodes: number;
+  pages: number;
+  resultCount: number;
+  handouts: number;
+  handout: number | null;
+};
 
 type Node = {
   uri: string;
@@ -141,25 +152,43 @@ type Node = {
 };
 
 function walkOf(db: Db, statusId: string, token: string): Walk | undefined {
-  const row = db.first<{ next_seq: number; nodes: number; pages: number; result_count: number }>(
-    `SELECT next_seq, nodes, pages, result_count FROM reply_walks
+  const row = db.first<{
+    next_seq: number;
+    nodes: number;
+    pages: number;
+    result_count: number;
+    handouts: number;
+    handout: number | null;
+  }>(
+    `SELECT next_seq, nodes, pages, result_count, handouts, handout FROM reply_walks
 			WHERE status_id = ? AND token = ? AND due_at IS NOT NULL`,
     statusId,
     token,
   );
   return row === undefined
     ? undefined
-    : { id: statusId, nextSeq: row.next_seq, nodes: row.nodes, pages: row.pages, resultCount: row.result_count };
+    : {
+        id: statusId,
+        nextSeq: row.next_seq,
+        nodes: row.nodes,
+        pages: row.pages,
+        resultCount: row.result_count,
+        handouts: row.handouts,
+        handout: row.handout,
+      };
 }
 
 function saveWalk(db: Db, walk: Walk): void {
   db.run(
-    "UPDATE reply_walks SET next_seq = ?2, nodes = ?3, pages = ?4, result_count = ?5 WHERE status_id = ?1",
+    `UPDATE reply_walks SET next_seq = ?2, nodes = ?3, pages = ?4, result_count = ?5, handouts = ?6, handout = ?7
+			WHERE status_id = ?1`,
     walk.id,
     walk.nextSeq,
     walk.nodes,
     walk.pages,
     walk.resultCount,
+    walk.handouts,
+    walk.handout,
   );
 }
 
@@ -192,9 +221,10 @@ function finish(db: Db, walkId: string, now: number): void {
   db.run("UPDATE reply_walks SET due_at = NULL, finished_at = ?2, token = NULL WHERE status_id = ?1", walkId, now);
 }
 
-// The next pending node, charged: an attempt, and a page at every stage but the status. A node with no attempt
-// left, or at those stages once WALK_PAGES are spent, is ended without a fetch, and the next is taken: each turn of the
-// loop ends a pending node, so it reads at most WALK_STATUSES of them. null: none is pending.
+// The next pending node, charged: an attempt, and a page at every stage but the status; it takes the walk's next
+// hand-out number, the only one a completion is then applied for. A node with no attempt left, or at those stages once
+// WALK_PAGES are spent, is ended without a fetch, and the next is taken: each turn of the loop ends a pending node, so
+// it reads at most WALK_STATUSES of them. null: none is pending.
 function handOut(db: Db, walk: Walk): ReplyStep | null {
   for (;;) {
     const node = db.first<{ uri: string; stage: number; fetch: string | null; skip: number; attempts: number }>(
@@ -214,7 +244,15 @@ function handOut(db: Db, walk: Walk): ReplyStep | null {
     if (page) {
       walk.pages += 1;
     }
-    return { uri: node.uri, stage: STAGES[node.stage]!, fetch: node.fetch ?? node.uri, skip: node.skip };
+    walk.handouts += 1;
+    walk.handout = walk.handouts;
+    return {
+      uri: node.uri,
+      stage: STAGES[node.stage]!,
+      fetch: node.fetch ?? node.uri,
+      skip: node.skip,
+      handout: walk.handouts,
+    };
   }
 }
 
@@ -530,25 +568,22 @@ export const claimReplyWalk = writeOperation.atStoreTime("now")<{ now: number },
 });
 
 // Applies what the Worker fetched for a node handed out under the claim `token`, in one transaction, and hands out the
-// next node when `more` says the Worker will fetch it. A completion of a claim that is no longer the walk's, or of a
-// node not at that stage, document and skip, changes nothing (done). When no node is left pending, the walk finishes.
+// next node when `more` says the Worker will fetch it. Only the completion of the hand-out awaited is applied, once: one
+// of a claim that is no longer the walk's, of an earlier hand-out, or repeated after it was applied changes nothing
+// (done), whatever node, stage, document and skip it names. A completion answered with a need is applied when it comes
+// again with the author. When no node is left pending, the walk finishes.
 export const completeReplyStep = writeOperation.atStoreTime("now")<ReplyStepInput, ReplyStepAnswer>((db, input) => {
   const walk = walkOf(db, input.statusId, input.token);
-  const node = walk === undefined ? undefined : nodeOf(db, walk.id, input.step.uri);
-  if (
-    walk === undefined ||
-    node === undefined ||
-    node.state !== PENDING ||
-    STAGES[node.stage] !== input.step.stage ||
-    (node.fetch ?? node.uri) !== input.step.fetch ||
-    node.skip !== input.step.skip
-  ) {
+  const node =
+    walk === undefined || walk.handout !== input.step.handout ? undefined : nodeOf(db, walk.id, input.step.uri);
+  if (walk === undefined || node === undefined) {
     return { next: null, need: null, done: true };
   }
   const need = applyStep(db, walk, node, input);
   if (need !== null) {
     return { next: null, need, done: false };
   }
+  walk.handout = null;
   const next = input.more ? handOut(db, walk) : null;
   saveWalk(db, walk);
   if (next === null && !hasPending(db, walk.id)) {
@@ -607,7 +642,8 @@ export const startRepliesRefresh = userWriteOperation.atStoreTime("now")<{ id: s
 		VALUES (?1, 0, ?2, ?3, ?3, 1, 1)
 		ON CONFLICT (status_id) DO UPDATE SET kind = 0,
 			refresh_id = COALESCE(reply_walks.refresh_id, excluded.refresh_id), queued_at = ?3, due_at = ?3,
-			finished_at = NULL, token = NULL, next_seq = 1, nodes = 1, pages = 0, result_count = 0`,
+			finished_at = NULL, token = NULL, next_seq = 1, nodes = 1, pages = 0, result_count = 0, handouts = 0,
+			handout = NULL`,
     statusId,
     newRefreshId(),
     now,

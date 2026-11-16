@@ -6,9 +6,11 @@
 --                         latest start, the pacing record), due_at (when a round may claim it; NULL once finished),
 --                         finished_at (NULL while it runs), token (the claim of the round holding it, a UUID), and its
 --                         counters: next_seq (the next node's place), nodes (recorded, the root included), pages (the
---                         collection documents handed out) and result_count (the statuses it created). Times are ms
---                         within 0 to 2^53 - 1 on the Store's clock. No reference to statuses: a status's deletion
---                         writes no walk row; the claim re-checks the root.
+--                         collection documents handed out), result_count (the statuses it created) and handouts (the
+--                         nodes handed out, which number them), with handout (the number of the hand-out whose
+--                         completion is awaited, NULL once it is applied). Counters start at 0 at every start. Times
+--                         are ms within 0 to 2^53 - 1 on the Store's clock. No reference to statuses: a status's
+--                         deletion writes no walk row; the claim re-checks the root.
 --   reply_walks_refresh   the API's lookup by refresh id.
 --   reply_walks_due       the claims' and the running count's seek by kind and due time.
 --   reply_walks_finished  the prune's seek of finished walks.
@@ -47,6 +49,8 @@ CREATE TABLE reply_walks (
   pages INTEGER NOT NULL DEFAULT 0 CHECK (typeof(pages) = 'integer' AND pages BETWEEN 0 AND 100000),
   result_count INTEGER NOT NULL DEFAULT 0
     CHECK (typeof(result_count) = 'integer' AND result_count BETWEEN 0 AND 100000),
+  handouts INTEGER NOT NULL DEFAULT 0 CHECK (typeof(handouts) = 'integer' AND handouts BETWEEN 0 AND 100000),
+  handout INTEGER CHECK (handout IS NULL OR (typeof(handout) = 'integer' AND handout BETWEEN 1 AND handouts)),
   CHECK ((kind = 0) = (refresh_id IS NOT NULL)),
   CHECK ((due_at IS NULL) = (finished_at IS NOT NULL))
 );

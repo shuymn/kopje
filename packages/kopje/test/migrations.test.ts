@@ -26,7 +26,7 @@ import { readOperation, sessionOperation, writeOperation } from "../src/domain/o
 import { QUOTE_AUTHOR_FETCHES } from "../src/domain/quotes";
 import { MAX_REMOTE_PINS } from "../src/domain/remote-collections";
 import { storeRemoteStatus } from "../src/domain/remote-statuses";
-import { NODE_ATTEMPTS, REPLY_READ_ENTRIES, WALK_PAGES } from "../src/domain/reply-walks";
+import { NODE_ATTEMPTS, REPLY_READ_ENTRIES, WALK_PAGES, WALK_STATUSES } from "../src/domain/reply-walks";
 import { actOnReport, fileRemoteReports, getAdminReport } from "../src/domain/reports";
 import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
 import { MAX_RAW_LENGTH } from "../src/domain/status-text";
@@ -12700,6 +12700,7 @@ describe("0099_reply_walks", () => {
     ["nodes", ["0", "100000"], ["100001", "-1"]],
     ["pages", ["0", "100000"], ["100001", "-1"]],
     ["result_count", ["0", "100000"], ["100001", "-1"]],
+    ["handouts", ["0", "100000"], ["100001", "-1", "1.5"]],
     ["token", [`'${TOKEN}'`, "NULL"], [`'${TOKEN}0'`, "X'00'", "36"]],
   ])("holds reply_walks.%s to its domain at each end", async (column, admitted, others) => {
     await runInDurableObject(freshStore(), async (_instance, state) => {
@@ -12741,6 +12742,28 @@ describe("0099_reply_walks", () => {
       sql.exec("UPDATE reply_walks SET due_at = NULL, finished_at = ?", SAFE);
       sql.exec("UPDATE reply_walks SET due_at = 0, finished_at = NULL");
       for (const pair of ["due_at = NULL, finished_at = NULL", "due_at = 0, finished_at = 0", "finished_at = -1"]) {
+        expect(() => sql.exec(`UPDATE reply_walks SET ${pair}`), pair).toThrow(refused);
+      }
+    });
+  });
+
+  it("holds the awaited hand-out's number to 1 to the walk's handouts, or NULL", async () => {
+    // A walk hands out at most NODE_ATTEMPTS × WALK_STATUSES + WALK_PAGES nodes a start (reply-walks.ts).
+    expect(NODE_ATTEMPTS * WALK_STATUSES + WALK_PAGES).toBeLessThanOrEqual(100_000);
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      seed(sql);
+      for (const pair of [
+        "handouts = 0",
+        "handouts = 5, handout = 5",
+        "handout = 1",
+        "handout = NULL",
+        "handout = 5",
+      ]) {
+        sql.exec(`UPDATE reply_walks SET ${pair}`);
+      }
+      for (const pair of ["handout = 6", "handouts = 4", "handout = 0", "handout = 1.5", "handout = 'x'"]) {
         expect(() => sql.exec(`UPDATE reply_walks SET ${pair}`), pair).toThrow(refused);
       }
     });

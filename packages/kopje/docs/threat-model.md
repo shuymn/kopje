@@ -3986,14 +3986,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   signing key and policy reads. The Store hands a node to the Worker only by charging it in the same transaction: one of
   its `NODE_ATTEMPTS` (2) for the document it reads, and at every stage but the status one of the walk's `WALK_PAGES`
   (100), a document read again past the entries an earlier step took included; the round's last completion hands out and
-  charges nothing, and a charge stays whatever the step's end (a lost lease, a round that died after its fetch). So a
-  walk records at most `WALK_STATUSES` (200) nodes, the root included, and hands out at most 2 × 200 + 100 = 500
-  documents (4,000 requests) however its rounds end, with no counter of claims. A claim drops at most
-  `REPLY_CLAIM_DROPS` + 1 (4) walks before it answers that more are due, and a hand-out ends at most 200 spent nodes
-  before it finds one to fetch; the lease (`REPLY_WALK_LEASE_MS`, 10 minutes) is checked as the module loads against
-  twice a walk's turn. A step holds a status document and an actor of at most 1 MiB each and carries at most
-  `REPLY_READ_ENTRIES` (200) entries of a chain past its skip to the Store (819,200 bytes at `STATUS_URI_LIMIT`); a
-  later step reads the rest by reading the same document again, while the walk has room
+  charges nothing, and a charge stays whatever the step's end (a lost lease, a round that died after its fetch). Each
+  hand-out is numbered, and only the completion of the one awaited is applied, once: one repeated, or of an earlier
+  hand-out, changes and charges nothing, a chain of pages that names a page again included (`test/reply-walks.test.ts`
+  ("applies a page's completion once when the page names itself next", "applies a page's completion once when a later
+  page names it again", "applies a transient failure once")). So a walk records at most `WALK_STATUSES` (200) nodes, the
+  root included, and hands out at most 2 × 200 + 100 = 500 documents (4,000 requests) however its rounds end, with no
+  counter of claims. A claim drops at most `REPLY_CLAIM_DROPS` + 1 (4) walks before it answers that more are due, and a
+  hand-out ends at most 200 spent nodes before it finds one to fetch; the lease (`REPLY_WALK_LEASE_MS`, 10 minutes) is
+  checked as the module loads against twice a walk's turn. A step holds a status document and an actor of at most 1 MiB
+  each and carries at most `REPLY_READ_ENTRIES` (200) entries of a chain past its skip to the Store (819,200 bytes at
+  `STATUS_URI_LIMIT`); a later step reads the rest by reading the same document again, while the walk has room
   (`test/reply-walk-rounds.test.ts` ("reads a page of 400 entries with no next past its first 200 in the same walk",
   "reads a page's entries past the cap before the next page its URI names", "reads the rest of the replies a status
   embeds by fetching it for its replies only, storing nothing")). A reply a walk stores verifies its quote one hop short

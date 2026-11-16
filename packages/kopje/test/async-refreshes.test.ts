@@ -210,7 +210,8 @@ describe("a context read's refresh", () => {
     const first = (await context(t, id)).match![1];
     await sql(
       t.store,
-      "UPDATE reply_walks SET due_at = NULL, finished_at = ?1, result_count = 4 WHERE status_id = ?2",
+      `UPDATE reply_walks SET due_at = NULL, finished_at = ?1, result_count = 4, pages = 3, handouts = 7, handout = 7
+			WHERE status_id = ?2`,
       NOW + 1000,
       id,
     );
@@ -226,6 +227,10 @@ describe("a context read's refresh", () => {
       finished_at: null,
       result_count: 0,
     });
+    // Its counters start again, its hand-outs' numbers included.
+    expect(await sql(t.store, "SELECT pages, handouts, handout FROM reply_walks WHERE status_id = ?", id)).toEqual([
+      { pages: 0, handouts: 0, handout: null },
+    ]);
     expect(
       await sql(t.store, "SELECT uri, seq, state, valid FROM reply_walk_nodes WHERE status_id = ?", id),
     ).toHaveLength(1);

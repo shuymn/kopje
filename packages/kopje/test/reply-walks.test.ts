@@ -289,35 +289,90 @@ function droppingStore(store: StoreStub, drop: (input: ReplyStepInput) => boolea
 }
 
 describe("completions", () => {
-  it("applies a reading once: a completion repeated after its node reads the same page again changes nothing", async () => {
+  // A walk of a root claimed, its status step completed naming its replies' first page by URI: `complete` completes a
+  // step under the claim, more to follow; `state` reads the walk's row and nodes.
+  async function atPage() {
     const { t, root } = await world();
     const note = mastodonNote(root);
     const id = await walking(t, root, withReplies(t.web, note, []));
-    const page = `${note.id}/replies?page=true`;
+    const page = (name: string) => `${note.id}/replies?page=${name}`;
     const claim = (await t.store.claimReplyWalk(BUILD)) as ClaimedWalk;
-    const complete = (step: ReplyStep, fetched: StepFetched) =>
-      t.store.completeReplyStep(BUILD, {
-        origin: LOCAL,
-        statusId: id,
-        token: claim.token,
-        step,
-        more: true,
-        fetched,
-      });
+    const complete = (step: ReplyStep, fetched: StepFetched, more = true) =>
+      t.store.completeReplyStep(BUILD, { origin: LOCAL, statusId: id, token: claim.token, step, more, fetched });
     const status = parseRemoteStatus({ "@context": AS, ...note })!;
-    const atPage = await complete(claim.step, {
+    const first = await complete(claim.step, {
       kind: "status",
       status,
-      replies: { entries: [], from: null, next: { stage: "page", uri: page } },
+      replies: { entries: [], from: null, next: { stage: "page", uri: page("p") } },
     });
-    expect(atPage.next).toEqual({ uri: note.id, stage: "page", fetch: page, skip: 0 });
+    expect(first.next).toEqual({ uri: note.id, stage: "page", fetch: page("p"), skip: 0, handout: 2 });
+    const state = async () => ({ walk: await walkRow(t.store, id), nodes: await walkNodes(t.store, id) });
+    return { t, note, page, complete, step: first.next!, state };
+  }
+  const naming = (uri: string): StepFetched => ({
+    kind: "replies",
+    replies: { entries: [], from: 0, next: { stage: "page", uri } },
+  });
+  const done = { next: null, need: null, done: true };
+
+  it("applies a reading once: a completion repeated after its node reads the same page again changes nothing", async () => {
+    const { complete, step, state } = await atPage();
     const read: StepFetched = { kind: "replies", replies: { entries: [missing("m0"), null], from: 0, next: "more" } };
-    const again = await complete(atPage.next!, read);
-    expect(again.next).toEqual({ uri: note.id, stage: "page", fetch: page, skip: 2 });
-    const before = { walk: await walkRow(t.store, id), nodes: await walkNodes(t.store, id) };
+    const again = await complete(step, read);
+    expect(again.next).toEqual({ ...step, skip: 2, handout: 3 });
+    const before = await state();
     // The first reading's completion, repeated (a retried call): the node reads that page past it now.
-    expect(await complete(atPage.next!, read)).toEqual({ next: null, need: null, done: true });
-    expect({ walk: await walkRow(t.store, id), nodes: await walkNodes(t.store, id) }).toEqual(before);
+    expect(await complete(step, read)).toEqual(done);
+    expect(await state()).toEqual(before);
+  });
+
+  it("applies a page's completion once when the page names itself next: repeated, it changes nothing", async () => {
+    const { page, complete, step, state } = await atPage();
+    const again = await complete(step, naming(page("p")));
+    // The same node, document and skip, handed out again under the next number.
+    expect(again.next).toEqual({ ...step, handout: 3 });
+    const before = await state();
+    expect(before.walk).toMatchObject({ pages: 2, handouts: 3, handout: 3 });
+    expect(await complete(step, naming(page("p")))).toEqual(done);
+    expect(await state()).toEqual(before);
+  });
+
+  it("applies a page's completion once when a later page names it again: P, Q, P, then P's repeated", async () => {
+    const { page, complete, step, state } = await atPage();
+    const atQ = await complete(step, naming(page("q")));
+    const atP = await complete(atQ.next!, naming(page("p")));
+    expect(atP.next).toEqual({ ...step, handout: 4 });
+    const before = await state();
+    expect(before.walk).toMatchObject({ pages: 3, handouts: 4, handout: 4 });
+    for (const [repeated, read] of [
+      [step, naming(page("q"))],
+      [atQ.next!, naming(page("p"))],
+    ] as const) {
+      expect(await complete(repeated, read)).toEqual(done);
+    }
+    expect(await state()).toEqual(before);
+  });
+
+  it("applies a transient failure once: repeated after the node is handed out again, it changes nothing", async () => {
+    const { page, complete, step, state } = await atPage();
+    const retry = await complete(step, { kind: "transient" });
+    expect(retry.next).toEqual({ ...step, handout: 3 });
+    const before = await state();
+    expect(before.nodes).toEqual([expect.objectContaining({ state: 0, attempts: NODE_ATTEMPTS })]);
+    // Applied again, it would end the node, its attempts spent, and finish the walk.
+    expect(await complete(step, { kind: "transient" })).toEqual(done);
+    expect(await state()).toEqual(before);
+    // The awaited one is still applied.
+    expect(await complete(retry.next!, naming(page("q")))).toMatchObject({ done: false });
+  });
+
+  it("applies the round's last completion once: repeated before the walk's release, it changes nothing", async () => {
+    const { complete, step, state } = await atPage();
+    expect(await complete(step, { kind: "transient" }, false)).toEqual({ next: null, need: null, done: false });
+    const before = await state();
+    expect(before.walk).toMatchObject({ handouts: 2, handout: null });
+    expect(await complete(step, { kind: "transient" }, false)).toEqual(done);
+    expect(await state()).toEqual(before);
   });
 });
 

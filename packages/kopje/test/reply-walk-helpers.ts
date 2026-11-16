@@ -92,14 +92,16 @@ export type WalkRow = {
   nodes: number;
   pages: number;
   result_count: number;
+  handouts: number;
+  handout: number | null;
 };
 
 export async function walkRow(store: StoreStub, statusId: string): Promise<WalkRow | undefined> {
   return (
     await sql<WalkRow>(
       store,
-      `SELECT queued_at, due_at, finished_at, token, next_seq, nodes, pages, result_count FROM reply_walks
-			WHERE status_id = ?`,
+      `SELECT queued_at, due_at, finished_at, token, next_seq, nodes, pages, result_count, handouts, handout
+			FROM reply_walks WHERE status_id = ?`,
       statusId,
     )
   )[0];
@@ -113,13 +115,15 @@ export type NodeRow = {
   valid: number;
   parent: string | null;
   fetch: string | null;
+  skip: number;
   attempts: number;
 };
 
 export function walkNodes(store: StoreStub, statusId: string): Promise<NodeRow[]> {
   return sql<NodeRow>(
     store,
-    "SELECT uri, seq, state, stage, valid, parent, fetch, attempts FROM reply_walk_nodes WHERE status_id = ? ORDER BY seq",
+    `SELECT uri, seq, state, stage, valid, parent, fetch, skip, attempts FROM reply_walk_nodes WHERE status_id = ?
+			ORDER BY seq`,
     statusId,
   );
 }
