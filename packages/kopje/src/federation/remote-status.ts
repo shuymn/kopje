@@ -71,10 +71,11 @@ function text(value: unknown): string | null {
   return typeof value === "string" && value !== "" ? value : null;
 }
 
-// A natural-language value: the plain property, or the first entry of its language map.
+// A natural-language value: the plain property when present by Rails' `present?` (railsBlank; StatusParser#text,
+// #spoiler_text, #title), else the first entry of its language map.
 function languageString(object: Json, key: string): string | null {
-  const plain = text(object[key]);
-  if (plain !== null) {
+  const plain = object[key];
+  if (typeof plain === "string" && !railsBlank(plain)) {
     return plain;
   }
   const map = object[`${key}Map`];

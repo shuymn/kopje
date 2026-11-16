@@ -133,7 +133,7 @@ describe("GET /api/v1/trends/links", () => {
     await listedLinks(h.store, 4, { languages: ["en", "ja"] });
     const ja = await h.request("/api/v1/trends/links", { headers: { "accept-language": "ja-JP, en;q=0.5" } });
     expect(urls(await ja.json())).toEqual([url(1), url(3), url(0), url(2)]);
-    expect(ja.headers.get("cache-control")).toBe("public, max-age=15, stale-while-revalidate=30, stale-if-error=86400");
+    expect(ja.headers.get("cache-control")).toBe("max-age=15, public, stale-while-revalidate=30, stale-if-error=86400");
     expect(ja.headers.get("vary")).toBe("Authorization, Accept-Language");
     expect(urls((await getJson(h, "/api/v1/trends/links")).body)).toEqual([url(0), url(2), url(1), url(3)]);
     expect((await h.request("/api/v1/trends/links", bearer("nope"))).status).toBe(401);
@@ -150,7 +150,7 @@ describe("GET /api/v1/trends/links", () => {
     const alice = (await login(h, { app, scope, email: "alice@example.com" })).token;
     await listedLinks(h.store, 2);
     // Anyone but the OAuth admin is refused by the gate (VIS-29), where the public list answers them.
-    expect((await h.request("/api/v1/trends/links")).headers.get("cache-control")).toMatch(/^public/);
+    expect((await h.request("/api/v1/trends/links")).headers.get("cache-control")).toMatch(/^max-age=15, public/);
     for (const caller of [undefined, "nope", alice]) {
       expect(await getJson(h, "/api/v1/admin/trends/links", caller)).toEqual({
         status: 403,
@@ -158,7 +158,7 @@ describe("GET /api/v1/trends/links", () => {
       });
     }
     const signed = await h.request("/api/v1/admin/trends/links", bearer(token));
-    expect(signed.headers.get("cache-control")).toBeNull();
+    expect(signed.headers.get("cache-control")).toBe("private, no-store");
     expect(signed.headers.get("vary")).toBe("Authorization, Accept-Language");
     const body = await signed.json();
     expect(urls(body)).toEqual([url(0), url(1)]);

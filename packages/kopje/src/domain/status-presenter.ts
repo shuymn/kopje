@@ -17,7 +17,9 @@ import {
   presentedAppName,
   presentedCardText,
   presentedCardUrl,
+  presentedContent,
   presentedEmbedSrc,
+  presentedSpoiler,
   STATUS_EMOJIS_BYTES,
   storedBlurhash,
 } from "../platform/stored-bounds";
@@ -412,10 +414,7 @@ export function storedSearchableText(db: Db, statusId: string, now: string): str
   if (judged === undefined || judged.odd !== 0) {
     return null;
   }
-  const row = db.first<TextRow>(
-    `SELECT s.spoiler_text, s.content, s.source_text, au.domain AS author_domain FROM ${statusesOfSql(STATUS_KEYS)}`,
-    json,
-  );
+  const row = db.first<TextRow>(`SELECT ${selectSql(TEXT_COLUMNS)} FROM ${statusesOfSql(STATUS_KEYS)}`, json);
   if (row === undefined) {
     return null;
   }
@@ -622,6 +621,14 @@ function mediaOf(db: Db, ids: string): Map<string, MediaRow[]> {
 }
 
 type TextRow = Pick<StatusRow, "spoiler_text" | "content" | "source_text" | "author_domain">;
+
+// The columns of searchableText as hydrate reads them, so storedSearchableText measures the same text.
+const TEXT_COLUMNS = {
+  spoiler_text: STATUS_COLUMN_MAP.spoiler_text,
+  content: STATUS_COLUMN_MAP.content,
+  source_text: STATUS_COLUMN_MAP.source_text,
+  author_domain: STATUS_COLUMN_MAP.author_domain,
+};
 
 // Status#searchable_text of a status: its spoiler text, its text (a local status's source, a remote one's HTML as
 // text), its poll's choices and its media descriptions (SearchConcern).
@@ -833,17 +840,19 @@ function hydrate(
           };
     const emojis = presentEmojis(row.emojis, STATUS_EMOJIS_BYTES, emojiCacheOf(row.emoji_cache, options.origin));
     const poll = polls.get(row.id);
+    // The text bounded again after decoding ("Status text as presented" in stored-bounds.ts, RES-3); a plain text is
+    // never longer than its HTML, but its JSON may be (an entity of a control character).
     const body =
       top && options.source === true
-        ? { text: row.source_text ?? htmlToPlainText(row.content) }
-        : { content: row.content };
+        ? { text: presentedContent(row.source_text ?? htmlToPlainText(presentedContent(row.content))) }
+        : { content: presentedContent(row.content) };
     return {
       id: row.id,
       created_at: row.published_at,
       in_reply_to_id: row.in_reply_to_id,
       in_reply_to_account_id: row.in_reply_to_account_id,
       sensitive: row.sensitive === 1,
-      spoiler_text: row.spoiler_text,
+      spoiler_text: presentedSpoiler(row.spoiler_text),
       visibility,
       language: row.language,
       uri: row.uri,

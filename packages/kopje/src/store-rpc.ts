@@ -76,7 +76,8 @@ import * as quoteVerification from "./domain/quote-verification";
 import * as quotes from "./domain/quotes";
 import * as remoteCollections from "./domain/remote-collections";
 import * as remoteMedia from "./domain/remote-media";
-import { resolveSearch } from "./domain/remote-statuses";
+import { refreshPoll, resolveSearch } from "./domain/remote-statuses";
+import * as replyWalks from "./domain/reply-walks";
 import * as reports from "./domain/reports";
 import * as scheduled from "./domain/scheduled-statuses";
 import { search } from "./domain/search";
@@ -175,6 +176,16 @@ export const STORE_RPC = {
   completeQuote: quoteVerification.completeQuote,
   chargeQuote: quotes.chargeQuote,
   claimQuotes: quotes.claimQuotes,
+
+  // Walks of remote replies collections (domain/reply-walks.ts): claimed, stepped and released by the Worker's job
+  // rounds (federation/replies.ts).
+  claimReplyWalk: replyWalks.claimReplyWalk,
+  completeReplyStep: replyWalks.completeReplyStep,
+  releaseReplyWalk: replyWalks.releaseReplyWalk,
+  // A context read's start of a refresh (mastodon/statuses.ts statusContext), and a refresh by its id
+  // (mastodon/async-refreshes.ts).
+  startRepliesRefresh: replyWalks.startRepliesRefresh,
+  getAsyncRefresh: replyWalks.getAsyncRefresh,
 
   // Verification of local profile links (domain/field-links.ts): claimed, recorded and finished by the cron's round
   // (federation/field-links.ts).
@@ -426,8 +437,11 @@ export const STORE_RPC = {
   getMarkers: markers.getMarkers,
   saveMarkers: markers.saveMarkers,
 
-  // Polls (domain/polls.ts).
+  // Polls (domain/polls.ts): a read that may find the poll due for a refresh, the refresh's reservation before the
+  // Worker's fetch, and the refresh that applies what it fetched (remote-statuses.ts).
   getPoll: polls.getPoll,
+  reservePollRefresh: polls.reservePollRefresh,
+  refreshPoll,
   vote: polls.vote,
 
   // The cron's round of polls (jobs/scheduled.ts): those that ended, and the Updates of counts that are due.
