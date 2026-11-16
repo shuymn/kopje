@@ -212,13 +212,16 @@ A remote status's mentions and post notifications are written when it is deliver
 path, within the real-time window (published at most six hours before it arrived; `withinRealTimeWindow` in
 `src/domain/real-time-window.ts`, the window the streaming `update` event uses); a fetched status's limited condition
 counts only its `to` and `cc`. A status that arrives again notifies no one. Mastodon's update fan-out (`notifyEdited`
-in `src/domain/statuses.ts`) notifies the local quoted account of the status's accepted quote and each active local
-mention, each when it has no kept notification (the mentions without the limited condition), then the local boosters
-and quoters: on a significant remote edit (text, spoiler text, media or poll), on a remote `Update` of the same version
-that changes its quote's approval stamp (not its legacy form alone), and on every accepted local edit, one that changes
-only the quote policy through `PUT /api/v1/statuses/:id` included (not through `/interaction_policy`). So a quote or
-mention notification the policy dropped or this rule refused at the time, or one its recipient dismissed or cleared,
-is notified then.
+in `src/domain/update-fan-out.ts`) notifies the local quoted account of the status's accepted quote and each active
+local mention, each when it has no kept notification (the mentions without the limited condition), then the local
+boosters and quoters: on a significant remote edit (text, spoiler text, media or poll), on a remote `Update` of the same
+version that changes its quote's approval stamp (not its legacy form alone), on the quote state changes Mastodon
+broadcasts (a stamp's `Delete` that revokes the accepted quote it approved, not the other quotes its batches reject or
+revoke; the `Delete` of a local quote's stamp; the revoke API; an `Accept` of a local quote's request, not its
+`Reject` nor an accepted `QuoteRequest`), and on every accepted local edit, one that
+changes only the quote policy through `PUT /api/v1/statuses/:id` included (not through `/interaction_policy`). So a
+quote or mention notification the policy dropped or this rule refused at the time, or one its recipient dismissed or
+cleared, is notified then.
 
 R15 also hides what its recipient cleared or dismissed (migration `0023_notification_clears`). Clearing
 (`POST /api/v1/notifications/clear` and its v2 form, Mastodon's `delete_all`) records the highest id of the

@@ -282,7 +282,7 @@ export const ROWS_1468: readonly Row1468[] = [
   {
     group: 3,
     statement: "revokeLocalStamp; quotedUpdates",
-    sites: ["src/domain/quotes.ts#revokeLocalStamp", "src/domain/quotes.ts#quotedUpdates"],
+    sites: ["src/domain/quotes.ts#revokeLocalStamp", "src/domain/update-fan-out.ts#quotedUpdates"],
     status: "fixed",
   },
   {

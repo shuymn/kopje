@@ -6,6 +6,7 @@ import {
   STATUSES_URI_INDEX,
 } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { errorFields } from "../platform/error-message";
 import { sameOrigin } from "../platform/http-url";
 import { iso } from "../platform/iso-time";
 import {
@@ -30,7 +31,7 @@ import {
 } from "./audience";
 import { localFollower } from "./follower-signer";
 import { NEW_GENERATION } from "./ids";
-import { JOB_BOOKKEEPING_ROWS, nextJob, QUOTE_REVOCATIONS, runJobItem } from "./job-attempts";
+import { isolated, JOB_BOOKKEEPING_ROWS, nextJob, QUOTE_REVOCATIONS, runJobItem } from "./job-attempts";
 import { notify } from "./notifications";
 import { readOperation, writeOperation } from "./operation";
 import {
@@ -59,6 +60,7 @@ import type { storeRemoteStatus } from "./remote-statuses";
 import { isDeleted, RETRACTION_TTL_MS } from "./retractions";
 import { RowBudget } from "./row-budget";
 import { journalHead, quietJournaledEdit } from "./stream-journal";
+import { notifyEdited } from "./update-fan-out";
 
 // How a received status is stored: remote-statuses.ts storeRemoteStatus, which its callers pass. Storing a status
 // records its quote here, and a quote fetches and stores its quoted status, at most QUOTE_HOPS deep; this module
@@ -364,6 +366,24 @@ export function quoteDue(db: Db, statusId: string, now: number): boolean {
 // Whether any quote has verification work due (a seek of quotes_due).
 export function quotesDue(db: Db, now: number): boolean {
   return db.first("SELECT 1 AS x FROM quotes WHERE verify_after <= ? ORDER BY verify_after LIMIT 1", now) !== undefined;
+}
+
+// Mastodon's DistributionWorker with `update: true` after a quote's state change (Delete#revoke_quote,
+// Accept#accept_quote!, RevokeQuoteService): the update fan-out of the quoting status (update-fan-out.ts notifyEdited),
+// its author the sender, in a savepoint of its own (isolated). A failure is logged and rolls back the notifications
+// alone: the state change, a VIS-28 boundary, stays committed (docs/engineering.md, "Ordering, rounds and fences").
+export function fanOutQuoteChange(db: Db, statusId: string, now: number): void {
+  const author = db.first<{ account_id: string }>(
+    `SELECT account_id FROM statuses INDEXED BY ${STATUSES_ID_INDEX} WHERE id = ?`,
+    statusId,
+  );
+  if (author === undefined) {
+    return;
+  }
+  const ran = isolated(db, () => notifyEdited(db, statusId, author.account_id, now));
+  if (!ran.ok) {
+    console.error({ event: "kopje.quote.fan_out.failed", ...errorFields(ran.error) });
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -989,7 +1009,10 @@ function revocationBatch(db: Db, approvalUri: string, actorUri: string, left: ()
 // committed); the rest is continued by the inbound job rounds (continueRevocations), which meet received quotes only.
 // A repeated Delete finds the revocation and adds nothing. The local quote holding the stamp is handled first, in this
 // transaction and outside the batch budget, whether or not the revocation was recorded before: revoked, and, for a
-// proven Delete (`forward`, the body as received), forwarded once (revokeLocalStamp).
+// proven Delete (`forward`, the body as received), forwarded once (revokeLocalStamp). So is the received accepted
+// quote the stamp approved (stampHolder), revoked by its key and fanned out, as Delete#revoke_quote finds one quote and
+// broadcasts it (delete.rb:57-66 in v4.7.5); the batches then reject or revoke the rest, which notify no one. A Delete
+// thus runs the update fan-out at most twice: for the local quote holding the stamp, and for that received quote.
 // Returns null when no quote names the stamp, else whether a revocation may run a batch now.
 export function revokeStamp(
   db: Db,
@@ -1009,6 +1032,18 @@ export function revokeStamp(
     ) !== undefined;
   if (!named) {
     return null;
+  }
+  const holder = stampHolder(db, actor, approvalUri, now);
+  if (
+    holder !== undefined &&
+    db.run(
+      `UPDATE quotes SET state = 'revoked', verify_after = NULL, updated_at = ?2, generation = ${NEW_GENERATION}
+			WHERE status_id = ?1 AND state = 'accepted'`,
+      holder.status_id,
+      iso(now),
+    ) > 0
+  ) {
+    fanOutQuoteChange(db, holder.status_id, now);
   }
   const recorded = db.run(
     `INSERT INTO quote_revocations (authorization, actor_uri, revoked_at, pending) VALUES (?, ?, ?, 1)
@@ -1045,14 +1080,42 @@ export function continueRevocations(db: Db, left: () => number, now: number): bo
 // flight match (at most a round's claim each).
 const MAX_RECHECKED = 100;
 
+// The accepted quotes naming a stamp of an actor that stampHolder reads at most.
+export const STAMP_HOLDER_CANDIDATES = 16;
+
+// The received accepted quote that a stamp of `actor` accepted: a valid stamp names one quoting status (stampValid), by
+// another author. An inner seek of quotes_approval on (stamp, actor, accepted) reads at most STAMP_HOLDER_CANDIDATES
+// raw candidates in the index's order, and the author and local filters apply outside that LIMIT, the first that passes
+// taken (RES-6). Past the cap only quotes accepted without a stamp's verification can stand ahead of the holder: the
+// actor's own self-quotes naming the stamp, or imported rows. Then nothing is found, and only the actor that flooded
+// its own stamp loses what finding the holder would do; every revocation batch still meets every quote naming the
+// stamp.
+export function stampHolder(
+  db: Db,
+  actor: { id: string },
+  approvalUri: string,
+  now: number,
+): { status_id: string; verify_after: number | null; leased: number } | undefined {
+  return db.first<{ status_id: string; verify_after: number | null; leased: number }>(
+    `SELECT c.status_id, c.verify_after, c.leased
+		FROM (SELECT status_id, local, verify_after, ${LEASED} AS leased FROM quotes INDEXED BY quotes_approval
+				WHERE approval_uri = ?1 AND quoted_account_id = ?2 AND state = 'accepted' LIMIT ?4) c
+			CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = c.status_id
+		WHERE s.account_id <> ?2 AND c.local = 0 LIMIT 1`,
+    approvalUri,
+    actor.id,
+    now,
+    STAMP_HOLDER_CANDIDATES,
+  );
+}
+
 // A Delete of a stamp relayed by another server without the author's proof (federation/inbound.ts): nothing is revoked
 // on its word, but the quotes of the actor's statuses that name the stamp and could still be accepted by it are checked
 // again, their state unchanged until then, so a stamp that is gone revokes or rejects them. Replays coalesce:
-//   - the accepted quote that a stamp accepted (one at most: a valid stamp names exactly one quoting status; a
-//     self-quote, accepted without one, may name the stamp too and is passed over, and so is a local quote, which only
-//     its quoted author's answers decide: VIS-28, quote-authoring concurrency row 17) is renewed when idle (due now,
-//     attempts reset, a new generation), left as it is when due or backing off (its next fetch is fresh anyway), and
-//     marked when a round has leased it;
+//   - the accepted quote that a stamp accepted (stampHolder: a self-quote, accepted without one, may name the stamp too
+//     and is passed over, and so is a local quote, which only its quoted author's answers decide: VIS-28,
+//     quote-authoring concurrency row 17) is renewed when idle (due now, attempts reset, a new generation), left as it
+//     is when due or backing off (its next fetch is fresh anyway), and marked when a round has leased it;
 //   - a pending quote is marked only when a round has leased it (its first stamp fetch is in flight), matched by the
 //     stamp alone, since a round may not have linked its target yet (the target found by its uri); marking one of
 //     another author's costs at most one more check. Otherwise its next fetch is fresh anyway.
@@ -1060,15 +1123,7 @@ const MAX_RECHECKED = 100;
 // finds the stamp valid. A round's 404 thus always applies, and a Delete that races a fetch is never lost. Returns
 // whether such a quote exists.
 export function recheckStamp(db: Db, actor: { id: string }, approvalUri: string, now: number): boolean {
-  const accepted = db.first<{ status_id: string; verify_after: number | null; leased: number }>(
-    `SELECT q.status_id, q.verify_after, ${LEASED} AS leased
-		FROM quotes q INDEXED BY quotes_approval CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = q.status_id
-		WHERE q.approval_uri = ?1 AND q.quoted_account_id = ?2 AND q.state = 'accepted' AND s.account_id <> ?2
-			AND q.local = 0 LIMIT 1`,
-    approvalUri,
-    actor.id,
-    now,
-  );
+  const accepted = stampHolder(db, actor, approvalUri, now);
   if (accepted?.leased === 1) {
     db.run("UPDATE quotes SET recheck = 1 WHERE status_id = ?", accepted.status_id);
   } else if (accepted !== undefined && accepted.verify_after === null) {
@@ -1183,7 +1238,8 @@ type QuotedTarget = {
 // quote row, never the fetched document, says what the instrument quotes; only a transition into accepted draws an
 // authorization (VIS-28). Bounds: one answer per request id (ID-7), at most MAX_QUOTE_REQUESTS_PER_ACTOR live ones per
 // actor (RetryLater past it), one fetch. What is answered and what is ignored: docs/visibility.md (R36) and
-// docs/threat-model.md (VIS-28); a withdrawn status (its Delete recorded) is an unknown object.
+// docs/threat-model.md (VIS-28); a withdrawn status (its Delete recorded) is an unknown object. An acceptance notifies
+// the quoted author's `quote` only: Mastodon's broadcast skips the notifications (quote_request.rb:41 in v4.7.5).
 export function answerQuoteRequest(
   db: Db,
   actor: { id: string; uri: string },
@@ -1612,7 +1668,8 @@ function recordStampUpdate(db: Db, statusId: string, authorId: string, now: numb
 // row's quoted_account_id, cleared by a detach, row 15), with a result on the actor's origin that the actor never
 // revoked nor retracted (rows 8, the same checks as verification), on a pending quote, and only when no other local
 // quote holds that stamp of the actor (quotes_local_stamp, row 9: the update is ignored on the unique index). Then the
-// quoting status's Update carries the stamp. Returns whether it applied.
+// quoting status's Update carries the stamp, and its update fan-out runs (fanOutQuoteChange; accept.rb:47-58 in
+// v4.7.5). Returns whether it applied.
 export function acceptOurQuote(
   db: Db,
   actor: { id: string; uri: string },
@@ -1643,14 +1700,15 @@ export function acceptOurQuote(
     return false;
   }
   recordStampUpdate(db, quote.status_id, quote.author_id, now);
+  fanOutQuoteChange(db, quote.status_id, now);
   return true;
 }
 
 // Mastodon's Quote#reject!: compare-and-set pending to rejected or accepted to revoked; the latter sends an Update
-// without the stamp, superseding waiting Updates that carry it. Only the author's stamp Delete writes
-// quote_revocations, so it still runs revocation batches for received quotes. Keep the stamp until that Delete is
-// forwarded: uniqueness prevents reuse before forwarding (row 9), and the Delete's record afterwards (row 8).
-// Returns whether it applied.
+// without the stamp, superseding waiting Updates that carry it. No update fan-out runs (reject.rb:37 in v4.7.5, "TODO:
+// broadcast an update?"). Only the author's stamp Delete writes quote_revocations, so it still runs revocation batches
+// for received quotes. Keep the stamp until that Delete is forwarded: uniqueness prevents reuse before forwarding (row
+// 9), and the Delete's record afterwards (row 8). Returns whether it applied.
 export function rejectOurQuote(db: Db, actor: { id: string }, requestId: string | null, now: number): boolean {
   const quote = answeredQuote(db, actor, requestId);
   if (quote === undefined) {
@@ -1688,12 +1746,12 @@ export function holdsLocalStamp(db: Db, actor: { id: string }, approvalUri: stri
 }
 
 // The first transaction of the actor's Delete of the stamp `approvalUri` (row 10), for the one local quote that holds
-// it (a seek of quotes_local_stamp, whatever the received quotes naming it): an accepted quote becomes revoked and its
-// status's Update without the stamp is recorded; and when the Delete is proven (its author's proof verified: `forward`
-// is the body as received), that body is recorded unchanged as one immutable envelope signed by the quoting author,
-// reaching every inbox that received the quoting status or would receive it now (reachOf, its owner's receipts and
-// audience), and the row lets go of the stamp, so a replay forwards nothing more. A retraction: no suspension or
-// admission refuses it. Returns whether a local quote held the stamp.
+// it (a seek of quotes_local_stamp, whatever the received quotes naming it): an accepted quote becomes revoked, its
+// status's Update without the stamp is recorded and its update fan-out runs (fanOutQuoteChange); and when the Delete is
+// proven (its author's proof verified: `forward` is the body as received), that body is recorded unchanged as one
+// immutable envelope signed by the quoting author, reaching every inbox that received the quoting status or would
+// receive it now (reachOf, its owner's receipts and audience), and the row lets go of the stamp, so a replay forwards
+// nothing more. A retraction: no suspension or admission refuses it. Returns whether a local quote held the stamp.
 function revokeLocalStamp(
   db: Db,
   actor: { id: string },
@@ -1720,6 +1778,7 @@ function revokeLocalStamp(
       iso(now),
     );
     recordStampUpdate(db, row.status_id, row.author_id, now);
+    fanOutQuoteChange(db, row.status_id, now);
   }
   if (forward !== null) {
     const reach = statusReach(db, row.status_id, noteQuote);
@@ -1741,37 +1800,4 @@ function revokeLocalStamp(
     );
   }
   return true;
-}
-
-// The local quoted account of the status's accepted quote, which an update of the status notifies again
-// (FanOutOnWriteService#notify_quoted_account!; statuses.ts notifyEdited): the quote by its key, its quoted account
-// sought among the local accounts; at most one row.
-export function localQuotedAccount(db: Db, statusId: string): string | null {
-  return (
-    db.first<{ quoted_account_id: string }>(
-      `SELECT q.quoted_account_id FROM quotes q INDEXED BY ${QUOTES_STATUS_INDEX}
-			CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = q.quoted_account_id
-			WHERE q.status_id = ?1 AND q.state = 'accepted'`,
-      statusId,
-    )?.quoted_account_id ?? null
-  );
-}
-
-// Local accounts an edit of a status notifies with quoted_update at most (row 16): the authors of its newest accepted
-// local quotes.
-export const MAX_QUOTED_UPDATES = 100;
-
-// The quoting statuses and their local authors that an edit of `quotedId` notifies (Mastodon's
-// FanOutOnWriteService#notify_about_update!): the accepted local quotes at this commit, newest first, at most
-// MAX_QUOTED_UPDATES, from one seek of quotes_local_accepted (migration 0039_quotes_local) whatever the received
-// quotes of the status.
-export function quotedUpdates(db: Db, quotedId: string): { status_id: string; account_id: string }[] {
-  return db.all<{ status_id: string; account_id: string }>(
-    `SELECT q.status_id, s.account_id FROM quotes q INDEXED BY quotes_local_accepted
-		CROSS JOIN statuses s INDEXED BY ${STATUSES_ID_INDEX} ON s.id = q.status_id
-		WHERE q.quoted_status_id = ? AND q.local = 1 AND q.state = 'accepted'
-		ORDER BY q.status_id DESC LIMIT ?`,
-    quotedId,
-    MAX_QUOTED_UPDATES,
-  );
 }

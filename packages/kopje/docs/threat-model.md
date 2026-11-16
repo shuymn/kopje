@@ -915,16 +915,20 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   notifies the quoted account of an accepted quote and each active mention, each without a kept notification, as
   Mastodon's does (`fan_out_on_write_service.rb:62-75`, `local_notification_worker.rb:15-16`): a `quote` or `mention`
   notification its recipient dismissed or cleared is written and pushed again at the author's next significant edit,
-  quote stamp change or policy-only edit; a kept one is a repeat. Its push is sent only for a newly inserted row. A
+  quote stamp change or policy-only edit, and at a quote state change Mastodon broadcasts (a stamp's `Delete` that
+  revokes the accepted quote it approved, the `Delete` of a local quote's stamp, the revoke API, an `Accept` of a local
+  quote's request; `fanOutQuoteChange` in `src/domain/quotes.ts`); a kept one is a repeat. Its push is sent only for a
+  newly inserted row. A
   remote favourite notifies when it is created and its notification goes with it, as Mastodon's does: a further `Like`
   it tracks notifies nothing, and an `Undo` followed by the next reaction's `Like` notifies (and pushes) again, while
   the reverse order does not;
   `test/inbox-reactions.test.ts` ("VIS-10: the favourite notification follows the aggregate"). _Enforced (main):_
   `notify` in `src/domain/notifications.ts`; `test/statuses.test.ts` ("a retry has no second side effect"),
   `test/timelines.test.ts` ("notifies followers who asked to be notified, once"); the update fan-out: `notifyEdited` in
-  `src/domain/statuses.ts`, `test/edit-fan-out.test.ts` ("…but not one alice holds: the same row, no new push", "…but
-  not a kept one: the same row, no new push"). Push: _Enforced (main):_ `notify` records pushes for the row it
-  inserted only, never for a repeat (`queuePushes` in `src/domain/notifications.ts`); `test/push-send.test.ts`
+  `src/domain/update-fan-out.ts`, `test/edit-fan-out.test.ts` ("…but not one alice holds: the same row, no new
+  push", "…but not a kept one: the same row, no new push", "a local quote's stamp Delete fans out its status once; a
+  repeated Delete none"). Push: _Enforced (main):_ `notify` records pushes for the
+  row it inserted only, never for a repeat (`queuePushes` in `src/domain/notifications.ts`); `test/push-send.test.ts`
   ("pushes every notification type Kopje emits, once each (VIS-10)").
 - **VIS-11: earlier versions keep the original audience.** Edit history and earlier versions are visible only to the
   status's original audience, and an edit of a non-public status never widens that audience (a recipient added by an
@@ -1327,9 +1331,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   way out of `accepted` (a revoke, the quoter's `Update` replacing or dropping the quote, the quoted status's delete,
   the quoting status's `Delete`, which retires it in its first transaction before any batch, and a purge) records it in
   `quote_revocations` through a trigger, whatever the statement. A received quote of a local status, and an accepted
-  self-quote, keep their state whatever stamp or legacy form the quoting status's `Update` names (`recordQuote`).
-  Kopje serves a stamp only for the current id of an accepted quote of an available author's public or unlisted
-  status, named by that author in the path, with the quoting status present and its author not being purged, ids only,
+  self-quote, keep their state whatever stamp or legacy form the quoting status's `Update` names (`recordQuote`). A
+  revocation or approval Mastodon broadcasts (a stamp's `Delete` of the accepted quote it approved, the `Delete` of a
+  local quote's stamp, the revoke API, an `Accept` of a local quote's request) runs the quoting status's update fan-out
+  after the move, in a savepoint of its own, so a failing fan-out is logged (`kopje.quote.fan_out.failed`) and does not
+  undo it, nor keeps any notification it wrote before it failed (`fanOutQuoteChange`; `test/edit-fan-out.test.ts`
+  ("…and still revokes when the fan-out fails part way, keeping none of its notifications, and logs it")). Kopje serves
+  a stamp only for the current id of an accepted quote of an available author's public or unlisted status, named by
+  that author in the path, with the quoting status present and its author not being purged, ids only,
   `Cache-Control: no-store`; a recorded id answers 404 for good. A revoked quote may be accepted again by a later
   request, with a new id, as Mastodon does; the author's lasting tools are the policy and blocks. A revoke records, in
   one transaction and only while the quote still holds the id its `Delete` was signed for, the quoted author's LD-signed
@@ -3434,9 +3443,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   stores", "deletes a status with many children in bounded batches"), `test/inbox-statuses-edge.test.ts` ("RES-4: bounds
   at their limits", "writes at most … rows per batch, hiding included"). The update fan-out of an edit reads one
   mention key per local account, whatever a converted or imported status holds (`LOCAL_MENTIONS_SQL`, `notifyEdited` in
-  `src/domain/statuses.ts`); `test/edit-fan-out.test.ts` ("reads no more for 10,000 converted mention rows: one key
-  probe per local account", "replaces each update, quoted_update and cleared mention within the formula; a kept one
-  writes nothing"). _Enforced (main)_ for pins: `status_pins` holds
+  `src/domain/update-fan-out.ts`); `test/edit-fan-out.test.ts` ("reads no more for 10,000 converted mention rows: one
+  key probe per local account", "replaces each update, quoted_update and cleared mention within the formula; a kept
+  one writes nothing"). A quote state change runs that fan-out at most once, and a stamp's `Delete` at most twice: for
+  the local quote holding the stamp (`revokeLocalStamp`) and for the received quote it approved (`stampHolder`), never
+  for the quotes its batches reject or revoke (`revokeStamp` in `src/domain/quotes.ts`; `test/edit-fan-out.test.ts`
+  ("a stamp's Delete fans out at most twice: the local quote holding it, then the received one it approved")).
+  _Enforced (main)_ for pins: `status_pins` holds
   at most an account's pin limit, `PIN_LIMIT` (5) for a local account (by its row's domain, which precedes its pins in
   any import order) and `MAX_REMOTE_PINS` (20) for a remote one (`pinCapSql` in `src/domain/status-actions.ts`),
   imported rows included: the triggers `status_pins_cap_insert` and
@@ -4178,7 +4191,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   concurrent outcome is discarded. Only job rounds verify quotes: an inbox request that makes work due only asks the
   Queue for a round, and a round leases what it claims, so nothing else touches the work meanwhile; a relayed `Delete`
   without the author's proof renews only idle work, leaves work that is due or backing off as it is, and only marks a
-  leased one to be checked once more, so replays never keep a genuine 404 from applying. A job round (Queue or cron)
+  leased one to be checked once more, so replays never keep a genuine 404 from applying; it seeks the accepted quote
+  the stamp approved among at most `STAMP_HOLDER_CANDIDATES` (16) accepted quotes naming the stamp, the author filter
+  applied outside that cap (`stampHolder`), so the actor's own self-quotes naming its stamp cost a fixed read
+  (`test/quotes.test.ts` ("reads at most STAMP_HOLDER_CANDIDATES quotes naming the stamp, past statistics taken before
+  they grew")). A job round (Queue or cron)
   verifies at most 10 quotes, each stage with a whole budget of its own (8 fetches, redirect hops, RFC 9421 retries
   and contexts included), so a heavy or failing quote starves no other, and charges every failure of a stage, a budget
   or deadline that ran out included, as it does a stage the Store cannot apply, except the refresh of a stored author,

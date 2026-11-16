@@ -56,7 +56,8 @@ import { isDeleted } from "./retractions";
 import { normalizeSearchText } from "./search-text";
 import { MAX_STATUS_MEDIA, MAX_STATUS_MENTION_ROWS, MAX_STATUS_TAGS, MAX_TAG_LENGTH } from "./status-bounds";
 import { measureFilterText, presentStatus, type Status } from "./status-presenter";
-import { MAX_STATUS_EDITS, notifyEdited, recordEdit, recountStatus, writeTags } from "./statuses";
+import { MAX_STATUS_EDITS, recordEdit, recountStatus, writeTags } from "./statuses";
+import { notifyEdited } from "./update-fan-out";
 
 // Remote statuses: Create, Update and the originals of boosts and search results, stored as Mastodon 4.7.5's
 // ActivityPub::Activity::Create and ProcessStatusUpdateService store them; a search result or a pin sync's status
