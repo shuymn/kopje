@@ -280,33 +280,48 @@ describe("a local collection's page", () => {
   // rule is dropped: q before order, order between equal q, no Accept read as HTML, a list naming */* read as a
   // browser's, */* taken as HTML, `text/*` and `application/*` led by HTML, a type Rails cannot read refusing the
   // request, types looked up by their exact case, the text/xml shuffle, and String#to_f's q truncated to hundredths.
+  // The forms Mastodon 4.7.5 (Rails 8.1.3.1 behind Puma) tells apart, and their answers there.
   it("reads a collection document's Accept as Mastodon's Rails does", async () => {
     const { h, alice } = await world();
     const id = await seedCollection(h, alice, 1);
     const document = `/ap/users/alice/collections/${id}`;
-    const forms: [string | null, number][] = [
-      ["application/json, text/html;q=0.1", 200],
-      ["text/html;q=0.1, application/json", 200],
-      ["text/html;q=0.5, application/json;q=0.5", 302],
-      ["application/json;q=0.5, text/html;q=0.5", 200],
-      ['application/ld+json; profile="https://www.w3.org/ns/activitystreams"', 200],
-      [null, 302],
-      ["application/activity+json, */*;q=0.1", 302],
-      ["*/*", 302],
-      ["*/*;q=0.5, application/json", 200],
-      ["application/*", 302],
-      ["image/png", 406],
-      ["foo, application/json", 406],
-      ["TEXT/HTML, application/json", 200],
-      ["text/xml, application/json, application/xhtml+xml", 302],
-      ["text/html;q=.3, application/json;q=0.2", 302],
-      ["text/html;q=1.e-1, application/json;q=0.2", 200],
-      ["application/json;q=0.285, text/html;q=0.29", 200],
+    const XHR = { "x-requested-with": "XMLHttpRequest" };
+    const forms: [Record<string, string>, number][] = [
+      [{ accept: "application/json, text/html;q=0.1" }, 200],
+      [{ accept: "text/html;q=0.1, application/json" }, 200],
+      [{ accept: "text/html;q=0.5, application/json;q=0.5" }, 302],
+      [{ accept: "application/json;q=0.5, text/html;q=0.5" }, 200],
+      [{ accept: 'application/ld+json; profile="https://www.w3.org/ns/activitystreams"' }, 200],
+      [{}, 302],
+      [{ accept: "application/activity+json, */*;q=0.1" }, 302],
+      [{ accept: "*/*" }, 302],
+      [{ accept: "*/*;q=0.5, application/json" }, 200],
+      [{ accept: "application/*" }, 302],
+      [{ accept: "image/png" }, 406],
+      [{ accept: "foo, application/json" }, 406],
+      [{ accept: "TEXT/HTML, application/json" }, 200],
+      [{ accept: "text/xml, application/json, application/xhtml+xml" }, 302],
+      [{ accept: "text/html;q=.3, application/json;q=0.2" }, 302],
+      [{ accept: "text/html;q=1.e-1, application/json;q=0.2" }, 200],
+      [{ accept: "application/json;q=0.285, text/html;q=0.29" }, 200],
+      // An XHR's Accept is read even when it names */* among others; without one, its Content-Type's type, else
+      // Mime[:js], which neither representation is.
+      [{ accept: "application/json, */*;q=0.1", ...XHR }, 200],
+      [{ accept: "application/json, */*;q=0.1", "x-requested-with": "xmlhttprequest, fetch" }, 200],
+      [{ accept: "*/*", ...XHR }, 302],
+      [XHR, 406],
+      [{ ...XHR, "content-type": "Application/JSON; charset=utf-8" }, 200],
+      [{ ...XHR, "content-type": "text/html" }, 302],
+      [{ ...XHR, "content-type": "" }, 406],
+      [{ "content-type": "application/json" }, 302],
+      // Puma passes the header as bytes, so an NBSP (UTF-8 or a single byte) is not blank: InvalidType there.
+      [{ accept: "\u00c2\u00a0" }, 406],
+      [{ accept: "\u00a0" }, 406],
     ];
-    for (const [accept, status] of forms) {
-      const answer = await h.request(document, accept === null ? {} : { headers: { accept } });
+    for (const [headers, status] of forms) {
+      const answer = await h.request(document, { headers });
       const location = status === 302 ? `/collections/${id}` : null;
-      expect([accept, answer.status, answer.headers.get("location")]).toEqual([accept, status, location]);
+      expect([headers, answer.status, answer.headers.get("location")]).toEqual([headers, status, location]);
     }
   });
 

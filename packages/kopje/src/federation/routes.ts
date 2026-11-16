@@ -201,9 +201,16 @@ async function respond(c: Context<FederationEnv>, deps: FederationRouteDeps, url
       if (answer.status !== "ok") {
         return null;
       }
-      // CollectionsController#show as Rails negotiates its Accept (rails-format.ts): a request it answers with the page
+      // CollectionsController#show as Rails negotiates its format (rails-format.ts): a request it answers with the page
       // moves to the page (#redirect_to_canonical_url), and one it answers with neither representation is refused.
-      const format = answer.document === null ? "json" : railsFormat(c.req.header("accept"));
+      const format =
+        answer.document === null
+          ? "json"
+          : railsFormat({
+              accept: c.req.header("accept"),
+              requestedWith: c.req.header("x-requested-with"),
+              contentType: c.req.header("content-type"),
+            });
       const response =
         format === "html"
           ? new Response(null, { status: 302, headers: { location: `/collections/${input.id}` } })
