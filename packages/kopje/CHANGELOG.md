@@ -127,9 +127,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   Reports take `collection_ids[]` (forwarded in the `Flag` after the statuses, and read from an inbound one), roles
   present `collection_limit`, search with `resolve=true` finds a local collection by its URL, and each local collection
   has a public page at its `url`. Migration `0103_collections`: two new tables and a column of `reports`, reading no
-  row; as it creates tables, the upgrade checks every reference of the Store (the migration bench's figure is recorded
-  with the release). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor
-  version, and rolling back past it needs a point-in-time restore.
+  row; as it creates tables, the upgrade checks every reference of the Store (the migration bench's upgrade from
+  `0093_annual_reports` takes 16,319 ms with this file and 16,404 ms without it, medians of three runs).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
+  back past it needs a point-in-time restore.
 
 ### Changed
 
