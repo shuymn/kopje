@@ -393,6 +393,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   longer discards that verification, nor cuts short its wait after a failure that may pass; a fetch refused under the
   key the verification no longer uses, or a stamp gone to it, is retried with the current one rather than rejecting
   the quote. No Store migration and no `wrangler.jsonc` change.
+- Editing a post's poll clears its votes as Mastodon does when the edit leaves out `poll[multiple]`, or sends choices
+  that differ from the stored ones before blanks and surrounding whitespace are removed. No Store migration and no
+  `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

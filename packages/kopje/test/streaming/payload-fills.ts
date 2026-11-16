@@ -155,7 +155,8 @@ export async function writeFilled(
     }
     const { id } = posted.value;
     // Written two days back, so it has ended both by the test's clock (REST) and by the real one (the hub's).
-    const poll = { options: [...fill.choices], expiresIn: 86_400, multiple: false, hideTotals: false };
+    const options = [...fill.choices];
+    const poll = { options, expiresIn: 86_400, multiple: false, hideTotals: false, sent: { options, multiple: false } };
     writePoll(new Db(state.storage.sql), id, poll, NOW - 2 * 86_400_000);
     return id;
   });
