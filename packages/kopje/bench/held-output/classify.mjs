@@ -1,10 +1,11 @@
 // The held-output bench's outcome rules (#1610): what `run.mjs` observed, classified. Every figure it reports is an
 // observation over the clients and the hours measured, never a bound for every reader:
-// - A run with a reset other than the headroom probe's own, with the object's storage lost, or with frames handed and
-//   neither received nor ended by the run's end (an unfinished tail), is inconclusive for what it measures; an
-//   unfinished tail's largest age is a lower bound. An end after a reset is the reset's, never a client drop; what
-//   follows the run's `done` record is the driver's cleanup, not the run's. What was handed is the object's own
-//   totals where the run recorded them, and otherwise every hand, those whose answer was lost included.
+// - A run with a reset other than the headroom probe's own, with the object's storage lost or an answer whose start
+//   could not be ordered against the newest (unordered), or with frames handed and neither received nor ended by the
+//   run's end (an unfinished tail), is inconclusive for what it measures; an unfinished tail's largest age is a lower
+//   bound. An end after a reset is the reset's, never a client drop; what follows the run's `done` record is the
+//   driver's cleanup, not the run's. What was handed is the object's own totals where the run recorded them, and
+//   otherwise every hand, those whose answer was lost included.
 // - M1 (does held output count against the Store's memory?) is "counted" at a held volume when the headroom falls by
 //   more than the probe's step plus the spread of its attempts; "not detected" when it does not, which excludes
 //   accounting of more than (step + spread) / volume of what is held and no less; "inconclusive" when either run is,
@@ -30,6 +31,8 @@ export const PROBE_STEP_BYTES = 1024 * 1024;
  *   baseline?: string }} RunRecord
  * @typedef {{ type: "start", run: string, at: number, id: string, kind: "fresh" | "wake", generation?: number,
  *   since: number, listedBefore: number, heldMibBefore: number, probe: boolean, storageLost?: boolean }} StartRecord
+ * @typedef {{ type: "unordered", run: string, at: number, id: string, generation: number, newest: string }}
+ *   UnorderedRecord
  * @typedef {{ type: "hand", run: string, client: string, at: number, firstSeq: number, frames: number,
  *   bytes: number }} HandRecord
  * @typedef {{ type: "hand-unknown", run: string, client: string, at: number, frames: number, bytes: number }}
@@ -49,8 +52,9 @@ export const PROBE_STEP_BYTES = 1024 * 1024;
  * @typedef {{ type: "rss", run: string, at: number, attempt: number, stage: string, bytes: number }} RssRecord
  * @typedef {{ type: "surface", run: string, at: number, start?: string, surface: unknown }} SurfaceRecord
  * @typedef {{ type: "done", run: string, at: number }} DoneRecord
- * @typedef {RunRecord | StartRecord | HandRecord | UnknownHandRecord | TotalsRecord | RecvRecord | PauseRecord
- *   | ClosedRecord | EndRecord | ListedRecord | HeadroomRecord | RssRecord | SurfaceRecord | DoneRecord} Observation
+ * @typedef {RunRecord | StartRecord | UnorderedRecord | HandRecord | UnknownHandRecord | TotalsRecord | RecvRecord
+ *   | PauseRecord | ClosedRecord | EndRecord | ListedRecord | HeadroomRecord | RssRecord | SurfaceRecord
+ *   | DoneRecord} Observation
  *
  * @typedef {{ ms: number, bound: "observed" | "lowerBound" }} Age
  * @typedef {{ at: number, side: "client" | "server", code: number | null, cause: "reset" | "closed" | "platform",
@@ -327,6 +331,9 @@ function classifyRun(run, records) {
   }
   if (starts.some((s) => s.storageLost === true)) {
     reasons.push("the object's storage was lost (its start generations went back)");
+  }
+  if (measured.some((r) => r.type === "unordered")) {
+    reasons.push("an answer's start could not be ordered against the newest one");
   }
   if (clients.some((c) => c.unfinishedTail)) {
     reasons.push("an unfinished tail");

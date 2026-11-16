@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { classify, type Observation } from "../bench/held-output/classify.mjs";
 import {
@@ -401,6 +401,71 @@ describe("held-output driver", () => {
     const outcome = classify(records).runs.find((r) => r.run === "r11");
     expect(outcome?.class).toBe("inconclusive");
     expect(outcome?.reasons).toContain("the object's storage was lost (its start generations went back)");
+  });
+
+  it("finds the storage lost when a rollback answers a question asked in its start's millisecond", async () => {
+    const { records, context, target } = await setup();
+    fake.restartAs(2);
+    // Every clock reading is the same millisecond: only the order of questions and answers can tell.
+    const spy = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    try {
+      const run = new Run(context, target, "r12", { measurement: "m2" });
+      await run.begin();
+      fake.restartAs(1);
+      await run.poll();
+      await run.done();
+    } finally {
+      spy.mockRestore();
+    }
+    const outcome = classify(records).runs.find((r) => r.run === "r12");
+    expect(outcome?.class).toBe("inconclusive");
+    expect(outcome?.reasons).toContain("the object's storage was lost (its start generations went back)");
+  });
+
+  it.each([
+    // Generation 2 seen, then a question asked after it answered by generation 1: the storage was lost.
+    [
+      "a rollback answering a later question",
+      ["seen 2 b", "seen 1 a"],
+      "the object's storage was lost (its start generations went back)",
+    ],
+    // Generation 2 seen, and an unseen generation 1 answering a question asked before: a late answer from a start
+    // between, or the first answer after the storage was lost; which one cannot be told.
+    [
+      "an unseen older start answering an earlier question",
+      ["asked early", "seen 2 b", "early 1 a"],
+      "an answer's start could not be ordered against the newest one",
+    ],
+    // Generation 1 seen, then 2, and generation 1 again (the same start) answering an earlier question: a late answer.
+    ["a known start answering an earlier question", ["seen 1 a", "asked early", "seen 2 b", "early 1 a"], null],
+  ])("orders answers by when their questions were asked, not by the clock: %s", (_, steps, reason) => {
+    const records: Observation[] = [];
+    const context = {
+      signal: new AbortController().signal,
+      plan: {} as Parameters<typeof m1>[0]["plan"],
+      write: (observation: Record<string, unknown>) => records.push(observation as Observation),
+      log: () => {},
+    };
+    const target = { base: "", host: "", port: 0, token: "", local: true, workerdPid: null, signal: context.signal };
+    const run = new Run(context, target, "r13", { measurement: "m2" });
+    let early = run.ask();
+    for (const step of steps) {
+      const [what, generation, id] = step.split(" ");
+      if (what === "asked") {
+        early = run.ask();
+      } else {
+        run.saw(
+          { id: id!, at: 0, kind: "fresh", generation: Number(generation) },
+          what === "early" ? early : run.ask(),
+        );
+      }
+    }
+    run.record({ type: "done", at: Date.now() });
+    const outcome = classify(records).runs.find((r) => r.run === "r13");
+    expect(outcome?.class).toBe(reason === null ? "observed" : "inconclusive");
+    if (reason !== null) {
+      expect(outcome?.reasons).toContain(reason);
+    }
   });
 
   it("counts no reset when the object is recreated empty after the bench closed its client", async () => {

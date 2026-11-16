@@ -191,6 +191,8 @@ function planOf(quick) {
 
 /** @typedef {ReturnType<typeof planOf>} Plan */
 /** @typedef {{ id: string, at: number, kind: "fresh" | "wake", generation: number }} Start */
+// When a question to the object was asked: the clock, and its place among the run's questions and observations.
+/** @typedef {{ at: number, seq: number }} Asked */
 /**
  * @typedef {{ start: Start, at: number, heldMib: number, keepalive: boolean,
  *   sockets: { name: string, readyState: number }[],
@@ -265,7 +267,8 @@ class Client {
   #timer = null;
   #paused = false;
   // When the client asked for its socket: the start that answers with frame 0 was alive then.
-  #connectingAt = 0;
+  /** @type {Asked | null} */
+  #connecting = null;
 
   // Bytes handed, hands whose answer was lost included (`unknownBytes`), and received; frame 0 counts on both sides.
   handedBytes = 0;
@@ -308,7 +311,7 @@ class Client {
   /** Opens the socket and resolves once the 101 arrived. */
   connect() {
     const { target } = this.run;
-    this.#connectingAt = Date.now();
+    this.#connecting = this.run.ask();
     const key = randomBytes(16).toString("base64");
     const request = [
       `GET /ws?name=${encodeURIComponent(this.name)} HTTP/1.1`,
@@ -461,9 +464,9 @@ class Client {
     const age = Date.now() - handAt;
     if (seq === 0) {
       // Frame 0 is handed by the object as it accepts the socket, and names the start that accepted it.
-      if (match?.[3] !== undefined) {
+      if (match?.[3] !== undefined && this.#connecting !== null) {
         const start = { id: match[3], kind: match[4] === "wake" ? "wake" : "fresh", generation: Number(match[5]) };
-        this.run.saw(/** @type {Start} */ (start), this.#connectingAt);
+        this.run.saw(/** @type {Start} */ (start), this.#connecting);
       }
       this.connectedAt = Date.now();
       this.handedBytes += this.#messageBytes;
@@ -670,9 +673,11 @@ export class Run {
   probeHeld = 0;
   // The newest start seen in any answer (a state, a hand, a close, a frame 0), by generation; when the latest of its
   // answers was asked for (the start was alive then, and no later moment is known, however late the answer came); and
-  // when its first answer arrived.
-  /** @type {{ id: string, generation: number, at: number, seenAt: number } | null} */
+  // where its first answer falls among the run's questions and observations.
+  /** @type {{ id: string, generation: number, at: number, seenSeq: number } | null} */
   #start = null;
+  // Counts the run's questions and observations, so their order never rests on the clock: many fall in one millisecond.
+  #sequence = 0;
   // Each generation's start id, as seen since the object's storage was last found lost.
   /** @type {Map<number, string>} */
   #generations = new Map();
@@ -719,8 +724,17 @@ export class Run {
     this.context.write({ ...observation, run: this.id });
   }
 
+  /**
+   * Marks a question about to be asked of the object.
+   * @returns {Asked}
+   */
+  ask() {
+    this.#sequence += 1;
+    return { at: Date.now(), seq: this.#sequence };
+  }
+
   async begin() {
-    const asked = Date.now();
+    const asked = this.ask();
     const state = await answeringState(this.target, 60_000, this.signal);
     this.#seenEvents = state.events.length;
     this.#observe(state, asked);
@@ -735,7 +749,7 @@ export class Run {
   /** Reads the object's state once, after any read already running. */
   poll() {
     this.#polling = this.#polling.then(async () => {
-      const asked = Date.now();
+      const asked = this.ask();
       const state = await stateOf(this.target);
       if (state !== null) {
         this.#observe(state, asked);
@@ -747,31 +761,42 @@ export class Run {
   /**
    * Notes the start an answer came from, and when that answer was asked for; an answer from an older generation than
    * the newest seen is late, and changes nothing, unless the generations went back (the object's storage was lost),
-   * which is recorded as a new start that leaves the run inconclusive. A newer start is recorded with what the run
-   * held open under the one before: the sockets the newest state listed and every client connected and not yet ended
-   * when the latest answer from that start was asked for (so neither a reset between two polls nor a late answer
-   * hides one), less those whose end the bench asked for, and the heap.
+   * which is recorded as a new start that leaves the run inconclusive, or it cannot be told which (recorded as
+   * unordered, which does too). A newer start is recorded with what the run held open under the one before: the
+   * sockets the newest state listed and every client connected and not yet ended when the latest answer from that
+   * start was asked for (so neither a reset between two polls nor a late answer hides one), less those whose end the
+   * bench asked for, and the heap.
    * @param {Start} start
-   * @param {number} asked
+   * @param {Asked} asked
    */
   saw(start, asked) {
     const current = this.#start;
     if (current === null) {
-      this.#start = { id: start.id, generation: start.generation, at: asked, seenAt: Date.now() };
+      this.#start = { id: start.id, generation: start.generation, at: asked.at, seenSeq: (this.#sequence += 1) };
       this.#generations.set(start.generation, start.id);
       return;
     }
     // The generations restart when the object's storage is lost: then a generation already seen comes with another
     // start id, or an older generation answers a question asked after the newest start was seen (a late answer can
-    // only be to a question asked before).
+    // only be to a question asked before). An older generation not seen before, answering a question asked before,
+    // is a late answer from a start in between or the first after the storage was lost; nothing tells which.
     const known = this.#generations.get(start.generation);
-    const lost =
-      (known !== undefined && known !== start.id) || (start.generation < current.generation && asked > current.seenAt);
+    const older = start.generation < current.generation;
+    const lost = (known !== undefined && known !== start.id) || (older && asked.seq > current.seenSeq);
     if (!lost && start.generation <= current.generation) {
-      if (start.generation === current.generation) {
-        current.at = Math.max(current.at, asked);
-      } else {
+      if (!older) {
+        current.at = Math.max(current.at, asked.at);
+        return;
+      }
+      if (known === undefined) {
         this.#generations.set(start.generation, start.id);
+        this.record({
+          type: "unordered",
+          at: Date.now(),
+          id: start.id,
+          generation: start.generation,
+          newest: current.id,
+        });
       }
       return;
     }
@@ -801,12 +826,12 @@ export class Run {
       this.#generations.clear();
     }
     this.#generations.set(start.generation, start.id);
-    this.#start = { id: start.id, generation: start.generation, at: asked, seenAt: Date.now() };
+    this.#start = { id: start.id, generation: start.generation, at: asked.at, seenSeq: (this.#sequence += 1) };
   }
 
   /**
    * @param {State} state
-   * @param {number} asked
+   * @param {Asked} asked
    */
   #observe(state, asked) {
     this.saw(state.start, asked);
@@ -898,7 +923,7 @@ export class Run {
     };
     const query = `name=${encodeURIComponent(client.name)}&frames=${frames}&bytes=${bytes}`;
     let answer;
-    const asked = Date.now();
+    const asked = this.ask();
     try {
       answer = await call(this.target, "POST", `/hand?${query}`);
     } catch (error) {
@@ -933,7 +958,7 @@ export class Run {
    */
   async closeByObject(client) {
     client.closeRequested = true;
-    const asked = Date.now();
+    const asked = this.ask();
     const { body } = await call(this.target, "POST", `/close?name=${encodeURIComponent(client.name)}`);
     const closed = /** @type {{ at: number, start: Start }} */ (body);
     this.saw(closed.start, asked);
