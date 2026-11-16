@@ -813,23 +813,23 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   blocks", "shows no more than the followers and following lists show"). The followers and following lists
   (`GET /api/v1/accounts/:id/followers` and `/following`, Mastodon 4.5's `FollowerAccountsController` and
   `FollowingAccountsController`) read the viewer from an optional token and list nothing when the account is suspended,
-  or, to anyone but the account itself, when it hides its network (`hide_collections`, set through `update_credentials`)
-  or blocks the viewer; other viewers do not see the accounts they block, mute (while the mute applies) or are blocked
-  by. The public followers and following pages read the same lists as an anonymous viewer and leave out an unavailable
-  member, which the API lists redacted; an account that hides its network, which its settings page sets too (WEB-4),
-  shows its counts and no list: _Enforced (main):_ `webFollowsPage` in `src/domain/web-pages/follows.ts`
-  (`listFollowsWithin`); `test/web-follow-lists.test.ts` ("is set from the settings page, with its anti-forgery token,
-  and then the lists show only their counts"). Familiar followers show no followers of an account that hides its
-  network, to anyone, the account itself included, and leave out a follower that hides its own (Mastodon's
-  `FamiliarFollowersPresenter`). The ActivityPub followers and following collections of a suspended actor answer 404,
-  and those of an actor that hides its network show `totalItems` only and answer a page with 403. A remote account's
-  setting is learned as Mastodon's ProcessAccountService learns it (its followers or following collection shows no first
-  page) and hides its lists the same way; one Kopje has not learned yet hides nothing, and a collection that cannot be
-  read for now leaves what was learned unless the other one is known to hide its items. Both collections are fetched in
-  every sync, the followers even once the following hides (for their counts, as Mastodon fetches them); one past the
-  network part's caps (`NETWORK_CAPS`, RES-6) is unreadable and hides, as any collection that cannot be read does
-  (`src/federation/collections.ts`, `accounts.hide_collections`; `test/remote-collections.test.ts`). _Enforced (main):_
-  `followListsShownSql` and `followListedSql` in
+  or, to anyone but the account itself, when it hides its network (`hide_collections`, set through `update_credentials`
+  or the profile update) or blocks the viewer; other viewers do not see the accounts they block, mute (while the mute
+  applies) or are blocked by. The public followers and following pages read the same lists as an anonymous viewer and
+  leave out an unavailable member, which the API lists redacted; an account that hides its network, which its settings
+  page sets too (WEB-4), shows its counts and no list: _Enforced (main):_ `webFollowsPage` in
+  `src/domain/web-pages/follows.ts` (`listFollowsWithin`); `test/web-follow-lists.test.ts` ("is set from the settings
+  page, with its anti-forgery token, and then the lists show only their counts"). Familiar followers show no followers
+  of an account that hides its network, to anyone, the account itself included, and leave out a follower that hides its
+  own (Mastodon's `FamiliarFollowersPresenter`). The ActivityPub followers and following collections of a suspended
+  actor answer 404, and those of an actor that hides its network show `totalItems` only and answer a page with 403. A
+  remote account's setting is learned as Mastodon's ProcessAccountService learns it (its followers or following
+  collection shows no first page) and hides its lists the same way; one Kopje has not learned yet hides nothing, and a
+  collection that cannot be read for now leaves what was learned unless the other one is known to hide its items. Both
+  collections are fetched in every sync, the followers even once the following hides (for their counts, as Mastodon
+  fetches them); one past the network part's caps (`NETWORK_CAPS`, RES-6) is unreadable and hides, as any collection
+  that cannot be read does (`src/federation/collections.ts`, `accounts.hide_collections`;
+  `test/remote-collections.test.ts`). _Enforced (main):_ `followListsShownSql` and `followListedSql` in
   `src/domain/audience.ts`, `listFollows` and `familiarFollowers` in `src/domain/accounts.ts`, `getCollection` in
   `src/domain/actors.ts`; `test/accounts.test.ts` ("follower lists for the viewer (R13)"), `test/account-reads.test.ts`
   ("shows no followers of an account that hides its network"), `test/federation.test.ts` ("shows only the size of the
@@ -2809,14 +2809,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   code units). Media uploads have their own limit. _Enforced (main)_ for bodies: `src/platform/body.ts`,
   `src/mastodon/params.ts`; `test/gate.test.ts` ("refuses an inbox body over 1 MiB", "stops reading a streamed inbox
   body"). _Enforced (main)_ for API bodies: a route's body stops at its limit (1 MiB unless the route sets one), and a
-  route that reads files (`readParams`' file rule: `update_credentials`' avatar and header, the settings page's
-  image) takes a multipart body of the limit plus each file and its part headers (17,858,560 bytes for
-  `update_credentials`), chosen from `Content-Type` before any byte is read, while its text stays within the limit in
-  UTF-8 bytes; a JSON body is refused past 10,000 generated parameter paths (object members, array objects and empty
-  arrays) or 2,097,152 UTF-16 code units of all its keys, charged before each key is built, and past 32 levels of
-  nesting; `update_credentials` checks the token before reading a multipart
-  body; `test/params.test.ts`, `test/profile-images.test.ts` ("takes a multipart body up to the text limit plus two
-  files and refuses one byte more", "answers an invalid or under-scoped token without reading a multipart body").
+  route that reads files (`readParams`' file rule: the avatar and header of `update_credentials` and of the profile
+  update, `PATCH` and `PUT /api/v1/profile`, and the settings page's image) takes a multipart body of the limit plus
+  each file and its part headers (17,858,560 bytes for `update_credentials` and the profile update), chosen from
+  `Content-Type` before any byte is read, while its text stays within the limit in UTF-8 bytes; a JSON body is refused
+  past 10,000 generated parameter paths (object members, array objects and empty arrays) or 2,097,152 UTF-16 code units
+  of all its keys, charged before each key is built, and past 32 levels of nesting; `update_credentials` and the profile
+  update check the token before reading a multipart body (one handler, `credentialsUpdate` in
+  `src/mastodon/accounts.ts`); `test/params.test.ts`, `test/profile-images.test.ts` ("takes a multipart body up to the
+  text limit plus two files and refuses one byte more", "answers an invalid or under-scoped token without reading a
+  multipart body"), `test/profile-api.test.ts` ("answers an invalid or under-scoped token without reading a multipart
+  body").
   _Enforced (main)_ for status text: `test/status-text.test.ts` ("raw input bound"); the Store checks the raw bound of
   the text and warning as sent before it judges a blank text or moves its warning into the text (`convertedPost`, which
   `postStatus` calls, and `editStatus`, in `src/domain/statuses.ts`), and an edit to a blank text checks it again on
@@ -3525,12 +3528,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   marks an app by its key")). The cron removes unused never-authorized apps after a day (Kopje's own removal, which
   Mastodon 4.5.11 does not make: [mastodon-deviations.md](mastodon-deviations.md), Posting), and expired codes and web
   sessions, 500 of each per run. `registerApp` and `sweepOAuth` in `src/domain/oauth.ts`, `src/mastodon/oauth.ts`;
-  `test/apps-budget.test.ts`. Avatar and header uploads, from `update_credentials` and the settings page alike, go
-  through the media budgets below, one reservation and three transformations each, at most 8 MB each. Unlocking an
-  account: _Enforced (main):_ the update starts a cursor job (`local_accounts.accept_requests_after`) instead of
-  accepting in the request; each job round authorizes at most 20 requests, each in its own transaction through the
-  single authorize path (its delivery admission and recount included), and every step advances or clears the cursor,
-  also when its authorization throws (RES-5) (`src/domain/unlock-accepts.ts`; `test/unlock-accepts.test.ts`: 250
+  `test/apps-budget.test.ts`. Avatar and header uploads, from `update_credentials`, the profile update and the settings
+  page alike, go through the media budgets below, one reservation and three transformations each, at most 8 MB each.
+  Unlocking an account: _Enforced (main):_ the update starts a cursor job (`local_accounts.accept_requests_after`)
+  instead of accepting in the request; each job round authorizes at most 20 requests, each in its own transaction
+  through the single authorize path (its delivery admission and recount included), and every step advances or clears the
+  cursor, also when its authorization throws (RES-5) (`src/domain/unlock-accepts.ts`; `test/unlock-accepts.test.ts`: 250
   requests in rounds of at most 20). Held handshakes (VIS-30): _Enforced (main):_ a follow holds one at most (the
   table's key), which goes with the follow; a claim writes at most `CLAIM_LIMIT` holds; a round runs at most
   `HANDSHAKE_REPLAYS_PER_ROUND` (20) steps, each its own transaction, which takes one hold by two index probes at most
@@ -4444,6 +4447,19 @@ not asserted.
 | Access admin's trending link, derived from its caps              |                   | 4,166           | 4,217             |           |       | 0.1%           |
 | Instance activity (12 weeks), derived from its caps              |                   | 1,189           | 1,189             | 8,592     |       | 0.0%           |
 | Scheduled status, derived from its caps                          |                   | 884,345         | 884,889           | 5         |       | 10.5%          |
+
+The Profile (`/api/v1/profile`, `presentProfile` in `src/domain/accounts.ts`) is one unit, derived from the bounds its
+parts hold after decoding: the display name at `DISPLAY_NAME_LIMIT` code points of six-byte escapes
+(`presentedDisplayName`); `formatted_note` at `BIO_JSON_BYTES` (`presentedNote`) and `note` at no more, since
+`htmlToPlainText` never grows a note's JSON; four local fields as written (code points of six-byte escapes, verified)
+and as formatted (37,677 bytes, as above); four image URLs at `PROFILE_URL_LIMIT` as JSON; both descriptions at
+`PROFILE_DESCRIPTION_LIMIT` code points (`presentedProfileDescription`); the attribution domains at
+`ATTRIBUTION_DOMAINS_JSON_MAX` (`presentedAttributionDomains` over `attributionDomainsSql`); and `MAX_FEATURED_TAGS`
+featured hashtags at the list's bound on an origin of a 253-octet host and a port, read through `ACCOUNT_FEATURED_SQL`'s
+`LIMIT` (as many rows read with 12 featured as with 40). A local account with every part at its cap presents the
+measured figure; with its display name, note and descriptions imported as malformed bytes past their decoded bounds it
+presents less (`test/profile-api.test.ts` ("derives the Profile's maximum from its caps, above a witness at them and one
+of malformed bytes")).
 
 A moderation_warning shows its account twice (the sender and the warning's `target_account`, the same local account with
 four local fields at their limits, each value a verified 255-character link whose `&`s the link markup escapes twice,
