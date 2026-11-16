@@ -420,6 +420,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "rowHeapSql",
   // A column map's select list: its values are checked where the map names them (`column <alias.column>`).
   "selectSql",
+  // A content warning cut to its read bytes (platform/stored-bounds.ts), no bounded column.
+  "spoilerReadSql",
   // As rowHeapSql: the heap of the rows one status reads (status-rows.ts), a number.
   "statusRowTerms",
   // statuses.url read through its stored bound (platform/stored-bounds.ts).

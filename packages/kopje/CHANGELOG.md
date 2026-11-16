@@ -259,6 +259,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - An account whose imported display name or bio holds malformed UTF-8 is shown within the usual bounds (the display
   name cut at 2,048 characters, the bio empty past 64 KiB of JSON) instead of growing an answer past its budget. No
   Store migration and no `wrangler.jsonc` change.
+- A status restored from a dump with malformed UTF-8 in its content, source text or content warning is presented
+  within those fields' bounds (content and source text empty past 128 KiB of JSON, the warning cut to 2,730
+  characters past 16 KiB) in the API, streaming, public pages and its ActivityPub Note; a warning was presented at up
+  to about three times its stored size, with no limit on that size. No Store migration and no `wrangler.jsonc`
+  change.
 - A display name and a bio set through `update_credentials` or the settings page are stripped of leading and trailing
   spaces, tabs, line breaks and NULs before they are counted and stored, as Mastodon strips them, and a bio keeps
   every other character, as Mastodon formats it. One at its limit with such a character at an end was refused, a
