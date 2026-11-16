@@ -7,11 +7,12 @@ import {
   STATUSES_URI_INDEX,
 } from "../db/indexes";
 import type { Db } from "../db/sql";
-import { parseAddress } from "../platform/domain-name";
-import { sameOrigin } from "../platform/http-url";
+import { normalizeDomain, parseAddress } from "../platform/domain-name";
+import { httpUrl, sameOrigin } from "../platform/http-url";
 import { iso } from "../platform/iso-time";
 import { STATUS_EMOJIS_BYTES, storedMediaMeta, storedTime } from "../platform/stored-bounds";
-import { type Account, type Present, presentAccountById } from "./accounts";
+import { type Account, accountIdByAddress, type Present, presentAccountById } from "./accounts";
+import { instanceDomainOf } from "./actors";
 import {
   availableSql,
   domainBlocksSql,
@@ -57,7 +58,7 @@ import { isDeleted } from "./retractions";
 import { normalizeSearchText } from "./search-text";
 import { MAX_STATUS_MEDIA, MAX_STATUS_MENTION_ROWS, MAX_STATUS_TAGS, MAX_TAG_LENGTH } from "./status-bounds";
 import { measureFilterText, presentStatus, type Status } from "./status-presenter";
-import { MAX_STATUS_EDITS, recordEdit, recountStatus, writeTags } from "./statuses";
+import { MAX_STATUS_EDITS, recordEdit, recountStatus, resolveStatusId, writeTags } from "./statuses";
 import { notifyEdited } from "./update-fan-out";
 
 // Remote statuses: Create, Update and the originals of boosts and search results, stored as Mastodon 4.7.5's
@@ -1153,6 +1154,80 @@ export function storeResolved(
   }
 }
 
+// Kopje's routes for what Mastodon 4.7.5's ResolveURLService#process_local_url finds (resolve_url_service.rb:93-123),
+// read as its router reads its own (config/routes.rb:113, :160-179): a profile or one of its tabs (accounts#show, whose
+// username takes no `@`, `/` or `.`), an actor URI (Kopje's for /users/:username, also accounts#show), a status page
+// (statuses#show, whose username is a profile's and whose id takes no `.`), an object URI (Kopje's for
+// /users/:u/statuses/:id), each with Rails' optional `.:format`; an address /@user@domain with no rest, and a status
+// page under any handle (home#index, which takes no format). A trailing `/` is allowed, as recognize_path allows it.
+const FORMAT = "(?:\\.[^/.]+)?";
+const LOCAL_PROFILE = new RegExp(
+  `^/@([^@/.]+)(?:/(?:featured|collections|with_replies|media|tagged/[^/.]+))?${FORMAT}/?$`,
+);
+const LOCAL_ACTOR = new RegExp(`^/ap/users/([^/.]+)${FORMAT}/?$`);
+const LOCAL_ADDRESS = /^\/@([^/]*@[^/]*)\/?$/;
+const LOCAL_STATUS_SHOW = new RegExp(`^/@[^@/.]+/([^/.]+)${FORMAT}/?$`);
+const LOCAL_STATUS_PAGE = /^\/@[^/]+\/([^/]+)\/?$/;
+const LOCAL_OBJECT = new RegExp(`^/ap/o/([^/.]+)${FORMAT}/?$`);
+
+// What a URL of this instance names on Kopje's routes (LOCAL_*), for a search resolution the stored lookup by uri did
+// not find: a profile or one of its tabs, or an actor URI, by the local account of that username (Account.find_local,
+// `:105`); an address /@<user>@<other domain> by the stored remote account of that address, nothing fetched
+// (Account.find_remote, `:116`), its user and domain the first two fields of Ruby's split('@') after one leading `@` is
+// removed (`:113`), and /@<user>@<this domain> by the local account, as its profile page serves it, where Mastodon
+// finds none (docs/mastodon-deviations.md, Search); a status page /@<handle>/<id>, whatever the handle (Mastodon reads
+// the id alone, `:100`, `:110`), by its API or legacy id as written (Mastodon casts it as Rails casts an integer,
+// listed there), never a boost; an object URI by its uri (storedStatus). Whether the viewer may see it is
+// resolveSearch's. It reads the instance's domain, then one status by unique key and its row again for the boost check,
+// or one account by its address index. The interaction page maps its own forms (interaction.ts localTarget).
+function localSearchTarget(db: Db, query: string, now: number): StoredResolution {
+  const none: StoredResolution = { kind: "none" };
+  const domain = instanceDomainOf(db);
+  const url = domain === null ? null : httpUrl(query);
+  if (domain === null || url === null || url.host !== domain) {
+    return none;
+  }
+  const decoded = (segment: string | undefined): string | null => {
+    try {
+      return decodeURIComponent(segment ?? "");
+    } catch {
+      return null;
+    }
+  };
+  const account = (username: string | null, at: string | null): StoredResolution => {
+    if (username === null || username === "" || at === "") {
+      return none;
+    }
+    const remote = at === null || at.toLowerCase() === domain ? null : (normalizeDomain(at) ?? at.toLowerCase());
+    const id = accountIdByAddress(db, username, remote);
+    return id === undefined ? none : { kind: "account", id };
+  };
+  const profile = LOCAL_PROFILE.exec(url.pathname) ?? LOCAL_ACTOR.exec(url.pathname);
+  if (profile !== null) {
+    return account(decoded(profile[1]), null);
+  }
+  const address = LOCAL_ADDRESS.exec(url.pathname);
+  const handle = address === null ? null : decoded(address[1]);
+  if (handle !== null) {
+    const fields = handle.replace(/^@/, "").split("@");
+    return account(fields[0] ?? null, fields[1] ?? "");
+  }
+  const object = LOCAL_OBJECT.exec(url.pathname);
+  if (object !== null) {
+    return storedStatus(db, `https://${domain}/ap/o/${object[1] ?? ""}`, null, now) ?? none;
+  }
+  const page = LOCAL_STATUS_SHOW.exec(url.pathname) ?? LOCAL_STATUS_PAGE.exec(url.pathname);
+  const raw = page === null ? null : decoded(page[1]);
+  const id = raw === null ? null : resolveStatusId(db, raw);
+  const original =
+    id !== null &&
+    db.first(
+      `SELECT 1 AS x FROM statuses INDEXED BY ${STATUSES_ID_INDEX} WHERE id = ?1 AND reblog_of_id IS NULL`,
+      id,
+    ) !== undefined;
+  return id !== null && original ? { kind: "status", id, quotesDue: false } : none;
+}
+
 // Stores what was resolved (storeResolved), then answers with it only if the viewer may see it (VIS-1): an account only
 // if account search would find it (findableBySql, R14), a status by the rule of a single status (canView, R3, as
 // Mastodon's ResolveURLService authorizes show?), unless the viewer blocks its author's domain. A private object a
@@ -1182,7 +1257,11 @@ export const resolveSearch = userWriteOperation.atStoreTime("storeNow")<ResolveI
     const found = visible === null ? null : presentStatus(db, visible, options);
     return { accounts: [], statuses: found === null ? [] : [found] };
   };
-  const stored = storeResolved(db, input, true);
+  const fetched = storeResolved(db, input, true);
+  const stored =
+    fetched.kind === "none" && input.resolved.kind === "local"
+      ? localSearchTarget(db, input.query, input.now)
+      : fetched;
   switch (stored.kind) {
     case "account":
       return account(stored.id);

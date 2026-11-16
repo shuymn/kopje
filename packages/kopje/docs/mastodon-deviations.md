@@ -922,8 +922,13 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
   nothing stored is removed. A fetch Kopje refuses before it is sent (the domain policy, the request's fetches or
   deadline, a redirect to another origin or past 5) counts as no answer and keeps the earlier answer, as Mastodon
   counts a connection error; an answer whose body the request's bytes cut counts as its status, as Mastodon records
-  the status before it reads the body within its limit. A boost is never answered (Mastodon's lookup by uri may find
-  one by its `Announce` id).
+  the status before it reads the body within its limit. A boost is never answered, here or for a status page URL of
+  this instance (Mastodon's lookup by uri may find one by its `Announce` id, and its status page route by its id).
+- With `resolve=true`, a URL of this instance is read on Kopje's routes as Mastodon 4.7.5's router reads its own, with
+  two differences. `/@user@<this domain>` finds the local account, as Kopje's profile page serves that spelling, where
+  Mastodon routes it to its web app and finds no account (`Account.find_remote` with its own domain,
+  `resolve_url_service.rb:116`). A status id in the URL is matched as written (an API id or a legacy id), where
+  Mastodon casts it as Rails casts an integer, so `0123` or `123-x` finds status 123.
 
 Polls (`GET /api/v1/polls/:id`):
 

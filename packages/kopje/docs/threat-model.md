@@ -849,10 +849,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the actor’s host on every path", "never lets a third-party alias replace a confirmed domain or evade a block on it").
   Account search finds an account that is available and not on a domain the viewer blocks (`findableBySql`). Search
   resolution answers an account only when account search would find it, and a status by the rule of a single status
-  (VIS-1, `canView`, as Mastodon's `ResolveURLService` authorizes `show?`) unless the viewer blocks its author's domain.
+  (VIS-1, `canView`, as Mastodon's `ResolveURLService` authorizes `show?`) unless the viewer blocks its author's domain,
+  a URL of this instance included, which it finds on Kopje's routes with nothing fetched (`localSearchTarget`).
   _Enforced (main):_ `findAccountIds` and `searchAccountIds` in `src/domain/accounts.ts`, `resolveSearch` in
   `src/domain/remote-statuses.ts`; `test/inbox-statuses.test.ts` ("answers a status by the single-status rule"),
-  `test/policy-endpoints.test.ts`.
+  `test/search-local-urls.test.ts` ("answers only what the viewer may see"), `test/policy-endpoints.test.ts`.
 - **VIS-6: a wrapper reveals nothing its target hides.** A boost is visible only if its original is; boosting is limited
   to `public` and `unlisted` statuses and one's own `private` ones (`StatusPolicy#reblog?`). _Enforced (main):_
   `viewableSql`; `test/visibility.test.ts` ("a boost of an original the viewer may not see is hidden with it"),
@@ -4472,7 +4473,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (`src/domain/search.ts`, `searchAccountIds` in `src/domain/accounts.ts`); `test/search.test.ts` ("filters before
   LIMIT"), `test/search-edge.test.ts` (rows read stay flat as favourites, bookmarks, accounts and tagged statuses grow
   fourfold, pending follows included; `max_id` reaches past each window; an exact address outside every window is
-  found). _Enforced (main):_ the peers list seeks each next domain on the (domain,
+  found). A search resolution of a URL of this instance reads the instance's domain, then one status by its key (and
+  that row again for the boost check) or one account by its address index (`localSearchTarget` in
+  `src/domain/remote-statuses.ts`). _Enforced (main):_ the peers list seeks each next domain on the (domain,
   username) index, so it reads rows by domain returned, not by account known; the public block list reads the suspend
   blocks in chunks of 500 from the partial index `instance_domain_blocks_public` (migration `0049_instance_bounds`),
   so its rows read are the admitted blocks and at most one chunk more, whatever the noop blocks

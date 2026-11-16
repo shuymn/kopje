@@ -946,6 +946,11 @@ export function accountByAddress(db: Db, username: string, domain: string | null
   return row === undefined ? null : presentOne(db, row, present);
 }
 
+// The id of the account an address names (addressRow), whether the account reads find it or not.
+export function accountIdByAddress(db: Db, username: string, domain: string | null): string | undefined {
+  return addressRow(db, username, domain)?.id;
+}
+
 // The address of the account an address names, as stored: `username`, or `username@domain` for a remote one.
 export function storedAddress(db: Db, username: string, domain: string | null): string | null {
   const row = addressRow(db, username, domain);

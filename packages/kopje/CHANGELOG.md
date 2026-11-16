@@ -277,9 +277,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
-- Search reads `limit` and `offset` as Mastodon's does: `limit=0` answers nothing, a negative `limit` counts as its
-  absolute value, and `offset` counts only with a `type`. A URL looked up with `resolve=true` is no longer also searched
-  as text, and an address is resolved only when accounts are searched
+- Search with `resolve=true` finds a local post by its page URL, a local account by its profile URL (one of its tabs
+  included) and a stored remote account by its `/@user@domain` URL on this instance, as Mastodon's search does, when
+  the viewer may see them. Search reads `limit` and `offset` as Mastodon's does: `limit=0` answers nothing, a negative
+  `limit` counts as its absolute value, and `offset` counts only with a `type`. A URL looked up with `resolve=true` is
+  no longer also searched as text, and an address is resolved only when accounts are searched
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Search). No Store migration and no `wrangler.jsonc`
   change.
 - A fetched ActivityPub document, WebFinger answer or JSON-LD context is taken only from a 200 answer, as Mastodon takes
