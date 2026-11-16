@@ -305,6 +305,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- The cutover stores a remote account's domain without the port or trailing dot of its actor id's host, as Kopje
+  stores one, and `verify-conversion` compares the domain. A Store converted before keeps such domains until a refresh
+  confirms each account; the query in [docs/cutover.md](docs/cutover.md) (Verification) lists them (#1725). A remote
+  actor id that is not an http or https URL, which the Worker never stores, now stops the conversion
+  (`remote-actor-uri-not-http`). No Store migration and no `wrangler.jsonc` change.
 - A remote actor whose member Kopje does not read from Fedify (an `icon`, `image` or collection spelled as a compact or
   full IRI, an unreadable `published` or `updated`, an odd `tag`, an invalid language map) is stored instead of
   refused, as Mastodon stores it (#1709, #1710; [docs/mastodon-deviations.md](docs/mastodon-deviations.md) lists the

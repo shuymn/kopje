@@ -166,6 +166,7 @@ export function actualFromDump(text) {
           t("actor_type"),
           int(row.discoverable),
           t("url"),
+          t("domain"),
         ]);
         if (row.raw !== "NULL") {
           put("raw", `account ${uri}`, t("raw"));

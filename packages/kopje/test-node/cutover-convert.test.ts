@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -8,7 +9,7 @@ import { promisify } from "node:util";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { threadsOf } from "../cli/lib/cutover/verify-expect.js";
-import { MAX_LOCAL_ADDRESSED } from "../src/platform/identity-bounds.js";
+import { isStorableActorId, MAX_LOCAL_ADDRESSED } from "../src/platform/identity-bounds.js";
 import {
   convert as convertIn,
   exportOf as exportIn,
@@ -18,8 +19,9 @@ import {
   rewriteExport,
   verify as verifyWith,
   workspace,
+  writeExport,
 } from "./cutover-helpers.js";
-import type { FixtureOptions } from "./legacy-fixture.js";
+import { buildLegacyFixture, type FixtureOptions } from "./legacy-fixture.js";
 
 // The converter end to end on synthetic exports (DATA-11 to DATA-14): convert, then check the result against
 // expectations computed independently from the export, and show the check fails on each kind of damage.
@@ -737,6 +739,148 @@ describe("remote actors that share an address", () => {
     expect(failing(unrequested.categories)).toEqual(["handle_refreshes"]);
     expect(unrequested.ok).toBe(false);
   });
+});
+
+// The read-only query docs/cutover.md gives operators for remote domains with a port or a trailing dot, as written there.
+function convertedDomainsQuery(): string {
+  const doc = readFileSync(fileURLToPath(new URL("../docs/cutover.md", import.meta.url)), "utf8");
+  const queries = [...doc.matchAll(/^kopje-admin sql "(SELECT id, uri, domain FROM accounts [^"]*)"$/gm)];
+  expect(queries).toHaveLength(1);
+  return queries[0]?.[1] ?? "";
+}
+
+describe("remote actors whose ids spell the host otherwise", () => {
+  it("store the domain the Worker gives the id's host, address and search text with it, and verify", async () => {
+    const exportPath = await exportOf({ level: 39, hostSpellings: true });
+    const { ok, manifest, dumpPath } = await convert(exportPath);
+    expect(manifest.stop).toBeUndefined();
+    expect(ok).toBe(true);
+    // The independent check works the domains and the shared address out on its own.
+    const { ok: verified, categories } = await verifyWith(exportPath, dumpPath);
+    expect(failing(categories)).toEqual([]);
+    expect(categories.handle_refreshes?.expected).toBe(1);
+    expect(verified).toBe(true);
+    const db = await opened(dumpPath);
+    const accounts = db
+      .prepare(
+        `SELECT uri, domain, username = '! ' || id AS invalidated, search_text, c.refresh
+				FROM accounts a LEFT JOIN collection_syncs c ON c.account_id = a.id
+				WHERE display_name LIKE 'Spelled %' ORDER BY a.rowid`,
+      )
+      .all();
+    // The port, the capitals and the trailing dot are dropped and a Unicode host is punycode, as hostDomain gives
+    // them; h.example:8443's a and h.example's a are then one address, so the later is invalidated and refreshed.
+    expect(accounts).toEqual([
+      {
+        uri: "https://Example.COM:8443/users/a",
+        domain: "example.com",
+        invalidated: 0,
+        search_text: "spelled 0 a@example.com",
+        refresh: null,
+      },
+      {
+        uri: "https://bücher.example/u/b",
+        domain: "xn--bcher-kva.example",
+        invalidated: 0,
+        search_text: "spelled 1 b@xn--bcher-kva.example",
+        refresh: null,
+      },
+      {
+        uri: "https://example.com./u/c",
+        domain: "example.com",
+        invalidated: 0,
+        search_text: "spelled 2 c@example.com",
+        refresh: null,
+      },
+      {
+        uri: "https://h.example:8443/u/a",
+        domain: "h.example",
+        invalidated: 0,
+        search_text: "spelled 3 a@h.example",
+        refresh: null,
+      },
+      {
+        uri: "https://h.example/u/a",
+        domain: "h.example",
+        invalidated: 1,
+        search_text: expect.any(String),
+        refresh: 1,
+      },
+    ]);
+    // The operator's query for domains an earlier converter kept (docs/cutover.md, Verification) finds none here, and
+    // exactly the rows with a port or a trailing dot once each spelled row holds the domain the old line wrote.
+    const listed = () =>
+      db
+        .prepare(convertedDomainsQuery())
+        .all()
+        .map((row) => (row as { uri: string }).uri);
+    expect(listed()).toEqual([]);
+    for (const { uri } of accounts as { uri: string }[]) {
+      db.prepare("UPDATE accounts SET domain = ? WHERE uri = ?").run(new URL(uri).host.toLowerCase(), uri);
+    }
+    expect(listed().toSorted()).toEqual(
+      ["https://Example.COM:8443/users/a", "https://example.com./u/c", "https://h.example:8443/u/a"].toSorted(),
+    );
+    db.close();
+    // A stored domain that keeps the id's port, as the converter once wrote it, is reported.
+    const ported = await verifyWith(
+      exportPath,
+      await tampered(
+        dumpPath,
+        "UPDATE accounts SET domain = 'example.com:8443' WHERE uri = 'https://Example.COM:8443/users/a'",
+      ),
+    );
+    expect(failing(ported.categories)).toEqual(["accounts"]);
+    expect(ported.ok).toBe(false);
+  });
+
+  // The Worker fetches actors over https only, from their id's origin (ID-2), so it never stores an actor whose id has
+  // another scheme; and the URL parser keeps such an id's host as spelled (percent escapes, capitals), no domain name.
+  for (const actor of [
+    { id: "foo://bücher.example/u/a", preferredUsername: "CaSe" },
+    { id: "foo://b%63.example/u/a", preferredUsername: "a" },
+  ]) {
+    it(`refuse the actor id ${actor.id}, as the Worker never stores it, and the check agrees`, async () => {
+      expect(isStorableActorId(actor.id)).toBe(true);
+      const { texts } = await buildLegacyFixture({ level: 39, extraActors: [actor] });
+      const exportPath = await writeExport(dir(), texts);
+      // The same export without the actor's row, converted: the dump a conversion that leaves the actor out carries.
+      const without = new Map(
+        [...texts].map(([table, text]) => [
+          table,
+          text
+            .split("\n")
+            .filter((line) => !(line.startsWith('INSERT INTO "actors"') && line.includes(actor.id)))
+            .join("\n"),
+        ]),
+      );
+      expect(without.get("actors")?.length).toBeLessThan(texts.get("actors")?.length ?? 0);
+      const untouched = await convert(await writeExport(dir(), without, "without"), { out: "untouched" });
+      expect(untouched.ok).toBe(true);
+      const stopped = await convert(exportPath);
+      expect(stopped.ok).toBe(false);
+      expect((stopped.manifest.conversion as { problems: Record<string, number> }).problems).toEqual({
+        "remote-actor-uri-not-http": 1,
+      });
+      // The check reports the refused identity, and that dump differs from what it expects only by the actor's own
+      // records (a refused identity is still expected, as every identity the converter refuses).
+      const checked = await verifyWith(exportPath, untouched.dumpPath);
+      expect(
+        Object.fromEntries(
+          failing(checked.categories).map((name) => {
+            const { missing, extra, changed } = checked.categories[name] ?? { missing: 0, extra: 0, changed: 0 };
+            return [name, { missing, extra, changed }];
+          }),
+        ),
+      ).toEqual({
+        accounts: { missing: 1, extra: 0, changed: 0 },
+        raw: { missing: 1, extra: 0, changed: 0 },
+        legacy_ids: { missing: 1, extra: 0, changed: 0 },
+      });
+      expect(checked.report).toMatchObject({ identities: { overBound: 1 } });
+      expect(checked.ok).toBe(false);
+    });
+  }
 });
 
 describe("the expected threads", () => {
