@@ -278,6 +278,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   linear time on long input. No Store migration and no `wrangler.jsonc` change.
 - The settings page's bio shows a stored note that starts with a line break whole, where the browser dropped that
   line break. No Store migration and no `wrangler.jsonc` change.
+- A conversation whose stored last status is a boost (only a restored row can name one) shows no last status instead
+  of the boost, in `GET /api/v1/conversations`, its read and unread answers and on the `direct` stream. No Store
+  migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 
