@@ -683,12 +683,15 @@ export type QuoteVerified = { done: boolean; due: boolean; state: QuoteState | n
 // The end of one verification: the state it leaves and its work: done (none left) or retry (a failure that may pass:
 // the next attempt after QUOTE_BACKOFF_MS, none after the last; an attempt is charged). A stamp found valid while a
 // relayed Delete asked for a recheck is checked once more, at once. The author address a stage recorded stays only
-// while work is left. The work's flag (quotes.broadcast) is 0 once no work is left, 2 while a retry awaits the next
-// verification (Mastodon's RefetchAndVerifyQuoteWorker), and kept on a signer's retry (`resigned`: Mastodon has none,
-// failed) and on a recheck's second look. A decision that ends the work and moves the quote's state runs the update
-// fan-out when the flag, read in this transaction, is 1 or 2: the work's first verification is one Mastodon broadcasts
-// (a same-version Update's that reset nothing, a relayed Delete's recheck), or the worker's after a failure that may
-// pass (:82, refetch_and_verify_quote_worker.rb:10-13 in v4.7.5).
+// while work is left. The flag a decision reads, in this transaction, is 1 under a relayed Delete's mark (recheck:
+// recheckStamp), else the work's own (quotes.broadcast). It writes 0 once no work is left, 2 while a retry awaits the
+// next verification (Mastodon's RefetchAndVerifyQuoteWorker), and the flag it read on a signer's retry (`resigned`:
+// Mastodon has none, failed) and on a recheck's second look (the Delete's 1). A decision that moves the quote's state
+// runs the update fan-out when that flag is 1 or 2: the work's first verification is one Mastodon broadcasts (a
+// same-version Update's that reset nothing, a relayed Delete's recheck), or the worker's after a failure that may pass
+// (:82, refetch_and_verify_quote_worker.rb:10-13 in v4.7.5). An acceptance a second look follows reads the work's own
+// flag instead: it is the work's first verification (Mastodon's inline one, broadcast before the Delete arrives), and
+// the second look is the Delete's.
 function finish(
   db: Db,
   row: QuoteRow,
@@ -703,10 +706,10 @@ function finish(
   const again = row.recheck === 1 && work === "done" && state === "accepted";
   const verifyAfter = again ? now : delay === undefined ? null : now + delay;
   const fetched = work === "done" || (work === "retry" && delay === undefined) ? null : keep;
-  const flag = verifyAfter === null ? 0 : work === "retry" && !resigned ? 2 : null;
+  const flag = row.recheck === 1 ? 1 : row.broadcast;
   db.run(
     `UPDATE quotes SET state = ?2, verify_after = ?3, attempts = ?4, need_author = ?5, updated_at = ?6,
-			generation = ${NEW_GENERATION}, recheck = 0, lease_until = NULL, broadcast = coalesce(?7, broadcast)
+			generation = ${NEW_GENERATION}, recheck = 0, lease_until = NULL, broadcast = ?7
 		WHERE status_id = ?1`,
     row.status_id,
     state,
@@ -714,9 +717,9 @@ function finish(
     attempts,
     fetched,
     iso(now),
-    flag,
+    verifyAfter === null ? 0 : work === "retry" && !resigned ? 2 : flag,
   );
-  if (work === "done" && !again && state !== row.state && row.broadcast !== 0) {
+  if (work === "done" && state !== row.state && (again ? row.broadcast : flag) !== 0) {
     fanOutQuoteChange(db, row.status_id, now);
   }
   return { done: !again, due: quotesDue(db, now), state, next: false };
@@ -1197,24 +1200,28 @@ export function stampHolder(
 // again, their state unchanged until then, so a stamp that is gone revokes or rejects them. Replays coalesce:
 //   - the accepted quote that a stamp accepted (stampHolder: a self-quote, accepted without one, may name the stamp too
 //     and is passed over, and so is a local quote, which only its quoted author's answers decide: VIS-28,
-//     quote-authoring concurrency row 17) is renewed when idle (renewAccepted), left as it is when due or backing off
-//     (its next fetch is fresh anyway), and marked when a round has leased it;
+//     quote-authoring concurrency row 17) is renewed when idle (renewAccepted), flagged when due or backing off (its
+//     next fetch is fresh anyway: its generation, due time and attempts are kept), and marked when a round has leased
+//     it;
 //   - a pending quote is marked only when a round has leased it (its first stamp fetch is in flight), matched by the
 //     stamp alone, since a round may not have linked its target yet (the target found by its uri); marking one of
 //     another author's costs at most one more check. Otherwise its next fetch is fresh anyway.
 // A marked quote keeps its generation, so the fetch in flight still applies, and is checked once more if that fetch
-// finds the stamp valid. A round's 404 thus always applies, and a Delete that races a fetch is never lost. A renewed or
-// marked work's decision notifies (quotes.broadcast 1): the recheck stands for Delete#revoke_quote's broadcast. Returns
-// whether such a quote exists.
+// finds the stamp valid. A round's 404 thus always applies, and a Delete that races a fetch is never lost. The recheck
+// stands for Delete#revoke_quote's broadcast: a renewed or flagged work's flag is 1 (quotes.broadcast), and a marked
+// work's decision reads its mark as 1 (finish), which keeps the work's own flag for an acceptance the fetch in flight
+// decides before the second look. Returns whether such a quote exists.
 export function recheckStamp(db: Db, actor: { id: string }, approvalUri: string, now: number): boolean {
   const accepted = stampHolder(db, actor, approvalUri, now);
   if (accepted?.leased === 1) {
-    db.run("UPDATE quotes SET recheck = 1, broadcast = 1 WHERE status_id = ?", accepted.status_id);
+    db.run("UPDATE quotes SET recheck = 1 WHERE status_id = ?", accepted.status_id);
   } else if (accepted !== undefined && accepted.verify_after === null) {
     renewAccepted(db, accepted.status_id, 1, now);
+  } else if (accepted !== undefined) {
+    db.run("UPDATE quotes SET broadcast = 1 WHERE status_id = ?", accepted.status_id);
   }
   const marked = db.run(
-    `UPDATE quotes INDEXED BY ${QUOTES_STATUS_INDEX} SET recheck = 1, broadcast = 1
+    `UPDATE quotes INDEXED BY ${QUOTES_STATUS_INDEX} SET recheck = 1
 		WHERE status_id IN (SELECT status_id FROM quotes INDEXED BY quotes_leased
 			WHERE approval_uri = ?1 AND state = 'pending' AND ${LEASED} LIMIT ?4)`,
     approvalUri,

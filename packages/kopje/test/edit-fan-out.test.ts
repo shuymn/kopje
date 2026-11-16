@@ -518,22 +518,131 @@ describe("a quote's decision and an implicit Update's update fan-out", () => {
     expect(await rowsOf(t, "update")).toMatchObject([{ account_id: DAVE }]);
   });
 
+  // The round's stamp fetch answered as served when it arrived (the first look), the Delete relayed while it is held,
+  // and the second look held until the first one's decision is read.
+  async function racedRound(t: Setup, stamp: string, during: () => Promise<void>, between: () => Promise<void>) {
+    const first = t.web.hold(stamp, { snapshot: true });
+    const second = t.web.hold(stamp);
+    const round = decide(t);
+    await first.reached;
+    await during();
+    first.release();
+    await second.reached;
+    await between();
+    second.release();
+    await round;
+  }
+
+  const marks = (t: Setup, statusId: string) =>
+    sql(t.store, "SELECT recheck, broadcast FROM quotes WHERE status_id = ?", statusId);
+
   it("…and from a Create's work whose stamp fetch it raced: the second look revokes and notifies once", async () => {
     const { t, carol, statusId, first } = await world(true, {}, { undecided: true });
     const dan = await mastodonActor(t.web, "dan", { origin: RELAY, key: 6 });
-    // The round's stamp fetch, answered as served when it arrived (valid); the stamp is gone meanwhile.
-    const gate = t.web.hold(first!, { snapshot: true });
-    const round = decide(t);
-    await gate.reached;
-    t.web.fail(first!, 404);
-    expect(await t.post(dan, relayed(carol, first!))).toBe(202);
-    expect(await sql(t.store, "SELECT recheck FROM quotes WHERE status_id = ?", statusId)).toEqual([{ recheck: 1 }]);
-    gate.release();
-    await round;
+    const count = broadcasts(t);
+    await racedRound(
+      t,
+      first!,
+      async () => {
+        t.web.fail(first!, 404);
+        expect(await t.post(dan, relayed(carol, first!))).toBe(202);
+        // Marked, the Create's own flag kept.
+        expect(await marks(t, statusId)).toEqual([{ recheck: 1, broadcast: 0 }]);
+      },
+      async () => {
+        // The first look accepted the quote, silently: the Create's acceptance.
+        expect(await quoteState(t, statusId)).toBe("accepted");
+        expect(await count()).toBe(0);
+      },
+    );
     expect(await quoteState(t, statusId)).toBe("revoked");
     expect(await rowsOf(t, "mention")).toMatchObject([{ account_id: ALICE }]);
-    expect(await rowsOf(t, "update")).toMatchObject([{ account_id: DAVE }]);
+    expect(await count()).toBe(1);
   });
+
+  it.each([
+    ["valid", "accepted", 1],
+    ["gone", "revoked", 2],
+  ] as const)(
+    "…and from a same-version Update's work whose fetch it raced: its acceptance notifies, a second look finding the stamp %s only a move",
+    async (_answer, state, expected) => {
+      const { t, bob, carol, statusId, stamp, serve, implicit } = await world(false);
+      const dan = await mastodonActor(t.web, "dan", { origin: RELAY, key: 6 });
+      const approval = stamp();
+      serve(approval);
+      expect(await t.post(bob, implicit({ quoteAuthorization: approval }))).toBe(202);
+      const count = broadcasts(t);
+      await racedRound(
+        t,
+        approval,
+        async () => {
+          if (state === "revoked") {
+            t.web.fail(approval, 404);
+          }
+          expect(await t.post(dan, relayed(carol, approval))).toBe(202);
+          expect(await marks(t, statusId)).toEqual([{ recheck: 1, broadcast: 1 }]);
+        },
+        async () => {
+          // Mastodon's inline verification of the Update accepts the quote and broadcasts it before the Delete.
+          expect(await quoteState(t, statusId)).toBe("accepted");
+          expect(await count()).toBe(1);
+        },
+      );
+      expect(await quoteState(t, statusId)).toBe(state);
+      expect(await count()).toBe(expected);
+    },
+  );
+
+  it("…and from an accepted quote's work whose stamp fetch it raced: the fetch's 404 revokes and notifies", async () => {
+    const { t, bob, carol, statusId, first, newer } = await world(true);
+    const dan = await mastodonActor(t.web, "dan", { origin: RELAY, key: 6 });
+    // A newer Update with no significant change renews the work at 0 (it notifies nothing of its own).
+    expect(await t.post(bob, newer({}))).toBe(202);
+    expect(await marks(t, statusId)).toEqual([{ recheck: 0, broadcast: 0 }]);
+    const count = broadcasts(t);
+    await heldRound(t, first!, async () => {
+      t.web.fail(first!, 404);
+      expect(await t.post(dan, relayed(carol, first!))).toBe(202);
+      expect(await marks(t, statusId)).toEqual([{ recheck: 1, broadcast: 0 }]);
+    });
+    expect(await quoteState(t, statusId)).toBe("revoked");
+    expect(await count()).toBe(1);
+  });
+
+  // An accepted quote's work that no round holds, flagged 0 by a newer Update with no significant change (Mastodon
+  // verifies that one inline and broadcasts nothing): the relayed Delete flags it 1, and its decision notifies.
+  it.each(["due", "backing off"] as const)(
+    "…and from an accepted quote's work that is %s: it is flagged, its due time, attempts and generation kept",
+    async (live) => {
+      const { t, bob, carol, statusId, first, newer } = await world(true);
+      const dan = await mastodonActor(t.web, "dan", { origin: RELAY, key: 6 });
+      expect(await t.post(bob, newer({}))).toBe(202);
+      let now = NOW;
+      if (live === "backing off") {
+        // The stamp answers 503 (a retry at 2), then a later newer Update is the first verification after it (0).
+        t.web.fail(first!, 503);
+        await decide(t);
+        now = NOW + QUOTE_BACKOFF_MS[0]!;
+        expect(await t.post(bob, newer({}, "2026-10-11T13:00:00Z"))).toBe(202);
+      }
+      const work = () =>
+        sql(
+          t.store,
+          "SELECT verify_after, attempts, generation, recheck, broadcast FROM quotes WHERE status_id = ?",
+          statusId,
+        );
+      const [before] = await work();
+      expect(before).toMatchObject({ verify_after: now, attempts: live === "due" ? 0 : 1, broadcast: 0 });
+      t.web.fail(first!, 404);
+      expect(await t.post(dan, relayed(carol, first!))).toBe(202);
+      expect(await work()).toEqual([{ ...before, broadcast: 1 }]);
+      const count = broadcasts(t);
+      await decide(t, now);
+      expect(await quoteState(t, statusId)).toBe("revoked");
+      expect(await rowsOf(t, "mention")).toMatchObject([{ account_id: ALICE }]);
+      expect(await count()).toBe(1);
+    },
+  );
 
   it("a rejected or revoked quote is not verified again by an Update with the same stamp", async () => {
     const policy = { interactionPolicy: { canQuote: { automaticApproval: [PUBLIC] } } };

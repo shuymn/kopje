@@ -889,10 +889,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/domain/update-fan-out.ts`, `test/edit-fan-out.test.ts` ("…but not one alice holds: the same row, no new
   push", "…but not a kept one: the same row, no new push", "a local quote's stamp Delete fans out its status once; a
   repeated Delete none", "an approval Update notifies when the round accepts the quote, not before", "a new stamp on
-  an accepted quote notifies at the Update; its acceptance by the round notifies no more"). Push: _Enforced (main):_
-  `notify` records pushes for the
-  row it inserted only, never for a repeat (`queuePushes` in `src/domain/notifications.ts`); `test/push-send.test.ts`
-  ("pushes every notification type Kopje emits, once each (VIS-10)").
+  an accepted quote notifies at the Update; its acceptance by the round notifies no more", "…and from a same-version
+  Update's work whose fetch it raced: its acceptance notifies"). Push: _Enforced (main):_ `notify` records pushes for
+  the row it inserted only, never for a repeat (`queuePushes` in `src/domain/notifications.ts`);
+  `test/push-send.test.ts` ("pushes every notification type Kopje emits, once each (VIS-10)").
 - **VIS-11: earlier versions keep the original audience.** Edit history and earlier versions are visible only to the
   status's original audience, and an edit of a non-public status never widens that audience (a recipient added by an
   edit does not see earlier versions). This differs from Mastodon on purpose. _Enforced (main):_
@@ -4023,12 +4023,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the work it read (a number drawn anew whenever the quote's target, stamp, stage or outcome changes), so a late or
   concurrent outcome is discarded. Only job rounds verify quotes: an inbox request that makes work due only asks the
   Queue for a round, and a round leases what it claims, so nothing else touches the work meanwhile; a relayed `Delete`
-  without the author's proof renews only idle work, leaves work that is due or backing off as it is, and only marks a
-  leased one to be checked once more, so replays never keep a genuine 404 from applying; it seeks the accepted quote
-  the stamp approved among at most `STAMP_HOLDER_CANDIDATES` (16) accepted quotes naming the stamp, the author filter
-  applied outside that cap (`stampHolder`), so the actor's own self-quotes naming its stamp cost a fixed read
-  (`test/quotes.test.ts` ("reads at most STAMP_HOLDER_CANDIDATES quotes naming the stamp, past statistics taken before
-  they grew")). A job round (Queue or cron)
+  without the author's proof renews only idle work, keeps the due time, attempts and generation of work that is due or
+  backing off (it sets only the flag the decision notifies by), and only marks a leased one to be checked once more, so
+  replays never keep a genuine 404 from applying; it seeks the accepted quote the stamp approved among at most
+  `STAMP_HOLDER_CANDIDATES` (16) accepted quotes naming the stamp, the author filter applied outside that cap
+  (`stampHolder`), so the actor's own self-quotes naming its stamp cost a fixed read (`test/quotes.test.ts` ("reads at
+  most STAMP_HOLDER_CANDIDATES quotes naming the stamp, past statistics taken before they grew")).
+  A job round (Queue or cron)
   verifies at most 10 quotes, each stage with a whole budget of its own (8 fetches, redirect hops, RFC 9421 retries
   and contexts included), so a heavy or failing quote starves no other, and charges every failure of a stage, a budget
   or deadline that ran out included, as it does a stage the Store cannot apply, except the refresh of a stored author,
