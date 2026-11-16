@@ -750,6 +750,8 @@ Remote interaction (`/authorize_interaction`, the subscribe template and the FEP
   the look-up is a POST, which sends a signed-out browser to sign in and back to the form. What it finds is shown on
   the page with a Follow button (for a status, its author's), and replies, favourites and boosts stay in clients.
 - A status is shown only when an anonymous viewer may see it; Mastodon shows one the signed-in user may see.
+- A URL whose fetch resolves nothing shows the stored account it names after a server error or no answer, and never a
+  stored post, as Mastodon's `ResolveURLService` without a viewer (`authorize_interactions_controller.rb:33`).
 - `uri` is used only when it is an http(s) URL or an address of at most 2,048 UTF-8 bytes; anything else leaves the
   form empty.
 - Following or opening a post from the viewer's own server (a profile's Follow, a status's "Open on your server"):
@@ -813,13 +815,15 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
     fetching, or a document past the JSON bounds) ends the resolution with nothing instead of trying the page.
   - The first request keeps the document fetch's redirect rule (same origin, at most 5), where Mastodon follows 3 hops
     to any origin; the alternates follow none, as Mastodon's.
-- With `resolve=true`, a URL whose fetches resolve nothing is answered with the stored status or account whose uri it
-  is, unless the last of them answered 410, after which nothing is answered (`src/federation/resolve.ts` resolveUrl);
-  nothing stored is removed. Mastodon answers a stored status only after a 401, 403 or 404 and a stored account only
-  after a 5xx or no answer (`resolve_url_service.rb:38-44`), so Kopje also answers a stored status after any other
-  HTTP status, a network failure or an unusable document, and a stored actor's account after a failure of its fetch
-  other than the 410 that deletes it. It never looks a status up by its `url` either, as Mastodon does for a `/@user/id`
-  path (`:50-55`). These differences are tracked by #1662.
+- With `resolve=true`, a URL whose fetches resolve nothing is answered from stored data as Mastodon 4.7.5's
+  `ResolveURLService#process_url_from_db` answers it: the stored account whose uri it is after a 500, 502, 503, 504 or
+  no answer to the last of them; the stored post whose uri it is, or, for an address `/@user/id`, whose uri is
+  `/users/user/statuses/id` on the same host and whose url it is, after a 401, 403 or 404; nothing otherwise, and
+  nothing stored is removed. A fetch Kopje refuses before it is sent (the domain policy, the request's fetches or
+  deadline, a redirect to another origin or past 5) counts as no answer and keeps the earlier answer, as Mastodon
+  counts a connection error; an answer whose body the request's bytes cut counts as its status, as Mastodon records
+  the status before it reads the body within its limit. A boost is never answered (Mastodon's lookup by uri may find
+  one by its `Announce` id).
 
 Hashtags (the `Tag` entity):
 

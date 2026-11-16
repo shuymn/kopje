@@ -264,7 +264,7 @@ export function createRemoteLoaders(
   const memoized = (caps: DocumentCaps): DocumentLoader => {
     const fetched = new Map<string, ReturnType<DocumentLoader>>();
     const fresh = requireObjectRoot(async (url, options) => {
-      return withinBounds(await createSafeLoader({ ...loaderDeps, ...caps }, await signer())(url, options));
+      return createSafeLoader({ ...loaderDeps, ...caps, checkDocument: withinBounds }, await signer())(url, options);
     });
     return (url, options) => memo(fetched, withoutFragment(url), () => fresh(url, options));
   };
@@ -273,10 +273,8 @@ export function createRemoteLoaders(
     context: boundedContexts(loaderDeps, parts.kv),
     webfinger: createWebFingerLoader(loaderDeps),
     capped: memoized,
-    resolve: async (url, terminal) => {
-      const answer = await createResolveLoader(loaderDeps, await signer())(url, terminal);
-      return answer.kind === "document" ? { kind: "document", remote: withinBounds(answer.remote) } : answer;
-    },
+    resolve: async (url, terminal) =>
+      createResolveLoader({ ...loaderDeps, checkDocument: withinBounds }, await signer())(url, terminal),
     offerSigner: (chosen) => {
       if (resolved === undefined) {
         offered = chosen;

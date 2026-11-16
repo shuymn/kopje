@@ -21,6 +21,8 @@ import { statusTarget, targetStatus } from "./web-pages/status";
 //     The resolver fetches nothing for this instance's own addresses and URLs, and storeResolved finds a stored object
 //     by its exact uri only; so an address on this domain, a profile URL (/@user) and a status permalink
 //     (/@user/:id, the embed's forms) are mapped to the stored identities here (localTarget). Search keeps its rule.
+//     A remote URL that resolves nothing shows no stored status, as Mastodon's ResolveURLService without
+//     on_behalf_of (authorize_interactions_controller.rb:33): storeResolved without a viewer.
 //   - webFollow follows through the follow service (followAccount), as the follow API does, and tells its outcomes
 //     apart.
 
@@ -70,9 +72,9 @@ function localTarget(db: Db, query: string, present: ResolveInput["present"]): S
 }
 
 export const resolveInteraction = userWriteOperation<ResolveInput, InteractionResult>((db, input) => {
-  const fetched = storeResolved(db, input);
+  const fetched = storeResolved(db, input, false);
   const stored =
-    fetched.kind === "none" && input.resolved.kind === "none" ? localTarget(db, input.query, input.present) : fetched;
+    fetched.kind === "none" && input.resolved.kind === "local" ? localTarget(db, input.query, input.present) : fetched;
   const notFound: InteractionResult = { target: { kind: "not_found" }, quotesDue: false };
   switch (stored.kind) {
     case "none":

@@ -3731,7 +3731,7 @@ export const resolutionGate = userReadOperation<
   return {
     refused: null,
     domain,
-    prefetch: target === null ? null : fetchPreparation(db, null, firstRequestOf(target)),
+    prefetch: target === null || target.kind === "local" ? null : fetchPreparation(db, null, firstRequestOf(target)),
   };
 });
 
