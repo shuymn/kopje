@@ -43,6 +43,7 @@ import {
   removalBegunSql,
 } from "./audience";
 import { userReadOperation } from "./auth";
+import { collectionUri } from "./collection-requests";
 import {
   beginRetraction,
   cancelFollowAnswers,
@@ -2864,12 +2865,9 @@ function originalById(db: Db, id: string): Original | undefined {
   return db.first<Original>(ORIGINAL_BY_ID, id);
 }
 
-function followersOf(raw: string | null): string | null {
-  if (raw === null) {
-    return null;
-  }
-  const followers = (JSON.parse(raw) as { followers?: unknown }).followers;
-  return typeof followers === "string" ? followers : null;
+// The followers collection a fetched actor document names (collection-requests.ts collectionUri).
+export function followersOf(raw: string | null): string | null {
+  return raw === null ? null : collectionUri((JSON.parse(raw) as { followers?: unknown }).followers);
 }
 
 // Mastodon's Announce#visibility_from_audience.
