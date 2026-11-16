@@ -927,8 +927,9 @@ streaming server's per-connection filter; R33 in [visibility.md](visibility.md))
   `reblogged`, `muted`, `bookmarked`, `pinned`, poll `voted` and `own_votes`, quote approval, quote state and card
   `missing_attribution` are the subscriber's, and `filtered` follows REST's filters (keyword and status filters, every
   match). Mastodon renders these streams once with no viewer (the flags and votes absent, quote approval `denied`,
-  quotes judged for a signed-out reader) and adds `filtered` from keyword filters alone; a client that replaces the
-  status on `status.update`, as Mastodon's web client and Elk do, then shows the subscriber's own marks as unset.
+  quotes judged for a signed-out reader) and adds `filtered` from keyword filters alone; Mastodon's web client, which
+  replaces the status on `status.update`, then shows the subscriber's favourite and bookmark as unset (Elk replaces the
+  text and keeps its marks).
   Kopje's payload is what the subscriber's next read shows (`test/streaming/public.test.ts`). Accepted, 2026-11-16.
 
 Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; the keys not served are MD-2):
