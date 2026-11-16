@@ -371,13 +371,13 @@ describe("an Update(Person) that embeds no actor", () => {
     const { t, bob } = await bobWorld();
     t.web.serve(bob.uri, { ...bob.document, name: "served" });
     const update = updateOf(bob, object(bob));
-    const parsed = parseActivity(new TextEncoder().encode(JSON.stringify(update)));
+    const parsed = await parseActivity(new TextEncoder().encode(JSON.stringify(update)));
     expect(fetchesFirst(parsed)).toBe(bob.uri);
     expect(await receive(t, bob, update)).toMatchObject({ status: 202, reason: "actor-updated" });
     expect(fetchedActor(t, bob)).toHaveLength(1);
     expect((await row(t, bob.uri)).display_name).toBe("served");
     // One that embeds its actor is hinted no fetch.
-    expect(fetchesFirst(parseActivity(new TextEncoder().encode(JSON.stringify(updateOf(bob)))))).toBeNull();
+    expect(fetchesFirst(await parseActivity(new TextEncoder().encode(JSON.stringify(updateOf(bob)))))).toBeNull();
   });
 });
 

@@ -1,4 +1,5 @@
 import { preloadedContexts } from "@fedify/fedify";
+import jsonld from "jsonld/dist/jsonld.esm.js";
 
 import { isObject } from "./json-shapes";
 import { MASTODON_CONTEXT_TERMS, MASTODON_NAMED_CONTEXTS } from "./mastodon-context";
@@ -23,17 +24,18 @@ import { MASTODON_CONTEXT_TERMS, MASTODON_NAMED_CONTEXTS } from "./mastodon-cont
 // Then every name of the vocabulary means what full_context makes it, no other name or keyword alias reaches one of its
 // IRIs, and no base or vocabulary is set: no key Kopje reads is renamed, aliased or given another meaning by the
 // compaction, and no member is merged into one. The rules do not make the readings equal. The compaction writes a type
-// given as an IRI (as:Follow, or the absolute one) as the vocabulary's name for it, and Kopje reads the activity's
-// type and its embedded object's so where it shows the compaction succeeds (mastodonCompacts); it writes a name, as a
-// key or a type, only where the name means in the body's contexts what it means in full_context (one full_context
-// defines that the body's contexts leave undefined it writes as a blank node's), and under it only the values its type
-// takes, and Kopje reads the body so named (namedAsCompacted); it also drops nulls, flattens arrays, and drops or
-// renames what the vocabulary does not define, and the readers on each side read some shapes differently. Those
-// differences are listed by form in the deviations page. The tables are built once from the preloaded contexts and
-// MASTODON_CONTEXT_TERMS, with no JSON-LD processing; test/ld-signed-vocabulary.test.ts holds them to jsonld.js's
-// processing of Mastodon's full_context and of each preloaded context. Kopje reads, from an activity, no name outside
-// the vocabulary that Mastodon also reads (EmojiReact and EmojiReaction, which Kopje reads as a favourite, Mastodon
-// reads in no form; test/inbox-signed-forms.test.ts).
+// given as an IRI (as:Follow, or the absolute one) as the vocabulary's name for it, and Kopje reads the activity's type
+// and its embedded object's so where it shows the compaction succeeds (mastodonCompacts); it writes a name, as a key or
+// a type, only where the name means in the body's contexts what it means in full_context (one full_context defines that
+// the body's contexts leave undefined it writes as a blank node's), and under it only the values its type takes, and
+// Kopje reads the body so named (namedAsCompacted); it also drops nulls, flattens arrays, and drops or renames what the
+// vocabulary does not define, and the readers on each side read some shapes differently. Those differences are listed
+// by form in the deviations page. The tables are built once from the preloaded contexts and MASTODON_CONTEXT_TERMS,
+// with no JSON-LD processing; test/ld-signed-vocabulary.test.ts holds them to jsonld.js's processing of Mastodon's
+// full_context and of each preloaded context. Only a data-integrity proof is expanded, by jsonld.js, to tell whether
+// Mastodon reads the body as received (proofExpandsToSomething). Kopje reads, from an activity, no name outside the
+// vocabulary that Mastodon also reads (EmojiReact and EmojiReaction, which Kopje reads as a favourite, Mastodon reads
+// in no form; test/inbox-signed-forms.test.ts).
 
 type Json = Record<string, unknown>;
 
@@ -649,51 +651,124 @@ function namedAsCompacted(json: Json, meanings: ReadonlyMap<string, Meaning>): J
 
 const AS_RECEIVED: ReadonlySet<string> = new Set(["@context", "signature", "proof"]);
 
-// The contexts a proof's own @context may name without the rules (1, 2) over it, as a body's may (SIGNED_CONTEXT_URLS).
+// Fedify's preloaded contexts, and nothing else: no fetch.
+const preloaded = (url: string) => {
+  const document = preloadedContexts[url];
+  return document === undefined
+    ? Promise.reject(new Error(`Not a preloaded JSON-LD context: ${url}`))
+    : Promise.resolve({ document, documentUrl: url, contextUrl: null });
+};
+
+// The contexts a proof may name, at any depth, as a body's (1): each preloaded, giving no name a keyword but @id and
+// @type.
 const PROOF_CONTEXTS: ReadonlySet<string> = new Set([AS, ...SIGNED_CONTEXT_URLS.keys()]);
 
-// Whether JSON-LD's expansion leaves anything of a value of a @graph container name (`proof` in the data-integrity
-// contexts, typed @id), which the compaction then writes as a graph object, under a @graph key check_jsonld_limits!
-// refuses. It leaves nothing of a null, an array of nothing, a value object whose @value is null (but a JSON
-// literal's), a map of @language alone or a @set of nothing; anything else is a node, a value or a list (a scalar a
-// node reference or a value). A proof's own @context it follows only where the rules (1, 2) accept it or it names
-// contexts a body's may, so that no plain name there aliases a keyword but @id and @type. Where the expansion raises (a
-// keyword given a value of the wrong shape) Mastodon reads the body as received too, which this does not show.
-// test/inbox-signed-forms.test.ts holds the shapes to Mastodon's reading.
-function expandsToSomething(value: unknown): boolean {
+// The contexts a body and its proof may give before the proof is expanded, each URL or object of a @context and each
+// type (whose context, if it has one, applies in its node): jsonld.js processes a context again in each node whose
+// active context differs, so their number, more than their size, makes the expansion's cost. A real body and its
+// proof give a dozen.
+const PROOF_CONTEXT_LIMIT = 32;
+
+const contextEntries = (value: unknown) => (Array.isArray(value) ? value.length : value === undefined ? 0 : 1);
+
+// A proof as Mastodon's JSON-LD library and jsonld.js both expand it, or undefined: each @context in it, at any depth,
+// one the rules (1, 2) read, or URLs of PROOF_CONTEXTS alone, so that no name there is a keyword but @id and @type and
+// no context is fetched, and no more contexts and types than `contexts` leaves; and each @set object (with an @index or
+// not) its value, which Mastodon's library reads it as, so that one of nothing leaves nothing where jsonld.js leaves an
+// empty node. A @value and a language map are left as they are (a JSON literal's value is data, a language map's keys
+// are tags). A map under @nest is not a node, its members its node's: one with a @set is not read, nor a @set object
+// with a @context.
+function comparableProof(value: unknown, contexts: { left: number }, nested = false): { value: unknown } | undefined {
   if (Array.isArray(value)) {
-    return value.some(expandsToSomething);
+    const items: unknown[] = [];
+    for (const item of value) {
+      const comparable = comparableProof(item, contexts, nested);
+      if (comparable === undefined) {
+        return undefined;
+      }
+      items.push(comparable.value);
+    }
+    return { value: items };
   }
   if (!isObject(value)) {
-    return value !== null && value !== undefined;
+    return { value };
   }
-  const { "@context": context, ...object } = value;
-  const urls = (Array.isArray(context) ? context : [context]).every(
-    (url) => typeof url === "string" && PROOF_CONTEXTS.has(url),
-  );
-  if (context !== undefined && !urls && readContext(context) === null) {
+  const { "@context": context } = value;
+  contexts.left -= contextEntries(context) + contextEntries(value.type) + contextEntries(value["@type"]);
+  if (contexts.left < 0) {
+    return undefined;
+  }
+  if (context !== undefined) {
+    const urls = (Array.isArray(context) ? context : [context]).every(
+      (url) => typeof url === "string" && PROOF_CONTEXTS.has(url),
+    );
+    if (!urls && readContext(context) === null) {
+      return undefined;
+    }
+  }
+  if (Object.hasOwn(value, "@set")) {
+    if (nested || !Object.keys(value).every((key) => key === "@set" || key === "@index")) {
+      return undefined;
+    }
+    return comparableProof(value["@set"], contexts);
+  }
+  const members: [string, unknown][] = [];
+  for (const [key, member] of Object.entries(value)) {
+    const comparable =
+      key === "@context" || key === "@value" || LANGUAGE_MAPS.has(key)
+        ? { value: member }
+        : comparableProof(member, contexts, key === "@nest");
+    if (comparable === undefined) {
+      return undefined;
+    }
+    members.push([key, comparable.value]);
+  }
+  return { value: Object.fromEntries(members) };
+}
+
+const PROOF_IRI = "https://w3id.org/security#proof";
+
+// Whether JSON-LD's expansion keeps anything of the body's proof, which in the data-integrity contexts is a @graph
+// container: Mastodon's compaction then writes it as a graph object, under a @graph key check_jsonld_limits! refuses.
+// The proof (comparableProof) is expanded by jsonld.js (the copy Fedify's signatures use), with Fedify's preloaded
+// contexts and no fetch, under the body's @context and type, as the value of its IRI written out, which no context
+// defines: jsonld.js, unlike JSON-LD 1.1 and Mastodon's json-ld, drops from a @graph container's values an empty node,
+// a value, a list and a bare node reference, and the value of a name no context defines expands as one of `proof` but
+// for that container and its @id typing (which only makes a string a node reference, kept either way). Where the proof
+// is not comparable or the expansion raises, the body is read as named, less than Mastodon reads where it reads it as
+// received. Mastodon's 1,000 values (checked first) and PROOF_CONTEXT_LIMIT bound the expansion (RES-6):
+// test/inbox-signed-forms.test.ts holds its time at those bounds, and test/ld-signed-proof-shapes.test.ts its result to
+// Mastodon's reading of each proof to depth 3.
+async function proofExpandsToSomething(json: Json): Promise<boolean> {
+  const left = PROOF_CONTEXT_LIMIT - contextEntries(json["@context"]) - contextEntries(json.type);
+  const proof = left < 0 ? undefined : comparableProof(json.proof, { left });
+  if (proof === undefined) {
     return false;
   }
-  if (Object.hasOwn(object, "@value")) {
-    return object["@value"] !== null || object["@type"] === "@json";
+  const probe = {
+    "@context": json["@context"],
+    ...(Object.hasOwn(json, "type") ? { type: json.type } : {}),
+    [PROOF_IRI]: proof.value,
+  };
+  try {
+    const [node] = await jsonld.expand(probe, { documentLoader: preloaded });
+    const kept = node?.[PROOF_IRI];
+    return Array.isArray(kept) && kept.length > 0;
+  } catch {
+    return false;
   }
-  if (Object.hasOwn(object, "@list")) {
-    return true;
-  }
-  if (Object.hasOwn(object, "@set")) {
-    return expandsToSomething(object["@set"]);
-  }
-  const keys = Object.keys(object);
-  return !(keys.length === 1 && keys[0] === "@language");
 }
 
 // Whether Mastodon reads an LD-signed body as received, as Kopje can show: its JSON-LD limits refuse it before the
 // compaction (more than 1,000 values, or a @graph, @included or @reverse key; check_jsonld_limits!), or after it, for
-// a proof its contexts make a @graph container of which the expansion leaves something (expandsToSomething). A proof
-// elsewhere than at the top, or one the expansion refuses, is not shown: Kopje then reads the body as named.
-function mastodonReadsAsReceived(json: Json, meanings: ReadonlyMap<string, Meaning>): boolean {
+// a proof its contexts make a @graph container of which the expansion keeps something (proofExpandsToSomething). A
+// proof elsewhere than at the top is not shown: Kopje then reads the body as named.
+async function mastodonReadsAsReceived(json: Json, meanings: ReadonlyMap<string, Meaning>): Promise<boolean> {
+  if (jsonLdValues(json) > JSONLD_BUDGET) {
+    return true;
+  }
   const graph = meanings.get("proof")?.containers.includes("@graph") === true;
-  return jsonLdValues(json) > JSONLD_BUDGET || (graph && expandsToSomething(json.proof));
+  return graph && json.proof !== undefined && (await proofExpandsToSomething(json));
 }
 
 // A type as Mastodon reads it in an LD-signed body of the shape whose compaction Kopje shows succeeds
@@ -704,8 +779,9 @@ export type TypeReader = (type: string) => string;
 
 // Whether an LD-signed activity is read (its signature an object), and then how its types are read and its body as
 // Mastodon's compaction names its members (namedAsCompacted): null when the rules refuse it. Run after
-// withinJsonBounds, so the work is bounded by its values.
-export function ldSignedReading(json: Json): { readType: TypeReader; body: Json } | null {
+// withinJsonBounds, so the work is bounded by its values, and a proof's expansion by Mastodon's 1,000 values and
+// PROOF_CONTEXT_LIMIT too.
+export async function ldSignedReading(json: Json): Promise<{ readType: TypeReader; body: Json } | null> {
   const context = readContext(json["@context"]);
   if (context === null || !bodyKeysReadable(json)) {
     return null;
@@ -720,10 +796,11 @@ export function ldSignedReading(json: Json): { readType: TypeReader; body: Json 
     compacts ??= mastodonCompacts(json, context.prefixes);
     return compacts ? name : type;
   };
-  const asReceived = mastodonReadsAsReceived(json, context.meanings);
+  const asReceived = await mastodonReadsAsReceived(json, context.meanings);
   return { readType, body: asReceived ? json : namedAsCompacted(json, context.meanings) };
 }
 
+// Whether the rules (1-3) read an LD-signed body at all (ldSignedReading is null for no other).
 export function ldSignedBodyReadable(json: Json): boolean {
-  return ldSignedReading(json) !== null;
+  return readContext(json["@context"]) !== null && bodyKeysReadable(json);
 }

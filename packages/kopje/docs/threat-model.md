@@ -145,35 +145,38 @@ against their own instance. TLS is assumed between all parties.
   `@id`) as its IRI; Mastodon's readers read neither, and nor does Kopje, so such a `QuoteRequest` grants no quote, nor
   does any for a quote so named. A body Kopje can show Mastodon reads as received it reads as received: one past its
   JSON-LD limits as received, and one whose proof, a `@graph` in the data-integrity contexts, keeps something once
-  JSON-LD expands it (of a proof that expands to nothing, a null value, the compaction stands). Where Mastodon gives up
-  the compaction of another, or still writes under a name the body defines otherwise a value of a shape that definition
-  does not coerce, Kopje reads less, but for `sensitive`, which marks the status wherever Mastodon may. The readings
-  still differ in shapes, values and readers, each listed in `docs/mastodon-deviations.md` ("Reading inbound
-  activities"). None of those differences lets Kopje grant an access Mastodon's reading would not (a follow, a status's
-  audience, a lifted block, a quote's approval); some leave in place one Mastodon's reading would withdraw (a follow its
-  `Reject` ends, a status its `Delete` removes, a block an `Undo` of it lifts), and those are listed there too. The
-  owner is the actor whose document lists the key, by id and key material, and the key names no other owner. An actor's
-  keys are what its document embeds among its first `MAX_PUBLIC_KEYS` (10) entries of `publicKey` and of
-  `assertionMethod` (FEP-521a `Multikey`), RSA or Ed25519, each with an id on its origin (`ownKeys`); a key listed by
-  reference in `assertionMethod` is not fetched, and a key the signature's verification resolved joins them only within
-  the same first ten (`withVerifiedReference`). Where a fetched document's context gives either property its security
-  meaning (a context Fedify preloads defines it, and the context holds no `null`, no scoped context, no `@import` and no
-  inline definition of it), an entry whose key Fedify cannot import (an ML-DSA-44 Multikey among them), whose key
-  material is not one string (alone, the one member of an array, or a value object's `@value`), or that wraps other
-  entries (a nested array, a `@list`, a `@set`, or any other object of keywords but `@id` and `@type`, from none of
-  which Mastodon reads a key) is removed before the document is read (`readableKeys`), so the actor stays usable; any
-  other document, and a key spelled otherwise (either property or the key material under a compact or absolute IRI, an
-  entry with its own `@context` or a `@nest`), is read as fetched. A key id the Store does not hold fresh, or whose
-  stored key fails, is resolved from the document at that id, as Kopje reads an actor's keys, and its owner judged as
-  for any fetched key (`storedKeys`, `verify`). An RFC 9421 signature verifies with an RSA or Ed25519 key, the algorithm
-  its own; a draft-cavage signature only with an RSA key, and one that names any other key is answered as a signature
-  that does not verify (401), live, on replay and in the rollback drain. A stored key (`remote_keys`, kept per key id
-  with its owner, whatever the shape of the key URL) is trusted for 24 hours after its document was fetched; after that,
-  or when its signature fails, the key and the actor document are fetched anew, bypassing the document cache. The one
-  exception is an actor's own `Delete` when its key (by the status its fetch actually returned) and its actor document
-  both answer 404 or 410: it is verified with its own stored key at any age. Another account's stale key, gone too, is
-  refused there (401) and is not taken for a relay. A live actor is never deleted with a key its current document does
-  not list (401), and a transient failure answers 503.
+  JSON-LD expands it, as jsonld.js expands it with the preloaded contexts alone (`proofExpandsToSomething`; of a proof
+  that expands to nothing, a null value or a `@language` beside members that do, the compaction stands). That expansion
+  runs before any signature is verified, within Mastodon's 1,000 values and at most 32 contexts and types of the body
+  and its proof (`PROOF_CONTEXT_LIMIT`, RES-6); a proof past them or naming another context, and one whose expansion
+  raises, is read as named. Where Mastodon gives up the compaction of another, or still writes under a name the body
+  defines otherwise a value of a shape that definition does not coerce, Kopje reads less, but for `sensitive`, which
+  marks the status wherever Mastodon may. The readings still differ in shapes, values and readers, each listed in
+  `docs/mastodon-deviations.md` ("Reading inbound activities"). None of those differences lets Kopje grant an access
+  Mastodon's reading would not (a follow, a status's audience, a lifted block, a quote's approval); some leave in place
+  one Mastodon's reading would withdraw (a follow its `Reject` ends, a status its `Delete` removes, a block an `Undo` of
+  it lifts), and those are listed there too. The owner is the actor whose document lists the key, by id and key
+  material, and the key names no other owner. An actor's keys are what its document embeds among its first
+  `MAX_PUBLIC_KEYS` (10) entries of `publicKey` and of `assertionMethod` (FEP-521a `Multikey`), RSA or Ed25519, each
+  with an id on its origin (`ownKeys`); a key listed by reference in `assertionMethod` is not fetched, and a key the
+  signature's verification resolved joins them only within the same first ten (`withVerifiedReference`). Where a fetched
+  document's context gives either property its security meaning (a context Fedify preloads defines it, and the context
+  holds no `null`, no scoped context, no `@import` and no inline definition of it), an entry whose key Fedify cannot
+  import (an ML-DSA-44 Multikey among them), whose key material is not one string (alone, the one member of an array, or
+  a value object's `@value`), or that wraps other entries (a nested array, a `@list`, a `@set`, or any other object of
+  keywords but `@id` and `@type`, from none of which Mastodon reads a key) is removed before the document is read
+  (`readableKeys`), so the actor stays usable; any other document, and a key spelled otherwise (either property or the
+  key material under a compact or absolute IRI, an entry with its own `@context` or a `@nest`), is read as fetched. A
+  key id the Store does not hold fresh, or whose stored key fails, is resolved from the document at that id, as Kopje
+  reads an actor's keys, and its owner judged as for any fetched key (`storedKeys`, `verify`). An RFC 9421 signature
+  verifies with an RSA or Ed25519 key, the algorithm its own; a draft-cavage signature only with an RSA key, and one
+  that names any other key is answered as a signature that does not verify (401), live, on replay and in the rollback
+  drain. A stored key (`remote_keys`, kept per key id with its owner, whatever the shape of the key URL) is trusted for
+  24 hours after its document was fetched; after that, or when its signature fails, the key and the actor document are
+  fetched anew, bypassing the document cache. The one exception is an actor's own `Delete` when its key (by the status
+  its fetch actually returned) and its actor document both answer 404 or 410: it is verified with its own stored key at
+  any age. Another account's stale key, gone too, is refused there (401) and is not taken for a relay. A live actor is
+  never deleted with a key its current document does not list (401), and a transient failure answers 503.
   _Enforced (main):_ `receiveInbound`, `verifyHttpSignature` and `verifySpooledRequest` in `src/federation/inbound.ts`;
   `test/inbox.test.ts` ("ID-1: an inbound activity acts only for its signer", "refuses a draft-cavage signature
   without", "refuses an RFC 9421 signature without", "accepts RFC 9421 signatures as Mastodon 4.7 and Fedify make them",
@@ -192,7 +195,8 @@ against their own instance. TLS is assumed between all parties.
   context rebases its IRIs", "ignores an LD-signed activity that aliases a keyword or a member beside the literal one",
   "a spooled LD-signed activity outside the vocabulary is ignored on replay", "reads an LD-signed activity in a real
   sender's vocabulary"), `test/ld-signed-vocabulary.test.ts` ("the vocabulary is jsonld.js's processing", "the allowed
-  context URLs are the preloaded ones"). A stored key list
+  context URLs are the preloaded ones"), `test/ld-signed-proof-shapes.test.ts` ("reads as received no body Mastodon
+  compacts, and as named none whose proof it keeps but those listed"). A stored key list
   and the inboxes beside it are replaced only by a document fetched after the last one stored; the profile, the handle
   and `movedTo` also by the actor's own `Update(Person)` embedding its document (an object of an actor type whose `id`
   is the activity's `actor`, its signer), read as a fetched document is (`readEmbeddedActor`) and stored under the
@@ -3634,23 +3638,26 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   separator, 1,506,001 bytes in all, admitted whole within `ARRAY_ANSWER_BYTES` (`test/local-emoji-api.test.ts` measures
   it); `GET /admin/emojis` pages hold at most 200.
 - **RES-6: one request cannot trigger unbounded work.** An inbound activity has fixed limits on dereferences,
-  recipients, collection expansion and notifications. The revision fence (ID-1) adds no additional inbox receive
-  round; a stale-author refresh fetches its actor again after reading the revision, within the fetch budget. Search
-  resolution makes one more Store call (`actorState`) before each actor fetch and before a URL's probe, and fetches the
-  actor document a probe or an alternate found a second time after it (within the request's fetch budget of 8). A
-  probe answered 200 with another type follows at most two alternates, the `Link` header's and then the page's, one
-  fetch and one domain-policy read (`fetchRefused`) each, and no second hop; the page's body, read only for the page's
-  alternate, is charged to the request's bytes like any document, so a page alternate after a large header alternate
-  can be refused for budget ([mastodon-deviations.md](mastodon-deviations.md), Search);
-  `test/resolve-alternate.test.ts` ("charges the page and every alternate to the request's budget (RES-6)"). A fetch
-  whose actor answers 410 makes one Store call (`actorGone`, a revision compare and a seek by uri, then the deletion's
-  first purge batch, `PURGE_BATCH`), so at most one per fetch of the budget. Confirming an actor's handle (NET-4) loads
-  at most two WebFinger answers, within the same budget, each after a policy read (`fetchRefused`), since a Store
-  answer's verdict is spent on its first fetch; a `Move` from a new actor to a new target, both confirming through a
-  redirect, stays within it and answers 503 (`test/inbox-handles.test.ts`, "the fetch budget"). A search resolution's
-  longest path makes six requests where no redirect hop, RFC 9421 retry or uncached context is needed: a page's probe,
-  its header alternate giving a nil answer, its page alternate naming an actor or a status, that actor's or the
-  status's author's fetch after its state read, and two WebFinger answers for a claim confirmed through another
+  recipients, collection expansion and notifications. An LD-signed body's data-integrity proof is expanded once, by
+  jsonld.js with the preloaded contexts alone, and only within Mastodon's 1,000 values and `PROOF_CONTEXT_LIMIT` (32)
+  contexts and types (ID-1); at those bounds the request is answered well within a second
+  (`test/inbox-signed-forms.test.ts`, "a data-integrity proof expanded within Mastodon's values"). The revision fence
+  (ID-1) adds no additional inbox receive round; a stale-author refresh fetches its actor again after reading the
+  revision, within the fetch budget. Search resolution makes one more Store call (`actorState`) before each actor fetch
+  and before a URL's probe, and fetches the actor document a probe or an alternate found a second time after it (within
+  the request's fetch budget of 8). A probe answered 200 with another type follows at most two alternates, the `Link`
+  header's and then the page's, one fetch and one domain-policy read (`fetchRefused`) each, and no second hop; the
+  page's body, read only for the page's alternate, is charged to the request's bytes like any document, so a page
+  alternate after a large header alternate can be refused for budget ([mastodon-deviations.md](mastodon-deviations.md),
+  Search); `test/resolve-alternate.test.ts` ("charges the page and every alternate to the request's budget (RES-6)"). A
+  fetch whose actor answers 410 makes one Store call (`actorGone`, a revision compare and a seek by uri, then the
+  deletion's first purge batch, `PURGE_BATCH`), so at most one per fetch of the budget. Confirming an actor's handle
+  (NET-4) loads at most two WebFinger answers, within the same budget, each after a policy read (`fetchRefused`), since
+  a Store answer's verdict is spent on its first fetch; a `Move` from a new actor to a new target, both confirming
+  through a redirect, stays within it and answers 503 (`test/inbox-handles.test.ts`, "the fetch budget"). A search
+  resolution's longest path makes six requests where no redirect hop, RFC 9421 retry or uncached context is needed: a
+  page's probe, its header alternate giving a nil answer, its page alternate naming an actor or a status, that actor's
+  or the status's author's fetch after its state read, and two WebFinger answers for a claim confirmed through another
   subject. Each reads up to `DOCUMENT_BODY_LIMIT` (1 MiB), 6 MiB against the request's 2 MiB (`REQUEST_MAX_BYTES`), and
   each hop, retry or uncached context takes one more of the 8 fetches. Past either, the next request is refused as a
   transient failure: a cut probe, alternate or actor fetch resolves nothing; one refused before it is sent counts as

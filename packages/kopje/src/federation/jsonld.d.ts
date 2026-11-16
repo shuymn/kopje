@@ -1,7 +1,7 @@
-// jsonld ships no types: the functions the tests call, from the ESM build @fedify/vocab-runtime imports: canonize for
-// the signature fixtures (test/author-proof-helpers.ts), expand for the actor's term checks (test/federation.test.ts,
-// test/actor-update.test.ts), processContext and compact for the vocabulary of LD-signed bodies
-// (test/ld-signed-vocabulary.test.ts).
+// jsonld ships no types: the functions Kopje calls, from the ESM build @fedify/vocab-runtime imports: expand for an
+// LD-signed body's proof (ld-signed-body.ts) and the actor's term checks (test/federation.test.ts,
+// test/actor-update.test.ts), canonize for the signature fixtures (test/author-proof-helpers.ts), processContext and
+// compact for the vocabulary of LD-signed bodies (test/ld-signed-vocabulary.test.ts).
 declare module "jsonld/dist/jsonld.esm.js" {
   type TermDefinition = { "@id"?: string; "@type"?: string; "@container"?: string[]; "@context"?: unknown };
   type ActiveContext = { "@base"?: unknown; "@vocab"?: unknown; mappings: Map<string, TermDefinition | null> };

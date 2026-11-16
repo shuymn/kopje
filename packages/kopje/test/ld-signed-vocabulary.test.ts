@@ -153,7 +153,7 @@ describe("ldSignedBodyReadable's tables", () => {
   // IRI is read as given.
   it("reads a type given as a vocabulary IRI as jsonld.js's compaction under full_context names it", async () => {
     const context = [AS, "https://w3id.org/security/v1"];
-    const { readType } = ldSignedReading({ "@context": context })!;
+    const { readType } = (await ldSignedReading({ "@context": context }))!;
     const named: string[] = [];
     for (const iri of new Set(ACTIVITY_VOCABULARY.values())) {
       if (iri.startsWith("@")) {
@@ -220,7 +220,7 @@ describe("ldSignedBodyReadable's tables", () => {
         { "@context": fullContext },
         options,
       )) as Json;
-      const read = ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } })!.body;
+      const read = (await ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } }))!.body;
       const keys = (json: Json) => Object.keys(json.object as Json).toSorted();
       const types = (json: Json) => (json.tag as Json[]).map((tag) => tag.type);
       expect(keys(read), JSON.stringify(context)).toEqual(keys(compacted));
@@ -270,7 +270,9 @@ describe("ldSignedBodyReadable's tables", () => {
           { "@context": fullContext },
           options,
         )) as Json;
-        const read = (ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } })!.body.object as Json)[name];
+        const read = (
+          (await ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } }))!.body.object as Json
+        )[name];
         const written = (compacted.object as Json)[name];
         const values = (v: unknown) => (v === undefined ? 0 : [v].flat(Infinity).filter((x) => x !== null).length);
         expect(read === undefined, `${name} given ${shape}`).toBe(written === undefined);
@@ -327,7 +329,7 @@ describe("ldSignedBodyReadable's tables", () => {
         { "@context": fullContext },
         options,
       )) as Json;
-      const read = ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } })!.body.object as Json;
+      const read = (await ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } }))!.body.object as Json;
       // Each node wherever the compaction put it (under its member's name or IRI), by its name.
       const nodeNamed = (object: Json, name: string) =>
         Object.values(object)
@@ -393,7 +395,7 @@ describe("ldSignedBodyReadable's tables", () => {
         { "@context": fullContext },
         options,
       )) as Json;
-      const read = ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } })!.body;
+      const read = (await ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } }))!.body;
       const names = (json: Json) => Object.keys(json.object as Json).filter((name) => flippable.includes(name));
       const types = (json: Json) => (json.tag as Json[]).map((tag) => tag.type);
       expect(names(read)).toEqual(["sensitive"]);

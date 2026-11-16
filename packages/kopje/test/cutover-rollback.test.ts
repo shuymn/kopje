@@ -792,7 +792,7 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
     const { "@context": _context, ...noContext } = base;
     const { id: _id, ...noId } = base;
     for (const activity of [noContext, noId, { ...base, id: 42 }]) {
-      expect(parseActivity(new TextEncoder().encode(JSON.stringify(activity)))).toMatchObject({ ok: false });
+      expect(await parseActivity(new TextEncoder().encode(JSON.stringify(activity)))).toMatchObject({ ok: false });
       await r.spool("/ap/users/alice/inbox", activity);
     }
     await r.consume();
@@ -806,7 +806,7 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
     const signature = { type: "RsaSignature2017", creator: `${r.carol.uri}#main-key`, signatureValue: "placeholder" };
     // A keyword alias beside the literal type: Mastodon reads two types and applies nothing.
     const ignored = { ...follow(r.carol.uri, 1), "@context": [ctx, { kind: "@type" }], kind: "Like", signature };
-    expect(parseActivity(new TextEncoder().encode(JSON.stringify(ignored)))).toMatchObject({
+    expect(await parseActivity(new TextEncoder().encode(JSON.stringify(ignored)))).toMatchObject({
       ok: false,
       reason: "ld-context",
     });
@@ -829,11 +829,11 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
     // the legacy instance to read as it does any type Kopje does not apply.
     const compacted = { ...follow(r.carol.uri, 1), type: "as:Follow", signature };
     const typed = { ...compacted, proof: { "@type": 5 } };
-    expect(parseActivity(new TextEncoder().encode(JSON.stringify(typed)))).toMatchObject({
+    expect(await parseActivity(new TextEncoder().encode(JSON.stringify(typed)))).toMatchObject({
       ok: false,
       reason: "unsupported",
     });
-    expect(parseActivity(new TextEncoder().encode(JSON.stringify(compacted)))).toMatchObject({
+    expect(await parseActivity(new TextEncoder().encode(JSON.stringify(compacted)))).toMatchObject({
       ok: true,
       activity: { type: "Follow" },
     });

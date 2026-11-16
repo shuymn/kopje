@@ -235,15 +235,16 @@ const AS_GIVEN: TypeReader = (type) => type;
 // elsewhere, and its names, as members and types, read only where the compaction writes them so (ID-1,
 // ldSignedReading): `read` is the body Kopje reads, the activity as received is still what is forwarded and proven.
 // Shared by the inbox and the cutover rollback's drain, so neither hands on an activity the other would ignore.
-function activityEnvelope(
+async function activityEnvelope(
   json: Json,
-):
+): Promise<
   | { ok: true; actor: string; id: string; type: string; readType: TypeReader; read: Json }
-  | { ok: false; reason: "no-context" | "ld-context" | "incomplete" } {
+  | { ok: false; reason: "no-context" | "ld-context" | "incomplete" }
+> {
   if (!hasActivityStreamsContext(json["@context"])) {
     return { ok: false, reason: "no-context" };
   }
-  const reading = isObject(json.signature) ? ldSignedReading(json) : { readType: AS_GIVEN, body: json };
+  const reading = isObject(json.signature) ? await ldSignedReading(json) : { readType: AS_GIVEN, body: json };
   if (reading === null) {
     return { ok: false, reason: "ld-context" };
   }
@@ -257,7 +258,7 @@ function activityEnvelope(
   return { ok: true, actor, id, type, readType, read };
 }
 
-export function parseActivity(body: Uint8Array): Parsed {
+export async function parseActivity(body: Uint8Array): Promise<Parsed> {
   let json: unknown;
   try {
     json = JSON.parse(new TextDecoder().decode(body));
@@ -273,7 +274,7 @@ export function parseActivity(body: Uint8Array): Parsed {
   }
   const object = idOf(json.object);
   const deleteOfSelf = json.type === "Delete" && idOf(json.actor) !== null && object === idOf(json.actor);
-  const envelope = activityEnvelope(json);
+  const envelope = await activityEnvelope(json);
   if (!envelope.ok) {
     return { ok: false, reason: envelope.reason, deleteOfSelf };
   }
@@ -1399,7 +1400,7 @@ export async function verifySpooledRequest(
     return { ok: false, transient: false, reason: "not-an-object" };
   }
   // What Kopje's inbox would ignore is not handed to the legacy instance either.
-  const envelope = activityEnvelope(json);
+  const envelope = await activityEnvelope(json);
   if (!envelope.ok) {
     return { ok: false, transient: false, reason: envelope.reason };
   }
