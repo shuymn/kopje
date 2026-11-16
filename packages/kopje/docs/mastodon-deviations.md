@@ -212,14 +212,15 @@ settings page):
   Without a cached copy they equal the remote URLs. The cache's bytes are capped by `REMOTE_MEDIA_CACHE_BYTES` (default
   4 GiB), and a profile image is kept while its account shows it. A suspended account's copies are deleted, where
   Mastodon keeps them private.
-- A remote account's `avatar_description` and `header_description` are read from its actor's `icon` and `image` as
-  Mastodon 4.7 reads them (the first value, an embedded `Image`, its `summary` else its `name`), but cut at 150 code
-  points, where Mastodon keeps 10,000 (`process_account_service.rb:368`). Every description Mastodon writes is within
-  150, its limit for a local account, and an account is embedded in nearly every answer (a conversation shows 14, a
-  boosted quote 3), so 10,000 would put one conversation past the 8 MiB answer budget and a timeline's heap past half
-  the isolate's memory. An image given by reference rather than embedded gives no description, as Kopje fetches no
-  image; a value Mastodon cannot read (a numeric `@value`) is none, where Mastodon fails the document. Accepted,
-  2026-11-15.
+- A remote account's `avatar`, `header`, `avatar_description` and `header_description` are read from its actor's
+  `icon` and `image` as Mastodon 4.7 reads them (`process_account_service.rb:354-379`: the first value; an embedded
+  `Image`'s `url` and its `summary` else its `name`; any other object's `href` and no description), but a description
+  is cut at 150 code points, where Mastodon keeps 10,000 (`process_account_service.rb:368`). Every description Mastodon
+  writes is within 150, its limit for a local account, and an account is embedded in nearly every answer (a
+  conversation shows 14, a boosted quote 3), so 10,000 would put one conversation past the 8 MiB answer budget and a
+  timeline's heap past half the isolate's memory. An image given by reference rather than embedded is not fetched, so
+  the account has neither the image nor its description; Mastodon fetches it. A value Mastodon cannot read (a numeric
+  `@value`) is none, where Mastodon fails the document. Accepted, 2026-11-15.
 - A remote account's `show_featured`, `show_media` and `show_media_replies` change only when its actor's
   `showFeatured`, `showMedia` or `showRepliesInMedia` is a JSON boolean, and keep their stored values otherwise, as
   when the key is absent (`process_account_service.rb:258-260`). Mastodon casts any other value as a form value (a
@@ -579,6 +580,24 @@ Mastodon's `JsonLdHelper#collection_items`; RES-6 in [threat-model.md](threat-mo
   each count expiring 5 minutes after its last increment). Kopje gives quote verification work only to statuses that a
   delivery or a user's request brought, so that reading an account's collections leads to no other account (RES-6).
   Accepted, 2026-11-15.
+
+- An actor's collection (its `followers`, `following`, `featured`, `featuredTags` or `outbox`) is the URI Mastodon
+  4.7.5's `valid_collection_uri` stores for it (`process_account_service.rb:235-245`: Addressable's parse, written back,
+  or `''` for none, which an addressing or quote policy entry `""` matches as in Mastodon), but Kopje cannot tell that
+  URI for a value holding a NUL (PostgreSQL refuses it, so Mastodon stores no account), a lone surrogate or U+FFFD, a
+  line feed in its authority, or a port that percent-decodes to one holding a line feed. Mastodon stores some of these
+  (a line feed in the userinfo as spelled, the port `4%0A` as `:4`). The Store's JSON functions read a lone surrogate's
+  escape as bytes that come back as U+FFFD, so its SQL readers and `JSON.parse` would read two strings, and a line feed
+  moves the splits of Ruby's line-anchored expressions. No addressing names such a collection, so a status addressed to
+  it is direct where Mastodon may make it private. A quote policy's entries are read in Mastodon's order (the public
+  collection, then the followers collection, then the following one, each match taken before the next,
+  `status_parser.rb:179-196`), and past such a collection an entry adds nothing but the public collection's flag, and a
+  value that is not a string `unsupported_policy`: Mastodon may store the collection as the very string a later entry
+  lists and read the entry as it, so neither a later collection's flag nor `unsupported_policy` (which lets anyone ask)
+  is known to be Mastodon's. Every string entry is compared as Mastodon compares it, whatever its length (a policy's
+  strings are the received object's, within its 1 MiB body bound; the stored collection compared with them has no fixed
+  bound), so each entry's flags are within Mastodon's, and no one may quote or ask where Mastodon refuses them.
+  Accepted, 2026-11-16.
 
 Followers synchronisation (Mastodon's `Collection-Synchronization` header and
 `/users/:username/followers_synchronization`):
@@ -1386,8 +1405,9 @@ ID-7 in `docs/threat-model.md`):
   author's later `Create`.
 - An `Update` replaces the content only when its `updated` is newer than the stored version (the last accepted
   `updated`, else `edited_at`, else `published`); one whose version is equal, or missing for a status never edited,
-  still refreshes the poll, the quote policy and the stamp of the same quote, as Mastodon's `handle_implicit_update!`
-  does; one missing for an edited status changes nothing, as in Mastodon (`process_status_update_service.rb:32-34`).
+  still refreshes the poll and the quote policy, records a changed stamp of the same quote, and verifies the same quote
+  again, as Mastodon's `handle_implicit_update!` does; one missing for an edited status changes nothing, as in
+  Mastodon (`process_status_update_service.rb:32-34`).
   Mastodon moves `edited_at` only on a significant edit (`process_status_update_service.rb`), so after a newer
   metadata-only `Update` it applies an older content `Update`: an author editing A, then B, then A again, whose final A
   arrives before B, ends at B there. Mastodon's behaviour is an ordering bug.
@@ -1428,15 +1448,38 @@ Quote approvals (a local account's quote of a remote status; Mastodon's `Activit
 Quote verification (a received quote and its stamp; Mastodon's `ActivityPub::VerifyQuoteService` and
 `ProcessStatusUpdateService`; VIS-28 in [threat-model.md](threat-model.md)):
 
+- Kopje verifies a quote in job rounds after the status or its `Update` is stored, not inline, so the notifications of
+  a verification Mastodon would broadcast (a same-version `Update`'s, a retried one's) come at the round's decision,
+  within minutes of the activity. Accepted, 2026-11-16.
+- An `Update` naming the same stamp does not verify a rejected or revoked quote again; Mastodon fetches the stamp, which
+  a Mastodon server answers 404 once it has rejected or revoked the quote (`quote_authorizations_controller.rb:23-28`),
+  and a revoked stamp never accepts a quote in Kopje (VIS-28). Accepted, 2026-11-16.
+- An accepted quote whose stamp, fetched again, no longer names it is revoked; Mastodon keeps it accepted
+  (`verify_quote_service.rb:23-24`, `:32`). A stamp that no longer proves the approval does not keep it. Accepted,
+  2026-11-16.
+- A rejected or revoked quote that an `Update` gives another stamp is pending until its round decides; Mastodon keeps
+  it rejected or revoked meanwhile, and broadcasts only if the stamp accepts it, where Kopje's round also notifies when
+  it rejects the quote again. Accepted, 2026-11-16.
 - An accepted self-quote (the quoting status's author is the quoted one) keeps its state whatever stamp an `Update`
   names, and Kopje never fetches its stamp. Mastodon 4.7.5 fetches it (`fast_track_approval!` answers false after
   accepting, `verify_quote_service.rb:40-51`), revokes the quote when the stamp answers 404, and resets it when a
   verified stamp changes. A self-quote needs no approval (FEP-044f, and Mastodon's own comment at `:43`). Accepted,
   2026-11-16.
-- A status that arrives again (an `Update`, a boost, a delivered `Create`) while its pending quote's verification is in
-  flight, or waits to retry after a failure that may pass, is answered by that verification, not by a fetch of its
-  own, and the wait runs out as it was; Mastodon verifies the quote at each `Update`
-  (`process_status_update_service.rb:60`, `:348`) and has no deferred work to interrupt. Accepted, 2026-11-16.
+- A status that arrives again (an `Update`, a boost, a delivered `Create`) while its quote's verification is in flight,
+  or waits to retry after a failure that may pass, is answered by that verification, not by a fetch of its own, and
+  the wait runs out as it was; Mastodon verifies the quote at each `Update` (`process_status_update_service.rb:60`,
+  `:348`) and has no deferred work to interrupt. Kopje's notification of that verification's move follows the first of
+  those `Update`s (or the first after a failure that may pass), as Mastodon's first verification is the one that
+  moves the state. When the stamp's answer changes between them, Mastodon notifies once more or once less: a stamp gone
+  after a same-version `Update` and before a significant newer one is notified once by Mastodon (the edit) and twice
+  by Kopje (the edit and the decision); gone after a significant newer `Update` and before a same-version one, twice by
+  Mastodon and once by Kopje (the edit). Accepted, 2026-11-16.
+- When a remote post that quotes a local post with an approval is edited to quote another post, Kopje retires the
+  approval (it never verifies again) but sends no `Delete` of it, where Mastodon 4.7.5 sends one to the servers both
+  posts reach (`RevokeQuoteService`, run by `ProcessStatusUpdateService#update_quote!`,
+  `process_status_update_service.rb:362`). Neither Mastodon nor Kopje edits a quote's target, and servers that receive
+  the edit drop the old quote themselves. When software that sends such an edit appears, Kopje sends the `Delete` as
+  Mastodon does. Accepted, 2026-11-16.
 
 Forwarded deletes (a remote author's `Delete` of a status that local accounts boosted or quoted; Mastodon's
 `ActivityPub::Forwarder`, `app/lib/activitypub/forwarder.rb`, run by `Activity::Delete#delete_status`):

@@ -156,6 +156,13 @@ dump carries it as it is, so a restored Store's work keeps its count. A dump tak
 restores into a Store at its own migrations, whose upgrade gives every quote `0`. A file built from legacy data has no
 quotes.
 
+A received quote's `broadcast` (migration `0104_quote_broadcast`) is the integer `0`, `1` or `2`: whether its current
+verification work notifies when its decision moves the quote's state (`2` while a failure that may pass waits for the
+next verification). Text that reads as one of them is stored as that integer by the column's affinity, and anything
+else fails with `CHECK constraint failed`. A dump carries it as it is, so a restored Store's work decides as it would
+have. A dump taken before 0104 has no such column: it restores into a Store at its own migrations, whose upgrade gives
+every quote `0`, so a work under way then decides without notifying. A file built from legacy data has no quotes.
+
 Authorized apps (migration `0086_authorized_apps`): `oauth_clients.authorized` is the integer `1` for an app a user
 has authorized (a code was issued for it) and `0` otherwise. Text or a real that reads as one of them is stored as
 that integer by the column's affinity; anything else fails with `oauth_client_authorized`. A dump carries it as it
@@ -309,6 +316,12 @@ of base83 characters (`0-9`, `A-Z`, `a-z` and `#$%*+,-.:;=?@[]^_{|}~`) whose fir
 of 1 to 5 each (its index i in that alphabet: x = i mod 9 + 1, y = floor(i / 9) + 1) and whose length is 4 + 2xy;
 anything else fails with `media_attachments: blurhash past its stored bound`. A dump taken before 0065 has no such
 column: it restores into a Store at its own migrations, which then upgrades. A file built from legacy data writes NULL.
+
+Media descriptions (migration `0105_media_description_bytes`): `media_attachments.description` is text of at most
+40,000 UTF-8 bytes and 10,000 characters as SQLite counts them (a malformed UTF-8 run counts as one); a longer one, or a
+BLOB, fails with `media_attachments: a value past its stored bound`. Malformed text within the bound is kept byte for
+byte, and presented as its first 10,000 code points once decoded. A dump taken before 0105 may hold a longer one or a
+BLOB: it restores into a Store at its own migrations, whose upgrade then cuts it to the bound, as text.
 
 Field verification (migration `0066_field_verification`): `local_accounts.links_due_at` and `links_hold_until` are NULL
 or non-negative integers (milliseconds), `links_claim` a non-negative integer and `links_attempts` an integer from 0 to

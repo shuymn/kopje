@@ -354,7 +354,10 @@ describe("update on public and hashtag streams", () => {
         `/api/v1/statuses/${status.id}`,
         bearer(
           h.users.bob.token,
-          json({ status: "after #cats", poll: { options: ["yes", "no"], expires_in: 3600 } }, { method: "PUT" }),
+          json(
+            { status: "after #cats", poll: { options: ["yes", "no"], expires_in: 3600, multiple: false } },
+            { method: "PUT" },
+          ),
         ),
       );
       expect(edited.status).toBe(200);
@@ -719,6 +722,39 @@ describe("payloads with descriptions at their length (D8)", () => {
       const shown = measured(json.quote, descriptions);
       expect(shown.descriptions).toEqual(descriptions);
       expect({ quote: shown.rest, boost: measured(json.boost, descriptions).rest }).toEqual(PLAIN_R);
+    } finally {
+      warn.mockRestore();
+    }
+  }, 120_000);
+
+  // RES-6: a unit past the limit is measured from its presented object and skipped with no string made. JSON.stringify
+  // is spied while the turn runs (the Store shares the test's isolate): the hub encodes the presented status it sends
+  // (S1, within the limit) and never the one it skips (S2, its descriptions control characters).
+  it("skips a unit past the limit without encoding its payload", async () => {
+    const w = await world(FILLS.plain);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const descriptions = [...described("\u0001"), ...described("\u0001")];
+      const media = await describedMedia(w.h, w.alice, descriptions);
+      await drained(w.h, w.inbox);
+      const quoted = await writeFilled(w.h, w.alice, FILLS.plain, media.slice(0, MAX_STATUS_MEDIA));
+      const quote = await writeFilled(w.h, w.alice, FILLS.plain, media.slice(MAX_STATUS_MEDIA), quoted);
+      const stringify = vi.spyOn(JSON, "stringify");
+      let encoded: unknown[];
+      try {
+        await w.h.store.streamTick(BUILD);
+        await drained(w.h, w.inbox);
+        encoded = stringify.mock.calls.flatMap(([value]) =>
+          typeof value === "object" && value !== null && "media_attachments" in value ? [(value as Status).id] : [],
+        );
+      } finally {
+        stringify.mockRestore();
+      }
+      expect(encoded).toEqual([quoted]);
+      expect([...frames(w.inbox).keys()]).toEqual([quoted]);
+      expect(skips(warn)).toHaveLength(1);
+      // The quote is the unit skipped: its payload, as REST shows it, passes the limit.
+      expect(payloadBytes(await shownJson(w, quote))).toBeGreaterThan(STREAM_LIMITS.payloadBytes);
     } finally {
       warn.mockRestore();
     }

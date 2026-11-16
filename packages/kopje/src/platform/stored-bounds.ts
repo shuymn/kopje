@@ -1,7 +1,8 @@
 // RES-2: the stored bounds of the columns a remote server controls or a converted row may carry. Each column has a
 // projection P, the SQL builder below, and a writer that ingestion, the local write paths, the cutover's conversion and
-// its verification apply. The triggers of 0048_stored_bounds refuse what is not a fixed point of P
-// (domain/stored-triggers.ts), and reads take the columns of STORED_COLUMNS as stored; pollOptionsSql is also the read projection of polls.options. Every writer's
+// its verification apply. The triggers of 0048_stored_bounds (media_attachments' as 0105_media_description_bytes made
+// them again) refuse what is not a fixed point of P (domain/stored-triggers.ts), and reads take the columns of
+// STORED_COLUMNS as stored; pollOptionsSql is also the read projection of polls.options. Every writer's
 // output, as SQLite stores it, is a fixed point of the column's P, and P(P(x)) = P(x) for any stored string
 // (test/stored-bounds.test.ts). An account's display name and note, and a status's content, source text and content
 // warning, which malformed UTF-8 can pass P with, are read and presented through their own bounds ("Account text as
@@ -30,6 +31,9 @@ export const MEDIA_META_BYTES = 1024;
 // A media description, in code points: Mastodon's MediaAttachment::MAX_DESCRIPTION_LENGTH (a local one's validation)
 // and MAX_DESCRIPTION_HARD_LENGTH_LIMIT (a remote one's cut), both 10,000 in v4.7.5.
 export const MAX_MEDIA_DESCRIPTION_LENGTH = 10_000;
+// A stored media description, in UTF-8 bytes: a code point takes at most four, so no description a writer stores
+// (storedMediaDescription) passes it.
+export const MEDIA_DESCRIPTION_BYTES = 4 * MAX_MEDIA_DESCRIPTION_LENGTH;
 // A profile image description (accounts.avatar_description, header_description), in code points: Mastodon's
 // Account::Avatar::MAX_DESCRIPTION_LENGTH and Account::Header::MAX_DESCRIPTION_LENGTH (a local one's validation),
 // 150 in v4.7.5. Kopje holds a remote one to it too (docs/mastodon-deviations.md). Its raw bytes as stored: at most
@@ -128,9 +132,13 @@ export function mediaUrlSql(column: string): string {
   return byteBoundSql(column, MEDIA_URL_LIMIT);
 }
 
-// media_attachments.description: cut at MAX_MEDIA_DESCRIPTION_LENGTH code points.
+// media_attachments.description (0105_media_description_bytes): text cut at MEDIA_DESCRIPTION_BYTES (textCut, which
+// also makes a BLOB text), then at MAX_MEDIA_DESCRIPTION_LENGTH of SQLite's characters, so within both. SQLite counts
+// a malformed run as one character, which the byte cut bounds; on text within MEDIA_DESCRIPTION_BYTES it is cutSql's
+// cut.
 export function mediaDescriptionSql(column: string): string {
-  return cutSql(column, MAX_MEDIA_DESCRIPTION_LENGTH);
+  return `CASE WHEN typeof(${column}) = 'text' AND length(CAST(${column} AS BLOB)) <= ${MAX_MEDIA_DESCRIPTION_LENGTH}
+	THEN ${column} ELSE substr(${textCut(column, MEDIA_DESCRIPTION_BYTES)}, 1, ${MAX_MEDIA_DESCRIPTION_LENGTH}) END`;
 }
 
 // media_attachments.meta: NULL past MEDIA_META_BYTES, as no meta.
@@ -380,6 +388,7 @@ export const STORED_COLUMNS: Readonly<Record<string, readonly StoredColumn[]>> =
       stored: (column) => `coalesce(${mediaUrlSql(column)}, '')`,
     },
     { column: "preview_url", projection: mediaUrlSql },
+    // Its projection is 0105_media_description_bytes', which rewrote the column to it; 0048's was cutSql's.
     { column: "description", projection: mediaDescriptionSql },
     { column: "meta", projection: mediaMetaSql },
   ],
@@ -389,6 +398,19 @@ export const STORED_COLUMNS: Readonly<Record<string, readonly StoredColumn[]>> =
     { column: "poll_options", projection: pollOptionsSql },
   ],
 };
+
+// Migration 0105_media_description_bytes before its triggers (stored-triggers.ts emits those): 0048's pair on
+// media_attachments dropped, then every description that is not a fixed point of mediaDescriptionSql set to P(x).
+export function mediaDescriptionBytesMigrationSql(): string {
+  const p = mediaDescriptionSql("description");
+  return `DROP TRIGGER media_attachments_bounds_insert;
+
+DROP TRIGGER media_attachments_bounds_update;
+
+UPDATE media_attachments SET description = ${p}
+WHERE (${p}) IS NOT description;
+`;
+}
 
 // ---- Instance settings: migration 0049_instance_bounds and its triggers
 

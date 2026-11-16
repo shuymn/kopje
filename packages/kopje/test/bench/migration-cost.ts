@@ -123,9 +123,12 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // triggers); 0098_card_attribution adds a column to status_cards and recreates its triggers (no row read, the attached
 // and pending cards seeded); 0101_pin_refresh tests its column's CHECK on every collection_pins_pending row
 // (MAX_REMOTE_PINS of each of SHAPE.collectionSyncs remote accounts, seeded while it is pending); 0102_quote_state_stream
-// reads no row (one trigger). A migration that reads another table must add it here before it is measured. The
-// measured time is the whole upgrade, from before the bookmark to after the verification: Date.now() in workerd moves
-// only between I/O events, so the clock is read across an await on each side.
+// reads no row (one trigger); 0104_quote_broadcast adds a checked column to quotes, which SQLite tests against each
+// quote, as 0094 does; 0105_media_description_bytes reads every media attachment's description and rewrites the
+// imported ones seeded while it is pending (1,000 malformed runs of 50,000 bytes and 1,000 BLOBs of 10,000, after
+// longMedia's rows). A migration that reads another table must add it here before it is measured. The measured time is
+// the whole upgrade, from before the bookmark to after the verification: Date.now() in workerd moves only between I/O
+// events, so the clock is read across an await on each side.
 
 export const UPGRADE_BUDGET_MS = 20_000;
 
@@ -182,6 +185,10 @@ const SHAPE = {
   longSpoilers: 10,
   longAccounts: 1_000,
   longMedia: 1_000,
+  // Imported descriptions 0105_media_description_bytes rewrites (not scaled): malformed runs past its byte bound, and
+  // BLOBs at the largest 0048's triggers accept, in the media rows after longMedia's.
+  malformedDescriptions: 1_000,
+  blobDescriptions: 1_000,
   // Pins while 0089_pin_cap is pending (not scaled): of each local account, and of each of pinningRemotes remote
   // accounts (none: the measured worst case concentrates the pins in the local accounts).
   localPins: 120_000,
@@ -878,6 +885,17 @@ it("applies the migration to the benchmark store within the budget", async () =>
         SHAPE.longMedia,
       );
     }
+    const descriptionsPending = pending("0105_media_description_bytes");
+    if (descriptionsPending) {
+      run(
+        `UPDATE media_attachments SET description = CASE WHEN id < CAST(700000000000000000 + ?1 + ?2 AS TEXT)
+					THEN CAST(x'FF' || unhex(replace(hex(zeroblob(49999)), '00', '80')) AS TEXT) ELSE zeroblob(10000) END
+				WHERE id >= CAST(700000000000000000 + ?1 AS TEXT) AND id < CAST(700000000000000000 + ?1 + ?2 + ?3 AS TEXT)`,
+        SHAPE.longMedia,
+        SHAPE.malformedDescriptions,
+        SHAPE.blobDescriptions,
+      );
+    }
     // Each local account pins distinct statuses: at most as many as there are (a scaled run holds fewer).
     const localPins = Math.min(SHAPE.localPins, statuses);
     const pinsPending =
@@ -971,6 +989,11 @@ it("applies the migration to the benchmark store within the budget", async () =>
 							HAVING count(*) > iif((SELECT a.domain FROM accounts a WHERE a.id = status_pins.account_id) IS NULL, 5, 20))`,
           )
         : 0;
+    // The descriptions that are not text or pass 40,000 bytes, which 0105_media_description_bytes rewrites, and the
+    // malformed runs (0xFF and continuation bytes).
+    const pastDescriptions = () =>
+      count("media_attachments WHERE typeof(description) <> 'text' OR length(CAST(description AS BLOB)) > 40000");
+    const MALFORMED_RUN = "hex(substr(CAST(description AS BLOB), 1, 2)) = 'FF80'";
     // The rows under the jamo spelling of 가, which 0087_tag_key_fixed_points renames.
     const jamoKeys = () => count("status_tags INDEXED BY status_tags_name WHERE name = char(0x1100, 0x1161)");
     const seeded = {
@@ -1016,6 +1039,8 @@ it("applies the migration to the benchmark store within the budget", async () =>
       jamoKeys: jamoKeys(),
       pins: pinsPending ? count("status_pins") : 0,
       excessPins: excessPins(),
+      pastDescriptions: descriptionsPending ? pastDescriptions() : 0,
+      malformedDescriptions: descriptionsPending ? count(`media_attachments WHERE ${MALFORMED_RUN}`) : 0,
       collectionSyncs: handlesPending && has("collection_syncs") ? count("collection_syncs") : 0,
       pendingPins: refreshPending ? count("collection_pins_pending") : 0,
       // The remote rows sharing an address with a row of lower rowid, and those in the reserved form.
@@ -1049,6 +1074,13 @@ it("applies the migration to the benchmark store within the budget", async () =>
     const foreignKeyCheck = logs.find((entry) => entry.event === "kopje.store.upgrade.start")?.foreignKeyCheck;
     const jamoLeft = jamoKeys();
     const pinsLeft = pinsPending ? [count("status_pins"), excessPins()] : [0, 0];
+    // 0105_media_description_bytes: the descriptions left past its bound, and the malformed runs it cut to it.
+    const descriptions = descriptionsPending
+      ? {
+          past: pastDescriptions(),
+          cut: count(`media_attachments WHERE ${MALFORMED_RUN} AND length(CAST(description AS BLOB)) = 40000`),
+        }
+      : undefined;
     // 0091_live_local_quotes: the backfilled copies, the rows of its index, and the plan of its backfill.
     const liveQuotes = has("quotes", "withdrawn")
       ? {
@@ -1066,6 +1098,10 @@ it("applies the migration to the benchmark store within the budget", async () =>
     // 0094_quote_author_fetches: the column, and the quotes holding its default.
     const authorFetches = has("quotes", "author_fetches")
       ? { quotes: count("quotes"), zero: count("quotes WHERE author_fetches = 0") }
+      : undefined;
+    // 0104_quote_broadcast: the column, and the quotes holding its default.
+    const quoteBroadcast = has("quotes", "broadcast")
+      ? { quotes: count("quotes"), zero: count("quotes WHERE broadcast = 0") }
       : undefined;
     // 0098_card_attribution: the column, and the cards holding NULL.
     const cardAuthors = has("status_cards", "unverified_author_account_id")
@@ -1135,6 +1171,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
           retryEstimateMs: ms,
           jamoLeft,
           pinsLeft,
+          descriptions,
           liveQuotes,
           rejectReplays,
           authorFetches,
@@ -1143,6 +1180,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
           profileSettings,
           cardAuthors,
           pinRefresh,
+          quoteBroadcast,
         },
       };
     }
@@ -1171,6 +1209,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
         retryEstimateMs: ms + resumedMs,
         jamoLeft,
         pinsLeft,
+        descriptions,
         liveQuotes,
         rejectReplays,
         authorFetches,
@@ -1179,6 +1218,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
         profileSettings,
         cardAuthors,
         pinRefresh,
+        quoteBroadcast,
       },
     };
   });
@@ -1282,6 +1322,17 @@ it("applies the migration to the benchmark store within the budget", async () =>
   if (applied.includes("0101_pin_refresh")) {
     const rows = Math.min(Math.round(SHAPE.collectionSyncs * scale), accounts - SHAPE.local) * MAX_REMOTE_PINS;
     expect([seeded.pendingPins, measured.pinRefresh]).toEqual([rows, { rows, pending: rows }]);
+  }
+  // 0104 tested its CHECK against every seeded quote, received and local, each taking the default.
+  if (applied.includes("0104_quote_broadcast")) {
+    expect(seeded.quotes).toBeGreaterThan(0);
+    expect(measured.quoteBroadcast).toEqual({ quotes: seeded.quotes, zero: seeded.quotes });
+  }
+  // 0105 found the seeded descriptions past its bound and rewrote each within it, the malformed runs to 40,000 bytes.
+  if (applied.includes("0105_media_description_bytes")) {
+    expect(seeded.malformedDescriptions).toBeGreaterThan(0);
+    expect(seeded.pastDescriptions).toBeGreaterThan(seeded.malformedDescriptions);
+    expect(measured.descriptions).toEqual({ past: 0, cut: seeded.malformedDescriptions });
   }
   const { ms, foreignKeyCheck, retryEstimateMs } = measured;
   console.log(

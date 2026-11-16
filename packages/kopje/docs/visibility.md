@@ -220,10 +220,13 @@ counts only its `to` and `cc`. A status that arrives again notifies no one. Mast
 in `src/domain/update-fan-out.ts`) notifies the local quoted account of the status's accepted quote and each active
 local mention, each when it has no kept notification (the mentions without the limited condition), then the local
 boosters and quoters: on a significant remote edit (text, spoiler text, media or poll), on a remote `Update` of the same
-version that changes its quote's approval stamp (not its legacy form alone), on the quote state changes Mastodon
-broadcasts (a stamp's `Delete` that revokes the accepted quote it approved, not the other quotes its batches reject or
-revoke; the `Delete` of a local quote's stamp; the revoke API; an `Accept` of a local quote's request, not its
-`Reject` nor an accepted `QuoteRequest`), and on every accepted local edit, one that
+version that resets its accepted quote (a new approval stamp, not its legacy form alone; a pending quote's new stamp
+notifies at its decision instead), on the quote state changes Mastodon broadcasts (a stamp's `Delete` that revokes the
+accepted quote it approved, not the other quotes its batches reject or revoke; the `Delete` of a local quote's stamp;
+the revoke API; an `Accept` of a local quote's request, not its `Reject` nor an accepted `QuoteRequest`; a
+verification round's decision that moves the quote's state when the work's first verification is a same-version
+`Update`'s that reset nothing or a relayed `Delete`'s recheck, or follows a failure that may pass, not a `Create`'s or
+a newer `Update`'s), and on every accepted local edit, one that
 changes only the quote policy through `PUT /api/v1/statuses/:id` included (not through `/interaction_policy`). So a
 quote or mention notification the policy dropped or this rule refused at the time, or one its recipient dismissed or
 cleared, is notified then.
@@ -265,6 +268,21 @@ status the actor is not in the audience of. Mastodon 4.5's `ActivityPub::Activit
 interaction itself (VIS-13, VIS-15). A reply is a status of the actor's own: it is stored
 whatever the author of its parent blocks, as Mastodon stores it, and that author's blocks keep it out of their lists
 and notifications (R7, R15).
+
+A received status's visibility is read from its addressing as Mastodon's `StatusParser#visibility` and
+`Announce#visibility_from_audience` read it (`interpretAddressing` in `src/domain/audience.ts`, `boostVisibility` in
+`src/domain/inbox.ts`): Public in `to` makes it public, Public in `cc` unlisted, its author's followers collection in
+`to` private, and anything else direct (limited with silent recipients, VIS-2). That collection, and the followers and
+following collections a remote quote policy names (R36), are read from the author's stored document as Mastodon's
+`valid_collection_uri` stores them (`collectionRead` in `src/domain/collection-requests.ts`): the last member of the
+name, an array's first value, an object's last `id`, and of a string the URI Addressable writes back from it (the scheme
+`http` or `https` in lower case, then `//` and a host; the port as an integer, the userinfo stripped, the fragment cut
+at a line feed), compared with the addressing as spelled. Any other value is none, which Mastodon stores as an empty
+string and compares as one: a status whose `to` holds `""` is private when its author names no followers collection, and
+a quote policy's `""` names that collection. A value Kopje cannot read as Mastodon stores it is named by no addressing,
+so a status addressed to it is direct, and a quote policy's entries, read in Mastodon's order (the public collection,
+the followers collection, then the following one), add nothing after it but the public collection's flag, and a value
+that is not a string `unsupported_policy` ([mastodon-deviations.md](mastodon-deviations.md), Remote collections).
 
 A quote (R35, VIS-27; Mastodon 4.5's `REST::BaseQuoteSerializer` and `StatusFilter#filter_state_for_quote`) is shown
 with the status that makes it, and never widens what that status's rule passed: the quoted status is judged on its own

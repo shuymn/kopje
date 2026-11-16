@@ -531,6 +531,9 @@ const STAGED =
   "a staged retraction's target (an inbox, or an addressee's identity), sent in an activity, never presented";
 
 const REMOTE_ATTACHMENT = "a remote account's attachment entry and its original value (src), from its stored document";
+const COLLECTION =
+  "the string a member of a remote actor's stored document names (collectionSql), read as a collection URI compared " +
+  "with addressing: one string, never an object, at most the stored document's bytes";
 
 const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/trends.ts interpolation TREND_OBSERVED_MAX": { count: 2, reason: NUMBER },
@@ -544,6 +547,18 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   },
   // A held Reject's Follow id judged against its stored bound: a predicate (deliveries.ts heldFollowUriSql).
   'src/domain/deliveries.ts interpolation heldFollowUriSql("uri")': { count: 2, reason: PREDICATE },
+  'src/domain/remote-status-reads.ts interpolation collectionSql("raw", "followers")': {
+    count: 1,
+    reason: COLLECTION,
+  },
+  'src/domain/remote-statuses.ts interpolation collectionSql("raw", "followers")': {
+    count: 1,
+    reason: COLLECTION,
+  },
+  'src/domain/remote-statuses.ts interpolation collectionSql("raw", "following")': {
+    count: 1,
+    reason: COLLECTION,
+  },
   // actorState's stored handle, cut to what a claim can be (remote-actors.ts).
   "src/domain/remote-actors.ts interpolation REMOTE_USERNAME_LIMIT": {
     count: 1,
