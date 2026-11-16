@@ -457,8 +457,10 @@ Accounts (the `Account` and credential account entities):
   actor that sends nothing keeps the old keys and inboxes until one of these happens (`test/inbox-actor-update.test.ts`,
   "an inbox move sent only by an embedded actor", "an Update(Person) that embeds no actor"). Reason: a holder of a
   still-trusted key could otherwise renew its trust and move the actor's deliveries without a fetch (ID-1 in
-  `docs/threat-model.md`). An embedded actor Kopje cannot read applies nothing, as Mastodon drops it. Accepted,
-  2026-11-16.
+  `docs/threat-model.md`). An embedded actor Kopje cannot read applies nothing, as Mastodon drops it. An
+  `Update(Person)` that carries an LD signature (a `signature` object) is read as received, where Mastodon reads its
+  compaction under `full_context` (`process_activity_service.rb:23-38`), so an `inbox` given only by its full IRI is
+  refused and `[null]` taken, where Mastodon does the opposite (#1680). Accepted, 2026-11-16.
 - The account `moved` nests is a bounded projection, not the full account: its identity, counts, flags, display
   settings and images, `note`, `avatar_description` and `header_description` `''` and `fields` `[]`, the display name
   cut at 100 code points, URLs and `uri` read as unset past 512 bytes, and only the emojis its display name references
