@@ -9,9 +9,9 @@ import { editOnce, guardFixtures, parse, type Source, sources, walk } from "./so
 // #1709: Fedify parses an actor document holding only the members of src/federation/remote-actor.ts FEDIFY_MEMBERS
 // (fedifyActorView), so a property Kopje reads from Fedify's Actor object is the document's only if its member is
 // there. Every Actor property remote-actor.ts and inbound.ts read names an inventory member through ACCESSORS; a read
-// of any other Fedify Actor accessor, or one whose member the inventory lacks, fails. An Actor is seen as a parameter
-// typed `Actor`, a value isActor() narrows, a fetch's `.actor`, and what is destructured from one; a read through
-// another name (an alias, a helper's parameter of another type) is not seen.
+// of any other Fedify Actor accessor, a computed key that is not a literal, or one whose member the inventory lacks,
+// fails. An Actor is seen as actorNames binds it and as a fetch's `.actor`; one reached otherwise (returned by a call,
+// held in a property or a collection) is not seen.
 
 const FILES = ["src/federation/remote-actor.ts", "src/federation/inbound.ts"];
 const INVENTORY_FILE = "src/federation/remote-actor.ts";
@@ -79,21 +79,69 @@ function inventoryOf(source: Source): Set<string> {
   return keys;
 }
 
-// Whether `node` is an Actor in `source`: an identifier among `actors`, or a member `.actor` of anything.
-function isActorValue(node: Node, actors: ReadonlySet<string>): boolean {
-  if (node.type === "Identifier") {
-    return actors.has(node.name);
+// The types an Actor is declared with: Fedify's Actor and its classes, and a file's aliases of them.
+const ACTOR_TYPES = ["Actor", "Application", "Group", "Organization", "Person", "Service"];
+
+// Whether `type` names an Actor type, alone or in a union (`Actor | null`).
+function isActorType(type: Node | null | undefined, types: ReadonlySet<string>): boolean {
+  if (type?.type === "TSTypeReference") {
+    return types.has(name(type.typeName) ?? "");
   }
-  return node.type === "MemberExpression" && !node.computed && name(node.property) === "actor";
+  return type?.type === "TSUnionType" && type.types.some((member) => isActorType(member, types));
 }
 
-// The Fedify Actor accessors each file reads, as `path accessor`.
-function reads(files: readonly Source[]): string[] {
-  const found: string[] = [];
-  for (const source of files) {
-    const { program } = parse(source);
-    const actors = new Set<string>();
+// The property a member expression reads: its name, or a computed key that is a string literal or a template without
+// expressions (`actor["published"]`); null for any other computed key.
+function propertyOf(node: Node & { type: "MemberExpression" }): string | null {
+  const key = node.property;
+  if (!node.computed || key.type === "Literal") {
+    return name(key);
+  }
+  return key.type === "TemplateLiteral" && key.expressions.length === 0 ? (key.quasis[0]?.value.cooked ?? null) : null;
+}
+
+// Whether `node` is an Actor: a cast to an Actor type, an identifier among `actors`, or a member `actor` of anything
+// (a fetch's result), through `!`, `as`, `satisfies` and optional chaining.
+function isActorValue(node: Node, actors: ReadonlySet<string>, types: ReadonlySet<string>): boolean {
+  let value = node;
+  for (;;) {
+    if (
+      (value.type === "TSAsExpression" || value.type === "TSSatisfiesExpression") &&
+      isActorType(value.typeAnnotation, types)
+    ) {
+      return true;
+    }
+    if (
+      value.type === "TSNonNullExpression" ||
+      value.type === "TSAsExpression" ||
+      value.type === "TSSatisfiesExpression" ||
+      value.type === "ChainExpression"
+    ) {
+      value = value.expression;
+      continue;
+    }
+    break;
+  }
+  if (value.type === "Identifier") {
+    return actors.has(value.name);
+  }
+  return value.type === "MemberExpression" && propertyOf(value) === "actor";
+}
+
+// The names a file binds to an Actor, to a fixed point: parameters and variables declared with an Actor type (a
+// file's `type A = Actor` included), values isActor() narrows, variables initialized from an Actor (an alias, a
+// fetch's `.actor`) and an `actor` destructured from anything. Names are not scoped: a name bound to an Actor anywhere
+// in the file counts everywhere, which can only add reads.
+function actorNames(program: Node): { actors: Set<string>; types: Set<string> } {
+  const actors = new Set<string>();
+  const types = new Set(ACTOR_TYPES);
+  let size = -1;
+  while (size !== actors.size + types.size) {
+    size = actors.size + types.size;
     walk(program, (node) => {
+      if (node.type === "TSTypeAliasDeclaration" && isActorType(node.typeAnnotation, types)) {
+        types.add(node.id.name);
+      }
       const params =
         node.type === "FunctionDeclaration" ||
         node.type === "FunctionExpression" ||
@@ -101,9 +149,24 @@ function reads(files: readonly Source[]): string[] {
           ? node.params
           : [];
       for (const param of params) {
-        const annotation = param.type === "Identifier" ? param.typeAnnotation?.typeAnnotation : undefined;
-        if (annotation?.type === "TSTypeReference" && name(annotation.typeName) === "Actor") {
-          actors.add((param as { name: string }).name);
+        const target = param.type === "AssignmentPattern" ? param.left : param;
+        if (target.type === "Identifier" && isActorType(target.typeAnnotation?.typeAnnotation, types)) {
+          actors.add(target.name);
+        }
+      }
+      if (node.type === "VariableDeclarator" && node.id.type === "Identifier") {
+        if (
+          isActorType(node.id.typeAnnotation?.typeAnnotation, types) ||
+          (node.init !== null && isActorValue(node.init, actors, types))
+        ) {
+          actors.add(node.id.name);
+        }
+      }
+      if (node.type === "VariableDeclarator" && node.id.type === "ObjectPattern") {
+        for (const property of node.id.properties) {
+          if (property.type === "Property" && name(property.key) === "actor" && property.value.type === "Identifier") {
+            actors.add(property.value.name);
+          }
         }
       }
       if (
@@ -114,15 +177,26 @@ function reads(files: readonly Source[]): string[] {
         actors.add(node.arguments[0].name);
       }
     });
+  }
+  return { actors, types };
+}
+
+// The Fedify Actor accessors each file reads, as `path accessor`.
+function reads(files: readonly Source[]): string[] {
+  const found: string[] = [];
+  for (const source of files) {
+    const { program } = parse(source);
+    const { actors, types } = actorNames(program);
     walk(program, (node) => {
-      if (node.type === "MemberExpression" && !node.computed && isActorValue(node.object, actors)) {
-        found.push(`${source.path} ${name(node.property)}`);
+      if (node.type === "MemberExpression" && isActorValue(node.object, actors, types)) {
+        const property = propertyOf(node);
+        found.push(`${source.path} ${property ?? "(a computed key)"}`);
       }
       if (node.type === "VariableDeclarator" && node.id.type === "ObjectPattern" && node.init !== null) {
-        if (isActorValue(node.init, actors)) {
+        if (isActorValue(node.init, actors, types)) {
           for (const property of node.id.properties) {
             if (property.type === "Property") {
-              found.push(`${source.path} ${name(property.key)}`);
+              found.push(`${source.path} ${name(property.key) ?? "(a computed key)"}`);
             }
           }
         }
@@ -131,7 +205,7 @@ function reads(files: readonly Source[]): string[] {
         node.type === "CallExpression" &&
         name(node.callee) === "getActorTypeName" &&
         node.arguments[0] !== undefined &&
-        isActorValue(node.arguments[0], actors)
+        isActorValue(node.arguments[0], actors, types)
       ) {
         found.push(`${source.path} getActorTypeName`);
       }
@@ -144,10 +218,12 @@ function reads(files: readonly Source[]): string[] {
 function find(all: readonly Source[]): string[] {
   const inventory = inventoryOf(all.find((s) => s.path === INVENTORY_FILE)!);
   return reads(all.filter((s) => FILES.includes(s.path))).flatMap((read) => {
-    const accessor = read.slice(read.lastIndexOf(" ") + 1);
+    const accessor = read.slice(read.indexOf(" ") + 1);
     const member = accessor === "getActorTypeName" ? "type" : ACCESSORS[accessor];
     if (member === undefined) {
-      return FEDIFY_ACCESSORS.has(accessor) ? [`${read}: an accessor ACCESSORS does not map`] : [];
+      return FEDIFY_ACCESSORS.has(accessor) || accessor === "(a computed key)"
+        ? [`${read}: an accessor ACCESSORS does not map`]
+        : [];
     }
     return inventory.has(member) ? [] : [`${read}: reads ${member}, which FEDIFY_MEMBERS lacks`];
   });
@@ -197,11 +273,50 @@ describe("the members Fedify is handed (#1709)", () => {
           "function f(actor: Actor) { return actor.published; }",
           `${INBOUND} published: reads published, which FEDIFY_MEMBERS lacks`,
         ],
+        "an alias": [
+          "function f(actor: Actor) { const alias = actor; const again = alias; return again.published; }",
+          `${INBOUND} published: reads published, which FEDIFY_MEMBERS lacks`,
+        ],
+        "a helper typed with an alias of Actor": [
+          "type Remote = Actor | null; type Other = Remote; function f(a: Other) { return a?.published; }",
+          `${INBOUND} published: reads published, which FEDIFY_MEMBERS lacks`,
+        ],
+        "a parameter typed as an Actor class, with a default": [
+          "function f(p: Person = make()) { return p.followersId; }",
+          `${INBOUND} followersId: an accessor ACCESSORS does not map`,
+        ],
+        "a literal computed key": [
+          'function f(actor: Actor) { return actor["published"]; }',
+          `${INBOUND} published: reads published, which FEDIFY_MEMBERS lacks`,
+        ],
+        "a template computed key": [
+          "function f(actor: Actor) { return actor[`followersId`]; }",
+          `${INBOUND} followersId: an accessor ACCESSORS does not map`,
+        ],
+        "a computed key of a variable": [
+          "function f(actor: Actor, key: string) { return actor[key]; }",
+          `${INBOUND} (a computed key): an accessor ACCESSORS does not map`,
+        ],
+        "a cast": ["use((value as Actor).followersId);", `${INBOUND} followersId: an accessor ACCESSORS does not map`],
+        "a non-null assertion on an alias of a fetch's actor": [
+          "const a = loaded.actor; use(a!.endpoints);",
+          `${INBOUND} endpoints: an accessor ACCESSORS does not map`,
+        ],
+        "an actor destructured from a fetch": [
+          "const { actor } = loaded; use(actor.outboxId);",
+          `${INBOUND} outboxId: an accessor ACCESSORS does not map`,
+        ],
+        "a variable declared an Actor": [
+          "let a: Actor | undefined; use(a?.followingId);",
+          `${INBOUND} followingId: an accessor ACCESSORS does not map`,
+        ],
       },
       passed: {
         "a mapped accessor": "if (!fetched.actor.aliasIds.some((a) => a.href === x)) {}",
+        "a mapped accessor through an alias": 'const a = fetched.actor; use(a["aliasIds"]);',
         "a property no Actor has": "use(states.actor.revision);",
         "a parameter of another type": "function f(actor: string) { return actor.length; }",
+        "a type alias of another type": "type Remote = string; function f(a: Remote) { return a.published; }",
       },
     },
     { path: INBOUND, over: SOURCES },
