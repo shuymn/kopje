@@ -328,6 +328,7 @@ describe("M1, held output against the headroom", () => {
         spread: 0,
         fraction: lowered / GIB,
         excludesAbove: null,
+        reasons: [],
       },
     ]);
     // With P, the groups answer with its backstop fired, it would pass the isolate's memory.
@@ -370,6 +371,11 @@ describe("M1, held output against the headroom", () => {
     expect(classify([...baseline, ...quiet, ...cut]).m1?.class).toBe("inconclusive");
     const mixed = classify([...baseline, ...quiet, ...cut, ...counted]).m1;
     expect(mixed?.volumes.map((v) => v.class)).toEqual(["not detected", "inconclusive", "counted"]);
+    expect(mixed?.volumes.map((v) => v.reasons)).toEqual([
+      [],
+      ["the run is inconclusive (a reset other than the headroom probe's own)"],
+      [],
+    ]);
     expect(mixed?.class).toBe("counted");
   });
   it("counts no attempt whose stopped clients did not hold the volume through its probe", () => {
@@ -377,18 +383,19 @@ describe("M1, held output against the headroom", () => {
     const lowered = [0, 1, 2].map(() => baselineBytes - 32 * MIB);
     // The same headroom with each attempt's holding intact is counted: the cases below differ only in what was held.
     expect(classify([...baseline, ...m1Run("m1-64m", volume, lowered)]).m1?.class).toBe("counted");
-    const shortfalls: [string, Partial<Held>][] = [
-      ["a short fill", { bytes: volume - 1 }],
-      ["a hand whose answer was lost", { unknown: 512 * KIB }],
-      ["a client that ended before the probe", { ended: 1 }],
-      ["a client that ended while the probe ran", { endedDuringProbe: 1 }],
+    const shortfalls: [Partial<Held>, string][] = [
+      [{ bytes: volume - 1 }, "attempt 2: the stopped clients held 67108863 of 67108864 bytes"],
+      [{ unknown: 512 * KIB }, "attempt 2: 524288 bytes were in hands whose answer was lost"],
+      [{ ended: 1 }, "attempt 2: 1 of the stopped clients had ended before the probe"],
+      [{ endedDuringProbe: 1 }, "attempt 2: 1 of the stopped clients ended while the probe ran"],
     ];
-    for (const [why, shortfall] of shortfalls) {
+    for (const [shortfall, why] of shortfalls) {
       const held = m1Run("m1-64m", volume, lowered, [], (attempt) => ({
         ...full(volume),
         ...(attempt === 2 ? shortfall : {}),
       }));
-      expect([why, classify([...baseline, ...held]).m1?.class]).toEqual([why, "inconclusive"]);
+      const result = classify([...baseline, ...held]).m1;
+      expect([why, result?.class, result?.volumes[0]?.reasons]).toEqual([why, "inconclusive", [why]]);
     }
   });
 });
@@ -622,6 +629,28 @@ describe("resets and cuts in a deployed run's records", () => {
       reset("s3-1"),
       lone("s3-2"),
       reset("s3-3"),
+    ]);
+  });
+
+  it("names why an M1 volume is inconclusive when it has no difference or spread", () => {
+    const baseline: Observation[] = [
+      run("m1-none", "m1", { volume: 0 }),
+      ...[239_462, 246_036, 252_230].map((at, i): Observation => ({
+        type: "headroom",
+        run: "m1-none",
+        at: 1_794_796_000_000 + at,
+        attempt: i + 1,
+        bytes: 134_217_728,
+        capped: false,
+      })),
+      { type: "done", run: "m1-none", at: 1_794_796_252_266 },
+    ];
+    const volume = classify([...baseline, ...cuts64b]).m1?.volumes[0];
+    expect(volume).toMatchObject({ class: "inconclusive", difference: null, spread: null });
+    expect(volume?.reasons).toEqual([
+      "attempt 1: the stopped clients held 4194304 of 67108864 bytes",
+      "attempt 2: the stopped clients held 11534336 of 67108864 bytes",
+      "attempt 3: the stopped clients held 6291456 of 67108864 bytes",
     ]);
   });
 });

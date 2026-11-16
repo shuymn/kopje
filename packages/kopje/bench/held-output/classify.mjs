@@ -11,8 +11,8 @@
 //   more than the probe's step plus the spread of its attempts; "not detected" when it does not, which excludes
 //   accounting of more than (step + spread) / volume of what is held and no less; "inconclusive" when either run is,
 //   or when any attempt's stopped clients did not hold the volume through its probe (a short fill, a hand whose
-//   answer was lost, a client that ended before the probe's reset). Mixed results resolve to the more conservative:
-//   counted, then inconclusive, then not detected.
+//   answer was lost, a client that ended before the probe's reset), each named in its reasons. Mixed results resolve
+//   to the more conservative: counted, then inconclusive, then not detected.
 // - M2, M3 and M4 report each end, and the ages and backlogs seen: envelopes of what was observed.
 // - M5 and M6 report aggregate scenario deltas (resident memory, headroom), each named with its scenario. They include
 //   transport buffers and the allocator's retention, so they are no cost per frame or per connection.
@@ -73,7 +73,8 @@ export const STATE_MS = 5_000;
  *   scenarioDeltas: ScenarioDelta[] }} RunOutcome
  * @typedef {"counted" | "inconclusive" | "not detected"} M1Class
  * @typedef {{ run: string, volume: number, frameBytes: number | null, class: M1Class, difference: number | null,
- *   step: number, spread: number | null, fraction: number | null, excludesAbove: number | null }} M1Volume
+ *   step: number, spread: number | null, fraction: number | null, excludesAbove: number | null,
+ *   reasons: string[] }} M1Volume
  * @typedef {{ samples: { run: string, start: string | null, surface: unknown }[], afterSend: boolean,
  *   signal: boolean }} SurfaceOutcome
  * @typedef {{ runs: RunOutcome[], m1: { class: M1Class, volumes: M1Volume[] } | null, surface: SurfaceOutcome }}
@@ -410,28 +411,54 @@ function classifyM1(byRun, outcomes) {
   /** @param {string} run */
   const headroomOf = (run) => (byRun.get(run) ?? []).filter((r) => r.type === "headroom");
   /**
-   * Every attempt of the run ended in the probe's own reset, and with a volume held, its stopped clients held all of
-   * it, with no hand whose answer was lost, until the probe's reset.
+   * Why the run measures no headroom against `volume`, if it does not: unless it is observed, every attempt ended in
+   * the probe's own reset, and, with a volume held, its stopped clients held all of it, with no hand whose answer was
+   * lost, until the probe's reset.
    * @param {string} run
    * @param {number} volume
    */
-  const conclusive = (run, volume) => {
+  const shortfallsOf = (run, volume) => {
+    const outcome = outcomes.find((o) => o.run === run);
+    /** @type {string[]} */
+    const reasons = [];
+    if (outcome === undefined) {
+      reasons.push("the run was not recorded");
+    } else if (outcome.class !== "observed") {
+      reasons.push(`the run is inconclusive (${outcome.reasons.join("; ")})`);
+    }
     const records = headroomOf(run);
-    return (
-      outcomes.find((o) => o.run === run)?.class === "observed" &&
-      records.length > 0 &&
-      records.every(
-        (h) =>
-          h.bytes !== null &&
-          h.capped !== true &&
-          (volume === 0 ||
-            (h.held !== undefined &&
-              h.held.bytes >= volume &&
-              h.held.unknown === 0 &&
-              h.held.ended === 0 &&
-              h.held.endedDuringProbe === 0)),
-      )
-    );
+    if (records.length === 0) {
+      reasons.push("no headroom was recorded");
+    }
+    for (const h of records) {
+      const attempt = `attempt ${h.attempt}`;
+      if (h.capped === true) {
+        reasons.push(`${attempt}: the probe reached its cap without a reset`);
+      } else if (h.bytes === null) {
+        reasons.push(`${attempt}: the probe saw no reset of its own`);
+      }
+      if (volume === 0) {
+        continue;
+      }
+      const { held } = h;
+      if (held === undefined) {
+        reasons.push(`${attempt}: what the stopped clients held was not recorded`);
+        continue;
+      }
+      if (held.bytes < volume) {
+        reasons.push(`${attempt}: the stopped clients held ${held.bytes} of ${volume} bytes`);
+      }
+      if (held.unknown > 0) {
+        reasons.push(`${attempt}: ${held.unknown} bytes were in hands whose answer was lost`);
+      }
+      if (held.ended > 0) {
+        reasons.push(`${attempt}: ${held.ended} of the stopped clients had ended before the probe`);
+      }
+      if (held.endedDuringProbe > 0) {
+        reasons.push(`${attempt}: ${held.endedDuringProbe} of the stopped clients ended while the probe ran`);
+      }
+    }
+    return reasons;
   };
   /** @type {M1Volume[]} */
   const volumes = [];
@@ -440,7 +467,7 @@ function classifyM1(byRun, outcomes) {
       continue;
     }
     const volume = /** @type {number} */ (head.volume);
-    const baseline = head.baseline ?? "";
+    const baseline = head.baseline;
     /** @type {M1Volume} */
     const entry = {
       run: head.run,
@@ -452,8 +479,14 @@ function classifyM1(byRun, outcomes) {
       spread: null,
       fraction: null,
       excludesAbove: null,
+      reasons: [
+        ...shortfallsOf(head.run, volume),
+        ...(baseline === undefined
+          ? ["no baseline run is named"]
+          : shortfallsOf(baseline, 0).map((reason) => `the baseline ${baseline}: ${reason}`)),
+      ],
     };
-    if (conclusive(head.run, volume) && conclusive(baseline, 0)) {
+    if (entry.reasons.length === 0 && baseline !== undefined) {
       const base = headroomOf(baseline).map((h) => Number(h.bytes));
       const held = headroomOf(head.run).map((h) => Number(h.bytes));
       const difference = median(base) - median(held);
