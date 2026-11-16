@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { Db, type Savepoint } from "../src/db/sql";
 import { stampDeleteActivity } from "../src/domain/activities";
 import { PURGE_BATCH, receiveActivity, runInboundJobs } from "../src/domain/inbox";
-import { JOB_RETRY_DELAYS_MS } from "../src/domain/job-attempts";
+import { JOB_BOOKKEEPING_ROWS, JOB_RETRY_DELAYS_MS } from "../src/domain/job-attempts";
 import { completeQuote } from "../src/domain/quote-verification";
 import {
   MAX_LINKED_QUOTES,
@@ -331,6 +331,41 @@ describe("storing and verifying a received quote (VerifyQuoteService)", () => {
     expect(await quoteOf(t, flaky.quote.id)).toMatchObject({ state: "pending", attempts: 1 });
     await rounds(t, NOW + QUOTE_BACKOFF_MS[0]!);
     expect(await quoteOf(t, flaky.quote.id)).toMatchObject({ state: "accepted", verify_after: null });
+  });
+
+  // A write that keeps a quote's state still sets it (the trigger stream_quote_state's event, UPDATE OF state), so the
+  // trigger's guard decides: a retry and a pending quote's write-back journal no status.update; the decision after them
+  // journals one (migration 0102_quote_state_stream).
+  it("journals nothing for a retry or a write-back that keeps a quote pending, and one row for its decision", async () => {
+    const { t, bob, carol } = await world();
+    await sql(
+      t.store,
+      "INSERT INTO stream_subscriptions (account_id, stream_key, sockets) VALUES (?, 'user', 1)",
+      ALICE,
+    );
+    const pair = quotedPair(t, bob, carol);
+    t.web.fail(pair.stamp, 503);
+    expect(await t.postOnly(bob, create(bob, pair.quote))).toBe(202);
+    const quoting = (await statusRow(t.store, pair.quote.id))!.id;
+    const edits = async () =>
+      sql(t.store, "SELECT subject FROM stream_events WHERE kind = 'edit' ORDER BY id").then((rows) =>
+        rows.map((row) => row.subject),
+      );
+    // The round's retry: finish writes the state, pending, and the attempt.
+    await rounds(t, NOW);
+    expect(await quoteOf(t, pair.quote.id)).toMatchObject({ state: "pending", attempts: 1 });
+    expect(await edits()).toEqual([]);
+    // A same-version Update naming another stamp: written back pending (recordQuote's upsert), with new work.
+    const second = stampUri(carol);
+    serveStamp(t.web, second, carol, pair.quote.id, pair.target.id);
+    const restamp = { ...update(bob, { ...pair.quote, quoteAuthorization: second }, ""), id: `${pair.quote.id}#u1` };
+    expect(await t.postOnly(bob, restamp)).toBe(202);
+    expect(await quoteOf(t, pair.quote.id)).toMatchObject({ state: "pending", approval_uri: second, attempts: 0 });
+    expect(await edits()).toEqual([]);
+    // The decision moves it: one row, the quoting status's.
+    await rounds(t, NOW);
+    expect(await quoteOf(t, pair.quote.id)).toMatchObject({ state: "accepted" });
+    expect(await edits()).toEqual([quoting]);
   });
 
   it("gives a quote up after five failed attempts until its status arrives again", async () => {
@@ -875,67 +910,79 @@ describe("revocation: the Delete of a stamp", () => {
     expect(await revocations(t)).toEqual([]);
   });
 
+  // `count` more quotes naming the stamp in `state`, by bob's server's other accounts, quoting carol's `target`.
+  async function naming(t: Setup, carol: TestActor, target: Note, stamp: string, count: number, state: string) {
+    const carolId = (await sql<{ id: string }>(t.store, "SELECT id FROM accounts WHERE uri = ?", carol.uri))[0]!.id;
+    const targetId = (await statusRow(t.store, target.id))!.id;
+    await sql(
+      t.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+			SELECT printf('7%017d', i), 'https://mastodon.example/users/bob/statuses/q' || i,
+				(SELECT id FROM accounts WHERE uri = ?2), 'public', '', '2026-10-11T12:00:00.000Z' FROM n`,
+      count,
+      `${MASTODON}/users/bob`,
+    );
+    await sql(
+      t.store,
+      `INSERT INTO quotes (status_id, quoted_uri, quoted_status_id, quoted_account_id, state, approval_uri, updated_at)
+			SELECT id, ?1, ?2, ?4, ?5, ?3, '2026-10-11T12:00:00.000Z' FROM statuses WHERE id GLOB '7*'`,
+      target.id,
+      targetId,
+      stamp,
+      carolId,
+      state,
+    );
+  }
+
+  // `run` in one transaction of the Store, and the rows it changed (total_changes(), triggers included).
+  const changes = async (t: Setup, run: (sql: SqlStorage, savepoint: Savepoint) => unknown) =>
+    runInDurableObject(t.store, (_instance, state) => {
+      const db = new Db(state.storage.sql);
+      const total = () => db.first<{ n: number }>("SELECT total_changes() AS n")!.n;
+      const before = total();
+      const result = state.storage.transactionSync(() =>
+        run(state.storage.sql, (fn) => state.storage.transactionSync(fn)),
+      );
+      return { wrote: total() - before, result };
+    });
+
+  // carol's Delete of the stamp, received, in one transaction.
+  const deleteStamp = (t: Setup, carol: TestActor, stamp: string) =>
+    changes(t, (sql, savepoint) =>
+      receiveActivity.run(
+        sql,
+        {
+          now: NOW,
+          storeNow: NOW,
+          origin: LOCAL,
+          actorUri: carol.uri,
+          actor: null,
+          actorRevision: null,
+          activity: { type: "Delete", id: remove(carol, stamp).id, object: stamp },
+        },
+        savepoint,
+      ),
+    );
+
+  const jobRound = (t: Setup) => changes(t, (sql, savepoint) => runInboundJobs.run(sql, { now: NOW }, savepoint));
+
   it.each([3, 3000])(
     "processes %i quotes naming the stamp in bounded batches",
     async (count) => {
       const { t, carol, target, stamp } = await accepted();
-      const carolId = (await sql<{ id: string }>(t.store, "SELECT id FROM accounts WHERE uri = ?", carol.uri))[0]!.id;
-      const targetId = (await statusRow(t.store, target.id))!.id;
-      // `count` more pending quotes naming the stamp, by bob's server's other accounts.
-      await sql(
-        t.store,
-        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
-			INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
-			SELECT printf('7%017d', i), 'https://mastodon.example/users/bob/statuses/q' || i,
-				(SELECT id FROM accounts WHERE uri = ?2), 'public', '', '2026-10-11T12:00:00.000Z' FROM n`,
-        count,
-        `${MASTODON}/users/bob`,
-      );
-      await sql(
-        t.store,
-        `INSERT INTO quotes (status_id, quoted_uri, quoted_status_id, quoted_account_id, state, approval_uri, updated_at)
-			SELECT id, ?1, ?2, ?4, 'pending', ?3, '2026-10-11T12:00:00.000Z' FROM statuses WHERE id GLOB '7*'`,
-        target.id,
-        targetId,
-        stamp,
-        carolId,
-      );
-      const deletion = remove(carol, stamp);
-      const changes = async (run: (sql: SqlStorage, savepoint: Savepoint) => unknown) =>
-        runInDurableObject(t.store, (_instance, state) => {
-          const db = new Db(state.storage.sql);
-          const total = () => db.first<{ n: number }>("SELECT total_changes() AS n")!.n;
-          const before = total();
-          const result = state.storage.transactionSync(() =>
-            run(state.storage.sql, (fn) => state.storage.transactionSync(fn)),
-          );
-          return { wrote: total() - before, result };
-        });
-      const request = await changes((sql, savepoint) =>
-        receiveActivity.run(
-          sql,
-          {
-            now: NOW,
-            storeNow: NOW,
-            origin: LOCAL,
-            actorUri: carol.uri,
-            actor: null,
-            actorRevision: null,
-            activity: { type: "Delete", id: deletion.id, object: stamp },
-          },
-          savepoint,
-        ),
-      );
+      await naming(t, carol, target, stamp, count, "pending");
+      const request = await deleteStamp(t, carol, stamp);
       expect(request.wrote).toBeLessThanOrEqual(PURGE_BATCH);
       let jobRounds = 0;
       for (let more = (request.result as { jobsPending: boolean }).jobsPending; more; jobRounds++) {
-        const round = await changes((sql, savepoint) => runInboundJobs.run(sql, { now: NOW }, savepoint));
+        const round = await jobRound(t);
         expect(round.wrote).toBeLessThanOrEqual(PURGE_BATCH);
         more = (round.result as { pending: boolean }).pending;
         expect(jobRounds).toBeLessThan(count);
       }
-      // Each batch takes half its budget in rows (a row and the count trigger it may fire).
-      expect(jobRounds).toBe(Math.max(0, Math.ceil((count + 1) / (PURGE_BATCH / 2)) - 1));
+      // Each batch takes a third of its budget in rows (a row, the count trigger and the journal row it may fire).
+      expect(jobRounds).toBe(Math.max(0, Math.ceil((count + 1) / (PURGE_BATCH / 3)) - 1));
       expect(
         await sql(
           t.store,
@@ -947,10 +994,43 @@ describe("revocation: the Delete of a stamp", () => {
         { state: "revoked", n: 1 },
       ]);
       expect(await revocations(t)).toEqual([{ authorization: stamp, actor_uri: carol.uri, pending: 0 }]);
-      expect(carolId).toBeDefined();
     },
     60_000,
   );
+
+  // Every quote at its most rows (accepted: the count trigger fires) and someone listening (the journal trigger,
+  // stream_quote_state): a batch's room is a third of its rows (revocationBatch), the rows of one job round at most
+  // PURGE_BATCH, its retry state's row reserved first.
+  it("writes at most its allowance in each batch while someone listens: three rows a quote", async () => {
+    const { t, carol, target, stamp } = await accepted();
+    await naming(t, carol, target, stamp, 400, "accepted");
+    await sql(
+      t.store,
+      "INSERT INTO stream_subscriptions (account_id, stream_key, sockets) VALUES (?, 'user', 1)",
+      ALICE,
+    );
+    const moved = async () => ({
+      quotes: (
+        await sql<{ n: number }>(
+          t.store,
+          "SELECT count(*) AS n FROM quotes WHERE approval_uri = ? AND state = 'revoked'",
+          stamp,
+        )
+      )[0]!.n,
+      journaled: (await sql<{ n: number }>(t.store, "SELECT count(*) AS n FROM stream_events WHERE kind = 'edit'"))[0]!
+        .n,
+    });
+    const request = await deleteStamp(t, carol, stamp);
+    expect(request.wrote).toBeLessThanOrEqual(PURGE_BATCH);
+    const first = await moved();
+    expect(first.journaled).toBe(first.quotes);
+    const round = await jobRound(t);
+    expect(round.wrote).toBeLessThanOrEqual(PURGE_BATCH);
+    const second = await moved();
+    expect(second.quotes - first.quotes).toBe(Math.floor((PURGE_BATCH - JOB_BOOKKEEPING_ROWS) / 3));
+    expect(second.journaled - first.journaled).toBe(second.quotes - first.quotes);
+    expect(round.wrote).toBeGreaterThanOrEqual(3 * (second.quotes - first.quotes));
+  }, 60_000);
 });
 
 describe("a revocation’s failing batch, and a call’s allowance (RES-5)", () => {
@@ -1084,10 +1164,16 @@ describe("a revocation’s failing batch, and a call’s allowance (RES-5)", () 
     expect(REVOCATION_BATCHES).toBeLessThanOrEqual(PURGE_BATCH);
   }, 60_000);
 
-  // `n` more accepted quotes of carol's target naming the stamp, each by an account of bob's server: revoking one
-  // writes its row and its target's count. Then carol's revocation, recorded without its request's batch.
+  // `n` more accepted quotes of carol's target naming the stamp, each by an account of bob's server, and alice
+  // listening on `user`: revoking one writes its row, its target's count and its journal row (stream_quote_state), the
+  // most a quote writes. Then carol's revocation, recorded without its request's batch.
   async function acceptedQuotes(n: number, retry: [number, number | null]) {
     const w = await accepted();
+    await sql(
+      w.t.store,
+      "INSERT INTO stream_subscriptions (account_id, stream_key, sockets) VALUES (?, 'user', 1)",
+      ALICE,
+    );
     const carolId = (await sql<{ id: string }>(w.t.store, "SELECT id FROM accounts WHERE uri = ?", w.carol.uri))[0]!.id;
     const targetId = (await statusRow(w.t.store, w.target.id))!.id;
     await sql(
@@ -1131,23 +1217,23 @@ describe("a revocation’s failing batch, and a call’s allowance (RES-5)", () 
     const t = await acceptedQuotes(PURGE_BATCH, [1, NOW - 1]);
     const round = await measuredRound(t.t.store);
     expect(round.wrote).toBeLessThanOrEqual(PURGE_BATCH);
-    // Two rows a quote, within the allowance less the reserved row; then the reset.
-    const revoked = Math.floor((PURGE_BATCH - 1) / 2);
-    expect(round.wrote).toBe(2 * revoked + 1);
+    // Three rows a quote, within the allowance less the reserved row; then the reset.
+    const revoked = Math.floor((PURGE_BATCH - 1) / 3);
+    expect(round.wrote).toBe(3 * revoked + 1);
     expect(await sql(t.t.store, "SELECT pending, attempts, due_at FROM quote_revocations")).toEqual([
       { pending: 1, attempts: 0, due_at: null },
     ]);
   });
 
   it("shares a call’s allowance among heavy revocations, each finishing across calls", async () => {
-    // Three of carol's stamps, each named by 200 accepted quotes of her target (400 rows to revoke each, 1,200 in all).
+    // Three of carol's stamps, each named by 100 accepted quotes of her target (300 rows to revoke each, 900 in all).
     const t = await acceptedQuotes(0, [0, null]);
     const carolId = (await sql<{ id: string }>(t.t.store, "SELECT id FROM accounts WHERE uri = ?", t.carol.uri))[0]!.id;
     const stamps = [1, 2, 3].map((i) => `${t.stamp}/heavy/${i}`);
     for (const [i, stamp] of stamps.entries()) {
       await sql(
         t.t.store,
-        `WITH RECURSIVE n(k) AS (SELECT 1 UNION ALL SELECT k + 1 FROM n WHERE k < 200)
+        `WITH RECURSIVE n(k) AS (SELECT 1 UNION ALL SELECT k + 1 FROM n WHERE k < 100)
 				INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
 				SELECT printf('8%02d%015d', ?1, k), 'https://mastodon.example/users/bob/statuses/h' || ?1 || '-' || k,
 					(SELECT id FROM accounts WHERE uri = ?2), 'public', '', '2026-10-11T12:00:00.000Z' FROM n`,
@@ -1179,9 +1265,9 @@ describe("a revocation’s failing batch, and a call’s allowance (RES-5)", () 
       more = round.result.pending;
       expect(calls.length).toBeLessThan(10);
     }
-    // Every call within its allowance; together they revoke all 600 quotes and end the four revocations.
+    // Every call within its allowance; together they revoke all 300 quotes and end the four revocations.
     expect(calls.every((wrote) => wrote <= PURGE_BATCH)).toBe(true);
-    expect(calls.length).toBeGreaterThanOrEqual(Math.ceil(1_200 / PURGE_BATCH));
+    expect(calls.length).toBeGreaterThanOrEqual(Math.ceil(900 / PURGE_BATCH));
     expect(
       await sql(
         t.t.store,
@@ -1189,15 +1275,15 @@ describe("a revocation’s failing batch, and a call’s allowance (RES-5)", () 
         ...stamps,
         "revoked",
       ),
-    ).toEqual([{ n: 600 }]);
+    ).toEqual([{ n: 300 }]);
     expect(await sql(t.t.store, "SELECT count(*) AS n FROM quote_revocations WHERE pending = 1")).toEqual([{ n: 0 }]);
-    // A call shared its allowance: one ended a revocation (its 401 rows) and went on with the next.
-    expect(Math.max(...calls)).toBeGreaterThan(2 * 200 + 1);
+    // A call shared its allowance: one ended a revocation (its 301 rows) and went on with the next.
+    expect(Math.max(...calls)).toBeGreaterThan(3 * 100 + 1);
   });
 
   it("keeps a batch that fails after its writes within the allowance, its attempt included, and rolls them back", async () => {
     // As many quotes as the batch revokes: it revokes them all, then fails at the revocation's end.
-    const revoked = Math.floor((PURGE_BATCH - 1) / 2);
+    const revoked = Math.floor((PURGE_BATCH - 1) / 3);
     const t = await acceptedQuotes(revoked - 1, [0, null]);
     await sql(
       t.t.store,
@@ -1208,7 +1294,7 @@ describe("a revocation’s failing batch, and a call’s allowance (RES-5)", () 
     const before = { states: await t.states(), count: await quotesCount(t.t, t.target.id) };
     const round = await measuredRound(t.t.store);
     expect(round.wrote).toBeLessThanOrEqual(PURGE_BATCH);
-    expect(round.wrote).toBe(2 * revoked + 1);
+    expect(round.wrote).toBe(3 * revoked + 1);
     expect({ states: await t.states(), count: await quotesCount(t.t, t.target.id) }).toEqual(before);
     expect(await sql(t.t.store, "SELECT pending, attempts FROM quote_revocations")).toEqual([
       { pending: 1, attempts: 1 },

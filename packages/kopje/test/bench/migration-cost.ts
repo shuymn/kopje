@@ -122,10 +122,10 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // 0097_profile_descriptions reads no row (five columns of accounts with constant defaults and no CHECK, and two
 // triggers); 0098_card_attribution adds a column to status_cards and recreates its triggers (no row read, the attached
 // and pending cards seeded); 0101_pin_refresh tests its column's CHECK on every collection_pins_pending row
-// (MAX_REMOTE_PINS of each of SHAPE.collectionSyncs remote accounts, seeded while it is pending). A migration that reads
-// another table must add it here before it is measured. The measured
-// time is the whole upgrade, from before the bookmark to after the verification: Date.now() in workerd moves only
-// between I/O events, so the clock is read across an await on each side.
+// (MAX_REMOTE_PINS of each of SHAPE.collectionSyncs remote accounts, seeded while it is pending); 0102_quote_state_stream
+// reads no row (one trigger). A migration that reads another table must add it here before it is measured. The
+// measured time is the whole upgrade, from before the bookmark to after the verification: Date.now() in workerd moves
+// only between I/O events, so the clock is read across an await on each side.
 
 export const UPGRADE_BUDGET_MS = 20_000;
 
