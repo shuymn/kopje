@@ -1532,7 +1532,8 @@ const OWNED_COLLECTIONS_WINDOW =
 // The items or collections of a window of the account ?1 (`key` the notifications column naming them), child-first
 // so no delete cascades, as purgeReports: the pushes of their notifications (up to MAX_PUSH_BACKLOG each), then the
 // notifications left without one (notifications_collection_item, notifications_collection), then the rows of the
-// window left without a notification (a collection also without an item). Each statement reads only the window and
+// window: its items, whose one notification each (0107) the step before deleted, as it leaves the budget empty while
+// one remains, or its collections left without an item or a notification. Each statement reads only the window and
 // takes what the budget has left.
 function purgeCollectionRows(
   db: Db,
@@ -1570,7 +1571,7 @@ function purgeCollectionRows(
     budget,
     key === "collection_item_id"
       ? {
-          ids: `SELECT w.id FROM (${window}) w WHERE NOT ${notified} LIMIT ?2`,
+          ids: `SELECT w.id FROM (${window}) w LIMIT ?2`,
           each: `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id = ?1`,
         }
       : {

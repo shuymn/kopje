@@ -24,8 +24,10 @@ import {
   MAX_STORED_ITEMS,
 } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
-import { type ApiHarness, bearer, sql } from "./api-helpers";
+import { type ApiHarness, bearer, seedAccount, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { migratedStore } from "./helpers";
+import { accessAdminStore, copyConfig, dumpViaRpc, importViaRpc } from "./ops-helpers";
 import { CONSERVATIVE_JSON } from "./presented-maxima";
 import { community, remoteAccount, type User } from "./status-helpers";
 
@@ -700,3 +702,92 @@ it(
     expect(await sql(h.store, "SELECT id FROM collections")).toEqual([{ id: own }]);
   },
 );
+
+// RES-4/RES-7: what a deletion of an item or a collection finds by key is bounded where it is stored, imports included:
+// one notification an item and one collection_update a collection and recipient (0107's unique partial indexes). A
+// dump past either, from a Store whose index was dropped, is refused, so no restore holds the 600 or 6,000
+// notifications a later cleanup, removal or purge would read and rewrite. Fails if either index is not UNIQUE.
+describe("the stored bound of collection notifications (2-T9)", () => {
+  const [COLLECTION, ITEM] = ["200000000000000001", "300000000000000001"];
+  const CASES = [
+    ["notifications_collection_item", "added_to_collection", ITEM, null, /notifications\.collection_item_id\b/],
+    [
+      "notifications_collection",
+      "collection_update",
+      null,
+      COLLECTION,
+      /notifications\.collection_id, notifications\.account_id\b/,
+    ],
+  ] as const;
+
+  it.each([600, 6_000])(
+    "refuses a restore of %i notifications of one item, or of one collection and recipient",
+    async (n) => {
+      for (const [index, type, item, collection, key] of CASES) {
+        const store = await accessAdminStore();
+        const owner = await seedAccount(store, { username: "owner", email: "owner@example.com" });
+        const member = await seedAccount(store, { username: "member", email: "member@example.com" });
+        await sql(
+          store,
+          `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, created_at, updated_at)
+				VALUES (?1, ?2, 1, 'c', 0, 1, ?3, ?3)`,
+          COLLECTION,
+          owner,
+          T,
+        );
+        await sql(
+          store,
+          `INSERT INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
+				VALUES (?1, ?2, ?3, 1, 1, ?4, ?4)`,
+          ITEM,
+          COLLECTION,
+          member,
+          T,
+        );
+        const notified = (from: string) =>
+          sql(
+            store,
+            `INSERT INTO notifications (account_id, type, from_account_id, collection_item_id, collection_id, created_at)
+					VALUES (?, ?, ?, ?, ?, ?)`,
+            member,
+            type,
+            from,
+            item,
+            collection,
+            T,
+          );
+        // Within the bound: the owner's one notification restores.
+        await notified(owner);
+        const within = await migratedStore();
+        await copyConfig(store, within);
+        expect((await importViaRpc(within, (await dumpViaRpc(store)).text)).report).toMatchObject({ ok: true });
+        // Past it: n senders of the same item's, or the same collection and recipient's, notification.
+        await sql(store, `DROP INDEX ${index}`);
+        await sql(
+          store,
+          `WITH RECURSIVE k(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM k WHERE i < ?1)
+				INSERT INTO accounts (id, uri, username, domain)
+				SELECT printf('9%017d', i), 'https://remote.test/users/r' || i, 'r' || i, 'remote.test' FROM k`,
+          n - 1,
+        );
+        await sql(
+          store,
+          `INSERT INTO notifications (account_id, type, from_account_id, collection_item_id, collection_id, created_at)
+				SELECT ?1, ?2, id, ?3, ?4, ?5 FROM accounts WHERE domain = 'remote.test'`,
+          member,
+          type,
+          item,
+          collection,
+          T,
+        );
+        expect(await sql(store, "SELECT count(*) AS n FROM notifications WHERE type = ?", type)).toEqual([{ n }]);
+        const target = await migratedStore();
+        await copyConfig(store, target);
+        await expect(importViaRpc(target, (await dumpViaRpc(store)).text), `${type} ${n}`).rejects.toThrow(
+          new RegExp(`UNIQUE constraint failed: ${key.source}`),
+        );
+      }
+    },
+    600_000,
+  );
+});

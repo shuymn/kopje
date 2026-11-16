@@ -161,14 +161,11 @@ export function notify(db: Db, input: NotifyInput): void {
     if (eligible === undefined) {
       return;
     }
-    // The previous one by the whole natural key, which a collection_update holds with its collection alone.
+    // The previous one by its collection and recipient (LocalNotificationWorker's recipient, activity and type: a row
+    // naming a collection is a collection_update), the key notifications_collection holds unique (0107).
     db.run(
-      `DELETE FROM notifications INDEXED BY notifications_natural
-			WHERE account_id = ?1 AND type = 'collection_update' AND from_account_id = ?2 AND IFNULL(status_id, '') = ''
-				AND IFNULL(report_id, 0) = 0 AND IFNULL(account_warning_id, 0) = 0 AND IFNULL(collection_item_id, '') = ''
-				AND IFNULL(collection_id, '') = ?3 AND collection_id = ?3`,
+      `DELETE FROM notifications INDEXED BY notifications_collection WHERE collection_id = ?2 AND account_id = ?1`,
       input.recipientId,
-      input.fromId,
       collectionId,
     );
   }

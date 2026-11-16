@@ -3152,8 +3152,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   collection ids (0100), and refuses a dump past their bounds"). A notification's `collection_item_id` and
   `collection_id`, imports included, are each NULL or 18 ASCII digits as text, an `added_to_collection` naming its item
   alone, a `collection_update` its collection alone and every other type neither, enforced by migration
-  `0107_collection_notifications` (`notificationCollectionKeysPastBoundSql`), which `notify` shares; each goes with
-  what it names (`ON DELETE CASCADE`); `test/migrations.test.ts` ("0107_collection_notifications").
+  `0107_collection_notifications` (`notificationCollectionKeysPastBoundSql`), which `notify` shares; at most one
+  notification names an item and one `collection_update` a collection and recipient (its unique partial indexes
+  `notifications_collection_item` and `notifications_collection`), so a deleted item or collection finds at most that
+  many by key; each goes with what it names (`ON DELETE CASCADE`); `test/migrations.test.ts`
+  ("0107_collection_notifications"), `test/collection-notifications.test.ts` ("refuses a restore of … notifications of
+  one item, or of one collection and recipient", of 600 and of 6,000).
   _Enforced (main)_ for remote field verification: `remote_field_links` rows, imports included, meet the
   [stored bounds](dump-format.md#stored-bounds), enforced by migration `0068_remote_field_verification`, whose triggers
   judge in order the storage classes, the raw bytes, a raw NUL, `json_valid` and the canonical form (no padding or
@@ -3563,24 +3567,25 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   per-status figure above, inserts at most 200 nodes and updates at most 400 (`src/domain/reply-walks.ts`;
   `test/reply-walks.test.ts` ("prunes at most WALK_PRUNE_BATCH finished walks a claim", "records at most
   WALK_STATUSES nodes", "stores a reply and its embedded self-quote … within the figure")).
-  _Enforced (main)_ for collections: an account holds at most 10 collections through the API (`COLLECTION_LIMIT`) and
-  50 stored, a collection at most 25 live items and 50 stored (VIS-33's triggers, RES-2); an add that meets the stored
+  _Enforced (main)_ for collections: an account holds at most 10 collections through the API (`COLLECTION_LIMIT`) and 50
+  stored, a collection at most 25 live items and 50 stored (VIS-33's triggers, RES-2); an add that meets the stored
   bound deletes the collection's oldest retired item first. The 5-minute cron deletes retired (rejected or revoked)
   items a day after they retired, at most 500 rows a run, oldest first, through `collection_items_retired`
   (`pruneCollectionItems` in `src/domain/collections.ts`), child-first: the pushes of their notifications (pending or
   leased), then those notifications, then the items, so no delete cascades. A block's step reads the blocker's and the
   target's collections (at most 50 each) and writes at most 50 items each way, with the deleted items' notifications
-  (one each) and their pushes (at most `MAX_PUSH_BACKLOG` in all). A collection's deletion writes the collection, its
-  at most 50 items, their notifications, its `collection_update` notifications (one per local recipient) and their
+  (one each, held unique by `notifications_collection_item`, imports included) and their pushes (at most
+  `MAX_PUSH_BACKLOG` in all). A collection's deletion writes the collection, its at most 50 items, their notifications,
+  its `collection_update` notifications (one per local recipient, held unique by `notifications_collection`) and their
   pushes (at most `MAX_PUSH_BACKLOG`), by the foreign keys; an item's removal or eviction the item, its notification and
-  that notification's pushes. The purge of a remote account deletes its items, the items of its collections and then
-  its collections, each window child-first (the pushes of their notifications, those notifications, then the rows), each
+  that notification's pushes. The purge of a remote account deletes its items, the items of its collections and then its
+  collections, each window child-first (the pushes of their notifications, those notifications, then the rows), each
   step counted against the batch's budget (`src/domain/inbox.ts`). `test/collections.test.ts` ("evicts the oldest
   retired item when an add meets the stored bound", "deletes retired items a day old, RETIRED_ROWS_PER_ROUND a round,
   keeping younger and live ones"), `test/collection-notifications.test.ts` ("deletions with pushes waiting (2-T9)",
-  "purges a remote account's collection rows child-first, within PURGE_BATCH a batch"), `test/blocks.test.ts`
-  ("revokes and deletes the collection memberships a block severs"), `test/inbox-regressions.test.ts` ("purges a
-  remote account's collections and memberships within the batch budget"), `test/cascade-guard.test.ts`.
+  "purges a remote account's collection rows child-first, within PURGE_BATCH a batch"), `test/blocks.test.ts` ("revokes
+  and deletes the collection memberships a block severs"), `test/inbox-regressions.test.ts` ("purges a remote account's
+  collections and memberships within the batch budget"), `test/cascade-guard.test.ts`.
 - **RES-5: retries are bounded, but maintenance is not a failure.** Waiting out maintenance consumes no processing
   retry; real processing errors count against `max_retries`. _Enforced (main):_ `src/jobs/queue.ts`; `test/gate.test.ts`
   ("spool consumer"). Deliveries give up after 15 attempts (`min(30s·2^n, 12h)`, n the attempts so far) or at once on a

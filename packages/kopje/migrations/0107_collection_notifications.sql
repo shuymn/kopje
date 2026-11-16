@@ -5,8 +5,11 @@
 --                             CollectionItem), NULL for every other type. It goes with its item (ON DELETE CASCADE).
 --   notifications.collection_id       the collection a collection_update notification is about (its activity), NULL
 --                             for every other type. It goes with its collection (ON DELETE CASCADE).
---   notifications_collection_item     serve the two foreign keys, so a deleted item or collection finds its
---   notifications_collection          notifications by key; each holds only the rows naming one.
+--   notifications_collection_item     UNIQUE: at most one notification an item (its member's added_to_collection), and
+--   notifications_collection          one collection_update a collection and recipient, as LocalNotificationWorker keys
+--                             each by recipient, activity and type and the writers write them; imports included, so a
+--                             deleted item or collection finds at most that many notifications by key. Each holds only
+--                             the rows naming one, and serves its foreign key.
 --   notifications_natural    (0063_account_warning_notifications_key) gains the two keys, so one owner's two
 --                             collections each notify a member, and a collection_update is replaced by its collection
 --                             (LocalNotificationWorker keys a notification by its activity). Every other notification
@@ -30,8 +33,9 @@
 ALTER TABLE notifications ADD COLUMN collection_item_id TEXT REFERENCES collection_items (id) ON DELETE CASCADE;
 ALTER TABLE notifications ADD COLUMN collection_id TEXT REFERENCES collections (id) ON DELETE CASCADE;
 
-CREATE INDEX notifications_collection_item ON notifications (collection_item_id) WHERE collection_item_id IS NOT NULL;
-CREATE INDEX notifications_collection ON notifications (collection_id) WHERE collection_id IS NOT NULL;
+CREATE UNIQUE INDEX notifications_collection_item ON notifications (collection_item_id)
+  WHERE collection_item_id IS NOT NULL;
+CREATE UNIQUE INDEX notifications_collection ON notifications (collection_id, account_id) WHERE collection_id IS NOT NULL;
 
 DROP INDEX notifications_natural;
 

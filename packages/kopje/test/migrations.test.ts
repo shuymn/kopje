@@ -13878,7 +13878,7 @@ describe("0103_collections", () => {
 describe("0107_collection_notifications", () => {
   const NAME = "0107_collection_notifications";
   const at = NAMES.indexOf(NAME);
-  const [OWNER, MEMBER] = ["100000000000000001", "100000000000000002"];
+  const [OWNER, MEMBER, SENDER] = ["100000000000000001", "100000000000000002", "100000000000000003"];
   const T = "2026-11-16T00:00:00.000Z";
   const [COLLECTION, OTHER_COLLECTION, ITEM, OTHER_ITEM] = [
     "200000000000000001",
@@ -14012,6 +14012,30 @@ describe("0107_collection_notifications", () => {
       notification(sql, "collection_update", null, COLLECTION);
       notification(sql, "collection_update", null, OTHER_COLLECTION);
       expect(() => notification(sql, "collection_update", null, COLLECTION)).toThrow(/UNIQUE constraint failed/);
+      // One notification an item, and one collection_update a collection and recipient, whoever sends it: a delete of
+      // an item or a collection finds at most that many.
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?, 'https://remote.test/users/r', 'r', 'remote.test')",
+        SENDER,
+      );
+      const from = (type: string, item: string | null, collection: string | null, account = MEMBER) =>
+        sql.exec(
+          `INSERT INTO notifications (account_id, type, from_account_id, collection_item_id, collection_id)
+					VALUES (?, ?, ?, ?, ?)`,
+          account,
+          type,
+          SENDER,
+          item,
+          collection,
+        );
+      expect(() => from("added_to_collection", ITEM, null)).toThrow(
+        /UNIQUE constraint failed: notifications.collection_item_id\b/,
+      );
+      expect(() => from("collection_update", null, COLLECTION)).toThrow(
+        /UNIQUE constraint failed: notifications.collection_id, notifications.account_id\b/,
+      );
+      from("collection_update", null, COLLECTION, OWNER);
+      sql.exec("DELETE FROM notifications WHERE account_id = ? AND type = 'collection_update'", OWNER);
       sql.exec("DELETE FROM collection_items WHERE id = ?", ITEM);
       sql.exec("DELETE FROM collections WHERE id = ?", OTHER_COLLECTION);
       expect(

@@ -496,8 +496,9 @@ rejected or revoked item a day after its `updated_at`. A dump taken before 0103 
 Store at its own migrations, which then upgrades. A file built from legacy data has no row.
 `notifications.collection_item_id` and `notifications.collection_id` (migration `0107_collection_notifications`) are
 each NULL or 18 ASCII digits naming an item or a collection the dump holds: an `added_to_collection` notification
-names its item alone, a `collection_update` its collection alone, and any other type neither; otherwise the chunk fails
-with `notifications: collection keys past their stored bound` or a `FOREIGN KEY` or `UNIQUE` failure. A dump taken
+names its item alone, a `collection_update` its collection alone, and any other type neither, with at most one
+notification an item and one `collection_update` a collection and recipient; otherwise the chunk fails with
+`notifications: collection keys past their stored bound` or a `FOREIGN KEY` or `UNIQUE` failure. A dump taken
 before 0107 has neither column: every notification restores with both NULL.
 
 A report (migration `0054_remote_reports`) names any account as its reporter (`account_id`), once per `uri` and
