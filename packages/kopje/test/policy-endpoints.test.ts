@@ -91,6 +91,33 @@ type Edges = {
 // Each account's accounts.discoverable, by index (an account past the list's end is not discoverable).
 type Case = { world: World; edges: Edges; discoverable: (0 | 1 | null)[] };
 
+const pick = <T>(items: readonly T[], n: number): T | undefined => items[n % Math.max(items.length, 1)];
+
+// The notifications a case seeds of generated ones, by index into the world: each to a local account, of an original
+// or of none, and once by the key the Store holds unique. A collection notification names no status, as notify writes
+// it, and its key is the sender's item for the recipient (added_to_collection) or the sender's collection and the
+// recipient (collection_update, collectionKeysOf): one a recipient, type and sender, by 0107's unique indexes. Any
+// other is one a recipient, type, sender and status.
+function seededNotifications(world: World, generated: Edges["notifications"]): Edges["notifications"] {
+  const locals = world.accounts.flatMap((account, x) => (account.local ? [x] : []));
+  const originals = world.statuses.flatMap((status, s) => (status.reblogOf === null ? [s] : []));
+  const seeded = new Map<string, Edges["notifications"][number]>();
+  for (const n of generated) {
+    const recipient = pick(locals, n.recipient);
+    if (recipient === undefined) {
+      continue;
+    }
+    const from = n.from % world.accounts.length;
+    const collection = n.type === "added_to_collection" || n.type === "collection_update";
+    const status = n.status === null || collection ? null : (pick(originals, n.status) ?? null);
+    const key = `${recipient}:${n.type}:${from}:${status}`;
+    if (!seeded.has(key)) {
+      seeded.set(key, { recipient, type: n.type, from, status, filtered: n.filtered });
+    }
+  }
+  return [...seeded.values()];
+}
+
 const caseArb: fc.Arbitrary<Case> = fc
   .record({
     world: worldArb,
@@ -112,7 +139,6 @@ const caseArb: fc.Arbitrary<Case> = fc
   .map(({ world, favourites, bookmarks, media, notifications, discoverable }): Case => {
     const locals = world.accounts.flatMap((account, x) => (account.local ? [x] : []));
     const originals = world.statuses.flatMap((status, s) => (status.reblogOf === null ? [s] : []));
-    const pick = <T>(items: readonly T[], n: number): T | undefined => items[n % Math.max(items.length, 1)];
     const unique = <T>(items: T[], key: (item: T) => string) =>
       items.filter((item, i) => items.findIndex((other) => key(other) === key(item)) === i);
     const edge = (accounts: readonly number[]) => (e: { account: number; status: number }) => {
@@ -131,15 +157,7 @@ const caseArb: fc.Arbitrary<Case> = fc
         }),
         favourites: unique(favourites.flatMap(edge(world.accounts.map((_, x) => x))), key),
         bookmarks: unique(bookmarks.flatMap(edge(locals)), key),
-        notifications: unique(
-          notifications.flatMap((n) => {
-            const recipient = pick(locals, n.recipient);
-            const from = n.from % world.accounts.length;
-            const status = n.status === null ? null : (pick(originals, n.status) ?? null);
-            return recipient === undefined ? [] : [{ recipient, type: n.type, from, status, filtered: n.filtered }];
-          }),
-          (n) => `${n.recipient}:${n.type}:${n.from}:${n.status}`,
-        ),
+        notifications: seededNotifications(world, notifications),
       },
     };
   });
@@ -366,6 +384,28 @@ describe("the status read endpoints agree with the model of their rules", () => 
     // Up to 68 s in a CI shard on workerd 1.20261110 (SQLite 3.54.1); alone, the file runs about twice as long there
     // as on workerd 1.20261023.
   }, 120_000);
+
+  // Generated collection notifications to one recipient from one sender that differ only by a status they do not name
+  // seed one of each type (a run of seed 20261018 wrote two such collection_update rows), and the endpoints agree with
+  // the model on them.
+  it("seeds one collection notification a recipient, type and sender, whatever status was generated", async () => {
+    const world = fc.sample(worldArb, { seed: 20261018, numRuns: 1 })[0]!;
+    const generated = (["collection_update", "added_to_collection"] as const).flatMap((type) =>
+      [null, 0].map((status) => ({ recipient: 1, type, from: 4, status, filtered: false })),
+    );
+    const notifications = seededNotifications(world, generated);
+    expect(notifications.map((n) => [n.type, n.status])).toEqual([
+      ["collection_update", null],
+      ["added_to_collection", null],
+    ]);
+    const c: Case = {
+      world,
+      discoverable: [1, 1, 1, 1, 1, 1, 1],
+      edges: { media: [], favourites: [], bookmarks: [], notifications },
+    };
+    const problems = await runInDurableObject(store, (_instance, state) => check(state.storage.sql, c));
+    expect(problems).toEqual([]);
+  });
 });
 
 // Runs every endpoint for every viewer of the case and returns what disagrees with the model.
