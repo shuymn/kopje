@@ -3307,7 +3307,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   mention key per local account, whatever a converted or imported status holds (`LOCAL_MENTIONS_SQL`, `notifyEdited` in
   `src/domain/update-fan-out.ts`); `test/edit-fan-out.test.ts` ("reads no more for 10,000 converted mention rows: one
   key probe per local account", "replaces each update, quoted_update and cleared mention within the formula; a kept
-  one writes nothing"). _Enforced (main)_ for pins: `status_pins` holds
+  one writes nothing"). A quote state change runs that fan-out at most once, and a stamp's `Delete` at most twice: for
+  the local quote holding the stamp (`revokeLocalStamp`) and for the received quote it approved (`stampHolder`), never
+  for the quotes its batches reject or revoke (`revokeStamp` in `src/domain/quotes.ts`; `test/edit-fan-out.test.ts`
+  ("a stamp's Delete fans out at most twice: the local quote holding it, then the received one it approved")).
+  _Enforced (main)_ for pins: `status_pins` holds
   at most an account's pin limit, `PIN_LIMIT` (5) for a local account (by its row's domain, which precedes its pins in
   any import order) and `MAX_REMOTE_PINS` (20) for a remote one (`pinCapSql` in `src/domain/status-actions.ts`),
   imported rows included: the triggers `status_pins_cap_insert` and

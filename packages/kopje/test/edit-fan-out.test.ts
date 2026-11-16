@@ -618,7 +618,7 @@ describe("a quote state change's update fan-out (DistributionWorker with update:
     const quoted = (await statusRow(t.store, theirs.id))!.id;
     const mine = await localStatus(t, { status: "@dave look", visibility: "public", quoted_status_id: quoted });
     expect(await stateOf(t, mine.id)).toBe("pending");
-    return { t, bob, mine, stamp: `${bob.uri}/quote_authorizations/${nextId()}` };
+    return { t, bob, theirs, mine, stamp: `${bob.uri}/quote_authorizations/${nextId()}` };
   }
 
   it("an Accept of our quote request notifies the quote's booster and a dismissed mention", async () => {
@@ -687,6 +687,35 @@ describe("a quote state change's update fan-out (DistributionWorker with update:
     expect(await t.post(bob, remove(bob, stamp))).toBe(202);
     expect(await updates(t)).toEqual(update);
     expect(await pushed(t)).toEqual(pushes);
+  });
+
+  // bob approves alice's quote with the stamp he also serves for erin's quote of the same status: its Delete revokes
+  // the local quote holding it (revokeLocalStamp) and the received one it approved (stampHolder), each fanned out.
+  it("a stamp's Delete fans out at most twice: the local quote holding it, then the received one it approved", async () => {
+    const { t, bob, theirs, mine, stamp } = await ours();
+    expect(await t.post(bob, quoteAccept(bob, mine.uri, stamp))).toBe(202);
+    const erin = await mastodonActor(t.web, "erin", { key: 7 });
+    await followed(t, erin, DAVE);
+    const note = quoting(erin, theirs.id, stamp);
+    serveStamp(t.web, stamp, bob, note.id, theirs.id);
+    expect(await t.post(erin, create(erin, note))).toBe(202);
+    const deps = { ...inboxDeps(() => t.store, t.web.loader), now: () => NOW };
+    for (let round = 0; await verifyQuotes(t.env, deps); round++) {
+      expect(round).toBeLessThan(20);
+    }
+    const received = (await statusRow(t.store, note.id))!.id;
+    expect([await stateOf(t, mine.id), await stateOf(t, received)]).toEqual(["accepted", "accepted"]);
+    await boost(t, mine.id);
+    await boost(t, received);
+    expect(await t.post(bob, remove(bob, stamp))).toBe(202);
+    expect([await stateOf(t, mine.id), await stateOf(t, received)]).toEqual(["revoked", "revoked"]);
+    const update = await updates(t);
+    expect(update).toMatchObject([
+      { account_id: DAVE, status_id: mine.id },
+      { account_id: DAVE, status_id: received },
+    ]);
+    expect(await t.post(bob, remove(bob, stamp))).toBe(202);
+    expect(await updates(t)).toEqual(update);
   });
 
   it("the revoke API fans out the quoting status once; a repeated revoke none", async () => {

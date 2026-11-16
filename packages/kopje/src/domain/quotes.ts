@@ -979,7 +979,8 @@ function revocationBatch(db: Db, approvalUri: string, actorUri: string, left: ()
 // transaction and outside the batch budget, whether or not the revocation was recorded before: revoked, and, for a
 // proven Delete (`forward`, the body as received), forwarded once (revokeLocalStamp). So is the received accepted
 // quote the stamp approved (stampHolder), revoked by its key and fanned out, as Delete#revoke_quote finds one quote and
-// broadcasts it (delete.rb:57-66 in v4.7.5); the batches then reject or revoke the rest, which notify no one.
+// broadcasts it (delete.rb:57-66 in v4.7.5); the batches then reject or revoke the rest, which notify no one. A Delete
+// thus runs the update fan-out at most twice: for the local quote holding the stamp, and for that received quote.
 // Returns null when no quote names the stamp, else whether a revocation may run a batch now.
 export function revokeStamp(
   db: Db,
