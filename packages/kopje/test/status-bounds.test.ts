@@ -26,7 +26,7 @@ import {
   VERIFIED_AT_JSON_BYTES,
 } from "../src/domain/accounts";
 import { createActivity, getLegacyObject, noteOf, PIN_LIMIT, statusFacts } from "../src/domain/activities";
-import { ANSWER_BYTES } from "../src/domain/answer-budget";
+import { ANSWER_BYTES, encodedTwiceBytes } from "../src/domain/answer-budget";
 import { type VisibleStatusId } from "../src/domain/audience";
 import { OWNER_ROLE } from "../src/domain/auth";
 import { listConversations, MAX_PRESENTED_PARTICIPANTS } from "../src/domain/conversations";
@@ -1875,8 +1875,17 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
       conversationPayload: utf8Length(JSON.stringify(JSON.stringify(talkOfQuote))),
       notification: jsonBytes(notified),
     };
+    expect([encodedTwiceBytes(talkOfQuote), encodedTwiceBytes(notified)]).toEqual([
+      streamed.conversationPayload,
+      utf8Length(JSON.stringify(JSON.stringify(notified))),
+    ]);
   }
   const { fallback: _streamed, ...streamedWarning } = warningNotification as { fallback?: unknown };
+  // RES-6: the hub's measure of a stream payload (encodedTwiceBytes) is the twice-encoded JSON's UTF-8 bytes on every
+  // maximal shape of the fill, a streamed one or not.
+  for (const [name, answer] of Object.entries({ ...answers, streamedWarning })) {
+    expect(encodedTwiceBytes(answer), `${fill} ${name}`).toBe(utf8Length(JSON.stringify(JSON.stringify(answer))));
+  }
   return {
     streamed,
     warningPayload: utf8Length(JSON.stringify(JSON.stringify(streamedWarning))),
