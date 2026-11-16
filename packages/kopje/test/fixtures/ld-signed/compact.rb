@@ -1,22 +1,27 @@
 # frozen_string_literal: true
 
-# Mastodon's reading of each received body (ActivityPub::ProcessActivityService#call, process_activity_service.rb:23-38
-# in v4.7.5): when its signature is an object, check_jsonld_limits!, compact under full_context, check_jsonld_limits!
-# again; Mastodon::InvalidJsonLdError or JSON::LD::JsonLdError reads the body as received without signature. Run inside
-# the reference release's web container, with the entries capture.rb, fedify.mjs or forms.mjs wrote:
+# Mastodon's reading of each received body (ActivityPub::ProcessActivityService#call in v4.7.5): when its signature is
+# an object, check_jsonld_limits!, compact under full_context, check_jsonld_limits! again (process_activity_service.rb
+# :23-38); Mastodon::InvalidJsonLdError or JSON::LD::JsonLdError reads the body as received without signature. A
+# compaction that keeps its signature (the sender is the activity's actor, as in every entry here) is then patched
+# against the body as received (:66-72, JsonLdHelper#patch_for_forwarding!): under each key both have, a one-element
+# array the compaction made a single value is an array again, and as:Public is the public collection's full IRI again;
+# Mastodon's readers read that. Run inside the reference release's web container, with the entries capture.rb,
+# fedify.mjs or forms.mjs wrote:
 #
 #   docker compose exec -T web bin/rails runner "$(cat compact.rb)" < entries.json > read.json
 #
-# Each entry gains `reference` (the release that read it) and `mastodon` (its compaction), or `fallback` (the error)
-# when Mastodon read it as received without its signature. Any other error is recorded as `error`, with no reading:
-# Mastodon's job raises then, and Sidekiq retries it. corpus.json is this over capture.rb's output from each release and
-# fedify.mjs's; forms.json over forms.mjs's. Writes nothing but the context cache Mastodon keeps itself.
+# Each entry gains `reference` (the release that read it) and `mastodon` (its patched compaction), or `fallback` (the
+# error) when Mastodon read it as received without its signature. Any other error is recorded as `error`, with no
+# reading: Mastodon's job raises then, and Sidekiq retries it. corpus.json is this over capture.rb's output from each
+# release and fedify.mjs's; forms.json over forms.mjs's. Writes nothing but the context cache Mastodon keeps itself.
 
 include JsonLdHelper
 
 entries = JSON.parse($stdin.read)
 entries.each do |entry|
-  json = entry['received']
+  received = entry['received']
+  json = received
   entry['reference'] = "mastodon-#{Mastodon::Version}"
   begin
     if json['signature'].is_a?(Hash)
@@ -24,6 +29,7 @@ entries.each do |entry|
       json = compact(json)
     end
     check_jsonld_limits!(json)
+    patch_for_forwarding!(received, json) if json['signature'].present?
     entry['mastodon'] = json
   rescue Mastodon::InvalidJsonLdError, JSON::LD::JsonLdError => e
     entry['fallback'] = "#{e.class}: #{e.message}"

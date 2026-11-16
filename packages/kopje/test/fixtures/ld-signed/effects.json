@@ -1,0 +1,869 @@
+[
+  {
+    "name": "type as a one-element array",
+    "effect": {}
+  },
+  {
+    "name": "type as a compact IRI",
+    "effect": {
+      "favourites": ["https://kopje.test/ap/o/local-1"]
+    }
+  },
+  {
+    "name": "type as an absolute IRI",
+    "effect": {
+      "favourites": ["https://kopje.test/ap/o/local-1"]
+    }
+  },
+  {
+    "name": "actor as a one-element array",
+    "effect": {
+      "favourites": ["https://kopje.test/ap/o/local-1"]
+    }
+  },
+  {
+    "name": "Follow object as a one-element array",
+    "error": "TypeError: no implicit conversion of String into Integer",
+    "effect": {}
+  },
+  {
+    "name": "Block object as a one-element array",
+    "error": "TypeError: no implicit conversion of String into Integer",
+    "effect": {}
+  },
+  {
+    "name": "Like object as a one-element array",
+    "error": "TypeError: no implicit conversion of String into Integer",
+    "effect": {}
+  },
+  {
+    "name": "EmojiReact object as a one-element array",
+    "effect": {}
+  },
+  {
+    "name": "Announce object as a one-element array",
+    "error": "TypeError: no implicit conversion of String into Integer",
+    "effect": {}
+  },
+  {
+    "name": "Delete object as a one-element array",
+    "error": "TypeError: no implicit conversion of String into Integer",
+    "effect": {}
+  },
+  {
+    "name": "Add object as a one-element array",
+    "error": "TypeError: no implicit conversion of String into Integer",
+    "effect": {}
+  },
+  {
+    "name": "Remove object as a one-element array",
+    "error": "TypeError: no implicit conversion of String into Integer",
+    "effect": {
+      "pins": ["https://mastodon.example/users/bob/statuses/pinned"]
+    }
+  },
+  {
+    "name": "QuoteRequest object as a one-element array",
+    "error": "TypeError: no implicit conversion of String into Integer",
+    "effect": {}
+  },
+  {
+    "name": "Undo object as a one-element array",
+    "error": "TypeError: no implicit conversion of String into Integer",
+    "effect": {}
+  },
+  {
+    "name": "Undo object type as an IRI",
+    "effect": {
+      "removed_follows": 1
+    }
+  },
+  {
+    "name": "Reject object as a one-element array",
+    "error": "TypeError: no implicit conversion of String into Integer",
+    "effect": {}
+  },
+  {
+    "name": "Accept object type as an IRI",
+    "effect": {
+      "local_requests_removed": 1,
+      "local_follows": ["alice"]
+    }
+  },
+  {
+    "name": "Add target as a one-element array",
+    "error": "TypeError: no implicit conversion of String into Integer",
+    "effect": {}
+  },
+  {
+    "name": "Remove target as a one-element array",
+    "error": "TypeError: no implicit conversion of String into Integer",
+    "effect": {
+      "pins": ["https://mastodon.example/users/bob/statuses/pinned"]
+    }
+  },
+  {
+    "name": "Move target as a one-element array",
+    "error": "TypeError: no implicit conversion of String into Integer",
+    "effect": {}
+  },
+  {
+    "name": "QuoteRequest instrument as a one-element array",
+    "error": "TypeError: no implicit conversion of String into Integer",
+    "effect": {}
+  },
+  {
+    "name": "Note type as an IRI",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/24",
+          "text": "<p>note 24</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "content as a one-element array",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/26",
+          "text": "[\"<p>text</p>\"]",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "summary as a one-element array",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/28",
+          "text": "<p>note 28</p>",
+          "spoiler": "[\"warning\"]",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "name as a one-element array",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/30",
+          "text": "<h2>[\"Title\"]</h2>\n\n<p>https://mastodon.example/@bob/30</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "inReplyTo as a one-element array",
+    "error": "TypeError: no implicit conversion of String into Integer",
+    "effect": {}
+  },
+  {
+    "name": "sensitive as a one-element array",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/34",
+          "text": "<p>note 34</p>",
+          "spoiler": "",
+          "sensitive": true,
+          "visibility": "public",
+          "mentions": [],
+          "media": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "Mention type as an IRI",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/36",
+          "text": "<p>note 36</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": ["alice"],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "Question with one option",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/38",
+          "text": "<p>poll</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "poll": ["Only"],
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "Flag object as a one-element array",
+    "effect": {
+      "reports": [
+        {
+          "target": "alice",
+          "statuses": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "more than 1,000 values",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/41",
+          "text": "<p>note 41</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "a proof in the data-integrity context",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/43",
+          "text": "<p>poll</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "poll": ["Only"],
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "sensitive left undefined",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/45",
+          "text": "<p>note 45</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "interactionPolicy left undefined",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/47",
+          "text": "<p>note 47</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "quote untyped",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/49",
+          "text": "<p>note 49</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "quoteUrl defined",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/51",
+          "text": "<p>note 51</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "@base after ActivityStreams",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/53",
+          "text": "<p>note 53</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "direct",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "@base before ActivityStreams",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/55",
+          "text": "<p>note 55</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "direct",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "a keyword alias beside the literal type",
+    "effect": {}
+  },
+  {
+    "name": "an alias of object beside the literal one",
+    "error": "TypeError: no implicit conversion of String into Integer",
+    "effect": {}
+  },
+  {
+    "name": "an alias of to with to redefined",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/59",
+          "text": "<p>note 59</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "private",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "an as:object key holding an object",
+    "error": "TypeError: no implicit conversion of String into Integer",
+    "effect": {}
+  },
+  {
+    "name": "an absolute IRI key holding an object",
+    "error": "TypeError: no implicit conversion of String into Integer",
+    "effect": {}
+  },
+  {
+    "name": "@id and @type in place of id and type",
+    "effect": {
+      "favourites": ["https://kopje.test/ap/o/local-1"]
+    }
+  },
+  {
+    "name": "@type beside type",
+    "effect": {}
+  },
+  {
+    "name": "@id beside id",
+    "effect": {
+      "favourites": ["https://kopje.test/ap/o/local-1"]
+    }
+  },
+  {
+    "name": "@value in content",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/66",
+          "text": "<p>text</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "@nest in a status",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/68",
+          "text": "<p>note 68</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": ["alice"],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "@id in inReplyTo",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/70",
+          "text": "<p>note 70</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "reply_to": "https://kopje.test/ap/o/local-1",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "@id in a Mention's href",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/72",
+          "text": "<p>note 72</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": ["alice"],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "@id in a Follow's object",
+    "effect": {}
+  },
+  {
+    "name": "@id in an Undo's object",
+    "effect": {}
+  },
+  {
+    "name": "@id in an Accept's result",
+    "effect": {}
+  },
+  {
+    "name": "@graph in the body",
+    "effect": {
+      "favourites": ["https://kopje.test/ap/o/local-1"]
+    }
+  },
+  {
+    "name": "@included in the body",
+    "effect": {
+      "favourites": ["https://kopje.test/ap/o/local-1"]
+    }
+  },
+  {
+    "name": "@reverse in the body",
+    "effect": {
+      "favourites": ["https://kopje.test/ap/o/local-1"]
+    }
+  },
+  {
+    "name": "an inline to",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/80",
+          "text": "<p>note 80</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "direct",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "a null tag",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/82",
+          "text": "<p>note 82</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "a redefined as",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/84",
+          "text": "<p>note 84</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "a redefined QuoteRequest",
+    "effect": {}
+  },
+  {
+    "name": "a redefined Like",
+    "effect": {}
+  },
+  {
+    "name": "a prefix naming the ActivityStreams namespace",
+    "effect": {
+      "favourites": ["https://kopje.test/ap/o/local-1"]
+    }
+  },
+  {
+    "name": "a scoped definition",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/89",
+          "text": "<p>note 89</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "a prefix chain",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/91",
+          "text": "<p>note 91</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "@vocab set",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/93",
+          "text": "<p>note 93</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "@language set",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/95",
+          "text": "<p>note 95</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "@propagate before ActivityStreams",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/97",
+          "text": "<p>note 97</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "schema.org after ActivityStreams",
+    "effect": {}
+  },
+  {
+    "name": "identity/v1 after ActivityStreams",
+    "effect": {
+      "favourites": ["https://kopje.test/ap/o/local-1"]
+    }
+  },
+  {
+    "name": "a null context entry",
+    "effect": {}
+  },
+  {
+    "name": "an unknown context URL",
+    "effect": {
+      "favourites": ["https://kopje.test/ap/o/local-1"]
+    }
+  },
+  {
+    "name": "a nested context array",
+    "effect": {
+      "favourites": ["https://kopje.test/ap/o/local-1"]
+    }
+  },
+  {
+    "name": "a context in the object",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/104",
+          "text": "<p>note 104</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "a context in a tag entry",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/106",
+          "text": "<p>note 106</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "a context in a proof of the object",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/108",
+          "text": "<p>note 108</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "Misskey's context",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/110",
+          "text": "<p>note 110</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "Mastodon 4.4 and 4.5's forwarded context",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/112",
+          "text": "<p>note 112</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "Mastodon 4.6's forwarded context",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/114",
+          "text": "<p>note 114</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "Mastodon 4.7's forwarded context",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/116",
+          "text": "<p>note 116</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "a name outside the vocabulary with a key of its own",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/118",
+          "text": "<p>note 118</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "an inline prefix named https",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/120",
+          "text": "<p>note 120</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "@base after ActivityStreams, unsigned",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/53",
+          "text": "<p>note 53</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  },
+  {
+    "name": "a keyword alias beside the literal type, unsigned",
+    "effect": {
+      "favourites": ["https://kopje.test/ap/o/local-1"]
+    }
+  },
+  {
+    "name": "an alias of to with to redefined, unsigned",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/59",
+          "text": "<p>note 59</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 0
+        }
+      ]
+    }
+  }
+]

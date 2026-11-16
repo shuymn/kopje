@@ -11,6 +11,7 @@ import { sql } from "./api-helpers";
 import { harness, inboxDeps, NOW } from "./app-helpers";
 import { fixtureKeyGen } from "./federation-helpers";
 import corpusFixture from "./fixtures/ld-signed/corpus.json";
+import effectsFixture from "./fixtures/ld-signed/effects.json";
 import formsFixture from "./fixtures/ld-signed/forms.json";
 import { BUILD } from "./helpers";
 import { AP, mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
@@ -28,17 +29,19 @@ import {
 import { quoteAccept } from "./quote-helpers";
 
 // Activities that carry a Linked Data signature, read as received where Mastodon 4.7.5 reads them as their compaction
-// under its full_context (docs/mastodon-deviations.md, "Reading inbound activities"; ID-1, VIS-1, RES-2). The
-// fixtures (fixtures/ld-signed/, with the scripts that wrote them) hold each body as its sender wrote it and Mastodon's
-// own reading of it: the corpus is what Mastodon 4.6.11 and 4.7.5 and Fedify 2.4.5 send; the forms are the bodies
-// whose readings differ. Mastodon's side of each case is its captured reading, parsed by Kopje's reader: what Kopje
-// would apply had it read the compaction.
+// under its full_context, patched back toward the body as received (docs/mastodon-deviations.md, "Reading inbound
+// activities"; ID-1, VIS-1, RES-2). The fixtures (fixtures/ld-signed/, with the scripts that wrote them) hold each body
+// as its sender wrote it and Mastodon's own reading of it: the corpus is what Mastodon 4.6.11 and 4.7.5 and Fedify
+// 2.4.5 send; the forms are the bodies whose readings could differ, with what Mastodon's readers applied from each
+// (effects.json). Mastodon's reading is also parsed by Kopje's reader: what Kopje would apply had it read that form.
 
 type Json = Record<string, unknown>;
 type Entry = { name: string; sender?: string; received: Json; reference: string; mastodon?: Json; fallback?: string };
+type Effect = { name: string; error?: string; effect: Json & { statuses?: Json[] } };
 
 const corpus = corpusFixture as unknown as Entry[];
 const forms = new Map((formsFixture as unknown as Entry[]).map((entry) => [entry.name, entry]));
+const effects = new Map((effectsFixture as unknown as Effect[]).map((effect) => [effect.name, effect]));
 
 function form(name: string): Entry {
   const entry = forms.get(name);
@@ -48,6 +51,16 @@ function form(name: string): Entry {
   return entry;
 }
 
+// What Mastodon 4.7.5 applied from a form with its own readers (effects.rb): what bob's activity left, and the error
+// its job raised, if any.
+function applied(name: string): Effect {
+  const effect = effects.get(name);
+  if (effect === undefined) {
+    throw new Error(`no effect ${name}`);
+  }
+  return effect;
+}
+
 const bytes = (json: unknown) => new TextEncoder().encode(JSON.stringify(json));
 
 function without(json: Json, key: string): Json {
@@ -55,8 +68,10 @@ function without(json: Json, key: string): Json {
   return rest;
 }
 
-// Mastodon's reading of a body (ActivityPub::ProcessActivityService#call): its compaction, the signature put back, or,
-// where the JSON-LD limits or the compaction refused it, the body as received without its signature.
+// Mastodon's reading of a body (ActivityPub::ProcessActivityService#call): its compaction, the signature put back and
+// patched toward the body as received (patch_for_forwarding!: under each key both have, a one-element array is an array
+// again and as:Public the public collection's IRI), or, where the JSON-LD limits or the compaction refused it, the body
+// as received without its signature.
 function mastodonReading(entry: Entry): Json {
   if (entry.fallback !== undefined) {
     return without(entry.received, "signature");
@@ -64,6 +79,25 @@ function mastodonReading(entry: Entry): Json {
   expect(entry.mastodon).toBeDefined();
   return entry.mastodon!;
 }
+
+// A body without its @context and its null members, which Mastodon reads as absent and the compaction leaves out.
+function members(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(members);
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key, member]) => key !== "@context" && member !== null)
+        .map(([key, member]) => [key, members(member)]),
+    );
+  }
+  return value;
+}
+
+// Whether Mastodon's reading of the entry is the body as received.
+const asReceived = (entry: Entry) =>
+  JSON.stringify(members(mastodonReading(entry))) === JSON.stringify(members(entry.received));
 
 type Reading = { ok: false; reason: string } | { ok: true; actor: string; activity: Json; target: string | null };
 
@@ -155,8 +189,16 @@ describe("D2: real LD-signed payloads read as Mastodon reads them", () => {
     expect(kopje(entry)).toEqual(mastodon(entry));
   });
 
+  it("Mastodon's reading of every other payload is the body as received", () => {
+    // The patch puts back the public collection's IRI and every one-element array the compaction made a single value.
+    for (const entry of corpus.filter((e) => e.fallback === undefined && !DIFFERING.has(e.name))) {
+      expect(asReceived(entry), `${entry.sender} ${entry.name}`).toBe(true);
+    }
+  });
+
   it("reads more content than Mastodon: Fedify's votersCount, typed otherwise than full_context", () => {
-    // Fedify types it xsd:nonNegativeInteger; full_context leaves it untyped, so the compaction keeps a value object.
+    // Fedify types it xsd:nonNegativeInteger; full_context leaves it untyped, so the compaction keeps a value object,
+    // which the patch leaves (it puts back only arrays and the public collection's IRI).
     const entry = corpus.find((e) => e.name === "Create(Question), RSA")!;
     expect(statusOf(kopje(entry)).poll).toMatchObject({ votersCount: 0 });
     expect((mastodonReading(entry).object as Json).votersCount).toEqual({
@@ -174,17 +216,6 @@ describe("D2: real LD-signed payloads read as Mastodon reads them", () => {
     expect(accepted(kopje(entry))).toMatchObject({ type: "Like", object: "https://kopje.test/ap/o/remote-1" });
     expect(mastodonReading(entry).type).toBe("http://litepub.social/ns#EmojiReact");
     expect(mastodon(entry)).toEqual({ ok: false, reason: "unsupported" });
-  });
-
-  it("reads Mastodon's payloads alike once the public collection's spellings are taken as one", () => {
-    // The only difference in the corpus: the compaction writes the public collection as as:Public.
-    const differing = corpus.filter(
-      (entry) => JSON.stringify(entry.received.to) !== JSON.stringify(mastodonReading(entry).to),
-    );
-    for (const entry of differing) {
-      expect(mastodonReading(entry).to, entry.name).toEqual(expect.stringMatching(/^as:Public$|^https:/));
-    }
-    expect(differing.filter((entry) => mastodonReading(entry).to === "as:Public").length).toBeGreaterThan(0);
   });
 
   it("refuses Mastodon's Add, Remove and FeatureRequest in both forms, as they carry no id or no actor", () => {
@@ -207,128 +238,90 @@ describe("D2: real LD-signed payloads read as Mastodon reads them", () => {
   });
 });
 
+// Each form beside what Mastodon 4.7.5 applied from it with its own readers (effects.json). Mastodon reads a form as
+// received when the patch puts back what the compaction changed (asReceived): the difference is then each reader's,
+// as it is for the same body unsigned.
 describe("D1: forms whose readings differ, each named by its class", () => {
+  const LIKED = { favourites: ["https://kopje.test/ap/o/local-1"] };
+  // Mastodon's job raises on an array where its reader wants a string or an object, and applies nothing.
+  const RAISED = { error: expect.stringMatching(/^TypeError/), effect: {} };
+
   describe("refused where Mastodon applies it", () => {
     it.each([
-      ["type as a one-element array", "incomplete"],
       ["type as a compact IRI", "unsupported"],
       ["type as an absolute IRI", "unsupported"],
-      ["actor as a one-element array", "incomplete"],
-    ])("an envelope: %s", (name, reason) => {
+    ])("an activity %s: the compaction makes it Like", (name, reason) => {
       const entry = form(name);
       expect(kopje(entry)).toEqual({ ok: false, reason });
       expect(accepted(mastodon(entry))).toMatchObject({ type: "Like", object: "https://kopje.test/ap/o/local-1" });
+      expect(applied(name)).toEqual({ name, effect: LIKED });
     });
 
-    it.each([
-      ["Follow", { type: "Follow", object: "https://kopje.test/ap/users/alice" }],
-      ["Block", { type: "Block", object: "https://kopje.test/ap/users/alice" }],
-      ["Like", { type: "Like", object: "https://kopje.test/ap/o/local-1" }],
-      ["EmojiReact", { type: "Like", object: "https://kopje.test/ap/o/local-1" }],
-      ["Announce", { type: "Announce", object: "https://kopje.test/ap/o/local-1" }],
-      ["Delete", { type: "Delete", object: "https://mastodon.example/users/bob/statuses/deleted" }],
-      ["Add", { type: "Add", object: { status: "https://mastodon.example/users/bob/statuses/pinned" } }],
-      ["Remove", { type: "Remove", object: { status: "https://mastodon.example/users/bob/statuses/pinned" } }],
-      ["QuoteRequest", { type: "QuoteRequest", object: "https://kopje.test/ap/o/local-1" }],
-    ])("an object as a one-element array: %s", (type, applied) => {
-      const entry = form(`${type} object as a one-element array`);
-      expect(kopje(entry)).toEqual({ ok: false, reason: "unsupported" });
-      expect(accepted(mastodon(entry))).toMatchObject(applied);
-    });
-
-    it.each([
-      [
-        "Add target as a one-element array",
-        { type: "Add", target: "https://mastodon.example/users/bob/collections/featured" },
-      ],
-      [
-        "Remove target as a one-element array",
-        { type: "Remove", target: "https://mastodon.example/users/bob/collections/featured" },
-      ],
-      [
-        "QuoteRequest instrument as a one-element array",
-        { type: "QuoteRequest", instrument: "https://mastodon.example/users/bob/statuses/quoting" },
-      ],
-    ])("%s", (name, applied) => {
-      const entry = form(name);
-      expect(kopje(entry)).toEqual({ ok: false, reason: "unsupported" });
-      expect(accepted(mastodon(entry))).toMatchObject(applied);
-    });
-
-    it("a Move's target as a one-element array: read without a target (refused later as no-target)", () => {
-      const entry = form("Move target as a one-element array");
-      expect(kopje(entry)).toMatchObject({ ok: true, target: null });
-      expect(mastodon(entry)).toMatchObject({ ok: true, target: "https://mastodon.example/users/bob2" });
+    it("actor as a one-element array: Mastodon applies it for the request's signer", () => {
+      const name = "actor as a one-element array";
+      expect(asReceived(form(name))).toBe(true);
+      expect(kopje(form(name))).toEqual({ ok: false, reason: "incomplete" });
+      expect(applied(name)).toEqual({ name, effect: LIKED });
     });
 
     it("a Note type as an IRI", () => {
       const entry = form("Note type as an IRI");
       expect(kopje(entry)).toEqual({ ok: false, reason: "unsupported" });
       expect(statusOf(mastodon(entry))).toMatchObject({ uri: expect.stringContaining("/statuses/") });
+      expect(applied(entry.name).effect.statuses).toMatchObject([{ text: "<p>note 24</p>", visibility: "public" }]);
     });
   });
 
   describe("reads less than Mastodon", () => {
-    it("an Undo or Reject reference as a one-element array, or an embedded type as an IRI", () => {
-      const undo = form("Undo object as a one-element array");
-      expect(accepted(kopje(undo)).object).toMatchObject({ id: null, type: null });
-      expect(accepted(mastodon(undo)).object).toMatchObject({
-        id: expect.stringContaining("/follows/"),
-        type: "Follow",
-      });
-      const reject = form("Reject object as a one-element array");
-      expect(accepted(kopje(reject)).object).toMatchObject({ id: null });
-      expect(accepted(mastodon(reject)).object).toMatchObject({
-        id: "https://kopje.test/ap/follows/1",
-        type: "Follow",
-      });
+    it("an Undo or Accept whose embedded type is an IRI", () => {
       for (const name of ["Undo object type as an IRI", "Accept object type as an IRI"]) {
         expect(accepted(kopje(form(name))).object, name).toMatchObject({ type: "as:Follow" });
         expect(accepted(mastodon(form(name))).object, name).toMatchObject({ type: "Follow" });
       }
+      expect(applied("Undo object type as an IRI").effect).toEqual({ removed_follows: 1 });
+      expect(applied("Accept object type as an IRI").effect).toEqual({
+        local_requests_removed: 1,
+        local_follows: ["alice"],
+      });
     });
 
     it.each([
-      ["content as a one-element array", "content", "<p>text</p>"],
-      ["summary as a one-element array", "spoilerText", "warning"],
-    ])("a text as a one-element array: %s", (name, member, text) => {
+      ["content as a one-element array", "content", { text: '["<p>text</p>"]' }],
+      ["summary as a one-element array", "spoilerText", { spoiler: '["warning"]' }],
+    ])("a text as a one-element array: %s, which Mastodon stores as the array's JSON", (name, member, stored) => {
+      expect(asReceived(form(name))).toBe(true);
       expect(statusOf(kopje(form(name)))[member]).toBe("");
-      expect(statusOf(mastodon(form(name)))[member]).toBe(text);
+      expect(applied(name).effect.statuses).toMatchObject([stored]);
     });
 
     it("a converted object's name as a one-element array", () => {
-      const entry = form("name as a one-element array");
-      expect(statusOf(kopje(entry)).content).not.toContain("Title");
-      expect(statusOf(mastodon(entry)).content).toContain("Title");
+      const name = "name as a one-element array";
+      expect(asReceived(form(name))).toBe(true);
+      expect(statusOf(kopje(form(name))).content).not.toContain("Title");
+      expect(applied(name).effect.statuses).toMatchObject([{ text: expect.stringContaining('<h2>["Title"]</h2>') }]);
     });
 
-    it("inReplyTo as a one-element array", () => {
-      const entry = form("inReplyTo as a one-element array");
-      expect(statusOf(kopje(entry)).inReplyTo).toBeNull();
-      expect(statusOf(mastodon(entry)).inReplyTo).toBe("https://kopje.test/ap/o/local-1");
-    });
-
-    it("sensitive as a one-element array", () => {
-      const entry = form("sensitive as a one-element array");
-      expect(statusOf(kopje(entry)).sensitive).toBe(false);
-      expect(statusOf(mastodon(entry)).sensitive).toBe(true);
+    it("sensitive as a one-element array, which Mastodon takes as true", () => {
+      const name = "sensitive as a one-element array";
+      expect(asReceived(form(name))).toBe(true);
+      expect(statusOf(kopje(form(name))).sensitive).toBe(false);
+      expect(applied(name).effect.statuses).toMatchObject([{ sensitive: true, media: 1 }]);
     });
 
     it("a mention's type as an IRI", () => {
       const entry = form("Mention type as an IRI");
       expect(statusOf(kopje(entry)).mentions).toEqual([]);
       expect(statusOf(mastodon(entry)).mentions).toEqual(["https://kopje.test/ap/users/alice"]);
+      expect(applied(entry.name).effect.statuses).toMatchObject([{ mentions: ["alice"] }]);
     });
   });
 
   describe("reads more content than Mastodon", () => {
-    it("a poll with one option", () => {
-      const entry = form("Question with one option");
-      expect(statusOf(kopje(entry)).poll).toMatchObject({ options: ["Only"] });
-      // PollParser#valid? wants an array of options; the compaction makes a single one an object.
-      const object = mastodonReading(entry).object as Json;
-      expect(object.oneOf).toMatchObject({ type: "Note", name: "Only" });
-      expect(Array.isArray(object.oneOf)).toBe(false);
+    it("inReplyTo as a one-element array: stored without its parent, where Mastodon's job raises", () => {
+      const name = "inReplyTo as a one-element array";
+      expect(asReceived(form(name))).toBe(true);
+      expect(statusOf(kopje(form(name)))).toMatchObject({ content: "<p>note 32</p>", inReplyTo: null });
+      expect(applied(name)).toEqual({ name, ...RAISED });
     });
 
     it.each([
@@ -340,16 +333,80 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       const entry = form(name);
       expect(kept(statusOf(kopje(entry)))).toBe(true);
       expect(kept(statusOf(mastodon(entry)))).toBe(false);
-      // Mastodon's reading keeps the value only under a key it does not read.
+      // Mastodon's reading keeps the value only under a key it does not read, which the patch leaves.
       expect(Object.keys(mastodonReading(entry).object as Json)).toContain(key);
     });
   });
 
   describe("the same effect as Mastodon", () => {
+    it("type as a one-element array: neither applies it", () => {
+      const name = "type as a one-element array";
+      expect(asReceived(form(name))).toBe(true);
+      expect(kopje(form(name))).toEqual({ ok: false, reason: "incomplete" });
+      expect(applied(name)).toEqual({ name, effect: {} });
+    });
+
+    it.each([
+      "Follow object as a one-element array",
+      "Block object as a one-element array",
+      "Like object as a one-element array",
+      "Announce object as a one-element array",
+      "Delete object as a one-element array",
+      "Add object as a one-element array",
+      "QuoteRequest object as a one-element array",
+      "Add target as a one-element array",
+      "QuoteRequest instrument as a one-element array",
+    ])("refused, where Mastodon's job raises: %s", (name) => {
+      expect(asReceived(form(name))).toBe(true);
+      expect(kopje(form(name))).toEqual({ ok: false, reason: "unsupported" });
+      expect(applied(name)).toEqual({ name, ...RAISED });
+    });
+
+    it.each(["Remove object as a one-element array", "Remove target as a one-element array"])(
+      "refused, where Mastodon's job raises and the pin stays: %s",
+      (name) => {
+        expect(asReceived(form(name))).toBe(true);
+        expect(kopje(form(name))).toEqual({ ok: false, reason: "unsupported" });
+        expect(applied(name)).toEqual({
+          name,
+          error: expect.stringMatching(/^TypeError/),
+          effect: { pins: ["https://mastodon.example/users/bob/statuses/pinned"] },
+        });
+      },
+    );
+
+    it("an EmojiReact whose object is a one-element array: refused, where Mastodon reads no EmojiReact", () => {
+      const name = "EmojiReact object as a one-element array";
+      expect(kopje(form(name))).toEqual({ ok: false, reason: "unsupported" });
+      expect(applied(name)).toEqual({ name, effect: {} });
+    });
+
+    it("an Undo or Reject reference as a one-element array: nothing undone or rejected", () => {
+      for (const name of ["Undo object as a one-element array", "Reject object as a one-element array"]) {
+        expect(asReceived(form(name)), name).toBe(true);
+        expect(accepted(kopje(form(name))).object, name).toMatchObject({ id: null, type: null });
+        expect(applied(name), name).toEqual({ name, ...RAISED });
+      }
+    });
+
+    it("a Move's target as a one-element array: read without a target (refused later as no-target)", () => {
+      const name = "Move target as a one-element array";
+      expect(kopje(form(name))).toMatchObject({ ok: true, target: null });
+      expect(applied(name)).toEqual({ name, ...RAISED });
+    });
+
+    it("a poll with one option: both store it", () => {
+      const name = "Question with one option";
+      expect(asReceived(form(name))).toBe(true);
+      expect(statusOf(kopje(form(name))).poll).toMatchObject({ options: ["Only"] });
+      expect(applied(name).effect.statuses).toMatchObject([{ poll: ["Only"] }]);
+    });
+
     it("a Flag's object as a one-element array", () => {
       const entry = form("Flag object as a one-element array");
       expect(accepted(kopje(entry))).toMatchObject({ type: "Flag", objects: ["https://kopje.test/ap/users/alice"] });
       expect(kopje(entry)).toEqual(mastodon(entry));
+      expect(applied(entry.name).effect).toEqual({ reports: [{ target: "alice", statuses: 0 }] });
     });
 
     it("more than 1,000 values, and a proof in the data-integrity context: Mastodon reads them as received", () => {
@@ -365,8 +422,9 @@ describe("D1: forms whose readings differ, each named by its class", () => {
   });
 });
 
-// One case per activity type through the inbox (D2): the stored outcome of the body as received, beside the same
-// activity written plainly, which is applied.
+// One case per activity type through the inbox (D2): the stored outcome of the body as received, beside what Mastodon
+// applied from it, and, where Mastodon's reading is not the body as received, that reading written plainly, which
+// Kopje applies.
 describe("D1 through the inbox: what the received form stores", () => {
   const LOCAL_STATUS = "https://kopje.test/ap/o/local-1";
 
@@ -393,9 +451,9 @@ describe("D1 through the inbox: what the received form stores", () => {
   // The form's received body.
   const body = (name: string, status: { uri: string }) => placed(form(name).received, status, "");
 
-  // The body Mastodon reads, written as Kopje reads it (its compaction, without the signature): Kopje applies it.
-  const plain = (name: string, status: { uri: string }, statuses = true) =>
-    placed(mastodonReading(form(name)), status, "plain-", statuses);
+  // The body Mastodon reads, written as Kopje reads it (without the signature): Kopje applies it.
+  const plain = (name: string, status: { uri: string }) =>
+    placed(without(mastodonReading(form(name)), "signature"), status, "plain-");
 
   // bob's follows of alice (followed() has bob follow dave).
   const follows = (t: Setup) =>
@@ -409,15 +467,14 @@ describe("D1 through the inbox: what the received form stores", () => {
   const mentionNotifications = (t: Setup) =>
     sql(t.store, "SELECT type FROM notifications WHERE account_id = ? AND type = 'mention'", ALICE);
 
-  it("a Follow whose object is a one-element array makes no follow", async () => {
+  it("a Follow whose object is a one-element array makes no follow, as in Mastodon", async () => {
     const { t, bob, status } = await world();
     expect(await t.post(bob, body("Follow object as a one-element array", status))).toBe(202);
     expect(await follows(t)).toEqual([]);
-    expect(await t.post(bob, plain("Follow object as a one-element array", status))).toBe(202);
-    expect((await follows(t)).length).toBe(1);
+    expect(applied("Follow object as a one-element array").effect).toEqual({});
   });
 
-  it("a Like typed as:Like favourites nothing", async () => {
+  it("a Like typed as:Like favourites nothing, where Mastodon's reading favourites", async () => {
     const { t, bob, status } = await world();
     expect(await t.post(bob, body("type as a compact IRI", status))).toBe(202);
     expect(await favourites(t)).toEqual([]);
@@ -430,9 +487,7 @@ describe("D1 through the inbox: what the received form stores", () => {
     const received = body("content as a one-element array", status);
     expect(await t.post(bob, received)).toBe(202);
     expect(await statusRow(t.store, (received.object as Json).id as string)).toMatchObject({ content: "" });
-    const compacted = plain("content as a one-element array", status);
-    expect(await t.post(bob, compacted)).toBe(202);
-    expect(await statusRow(t.store, (compacted.object as Json).id as string)).toMatchObject({ content: "<p>text</p>" });
+    expect(applied("content as a one-element array").effect.statuses).toMatchObject([{ text: '["<p>text</p>"]' }]);
   });
 
   it("a reply whose inReplyTo is a one-element array is stored without in_reply_to_id", async () => {
@@ -440,14 +495,10 @@ describe("D1 through the inbox: what the received form stores", () => {
     const received = body("inReplyTo as a one-element array", status);
     expect(await t.post(bob, received)).toBe(202);
     expect(await statusRow(t.store, (received.object as Json).id as string)).toMatchObject({ in_reply_to_id: null });
-    const compacted = plain("inReplyTo as a one-element array", status);
-    expect(await t.post(bob, compacted)).toBe(202);
-    expect(await statusRow(t.store, (compacted.object as Json).id as string)).toMatchObject({
-      in_reply_to_id: status.id,
-    });
+    expect(applied("inReplyTo as a one-element array").effect).toEqual({});
   });
 
-  it("a mention typed as:Mention notifies no one", async () => {
+  it("a mention typed as:Mention notifies no one, where Mastodon's reading mentions", async () => {
     const { t, bob, status } = await world();
     const received = body("Mention type as an IRI", status);
     expect(await t.post(bob, received)).toBe(202);
@@ -457,7 +508,7 @@ describe("D1 through the inbox: what the received form stores", () => {
     expect(await mentionNotifications(t)).toEqual([{ type: "mention" }]);
   });
 
-  it("a one-option poll is stored with its poll", async () => {
+  it("a one-option poll is stored with its poll, as in Mastodon", async () => {
     const { t, bob, status } = await world();
     const received = body("Question with one option", status);
     expect(await t.post(bob, received)).toBe(202);
@@ -465,9 +516,10 @@ describe("D1 through the inbox: what the received form stores", () => {
     expect(await sql(t.store, "SELECT options FROM polls WHERE status_id = ?", row!.id)).toEqual([
       { options: JSON.stringify(["Only"]) },
     ]);
+    expect(applied("Question with one option").effect.statuses).toMatchObject([{ poll: ["Only"] }]);
   });
 
-  it("a Delete whose object is a one-element array leaves its status", async () => {
+  it("a Delete whose object is a one-element array leaves its status, as in Mastodon", async () => {
     const { t, bob, status } = await world();
     const deleted = "https://mastodon.example/users/bob/statuses/deleted";
     const note = (form("Mention type as an IRI").received.object as Json) ?? {};
@@ -484,8 +536,7 @@ describe("D1 through the inbox: what the received form stores", () => {
     expect(await statusRow(t.store, deleted)).toBeDefined();
     expect(await t.post(bob, body("Delete object as a one-element array", status))).toBe(202);
     expect(await statusRow(t.store, deleted)).toBeDefined();
-    expect(await t.post(bob, plain("Delete object as a one-element array", status, false))).toBe(202);
-    expect(await statusRow(t.store, deleted)).toBeUndefined();
+    expect(applied("Delete object as a one-element array").effect).toEqual({});
   });
 });
 
@@ -502,9 +553,10 @@ describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", (
       (name) => {
         const entry = form(name);
         expect(kopje(entry)).toEqual(LD_CONTEXT);
-        // Literally public; Mastodon reads it addressed to https://other.example/Public, a limited status.
+        // Literally public; Mastodon reads it addressed to https://other.example/Public, a direct status.
         expect(statusOf(literal(entry))).toMatchObject({ to: [PUBLIC] });
         expect(statusOf(mastodon(entry))).toMatchObject({ to: ["https://other.example/Public"] });
+        expect(applied(name).effect.statuses).toMatchObject([{ visibility: "direct" }]);
       },
     );
 
@@ -515,6 +567,7 @@ describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", (
         expect(accepted(literal(form(name))), name).toMatchObject({ type: "Like" });
         // Two types: Mastodon's factory applies nothing.
         expect(mastodonReading(form(name)).type, name).toEqual(["Like", "Create"]);
+        expect(applied(name), name).toEqual({ name, effect: {} });
       }
       const twoObjects = [
         "an alias of object beside the literal one",
@@ -531,6 +584,7 @@ describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", (
       expect(kopje(aliasedTo)).toEqual(LD_CONTEXT);
       expect(statusOf(literal(aliasedTo))).toMatchObject({ to: [PUBLIC] });
       expect(statusOf(mastodon(aliasedTo))).toMatchObject({ to: ["https://mastodon.example/users/bob/followers"] });
+      expect(applied(aliasedTo.name).effect.statuses).toMatchObject([{ visibility: "private" }]);
     });
 
     it.each([
@@ -547,7 +601,8 @@ describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", (
       ["a context in the object", (reading: Json) => Object.hasOwn(reading.object as Json, "https://other.example/to")],
       [
         "a context in a tag entry",
-        (reading: Json) => Object.hasOwn((reading.object as Json).tag as Json, "https://other.example/href"),
+        (reading: Json) =>
+          Object.hasOwn(([] as Json[]).concat((reading.object as Json).tag as Json)[0]!, "https://other.example/href"),
       ],
     ])("ignores an LD-signed activity whose context changes a name's meaning: %s", (name, renamed) => {
       expect(kopje(form(name))).toEqual(LD_CONTEXT);

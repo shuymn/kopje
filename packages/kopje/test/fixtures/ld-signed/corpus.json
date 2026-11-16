@@ -274,7 +274,7 @@
       "id": "https://mastodon.example/ap/users/117618077201692915#updates/1794800760",
       "type": "Update",
       "actor": "https://mastodon.example/ap/users/117618077201692915",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077201692915",
         "webfinger": "alice@mastodon.example",
@@ -299,7 +299,7 @@
         "showRepliesInMedia": true,
         "interactionPolicy": {
           "canFeature": {
-            "automaticApproval": "https://mastodon.example/ap/users/117618077201692915"
+            "automaticApproval": ["https://mastodon.example/ap/users/117618077201692915"]
           }
         },
         "featuredCollections": "https://mastodon.example/ap/users/117618077201692915/featured_collections",
@@ -587,16 +587,16 @@
       "type": "Create",
       "actor": "https://mastodon.example/ap/users/117618077201692915",
       "published": "2026-11-16T12:00:01Z",
-      "to": "as:Public",
-      "cc": "https://mastodon.example/ap/users/117618077201692915/followers",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
+      "cc": ["https://mastodon.example/ap/users/117618077201692915/followers"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077201692915/statuses/117626005190348990",
         "type": "Note",
         "published": "2026-11-16T12:00:01Z",
         "url": "https://mastodon.example/@alice/117626005190348990",
         "attributedTo": "https://mastodon.example/ap/users/117618077201692915",
-        "to": "as:Public",
-        "cc": "https://mastodon.example/ap/users/117618077201692915/followers",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
+        "cc": ["https://mastodon.example/ap/users/117618077201692915/followers"],
         "sensitive": false,
         "atomUri": "tag:mastodon.example,2026-11-16:objectId=117626005190348990:objectType=Status",
         "content": "<p>A plain post</p>",
@@ -605,7 +605,7 @@
         },
         "interactionPolicy": {
           "canQuote": {
-            "automaticApproval": "https://mastodon.example/ap/users/117618077201692915"
+            "automaticApproval": ["https://mastodon.example/ap/users/117618077201692915"]
           }
         },
         "attachment": [],
@@ -920,7 +920,7 @@
       "type": "Create",
       "actor": "https://mastodon.example/ap/users/117618077201692915",
       "published": "2026-11-16T12:00:02Z",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "cc": ["https://mastodon.example/ap/users/117618077201692915/followers", "https://kopje.test/ap/users/alice"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077201692915/statuses/117626005278409467",
@@ -929,7 +929,7 @@
         "published": "2026-11-16T12:00:02Z",
         "url": "https://mastodon.example/@alice/117626005278409467",
         "attributedTo": "https://mastodon.example/ap/users/117618077201692915",
-        "to": "as:Public",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
         "cc": ["https://mastodon.example/ap/users/117618077201692915/followers", "https://kopje.test/ap/users/alice"],
         "sensitive": true,
         "atomUri": "tag:mastodon.example,2026-11-16:objectId=117626005278409467:objectType=Status",
@@ -939,7 +939,7 @@
         },
         "interactionPolicy": {
           "canQuote": {
-            "automaticApproval": "https://mastodon.example/ap/users/117618077201692915"
+            "automaticApproval": ["https://mastodon.example/ap/users/117618077201692915"]
           }
         },
         "attachment": [
@@ -1303,7 +1303,7 @@
       "type": "Update",
       "actor": "https://mastodon.example/ap/users/117618077201692915",
       "published": "2026-11-16T12:01:00Z",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "cc": ["https://mastodon.example/ap/users/117618077201692915/followers", "https://kopje.test/ap/users/alice"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077201692915/statuses/117626005278409467",
@@ -1312,7 +1312,7 @@
         "published": "2026-11-16T12:00:02Z",
         "url": "https://mastodon.example/@alice/117626005278409467",
         "attributedTo": "https://mastodon.example/ap/users/117618077201692915",
-        "to": "as:Public",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
         "cc": ["https://mastodon.example/ap/users/117618077201692915/followers", "https://kopje.test/ap/users/alice"],
         "sensitive": true,
         "atomUri": "tag:mastodon.example,2026-11-16:objectId=117626005278409467:objectType=Status",
@@ -1323,7 +1323,7 @@
         "updated": "2026-11-16T12:01:00Z",
         "interactionPolicy": {
           "canQuote": {
-            "automaticApproval": "https://mastodon.example/ap/users/117618077201692915"
+            "automaticApproval": ["https://mastodon.example/ap/users/117618077201692915"]
           }
         },
         "attachment": [
@@ -1550,7 +1550,7 @@
       "id": "https://mastodon.example/ap/users/117618077201692915/statuses/117626005337528354#delete",
       "type": "Delete",
       "actor": "https://mastodon.example/ap/users/117618077201692915",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077201692915/statuses/117626005337528354",
         "type": "Tombstone",
@@ -1701,7 +1701,7 @@
       "type": "Announce",
       "actor": "https://mastodon.example/ap/users/117618077201692915",
       "published": "2026-11-16T12:00:04Z",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "cc": ["https://kopje.test/ap/users/alice", "https://mastodon.example/ap/users/117618077201692915/followers"],
       "object": "https://kopje.test/ap/o/remote-1",
       "signature": {
@@ -1854,13 +1854,13 @@
       "id": "https://mastodon.example/ap/users/117618077201692915#announces/117626005407110918/undo",
       "type": "Undo",
       "actor": "https://mastodon.example/ap/users/117618077201692915",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077201692915/statuses/117626005407110918/activity",
         "type": "Announce",
         "actor": "https://mastodon.example/ap/users/117618077201692915",
         "published": "2026-11-16T12:00:04Z",
-        "to": "as:Public",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
         "cc": ["https://kopje.test/ap/users/alice", "https://mastodon.example/ap/users/117618077201692915/followers"],
         "object": "https://kopje.test/ap/o/remote-1"
       },
@@ -2118,16 +2118,16 @@
       "type": "Create",
       "actor": "https://mastodon.example/ap/users/117618077201692915",
       "published": "2026-11-16T12:00:05Z",
-      "to": "as:Public",
-      "cc": "https://mastodon.example/ap/users/117618077201692915/followers",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
+      "cc": ["https://mastodon.example/ap/users/117618077201692915/followers"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077201692915/statuses/117626005451452277",
         "type": "Question",
         "published": "2026-11-16T12:00:05Z",
         "url": "https://mastodon.example/@alice/117626005451452277",
         "attributedTo": "https://mastodon.example/ap/users/117618077201692915",
-        "to": "as:Public",
-        "cc": "https://mastodon.example/ap/users/117618077201692915/followers",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
+        "cc": ["https://mastodon.example/ap/users/117618077201692915/followers"],
         "sensitive": false,
         "atomUri": "tag:mastodon.example,2026-11-16:objectId=117626005451452277:objectType=Status",
         "content": "<p>A poll</p>",
@@ -2138,7 +2138,7 @@
         "votersCount": 3,
         "interactionPolicy": {
           "canQuote": {
-            "automaticApproval": "https://mastodon.example/ap/users/117618077201692915"
+            "automaticApproval": ["https://mastodon.example/ap/users/117618077201692915"]
           }
         },
         "attachment": [],
@@ -2433,15 +2433,15 @@
       "id": "https://mastodon.example/ap/users/117618077201692915/statuses/117626005451452277#updates/0",
       "type": "Update",
       "actor": "https://mastodon.example/ap/users/117618077201692915",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077201692915/statuses/117626005451452277",
         "type": "Question",
         "published": "2026-11-16T12:00:05Z",
         "url": "https://mastodon.example/@alice/117626005451452277",
         "attributedTo": "https://mastodon.example/ap/users/117618077201692915",
-        "to": "as:Public",
-        "cc": "https://mastodon.example/ap/users/117618077201692915/followers",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
+        "cc": ["https://mastodon.example/ap/users/117618077201692915/followers"],
         "sensitive": false,
         "atomUri": "tag:mastodon.example,2026-11-16:objectId=117626005451452277:objectType=Status",
         "content": "<p>A poll</p>",
@@ -2452,7 +2452,7 @@
         "votersCount": 3,
         "interactionPolicy": {
           "canQuote": {
-            "automaticApproval": "https://mastodon.example/ap/users/117618077201692915"
+            "automaticApproval": ["https://mastodon.example/ap/users/117618077201692915"]
           }
         },
         "attachment": [],
@@ -2638,7 +2638,7 @@
       "id": "https://mastodon.example/ap/users/117618077201692915#delete",
       "type": "Delete",
       "actor": "https://mastodon.example/ap/users/117618077201692915",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "object": "https://mastodon.example/ap/users/117618077201692915",
       "signature": {
         "type": "RsaSignature2017",
@@ -3338,8 +3338,8 @@
         "published": "2026-11-16T12:00:06Z",
         "url": "https://mastodon.example/@alice/117626005504163409",
         "attributedTo": "https://mastodon.example/ap/users/117618077201692915",
-        "to": "as:Public",
-        "cc": "https://mastodon.example/ap/users/117618077201692915/followers",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
+        "cc": ["https://mastodon.example/ap/users/117618077201692915/followers"],
         "sensitive": false,
         "atomUri": "tag:mastodon.example,2026-11-16:objectId=117626005504163409:objectType=Status",
         "content": "<p class=\"quote-inline\">RE: <a href=\"https://kopje.test/@alice/remote-1\" target=\"_blank\" rel=\"nofollow noopener\" translate=\"no\"><span class=\"invisible\">https://</span><span class=\"\">kopje.test/@alice/remote-1</span><span class=\"invisible\"></span></a></p><p>Quoting</p>",
@@ -3351,7 +3351,7 @@
         "quoteUri": "https://kopje.test/ap/o/remote-1",
         "interactionPolicy": {
           "canQuote": {
-            "automaticApproval": "https://mastodon.example/ap/users/117618077201692915"
+            "automaticApproval": ["https://mastodon.example/ap/users/117618077201692915"]
           }
         },
         "attachment": [],
@@ -3540,7 +3540,7 @@
       "id": "https://mastodon.example/ap/users/117618077201692915/quote_authorizations/117626018219162070#delete",
       "type": "Delete",
       "actor": "https://mastodon.example/ap/users/117618077201692915",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077201692915/quote_authorizations/117626018219162070",
         "type": "QuoteAuthorization",
@@ -3858,7 +3858,7 @@
       "id": "https://mastodon.example/ap/users/117618077201692915/feature_authorizations/117626031434792628#delete",
       "type": "Delete",
       "actor": "https://mastodon.example/ap/users/117618077201692915",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077201692915/feature_authorizations/117626031434792628",
         "type": "FeatureAuthorization",
@@ -4148,7 +4148,7 @@
       "id": "https://mastodon.example/ap/users/117618077213859260#updates/1794709430",
       "type": "Update",
       "actor": "https://mastodon.example/ap/users/117618077213859260",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077213859260",
         "webfinger": "bob@mastodon.example",
@@ -4173,7 +4173,7 @@
         "showRepliesInMedia": true,
         "interactionPolicy": {
           "canFeature": {
-            "automaticApproval": "https://mastodon.example/ap/users/117618077213859260"
+            "automaticApproval": ["https://mastodon.example/ap/users/117618077213859260"]
           }
         },
         "featuredCollections": "https://mastodon.example/ap/users/117618077213859260/featured_collections",
@@ -4459,16 +4459,16 @@
       "type": "Create",
       "actor": "https://mastodon.example/ap/users/117618077213859260",
       "published": "2026-11-16T12:00:01Z",
-      "to": "as:Public",
-      "cc": "https://mastodon.example/ap/users/117618077213859260/followers",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
+      "cc": ["https://mastodon.example/ap/users/117618077213859260/followers"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077213859260/statuses/117626005206273975",
         "type": "Note",
         "published": "2026-11-16T12:00:01Z",
         "url": "https://mastodon.example/@bob/117626005206273975",
         "attributedTo": "https://mastodon.example/ap/users/117618077213859260",
-        "to": "as:Public",
-        "cc": "https://mastodon.example/ap/users/117618077213859260/followers",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
+        "cc": ["https://mastodon.example/ap/users/117618077213859260/followers"],
         "sensitive": false,
         "atomUri": "tag:mastodon.example,2026-11-16:objectId=117626005206273975:objectType=Status",
         "content": "<p>A plain post</p>",
@@ -4477,7 +4477,7 @@
         },
         "interactionPolicy": {
           "canQuote": {
-            "automaticApproval": "https://mastodon.example/ap/users/117618077213859260"
+            "automaticApproval": ["https://mastodon.example/ap/users/117618077213859260"]
           }
         },
         "attachment": [],
@@ -4790,7 +4790,7 @@
       "type": "Create",
       "actor": "https://mastodon.example/ap/users/117618077213859260",
       "published": "2026-11-16T12:00:02Z",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "cc": ["https://mastodon.example/ap/users/117618077213859260/followers", "https://kopje.test/ap/users/alice"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077213859260/statuses/117626005229749351",
@@ -4799,7 +4799,7 @@
         "published": "2026-11-16T12:00:02Z",
         "url": "https://mastodon.example/@bob/117626005229749351",
         "attributedTo": "https://mastodon.example/ap/users/117618077213859260",
-        "to": "as:Public",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
         "cc": ["https://mastodon.example/ap/users/117618077213859260/followers", "https://kopje.test/ap/users/alice"],
         "sensitive": true,
         "atomUri": "tag:mastodon.example,2026-11-16:objectId=117626005229749351:objectType=Status",
@@ -4809,7 +4809,7 @@
         },
         "interactionPolicy": {
           "canQuote": {
-            "automaticApproval": "https://mastodon.example/ap/users/117618077213859260"
+            "automaticApproval": ["https://mastodon.example/ap/users/117618077213859260"]
           }
         },
         "attachment": [
@@ -5171,7 +5171,7 @@
       "type": "Update",
       "actor": "https://mastodon.example/ap/users/117618077213859260",
       "published": "2026-11-16T12:01:00Z",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "cc": ["https://mastodon.example/ap/users/117618077213859260/followers", "https://kopje.test/ap/users/alice"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077213859260/statuses/117626005229749351",
@@ -5180,7 +5180,7 @@
         "published": "2026-11-16T12:00:02Z",
         "url": "https://mastodon.example/@bob/117626005229749351",
         "attributedTo": "https://mastodon.example/ap/users/117618077213859260",
-        "to": "as:Public",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
         "cc": ["https://mastodon.example/ap/users/117618077213859260/followers", "https://kopje.test/ap/users/alice"],
         "sensitive": true,
         "atomUri": "tag:mastodon.example,2026-11-16:objectId=117626005229749351:objectType=Status",
@@ -5191,7 +5191,7 @@
         "updated": "2026-11-16T12:01:00Z",
         "interactionPolicy": {
           "canQuote": {
-            "automaticApproval": "https://mastodon.example/ap/users/117618077213859260"
+            "automaticApproval": ["https://mastodon.example/ap/users/117618077213859260"]
           }
         },
         "attachment": [
@@ -5416,7 +5416,7 @@
       "id": "https://mastodon.example/ap/users/117618077213859260/statuses/117626005340488856#delete",
       "type": "Delete",
       "actor": "https://mastodon.example/ap/users/117618077213859260",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077213859260/statuses/117626005340488856",
         "type": "Tombstone",
@@ -5565,7 +5565,7 @@
       "type": "Announce",
       "actor": "https://mastodon.example/ap/users/117618077213859260",
       "published": "2026-11-16T12:00:04Z",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "cc": ["https://kopje.test/ap/users/alice", "https://mastodon.example/ap/users/117618077213859260/followers"],
       "object": "https://kopje.test/ap/o/remote-1",
       "signature": {
@@ -5716,13 +5716,13 @@
       "id": "https://mastodon.example/ap/users/117618077213859260#announces/117626005392874234/undo",
       "type": "Undo",
       "actor": "https://mastodon.example/ap/users/117618077213859260",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077213859260/statuses/117626005392874234/activity",
         "type": "Announce",
         "actor": "https://mastodon.example/ap/users/117618077213859260",
         "published": "2026-11-16T12:00:04Z",
-        "to": "as:Public",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
         "cc": ["https://kopje.test/ap/users/alice", "https://mastodon.example/ap/users/117618077213859260/followers"],
         "object": "https://kopje.test/ap/o/remote-1"
       },
@@ -5978,16 +5978,16 @@
       "type": "Create",
       "actor": "https://mastodon.example/ap/users/117618077213859260",
       "published": "2026-11-16T12:00:05Z",
-      "to": "as:Public",
-      "cc": "https://mastodon.example/ap/users/117618077213859260/followers",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
+      "cc": ["https://mastodon.example/ap/users/117618077213859260/followers"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077213859260/statuses/117626005465925729",
         "type": "Question",
         "published": "2026-11-16T12:00:05Z",
         "url": "https://mastodon.example/@bob/117626005465925729",
         "attributedTo": "https://mastodon.example/ap/users/117618077213859260",
-        "to": "as:Public",
-        "cc": "https://mastodon.example/ap/users/117618077213859260/followers",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
+        "cc": ["https://mastodon.example/ap/users/117618077213859260/followers"],
         "sensitive": false,
         "atomUri": "tag:mastodon.example,2026-11-16:objectId=117626005465925729:objectType=Status",
         "content": "<p>A poll</p>",
@@ -5998,7 +5998,7 @@
         "votersCount": 3,
         "interactionPolicy": {
           "canQuote": {
-            "automaticApproval": "https://mastodon.example/ap/users/117618077213859260"
+            "automaticApproval": ["https://mastodon.example/ap/users/117618077213859260"]
           }
         },
         "attachment": [],
@@ -6291,15 +6291,15 @@
       "id": "https://mastodon.example/ap/users/117618077213859260/statuses/117626005465925729#updates/0",
       "type": "Update",
       "actor": "https://mastodon.example/ap/users/117618077213859260",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077213859260/statuses/117626005465925729",
         "type": "Question",
         "published": "2026-11-16T12:00:05Z",
         "url": "https://mastodon.example/@bob/117626005465925729",
         "attributedTo": "https://mastodon.example/ap/users/117618077213859260",
-        "to": "as:Public",
-        "cc": "https://mastodon.example/ap/users/117618077213859260/followers",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
+        "cc": ["https://mastodon.example/ap/users/117618077213859260/followers"],
         "sensitive": false,
         "atomUri": "tag:mastodon.example,2026-11-16:objectId=117626005465925729:objectType=Status",
         "content": "<p>A poll</p>",
@@ -6310,7 +6310,7 @@
         "votersCount": 3,
         "interactionPolicy": {
           "canQuote": {
-            "automaticApproval": "https://mastodon.example/ap/users/117618077213859260"
+            "automaticApproval": ["https://mastodon.example/ap/users/117618077213859260"]
           }
         },
         "attachment": [],
@@ -6494,7 +6494,7 @@
       "id": "https://mastodon.example/ap/users/117618077213859260#delete",
       "type": "Delete",
       "actor": "https://mastodon.example/ap/users/117618077213859260",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "object": "https://mastodon.example/ap/users/117618077213859260",
       "signature": {
         "type": "RsaSignature2017",
@@ -7186,8 +7186,8 @@
         "published": "2026-11-16T12:00:06Z",
         "url": "https://mastodon.example/@bob/117626005528853814",
         "attributedTo": "https://mastodon.example/ap/users/117618077213859260",
-        "to": "as:Public",
-        "cc": "https://mastodon.example/ap/users/117618077213859260/followers",
+        "to": ["https://www.w3.org/ns/activitystreams#Public"],
+        "cc": ["https://mastodon.example/ap/users/117618077213859260/followers"],
         "sensitive": false,
         "atomUri": "tag:mastodon.example,2026-11-16:objectId=117626005528853814:objectType=Status",
         "content": "<p class=\"quote-inline\">RE: <a href=\"https://kopje.test/@alice/remote-1\" target=\"_blank\" rel=\"nofollow noopener\" translate=\"no\"><span class=\"invisible\">https://</span><span class=\"\">kopje.test/@alice/remote-1</span><span class=\"invisible\"></span></a></p><p>Quoting</p>",
@@ -7199,7 +7199,7 @@
         "quoteUri": "https://kopje.test/ap/o/remote-1",
         "interactionPolicy": {
           "canQuote": {
-            "automaticApproval": "https://mastodon.example/ap/users/117618077213859260"
+            "automaticApproval": ["https://mastodon.example/ap/users/117618077213859260"]
           }
         },
         "attachment": [],
@@ -7386,7 +7386,7 @@
       "id": "https://mastodon.example/ap/users/117618077213859260/quote_authorizations/117626018261246376#delete",
       "type": "Delete",
       "actor": "https://mastodon.example/ap/users/117618077213859260",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077213859260/quote_authorizations/117626018261246376",
         "type": "QuoteAuthorization",
@@ -7700,7 +7700,7 @@
       "id": "https://mastodon.example/ap/users/117618077213859260/feature_authorizations/117626031399276846#delete",
       "type": "Delete",
       "actor": "https://mastodon.example/ap/users/117618077213859260",
-      "to": "as:Public",
+      "to": ["https://www.w3.org/ns/activitystreams#Public"],
       "object": {
         "id": "https://mastodon.example/ap/users/117618077213859260/feature_authorizations/117626031399276846",
         "type": "FeatureAuthorization",
@@ -7919,14 +7919,16 @@
       "object": {
         "id": "https://fedify.example/notes/1",
         "type": "Note",
-        "attachment": {
-          "type": "Document",
-          "height": 480,
-          "mediaType": "image/png",
-          "name": "An image",
-          "url": "https://fedify.example/media/1.png",
-          "width": 640
-        },
+        "attachment": [
+          {
+            "type": "Document",
+            "height": 480,
+            "mediaType": "image/png",
+            "name": "An image",
+            "url": "https://fedify.example/media/1.png",
+            "width": 640
+          }
+        ],
         "attributedTo": "https://fedify.example/users/alice",
         "cc": ["https://fedify.example/users/alice/followers", "https://kopje.test/ap/users/alice"],
         "content": "<p>Hello <a href=\"https://kopje.test/@alice\" class=\"mention\">@alice</a> #kopje</p>",
@@ -7944,9 +7946,9 @@
             "name": "#kopje"
           }
         ],
-        "to": "as:Public"
+        "to": "https://www.w3.org/ns/activitystreams#Public"
       },
-      "to": "as:Public",
+      "to": "https://www.w3.org/ns/activitystreams#Public",
       "signature": {
         "@context": "https://w3id.org/identity/v1",
         "creator": "https://fedify.example/users/alice#main-key",
@@ -8338,7 +8340,7 @@
         "preferredUsername": "alice",
         "summary": "<p>Bio</p>"
       },
-      "to": "as:Public",
+      "to": "https://www.w3.org/ns/activitystreams#Public",
       "signature": {
         "@context": "https://w3id.org/identity/v1",
         "creator": "https://fedify.example/users/alice#main-key",
@@ -9095,7 +9097,7 @@
       "actor": "https://fedify.example/users/alice",
       "cc": "https://fedify.example/users/alice/followers",
       "object": "https://kopje.test/ap/o/remote-1",
-      "to": "as:Public",
+      "to": "https://www.w3.org/ns/activitystreams#Public",
       "signature": {
         "@context": "https://w3id.org/identity/v1",
         "creator": "https://fedify.example/users/alice#main-key",
@@ -9603,7 +9605,7 @@
         "id": "https://fedify.example/notes/2",
         "type": "Tombstone"
       },
-      "to": "as:Public",
+      "to": "https://www.w3.org/ns/activitystreams#Public",
       "signature": {
         "@context": "https://w3id.org/identity/v1",
         "creator": "https://fedify.example/users/alice#main-key",
@@ -10301,9 +10303,9 @@
             "name": "No"
           }
         ],
-        "to": "as:Public"
+        "to": "https://www.w3.org/ns/activitystreams#Public"
       },
-      "to": "as:Public",
+      "to": "https://www.w3.org/ns/activitystreams#Public",
       "signature": {
         "@context": "https://w3id.org/identity/v1",
         "creator": "https://fedify.example/users/alice#main-key",
