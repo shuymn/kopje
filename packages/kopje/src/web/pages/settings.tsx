@@ -1,6 +1,7 @@
 import type { FC } from "hono/jsx";
 
-import { type CredentialAccount, MAX_DISPLAY_NAME, MAX_NOTE, type Visibility } from "../../domain/accounts";
+import { type CredentialAccount, MAX_DISPLAY_NAME, type Visibility } from "../../domain/accounts";
+import { MAX_RAW_LENGTH } from "../../domain/status-text";
 import type { Authorizations } from "../../domain/web-session";
 import { httpUrl } from "../../platform/http-url";
 import { MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS, PROFILE_DESCRIPTION_LIMIT } from "../../platform/stored-bounds";
@@ -66,8 +67,8 @@ const FIELD_NAME = "field-name";
 const FIELD_VALUE = "field-value";
 
 // A text control's native limit for a server limit of `points` code points. `maxlength` counts UTF-16 code units, of
-// which a code point takes at most two, so this lets through every value the server accepts; the server's check
-// (accountChanges in mastodon/accounts.ts) decides, and answers a longer value with its message.
+// which a code point takes at most two, so this lets through every value the server accepts or keeps; the server
+// (accountChanges in mastodon/accounts.ts) decides, answering a longer value with its message, or cutting a field.
 function codeUnitsFor(points: number): number {
   return 2 * points;
 }
@@ -182,7 +183,8 @@ export const SettingsPage: FC<SettingsView> = ({ chrome, account, authorizations
               </label>
               <label>
                 {m.settings.bio}
-                <TextArea name="note" rows={4} maxlength={codeUnitsFor(MAX_NOTE)} value={account.source.note} />
+                {/* The note's limit counts a link as 23 characters, so only its raw bound is a native limit. */}
+                <TextArea name="note" rows={4} maxlength={MAX_RAW_LENGTH} value={account.source.note} />
               </label>
               <fieldset class="pairs">
                 <legend>{m.settings.fields}</legend>

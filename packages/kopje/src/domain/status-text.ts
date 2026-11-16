@@ -1,5 +1,6 @@
 import { LinkifyIt } from "linkify-it";
 
+import { railsBlank } from "../platform/rails-blank";
 import { storedText } from "../platform/stored-bounds";
 import { cutCodeUnits } from "../security/html";
 import { escapeHtml } from "./plain-text";
@@ -47,12 +48,9 @@ export function exceedsRawLength(text: string, spoilerText: string): boolean {
 // StatusLengthValidator::MAX_CHARS: the most a local status's counted length (statusLength) may be.
 export const MAX_STATUS_CHARACTERS = 500;
 
-// ActiveSupport's String#blank? (/\A[[:space:]]*\z/; [[:space:]] under Unicode, as Ruby has it), over the text as
-// it is stored (storedText): U+0085 is blank and U+FEFF is not, where JavaScript's trim() has it the other way.
-const BLANK = /^[\t-\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/;
-
+// ActiveSupport's String#blank? over the text as it is stored (storedText).
 export function blankText(text: string): boolean {
-  return BLANK.test(storedText(text));
+  return railsBlank(storedText(text));
 }
 
 export type MentionRef = { username: string; domain: string | null };
@@ -65,6 +63,11 @@ export type Segment =
 
 export type ParsedText = { segments: Segment[]; mentions: MentionRef[]; tags: string[] };
 
+// The http(s) URLs of `text` as linkify-it finds them; a run past MAX_URL_LENGTH is text.
+function urlMatches(text: string): { index: number; lastIndex: number; raw: string; url: string }[] {
+  return (linkify.match(text) ?? []).filter((match) => match.raw.length <= MAX_URL_LENGTH);
+}
+
 // Throws on text over MAX_RAW_LENGTH: callers check exceedsRawLength first, so nothing unbounded is ever parsed.
 export function parseStatusText(source: string): ParsedText {
   if (source.length > MAX_RAW_LENGTH) {
@@ -73,10 +76,7 @@ export function parseStatusText(source: string): ParsedText {
   const text = source.replace(/\r\n?/g, "\n");
   const segments: Segment[] = [];
   let at = 0;
-  for (const match of linkify.match(text) ?? []) {
-    if (match.raw.length > MAX_URL_LENGTH) {
-      continue;
-    }
+  for (const match of urlMatches(text)) {
     pushEntities(text, at, match.index, segments);
     segments.push({ kind: "url", url: match.url, text: match.raw });
     at = match.lastIndex;
@@ -250,4 +250,41 @@ export function statusLength(text: string, spoilerText: string): number {
         })
         .join("");
   return graphemeLength(spoilerText + countable);
+}
+
+// Onigmo's [[:word:]] under Unicode (Alphabetic, marks, decimal digits, connector punctuation and join controls), as
+// Account::MENTION_RE reads a note. WORD, which the status parser keeps, leaves out letter numbers (U+2163),
+// alphabetic symbols (U+24B6) and U+200C; counting a note with it disagrees with Mastodon's counts on them.
+const NOTE_WORD = "\\p{Alphabetic}\\p{M}\\p{Nd}\\p{Pc}\\p{Join_Control}";
+// Account::MENTION_RE (app/models/account.rb:75-76) itself, USERNAME_RE's /i on the whole: its second group is the
+// username, which NoteLengthValidator keeps of each mention. A domain of one character is a domain.
+const NOTE_MENTION = new RegExp(
+  `(?<![=/${NOTE_WORD}])@(([a-z0-9_]+(?:[.-]+[a-z0-9_]+)*)(?:@[${NOTE_WORD}]+(?:[.-]+[${NOTE_WORD}]+)*)?)`,
+  "giu",
+);
+
+// `text` without its last code point ("" stays "").
+function withoutLastCodePoint(text: string): string {
+  const pair = /[\uD800-\uDBFF][\uDC00-\uDFFF]$/.test(text);
+  return text.slice(0, text.length - (pair ? 2 : 1));
+}
+
+// NoteLengthValidator (app/validators/note_length_validator.rb) for a note within MAX_RAW_LENGTH: the grapheme clusters
+// of the note after FetchLinkCardService::URL_PATTERN's gsub, which makes each URL and the character before it (the
+// pattern's $1, any but the note's first) 23 characters, and then MENTION_RE's, which makes each mention @ and its
+// username, over the text the first left (so a URL's characters can extend a mention's domain). Which runs are URLs is
+// linkify-it's, as parseStatusText finds them (docs/mastodon-deviations.md, Profile credentials).
+export function noteLength(note: string): number {
+  if (note.length > MAX_RAW_LENGTH) {
+    throw new RangeError(`note over ${MAX_RAW_LENGTH} code units`);
+  }
+  let replaced = "";
+  let at = 0;
+  for (const match of urlMatches(note)) {
+    const before = note.slice(at, match.index);
+    replaced += `${withoutLastCodePoint(before)}${"x".repeat(URL_PLACEHOLDER_LENGTH)}`;
+    at = match.lastIndex;
+  }
+  replaced += note.slice(at);
+  return graphemeLength(replaced.replace(NOTE_MENTION, "@$2"));
 }

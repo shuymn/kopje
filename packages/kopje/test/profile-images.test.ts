@@ -7,13 +7,13 @@ import { PROFILE_IMAGE_LIMIT } from "../src/platform/images";
 import type { StoreStub } from "../src/platform/store-client";
 import { bearer, json, sql } from "./api-helpers";
 import { ANIMATED_GIF, PNG_PLAIN } from "./fixtures/images";
-import { bytes, multipartForm, r2Keys, TestCodec } from "./media-helpers";
+import { bytes, mediaForm, multipartForm, r2Keys, TestCodec } from "./media-helpers";
 import { singletonStatistics } from "./plan-audit-store";
 import { aliceWithFollower } from "./profile-fixtures";
 import { scopedToken } from "./read-helpers";
 import { storeWith } from "./setup-helpers";
 import { outbound } from "./status-helpers";
-import { ORIGIN } from "./web-helpers";
+import { csrfOf, ORIGIN, signIn } from "./web-helpers";
 
 // PATCH /api/v1/accounts/update_credentials with avatar and header files (multipart): the body and file bounds, the
 // token checked before the body is read, Paperclip's validations, one transaction with one Update(Person), and the
@@ -231,7 +231,13 @@ describe("update_credentials: avatar and header", () => {
       await answer(await patch(h, h.users.alice.token, formOf([["avatar", padded(PROFILE_IMAGE_LIMIT)]]))),
     ).toEqual({
       status: 422,
-      body: { error: "Validation failed: Avatar file size must be less than 8 MB" },
+      body: {
+        error: "Validation failed: Avatar must be less than 8 MB, Avatar file size must be less than 8 MB",
+        details: {
+          avatar: [{ error: "ERR_LESS_THAN", description: "must be less than 8 MB" }],
+          avatar_file_size: [{ error: "ERR_LESS_THAN", description: "must be less than 8 MB" }],
+        },
+      },
     });
     const avif = new File([AVIF], "a.avif", { type: "image/avif" });
     expect(
@@ -245,7 +251,16 @@ describe("update_credentials: avatar and header", () => {
           ]),
         ),
       ),
-    ).toEqual({ status: 422, body: { error: "Validation failed: Header content type is invalid" } });
+    ).toEqual({
+      status: 422,
+      body: {
+        error: "Validation failed: Header content type is invalid, Header is invalid",
+        details: {
+          header_content_type: [{ error: "ERR_INVALID", description: "is invalid" }],
+          header: [{ error: "ERR_IS INVALID", description: "is invalid" }],
+        },
+      },
+    });
     for (const parts of [
       [["avatar", "x"]],
       [
@@ -336,7 +351,11 @@ describe("update_credentials: upload ownership", () => {
       }),
     );
     const { response, added } = await keysAfter(() => patch(h, h.users.alice.token, formOf([["avatar", png()]])));
-    expect(await answer(response)).toEqual({ status: 422, body: { error: "Validation failed: The upload expired" } });
+    // As Rails answers a base error (M1: an unsaved Account's errors.add(:base, :invalid, message: ...)).
+    expect(await response.clone().text()).toBe(
+      '{"error":"Validation failed: The upload expired","details":{"base":[{"error":"ERR_INVALID","description":"The upload expired"}]}}',
+    );
+    expect(response.status).toBe(422);
     expect(await profile(h.store)).toEqual({ avatar_url: null, header_url: null, display_name: "" });
     expect(await media(h.store)).toEqual([]);
     expect(added).toEqual([]);
@@ -422,7 +441,51 @@ describe("profile image release", () => {
   });
 });
 
+// What the upload pipeline refuses after Paperclip's checks pass, as an unsaved Account's errors: an image the service
+// does not read as its signature's type as the content type's problems, one past IMAGE_MATRIX_LIMIT pixels as the
+// image's invalid with Kopje's message (docs/mastodon-deviations.md, Profile credentials).
+describe("update_credentials: the pipeline's refusals", () => {
+  it("answers them as the image's problems", async () => {
+    const h = await setup();
+    h.codec.infoResult = { format: "image/svg+xml" };
+    expect(await (await patch(h, h.users.alice.token, formOf([["avatar", png()]]))).text()).toBe(
+      '{"error":"Validation failed: Avatar content type is invalid, Avatar is invalid","details":{"avatar_content_type":[{"error":"ERR_INVALID","description":"is invalid"}],"avatar":[{"error":"ERR_IS INVALID","description":"is invalid"}]}}',
+    );
+    const big = await setup();
+    big.codec.infoResult = { format: "image/png", width: 5000, height: 4000 };
+    const response = await patch(big, big.users.alice.token, formOf([["header", png()]]));
+    expect(response.status).toBe(422);
+    expect(await response.text()).toBe(
+      '{"error":"Validation failed: Header dimensions exceed 16777216 pixels","details":{"header":[{"error":"ERR_INVALID","description":"dimensions exceed 16777216 pixels"}]}}',
+    );
+    expect(await profile(big.store)).toEqual({ avatar_url: null, header_url: null, display_name: "" });
+  });
+});
+
 describe("the settings page", () => {
+  // The page shows RecordInvalid's message of the API's problems: Paperclip's, and the pipeline's.
+  it("shows an image's problems as the API words them", async () => {
+    const h = await setup();
+    const browser = await signIn(h);
+    const upload = async (kind: string, file: Uint8Array, type: string) => {
+      const response = await h.request(`/settings/${kind}`, {
+        method: "POST",
+        headers: { cookie: browser.cookie, origin: ORIGIN },
+        body: mediaForm(file, { csrf: await csrfOf(h, browser) }, "f", type),
+      });
+      expect(response.status).toBe(422);
+      return response.text();
+    };
+    expect(await upload("avatar", new TextEncoder().encode("not an image"), "text/plain")).toContain(
+      "Validation failed: Avatar content type is invalid, Avatar is invalid",
+    );
+    h.codec.infoResult = { format: "image/png", width: 5000, height: 4000 };
+    expect(await upload("header", bytes(PNG_PLAIN), "image/png")).toContain(
+      "Validation failed: Header dimensions exceed 16777216 pixels",
+    );
+    expect(await profile(h.store)).toEqual({ avatar_url: null, header_url: null, display_name: "" });
+  });
+
   it("refuses an expired session without reading the body", async () => {
     const h = await setup();
     const response = await h.request("/settings/avatar", {

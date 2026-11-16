@@ -5,6 +5,8 @@ import type { Present } from "../domain/accounts";
 import type { StoredKey } from "../domain/actors";
 import type { AuthFailure, Authorized, Credential, Suspended, UserCredential } from "../domain/auth";
 import type { ResolutionStart } from "../domain/inbox";
+import type { PollReservation } from "../domain/polls";
+import type { RemoteStatusInput } from "../domain/remote-status-reads";
 import type { Resolved } from "../domain/remote-statuses";
 import { webPushKeys } from "../platform/config";
 import { errorFields } from "../platform/error-message";
@@ -28,6 +30,9 @@ export type ApiDeps = {
   // Fetches a URL or user@domain for search with resolve=true (federation/resolve.ts), from what the resolution gate
   // answered; none: answered locally.
   resolve?: (env: Env, query: string, start?: ResolutionStart) => Promise<Resolved>;
+  // Fetches the document of a remote poll's status for its refresh on read (federation/poll-refresh.ts), after the
+  // Store reserved the attempt; none: polls are not refreshed.
+  fetchPoll?: (env: Env, reservation: PollReservation) => Promise<RemoteStatusInput | null>;
   // Asks the Queue for a round of the Store's jobs (a resolved status's quote to verify); cron runs one regardless.
   requestJobs?: (env: Env) => Promise<unknown>;
   // LD-signs an activity as a local author with their wrapped key (a revoke's stamp Delete, the Delete of a public or

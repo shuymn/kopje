@@ -467,6 +467,15 @@ stored bound`. A description of malformed bytes that SQLite counts as fewer char
 points after decoding. A dump taken before 0097 has none of these columns: it restores into a Store at its own
 migrations, which then upgrades, giving every account `''` and `1`. A file built from legacy data writes the defaults.
 
+Poll refresh state (migration `0100_poll_refresh`): `polls.fetched_at` and `refresh_at` are NULL or an integer from
+0 to 2^53 - 1 (epoch milliseconds, the Store's clock), and `revision` is an integer from 0 to 2^53 - 1. Column
+affinity applies first, so numeric text or an integral REAL is stored as the integer. Anything else fails with the
+CHECK's text for the two times and with `polls: revision past its stored bound` for the revision. A restored value is
+kept as dumped: a time after the Store's clock reads as none, so that poll is due for a refresh at its next signed-in
+read, and the next write of the poll issues another revision, the maximum included. A dump taken before 0100 has none
+of these columns: it restores into a Store at its own migrations, which then upgrades, giving every poll NULL, NULL
+and 0. A file built from legacy data writes the defaults.
+
 A report (migration `0054_remote_reports`) names any account as its reporter (`account_id`), once per `uri` and
 reported account, with `status_ids` of at most 100 ids within 2,101 UTF-8 bytes (compact JSON of 18-digit ids), a
 `uri` within 4,096 JSON-escaped UTF-8 bytes and a `comment` within 20,000 UTF-8 bytes (and 5,000 code points up to any
@@ -503,7 +512,7 @@ These are excluded because they must not be restored blindly:
 | `card_images`                                              | Card images, re-encoded with no original kept; a restored Store shows its cards without them (`status_cards` keeps the links)                          |
 | `remote_media*`                                            | The cache of remote media and its R2 ledger: a target starts with an empty cache, shows remote URLs, and fetches them again                            |
 | `backup_media`                                             | The scheduled backup's media index for one bucket ([backup.md](backup.md)); a restored Store starts a fresh media baseline                             |
-| `reply_walk*`                                              | Walks of remote replies collections under way (the context's refresh, migration `0099_reply_walks`): job state; a restored Store starts none           |
+| `reply_walk*`                                              | Walks of remote replies collections under way (context or Create walks, migration `0099_reply_walks`): job state; a restored Store starts none         |
 | `stream_*`                                                 | The streaming API's registry of subscriptions, journal of events and position: state of the open sockets of one object                                 |
 | `_cf_*`, `sqlite_*` (except `sqlite_sequence`)             | Platform and SQLite internals                                                                                                                          |
 

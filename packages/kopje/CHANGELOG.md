@@ -80,11 +80,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   migration and no `wrangler.jsonc` change.
 - Accounts show `avatar_description`, `header_description`, `show_featured`, `show_media` and `show_media_replies`,
   and grouped notifications' partial accounts `avatar_description`, as Mastodon 4.6. `update_credentials` and the
-  settings page set the descriptions, up to 150 characters, which `/api/v2/instance` advertises; the display settings
-  keep their defaults, as nothing sets them yet. Migration `0097_profile_descriptions` adds the five columns with
-  their defaults and two triggers that bound them; the upgrade checks no reference (17 ms for this file in one local
-  run of the migration bench, at a load average of 4 to 7). `wrangler.jsonc`: unchanged. This adds a Store migration,
-  so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+  settings page set the descriptions, up to 150 characters, which `/api/v2/instance` advertises. Migration
+  `0097_profile_descriptions` adds the five columns with their defaults and two triggers that bound them; the upgrade
+  checks no reference (17 ms for this file in one local run of the migration bench, at a load average of 4 to 7).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling back
+  past it needs a point-in-time restore.
 - A signed-in read of a remote public or unlisted status's context fetches its replies collection in the background, as
   Mastodon 4.7.5 does, and answers with `Mastodon-Async-Refresh` while that runs, a header the API exposes to browser
   clients; `GET /api/v1_alpha/async_refreshes/:id` reports the refresh. A refresh reads at most 200 statuses and 100
@@ -95,6 +95,21 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   upgrade checks every reference of the Store (the migration bench's upgrade from `0093_annual_reports` takes 10,877 ms
   with this file and 10,633 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store
   migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+- The local actor publishes its image descriptions as the icon's and image's `summary`, and its display settings as
+  `showFeatured`, `showMedia` and `showRepliesInMedia` with their context terms, a suspended actor's settings too, as
+  Mastodon 4.6 does; a description changed while its image exists sends an `Update` of the actor. No Store migration
+  and no `wrangler.jsonc` change.
+- `GET`, `PATCH` and `PUT /api/v1/profile` serve Mastodon 4.6's profile API, which also sets the display settings
+  (`show_featured`, `show_media`, `show_media_replies`). An update takes what `update_credentials` takes but `source`,
+  avatar and header files included, and answers the Profile. No Store migration and no `wrangler.jsonc` change.
+- Remote accounts' image descriptions (up to 150 characters) and display settings are read from their actors, as
+  Mastodon 4.7 reads them ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Profile credentials); an
+  account stored earlier shows them once its actor is stored again. No Store migration and no `wrangler.jsonc` change.
+- A public or unlisted remote status Kopje stores from a delivery or a user's request has the replies on its own server
+  that its replies collection's first page lists fetched too, as Mastodon 4.7.5 does on `Create`: at most 5 a status and
+  20 a thread, reading at most 10 collection documents. Statuses Kopje stores while fetching replies, quotes or pinned
+  statuses start no such fetch ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Replies collections"). No
+  Store migration and no `wrangler.jsonc` change.
 
 ### Changed
 
@@ -111,6 +126,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   and as it recreates an index, the upgrade checks every reference of the Store (for this file in local runs of the
   migration bench, each started at a load average below 5: 8,891 ms as seeded, and 11,846 to 12,436 ms in three runs
   with one remote account in ten sharing the address of another). `wrangler.jsonc`: unchanged. This adds a Store
+  migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+- A sync of a remote account's pinned posts fetches every listed post Kopje already holds too, as Mastodon does,
+  applying the account's own edits and removing a public or unlisted post whose address answers 404 (no retraction is
+  kept, so the post is stored again if it arrives later) ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
+  "Retractions and edits of remote statuses"). A sync still fetches at most 20 posts and makes at most 552 requests.
+  Migration `0101_pin_refresh` adds a column of `collection_pins_pending` with its default, reading every row for its
+  CHECK; the upgrade checks no reference (the migration bench's upgrade from `0093_annual_reports` takes 11,333 ms
+  with this file and 11,149 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store
   migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
 - Kopje follows the client API of Mastodon v4.7.5, its reference release, where it followed v4.5.11
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). The differences from v4.7.5 are listed there or tracked
@@ -230,6 +253,16 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   history, and a poll's counts are refreshed. As in Mastodon, a document served at another URL than its `id`, or
   reached through a redirect, is taken only as its `id` serves it, and a post whose URL answers 410 is not shown (it
   stays stored). No Store migration and no `wrangler.jsonc` change.
+- Search with `resolve=true` answers a stored post for a URL whose fetch fails only after a 401, 403 or 404, and finds
+  one by its `/@user/id` address too; it answers a stored account only after a server error or no answer, as Mastodon
+  4.7.5. The interaction page shows no stored post for a URL whose fetch fails. No Store migration and no
+  `wrangler.jsonc` change.
+- Reading a remote poll (`GET /api/v1/polls/:id`) while signed in refreshes it from its server when it may be stale,
+  as Mastodon 4.7.5 does, at most once a minute per poll ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
+  "Polls"). Migration `0100_poll_refresh` adds three columns and a trigger to `polls` (the migration bench's upgrade
+  from `0093_annual_reports` takes 18,538 ms with this file and 18,493 ms without it, medians of three runs).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
+  back past it needs a point-in-time restore.
 - An `Update` of a remote post that names no edit time no longer resets the poll counts, quote policy or quote
   approval of a post that was edited, as Mastodon ignores it. No Store migration and no `wrangler.jsonc` change.
 - The public pages show a remote post or bio whose sanitized HTML is longer than 50,000 UTF-16 code units whole,
@@ -267,8 +300,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   author's signature, as a server holding a boost of the quoting status does, revokes the quote as the author's own
   `Delete` does; it was dropped and the quote stayed accepted. No Store migration and no `wrangler.jsonc` change.
 - An account whose imported display name or bio holds malformed UTF-8 is shown within the usual bounds (the display
-  name cut at 2,048 characters, the bio empty past 64 KiB of JSON) instead of growing an answer past its budget. No
-  Store migration and no `wrangler.jsonc` change.
+  name cut at 2,048 characters, the bio empty past 64 KiB of JSON) instead of growing an answer past its budget, and a
+  local account's actor is published within the same bounds at its endpoint and in its `Update`s. No Store migration
+  and no `wrangler.jsonc` change.
 - A status restored from a dump with malformed UTF-8 in its content, source text or content warning is presented
   within those fields' bounds (content and source text empty past 128 KiB of JSON, the warning cut to 2,730
   characters past 16 KiB) in the API, streaming, public pages and its ActivityPub Note; a warning was presented at up
@@ -321,6 +355,30 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   languages, policies, activity, domain blocks and peer search among them) is public only to a request without one
   and varies by `Authorization`, so no cache serves a stored answer to a signed-in or suspended account. No Store
   migration and no `wrangler.jsonc` change.
+- A post's text and content warning are stripped of surrounding whitespace, and a content warning of only whitespace no
+  longer marks the post sensitive, as in Mastodon; a poll choice of only U+0085 is dropped and one of U+FEFF kept; a
+  remote post whose content or content warning is only whitespace reads its language map; a remote account's profile
+  fields are shown without surrounding whitespace. No Store migration and no `wrangler.jsonc` change.
+- `PUT /api/v1/media/:id` answers 404 for media attached to a post before it checks the parameters, as Mastodon does.
+  No Store migration and no `wrangler.jsonc` change.
+- `PATCH /api/v1/accounts/update_credentials` answers validation errors with Mastodon's `details` and messages, in
+  the order Mastodon validates: an avatar or header that is too large or not an image is reported as Paperclip reports
+  it, and an expired upload as an error of the account. At most 100 invalid attribution domains are listed. A profile
+  field's name or value longer than 255 characters is cut to 255 instead of refused (a change from earlier versions),
+  surrounding whitespace is stripped as Ruby strips it, a field sent without its `name` or `value` parameter, or with
+  either as JSON `null`, is dropped, and a value without a label is refused, as Mastodon reads fields. An attribution
+  domain with a label of 64 or more characters as written is refused, as Mastodon refuses it. A profile note is
+  counted as Mastodon counts it (characters as shown, a link as 23, a remote mention by its username), so a note Kopje
+  refused for length may now be saved; a note longer than 10,000 UTF-16 code units as sent is refused, as a post's
+  text is, and the settings page's bio takes up to that many. No Store migration and no `wrangler.jsonc` change.
+- An actor document whose `inbox` is missing, null or blank is refused, as Mastodon refuses it: its activities are
+  answered without effect and nothing of it is stored. Kopje stored such an actor with no inbox (or, for an empty
+  string, with a URL resolved from the document's own), and a refetch of a stored actor cleared its inbox. No Store
+  migration and no `wrangler.jsonc` change.
+- An `Update(Person)` applies the profile and handle the actor it carries states, so a rename or a profile change no
+  longer waits for the sender's actor cache (3 minutes on Mastodon). Keys and inboxes still come only from the actor
+  document Kopje fetches ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts). No Store migration and
+  no `wrangler.jsonc` change.
 - API answers carry Mastodon's `Content-Security-Policy`, `X-Frame-Options` and `Referrer-Policy`, and Mastodon's
   deprecated routes (`/api/v1/instance`, `/api/v1/filters`, `/api/v1/suggestions`, `/api/v1/trends`,
   `/api/v1/accounts/:id/identity_proofs`) its `Deprecation` header. No Store migration and no `wrangler.jsonc` change.

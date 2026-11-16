@@ -462,7 +462,10 @@ export const ROUTES: readonly Route[] = [
   put("/api/v1/media/:id", { scope: "write:media" }, media.updateMedia),
   patch("/api/v1/media/:id", { scope: "write:media" }, media.updateMedia),
   del("/api/v1/media/:id", { scope: "write:media" }, media.deleteMedia),
-  // Profile images (mastodon/accounts.ts); they are set from the settings page.
+  // The profile (mastodon/accounts.ts): Mastodon 4.6's profile API, and the removal of its images.
+  get("/api/v1/profile", { scope: ["profile", "read:accounts"] }, accounts.getProfile),
+  patch("/api/v1/profile", { scope: "write:accounts" }, accounts.updateProfile),
+  put("/api/v1/profile", { scope: "write:accounts" }, accounts.updateProfile),
   del("/api/v1/profile/avatar", { scope: "write:accounts" }, accounts.removeAvatar),
   del("/api/v1/profile/header", { scope: "write:accounts" }, accounts.removeHeader),
 

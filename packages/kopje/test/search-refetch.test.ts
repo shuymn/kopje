@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { QUOTE_HOPS } from "../src/domain/quotes";
 import { sql } from "./api-helpers";
@@ -69,6 +69,10 @@ const row = (t: Setup, id: string) =>
   ).then((rows) => rows[0]);
 
 describe("search of a stored status applies the served document as an Update", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("applies a newer version as an edit: content, edited_at and the history", async () => {
     const { t, note, id } = await stored();
     serve(t, { ...note, content: "<p>edited</p>", updated: at(60) });
@@ -78,11 +82,16 @@ describe("search of a stored status applies the served document as an Update", (
     expect(history.body.map((version) => version.content)).toEqual([note.content, "<p>edited</p>"]);
   });
 
+  // #1655: the poll is marked fetched at the Store's time, as by a delivered Update (polls.ts markPollFetched).
   it("refreshes a never-edited poll's counts from a document that names no version; edited_at stays null", async () => {
     const { t, note, id } = await stored(poll(0));
+    expect(await sql(t.store, "SELECT fetched_at FROM polls")).toEqual([{ fetched_at: null }]);
     serve(t, { ...note, ...poll(3) });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW + 1000);
     expect((await search(t, note.id)).body.statuses).toMatchObject([{ id, edited_at: null, poll: { votes_count: 3 } }]);
     expect(await row(t, id)).toMatchObject({ content: note.content, edited_at: null, votes: 3, edits: 0 });
+    expect(await sql(t.store, "SELECT fetched_at FROM polls")).toEqual([{ fetched_at: NOW + 1000 }]);
   });
 
   // ID-7: an older served version changes nothing; the fixture's newer one does (the branch ran).
