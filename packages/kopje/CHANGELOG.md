@@ -110,6 +110,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   20 a thread, reading at most 10 collection documents. Statuses Kopje stores while fetching replies, quotes or pinned
   statuses start no such fetch ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Replies collections"). No
   Store migration and no `wrangler.jsonc` change.
+- Changing a post's quote policy, through `PUT /api/v1/statuses/:id` or `/interaction_policy`, sends `status.update`
+  to the streaming clients that show it, as Mastodon does: through `/interaction_policy`, not to an account that only
+  a mention of it shows it to. No Store migration and no `wrangler.jsonc` change.
 
 ### Changed
 
