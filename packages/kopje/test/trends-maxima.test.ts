@@ -420,12 +420,12 @@ const ADMIN_PUBLISHER_MAX = jsonBytes(PUBLISHER);
 describe("link trends maxima (RES-3)", () => {
   it("pins the derived maxima, each page within its answer", () => {
     expect({ TREND_LINK_MAX, ADMIN_LINK_MAX, ADMIN_PUBLISHER_MAX }).toEqual({
-      TREND_LINK_MAX: 10_268,
+      TREND_LINK_MAX: 10_296,
       ADMIN_LINK_MAX: 4_217,
       ADMIN_PUBLISHER_MAX: 325,
     });
     const page = 2 + TREND_LINKS_MAX_LIMIT * TREND_LINK_MAX + (TREND_LINKS_MAX_LIMIT - 1);
-    expect(page).toBe(205_381);
+    expect(page).toBe(205_941);
     expect(page).toBeLessThanOrEqual(ARRAY_ANSWER_BYTES);
     expect(ADMIN_TREND_LINKS_LIMIT * (ADMIN_LINK_MAX + 1) + 1).toBeLessThanOrEqual(ANSWER_BYTES);
     expect(ADMIN_TREND_PUBLISHERS_LIMIT * (ADMIN_PUBLISHER_MAX + 1) + 1).toBeLessThanOrEqual(ANSWER_BYTES);
@@ -482,7 +482,7 @@ describe("link trends maxima (RES-3)", () => {
     console.log(JSON.stringify({ event: "trends-link-fill", unit, page: jsonBytes(page.value.items), adminUnit }));
     expect(unit).toBeLessThanOrEqual(TREND_LINK_MAX);
     expect(adminUnit).toBeLessThanOrEqual(ADMIN_LINK_MAX);
-    expect(jsonBytes(page.value.items)).toBeLessThanOrEqual(205_381);
+    expect(jsonBytes(page.value.items)).toBeLessThanOrEqual(205_941);
   }, 60_000);
 });
 

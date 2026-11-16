@@ -3,8 +3,11 @@ import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import { STAGING_READ } from "../src/domain/deliveries";
+import type { RemoteActorInput } from "../src/domain/remote-actors";
 import type { RemoteStatusInput } from "../src/domain/remote-status-reads";
+import type { Resolved } from "../src/domain/remote-statuses";
 import { MAX_RETRACTIONS_PER_ACTOR } from "../src/domain/retractions";
+import { sha256Hex } from "../src/security/tokens";
 import { bearer, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD, runStoreJobs, drainDeliveries } from "./helpers";
@@ -32,9 +35,10 @@ import { community, remoteAccount, seedReceipts } from "./status-helpers";
 // sender, delivered in any order and again), L's favourites and boosts of R's status, Kopje's job rounds and its
 // delivery steps run through the Store and the API; after every step the Store's projection and each answer must equal
 // the policy's (test/status-delete-model.ts), and once everything has settled Kopje must hold the author's final
-// state, except where an accepted risk names the messages that differ (`exception`). A second property sends what
-// Mastodon would not: forgeries, stale, version-less and future Updates, the retraction cap and replays across the
-// retraction TTL.
+// state, except where an accepted risk names the messages that differ (`exception`). Every status is a poll, whose
+// votes the author's server sends as Updates from a job 3 minutes later (`race` puts an edit between one and its
+// delivery), and L searches R's statuses, which R's server serves from its render cache. A second property sends what Mastodon would not: forgeries, stale, version-less and future Updates, the
+// retraction cap and replays across the retraction TTL.
 
 const AS = "https://www.w3.org/ns/activitystreams";
 const PUBLIC = `${AS}#Public`;
@@ -153,6 +157,7 @@ async function project(w: World) {
         withdrawn: number;
         content: string;
         sensitive: number;
+        tally: number | null;
         version: string | null;
         edited_at: string | null;
         linked: number;
@@ -162,7 +167,9 @@ async function project(w: World) {
         reblogs_count: number;
         replies_count: number;
       }>(
-        `SELECT s.id, s.uri, a.uri AS author, s.withdrawn, s.content, s.sensitive, s.remote_version AS version,
+        `SELECT s.id, s.uri, a.uri AS author, s.withdrawn, s.content, s.sensitive,
+					(SELECT json_extract(p.tallies, '$[0]') FROM polls p WHERE p.status_id = s.id) AS tally,
+					s.remote_version AS version,
 					s.edited_at, s.in_reply_to_id IS NOT NULL AS linked,
 					(SELECT json_group_array(json_object('content', e.content, 'sensitive', e.sensitive, 'media', e.media_json,
 						'at', e.created_at)) FROM (SELECT * FROM status_edits WHERE status_id = s.id ORDER BY id) e) AS history,
@@ -233,6 +240,7 @@ async function project(w: World) {
       author: s.author,
       withdrawn: s.withdrawn === 1,
       snapshot: { content: letter(s.content), sensitive: s.sensitive === 1, media: JSON.parse(s.media) as string[] },
+      tally: s.tally,
       version: s.version,
       editedAt: s.edited_at,
       history: (JSON.parse(s.history) as { content: string; sensitive: number; media: string; at: string }[]).map(
@@ -325,6 +333,7 @@ function expected(w: World) {
         author: s.author,
         withdrawn: s.withdrawn,
         snapshot: shown(s.snapshot),
+        tally: s.tally,
         version: s.version,
         editedAt: s.editedAt,
         history: s.history.map((v) => ({ snapshot: shown(v.snapshot), at: v.at })),
@@ -417,6 +426,15 @@ function input(o: Obj): RemoteStatusInput {
           },
         ]
       : [],
+    poll: {
+      options: ["yes", "no"],
+      tallies: [o.tally, 0],
+      multiple: false,
+      expiresAt: null,
+      closedNow: false,
+      votersCount: null,
+      cut: [],
+    },
     raw: "{}",
   };
 }
@@ -450,10 +468,18 @@ function activityOf(actor: string, msg: Msg) {
 const describeMsg = (actor: string, msg: Msg) =>
   `${actor.split("/").at(-1)} ${msg.type}${msg.type === "Delete" && msg.proven ? " (proven)" : ""} ${
     msg.type === "Delete" ? msg.object : msg.object.uri
-  }${msg.type === "Delete" ? "" : ` ${JSON.stringify(msg.object.snapshot)} p=${msg.object.published} u=${msg.object.updated}`}`;
+  }${msg.type === "Delete" ? "" : ` ${JSON.stringify(msg.object.snapshot)} t=${msg.object.tally} p=${msg.object.published} u=${msg.object.updated}`}`;
 
 async function receive(w: World, actor: string, msg: Msg, label: string): Promise<Answer> {
   log(w, `${label} ${describeMsg(actor, msg)} at +${w.clock - NOW}`);
+  const held = msg.type === "Update" ? w.policy.statuses.get(msg.object.uri) : undefined;
+  if (msg.type === "Update" && msg.object.updated === null && held !== undefined && held.editedAt !== null) {
+    tally(w.stats, "Update without a version of an edited status");
+    // Only older counts show whether it was refused (an implicit update of equal counts changes nothing either).
+    if (msg.object.tally !== held.tally) {
+      tally(w.stats, "Update without a version of an edited status, other counts");
+    }
+  }
   const result = await storeReceive(w.store, actor, activityOf(actor, msg), w.clock);
   const predicted = w.policy.receive(actor, msg, w.clock);
   const actual = {
@@ -467,6 +493,83 @@ async function receive(w: World, actor: string, msg: Msg, label: string): Promis
   tally(w.stats, `${msg.type} ${result.reason}`);
   await check(w, { actual, predicted });
   return predicted;
+}
+
+// R's actor as a search fetches it. Its revision never holds (null: no stored row expected), so the Store keeps R's
+// stored row (storeResolved's superseded document) and the search tests only the status.
+const R_ACTOR: RemoteActorInput = {
+  uri: R,
+  claim: { username: "r", domain: new URL(R_ORIGIN).host },
+  confirmed: null,
+  actorType: "Person",
+  displayName: "",
+  note: "",
+  url: null,
+  avatarUrl: null,
+  headerUrl: null,
+  locked: false,
+  discoverable: null,
+  indexable: false,
+  inboxUrl: null,
+  sharedInboxUrl: null,
+  published: null,
+  keys: [],
+  emojiTags: [],
+  raw: "{}",
+  movedTo: null,
+};
+
+// L's search of `uri` with resolve=true, through the Store's resolution (the Worker's fetch replaced by what R's
+// server serves now, parsed as `input` stands for): a 404 fetches nothing (`none`). Its answer and the Store must
+// agree with the policy's refetch.
+async function search(w: World, uri: string): Promise<void> {
+  const served = w.peer.serve(uri, w.clock);
+  const cached =
+    served !== "gone" &&
+    JSON.stringify(served) !== JSON.stringify(w.peer.statuses.get(uri)!.state === "posted" ? current(w, uri) : null);
+  log(
+    w,
+    `L searches ${uri} at +${w.clock - NOW}: ${served === "gone" ? "404" : `${cached ? "cached " : ""}${JSON.stringify(served.snapshot)} t=${served.tally} u=${served.updated}`}`,
+  );
+  tally(
+    w.stats,
+    served === "gone" ? "search 404" : cached ? "search served a cached copy" : "search served the current",
+  );
+  const resolved: Resolved =
+    served === "gone" ? { kind: "none" } : { kind: "status", status: input(served), author: R_ACTOR, revision: null };
+  const result = await w.store.resolveSearch(BUILD, {
+    credential: { tokenHash: await sha256Hex(w.l.token), scope: "read:search", now: w.clock },
+    query: uri,
+    resolved,
+    now: w.clock,
+    origin: LOCAL,
+    present: { origin: LOCAL },
+  });
+  if (result.status !== "ok") {
+    throw new Error(`search refused: ${result.status}`);
+  }
+  w.policy.refetch(R, served, w.clock);
+  const actual = result.value.statuses.map((s) => s.uri);
+  w.trace.push(`  -> ${JSON.stringify(actual)}`);
+  await check(w, { actual, predicted: w.policy.shown(uri) ? [uri] : [] });
+}
+
+// What R's server renders for `uri` now (its cache aside).
+function current(w: World, uri: string): Obj {
+  const status = w.peer.statuses.get(uri)!;
+  if (status.state !== "posted") {
+    throw new Error(`${uri} is not posted`);
+  }
+  const last = status.versions.at(-1)!;
+  return {
+    uri,
+    attributedTo: R,
+    snapshot: last.snapshot,
+    tally: status.tally,
+    published: status.published,
+    updated: status.versions.length > 1 ? last.at : null,
+    inReplyTo: PARENTS.get(uri) ?? null,
+  };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -730,6 +833,7 @@ type Action =
   | { k: "post"; s: number; snapshot: Snapshot }
   | { k: "edit"; s: number; snapshot: Snapshot }
   | { k: "delete"; s: number; proven: boolean }
+  | { k: "vote" | "search" | "race"; s: number }
   | { k: "deliver" | "redeliver" | "confirm" | "complete"; i: number }
   | { k: LocalKind }
   | { k: "jobs" | "claim" | "send" }
@@ -757,6 +861,9 @@ const actionArb: fc.Arbitrary<Action> = fc.oneof(
   { arbitrary: fc.record({ k: fc.constant("post" as const), s: statusArb, snapshot: snapshotArb }), weight: 2 },
   { arbitrary: fc.record({ k: fc.constant("edit" as const), s: statusArb, snapshot: snapshotArb }), weight: 4 },
   { arbitrary: fc.record({ k: fc.constant("delete" as const), s: statusArb, proven: fc.boolean() }), weight: 3 },
+  { arbitrary: fc.record({ k: fc.constant("vote" as const), s: statusArb }), weight: 2 },
+  { arbitrary: fc.record({ k: fc.constant("search" as const), s: statusArb }), weight: 4 },
+  { arbitrary: fc.record({ k: fc.constant("race" as const), s: statusArb }), weight: 2 },
   indexed("deliver", 10),
   indexed("redeliver", 2),
   simple("favourite", 2),
@@ -794,6 +901,17 @@ async function act(w: World, a: Action): Promise<void> {
       if (peer.delete(POOL[a.s]!, w.clock, a.proven)) {
         log(w, `R deletes ${POOL[a.s]}${a.proven ? " (proven)" : ""}`);
       }
+      return;
+    case "vote":
+      if (peer.vote(POOL[a.s]!, w.clock)) {
+        log(w, `a vote in ${POOL[a.s]}`);
+      }
+      return;
+    case "search":
+      await search(w, POOL[a.s]!);
+      return;
+    case "race":
+      await race(w, a.s);
       return;
     case "deliver":
       if (peer.outbox.length > 0) {
@@ -847,12 +965,47 @@ async function act(w: World, a: Action): Promise<void> {
       return;
     }
     case "tick":
-      // Mastodon retries a message for about 3.1 days at most: no undelivered one is held longer.
+      // Mastodon retries a message for about 3.1 days at most: no undelivered one is held longer. The poll Updates due
+      // meanwhile run at their time.
       if (peer.oldest(w.clock + a.ms) <= RETRY_WINDOW_MS) {
+        distribute(w, w.clock + a.ms);
         w.clock += a.ms;
         log(w, `tick ${a.ms}`);
       }
       return;
+  }
+}
+
+// The D14 ordering with counts that differ (ID-7): a vote whose Update R's poll job writes while the status is
+// unedited (no `updated`), then another vote and an edit, whose Update (with the newer counts) is delivered at once; the
+// job's Update, delivered later, names no version of an edited status and older counts. Each step is R's as the actions
+// take it, so a status not posted, a tick past the retry window or an edit refused leaves the rest as it falls.
+async function race(w: World, s: number): Promise<void> {
+  const uri = POOL[s]!;
+  const status = w.peer.statuses.get(uri)!;
+  if (status.state !== "posted") {
+    return;
+  }
+  await act(w, { k: "vote", s });
+  await act(w, { k: "tick", ms: 6 * MINUTE });
+  await act(w, { k: "vote", s });
+  const last = status.versions.at(-1)!.snapshot;
+  const content = ({ A: "B", B: "C", C: "A", "": "A" } as const)[last.content];
+  await act(w, { k: "edit", s, snapshot: { ...last, content } });
+  const edit = w.peer.outbox.findIndex(
+    (sent) => sent === w.peer.sent.at(-1) && sent.msg.id.startsWith(`${uri}#updates/`),
+  );
+  if (edit >= 0) {
+    await deliverSent(w, w.peer.take(edit).msg, "deliver");
+  }
+}
+
+// R's server runs the poll Updates due by `until` (Peer.distribute).
+function distribute(w: World, until: number): void {
+  const before = w.peer.sent.length;
+  w.peer.distribute(until);
+  for (const sent of w.peer.sent.slice(before)) {
+    log(w, `R's poll job sends ${describeMsg(R, sent.msg)} at +${sent.at - NOW}`);
   }
 }
 
@@ -909,8 +1062,9 @@ async function settleKopje(w: World): Promise<void> {
 
 // The accepted risk of an Update that reaches Kopje before its Create, more than 24 hours after publication
 // (Mastodon parity: update.rb:36 drops it through object_too_old?): Kopje dropped it as `unknown-object` and stored the
-// earlier version the Create carried. Allowed only for that status, while every newer version of it was answered
-// `unknown-object` each time it arrived, and the version Kopje holds is one the author sent.
+// earlier version the Create carried. Allowed only for that status, while every message sent later with a newer version
+// of it (an edit, or a vote's Update naming the edit) was answered `unknown-object` each time it arrived, and the
+// version Kopje holds is one the author sent.
 function updateBeforeCreate(w: World, uri: string, held: { snapshot: Shown; version: string | null }): boolean {
   const versions = w.peer.sent.filter((s) => s.msg.type !== "Delete" && s.msg.object.uri === uri);
   const mine = versions.find(
@@ -922,7 +1076,8 @@ function updateBeforeCreate(w: World, uri: string, held: { snapshot: Shown; vers
   if (mine === undefined) {
     return false;
   }
-  const newer = versions.filter((s) => s.at > mine.at);
+  const versionOf = (msg: Msg) => (msg.type === "Delete" ? null : iso(msg.object.updated ?? msg.object.published!));
+  const newer = versions.filter((s) => s.at > mine.at && versionOf(s.msg) !== held.version);
   return (
     newer.length > 0 &&
     newer.every((s) => {
@@ -1005,7 +1160,9 @@ async function run(actions: readonly Action[], order: readonly number[] = []): P
     await act(w, a);
   }
   w.trace.push("-- settle");
-  // Every message the author sent is delivered at least once, in a generated order.
+  // The poll Updates still scheduled run, and every message the author sent is delivered at least once, in a
+  // generated order.
+  distribute(w, Number.POSITIVE_INFINITY);
   for (let k = 0; w.peer.outbox.length > 0; k++) {
     await deliverSent(w, w.peer.take((order[k] ?? 0) % w.peer.outbox.length).msg, "deliver");
   }
@@ -1064,6 +1221,7 @@ type InAction =
       // attributedTo: the actor itself, or R.
       own: boolean;
       snapshot: Snapshot;
+      tally: number;
       // Offsets from the clock (null: the field is absent).
       published: number | null;
       updated: number | null;
@@ -1081,6 +1239,7 @@ const inArb: fc.Arbitrary<InAction> = fc.oneof(
       s: fc.constantFrom(0, 0, 1, 2),
       own: fc.boolean(),
       snapshot: snapshotArb,
+      tally: fc.nat(2),
       published: fc.constantFrom(0, -MINUTE, -2 * HOUR, -DAY, -25 * HOUR, null),
       updated: fc.constantFrom(null, -10 * MINUTE, -MINUTE, 0, MINUTE, 6 * MINUTE, 10 * MINUTE),
       proven: fc.boolean(),
@@ -1110,6 +1269,7 @@ function inMessage(w: World, a: InAction & { k: "in" }): { actor: string; msg: M
     uri,
     attributedTo: a.own ? actor : R,
     snapshot: a.snapshot,
+    tally: a.tally,
     published: a.published === null ? null : w.clock + a.published,
     updated: a.updated === null ? null : w.clock + a.updated,
     inReplyTo: PARENTS.get(uri) ?? null,
@@ -1262,6 +1422,114 @@ describe("status deletes: the author's orders", () => {
     ]);
     expect(answersOf(w, "Update", S1)).toEqual(["updated", "stale"].toReversed());
     expect((await project(w)).statuses.find((s) => s.uri === S1)?.snapshot).toEqual(shown(A));
+  });
+
+  // ID-7: a vote's Update names no version while the status was never edited, and refreshes the counts; one its job
+  // wrote before the edit and delivered after it changes nothing (Kopje holds the newer counts a later vote's Update
+  // carried, which names the edit's version). Each job runs 3 minutes after its vote (the ticks).
+  it("a vote's Update without a version: applied before any edit, not after one", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "vote", s: 0 },
+      { k: "tick", ms: 6 * MINUTE },
+      deliver(),
+      { k: "vote", s: 0 },
+      { k: "vote", s: 0 },
+      { k: "tick", ms: 6 * MINUTE },
+      { k: "edit", s: 0, snapshot: B },
+      { k: "vote", s: 0 },
+      { k: "tick", ms: 6 * MINUTE },
+      deliver(1),
+      deliver(1),
+      deliver(0),
+    ]);
+    expect(answersOf(w, "Update", S1)).toEqual(["poll-updated", "stale", "edited", "poll-updated"]);
+    expect(w.stats["Update without a version of an edited status"]).toBe(1);
+    expect((await project(w)).statuses.find((s) => s.uri === S1)?.tally).toBe(4);
+  });
+
+  // VoteService schedules the poll's Update 3 minutes after the vote (vote_service.rb:48), and the job writes it from
+  // the status as it is when it runs (distribute_poll_update_worker.rb:9-22): an edit within the 3 minutes is in it, a
+  // vote while it waits adds only its count (the job's lock, :7), an edit after it is not in it, and a status deleted
+  // before it runs sends nothing.
+  it("a vote's Update is written when its job runs, 3 minutes after the vote", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      { k: "post", s: 2, snapshot: A },
+      deliver(),
+      deliver(),
+      { k: "vote", s: 0 },
+      { k: "tick", ms: 2 * MINUTE },
+      { k: "vote", s: 0 },
+      { k: "edit", s: 0, snapshot: B },
+      { k: "tick", ms: 2 * MINUTE },
+      { k: "edit", s: 0, snapshot: C },
+      { k: "vote", s: 2 },
+      { k: "delete", s: 2, proven: false },
+      { k: "tick", ms: 6 * MINUTE },
+    ]);
+    const edit = w.peer.sent.find((s) => s.msg.type === "Update" && s.msg.object.snapshot.content === "B")!;
+    const votes = w.peer.sent.flatMap((s) =>
+      s.msg.type === "Update" && s.msg.id.includes("#votes/")
+        ? [{ uri: s.msg.object.uri, content: s.msg.object.snapshot.content, tally: s.msg.object.tally, at: s.at }]
+        : [],
+    );
+    // The first vote is R's write after both Creates; its job runs 3 minutes later.
+    const voted = w.peer.sent[1]!.at + 1000;
+    expect(votes).toEqual([{ uri: S1, content: "B", tally: 2, at: voted + 3 * MINUTE }]);
+    expect(edit.msg.type === "Update" && edit.msg.object.updated).toBe(edit.at);
+    // The edit B carried the same counts: the job's Update changes nothing.
+    expect(answersOf(w, "Update", S1)).toEqual(["edited", "stale", "edited"]);
+  });
+
+  // ID-7: L searches s1 (R's server renders it, unedited, and caches it), a vote and R's edit follow and the edit's
+  // Update is delivered; a search within the cache window reads the cached copy (no `updated`, no votes), which changes
+  // nothing; one after the window reads the current version, the same Kopje holds.
+  it("a search of a cached copy from before the delivered edit and a vote", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "search", s: 0 },
+      { k: "vote", s: 0 },
+      { k: "edit", s: 0, snapshot: B },
+      deliver(1),
+      { k: "tick", ms: MINUTE },
+      { k: "search", s: 0 },
+      { k: "tick", ms: 6 * MINUTE },
+      { k: "search", s: 0 },
+    ]);
+    expect(w.stats["search served a cached copy"]).toBe(1);
+    expect(w.stats["search served the current"]).toBe(2);
+    expect((await project(w)).statuses.find((s) => s.uri === S1)).toMatchObject({ snapshot: shown(B), tally: 1 });
+  });
+
+  // ID-7: a search reads R's edit before its Update arrives, and applies it with its history; the Update then names
+  // the version Kopje holds.
+  it("a search applies an edit its Update has not brought", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "edit", s: 0, snapshot: B },
+      { k: "search", s: 0 },
+      deliver(),
+    ]);
+    expect(answersOf(w, "Update", S1)).toEqual(["stale"]);
+    expect((await project(w)).statuses.find((s) => s.uri === S1)?.history).toHaveLength(2);
+  });
+
+  // A search finds a status before its Create and stores it; R's deleted status answers 404 and stays as Kopje holds it.
+  it("a search stores a status before its Create, and a 404 changes nothing", async () => {
+    const w = await run([
+      { k: "post", s: 2, snapshot: A },
+      { k: "search", s: 2 },
+      { k: "delete", s: 2, proven: false },
+      { k: "search", s: 2 },
+      deliver(0),
+      deliver(0),
+    ]);
+    expect(w.stats["search 404"]).toBe(1);
+    expect(answersOf(w, "Create", S3)).toEqual(["duplicate"]);
   });
 
   it("a metadata Update, then an older content Update", async () => {
@@ -1443,6 +1711,7 @@ const inbox = (
   s,
   own: true,
   snapshot: A,
+  tally: 0,
   published: 0,
   updated: null,
   proven: false,
@@ -1491,7 +1760,7 @@ describe("status deletes: forgeries and the retraction's scope", () => {
     const msg: Msg = {
       type: "Create",
       id: `${FRESH}/activity`,
-      object: { uri: FRESH, attributedTo: F, snapshot: A, published: NOW, updated: null, inReplyTo: null },
+      object: { uri: FRESH, attributedTo: F, snapshot: A, tally: 0, published: NOW, updated: null, inReplyTo: null },
     };
     expect((await receive(w, F, msg, "receive")).reason).toBe("created");
   });
@@ -1583,7 +1852,7 @@ describe("status deletes: the cap and the TTL", () => {
       {
         type: "Update",
         id: `${S1}#late`,
-        object: { uri: S1, attributedTo: R, snapshot: B, published: NOW, updated: w.clock, inReplyTo: null },
+        object: { uri: S1, attributedTo: R, snapshot: B, tally: 0, published: NOW, updated: w.clock, inReplyTo: null },
       },
       "late",
     );
@@ -1633,7 +1902,7 @@ async function boostedWithReceipts(w: World): Promise<{ original: string; boost:
   const create: Msg = {
     type: "Create",
     id: `${S1}/activity`,
-    object: { uri: S1, attributedTo: R, snapshot: A, published: NOW, updated: null, inReplyTo: null },
+    object: { uri: S1, attributedTo: R, snapshot: A, tally: 0, published: NOW, updated: null, inReplyTo: null },
   };
   await storeReceive(w.store, R, activityOf(R, create), NOW);
   const original = await s1Id(w);

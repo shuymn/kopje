@@ -195,8 +195,8 @@ describe("link trends in dumps", () => {
       // The public card's parent made unlisted, then private.
       [statusLine(original), statusLine(original).replace("'public'", "'unlisted'")],
       [statusLine(original), statusLine(original).replace("'public'", "'private'")],
-      // The unlisted parent's card made public.
-      [cardLine(unlisted), cardLine(unlisted).replace(/,0\);$/, ",1);")],
+      // The unlisted parent's card made public (public, then unverified_author_account_id, end the row).
+      [cardLine(unlisted), cardLine(unlisted).replace(/,0,NULL\);$/, ",1,NULL);")],
       // A trend link past its domain bound.
       ["'news.example','en',2.0", "'News.example','en',2.0"],
     ];

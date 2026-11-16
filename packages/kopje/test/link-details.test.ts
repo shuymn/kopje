@@ -500,3 +500,27 @@ describe("link details: the link type (0071_link_trends)", () => {
     });
   });
 });
+
+describe("link details: the creator (fediverse:creator, Mastodon 4.6)", () => {
+  const meta = (attribute: string, key: string, content: string) => `<meta ${attribute}="${key}" content="${content}">`;
+
+  it("reads the first meta by property or name in any case, as the scan decoded it once", async () => {
+    for (const [html, creator] of [
+      [`<title>t</title>${meta("property", "fediverse:creator", "@alice@kopje.test")}`, "@alice@kopje.test"],
+      [`<title>t</title>${meta("name", "Fediverse:Creator", "alice")}`, "alice"],
+      [`<title>t</title>${meta("PROPERTY", "FEDIVERSE:CREATOR", "bob")}`, "bob"],
+      // The first only, whichever attribute names it.
+      [
+        `<title>t</title>${meta("name", "fediverse:creator", "first")}${meta("property", "fediverse:creator", "x")}`,
+        "first",
+      ],
+      // Decoded once by the scan, never a second time (Nokogiri's attribute, no HTMLEntities).
+      [`<title>t</title>${meta("property", "fediverse:creator", "a&amp;amp;b")}`, "a&amp;b"],
+      ["<title>t</title>", null],
+      // A first meta without content ends the lookup, as Mastodon's nil does.
+      [`<title>t</title><meta property="fediverse:creator">${meta("name", "fediverse:creator", "x")}`, null],
+    ] as const) {
+      expect((await details(html)).creator, html).toBe(creator);
+    }
+  });
+});

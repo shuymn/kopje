@@ -106,6 +106,7 @@ import {
   ANNUAL_REPORT_ARCHETYPES,
   annualReportsMigrationSql,
   WRAPSTODON_SETTING_BOUNDS,
+  cardAttributionMigrationSql,
   PROFILE_DESCRIPTION_BYTES,
   PROFILE_DESCRIPTION_LIMIT,
 } from "../src/platform/stored-bounds";
@@ -12945,6 +12946,114 @@ describe("0097_profile_descriptions", () => {
         }
         expect(read(column)).toEqual({ v: 0, t: "integer" });
       }
+    });
+  });
+});
+
+describe("0098_card_attribution", () => {
+  const NAME = "0098_card_attribution";
+  const at = NAMES.indexOf(NAME);
+  const [ACCOUNT, STATUS, PENDING] = ["100000000000000001", "100000000000000002", "100000000000000003"];
+  const REFUSED = /status_cards: a value past its stored bound/;
+  const AUTHOR = "123456789012345678";
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+
+  it("follows 0097, checks every reference, and writes the generator's statements and triggers", () => {
+    expect(NAMES[at - 1]).toBe("0097_profile_descriptions");
+    // Its triggers read main.statuses, a name the narrow dialect of foreignKeys: 'unchanged' refuses.
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    const sql = MIGRATIONS[at]?.sql ?? "";
+    expect(statements(sql)).toBe(
+      statements(
+        `${cardAttributionMigrationSql()}\n${emitTriggers(["status_cards_bounds_insert", "status_cards_bounds_update"])}`,
+      ),
+    );
+    for (const [, pattern] of sql.matchAll(/GLOB\s+'([^']*)'/g)) {
+      expect(new TextEncoder().encode(pattern).length).toBeLessThanOrEqual(50);
+    }
+  });
+
+  it("keeps every row as it was with no author, then holds the author to 18 digits on an attached row", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://remote.example/users/a', 'a', 'remote.example')",
+        ACCOUNT,
+      );
+      for (const id of [STATUS, PENDING]) {
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+					VALUES (?1, 'https://remote.example/s/' || ?1, ?2, 'public', 'x', '2026-11-16T00:00:00.000Z')`,
+          id,
+          ACCOUNT,
+        );
+      }
+      sql.exec(
+        `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at, final_url, public)
+				VALUES (?, 'https://a.example/', 5, 7, 't', 9, 'https://a.example/', 1)`,
+        STATUS,
+      );
+      sql.exec(
+        "INSERT INTO status_cards (status_id, url, due_at, enqueued_at, generation) VALUES (?, 'https://a.example/', 5, 5, 7)",
+        PENDING,
+      );
+      const before = sql.exec("SELECT * FROM status_cards ORDER BY status_id").toArray();
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      expect(sql.exec("SELECT * FROM status_cards ORDER BY status_id").toArray()).toEqual(
+        before.map((row) => ({ ...row, unverified_author_account_id: null })),
+      );
+      const author = (id: string) =>
+        sql
+          .exec<{ v: SqlStorageValue; t: string }>(
+            "SELECT unverified_author_account_id AS v, typeof(unverified_author_account_id) AS t FROM status_cards WHERE status_id = ?",
+            id,
+          )
+          .one();
+      const set = (id: string, value: SqlStorageValue) =>
+        sql.exec("UPDATE status_cards SET unverified_author_account_id = ? WHERE status_id = ?", value, id);
+      // Refused in order: 17 and 19 digits (the bytes), a non-digit (the digits), 18 digits as a BLOB (the storage
+      // class only), and 18 bytes with a NUL inside, whose digits before the NUL are all GLOB reads (NUL only).
+      const nul = sql.exec<{ v: string }>("SELECT '12345678' || char(0) || '123456789' AS v").one().v;
+      for (const value of [AUTHOR.slice(1), `${AUTHOR}9`, `${AUTHOR.slice(1)}x`, blob(AUTHOR), nul]) {
+        expect(() => set(STATUS, value), JSON.stringify(value)).toThrow(REFUSED);
+      }
+      expect(author(STATUS)).toEqual({ v: null, t: "null" });
+      // Accepted: 18 digits, and an 18-digit integer, which the column's TEXT affinity stores as those digits.
+      set(STATUS, AUTHOR);
+      expect(author(STATUS)).toEqual({ v: AUTHOR, t: "text" });
+      sql.exec(`UPDATE status_cards SET unverified_author_account_id = ${AUTHOR} WHERE status_id = ?`, STATUS);
+      expect(author(STATUS)).toEqual({ v: AUTHOR, t: "text" });
+      set(STATUS, null);
+      expect(author(STATUS)).toEqual({ v: null, t: "null" });
+      // Never on a pending row: set on one, kept while a row returns to pending, or inserted with one.
+      expect(() => set(PENDING, AUTHOR)).toThrow(REFUSED);
+      set(STATUS, AUTHOR);
+      expect(() =>
+        sql.exec("UPDATE status_cards SET fetched_at = NULL, due_at = 5, public = 0 WHERE status_id = ?", STATUS),
+      ).toThrow(REFUSED);
+      sql.exec("DELETE FROM status_cards WHERE status_id = ?", PENDING);
+      expect(() =>
+        sql.exec(
+          `INSERT INTO status_cards (status_id, url, due_at, enqueued_at, generation, unverified_author_account_id)
+					VALUES (?, 'https://a.example/', 5, 5, 7, ?)`,
+          PENDING,
+          AUTHOR,
+        ),
+      ).toThrow(REFUSED);
+      sql.exec(
+        `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at, unverified_author_account_id)
+				VALUES (?, 'https://a.example/', 5, 7, 't', 9, ?)`,
+        PENDING,
+        AUTHOR,
+      );
+      expect(author(PENDING)).toEqual({ v: AUTHOR, t: "text" });
     });
   });
 });
