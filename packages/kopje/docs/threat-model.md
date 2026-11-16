@@ -133,11 +133,17 @@ against their own instance. TLS is assumed between all parties.
   other object of keywords but `@id` and `@type`, from none of which Mastodon reads a key) is removed before the
   document is read (`readableKeys`), so the actor stays usable; any other document, and a key spelled otherwise (either
   property or the key material under a compact or absolute IRI, an entry with its own `@context` or a `@nest`), is read
-  as fetched. A key id the Store does not hold fresh, or whose stored key fails, is resolved from the document at that
-  id, as Kopje reads an actor's keys, and its owner judged as for any fetched key (`storedKeys`, `verify`). An RFC 9421
-  signature verifies with an RSA or Ed25519 key, the algorithm its own; a draft-cavage signature only with an RSA key,
-  and one that names any other key is answered as a signature that does not verify (401), live, on replay and in the
-  rollback drain. A stored key (`remote_keys`, kept per key id with its owner, whatever the shape of the key URL) is
+  as fetched. Fedify parses an actor document without its `icon`, `image`, `followers` and `following`, which Kopje
+  reads by their spelling as Mastodon does (`fedifyActorView` in `src/federation/remote-actor.ts`), also one it loads
+  itself while verifying an HTTP signature, live, on replay and in the rollback drain (a key at the actor's URL, or a
+  key document's owner: `actorViewLoader`), so a value of a type Fedify does not expect there refuses neither the actor
+  nor its keys; leaving members out never adds a key or changes the id (`test/remote-actor-images.test.ts`, "verifies a
+  signature by an actor whose icon is not an Image", "verifies a key Fedify fetches itself, by an actor whose icon is
+  not an Image"). A key id the Store does not hold fresh, or whose stored key fails, is resolved from the document at
+  that id, as Kopje reads an actor's keys, and its owner judged as for any fetched key (`storedKeys`, `verify`). An RFC
+  9421 signature verifies with an RSA or Ed25519 key, the algorithm its own; a draft-cavage signature only with an RSA
+  key, and one that names any other key is answered as a signature that does not verify (401), live, on replay and in
+  the rollback drain. A stored key (`remote_keys`, kept per key id with its owner, whatever the shape of the key URL) is
   trusted for 24 hours after its document was fetched; after that, or when its signature fails, the key and the actor
   document are fetched anew, bypassing the document cache. The one exception is an actor's own `Delete` when its key (by
   the status its fetch actually returned) and its actor document both answer 404 or 410: it is verified with its own
@@ -209,7 +215,9 @@ against their own instance. TLS is assumed between all parties.
   Data Signature or an FEP-8b32 proof, which Fedify verifies in the Worker, before the Store is called, against a key
   the actor's current document embeds (a legacy key or, for an FEP-8b32 proof, an `assertionMethod` Multikey, within the
   first `MAX_PUBLIC_KEYS` of each), that document fetched anew in the request, never from a cache, so a key the actor
-  has since replaced proves nothing (no other key is ever loaded).
+  has since replaced proves nothing (no other key is ever loaded). The proof's key is found in the same view of that
+  document as the HTTP signature's (`fedifyActorView`, made inside `verifyAuthorProof`), so no caller hands Fedify
+  another form of it.
   A proof is considered only on a body in one of the sender profiles (`PROFILES` in `src/federation/author-proof.ts`):
   Mastodon's status `Delete` (the same body from 4.4 to 4.7) and stamp `Delete` (as 4.5.10 to 4.7 write it), signed by
   `LinkedDataSignature#sign!`, which writes `expires` from 4.7.0; Kopje's status and stamp `Delete`; Mastodon's and
@@ -270,7 +278,11 @@ against their own instance. TLS is assumed between all parties.
   forwarded form passing under each release's context, and refused with a key added to the object or a `cc`, another
   object type, the other sender's signature form or a redefined stamp term; no allowed term, nor any term webfinger or
   cid/v1 defines, that is or aliases a decision term; no network fetch while verifying, and an actor document naming a
-  context that is not preloaded refused; the request's shared context cache is not observed by a test),
+  context that is not preloaded refused; the request's shared context cache is not observed by a test; both proof forms
+  by an actor whose `icon` and `followers` are typed `Document`, relayed and applied, and as its own `Delete` proven and
+  forwarded, "proves a Delete by an actor whose icon is a Document, in both proof forms"; a key at the actor's URL that
+  its document does not embed refused though the network serves a document embedding it, and a key of another actor
+  refused before any verifier runs, "refuses a proof by a key the actor does not embed"),
   `test/quotes.test.ts` ("relayed revocations (ID-1’s exception)": Mastodon's stamp `Delete`, signed with or without
   `expires`, a missing proof, a forged signature, a proof by another actor's key, a proof covering another object, a
   valid proof on another activity type, a signed graph with no `Delete` type, a signed `Update` of the stamp read as a
@@ -291,7 +303,8 @@ against their own instance. TLS is assumed between all parties.
   (`packages/kopje/lint/fedify-usage.js`).
 - **ID-2: a fetched document is trusted only for its own origin.** The identity of a fetched object is its parsed `id`
   after JSON-LD processing, and it must have the origin of the final response URL. The loader's literal `id` check is a
-  pre-filter. Cross-origin redirects are refused. _Enforced (main):_ `src/federation/loader.ts`;
+  pre-filter. Cross-origin redirects are refused. An actor's `id` is checked on the view of its document Fedify parses
+  (`fedifyActorView`, ID-1), which only leaves members out. _Enforced (main):_ `src/federation/loader.ts`;
   `test/remote-identity.test.ts`, `test/loader.test.ts`. A search resolution's alternate (the document an HTML or
   other non-ActivityPub answer names in its `Link` header or `<link rel="alternate">`, NET-4) may be on another
   origin than the page, as Mastodon's `FetchResourceService` allows; its request follows no redirect, and its
@@ -446,8 +459,9 @@ against their own instance. TLS is assumed between all parties.
   (`statuses.remote_version`, kept as the remote wrote it whether or not the change wrote history, and compared
   unclamped), so a reordered or repeated one changes no content whenever it arrives; one whose version equals the
   stored one, or names none for a status never edited (no `edited_at`), still refreshes the status's poll (counts, end,
-  voters), its quote policy and the stamp of the same quote (Mastodon's `handle_implicit_update!`), and an older one, or
-  one that names none for an edited status, changes nothing (Mastodon's `process_status_update_service.rb:32-34`), so
+  voters), its quote policy and the stamp of the same quote, and verifies the same quote again (Mastodon's
+  `handle_implicit_update!`), and an older one, or one that names none for an edited status, changes nothing
+  (Mastodon's `process_status_update_service.rb:32-34`), so
   a peer's cached copy from before an edit rolls nothing back; an `Update` dated more than 5 minutes ahead
   of the clock is ignored (no change, history or notification), and its edit waits for another delivery; a status whose
   `Delete` was recorded takes no `Update`. A status Kopje fetches again that it stores under the document's id, by its
@@ -915,10 +929,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   notifies the quoted account of an accepted quote and each active mention, each without a kept notification, as
   Mastodon's does (`fan_out_on_write_service.rb:62-75`, `local_notification_worker.rb:15-16`): a `quote` or `mention`
   notification its recipient dismissed or cleared is written and pushed again at the author's next significant edit,
-  quote stamp change or policy-only edit, and at a quote state change Mastodon broadcasts (a stamp's `Delete` that
-  revokes the accepted quote it approved, the `Delete` of a local quote's stamp, the revoke API, an `Accept` of a local
-  quote's request; `fanOutQuoteChange` in `src/domain/quotes.ts`); a kept one is a repeat. Its push is sent only for a
-  newly inserted row. A
+  reset of an accepted quote by a new stamp or policy-only edit, and at a quote state change Mastodon broadcasts (a
+  stamp's `Delete` that revokes the accepted quote it approved, the `Delete` of a local quote's stamp, the revoke API,
+  an `Accept` of a local quote's request, and a round's decision that moves the state of a work whose first
+  verification is a same-version `Update`'s that reset nothing or a relayed `Delete`'s recheck, or that follows a
+  failure that may pass: `quotes.broadcast`; `fanOutQuoteChange` in `src/domain/quotes.ts`); a kept one is a repeat.
+  Its push is sent only for a newly inserted row. A
   remote favourite notifies when it is created and its notification goes with it, as Mastodon's does: a further `Like`
   it tracks notifies nothing, and an `Undo` followed by the next reaction's `Like` notifies (and pushes) again, while
   the reverse order does not;
@@ -927,9 +943,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/timelines.test.ts` ("notifies followers who asked to be notified, once"); the update fan-out: `notifyEdited` in
   `src/domain/update-fan-out.ts`, `test/edit-fan-out.test.ts` ("…but not one alice holds: the same row, no new
   push", "…but not a kept one: the same row, no new push", "a local quote's stamp Delete fans out its status once; a
-  repeated Delete none"). Push: _Enforced (main):_ `notify` records pushes for the
-  row it inserted only, never for a repeat (`queuePushes` in `src/domain/notifications.ts`); `test/push-send.test.ts`
-  ("pushes every notification type Kopje emits, once each (VIS-10)").
+  repeated Delete none", "an approval Update notifies when the round accepts the quote, not before", "a new stamp on
+  an accepted quote notifies at the Update; its acceptance by the round notifies no more", "…and from a same-version
+  Update's work whose fetch it raced: its acceptance notifies"). Push: _Enforced (main):_ `notify` records pushes for
+  the row it inserted only, never for a repeat (`queuePushes` in `src/domain/notifications.ts`);
+  `test/push-send.test.ts` ("pushes every notification type Kopje emits, once each (VIS-10)").
 - **VIS-11: earlier versions keep the original audience.** Edit history and earlier versions are visible only to the
   status's original audience, and an edit of a non-public status never widens that audience (a recipient added by an
   edit does not see earlier versions). This differs from Mastodon on purpose. _Enforced (main):_
@@ -2610,9 +2628,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   2,048 bytes and 4,098 JSON bytes (`snapshotMedia` in `src/domain/statuses.ts`; `test/status-bounds.test.ts`
   ("judges a media URL as decoded, then as normalized", "judges an imported snapshot's URLs and blurhash as live
   media")). _Enforced (main)_ for remote actors at ingest (profile URL, avatar, header, inboxes) and links in remote
-  HTML: `src/federation/remote-actor.ts`, `src/security/html.ts`; `test/inbox.test.ts` ("stores the remote actor"),
-  `test/html.test.ts`. _Enforced (main)_ for field links and remote statuses at ingest
-  (the status url and attachment and preview URLs, which are dropped unless http(s)); `src/federation/remote-status.ts`;
+  HTML: `src/federation/remote-actor.ts` (the avatar and header read from the document's JSON by `profileImage`),
+  `src/security/html.ts`; `test/inbox.test.ts` ("stores the remote actor"), `test/remote-actor-images.test.ts` ("keeps
+  only an absolute http(s) URL within its bound"), `test/html.test.ts`. _Enforced (main)_ for field links and remote
+  statuses at ingest (the status url and attachment and preview URLs, which are dropped unless http(s));
+  `src/federation/remote-status.ts`;
   `test/inbox-statuses.test.ts` ("keeps only http(s) media (HTML-1, HTML-3)", "http(s) links only").
   _Enforced (main)_ for custom emoji: an emoji's `url` and `static_url` pass `emojiHref` (http(s), serialized, within
   512 bytes and `EMOJI_URL_ALPHABET`) when an `Emoji` tag is read and again whenever a snapshot is presented, so an
@@ -3460,7 +3480,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   mention key per local account, whatever a converted or imported status holds (`LOCAL_MENTIONS_SQL`, `notifyEdited` in
   `src/domain/update-fan-out.ts`); `test/edit-fan-out.test.ts` ("reads no more for 10,000 converted mention rows: one
   key probe per local account", "replaces each update, quoted_update and cleared mention within the formula; a kept
-  one writes nothing"). A quote state change runs that fan-out at most once, and a stamp's `Delete` at most twice: for
+  one writes nothing"). A quote state change runs that fan-out at most once (a round's decision:
+  `test/edit-fan-out.test.ts` ("a decision writes at most one update fan-out's bound beside its own rows (RES-4)")),
+  and a stamp's `Delete` at most twice: for
   the local quote holding the stamp (`revokeLocalStamp`) and for the received quote it approved (`stampHolder`), never
   for the quotes its batches reject or revoke (`revokeStamp` in `src/domain/quotes.ts`; `test/edit-fan-out.test.ts`
   ("a stamp's Delete fans out at most twice: the local quote holding it, then the received one it approved")).
@@ -4205,12 +4227,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the work it read (a number drawn anew whenever the quote's target, stamp, stage or outcome changes), so a late or
   concurrent outcome is discarded. Only job rounds verify quotes: an inbox request that makes work due only asks the
   Queue for a round, and a round leases what it claims, so nothing else touches the work meanwhile; a relayed `Delete`
-  without the author's proof renews only idle work, leaves work that is due or backing off as it is, and only marks a
-  leased one to be checked once more, so replays never keep a genuine 404 from applying; it seeks the accepted quote
-  the stamp approved among at most `STAMP_HOLDER_CANDIDATES` (16) accepted quotes naming the stamp, the author filter
-  applied outside that cap (`stampHolder`), so the actor's own self-quotes naming its stamp cost a fixed read
-  (`test/quotes.test.ts` ("reads at most STAMP_HOLDER_CANDIDATES quotes naming the stamp, past statistics taken before
-  they grew")). A job round (Queue or cron)
+  without the author's proof renews only idle work, keeps the due time, attempts and generation of work that is due or
+  backing off (it sets only the flag the decision notifies by), and only marks a leased one to be checked once more, so
+  replays never keep a genuine 404 from applying; it seeks the accepted quote the stamp approved among at most
+  `STAMP_HOLDER_CANDIDATES` (16) accepted quotes naming the stamp, the author filter applied outside that cap
+  (`stampHolder`), so the actor's own self-quotes naming its stamp cost a fixed read (`test/quotes.test.ts` ("reads at
+  most STAMP_HOLDER_CANDIDATES quotes naming the stamp, past statistics taken before they grew")).
+  A job round (Queue or cron)
   verifies at most 10 quotes, each stage with a whole budget of its own (8 fetches, redirect hops, RFC 9421 retries
   and contexts included), so a heavy or failing quote starves no other, and charges every failure of a stage, a budget
   or deadline that ran out included, as it does a stage the Store cannot apply, except the refresh of a stored author,
@@ -4227,7 +4250,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   meets live work (due, leased or backing off) raises its budget and signer only, so arrivals that keep coming neither
   discard a fetch in flight nor reset its attempts and backoff, and a fetch refused under a signer the work has since
   left, or answered gone to it (a stamp's 404 then rejects or revokes nothing: Mastodon answers 404 to a viewer it
-  refuses), is retried with the current one within those attempts. Every author stage of a verification that stores,
+  refuses), is retried with the current one within those attempts. An `Update` that keeps a pending or accepted quote
+  renews its work by the same rule (`promoteQuote`, `reverifyQuote`): it starts one only when none is live, so
+  `Update`s add at most one work between two decisions whatever their number, and so at most one stamp fetch toward
+  the quoted author's server, to the stamp stored, which passed `stampValid` (`test/quotes.test.ts` ("adds no stamp
+  fetch for Updates that reach an accepted quote's live verification")).
+  Every author stage of a verification that stores,
   refreshes or (on a failed refetch) stamps the quoted status's author counts in its quote's `author_fetches`, apart
   from its attempts: at most `QUOTE_AUTHOR_FETCHES` (6) a work, whose renewal starts the count again, and an author
   stage with none left fetches nothing and ends the work, so a work whose rounds die after the author stage, reclaimed

@@ -270,9 +270,19 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   becomes, as Mastodon 4.6 does (`mastodon#39114`). Posts and bios stored earlier show them after their next update; a
   post whose HTML has them counts that update as an edit once. A line break with attributes ends a line for filters,
   as one without does. No Store migration and no `wrangler.jsonc` change.
+- A remote quote's verification notifies the quoting post's mentions, boosters and quoters as Mastodon does: when a
+  same-version `Update`'s or a retried verification changes the quote's state, and no longer when an `Update` brings a
+  pending quote's stamp, before it is verified. Every `Update` that names the same quote verifies a pending or accepted
+  quote again ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Quote verification). Migration
+  `0104_quote_broadcast` adds a column of `quotes` with its default, reading every row for its CHECK; the upgrade
+  checks no reference (the migration bench's upgrade from `0093_annual_reports` takes 12,349 ms with this file and
+  11,736 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the
+  release is at least a minor version, and rolling back past it needs a point-in-time restore.
 
 ### Fixed
 
+- A fetched ActivityPub document, WebFinger answer or JSON-LD context is taken only from a 200 answer, as Mastodon takes
+  them; another 2xx answer is a failed fetch. No Store migration and no `wrangler.jsonc` change.
 - Boolean parameters of the Mastodon API are read as Rails casts them in every endpoint: only `0`, `f`, `F`, `false`,
   `FALSE`, `off`, `OFF` and a blank value are false, so `False` or `Off` is now true, as in Mastodon (it was read as
   false). No Store migration and no `wrangler.jsonc` change.
@@ -420,6 +430,15 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   the quote. No Store migration and no `wrangler.jsonc` change.
 - A stamp's revocation reads a bounded number of the quotes naming it to find the one it approved. No Store migration
   and no `wrangler.jsonc` change.
+- Editing a post's poll clears its votes as Mastodon does when the edit leaves out `poll[multiple]`, or sends choices
+  that differ from the stored ones before blanks and surrounding whitespace are removed. No Store migration and no
+  `wrangler.jsonc` change.
+- A remote actor whose `icon` or `image` is not an embedded `Image` (a `Document`, say), or whose `followers` or
+  `following` is an object of another type, is stored without that image, where its documents, its signed activities
+  and the author proofs of its `Delete`s were refused. Avatars and headers are read as Mastodon 4.7 reads them, and an
+  actor's `followers` and `following` as Mastodon stores them (an object's `id`, an array's first value, a URI as
+  Mastodon's parser writes it back), for the visibility of its posts, quote policies and the follower sync. No Store
+  migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

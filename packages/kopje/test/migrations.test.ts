@@ -13874,3 +13874,59 @@ describe("0103_collections", () => {
     });
   });
 });
+
+describe("0104_quote_broadcast", () => {
+  const NAME = "0104_quote_broadcast";
+  const at = NAMES.indexOf(NAME);
+  const [R, Q, O] = ["100000000000000001", "200000000000000001", "200000000000000002"];
+
+  it("follows 0103, declared foreignKeys: 'unchanged'", () => {
+    expect(NAMES[at - 1]).toBe("0103_collections");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    expect(MIGRATIONS[at]?.sql).toContain("CHECK (typeof(broadcast) = 'integer' AND broadcast IN (0, 1, 2))");
+  });
+
+  it("gives every stored quote 0, and holds the column to 0, 1 or 2", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec("INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://x.test/u/1', 'u', 'x.test')", R);
+      for (const id of [Q, O]) {
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, published_at)
+						VALUES (?1, 'https://x.test/s/' || ?1, ?2, 'public', '2026-11-01T00:00:00.000Z')`,
+          id,
+          R,
+        );
+      }
+      // Before 0100: a quote with its work under way, which the previous release notified at the write-back.
+      sql.exec(
+        `INSERT INTO quotes (status_id, quoted_uri, state, attempts, hops, verify_after, updated_at)
+					VALUES (?1, 'https://x.test/s/' || ?2, 'pending', 3, 2, 0, '2026-11-01T00:00:00.000Z')`,
+        Q,
+        O,
+      );
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      const flag = () =>
+        sql
+          .exec<{ n: SqlStorageValue; type: string }>(
+            "SELECT broadcast AS n, typeof(broadcast) AS type FROM quotes WHERE status_id = ?",
+            Q,
+          )
+          .one();
+      expect(flag()).toEqual({ n: 0, type: "integer" });
+      const set = (value: SqlStorageValue) =>
+        state.storage.transactionSync(() => sql.exec("UPDATE quotes SET broadcast = ? WHERE status_id = ?", value, Q));
+      // Each value of the domain is kept, and text that reads as an integer is stored as one; anything else is refused.
+      for (const value of [0, 1, 2, "1", "01", "1.0"]) {
+        set(value);
+        expect(flag(), String(value)).toEqual({ n: Number(value), type: "integer" });
+      }
+      set(2);
+      for (const value of [3, -1, 0.5, "x", "", null, new Uint8Array([1]).buffer]) {
+        expect(() => set(value), value instanceof ArrayBuffer ? "a blob" : String(value)).toThrow(/constraint failed/);
+      }
+      expect(flag()).toEqual({ n: 2, type: "integer" });
+    });
+  });
+});

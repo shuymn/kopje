@@ -29,7 +29,109 @@ export function requestCollectionSync(db: Db, accountId: string, now: number, re
   return row?.due === 1;
 }
 
-// The collections a stored actor document names, http(s) only, as strings (an id given as an object with an id too).
+// A collection an actor document names (followers, following, featured, ...), as Mastodon 4.7.5 stores it
+// (ProcessAccountService#valid_collection_uri, process_account_service.rb:235-245): an array is unwrapped once, to its
+// first value; then an object gives its id; then a string gives the URI Mastodon stores for it (storedCollectionUri),
+// which addressing and quote policies are compared with as Mastodon compares its stored URI; anything else is none,
+// which Mastodon stores as '' (the column's default) and compares as that string, so `[[F]]`, whose first value is an
+// array, is ''. The only place a member's array is unwrapped: every reader hands it the member as parsed, or reads what
+// collectionSql selects, which is the same string.
+export function collectionRead(value: unknown): CollectionRead {
+  let uri: unknown = Array.isArray(value) ? value[0] : value;
+  if (typeof uri === "object" && uri !== null && !Array.isArray(uri)) {
+    uri = (uri as { id?: unknown }).id;
+  }
+  return typeof uri === "string" ? storedCollectionUri(uri) : NONE;
+}
+
+// No collection, as Mastodon stores it.
+const NONE = "";
+
+// A collection Kopje cannot tell what Mastodon stores for (storedCollectionUri), which no reader may read as more than
+// Mastodon may (docs/mastodon-deviations.md).
+export const UNREADABLE = Symbol("an unreadable collection");
+export type CollectionRead = string | typeof UNREADABLE;
+
+// collectionRead, with an unreadable collection as null, which no addressing names: a status addressed to it is direct,
+// never more visible than Mastodon makes it.
+export function collectionUri(value: unknown): string | null {
+  const read = collectionRead(value);
+  return read === UNREADABLE ? null : read;
+}
+
+// Ruby's [[:space:]] on a UTF-8 string: JavaScript's \s with U+0085 and without U+FEFF.
+const RUBY_SPACE = "\\t\\n\\v\\f\\r \\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
+// What Addressable refuses in a host (Addressable::URI#validate), and inside an IP literal's brackets anything but
+// its UNRESERVED, SUB_DELIMS and `:`.
+const HOST_REFUSED = new RegExp(`[<>{}/\\\\?#@"${RUBY_SPACE}]`, "u");
+const BLANK = new RegExp(`^[${RUBY_SPACE}]*$`, "u");
+const IP_LITERAL = /^[A-Za-z0-9\-._~!$&'()*+,;=:]*$/;
+// A NUL, a lone surrogate or U+FFFD (storedCollectionUri).
+const UNREADABLE_CHARACTER = /[\0\uD800-\uDFFF\uFFFD]/u;
+
+// The URI Mastodon 4.7.5's valid_collection_uri stores for `uri`: what Addressable 2.9.2 (its Gemfile.lock) parses
+// (Addressable::URI.parse: RFC 3986's regex, the authority split into userinfo, host and port, then #validate) and
+// writes back (#to_s), when the scheme is http or https:
+//   - the scheme is `http` or `https` exactly as spelled (VALID_URI_SCHEMES, case-sensitive), followed by `//` and an
+//     authority, so an upper-case scheme, a missing `//`, a backslash in place of a slash and leading whitespace,
+//     which the URL Standard's parser would repair, are none ('');
+//   - the host (the authority without its userinfo up to the last `@` and its `:port`) is not blank (present?) and
+//     holds nothing #validate refuses (a backslash or whitespace among them), else none;
+//   - the port is percent-decoded (#port=) and must then be digits, else none; it is written back as an integer: an
+//     empty or zero port is dropped, and leading zeros go;
+//   - the userinfo is written back stripped of ASCII whitespace (String#strip), and the fragment ends at a line feed
+//     (Ruby's `.` and `$` stop there).
+// Anything else is written back as spelled. UNREADABLE where Kopje cannot tell: a NUL (PostgreSQL refuses it, so
+// Mastodon stores no account), a lone surrogate or U+FFFD (the Store's JSON functions read a lone surrogate's escape as
+// bytes that come back as U+FFFD, so the SQL readers and JSON.parse would read two strings), a line feed in the
+// authority (Ruby's `^` and `$` match at it, which moves the split), and a port decoded to one holding a line feed.
+function storedCollectionUri(uri: string): CollectionRead {
+  if (UNREADABLE_CHARACTER.test(uri)) {
+    return UNREADABLE;
+  }
+  const parts = /^(https?:\/\/)([^/?#]*)([^]*)$/.exec(uri);
+  if (parts === null) {
+    return NONE;
+  }
+  const [, scheme = "", authority = "", rest = ""] = parts;
+  if (authority.includes("\n")) {
+    return UNREADABLE;
+  }
+  const userinfo = /^([^[\]]*)@/.exec(authority)?.[1];
+  const host = authority.replace(/^[^[\]]*@/, "").replace(/:[^:@[\]]*$/, "");
+  const literal = /^\[([^]*)\]$/.exec(host)?.[1];
+  if (BLANK.test(host) || HOST_REFUSED.test(host) || (literal !== undefined && !IP_LITERAL.test(literal))) {
+    return NONE;
+  }
+  let port = /:([^:@[\]]*)$/.exec(authority)?.[1] ?? "";
+  port = port.replace(/%[0-9a-f]{2}/gi, (code) => String.fromCharCode(Number.parseInt(code.slice(1), 16)));
+  if (!/^\d*$/.test(port)) {
+    return port.includes("\n") ? UNREADABLE : NONE;
+  }
+  port = port.replace(/^0+/, "");
+  const user = userinfo === undefined ? "" : `${userinfo.replace(/^[\t\v\f\r ]+|[\t\v\f\r ]+$/g, "")}@`;
+  const hash = rest.indexOf("#");
+  const cut = hash === -1 ? -1 : rest.indexOf("\n", hash);
+  return `${scheme}${user}${host}${port === "" ? "" : `:${port}`}${cut === -1 ? rest : rest.slice(0, cut)}`;
+}
+
+// The SQL of the string a member of the actor document `raw` names for collectionRead, as text, or NULL: the last
+// member of that name (as JSON.parse and Ruby's parser keep the last of a duplicate key), its first value if an array,
+// then the last `id` of an object, kept when a string. The projection is that one string, never an object, so its
+// bytes are the string's: at most the stored document's, which has no fixed bound of its own (a fetched document is
+// within DOCUMENT_BODY_LIMIT, an imported one only valid JSON).
+export function collectionSql(raw: string, member: "followers" | "following"): string {
+  return `(SELECT CASE m.type WHEN 'text' THEN m.value
+			WHEN 'object' THEN (SELECT CASE i.type WHEN 'text' THEN i.value END FROM json_each(m.value) AS i
+				WHERE i.key = 'id' ORDER BY i.id DESC LIMIT 1)
+			WHEN 'array' THEN (SELECT CASE f.type WHEN 'text' THEN f.value
+					WHEN 'object' THEN (SELECT CASE i.type WHEN 'text' THEN i.value END FROM json_each(f.value) AS i
+						WHERE i.key = 'id' ORDER BY i.id DESC LIMIT 1) END
+				FROM json_each(m.value) AS f WHERE f.key = 0) END
+		FROM json_each(${raw}) AS m WHERE m.key = '${member}' ORDER BY m.id DESC LIMIT 1)`;
+}
+
+// The collections a stored actor document names (collectionUri), normalized as fetch targets.
 export type ActorCollections = {
   featured: string | null;
   featuredTags: string | null;
@@ -39,13 +141,7 @@ export type ActorCollections = {
 };
 
 function idOf(value: unknown): string | null {
-  const id =
-    typeof value === "string"
-      ? value
-      : typeof value === "object" && value !== null && typeof (value as { id?: unknown }).id === "string"
-        ? (value as { id: string }).id
-        : null;
-  return httpUrl(id)?.href ?? null;
+  return httpUrl(collectionUri(value))?.href ?? null;
 }
 
 export function actorCollections(raw: string | null): ActorCollections {

@@ -449,20 +449,22 @@ describe("storing and verifying a received quote (VerifyQuoteService)", () => {
     const { t, bob, carol } = await world();
     const { target, stamp, quote } = quotedPair(t, bob, carol);
     expect(await t.post(bob, create(bob, quote))).toBe(202);
-    const kept = { state: "accepted", legacy: 0, approval_uri: stamp, verify_after: null };
-    expect(await quoteOf(t, quote.id)).toMatchObject(kept);
+    const kept = { state: "accepted", legacy: 0, approval_uri: stamp };
+    expect(await quoteOf(t, quote.id)).toMatchObject({ ...kept, verify_after: null });
     t.web.fetched.length = 0;
     // The same stamp, the quote named by _misskey_quote and quoteUri only (a legacy form): a same-version Update, then
-    // a newer one, whose content shows the explicit branch ran.
+    // a newer one, whose content shows the explicit branch ran. Each keeps the quote and its stored form; the first
+    // renews its verification (reverifyQuote), which the second leaves running.
     const legacy = { ...quote, quote: undefined } as Note;
     expect(await t.postOnly(bob, update(bob, legacy, quote.published as string))).toBe(202);
-    expect(await quoteOf(t, quote.id)).toMatchObject(kept);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ ...kept, verify_after: NOW });
     const edited = { ...legacy, content: "<p>edited</p>" };
     expect(await t.postOnly(bob, update(bob, edited, "2026-10-11T12:30:00Z"))).toBe(202);
     expect(await statusRow(t.store, quote.id)).toMatchObject({ content: "<p>edited</p>" });
-    expect(await quoteOf(t, quote.id)).toMatchObject(kept);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ ...kept, verify_after: NOW });
     await rounds(t, NOW);
-    expect(t.web.fetched).not.toContain(stamp);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ ...kept, verify_after: null });
+    expect(t.web.fetched.filter((url) => url === stamp)).toHaveLength(1);
     expect(await quotesCount(t, target.id)).toBe(1);
   });
 
@@ -475,27 +477,18 @@ describe("storing and verifying a received quote (VerifyQuoteService)", () => {
     const quote = quoting(bob, own.id, null);
     expect(await t.post(bob, create(bob, quote))).toBe(202);
     expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted", approval_uri: null });
-    const written = async () =>
-      (
-        await sql<{ updated_at: string }>(
-          t.store,
-          "SELECT q.updated_at FROM quotes q JOIN statuses s ON s.id = q.status_id WHERE s.uri = ?",
-          quote.id,
-        )
-      )[0]!.updated_at;
-    const before = await written();
     const stamp = stampUri(bob);
     t.web.fail(stamp, 404);
     t.web.fetched.length = 0;
-    // Right after the Update: no write-back, so no work that could fetch the stamp.
+    // Right after the Update: no write-back (the stamp not recorded), its verification renewed (reverifyQuote), whose
+    // decision accepts a self-quote before any stamp stage.
     expect(await t.postOnly(bob, update(bob, { ...quote, quoteAuthorization: stamp }, quote.published as string))).toBe(
       202,
     );
-    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted", approval_uri: null, verify_after: null });
-    expect(await written()).toBe(before);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted", approval_uri: null, verify_after: NOW });
     await rounds(t, NOW);
     expect(t.web.fetched).not.toContain(stamp);
-    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted", approval_uri: null, verify_after: null });
   });
 
   it("verifies a chain two levels below the status that arrived, however long the chain", async () => {
@@ -2285,6 +2278,64 @@ describe("verifying quotes in stages: rounds, budgets, leases, generations and r
     const renewed = await liveOf(t, pair.quote.id);
     expect(renewed).toMatchObject({ state: "pending", verify_after: NOW, attempts: 0, author_fetches: 0 });
     expect(renewed.generation).not.toBe(idle.generation);
+  });
+
+  // An accepted quote's verification renewed by Updates (reverifyQuote): one work answers every Update that keeps the
+  // quote while it is due, leased or backing off (docs/threat-model.md RES-6).
+  it("adds no stamp fetch for Updates that reach an accepted quote's live verification", async () => {
+    const { t, bob, carol } = await world();
+    const pair = quotedPair(t, bob, carol);
+    expect(await t.post(bob, create(bob, pair.quote))).toBe(202);
+    const fetches = () => t.web.fetched.filter((url) => url === pair.stamp).length;
+    const recheck = async () =>
+      (
+        await sql<{ recheck: number }>(
+          t.store,
+          "SELECT q.recheck FROM quotes q JOIN statuses s ON s.id = q.status_id WHERE s.uri = ?",
+          pair.quote.id,
+        )
+      )[0]!.recheck;
+    // Twenty before the round: one due work, one fetch.
+    t.web.fetched.length = 0;
+    for (let n = 0; n < 20; n++) {
+      expect(await t.postOnly(bob, sameVersion(bob, pair.quote, n))).toBe(202);
+    }
+    expect(await liveOf(t, pair.quote.id)).toMatchObject({ state: "accepted", verify_after: NOW, attempts: 0 });
+    await rounds(t, NOW);
+    expect(fetches()).toBe(1);
+    // Twenty while the round waits on the stamp: its claim kept, no recheck, its outcome applied.
+    t.web.fetched.length = 0;
+    expect(await t.postOnly(bob, sameVersion(bob, pair.quote, 20))).toBe(202);
+    const gate = t.web.hold(pair.stamp);
+    const round = verifyQuotes(t.env, { ...inboxDeps(() => t.store, t.web.loader), now: () => NOW });
+    await gate.reached;
+    const claimed = await liveOf(t, pair.quote.id);
+    expect(claimed).toMatchObject({ verify_after: NOW + QUOTE_LEASE_MS });
+    for (let n = 21; n < 41; n++) {
+      expect(await t.postOnly(bob, sameVersion(bob, pair.quote, n))).toBe(202);
+      expect(await liveOf(t, pair.quote.id)).toEqual(claimed);
+    }
+    expect(await recheck()).toBe(0);
+    gate.release();
+    await round;
+    expect(await liveOf(t, pair.quote.id)).toMatchObject({ state: "accepted", verify_after: null });
+    expect(fetches()).toBe(1);
+    // Twenty while it backs off: its due time and attempts kept, one fetch at the retry.
+    const served = t.web.served.get(pair.stamp)!;
+    t.web.fail(pair.stamp, 503);
+    t.web.fetched.length = 0;
+    expect(await t.postOnly(bob, sameVersion(bob, pair.quote, 41))).toBe(202);
+    await rounds(t, NOW);
+    const backingOff = await liveOf(t, pair.quote.id);
+    expect(backingOff).toMatchObject({ state: "accepted", attempts: 1, verify_after: NOW + QUOTE_BACKOFF_MS[0]! });
+    for (let n = 42; n < 62; n++) {
+      expect(await t.postOnly(bob, sameVersion(bob, pair.quote, n))).toBe(202);
+      expect(await liveOf(t, pair.quote.id)).toEqual(backingOff);
+    }
+    t.web.served.set(pair.stamp, served);
+    await rounds(t, NOW + QUOTE_BACKOFF_MS[0]!);
+    expect(await liveOf(t, pair.quote.id)).toMatchObject({ state: "accepted", verify_after: null });
+    expect(fetches()).toBe(2);
   });
 
   // The quote's fetch_as changes while its first fetch is in flight: a refusal under the instance actor is no answer of
