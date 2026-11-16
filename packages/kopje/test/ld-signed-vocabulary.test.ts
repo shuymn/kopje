@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ACTIVITY_VOCABULARY,
+  FULL_CONTEXT_VALUES,
   inlineDefinitionIris,
   ldSignedTypeReader,
   SIGNED_CONTEXT_URLS,
@@ -58,6 +59,17 @@ const meaning = (definition: Definition | undefined) =>
 const extension = fullContext.at(-1) as Json;
 
 describe("ldSignedBodyReadable's tables", () => {
+  it("full_context counts as many values against Mastodon's JSON-LD limit as its own compaction writes", () => {
+    const values = (value: unknown): number =>
+      1 +
+      (Array.isArray(value)
+        ? value.reduce<number>((sum, member) => sum + values(member), 0)
+        : value !== null && typeof value === "object"
+          ? Object.values(value).reduce<number>((sum, member) => sum + values(member), 0)
+          : 0);
+    expect(FULL_CONTEXT_VALUES).toBe(values(fullContext));
+  });
+
   it("the vocabulary is jsonld.js's processing of Mastodon 4.7.5's full_context, restricted to its names", async () => {
     expect(fullContext.slice(0, -1)).toEqual([
       AS,

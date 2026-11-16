@@ -1300,35 +1300,42 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   Mastodon reads as received too. The fixtures and their capture scripts are in `test/fixtures/ld-signed/`
   (`test/inbox-signed-forms.test.ts`). The activity's `type` and its embedded object's (an `Undo`'s, a `Reject`'s or an
   `Accept`'s) given as an IRI (`as:Follow`, or the absolute one) are read as the name the compaction gives them, as
-  Mastodon reads them. Otherwise the readings differ only for forms none of these writes, and Kopje reads each as
-  written: a status's or a mention's `type` given as an IRI is read as given, so such a status is refused and such a
-  mention read as absent, where Mastodon reads the type the compaction gives it; an extension property the sender's
-  context leaves undefined or types otherwise than Mastodon (`sensitive`, `quote`, `quoteUrl`, `votersCount`, an
-  interaction policy) is read, where Mastodon's reading keeps it under a key it does not read. A one-element array both
-  read as received, and each reader then reads it as it reads the same body unsigned: an `actor` given so is refused,
-  where Mastodon applies the activity for the request's signer; a text given so is read as empty, where Mastodon stores
-  the array's JSON; `sensitive: [true]` is read as false, where Mastodon marks the status (so such media are shown
-  unmarked); an `inReplyTo` given so is read as absent, where Mastodon's job raises and stores nothing; an `object`,
-  `target` or `instrument` given so is refused, and an `Undo`'s or a `Reject`'s read as absent, where Mastodon's job
-  raises too; a single poll option is a poll in both. The patch cannot put back an array the compaction shortened (a
-  `null` it left out): an embedded actor's `inbox: [null]` is read, where Mastodon's `[]` drops the update. And it stops
-  there, so the members after it in the same object keep the compaction's single values: an `object` given as a
-  one-element array after `to: [null]` is refused, where Mastodon applies the activity. Compacting would add JSON-LD
-  processing to every signed activity before its HTTP signature is verified, and its readers would read a form other
-  than the one the author proof verifies. This is weighed again when a sender is seen writing one of these forms, or
-  when the fixtures re-captured at a new reference release no longer read the same. Accepted, 2026-11-16.
-- An activity that carries a Linked Data signature is read only where nothing Kopje reads from it has another meaning
-  in Mastodon's reading, and is otherwise ignored (answered 202): its contexts must give each ActivityStreams
-  term and each property Mastodon's `full_context` defines that context's meaning, give no other property one of those
-  meanings or a keyword's, and set no keyword (`@base`, `@vocab`, `@language`, …); its context URLs must be ones Kopje
-  preloads and that keep those meanings (not `http://schema.org/`, nor `https://w3id.org/identity/v1` after the
-  ActivityStreams context); and its properties must be plain names (no `@id`, `@type`, `@value` or nested `@context`,
-  no compact or absolute IRI as a key). Mastodon reads such an activity by its JSON-LD meaning, which the patch does
-  not undo and which can address it to others than its literal `to`, `cc` and mentions, or give its type or object a
-  second value so that Mastodon applies nothing; reading it as written could show it to viewers Mastodon would not, or
-  apply what Mastodon would not. This keeps the meaning of what Kopje reads; it does not make the two readings equal,
-  and the shapes and values above still differ. Every sender above, Misskey's context included, passes. Accepted,
-  2026-11-16.
+  Mastodon reads them, in a body Kopje can tell Mastodon compacts: one under the ActivityStreams and security/v1
+  contexts alone (neither defines a data-integrity proof), whose ids, IRIs, types and language maps Mastodon's JSON-LD
+  processing accepts, and small enough that its compaction stays within the 1,000 values. Mastodon reads any other body
+  as received where its limits or its JSON-LD processing refuse it, so Kopje reads the types of each such body as given;
+  where Mastodon compacts one all the same (an inline context, an array in an array), such an activity applies less than
+  Mastodon's (an `Undo` of a block leaves the block). Otherwise the readings differ only for forms none of these writes,
+  and Kopje reads each as written: a status's or a mention's `type` given as an IRI is read as given, so such a status
+  is refused and such a mention read as absent, where Mastodon reads the type the compaction gives it; an extension
+  property the sender's context leaves undefined or types otherwise than Mastodon (`sensitive`, `quote`, `quoteUrl`,
+  `votersCount`, an interaction policy) is read, where Mastodon's reading keeps it under a key it does not read. A
+  one-element array both read as received, and each reader then reads it as it reads the same body unsigned: an `actor`
+  given so is refused, where Mastodon applies the activity for the request's signer (so such a `Reject`, `Undo` or
+  `Delete` leaves what Mastodon's ends); a text given so is read as empty, where Mastodon stores the array's JSON;
+  `sensitive: [true]` is read as false, where Mastodon marks the status (so such media are shown unmarked); an
+  `inReplyTo` given so is read as absent, where Mastodon's job raises and stores nothing; an `object`, `target` or
+  `instrument` given so is refused, and an `Undo`'s or a `Reject`'s read as absent, where Mastodon's job raises too; a
+  single poll option is a poll in both. The patch cannot put back an array the compaction shortened (a `null` it left
+  out): an embedded actor's `inbox: [null]` is read, where Mastodon's `[]` drops the update. And it stops there, so the
+  members after it in the same object keep the compaction's single values: an `object` given as a one-element array
+  after `to: [null]` is refused, where Mastodon applies the activity. Compacting would add JSON-LD processing to every
+  signed activity before its HTTP signature is verified, and its readers would read a form other than the one the author
+  proof verifies. This is weighed again when a sender is seen writing one of these forms, or when the fixtures
+  re-captured at a new reference release no longer read the same. Accepted, 2026-11-16.
+- An activity that carries a Linked Data signature is read only where nothing Kopje reads from it has another meaning in
+  Mastodon's reading, and is otherwise ignored (answered 202): its contexts must give each ActivityStreams term and each
+  property Mastodon's `full_context` defines that context's meaning, give no other property one of those meanings or a
+  keyword's, and set no keyword (`@base`, `@vocab`, `@language`, …); its context URLs must be ones Kopje preloads and
+  that keep those meanings (not `http://schema.org/`, nor `https://w3id.org/identity/v1` after the ActivityStreams
+  context); and its properties must be plain names (no `@id`, `@type`, `@value` or nested `@context`, no compact or
+  absolute IRI as a key). Mastodon reads such an activity by its JSON-LD meaning, which the patch does not undo and
+  which can address it to others than its literal `to`, `cc` and mentions, or give its type or object a second value so
+  that Mastodon applies nothing; reading it as written could show it to viewers Mastodon would not, or apply what
+  Mastodon would not. A retraction so ignored (a `Reject`, `Undo` or `Delete` whose `object` is given as `{"@id": …}`)
+  leaves in place the follow, the block or the status Mastodon's ends. This keeps the meaning of what Kopje reads; it
+  does not make the two readings equal, and the shapes and values above still differ. Every sender above, Misskey's
+  context included, passes. Accepted, 2026-11-16.
 
 Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NET-1 in `docs/threat-model.md`):
 

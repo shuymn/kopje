@@ -118,6 +118,25 @@ const follow = () => ({ id: `${BOB}/follows/${++n}`, type: "Follow", actor: BOB,
 // alice's follow of bob, and bob's of her, as effects.rb seeds them.
 const OUR_FOLLOW = { id: "https://kopje.test/ap/follows/1", type: "Follow", actor: ALICE, object: BOB };
 const BOBS_FOLLOW = { id: `${BOB}/follows/14`, type: "Follow", actor: BOB, object: ALICE };
+// bob's block of alice, as effects.rb seeds it for an entry named for a block, with both types as IRIs.
+const BLOCK = { id: `${BOB}/blocks/1`, type: "as:Block", actor: BOB, object: ALICE };
+const QUOTE_REQUEST = "https://w3id.org/fep/044f#QuoteRequest";
+/** @type {(value: unknown) => number} The values JsonLdHelper#check_jsonld_limits! counts. */
+const values = (value) => {
+  /** @type {unknown[]} */
+  const members = Array.isArray(value)
+    ? value
+    : typeof value === "object" && value !== null
+      ? Object.values(value)
+      : [];
+  let count = 1;
+  for (const member of members) {
+    count += values(member);
+  }
+  return count;
+};
+/** @type {(body: Json, total: number) => Json} The body with a padding array of strings, `total` values in all. */
+const padded = (body, total) => ({ ...body, padding: Array.from({ length: total - values(body) - 1 }, () => "x") });
 const question = (options) =>
   note({ type: "Question", content: "<p>poll</p>", endTime: "2026-11-17T12:00:00Z", oneOf: options });
 const option = (name) => ({ type: "Note", name, replies: { type: "Collection", totalItems: 0 } });
@@ -391,6 +410,70 @@ const forms = {
     [AS, SEC],
     activity("as:Delete", { object: { id: `${BOB}/statuses/deleted`, type: "Tombstone" }, to: [PUBLIC] }),
   ),
+
+  // An answer whose object id is alice's follow of bob, its type naming another kind: Mastodon seeks the follow by the
+  // id first (accept.rb:5, reject.rb:5-7).
+  "Reject of an accepted follow, its object typed as the QuoteRequest IRI": signed(
+    [AS, SEC],
+    activity("Reject", { object: { id: OUR_FOLLOW.id, type: QUOTE_REQUEST } }),
+  ),
+  "Reject of an accepted follow, its object typed QuoteRequest": signed(
+    [AS, { QuoteRequest: QUOTE_REQUEST }, SEC],
+    activity("Reject", { object: { id: OUR_FOLLOW.id, type: "QuoteRequest" } }),
+  ),
+  "Accept of a follow request, its object typed QuoteRequest": signed(
+    [AS, { QuoteRequest: QUOTE_REQUEST }, SEC],
+    activity("Accept", { object: { id: OUR_FOLLOW.id, type: "QuoteRequest" } }),
+  ),
+
+  // bob's Undo of his block of alice, both typed as IRIs: Mastodon renames the types only where it compacts the body,
+  // and reads it as received (applying nothing) where it gives the compaction up.
+  "Undo of a block, both typed as IRIs": signed([AS, SEC], activity("as:Undo", { object: BLOCK })),
+  "Undo of a block, both typed as IRIs, past the value limit as received": padded(
+    signed([AS, SEC], activity("as:Undo", { object: BLOCK })),
+    1_001,
+  ),
+  // Within the limit as received, past it once full_context (90 values) replaces the three of its @context.
+  "Undo of a block, both typed as IRIs, past the value limit once compacted": padded(
+    signed([AS, SEC], activity("as:Undo", { object: BLOCK })),
+    990,
+  ),
+  "Undo of a block, both typed as IRIs, with a proof in the data-integrity context": signed([AS, DATA_INTEGRITY, SEC], {
+    ...activity("as:Undo", { object: BLOCK }),
+    proof: {
+      type: "DataIntegrityProof",
+      cryptosuite: "eddsa-jcs-2022",
+      verificationMethod: `${BOB}#ed25519-key`,
+      proofPurpose: "assertionMethod",
+      proofValue: "z3placeholder",
+      created: "2026-11-16T12:00:00Z",
+    },
+  }),
+  "Undo of a block, both typed as IRIs, with a type that is not a string": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, tag: [{ type: 5, name: "x" }] }),
+  ),
+  "Undo of a block, both typed as IRIs, with a language map member that is not a string": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, contentMap: { en: 5 } }),
+  ),
+  "Undo of a block, both typed as IRIs, with an IRI over a prefix only full_context defines": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, cc: ["toot:followers"] }),
+  ),
+  "Undo of a block, both typed as IRIs, with an array in an array": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, cc: [[PUBLIC]] }),
+  ),
+  "Undo of a block, both typed as IRIs, under an inline context": signed(
+    [AS, SEC, { extra: "https://other.example/ns#extra" }],
+    activity("as:Undo", { object: BLOCK, extra: "kept" }),
+  ),
+  "Undo of a block, both typed as IRIs, with @graph in its signature": {
+    "@context": [AS, SEC],
+    ...activity("as:Undo", { object: BLOCK }),
+    signature: { ...SIGNATURE, "@graph": [] },
+  },
 };
 
 // The same bodies without a signature: read as received by both.
@@ -401,6 +484,8 @@ const unsigned = Object.fromEntries(
     "an alias of to with to redefined",
     "Reject of an accepted follow, its object's type as:Follow",
     "Accept object type as an IRI",
+    "Reject of an accepted follow, its object typed QuoteRequest",
+    "Accept of a follow request, its object typed QuoteRequest",
   ].map((name) => {
     const { signature: _, ...body } = forms[name];
     return [`${name}, unsigned`, body];

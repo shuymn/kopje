@@ -891,6 +891,79 @@
     }
   },
   {
+    "name": "Reject of an accepted follow, its object typed as the QuoteRequest IRI",
+    "effect": {
+      "local_follows_removed": 1
+    }
+  },
+  {
+    "name": "Reject of an accepted follow, its object typed QuoteRequest",
+    "effect": {
+      "local_follows_removed": 1
+    }
+  },
+  {
+    "name": "Accept of a follow request, its object typed QuoteRequest",
+    "effect": {
+      "local_requests_removed": 1,
+      "local_follows": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs",
+    "effect": {}
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, past the value limit as received",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, past the value limit once compacted",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a proof in the data-integrity context",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a type that is not a string",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a language map member that is not a string",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with an IRI over a prefix only full_context defines",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with an array in an array",
+    "effect": {}
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, under an inline context",
+    "effect": {}
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with @graph in its signature",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
     "name": "@base after ActivityStreams, unsigned",
     "effect": {
       "statuses": [
@@ -936,6 +1009,19 @@
   },
   {
     "name": "Accept object type as an IRI, unsigned",
+    "effect": {
+      "local_requests_removed": 1,
+      "local_follows": ["alice"]
+    }
+  },
+  {
+    "name": "Reject of an accepted follow, its object typed QuoteRequest, unsigned",
+    "effect": {
+      "local_follows_removed": 1
+    }
+  },
+  {
+    "name": "Accept of a follow request, its object typed QuoteRequest, unsigned",
     "effect": {
       "local_requests_removed": 1,
       "local_follows": ["alice"]

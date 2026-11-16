@@ -10,7 +10,8 @@
 # (what they would do later, notifications and fetches, is not observed). The entries' local references (kopje.test)
 # are rewritten to records made inside that transaction: the local account, its statuses local-1 and local-2, and its
 # follow request to bob (follows/1; for an entry named for an accepted follow, its follow of bob); bob's own statuses
-# (deleted, pinned, quoting), bob2 and, for an Undo, his follow of the local account (follows/14) are made there too.
+# (deleted, pinned, quoting), bob2 and, for an Undo, his follow of the local account (follows/14) and, for an entry
+# named for a block, his block of it (blocks/1) are made there too.
 # The output lists, per entry, what bob's activity left: statuses (text, spoiler, sensitive, reply, poll, mentions,
 # visibility), his display name, follows and follow requests, favourites, blocks, reblogs, pins, reports, quotes,
 # removed statuses, follows and follow requests (his, and the local account's of him), and any error the job would
@@ -91,6 +92,7 @@ results = entries.map do |entry|
     Quote.create!(account: bob, status: quoting, quoted_status: local1, quoted_account: local, state: :pending)
     undo = entry['name'].start_with?('Undo')
     Follow.create!(account: bob, target_account: local, uri: "#{bob.uri}/follows/14") if undo
+    Block.create!(account: bob, target_account: local, uri: "#{bob.uri}/blocks/1") if entry['name'].include?('a block')
     StatusPin.create!(account: bob, status: pinned) if entry['name'].start_with?('Remove')
     tag = ActivityPub::TagManager.instance
     body = JSON.generate(entry['received'])

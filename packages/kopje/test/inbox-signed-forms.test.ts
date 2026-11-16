@@ -271,6 +271,16 @@ describe("D1: forms whose readings differ, each named by its class", () => {
   });
 
   describe("reads less than Mastodon", () => {
+    it.each(["with an array in an array", "under an inline context"])(
+      "an Undo of a block typed as IRIs %s: Mastodon compacts it and lifts the block; Kopje cannot tell it does",
+      (variant) => {
+        const name = `Undo of a block, both typed as IRIs, ${variant}`;
+        expect(form(name).fallback).toBeUndefined();
+        expect(kopje(form(name))).toEqual({ ok: false, reason: "unsupported" });
+        expect(applied(name)).toEqual({ name, effect: {} });
+      },
+    );
+
     it.each([
       ["content as a one-element array", "content", { text: '["<p>text</p>"]' }],
       ["summary as a one-element array", "spoilerText", { spoiler: '["warning"]' }],
@@ -363,6 +373,48 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       expect(applied(name)).toEqual({ name, effect });
     });
 
+    // Mastodon's Accept and Reject seek alice's follow by the object's id before reading it as anything else.
+    it.each([
+      ["Reject of an accepted follow, its object typed as the QuoteRequest IRI", { local_follows_removed: 1 }],
+      ["Reject of an accepted follow, its object typed QuoteRequest", { local_follows_removed: 1 }],
+      ["Reject of an accepted follow, its object typed QuoteRequest, unsigned", { local_follows_removed: 1 }],
+      [
+        "Accept of a follow request, its object typed QuoteRequest",
+        { local_requests_removed: 1, local_follows: ["alice"] },
+      ],
+      [
+        "Accept of a follow request, its object typed QuoteRequest, unsigned",
+        { local_requests_removed: 1, local_follows: ["alice"] },
+      ],
+    ])("an answer naming our follow's id under a QuoteRequest's type, %s", (name, effect) => {
+      expect(accepted(kopje(form(name))).object).toMatchObject({
+        id: "https://kopje.test/ap/follows/1",
+        type: "QuoteRequest",
+      });
+      expect(applied(name)).toEqual({ name, effect });
+    });
+
+    it("an Undo of a block typed as IRIs in a body Mastodon compacts: both lift the block", () => {
+      const name = "Undo of a block, both typed as IRIs";
+      expect(accepted(kopje(form(name)))).toMatchObject({ type: "Undo", object: { type: "Block" } });
+      expect(applied(name)).toEqual({ name, effect: {} });
+    });
+
+    it.each([
+      ["past the value limit as received", /^Mastodon::InvalidJsonLdError: has too many nodes/],
+      ["past the value limit once compacted", /^Mastodon::InvalidJsonLdError: has too many nodes/],
+      ["with a proof in the data-integrity context", /^Mastodon::InvalidJsonLdError: contains unsupported/],
+      ["with @graph in its signature", /^Mastodon::InvalidJsonLdError: contains unsupported/],
+      ["with a type that is not a string", /^JSON::LD::JsonLdError::InvalidTypeValue/],
+      ["with a language map member that is not a string", /^JSON::LD::JsonLdError::InvalidLanguageMapValue/],
+      ["with an IRI over a prefix only full_context defines", /^JSON::LD::JsonLdError::IRIConfusedWithPrefix/],
+    ])("an Undo of a block typed as IRIs %s: Mastodon reads it as received, so neither lifts it", (variant, cause) => {
+      const name = `Undo of a block, both typed as IRIs, ${variant}`;
+      expect(form(name).fallback).toMatch(cause);
+      expect(kopje(form(name))).toEqual({ ok: false, reason: "unsupported" });
+      expect(applied(name)).toEqual({ name, effect: { blocks: ["alice"] } });
+    });
+
     it("an unsigned body's types are read as given, as Mastodon reads it uncompacted", () => {
       expect(read(without(form("type as a compact IRI").received, "signature"))).toEqual({
         ok: false,
@@ -372,28 +424,71 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       expect(undo.object).toMatchObject({ type: "as:Follow" });
     });
 
-    it("every type of an LD-signed fixture is read as Mastodon's compaction names it", () => {
-      const checked: string[] = [];
+    // Mastodon renames a type given as an IRI only in a body it compacts; where it gives the compaction up it reads the
+    // body as received. Kopje renames one only where it can tell Mastodon compacts the body: never in a body Mastodon
+    // read as received, and in each it can tell of, as the compaction names it.
+    it("renames a type given as an IRI only in a body Mastodon compacts, as the compaction names it", () => {
+      const renamed: string[] = [];
+      const kept = new Set<string>();
+      let names = 0;
       for (const entry of [...corpus, ...forms.values()]) {
-        const readType = ldSignedTypeReader(entry.received);
-        if (readType === null || entry.mastodon === undefined || typeof entry.received.signature !== "object") {
+        const readType = typeof entry.received.signature === "object" ? ldSignedTypeReader(entry.received) : null;
+        if (readType === null) {
           continue;
         }
+        const label = entry.name ?? entry.reference;
+        const compacts = readType("as:Like") === "Like";
+        if (compacts) {
+          expect(entry.fallback, label).toBeUndefined();
+        }
+        const reading = mastodonReading(entry);
         const object = (body: Json) => (typeof body.object === "object" && body.object !== null ? body.object : {});
-        for (const [given, compacted] of [
-          [entry.received.type, entry.mastodon.type],
-          [(object(entry.received) as Json).type, (object(entry.mastodon) as Json).type],
+        for (const [given, read] of [
+          [entry.received.type, reading.type],
+          [(object(entry.received) as Json).type, (object(reading) as Json).type],
         ]) {
-          // A name outside the vocabulary means what the body's context makes it (EmojiReact, read as a favourite).
-          const read = typeof given === "string" && (given.includes(":") || ACTIVITY_VOCABULARY.has(given));
-          if (read && typeof compacted === "string") {
-            expect(readType(given), entry.name ?? entry.reference).toBe(compacted);
-            checked.push(given);
+          if (typeof given !== "string" || typeof read !== "string") {
+            continue;
+          }
+          if (!given.includes(":")) {
+            // A name keeps its meaning (D4), but one outside the vocabulary (EmojiReact, read as a favourite).
+            if (ACTIVITY_VOCABULARY.has(given)) {
+              expect(readType(given), label).toBe(read);
+              names++;
+            }
+          } else if (compacts) {
+            expect(readType(given), label).toBe(read);
+            renamed.push(given);
+          } else {
+            expect(readType(given), label).toBe(given);
+            if (entry.fallback === undefined) {
+              kept.add(label);
+            }
           }
         }
       }
-      expect(checked.length).toBeGreaterThanOrEqual(150);
-      expect(checked.filter((type) => type.includes(":")).length).toBe(13);
+      expect(names).toBeGreaterThanOrEqual(150);
+      expect(renamed.length).toBe(15);
+      // Bodies Mastodon compacts that Kopje cannot tell it does (an inline context, an array in an array): their
+      // types are read as given, so such an activity applies less than Mastodon's.
+      expect([...kept]).toEqual([
+        "Note type as an IRI",
+        "Undo of a block, both typed as IRIs, with an array in an array",
+        "Undo of a block, both typed as IRIs, under an inline context",
+      ]);
+    });
+
+    // Bounds of the same body no capture varies: an object with no type is a node like any other; an id over a prefix
+    // only full_context defines (as the captured `cc` one), a language map member that is an array, or a key that is
+    // no language tag, are ones Kopje does not tell JSON-LD's processing accepts.
+    it.each([
+      { added: { instrument: { name: "client" } }, read: "Undo" },
+      { added: { instrument: { id: "toot:client" } }, read: "as:Undo" },
+      { added: { summaryMap: { en: ["blocked"] } }, read: "as:Undo" },
+      { added: { summaryMap: { "not a tag": "blocked" } }, read: "as:Undo" },
+    ])("reads the compacted Undo of a block, given $added, as $read", ({ added, read }) => {
+      const body = { ...form("Undo of a block, both typed as IRIs").received, ...added };
+      expect(ldSignedTypeReader(body)?.("as:Undo")).toBe(read);
     });
 
     it("type as a one-element array: neither applies it", () => {
@@ -568,8 +663,11 @@ describe("D1 through the inbox: what the received form stores", () => {
     "Reject of an accepted follow, its object's type the absolute IRI",
     "Reject typed as:Reject, of an accepted follow",
     "Block typed as:Block, by an accepted follow's target",
-    // Unsigned, read as given: our follow by its id, whatever its type (D6).
+    // Our follow by its id, whatever its type (D6), unsigned or under a QuoteRequest's type.
     "Reject of an accepted follow, its object's type as:Follow, unsigned",
+    "Reject of an accepted follow, its object typed as the QuoteRequest IRI",
+    "Reject of an accepted follow, its object typed QuoteRequest",
+    "Reject of an accepted follow, its object typed QuoteRequest, unsigned",
   ])("%s ends alice's follow and her reading of his followers-only status, as in Mastodon", async (name) => {
     const { t, bob, status } = await world();
     const id = await followersOnly(t, bob);
@@ -579,7 +677,11 @@ describe("D1 through the inbox: what the received form stores", () => {
     expect(applied(name).effect).toMatchObject({ local_follows_removed: 1 });
   });
 
-  it("an unsigned Accept of an as:Follow accepts alice's request by its id, as in Mastodon", async () => {
+  it.each([
+    "Accept object type as an IRI, unsigned",
+    "Accept of a follow request, its object typed QuoteRequest",
+    "Accept of a follow request, its object typed QuoteRequest, unsigned",
+  ])("%s accepts alice's request by its id, as in Mastodon", async (name) => {
     const { t, bob, status } = await world();
     await sql(
       t.store,
@@ -589,10 +691,45 @@ describe("D1 through the inbox: what the received form stores", () => {
       ALICE,
       bob.uri,
     );
-    const name = "Accept object type as an IRI, unsigned";
     expect(await t.post(bob, body(name, status))).toBe(202);
     expect(await aliceFollows(t, bob)).toEqual([{ state: "accepted" }]);
     expect(applied(name).effect).toEqual({ local_requests_removed: 1, local_follows: ["alice"] });
+  });
+
+  // bob's block of alice (blocks/1, as the forms name it), which hides his public status from her.
+  async function blockedStatus(t: Setup, bob: TestActor): Promise<string> {
+    const note = mastodonNote(bob);
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    const id = (await statusRow(t.store, note.id))!.id;
+    const block = { "@context": "https://www.w3.org/ns/activitystreams", type: "Block", actor: bob.uri };
+    const blocks = `${bob.uri}/blocks/1`;
+    expect(await t.post(bob, { ...block, id: blocks, object: "https://kopje.test/ap/users/alice" })).toBe(202);
+    expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(404);
+    return id;
+  }
+
+  it("an Undo of a block typed as IRIs in a body Mastodon compacts lifts it, as in Mastodon", async () => {
+    const { t, bob, status } = await world();
+    const id = await blockedStatus(t, bob);
+    expect(await t.post(bob, body("Undo of a block, both typed as IRIs", status))).toBe(202);
+    expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(200);
+  });
+
+  it.each([
+    "past the value limit as received",
+    "past the value limit once compacted",
+    "with a proof in the data-integrity context",
+    "with @graph in its signature",
+    "with a type that is not a string",
+    "with a language map member that is not a string",
+    "with an IRI over a prefix only full_context defines",
+    "with an array in an array",
+    "under an inline context",
+  ])("an Undo of a block typed as IRIs %s leaves the block", async (variant) => {
+    const { t, bob, status } = await world();
+    const id = await blockedStatus(t, bob);
+    expect(await t.post(bob, body(`Undo of a block, both typed as IRIs, ${variant}`, status))).toBe(202);
+    expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(404);
   });
 
   it.each(["Undo object type as the absolute IRI", "Undo typed as:Undo"])(

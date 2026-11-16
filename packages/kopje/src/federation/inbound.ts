@@ -231,8 +231,9 @@ const AS_GIVEN: TypeReader = (type) => type;
 // strings or objects with an id. Other types and objects Kopje does not store are 'unsupported'.
 // The envelope every activity must have before anything reads it: the ActivityStreams context, a string id and type,
 // and an actor with an http(s) origin; an LD-signed one, only in the vocabulary Mastodon reads it in, its types (the
-// activity's and its embedded object's) as the compaction names them (ID-1, ldSignedTypeReader). Shared by the inbox
-// and the cutover rollback's drain, so neither hands on an activity the other would ignore.
+// activity's and its embedded object's) as the compaction names them where Mastodon compacts it, as given elsewhere
+// (ID-1, ldSignedTypeReader). Shared by the inbox and the cutover rollback's drain, so neither hands on an activity the
+// other would ignore.
 function activityEnvelope(
   json: Json,
 ):

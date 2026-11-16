@@ -130,10 +130,13 @@ against their own instance. TLS is assumed between all parties.
   and the rollback drain alike (`ldSignedTypeReader` in `src/federation/ld-signed-body.ts`, called by the envelope
   check of `src/federation/inbound.ts`); the inbox and its replay log it once, as `kopje.inbox.refused` with reason
   `ld-context` and nothing of the body (DATA-5). No context can then readdress it, alias its type, actor or object,
-  or redefine a mention; its type and its embedded object's, given as an IRI, are read as the name Mastodon's
-  compaction gives them, so a retraction ends what Mastodon's ends. The two readings still differ in shapes, values
-  and readers, each listed in `docs/mastodon-deviations.md` ("Reading inbound activities"); none of those widens who
-  sees a status (VIS-1). The owner is the actor whose document lists the key,
+  or redefine a mention: this keeps meanings, and does not make the two readings equal. Its type and its embedded
+  object's, given as an IRI, are read as the name Mastodon's compaction gives them only in a body Kopje can tell
+  Mastodon compacts, and as given elsewhere, where Mastodon may read the body as received (`ldSignedTypeReader`). The
+  readings still differ in shapes, values and readers, each listed in `docs/mastodon-deviations.md` ("Reading inbound
+  activities"). None of those differences lets Kopje grant an access Mastodon's reading would not (a follow, a status's
+  audience, a lifted block); some leave in place one Mastodon's reading would withdraw (a follow its `Reject` ends, a
+  status its `Delete` removes), and those are listed there too. The owner is the actor whose document lists the key,
   by id and key material, and the key names no other owner. An actor's keys are what its document embeds among its
   first `MAX_PUBLIC_KEYS` (10) entries of `publicKey` and of `assertionMethod` (FEP-521a `Multikey`), RSA or Ed25519,
   each with an id on its origin (`ownKeys`); a key listed by reference in `assertionMethod` is not fetched, and a key
