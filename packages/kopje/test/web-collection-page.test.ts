@@ -385,6 +385,38 @@ describe("a local collection's page", () => {
     }
   });
 
+  // Every Mastodon controller runs ParamsWrapper#_wrapper_enabled? before its callbacks and action, and it reads the
+  // Content-Type, a GET's with no body included: one Rails cannot read is 406, whatever the extension, format or
+  // Accept, and before the collection is found. Only Rack's refusals and the router's come before it; Rails' own reading
+  // of the query comes after it. Each form's answer is Mastodon 4.7.5's for an existing collection, then a missing one.
+  it("refuses a Content-Type Rails cannot read before the format and the collection, as Mastodon does", async () => {
+    const { h, alice } = await world();
+    const id = await seedCollection(h, alice, 1);
+    const missing = collectionId(99);
+    const broken = { accept: "application/json", "content-type": "broken" };
+    const forms: [string, Record<string, string>, number, number][] = [
+      [".json", broken, 406, 406],
+      [".html", broken, 406, 406],
+      ["?format=json", broken, 406, 406],
+      ["", broken, 406, 406],
+      ["", { accept: "application/json", "content-type": "" }, 406, 406],
+      ["", { accept: "application/json", "content-type": " Text/HTML , x" }, 200, 404],
+      ["?a=%ZZ", broken, 400, 400],
+      ["?%FF=2&%FF[b]=1", broken, 400, 400],
+      [".%FF", broken, 400, 400],
+      ["?a=%FF", broken, 406, 406],
+      ["?%FF=1", broken, 406, 406],
+      ["?a=%FF", { accept: "application/json", "content-type": "application/json" }, 400, 400],
+    ];
+    for (const [suffix, headers, found, gone] of forms) {
+      const answers = [];
+      for (const target of [id, missing]) {
+        answers.push((await h.request(`/ap/users/alice/collections/${target}${suffix}`, { headers })).status);
+      }
+      expect([suffix, headers["content-type"], answers]).toEqual([suffix, headers["content-type"], [found, gone]]);
+    }
+  });
+
   it("reads each page and the site facts in one Store call", async () => {
     const { h, calls } = await countedHarness(["alice", "bob"]);
     const served = await seedCollection(h, h.users.alice.id, 1);

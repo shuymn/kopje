@@ -1,14 +1,16 @@
-// The format parameter Mastodon 4.7.5 reads at a route with Rails' `(.:format)` (parameters[:format]), and whether it
-// refuses the request (400) before reading it. Two parsers read the query, in this order:
+// The format parameter Mastodon 4.7.5 reads at a route with Rails' `(.:format)` (parameters[:format]), and where it
+// refuses the request (400) before reading it: while the request is read, before any controller, or in the controller.
+// Two parsers read the query, in this order:
 //   - Rack 3.2.8's QueryParser#parse_nested_query, in a middleware (Rack::Attack's throttle_authenticated_paging reads
-//     every request's params): a `%` not followed by two hex digits (InvalidParameterError) or a key nested as two
-//     kinds (ParameterTypeError) is 400; a nesting 32 deep, more than 4,096 fields or more than 4 MiB
+//     every request's params), on the key's bytes: a `%` not followed by two hex digits (InvalidParameterError) or a key
+//     nested as two kinds (ParameterTypeError) is 400; a nesting 32 deep, more than 4,096 fields or more than 4 MiB
 //     (QueryLimitError) is an unmapped 500 there, and 400 here;
 //   - Rails 8.1.3.1's ActionDispatch::QueryParser.each_pair and ParamBuilder#store_nested_param (deep munge on, the
-//     depth limit 100), in the controller, before it reads the format: the same, a key that is not UTF-8, and a
-//     top-level key's value that is not UTF-8, are 400.
-// The route's extension (the path parameter `format`, CGI.unescapeURIComponent'd, 400 when not UTF-8) is merged last
-// (Request#parameters), so it wins over the query's.
+//     depth limit 100), in the controller, after ParamsWrapper reads the Content-Type (rails-format.ts
+//     railsContentTypeRefused) and before it reads the format: the same, a key that is not UTF-8, and a top-level
+//     key's value that is not UTF-8, are 400.
+// The route's extension (the path parameter `format`, CGI.unescapeURIComponent'd, 400 in the router when not UTF-8) is
+// merged last (Request#parameters), so it wins over the query's.
 
 // A parameter's value as Ruby holds it: a String, nil, an Array or a Hash.
 export type RailsParam = string | null | RailsParam[] | ParamHash;
@@ -56,6 +58,15 @@ function text(bytes: Uint8Array): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+// The bytes, each one char: Rack nests a key as bytes, whatever its encoding.
+function bytewise(bytes: Uint8Array): string {
+  let out = "";
+  for (const byte of bytes) {
+    out += String.fromCharCode(byte);
+  }
+  return out;
 }
 
 // params_hash_has_key?.
@@ -162,46 +173,56 @@ function pairs(query: string): { key: Uint8Array; value: Uint8Array | null }[] {
     });
 }
 
+// Where Mastodon refuses a request's query or extension (400, or the 500 of a Rack limit): "request" while it reads the
+// request, before any controller (Rack's parser, the router); "controller" when the controller reads its parameters.
+type Refusal = "request" | "controller";
+
+function refused<By extends Refusal>(error: unknown, by: By): { refused: By } {
+  if (error instanceof Refused) {
+    return { refused: by };
+  }
+  throw error;
+}
+
 // The format parameter of a request whose route extension is `extension` (undefined without one, as the path holds
 // it) and whose query is `query` (without its `?`): `format` undefined when neither sets it (or the query's is nil);
-// refused when Mastodon answers 400 (or the 500 of a Rack limit) before reading it.
+// refused where Mastodon refuses it before reading it.
 export function railsFormatParam(
   extension: string | undefined,
   query: string,
-): { refused: true } | { refused: false; format: RailsParam | undefined } {
+): { refused: "request" } | { refused: "controller" } | { refused: false; format: RailsParam | undefined } {
+  let decoded: ReturnType<typeof pairs>;
+  let pathFormat: string | undefined;
   try {
-    const decoded = pairs(query).map(({ key, value }) => {
+    decoded = pairs(query);
+    const rack = new ParamHash();
+    for (const { key, value } of decoded) {
+      store(RACK, rack, bytewise(key), value === null ? null : "", 0);
+    }
+    pathFormat = extension?.includes("%") ? text(percentBytes(extension, false)) : extension;
+    if (extension !== undefined && pathFormat === undefined) {
+      throw new Refused();
+    }
+  } catch (error) {
+    return refused(error, "request");
+  }
+  try {
+    const rails = new ParamHash();
+    for (const { key, value } of decoded) {
       const name = text(key);
       if (name === undefined) {
         throw new Refused();
       }
-      return { name, value: value === null ? null : (text(value) ?? value) };
-    });
-    const rack = new ParamHash();
-    for (const { name, value } of decoded) {
-      store(RACK, rack, name, value === null ? null : "", 0);
-    }
-    const rails = new ParamHash();
-    for (const { name, value } of decoded) {
       const start = name.indexOf("[", 1);
       const top = start === -1 ? name : name.slice(0, start);
-      if (value instanceof Uint8Array && top !== "") {
+      const v = value === null ? null : text(value);
+      if (v === undefined && top !== "") {
         throw new Refused();
       }
-      store(RAILS, rails, name, value instanceof Uint8Array ? "" : value, 0);
+      store(RAILS, rails, name, v === undefined ? "" : v, 0);
     }
-    if (extension !== undefined) {
-      const format = extension.includes("%") ? text(percentBytes(extension, false)) : extension;
-      if (format === undefined) {
-        throw new Refused();
-      }
-      return { refused: false, format };
-    }
-    return { refused: false, format: rails.get("format") };
+    return { refused: false, format: pathFormat ?? rails.get("format") };
   } catch (error) {
-    if (error instanceof Refused) {
-      return { refused: true };
-    }
-    throw error;
+    return refused(error, "controller");
   }
 }

@@ -284,6 +284,14 @@ function contentMime(header: string | undefined): ReturnType<typeof lookup> | un
   return lookup(rubyStrip(header.split(/[,;]/, 1)[0]!).replace(/[A-Z]+/g, (upper) => upper.toLowerCase()));
 }
 
+// ParamsWrapper#_wrapper_enabled?, which runs before every Mastodon controller's callbacks and action: a Content-Type,
+// even an empty one (has_content_type?), whose type Rails cannot read (content_mime_type's InvalidType) is refused, 406,
+// whatever the method, the body or the format; Rack's and the router's refusals come before it, the controller's
+// reading of its parameters after it.
+export function railsContentTypeRefused(contentType: string | undefined): boolean {
+  return contentType !== undefined && contentMime(contentType) === null;
+}
+
 // MimeNegotiation#formats: Mime[parameters[:format]] when the parameter is set (a String's type by its exact
 // extension, none for another String, an Array or a Hash); else the Accept's types when valid_accept_header (an XHR's
 // present Accept, or its Content-Type's type without one; any other present Accept not BROWSER_LIKE), else Mime[:js]

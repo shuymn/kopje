@@ -19,7 +19,7 @@ import {
 } from "./federation";
 import { signatureKeyId } from "./inbox-request";
 import type { LoaderDeps } from "./loader";
-import { railsFormat } from "./rails-format";
+import { railsContentTypeRefused, railsFormat } from "./rails-format";
 import { railsFormatParam } from "./rails-params";
 import { notSetUp } from "./setup-gate";
 import { createSnapshotSaver, snapshotKey } from "./snapshot";
@@ -305,10 +305,11 @@ function collectionDocument(document: string | null, headers: Record<string, str
   });
 }
 
-// CollectionsController#show as Mastodon answers it (rails-params.ts, rails-format.ts), in its order: a query or
-// extension Rack or Rails refuses (400), then a type Rails cannot read (406), both before the collection is found; then
-// a collection not found (404); then a request it answers with the page moves to the page
-// (#redirect_to_canonical_url), and one it answers with neither representation is refused (406).
+// CollectionsController#show as Mastodon answers it (rails-params.ts, rails-format.ts), in its order: a query Rack
+// refuses or an extension the router refuses (400), a Content-Type Rails cannot read (406, ParamsWrapper), a query
+// Rails refuses (400), then an Accept or format Rails cannot read (406), all before the collection is found; then a
+// collection not found (404); then a request it answers with the page moves to the page (#redirect_to_canonical_url),
+// and one it answers with neither representation is refused (406).
 function collectionAnswer(
   c: Context<FederationEnv>,
   document: string | null,
@@ -317,7 +318,13 @@ function collectionAnswer(
   query: string,
 ): Response {
   const param = railsFormatParam(extension, query);
-  if (param.refused) {
+  if (param.refused === "request") {
+    return new Response("Bad Request", { status: 400 });
+  }
+  if (railsContentTypeRefused(c.req.header("content-type"))) {
+    return new Response("Not Acceptable", { status: 406 });
+  }
+  if (param.refused === "controller") {
     return new Response("Bad Request", { status: 400 });
   }
   const negotiated = railsFormat({
