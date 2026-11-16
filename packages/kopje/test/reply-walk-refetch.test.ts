@@ -7,13 +7,13 @@ import { BUILD, runStoreJobs } from "./helpers";
 import { mastodonActor, type TestActor } from "./inbox-helpers";
 import { create, DAVE, followed, mastodonNote, type Note, type Setup, setup, statusRow } from "./inbox-status-helpers";
 import { reply, serveNote, startWalk, storedRoot, walkRounds, walkRow, withReplies } from "./reply-walk-helpers";
-//  The statuses a walk fetches again (#1607 D9, D11, D13; Mastodon 4.7.5's FetchReplyWorker through
-// FetchRemoteStatusService): a stored node, the root included, is applied as its author's Update; a node other than the
-// root whose own URI answers 404 with no redirect has the public or unlisted status stored under it then removed, with
-// no retraction (fetch_remote_status_service.rb:86-98); the root's 404 removes nothing
-// (fetch_all_replies_worker.rb:85-91 hands its body to FetchReplyWorker); and a create walk records the items it lists
-// stored or not
-// (fetch_replies_service.rb:33-39). The Store's clock is the faked Date.
+
+// The statuses a walk fetches again (#1607 D9, D11, D13; Mastodon 4.7.5's FetchReplyWorker through
+// FetchRemoteStatusService): a stored node, the root included, listed or reached by a scan of stored replies (D12), is
+// applied as its author's Update; a node other than the root whose own URI answers 404 with no redirect has the public
+// or unlisted status stored under it then removed, with no retraction (fetch_remote_status_service.rb:86-98); the
+// root's 404 removes nothing (fetch_all_replies_worker.rb:85-91 hands its body to FetchReplyWorker); and a create walk
+// records the items it lists stored or not (fetch_replies_service.rb:33-39). The Store's clock is the faked Date.
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -111,6 +111,27 @@ describe("a walk's stored nodes (D11)", () => {
     await walkRounds(t);
     expect(await statusRow(t.store, note.id)).toMatchObject({ content: "<p>edited root</p>" });
     expect(await statusRow(t.store, g.id)).toMatchObject({ in_reply_to_id: rootId });
+  });
+});
+
+describe("a stored reply a scan admits (D11 and D9, with D12)", () => {
+  // The root's collection lists neither reply: the walk reaches both by its scan of the root's stored replies.
+  it("refreshes an edited one and removes one whose URI answers 404, as listed ones", async () => {
+    const { t, root, bob } = await world();
+    const note = mastodonNote(root);
+    serveNote(t.web, withReplies(t.web, note, []));
+    const rootId = await storedRoot(t, root, note);
+    const edited = await delivered(t, bob, note.id);
+    const gone = await delivered(t, bob, note.id);
+    editedServed(t, edited, "edited");
+    t.web.fail(gone.id, 404);
+    await startWalk(t.store, rootId, NOW);
+    await walkRounds(t);
+    expect([edited, gone].map((n) => fetches(t, n.id))).toEqual([1, 1]);
+    expect(await statusRow(t.store, edited.id)).toMatchObject({ content: "<p>edited</p>", in_reply_to_id: rootId });
+    await jobs(t);
+    expect(await statusRow(t.store, gone.id)).toBeUndefined();
+    expect(await retractions(t)).toBe(0);
   });
 });
 
