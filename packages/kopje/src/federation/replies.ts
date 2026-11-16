@@ -16,10 +16,16 @@ import { errorFields } from "../platform/error-message";
 import { callStore, type StoreStub } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
 import { documentOn, itemsOf } from "./collections";
-import { afterRevisionRead, createRemoteLoaders, type FederationDeps, type FederationState } from "./federation";
+import {
+  afterRevisionRead,
+  createRemoteLoaders,
+  type FederationDeps,
+  type FederationState,
+  type RemoteLoaders,
+} from "./federation";
 import type { InboxDeps } from "./inbox";
 import { REQUEST_DEADLINE_MS, requestBudget } from "./loader";
-import { fetchActor } from "./remote-actor";
+import { loadActor } from "./quotes";
 import { fetchRemoteStatus, idOf, statusIdentity } from "./remote-status";
 
 // The Worker's part of a walk of a remote replies collection (domain/reply-walks.ts; Mastodon 4.7.5's
@@ -146,31 +152,21 @@ async function fetchStep(step: ReplyStep, origin: string, loader: DocumentLoader
   return { kind: "replies", replies };
 }
 
-// The author a step's completion asked for: its document, or 'gone'; a fetch that may pass is 'transient', which
-// fails the step unless the author is a stale stored one (its stored row is used: null).
+// The author a step's completion asked for, loaded as a quoted status's is (quotes.ts loadActor): its document with its
+// claim confirmed against the handle the need read, or 'gone'. An unknown author (no state) whose claim WebFinger
+// refuses gives no document (null), so the Store stores neither it nor its status. A fetch or confirmation that may
+// pass is 'transient', which fails the step unless the author is a stale stored one (its stored row is used: null).
 async function fetchAuthor(
   need: AuthorNeed,
   origin: string,
-  loaders: Parameters<typeof afterRevisionRead>[0],
+  loaders: RemoteLoaders,
 ): Promise<NonNullable<ReplyStepInput["author"]> | "transient"> {
-  const document = await (async () => {
-    if (originOf(need.uri) === null || originOf(need.uri) === origin) {
-      return null;
-    }
-    const fetched = await fetchActor(need.uri, loaders.document, loaders.context);
-    return fetched.kind === "ok"
-      ? fetched.input
-      : fetched.kind === "gone"
-        ? "gone"
-        : fetched.kind === "transient"
-          ? "transient"
-          : null;
-  })();
-  if (document === "transient" && !need.refresh) {
+  const { author } = await loadActor(need.uri, origin, loaders, need.state?.handle ?? null);
+  if (author.kind === "transient" && !need.refresh) {
     return "transient";
   }
-  const kept = document === "transient" ? null : document;
-  return { uri: need.uri, document: kept, ...(need.state === undefined ? {} : { revision: need.state.revision }) };
+  const document = author.kind === "ok" ? author.value : author.kind === "gone" ? "gone" : null;
+  return { uri: need.uri, document, ...(need.state === undefined ? {} : { revision: need.state.revision }) };
 }
 
 // A Store refusal inside a loader (a signing key's RPC in maintenance) made the fetch fail: no outcome of the step's.

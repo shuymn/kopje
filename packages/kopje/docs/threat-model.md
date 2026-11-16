@@ -2371,7 +2371,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   also without a trailing dot (`hostDomain` in `src/platform/domain-name.ts`); the id itself is kept whole for origin
   checks. A search by an alias (any address whose WebFinger names an existing actor) finds the account by its actor id,
   whose own claim decides its address. `test/inbox-handles.test.ts`, `test/inbox-canonical-address.test.ts` ("the
-  canonical address of a remote account", "the domains of WebFinger subjects and addresses, parsed one way").
+  canonical address of a remote account", "the domains of WebFinger subjects and addresses, parsed one way"); a replies
+  walk confirms an author it fetches the same way (`loadActor` in `src/federation/quotes.ts`;
+  `test/reply-walk-rounds.test.ts` ("stores a reply by an unknown author once WebFinger confirms", "stores no reply by
+  an unknown author whose handle WebFinger refuses")).
   Only a username of Mastodon's format (`isRemoteUsername`) is matched against stored accounts by address, so an
   invalidated handle (`! <id>`, `shownHandle` in `src/domain/accounts.ts`) names no account by address; lookup names it
   by `<id>@handle.invalid` (`accountByLookup`); `test/account-invalid-handle.test.ts`.
@@ -4899,10 +4902,11 @@ heap).
   `fetchSignerOf` in `src/domain/actors.ts`, the one home of this rule, read by `fetchSigner` and by the fetch
   preparation of `inboxGate`, of a `receiveActivity` need and of `resolutionGate` (a search resolution, the instance
   actor); `src/federation/collections.ts`, `receiveInbound` in `src/federation/inbound.ts`;
-  `test/remote-collections.test.ts`, `test/signed-fetch.test.ts` "the signer of a fetch"). A replies walk's fetches
-  (its statuses, their collections and pages, and their authors) have no recipient: the instance actor signs them, as
-  Mastodon's representative signs them (`JsonLdHelper#fetch_resource_without_id_validation`;
-  `src/federation/replies.ts`; `test/reply-walk-rounds.test.ts` ("signed by the instance actor")).
+  `test/remote-collections.test.ts`, `test/signed-fetch.test.ts` "the signer of a fetch"). A replies walk's fetches (its
+  statuses, their collections and pages, and their authors) have no recipient: the instance actor signs them, as
+  Mastodon's representative signs them, but for the WebFinger lookup that confirms an author's handle, unsigned as every
+  WebFinger request (`JsonLdHelper#fetch_resource_without_id_validation`; `src/federation/replies.ts`;
+  `test/reply-walk-rounds.test.ts` ("signed by the instance actor")).
   A signer is judged when it is chosen: a suspension or unfollow committed after the Store answer that chose it costs
   at most that request's fetches, and the next Store round refuses what they bring (`test/quote-requests.test.ts`);
   activities by their author's key. The instance key never signs an activity attributed to a user: the one activity it

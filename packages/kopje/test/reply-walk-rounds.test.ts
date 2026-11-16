@@ -25,7 +25,7 @@ import { StoreUnavailableError } from "../src/platform/store-errors";
 import { sql } from "./api-helpers";
 import { countingStore, inboxDeps, NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
-import { LOCAL, mastodonActor, type TestActor } from "./inbox-helpers";
+import { LOCAL, mastodonActor, serveWebFinger, type TestActor } from "./inbox-helpers";
 import {
   accountId,
   ALICE,
@@ -88,6 +88,9 @@ async function walkOf(t: Setup, root: TestActor, note: Note, items: unknown[]) {
 }
 
 const fetches = (t: Setup, url: string) => t.web.fetched.filter((fetched) => fetched === url).length;
+const BOB_HANDLE = "acct:bob@other.example";
+const webfingerOf = (handle: string) =>
+  `https://${handle.split("@")[1]}/.well-known/webfinger?resource=${encodeURIComponent(handle)}`;
 
 describe("a walk of a Mastodon thread", () => {
   it("stores the replies its collections list, each linked under the root, signed by the instance actor", async () => {
@@ -117,9 +120,41 @@ describe("a walk of a Mastodon thread", () => {
     // bob, unknown, was fetched and stored with his reply (the Announce original's author step).
     expect(await accountId(t.store, bob.uri)).toBeDefined();
     expect(t.web.fetched).toContain(bob.uri);
-    // DATA-7: every fetch of the walk signed as the instance actor; nothing of this instance's origin requested.
-    expect(new Set(t.web.signers.slice(signed))).toEqual(new Set([INSTANCE_KEY]));
+    // DATA-7: every fetch of the walk signed as the instance actor but the WebFinger lookup confirming bob's handle,
+    // unsigned as every WebFinger request; nothing of this instance's origin requested.
+    const walked = t.web.fetched.slice(signed).map((url, i) => [url, t.web.signers[signed + i]]);
+    expect(walked.filter(([, signer]) => signer !== INSTANCE_KEY)).toEqual([[webfingerOf(BOB_HANDLE), "unsigned"]]);
     expect(t.web.fetched.filter((url) => url.startsWith(LOCAL))).toEqual([]);
+  });
+
+  it("stores a reply by an unknown author once WebFinger confirms the handle its document claims", async () => {
+    const { t, root, bob } = await world();
+    const note = mastodonNote(root);
+    const answer = reply(t.web, bob, note.id);
+    const { id } = await walkOf(t, root, note, [answer.id]);
+    await walkRounds(t);
+    expect(t.web.fetched).toContain(webfingerOf(BOB_HANDLE));
+    expect(await storedOf(t.store, [answer.id])).toEqual([answer.id]);
+    expect(await sql(t.store, "SELECT username, domain FROM accounts WHERE uri = ?", bob.uri)).toEqual([
+      { username: "bob", domain: "other.example" },
+    ]);
+    expect((await walkRow(t.store, id))?.result_count).toBe(1);
+  });
+
+  it("stores no reply by an unknown author whose handle WebFinger refuses, and finishes the walk", async () => {
+    const { t, root, bob } = await world();
+    // bob's handle names another actor.
+    serveWebFinger(t.web, BOB_HANDLE, BOB_HANDLE, `${OTHER_ORIGIN}/users/carol`);
+    const note = mastodonNote(root);
+    const answer = reply(t.web, bob, note.id);
+    const self = reply(t.web, root, note.id);
+    const { id } = await walkOf(t, root, note, [answer.id, self.id]);
+    await walkRounds(t);
+    expect(t.web.fetched).toContain(webfingerOf(BOB_HANDLE));
+    expect(await storedOf(t.store, [answer.id, self.id])).toEqual([self.id]);
+    expect(await accountId(t.store, bob.uri)).toBeUndefined();
+    expect(await walkRow(t.store, id)).toMatchObject({ finished_at: NOW, result_count: 1 });
+    expect(await walkNodes(t.store, id)).toEqual([]);
   });
 
   it("refetches a stale stored author before its reply, under the revision read with the need", async () => {
