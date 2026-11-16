@@ -115,6 +115,11 @@ describe("a local collection's page", () => {
     expect(text(query(doc, "h2").find((h2) => text(h2) === "Accounts")!)).toBe("Accounts");
     expect(query(doc, "details")).toEqual([]);
     expect(query(doc, "script")).toEqual([]);
+    // Its FeaturedCollection, as Mastodon's page links it (PR 3).
+    const alternates = query(doc, "link")
+      .filter((link) => attr(link, "rel") === "alternate")
+      .map((link) => [attr(link, "type"), attr(link, "href")]);
+    expect(alternates).toEqual([["application/activity+json", `https://kopje.test/ap/users/alice/collections/${id}`]]);
   });
 
   // W-T2. Fails if the item arm's state test is dropped (the pending member shown), or its availability test (the
@@ -230,6 +235,44 @@ describe("a local collection's page", () => {
         .map((m) => attr(m, "content"));
       expect([fields, status, robots]).toEqual([fields, 200, ["noindex, noarchive"]]);
     }
+  });
+
+  // W-T8 (PR 3). Fails if the page route serves HTML to an ActivityPub client, or the document route the JSON to a
+  // browser.
+  it("serves the FeaturedCollection to an ActivityPub client, and moves a browser from the document to the page", async () => {
+    const { h, alice, bob, carol } = await world();
+    const id = await seedCollection(h, alice, 1);
+    await seedItem(h, id, 1, bob, 1);
+    const document = `/ap/users/alice/collections/${id}`;
+    const ap = { headers: { accept: "application/activity+json" } };
+    const direct = await h.request(document, ap);
+    const negotiated = await h.request(`/collections/${id}`, ap);
+    expect([negotiated.status, negotiated.headers.get("content-type"), negotiated.headers.get("vary")]).toEqual([
+      200,
+      "application/activity+json",
+      "Accept",
+    ]);
+    const body = await negotiated.text();
+    expect(body).toBe(await direct.text());
+    expect(JSON.parse(body)).toMatchObject({ type: "FeaturedCollection", id: `https://kopje.test${document}` });
+    // A browser asking for the document moves to the page; an unknown, remote or hidden one is not found either way.
+    const html = await h.request(document, { headers: { accept: "text/html,application/xhtml+xml" } });
+    expect([html.status, html.headers.get("location")]).toEqual([302, `/collections/${id}`]);
+    const remote = await seedCollection(
+      h,
+      await seedAccount(h.store, { username: "erin", domain: "remote.example" }),
+      2,
+    );
+    const hidden = await seedCollection(h, carol, 3);
+    await suspend(h, carol);
+    for (const path of [`/collections/${collectionId(99)}`, `/collections/${remote}`, `/collections/${hidden}`]) {
+      const answer = await h.request(path, ap);
+      expect([path, answer.status, await answer.text()]).toEqual([path, 404, "Not Found"]);
+    }
+    const unknown = await h.request(`/ap/users/alice/collections/${collectionId(99)}`, {
+      headers: { accept: "text/html" },
+    });
+    expect(unknown.status).toBe(404);
   });
 
   it("reads each page and the site facts in one Store call", async () => {

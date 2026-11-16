@@ -903,6 +903,17 @@ export function flaggedCollections(
 
 // ---- The public page of a local collection (web-pages/collection.ts).
 
+// The path of the local collection `id`'s FeaturedCollection (collection-documents.ts), by key; null for any other.
+export function localCollectionPath(db: Db, id: string): string | null {
+  const row = db.first<{ username: string }>(
+    `SELECT a.username FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
+			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
+		WHERE c.id = ? AND c.local = 1`,
+    id,
+  );
+  return row === undefined ? null : `/ap/users/${encodeURIComponent(row.username)}/collections/${id}`;
+}
+
 type PageOwner = { id: string; account: Account } | { status: "not_found" } | { status: "suspended" };
 
 // A local collection's page (Mastodon's CollectionsController#show, as HTML), as an anonymous viewer reads it (VIS-4):

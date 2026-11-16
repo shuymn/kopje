@@ -1,5 +1,5 @@
 import { type Account, presentAccountsWithin } from "../accounts";
-import { type Collection, localCollectionOf } from "../collections";
+import { type Collection, localCollectionOf, localCollectionPath } from "../collections";
 import { admitMandatory, pageBudget } from "./budget";
 import { pageAccountById } from "./profile";
 import { pagePresent, pageRead, type Site } from "./site";
@@ -18,12 +18,20 @@ export type CollectionPage =
       accounts: Account[];
     }
   | { status: "not_found" }
-  | { status: "suspended" };
+  | { status: "suspended" }
+  // The path of its FeaturedCollection, for an ActivityPub client (`document`).
+  | { status: "document"; path: string };
 
 // /collections/:id, a local collection's url (Mastodon's CollectionsController#show, as HTML), as an anonymous viewer
 // reads it (VIS-4): the collection localCollectionOf finds, its owner answered for as its profile is (a suspended
-// owner's page is gone, 410). An unknown id, a remote collection's, or one R45 does not find is not found.
-export const webCollectionPage = pageRead<{ id: string }, CollectionPage>((db, input, site) => {
+// owner's page is gone, 410). An unknown id, a remote collection's, or one R45 does not find is not found. document: an
+// ActivityPub client's request, answered with the path of the local collection's FeaturedCollection, whose own read
+// applies R45 (federation/routes.ts).
+export const webCollectionPage = pageRead<{ id: string; document?: true }, CollectionPage>((db, input, site) => {
+  if (input.document === true) {
+    const path = localCollectionPath(db, input.id);
+    return path === null ? { status: "not_found" } : { status: "document", path };
+  }
   const present = pagePresent(site);
   const found = localCollectionOf(db, input.id, present.origin, (owner) => pageAccountById(db, owner, site));
   if ("status" in found) {

@@ -15,6 +15,11 @@ const AP = { accept: "application/activity+json" };
 const EMOJI = "222222222222222222";
 const MISSING_EMOJI = "123456789012345678";
 const FEP = "https://w3id.org/fep/044f#QuoteRequest";
+const COLLECTION = "500000000000000001";
+const ITEM = "600000000000000001";
+const T = "2026-10-11T00:00:00.000Z";
+const TEXT = "text/plain;charset=UTF-8";
+const AP_JSON = "application/activity+json";
 
 // alice's public status, quoted by bob with her approval: the stamp's path, and the ids to revoke it by.
 async function world() {
@@ -38,6 +43,26 @@ async function world() {
     "SELECT authorization_id, status_id FROM quotes WHERE state = 'accepted'",
   );
   await seedEmojiRow(t.store, { id: EMOJI, shortcode: "blob", owner: ALICE });
+  // alice's collection, featuring herself.
+  await sql(
+    t.store,
+    `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, created_at, updated_at)
+		VALUES (?, ?, 1, 'c', 0, 1, ?, ?)`,
+    COLLECTION,
+    ALICE,
+    T,
+    T,
+  );
+  await sql(
+    t.store,
+    `INSERT INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
+		VALUES (?, ?, ?, 1, 1, ?, ?)`,
+    ITEM,
+    COLLECTION,
+    ALICE,
+    T,
+    T,
+  );
   return { t, stamp: `/ap/users/alice/quote_authorizations/${quote!.authorization_id}`, mine, quote: quote! };
 }
 
@@ -79,6 +104,16 @@ describe("self-gated federation GETs", () => {
       [`/emojis/${EMOJI}`, 200, "application/activity+json", "public, max-age=180", ["apEmoji"]],
       [`/emojis/${MISSING_EMOJI}`, 404, "text/plain;charset=UTF-8", null, ["apEmoji"]],
       ["/emojis/abc", 404, "text/plain;charset=UTF-8", null, ["apSite"]],
+      ["/ap/users/alice/featured_collections", 200, AP_JSON, null, ["apFeaturedCollections"]],
+      ["/ap/users/alice/featured_collections?page=1", 200, AP_JSON, null, ["apFeaturedCollections"]],
+      ["/ap/users/alice/featured_collections?page=x", 404, TEXT, null, ["apSite"]],
+      [`/ap/users/alice/collections/${COLLECTION}`, 200, AP_JSON, null, ["apFeaturedCollection"]],
+      ["/ap/users/alice/collections/123", 404, TEXT, null, ["apSite"]],
+      [`/ap/users/alice/collection_items/${ITEM}`, 200, AP_JSON, null, ["apFeaturedItem"]],
+      ["/ap/users/alice/collection_items/x", 404, TEXT, null, ["apSite"]],
+      [`/ap/users/alice/feature_authorizations/${ITEM}`, 200, AP_JSON, "no-store", ["apFeatureAuthorization"]],
+      [`/ap/users/alice/feature_authorizations/${COLLECTION}`, 404, TEXT, "no-store", ["apFeatureAuthorization"]],
+      ["/ap/users/alice/feature_authorizations/x", 404, TEXT, null, ["apSite"]],
     ];
     for (const [path, status, type, cache, expected] of rows) {
       expect(await calls(t, method, path), path).toEqual({ status, type, cache, calls: expected });
@@ -113,6 +148,10 @@ describe("self-gated federation GETs", () => {
       ["/ap/users/alice/quote_authorizations/x", "apSite"],
       [`/emojis/${EMOJI}`, "apEmoji"],
       ["/emojis/abc", "apSite"],
+      ["/ap/users/alice/featured_collections", "apFeaturedCollections"],
+      [`/ap/users/alice/collections/${COLLECTION}`, "apFeaturedCollection"],
+      [`/ap/users/alice/collection_items/${ITEM}`, "apFeaturedItem"],
+      [`/ap/users/alice/feature_authorizations/${ITEM}`, "apFeatureAuthorization"],
     ];
     for (const [path, read] of rows) {
       expect(await calls(t, "GET", path), path).toEqual({

@@ -40,8 +40,9 @@ Other documents point here rather than repeat the release.
   `test/streaming/public.test.ts`. Accepted, 2026-11-15.
 - **Federation.** Kopje federates with every Mastodon series upstream still supports (its `SECURITY.md`), so it names
   no single release here. A behaviour takes as its reference the release its code and the threat model name:
-  remote-status ingestion and handle confirmation follow Mastodon v4.7.5, with Kopje's failure handling under NET-4. A
-  supported series whose activities Kopje refuses or misreads is a gap.
+  remote-status ingestion and handle confirmation follow Mastodon v4.7.5, with Kopje's failure handling under NET-4, and
+  local collections are published as its FEP-7aa9 documents. A supported series whose activities Kopje refuses or
+  misreads is a gap.
 
 ## Following a Mastodon release
 
@@ -677,6 +678,9 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   allowed", where Mastodon's message is a missing-translation text (it has no English text for that error). Accepted,
   2026-11-16.
 - Only local accounts can be featured yet: a remote account answers 403, as one that refuses. Tracked by #1589.
+- A collection's ActivityPub documents (its `FeaturedCollection`, as served and on the pages of the owner's
+  `featured_collections`) leave out a member that is suspended or otherwise unavailable, and that member's
+  `FeaturedItem` answers 404, where Mastodon lists every accepted item. Accepted, 2026-11-16.
 - A collection's page (`/collections/:id`) is served for a local collection only (a remote collection's `url` is its
   own server's), and the profile pages do not list an account's collections, where Mastodon's web client does.
   Accepted, 2026-11-16.

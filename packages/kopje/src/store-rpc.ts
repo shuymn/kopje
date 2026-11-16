@@ -267,6 +267,10 @@ export const STORE_RPC = {
   apNodeInfo: federationReads.apNodeInfo,
   apQuoteAuthorization: federationReads.apQuoteAuthorization,
   apEmoji: federationReads.apEmoji,
+  apFeaturedCollections: federationReads.apFeaturedCollections,
+  apFeaturedCollection: federationReads.apFeaturedCollection,
+  apFeaturedItem: federationReads.apFeaturedItem,
+  apFeatureAuthorization: federationReads.apFeatureAuthorization,
   saveSnapshot,
 
   // OAuth and the account and instance API.

@@ -292,17 +292,22 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
     );
   });
 
-  // A local collection's url (Mastodon's CollectionsController#show): its page, as an anonymous viewer reads it. HTML
-  // only.
+  // A local collection's url (Mastodon's CollectionsController#show): its page, as an anonymous viewer reads it, or
+  // for an ActivityPub client its FeaturedCollection, whose endpoint applies R45 again.
   pageGet("/collections/:id{[0-9]{1,19}}", async (c) => {
-    const page = await pageCall(c, (s, b) => s.webCollectionPage(b, { id: c.req.param("id") }));
+    const activityPub = wantsActivityPub(c.req.header("accept"));
+    const page = await pageCall(c, (s, b) =>
+      s.webCollectionPage(b, { id: c.req.param("id"), ...(activityPub ? { document: true } : {}) }),
+    );
     switch (page.status) {
       case "not_set_up":
         return notSetUp(c);
       case "not_found":
-        return notFound(c, page.site);
+        return activityPub ? withVary(new Response("Not Found", { status: 404 })) : notFound(c, page.site);
       case "suspended":
         return gone(c, page.site);
+      case "document":
+        return withVary(await forward(c, page.path));
     }
     return publicPage(
       c,

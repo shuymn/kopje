@@ -1,5 +1,12 @@
 import type { Db } from "../db/sql";
 import { instanceDomainOf, type NodeInfoUsage, nodeInfoUsageOf } from "./actors";
+import {
+  type DocumentRequest,
+  featureAuthorizationDocument,
+  featuredCollectionDocument,
+  featuredCollectionsDocument,
+  featuredItemDocument,
+} from "./collection-documents";
 import type { EmojiTag } from "./custom-emojis";
 import { localEmojiObjectOf } from "./local-emojis";
 import { readOperation } from "./operation";
@@ -40,3 +47,27 @@ export const apQuoteAuthorization = federationRead<
 export const apEmoji = federationRead<{ id: string }, { emoji: EmojiTag | null }>((db, { id }, domain) => ({
   emoji: localEmojiObjectOf(db, id, `https://${domain}`),
 }));
+
+// A local account's collections and their parts (collection-documents.ts), each refused to a fetcher its owner (the
+// member, for an authorization) blocks (VIS-33): the document's JSON, or null.
+type CollectionDocument = { document: string | null };
+
+const serialized = (document: Record<string, unknown> | null) => ({
+  document: document === null ? null : JSON.stringify(document),
+});
+
+export const apFeaturedCollections = federationRead<DocumentRequest & { page: number | null }, CollectionDocument>(
+  (db, input) => serialized(featuredCollectionsDocument(db, input)),
+);
+
+export const apFeaturedCollection = federationRead<DocumentRequest & { id: string }, CollectionDocument>((db, input) =>
+  serialized(featuredCollectionDocument(db, input)),
+);
+
+export const apFeaturedItem = federationRead<DocumentRequest & { id: string }, CollectionDocument>((db, input) =>
+  serialized(featuredItemDocument(db, input)),
+);
+
+export const apFeatureAuthorization = federationRead<DocumentRequest & { id: string }, CollectionDocument>(
+  (db, input) => serialized(featureAuthorizationDocument(db, input)),
+);

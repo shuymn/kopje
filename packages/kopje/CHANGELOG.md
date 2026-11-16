@@ -134,6 +134,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `0093_annual_reports` takes 16,319 ms with this file and 16,404 ms without it, medians of three runs).
   `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
   back past it needs a point-in-time restore.
+- Collections federate as FEP-7aa9 `FeaturedCollection`s: the actor's `featuredCollections` and `canFeature`, and each
+  local collection's documents, also served at its `url` to an ActivityPub client
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections"). No Store migration and no
+  `wrangler.jsonc` change.
 
 ### Changed
 

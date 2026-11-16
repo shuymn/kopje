@@ -1613,15 +1613,26 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   memberships of the blocked account's collections and deletes the blocked account's memberships of the blocker's
   collections, as Mastodon's `BlockService#handle_collections` does; an inbound `Block` changes no membership, and R45
   hides the blocked side's view. A member alone revokes its membership, which keeps the row (and the collection) but no
-  longer shows it.
+  longer shows it. A local collection's ActivityPub documents (FEP-7aa9: `featured_collections` and its pages, the
+  `FeaturedCollection`, a `FeaturedItem`, a member's `FeatureAuthorization`) apply the same rule with the fetcher as
+  the viewer, the remote account whose stored key the request's signature names (unverified: every document is also
+  served unsigned, so a named key only narrows the answer): not found while the owner is unavailable or to a fetcher
+  it blocks or domain-blocks; an authorization only while its item is accepted and its member local, available and not
+  blocking the fetcher or its domain, and never cached. Every member list and count in them, embedded copies
+  included, holds only accepted items whose member is available, so a suspended member is in none and its
+  `FeaturedItem` is not found.
   _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`, `collectionItemShownSql`,
   `mayFeatureSql` and `inCollectionsSql` in `src/domain/audience.ts`, `src/domain/collections.ts`, `severCollections`
-  (`src/domain/collections.ts`, run by a local block in `src/domain/blocks.ts`); `test/collections.test.ts` ("shows a
+  (`src/domain/collections.ts`, run by a local block in `src/domain/blocks.ts`), the documents in
+  `src/domain/collection-documents.ts` (served by `src/federation/routes.ts`); `test/collections.test.ts` ("shows a
   collection and its items only as R45 allows", "asks the member's consent: discoverable, and unlocked or followed, no
   block either way, local", "lets only the item's account revoke it, which keeps the row and the membership listed"),
-  `test/blocks.test.ts` ("revokes and deletes the collection memberships a block severs"), `test/policy-oracle.test.ts`
-  (against `collectionFound`, `collectionShown`, `collectionListed`, `collectionItemShown`, `mayFeature` and
-  `inCollections` in `test/policy-model.ts`), `test-node/policy-boundary.test.ts`.
+  `test/blocks.test.ts` ("revokes and deletes the collection memberships a block severs"),
+  `test/federation-collections.test.ts` ("refuses a fetcher the owner blocks or domain-blocks, and an authorization
+  to one its member blocks", "leaves a suspended member out of every document, and its FeaturedItem 404, as REST and
+  the page do"), `test/policy-oracle.test.ts` (against `collectionFound`, `collectionShown`, `collectionListed`,
+  `collectionItemShown`, `mayFeature` and `inCollections` in `test/policy-model.ts`),
+  `test-node/policy-boundary.test.ts`.
 
 ### Authorization (AUTH)
 
@@ -2074,11 +2085,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 
 - **SETUP-1: nothing is published before setup.** Federation paths answer 503 until `/setup` has fixed the domain;
   sign-in answers 503 until Access is configured. _Enforced (main):_ `src/federation/setup-gate.ts`; for the
-  federation GETs in `SELF_GATED_ROUTES` (`src/federation/routes.ts`: NodeInfo, `/actor/outbox`, quote stamps and
-  `/emojis/:id`), which the gate passes, the request's one Store read, which answers `not_set_up` before reading
-  anything else (`federationRead` in `src/domain/federation-reads.ts`); `src/app/authorize.tsx`; `test/app.test.ts`
-  ("answers 503 on federation routes until setup has fixed the domain"), `test/federation-store-calls.test.ts` ("answers
-  the setup 503 from the one read before setup"),
+  federation GETs in `SELF_GATED_ROUTES` (`src/federation/routes.ts`: NodeInfo, `/actor/outbox`, quote stamps,
+  `/emojis/:id` and a local account's collection documents), which the gate passes, the request's one Store read,
+  which answers `not_set_up` before reading anything else (`federationRead` in `src/domain/federation-reads.ts`);
+  `src/app/authorize.tsx`; `test/app.test.ts` ("answers 503 on federation routes until setup has fixed the domain"),
+  `test/federation-store-calls.test.ts` ("answers the setup 503 from the one read before setup"),
   `test/oauth.test.ts` ("answers 503 until Access is configured"). The wizard's steps before the bootstrap write only a
   draft in the setup session, so nothing is published until SETUP-3 commits; `test/setup.test.ts` ("confirms the host
   the request came to, and refuses workers.dev, IP addresses and ports").
