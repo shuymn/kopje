@@ -452,11 +452,13 @@ Accounts (the `Account` and credential account entities):
   (`process_account_service.rb:222-232`, `:264-270`). A key rotation or inbox move sent only by `Update(Person)`
   applies at Kopje's next fetch of the actor's document, which nothing schedules: the actor's first activity signed by
   a key Kopje does not hold fresh (one it does not hold, one that fails, or one its last fetched document listed 24
-  hours ago or more), a stale-author refresh, a search for the actor, or a collection sync's refresh of it. An actor
-  that sends nothing keeps the old keys and inboxes until one of these happens (`test/inbox-actor-update.test.ts`, "an
-  inbox move sent only by an embedded actor"). Reason: a holder of a still-trusted key could otherwise renew its trust
-  and move the actor's deliveries without a fetch (ID-1 in `docs/threat-model.md`). An embedded actor Kopje cannot read
-  applies nothing, as Mastodon drops it. Accepted, 2026-11-16.
+  hours ago or more), an `Update(Person)` that embeds no actor (its object the actor's URI, or not an actor), which is
+  fetched whatever its key, a stale-author refresh, a search for the actor, or a collection sync's refresh of it. An
+  actor that sends nothing keeps the old keys and inboxes until one of these happens (`test/inbox-actor-update.test.ts`,
+  "an inbox move sent only by an embedded actor", "an Update(Person) that embeds no actor"). Reason: a holder of a
+  still-trusted key could otherwise renew its trust and move the actor's deliveries without a fetch (ID-1 in
+  `docs/threat-model.md`). An embedded actor Kopje cannot read applies nothing, as Mastodon drops it. Accepted,
+  2026-11-16.
 - The account `moved` nests is a bounded projection, not the full account: its identity, counts, flags, display
   settings and images, `note`, `avatar_description` and `header_description` `''` and `fields` `[]`, the display name
   cut at 100 code points, URLs and `uri` read as unset past 512 bytes, and only the emojis its display name references
