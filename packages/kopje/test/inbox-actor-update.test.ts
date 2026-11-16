@@ -476,66 +476,6 @@ describe("an actor document whose inbox is blank", () => {
   });
 });
 
-// Mastodon's blank test reads the `inbox` member of the document as Mastodon reads it: a fetched one as served
-// (json_ld_helper.rb body_to_json), an embedded one in its activity as received, or compacted under full_context when
-// the activity carries an LD signature (process_activity_service.rb:23-38; ld-compaction.ts mastodonReading).
-describe("the inbox member the blank test reads, by path", () => {
-  // Each form, and whether Mastodon takes it as received and compacted (compacted with jsonld.js, not Ruby's JSON::LD).
-  const forms: [string, (bob: TestActor) => Record<string, unknown>, boolean, boolean][] = [
-    ["a URL", (bob) => ({ inbox: `${bob.uri}/inbox` }), true, true],
-    ["an object with an id", (bob) => ({ inbox: { id: `${bob.uri}/inbox` } }), true, true],
-    ["an empty array", () => ({ inbox: [] }), false, false],
-    // [nil] is not blank; compaction drops the null.
-    ["an array of null", () => ({ inbox: [null] }), true, false],
-    ["an empty object", () => ({ inbox: {} }), false, false],
-    ["a next line (U+0085)", () => ({ inbox: "\u0085" }), false, false],
-    ["a zero width no-break space (U+FEFF)", () => ({ inbox: "\uFEFF" }), true, true],
-    // No `inbox` member as received; compaction names ldp:inbox `inbox`.
-    [
-      "only its full IRI",
-      (bob) => ({ inbox: undefined, "http://www.w3.org/ns/ldp#inbox": { "@id": `${bob.uri}/inbox` } }),
-      false,
-      true,
-    ],
-  ];
-  const outcome = (taken: boolean) => ({ status: 202, reason: taken ? "actor-updated" : "invalid-actor" });
-  // An LD signature as Mastodon writes one (LinkedDataSignature#sign!); nothing verifies it.
-  const signed = (bob: TestActor, activity: Record<string, unknown>) => ({
-    ...activity,
-    signature: { type: "RsaSignature2017", creator: `${bob.uri}#main-key`, created: iso(NOW), signatureValue: "AA==" },
-  });
-
-  it.each(forms)(
-    "reads %s as served fetched, as received embedded, and compacted embedded in an LD-signed activity",
-    async (_name, form, received, compacted) => {
-      const { t, bob } = await bobWorld();
-      t.web.serve(bob.uri, { ...bob.document, ...form(bob) });
-      expect(await receive(t, bob, updateOf(bob, bob.uri))).toMatchObject(outcome(received));
-      expect(await receive(t, bob, updateOf(bob, embedded(bob, form(bob))))).toMatchObject(outcome(received));
-      const ldSigned = signed(bob, updateOf(bob, embedded(bob, { ...form(bob), name: "compacted" })));
-      expect(await receive(t, bob, ldSigned)).toMatchObject(outcome(compacted));
-      expect((await row(t, bob.uri)).display_name === "compacted").toBe(compacted);
-    },
-  );
-
-  // check_jsonld_limits! refuses the activity (its @context counted), or its compaction, and Mastodon reads the
-  // activity as received.
-  const terms = Object.fromEntries(Array.from({ length: 1000 }, (_, i) => [`t${i}`, `${MASTODON}/ns#t${i}`]));
-  it.each([
-    ["a context of over 1,000 values, which compaction replaces", {}, [AS, terms]],
-    [
-      "an alias of @included, which compaction spells out",
-      { also: [{ id: `${MASTODON}/x` }] },
-      [AS, { also: "@included" }],
-    ],
-  ])("reads an LD-signed activity with %s as received", async (_name, extra, context) => {
-    const { t, bob } = await bobWorld();
-    const activity = updateOf(bob, embedded(bob, { inbox: [null], name: "as received" }), context);
-    expect(await receive(t, bob, signed(bob, { ...activity, ...extra }))).toMatchObject(outcome(true));
-    expect((await row(t, bob.uri)).display_name).toBe("as received");
-  });
-});
-
 describe("how the embedded actor is read (D3)", () => {
   const CONTEXTS = "https://contexts.example";
   // A context at `path` reached through `hops` same-origin redirects: hops + 1 requests.

@@ -3735,12 +3735,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   is ignored. Mastodon sets no length limit; Misskey stores inbox URLs in 512-character columns. A document whose own
   `inbox` member is blank (missing, null, false, whitespace alone, `[]` or `{}`) is no actor either, fetched or
   embedded, as Mastodon's `ProcessAccountService` raises for one (`process_account_service.rb:24`), so it stores
-  nothing, a stored row's inbox included. The member is read where Mastodon reads it: a fetched document as served,
-  an embedded one in its activity as received or, when the activity carries an LD signature, compacted under
-  Mastodon's `full_context` (`process_activity_service.rb:23-38`; `src/federation/ld-compaction.ts`, with jsonld.js,
-  not Ruby's JSON::LD), after Mastodon's JSON-LD limits and within RES-2's bounds (`remoteActorInput`;
-  `test/inbox-actor-update.test.ts` ("an actor document whose inbox is blank", "the inbox member the blank test
-  reads, by path")).
+  nothing, a stored row's inbox included (`remoteActorInput`; `test/inbox-actor-update.test.ts` ("an actor document
+  whose inbox is blank")).
   `test/inbox-verify4.test.ts` ("enqueues and fully expands an audience whose targets exceed what one row can hold",
   "refuses an actor whose inbox URL is over the cap", "refuses an actor whose id is over the cap"),
   `test/delivery-chunks.test.ts` (the chunk boundary, lane order across intents, an Update replacing a partly expanded

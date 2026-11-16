@@ -21,8 +21,8 @@ export const MASTODON_NAMED_CONTEXTS: readonly (readonly string[])[] = [
 
 // Every term full_context defines in its extension object, with each definition any release gave it: the union over
 // the tags above (4.6 and 4.7 share one object, which adds showFeatured to featureAuthorization to 4.5's terms). A term
-// whose definition changed between releases lists each one, the one 4.6 and 4.7 give last. test/author-proof.test.ts
-// shows no term is, or aliases, one the decision reads.
+// whose definition changed between releases lists each one. test/author-proof.test.ts shows no term is, or aliases, one
+// the decision reads.
 export const MASTODON_CONTEXT_TERMS: Readonly<Record<string, readonly unknown[]>> = {
   manuallyApprovesFollowers: ["as:manuallyApprovesFollowers"],
   sensitive: ["as:sensitive"],
@@ -76,10 +76,3 @@ export const MASTODON_CONTEXT_TERMS: Readonly<Record<string, readonly unknown[]>
   featuredObject: [{ "@id": "https://w3id.org/fep/7aa9#featuredObject", "@type": "@id" }],
   featureAuthorization: [{ "@id": "https://w3id.org/fep/7aa9#featureAuthorization", "@type": "@id" }],
 };
-
-// full_context as 4.7 (v4.7.0 to v4.7.5) serializes it: its named contexts, then its extension object, each term
-// with the definition 4.7 gives (the last MASTODON_CONTEXT_TERMS lists).
-export const MASTODON_FULL_CONTEXT: readonly unknown[] = [
-  ...MASTODON_NAMED_CONTEXTS[2]!,
-  Object.fromEntries(Object.entries(MASTODON_CONTEXT_TERMS).map(([term, definitions]) => [term, definitions.at(-1)])),
-];

@@ -9,9 +9,7 @@ import { DOMAIN_BYTES, isRemoteUsername, isStorableActorId, REMOTE_USERNAME_LIMI
 import { railsBlank } from "../platform/rails-blank";
 import { storedDisplayName, storedProfileUrl, storedText } from "../platform/stored-bounds";
 import { sanitizeRemoteBio } from "../security/html";
-import { isObject } from "./json-shapes";
 import { MAX_PUBLIC_KEYS, readableKeys } from "./key-entries";
-import { mastodonReading } from "./ld-compaction";
 import { isTransientLoadError, loadFailureOf } from "./loader";
 import { emojiCandidates } from "./remote-emoji";
 
@@ -96,22 +94,16 @@ async function readActor(uri: string, served: RemoteDocument, contextLoader: Doc
 
 // The actor document an activity embeds (an Update(Person)'s object, docs/threat-model.md ID-1), read as a fetched one
 // is: its key entries as the safe loader reads a fetched document's (key-entries.ts readableKeys), then readActor and
-// remoteActorInput. It is the object of the activity as Mastodon reads it (ld-compaction.ts mastodonReading: as
-// received, or compacted when it carries an LD signature), so remoteActorInput reads its members (its inbox, its
-// claim, its tags) where Mastodon does. It is served under the actor's URI with the activity's @context before its own,
-// as JSON-LD nests the object in the activity and Mastodon reads it under the activity's context. Nothing is fetched
-// but its JSON-LD contexts, through the request's context loader and budget (RES-6); its size is within the activity's
-// bounds (inbound.ts parseActivity, RES-2). Unusable: no object, no actor of exactly `uri`, or one remoteActorInput
-// refuses.
+// remoteActorInput. It is served under the actor's URI with the activity's @context before its own (`context`), as
+// JSON-LD nests the object in the activity and Mastodon reads it under the activity's compacted context. Nothing is
+// fetched but its JSON-LD contexts, through the request's context loader and budget (RES-6); its size is the
+// activity's (inbound.ts parseActivity, RES-2). Unusable: no actor of exactly `uri`, or one remoteActorInput refuses.
 export async function readEmbeddedActor(
   uri: string,
-  activity: Record<string, unknown>,
+  object: Record<string, unknown>,
+  context: unknown,
   contextLoader: DocumentLoader,
 ): Promise<{ kind: "ok"; input: RemoteActorInput } | { kind: "transient" } | { kind: "unusable" }> {
-  const { object, "@context": context } = await mastodonReading(activity, contextLoader);
-  if (!isObject(object)) {
-    return { kind: "unusable" };
-  }
   const own = object["@context"];
   const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : [value]);
   const document = { ...object, "@context": own === undefined ? context : [...list(context), ...list(own)] };
@@ -222,10 +214,8 @@ export function claimedHandle(document: unknown, uri: string, preferredUsername:
 
 // Whether the document's own `inbox` member is blank as Mastodon 4.7 reads it (`json['inbox'].blank?`,
 // ProcessAccountService#call, process_account_service.rb:24): missing, null, false, a string of whitespace alone
-// (railsBlank), an empty array or an empty object. The member is read in the document as Mastodon reads it: a fetched
-// one as served (json_ld_helper.rb body_to_json), an embedded one as readEmbeddedActor gives it, compacted when its
-// activity carries an LD signature. A value that is not blank but no inbox URL is not refused here (Mastodon stores no
-// inbox for it, valid_collection_uri).
+// (railsBlank), an empty array or an empty object. A value that is not blank but no inbox URL is not refused here
+// (Mastodon stores no inbox for it, valid_collection_uri).
 function blankInbox(document: unknown): boolean {
   const inbox = typeof document === "object" && document !== null ? (document as { inbox?: unknown }).inbox : undefined;
   return (
