@@ -41,7 +41,7 @@ export const RENDER_CACHE_MS = 3 * MINUTE;
 // VoteService schedules the poll's Update 3 minutes after a vote (vote_service.rb:48 in v4.7.5).
 export const POLL_UPDATE_DELAY_MS = 3 * MINUTE;
 // docs/mastodon-deviations.md "Polls": a read refreshes a poll when no Update was applied to it, and no attempt was
-// reserved for it, in the last minute.
+// reserved for it, in the last full minute (one exactly a minute ago still counts).
 export const POLL_REFRESH_AFTER_MS = MINUTE;
 
 // The ANY_ACTOR row of ID-7: "the Delete of a stored status or boost is also recorded for every actor".
@@ -369,7 +369,7 @@ export class Policy {
   // for it, in the last minute. R's polls have no end.
   pollDue(uri: string, now: number): boolean {
     const stored = this.statuses.get(uri);
-    const since = (t: number | null) => t === null || t <= now - POLL_REFRESH_AFTER_MS;
+    const since = (t: number | null) => t === null || t < now - POLL_REFRESH_AFTER_MS;
     return this.shown(uri) && since(stored!.fetchedAt) && since(stored!.refreshAt);
   }
 

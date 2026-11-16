@@ -3551,13 +3551,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/resolve-alternate.test.ts` ("stops at the request's budget when the alternates and the confirmation need
   more"). A signed-in read of a remote poll (`GET /api/v1/polls/:id`) refreshes it at most once a minute, however many
   users read it: the attempt is reserved in a Store write before its fetch (`reservePollRefresh` in
-  `src/domain/polls.ts`), and the next is due a minute after it, whatever its outcome. The refresh sends one request
-  for the post's document, two with the RFC 9421 retry of a 400 or 401, follows no redirect and loads no JSON-LD
-  context, within the request's budget, and the read makes at most five Store calls after the host check's and none to
-  the KV store (`test/poll-refresh.test.ts` ("reserves the attempt before the fetch", "waits a minute after any
-  attempt"), `test/poll-refresh-store-calls.test.ts` ("Store calls of a poll read")). A collection sync's document
-  part, the refresh of an invalidated account, reads at most three documents with the other parts' room for a redirect
-  or a retry each (`PART_DOCUMENTS` in `src/federation/collections.ts`). Every
+  `src/domain/polls.ts`), and the next is due once more than a minute has passed, whatever its outcome. The refresh
+  sends one request for the post's document, two with the RFC 9421 retry of a 400 or 401, follows no redirect and
+  loads no JSON-LD context, within the request's budget, and the read makes at most five Store calls after the host
+  check's and none to the KV store (`test/poll-refresh.test.ts` ("reserves the attempt before the fetch", "waits a full
+  minute after any attempt"), `test/poll-refresh-store-calls.test.ts` ("Store calls of a poll read")). A collection
+  sync's document part, the refresh of an invalidated account, reads at most three documents with the other parts'
+  room for a redirect or a retry each (`PART_DOCUMENTS` in `src/federation/collections.ts`). Every
   actor state read (revision and stored handle) is one seek by `accounts`' uri index, pinned with `INDEXED BY` (RES-7):
   the inbox gate's actor and `Move` target, a refresh need's and a quote's author stage's author, a search
   resolution's actor, a sync's document part, and the comparison in the writing transaction

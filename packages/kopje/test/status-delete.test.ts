@@ -1647,7 +1647,8 @@ describe("status deletes: the author's orders", () => {
 
   // ID-7 and RES-6: L's read of s1's poll reserves its refresh and fetches the counts R's server renders then; R's vote
   // Update is delivered before the refresh, and a read finds the poll not due. The refresh then applies nothing, since
-  // the Update wrote the poll after the reservation; a read a minute after the Update refreshes it with the newer count.
+  // the Update wrote the poll after the reservation; a read two minutes after the Update refreshes it with the newer
+  // count.
   it("a poll refresh after a delivered Update applies nothing", async () => {
     const w = await run([
       { k: "post", s: 0, snapshot: A },
@@ -1658,7 +1659,7 @@ describe("status deletes: the author's orders", () => {
       deliver(),
       { k: "read", s: 0 },
       { k: "refresh", i: 0 },
-      { k: "tick", ms: MINUTE },
+      { k: "tick", ms: 2 * MINUTE },
       { k: "vote", s: 0 },
       { k: "read", s: 0 },
       { k: "refresh", i: 0 },

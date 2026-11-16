@@ -201,16 +201,17 @@ describe("a signed-in read of a remote poll", () => {
     expect(fetches(w)).toBe(1);
   });
 
-  it("waits a minute after an applied Update", async () => {
-    // Delivered: a same-version Update at NOW + 1 s marks the poll fetched.
+  it("waits a full minute after an applied Update", async () => {
+    // Delivered: a same-version Update at NOW + 1 s marks the poll fetched. Exactly a minute later it is not due yet
+    // (Mastodon's `last_fetched_at < 1.minute.ago`); 61 s later it is.
     const w = await world();
     w.move(1000);
     expect(await w.t.post(w.bob, implicit(w, counted(w, 1, 1)))).toBe(202);
     expect((await stored(w)).fetched_at).toBe(NOW + 1000);
-    w.move(MINUTE - 1);
+    w.move(MINUTE);
     await read(w);
     expect(fetches(w)).toBe(0);
-    w.move(1);
+    w.move(1000);
     await read(w);
     expect(fetches(w)).toBe(1);
     // Fetched: a search that refetches the stored status marks it too.
@@ -219,21 +220,22 @@ describe("a signed-in read of a remote poll", () => {
     expect(found.status).toBe(200);
     expect(fetches(w)).toBe(2);
     expect((await stored(w)).fetched_at).toBe(w.clock.now);
-    w.move(MINUTE - 1);
+    w.move(MINUTE);
     await read(w);
     expect(fetches(w)).toBe(2);
   });
 
-  it("waits a minute after any attempt", async () => {
+  it("waits a full minute after any attempt", async () => {
+    // Exactly a minute after the reservation the poll is not due yet, as after a fetch; 61 s after it, it is.
     const w = await world();
     w.t.web.fail(w.note.id, 503);
     await read(w);
     expect(fetches(w)).toBe(1);
     expect(await stored(w)).toMatchObject({ fetched_at: null, refresh_at: NOW });
-    w.move(MINUTE - 1);
+    w.move(MINUTE);
     await read(w);
     expect(fetches(w)).toBe(1);
-    w.move(1);
+    w.move(1000);
     await read(w);
     expect(fetches(w)).toBe(2);
     // Times after the Store's (imported, or written under a skewed clock) read as none: the poll is due.
@@ -391,17 +393,17 @@ describe("a signed-in read of a remote poll", () => {
 
   it("a refused choice change leaves the poll due", async () => {
     // A poll past its end, whose server renames a choice without a newer version: the change is refused, so its
-    // fetched_at stays unset and it is tried again a minute later, as Mastodon tries it at every read.
+    // fetched_at stays unset and it is tried again once a full minute has passed, as Mastodon tries it at every read.
     const w = await world({ endTime: "2026-10-12T00:30:00Z" });
     w.move(HOUR);
     serve(w.t, counted(w, 4, 4, { oneOf: [{ ...choices(4, 4)[0]!, name: "birds" }, choices(4, 4)[1]!] }));
     await read(w);
     expect(fetches(w)).toBe(1);
     expect(await stored(w)).toMatchObject({ tallies: "[0,0]", fetched_at: null, refresh_at: NOW + HOUR });
-    w.move(MINUTE - 1);
+    w.move(MINUTE);
     await read(w);
     expect(fetches(w)).toBe(1);
-    w.move(1);
+    w.move(1000);
     await read(w);
     expect(fetches(w)).toBe(2);
   });

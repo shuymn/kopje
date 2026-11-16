@@ -266,8 +266,8 @@ function viewablePoll(db: Db, viewerId: string | null, id: string): string | nul
 
 // ---- Refreshing a remote poll on read (#1655; Api::V1::PollsController#refresh_poll).
 
-// Poll::MAKE_FETCH_HAPPEN: a remote poll is fetched again at most this long after its last applied Update, and here
-// also after its last refresh attempt.
+// Poll::MAKE_FETCH_HAPPEN: a remote poll is fetched again only once more than this has passed since its last applied
+// Update, and here also since its last refresh attempt.
 const MAKE_FETCH_HAPPEN_MS = 60_000;
 
 // The ISO time of the integer ms `ms` (0 or more, within year 9999), in the 24-byte form polls.expires_at holds, by
@@ -281,16 +281,18 @@ function isoOfMsSql(ms: string): string {
 // Update) and A (refresh_at, the last attempt's reservation) are read as NULL when not an integer or after `now`
 // (pollTimeReadSql):
 //   - F is NULL, or before the poll's end, or the poll has no end (last_fetched_before_expiration?);
-//   - F is NULL or at most `now` - MAKE_FETCH_HAPPEN_MS (time_passed_since_last_fetch?);
-//   - A is NULL or at most `now` - MAKE_FETCH_HAPPEN_MS: after any attempt, whatever its outcome, the next waits.
+//   - F is NULL or before `now` - MAKE_FETCH_HAPPEN_MS (time_passed_since_last_fetch?: `last_fetched_at <
+//     MAKE_FETCH_HAPPEN.ago`, strictly, so a poll fetched exactly a minute ago is not due yet);
+//   - A is NULL or before `now` - MAKE_FETCH_HAPPEN_MS, strictly as for F, so both minute rules read alike: after any
+//     attempt, whatever its outcome, the next waits a full minute.
 // The author's being remote is the caller's (remotePollSql). getPoll and reservePollRefresh judge it alike.
 function pollDueSql(p: string, now: string): string {
   const fetched = pollTimeReadSql(`${p}.fetched_at`, now);
   const attempt = pollTimeReadSql(`${p}.refresh_at`, now);
   return `(${p}.removed = 0
 		AND (${fetched} IS NULL OR ${p}.expires_at IS NULL OR ${isoOfMsSql(fetched)} < ${p}.expires_at)
-		AND (${fetched} IS NULL OR ${fetched} <= ${now} - ${MAKE_FETCH_HAPPEN_MS})
-		AND (${attempt} IS NULL OR ${attempt} <= ${now} - ${MAKE_FETCH_HAPPEN_MS}))`;
+		AND (${fetched} IS NULL OR ${fetched} < ${now} - ${MAKE_FETCH_HAPPEN_MS})
+		AND (${attempt} IS NULL OR ${attempt} < ${now} - ${MAKE_FETCH_HAPPEN_MS}))`;
 }
 
 // Whether the poll `p`'s status is by a remote account (Poll#remote?), by the status's key and its author's.
