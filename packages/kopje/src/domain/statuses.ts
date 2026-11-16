@@ -97,11 +97,9 @@ import {
   acceptedQuoteWindow,
   answeredRequests,
   ensureQuotedAccess,
-  localQuotedAccount,
   localQuoteOf,
   noteQuote,
   type QuotedForPost,
-  quotedUpdates,
   type QuoteState,
   recordLocalQuote,
   retireQuoteOf,
@@ -140,6 +138,7 @@ import {
 } from "./status-text";
 import { streamDelete } from "./streaming";
 import { forgetStatusTrend } from "./trends";
+import { notifyEdited } from "./update-fan-out";
 import { edgeRangeSql, readWindow, singleWindow, statusCursor, windowJson, windowPage } from "./windows";
 
 // Statuses: posting, editing and deleting local statuses, the per-status reads, and favourite, reblog and
@@ -359,42 +358,6 @@ export function recountStatuses(db: Db, accountId: string): void {
 		WHERE id = ?1 AND domain IS NULL`,
     accountId,
   );
-}
-
-// The local accounts whose kept boost of the status ?1 an edit of it notifies: one unique seek of
-// statuses_account_reblogs_kept per local account (RES-7), so neither the status's remote boosts nor withdrawn
-// generations are read.
-const LOCAL_BOOSTERS_SQL = `SELECT l.account_id FROM local_accounts l
-	CROSS JOIN statuses r INDEXED BY statuses_account_reblogs_kept
-		ON r.account_id = l.account_id AND r.reblog_of_id = ?1 AND r.reblog_of_id IS NOT NULL AND r.withdrawn = 0`;
-
-// The local accounts the status ?1 mentions, not silently: the local accounts drive, each one's mention sought by the
-// mention's key, so the status's other mention rows are never read; nothing caps them in the schema (a converted or
-// imported status may hold any number), and local accounts are operator-sized (RES-4).
-const LOCAL_MENTIONS_SQL = `SELECT l.account_id FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
-	CROSS JOIN status_mentions m ON m.status_id = ?1 AND m.account_id = l.account_id
-	WHERE m.silent = 0`;
-
-// Mastodon's update fan-out, run wherever Mastodon broadcasts an update (each caller says which): FanOutOnWriteService's
-// notifications for `update: true` (fan_out_on_write_service.rb:31-35 in v4.7.5), in its order: the local quoted account of the status's accepted quote (`quote`, notify_quoted_account!, :62-66), each
-// local account the status mentions not silently (`mention`, notify_mentioned_accounts!, :68-75, never limited: an
-// update passes no silenced ids), the local boosters (`update`) and the accepted local quoters (`quoted_update`,
-// notify_about_update!, :87-98). Each goes through LocalNotificationWorker, which writes nothing for a notification
-// that exists (local_notification_worker.rb:15-16): notify's natural key keeps a kept `quote` or `mention`, and one
-// that was dismissed or cleared, or never written (the policy dropped it, R15 refused it), is written now.
-export function notifyEdited(db: Db, statusId: string, fromId: string, now: number): void {
-  const quoted = localQuotedAccount(db, statusId);
-  if (quoted !== null) {
-    notify(db, { recipientId: quoted, type: "quote", fromId, statusId, now });
-  }
-  for (const mention of db.all<{ account_id: string }>(LOCAL_MENTIONS_SQL, statusId)) {
-    notify(db, { recipientId: mention.account_id, type: "mention", fromId, statusId, now });
-  }
-  // A withdrawn boost's booster is not notified (Mastodon discards it).
-  for (const booster of db.all<{ account_id: string }>(LOCAL_BOOSTERS_SQL, statusId)) {
-    notify(db, { recipientId: booster.account_id, type: "update", fromId, statusId, now });
-  }
-  notifyQuotedUpdate(db, statusId, fromId, now);
 }
 
 // replies_count counts public and unlisted replies, as Mastodon does; reblogs_count the boosts not withdrawn (a
@@ -1156,14 +1119,6 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   }
   return status();
 });
-
-// FanOutOnWriteService#notify_about_update!'s quoted_update: each local quoter (quotes.ts quotedUpdates) about their
-// own quoting status, from the quoted author; a later one replaces the earlier (notify).
-function notifyQuotedUpdate(db: Db, quotedId: string, fromId: string, now: number): void {
-  for (const quote of quotedUpdates(db, quotedId)) {
-    notify(db, { recipientId: quote.account_id, type: "quoted_update", fromId, statusId: quote.status_id, now });
-  }
-}
 
 // A policy-only change sends an Update without a history entry or edited_at; receivers apply it as an implicit update
 // (Notes carry the policy: activities.ts noteOf). Each Update snapshots its commit and supersedes waiting ones. Answers

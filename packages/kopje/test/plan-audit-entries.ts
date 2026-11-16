@@ -1395,18 +1395,18 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   {
     id: "2e2b65979d04e6c3",
     scans: ["local_accounts: SCAN l USING COVERING INDEX sqlite_autoindex_local_accounts_1"],
-    site: "src/domain/statuses.ts#notifyEdited < src/domain/statuses.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
+    site: "src/domain/update-fan-out.ts#notifyEdited < src/domain/statuses.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
     disposition: "deliberate",
     reason:
-      'an edit notifies the local boosters: LOCAL_BOOSTERS_SQL (src/domain/statuses.ts) walks the local accounts, each one\'s kept boost sought by statuses_account_reblogs_kept: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
+      'an edit notifies the local boosters: LOCAL_BOOSTERS_SQL (src/domain/update-fan-out.ts) walks the local accounts, each one\'s kept boost sought by statuses_account_reblogs_kept: local accounts are operator-sized (docs/threat-model.md, "Deployment assumptions")',
   },
   {
     id: "9eb5a4e6b24f58b1",
     scans: ["local_accounts: SCAN l USING COVERING INDEX sqlite_autoindex_local_accounts_1"],
-    site: "src/domain/statuses.ts#notifyEdited < src/domain/statuses.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
+    site: "src/domain/update-fan-out.ts#notifyEdited < src/domain/statuses.ts#<anonymous> < src/domain/auth.ts#<anonymous>",
     disposition: "deliberate",
     reason:
-      "an edit notifies the active local mentions: LOCAL_MENTIONS_SQL (src/domain/statuses.ts) walks the local accounts, each one's mention sought by its key, whatever the status's other mention rows: local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\"; RES-4)",
+      "an edit notifies the active local mentions: LOCAL_MENTIONS_SQL (src/domain/update-fan-out.ts) walks the local accounts, each one's mention sought by its key, whatever the status's other mention rows: local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\"; RES-4)",
     witness:
       'test/edit-fan-out.test.ts ("reads no more for 10,000 converted mention rows: one key probe per local account")',
   },

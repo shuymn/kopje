@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { totalChanges } from "../src/domain/row-budget";
-import { notifyEdited } from "../src/domain/statuses";
+import { notifyEdited } from "../src/domain/update-fan-out";
 import { verifyQuotes } from "../src/federation/quotes";
 import { sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
@@ -32,7 +32,7 @@ import {
 import { quoteRequest, quoting, serveStamp } from "./quote-helpers";
 import { observedSql, remoteAccounts, staleStatistics, watchedCursor } from "./read-helpers";
 
-// Mastodon's update fan-out (notifyEdited in src/domain/statuses.ts; docs/visibility.md R15, docs/threat-model.md
+// Mastodon's update fan-out (notifyEdited in src/domain/update-fan-out.ts; docs/visibility.md R15, docs/threat-model.md
 // VIS-10 and RES-4): wherever Mastodon broadcasts an update, the local quoted account of an accepted quote and every
 // active local mention without a kept notification are notified, then the local boosters and quoters. A remote edit
 // broadcasts only when it is significant (ProcessStatusUpdateService#handle_explicit_update!).

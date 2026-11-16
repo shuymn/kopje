@@ -880,9 +880,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/inbox-reactions.test.ts` ("VIS-10: the favourite notification follows the aggregate"). _Enforced (main):_
   `notify` in `src/domain/notifications.ts`; `test/statuses.test.ts` ("a retry has no second side effect"),
   `test/timelines.test.ts` ("notifies followers who asked to be notified, once"); the update fan-out: `notifyEdited` in
-  `src/domain/statuses.ts`, `test/edit-fan-out.test.ts` ("…but not one alice holds: the same row, no new push", "…but
-  not a kept one: the same row, no new push"). Push: _Enforced (main):_ `notify` records pushes for the row it
-  inserted only, never for a repeat (`queuePushes` in `src/domain/notifications.ts`); `test/push-send.test.ts`
+  `src/domain/update-fan-out.ts`, `test/edit-fan-out.test.ts` ("…but not one alice holds: the same row, no new
+  push", "…but not a kept one: the same row, no new push"). Push: _Enforced (main):_ `notify` records pushes for the
+  row it inserted only, never for a repeat (`queuePushes` in `src/domain/notifications.ts`); `test/push-send.test.ts`
   ("pushes every notification type Kopje emits, once each (VIS-10)").
 - **VIS-11: earlier versions keep the original audience.** Edit history and earlier versions are visible only to the
   status's original audience, and an edit of a non-public status never widens that audience (a recipient added by an
@@ -3295,9 +3295,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   stores", "deletes a status with many children in bounded batches"), `test/inbox-statuses-edge.test.ts` ("RES-4: bounds
   at their limits", "writes at most … rows per batch, hiding included"). The update fan-out of an edit reads one
   mention key per local account, whatever a converted or imported status holds (`LOCAL_MENTIONS_SQL`, `notifyEdited` in
-  `src/domain/statuses.ts`); `test/edit-fan-out.test.ts` ("reads no more for 10,000 converted mention rows: one key
-  probe per local account", "replaces each update, quoted_update and cleared mention within the formula; a kept one
-  writes nothing"). _Enforced (main)_ for pins: `status_pins` holds
+  `src/domain/update-fan-out.ts`); `test/edit-fan-out.test.ts` ("reads no more for 10,000 converted mention rows: one
+  key probe per local account", "replaces each update, quoted_update and cleared mention within the formula; a kept
+  one writes nothing"). _Enforced (main)_ for pins: `status_pins` holds
   at most an account's pin limit, `PIN_LIMIT` (5) for a local account (by its row's domain, which precedes its pins in
   any import order) and `MAX_REMOTE_PINS` (20) for a remote one (`pinCapSql` in `src/domain/status-actions.ts`),
   imported rows included: the triggers `status_pins_cap_insert` and
