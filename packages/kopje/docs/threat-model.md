@@ -1539,23 +1539,24 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/policy-oracle.test.ts` (against `cardEligible` in `test/policy-model.ts`),
   `test-node/policy-boundary.test.ts`.
 
-- **VIS-33: a collection and its members are shown only as R45 allows.** A collection (migration `0100_collections`)
-  is found only while its owner is available; it is shown to a viewer the owner does not block, and listed among the
+- **VIS-33: a collection and its members are shown only as R45 allows.** A collection (migration `0100_collections`) is
+  found only while its owner is available; it is shown to a viewer the owner does not block, and listed among the
   owner's collections only when discoverable or to the owner. A member is shown only while available, accepted (or
-  pending, to the owner), and not blocking the viewer; an account's memberships (`in_collections`) are listed to that
-  account only. An account is added only with its consent: local, available, discoverable, unlocked or following the
-  owner (or the owner itself), with no block either way; a block from either side revokes the blocked account's
-  memberships of the blocker's collections and deletes the blocker's own from the other's, as Mastodon's
-  `BlockService` does. A member alone revokes its membership, which keeps the row (and the collection) but no longer
-  shows it.
+  pending, to the owner), and not blocked by the viewer; an account's memberships (`in_collections`) are listed to that
+  account only. An account is added only with its consent: local, available, discoverable, unlocked or followed by the
+  owner (or the owner itself), with no block either way. A local account's block of another revokes the blocker's
+  memberships of the blocked account's collections and deletes the blocked account's memberships of the blocker's
+  collections, as Mastodon's `BlockService#handle_collections` does; an inbound `Block` changes no membership, and R45
+  hides the blocked side's view. A member alone revokes its membership, which keeps the row (and the collection) but no
+  longer shows it.
   _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`, `collectionItemShownSql`,
-  `mayFeatureSql` and `inCollectionsSql` in `src/domain/audience.ts`, `src/domain/collections.ts`,
-  `severCollections` in `src/domain/blocks.ts`; `test/collections.test.ts` ("shows a collection and its items only as
-  R45 allows", "asks the member's consent: discoverable, and unlocked or followed, no block either way, local", "lets
-  only the item's account revoke it, which keeps the row and the membership listed"), `test/blocks.test.ts` ("revokes
-  and deletes the collection memberships a block severs"), `test/policy-oracle.test.ts` (against `collectionFound`,
-  `collectionShown`, `collectionListed`, `collectionItemShown`, `mayFeature` and `inCollections` in
-  `test/policy-model.ts`), `test-node/policy-boundary.test.ts`.
+  `mayFeatureSql` and `inCollectionsSql` in `src/domain/audience.ts`, `src/domain/collections.ts`, `severCollections`
+  (`src/domain/collections.ts`, run by a local block in `src/domain/blocks.ts`); `test/collections.test.ts` ("shows a
+  collection and its items only as R45 allows", "asks the member's consent: discoverable, and unlocked or followed, no
+  block either way, local", "lets only the item's account revoke it, which keeps the row and the membership listed"),
+  `test/blocks.test.ts` ("revokes and deletes the collection memberships a block severs"), `test/policy-oracle.test.ts`
+  (against `collectionFound`, `collectionShown`, `collectionListed`, `collectionItemShown`, `mayFeature` and
+  `inCollections` in `test/policy-model.ts`), `test-node/policy-boundary.test.ts`.
 
 ### Authorization (AUTH)
 
