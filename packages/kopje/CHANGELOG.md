@@ -147,6 +147,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
+- A remote actor's members are read only by their literal spelling, as Mastodon reads them: a name or bio given only
+  as a language map (`nameMap`, `summaryMap`) is no longer read, so such an account shows an empty display name and
+  bio, and a `movedTo` or `alsoKnownAs` spelled as a compact or full IRI no longer names a move. No Store migration and
+  no `wrangler.jsonc` change.
 - Breaking: a remote account's handle is taken only once WebFinger confirms it, as Mastodon 4.7 does: the handle an
   actor claims is its `webfinger` (FEP-2c59), else its `preferredUsername` at its host, and WebFinger at that address
   must name the actor, following one other subject at most. A new actor whose handle cannot be confirmed is not stored
@@ -306,6 +310,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   confirms each account; the query in [docs/cutover.md](docs/cutover.md) (Verification) lists them (#1725). A remote
   actor id that is not an http or https URL, which the Worker never stores, now stops the conversion
   (`remote-actor-uri-not-http`). No Store migration and no `wrangler.jsonc` change.
+- A remote actor whose member Kopje does not read from Fedify (an `icon`, `image` or collection spelled as a compact or
+  full IRI, an unreadable `updated`, an odd `tag`, an invalid language map) is stored instead of refused, as Mastodon
+  stores it, and so is one with an unreadable `published`, which Mastodon fails (#1709, #1710;
+  [docs/mastodon-deviations.md](docs/mastodon-deviations.md) lists the members that still refuse one). Its `published`
+  is read as Mastodon's Rails casts it: a date alone is read, a day past the month's end rolls over, and a value it
+  cannot read creates the account now. No Store migration and no `wrangler.jsonc` change.
 - Integer parameters are read as Rails reads them: the last of repeated values, the query's before the body's, as Ruby's
   `String#to_i` reads it (underscores, a `0d` prefix, ASCII whitespace only), a JSON number by Ruby's `to_i` of the
   number (`1e21` is 10^21 and `1e-7` is 0, where the string `"1e21"` is 1), a blank oEmbed `maxheight` or filter
