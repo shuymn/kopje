@@ -311,11 +311,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   actor id that is not an http or https URL, which the Worker never stores, now stops the conversion
   (`remote-actor-uri-not-http`). No Store migration and no `wrangler.jsonc` change.
 - A remote actor whose member Kopje does not read from Fedify (an `icon`, `image` or collection spelled as a compact or
-  full IRI, an unreadable `published` or `updated`, an odd `tag`, an invalid language map) is stored instead of
-  refused, as Mastodon stores it (#1709, #1710; [docs/mastodon-deviations.md](docs/mastodon-deviations.md) lists the
-  members that still refuse one). Its `published` is read as Mastodon's Rails casts it: a date alone is read, a day
-  past the month's end rolls over, and a value it cannot read creates the account now. No Store migration and no
-  `wrangler.jsonc` change.
+  full IRI, an unreadable `updated`, an odd `tag`, an invalid language map) is stored instead of refused, as Mastodon
+  stores it, and so is one with an unreadable `published`, which Mastodon fails (#1709, #1710;
+  [docs/mastodon-deviations.md](docs/mastodon-deviations.md) lists the members that still refuse one). Its `published`
+  is read as Mastodon's Rails casts it: a date alone is read, a day past the month's end rolls over, and a value it
+  cannot read creates the account now. No Store migration and no `wrangler.jsonc` change.
 - Search with `resolve=true` finds a local post by its page URL, a local account by its profile URL (one of its tabs
   included) and a stored remote account by its `/@user@domain` URL on this instance, as Mastodon's search does, when
   the viewer may see them. Search reads `limit` and `offset` as Mastodon's does: a negative `limit` or `offset` is

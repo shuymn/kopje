@@ -237,8 +237,10 @@ settings page):
   midnight and second 60 the next minute, and a day 31 of a shorter month that the offset carries into the next day the
   last day of the month before, as Ruby's `Time.new` stores it (`2020-04-31T23:59:60-00:01` is 31 March); the fraction
   is cut to milliseconds, where Mastodon keeps microseconds. Any other value is none and the account is created at the
-  Store's time, as Mastodon creates it when its cast is nil, a value past 128 characters included. Mastodon reads more
-  forms (`test/fixtures/rails-time.json` lists each with its value), and stores their time where Kopje stores its own: a
+  Store's time, a value past 128 characters included, where Mastodon fails the actor: its first save stores the row,
+  then the update every resolve runs (`process_account_service.rb:77,219`) writes nil into the `NOT NULL` column, so the
+  resolve answers 500 and leaves a row with no name or key. Accepted, 2026-11-17. Mastodon reads more forms
+  (`test/fixtures/rails-time.json` lists each with its value), and stores their time where Kopje stores its own: a
   day-first or named date (`01/02/2020` is 1 February, `Jan 2 2020`, RFC 2822), `20200105T100000Z`, fields of one digit
   (`2020-1-5`, `T1:00`), a signed, longer or `BC` year (`2020-01-05 BC` is the year -2019), text after the date or time,
   week and ordinal dates (read against the current day), an hour alone (`T10Z` is midnight), `infinity`, an offset it
