@@ -376,6 +376,40 @@ describe("completions", () => {
   });
 });
 
+describe("a status step's parent", () => {
+  it("ends a node whose parent no walk records, and defers one on a parent the walk may record later", async () => {
+    const { t, root, bob } = await world();
+    const note = mastodonNote(root);
+    const id = await walking(t, root, withReplies(t.web, note, []));
+    const local = mastodonNote(bob, { inReplyTo: `${LOCAL}/statuses/1` });
+    const later = mastodonNote(bob, { inReplyTo: missing("later") });
+    const claim = (await t.store.claimReplyWalk(BUILD)) as ClaimedWalk;
+    const complete = (step: ReplyStep, status: Note, entries: string[] = []) =>
+      t.store.completeReplyStep(BUILD, {
+        origin: LOCAL,
+        statusId: id,
+        token: claim.token,
+        step,
+        more: true,
+        fetched: {
+          kind: "status",
+          status: parseRemoteStatus({ "@context": AS, ...status })!,
+          replies: { entries, from: 0, next: null },
+        },
+      });
+    // A node left pending after them keeps the walk running.
+    const atLocal = await complete(claim.step, note, [local.id, later.id, missing("tail")]);
+    const atLater = await complete(atLocal.next!, local);
+    expect((await complete(atLater.next!, later)).next).toMatchObject({ uri: missing("tail") });
+    expect((await walkNodes(t.store, id)).map(({ uri, state, parent }) => ({ uri, state, parent }))).toEqual([
+      { uri: note.id, state: 1, parent: null },
+      { uri: local.id, state: 1, parent: null },
+      { uri: later.id, state: 2, parent: missing("later") },
+      { uri: missing("tail"), state: 0, parent: null },
+    ]);
+  });
+});
+
 describe("the bounds of a walk at their caps", () => {
   it(
     "records at most WALK_STATUSES nodes, the root included: the next item is never fetched",

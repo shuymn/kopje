@@ -43,16 +43,18 @@ import { viewable } from "./statuses";
 // completion carrying the number of the one awaited is applied, once.
 //
 // Only statuses linked to the root are stored (ID-2): a node is valid once its parent is a valid node of the same walk
-// and its stored row links to that node's status (in_reply_to_id, the link the context follows). The root is valid
-// from the start. A new status's parent is its fetched inReplyTo, checked before anything of it is stored; a stored
-// one's is its stored row's (in_reply_to_id, else in_reply_to_uri), and it is not updated (Mastodon updates it,
-// deletes it on 404 and refetches replies the collection no longer lists: docs/mastodon-deviations.md, "Replies
-// collections"). A node whose parent is a node not valid yet is deferred on it, and returns to the end of the walk
-// (fetched again, while it has an attempt left) when that node becomes valid; one whose parent is no node, or a node
-// that ended without becoming valid, ends. A walk ends when no node is pending; deferred nodes are then dropped. A new
-// status goes through the boosted original's author step (inbox.ts fetchedAuthor) and storeRemoteStatus as a fetched
-// status, its quote one hop short of a root's (QUOTE_HOPS - 1): its quoted status is stored with none, and nothing a
-// walk stores starts another walk. Collection items are ids only: an embedded object is never taken as a status.
+// and its stored row links to that node's status (in_reply_to_id, the link the context follows). The root is valid from
+// the start. A new status's parent is its fetched inReplyTo, checked before anything of it is stored; a stored one's is
+// its stored row's (in_reply_to_id, else in_reply_to_uri), and it is not updated (Mastodon updates it, deletes it on
+// 404 and refetches replies the collection no longer lists: docs/mastodon-deviations.md, "Replies collections"). A node
+// whose parent is not valid yet (a node of the walk not valid yet, or a URI a walk may record that is no node of it
+// yet) is deferred on the parent's URI, and returns to the end of the walk (fetched again, while it has an attempt
+// left) when a node of that URI becomes valid; one with no parent, a parent no walk records (of this instance's origin,
+// or no http(s) URI within STATUS_URI_LIMIT), or a parent node that ended without becoming valid, ends. A walk ends
+// when no node is pending; deferred nodes are then dropped. A new status goes through the boosted original's author
+// step (inbox.ts fetchedAuthor) and storeRemoteStatus as a fetched status, its quote one hop short of a root's
+// (QUOTE_HOPS - 1): its quoted status is stored with none, and nothing a walk stores starts another walk. Collection
+// items are ids only: an embedded object is never taken as a status.
 
 // Nodes a walk records at most, the root included; an item past it is not recorded (docs/mastodon-deviations.md:
 // Mastodon's FetchAllRepliesWorker takes 1,000).
@@ -407,17 +409,22 @@ function judge(
   const status = fetched.status;
   const stored = storedPlace(db, node.uri);
   const parentUri = stored === undefined ? status.inReplyTo : stored.parent;
-  const parent = parentUri === null ? undefined : nodeOf(db, walk.id, parentUri);
-  if (parent === undefined || (parent.state === DONE && parent.valid === 0)) {
+  if (parentUri === null || !walkUri(parentUri) || sameOrigin(parentUri, input.origin)) {
     endNode(db, walk.id, node.uri);
     return null;
   }
-  if (parent.valid === 0) {
+  const parent = nodeOf(db, walk.id, parentUri);
+  if (parent !== undefined && parent.state === DONE && parent.valid === 0) {
+    endNode(db, walk.id, node.uri);
+    return null;
+  }
+  // A parent no node of the walk yet may be recorded later, from a collection read after this one.
+  if (parent === undefined || parent.valid === 0) {
     db.run(
       `UPDATE reply_walk_nodes SET state = ${DEFERRED}, parent = ?3 WHERE status_id = ?1 AND uri = ?2`,
       walk.id,
       node.uri,
-      parent.uri,
+      parentUri,
     );
     return null;
   }

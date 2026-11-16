@@ -192,6 +192,35 @@ describe("stores only the thread", () => {
     expect((await walkRow(t.store, id))?.result_count).toBe(2);
   });
 
+  it("defers a node on a parent the walk records only later, and walks it once that parent is valid", async () => {
+    const { t, root, bob } = await world();
+    await followed(t, bob, DAVE);
+    const note = mastodonNote(root);
+    serveNote(t.web, withReplies(t.web, note, []));
+    const rootId = await storedRoot(t, root, note);
+    // P and S stored as delivered, S under P under the root; Q, unstored, replies to the root and lists P.
+    const p = mastodonNote(bob, { inReplyTo: note.id });
+    const s = mastodonNote(bob, { inReplyTo: p.id });
+    for (const status of [p, s]) {
+      expect(await t.post(bob, create(bob, status))).toBe(202);
+    }
+    const u = reply(t.web, bob, s.id);
+    serveNote(t.web, withReplies(t.web, s, [u.id]));
+    serveNote(t.web, withReplies(t.web, p, []));
+    const q = reply(t.web, bob, note.id);
+    serveNote(t.web, withReplies(t.web, q, [p.id]));
+    // The root lists S before Q: S is judged while P is no node of the walk.
+    serveNote(t.web, withReplies(t.web, note, [s.id, q.id]));
+    await startWalk(t.store, rootId, NOW);
+    const before = t.web.fetched.length;
+    await walkRounds(t);
+    const statuses = [s.id, q.id, p.id, u.id];
+    expect(t.web.fetched.slice(before).filter((url) => statuses.includes(url))).toEqual([s.id, q.id, p.id, s.id, u.id]);
+    expect(await storedOf(t.store, [q.id, u.id])).toEqual([q.id, u.id]);
+    expect((await statusRow(t.store, u.id))?.in_reply_to_id).toBe((await statusRow(t.store, s.id))?.id);
+    expect(await walkRow(t.store, rootId)).toMatchObject({ finished_at: NOW, result_count: 2 });
+  });
+
   it("judges a stored status by its stored row, not by its fetched document, and does not update it", async () => {
     const { t, root, bob } = await world();
     await followed(t, bob, DAVE);

@@ -516,9 +516,9 @@ Replies collections (the context's refresh and `GET /api/v1_alpha/async_refreshe
   at most twice (Mastodon's `FetchAllRepliesWorker`: 1,000 statuses and 500 pages). It reads each collection until it
   ends or those caps are spent, where Mastodon takes the first 5 items of a reply's collection: the caps bound the
   work, and the 5-item stop loses replies Mastodon itself means to fetch. Accepted, 2026-11-16.
-- A refresh stores only the replies its stored rows link to the status, each under a reply it stored or found
-  stored; a status listed whose parent is not such a reply is not stored, and a stored one is judged by its stored
-  parent. Mastodon stores every status a collection lists. Items are taken from any server, and their collections
+- A refresh stores only the replies its stored rows link to the status, each under a reply it stored or found stored; a
+  status listed whose parent is not such a reply by the refresh's end is not stored, and a stored one is judged by its
+  stored parent. Mastodon stores every status a collection lists. Items are taken from any server, and their collections
   only from the replying status's own server, as Mastodon's. Accepted, 2026-11-16.
 - Only the refreshed status is paced: the replies a refresh reaches record nothing, so opening one of them later may
   refresh it at once, where Mastodon skips each fetched status for 15 minutes. A reply a refresh stores verifies its
