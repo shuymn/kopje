@@ -496,7 +496,8 @@ const backlog = async (h: ApiHarness) =>
 
 describe("deletions with pushes waiting (2-T9)", () => {
   // §5.1, a collection's deletion: 1 + its MAX_STORED_ITEMS items + their notifications (one each) + its
-  // collection_update notifications (one per local recipient) + MAX_PUSH_BACKLOG pushes, all by the foreign keys.
+  // collection_update notifications (one per local recipient) + MAX_PUSH_BACKLOG pushes, all by the foreign keys, and
+  // its Remove's id (allocateLocalId's kopje_state row; no remote recipient here, so no intent).
   it("deletes a collection with its items, notifications and pushes in one bounded request", async () => {
     const { h, alice, bob, carol } = await world();
     await subscriptions(h, bob.id, MAX_PUSH_BACKLOG);
@@ -521,13 +522,13 @@ describe("deletions with pushes waiting (2-T9)", () => {
     const { answer, wrote } = await measured(h, (s) => deleteCollection.run(s, input));
     expect(answer).toEqual({ status: "ok", value: "ok" });
     const locals = (await sql<{ n: number }>(h.store, "SELECT count(*) AS n FROM local_accounts"))[0]!.n;
-    expect(wrote).toBeLessThanOrEqual(1 + 2 * MAX_STORED_ITEMS + locals + MAX_PUSH_BACKLOG);
-    expect(wrote).toBe(1 + 2 * MAX_STORED_ITEMS + updates.length + MAX_PUSH_BACKLOG);
+    expect(wrote).toBeLessThanOrEqual(1 + 2 * MAX_STORED_ITEMS + locals + MAX_PUSH_BACKLOG + 1);
+    expect(wrote).toBe(1 + 2 * MAX_STORED_ITEMS + updates.length + MAX_PUSH_BACKLOG + 1);
     expect(await backlog(h)).toBe(0);
     expect(await sql(h.store, "SELECT count(*) AS n FROM notifications")).toEqual([{ n: 0 }]);
   });
 
-  // §5.1, an item's removal: 1 + its notification + MAX_PUSH_BACKLOG pushes.
+  // §5.1, an item's removal: 1 + its notification + MAX_PUSH_BACKLOG pushes, and its Remove's id.
   it("removes an item with its notification and pushes", async () => {
     const { h, alice, bob } = await world();
     await subscriptions(h, bob.id, MAX_PUSH_BACKLOG);
@@ -537,13 +538,13 @@ describe("deletions with pushes waiting (2-T9)", () => {
     const input = { credential: await credential(alice), collection, item, now: NOW };
     const { answer, wrote } = await measured(h, (s) => removeCollectionItem.run(s, input));
     expect(answer).toEqual({ status: "ok", value: "ok" });
-    expect(wrote).toBe(1 + 1 + MAX_PUSH_BACKLOG);
+    expect(wrote).toBe(1 + 1 + MAX_PUSH_BACKLOG + 1);
     expect(await backlog(h)).toBe(0);
   });
 
   // §5.1, an eviction at the stored cap: the oldest retired row, its notification and its MAX_PUSH_BACKLOG pushes;
   // then the add's own rows: its id (allocateLocalId's kopje_state row), its item and its notification (dave has no
-  // subscription, so no push).
+  // subscription, so no push), and its Add's id.
   it("evicts the oldest retired item with its notification and pushes", async () => {
     const { h, alice, bob, dave } = await world();
     await subscriptions(h, bob.id, MAX_PUSH_BACKLOG);
@@ -557,13 +558,14 @@ describe("deletions with pushes waiting (2-T9)", () => {
     const input = { credential: await credential(alice), collection, account: dave.id, now: NOW };
     const { answer, wrote } = await measured(h, (s) => addCollectionItem.run(s, input));
     expect(answer).toMatchObject({ status: "ok", value: { status: "ok" } });
-    expect(wrote).toBe(1 + 1 + MAX_PUSH_BACKLOG + 3);
+    expect(wrote).toBe(1 + 1 + MAX_PUSH_BACKLOG + 3 + 1);
     expect(await sql(h.store, "SELECT id FROM collection_items WHERE id = ?", oldest)).toEqual([]);
     expect(await backlog(h)).toBe(0);
   });
 
   // §5.1, the block step: per side at most MAX_STORED_COLLECTIONS items (one per collection), the deleted ones'
-  // notifications and their pushes.
+  // notifications and their pushes; and each severed item's Remove staged for its owner's collection job (its id, its
+  // intent and its job link: both members are local, so no member target) with one job per owner.
   it("severs at most one item a collection each way, with the deleted items' notifications and pushes", async () => {
     const { h, alice, bob } = await world();
     await subscriptions(h, bob.id, MAX_PUSH_BACKLOG / MAX_STORED_COLLECTIONS);
@@ -575,7 +577,7 @@ describe("deletions with pushes waiting (2-T9)", () => {
     }
     expect(await backlog(h)).toBe(MAX_PUSH_BACKLOG);
     const { wrote } = await measured(h, (s) => severCollections(new Db(s), alice.id, bob.id, NOW));
-    expect(wrote).toBe(3 * MAX_STORED_COLLECTIONS + MAX_PUSH_BACKLOG);
+    expect(wrote).toBe(3 * MAX_STORED_COLLECTIONS + MAX_PUSH_BACKLOG + 2 * MAX_STORED_COLLECTIONS * 3 + 2);
     expect(await sql(h.store, "SELECT state, count(*) AS n FROM collection_items GROUP BY state")).toEqual([
       { state: 3, n: MAX_STORED_COLLECTIONS },
     ]);
