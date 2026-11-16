@@ -15,7 +15,7 @@ import { NOW } from "./app-helpers";
 import { keptReject, net2Answer } from "./follow-exceptions";
 import { type Body, HANDSHAKE_RECHECK_MS, type Inbound, type Intent, Peer, type Policy } from "./follow-model";
 import { BUILD } from "./helpers";
-import { confirmedAs } from "./inbox-helpers";
+import { actorDefaults, confirmedAs } from "./inbox-helpers";
 import { storeReceive, writtenBy } from "./inbox-store-helpers";
 import {
   type Block,
@@ -1441,26 +1441,12 @@ function documentOf(w: World, r: Remote, doc: Document): RemoteActorInput {
   return {
     uri: a.uri,
     ...confirmedAs(r.toLowerCase(), a.domain),
-    actorType: "Person",
+    ...actorDefaults(),
     displayName: doc.name,
-    note: "",
     url: a.uri,
-    avatarUrl: null,
-    headerUrl: null,
-    avatarDescription: "",
-    headerDescription: "",
-    showFeatured: null,
-    showMedia: null,
-    showRepliesInMedia: null,
-    locked: false,
-    discoverable: null,
-    indexable: false,
     inboxUrl: doc.inbox,
     sharedInboxUrl: doc.sharedInbox,
-    published: null,
     keys: doc.keys.map((pem) => ({ id: `${a.uri}#main-key`, pem })),
-    emojiTags: [],
-    raw: "{}",
     movedTo: null,
   };
 }

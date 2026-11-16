@@ -19,7 +19,7 @@ import { bearer, form, seedFollows, settle, sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
 import { blockDomain, setSeverity, unblockDomain } from "./domain-block-helpers";
 import { BUILD, runStoreJobs, deferred } from "./helpers";
-import { confirmedAs } from "./inbox-helpers";
+import { actorDefaults, confirmedAs } from "./inbox-helpers";
 import { QueueSim } from "./queue-sim";
 import { plannedRun, type PlannedStatement, remoteAccounts, scansOf, staleStatistics } from "./read-helpers";
 import {
@@ -47,26 +47,9 @@ const D = "d.example";
 
 // A remote actor's document as the inbox's refresh reads it (remote-actors.ts RemoteActorInput).
 const ACTOR = {
-  actorType: "Person",
+  ...actorDefaults(),
   displayName: "R",
-  note: "",
-  url: null,
-  avatarUrl: null,
-  headerUrl: null,
-  avatarDescription: "",
-  headerDescription: "",
-  showFeatured: null,
-  showMedia: null,
-  showRepliesInMedia: null,
-  locked: false,
-  discoverable: null,
-  indexable: false,
   inboxUrl: "https://moved.example/users/r/inbox",
-  sharedInboxUrl: null,
-  published: null,
-  keys: [],
-  emojiTags: [],
-  raw: "{}",
   movedTo: null,
 };
 const BASE = 600_000_000_000_000_000;
