@@ -855,7 +855,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   _Enforced (main):_ `filteredForSql`, `listableSql` and `homeFilterSql` in `src/domain/audience.ts`;
   `test/audience.test.ts`, `test/visibility.test.ts` ("blocked and muted accounts stay out of lists"). _Enforced
   (main):_ a domain block matches an account by its stored domain and by the host of its actor id, the account's side
-  normalized (lowercase, no port, no trailing dot) and compared with the block's stored, normalized domain through its
+  normalized (lowercase, no port, no trailing dots) and compared with the block's stored, normalized domain through its
   index (`inDomainSql`, `domainBlocksSql`), everywhere a domain block applies (lists, notifications, relationships,
   inbound Follows and Moves, account search and search resolution), so an account confirmed under another WebFinger
   domain cannot escape a block of the server it lives on; `test/inbox-canonical-address.test.ts` ("applies a block of
@@ -1519,7 +1519,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   An instance domain block of severity `suspend` (R38) covers a host by its longest matching block (a child `noop`
   exempts its subdomains), with at most `MAX_BLOCK_LABELS` (8) labels per stored block; a covered account (by its stored
   domain or its actor host) is unavailable from the block's commit, read live; nothing is fetched from a covered host
-  (advisory: the writes refuse to store a covered account or its statuses, and refresh no covered row). The verdict for
+  (advisory: the writes refuse to store a covered account or its statuses, and refresh no covered row). A host is
+  compared by one key on every path: lowercase, punycode, without the port and without every trailing dot, in the
+  Worker (`hostDomain` in `src/platform/domain-name.ts`: the fetch policy and its tickets, the inbox gate's actor host,
+  the send-time check's inbox host) and in SQL (`uriHostSql` in `src/domain/audience.ts`, and a stored domain's
+  `rtrim`), so the block of `blocked.example` covers `blocked.example..` at every one of them; the URL keeps its
+  spelling (`test/host-trailing-dots.test.ts`). The verdict for
   the first request after a Store answer that decided the fetch (`inboxGate`, a `receiveActivity` need, a search
   resolution's `resolutionGate` and its `actorState` before the actor's fetch, a poll refresh's `reservePollRefresh`)
   comes with that answer and is spent on that request alone; every other request, redirect hops and RFC 9421 retries
@@ -2543,13 +2548,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   one confirmed. An address is split into its parts before its domain is normalized, for resolution, exact account
   search and lookup, so a Unicode and a punycode spelling find the same account. The host a claim falls back to is the
   actor id's host as Mastodon takes it (`Addressable::URI#normalized_host`: lowercase, punycode, without the port),
-  also without a trailing dot (`hostDomain` in `src/platform/domain-name.ts`); the id itself is kept whole for origin
-  checks. A search by an alias (any address whose WebFinger names an existing actor) finds the account by its actor id,
-  whose own claim decides its address. `test/inbox-handles.test.ts`, `test/inbox-canonical-address.test.ts` ("the
-  canonical address of a remote account", "the domains of WebFinger subjects and addresses, parsed one way"); a replies
-  walk confirms an author it fetches the same way (`loadActor` in `src/federation/quotes.ts`;
-  `test/reply-walk-rounds.test.ts` ("stores a reply by an unknown author once WebFinger confirms", "stores no reply by
-  an unknown author whose handle WebFinger refuses")).
+  also without its trailing dots, every one where Addressable drops a single one (`hostDomain` in
+  `src/platform/domain-name.ts`; [mastodon-deviations.md](mastodon-deviations.md)); the id itself is kept whole for
+  origin checks (ID-2). A search by an alias (any address whose WebFinger names an existing actor) finds the account by
+  its actor id, whose own claim decides its address. `test/inbox-handles.test.ts`,
+  `test/inbox-canonical-address.test.ts` ("the canonical address of a remote account", "the domains of WebFinger
+  subjects and addresses, parsed one way"); a replies walk confirms an author it fetches the same way (`loadActor` in
+  `src/federation/quotes.ts`; `test/reply-walk-rounds.test.ts` ("stores a reply by an unknown author once WebFinger
+  confirms", "stores no reply by an unknown author whose handle WebFinger refuses")).
   Only a username of Mastodon's format (`isRemoteUsername`) is matched against stored accounts by address, so an
   invalidated handle (`! <id>`, `shownHandle` in `src/domain/accounts.ts`) names no account by address; lookup names it
   by `<id>@handle.invalid` (`accountByLookup`); `test/account-invalid-handle.test.ts`.
@@ -3098,6 +3104,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   cap within a generous time"). Removing the CDATA lines of a card's JSON-LD: _Enforced (main):_ `removeCdataJunk`
   (`src/federation/link-details.ts`) passes over a script in linear time; `test/link-details.test.ts` ("removes CDATA
   lines from a round of scripts at the JSON-LD cap within a generous time", "removes CDATA lines as the pattern does").
+  A URL's host key: _Enforced (main):_ `hostDomain` (`src/platform/domain-name.ts`) drops the trailing dots in one
+  backward scan, where a regex retries at each dot of an interior run; `test-node/cutover-convert.test.ts` ("is read
+  within a generous time at the size of an inbound activity"), `test/host-trailing-dots.test.ts` ("answers an inbound
+  activity whose actor's host is one, at the body's cap, within a generous time").
   Matching a username: _Enforced (main):_ `USERNAME` (`src/platform/domain-name.ts`) and `REMOTE_USERNAME`
   (`src/platform/identity-bounds.ts`) are written in a form matched in linear time; `test/username.test.ts` ("matches
   what the baseline matches"), `test/interaction.test.ts` ("reads an address at INTERACTION_TARGET_BYTES within a

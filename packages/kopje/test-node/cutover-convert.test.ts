@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { threadsOf } from "../cli/lib/cutover/verify-expect.js";
+import { hostDomain } from "../src/platform/domain-name.js";
 import { isStorableActorId, MAX_LOCAL_ADDRESSED } from "../src/platform/identity-bounds.js";
 import {
   convert as convertIn,
@@ -748,6 +749,25 @@ function convertedDomainsQuery(): string {
   expect(queries).toHaveLength(1);
   return queries[0]?.[1] ?? "";
 }
+
+// RES-2: hostDomain reads an id's host without its trailing dots in one scan. The converter reads a legacy actor id's
+// host before its identity bound (convert.js), and the inbox gate an inbound actor id as long as the body
+// (INBOX_BODY_LIMIT, test/host-trailing-dots.test.ts). A run of dots followed by another character is the quadratic case
+// of a regex such as /\.+$/ (about 10 s at 160,000 in Node); the smaller size fails first under it.
+describe("the host key of an id whose host is a run of dots", () => {
+  // INBOX_BODY_LIMIT (src/federation/spool.ts), which this project's sources cannot import.
+  const INBOX_BODY_BYTES = 1024 * 1024;
+
+  it("is read within a generous time at the size of an inbound activity", () => {
+    for (const size of [100_000, INBOX_BODY_BYTES]) {
+      const run = ".".repeat(size);
+      const started = performance.now();
+      const keys = [hostDomain(`https://a${run}b.example/u`), hostDomain(`https://a.example${run}/u`)];
+      expect(performance.now() - started, `${size}`).toBeLessThan(1000);
+      expect(keys).toEqual([`a${run}b.example`, "a.example"]);
+    }
+  });
+});
 
 describe("remote actors whose ids spell the host otherwise", () => {
   it("store the domain the Worker gives the id's host, address and search text with it, and verify", async () => {

@@ -143,7 +143,7 @@ export class PolicyModel {
     return this.accountFound(x) && (withSuspended || this.available(x));
   }
 
-  // R38: an instance domain block covers `domain` (lowercase, no trailing dot) when the block that rules it is a
+  // R38: an instance domain block covers `domain` (lowercase, no trailing dots) when the block that rules it is a
   // suspend: the block of the domain itself or of its nearest parent, the longest match (Mastodon's
   // DomainBlock.rule_for). A child noop exempts its subdomains from a parent's suspend.
   covered(domain: string): boolean {
@@ -157,8 +157,8 @@ export class PolicyModel {
   // covers.
   domainCovered(x: number): boolean {
     const account = this.account(x);
-    const host = new URL(account.uri).hostname.replace(/\.$/, "");
-    return !account.local && (this.covered((account.domain ?? "").replace(/\.$/, "")) || this.covered(host));
+    const host = new URL(account.uri).hostname.replace(/\.+$/, "");
+    return !account.local && (this.covered((account.domain ?? "").replace(/\.+$/, "")) || this.covered(host));
   }
 
   // VIS-30, the public block list (docs/visibility.md, "Instance domain blocks"): a suspended local viewer's token is
@@ -188,8 +188,8 @@ export class PolicyModel {
   // a domain block can name.
   inDomain(x: number, domain: string): boolean {
     const account = this.account(x);
-    // The host of the actor id, lowercased, without a port or a trailing dot.
-    const host = new URL(account.uri).hostname.replace(/\.$/, "");
+    // The host of the actor id, lowercased, without a port or its trailing dots.
+    const host = new URL(account.uri).hostname.replace(/\.+$/, "");
     return !account.local && (account.domain === domain || host === domain);
   }
 
@@ -1095,7 +1095,7 @@ export class PolicyModel {
     }
     if (
       hosts !== null &&
-      (this.covered(new URL(hosts.inbox).hostname.replace(/\.$/, "")) ||
+      (this.covered(new URL(hosts.inbox).hostname.replace(/\.+$/, "")) ||
         (hosts.domains !== null && hosts.domains.length > 0 && hosts.domains.every((d) => this.covered(d))))
     ) {
       return false;

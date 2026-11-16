@@ -1107,6 +1107,14 @@ remote account, `/api/v1/admin/domain_blocks`; R38 in [visibility.md](visibility
   `Account.by_domain_and_subdomains` of the suspending block.
 - Severing writes no `severed_relationships` notification (Mastodon's `block_domain_service.rb` writes them).
 - Severity `silence` is refused with 422 on create and update.
+- A host is ruled and claimed without every trailing dot: the block of `blocked.example` covers an actor, an inbox or a
+  fetch on `blocked.example..`, and an actor whose id is there claims `<username>@blocked.example`, stored once
+  WebFinger confirms it (`hostDomain` in `src/platform/domain-name.ts`, `uriHostSql` in `src/domain/audience.ts`; R38 in
+  [visibility.md](visibility.md), "Instance domain blocks"). The id, its inboxes and every other stored URL keep their
+  dots. Mastodon 4.7.5 reads such a host through Addressable 2.9.2's `normalized_host` (`tag_manager.rb:17-23`,
+  `process_account_service.rb:143`), which drops a single trailing dot and keeps two or more, so there
+  `blocked.example..` is a domain of its own, which a block of `blocked.example` does not cover, and an actor there
+  claims a handle on it. Kopje keeps one key for every check, in the Worker and in SQL. Accepted, 2026-11-17.
 - A suspended actor's `Update` is not applied, as no profile of an unavailable account is refreshed; Mastodon's
   `process_collection_service.rb` applies it.
 - Unsuspension does not fetch the account again; Mastodon's `unsuspend_account_service.rb` refetches it.

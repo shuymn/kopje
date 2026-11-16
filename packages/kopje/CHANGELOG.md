@@ -302,6 +302,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   ([docs/web-pages.md](docs/web-pages.md), "Robots"). No Store migration and no `wrangler.jsonc` change.
 - The Store isolate's memory at rest drops by about 6 MB: the Worker bundle holds no character above U+00FF, so V8
   keeps its source one byte a character instead of two. No Store migration and no `wrangler.jsonc` change.
+- Every domain check reads a host without any of its trailing dots, in the Worker as in SQL: an instance domain block
+  of `example.com` covers a fetch, an inbox, an actor and a delivery on `example.com..`, and an actor whose id is there
+  claims its handle at `example.com`, where Mastodon drops a single trailing dot
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Remote suspension and instance domain blocks") (#1734).
+  Actor ids, inboxes and stored handles keep their spelling. No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 
