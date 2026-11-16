@@ -1,6 +1,6 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import fc from "fast-check";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { STATUSES_ID_INDEX } from "../src/db/indexes";
 import { MIGRATIONS } from "../src/db/migrations";
@@ -43,6 +43,7 @@ import {
   EMOJI_SERVED_TYPES,
 } from "../src/platform/emoji-image";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../src/platform/identity-bounds";
+import type { StoreStub } from "../src/platform/store-client";
 import { StoreUnavailableError, toStoreUnavailable } from "../src/platform/store-errors";
 import {
   ACTIVITY_SETTING_BOUNDS,
@@ -110,7 +111,7 @@ import {
 } from "../src/platform/stored-bounds";
 import { NOW } from "./app-helpers";
 import { ACCOUNT_EMOJIS_FULL, accountAtCap, padded, STATUS_EMOJIS_FULL, statusAtCap } from "./emoji-fixtures";
-import { BUILD, freshStore, migratedStore, rejectionOf, tableNames, testKernel as kernel } from "./helpers";
+import { BUILD, freshStore as newStore, migratedStore, rejectionOf, tableNames, testKernel as kernel } from "./helpers";
 import { BREAK_WITNESSES } from "./migration-fixtures";
 import { TEMPLATE_FIXTURES } from "./oembed-template-fixtures";
 import { byText } from "./sort";
@@ -131,6 +132,23 @@ import { deriveTagKeyTables, seconds } from "./tag-key-tables";
 
 // The shipped migrations, in order; test-only files are named after them (9999_*).
 const NAMES = MIGRATIONS.map((m) => m.name);
+
+// A Store this file's tests create, its pending upgrade alarm cleared after the test. A kernel that finds the schema
+// pending schedules the alarm (StoreKernel's state), so most of these Stores, brought to a partial schema by a test
+// kernel, would each be upgraded through every later migration once the tests stop holding the isolate: about 600
+// upgrades in a row on the isolate the worker's suites share (vitest.config.ts), stalling the setup's measure and
+// audit after the last test (test/sql-depth-setup.ts) for half a minute, longer on a slower host.
+const created: StoreStub[] = [];
+function freshStore(): StoreStub {
+  const store = newStore();
+  created.push(store);
+  return store;
+}
+afterEach(async () => {
+  for (const store of created.splice(0)) {
+    await runInDurableObject(store, (_instance, state) => state.storage.deleteAlarm());
+  }
+});
 
 // `text` as a BLOB of its UTF-8 bytes.
 const blob = (text: string) => new TextEncoder().encode(text).buffer as ArrayBuffer;
