@@ -575,9 +575,10 @@ API caching (`Cache-Control` and `Vary` of the Mastodon API; threat model WEB-7)
 - Of the instance reads Mastodon lets caches keep for everyone, the nine that read the token (custom emoji,
   languages, privacy policy, terms of service and their dated form, translation languages, activity, domain blocks,
   peer search) answer an anonymous request public for 5 minutes with `Vary: Authorization` and a request with
-  `Authorization` `private, no-store`. Mastodon answers both public for 5 minutes with no `Vary`, so a cache may serve
-  an anonymous answer to a suspended owner's token, whose answer is 403, and a user's domain-block list, comments
-  included where the instance shows them to users only, to anyone. Accepted, 2026-11-16.
+  `Authorization` `private, no-store`. Mastodon answers both public for 5 minutes and leaves `Authorization` out of
+  `Vary`, so a cache may serve an anonymous answer to a suspended owner's token, whose answer is 403 (custom emoji
+  where the instance answers unauthenticated API requests), and, where the instance shows domain blocks to everyone
+  and their comments to users only, a user's domain-block list, comments included, to anyone. Accepted, 2026-11-16.
 - OAuth endpoints keep Doorkeeper's `no-store` on tokens, token info and introspection, and add `Pragma: no-cache` to
   errors too; a revocation's `{}` and the authorization server metadata carry none, where Mastodon's Rack adds
   `max-age=0, private, must-revalidate` and an ETag, and `no-cache` to a revocation's error. Accepted, 2026-11-16.
