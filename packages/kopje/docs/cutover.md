@@ -373,6 +373,19 @@ or outside years 0 to 9999) is stored: it reads it from a converted dump's `crea
 records its own time there, needs `--base-time` with the manifest's `baseTime` (without it the check stops with
 `base-time-required`).
 
+**Remote domains with a port or a trailing dot.** The converter stores a remote account's domain as the Worker does,
+without the port or trailing dot of its actor id's host. A Store converted before it did, or restored from such a
+Store's dump, may keep such domains, which address lookup, the one-account-per-address rule and the filters by domain
+read apart from the account's handle. Nothing stored tells a converted row from an imported one, so they are not
+rewritten; this read-only query lists the first 100 by id:
+
+```sh
+kopje-admin sql "SELECT id, uri, domain FROM accounts WHERE domain IS NOT NULL AND (instr(domain, ':') > 0 OR substr(domain, -1) = '.') ORDER BY id LIMIT 100"
+```
+
+Each such row heals when a refresh that WebFinger confirms rewrites its domain, which resolving the actor's id in search
+(`resolve=true`) starts.
+
 With `--images`, the expected avatars, headers, attachments, old image URLs and `media_files` come from `images.json`
 and the instance origin alone, by code that does not share the converter's mapping: a URL, a token, a served type or a
 size that differs fails. So does a URL under the operator's account that `images.json` does not map, and a missing

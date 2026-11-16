@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -740,6 +741,14 @@ describe("remote actors that share an address", () => {
   });
 });
 
+// The read-only query docs/cutover.md gives operators for remote domains with a port or a trailing dot, as written there.
+function convertedDomainsQuery(): string {
+  const doc = readFileSync(fileURLToPath(new URL("../docs/cutover.md", import.meta.url)), "utf8");
+  const queries = [...doc.matchAll(/^kopje-admin sql "(SELECT id, uri, domain FROM accounts [^"]*)"$/gm)];
+  expect(queries).toHaveLength(1);
+  return queries[0]?.[1] ?? "";
+}
+
 describe("remote actors whose ids spell the host otherwise", () => {
   it("store the domain the Worker gives the id's host, address and search text with it, and verify", async () => {
     const exportPath = await exportOf({ level: 39, hostSpellings: true });
@@ -759,7 +768,6 @@ describe("remote actors whose ids spell the host otherwise", () => {
 				WHERE display_name LIKE 'Spelled %' ORDER BY a.rowid`,
       )
       .all();
-    db.close();
     // The port, the capitals and the trailing dot are dropped and a Unicode host is punycode, as hostDomain gives
     // them; h.example:8443's a and h.example's a are then one address, so the later is invalidated and refreshed.
     expect(accounts).toEqual([
@@ -799,6 +807,21 @@ describe("remote actors whose ids spell the host otherwise", () => {
         refresh: 1,
       },
     ]);
+    // The operator's query for domains an earlier converter kept (docs/cutover.md, Verification) finds none here, and
+    // exactly the rows with a port or a trailing dot once each spelled row holds the domain the old line wrote.
+    const listed = () =>
+      db
+        .prepare(convertedDomainsQuery())
+        .all()
+        .map((row) => (row as { uri: string }).uri);
+    expect(listed()).toEqual([]);
+    for (const { uri } of accounts as { uri: string }[]) {
+      db.prepare("UPDATE accounts SET domain = ? WHERE uri = ?").run(new URL(uri).host.toLowerCase(), uri);
+    }
+    expect(listed().toSorted()).toEqual(
+      ["https://Example.COM:8443/users/a", "https://example.com./u/c", "https://h.example:8443/u/a"].toSorted(),
+    );
+    db.close();
     // A stored domain that keeps the id's port, as the converter once wrote it, is reported.
     const ported = await verifyWith(
       exportPath,
