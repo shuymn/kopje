@@ -51,6 +51,8 @@ const NOT_CARRIED: Record<string, string> = {
   card_images: "card images Kopje's image round stores; legacy Wildebeest has none, and a carried status gets no card",
   card_oembed_endpoints: "oEmbed endpoints Kopje's card round discovers; legacy Wildebeest has none",
   collection_pins_pending: "pinned statuses a sync of Kopje has yet to fetch; legacy has none",
+  collection_items: "the members of collections made in Kopje; legacy Wildebeest has no collections",
+  collections: "collections made in Kopje; legacy Wildebeest has no collections",
   conversation_mutes:
     "legacy never wrote its conversation_mutes table, and a legacy row there stops the conversion (UNUSED_LEGACY_TABLES)",
   custom_emojis: "local custom emoji of Kopje; legacy Wildebeest has none (verify-actual fails on any row)",

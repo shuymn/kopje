@@ -2372,3 +2372,268 @@ DELETE FROM instance_settings
 WHERE name = 'wrapstodon' AND value IS NOT 'true' AND value IS NOT 'false';
 `;
 }
+
+// ---- Collections: migration 0099_collections (domain/collections.ts)
+
+// collections and collection_items hold Mastodon 4.7.5's Collection and CollectionItem (FEP-7aa9): a local
+// collection's name and description as its owner wrote them, and the columns a remote one (#1589's PR 5) and its
+// members' checks (PR 4 to PR 6) write, each held by a CHECK of its own, judged as 0093's are: a CASE yielding 1 or 0,
+// written `(...) = 1`, the type first, then the raw bytes, then NUL, then the structure.
+// Collection::MAX_ITEMS: the live (pending and accepted) items of a collection, local or remote.
+export const COLLECTION_MAX_ITEMS = 25;
+// The collections one account may hold, of any locality (collections_per_account): local creation stops at
+// COLLECTION_LIMIT (domain/collections.ts), a remote account's read at its own bound.
+export const MAX_STORED_COLLECTIONS = 50;
+// The rows one collection may hold, live and retired (collection_items_per_collection).
+export const MAX_STORED_ITEMS = 50;
+// Collection's validations: a local name and description, and a remote one's hard limits (NAME_LENGTH_HARD_LIMIT,
+// DESCRIPTION_LENGTH_HARD_LIMIT), in code points; their raw bytes as stored, at most four a code point.
+export const COLLECTION_NAME_LENGTH = { local: 40, remote: 256 } as const;
+export const COLLECTION_DESCRIPTION_LENGTH = { local: 100, remote: 2048 } as const;
+// A collection's language: a key of Mastodon's SUPPORTED_LOCALES, in UTF-8 bytes (the longest is 7).
+export const COLLECTION_LANGUAGE_BYTES = 16;
+// A remote collection's uri and an item's URIs, as identity-bounds.ts ACTOR_URI_LIMIT bounds an actor id; its url and
+// totalItems (original_number_of_items).
+export const COLLECTION_URI_BYTES = 2048;
+export const COLLECTION_URL_BYTES = 2048;
+export const COLLECTION_TOTAL_ITEMS_MAX = 2_147_483_647;
+// collection_items.position, and the attempts of an item's check (#1589's PR 5).
+export const COLLECTION_POSITION_MAX = 2_147_483_647;
+export const COLLECTION_CHECK_ATTEMPTS = 5;
+// The stored item states, Mastodon's enum (collection_item.rb:24-26).
+export const COLLECTION_ITEM_STATES = { pending: 0, accepted: 1, rejected: 2, revoked: 3 } as const;
+export type CollectionItemState = keyof typeof COLLECTION_ITEM_STATES;
+// reports.collection_ids: NULL, or a JSON array of at most REPORT_COLLECTION_IDS 18-digit collection ids.
+export const REPORT_COLLECTION_IDS = 50;
+export const REPORT_COLLECTION_IDS_BYTES = 2 + REPORT_COLLECTION_IDS * (WARNING_STATUS_ID_BYTES + 3) - 1;
+
+// The WHEN lines of an 18-digit snowflake as TEXT.
+function snowflakeWhen(column: string): string[] {
+  return [
+    `WHEN typeof(${column}) <> 'text' THEN 0`,
+    `WHEN length(CAST(${column} AS BLOB)) <> 18 THEN 0`,
+    `WHEN instr(CAST(${column} AS BLOB), x'00') > 0 THEN 0`,
+    `WHEN ${column} NOT GLOB '*[^0-9]*' THEN 1`,
+  ];
+}
+
+// The WHEN lines of an https URL of at most `bytes` printable ASCII bytes (an identity Kopje stores as given).
+function httpsUrlWhen(column: string, bytes: number): string[] {
+  return [
+    `WHEN typeof(${column}) <> 'text' THEN 0`,
+    `WHEN length(CAST(${column} AS BLOB)) > ${bytes} THEN 0`,
+    `WHEN instr(CAST(${column} AS BLOB), x'00') > 0 THEN 0`,
+    `WHEN ${column} GLOB 'https://?*' AND ${column} NOT GLOB '*[^!-~]*' THEN 1`,
+  ];
+}
+
+// The WHEN lines of text of 1 (`min`) to `length` code points, with at most four bytes each.
+function textWhen(column: string, min: 0 | 1, length: string): string[] {
+  return [
+    `WHEN typeof(${column}) <> 'text' THEN 0`,
+    `WHEN length(CAST(${column} AS BLOB)) > 4 * (${length}) THEN 0`,
+    `WHEN instr(CAST(${column} AS BLOB), x'00') > 0 THEN 0`,
+    `WHEN length(${column}) BETWEEN ${min} AND ${length} THEN 1`,
+  ];
+}
+
+// The WHEN lines of an integer from `min` to `max`.
+function integerWhen(column: string, min: number, max: number | string): string[] {
+  return [`WHEN typeof(${column}) <> 'integer' THEN 0`, `WHEN ${column} BETWEEN ${min} AND ${max} THEN 1`];
+}
+
+// A CHECK of 0099 (as reportCheck: `when` as a CASE yielding 1 or 0, written `(...) = 1`).
+const collectionCheck = reportCheck;
+
+// The bound of a local collection's or a remote one's column (`local` the row's locality).
+const byLocality = (local: number, remote: number) => `CASE WHEN local = 1 THEN ${local} ELSE ${remote} END`;
+
+// The statements of 0099 before its triggers (domain/stored-triggers.ts): the two tables and their indexes, and the
+// column reports.collection_ids. `languages`: Mastodon's SUPPORTED_LOCALES (domain/trend-languages.ts TREND_LANGUAGES),
+// `tag` the hashtag name bound (domain/status-bounds.ts TAG_NAME_BYTES, MAX_TAG_LENGTH), which this module cannot
+// import; test/migrations.test.ts compares the file with it. A local collection holds no uri, url or total_items; a
+// remote one's uri is required (Collection's `uri, presence: true, if: :remote?`). An item names its account, or its
+// featuredObject while unresolved (object_uri); a check is queued only with its candidate (check_due_at), claimed only
+// while queued (check_token), and an answer's delivery is watched only while queued and unclaimed
+// (answer_activity_id); only an item with an account is accepted or holds an approval; a retracted approval only on a
+// pending item holding neither of the others (#1589's D22 to D24).
+export function collectionsMigrationSql(languages: readonly string[], tag: { bytes: number; length: number }): string {
+  // Sixteen keys a line.
+  const quoted = languages.map((language) => `'${language}'`);
+  const locales = Array.from({ length: Math.ceil(quoted.length / 16) }, (_, line) =>
+    quoted.slice(line * 16, line * 16 + 16).join(", "),
+  ).join(",\n        ");
+  const optional = (column: string, when: string[]) => [`WHEN ${column} IS NULL THEN 1`, ...when];
+  const remoteOnly = (column: string, when: string[]) => [
+    `WHEN local = 1 THEN ${column} IS NULL`,
+    `WHEN ${column} IS NULL THEN 1`,
+    ...when,
+  ];
+  const collections = [
+    `id TEXT NOT NULL PRIMARY KEY ${collectionCheck("collection_id", snowflakeWhen("id"))}`,
+    "account_id TEXT NOT NULL REFERENCES accounts (id) ON DELETE CASCADE",
+    `local INTEGER NOT NULL ${collectionCheck("collection_local", integerWhen("local", 0, 1))}`,
+    `name TEXT NOT NULL ${collectionCheck(
+      "collection_name",
+      textWhen("name", 1, byLocality(COLLECTION_NAME_LENGTH.local, COLLECTION_NAME_LENGTH.remote)),
+    )}`,
+    `description TEXT ${collectionCheck(
+      "collection_description",
+      optional(
+        "description",
+        textWhen(
+          "description",
+          0,
+          byLocality(COLLECTION_DESCRIPTION_LENGTH.local, COLLECTION_DESCRIPTION_LENGTH.remote),
+        ),
+      ),
+    )}`,
+    `language TEXT ${collectionCheck(
+      "collection_language",
+      optional("language", [
+        "WHEN typeof(language) <> 'text' THEN 0",
+        `WHEN length(CAST(language AS BLOB)) > ${COLLECTION_LANGUAGE_BYTES} THEN 0`,
+        "WHEN instr(CAST(language AS BLOB), x'00') > 0 THEN 0",
+        `WHEN language IN (${locales}) THEN 1`,
+      ]),
+    )}`,
+    `sensitive INTEGER NOT NULL ${collectionCheck("collection_sensitive", integerWhen("sensitive", 0, 1))}`,
+    `discoverable INTEGER NOT NULL ${collectionCheck("collection_discoverable", integerWhen("discoverable", 0, 1))}`,
+    `tag TEXT ${collectionCheck(
+      "collection_tag",
+      optional("tag", [
+        "WHEN typeof(tag) <> 'text' THEN 0",
+        `WHEN length(CAST(tag AS BLOB)) NOT BETWEEN 1 AND ${tag.bytes} THEN 0`,
+        "WHEN instr(CAST(tag AS BLOB), x'00') > 0 THEN 0",
+        `WHEN length(tag) <= ${tag.length} THEN 1`,
+      ]),
+    )}`,
+    `uri TEXT ${collectionCheck("collection_uri", [
+      "WHEN local = 1 THEN uri IS NULL",
+      ...httpsUrlWhen("uri", COLLECTION_URI_BYTES),
+    ])}`,
+    `url TEXT ${collectionCheck("collection_url", remoteOnly("url", httpsUrlWhen("url", COLLECTION_URL_BYTES)))}`,
+    `total_items INTEGER ${collectionCheck(
+      "collection_total_items",
+      remoteOnly("total_items", integerWhen("total_items", 0, COLLECTION_TOTAL_ITEMS_MAX)),
+    )}`,
+    `created_at TEXT NOT NULL ${collectionCheck("collection_created_at", isoTimeWhen("created_at"))}`,
+    `updated_at TEXT NOT NULL ${collectionCheck("collection_updated_at", isoTimeWhen("updated_at"))}`,
+  ];
+  const itemUri = (column: string) =>
+    `${column} TEXT ${collectionCheck(`collection_item_${column}`, optional(column, httpsUrlWhen(column, COLLECTION_URI_BYTES)))}`;
+  const items = [
+    `id TEXT NOT NULL PRIMARY KEY ${collectionCheck("collection_item_id", snowflakeWhen("id"))}`,
+    "collection_id TEXT NOT NULL REFERENCES collections (id) ON DELETE CASCADE",
+    "account_id TEXT REFERENCES accounts (id) ON DELETE CASCADE",
+    `state INTEGER NOT NULL ${collectionCheck("collection_item_state", integerWhen("state", 0, 3))}`,
+    `position INTEGER NOT NULL ${collectionCheck(
+      "collection_item_position",
+      integerWhen("position", 1, COLLECTION_POSITION_MAX),
+    )}`,
+    itemUri("uri"),
+    itemUri("object_uri"),
+    itemUri("activity_uri"),
+    itemUri("candidate_approval_uri"),
+    itemUri("approval_uri"),
+    itemUri("retracted_approval_uri"),
+    `check_due_at INTEGER ${collectionCheck(
+      "collection_item_check_due_at",
+      optional("check_due_at", integerWhen("check_due_at", 0, SAFE_INTEGER_MAX)),
+    )}`,
+    `check_attempts INTEGER NOT NULL DEFAULT 0 ${collectionCheck(
+      "collection_item_check_attempts",
+      integerWhen("check_attempts", 0, COLLECTION_CHECK_ATTEMPTS),
+    )}`,
+    `check_token TEXT ${collectionCheck(
+      "collection_item_check_token",
+      optional("check_token", [
+        "WHEN typeof(check_token) <> 'text' THEN 0",
+        "WHEN length(CAST(check_token AS BLOB)) <> 36 THEN 0",
+        "WHEN instr(CAST(check_token AS BLOB), x'00') > 0 THEN 0",
+        "WHEN check_token NOT GLOB '*[^0-9a-f-]*' THEN 1",
+      ]),
+    )}`,
+    `answer_activity_id INTEGER ${collectionCheck(
+      "collection_item_answer_activity_id",
+      optional("answer_activity_id", integerWhen("answer_activity_id", 1, "9223372036854775807")),
+    )}`,
+    `created_at TEXT NOT NULL ${collectionCheck("collection_item_created_at", isoTimeWhen("created_at"))}`,
+    `updated_at TEXT NOT NULL ${collectionCheck("collection_item_updated_at", isoTimeWhen("updated_at"))}`,
+    collectionCheck("collection_item_member", ["WHEN account_id IS NOT NULL OR object_uri IS NOT NULL THEN 1"]),
+    collectionCheck("collection_item_queued", [
+      "WHEN check_due_at IS NULL OR candidate_approval_uri IS NOT NULL THEN 1",
+    ]),
+    collectionCheck("collection_item_claimed", ["WHEN check_token IS NULL OR check_due_at IS NOT NULL THEN 1"]),
+    collectionCheck("collection_item_watched", [
+      "WHEN answer_activity_id IS NULL THEN 1",
+      "WHEN check_due_at IS NOT NULL AND check_token IS NULL THEN 1",
+    ]),
+    collectionCheck("collection_item_approved", ["WHEN approval_uri IS NULL OR account_id IS NOT NULL THEN 1"]),
+    collectionCheck("collection_item_retracted", [
+      "WHEN retracted_approval_uri IS NULL THEN 1",
+      "WHEN state = 0 AND approval_uri IS NULL AND candidate_approval_uri IS NULL THEN 1",
+    ]),
+    collectionCheck("collection_item_accepted", ["WHEN state <> 1 OR account_id IS NOT NULL THEN 1"]),
+  ];
+  return `CREATE TABLE collections (
+  ${collections.join(",\n  ")}
+);
+
+CREATE INDEX collections_account ON collections (account_id, created_at, id);
+CREATE UNIQUE INDEX collections_uri ON collections (uri) WHERE uri IS NOT NULL;
+
+CREATE TABLE collection_items (
+  ${items.join(",\n  ")}
+);
+
+CREATE UNIQUE INDEX collection_items_member ON collection_items (collection_id, account_id) WHERE account_id IS NOT NULL;
+CREATE INDEX collection_items_order ON collection_items (collection_id, position, id);
+CREATE INDEX collection_items_account ON collection_items (account_id, id) WHERE account_id IS NOT NULL;
+CREATE UNIQUE INDEX collection_items_uri ON collection_items (uri) WHERE uri IS NOT NULL;
+CREATE UNIQUE INDEX collection_items_approval ON collection_items (account_id, approval_uri) WHERE approval_uri IS NOT NULL;
+CREATE INDEX collection_items_activity ON collection_items (activity_uri) WHERE activity_uri IS NOT NULL;
+CREATE INDEX collection_items_retired ON collection_items (updated_at, id) WHERE state IN (2, 3);
+CREATE INDEX collection_items_check ON collection_items (check_due_at, id) WHERE check_due_at IS NOT NULL;
+
+ALTER TABLE reports ADD COLUMN collection_ids TEXT;
+`;
+}
+
+// True when `column` is no stored reports.collection_ids: NULL is one; else a JSON array of at most
+// REPORT_COLLECTION_IDS 18-digit ids as TEXT, judged in order (the storage class, the bytes, NUL, the JSON, the array,
+// its length, each element). The triggers of 0099 and the writer (collectionIdsOf) share it.
+export function reportCollectionIdsPastBoundSql(column: string): string {
+  return `CASE WHEN ${column} IS NULL THEN 0
+	WHEN typeof(${column}) <> 'text' THEN 1
+	WHEN length(CAST(${column} AS BLOB)) > ${REPORT_COLLECTION_IDS_BYTES} THEN 1
+	WHEN instr(CAST(${column} AS BLOB), x'00') > 0 THEN 1
+	WHEN NOT json_valid(${column}) THEN 1
+	WHEN json_type(${column}) <> 'array' THEN 1
+	WHEN json_array_length(${column}) > ${REPORT_COLLECTION_IDS} THEN 1
+	WHEN EXISTS (SELECT 1 FROM json_each(${column}) e WHERE e.type <> 'text'
+		OR length(CAST(e.value AS BLOB)) <> ${WARNING_STATUS_ID_BYTES} OR instr(CAST(e.value AS BLOB), x'00') > 0
+		OR e.value GLOB '*[^0-9]*') THEN 1
+	ELSE 0 END`;
+}
+
+// The writer twin of reportCollectionIdsPastBoundSql: the ids of a stored collection_ids, or [] for none or for a
+// value the rule refuses (a restored report is held by the triggers too, so the presenter never throws on one).
+export function reportCollectionIdsOf(raw: string | null): string[] {
+  if (raw === null || raw.length > REPORT_COLLECTION_IDS_BYTES || raw.includes("\u0000")) {
+    return [];
+  }
+  if (ENCODER.encode(raw).length > REPORT_COLLECTION_IDS_BYTES) {
+    return [];
+  }
+  let ids: unknown;
+  try {
+    ids = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(ids) || ids.length > REPORT_COLLECTION_IDS) {
+    return [];
+  }
+  return ids.every((id): id is string => typeof id === "string" && WARNING_STATUS_ID.test(id)) ? ids : [];
+}

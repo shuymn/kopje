@@ -33,6 +33,7 @@ import * as annualReports from "./domain/annual-reports";
 import { checkAdminCredential, checkCredential, checkNotSuspended } from "./domain/auth";
 import * as blocks from "./domain/blocks";
 import * as cardImages from "./domain/card-images";
+import * as collections from "./domain/collections";
 import * as conversations from "./domain/conversations";
 import * as deliveries from "./domain/deliveries";
 import { directory } from "./domain/directory";
@@ -416,6 +417,18 @@ export const STORE_RPC = {
   addListAccounts: lists.addListAccounts,
   removeListAccounts: lists.removeListAccounts,
   accountLists: lists.accountLists,
+
+  // Collections (domain/collections.ts); the cron's cleanup is pruneCollectionItems.
+  accountCollections: collections.accountCollections,
+  inCollections: collections.inCollections,
+  showCollection: collections.showCollection,
+  createCollection: collections.createCollection,
+  updateCollection: collections.updateCollection,
+  deleteCollection: collections.deleteCollection,
+  addCollectionItem: collections.addCollectionItem,
+  removeCollectionItem: collections.removeCollectionItem,
+  revokeCollectionItem: collections.revokeCollectionItem,
+  pruneCollectionItems: collections.pruneCollectionItems,
 
   // Conversations (domain/conversations.ts).
   listConversations: conversations.listConversations,

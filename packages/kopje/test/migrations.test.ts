@@ -34,6 +34,7 @@ import { MAX_RAW_LENGTH } from "../src/domain/status-text";
 import { emitTriggers, STORED_TRIGGERS } from "../src/domain/stored-triggers";
 import { moderationRound, runModerationJobs } from "../src/domain/suspension";
 import { normalizeOnce, normalizeTag } from "../src/domain/tag-name";
+import { TREND_LANGUAGES } from "../src/domain/trend-languages";
 import { parseRemoteStatus } from "../src/federation/remote-status";
 import {
   EMOJI_EDGE_LIMIT,
@@ -107,6 +108,7 @@ import {
   annualReportsMigrationSql,
   WRAPSTODON_SETTING_BOUNDS,
   cardAttributionMigrationSql,
+  collectionsMigrationSql,
   PROFILE_DESCRIPTION_BYTES,
   PROFILE_DESCRIPTION_LIMIT,
 } from "../src/platform/stored-bounds";
@@ -398,9 +400,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(72);
+      expect(STORED_TRIGGERS.size).toBe(80);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        72 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        80 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -13054,6 +13056,284 @@ describe("0098_card_attribution", () => {
         AUTHOR,
       );
       expect(author(PENDING)).toEqual({ v: AUTHOR, t: "text" });
+    });
+  });
+});
+
+describe("0099_collections", () => {
+  const NAME = "0099_collections";
+  const at = NAMES.indexOf(NAME);
+  const [OWNER, OTHER] = ["100000000000000001", "100000000000000002"];
+  const T = "2026-11-16T00:00:00.000Z";
+  const ASTRAL = "\u{1F600}";
+  const id = (n: number) => String(200000000000000000n + BigInt(n));
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  const TRIGGERS = [
+    "collections_per_account",
+    "collections_per_account_move",
+    "collection_items_per_collection",
+    "collection_items_per_collection_move",
+    "collection_items_live",
+    "collection_items_live_update",
+    "reports_collection_ids_insert",
+    "reports_collection_ids_update",
+  ];
+
+  // A Store at 0099 with a local owner and a remote account, and helpers inserting rows of the two tables.
+  async function migrated(run: (sql: SqlStorage) => void) {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/owner', 'owner', NULL)",
+        OWNER,
+      );
+      sql.exec(
+        "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, 'o@x.test', X'00', X'00', 'k')",
+        OWNER,
+      );
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://remote.example/users/a', 'a', 'remote.example')",
+        OTHER,
+      );
+      run(sql);
+    });
+  }
+  const insert = (sql: SqlStorage, table: string, row: Record<string, SqlStorageValue>) => {
+    const keys = Object.keys(row);
+    sql.exec(
+      `INSERT INTO ${table} (${keys.join(", ")}) VALUES (${keys.map(() => "?").join(", ")})`,
+      ...Object.values(row),
+    );
+  };
+  const collection = (sql: SqlStorage, n: number, fields: Record<string, SqlStorageValue> = {}) =>
+    insert(sql, "collections", {
+      id: id(n),
+      account_id: OWNER,
+      local: 1,
+      name: "n",
+      sensitive: 0,
+      discoverable: 1,
+      created_at: T,
+      updated_at: T,
+      ...fields,
+    });
+  const item = (sql: SqlStorage, n: number, fields: Record<string, SqlStorageValue> = {}) =>
+    insert(sql, "collection_items", {
+      id: id(1000 + n),
+      collection_id: id(1),
+      object_uri: `https://remote.example/users/m${n}`,
+      state: 0,
+      position: 1,
+      created_at: T,
+      updated_at: T,
+      ...fields,
+    });
+
+  it("follows 0098, checks every reference, and writes the generator's statements and triggers", () => {
+    expect(NAMES[at - 1]).toBe("0098_card_attribution");
+    // New tables: the upgrade checks every reference of the Store.
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    const sql = MIGRATIONS[at]?.sql ?? "";
+    expect(statements(sql)).toBe(
+      statements(
+        `${collectionsMigrationSql([...TREND_LANGUAGES], { bytes: TAG_NAME_BYTES, length: MAX_TAG_LENGTH })}\n${emitTriggers(TRIGGERS)}`,
+      ),
+    );
+    for (const [, pattern] of sql.matchAll(/GLOB\s+'([^']*)'/g)) {
+      expect(new TextEncoder().encode(pattern).length).toBeLessThanOrEqual(50);
+    }
+  });
+
+  it("holds a collection's columns to their bounds, by locality", async () => {
+    await migrated((sql) => {
+      // At the bounds: 40 and 100 four-byte characters on a local collection, 256 and 2,048 on a remote one, a
+      // tag of MAX_TAG_LENGTH four-byte characters, a script-tagged locale, and a remote URI of 2,048 bytes.
+      collection(sql, 1, {
+        name: ASTRAL.repeat(40),
+        description: ASTRAL.repeat(100),
+        language: "mn-Mong",
+        tag: ASTRAL.repeat(MAX_TAG_LENGTH),
+      });
+      collection(sql, 2, { description: "" });
+      const uri = (bytes: number) => "https://remote.example/c/".padEnd(bytes, "x");
+      collection(sql, 3, {
+        account_id: OTHER,
+        local: 0,
+        name: ASTRAL.repeat(256),
+        description: ASTRAL.repeat(2048),
+        uri: uri(2048),
+        url: uri(2048),
+        total_items: 2147483647,
+      });
+      const refused: [string, Record<string, SqlStorageValue>, string][] = [
+        ["an empty name", { name: "" }, "collection_name"],
+        ["41 characters on a local one", { name: ASTRAL.repeat(41) }, "collection_name"],
+        [
+          "257 on a remote one",
+          { account_id: OTHER, local: 0, name: "a".repeat(257), uri: uri(30) },
+          "collection_name",
+        ],
+        ["101 characters of description", { description: "a".repeat(101) }, "collection_description"],
+        ["an empty language", { language: "" }, "collection_language"],
+        ["an unsupported language", { language: "xx" }, "collection_language"],
+        ["a flag of 2", { sensitive: 2 }, "collection_sensitive"],
+        ["an empty tag", { tag: "" }, "collection_tag"],
+        ["a tag past its length", { tag: "a".repeat(MAX_TAG_LENGTH + 1) }, "collection_tag"],
+        ["a URI on a local one", { uri: uri(30) }, "collection_uri"],
+        ["a remote one without a URI", { account_id: OTHER, local: 0 }, "collection_uri"],
+        ["a remote URI past 2,048 bytes", { account_id: OTHER, local: 0, uri: uri(2049) }, "collection_uri"],
+        ["an http URI", { account_id: OTHER, local: 0, uri: "http://remote.example/c" }, "collection_uri"],
+        ["total_items on a local one", { total_items: 1 }, "collection_total_items"],
+        ["a 17-digit id", { id: id(9).slice(1) }, "collection_id"],
+        ["a time of another form", { created_at: "2026-11-16T00:00:00Z" }, "collection_created_at"],
+      ];
+      for (const [what, fields, check] of refused) {
+        expect(() => collection(sql, 9, fields), what).toThrow(new RegExp(`CHECK constraint failed: ${check}\\b`));
+      }
+      expect(sql.exec("SELECT count(*) AS n FROM collections").one().n).toBe(3);
+    });
+  });
+
+  it("ties an item's columns to each other and keeps one verified authorization per member", async () => {
+    await migrated((sql) => {
+      collection(sql, 1);
+      collection(sql, 2);
+      const AUTH = "https://remote.example/auth/1";
+      const refused: [string, Record<string, SqlStorageValue>, string][] = [
+        ["neither an account nor an object", { object_uri: null }, "collection_item_member"],
+        ["a queued check without a candidate", { check_due_at: 5 }, "collection_item_queued"],
+        ["a token not queued", { check_token: "00000000-0000-4000-8000-000000000000" }, "collection_item_claimed"],
+        [
+          "a watched answer under a claim",
+          {
+            candidate_approval_uri: AUTH,
+            check_due_at: 5,
+            check_token: "00000000-0000-4000-8000-000000000000",
+            answer_activity_id: 1,
+          },
+          "collection_item_watched",
+        ],
+        ["a verified authorization without an account", { approval_uri: AUTH }, "collection_item_approved"],
+        [
+          "a retraction on an accepted item",
+          { account_id: OTHER, state: 1, retracted_approval_uri: AUTH },
+          "collection_item_retracted",
+        ],
+        [
+          "a retraction beside a verified authorization",
+          { account_id: OTHER, approval_uri: AUTH, retracted_approval_uri: `${AUTH}x` },
+          "collection_item_retracted",
+        ],
+        [
+          "a retraction beside a candidate",
+          { candidate_approval_uri: AUTH, retracted_approval_uri: `${AUTH}x` },
+          "collection_item_retracted",
+        ],
+        ["an accepted item without an account", { state: 1 }, "collection_item_accepted"],
+        ["a state of 4", { state: 4 }, "collection_item_state"],
+        ["a position of 0", { position: 0 }, "collection_item_position"],
+        ["six attempts", { check_attempts: 6 }, "collection_item_check_attempts"],
+      ];
+      for (const [what, fields, check] of refused) {
+        expect(() => item(sql, 9, fields), what).toThrow(new RegExp(`CHECK constraint failed: ${check}\\b`));
+      }
+      // A pending item's first retraction, and a queued watch of an answer, are accepted.
+      item(sql, 1, { retracted_approval_uri: AUTH });
+      item(sql, 2, { candidate_approval_uri: AUTH, check_due_at: 5, answer_activity_id: 1 });
+      // Two members' rows may hold one authorization; one member's two rows may not.
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://remote.example/users/b', 'b', 'remote.example')",
+        id(500),
+      );
+      item(sql, 3, { account_id: OTHER, state: 1, approval_uri: AUTH });
+      item(sql, 4, { account_id: id(500), state: 1, approval_uri: AUTH });
+      expect(() => item(sql, 5, { collection_id: id(2), account_id: OTHER, state: 1, approval_uri: AUTH })).toThrow(
+        /UNIQUE constraint failed/,
+      );
+      // One item per member and collection, whatever its state.
+      expect(() => item(sql, 6, { account_id: OTHER, state: 3 })).toThrow(/UNIQUE constraint failed/);
+    });
+  });
+
+  it("refuses a 51st stored collection of one account, inserted or moved", async () => {
+    await migrated((sql) => {
+      for (let n = 1; n <= 50; n++) {
+        collection(sql, n);
+      }
+      expect(() => collection(sql, 51)).toThrow(/collections: past the per-account bound/);
+      collection(sql, 51, { account_id: OTHER, local: 0, uri: "https://remote.example/c/51" });
+      expect(() => sql.exec("UPDATE collections SET account_id = ? WHERE id = ?", OWNER, id(51))).toThrow(
+        /collections: past the per-account bound/,
+      );
+      // A row's other columns change freely at the bound.
+      sql.exec("UPDATE collections SET name = 'm' WHERE id = ?", id(50));
+      expect(sql.exec("SELECT count(*) AS n FROM collections WHERE account_id = ?", OWNER).one().n).toBe(50);
+    });
+  });
+
+  it("refuses a 26th live item and a 51st stored one in a collection, inserted, revived or moved", async () => {
+    await migrated((sql) => {
+      collection(sql, 1);
+      collection(sql, 2);
+      for (let n = 1; n <= 25; n++) {
+        item(sql, n);
+      }
+      expect(() => item(sql, 26)).toThrow(/collection_items: past the live bound/);
+      for (let n = 26; n <= 50; n++) {
+        item(sql, n, { state: n % 2 === 0 ? 2 : 3 });
+      }
+      expect(() => item(sql, 51, { state: 2 })).toThrow(/collection_items: past the per-collection bound/);
+      // A retired row back to pending past 25, and a live one moved into a collection holding 25.
+      expect(() => sql.exec("UPDATE collection_items SET state = 0 WHERE id = ?", id(1026))).toThrow(
+        /collection_items: past the live bound/,
+      );
+      item(sql, 60, { collection_id: id(2) });
+      expect(() => sql.exec("UPDATE collection_items SET collection_id = ? WHERE id = ?", id(1), id(1060))).toThrow(
+        /collection_items: past the per-collection bound|collection_items: past the live bound/,
+      );
+      // A live item stays live and moves within the bound: its position and its state between pending and accepted.
+      sql.exec("UPDATE collection_items SET position = 2 WHERE id = ?", id(1001));
+      sql.exec("UPDATE collection_items SET state = 1, account_id = ? WHERE id = ?", OTHER, id(1001));
+      // Retiring one frees a live slot.
+      sql.exec("UPDATE collection_items SET state = 3 WHERE id = ?", id(1002));
+      sql.exec("DELETE FROM collection_items WHERE id = ?", id(1026));
+      sql.exec("UPDATE collection_items SET state = 0 WHERE id = ?", id(1027));
+      const count = (where: string) =>
+        sql.exec(`SELECT count(*) AS n FROM collection_items WHERE collection_id = ? AND ${where}`, id(1)).one().n;
+      expect([count("state IN (0, 1)"), count("1")]).toEqual([25, 49]);
+    });
+  });
+
+  it("holds reports.collection_ids to 50 ids of 18 digits", async () => {
+    await migrated((sql) => {
+      const ids = (count: number) => JSON.stringify(Array.from({ length: count }, (_, n) => id(n)));
+      const report = (value: SqlStorageValue) =>
+        sql.exec(
+          "INSERT INTO reports (account_id, target_account_id, uri, created_at, collection_ids) VALUES (?, ?, ?, ?, ?)",
+          OWNER,
+          OTHER,
+          `https://kopje.test/r/${crypto.randomUUID()}`,
+          T,
+          value,
+        );
+      report(null);
+      report(ids(50));
+      for (const value of [ids(51), '["1"]', "[1]", "{}", '["1"', blob("[]"), `[${JSON.stringify(id(1).slice(1))}]`]) {
+        expect(() => report(value), typeof value === "string" ? value : "a blob").toThrow(
+          /reports: collection_ids past its stored bound/,
+        );
+      }
+      expect(() => sql.exec("UPDATE reports SET collection_ids = ?", ids(51))).toThrow(
+        /reports: collection_ids past its stored bound/,
+      );
+      expect(sql.exec("SELECT count(*) AS n FROM reports").one().n).toBe(2);
     });
   });
 });

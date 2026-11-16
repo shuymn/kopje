@@ -298,6 +298,9 @@ export const ADMIN_PERMISSIONS: number =
 // A role as Mastodon's REST::RoleSerializer presents it (permissions is a string).
 export type Role = { id: string; name: string; permissions: string; color: string; highlighted: boolean };
 
+// UserRole#collection_limit of every role (Mastodon's default, user_role.rb:8): Kopje has no role editor.
+export const COLLECTION_LIMIT = 10;
+
 // The OAuth admin's role: Mastodon's Owner (id 3 on a default install, db/seeds/03_roles.rb), with exactly the
 // permissions Kopje serves. Not `administrator` (bit 1), which implies every permission (UserRole#can?).
 export const OWNER_ROLE: Role = {
