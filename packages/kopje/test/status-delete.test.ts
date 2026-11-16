@@ -36,8 +36,8 @@ import { community, remoteAccount, seedReceipts } from "./status-helpers";
 // delivery steps run through the Store and the API; after every step the Store's projection and each answer must equal
 // the policy's (test/status-delete-model.ts), and once everything has settled Kopje must hold the author's final
 // state, except where an accepted risk names the messages that differ (`exception`). Every status is a poll, whose
-// votes the author's server sends as Updates, and L searches R's statuses, which R's server serves from its render
-// cache. A second property sends what Mastodon would not: forgeries, stale, version-less and future Updates, the
+// votes the author's server sends as Updates from a job 3 minutes later (`race` puts an edit between one and its
+// delivery), and L searches R's statuses, which R's server serves from its render cache. A second property sends what Mastodon would not: forgeries, stale, version-less and future Updates, the
 // retraction cap and replays across the retraction TTL.
 
 const AS = "https://www.w3.org/ns/activitystreams";
@@ -475,6 +475,10 @@ async function receive(w: World, actor: string, msg: Msg, label: string): Promis
   const held = msg.type === "Update" ? w.policy.statuses.get(msg.object.uri) : undefined;
   if (msg.type === "Update" && msg.object.updated === null && held !== undefined && held.editedAt !== null) {
     tally(w.stats, "Update without a version of an edited status");
+    // Only older counts show whether it was refused (an implicit update of equal counts changes nothing either).
+    if (msg.object.tally !== held.tally) {
+      tally(w.stats, "Update without a version of an edited status, other counts");
+    }
   }
   const result = await storeReceive(w.store, actor, activityOf(actor, msg), w.clock);
   const predicted = w.policy.receive(actor, msg, w.clock);
@@ -829,7 +833,7 @@ type Action =
   | { k: "post"; s: number; snapshot: Snapshot }
   | { k: "edit"; s: number; snapshot: Snapshot }
   | { k: "delete"; s: number; proven: boolean }
-  | { k: "vote" | "search"; s: number }
+  | { k: "vote" | "search" | "race"; s: number }
   | { k: "deliver" | "redeliver" | "confirm" | "complete"; i: number }
   | { k: LocalKind }
   | { k: "jobs" | "claim" | "send" }
@@ -859,6 +863,7 @@ const actionArb: fc.Arbitrary<Action> = fc.oneof(
   { arbitrary: fc.record({ k: fc.constant("delete" as const), s: statusArb, proven: fc.boolean() }), weight: 3 },
   { arbitrary: fc.record({ k: fc.constant("vote" as const), s: statusArb }), weight: 2 },
   { arbitrary: fc.record({ k: fc.constant("search" as const), s: statusArb }), weight: 4 },
+  { arbitrary: fc.record({ k: fc.constant("race" as const), s: statusArb }), weight: 2 },
   indexed("deliver", 10),
   indexed("redeliver", 2),
   simple("favourite", 2),
@@ -904,6 +909,9 @@ async function act(w: World, a: Action): Promise<void> {
       return;
     case "search":
       await search(w, POOL[a.s]!);
+      return;
+    case "race":
+      await race(w, a.s);
       return;
     case "deliver":
       if (peer.outbox.length > 0) {
@@ -965,6 +973,30 @@ async function act(w: World, a: Action): Promise<void> {
         log(w, `tick ${a.ms}`);
       }
       return;
+  }
+}
+
+// The D14 ordering with counts that differ (ID-7): a vote whose Update R's poll job writes while the status is
+// unedited (no `updated`), then another vote and an edit, whose Update (with the newer counts) is delivered at once; the
+// job's Update, delivered later, names no version of an edited status and older counts. Each step is R's as the actions
+// take it, so a status not posted, a tick past the retry window or an edit refused leaves the rest as it falls.
+async function race(w: World, s: number): Promise<void> {
+  const uri = POOL[s]!;
+  const status = w.peer.statuses.get(uri)!;
+  if (status.state !== "posted") {
+    return;
+  }
+  await act(w, { k: "vote", s });
+  await act(w, { k: "tick", ms: 6 * MINUTE });
+  await act(w, { k: "vote", s });
+  const last = status.versions.at(-1)!.snapshot;
+  const content = ({ A: "B", B: "C", C: "A", "": "A" } as const)[last.content];
+  await act(w, { k: "edit", s, snapshot: { ...last, content } });
+  const edit = w.peer.outbox.findIndex(
+    (sent) => sent === w.peer.sent.at(-1) && sent.msg.id.startsWith(`${uri}#updates/`),
+  );
+  if (edit >= 0) {
+    await deliverSent(w, w.peer.take(edit).msg, "deliver");
   }
 }
 
