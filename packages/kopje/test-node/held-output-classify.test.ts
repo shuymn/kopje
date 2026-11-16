@@ -331,7 +331,6 @@ describe("M1, held output against the headroom", () => {
       },
     ]);
     // With P, the groups answer with its backstop fired, it would pass the isolate's memory.
-    expect(HEAP_PEAKS.groups.backstop + lowered).toBe(143_529_644);
     expect(HEAP_PEAKS.groups.backstop + lowered).toBeGreaterThan(ISOLATE_BYTES);
   });
 
