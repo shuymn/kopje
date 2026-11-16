@@ -15,21 +15,22 @@ import {
 } from "./context";
 import { mastodonError } from "./errors";
 import { pageQuery } from "./pagination";
-import { offsetParam, type Params, parseBoolean } from "./params";
+import { limitParam, offsetParam, type Params, parseBoolean } from "./params";
 
 // GET /api/v2/search: accounts, statuses and hashtags from local data (domain/search.ts). Hashtags are recent
 // autocomplete over the viewer's library and the newest public statuses, not a catalogue of every tag. Collections
 // are found only by resolve=true.
 //
 // resolve=true (Mastodon's SearchService): a local collection's URL (its uri or url) answers that collection alone when
-// R45 shows it to the viewer (ResolveURLService#process_local_url), with no fetch. Otherwise, after the token is
-// verified, a URL or user@domain query is fetched (federation/resolve.ts, signed by the instance actor) and stored by
-// the Store with inbound validation. A URL query answers with what it resolved to alone, if the viewer may see it; an
-// address query answers the account search with the resolved account first, which the Store's search puts there
-// (resolvedAccountId), so the answer budget (RES-3) covers it. Unauthenticated requests are refused before anything is
-// fetched (401, the route's scope), and a request the Store could not store for (resolveQuery) is answered as without
-// resolve=true. The final search takes a fresh credential, so a token that expired while resolving is refused.
-// GET /api/v1/accounts/search resolves addresses only, through the same resolveQuery (mastodon/accounts.ts).
+// R45 shows it to the viewer (ResolveURLService#process_local_url), with no fetch, under SearchService#call's limit and
+// offset. Otherwise, after the token is verified, a URL or user@domain query is fetched (federation/resolve.ts, signed
+// by the instance actor) and stored by the Store with inbound validation. A URL query answers with what it resolved to
+// alone, if the viewer may see it; an address query answers the account search with the resolved account first, which
+// the Store's search puts there (resolvedAccountId), so the answer budget (RES-3) covers it. Unauthenticated requests
+// are refused before anything is fetched (401, the route's scope), and a request the Store could not store for
+// (resolveQuery) is answered as without resolve=true. The final search takes a fresh credential, so a token that
+// expired while resolving is refused. GET /api/v1/accounts/search resolves addresses only, through the same
+// resolveQuery (mastodon/accounts.ts).
 
 // The raw bound of q before it is normalized and split (RES-1). Terms beyond the eighth are ignored (search-text.ts).
 const MAX_QUERY_LENGTH = 500;
@@ -69,12 +70,19 @@ export const search: ApiHandler = withParams(async (c, deps, p) => {
   const excludeUnreviewed = parseBoolean(p.get("exclude_unreviewed")) === true;
   const offset = parsed.offset > MAX_SEARCH_OFFSET ? null : parsed.offset;
   const query = parsed.query.trim();
-  const resolving = (parseBoolean(p.get("resolve")) ?? false) && offset === 0;
-  const collection = resolving && isUrlQuery(query) ? localCollectionId(query, new URL(c.req.url).origin) : null;
+  const resolve = parseBoolean(p.get("resolve")) ?? false;
+  const resolving = resolve && offset === 0;
+  const collection = resolve && isUrlQuery(query) ? localCollectionId(query, new URL(c.req.url).origin) : null;
   if (collection !== null) {
+    // SearchService#call: nothing for a limit of 0 (limit_param's, search_service.rb:11) or past offset 0, which
+    // counts only with a type (`:17`: an empty type searches from 0), or for another type than collections.
+    if (!collections || limitParam(p, 20, 40) === 0 || (anyType ? 0 : parsed.offset) > 0) {
+      authorized(await storeCall(c, deps, (s, b) => s.checkCredential(b, userCredential(c, deps))));
+      return c.json(NOTHING);
+    }
     const input = { credential: userCredential(c, deps), id: collection, present: present(c) };
     const found = authorized(await storeCall(c, deps, (s, b) => s.resolvedCollection(b, input)));
-    return c.json({ ...NOTHING, collections: found !== null && collections ? [found] : [] });
+    return c.json({ ...NOTHING, collections: found === null ? [] : [found] });
   }
   if (offset === null || types.length === 0) {
     authorized(await storeCall(c, deps, (s, b) => s.checkCredential(b, userCredential(c, deps))));

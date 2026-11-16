@@ -219,6 +219,26 @@ describe("GET /api/v2/search", () => {
     expect(await search(collection.url, "&resolve=true")).toEqual(nothing);
   });
 
+  // SearchService#call (Mastodon 4.7.5, search_service.rb:11, :17): nothing for a limit of 0; an offset counts only with
+  // a type, so without one a URL resolves at any offset, and with one past 0 it finds nothing.
+  it("answers a local collection's URL under SearchService's limit and offset", async () => {
+    const { h, search } = await fixture();
+    const made = await act(h, h.users.bob, "/api/v1/collections", {
+      name: "picks",
+      sensitive: false,
+      discoverable: true,
+    });
+    const { id, url } = (await made.json<{ collection: { id: string; url: string } }>()).collection;
+    const ids = async (extra: string) => (await search(url, `&resolve=true${extra}`)).collections.map((c) => c.id);
+    expect(await ids("&limit=0")).toEqual([]);
+    expect(await ids("&limit=0&type=collections")).toEqual([]);
+    expect(await ids("&limit=")).toEqual([]);
+    expect(await ids("&offset=1")).toEqual([id]);
+    expect(await ids("&offset=1&type=")).toEqual([id]);
+    expect(await ids("&offset=1&type=collections")).toEqual([]);
+    expect(await ids("&limit=-1&type=collections")).toEqual([id]);
+  });
+
   it("answers resolve=true from local data when the query is neither a URL nor an address", async () => {
     // Remote resolution of URLs and addresses: test/inbox-statuses.test.ts ("search with resolve=true").
     const { h, search } = await fixture();
