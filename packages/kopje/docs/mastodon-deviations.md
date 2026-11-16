@@ -925,10 +925,12 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
   the status before it reads the body within its limit. A boost is never answered, here or for a status page URL of
   this instance (Mastodon's lookup by uri may find one by its `Announce` id, and its status page route by its id).
 - With `resolve=true`, a URL of this instance is read on Kopje's routes as Mastodon 4.7.5's router reads its own, with
-  two differences. `/@user@<this domain>` finds the local account, as Kopje's profile page serves that spelling, where
-  Mastodon routes it to its web app and finds no account (`Account.find_remote` with its own domain,
+  three differences. `/@user@<this domain>` finds the local account, as Kopje's profile page serves that spelling,
+  where Mastodon routes it to its web app and finds no account (`Account.find_remote` with its own domain,
   `resolve_url_service.rb:116`). A status id in the URL is matched as written (an API id or a legacy id), where
-  Mastodon casts it as Rails casts an integer, so `0123` or `123-x` finds status 123.
+  Mastodon casts it as Rails casts an integer, so `0123` or `123-x` finds status 123. A URL that RFC 3986 does not
+  admit (a space, `|`, `\`, a character outside ASCII, a `%` without two hex digits) finds nothing, where Mastodon's
+  search answers 404: its router cannot parse the URL and raises `ActionController::RoutingError`.
 
 Polls (`GET /api/v1/polls/:id`):
 

@@ -1155,20 +1155,49 @@ export function storeResolved(
 }
 
 // Kopje's routes for what Mastodon 4.7.5's ResolveURLService#process_local_url finds (resolve_url_service.rb:93-123),
-// read as its router reads its own (config/routes.rb:113, :160-179): a profile or one of its tabs (accounts#show, whose
-// username takes no `@`, `/` or `.`), an actor URI (Kopje's for /users/:username, also accounts#show), a status page
-// (statuses#show, whose username is a profile's and whose id takes no `.`), an object URI (Kopje's for
-// /users/:u/statuses/:id), each with Rails' optional `.:format`; an address /@user@domain with no rest, and a status
-// page under any handle (home#index, which takes no format). A trailing `/` is allowed, as recognize_path allows it.
+// read as its router reads its own (config/routes.rb:113, :160-179) through recognize_path, which Rails 8.1.3.1 runs on
+// the URL's path as written, not normalized (routing/route_set.rb: an absolute URL skips normalize_path), against
+// routes anchored at both ends (journey/path/pattern.rb), so a trailing `/` or a dot segment matches none of them: a
+// profile or one of its tabs (accounts#show, whose username takes no `@`, `/` or `.`), an actor URI (Kopje's for
+// /users/:username, also accounts#show), a status page (statuses#show, whose username is a profile's and whose id takes
+// no `.`), an object URI (Kopje's for /users/:u/statuses/:id), each with Rails' optional `.:format`; then, under any
+// handle (home#index, which takes no format), an address with no rest and a status page.
 const FORMAT = "(?:\\.[^/.]+)?";
 const LOCAL_PROFILE = new RegExp(
-  `^/@([^@/.]+)(?:/(?:featured|collections|with_replies|media|tagged/[^/.]+))?${FORMAT}/?$`,
+  `^/@([^@/.]+)(?:/(?:featured|collections|with_replies|media|tagged/[^/.]+))?${FORMAT}$`,
 );
-const LOCAL_ACTOR = new RegExp(`^/ap/users/([^/.]+)${FORMAT}/?$`);
-const LOCAL_ADDRESS = /^\/@([^/]*@[^/]*)\/?$/;
-const LOCAL_STATUS_SHOW = new RegExp(`^/@[^@/.]+/([^/.]+)${FORMAT}/?$`);
-const LOCAL_STATUS_PAGE = /^\/@[^/]+\/([^/]+)\/?$/;
-const LOCAL_OBJECT = new RegExp(`^/ap/o/([^/.]+)${FORMAT}/?$`);
+const LOCAL_ACTOR = new RegExp(`^/ap/users/([^/.]+)${FORMAT}$`);
+const LOCAL_STATUS_SHOW = new RegExp(`^/@[^@/.]+/([^/.]+)${FORMAT}$`);
+const LOCAL_OBJECT = new RegExp(`^/ap/o/([^/.]+)${FORMAT}$`);
+const LOCAL_ADDRESS = /^\/@([^/]+)$/;
+const LOCAL_STATUS_PAGE = /^\/@[^/]+\/([^/]+)$/;
+
+// An http(s) URL as Rack's env_for parses it before recognize_path (URI::Parser, RFC 3986's on Ruby 4.0.9: §3.2's
+// authority with a reg-name host, §3.3-3.5's path, query and fragment), its path captured. Mastodon raises on any other
+// (ActionController::RoutingError, answered 404: docs/mastodon-deviations.md, Search).
+const PCHAR = "(?:[A-Za-z0-9\\-._~!$&'()*+,;=:@]|%[0-9A-Fa-f]{2})";
+const RFC3986_URL = new RegExp(
+  "^https?://(?:(?=[^/?#]*@)(?:[A-Za-z0-9\\-._~!$&'()*+,;=:]|%[0-9A-Fa-f]{2})*@)?" +
+    "(?:[A-Za-z0-9\\-._~!$&'()*+,;=]|%[0-9A-Fa-f]{2})*(?::[0-9]*)?" +
+    `((?:/${PCHAR}*)*)(?:\\?(?:${PCHAR}|[/?])*)?(?:#(?:${PCHAR}|[/?])*)?$`,
+  "i",
+);
+
+// A path parameter as recognize_path gives it: Journey decodes each %HH once (CGI.unescapeURIComponent,
+// journey/router.rb) and recognize_path_with_request once more (URI::RFC2396_PARSER.unescape, routing/route_set.rb),
+// both on bytes and leaving any other `%` as it is; null when the bytes are not UTF-8, which a lookup here cannot bind.
+const ESCAPED = /%([0-9A-Fa-f]{2})/g;
+const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+function routeParam(segment: string | undefined): string | null {
+  const unescape = (bytes: string) =>
+    bytes.replace(ESCAPED, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+  const bytes = unescape(unescape(segment ?? ""));
+  try {
+    return UTF8.decode(Uint8Array.from(bytes, (c) => c.charCodeAt(0)));
+  } catch {
+    return null;
+  }
+}
 
 // What a URL of this instance names on Kopje's routes (LOCAL_*), for a search resolution the stored lookup by uri did
 // not find: a profile or one of its tabs, or an actor URI, by the local account of that username (Account.find_local,
@@ -1184,16 +1213,10 @@ function localSearchTarget(db: Db, query: string, now: number): StoredResolution
   const none: StoredResolution = { kind: "none" };
   const domain = instanceDomainOf(db);
   const url = domain === null ? null : httpUrl(query);
-  if (domain === null || url === null || url.host !== domain) {
+  const path = url === null ? undefined : RFC3986_URL.exec(query)?.[1];
+  if (domain === null || url === null || url.host !== domain || path === undefined) {
     return none;
   }
-  const decoded = (segment: string | undefined): string | null => {
-    try {
-      return decodeURIComponent(segment ?? "");
-    } catch {
-      return null;
-    }
-  };
   const account = (username: string | null, at: string | null): StoredResolution => {
     if (username === null || username === "" || at === "") {
       return none;
@@ -1202,22 +1225,23 @@ function localSearchTarget(db: Db, query: string, now: number): StoredResolution
     const id = accountIdByAddress(db, username, remote);
     return id === undefined ? none : { kind: "account", id };
   };
-  const profile = LOCAL_PROFILE.exec(url.pathname) ?? LOCAL_ACTOR.exec(url.pathname);
+  const profile = LOCAL_PROFILE.exec(path) ?? LOCAL_ACTOR.exec(path);
   if (profile !== null) {
-    return account(decoded(profile[1]), null);
+    return account(routeParam(profile[1]), null);
   }
-  const address = LOCAL_ADDRESS.exec(url.pathname);
-  const handle = address === null ? null : decoded(address[1]);
+  const object = LOCAL_OBJECT.exec(path);
+  if (object !== null) {
+    const id = routeParam(object[1]);
+    return id === null ? none : (storedStatus(db, `https://${domain}/ap/o/${id}`, null, now) ?? none);
+  }
+  const address = LOCAL_ADDRESS.exec(path);
+  const handle = address === null ? null : routeParam(address[1]);
   if (handle !== null) {
     const fields = handle.replace(/^@/, "").split("@");
     return account(fields[0] ?? null, fields[1] ?? "");
   }
-  const object = LOCAL_OBJECT.exec(url.pathname);
-  if (object !== null) {
-    return storedStatus(db, `https://${domain}/ap/o/${object[1] ?? ""}`, null, now) ?? none;
-  }
-  const page = LOCAL_STATUS_SHOW.exec(url.pathname) ?? LOCAL_STATUS_PAGE.exec(url.pathname);
-  const raw = page === null ? null : decoded(page[1]);
+  const page = LOCAL_STATUS_SHOW.exec(path) ?? LOCAL_STATUS_PAGE.exec(path);
+  const raw = page === null ? null : routeParam(page[1]);
   const id = raw === null ? null : resolveStatusId(db, raw);
   const original =
     id !== null &&
