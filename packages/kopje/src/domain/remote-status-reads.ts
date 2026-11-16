@@ -1,5 +1,5 @@
 import type { Db } from "../db/sql";
-import { statusEditedSql, statusPublishedSql } from "../platform/stored-bounds";
+import { spoilerReadSql, statusEditedSql, statusPublishedSql } from "../platform/stored-bounds";
 import { isPublicCollection, type Visibility } from "./audience";
 import { type EmojiCandidate } from "./custom-emojis";
 import { type CardCandidate, type CardLink } from "./link-cards";
@@ -104,7 +104,8 @@ export type StoredStatus = {
 
 export function statusByUri(db: Db, uri: string): StoredStatus | undefined {
   return db.first<StoredStatus>(
-    `SELECT id, account_id, reblog_of_id, visibility, content, spoiler_text, sensitive, language,
+    `SELECT id, account_id, reblog_of_id, visibility, content, ${spoilerReadSql("spoiler_text")} AS spoiler_text,
+			sensitive, language,
 			${statusPublishedSql("statuses")} AS published_at, ${statusEditedSql("statuses")} AS edited_at,
 			CASE WHEN typeof(coalesce(remote_version, edited_at, published_at)) <> 'blob'
 				THEN CAST(coalesce(remote_version, edited_at, published_at) AS TEXT) END AS watermark

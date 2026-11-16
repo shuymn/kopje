@@ -45,6 +45,7 @@ import { INTERACTION_PATH } from "../domain/web-session";
 import { httpUrl } from "../platform/http-url";
 import { withinJsonBounds } from "../platform/json-bounds";
 import { PACKAGE_VERSION, SOFTWARE_REPOSITORY } from "../platform/package-version";
+import { railsBlank } from "../platform/rails-blank";
 import { callStore, type StoreStub } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
 import { bytesToBase64, generateWrappedKey, importPublicKeyPem, type KeyGen } from "../security/key-wrap";
@@ -264,7 +265,7 @@ export function createRemoteLoaders(
   const memoized = (caps: DocumentCaps): DocumentLoader => {
     const fetched = new Map<string, ReturnType<DocumentLoader>>();
     const fresh = requireObjectRoot(async (url, options) => {
-      return withinBounds(await createSafeLoader({ ...loaderDeps, ...caps }, await signer())(url, options));
+      return createSafeLoader({ ...loaderDeps, ...caps, checkDocument: withinBounds }, await signer())(url, options);
     });
     return (url, options) => memo(fetched, withoutFragment(url), () => fresh(url, options));
   };
@@ -273,10 +274,8 @@ export function createRemoteLoaders(
     context: boundedContexts(loaderDeps, parts.kv),
     webfinger: createWebFingerLoader(loaderDeps),
     capped: memoized,
-    resolve: async (url, terminal) => {
-      const answer = await createResolveLoader(loaderDeps, await signer())(url, terminal);
-      return answer.kind === "document" ? { kind: "document", remote: withinBounds(answer.remote) } : answer;
-    },
+    resolve: async (url, terminal) =>
+      createResolveLoader({ ...loaderDeps, checkDocument: withinBounds }, await signer())(url, terminal),
     offerSigner: (chosen) => {
       if (resolved === undefined) {
         offered = chosen;
@@ -618,7 +617,8 @@ async function localActorObject(ctx: RequestContext<FederationState>, actor: Loc
   const cls = ACTOR_CLASSES[actor.actorType as keyof typeof ACTOR_CLASSES] ?? Person;
   // A suspended actor, as Mastodon's ActivityPub::ActorSerializer presents one: no name, summary, icon, image, aliases
   // or fields, not locked, discoverable or indexable, and `suspended: true`; its keys, inboxes and collections stay, so
-  // other servers can still verify what it signed and learn of the suspension.
+  // other servers can still verify what it signed and learn of the suspension, and so do its display settings
+  // (withMastodonTerms).
   const profile = actor.suspended
     ? { manuallyApprovesFollowers: false, discoverable: false, indexable: false, suspended: true }
     : {
@@ -628,8 +628,8 @@ async function localActorObject(ctx: RequestContext<FederationState>, actor: Loc
         discoverable: actor.discoverable,
         indexable: actor.indexable,
         // Only http(s) URLs are published; anything else stored is left out (HTML-3), aliases included.
-        icon: image(actor.avatarUrl),
-        image: image(actor.headerUrl),
+        icon: image(actor.avatarUrl, actor.avatarDescription),
+        image: image(actor.headerUrl, actor.headerDescription),
         aliases: actor.alsoKnownAs.flatMap((uri) => httpUrl(uri) ?? []),
         // Profile fields as Mastodon publishes them: the value escaped and linked (HTML-2).
         attachments: actor.fields.map(
@@ -658,25 +658,38 @@ async function localActorObject(ctx: RequestContext<FederationState>, actor: Loc
     published: Temporal.Instant.from(actor.createdAt),
     ...profile,
   });
-  return withMastodonTerms(object, `${actor.username}@${id.host}`, actor.attributionDomains);
+  return withMastodonTerms(object, {
+    webfinger: `${actor.username}@${id.host}`,
+    attributionDomains: actor.attributionDomains,
+    showFeatured: actor.showFeatured,
+    showMedia: actor.showMedia,
+    showRepliesInMedia: actor.showRepliesInMedia,
+  });
 }
 
 // Mastodon's actor terms that Fedify's vocabulary does not have, added to the compacted document with their contexts as
 // ActivityPub::ActorSerializer adds them, a suspended account's too: `webfinger` (FEP-2c59, Mastodon 4.6: the stored
 // username's spelling at the host of the actor id, the domain fixed at setup that WebFinger answers on, ID-5, as the
-// profile Update names it: domain/actor-update.ts) with its named context, which Fedify preloads, and
-// `attributionDomains` (toot:attributionDomains) with its term, only when the account has one. The instance actor
-// declares no handle: WebFinger answers it only by its URL (isInstanceActorRequest).
+// profile Update names it: domain/actor-update.ts) with its named context, which Fedify preloads; the display settings
+// `showFeatured`, `showMedia` and `showRepliesInMedia` (Mastodon 4.6, context_helper.rb's profile_settings terms) as
+// stored; and `attributionDomains` (toot:attributionDomains) with its term, only when the account has one. The instance
+// actor declares no handle: WebFinger answers it only by its URL (isInstanceActorRequest).
 const WEBFINGER_CONTEXT = "https://purl.archive.org/socialweb/webfinger";
-const ATTRIBUTION_DOMAINS_CONTEXT = {
+const MASTODON_TERMS_CONTEXT = {
   toot: "http://joinmastodon.org/ns#",
-  attributionDomains: { "@id": "toot:attributionDomains", "@container": "@set" },
+  showFeatured: "toot:showFeatured",
+  showMedia: "toot:showMedia",
+  showRepliesInMedia: "toot:showRepliesInMedia",
+};
+const ATTRIBUTION_DOMAINS_TERM = { "@id": "toot:attributionDomains", "@container": "@set" };
+
+type MastodonTerms = Pick<LocalActor, "attributionDomains" | "showFeatured" | "showMedia" | "showRepliesInMedia"> & {
+  webfinger: string;
 };
 
 function withMastodonTerms<T extends { toJsonLd(options?: object): Promise<unknown> }>(
   object: T,
-  webfinger: string,
-  domains: string[],
+  { webfinger, attributionDomains, showFeatured, showMedia, showRepliesInMedia }: MastodonTerms,
 ): T {
   const toJsonLd = object.toJsonLd.bind(object);
   object.toJsonLd = async (options?: object) => {
@@ -685,12 +698,19 @@ function withMastodonTerms<T extends { toJsonLd(options?: object): Promise<unkno
       return json;
     }
     const context = json["@context"];
-    const attribution = domains.length === 0 ? [] : [ATTRIBUTION_DOMAINS_CONTEXT];
+    const attribution = attributionDomains.length === 0 ? {} : { attributionDomains: ATTRIBUTION_DOMAINS_TERM };
     return {
       ...json,
-      "@context": [...(Array.isArray(context) ? (context as unknown[]) : [context]), WEBFINGER_CONTEXT, ...attribution],
+      "@context": [
+        ...(Array.isArray(context) ? (context as unknown[]) : [context]),
+        WEBFINGER_CONTEXT,
+        { ...MASTODON_TERMS_CONTEXT, ...attribution },
+      ],
       webfinger,
-      ...(domains.length === 0 ? {} : { attributionDomains: domains }),
+      showFeatured,
+      showMedia,
+      showRepliesInMedia,
+      ...(attributionDomains.length === 0 ? {} : { attributionDomains }),
     };
   };
   return object;
@@ -706,9 +726,11 @@ function emojiObject(emoji: LocalActor["emojis"][number]): Emoji {
   });
 }
 
-function image(stored: string | null): Image | null {
+// An image as ActivityPub::ImageSerializer writes one: its description as `summary` only when present? (railsBlank:
+// U+0085 is blank, U+FEFF is not), as the Update writes it (domain/actor-update.ts).
+function image(stored: string | null, description: string): Image | null {
   const url = httpUrl(stored);
-  return url === null ? null : new Image({ url });
+  return url === null ? null : new Image({ url, ...(railsBlank(description) ? {} : { summary: description }) });
 }
 
 // The instance actor, as Mastodon's: an Application at /actor with its own inbox and the shared inbox.

@@ -993,6 +993,22 @@ describe("field verification bounds", () => {
     expect(worst).toBeLessThanOrEqual(LOCAL_FIELDS_BYTES);
   });
 
+  // The writer cuts each name and value to its first 255 code points before it encodes the column (E2 of #1606), so
+  // values sent longer, of the control character JSON escapes widest, store at the bound above and no more.
+  it("holds a cut field within LOCAL_FIELDS_BYTES", async () => {
+    const w = await world();
+    const sent = "\u0001".repeat(300);
+    await w.save(Array.from({ length: LOCAL_FIELDS }, () => ({ name: sent, value: sent })));
+    const [row] = await sql<{ fields: string; bytes: number }>(
+      w.h.store,
+      "SELECT fields, octet_length(fields) AS bytes FROM local_accounts",
+    );
+    const cut = "\u0001".repeat(255);
+    expect(JSON.parse(row!.fields)).toEqual(Array.from({ length: LOCAL_FIELDS }, () => ({ name: cut, value: cut })));
+    expect(row!.bytes).toBe(12_333);
+    expect(row!.bytes).toBeLessThanOrEqual(LOCAL_FIELDS_BYTES);
+  });
+
   // The compressed page is test-node/web-page-fixtures.ts's gzip bomb through workerd's fetch path (decoded there):
   // its rel=me first, then 16 MiB of zeros, read up to the 1 MiB cap.
   const fixtures = (workersEnv as unknown as { WEB_PAGE_FIXTURES: Fetcher }).WEB_PAGE_FIXTURES;

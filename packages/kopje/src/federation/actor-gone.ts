@@ -1,6 +1,7 @@
 import type { DocumentRevision } from "../domain/remote-actors";
 import { callStore, type StoreStub } from "../platform/store-client";
 import type { FetchedActor } from "./remote-actor";
+import type { FetchedStatus } from "./remote-status";
 
 // An actor whose own URI answers 410 is deleted, as Mastodon's FetchRemoteActorService deletes a stored account on a
 // 410 (v4.7.5 fetch_remote_actor_service.rb:21-24, :46-54). Only a 410 counts, never a 404, and only when the URL that
@@ -8,6 +9,8 @@ import type { FetchedActor } from "./remote-actor";
 // follows none on this fetch (json_ld_helper.rb:242), so a 410 at the end of a redirect says nothing about the URI that
 // redirected. The Store deletes only a stored remote actor and only under the revision the path read before that fetch
 // (domain/inbox.ts actorGone, ID-1); a path that read none (a URL search's probe, a new author's need) deletes nothing.
+// A status's own 404 is read the same way (goneAt), as Mastodon's FetchRemoteStatusService#fetch_status, which follows
+// no redirect either (fetch_remote_status_service.rb:86-98): domain/remote-collections.ts completePinFetches.
 
 // at: the 410 was the actor URI's own. jobsPending: the deletion's purge has a batch for a round.
 export type GoneSettled = { at: boolean; jobsPending: boolean };
@@ -24,7 +27,7 @@ const NOT_GONE: GoneSettled = { at: false, jobsPending: false };
 // fetch (undefined: none was read).
 export function goneSettler(store: () => StoreStub, build: string, now: () => number): SettleGone {
   return async (fetched, uri, revision) => {
-    if (!goneAt(fetched, uri)) {
+    if (!goneAt(fetched, uri, 410)) {
       return NOT_GONE;
     }
     if (revision === undefined) {
@@ -35,14 +38,14 @@ export function goneSettler(store: () => StoreStub, build: string, now: () => nu
   };
 }
 
-// Whether `fetched` is a 410 that `uri` itself answered. HTTP never sends a fragment, so the URLs are compared without
-// one (a key fetch of `uri#main-key` and a fetch of `uri` are one request in the loaders' memo).
-function goneAt(fetched: FetchedActor, uri: string): boolean {
-  if (fetched.kind !== "gone" || fetched.status !== 410) {
+// Whether `fetched` is a `status` answer that `uri` itself gave. HTTP never sends a fragment, so the URLs are compared
+// without one (a key fetch of `uri#main-key` and a fetch of `uri` are one request in the loaders' memo).
+export function goneAt(fetched: FetchedActor | FetchedStatus, uri: string, status: 404 | 410): boolean {
+  if (fetched.kind !== "gone" || fetched.status !== status) {
     return false;
   }
-  const actor = withoutFragment(uri);
-  return actor !== null && withoutFragment(fetched.url) === actor;
+  const target = withoutFragment(uri);
+  return target !== null && withoutFragment(fetched.url) === target;
 }
 
 function withoutFragment(url: string): string | null {

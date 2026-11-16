@@ -22,7 +22,7 @@ import {
   type ReceiveAnswer,
   type StoredRemoteKey,
 } from "../domain/inbox";
-import type { ActorState, RemoteActorInput } from "../domain/remote-actors";
+import type { ActorState, RemoteActorInput, RemoteProfileInput } from "../domain/remote-actors";
 import { flagObjects, MAX_FLAG_OBJECTS, reportComment } from "../domain/reports";
 import { fetchableHref, sameOrigin } from "../platform/http-url";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
@@ -51,7 +51,7 @@ import {
   requestBudget,
   requireObjectRoot,
 } from "./loader";
-import { type FetchedActor, fetchActor, loadActor, ownKeys } from "./remote-actor";
+import { type FetchedActor, fetchActor, loadActor, ownKeys, readEmbeddedActor } from "./remote-actor";
 import {
   ACTOR_TYPES,
   CONVERTED_TYPES,
@@ -78,8 +78,9 @@ import { confirmedInput } from "./resolve";
 //      applied as the actor's only with the actor's own proof (author-proof.ts), and without one it only has the stamp
 //      verified again. A proof that does not hold drops the relay: 202, nothing applied, logged (dropped). Any other
 //      relay (another type, or an actor's Delete) whose signer owns its key is dropped the same way.
-//   5. Per type, what the Store cannot fetch itself: a fresh actor document for Update, the Move target (ID-4), the
-//      object of a Create or Update given by id only.
+//   5. Per type, what the Store cannot fetch itself: a fresh actor document for an Update of the actor that embeds
+//      none (one that embeds its document has it read as a fetched one is and stored without its keys and inboxes,
+//      ID-1), the Move target (ID-4), the object of a Create or Update given by id only.
 //   6. The Store applies it. It may answer that it needs a document first (the original of a boost it does not have,
 //      or that original's author, or the refetch of a stored author a day old): the Worker fetches it within the
 //      request's budget, signed as the request's other fetches are (NET-4), and asks again with it (at most
@@ -123,8 +124,16 @@ type Json = Record<string, unknown>;
 // A Create or Update whose object is given by id only (Mastodon's dereference_object!): fetched before the Store runs.
 type Dereference = { type: "Dereference"; kind: "Create" | "UpdateStatus"; id: string; object: string; activity: Json };
 
+// The actor's Update of itself (ID-6). embedded: its object when that is a document of an actor type, whose id is the
+// actor's (ID-1), read in the Worker (readEmbeddedActor) and stored without its keys and inboxes; null when the object
+// is the actor's URI (Mastodon's dereference_object!) or of another type, and the actor's document is fetched instead.
+// Only the Worker reads it: the Store is handed the activity without it (receiveInbound).
+type ActorUpdate = { type: "UpdateActor"; id: string; embedded: Json | null };
+
+type ParsedActivity = Exclude<InboundActivity, { type: "UpdateActor" }> | Dereference | ActorUpdate;
+
 export type Parsed =
-  | { ok: true; actor: string; activity: InboundActivity | Dereference; target: string | null; body: Json }
+  | { ok: true; actor: string; activity: ParsedActivity; target: string | null; body: Json }
   // actor: the envelope's single actor, when the envelope is usable but its activity is not one Kopje reads.
   | { ok: false; reason: string; deleteOfSelf?: boolean; actor?: string };
 
@@ -142,17 +151,17 @@ export type InboundGate = {
   states: InboxGate["states"];
 };
 
-// The URL an activity's own handling fetches first, whatever its key (receiveInbound: an actor's Update fetches the
-// actor's document, a Dereference its object on the actor's origin, a Move its target), for the inbox gate's fetch
-// preparation; null when there is none, or the loader would refuse it (fetchableHref). Only a hint: a wrong one costs
-// an unused preparation or one more Store call.
+// The URL an activity's own handling fetches first, whatever its key (receiveInbound: an actor's Update that embeds no
+// actor fetches the actor's document, a Dereference its object on the actor's origin, a Move its target), for the inbox
+// gate's fetch preparation; null when there is none, or the loader would refuse it (fetchableHref). Only a hint: a
+// wrong one costs an unused preparation or one more Store call.
 export function fetchesFirst(parsed: Parsed): string | null {
   if (!parsed.ok) {
     return null;
   }
   const { activity, actor, target } = parsed;
   const url =
-    activity.type === "UpdateActor"
+    activity.type === "UpdateActor" && activity.embedded === null
       ? actor
       : activity.type === "Dereference" && sameOrigin(activity.object, actor)
         ? activity.object
@@ -266,7 +275,7 @@ function strings(value: unknown): string[] {
   );
 }
 
-function statusActivity(kind: "Create" | "UpdateStatus", id: string, json: Json): InboundActivity | Dereference | null {
+function statusActivity(kind: "Create" | "UpdateStatus", id: string, json: Json): ParsedActivity | null {
   if (typeof json.object === "string") {
     return { type: "Dereference", kind, id, object: json.object, activity: json };
   }
@@ -274,13 +283,7 @@ function statusActivity(kind: "Create" | "UpdateStatus", id: string, json: Json)
   return object === null ? null : { type: kind, id, object };
 }
 
-function activityOf(
-  type: string,
-  id: string,
-  actor: string,
-  json: Json,
-  object: string | null,
-): InboundActivity | Dereference | null {
+function activityOf(type: string, id: string, actor: string, json: Json, object: string | null): ParsedActivity | null {
   if (LIKE_TYPES.has(type)) {
     return object === null ? null : { type: "Like", id, object };
   }
@@ -317,10 +320,14 @@ function activityOf(
       return statusActivity("Create", id, json);
     case "Update": {
       // An actor updates only itself (ID-6); a status is updated by its author (checked in the Store).
-      if (object === actor) {
-        return { type: "UpdateActor", id };
-      }
       const embedded = isObject(json.object) ? json.object : null;
+      if (object === actor) {
+        return {
+          type: "UpdateActor",
+          id,
+          embedded: embedded !== null && typeIs(embedded.type, ACTOR_TYPES) ? embedded : null,
+        };
+      }
       if (embedded !== null && typeIs(embedded.type, ACTOR_TYPES)) {
         return null;
       }
@@ -755,8 +762,11 @@ export async function receiveInbound(
   if (!sameOrigin(activity.id, actorUri)) {
     return { status: 202, reason: "foreign-id" };
   }
+  // An Update of the actor that embeds its document fetches that document only when its key needs one, as any activity
+  // does; one that embeds none fetches it (ID-1).
+  const embedded = activity.type === "UpdateActor" ? activity.embedded : null;
   let actor: RemoteActorInput | null = null;
-  if (fromStore?.key !== key || activity.type === "UpdateActor") {
+  if (fromStore?.key !== key || (activity.type === "UpdateActor" && embedded === null)) {
     const owned = await ownerDocument(actorUri, key, pem, loaders, (fetched) =>
       settle(fetched, actorUri, states.actor.revision),
     );
@@ -764,23 +774,48 @@ export async function receiveInbound(
     if ("status" in owned) {
       return owned;
     }
-    // An actor's own Delete stores nothing of its document, so its claim is not confirmed.
-    if (activity.type === "DeleteActor") {
-      actor = owned.input;
+    actor = owned.input;
+  }
+  // The embedded actor, read as a fetched document is, its claim confirmed against the handle the gate read
+  // (resolve.ts confirmedInput). One Kopje cannot read applies nothing (202 invalid-actor), as Mastodon's
+  // ProcessAccountService drops the Update; a document fetched for the key is still stored, as for any activity.
+  let profile: RemoteProfileInput | null | undefined;
+  if (embedded !== null) {
+    const read = await readEmbeddedActor(actorUri, embedded, parsed.body["@context"], loaders.context);
+    rethrowStoreError(state);
+    if (read.kind === "transient") {
+      return { status: 503, reason: "actor-unavailable" };
+    }
+    if (read.kind === "unusable" && actor === null) {
+      return { status: 202, reason: "invalid-actor" };
+    }
+    if (read.kind === "unusable") {
+      profile = null;
     } else {
-      const checked = await confirmed(deps, loaders, owned.input, states.actor);
+      const checked = await confirmed(deps, loaders, read.input, states.actor);
       rethrowStoreError(state);
       if ("status" in checked) {
         return checked;
       }
-      actor = checked.input;
+      profile = profileOf(checked.input);
     }
   }
+  // An actor's own Delete stores nothing of its document, nor does an Update store the claim of the document it
+  // fetched for its key when it stores an embedded one: neither claim is confirmed.
+  if (actor !== null && activity.type !== "DeleteActor" && (profile === undefined || profile === null)) {
+    const checked = await confirmed(deps, loaders, actor, states.actor);
+    rethrowStoreError(state);
+    if ("status" in checked) {
+      return checked;
+    }
+    actor = checked.input;
+  }
   return apply(deps, {
-    activity,
+    activity: activity.type === "UpdateActor" ? { type: "UpdateActor", id: activity.id } : activity,
     target: parsed.target,
     actorUri,
     actor,
+    ...(profile === undefined ? {} : { profile }),
     origin,
     loaders,
     state,
@@ -790,6 +825,12 @@ export async function receiveInbound(
     settle,
     receivedAt: request.receivedAt,
   });
+}
+
+// An embedded actor as the Store takes it: without its keys and inboxes (ID-1, RemoteProfileInput).
+function profileOf(input: RemoteActorInput): RemoteProfileInput {
+  const { keys: _keys, inboxUrl: _inboxUrl, sharedInboxUrl: _sharedInboxUrl, ...profile } = input;
+  return profile;
 }
 
 // What an actor an instance domain block covers may still do (R38, VIS-30). Only its cleanups (Delete,
@@ -1029,6 +1070,8 @@ type Application = {
   target: string | null;
   actorUri: string;
   actor: RemoteActorInput | null;
+  // An UpdateActor's embedded actor (ReceiveInput.profile), absent when it embeds none.
+  profile?: RemoteProfileInput | null;
   origin: string;
   loaders: RemoteLoaders;
   state: FederationState;
@@ -1086,6 +1129,7 @@ async function apply(deps: InboundDeps, application: Application): Promise<Inbox
         origin,
         actorUri,
         actor,
+        ...(application.profile === undefined ? {} : { profile: application.profile }),
         actorRevision: states.actor.revision,
         activity: prepared,
         recipient: deps.recipient,
@@ -1265,7 +1309,7 @@ async function prepare(
     if (fetched.kind === "transient") {
       return { status: 503, reason: "object-unavailable" };
     }
-    if (fetched.kind === "unusable") {
+    if (fetched.kind !== "ok") {
       return { status: 202, reason: "unusable-object" };
     }
     return { type: activity.kind, id: activity.id, object: fetched.status };

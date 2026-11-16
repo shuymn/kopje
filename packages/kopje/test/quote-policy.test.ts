@@ -653,7 +653,10 @@ describe("source[quote_policy] and posting:default:quote_policy", () => {
     });
     expect(await refusal(response)).toEqual({
       status: 422,
-      body: { error: "Validation failed: Quote policy is not included in the list" },
+      body: {
+        error: "Validation failed: Quote policy is not included in the list",
+        details: { quote_policy: [{ error: "ERR_INCLUSION", description: "is not included in the list" }] },
+      },
     });
     expect(await sql(h.store, "SELECT default_quote_policy FROM local_accounts")).toEqual([
       { default_quote_policy: "followers" },

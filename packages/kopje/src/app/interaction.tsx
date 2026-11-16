@@ -50,7 +50,7 @@ const FOLLOW_PATH = `${INTERACTION_PATH}/follow`;
 const FORM_LIMIT = 64 * 1024;
 const SCOPE = "write:follows";
 
-const NONE: Resolved = { kind: "none" };
+const NONE: Resolved = { kind: "none", last: null };
 
 function page(c: InteractionContext, status: PageStatus, body: Parameters<InteractionContext["html"]>[0]) {
   return c.html(<>{body}</>, status, PRIVATE_HEADERS);
