@@ -489,9 +489,10 @@ describe("the RFC 9421 retry (NET-4, RES-6)", () => {
     const follow = { "@context": AS, id: `${bob.uri}#follows/1`, type: "Follow", actor: bob.uri };
     expect(await send({ ...follow, object: `${LOCAL}/ap/users/alice` })).toBe(202);
     const before = refusing.requests.length;
-    const updated = { ...bob.document, name: "Bob 2" };
-    web.serve(bob.uri, updated);
-    const update = { "@context": AS, id: `${bob.uri}#updates/1`, type: "Update", actor: bob.uri, object: updated };
+    web.serve(bob.uri, { ...bob.document, name: "Bob 2" });
+    // Naming its actor by URI, the Update fetches the actor's document whatever its key (one embedding the document
+    // fetches only for its key, test/inbox-actor-update.test.ts).
+    const update = { "@context": AS, id: `${bob.uri}#updates/1`, type: "Update", actor: bob.uri, object: bob.uri };
     expect(await send(update)).toBe(202);
     expect(refusing.requests.slice(before).map((r) => [r.url, formOf(r)])).toEqual([
       [bob.uri, "cavage"],

@@ -99,7 +99,6 @@ const ENTITY_EXCEPTIONS: Exceptions = {
   "REST::AccountSerializer": ACCOUNT,
   "REST::CredentialAccountSerializer": ACCOUNT,
   "REST::StatusSerializer": open(1589, "collections", "tagged_collections"),
-  "REST::PreviewCardSerializer": open(1586, "attribution of a link's author", "missing_attribution"),
   "REST::MediaAttachmentSerializer": accepted("MD-6", "text_url"),
   "REST::NotificationSerializer": NOTIFICATION,
   "REST::NotificationGroupSerializer": {

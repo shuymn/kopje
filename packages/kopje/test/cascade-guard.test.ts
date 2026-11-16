@@ -97,7 +97,7 @@ const WRITING_TRIGGERS: Record<string, string> = {
   reject_replays_follow_stored:
     "fires on a follow insert, which no batched delete or purge makes (a remote follower's follow of a local account deletes its pair's held Reject, one row at most)",
   statuses_filter_text_stale:
-    "fires only on a text change of a status that keeps its measure: every hide (statuses.ts local delete, inbox.ts hideRemoteStatus) clears filter_text_units in the same SET, so it writes no other row",
+    "fires only on a text change of a status that keeps its measure: every hide (statuses.ts local delete, remote-removal.ts hideRemoteStatus) clears filter_text_units in the same SET, so it writes no other row",
 };
 
 // Streaming subscriptions of the account on `user`, `user:notification`, a list, `direct`, `public` and a hashtag, which

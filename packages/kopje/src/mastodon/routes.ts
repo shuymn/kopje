@@ -5,7 +5,18 @@ import * as accounts from "./accounts";
 import * as admin from "./admin";
 import * as announcements from "./announcements";
 import * as annualReports from "./annual-reports";
+import * as asyncRefreshes from "./async-refreshes";
 import * as blocks from "./blocks";
+import {
+  ANONYMOUS,
+  ANONYMOUS_BY_LANGUAGE,
+  ANONYMOUS_LONG,
+  type Caching,
+  declareCaching,
+  EVERYONE,
+  PRIVATE,
+  PRIVATE_BY_LANGUAGE,
+} from "./caching";
 import type { ApiDeps, ApiEnv, ApiHandler } from "./context";
 import * as conversations from "./conversations";
 import * as filters from "./filters";
@@ -31,8 +42,8 @@ import * as timelines from "./timelines";
 import * as trends from "./trends";
 
 // The explicit API route table: every route names the access it requires, one middleware (requireAccess)
-// declares it, and the Store enforces it in each operation. Routes are matched in order, so fixed paths come before
-// their :id siblings.
+// declares it, and the Store enforces it in each operation. Each route also names its caching (mastodon/caching.ts,
+// WEB-7; PRIVATE unless given). Routes are matched in order, so fixed paths come before their :id siblings.
 
 type Method = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
 
@@ -41,11 +52,18 @@ export type Route = {
   path: string;
   access: RouteAccess;
   handler: ApiHandler;
+  caching: Caching;
 };
 
 const route =
   (method: Method) =>
-  (path: string, access: RouteAccess, handler: ApiHandler): Route => ({ method, path, access, handler });
+  (path: string, access: RouteAccess, handler: ApiHandler, caching: Caching = PRIVATE): Route => ({
+    method,
+    path,
+    access,
+    handler,
+    caching,
+  });
 const get = route("GET");
 const post = route("POST");
 const patch = route("PATCH");
@@ -67,31 +85,31 @@ export const ROUTES: readonly Route[] = [
   // Mastodon's instance controllers read a user only in limited federation mode (their current_user override), which
   // Kopje does not have: the instance details here and the rules, peers and extended description below read no token
   // (AUTH-2).
-  get("/api/v1/instance", "public", instance.instanceV1),
-  get("/api/v2/instance", "public", instance.instanceV2),
-  get("/api/v1/custom_emojis", "anonymous", instance.customEmojis),
+  get("/api/v1/instance", "public", instance.instanceV1, EVERYONE),
+  get("/api/v2/instance", "public", instance.instanceV2, EVERYONE),
+  get("/api/v1/custom_emojis", "anonymous", instance.customEmojis, ANONYMOUS_LONG),
   // Api::OEmbedController: no token is required.
   get("/api/oembed", "anonymous", oembed.oembed),
 
   // Reads clients make at startup (instance details, preferences, tags, familiar followers), and the empty answers of
   // features Kopje has no data for yet (mastodon/placeholders.ts). Kept before the accounts routes, so
   // familiar_followers comes before its :id sibling.
-  get("/api/v1/instance/rules", "public", instance.rules),
-  get("/api/v1/instance/peers", "public", instance.peers),
-  get("/api/v1/instance/extended_description", "public", instance.extendedDescription),
-  get("/api/v1/instance/languages", "anonymous", instance.languages),
-  get("/api/v1/instance/privacy_policy", "anonymous", instance.privacyPolicy),
-  get("/api/v1/instance/terms_of_service", "anonymous", instance.termsOfService),
-  get("/api/v1/instance/terms_of_service/:date", "anonymous", instance.termsOfService),
-  get("/api/v1/instance/translation_languages", "anonymous", instance.translationLanguages),
-  get("/api/v1/peers/search", "anonymous", instance.searchPeers),
-  get("/api/v1/instance/activity", "anonymous", instance.activity),
+  get("/api/v1/instance/rules", "public", instance.rules, EVERYONE),
+  get("/api/v1/instance/peers", "public", instance.peers, EVERYONE),
+  get("/api/v1/instance/extended_description", "public", instance.extendedDescription, EVERYONE),
+  get("/api/v1/instance/languages", "anonymous", instance.languages, ANONYMOUS_LONG),
+  get("/api/v1/instance/privacy_policy", "anonymous", instance.privacyPolicy, ANONYMOUS_LONG),
+  get("/api/v1/instance/terms_of_service", "anonymous", instance.termsOfService, ANONYMOUS_LONG),
+  get("/api/v1/instance/terms_of_service/:date", "anonymous", instance.termsOfService, ANONYMOUS_LONG),
+  get("/api/v1/instance/translation_languages", "anonymous", instance.translationLanguages, ANONYMOUS_LONG),
+  get("/api/v1/peers/search", "anonymous", instance.searchPeers, ANONYMOUS_LONG),
+  get("/api/v1/instance/activity", "anonymous", instance.activity, ANONYMOUS_LONG),
   // A token is read: a suspended user's is refused, and show_domain_blocks may list to users only.
-  get("/api/v1/instance/domain_blocks", { optional: true }, instance.domainBlocks),
+  get("/api/v1/instance/domain_blocks", { optional: true }, instance.domainBlocks, ANONYMOUS_LONG),
   get("/api/v1/preferences", { scope: "read:accounts" }, accounts.preferences),
   get("/api/v1/accounts/familiar_followers", { scope: "read:follows" }, accounts.familiarFollowers),
   // Hashtags, followed and featured (mastodon/tags.ts).
-  get("/api/v1/tags/:id", { optional: true }, tags.getTag),
+  get("/api/v1/tags/:id", { optional: true }, tags.getTag, ANONYMOUS),
   post("/api/v1/tags/:id/follow", { scope: "write:follows" }, tags.followTag),
   post("/api/v1/tags/:id/unfollow", { scope: "write:follows" }, tags.unfollowTag),
   post("/api/v1/tags/:id/feature", { scope: "write:accounts" }, tags.featureTag),
@@ -103,7 +121,7 @@ export const ROUTES: readonly Route[] = [
   del("/api/v1/featured_tags/:id", { scope: "write:accounts" }, tags.deleteFeaturedTag),
   get("/api/v1/accounts/:id/featured_tags", "anonymous", tags.accountFeaturedTags),
   // The profile directory: optional token, no scope (Api::V1::DirectoriesController).
-  get("/api/v1/directory", { optional: true }, accounts.directory),
+  get("/api/v1/directory", { optional: true }, accounts.directory, ANONYMOUS),
   get("/api/v1/endorsements", { scope: "read:accounts" }, accounts.endorsements),
   // Announcements (mastodon/announcements.ts): any user token lists them (require_user!, no scope).
   get("/api/v1/announcements", "token", announcements.listAnnouncements),
@@ -124,10 +142,10 @@ export const ROUTES: readonly Route[] = [
     announcements.unreactToAnnouncement,
   ),
   // Trends (mastodon/trends.ts).
-  get("/api/v1/trends", { optional: true }, trends.trendTags),
-  get("/api/v1/trends/tags", { optional: true }, trends.trendTags),
-  get("/api/v1/trends/statuses", { optional: true }, trends.trendStatuses),
-  get("/api/v1/trends/links", { optional: true }, trends.trendLinks),
+  get("/api/v1/trends", { optional: true }, trends.trendTags, ANONYMOUS),
+  get("/api/v1/trends/tags", { optional: true }, trends.trendTags, ANONYMOUS),
+  get("/api/v1/trends/statuses", { optional: true }, trends.trendStatuses, ANONYMOUS_BY_LANGUAGE),
+  get("/api/v1/trends/links", { optional: true }, trends.trendLinks, ANONYMOUS_BY_LANGUAGE),
   // Follow suggestions (mastodon/suggestions.ts).
   get("/api/v1/suggestions", { scope: "read:accounts" }, suggestions.suggestionsV1),
   del("/api/v1/suggestions/:id", { scope: "write:accounts" }, suggestions.dismissSuggestion),
@@ -140,10 +158,11 @@ export const ROUTES: readonly Route[] = [
   post("/api/v1/annual_reports/:id/read", { scope: "write:accounts" }, annualReports.read),
   post("/api/v1/annual_reports/:id/generate", { scope: "write:accounts" }, annualReports.generate),
   // E-mail confirmation (any token at the route: placeholders.resendConfirmation checks write:accounts, since Mastodon
-  // takes app tokens there), and async refreshes, which Kopje never starts.
+  // takes app tokens there).
   post("/api/v1/emails/confirmations", "token", placeholders.resendConfirmation),
   get("/api/v1/emails/check_confirmation", { scope: "read:accounts" }, placeholders.checkConfirmation),
-  get("/api/v1_alpha/async_refreshes/:id", { scope: "read" }, placeholders.asyncRefresh),
+  // A context's refresh of a status's replies (mastodon/async-refreshes.ts).
+  get("/api/v1_alpha/async_refreshes/:id", { scope: "read" }, asyncRefreshes.show),
   // Feature-off answers that read a sent token without requiring one (AUTH-2's exception).
   get("/api/v1/donation_campaigns", { optional: true }, placeholders.donationCampaigns),
 
@@ -151,20 +170,25 @@ export const ROUTES: readonly Route[] = [
   patch("/api/v1/accounts/update_credentials", { scope: "write:accounts" }, accounts.updateCredentials),
   get("/api/v1/accounts/relationships", { scope: "read:follows" }, accounts.relationships),
   get("/api/v1/accounts/search", { scope: "read:accounts" }, accounts.searchAccounts),
-  get("/api/v1/accounts/lookup", "anonymous", accounts.lookupAccount),
+  get("/api/v1/accounts/lookup", "anonymous", accounts.lookupAccount, ANONYMOUS),
   // Accounts by id, as /api/v1/accounts/:id shows them; registration answers as Mastodon's with registrations closed
   // (any token here: the handler checks write:accounts, then that the token has no user).
   get("/api/v1/accounts", "anonymous", accounts.getAccounts),
   post("/api/v1/accounts", "token", accounts.register),
-  get("/api/v1/accounts/:id", "anonymous", accounts.getAccount),
+  get("/api/v1/accounts/:id", "anonymous", accounts.getAccount, ANONYMOUS),
   post("/api/v1/accounts/:id/follow", { scope: "write:follows" }, accounts.follow),
   post("/api/v1/accounts/:id/unfollow", { scope: "write:follows" }, accounts.unfollow),
-  get("/api/v1/accounts/:id/followers", { scope: "read:accounts", optional: true }, accounts.followers),
+  get("/api/v1/accounts/:id/followers", { scope: "read:accounts", optional: true }, accounts.followers, ANONYMOUS),
   get("/api/v1/follow_requests", { scope: "read:follows" }, accounts.followRequests),
   post("/api/v1/follow_requests/:id/authorize", { scope: "write:follows" }, accounts.authorizeFollowRequest),
   post("/api/v1/follow_requests/:id/reject", { scope: "write:follows" }, accounts.rejectFollowRequest),
-  get("/api/v1/accounts/:id/following", { scope: "read:accounts", optional: true }, accounts.following),
-  get("/api/v1/accounts/:id/statuses", { scope: "read:statuses", optional: true }, timelines.accountStatuses),
+  get("/api/v1/accounts/:id/following", { scope: "read:accounts", optional: true }, accounts.following, ANONYMOUS),
+  get(
+    "/api/v1/accounts/:id/statuses",
+    { scope: "read:statuses", optional: true },
+    timelines.accountStatuses,
+    ANONYMOUS,
+  ),
 
   // Removing a follower, private notes and endorsements.
   post("/api/v1/accounts/:id/remove_from_followers", { scope: "write:follows" }, accounts.removeFromFollowers),
@@ -173,7 +197,12 @@ export const ROUTES: readonly Route[] = [
   post("/api/v1/accounts/:id/pin", { scope: "write:accounts" }, accounts.endorse),
   post("/api/v1/accounts/:id/unendorse", { scope: "write:accounts" }, accounts.unendorse),
   post("/api/v1/accounts/:id/unpin", { scope: "write:accounts" }, accounts.unendorse),
-  get("/api/v1/accounts/:id/endorsements", { scope: "read:accounts", optional: true }, accounts.accountEndorsements),
+  get(
+    "/api/v1/accounts/:id/endorsements",
+    { scope: "read:accounts", optional: true },
+    accounts.accountEndorsements,
+    ANONYMOUS,
+  ),
   // Any token at the route; the handler refuses one without a user (require_user!).
   get("/api/v1/accounts/:id/identity_proofs", "token", placeholders.identityProofs),
   post("/api/v1/accounts/:id/email_subscriptions", { optional: true }, placeholders.emailSubscription),
@@ -195,19 +224,24 @@ export const ROUTES: readonly Route[] = [
 
   post("/api/v1/statuses", { scope: "write:statuses" }, statuses.createStatus),
   get("/api/v1/statuses", { scope: "read:statuses", optional: true }, statuses.getStatuses),
-  get("/api/v1/statuses/:id", { scope: "read:statuses", optional: true }, statuses.getStatus),
+  get("/api/v1/statuses/:id", { scope: "read:statuses", optional: true }, statuses.getStatus, ANONYMOUS),
   put("/api/v1/statuses/:id", { scope: "write:statuses" }, statuses.editStatus),
   patch("/api/v1/statuses/:id", { scope: "write:statuses" }, statuses.editStatus),
   put("/api/v1/statuses/:id/interaction_policy", { scope: "write:statuses" }, statuses.updateInteractionPolicy),
   patch("/api/v1/statuses/:id/interaction_policy", { scope: "write:statuses" }, statuses.updateInteractionPolicy),
   del("/api/v1/statuses/:id", { scope: "write:statuses" }, statuses.deleteStatus),
-  get("/api/v1/statuses/:id/context", { scope: "read:statuses", optional: true }, statuses.statusContext),
-  get("/api/v1/statuses/:id/history", { scope: "read:statuses", optional: true }, statuses.statusHistory),
+  get("/api/v1/statuses/:id/context", { scope: "read:statuses", optional: true }, statuses.statusContext, ANONYMOUS),
+  get("/api/v1/statuses/:id/history", { scope: "read:statuses", optional: true }, statuses.statusHistory, ANONYMOUS),
   get("/api/v1/statuses/:id/source", { scope: "read:statuses" }, statuses.statusSource),
-  get("/api/v1/statuses/:id/quotes", { scope: "read:statuses", app: true }, statuses.statusQuotes),
+  get("/api/v1/statuses/:id/quotes", { scope: "read:statuses", app: true }, statuses.statusQuotes, ANONYMOUS),
   post("/api/v1/statuses/:id/quotes/:quoting_status_id/revoke", { scope: "write:statuses" }, statuses.revokeQuote),
-  get("/api/v1/statuses/:id/favourited_by", { scope: "read:accounts", optional: true }, statuses.favouritedBy),
-  get("/api/v1/statuses/:id/reblogged_by", { scope: "read:accounts", optional: true }, statuses.rebloggedBy),
+  get(
+    "/api/v1/statuses/:id/favourited_by",
+    { scope: "read:accounts", optional: true },
+    statuses.favouritedBy,
+    ANONYMOUS,
+  ),
+  get("/api/v1/statuses/:id/reblogged_by", { scope: "read:accounts", optional: true }, statuses.rebloggedBy, ANONYMOUS),
   post("/api/v1/statuses/:id/favourite", { scope: "write:favourites" }, statuses.favourite),
   post("/api/v1/statuses/:id/unfavourite", { scope: "write:favourites" }, statuses.unfavourite),
   post("/api/v1/statuses/:id/reblog", { scope: "write:statuses" }, statuses.reblog),
@@ -223,9 +257,9 @@ export const ROUTES: readonly Route[] = [
 
   get("/api/v1/timelines/home", { scope: "read:statuses" }, timelines.home),
   get("/api/v1/timelines/list/:id", { scope: "read:lists" }, timelines.listTimeline),
-  get("/api/v1/timelines/public", { scope: "read:statuses", optional: true }, timelines.publicTimeline),
-  get("/api/v1/timelines/tag/:hashtag", { scope: "read:statuses", optional: true }, timelines.tagTimeline),
-  get("/api/v1/timelines/link", { scope: "read:statuses", optional: true }, timelines.linkTimeline),
+  get("/api/v1/timelines/public", { scope: "read:statuses", optional: true }, timelines.publicTimeline, ANONYMOUS),
+  get("/api/v1/timelines/tag/:hashtag", { scope: "read:statuses", optional: true }, timelines.tagTimeline, ANONYMOUS),
+  get("/api/v1/timelines/link", { scope: "read:statuses", optional: true }, timelines.linkTimeline, ANONYMOUS),
   get("/api/v1/bookmarks", { scope: "read:bookmarks" }, timelines.bookmarks),
   get("/api/v1/favourites", { scope: "read:favourites" }, timelines.favourites),
 
@@ -391,8 +425,8 @@ export const ROUTES: readonly Route[] = [
     { scope: "admin:write:canonical_email_blocks", admin: true },
     admin.recordNotFound,
   ),
-  get("/api/v1/admin/trends/links", { scope: "admin:read", admin: true }, admin.trendLinks),
-  get("/api/v1/admin/trends/statuses", { scope: "admin:read", admin: true }, admin.trendStatuses),
+  get("/api/v1/admin/trends/links", { scope: "admin:read", admin: true }, admin.trendLinks, PRIVATE_BY_LANGUAGE),
+  get("/api/v1/admin/trends/statuses", { scope: "admin:read", admin: true }, admin.trendStatuses, PRIVATE_BY_LANGUAGE),
   get("/api/v1/admin/trends/tags", { scope: "admin:read", admin: true }, admin.trendTags),
   get("/api/v1/admin/trends/links/publishers", { scope: "admin:read", admin: true }, admin.notAllowed),
   post("/api/v1/admin/trends/links/:id/approve", { scope: "admin:write", admin: true }, admin.notAllowed),
@@ -411,7 +445,7 @@ export const ROUTES: readonly Route[] = [
   put("/api/v1/admin/tags/:id", { scope: "admin:write", admin: true }, admin.notAllowed),
   patch("/api/v1/admin/tags/:id", { scope: "admin:write", admin: true }, admin.notAllowed),
   // Polls (mastodon/polls.ts); a poll is posted with its status.
-  get("/api/v1/polls/:id", { scope: "read:statuses", optional: true }, polls.showPoll),
+  get("/api/v1/polls/:id", { scope: "read:statuses", optional: true }, polls.showPoll, ANONYMOUS),
   post("/api/v1/polls/:id/votes", { scope: "write:statuses" }, polls.votePoll),
   // Scheduled statuses (mastodon/scheduled-statuses.ts); scheduling is POST /api/v1/statuses with scheduled_at.
   get("/api/v1/scheduled_statuses", { scope: "read:statuses" }, scheduled.list),
@@ -493,7 +527,13 @@ export const ROUTES: readonly Route[] = [
 export function mastodonApi(deps: ApiDeps, routes: readonly Route[] = ROUTES): Hono<ApiEnv> {
   const api = new Hono<ApiEnv>();
   for (const route of routes) {
-    api.on(route.method, route.path, requireAccess(route.access, deps), (c) => route.handler(c, deps));
+    // WEB-7: only an answer that no token can change may be kept for every request.
+    if (route.caching === EVERYONE && route.access !== "public") {
+      throw new Error(`${route.method} ${route.path} reads a token: it cannot be cached for everyone`);
+    }
+    api.on(route.method, route.path, declareCaching(route.caching), requireAccess(route.access, deps), (c) =>
+      route.handler(c, deps),
+    );
   }
   return api;
 }

@@ -25,7 +25,9 @@ import { rubyStrip } from "../platform/strip";
 //   - link_type (:139-145): an article when the supported JSON-LD object's @type is NewsArticle or the first og:type
 //     is exactly article, whatever the card's type (a video may be an article);
 //   - the image (:114-119, 171-177): og:image as a valid URL (cardImageSource: https only, a declared deviation), and
-//     og:image:alt as the scan decoded it, its description ('' when absent; Mastodon decodes it no second time).
+//     og:image:alt as the scan decoded it, its description ('' when absent; Mastodon decodes it no second time);
+//   - the creator (author_account, :203-205, Mastodon 4.6): fediverse:creator's content as the scan decoded it (no
+//     second decode), for the Store's judgement (domain/link-cards.ts unverifiedAuthor); null when absent.
 // Declared deviations (docs/mastodon-deviations.md, "Link previews"): a malformed JSON-LD shape (an @type lookup on an
 // array or a number, a string author) is skipped where Mastodon raises or reads a substring; a value that is not a
 // string reads as absent; JSON.parse replaces Oj; a meta value past the scan's bound reads as absent; the title is the
@@ -368,5 +370,6 @@ export function linkDetails(scan: PageScan, finalUrl: string): LinkDetails {
     imageDescription: og("og:image:alt") ?? "",
     linkType: sd?.type === "NewsArticle" || og("og:type") === "article" ? "article" : "unknown",
     finalUrl,
+    creator: og("fediverse:creator"),
   };
 }

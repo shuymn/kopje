@@ -1,6 +1,6 @@
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import fc from "fast-check";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { STATUSES_ID_INDEX } from "../src/db/indexes";
 import { MIGRATIONS } from "../src/db/migrations";
@@ -27,6 +27,7 @@ import { readOperation, sessionOperation, writeOperation } from "../src/domain/o
 import { QUOTE_AUTHOR_FETCHES } from "../src/domain/quotes";
 import { MAX_REMOTE_PINS } from "../src/domain/remote-collections";
 import { storeRemoteStatus } from "../src/domain/remote-statuses";
+import { NODE_ATTEMPTS, REPLY_READ_ENTRIES, WALK_PAGES, WALK_STATUSES } from "../src/domain/reply-walks";
 import { actOnReport, fileRemoteReports, getAdminReport } from "../src/domain/reports";
 import { accountSearchText } from "../src/domain/search-text";
 import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
@@ -43,6 +44,7 @@ import {
   EMOJI_SERVED_TYPES,
 } from "../src/platform/emoji-image";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../src/platform/identity-bounds";
+import type { StoreStub } from "../src/platform/store-client";
 import { StoreUnavailableError, toStoreUnavailable } from "../src/platform/store-errors";
 import {
   ACTIVITY_SETTING_BOUNDS,
@@ -105,12 +107,16 @@ import {
   ANNUAL_REPORT_ARCHETYPES,
   annualReportsMigrationSql,
   WRAPSTODON_SETTING_BOUNDS,
+  cardAttributionMigrationSql,
   PROFILE_DESCRIPTION_BYTES,
   PROFILE_DESCRIPTION_LIMIT,
+  POLL_REVISION_COLUMNS,
+  POLL_REVISION_MAX,
+  pollRefreshMigrationSql,
 } from "../src/platform/stored-bounds";
 import { NOW } from "./app-helpers";
 import { ACCOUNT_EMOJIS_FULL, accountAtCap, padded, STATUS_EMOJIS_FULL, statusAtCap } from "./emoji-fixtures";
-import { BUILD, freshStore, migratedStore, rejectionOf, tableNames, testKernel as kernel } from "./helpers";
+import { BUILD, freshStore as newStore, migratedStore, rejectionOf, tableNames, testKernel as kernel } from "./helpers";
 import { BREAK_WITNESSES } from "./migration-fixtures";
 import { TEMPLATE_FIXTURES } from "./oembed-template-fixtures";
 import { byText } from "./sort";
@@ -131,6 +137,23 @@ import { deriveTagKeyTables, seconds } from "./tag-key-tables";
 
 // The shipped migrations, in order; test-only files are named after them (9999_*).
 const NAMES = MIGRATIONS.map((m) => m.name);
+
+// A Store this file's tests create, its pending upgrade alarm cleared after the test. A kernel that finds the schema
+// pending schedules the alarm (StoreKernel's state), so most of these Stores, brought to a partial schema by a test
+// kernel, would each be upgraded through every later migration once the tests stop holding the isolate: about 600
+// upgrades in a row on the isolate the worker's suites share (vitest.config.ts), stalling the setup's measure and
+// audit after the last test (test/sql-depth-setup.ts) for half a minute, longer on a slower host.
+const created: StoreStub[] = [];
+function freshStore(): StoreStub {
+  const store = newStore();
+  created.push(store);
+  return store;
+}
+afterEach(async () => {
+  for (const store of created.splice(0)) {
+    await runInDurableObject(store, (_instance, state) => state.storage.deleteAlarm());
+  }
+});
 
 // `text` as a BLOB of its UTF-8 bytes.
 const blob = (text: string) => new TextEncoder().encode(text).buffer as ArrayBuffer;
@@ -379,9 +402,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(72);
+      expect(STORED_TRIGGERS.size).toBe(75);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        72 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        75 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -12927,6 +12950,513 @@ describe("0097_profile_descriptions", () => {
         }
         expect(read(column)).toEqual({ v: 0, t: "integer" });
       }
+    });
+  });
+});
+
+describe("0098_card_attribution", () => {
+  const NAME = "0098_card_attribution";
+  const at = NAMES.indexOf(NAME);
+  const [ACCOUNT, STATUS, PENDING] = ["100000000000000001", "100000000000000002", "100000000000000003"];
+  const REFUSED = /status_cards: a value past its stored bound/;
+  const AUTHOR = "123456789012345678";
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+
+  it("follows 0097, checks every reference, and writes the generator's statements and triggers", () => {
+    expect(NAMES[at - 1]).toBe("0097_profile_descriptions");
+    // Its triggers read main.statuses, a name the narrow dialect of foreignKeys: 'unchanged' refuses.
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    const sql = MIGRATIONS[at]?.sql ?? "";
+    expect(statements(sql)).toBe(
+      statements(
+        `${cardAttributionMigrationSql()}\n${emitTriggers(["status_cards_bounds_insert", "status_cards_bounds_update"])}`,
+      ),
+    );
+    for (const [, pattern] of sql.matchAll(/GLOB\s+'([^']*)'/g)) {
+      expect(new TextEncoder().encode(pattern).length).toBeLessThanOrEqual(50);
+    }
+  });
+
+  it("keeps every row as it was with no author, then holds the author to 18 digits on an attached row", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://remote.example/users/a', 'a', 'remote.example')",
+        ACCOUNT,
+      );
+      for (const id of [STATUS, PENDING]) {
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+					VALUES (?1, 'https://remote.example/s/' || ?1, ?2, 'public', 'x', '2026-11-16T00:00:00.000Z')`,
+          id,
+          ACCOUNT,
+        );
+      }
+      sql.exec(
+        `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at, final_url, public)
+				VALUES (?, 'https://a.example/', 5, 7, 't', 9, 'https://a.example/', 1)`,
+        STATUS,
+      );
+      sql.exec(
+        "INSERT INTO status_cards (status_id, url, due_at, enqueued_at, generation) VALUES (?, 'https://a.example/', 5, 5, 7)",
+        PENDING,
+      );
+      const before = sql.exec("SELECT * FROM status_cards ORDER BY status_id").toArray();
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      expect(sql.exec("SELECT * FROM status_cards ORDER BY status_id").toArray()).toEqual(
+        before.map((row) => ({ ...row, unverified_author_account_id: null })),
+      );
+      const author = (id: string) =>
+        sql
+          .exec<{ v: SqlStorageValue; t: string }>(
+            "SELECT unverified_author_account_id AS v, typeof(unverified_author_account_id) AS t FROM status_cards WHERE status_id = ?",
+            id,
+          )
+          .one();
+      const set = (id: string, value: SqlStorageValue) =>
+        sql.exec("UPDATE status_cards SET unverified_author_account_id = ? WHERE status_id = ?", value, id);
+      // Refused in order: 17 and 19 digits (the bytes), a non-digit (the digits), 18 digits as a BLOB (the storage
+      // class only), and 18 bytes with a NUL inside, whose digits before the NUL are all GLOB reads (NUL only).
+      const nul = sql.exec<{ v: string }>("SELECT '12345678' || char(0) || '123456789' AS v").one().v;
+      for (const value of [AUTHOR.slice(1), `${AUTHOR}9`, `${AUTHOR.slice(1)}x`, blob(AUTHOR), nul]) {
+        expect(() => set(STATUS, value), JSON.stringify(value)).toThrow(REFUSED);
+      }
+      expect(author(STATUS)).toEqual({ v: null, t: "null" });
+      // Accepted: 18 digits, and an 18-digit integer, which the column's TEXT affinity stores as those digits.
+      set(STATUS, AUTHOR);
+      expect(author(STATUS)).toEqual({ v: AUTHOR, t: "text" });
+      sql.exec(`UPDATE status_cards SET unverified_author_account_id = ${AUTHOR} WHERE status_id = ?`, STATUS);
+      expect(author(STATUS)).toEqual({ v: AUTHOR, t: "text" });
+      set(STATUS, null);
+      expect(author(STATUS)).toEqual({ v: null, t: "null" });
+      // Never on a pending row: set on one, kept while a row returns to pending, or inserted with one.
+      expect(() => set(PENDING, AUTHOR)).toThrow(REFUSED);
+      set(STATUS, AUTHOR);
+      expect(() =>
+        sql.exec("UPDATE status_cards SET fetched_at = NULL, due_at = 5, public = 0 WHERE status_id = ?", STATUS),
+      ).toThrow(REFUSED);
+      sql.exec("DELETE FROM status_cards WHERE status_id = ?", PENDING);
+      expect(() =>
+        sql.exec(
+          `INSERT INTO status_cards (status_id, url, due_at, enqueued_at, generation, unverified_author_account_id)
+					VALUES (?, 'https://a.example/', 5, 5, 7, ?)`,
+          PENDING,
+          AUTHOR,
+        ),
+      ).toThrow(REFUSED);
+      sql.exec(
+        `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at, unverified_author_account_id)
+				VALUES (?, 'https://a.example/', 5, 7, 't', 9, ?)`,
+        PENDING,
+        AUTHOR,
+      );
+      expect(author(PENDING)).toEqual({ v: AUTHOR, t: "text" });
+    });
+  });
+});
+
+describe("0099_reply_walks", () => {
+  const NAME = "0099_reply_walks";
+  const at = NAMES.indexOf(NAME);
+  const ROOT = "100000000000000001";
+  const HEX = "0123456789abcdef0123456789abcdef";
+  const TOKEN = "00000000-0000-4000-8000-000000000000";
+  const SAFE = String(SAFE_MS);
+  const refused = /constraint failed/;
+
+  // A context walk of ROOT, running, and a node of it.
+  const seed = (sql: SqlStorage) => {
+    sql.exec(
+      "INSERT INTO reply_walks (status_id, kind, refresh_id, queued_at, due_at) VALUES (?, 0, ?, 0, 0)",
+      ROOT,
+      HEX,
+    );
+    sql.exec("INSERT INTO reply_walk_nodes (status_id, uri, seq) VALUES (?, 'https://r.example/s/1', 0)", ROOT);
+  };
+
+  it("follows 0098, creates two tables and five indexes, no trigger, and checks every reference", async () => {
+    expect(NAMES[at - 1]).toBe("0098_card_attribution");
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      const schema = () =>
+        sql
+          .exec<{ type: string; name: string }>(
+            "SELECT type, name FROM sqlite_master WHERE name LIKE 'reply_walk%' ORDER BY type, name",
+          )
+          .toArray();
+      expect(schema()).toEqual([]);
+      const triggers = sql.exec("SELECT count(*) AS n FROM sqlite_master WHERE type = 'trigger'").one().n;
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      expect(schema()).toEqual([
+        { type: "index", name: "reply_walk_nodes_parent" },
+        { type: "index", name: "reply_walk_nodes_pending" },
+        { type: "index", name: "reply_walks_due" },
+        { type: "index", name: "reply_walks_finished" },
+        { type: "index", name: "reply_walks_refresh" },
+        { type: "table", name: "reply_walk_nodes" },
+        { type: "table", name: "reply_walks" },
+      ]);
+      expect(sql.exec("SELECT count(*) AS n FROM sqlite_master WHERE type = 'trigger'").one().n).toBe(triggers);
+      // No reference to statuses: a walk of a status the Store does not hold is stored.
+      seed(sql);
+      expect(sql.exec("SELECT count(*) AS n FROM reply_walk_nodes").one().n).toBe(1);
+    });
+  });
+
+  it.each([
+    [
+      "status_id",
+      ["'100000000000000002'"],
+      ["'10000000000000000x'", "'1000000000000000001'", "'10000000000000001'", "NULL"],
+    ],
+    ["kind", ["1"], ["2", "-1", "'0'", "0.5"]],
+    ["queued_at", ["0", SAFE], [`${SAFE_MS + 1}`, "-1", "1.5", "NULL"]],
+    ["next_seq", ["0", "2147483647"], ["2147483648", "-1", "1.5"]],
+    ["nodes", ["0", "100000"], ["100001", "-1"]],
+    ["pages", ["0", "100000"], ["100001", "-1"]],
+    ["result_count", ["0", "100000"], ["100001", "-1"]],
+    ["handouts", ["0", "100000"], ["100001", "-1", "1.5"]],
+    ["token", [`'${TOKEN}'`, "NULL"], [`'${TOKEN}0'`, "X'00'", "36"]],
+  ])("holds reply_walks.%s to its domain at each end", async (column, admitted, others) => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      seed(sql);
+      // The node references the walk's key.
+      sql.exec("DELETE FROM reply_walk_nodes");
+      // A kind 1 walk has no refresh id.
+      const set = (value: string) =>
+        sql.exec(
+          `UPDATE reply_walks SET ${column} = ${value}${column === "kind" ? `, refresh_id = CASE WHEN ${value} = 0 THEN refresh_id END` : ""}`,
+        );
+      for (const value of admitted) {
+        set(value);
+      }
+      for (const value of others) {
+        expect(() => set(value), value).toThrow(refused);
+      }
+    });
+  });
+
+  it("holds the refresh id to 32 lowercase hex characters for a context walk only, and due_at to running walks", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      seed(sql);
+      for (const value of [`'${HEX.toUpperCase()}'`, `'${HEX}0'`, `'${HEX.slice(1)}'`, `'${HEX.slice(1)}g'`, "NULL"]) {
+        expect(() => sql.exec(`UPDATE reply_walks SET refresh_id = ${value}`), value).toThrow(refused);
+      }
+      // One id per walk.
+      expect(() =>
+        sql.exec(
+          "INSERT INTO reply_walks (status_id, kind, refresh_id, queued_at, due_at) VALUES ('100000000000000002', 0, ?, 0, 0)",
+          HEX,
+        ),
+      ).toThrow(/UNIQUE constraint failed/);
+      // Finished: due_at NULL and finished_at set, never one without the other.
+      sql.exec("UPDATE reply_walks SET due_at = NULL, finished_at = ?", SAFE);
+      sql.exec("UPDATE reply_walks SET due_at = 0, finished_at = NULL");
+      for (const pair of ["due_at = NULL, finished_at = NULL", "due_at = 0, finished_at = 0", "finished_at = -1"]) {
+        expect(() => sql.exec(`UPDATE reply_walks SET ${pair}`), pair).toThrow(refused);
+      }
+    });
+  });
+
+  it("holds the awaited hand-out's number to 1 to the walk's handouts, or NULL", async () => {
+    // A walk hands out at most NODE_ATTEMPTS × WALK_STATUSES + WALK_PAGES nodes a start (reply-walks.ts).
+    expect(NODE_ATTEMPTS * WALK_STATUSES + WALK_PAGES).toBeLessThanOrEqual(100_000);
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      seed(sql);
+      for (const pair of [
+        "handouts = 0",
+        "handouts = 5, handout = 5",
+        "handout = 1",
+        "handout = NULL",
+        "handout = 5",
+      ]) {
+        sql.exec(`UPDATE reply_walks SET ${pair}`);
+      }
+      for (const pair of ["handout = 6", "handouts = 4", "handout = 0", "handout = 1.5", "handout = 'x'"]) {
+        expect(() => sql.exec(`UPDATE reply_walks SET ${pair}`), pair).toThrow(refused);
+      }
+    });
+  });
+
+  it("holds a node's state, stage, validity, parent and fetch together, and its attempts to 0 to NODE_ATTEMPTS", async () => {
+    // The CHECK's upper end is NODE_ATTEMPTS, the hand-outs of one document a walk charges (reply-walks.ts); a node's
+    // skip grows by at most REPLY_READ_ENTRIES a collection document, of which a walk reads at most WALK_PAGES.
+    expect(NODE_ATTEMPTS).toBe(2);
+    expect(WALK_PAGES * REPLY_READ_ENTRIES).toBeLessThanOrEqual(100_000);
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      seed(sql);
+      const P = "'https://r.example/s/0'";
+      const F = "'https://r.example/s/1/replies'";
+      for (const columns of [
+        "state = 2, parent = " + P,
+        "state = 0, parent = NULL, valid = 1, stage = 1, fetch = " + F,
+        "stage = 2",
+        "stage = 3, fetch = 'https://r.example/s/1', skip = 100000",
+        "skip = 0",
+        "state = 1",
+        `attempts = ${NODE_ATTEMPTS}`,
+        "attempts = 0, stage = 0, fetch = NULL, valid = 0",
+      ]) {
+        sql.exec(`UPDATE reply_walk_nodes SET ${columns}`);
+      }
+      for (const columns of [
+        // Only a deferred node names a parent, and a deferred one names one.
+        "parent = " + P,
+        "state = 2",
+        // A deferred node is a status that is not valid yet.
+        "state = 2, parent = " + P + ", valid = 1",
+        // Only a valid node's collection is read, and only a collection stage has a document to fetch.
+        "stage = 1, fetch = " + F,
+        "valid = 1, stage = 1",
+        "fetch = " + F,
+        `attempts = ${NODE_ATTEMPTS + 1}`,
+        "attempts = -1",
+        "stage = 4",
+        "skip = 100001",
+        "skip = -1",
+        "skip = 1.5",
+        "state = 3",
+        "seq = -1",
+        "seq = 2147483648",
+        "uri = ''",
+        `uri = 'https://r.example/' || char(0)`,
+        `uri = 'https://r.example/' || hex(zeroblob(2040))`,
+      ]) {
+        expect(() => sql.exec(`UPDATE reply_walk_nodes SET ${columns}`), columns).toThrow(refused);
+      }
+      // A uri of 4096 bytes is stored.
+      sql.exec(`UPDATE reply_walk_nodes SET uri = 'https://r.example/' || substr(hex(zeroblob(2040)), 1, 4078)`);
+      expect(sql.exec("SELECT length(CAST(uri AS BLOB)) AS n FROM reply_walk_nodes").one().n).toBe(4096);
+      // The walk's deletion takes its nodes.
+      sql.exec("DELETE FROM reply_walks");
+      expect(sql.exec("SELECT count(*) AS n FROM reply_walk_nodes").one().n).toBe(0);
+    });
+  });
+});
+
+describe("0100_poll_refresh", () => {
+  const NAME = "0100_poll_refresh";
+  const at = NAMES.indexOf(NAME);
+  const [ACCOUNT, STATUS, OTHER] = ["100000000000000001", "100000000000000002", "100000000000000003"];
+  const REVISION_REFUSED = /polls: revision past its stored bound/;
+  const label = (value: unknown) => JSON.stringify(value, (_k, v: unknown) => (v instanceof ArrayBuffer ? "BLOB" : v));
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+
+  it("follows 0099, declared foreignKeys: 'unchanged', and writes the generator's statements and triggers", () => {
+    expect(NAMES[at - 1]).toBe("0099_reply_walks");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    expect(POLL_REVISION_MAX).toBe(2 ** 53 - 1);
+    expect(statements(MIGRATIONS[at]?.sql ?? "")).toBe(
+      statements(
+        `${pollRefreshMigrationSql()}\n${emitTriggers(["polls_revision_insert", "polls_revision_update", "polls_revision"])}`,
+      ),
+    );
+  });
+
+  it("polls.fetched_at, refresh_at and revision", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?, 'https://remote.test/users/a', 'a', 'remote.test')",
+        ACCOUNT,
+      );
+      for (const id of [STATUS, OTHER]) {
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+					VALUES (?1, 'https://remote.test/s/' || ?1, ?2, 'public', 'x', '2026-11-16T00:00:00.000Z')`,
+          id,
+          ACCOUNT,
+        );
+      }
+      sql.exec(
+        `INSERT INTO polls (status_id, options, tallies, expires_at, votes_count, voters_count)
+				VALUES (?, '["a","b"]', '[1,2]', '2026-11-17T00:00:00.000Z', 3, 3)`,
+        STATUS,
+      );
+      const before = sql.exec("SELECT * FROM polls").one();
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      // A carried poll was never fetched nor tried, and holds revision 0: it is due at its first signed-in read.
+      expect(sql.exec("SELECT * FROM polls").one()).toEqual({
+        ...before,
+        fetched_at: null,
+        refresh_at: null,
+        revision: 0,
+      });
+
+      const read = (column: string) =>
+        sql.exec(`SELECT ${column} AS v, typeof(${column}) AS t FROM polls WHERE status_id = ?`, STATUS).one();
+      const update = (column: string, value: SqlStorageValue) =>
+        sql.exec(`UPDATE polls SET ${column} = ? WHERE status_id = ?`, value, STATUS);
+      const insert = (column: string, value: SqlStorageValue) => {
+        sql.exec("DELETE FROM polls WHERE status_id = ?", OTHER);
+        sql.exec(
+          `INSERT INTO polls (status_id, options, tallies, ${column}) VALUES (?, '["a","b"]', '[0,0]', ?)`,
+          OTHER,
+          value,
+        );
+      };
+      // The times' CHECK: NULL, 0, 2^53 - 1 and what INTEGER affinity stores as an integer are kept; -1, past 2^53 - 1,
+      // a REAL that is not integral, a text and a BLOB are refused, on insert and on update.
+      for (const column of ["fetched_at", "refresh_at"]) {
+        for (const [value, kept] of [
+          [null, null],
+          [0, 0],
+          [POLL_REVISION_MAX, POLL_REVISION_MAX],
+          ["7", 7],
+          [8.0, 8],
+        ] as const) {
+          update(column, value);
+          expect(read(column), `${column} ${String(value)}`).toEqual({
+            v: kept,
+            t: kept === null ? "null" : "integer",
+          });
+          insert(column, value);
+        }
+        for (const value of [-1, 2 ** 53, 1.5, "x", blob("7")] as SqlStorageValue[]) {
+          expect(() => update(column, value), `${column} ${label(value)}`).toThrow(/CHECK constraint failed/);
+          expect(() => insert(column, value), `${column} ${label(value)}`).toThrow(/CHECK constraint failed/);
+        }
+        expect(read(column)).toEqual({ v: 8, t: "integer" });
+        update(column, null);
+      }
+      // The revision's triggers: 0, 2^53 - 1 and integer affinity's integers kept; anything else refused, NULL included.
+      for (const [value, kept] of [
+        [0, 0],
+        [POLL_REVISION_MAX, POLL_REVISION_MAX],
+        ["7", 7],
+        [8.0, 8],
+      ] as const) {
+        update("revision", value);
+        expect(read("revision")).toEqual({ v: kept, t: "integer" });
+        insert("revision", value);
+      }
+      for (const value of [null, -1, 2 ** 53, 1.5, "x", blob("7")] as SqlStorageValue[]) {
+        expect(() => update("revision", value), label(value)).toThrow(REVISION_REFUSED);
+        expect(() => insert("revision", value), label(value)).toThrow(REVISION_REFUSED);
+      }
+
+      // polls_revision: a write of any of the poll's columns moves the revision, from any stored value the maximum
+      // included, to another value within the bound; a write of the others moves nothing.
+      const revision = () =>
+        sql.exec<{ v: number }>("SELECT revision AS v FROM polls WHERE status_id = ?", STATUS).one().v;
+      const values: Record<(typeof POLL_REVISION_COLUMNS)[number], SqlStorageValue> = {
+        options: '["c","d"]',
+        cut_options: "[1]",
+        tallies: "[4,5]",
+        multiple: 1,
+        expires_at: "2026-11-18T00:00:00.000Z",
+        votes_count: 9,
+        voters_count: null,
+        ended: 1,
+        generation: 1,
+        removed: 1,
+        fetched_at: 5,
+      };
+      for (const column of POLL_REVISION_COLUMNS) {
+        for (const start of [0, POLL_REVISION_MAX]) {
+          update("revision", start);
+          update(column, values[column]);
+          const moved = revision();
+          expect(moved, `${column} from ${start}`).not.toBe(start);
+          expect(moved).toBeGreaterThanOrEqual(0);
+          expect(moved).toBeLessThanOrEqual(POLL_REVISION_MAX);
+        }
+      }
+      update("revision", POLL_REVISION_MAX);
+      for (const [column, value] of [
+        ["refresh_at", 6],
+        ["update_due_at", "2026-11-18T00:00:00.000Z"],
+        ["stale", 1],
+        ["hide_totals", 1],
+      ] as const) {
+        update(column, value);
+        expect(revision(), column).toBe(POLL_REVISION_MAX);
+      }
+    });
+  });
+});
+
+describe("0101_pin_refresh", () => {
+  const NAME = "0101_pin_refresh";
+  const at = NAMES.indexOf(NAME);
+  const ACCOUNT = "100000000000000001";
+
+  it("follows 0100, declared foreignKeys: 'unchanged'", () => {
+    expect(NAMES[at - 1]).toBe("0100_poll_refresh");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+  });
+
+  it("keeps every sync row a pending row, and holds refresh to 0 and 1", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://remote.example/users/a', 'a', 'remote.example')",
+        ACCOUNT,
+      );
+      for (const n of ["1", "2"]) {
+        sql.exec(
+          `INSERT INTO collection_pins_pending (account_id, uri, pinned_at)
+					VALUES (?, 'https://remote.example/users/a/statuses/' || ?, '2026-11-16T00:00:00.000Z')`,
+          ACCOUNT,
+          n,
+        );
+      }
+      const before = sql.exec("SELECT * FROM collection_pins_pending ORDER BY uri").toArray();
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      expect(sql.exec("SELECT * FROM collection_pins_pending ORDER BY uri").toArray()).toEqual(
+        before.map((row) => ({ ...row, refresh: 0 })),
+      );
+      const set = (value: SqlStorageValue) =>
+        sql.exec(
+          "UPDATE collection_pins_pending SET refresh = ? WHERE uri = 'https://remote.example/users/a/statuses/1'",
+          value,
+        );
+      for (const value of [1, 0, 1]) {
+        set(value);
+      }
+      expect(
+        sql.exec("SELECT refresh, typeof(refresh) AS t FROM collection_pins_pending ORDER BY uri").toArray(),
+      ).toEqual([
+        { refresh: 1, t: "integer" },
+        { refresh: 0, t: "integer" },
+      ]);
+      const refused = /CHECK constraint failed: refresh IN \(0, 1\)/;
+      for (const value of [2, -1, "x", 0.5]) {
+        expect(() => set(value), String(value)).toThrow(refused);
+      }
+      expect(() => set(null)).toThrow(/NOT NULL constraint failed/);
+      expect(() =>
+        sql.exec(
+          `INSERT INTO collection_pins_pending (account_id, uri, pinned_at, refresh)
+					VALUES (?, 'https://remote.example/users/a/statuses/3', '2026-11-16T00:00:00.000Z', 2)`,
+          ACCOUNT,
+        ),
+      ).toThrow(refused);
     });
   });
 });

@@ -204,6 +204,11 @@ describe("profile image descriptions through update_credentials", () => {
           "Validation failed: Avatar description is too long (maximum is 150 characters), " +
           "Header description is too long (maximum is 150 characters), " +
           "Display name is too long (maximum is 40 characters)",
+        details: {
+          avatar_description: [{ error: "ERR_TOO_LONG", description: "is too long (maximum is 150 characters)" }],
+          header_description: [{ error: "ERR_TOO_LONG", description: "is too long (maximum is 150 characters)" }],
+          display_name: [{ error: "ERR_TOO_LONG", description: "is too long (maximum is 40 characters)" }],
+        },
       },
     });
     expect(await stored()).toEqual(["", ""]);
