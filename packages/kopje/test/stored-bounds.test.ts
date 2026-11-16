@@ -391,15 +391,15 @@ describe("stored bounds (RES-2)", () => {
 
   // An actor's display name of lone surrogates is stored as U+FFFD, three bytes each, and reads back at that size.
   it("stores a display name of lone surrogates from ingestion within three bytes a character, read back alike", async () => {
-    const actor = await Person.fromJsonLd({
+    const document = {
       "@context": "https://www.w3.org/ns/activitystreams",
       id: "https://remote.example/users/s",
       type: "Person",
       preferredUsername: "s",
       name: "\ud800".repeat(DISPLAY_NAME_LIMIT),
       inbox: "https://remote.example/users/s/inbox",
-    });
-    const input = await remoteActorInput(actor, {});
+    };
+    const input = await remoteActorInput(await Person.fromJsonLd(document), document);
     expect(input).not.toBeNull();
     const store = await migratedStore();
     const stored = await runInDurableObject(store, (_instance, state) =>

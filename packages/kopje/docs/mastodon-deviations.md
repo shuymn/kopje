@@ -34,7 +34,7 @@ Other documents point here rather than repeat the release.
   twice, in its address and its shown text, with `&` as `&amp;`; profile fields and poll choices likewise). An event
   whose rest takes R bytes is sent while its descriptions take at most 524,288 − R. A post and its quote with eight
   descriptions of 10,000 characters (320,000 bytes of emoji, 560,000 of U+0001) are sent beside plain text, a poll and
-  profiles (R about 84,000), and skipped beside three long links in each post (R about 224,000) or with descriptions of
+  profiles (R about 141,000), and skipped beside three long links in each post (R about 281,000) or with descriptions of
   U+0001; a post without a quote is sent with four such descriptions beside any of these. Events whose statuses are
   near their stored bounds (remote statuses, or content filled by mentions) are skipped too. The figures are pinned by
   `test/streaming/public.test.ts`. Accepted, 2026-11-15.
@@ -187,14 +187,15 @@ A pull request that fixes a gap removes the exceptions that cite it.
 
 ## Differences the checks cannot see
 
-Profile credentials (`PATCH /api/v1/accounts/update_credentials`, the settings page):
+Profile credentials (`PATCH /api/v1/accounts/update_credentials`, `GET`, `PATCH` and `PUT /api/v1/profile`, the
+settings page):
 
 - `avatar` and `header` are multipart files only: a data URI or any other non-empty text value answers 400 (Paperclip
   has no handler for it); an empty value reads as absent. Each file must be under 8 MB (8,388,608 bytes is refused)
   and JPEG, PNG, GIF or WebP by its signature; AVIF is refused. The multipart body may be 17,858,560 bytes (1 MiB of
   text plus two files and their part headers), its text at most 1 MiB in UTF-8 bytes.
-- Images are not cropped to 400×400 or capped at 1500×500; an image past 16,777,216 pixels answers 422 (Mastodon keeps
-  the account unchanged and answers 200).
+- Images are not cropped to 400×400 or capped at 1500×500; an image past 16,777,216 pixels answers 422, an error of
+  `avatar` or `header` (Mastodon keeps the account unchanged and answers 200).
 - For an uploaded image whose served file is animated, `avatar_static` and `header_static` are a still of at most
   640 px on the long edge (the upload's preview); Mastodon's is 400×400 or the header's own size, and only for a GIF.
   Otherwise they equal `avatar` and `header`.
@@ -211,25 +212,60 @@ Profile credentials (`PATCH /api/v1/accounts/update_credentials`, the settings p
   Without a cached copy they equal the remote URLs. The cache's bytes are capped by `REMOTE_MEDIA_CACHE_BYTES` (default
   4 GiB), and a profile image is kept while its account shows it. A suspended account's copies are deleted, where
   Mastodon keeps them private.
+- A remote account's `avatar_description` and `header_description` are read from its actor's `icon` and `image` as
+  Mastodon 4.7 reads them (the first value, an embedded `Image`, its `summary` else its `name`), but cut at 150 code
+  points, where Mastodon keeps 10,000 (`process_account_service.rb:368`). Every description Mastodon writes is within
+  150, its limit for a local account, and an account is embedded in nearly every answer (a conversation shows 14, a
+  boosted quote 3), so 10,000 would put one conversation past the 8 MiB answer budget and a timeline's heap past half
+  the isolate's memory. An image given by reference rather than embedded gives no description, as Kopje fetches no
+  image; a value Mastodon cannot read (a numeric `@value`) is none, where Mastodon fails the document. Accepted,
+  2026-11-15.
+- A remote account's `show_featured`, `show_media` and `show_media_replies` change only when its actor's
+  `showFeatured`, `showMedia` or `showRepliesInMedia` is a JSON boolean, and keep their stored values otherwise, as
+  when the key is absent (`process_account_service.rb:258-260`). Mastodon casts any other value as a form value (a
+  non-empty string other than a false value is true) and fails the document on `null` and on an empty string, which
+  casts to `nil`.
 - Images uploaded before still renditions were made keep `avatar_static` and `header_static` equal to the image until
   they are replaced.
 - The `preview_url` of an animated upload (status media included) is a still.
 - `indexable` is stored, shown and federated, but changes no search result: status search reads the viewer's own posts
   and interactions, or one account's posts the viewer may see, never a public index.
 - An attribution domain (`attribution_domains[]`) whose written form passes 1,020 UTF-8 bytes is refused as not a valid
-  domain name. A compliant host is shorter than 256 characters, so only one padded with characters IDNA ignores (U+00AD)
-  is that long; Mastodon refuses such padding much sooner, when its IDNA conversion fails (between 60 and 120 U+00AD in
-  a check), and Kopje accepts it up to the 1,020 bytes (#1606). Domains and lists past the presented bounds, whether
-  saved before this check or imported, stay stored and are hidden from `source.attribution_domains` and the actor's
-  `attributionDomains`: an entry whose JSON string passes 1,022 bytes is left out, and a list past 102,302 bytes in all
-  (100 such domains pass it) is shown as none. Accepted, 2026-11-15.
-- A JSON `true` or `false` sent as `avatar_description` or `header_description` is stored and shown as `true` or
-  `false`, as Kopje reads every JSON scalar where it expects text (a number as JSON writes it, as Mastodon stores it
-  too); Mastodon casts a boolean to `t` or `f`. Either is a client's error, `true` is what the client sent, and a
-  description reads JSON as the other text parameters do. Accepted, 2026-11-16.
+  domain name. As in Mastodon, a label of 64 or more characters as written is refused, even of characters IDNA ignores
+  (U+00AD), so only a host padded in many labels is that long; Mastodon accepts such a host up to about 128 labels of
+  padding. Domains and lists past the presented bounds, whether saved before this check or imported, stay stored and
+  are hidden from `source.attribution_domains` and the actor's `attributionDomains`: an entry whose JSON string passes
+  1,022 bytes is left out, and a list past 102,302 bytes in all (100 such domains pass it) is shown as none. Accepted,
+  2026-11-15.
+- A refusal lists at most 100 invalid attribution domains, in `error` and in `details`, before the count's error;
+  Mastodon lists every one. Each listed domain is written twice, so the cap bounds the answer
+  (`test/accounts.test.ts` derives its maximum). Accepted, 2026-11-16.
+- An unknown `source[privacy]`, `source[quote_policy]` or `source[language]` is refused with 422, an error of
+  `privacy`, `quote_policy` or `language` after the account's own, and nothing is saved; Mastodon saves the account's
+  other changes and answers 500. Accepted, 2026-11-16.
+- A JSON `true` or `false` sent as a text parameter (`display_name`, `note`, `avatar_description`,
+  `header_description`, an `attribution_domains[]` entry, a field's `name` or `value`) is stored and shown as `true` or
+  `false`, as Kopje reads every JSON scalar where it expects text (a number as JSON writes it, as Mastodon stores a
+  number it casts to text too); Mastodon casts a boolean to `t` or `f`, and leaves a field whose name or value is not
+  a string out of every read. Either is a client's error, `true` is what the client sent, and every text parameter
+  reads JSON the same way. Accepted, 2026-11-16.
+- A bio (`note`) longer than 10,000 UTF-16 code units as sent is refused as too long before it is counted, as a post's
+  text is (`MAX_RAW_LENGTH`); Mastodon counts each link as 23 characters whatever its length, so it accepts a longer
+  bio of long links. Which runs of a bio count as links is linkify-it's, as for posts: a link right after `#` or `@`
+  counts as 23, where Mastodon's pattern reads no link there. Accepted, 2026-11-16.
 - A bio that is only whitespace once stripped (Rails' `blank?`, Unicode spaces included) is stored empty, so its
   `source.note` is `''`, where Mastodon gives the whitespace back; its `note` is `''` in both. Kopje stores the bio
-  once, as the HTML it presents and federates.
+  once, as the HTML it presents and federates, so `source.note` gives line breaks as `\n` and one blank line between
+  paragraphs, where Mastodon gives the bio back as sent (`\r\n` kept), and `note` writes a line break `<br>`, where
+  Mastodon writes `<br />`; the text and paragraphs are the same. Accepted, 2026-11-16.
+- A profile change sends an `Update(Person)` only when the published actor document changed, where Mastodon sends one
+  after every update (`ActivityPub::UpdateDistributionWorker`, `credentials_controller.rb:17`,
+  `profiles_controller.rb:16`). An image description is published only on its image (the actor's `icon` and `image`, as
+  `ActivityPub::ActorSerializer` writes them), so a description changed while the image is absent sends none; followers
+  get it with the image's next Update.
+- The Profile's `featured_tags` are the account's first 10 featured hashtags in the order they were featured, as
+  Kopje's writers keep at most 10; Mastodon lists every one of the association, in no stated order. Only an imported
+  account can have more, and its others stay listed by `GET /api/v1/featured_tags`.
 - Unlocking accepts the pending follow requests in job rounds after the response, at most 20 per round (the 5-minute
   cron resumes them); relocking stops it. Requests from an unavailable requester, or one the account or its blocked
   domains cover, stay pending.
@@ -388,6 +424,11 @@ Accounts (the `Account` and credential account entities):
   stored entries, those that are a name and a value of strings within 255 code points each, in their order; a stored
   value past 16 KiB of JSON, or one that is not a JSON array, shows none. Mastodon presents every stored field.
   Kopje's own writer stores at most 4 within those limits, so only a converted or imported row can differ.
+- A remote account shows at most its first 16 fields, within 32 KiB of names and values as presented, each name cut at
+  255 UTF-16 code units and each value at 4,096 before it is sanitized (`remoteAttachmentSql` in
+  `src/domain/account-columns.ts`); Mastodon keeps 50 and cuts each at 2,047 characters. Each name and value is
+  stripped as Ruby's `strip` strips it, as Mastodon's `Account::Field` does, but after Kopje's cut where Mastodon
+  strips first, so a name or value whose leading whitespace pushes its text past the cut keeps less of it.
 - `noindex` is `false` for every local account, Mastodon's default: no setting stores it, and the profile and status
   pages do not ask search engines to skip them. A remote account shows none, as in Mastodon.
 - `roles` of a local account is the OAuth admin's Owner role (`id`, `name` and `color`) while that account is
@@ -448,9 +489,24 @@ Accounts (the `Account` and credential account entities):
 - A remote actor's document is stored only while the Store revision read before its fetch holds (ID-1 in
   `docs/threat-model.md`): a document fetched before another store of the actor committed is not stored. Mastodon
   serializes the processing of one account (`process_account_service.rb:30`) but stores whatever document it processes
-  last (`process_account_service.rb:95-103`). So an `Update(Person)` whose fetch raced another store answers 503,
-  having written nothing, and a retry is judged afresh; a `Move` whose target was stored meanwhile answers 503 too;
-  another activity, a stale-author refresh and a search resolution use the stored account.
+  last (`process_account_service.rb:95-103`). So an `Update(Person)` whose document or fetch raced another store
+  answers 503, having written nothing, and a retry is judged afresh; a `Move` whose target was stored meanwhile answers
+  503 too; another activity, a stale-author refresh and a search resolution use the stored account.
+- An `Update(Person)` applies the profile, the handle (confirmed by WebFinger when it changes) and `movedTo` of the
+  actor it embeds, as Mastodon's `ProcessAccountService` does (`update.rb:23-27`), but not its keys or inboxes, which
+  stay those of the last document Kopje fetched; Mastodon takes both from the embedded actor
+  (`process_account_service.rb:222-232`, `:264-270`). A key rotation or inbox move sent only by `Update(Person)`
+  applies at Kopje's next fetch of the actor's document, which nothing schedules: the actor's first activity signed by
+  a key Kopje does not hold fresh (one it does not hold, one that fails, or one its last fetched document listed 24
+  hours ago or more), an `Update(Person)` that embeds no actor (its object the actor's URI, or not an actor), which is
+  fetched whatever its key, a stale-author refresh, a search for the actor, or a collection sync's refresh of it. An
+  actor that sends nothing keeps the old keys and inboxes until one of these happens (`test/inbox-actor-update.test.ts`,
+  "an inbox move sent only by an embedded actor", "an Update(Person) that embeds no actor"). Reason: a holder of a
+  still-trusted key could otherwise renew its trust and move the actor's deliveries without a fetch (ID-1 in
+  `docs/threat-model.md`). An embedded actor Kopje cannot read applies nothing, as Mastodon drops it. An
+  `Update(Person)` that carries an LD signature (a `signature` object) is read as received, where Mastodon reads its
+  compaction under `full_context` (`process_activity_service.rb:23-38`), so an `inbox` given only by its full IRI is
+  refused and `[null]` taken, where Mastodon does the opposite (#1680). Accepted, 2026-11-16.
 - The account `moved` nests is a bounded projection, not the full account: its identity, counts, flags, display
   settings and images, `note`, `avatar_description` and `header_description` `''` and `fields` `[]`, the display name
   cut at 100 code points, URLs and `uri` read as unset past 512 bytes, and only the emojis its display name references
@@ -531,8 +587,9 @@ Followers synchronisation (Mastodon's `Collection-Synchronization` header and
   repaired by a later delivery; each server keeps delivering and distributing by its own follow records. Mastodon 4.6
   also stopped sending it from 25,000 followers (`mastodon#37302`). Accepted, 2026-11-15.
 
-Replies collections (the context's refresh and `GET /api/v1_alpha/async_refreshes/:id`; Mastodon's
-`ContextsController#show`, `FetchAllRepliesWorker` and `AsyncRefresh`; RES-6 in [threat-model.md](threat-model.md)):
+Replies collections (the context's refresh, `GET /api/v1_alpha/async_refreshes/:id` and the replies a created status
+lists; Mastodon's `ContextsController#show`, `FetchAllRepliesWorker`, `AsyncRefresh` and `Create#fetch_replies`; RES-6
+in [threat-model.md](threat-model.md)):
 
 - A signed-in reader's context read of a remote public or unlisted status starts a refresh of its replies, as Mastodon
   4.7.5's does, from 5 minutes after the status was published and at most every 15 minutes, and answers
@@ -546,10 +603,11 @@ Replies collections (the context's refresh and `GET /api/v1_alpha/async_refreshe
   at most twice (Mastodon's `FetchAllRepliesWorker`: 1,000 statuses and 500 pages). It reads each collection until it
   ends or those caps are spent, where Mastodon takes the first 5 items of a reply's collection: the caps bound the
   work, and the 5-item stop loses replies Mastodon itself means to fetch. Accepted, 2026-11-16.
-- A refresh stores only the replies its stored rows link to the status, each under a reply it stored or found stored; a
-  status listed whose parent is not such a reply by the refresh's end is not stored, and a stored one is judged by its
-  stored parent. Mastodon stores every status a collection lists. Items are taken from any server, and their collections
-  only from the replying status's own server, as Mastodon's. Accepted, 2026-11-16.
+- A refresh, or a created status's walk below, stores only the replies its stored rows link to the status, each under a
+  reply it stored or found stored; a status listed whose parent is not such a reply by the walk's end is not stored, and
+  a stored one is judged by its stored parent. Mastodon stores every status a collection lists. A refresh takes items
+  from any server, as Mastodon's, and a created status's walk only from the listing status's own server; both read
+  collections only from the replying status's own server, as Mastodon's (but by origin, below). Accepted, 2026-11-16.
 - Only the refreshed status is paced: the replies a refresh reaches record nothing, so opening one of them later may
   refresh it at once, where Mastodon skips each fetched status for 15 minutes. A reply a refresh stores verifies its
   quote one hop short of a delivered status's, so its quoted status is stored with no quote work of its own.
@@ -559,8 +617,23 @@ Replies collections (the context's refresh and `GET /api/v1_alpha/async_refreshe
   the record is gone, the next refresh has a new id, where Mastodon's repeats; in between, the id answers 404 in both.
   `result_count` counts the statuses the latest refresh created, whoever may see them, as Mastodon's. Accepted,
   2026-11-16.
+- A status Kopje creates from a delivery or a user's request (an inbound `Create` or `Update`, a boost's original, an
+  `Add`'s status, a `QuoteRequest`'s quoting status, a search or `/authorize_interaction`) has the first 5 replies on
+  its own server that its replies collection's first page lists fetched, as Mastodon's `Create` does, and so does each
+  of those replies, up to 20 statuses and 10 collection documents a thread (Mastodon: up to 1,000 statuses a request).
+  A status Kopje stores otherwise (a reply a walk stores, a quoted status a verification stores, a pinned status a
+  profile's sync stores) has none fetched, where Mastodon fetches them for every status it creates: so no chain of
+  replies, quotes and pins starts walks without end. A walk not ended a day after its status arrived is dropped at its
+  next claim, which newer walks may delay. Accepted, 2026-11-16.
+- A created status's walk starts only for a public or unlisted status, where Mastodon's `Create#fetch_replies` checks no
+  visibility: the replies of a private, direct or limited status Kopje creates are not fetched. A created status's walk
+  takes an item only on the origin (scheme, host and port) of the status that lists it, and both walks read a collection
+  document only on the origin of the status whose replies it holds, where Mastodon compares hosts only
+  (`non_matching_uri_hosts?`): an item or document on the same host under another scheme or port is passed over.
+  Accepted, 2026-11-16.
 - A refresh does not update the statuses it finds stored, the refreshed one included, nor delete one whose document
-  is gone, nor refetch stored replies the collection no longer lists, all of which Mastodon does (#1607). Gap.
+  is gone, nor refetch stored replies the collection no longer lists, all of which Mastodon does; nor does a created
+  status's walk fetch the listed replies Kopje already stores, which Mastodon fetches again (#1607). Gap.
 
 Annual reports (`/api/v1/annual_reports`, `wrapstodon` of `/api/v2/instance`; MD-9):
 
@@ -731,6 +804,8 @@ Remote interaction (`/authorize_interaction`, the subscribe template and the FEP
   the look-up is a POST, which sends a signed-out browser to sign in and back to the form. What it finds is shown on
   the page with a Follow button (for a status, its author's), and replies, favourites and boosts stay in clients.
 - A status is shown only when an anonymous viewer may see it; Mastodon shows one the signed-in user may see.
+- A URL whose fetch resolves nothing shows the stored account it names after a server error or no answer, and never a
+  stored post, as Mastodon's `ResolveURLService` without a viewer (`authorize_interactions_controller.rb:33`).
 - `uri` is used only when it is an http(s) URL or an address of at most 2,048 UTF-8 bytes; anything else leaves the
   form empty.
 - Following or opening a post from the viewer's own server (a profile's Follow, a status's "Open on your server"):
@@ -794,13 +869,31 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
     fetching, or a document past the JSON bounds) ends the resolution with nothing instead of trying the page.
   - The first request keeps the document fetch's redirect rule (same origin, at most 5), where Mastodon follows 3 hops
     to any origin; the alternates follow none, as Mastodon's.
-- With `resolve=true`, a URL whose fetches resolve nothing is answered with the stored status or account whose uri it
-  is, unless the last of them answered 410, after which nothing is answered (`src/federation/resolve.ts` resolveUrl);
-  nothing stored is removed. Mastodon answers a stored status only after a 401, 403 or 404 and a stored account only
-  after a 5xx or no answer (`resolve_url_service.rb:38-44`), so Kopje also answers a stored status after any other
-  HTTP status, a network failure or an unusable document, and a stored actor's account after a failure of its fetch
-  other than the 410 that deletes it. It never looks a status up by its `url` either, as Mastodon does for a `/@user/id`
-  path (`:50-55`). These differences are tracked by #1662.
+- With `resolve=true`, a URL whose fetches resolve nothing is answered from stored data as Mastodon 4.7.5's
+  `ResolveURLService#process_url_from_db` answers it: the stored account whose uri it is after a 500, 502, 503, 504 or
+  no answer to the last of them; the stored post whose uri it is, or, for an address `/@user/id`, whose uri is
+  `/users/user/statuses/id` on the same host and whose url it is, after a 401, 403 or 404; nothing otherwise, and
+  nothing stored is removed. A fetch Kopje refuses before it is sent (the domain policy, the request's fetches or
+  deadline, a redirect to another origin or past 5) counts as no answer and keeps the earlier answer, as Mastodon
+  counts a connection error; an answer whose body the request's bytes cut counts as its status, as Mastodon records
+  the status before it reads the body within its limit. A boost is never answered (Mastodon's lookup by uri may find
+  one by its `Announce` id).
+
+Polls (`GET /api/v1/polls/:id`):
+
+- A signed-in read of a remote poll refreshes it from its post's document, applied as its author's `Update`, when
+  Mastodon 4.7.5's `Poll#possibly_stale?` holds (no `Update` applied since its end, and the last one applied more than
+  a minute ago). An attempt is reserved before its fetch, so a poll is fetched at most once a minute however many users
+  read it, and after an attempt of any outcome the next waits more than a minute too; Mastodon tries again at every
+  read until one applies. A refresh whose poll was written after its attempt began (a vote, another `Update`) applies
+  nothing.
+- A refresh that fails answers the poll as stored, where Mastodon answers 503 after a connection error or timeout.
+- A public or unlisted post's document is fetched as the instance actor, another's as the reader, where Mastodon signs
+  every refresh as the reader: the refresh of a poll anyone may see then tells its server nothing about who read it,
+  as search's fetches do, while a private, direct or limited post is reached only with the reader's access, which its
+  server already knows. When the fetch is refused (by the remote server, or by Kopje's domain policy), nothing is
+  refreshed, the poll is answered as stored, and the next refresh waits a minute; the other signer is not tried.
+- Nothing is fetched while the instance does not accept writes.
 
 Hashtags (the `Tag` entity):
 
@@ -936,8 +1029,9 @@ Request parameters:
   `media_attributes[][thumbnail]` (on a status edit) answer 422 `Validation failed: Thumbnail must be blank`, as
   Mastodon validates an image's thumbnail. Any file part or non-empty text is a thumbnail; empty text or JSON `null`
   is none. Text that is not a data URI answers 422, where Mastodon answers 500. The check runs before the file is
-  processed on an upload, before the media lookup on `/api/v1/media/:id`, and on an edit after the status is found and
-  before `media_ids` are looked up, for any entry with an `id` (Mastodon reads only entries for the post's media).
+  processed on an upload, after the media is found on `/api/v1/media/:id` (as Mastodon: media that is not the caller's
+  unattached media answers 404 first), and on an edit after the status is found and before `media_ids` are looked up,
+  for any entry with an `id` (Mastodon reads only entries for the post's media).
   Mastodon may report other validation errors first or alongside it. On `/api/v1/media/:id`, a multipart body larger
   than 1 MiB plus 16 KiB answers 413.
 - A multipart part with an empty filename is read as a text value, as workerd's parser reads it (Rack drops it as an
@@ -1002,6 +1096,18 @@ Home and lists (`/api/v1/timelines/home`, `/api/v1/timelines/list/:id` and their
   boost of it is among the 80 newest entries of the feed as the boost arrives (`REBLOG_FALLOFF`; 40 before 4.7), unless
   the user turned off its web preference `aggregate_reblogs` (on by default). Kopje reads home and lists from stored
   statuses on each request and keeps no record of a feed's order at the time a boost arrived. Accepted, 2026-11-15.
+
+Feed streams (the `public*` and `hashtag*` streams of `/api/v1/streaming`; Mastodon's `FanOutOnWriteService` and its
+streaming server's per-connection filter; R33 in [visibility.md](visibility.md)):
+
+- A status on `public*` and `hashtag*` is presented as REST presents it to the subscriber: its `favourited`,
+  `reblogged`, `muted`, `bookmarked`, `pinned`, poll `voted` and `own_votes`, quote approval, quote state and card
+  `missing_attribution` are the subscriber's, and `filtered` follows REST's filters (keyword and status filters, every
+  match). Mastodon renders these streams once with no viewer (the flags and votes absent, quote approval `denied`,
+  quotes judged for a signed-out reader) and adds `filtered` from keyword filters alone; Mastodon's web client, which
+  replaces the status on `status.update`, then shows the subscriber's favourite and bookmark as unset (Elk replaces the
+  text and keeps its marks).
+  Kopje's payload is what the subscriber's next read shows (`test/streaming/public.test.ts`). Accepted, 2026-11-16.
 
 Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; the keys not served are MD-2):
 
@@ -1233,10 +1339,19 @@ ID-7 in `docs/threat-model.md`):
   Mastodon moves `edited_at` only on a significant edit (`process_status_update_service.rb`), so after a newer
   metadata-only `Update` it applies an older content `Update`: an author editing A, then B, then A again, whose final A
   arrives before B, ends at B there. Mastodon's behaviour is an ordering bug.
-- A status Kopje fetches again that it stores (search, `/authorize_interaction`) is applied as its author's `Update`, as
-  `FetchRemoteStatusService` turns a stored status's `Create` into an `Update` (`fetch_remote_status_service.rb:48`). A
-  status fetched because it was not stored (a boost's original, a quoted status, an `Add`, a quote request's instrument)
-  that a delivery stored before the fetch completed keeps the stored version; Mastodon applies the fetched one.
+- A status Kopje fetches again that it stores (search, `/authorize_interaction`, a pin sync) is applied as its author's
+  `Update`, as `FetchRemoteStatusService` turns a stored status's `Create` into an `Update`
+  (`fetch_remote_status_service.rb:48`). A pin sync fetches every status its account lists on its origin and applies
+  only the account's own, as Mastodon's `expected_actor_uri`. A status fetched because it was not stored (a boost's
+  original, a quoted status, an `Add`, a quote request's instrument) that a delivery stored before the fetch completed
+  keeps the stored version; Mastodon applies the fetched one.
+- A public or unlisted status stored under the URI a pin sync fetches is removed when that URI answers 404 without a
+  redirect, as Mastodon's `fetch_status` (`fetch_remote_status_service.rb:86-98`); no retraction is recorded, as
+  Mastodon keeps no tombstone, so a later `Create` of it is stored again. A 410, a redirected 404 and a private status's
+  404 remove nothing; search removes nothing (`resolve_url_service.rb:38-61`). Kopje's removal runs in its job's
+  batches after the status is hidden, where Mastodon's `RemoveStatusService` deletes the row at once: an `Update` that
+  arrives in between applies to the hidden row and goes with it, where Mastodon's would create the status again if it
+  is recent.
 - An `Update` whose `updated` is more than five minutes ahead of the clock is ignored (`src/domain/remote-statuses.ts`);
   Mastodon has no such check. The edit is lost until another delivery or a later edit: the sender does not send it
   again when the receiver's clock catches up.

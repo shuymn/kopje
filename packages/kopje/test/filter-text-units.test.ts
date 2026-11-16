@@ -122,7 +122,7 @@ function question(n: number | string, choices: readonly string[], extra: Record<
   });
 }
 
-const CTX = { now: NOW, origin: "https://kopje.test", deliveredTo: null, fetched: true };
+const CTX = { now: NOW, storeNow: NOW, origin: "https://kopje.test", deliveredTo: null, fetched: true };
 
 function storeNote(db: Db, author: string, object: Record<string, unknown>): string {
   const input = parseRemoteStatus(object);
