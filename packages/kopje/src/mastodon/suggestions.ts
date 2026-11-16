@@ -7,7 +7,7 @@ import { limitParam, offsetParam } from "./params";
 // GET /api/v1/suggestions (Accounts) and /api/v2/suggestions (REST::SuggestionSerializer). Parameters as the
 // directory reads them: `limit` as limit_param (40 when absent, else the absolute value, at most 80; 0 or an
 // unreadable one answers none) and `offset` (a negative or unreadable one is 0). An offset past the end answers [],
-// where Mastodon's slice of nil answers 500. No Deprecation header on v1, as on Kopje's other deprecated routes.
+// where Mastodon's slice of nil answers 500.
 function suggestionsHandler(version: 1 | 2): ApiHandler {
   return withParams(async (c, deps, p) => {
     const input = {

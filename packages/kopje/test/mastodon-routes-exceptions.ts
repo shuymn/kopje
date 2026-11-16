@@ -20,13 +20,6 @@ const COLLECTIONS = (prefix: string) => [
 
 export const UNROUTED: Record<string, Exception> = {
   ...open(1589, "collections", ...COLLECTIONS("/api/v1"), ...COLLECTIONS("/api/v1_alpha")),
-  ...open(
-    1583,
-    "the profile API of Mastodon 4.6",
-    "GET /api/v1/profile",
-    "PATCH /api/v1/profile",
-    "PUT /api/v1/profile",
-  ),
   // Served outside ROUTES by streamingRoutes (src/mastodon/streaming.ts), as a WebSocket only.
   ...accepted("MD-8", "GET /api/v1/streaming", "GET /api/v1/streaming/*any"),
   // Mastodon's web app API and FASP.

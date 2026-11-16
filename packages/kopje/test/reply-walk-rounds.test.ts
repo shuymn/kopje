@@ -457,16 +457,17 @@ describe("stored items", () => {
     const note = mastodonNote(root);
     serveNote(t.web, withReplies(t.web, note, []));
     const rootId = await storedRoot(t, root, note);
-    // Three stored replies, each listing a reply of its own: one just published, one whose own refresh started
-    // within the cooldown, and one older with none (the one recorded).
+    // Three stored replies, each listing a reply of its own once stored (delivered listing none, so no create walk):
+    // one just published, one whose own refresh started within the cooldown, and one older with none (the one
+    // recorded).
     const at = (ms: number) => new Date(ms).toISOString();
     const recent = mastodonNote(bob, { inReplyTo: note.id, published: at(NOW - REPLIES_INITIAL_WAIT_MS + 1000) });
     const cooling = mastodonNote(bob, { inReplyTo: note.id });
     const older = mastodonNote(bob, { inReplyTo: note.id });
     const children = [recent, cooling, older].map((status) => reply(t.web, bob, status.id));
     for (const [i, status] of [recent, cooling, older].entries()) {
+      expect(await t.post(bob, create(bob, withReplies(t.web, status, [])))).toBe(202);
       serveNote(t.web, withReplies(t.web, status, [children[i]!.id]));
-      expect(await t.post(bob, create(bob, status))).toBe(202);
     }
     const coolingId = (await statusRow(t.store, cooling.id))!.id;
     await sql(

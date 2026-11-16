@@ -65,8 +65,7 @@ const MAPPING: Record<string, Mapping> = {
   "REST::CustomEmojiSerializer": { file: "src/domain/local-emojis.ts", typeName: "ListedEmoji" },
   "REST::AnnualReportSerializer": { file: "src/domain/annual-reports.ts", typeName: "AnnualReport" },
   "REST::PartialAccountSerializer": { file: "src/domain/accounts.ts", typeName: "PartialAccount" },
-  // No Kopje type yet: the profile API.
-  "REST::ProfileSerializer": { deferred: 1583 },
+  "REST::ProfileSerializer": { file: "src/domain/accounts.ts", typeName: "Profile" },
   "REST::CollectionSerializer": { deferred: 1589 },
   "REST::CollectionItemSerializer": { deferred: 1589 },
   "REST::CollectionWithAccountsSerializer": { deferred: 1589 },
