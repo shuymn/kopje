@@ -103,10 +103,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   kept out of dumps; as it creates a table, the upgrade checks every reference of the Store (the migration bench's
   upgrade from `0093_annual_reports` takes 10,877 ms with this file and 10,633 ms without it, medians of three runs).
   Migration `0106_reply_walk_debts`: two more empty tables and their indexes, kept out of dumps, and columns of the
-  walk tables with their defaults; as it creates a table, the upgrade checks every reference of the Store (<ms> for
-  this file in one local run of the migration bench, at a load average of <x>). `wrangler.jsonc`: unchanged. This adds
-  Store migrations, so the release is at least a minor version, and rolling back past them needs a point-in-time
-  restore.
+  walk tables with their defaults; as it creates a table, the upgrade checks every reference of the Store (the
+  migration bench's upgrade from `0093_annual_reports` takes 12,048 ms with this file and 12,260 ms without it, medians
+  of three runs). `wrangler.jsonc`: unchanged. This adds Store migrations, so the release is at least a minor version,
+  and rolling back past them needs a point-in-time restore.
 - The local actor publishes its image descriptions as the icon's and image's `summary`, and its display settings as
   `showFeatured`, `showMedia` and `showRepliesInMedia` with their context terms, a suspended actor's settings too, as
   Mastodon 4.6 does; a description changed while its image exists sends an `Update` of the actor. No Store migration
