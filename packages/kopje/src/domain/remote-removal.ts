@@ -1,13 +1,15 @@
+import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { isDistributable, type Visibility } from "./audience";
 import { deleteCard } from "./link-cards";
 import { retireQuoteOf } from "./quotes";
 import { streamDelete } from "./streaming";
 
 // The start of a remote status's removal (RES-6, VIS-1), for its author's Delete after the retractions it records
-// (inbox.ts deleteObject) and for a 404 at its own URI to a pin sync's fetch, which records none (remote-collections.ts
-// removeGone): its delete job, the streamed delete, the hide and the end of its quote, each outside the batch's
-// budget, after which the job's batches remove the rest (inbox.ts runJobBatch). The caller decides whether a batch
-// runs in its own transaction.
+// (inbox.ts deleteObject) and for a 404 at its own URI to a pin sync's or a replies walk's fetch, which records none
+// (removeGone: remote-collections.ts completePinFetches, reply-walks.ts): its delete job, the streamed delete, the hide
+// and the end of its quote, each outside the batch's budget, after which the job's batches remove the rest (inbox.ts
+// runJobBatch). The caller decides whether a batch runs in its own transaction.
 
 // The hide of a remote status whose removal runs (VIS-1): it writes the status, the account's last status, which the
 // trigger of migration 0021_directory moves back, and deletes the status's card (link-cards.ts: a direct status holds
@@ -52,4 +54,50 @@ export function startRemoval(db: Db, statusId: string, actorUri: string, now: nu
   // shows it (VIS-27), and no stamp is served (VIS-28), while the removal runs.
   retireQuoteOf(db, statusId, now);
   return created !== undefined;
+}
+
+// Mastodon's FetchRemoteStatusService#fetch_status (v4.7.5 fetch_remote_status_service.rb:86-98): a 404 at a status's
+// own URI, to a pin sync's fetch or a replies walk's fetch of a node other than its root, removes the status stored
+// under that URI when the fetch completes, by whichever author (its origin is the URI's, ID-2), when it is a remote
+// original (never a local status, ID-3), public or unlisted (isDistributable), and not withdrawn (its removal not
+// begun). The removal starts as a Delete's does (startRemoval), with no retraction recorded and nothing forwarded, as
+// Mastodon's RemoveStatusService keeps no tombstone: a later Create of the uri stores it again once the removal ended.
+// Its batches run in the inbound job rounds; its parent's replies_count drops at once. Whether a removal started.
+export function removeGone(db: Db, uri: string, now: number): boolean {
+  const status = db.first<{
+    id: string;
+    reblog_of_id: string | null;
+    in_reply_to_id: string | null;
+    visibility: Visibility;
+    withdrawn: number;
+    author_uri: string;
+    local: number;
+  }>(
+    `SELECT s.id, s.reblog_of_id, s.in_reply_to_id, s.visibility, s.withdrawn,
+			(SELECT a.uri FROM accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE a.id = s.account_id) AS author_uri,
+			EXISTS (SELECT 1 FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} WHERE l.account_id = s.account_id)
+				AS local
+		FROM statuses s WHERE s.uri = ?`,
+    uri,
+  );
+  if (
+    status === undefined ||
+    status.local === 1 ||
+    status.reblog_of_id !== null ||
+    !isDistributable(status.visibility) ||
+    status.withdrawn !== 0
+  ) {
+    return false;
+  }
+  const created = startRemoval(db, status.id, status.author_uri, now);
+  // The hidden reply no longer counts in its parent's replies_count (its public and unlisted replies,
+  // statuses.ts recountStatus), which Mastodon's RemoveStatusService decrements at once; the removal's last batch
+  // recounts the parent (deleteStatusWithin), which sets the same value. One key write.
+  if (created && status.in_reply_to_id !== null) {
+    db.run(
+      `UPDATE statuses INDEXED BY ${STATUSES_ID_INDEX} SET replies_count = max(replies_count - 1, 0) WHERE id = ?`,
+      status.in_reply_to_id,
+    );
+  }
+  return created;
 }

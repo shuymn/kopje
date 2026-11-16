@@ -369,7 +369,7 @@ describe("stores only the thread", () => {
     expect(await walkRow(t.store, rootId)).toMatchObject({ finished_at: NOW, result_count: 2 });
   });
 
-  it("judges a stored status by its stored row, not by its fetched document, and does not update it", async () => {
+  it("judges a stored status by its stored row, not by its fetched document, and applies only its newer version", async () => {
     const { t, root, bob } = await world();
     await followed(t, bob, DAVE);
     const note = mastodonNote(root);
@@ -383,7 +383,8 @@ describe("stores only the thread", () => {
     for (const status of [elsewhere, inside]) {
       expect(await t.post(bob, create(bob, status))).toBe(202);
     }
-    // Their documents now name the other parent, and other content; each lists a reply of its own by its collection.
+    // Their documents now name the other parent, an edit with a newer version; each lists a reply of its own by its
+    // collection.
     const childOfElsewhere = reply(t.web, bob, elsewhere.id);
     const childOfInside = reply(t.web, bob, inside.id);
     for (const [status, parent, child] of [
@@ -392,7 +393,13 @@ describe("stores only the thread", () => {
     ] as const) {
       const collection = `${status.id}/replies`;
       t.web.serve(collection, { "@context": AS, id: collection, type: "OrderedCollection", orderedItems: [child.id] });
-      serveNote(t.web, { ...status, inReplyTo: parent, content: "<p>edited</p>", replies: collection });
+      serveNote(t.web, {
+        ...status,
+        inReplyTo: parent,
+        content: "<p>edited</p>",
+        updated: "2026-10-11T18:00:00Z",
+        replies: collection,
+      });
     }
     const before = await statusRow(t.store, inside.id);
     serveNote(t.web, withReplies(t.web, note, [elsewhere.id, inside.id]));
@@ -401,8 +408,15 @@ describe("stores only the thread", () => {
     expect(await storedOf(t.store, [childOfInside.id, childOfElsewhere.id])).toEqual([childOfInside.id]);
     expect(t.web.fetched).not.toContain(`${elsewhere.id}/replies`);
     expect(t.web.fetched).toContain(`${inside.id}/replies`);
-    // Neither stored status was updated: content and parent as stored.
-    expect(await statusRow(t.store, inside.id)).toEqual({ ...before, replies_count: before!.replies_count + 1 });
+    // inside, linked under the root, takes the edit (#1607 D11) and keeps its stored parent; elsewhere, ended on its
+    // stored parent, is not updated.
+    expect(await statusRow(t.store, inside.id)).toMatchObject({
+      content: "<p>edited</p>",
+      edited_at: expect.any(String),
+      in_reply_to_id: before!.in_reply_to_id,
+      in_reply_to_uri: note.id,
+      replies_count: before!.replies_count + 1,
+    });
     expect((await statusRow(t.store, elsewhere.id))?.content).not.toContain("edited");
   });
 
@@ -622,7 +636,8 @@ describe("charges", () => {
     expect(1 + 1 + others.length + 1).toBe(REPLY_STEPS_PER_WALK);
     const counting = countingStore(t.store);
     const deps = inboxDeps(() => counting.stub, t.web.loader);
-    expect(await walkReplies(t.env, deps)).toBe(false);
+    // The walk is due again after the round: its nodes' scans (#1607 D12) are left.
+    expect(await walkReplies(t.env, deps)).toBe(true);
     const completions = counting.records.filter((record) => record.name === "completeReplyStep");
     // The turn's eighth step (P) is told no more and hands out nothing; X, returned, keeps one attempt.
     const last = completions[REPLY_STEPS_PER_WALK - 1]!;
@@ -1069,12 +1084,12 @@ describe("reading a collection: raw entries, skips and reading again (RepliesRea
     return counting.records
       .filter((record) => record.name === "completeReplyStep")
       .map((record) => record.args[1] as ReplyStepInput)
-      .filter((input) => input.author === undefined);
+      .filter((input) => input.author === undefined && input.step.stage !== "store");
   }
 
   const readsOf = (inputs: readonly ReplyStepInput[], uri: string) =>
     inputs.filter((input) => input.step.uri === uri).map(({ step }) => ({ stage: step.stage, skip: step.skip }));
-  // A step as handed out, without its number.
+  // A step as handed out, without its number (the Store-only steps of the walk's scans left out by countedRounds).
   const placeOf = ({ step }: ReplyStepInput) => ({
     uri: step.uri,
     stage: step.stage,

@@ -38,7 +38,7 @@ import {
   pollOptionsSql,
   tagNameSql,
 } from "./status-bounds";
-import { shownCardUrl } from "./status-presenter";
+import { presentedMediaDescription, shownCardUrl } from "./status-presenter";
 import { CARD_COLUMN_MAP } from "./status-rows";
 
 // Outbound intents. A local change that federates records the ActivityPub activity it means and the audience it is
@@ -347,7 +347,7 @@ function attachmentsOf(facts: StatusFacts): Record<string, unknown>[] {
             type: "Document",
             mediaType: m.content_type,
             url: url.href,
-            name: m.description === "" ? null : m.description,
+            name: presentedMediaDescription(m.description),
             ...(m.blurhash === null ? {} : { blurhash: m.blurhash }),
           },
         ];
@@ -1078,6 +1078,7 @@ export const getLegacyObject = readOperation<{ uuid: string; origin: string }, L
   if (image === undefined || url === null) {
     return { location: null, image: null };
   }
+  const name = presentedMediaDescription(image.description);
   return {
     location: null,
     image: JSON.stringify({
@@ -1087,7 +1088,7 @@ export const getLegacyObject = readOperation<{ uuid: string; origin: string }, L
       attributedTo: image.author,
       url: url.href,
       ...(image.content_type === null ? {} : { mediaType: image.content_type }),
-      ...(image.description === "" ? {} : { name: image.description }),
+      ...(name === null ? {} : { name }),
     }),
   };
 });

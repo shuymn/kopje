@@ -65,8 +65,8 @@ import { postForm, signIn } from "./web-helpers";
 
 // The Create trigger of the walks of replies collections (domain/reply-walk-create.ts; Mastodon 4.7.5's
 // Create#fetch_replies and FetchRepliesService): which stores record a create walk, which never do, what a create walk
-// reads (first pages, the first items on the node's origin that Kopje does not store), its caps, its order among the
-// walks, and a context refresh started over one. The Store's clock is the faked Date.
+// reads (first pages, the first items on the node's origin, stored or not), its caps, its order among the walks, and a
+// context refresh started over one. The Store's clock is the faked Date.
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -401,13 +401,11 @@ describe("the stores that record a create walk (StoreContext.readReplies)", () =
     expect(await receive(listed)).toMatchObject({ applied: true, jobsPending: true });
   });
 
-  it("records none for a private status, for items it stores or that are on another origin, nor for nothing listed", async () => {
+  it("records none for a private status, for items on another origin, nor for nothing listed", async () => {
     const { t, bob, erin } = await world();
-    const stored = mastodonNote(bob);
-    expect(await t.post(bob, create(bob, stored))).toBe(202);
     const cases = [
       mastodonNote(bob, { to: [`${bob.uri}/followers`], cc: [] }),
-      withReplies(t.web, mastodonNote(bob), [stored.id, mastodonNote(erin).id]),
+      withReplies(t.web, mastodonNote(bob), [mastodonNote(erin).id]),
       withReplies(t.web, mastodonNote(bob), []),
       { ...mastodonNote(bob), replies: `${OTHER_ORIGIN}/replies` },
     ];
@@ -549,16 +547,16 @@ describe("the stores that never record one: a walk's, quote verification's and a
 
 describe("the Store's own reading of a create walk's items, whatever the Worker hands it", () => {
   // Of a node's entries: one of another origin, then same-origin ids, one of them stored: the first CREATE_WALK_ITEMS on
-  // the node's origin, less the stored one.
+  // the node's origin, the stored one included (FetchRepliesService fetches its items stored or not, #1607 D13).
   async function entries(t: Setup, bob: TestActor) {
     const stored = mastodonNote(bob);
     expect(await t.post(bob, create(bob, stored))).toBe(202);
     const own = Array.from({ length: 7 }, (_, i) => `${bob.uri}/statuses/x${i}`);
     const all = [`${OTHER_ORIGIN}/statuses/1`, own[0]!, stored.id, ...own.slice(1)];
-    return { all, taken: [own[0]!, ...own.slice(1, CREATE_WALK_ITEMS - 1)] };
+    return { all, taken: [own[0]!, stored.id, ...own.slice(1, CREATE_WALK_ITEMS - 1)] };
   }
 
-  it("records at most CREATE_WALK_ITEMS items on the status's origin that it does not store", async () => {
+  it("records at most CREATE_WALK_ITEMS items on the status's origin, stored or not", async () => {
     const { t, bob } = await world();
     const { all, taken } = await entries(t, bob);
     const s = mastodonNote(bob);
@@ -918,7 +916,7 @@ describe("claims of create walks", () => {
       more: true,
       fetched: { kind: "failed" },
     });
-    expect(ended).toEqual({ next: null, need: null, done: true });
+    expect(ended).toEqual({ next: null, need: null, done: true, jobsPending: false });
     expect(await walkRow(t.store, a)).toBeUndefined();
     expect(await walkNodes(t.store, a)).toEqual([]);
     expect(await claim(t)).toMatchObject({ statusId: b, kind: "create" });
@@ -1072,7 +1070,8 @@ describe("plans (RES-7)", () => {
     );
     expect(recording.result).toBe(true);
     const claimed = await plannedRun(t, /reply_walk/, claimReplyWalk, { now: NOW }, true);
-    expect(claimed.result).toMatchObject({ statusId: sid, kind: "create", step: { uri: items[0] } });
+    // The stored item first: a create walk records the items it lists stored or not (#1607 D13).
+    expect(claimed.result).toMatchObject({ statusId: sid, kind: "create", step: { uri: stored.id } });
     const statements = [...recording.plans, ...claimed.plans];
     for (const { query, plan } of statements) {
       expect(scansOf(plan, ["reply_walks", "reply_walk_nodes", "statuses"]), query).toEqual([]);

@@ -333,11 +333,11 @@ against their own instance. TLS is assumed between all parties.
   fetches nothing for an address or URL on the instance's domain (`upsertRemoteActor`, `resolutionTarget` in
   `src/domain/remote-statuses.ts`); `test/instance-actor-handle.test.ts`. _Enforced (main)_ for statuses, favourites
   and boosts: a remote object must have its actor's origin and name no other author, and only its stored author
-  updates or deletes it, except that a 404 at a remote original's own URI to a pin sync's fetch (an answer of that
-  URI's origin, ID-2) removes it whoever's, as Mastodon's `fetch_status` does; so a local status is never created,
-  updated or deleted from outside (`storeRemoteStatus` and `updateRemoteStatus` in
+  updates or deletes it, except that a 404 at a remote original's own URI to a pin sync's or a replies walk's fetch (an
+  answer of that URI's origin, ID-2) removes it whoever's, as Mastodon's `fetch_status` does; so a local status is never
+  created, updated or deleted from outside (`storeRemoteStatus` and `updateRemoteStatus` in
   `src/domain/remote-statuses.ts`, `deleteObject` in `src/domain/inbox.ts`, `removeGone` in
-  `src/domain/remote-collections.ts`, which skips a local author's row); `test/inbox-statuses.test.ts` ("nobody
+  `src/domain/remote-removal.ts`, which skips a local author's row); `test/inbox-statuses.test.ts` ("nobody
   remote updates a local one (ID-3)", "nothing of anyone else’s (ID-6, ID-3)"). A status matched by an object's
   `atomUri` (Mastodon's `Create#find_existing_status`, which `Update#update_status` also reaches, `Delete#delete_status`
   and `Undo#undo_announce`) keeps the rule: a `Create` or an `Update` whose `atomUri` names another author's status, a
@@ -465,28 +465,33 @@ against their own instance. TLS is assumed between all parties.
   a peer's cached copy from before an edit rolls nothing back; an `Update` dated more than 5 minutes ahead
   of the clock is ignored (no change, history or notification), and its edit waits for another delivery; a status whose
   `Delete` was recorded takes no `Update`. A status Kopje fetches again that it stores under the document's id, by its
-  author (search, `/authorize_interaction`, a signed-in poll read, and a pin sync, which fetches every status its
-  account's featured collection lists on the account's origin, stored or not: `storeFetchedStatus` in
-  `src/domain/remote-statuses.ts`), is applied as that author's `Update` under these rules, as Mastodon's
-  `FetchRemoteStatusService` turns it into one, and one it does not store is its `Create`, its document taken only from
-  its `id` (ID-2); a pin sync applies only its account's own (Mastodon's `expected_actor_uri`), so another author's
-  listed status is fetched and left as stored. A 404 or 410 to a search's or an interaction's fetch removes nothing; a
-  failed fetch answers a stored status only after a 401, 403 or 404 and a stored account only after a 5xx or no answer
-  (`resolve_url_service.rb:38-63`), and the interaction page never a stored status (`test/search-refetch.test.ts`,
-  `test/search-fallback.test.ts`, `test/interaction.test.ts` ("applies a newer version of a stored status it finds
-  again", "finds nothing for a stored status whose fetch answers 410, and keeps it", "shows no stored status after a
-  failed fetch")). A 404 to a pin sync's fetch, answered by the status's own URI with
-  no redirect, removes the status stored under that URI when the fetch completes, judged on the row stored then (a
-  status whose `Create` arrived after the sync's read included), when it is a remote original, public or unlisted, and
-  not withdrawn, whoever its author, as Mastodon's `fetch_status` (`fetch_remote_status_service.rb:86-98`): its removal
-  starts as a `Delete`'s does but records no retraction and no deleted object and forwards nothing, as Mastodon's
-  `RemoveStatusService` keeps no tombstone, so a later `Create` of the uri stores it again once the removal ended; a
-  410, a 404 after a redirect, and a private status's 404 remove nothing (`removeGone` in
-  `src/domain/remote-collections.ts`, `goneAt` in `src/federation/actor-gone.ts`; `test/remote-collections.test.ts`
-  ("a sync's fetch of every listed status")).
-  An `Update` whose poll is accepted, its values changed or not, records the Store's time as the poll's last fetch
-  (`polls.fetched_at`); a refused or removed poll and a `Create` record none (`test/polls-federation.test.ts` ("marks
-  the poll fetched on an accepted Update, not on a Create or a refused one")). A poll read's refresh applies its
+  author (search, `/authorize_interaction`, a signed-in poll read, a pin sync, which fetches every status its account's
+  featured collection lists on the account's origin, stored or not, and a replies walk, which fetches every node it
+  records, its root included, stored or not: `storeFetchedStatus` in `src/domain/remote-statuses.ts`), is applied as
+  that author's `Update` under these rules, as Mastodon's `FetchRemoteStatusService` turns it into one, and one it does
+  not store is its `Create`, its document taken only from its `id` (ID-2); a pin sync applies only its account's own
+  (Mastodon's `expected_actor_uri`), so another author's listed status is fetched and left as stored. A 404 or 410 to a
+  search's or an interaction's fetch removes nothing; a failed fetch answers a stored status only after a 401, 403 or
+  404 and a stored account only after a 5xx or no answer (`resolve_url_service.rb:38-63`), and the interaction page
+  never a stored status (`test/search-refetch.test.ts`, `test/search-fallback.test.ts`, `test/interaction.test.ts`
+  ("applies a newer version of a stored status it finds again", "finds nothing for a stored status whose fetch answers
+  410, and keeps it", "shows no stored status after a failed fetch")). A 404 to a pin sync's fetch or to a replies
+  walk's fetch of a node other than its root (the root's 404 removes nothing, as Mastodon hands the root's body to
+  `FetchReplyWorker`), answered by the status's own URI with no redirect, removes the status stored under that URI when
+  the fetch completes, judged on the row stored then (a status whose `Create` arrived after the sync's read or the
+  node's hand-out included), when it is a remote original, public or unlisted, and not withdrawn, whoever its author, as
+  Mastodon's `fetch_status` (`fetch_remote_status_service.rb:86-98`): its removal starts as a `Delete`'s does but
+  records no retraction and no deleted object and forwards nothing, as Mastodon's `RemoveStatusService` keeps no
+  tombstone, so a later `Create` of the uri stores it again once the removal ended, and the hidden reply leaves its
+  parent's `replies_count` at once (one key write; the removal's last batch recounts the parent to the same value), as
+  `RemoveStatusService` decrements it; a 410, a 404 after a redirect, and a private status's 404 remove nothing
+  (`removeGone` in `src/domain/remote-removal.ts`, `goneAt` in `src/federation/actor-gone.ts`;
+  `test/remote-collections.test.ts` ("a sync's fetch of every listed status"), `test/reply-walk-refetch.test.ts`,
+  `test/status-delete.test.ts` ("a pin sync's 404 of a stored reply counts it off its parent at once", "a walk applies
+  its root's edit, and its root's 404 removes nothing", "a walk's 404 of a stored reply before its Delete and a Create
+  retry")). An `Update` whose poll is accepted, its values changed or not, records the Store's time as the poll's last
+  fetch (`polls.fetched_at`); a refused or removed poll and a `Create` record none (`test/polls-federation.test.ts`
+  ("marks the poll fetched on an accepted Update, not on a Create or a refused one")). A poll read's refresh applies its
   document only while the poll's revision is still the one its reservation took: every write of the poll moves it to
   another value within 0 to 2^53 − 1 (the `polls_revision` trigger, the reservation included), so a refresh never
   overwrites a vote, an `Update` or a newer reservation committed during its fetch (`refreshPoll` in
@@ -545,11 +550,11 @@ against their own instance. TLS is assumed between all parties.
   new kept key (`statuses_account_reblogs_kept`, migration 0075, unique), and the original's removal continues the
   withdrawn boost's `Undo` instead of recording another (`test/unboost.test.ts`). While
   an original's removal runs (its hide, which marks `statuses.withdrawn`, is done: by a local status's `DELETE`, or by
-  a remote status's `Delete` in its own transaction, or by a 404 at its own URI to a pin sync's fetch, judged on the
-  row stored when the fetch completes, which records no retraction; or its author's purge started: `removalBegunSql` in
-  `src/domain/audience.ts`), its local boosters cannot undo their boosts: an unreblog of it and a `DELETE` of a boost
-  of it answer 404 before any write (as Mastodon's unreblog of a discarded status does), so no second `Undo` is
-  recorded and no receipt is deleted before the removal's own `Undo` has taken it as a target
+  a remote status's `Delete` in its own transaction, or by a 404 at its own URI to a pin sync's or a walk's fetch,
+  judged on the row stored when the fetch completes, which records no retraction; or its author's purge started:
+  `removalBegunSql` in `src/domain/audience.ts`), its local boosters cannot undo their boosts: an unreblog of it and a
+  `DELETE` of a boost of it answer 404 before any write (as Mastodon's unreblog of a discarded status does), so no
+  second `Undo` is recorded and no receipt is deleted before the removal's own `Undo` has taken it as a target
   (`test/remote-delete-cleanup.test.ts`). `test/inbox-statuses.test.ts` ("ID-7: duplicate and reordered Create and
   Delete", "ignores an Update that is not newer"), `test/inbox-statuses-edge.test.ts` ("ID-7: the Update watermark",
   "leaves nothing for every order of Create, Update and Delete", "ID-7: an Update that names no version, of an edited
@@ -590,15 +595,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 - **VIS-1: one rule decides who may see a status**, Mastodon's `StatusPolicy#show?`: the statuses of an unavailable
   author (a suspended local account, or a remote account whose deletion has started) are seen by nobody; nor is a
   withdrawn status (`statuses.withdrawn`: its removal runs in a job, its `Delete` or `Undo` recorded, or its own URI
-  answered 404 to a pin sync's fetch (ID-7), or, for an identity past its stored bound, skipped), its author included
-  (it stays a candidate of its author's reads, where the rule hides it: the cursor rule in `docs/visibility.md`); the
-  author sees all else of their own; an author who blocks the viewer hides everything from them; `public`
-  and `unlisted` are seen by everyone else; `private` by accepted followers and the mentioned (silent included);
-  `direct` and `limited` by the mentioned (silent included) only. Every read path uses the same SQL rule, from the one
-  policy module (`docs/visibility.md`; `test-node/policy-boundary.test.ts` keeps the rule out of other modules). A
-  remote account is unavailable from the first transaction of its purge (`accounts.deleted_at`), so nothing of it is
-  shown while the purge's batches remove its relationships and statuses (`test/inbox-regressions.test.ts` ("shows
-  nothing of the actor from the Delete on")). A remote status its author deletes is hidden in the `Delete`'s own
+  answered 404 to a pin sync's or a replies walk's fetch (ID-7), or, for an identity past its stored bound, skipped),
+  its author included (it stays a candidate of its author's reads, where the rule hides it: the cursor rule in
+  `docs/visibility.md`); the author sees all else of their own; an author who blocks the viewer hides everything from
+  them; `public` and `unlisted` are seen by everyone else; `private` by accepted followers and the mentioned (silent
+  included); `direct` and `limited` by the mentioned (silent included) only. Every read path uses the same SQL rule,
+  from the one policy module (`docs/visibility.md`; `test-node/policy-boundary.test.ts` keeps the rule out of other
+  modules). A remote account is unavailable from the first transaction of its purge (`accounts.deleted_at`), so nothing
+  of it is shown while the purge's batches remove its relationships and statuses (`test/inbox-regressions.test.ts`
+  ("shows nothing of the actor from the Delete on")). A remote status its author deletes is hidden in the `Delete`'s own
   transaction, before any batch removes a mention, so no read and no new local boost sees it from then on
   (`test/forward-delete.test.ts` ("hides an imported status with 500 mentions at once")). _Enforced (main):_
   `src/domain/audience.ts` (`visibleSql`, `canView`); `test/audience.test.ts`, `test/visibility.test.ts` (single status,
@@ -3094,6 +3099,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   triggers `<table>_bounds_insert` and `<table>_bounds_update` (`migrations/0048_stored_bounds.sql`) abort any write
   where `P(NEW.x) IS NOT NEW.x`. Reads take these columns as stored: since P(P(x)) = P(x), a rewritten row presents
   what a read through P presented before. The columns that keep read-time projections are listed at `STORED_COLUMNS`.
+  A media description's P (`mediaDescriptionSql`) bounds it by bytes as well: text within 40,000 UTF-8 bytes
+  (`MEDIA_DESCRIPTION_BYTES`, four a code point) and 10,000 SQLite characters, which count a malformed run as one;
+  migration `0105_media_description_bytes` set every stored description to it (a malformed run past the bytes, or a
+  BLOB, only an import holds) and made `media_attachments`' pair of triggers again with it, so an import refuses one
+  past it; on text within the bytes it is 0048's cut, so no writer's description changes (`test/migrations.test.ts`
+  ("0105_media_description_bytes"), `test/dump-import.test.ts` ("round-trips a media description at its byte bound",
+  "restores a dump taken before 0105_media_description_bytes")).
   `test/stored-bounds.test.ts` ("P is idempotent and the writer's output is its fixed point", "answers every converted
   row after the rewrite"), `test/migrations.test.ts` (0048: "stores each covered value as P(x)", "refuses a value one
   past its bound on insert and update", "fails by its check on an uploaded media URL past the bound"),
@@ -3246,8 +3258,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   stored rows, or NULL when an input is not text after affinity (judged in SQL first, so no JavaScript runs on it); a
   text change clears the column in its own SET, so a hide fires no trigger. A stored figure never raises what is matched
   past the shared allowance (VIS-18). The measure decodes the same stored text as one presentation of the row does, so
-  its cost is a presentation's: media descriptions are bounded in code points (0048), so a malformed UTF-8 run in an
-  imported one may hold many bytes in few code points (`test/migrations.test.ts` ("0079_filter_text_units"),
+  its cost is a presentation's: media descriptions are bounded by bytes as well as characters (0105: at most 40,000
+  bytes, so a malformed UTF-8 run in an imported one decodes to at most 40,000 U+FFFD), and the filter text holds each
+  as presented, its first 10,000 code points (`test/migrations.test.ts` ("0079_filter_text_units"),
+  `test/status-bounds.test.ts` ("leaves a description's text past MAX_MEDIA_DESCRIPTION_LENGTH code points out of the
+  filter text"),
   `test/filter-text-units.test.ts`). _Enforced (main)_ for status times: `statuses.published_at` and `edited_at` have
   no stored bound (TEXT, no CHECK or trigger; adding one would rewrite every status, each row whole), so an imported or
   converted row may hold any value there. The writers store only the 24-byte ISO form: the remote writers (`remoteTime`
@@ -3385,7 +3400,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/domain/status-presenter.ts`, `src/domain/status-rows.ts`; `test/answer-budgets.test.ts`,
   `test/status-rows.test.ts`, `test/notification-budgets.test.ts`, `test/notification-group-budgets.test.ts`,
   `test/conversation-budgets.test.ts`, `test/account-page-budgets.test.ts`, `test/activitypub-budgets.test.ts`,
-  `test/admin-reports.test.ts`). Streaming events stay one unit each, and an event over 512 KiB is skipped whole. Its
+  `test/admin-reports.test.ts`). Streaming events stay one unit each, and an event over 512 KiB is skipped whole,
+  measured from its presented object before any of it is encoded (RES-6). Its
   payload counts the media descriptions with the rest of the event, formatted text expanded as it is encoded (a link
   written twice, profile fields, poll choices), so a local post and its quote reach it with descriptions at their
   length beside long links, or with descriptions of control characters such as U+0001, as statuses near their stored
@@ -3397,7 +3413,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (RES-2, stored values) and are read as stored, but the content warning, read through a cut of 16,382 stored bytes
   (`spoilerReadSql`, which cuts no value a writer stores): content and source text within 128 KiB as a
   JSON string, a content warning within 16 KiB, a status url within 4,096 bytes, attachment URLs within 2,048,
-  descriptions within 10,000 code points and meta within 1 KiB, a blurhash within 54 bytes, and an edit's content,
+  descriptions within 10,000 code points and `MEDIA_DESCRIPTION_BYTES` (40,000) and presented within 10,000 code
+  points after decoding (`presentedMediaDescription`, live, scheduled, from an edit's snapshot, as a Note's or a legacy
+  Image's `name` and in the filter text), meta within 1 KiB, a blurhash within 54 bytes, and an edit's content,
   warning and choices the same. An import may still hold malformed UTF-8 that passes the triggers' counts and decodes
   past them (0xFF and any number of continuation bytes is one character to the warning's `substr`; `json_quote`
   counts a malformed byte as one, and it decodes to a U+FFFD of three bytes), so content, source text and the warning
@@ -3574,11 +3592,22 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   a create walk, deleted when it ends; neither is dumped. A store that creates a remote status records at most one
   create walk, one walk row and at most 1 + `CREATE_WALK_ITEMS` (5) = 6 nodes, in its transaction
   (`src/domain/reply-walk-create.ts`; `test/reply-walk-create.test.ts` ("records at most CREATE_WALK_ITEMS items on
-  the status's origin that it does not store")). A completion stores at most two statuses (the reply and the self-quote
+  the status's origin, stored or not")). A completion stores at most two statuses (the reply and the self-quote
   it embeds) and one author, each status with its notifications only within the real-time window and within the
   per-status figure above, inserts at most 200 nodes and updates at most 400 (`src/domain/reply-walks.ts`;
-  `test/reply-walks.test.ts` ("prunes at most WALK_PRUNE_BATCH finished walks a claim", "records at most
-  WALK_STATUSES nodes", "stores a reply and its embedded self-quote … within the figure")).
+  `test/reply-walks.test.ts` ("prunes at most WALK_PRUNE_BATCH finished walks a claim", "records at most WALK_STATUSES
+  nodes", "stores a reply and its embedded self-quote … within the figure")). Besides these, a completion that applies a
+  stored node's document writes at most what an inbound `Update` at its caps writes, and one that starts a node's
+  removal at most what that start writes (its job, the streamed delete, `HIDE_ROWS`, the quote's retirement, its
+  parent's count), each with at most two debts paid and one collection debt owed after one replacement delete
+  (`test/reply-walk-debt-bounds.test.ts` ("updates a node at every cap of updateRemoteStatus within the figure", "starts
+  a node's removal within the figure")). Migration `0106_reply_walk_debts` adds `reply_walk_cursors`, at most one row
+  per stored status, and `reply_walk_debts`, at most one row per root and owed status and one per status and depth (so
+  at most `WALK_STATUSES` × S rows), neither dumped (a restored Store scans from each status's first reply again), both
+  deleted with their statuses by `STATUS_CHILDREN`'s child steps within the batch budget, the cascades only a backstop
+  (`test/cascade-guard.test.ts` ("deletes a status's cursor and debts before it within the budget", "deletes 450 debts
+  of a root over batches, each within PURGE_BATCH, before the status"), `test/dump-import.test.ts` ("leaves a replies
+  walk's cursors and debts out, and an import with both empty")).
   _Enforced (main)_ for collections: an account holds at most 10 collections through the API (`COLLECTION_LIMIT`) and
   50 stored, a collection at most 25 live items and 50 stored (VIS-33's triggers, RES-2); an add that meets the stored
   bound deletes the collection's oldest retired item first. The 5-minute cron deletes retired (rejected or revoked)
@@ -4287,23 +4316,28 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   purge's batch deletes a quote holding one within a third of the rows left. `test/quote-requests.test.ts`,
   `test/cascade-guard.test.ts`.
   Replies walks: _Enforced (main):_ only job rounds walk a remote status's replies collection
-  (`src/domain/reply-walks.ts`, `src/federation/replies.ts`), one document a step. A round claims at most
-  `REPLY_WALKS_PER_ROUND` (2) walks one after another and runs at most `REPLY_STEPS_PER_WALK` (8) steps of each, each
-  step with a whole fetch budget of its own (8 fetches), so a round makes at most 16 steps, 128 requests and 37 own
-  Store calls (the domain read, a claim and a release a walk, at most two completions a step), besides the loaders'
-  signing key and policy reads. The Store hands a node to the Worker only by charging it in the same transaction: one of
-  its `NODE_ATTEMPTS` (2) for the document it reads, and at every stage but the status one of the walk's `WALK_PAGES`
-  (100), a document read again past the entries an earlier step took included; the round's last completion hands out and
-  charges nothing, and a charge stays whatever the step's end (a lost lease, a round that died after its fetch). Each
-  hand-out is numbered, and only the completion of the one awaited is applied, once: one repeated, or of an earlier
-  hand-out, changes and charges nothing, a chain of pages that names a page again included (`test/reply-walks.test.ts`
-  ("applies a page's completion once when the page names itself next", "applies a page's completion once when a later
-  page names it again", "applies a transient failure once")). So a walk records at most `WALK_STATUSES` (200) nodes, the
-  root included, and hands out at most 2 × 200 + 100 = 500 documents (4,000 requests) however its rounds end, with no
-  counter of claims. A claim drops at most `REPLY_CLAIM_DROPS` + 1 (4) walks before it answers that more are due, and a
-  hand-out ends at most 200 spent nodes before it finds one to fetch; the lease (`REPLY_WALK_LEASE_MS`, 10 minutes) is
-  checked as the module loads against twice a walk's turn. A step holds a status document and an actor of at most 1 MiB
-  each and carries at most `REPLY_READ_ENTRIES` (200) entries of a chain past its skip to the Store (819,200 bytes at
+  (`src/domain/reply-walks.ts`, `src/federation/replies.ts`), one document a step. A step's stored status, the root
+  included, is applied as its author's `Update` (`storeFetchedStatus`, within an inbound `Update`'s caps), and a 404 at
+  the own URI of a node other than the root starts its status's removal (`removeGone`, ID-7), whose batches the inbound
+  job rounds run (`test/reply-walk-refetch.test.ts`). A round claims at most `REPLY_WALKS_PER_ROUND` (2) walks one after
+  another and runs at most `REPLY_STEPS_PER_WALK` (8) steps of each, each step with a whole fetch budget of its own (8
+  fetches), so a round makes at most 16 steps, 128 requests and 37 own Store calls (the domain read, a claim and a
+  release a walk, at most two completions a step), besides the loaders' signing key and policy reads. The Store hands a
+  node to the Worker only by charging it in the same transaction: one of its `NODE_ATTEMPTS` (2) for the document it
+  reads, and at every stage but the status one of the walk's `WALK_PAGES` (100), a document read again past the entries
+  an earlier step took included; the round's last completion hands out and charges nothing, and a charge stays whatever
+  the step's end (a lost lease, a round that died after its fetch). Each hand-out is numbered, and only the completion
+  of the one awaited is applied, once: one repeated, or of an earlier hand-out, changes and charges nothing, a chain of
+  pages that names a page again included (`test/reply-walks.test.ts` ("applies a page's completion once when the page
+  names itself next", "applies a page's completion once when a later page names it again", "applies a transient failure
+  once")). So a walk records at most `WALK_STATUSES` (200) nodes, the root and the stored, scanned, owed and path ones
+  included, and hands out at most 2 × 200 + 100 = 500 documents (4,000 requests) however its rounds end, a resumed
+  reading's documents and a reading again counted as pages, with no counter of claims. A claim drops at most
+  `REPLY_CLAIM_DROPS` + 1 (4) walks before it answers that more are due, and a hand-out ends at most 200 spent nodes and
+  runs at most one scan or consideration before it finds one to fetch; the lease (`REPLY_WALK_LEASE_MS`, 10 minutes)
+  is checked as the module loads against twice a walk's turn. A step holds a status document and an actor of at most
+  1 MiB each and carries at most
+  `REPLY_READ_ENTRIES` (200) entries of a chain past its skip to the Store (819,200 bytes at
   `STATUS_URI_LIMIT`); a later step reads the rest by reading the same document again, while the walk has room
   (`test/reply-walk-rounds.test.ts` ("reads a page of 400 entries with no next past its first 200 in the same walk",
   "reads a page's entries past the cap before the next page its URI names", "reads the rest of the replies a status
@@ -4321,29 +4355,56 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   of a step whose lease another round took", "verifies a walk's reply's quote one hop deep", "starts no walk along an
   alternating reply and quote chain", "ends discovery at a new author's synced pin", "repeated stale-author applications
   under a walk")).
+  Scans and debts (`src/domain/reply-walk-debts.ts`): a context walk's node whose collection reading ends, or is cut,
+  after it read a chain examines at most `REPLY_SCAN_ROWS` (200) of its stored public replies, from where its last
+  examination ended, whichever walk ran it (its cursor), and a walk owes its root what it has no room for: a stored
+  reply as a row debt, a cut reading as a collection debt with its place. A scan or a debt's consideration runs in a
+  hand-out, at most one a hand-out, as a Store-only step the Worker completes with no request, each one of its turn's
+  `REPLY_STEPS_PER_WALK` (8) steps. A walk runs at most one scan per scan-due node, its root's included, and at most
+  `WALK_STATUSES` considerations, so at most 200 scans of 200 index rows (40,000 rows), each row with at most six key
+  reads (the walk's node; the status, its account and local account; its walk as a root), each scan with one cursor
+  write and at most 200 row-debt inserts each after at most one replacement delete: at most 40,000 row-debt inserts and
+  80,000 row-debt changes a walk, 3,200 a turn, and with at most 200 collection debts written or re-keyed and at most
+  600 payments and drops, at most 81,000 debt-row changes a walk. A consideration reads one debt index entry and its row
+  and at most `WALK_STATUSES` − 2 ancestors, and records at most `WALK_STATUSES` − 1 nodes within the walk's cap. A debt
+  is unique by root and owed status, and by status and depth (depths 0 to `WALK_STATUSES` − 1): a walk owing a status at
+  a depth another root's debt holds replaces it, so a status is named by at most `WALK_STATUSES` debts and all number at
+  most `WALK_STATUSES` × S at all times. A root's walks take its oldest debt first, a walk reaches at most
+  `WALK_STATUSES` − 1 links below its root, and no cursor or debt is written for a status or root whose removal has
+  begun (`test/reply-walk-debt-bounds.test.ts` ("owes exactly 40,000 row debts over 200 scans, each its own step of at
+  most 200 inserts, no request for them", "changes 80,000 debt rows when another root holds a debt at every status and
+  depth it owes, at most 3,200 a turn", "changes 80,198 debt rows in a thread of cut collections, within 81,000",
+  "records a 197-status path and the owed status in one consideration, within WALK_STATUSES + 2 rows", "ends 199 nodes
+  at spent WALK_PAGES in one hand-out, owing each its collection debt within 3 rows a node", "examines each scanned row
+  with at most six key reads, in one scan of REPLY_SCAN_ROWS rows a hand-out", the plans of the scans and debts),
+  `test/reply-walk-debts.test.ts` ("owes a reply to one root at a time while its parent moves from root to root, each
+  owing it at the same depth", "owes no cut collection of a status whose %s's removal began during its fetch, and scans
+  a removed status without a cursor", "owes nothing from a scan once its root's removal began in the scan's turn",
+  "fetches no status more than WALK_STATUSES - 1 links below the root, and owes nothing for them"),
+  `test/reply-walk-generated.test.ts`).
   Create walks: _Enforced (main):_ a remote status a store creates has its replies walked (a create walk, Mastodon's
   `Create#fetch_replies`; `src/domain/reply-walk-create.ts`) only when the store's context sets `readReplies`, which
   only the stores of what was delivered or what a user asked for do (an inbound `Create` or `Update`, an `Announce`'s
   original, an `Add`'s status, a `QuoteRequest`'s quoting status, a search or interaction resolution); a walk's own
   stores, quote verification's and a collection sync's never do, so nothing a walk causes starts another walk and no
   walk's caps start afresh. A create walk runs in the same family, steps and charges as a context walk, takes a node's
-  first `CREATE_WALK_ITEMS` (5) items on the node's origin that Kopje does not store, reads first pages only, and
-  records at most `CREATE_WALK_STATUSES` (20) nodes and hands out at most `CREATE_WALK_PAGES` (10) documents, so at most
-  2 × 20 + 10 = 50 documents (400 requests) however its rounds end; the Store applies the item rule and the first-page
-  rule whatever the Worker hands it, at every stage (a completion that read a page ends the node, whatever next it
-  names). Context walks are claimed first; create walks wait in the order the Store recorded them (the rowid, whatever
-  the Worker's clock or the Store's says), each back in its place at every release (one whose round died holding it is
-  due behind them once its lease runs out), and one the Store recorded a day ago by its own clock is dropped at its
-  claim. Its at most `CREATE_WALK_STATUSES` − 1 replies each lead to a context walk's reply's follow-on work (above)
-  (`test/reply-walk-create.test.ts` ("records at most CREATE_WALK_STATUSES nodes and CREATE_WALK_ITEMS items a page",
-  "hands out at most CREATE_WALK_PAGES documents", "hands out at most NODE_ATTEMPTS × (CREATE_WALK_STATUSES - 1) +
-  CREATE_WALK_PAGES documents", "records the same of a page, and ends the node there", "ends a status's node at the
-  first page its completion embeds, whatever next it names", "a walk's reply: its collection is read by the context walk
-  alone", "quote verification's quoted status, fetched or embedded: its collection is never read", "a collection sync's
-  pin: its collection is never read", "starts no walk along an alternating reply and quote chain longer than a walk",
-  "claims context walks first, then create walks in the order they were queued", "claims create walks in the order the
-  Store recorded them, whatever the Worker's clock or its own says", "claims at once the walk of a Create whose Worker
-  clock is ahead of the Store's, as its answer asks")).
+  first `CREATE_WALK_ITEMS` (5) items on the node's origin, stored or not (Mastodon's `FetchRepliesService`), reads
+  first pages only, and records at most `CREATE_WALK_STATUSES` (20) nodes and hands out at most `CREATE_WALK_PAGES` (10)
+  documents, so at most 2 × 20 + 10 = 50 documents (400 requests) however its rounds end; the Store applies the item
+  rule and the first-page rule whatever the Worker hands it, at every stage (a completion that read a page ends the
+  node, whatever next it names). Context walks are claimed first; create walks wait in the order the Store recorded them
+  (the rowid, whatever the Worker's clock or the Store's says), each back in its place at every release (one whose round
+  died holding it is due behind them once its lease runs out), and one the Store recorded a day ago by its own clock is
+  dropped at its claim. Its at most `CREATE_WALK_STATUSES` − 1 replies each lead to a context walk's reply's follow-on
+  work (above) (`test/reply-walk-create.test.ts` ("records at most CREATE_WALK_STATUSES nodes and CREATE_WALK_ITEMS
+  items a page", "hands out at most CREATE_WALK_PAGES documents", "hands out at most NODE_ATTEMPTS ×
+  (CREATE_WALK_STATUSES - 1) + CREATE_WALK_PAGES documents", "records the same of a page, and ends the node there",
+  "ends a status's node at the first page its completion embeds, whatever next it names", "a walk's reply: its
+  collection is read by the context walk alone", "quote verification's quoted status, fetched or embedded: its
+  collection is never read", "a collection sync's pin: its collection is never read", "starts no walk along an
+  alternating reply and quote chain longer than a walk", "claims context walks first, then create walks in the order
+  they were queued", "claims create walks in the order the Store recorded them, whatever the Worker's clock or its own
+  says", "claims at once the walk of a Create whose Worker clock is ahead of the Store's, as its answer asks")).
   Streaming (VIS-26): _Enforced (main):_ at most 16 sockets per account (429) and 256 per
   instance (503); 16 subscriptions per socket, 16 stream keys per account and a socket's attachment at most 12 KiB (`Too
   many subscriptions`, 429); incoming messages text only (1003), at most 4 KiB and 120 a minute (1008). The fan-out runs
@@ -4351,13 +4412,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   spends at most 512 checks, 64 presentations and 4,096 sends, runs a unit only while what is left covers a unit's
   worst case (35 checks: 16 tokens, home, the mention, one for each of 16 keys (lists and feeds) and the feeds' mention
   filter; one presentation, 512 KiB of payload, 256 sends) and leaves the rest to the next turn. A payload is counted
-  in UTF-8 bytes, the measure of the 512 KiB past which it is skipped and logged, and a unit is charged its whole
-  payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit: a
-  turn presents at most 18,806,024 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
-  JSON again at most doubles it), S = 7,568,003 being the most JSON a streamed subject presents (`update` and
-  `status.update` a boost of a quote, `conversation` one whose last status is a boost of a quote, `notification` its
-  status, report and warning together, an announcement), derived from the maxima table
-  (`test/status-bounds.test.ts`, `test/streaming/split.test.ts`). The journal records nothing once it spans 4,096 ids,
+  in UTF-8 bytes as encoded, measured from the presented object before anything is encoded (`encodedTwiceBytes`): the
+  measure of the 512 KiB past which it is skipped and logged with no string made. A unit within it is encoded once and
+  sent one stream's envelope at a time, so a unit's isolate peak is its rows, its presented object and four frames of
+  the largest at most, 47,878,111.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
+  whole payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit:
+  a turn presents at most 17,972,684 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
+  JSON again at most doubles it), S = 7,151,333 being the most JSON a streamed subject presents, the quote
+  conversation's (`update` and `status.update` a boost of a quote, `conversation` one whose last status is a quote, as a
+  conversation shows no boost as its last status, `notification` its status, report and warning together, an
+  announcement), derived from the maxima table (`test/status-bounds.test.ts`, `test/streaming/split.test.ts`). The
+  journal records nothing once it spans 4,096 ids,
   and is pruned behind the position, at
   most 500 rows a call: the finished journal rows first, so the span shrinks at once, then a delete's capture rows, in
   further turns until none is left. A turn that read anything moves the position, also past what it read with nothing to
@@ -4755,6 +4820,10 @@ bytes) and warning (0xFF and 1,048,575) are malformed, and an edit of it, are ch
 fill's 131,070 bytes of content and source text and 16,382 of the warning, hold a decoded row within `rowHeapSql` of
 the row and that within the raw fill's, and present within the escaped fill's occurrence of each shape
 (`test/status-bounds.test.ts` ("a status of malformed imported text")).
+An imported attachment description of malformed UTF-8 at its stored bound (0xFF and continuation bytes to
+`MEDIA_DESCRIPTION_BYTES`, 40,000) decodes to 40,000 U+FFFD, of which every presenter shows the first 10,000
+(`presentedMediaDescription`): within the escaped fill's description, so the fills stay the maxima; a status of four
+such attachments reads within R (`test/status-bounds.test.ts` ("an attachment of malformed imported text")).
 A local account also shows `noindex` and `roles`, at most the Owner's
 badge: the account occurrence's conservative JSON adds those keys (63 bytes) to the remote one measured, and what a
 local account's four fields at their derived most (37,677 bytes: names of six-byte escapes, each value at 7,822 and
@@ -4939,8 +5008,9 @@ every item is below it. The model:
   admitted answer's 25.2 MB, the first rejected item's three times its JSON. Every string field counts on its own,
   even one that repeats another's string (an attachment's `remote_url` is its `url`), and rows and presented objects
   often share the same string instances, which the model does not credit either.
-- An item is measured without building its JSON (`jsonBytes` in `src/domain/answer-budget.ts`): a string of several
-  MB, which takes up to two bytes a character once one character is wider than Latin-1, is never made.
+- An item is measured without building its JSON (`jsonBytes` in `src/domain/answer-budget.ts`), and a stream payload
+  without encoding it twice (`encodedTwiceBytes`): a string of several MB, which takes up to two bytes a character once
+  one character is wider than Latin-1, is never made.
 
 Chunks. `statusStream` (`src/domain/status-presenter.ts`) reads an answer's statuses in chunks of consecutive statuses,
 each presented and measured only when admission reaches it, so while the first rejected status is measured the admitted
@@ -5086,6 +5156,29 @@ the Worker within half of its own. One isolate holding both sides at once, the S
 Worker's are built, would reach about 107 MB; it stays within half (the timelines' peaks above) when the Store drops
 its objects once they are serialized. Groups and reports pass half of the Store isolate (RES-3, the Gap note on their
 heap).
+
+A stream unit (`src/stream-hub.ts`, RES-6) presents one subject for one viewer, outside any answer. Its payload is
+measured from the presented object (`encodedTwiceBytes`), so one past `STREAM_LIMITS.payloadBytes` is skipped with no
+string made, and one within it is encoded once for all its frames, each stream's envelope made and sent to its sockets
+before the next is made. Its peak, per streamed kind, is its rows with 25% headroom at their per-column maxima (a status
+the largest timeline item's; a conversation its read's; a notification its status's, a report notification's and a
+warning's together; an announcement its list's and one presentation's, `ANNOUNCEMENT_ROW_CAPS`), three times its
+conservative JSON (the presented object), and four frames of `MESSAGE_MAX` at two bytes a code unit (the payload encoded
+once and twice, then the twice-encoded payload and one envelope) with its presentation's scratch (a moved-to account's
+emoji, 18,060 bytes; an announcement's rendering). `MESSAGE_MAX` is the largest frame, 525,898 bytes: the payload limit,
+the envelope's keys (31), the longest event (`"announcement.reaction"`, 23) and the longest stream (`["hashtag:local",
+tag]` with a 256-byte tag escaped at six a byte, 1,556). Imported text of malformed UTF-8 reads and presents within the
+fills (the account, status and attachment witnesses of "Maxima of presented units"), so the figures hold for it.
+`test/status-bounds.test.ts` ("bounds a stream unit's isolate peak by the most a subject presents") computes them, each
+within half of the Store isolate's 128 MB, and pins them (`STREAM_UNIT_PEAKS` and `MESSAGE_MAX` in
+`test/presented-maxima.ts`), which `test-node/presented-maxima.test.ts` compares with this table.
+
+| Stream unit (Store isolate)                            | Rows, with 25% headroom | Presented objects | Strings and scratch | Peak     |
+| ------------------------------------------------------ | ----------------------- | ----------------- | ------------------- | -------- |
+| Status (`update`, `status.update`: a boost of a quote) | 19.34 MB                | 17.46 MB          | 2.12 MB             | 38.92 MB |
+| Conversation (its last status a quote)                 | 23.02 MB                | 21.45 MB          | 2.12 MB             | 46.59 MB |
+| Notification (its status, report and warning together) | 25.88 MB                | 19.88 MB          | 2.12 MB             | 47.88 MB |
+| Announcement                                           | 7.28 MB                 | 0.75 MB           | 2.97 MB             | 11.01 MB |
 
 ### Data and keys (DATA)
 

@@ -857,3 +857,153 @@ describe("trend and card rows within a batch (0057_trends, 0067_status_cards)", 
     expect(await sql(h.store, "SELECT count(*) AS n FROM account_trend_reviews")).toEqual([{ n: left === 3 ? 0 : 1 }]);
   });
 });
+
+describe("replies walk rows within a batch (0106_reply_walk_debts)", () => {
+  // The rows of a status's scans and debts (reply-walk-debts.ts): its cursor, the debts it holds as a root and those
+  // naming it, n rows, which STATUS_CHILDREN's steps delete before it within the batch's budget. With the 7 rows its
+  // final delete reserves (above) and n more left, the status goes in this batch; with 6 and n, the steps take the n
+  // and the status waits for the next.
+  it.each([7, 6])("deletes a status's cursor and debts before it within the budget (left: %i + n)", async (left) => {
+    const h = await community(["alice"]);
+    const parent = await seedStatus(h.store, { accountId: h.users.alice.id, visibility: "public" });
+    const other = await seedStatus(h.store, { accountId: h.users.alice.id, visibility: "public" });
+    const remote = await remoteAccount(h.store, "carol");
+    const uri = "https://remote.example/users/carol";
+    const reply = await seedStatus(h.store, { accountId: remote, visibility: "public", inReplyToId: parent });
+    await sql(h.store, `INSERT INTO polls (status_id, options, tallies) VALUES (?, '["a","b"]', '[0,0]')`, reply);
+    await sql(h.store, "INSERT INTO trend_statuses (status_id, account_id, score) VALUES (?, ?, 9)", reply, remote);
+    await sql(
+      h.store,
+      "INSERT INTO status_trend_reviews (status_id, trendable, reviewed_at) VALUES (?, 1, '2026-10-12T00:00:00.000Z')",
+      reply,
+    );
+    await sql(
+      h.store,
+      `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at)
+			VALUES (?, 'https://a.example/', 0, 0, 't', 0)`,
+      reply,
+    );
+    await sql(h.store, "INSERT INTO reply_walk_cursors (status_id, after_id) VALUES (?, ?)", reply, parent);
+    await sql(
+      h.store,
+      `INSERT INTO reply_walk_debts (root_id, status_id, kind, owed_walk, owed_seq, owed_pos, depth)
+			VALUES (?1, ?2, 0, 1, 1, 1, 1), (?1, ?3, 0, 1, 1, 2, 1), (?2, ?1, 0, 1, 1, 1, 1)`,
+      reply,
+      parent,
+      other,
+    );
+    const walkRows = async () =>
+      (
+        await sql<{ n: number }>(
+          h.store,
+          "SELECT (SELECT count(*) FROM reply_walk_cursors) + (SELECT count(*) FROM reply_walk_debts) AS n",
+        )
+      )[0]!.n;
+    const n = await walkRows();
+    expect(n).toBe(4);
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO accounts (id, uri, username, domain)
+			SELECT printf('6%017d', i), 'https://many.example/users/m' || i, 'm' || i, 'many.example' FROM n`,
+      PURGE_BATCH - left - n,
+    );
+    await sql(
+      h.store,
+      "INSERT INTO status_mentions (status_id, account_id) SELECT ?, id FROM accounts WHERE id GLOB '6*'",
+      reply,
+    );
+    const batch = () =>
+      runInDurableObject(h.store, (_instance, state) => {
+        const db = new Db(state.storage.sql);
+        const changes = () => db.first<{ n: number }>("SELECT total_changes() AS n")!.n;
+        const before = changes();
+        const more = state.storage.transactionSync(() => purgeBatch(db, uri, NOW));
+        return { wrote: changes() - before, more };
+      });
+    const first = await batch();
+    expect(await walkRows()).toBe(0);
+    const gone = (await sql(h.store, "SELECT count(*) AS n FROM statuses WHERE id = ?", reply))[0]!.n === 0;
+    expect(gone).toBe(left === 7);
+    expect(first).toEqual({ wrote: left === 7 ? PURGE_BATCH : PURGE_BATCH - 6, more: true });
+    if (left === 6) {
+      expect((await batch()).wrote).toBe(8);
+    }
+  });
+
+  // A status holding 450 debts as a root, named by 3 of other roots, with its cursor: 100 rows left in the first batch.
+  it.each(["the status's delete", "its author's purge"] as const)(
+    "deletes 450 debts of a root over batches, each within PURGE_BATCH, before the status (%s)",
+    async (how) => {
+      const h = await community(["alice"]);
+      const remote = await remoteAccount(h.store, "carol");
+      const uri = "https://remote.example/users/carol";
+      const status = await seedStatus(h.store, { accountId: remote, visibility: "public" });
+      await sql(
+        h.store,
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 453)
+				INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+				SELECT printf('7%017d', i), 'https://kopje.test/ap/o/d' || i, ?, 'public', '<p>d</p>',
+					'2026-10-11T12:00:00.000Z' FROM n`,
+        h.users.alice.id,
+      );
+      await sql(
+        h.store,
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 449)
+				INSERT INTO reply_walk_debts (root_id, status_id, kind, owed_walk, owed_seq, owed_pos, depth)
+				SELECT ?1, printf('7%017d', i + 1), 0, 1, i / 200, i % 200 + 1, 1 FROM n`,
+        status,
+      );
+      await sql(
+        h.store,
+        `INSERT INTO reply_walk_debts (root_id, status_id, kind, owed_walk, owed_seq, owed_pos, depth)
+				SELECT printf('7%017d', 450 + d), ?1, 0, 1, 0, 1, d FROM (SELECT 1 AS d UNION ALL SELECT 2 UNION ALL SELECT 3)`,
+        status,
+      );
+      await sql(
+        h.store,
+        "INSERT INTO reply_walk_cursors (status_id, after_id) VALUES (?, '700000000000000001')",
+        status,
+      );
+      await sql(
+        h.store,
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+				INSERT INTO accounts (id, uri, username, domain)
+				SELECT printf('6%017d', i), 'https://many.example/users/m' || i, 'm' || i, 'many.example' FROM n`,
+        PURGE_BATCH - 100,
+      );
+      await sql(
+        h.store,
+        "INSERT INTO status_mentions (status_id, account_id) SELECT ?, id FROM accounts WHERE id GLOB '6*'",
+        status,
+      );
+      const batches: number[] = [];
+      for (let i = 0; i < 20; i++) {
+        const { wrote, more } = await runInDurableObject(h.store, (_instance, state) => {
+          const db = new Db(state.storage.sql);
+          const changes = () => db.first<{ n: number }>("SELECT total_changes() AS n")!.n;
+          const before = changes();
+          const remaining = state.storage.transactionSync(() =>
+            how === "its author's purge" ? purgeBatch(db, uri, NOW) : deleteStatusBatch(db, status, NOW),
+          );
+          return { wrote: changes() - before, more: remaining };
+        });
+        batches.push(wrote);
+        if (!more) {
+          break;
+        }
+      }
+      // The first batch spends its budget on the mentions and 100 walk rows; the rest go in the next.
+      expect(batches[0]).toBe(PURGE_BATCH);
+      expect(batches.length).toBeGreaterThan(1);
+      expect(batches.every((wrote) => wrote <= PURGE_BATCH)).toBe(true);
+      expect(await sql(h.store, "SELECT count(*) AS n FROM statuses WHERE id = ?", status)).toEqual([{ n: 0 }]);
+      expect(
+        await sql(
+          h.store,
+          `SELECT (SELECT count(*) FROM reply_walk_debts) AS debts, (SELECT count(*) FROM reply_walk_cursors) AS cursors`,
+        ),
+      ).toEqual([{ debts: 0, cursors: 0 }]);
+    },
+  );
+});

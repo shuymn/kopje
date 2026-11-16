@@ -119,6 +119,7 @@ import {
   type MediaAttachment,
   type MediaRow,
   measureFilterText,
+  presentedMediaDescription,
   presentedMediaUrl,
   presentMedia,
   presentOwnStatus,
@@ -921,8 +922,9 @@ function ownStatus(db: Db, accountId: string, id: string): OwnStatus | null {
   );
 }
 
-// An edit's media as presented: the snapshot as editMediaSql projects its bytes, with each URL and the blurhash judged
-// again as decoded, as live media are (presentedMediaUrl, storedBlurhash): an imported snapshot may hold any text.
+// An edit's media as presented: the snapshot as editMediaSql projects its bytes, with each URL, the description and
+// the blurhash judged again as decoded, as live media are (presentedMediaUrl, presentedMediaDescription,
+// storedBlurhash): an imported snapshot may hold any text.
 function snapshotMedia(json: string): MediaAttachment[] {
   return (JSON.parse(json) as MediaAttachment[]).map((media) => ({
     ...media,
@@ -930,6 +932,7 @@ function snapshotMedia(json: string): MediaAttachment[] {
     preview_url: presentedMediaUrl(media.preview_url),
     remote_url: presentedMediaUrl(media.remote_url),
     preview_remote_url: presentedMediaUrl(media.preview_remote_url),
+    description: presentedMediaDescription(media.description),
     blurhash: storedBlurhash(media.blurhash),
   }));
 }
