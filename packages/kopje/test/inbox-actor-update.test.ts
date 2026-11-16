@@ -463,16 +463,32 @@ describe("an actor document whose inbox is blank", () => {
     expect(await t.post(bob, updateOf(bob, embedded(bob, { name: "embedded" })))).toBe(202);
     expect((await row(t, bob.uri)).display_name).toBe("embedded");
   });
+});
 
-  // U+FEFF is not White_Space, though String#trim removes it.
-  it("takes an inbox of a zero width no-break space (U+FEFF) alone, fetched or embedded", async () => {
+// Mastodon's blank test reads the `inbox` member as it receives it: a fetched document as served (json_ld_helper.rb
+// body_to_json), an embedded one in its activity as received. Mastodon compacts an LD-signed activity first; Kopje reads
+// it as received (#1680).
+describe("the inbox member the blank test reads", () => {
+  const forms: [string, (bob: TestActor) => unknown, boolean][] = [
+    ["a URL", (bob) => `${bob.uri}/inbox`, true],
+    ["an object with an id", (bob) => ({ id: `${bob.uri}/inbox` }), true],
+    ["an empty array", () => [], false],
+    // [nil] is not blank.
+    ["an array of null", () => [null], true],
+    ["an empty object", () => ({}), false],
+    // U+0085 is White_Space, which String#trim keeps; U+FEFF is not, though String#trim removes it.
+    ["a next line (U+0085)", () => "\u0085", false],
+    ["a zero width no-break space (U+FEFF)", () => "\uFEFF", true],
+  ];
+  it.each(forms)("reads an inbox of %s alike fetched and embedded", async (_name, inbox, taken) => {
     const { t, bob } = await bobWorld();
-    t.web.serve(bob.uri, { ...bob.document, inbox: "\uFEFF", name: "refetched" });
-    expect(await receive(t, bob, updateOf(bob, bob.uri))).toMatchObject({ status: 202, reason: "actor-updated" });
-    expect((await row(t, bob.uri)).display_name).toBe("refetched");
-    const embedding = updateOf(bob, embedded(bob, { inbox: "\uFEFF", name: "embedded" }));
-    expect(await receive(t, bob, embedding)).toMatchObject({ status: 202, reason: "actor-updated" });
-    expect((await row(t, bob.uri)).display_name).toBe("embedded");
+    const outcome = { status: 202, reason: taken ? "actor-updated" : "invalid-actor" };
+    t.web.serve(bob.uri, { ...bob.document, inbox: inbox(bob), name: "refetched" });
+    expect(await receive(t, bob, updateOf(bob, bob.uri))).toMatchObject(outcome);
+    expect((await row(t, bob.uri)).display_name === "refetched").toBe(taken);
+    const embedding = updateOf(bob, embedded(bob, { inbox: inbox(bob), name: "embedded" }));
+    expect(await receive(t, bob, embedding)).toMatchObject(outcome);
+    expect((await row(t, bob.uri)).display_name === "embedded").toBe(taken);
   });
 });
 
