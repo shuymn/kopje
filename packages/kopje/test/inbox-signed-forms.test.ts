@@ -451,6 +451,20 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       expect(kopje(form(name))).toEqual(mastodon(form(name)));
     });
 
+    // sensitive typed otherwise than full_context, which leaves it untyped, is written under the name all the same: an
+    // IRI as a node, a value of a datatype as a typed value, either an object Mastodon takes as true; false as false.
+    // Kopje reads it as Mastodon marks the status (ldSignedReading).
+    it.each([
+      ["typed @id, given an IRI", true],
+      ["typed @id, given false", false],
+      ["typed as a boolean, given false", true],
+    ])("sensitive %s: marked %s, as Mastodon marks it", (variant, marked) => {
+      const name = `Note, its sensitive ${variant}`;
+      expect(form(name).fallback).toBeUndefined();
+      expect(statusOf(kopje(form(name))).sensitive).toBe(marked);
+      expect(applied(name).effect.statuses).toMatchObject([{ sensitive: marked, media: 1 }]);
+    });
+
     // A proof in the data-integrity context, a @graph container: Mastodon reads the body as received only where
     // JSON-LD's expansion leaves something of the proof (its compaction's @graph key the limits refuse); of one that
     // expands to nothing it reads the compaction, the QuoteRequest left undefined a blank node's type, and so does
@@ -1094,6 +1108,21 @@ describe("D1 through the inbox: what the received form stores", () => {
     const stored = await sql<{ legacy: number }>(t.store, "SELECT legacy FROM quotes WHERE status_id = ?", id);
     expect(stored).toEqual([{ legacy: 1 }]);
     expect(applied(name).effect.statuses).toMatchObject([{ quote: { state: "pending", legacy: true } }]);
+  });
+
+  it.each([
+    ["typed @id, given an IRI", true],
+    ["typed @id, given false", false],
+    ["typed as a boolean, given false", true],
+  ])("a Note, its sensitive %s, is shown sensitive %s, as in Mastodon", async (variant, sensitive) => {
+    const { t, bob, status } = await world();
+    const name = `Note, its sensitive ${variant}`;
+    const received = body(name, status);
+    expect(await t.post(bob, received)).toBe(202);
+    const id = (await statusRow(t.store, (received.object as Json).id as string))!.id;
+    const shown = (await t.api<{ sensitive: boolean }>(`/api/v1/statuses/${id}`, "alice")).body;
+    expect(shown.sensitive).toBe(sensitive);
+    expect(applied(name).effect.statuses).toMatchObject([{ sensitive }]);
   });
 
   it.each([

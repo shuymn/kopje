@@ -347,10 +347,11 @@ describe("ldSignedBodyReadable's tables", () => {
 
   // A name the body's contexts define otherwise than full_context, here each of its extension object's names but its
   // namespace prefixes and its list term (focalPoint) and those ActivityStreams defines (which the rules hold to it),
-  // typed @id where full_context leaves it untyped and untyped where it types it @id: Kopje reads none of them. The
-  // compaction writes none given a value the definition coerces to a literal (an IRI string, untyped), and so reads it
-  // nowhere Kopje does not; given a node (an IRI string, typed @id, or an object with an id) it still writes the name,
-  // where Kopje reads less than Mastodon. Types are read by their IRI, the same in both.
+  // typed @id where full_context leaves it untyped and untyped where it types it @id: Kopje reads none of them but
+  // `sensitive`, as true. The compaction writes none given a value the definition coerces to a literal (an IRI string,
+  // untyped), and so reads it nowhere Kopje does not; given a node (an IRI string, typed @id, or an object with an id)
+  // it still writes the name, where Kopje reads less than Mastodon, but marks a status sensitive as Mastodon does (an
+  // object there is true). Types are read by their IRI, the same in both.
   it("reads no member its context defines otherwise, where jsonld.js's compaction may still write one", async () => {
     const base = new Set([AS, "https://w3id.org/security/v1"].flatMap((url) => Object.keys(definitions(url))));
     const flippable = Object.keys(extension).filter(
@@ -395,8 +396,10 @@ describe("ldSignedBodyReadable's tables", () => {
       const read = ldSignedReading({ ...body, signature: { type: "RsaSignature2017" } })!.body;
       const names = (json: Json) => Object.keys(json.object as Json).filter((name) => flippable.includes(name));
       const types = (json: Json) => (json.tag as Json[]).map((tag) => tag.type);
-      expect(names(read)).toEqual([]);
+      expect(names(read)).toEqual(["sensitive"]);
+      expect((read.object as Json).sensitive).toBe(true);
       expect(names(compacted).toSorted()).toEqual([...written].toSorted());
+      expect(isObject((compacted.object as Json).sensitive)).toBe(true);
       expect(types(read)).toEqual(types(compacted));
     }
   });

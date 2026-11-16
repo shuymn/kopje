@@ -1575,6 +1575,54 @@
     }
   },
   {
+    "name": "Note, its sensitive typed @id, given an IRI",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/192",
+          "text": "<p>note 192</p>",
+          "spoiler": "",
+          "sensitive": true,
+          "visibility": "public",
+          "mentions": [],
+          "media": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "Note, its sensitive typed @id, given false",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/194",
+          "text": "<p>note 194</p>",
+          "spoiler": "",
+          "sensitive": false,
+          "visibility": "public",
+          "mentions": [],
+          "media": 1
+        }
+      ]
+    }
+  },
+  {
+    "name": "Note, its sensitive typed as a boolean, given false",
+    "effect": {
+      "statuses": [
+        {
+          "uri": "https://mastodon.example/users/bob/statuses/196",
+          "text": "<p>note 196</p>",
+          "spoiler": "",
+          "sensitive": true,
+          "visibility": "public",
+          "mentions": [],
+          "media": 1
+        }
+      ]
+    }
+  },
+  {
     "name": "@base after ActivityStreams, unsigned",
     "effect": {
       "statuses": [

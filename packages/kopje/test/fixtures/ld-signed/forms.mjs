@@ -722,6 +722,25 @@ const forms = {
     ...question([option("Yes"), option("No")]),
     closed: { id: `${BOB}/closed` },
   }),
+
+  // sensitive typed otherwise than full_context, which leaves it untyped: the compaction writes it under the name all
+  // the same, an IRI or a typed value as an object.
+  ...Object.fromEntries(
+    /** @type {[string, unknown, unknown][]} */ ([
+      ["typed @id, given an IRI", "@id", `${BOB}/sensitive`],
+      ["typed @id, given false", "@id", false],
+      ["typed as a boolean, given false", "http://www.w3.org/2001/XMLSchema#boolean", false],
+    ]).map(([variant, type, sensitive]) => [
+      `Note, its sensitive ${variant}`,
+      create(
+        note({
+          sensitive,
+          attachment: [{ type: "Document", mediaType: "image/png", url: "https://mastodon.example/media/4.png" }],
+        }),
+        [AS, { ...STATUS_EXTENSION, sensitive: { "@id": "as:sensitive", "@type": type } }, SEC],
+      ),
+    ]),
+  ),
 };
 
 // The same bodies without a signature: read as received by both.

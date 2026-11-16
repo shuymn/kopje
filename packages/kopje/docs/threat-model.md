@@ -147,32 +147,33 @@ against their own instance. TLS is assumed between all parties.
   JSON-LD limits as received, and one whose proof, a `@graph` in the data-integrity contexts, keeps something once
   JSON-LD expands it (of a proof that expands to nothing, a null value, the compaction stands). Where Mastodon gives up
   the compaction of another, or still writes under a name the body defines otherwise a value of a shape that definition
-  does not coerce, Kopje reads less. The readings still differ in shapes, values and readers, each listed in
-  `docs/mastodon-deviations.md` ("Reading inbound activities"). None of those differences lets Kopje grant an access
-  Mastodon's reading would not (a follow, a status's audience, a lifted block, a quote's approval); some leave in place
-  one Mastodon's reading would withdraw (a follow its `Reject` ends, a status its `Delete` removes, a block an `Undo` of
-  it lifts), and those are listed there too. The owner is the actor whose document lists the key, by id and key
-  material, and the key names no other owner. An actor's keys are what its document embeds among its first
-  `MAX_PUBLIC_KEYS` (10) entries of `publicKey` and of `assertionMethod` (FEP-521a `Multikey`), RSA or Ed25519, each
-  with an id on its origin (`ownKeys`); a key listed by reference in `assertionMethod` is not fetched, and a key the
-  signature's verification resolved joins them only within the same first ten (`withVerifiedReference`). Where a fetched
-  document's context gives either property its security meaning (a context Fedify preloads defines it, and the context
-  holds no `null`, no scoped context, no `@import` and no inline definition of it), an entry whose key Fedify cannot
-  import (an ML-DSA-44 Multikey among them), whose key material is not one string (alone, the one member of an array, or
-  a value object's `@value`), or that wraps other entries (a nested array, a `@list`, a `@set`, or any other object of
-  keywords but `@id` and `@type`, from none of which Mastodon reads a key) is removed before the document is read
-  (`readableKeys`), so the actor stays usable; any other document, and a key spelled otherwise (either property or the
-  key material under a compact or absolute IRI, an entry with its own `@context` or a `@nest`), is read as fetched. A
-  key id the Store does not hold fresh, or whose stored key fails, is resolved from the document at that id, as Kopje
-  reads an actor's keys, and its owner judged as for any fetched key (`storedKeys`, `verify`). An RFC 9421 signature
-  verifies with an RSA or Ed25519 key, the algorithm its own; a draft-cavage signature only with an RSA key, and one
-  that names any other key is answered as a signature that does not verify (401), live, on replay and in the rollback
-  drain. A stored key (`remote_keys`, kept per key id with its owner, whatever the shape of the key URL) is trusted for
-  24 hours after its document was fetched; after that, or when its signature fails, the key and the actor document are
-  fetched anew, bypassing the document cache. The one exception is an actor's own `Delete` when its key (by the status
-  its fetch actually returned) and its actor document both answer 404 or 410: it is verified with its own stored key at
-  any age. Another account's stale key, gone too, is refused there (401) and is not taken for a relay. A live actor is
-  never deleted with a key its current document does not list (401), and a transient failure answers 503.
+  does not coerce, Kopje reads less, but for `sensitive`, which marks the status wherever Mastodon may. The readings
+  still differ in shapes, values and readers, each listed in `docs/mastodon-deviations.md` ("Reading inbound
+  activities"). None of those differences lets Kopje grant an access Mastodon's reading would not (a follow, a status's
+  audience, a lifted block, a quote's approval); some leave in place one Mastodon's reading would withdraw (a follow its
+  `Reject` ends, a status its `Delete` removes, a block an `Undo` of it lifts), and those are listed there too. The
+  owner is the actor whose document lists the key, by id and key material, and the key names no other owner. An actor's
+  keys are what its document embeds among its first `MAX_PUBLIC_KEYS` (10) entries of `publicKey` and of
+  `assertionMethod` (FEP-521a `Multikey`), RSA or Ed25519, each with an id on its origin (`ownKeys`); a key listed by
+  reference in `assertionMethod` is not fetched, and a key the signature's verification resolved joins them only within
+  the same first ten (`withVerifiedReference`). Where a fetched document's context gives either property its security
+  meaning (a context Fedify preloads defines it, and the context holds no `null`, no scoped context, no `@import` and no
+  inline definition of it), an entry whose key Fedify cannot import (an ML-DSA-44 Multikey among them), whose key
+  material is not one string (alone, the one member of an array, or a value object's `@value`), or that wraps other
+  entries (a nested array, a `@list`, a `@set`, or any other object of keywords but `@id` and `@type`, from none of
+  which Mastodon reads a key) is removed before the document is read (`readableKeys`), so the actor stays usable; any
+  other document, and a key spelled otherwise (either property or the key material under a compact or absolute IRI, an
+  entry with its own `@context` or a `@nest`), is read as fetched. A key id the Store does not hold fresh, or whose
+  stored key fails, is resolved from the document at that id, as Kopje reads an actor's keys, and its owner judged as
+  for any fetched key (`storedKeys`, `verify`). An RFC 9421 signature verifies with an RSA or Ed25519 key, the algorithm
+  its own; a draft-cavage signature only with an RSA key, and one that names any other key is answered as a signature
+  that does not verify (401), live, on replay and in the rollback drain. A stored key (`remote_keys`, kept per key id
+  with its owner, whatever the shape of the key URL) is trusted for 24 hours after its document was fetched; after that,
+  or when its signature fails, the key and the actor document are fetched anew, bypassing the document cache. The one
+  exception is an actor's own `Delete` when its key (by the status its fetch actually returned) and its actor document
+  both answer 404 or 410: it is verified with its own stored key at any age. Another account's stale key, gone too, is
+  refused there (401) and is not taken for a relay. A live actor is never deleted with a key its current document does
+  not list (401), and a transient failure answers 503.
   _Enforced (main):_ `receiveInbound`, `verifyHttpSignature` and `verifySpooledRequest` in `src/federation/inbound.ts`;
   `test/inbox.test.ts` ("ID-1: an inbound activity acts only for its signer", "refuses a draft-cavage signature
   without", "refuses an RFC 9421 signature without", "accepts RFC 9421 signatures as Mastodon 4.7 and Fedify make them",

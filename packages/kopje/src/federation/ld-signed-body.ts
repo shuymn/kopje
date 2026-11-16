@@ -546,6 +546,24 @@ function shadowedNames(): ReadonlySet<string> {
 
 const FULL_CONTEXT_SHADOWED = shadowedNames();
 
+const SENSITIVE_IRI = FULL_CONTEXT_MEANINGS.get("sensitive")?.iri;
+
+// `sensitive` the body's contexts give another type than full_context, which leaves it untyped and so takes any value
+// (takes): the compaction still writes it under the name, an IRI or a typed value as an object, and Mastodon marks the
+// status by any value there but false, 0 and null (its sensitive column is a boolean, which takes an object or an
+// array as true; the patch makes a one-element array one again). Kopje reads it as true wherever Mastodon may mark the
+// status, so that a status Mastodon marks is never shown unmarked: of a name with a @list container, which the
+// compaction writes under its IRI, nothing.
+function marksSensitive(meaning: Meaning | undefined, value: unknown): boolean {
+  if (meaning === undefined || meaning.iri !== SENSITIVE_IRI || meaning.containers.includes("@list")) {
+    return false;
+  }
+  const plain = meaning.coercion === "@id" || meaning.coercion === "@vocab";
+  return (
+    leaves(value).some((item) => item !== null) && !(plain && !Array.isArray(value) && (value === false || value === 0))
+  );
+}
+
 // An LD-signed body with its names, as members and as types, read only where Mastodon's compaction under full_context
 // writes them so, whatever D5 decides (ID-1). Mastodon's readers read a member by its name only where the compaction
 // writes that name, and Kopje's readers, given this body, read one only there too; any other is renamed `_:name`, which
@@ -560,7 +578,7 @@ const FULL_CONTEXT_SHADOWED = shadowedNames();
 //     under the ActivityStreams and security contexts alone) the compaction writes as `_:name`; one the body defines
 //     otherwise (another type or container, or a name full_context leaves undefined), as its IRI. That last holds for
 //     the values a definition coerces; a value of another shape (an object for a name typed @id, say) the compaction
-//     may still write under the name, and Kopje then reads less than Mastodon;
+//     may still write under the name, and Kopje then reads less than Mastodon, but for `sensitive` (marksSensitive);
 //   - a type name is the one the compaction writes for the IRI the body's contexts give it (FULL_TYPE_NAMES), or is
 //     defined by neither. A name aliasing a keyword is left as it is (no reader reads one as a type).
 // Kept as they are: a language map's tags, the top-level @context, signature and proof. A body Kopje can show Mastodon
@@ -607,7 +625,7 @@ function namedAsCompacted(json: Json, meanings: ReadonlyMap<string, Meaning>): J
   ): [string, unknown] => {
     const meaning = own.get(key) ?? meanings.get(key);
     if (meaning?.key !== (full.get(key) ?? FULL_CONTEXT_MEANINGS.get(key))?.key) {
-      return [blank(key), node(value)];
+      return key === "sensitive" && marksSensitive(meaning, value) ? [key, true] : [blank(key), node(value)];
     }
     if (key === "type") {
       return [key, Array.isArray(value) ? value.map(typed) : typed(value)];
