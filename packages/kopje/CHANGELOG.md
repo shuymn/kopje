@@ -91,7 +91,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   collection documents (Mastodon: 1,000 and 500), from 5 minutes after the status was published and at most every 15
   minutes, and at most 16 run at once ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Replies
   collections"). The replies it fetches notify as other fetched statuses do, only when published within the last 6
-  hours. Migration `0099_reply_walks`: two empty tables and their indexes, kept out of dumps; as it creates a table, the
+  hours. A refresh applies the edits of the statuses it fetches that Kopje already holds, the refreshed one included,
+  and removes a public or unlisted reply whose address answers 404 (not the refreshed status itself), as Mastodon does.
+  Migration `0099_reply_walks`: two empty tables and their indexes, kept out of dumps; as it creates a table, the
   upgrade checks every reference of the Store (the migration bench's upgrade from `0093_annual_reports` takes 10,877 ms
   with this file and 10,633 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store
   migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
@@ -106,10 +108,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   Mastodon 4.7 reads them ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Profile credentials); an
   account stored earlier shows them once its actor is stored again. No Store migration and no `wrangler.jsonc` change.
 - A public or unlisted remote status Kopje stores from a delivery or a user's request has the replies on its own server
-  that its replies collection's first page lists fetched too, as Mastodon 4.7.5 does on `Create`: at most 5 a status and
-  20 a thread, reading at most 10 collection documents. Statuses Kopje stores while fetching replies, quotes or pinned
-  statuses start no such fetch ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Replies collections"). No
-  Store migration and no `wrangler.jsonc` change.
+  that its replies collection's first page lists fetched too, those Kopje already holds included (their edits applied
+  and a 404 removing them, as a refresh does), as Mastodon 4.7.5 does on `Create`: at most 5 a status and 20 a thread,
+  reading at most 10 collection documents. Statuses Kopje stores while fetching replies, quotes or pinned statuses start
+  no such fetch ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Replies collections"). No Store migration
+  and no `wrangler.jsonc` change.
 
 ### Changed
 

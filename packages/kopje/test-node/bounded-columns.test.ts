@@ -696,6 +696,8 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/remote-statuses.ts accounts.uri": { count: 2, reason: IDENTITY },
   "src/domain/reply-walk-reads.ts statuses.uri": { count: 1, reason: IDENTITY },
   "src/domain/reply-walks.ts statuses.uri": { count: 1, reason: IDENTITY },
+  // A stored node's author, compared with its fetched document's (storedPlace).
+  "src/domain/reply-walks.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/reports.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/status-actions.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/status-actions.ts statuses.uri": { count: 1, reason: IDENTITY },

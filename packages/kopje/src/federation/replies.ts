@@ -16,7 +16,7 @@ import { readConfig, userKek } from "../platform/config";
 import { errorFields } from "../platform/error-message";
 import { callStore, type StoreStub } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
-import { goneSettler, type SettleGone } from "./actor-gone";
+import { goneAt, goneSettler, type SettleGone } from "./actor-gone";
 import { documentOn } from "./collections";
 import {
   afterRevisionRead,
@@ -149,7 +149,10 @@ async function fetchStep(
       return loaded;
     });
     if (fetched.kind !== "ok") {
-      return { kind: fetched.kind === "transient" ? "transient" : "failed" };
+      // Only a 404 the status's own URI answered, with no redirect, may remove it (the Store judges which node).
+      return goneAt(fetched, step.uri, 404)
+        ? { kind: "gone" }
+        : { kind: fetched.kind === "transient" ? "transient" : "failed" };
     }
     const replies =
       kind === "create"
@@ -214,6 +217,8 @@ type Turn = {
   state: FederationState;
   // What a gone author's document does (actor-gone.ts).
   settle: SettleGone;
+  // A step started a status's removal (domain/remote-removal.ts removeGone), whose batches the inbound job rounds run.
+  removed: () => void;
 };
 
 // A round's turn of one claimed walk: up to REPLY_STEPS_PER_WALK steps, each with loaders and a fetch budget of its
@@ -263,14 +268,18 @@ async function walkTurn(turn: Turn, claim: ClaimedWalk): Promise<boolean> {
       console.error({ event: "kopje.replies.step.failed", ...errorFields(error) });
       break;
     }
+    if (answer.jobsPending) {
+      turn.removed();
+    }
     step = answer.need === null ? answer.next : null;
   }
   return callStore(() => store().releaseReplyWalk(build, { statusId: claim.statusId, token: claim.token }));
 }
 
 // One job round (jobs/queue.ts): up to REPLY_WALKS_PER_ROUND walks, claimed one after another. Returns whether a walk
-// is due, or a deletion a gone author's 410 started has its purge a batch left. A Store refusal surfaces as
-// StoreUnavailableError for the caller; a walk whose round died is claimed again after its lease, its charges kept.
+// is due, or a deletion a gone author's 410 started has its purge a batch left, or a step started a status's removal. A
+// Store refusal surfaces as StoreUnavailableError for the caller; a walk whose round died is claimed again after its
+// lease, its charges kept.
 export async function walkReplies(env: Env, deps: InboxDeps): Promise<boolean> {
   const build = deps.build(env);
   const store = () => deps.store(env);
@@ -279,7 +288,8 @@ export async function walkReplies(env: Env, deps: InboxDeps): Promise<boolean> {
     return false;
   }
   const config = readConfig(env);
-  // Whether a deletion a 410 started (actor-gone.ts) left its purge a batch: the round asks for another.
+  // Whether a deletion a 410 started (actor-gone.ts) left its purge a batch, or a step started a status's removal: the
+  // round asks for another.
   let goneJobs = false;
   const settled = goneSettler(store, build, deps.now);
   const turn: Turn = {
@@ -300,6 +310,9 @@ export async function walkReplies(env: Env, deps: InboxDeps): Promise<boolean> {
       const gone = await settled(fetched, uri, revision);
       goneJobs ||= gone.jobsPending;
       return gone;
+    },
+    removed: () => {
+      goneJobs = true;
     },
   };
   let pending = false;

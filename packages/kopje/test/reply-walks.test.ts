@@ -313,7 +313,7 @@ describe("completions", () => {
     kind: "replies",
     replies: { entries: [], from: 0, next: { stage: "page", uri } },
   });
-  const done = { next: null, need: null, done: true };
+  const done = { next: null, need: null, done: true, jobsPending: false };
 
   it("applies a reading once: a completion repeated after its node reads the same page again changes nothing", async () => {
     const { complete, step, state } = await atPage();
@@ -368,7 +368,12 @@ describe("completions", () => {
 
   it("applies the round's last completion once: repeated before the walk's release, it changes nothing", async () => {
     const { complete, step, state } = await atPage();
-    expect(await complete(step, { kind: "transient" }, false)).toEqual({ next: null, need: null, done: false });
+    expect(await complete(step, { kind: "transient" }, false)).toEqual({
+      next: null,
+      need: null,
+      done: false,
+      jobsPending: false,
+    });
     const before = await state();
     expect(before.walk).toMatchObject({ handouts: 2, handout: null });
     expect(await complete(step, { kind: "transient" }, false)).toEqual(done);

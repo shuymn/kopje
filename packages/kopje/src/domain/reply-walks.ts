@@ -1,4 +1,4 @@
-import { REPLY_WALKS_ID_INDEX, STATUSES_ID_INDEX, STATUSES_URI_INDEX } from "../db/indexes";
+import { ACCOUNTS_ID_INDEX, REPLY_WALKS_ID_INDEX, STATUSES_ID_INDEX, STATUSES_URI_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { sameOrigin } from "../platform/http-url";
 import { iso } from "../platform/iso-time";
@@ -7,9 +7,16 @@ import { userReadOperation, userWriteOperation } from "./auth";
 import { fetchedAuthor, type Prefetched } from "./inbox";
 import { writeOperation } from "./operation";
 import { QUOTE_HOPS } from "./quotes";
-import { type ActorState, type DocumentRevision, isDeletedActor, type RemoteActorInput } from "./remote-actors";
+import {
+  type ActorState,
+  type DocumentRevision,
+  isDeletedActor,
+  type RemoteActorInput,
+  type RemoteRow,
+} from "./remote-actors";
+import { removeGone } from "./remote-removal";
 import type { RemoteStatusInput } from "./remote-status-reads";
-import { storeRemoteStatus } from "./remote-statuses";
+import { storeFetchedStatus, storeRemoteStatus } from "./remote-statuses";
 import {
   CONTEXT_WALK,
   CREATE_WALK,
@@ -58,20 +65,23 @@ import { viewable } from "./statuses";
 // Only statuses linked to the root are stored (ID-2): a node is valid once its parent is a valid node of the same walk
 // and its stored row links to that node's status (in_reply_to_id, the link the context follows). The root is valid from
 // the start. A new status's parent is its fetched inReplyTo, checked before anything of it is stored; a stored one's is
-// its stored row's (in_reply_to_id, else in_reply_to_uri), and it is not updated (Mastodon updates it, deletes it on
-// 404 and refetches replies the collection no longer lists: docs/mastodon-deviations.md, "Replies collections"). A node
-// whose parent is not valid yet (a node of the walk not valid yet, or a URI a walk may record that is no node of it
-// yet) is deferred on the parent's URI, and returns to the end of the walk (fetched again, while it has an attempt
-// left) when a node of that URI becomes valid; one with no parent, a parent no walk records (of this instance's origin,
-// or no http(s) URI within STATUS_URI_LIMIT), or a parent node that ended without becoming valid, ends. A walk ends
-// when no node is pending; deferred nodes are then dropped. A new status goes through the boosted original's author
-// step (inbox.ts fetchedAuthor) and storeRemoteStatus as a fetched status, its quote one hop short of a root's
-// (QUOTE_HOPS - 1): its quoted status is stored with none, and nothing a walk stores starts another walk. Collection
-// items are ids only: an embedded object is never taken as a status.
+// its stored row's (in_reply_to_id, else in_reply_to_uri), which no update changes. A stored status a step fetched, the
+// root included, is applied as its author's Update (remote-statuses.ts storeFetchedStatus, Mastodon's FetchReplyWorker
+// through FetchRemoteStatusService), and a node other than the root whose own URI answered 404 has the status stored
+// under it then removed (remote-removal.ts removeGone, Mastodon's fetch_status); the root's 404 removes nothing, as
+// FetchAllRepliesWorker hands the root's body to FetchReplyWorker. A node whose parent is not valid yet (a node of the
+// walk not valid yet, or a URI a walk may record that is no node of it yet) is deferred on the parent's URI, and
+// returns to the end of the walk (fetched again, while it has an attempt left) when a node of that URI becomes valid;
+// one with no parent, a parent no walk records (of this instance's origin, or no http(s) URI within STATUS_URI_LIMIT),
+// or a parent node that ended without becoming valid, ends. A walk ends when no node is pending; deferred nodes are
+// then dropped. A new status goes through the boosted original's author step (inbox.ts fetchedAuthor) and
+// storeRemoteStatus as a fetched status, its quote one hop short of a root's (QUOTE_HOPS - 1): its quoted status is
+// stored with none, and nothing a walk stores starts another walk. Collection items are ids only: an embedded object is
+// never taken as a status.
 //
 // A walk is a context walk (the refresh a context read starts) or a create walk (the Create trigger,
 // reply-walk-create.ts), alike but for these: a create walk records a node's first CREATE_WALK_ITEMS items on the
-// node's origin that Kopje does not store (createItems), reads first pages only, reads the replies of the statuses it
+// node's origin, stored or not (createItems), reads first pages only, reads the replies of the statuses it
 // creates only, is capped at CREATE_WALK_STATUSES nodes and CREATE_WALK_PAGES documents, and goes once it ends. Context
 // walks are claimed first; create walks in the order the Store recorded them, each back in its place at every release
 // (one whose round died holding it is due behind them once its lease runs out), and one the Store recorded
@@ -129,10 +139,12 @@ export type RepliesRead = {
 };
 
 // A step's fetch: the node's status with its replies (null when it names none Kopje reads), a collection document's
-// or a page's reading, a failure that may pass, or any other failure (gone, refused, unusable, another origin).
+// or a page's reading, a 404 that the status's own URI answered without a redirect (federation/actor-gone.ts goneAt),
+// a failure that may pass, or any other failure (a 410, a redirected 404, refused, unusable, another origin).
 export type StepFetched =
   | { kind: "status"; status: RemoteStatusInput; replies: RepliesRead | null }
   | { kind: "replies"; replies: RepliesRead }
+  | { kind: "gone" }
   | { kind: "transient" }
   | { kind: "failed" };
 
@@ -150,12 +162,12 @@ export type ReplyStepInput = {
 
 // need: the step is not applied yet, and the Store needs the status's author (unknown, or stale: refresh, with its
 // state read here). next: the node handed out, charged. done: the walk is over for this claim (finished, or the
-// claim lost).
+// claim lost). jobsPending: the step started a removal (removeGone), whose batches the inbound job rounds run.
 export type AuthorNeed = { uri: string; refresh: boolean; state?: ActorState };
-export type ReplyStepAnswer = { next: ReplyStep | null; need: AuthorNeed | null; done: boolean };
+export type ReplyStepAnswer = { next: ReplyStep | null; need: AuthorNeed | null; done: boolean; jobsPending: boolean };
 
 // The walk's counters, changed in memory by a step and written once (saveWalk); handout: the number of the hand-out
-// whose completion is awaited, null once it is applied.
+// whose completion is awaited, null once it is applied; removed (not stored): the step started a removal.
 type Walk = {
   id: string;
   kind: number;
@@ -165,6 +177,7 @@ type Walk = {
   resultCount: number;
   handouts: number;
   handout: number | null;
+  removed: boolean;
 };
 
 type Node = {
@@ -203,6 +216,7 @@ function walkOf(db: Db, statusId: string, token: string): Walk | undefined {
         resultCount: row.result_count,
         handouts: row.handouts,
         handout: row.handout,
+        removed: false,
       };
 }
 
@@ -319,7 +333,7 @@ function skipped(db: Db, uri: string, now: number): boolean {
 // (FetchAllRepliesService does not filter them by host); in a create walk the items createItems keeps of the node's.
 function recordItems(db: Db, walk: Walk, node: Node, entries: readonly (string | null)[], input: ReplyStepInput): void {
   const create = walk.kind === CREATE_WALK;
-  for (const uri of create ? createItems(db, entries, node.uri) : entries) {
+  for (const uri of create ? createItems(entries, node.uri) : entries) {
     if (walk.nodes >= capsOf(walk).statuses) {
       return;
     }
@@ -417,10 +431,12 @@ function validate(db: Db, walk: Walk, node: Node, replies: RepliesRead | null, i
 }
 
 // A stored status's place in the thread, as its row keeps it: its id, the status its in_reply_to_id links (null while
-// unlinked), and the URI of its parent (that status's, else in_reply_to_uri). Two key reads.
-function storedPlace(db: Db, uri: string): { id: string; linked: string | null; parent: string | null } | undefined {
-  return db.first<{ id: string; linked: string | null; parent: string | null }>(
-    `SELECT s.id, s.in_reply_to_id AS linked, COALESCE(p.uri, s.in_reply_to_uri) AS parent
+// unlinked), the URI of its parent (that status's, else in_reply_to_uri), and its author's URI. Three key reads.
+type StoredPlace = { id: string; linked: string | null; parent: string | null; author: string | null };
+function storedPlace(db: Db, uri: string): StoredPlace | undefined {
+  return db.first<StoredPlace>(
+    `SELECT s.id, s.in_reply_to_id AS linked, COALESCE(p.uri, s.in_reply_to_uri) AS parent,
+				(SELECT a.uri FROM accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE a.id = s.account_id) AS author
 			FROM statuses s INDEXED BY ${STATUSES_URI_INDEX}
 				LEFT JOIN statuses p INDEXED BY ${STATUSES_ID_INDEX} ON p.id = s.in_reply_to_id
 			WHERE s.uri = ?`,
@@ -442,8 +458,73 @@ function linkedTo(db: Db, statusId: string, parentId: string): boolean {
   );
 }
 
-// The status step of a node that is not valid yet: its parent judged, then, for a new status under a valid parent,
-// its author and the status stored. Returns the author the Store needs first, or null once the step is applied.
+// The author of a document a step fetched (inbox.ts fetchedAuthor: a stored one, refetched first when stale, or an
+// unknown one fetched and stored by `store` once the caller's checks pass): null for one of which nothing is stored (no
+// author, one off the status's origin, ID-6, one whose deletion has started, ID-7, or one that cannot be fetched).
+function authorFound(
+  db: Db,
+  status: RemoteStatusInput,
+  input: ReplyStepInput,
+): { need: AuthorNeed } | { store: () => RemoteRow | undefined } | null {
+  const authorUri = status.attributedTo;
+  if (authorUri === null || !sameOrigin(authorUri, status.uri) || isDeletedActor(db, authorUri, input.now)) {
+    return null;
+  }
+  const author = input.author?.uri === authorUri ? input.author : undefined;
+  const prefetched: Prefetched | undefined =
+    author === undefined
+      ? undefined
+      : {
+          statuses: {},
+          actors: { [authorUri]: author.document },
+          revisions: author.revision === undefined ? {} : { [authorUri]: author.revision },
+        };
+  const found = fetchedAuthor(db, authorUri, prefetched, input.origin, input.now);
+  if (!("reason" in found)) {
+    return { store: found.store };
+  }
+  if (found.need === undefined) {
+    return null;
+  }
+  const { uri, refresh, state } = found.need;
+  return { need: { uri, refresh: refresh === true, ...(state === undefined ? {} : { state }) } };
+}
+
+// As any fetched status (StoreContext.fetched): no relation to a local account needed, its mentions and its author's
+// subscribers notified only within the real-time window; its quote one hop short of a root's.
+function fetchedContext(input: ReplyStepInput) {
+  return {
+    now: input.now,
+    storeNow: input.now,
+    origin: input.origin,
+    deliveredTo: null,
+    fetched: true,
+    quoteHops: QUOTE_HOPS - 1,
+  };
+}
+
+// A stored status's fetched document, applied as its author's Update (storeFetchedStatus: the version rules, the
+// fan-out, the quote, R38) when it names the stored author; one naming another changes nothing, as Mastodon's
+// Create#find_existing_status finds the status by its uri. Its place in the thread is its stored row's either way.
+// Returns the author the Store needs first, or null once applied.
+function refresh(db: Db, stored: StoredPlace, status: RemoteStatusInput, input: ReplyStepInput): AuthorNeed | null {
+  if (status.attributedTo === null || status.attributedTo !== stored.author) {
+    return null;
+  }
+  const found = authorFound(db, status, input);
+  if (found === null || "need" in found) {
+    return found?.need ?? null;
+  }
+  const author = found.store();
+  if (author !== undefined) {
+    storeFetchedStatus(db, author, status, fetchedContext(input));
+  }
+  return null;
+}
+
+// The status step of a node that is not valid yet: its parent judged, then, under a valid parent, a stored status
+// refreshed (refresh) or a new one stored with its author. Returns the author the Store needs first, or null once the
+// step is applied.
 function judge(
   db: Db,
   walk: Walk,
@@ -480,49 +561,24 @@ function judge(
     // A stored status still unlinked is out of the context's reach, as is one linked elsewhere.
     if (parentId === undefined || stored.linked !== parentId) {
       endNode(db, walk.id, node.uri);
-    } else {
+      return null;
+    }
+    const need = refresh(db, stored, status, input);
+    if (need === null) {
       validate(db, walk, node, repliesOf(false), input);
     }
-    return null;
+    return need;
   }
-  const authorUri = status.attributedTo;
-  // Nothing new of an author whose deletion has started is stored (ID-7), nor of one off the status's origin (ID-6).
-  if (authorUri === null || !sameOrigin(authorUri, status.uri) || isDeletedActor(db, authorUri, input.now)) {
-    endNode(db, walk.id, node.uri);
-    return null;
+  const found = authorFound(db, status, input);
+  if (found !== null && "need" in found) {
+    return found.need;
   }
-  const author = input.author?.uri === authorUri ? input.author : undefined;
-  const prefetched: Prefetched | undefined =
-    author === undefined
-      ? undefined
-      : {
-          statuses: {},
-          actors: { [authorUri]: author.document },
-          revisions: author.revision === undefined ? {} : { [authorUri]: author.revision },
-        };
-  const found = fetchedAuthor(db, authorUri, prefetched, input.origin, input.now);
-  if ("reason" in found) {
-    if (found.need !== undefined) {
-      const { uri, refresh, state } = found.need;
-      return { uri, refresh: refresh === true, ...(state === undefined ? {} : { state }) };
-    }
-    endNode(db, walk.id, node.uri);
-    return null;
-  }
-  const stores = found.store();
+  const stores = found?.store();
   if (stores === undefined) {
     endNode(db, walk.id, node.uri);
     return null;
   }
-  // As any fetched status (StoreContext.fetched): no relation to a local account needed, its mentions and its author's
-  // subscribers notified only within the real-time window; its quote one hop short of a root's.
-  const outcome = storeRemoteStatus(db, stores, status, {
-    now: input.now,
-    origin: input.origin,
-    deliveredTo: null,
-    fetched: true,
-    quoteHops: QUOTE_HOPS - 1,
-  });
+  const outcome = storeRemoteStatus(db, stores, status, fetchedContext(input));
   if (outcome.reason === "created") {
     walk.resultCount += 1;
   }
@@ -547,7 +603,12 @@ function applyStep(db: Db, walk: Walk, node: Node, input: ReplyStepInput): Autho
     }
     return null;
   }
-  if (fetched.kind === "failed" || (fetched.kind === "replies") !== (node.stage !== 0)) {
+  // A node's own 404, judged on the row stored under its URI now (one whose Create arrived since its hand-out
+  // included); never the root's (valid at its status stage from the walk's start).
+  if (fetched.kind === "gone" && node.stage === 0 && node.valid === 0) {
+    walk.removed = removeGone(db, node.uri, input.now) || walk.removed;
+  }
+  if (fetched.kind === "failed" || fetched.kind === "gone" || (fetched.kind === "replies") !== (node.stage !== 0)) {
     endNode(db, walk.id, node.uri);
     return null;
   }
@@ -559,10 +620,14 @@ function applyStep(db: Db, walk: Walk, node: Node, input: ReplyStepInput): Autho
     endNode(db, walk.id, node.uri);
     return null;
   }
-  // The root: stored, read for its replies only.
+  // The root: stored (its claim checked it), refreshed, and read for its replies.
   if (node.valid === 1) {
-    readReplies(db, walk, node, fetched.replies, input);
-    return null;
+    const stored = storedPlace(db, node.uri);
+    const need = stored === undefined ? null : refresh(db, stored, fetched.status, input);
+    if (need === null) {
+      readReplies(db, walk, node, fetched.replies, input);
+    }
+    return need;
   }
   return judge(db, walk, node, fetched, input);
 }
@@ -642,20 +707,21 @@ export const completeReplyStep = writeOperation.atStoreTime("now")<ReplyStepInpu
   const node =
     walk === undefined || walk.handout !== input.step.handout ? undefined : nodeOf(db, walk.id, input.step.uri);
   if (walk === undefined || node === undefined) {
-    return { next: null, need: null, done: true };
+    return { next: null, need: null, done: true, jobsPending: false };
   }
   const need = applyStep(db, walk, node, input);
   if (need !== null) {
-    return { next: null, need, done: false };
+    return { next: null, need, done: false, jobsPending: false };
   }
   walk.handout = null;
   const next = input.more ? handOut(db, walk) : null;
   saveWalk(db, walk);
+  const jobsPending = walk.removed;
   if (next === null && !hasPending(db, walk.id)) {
     finish(db, walk.id, walk.kind, input.now);
-    return { next: null, need: null, done: true };
+    return { next: null, need: null, done: true, jobsPending };
   }
-  return { next, need: null, done: false };
+  return { next, need: null, done: false, jobsPending };
 });
 
 // The end of a round's turn of a walk: under its claim, the walk is due again at once while a node is pending (a
