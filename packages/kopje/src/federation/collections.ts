@@ -10,12 +10,12 @@ import {
   PART_FEATURED,
   PART_NETWORK,
   PART_TAGS,
+  type PinFetchesInput,
 } from "../domain/remote-collections";
-import type { RemoteStatusInput } from "../domain/remote-status-reads";
 import { readConfig, userKek } from "../platform/config";
 import { callStore } from "../platform/store-client";
 import { storedCount } from "../platform/stored-bounds";
-import { goneSettler, type SettleGone } from "./actor-gone";
+import { goneAt, goneSettler, type SettleGone } from "./actor-gone";
 import { createRemoteLoaders, type FederationState, type RemoteLoaders } from "./federation";
 import type { InboxDeps } from "./inbox";
 import {
@@ -26,7 +26,7 @@ import {
   requestBudget,
 } from "./loader";
 import { fetchActor } from "./remote-actor";
-import { fetchRemoteStatus, idOf } from "./remote-status";
+import { type FetchedStatus, fetchRemoteStatus, idOf } from "./remote-status";
 import { confirmedInput } from "./resolve";
 
 // The Worker's part of a sync of a remote account's collections (domain/remote-collections.ts): what Mastodon's
@@ -37,7 +37,7 @@ import { confirmedInput } from "./resolve";
 // fetches with local_follower, as Kopje does, but the network collections as Account.representative
 // (json_ld_helper.rb:232-235): Kopje signs them as the others (docs/mastodon-deviations.md, Accounts). The
 // jobs/queue.ts rounds run it after the Store's inbound jobs: a round runs one phase of a sync, reading the
-// collections or fetching the pinned statuses that reading left pending.
+// collections or fetching the listed statuses that reading left to fetch, stored or not.
 //
 // Differences from Mastodon: a collection is read only on the actor's own origin (Mastodon checks the host for the
 // featured collections only); the featured collection's first MAX_REMOTE_PINS items are read; a collection that may be
@@ -219,20 +219,26 @@ async function readFeatured(
   return { uris, hashtags: hashtagNames(items) };
 }
 
-// Phase 2: the pending statuses, fetched in order (FetchRemoteStatusService) while the budget lasts: a usable status, or
-// null for one that is not; one that may be fetched later (the budget spent included) is left out, for a later round.
-async function fetchPending(
-  uris: readonly string[],
-  loader: DocumentLoader,
-): Promise<Record<string, RemoteStatusInput | null>> {
-  const fetched: Record<string, RemoteStatusInput | null> = {};
+// Phase 2: the statuses of the pending and refresh rows, fetched in order (FetchRemoteStatusService) while the budget
+// lasts; one that may be fetched later (the budget spent included) is left out, for a later round.
+async function fetchPending(uris: readonly string[], loader: DocumentLoader): Promise<PinFetchesInput["fetched"]> {
+  const fetched: PinFetchesInput["fetched"] = {};
   for (const uri of uris) {
     const status = await fetchRemoteStatus(uri, loader);
     if (status.kind !== "transient") {
-      fetched[uri] = status.kind === "ok" ? status.status : null;
+      fetched[uri] = pinFetched(status, uri);
     }
   }
   return fetched;
+}
+
+// What phase 2 hands back of the fetch of `uri`: a usable status, 'gone' for a 404 the status's own URI answered
+// (goneAt: none after a redirect, and never a 410, as Mastodon's fetch_status), or null for one that cannot be used.
+export function pinFetched(
+  status: Exclude<FetchedStatus, { kind: "transient" }>,
+  uri: string,
+): PinFetchesInput["fetched"][string] {
+  return status.kind === "ok" ? status.status : goneAt(status, uri, 404) ? "gone" : null;
 }
 
 // FetchFeaturedTagsCollectionService: the Hashtags of its pages, until MAX_FEATURED_TAGS items, a page without items,
@@ -370,7 +376,8 @@ async function refetchDocument(
 }
 
 // One round: up to COLLECTION_SYNCS_PER_ROUND syncs, each claimed, its phase run and handed back. Returns whether another
-// waits, or a purge a document part started (refetchDocument) has a batch left.
+// waits, or a purge a document part started (refetchDocument) or a removal a pin fetch started (completePinFetches)
+// has a batch left.
 // A Store refusal (maintenance) surfaces as StoreUnavailableError for the caller; a claimed sync whose round died is
 // claimed again after its lease.
 export async function syncCollections(env: Env, deps: InboxDeps): Promise<boolean> {
@@ -437,7 +444,9 @@ export async function syncCollections(env: Env, deps: InboxDeps): Promise<boolea
       if (state.storeError !== null) {
         throw state.storeError;
       }
-      pending = await callStore(() => store().completePinFetches(build, { ...round, now: deps.now(), fetched }));
+      const ended = await callStore(() => store().completePinFetches(build, { ...round, now: deps.now(), fetched }));
+      pending = ended.pending;
+      goneJobs ||= ended.jobsPending;
     }
   }
   return pending || goneJobs;

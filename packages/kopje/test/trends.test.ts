@@ -64,12 +64,12 @@ describe("GET /api/v1/trends/tags", () => {
     await setTrendSetting(h.store, "trendable_by_default", true);
     const anonymous = await h.request("/api/v1/trends/tags");
     expect(anonymous.headers.get("cache-control")).toBe(
-      "public, max-age=15, stale-while-revalidate=30, stale-if-error=86400",
+      "max-age=15, public, stale-while-revalidate=30, stale-if-error=86400",
     );
-    expect(anonymous.headers.get("vary")).toContain("Authorization");
+    expect(anonymous.headers.get("vary")).toBe("Authorization");
     expect(anonymous.headers.get("deprecation")).toBeNull();
     const signed = await h.request("/api/v1/trends/tags", bearer(h.users.alice.token));
-    expect(signed.headers.get("cache-control")).toBeNull();
+    expect(signed.headers.get("cache-control")).toBe("private, no-store");
     expect(await signed.json()).toEqual([
       expect.objectContaining({ name: "t000", following: false, featuring: false }),
     ]);
@@ -323,9 +323,9 @@ describe("links and the admin lists", () => {
       // The OAuth admin is answered as a signed-in caller: never cached publicly (cache_if_unauthenticated!).
       const answered = await h.request(path, bearer(token));
       expect(answered.status, path).toBe(200);
-      expect(answered.headers.get("cache-control"), path).toBeNull();
+      expect(answered.headers.get("cache-control"), path).toBe("private, no-store");
     }
-    expect((await h.request("/api/v1/trends/tags")).headers.get("cache-control")).toMatch(/^public/);
+    expect((await h.request("/api/v1/trends/tags")).headers.get("cache-control")).toMatch(/^max-age=15, public/);
     expect(await getJson(h, "/api/v1/admin/trends/tags", token)).toEqual(
       await getJson(h, "/api/v1/trends/tags", token),
     );

@@ -87,7 +87,10 @@ describe("answering only on the instance domain (WEB-6)", () => {
           const label = `${method} ${host}${path}`;
           expect(response.status, label).toBe(301);
           expect(response.headers.get("location"), label).toBe(`https://kopje.test${path}`);
-          expect(response.headers.get("cache-control"), label).toBe("no-store");
+          // The API's answers are WEB-7's, private like every API answer outside a route.
+          expect(response.headers.get("cache-control"), label).toBe(
+            path.startsWith("/api/") ? "private, no-store" : "no-store",
+          );
           expect(await response.text(), label).toBe("");
         }
       }

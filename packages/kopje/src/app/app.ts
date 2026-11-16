@@ -8,6 +8,7 @@ import { ringDoorbell } from "../federation/delivery";
 import { inboxHandler, precheckInbox, requestInboundJobs } from "../federation/inbox";
 import { activityStreamsRequest, INBOX_ROUTES } from "../federation/inbox-request";
 import { signAsAuthor } from "../federation/ld-sign";
+import { createPollFetcher } from "../federation/poll-refresh";
 import { createResolver } from "../federation/resolve";
 import {
   FEDERATION_GET_ROUTES,
@@ -19,6 +20,7 @@ import { FEDERATION_PATHS, requireSetup } from "../federation/setup-gate";
 import { rescueFromSnapshot } from "../federation/snapshot";
 import { createAdmission, INBOX_BODY_LIMIT, spoolInbox } from "../federation/spool";
 import { ActivityMemo } from "../mastodon/activity";
+import { apiCaching } from "../mastodon/caching";
 import type { AuthorSignature } from "../mastodon/context";
 import { maintenanceError, mastodonError, recordNotFound } from "../mastodon/errors";
 import { mastodonApi } from "../mastodon/routes";
@@ -74,6 +76,10 @@ const MODERATION_WRITE = /^\/api\/v1\/admin\/accounts\/[^/]+\/(?:action|unsuspen
 
 const API_CORS_PATHS = ["/api/*", "/oauth/token", "/oauth/revoke", "/oauth/userinfo"];
 
+// The Api::BaseController answers of Mastodon: the API and OpenID Connect's userinfo. The other OAuth endpoints are
+// Doorkeeper's, outside ApplicationController, and set their own headers (mastodon/oauth.ts).
+const API_CACHING_PATHS = ["/api/*", "/oauth/userinfo"];
+
 // WEB-3: cross-origin GET for /.well-known, NodeInfo and local actor documents; the profile page (HTML) stays closed.
 // As Mastodon v4.5.11 opens them (config/initializers/cors.rb).
 const DOCUMENT_CORS_PATHS = ["/.well-known/*", "/nodeinfo/*", "/ap/users/:username"];
@@ -115,6 +121,12 @@ export function createApp({
   const documentCors = cors({ origin: "*", allowMethods: ["GET"], maxAge: 86400 });
   for (const path of DOCUMENT_CORS_PATHS) {
     app.use(path, documentCors);
+  }
+
+  // WEB-7: every Mastodon API answer's Cache-Control and Vary (mastodon/caching.ts). After CORS, whose preflight
+  // answer keeps none, and before the gates, so their answers, notFound's and onError's get them too.
+  for (const path of API_CACHING_PATHS) {
+    app.use(path, apiCaching);
   }
 
   // Spooling within the Queue's admission budget (federation/spool.ts): over it, or when it cannot be read, 503.
@@ -243,6 +255,7 @@ export function createApp({
     randomToken: seams.randomToken ?? randomToken,
     images,
     resolve: createResolver({ build, store, now, keygen, loader, requestJobs: jobs }),
+    fetchPoll: createPollFetcher({ build, store, now, keygen, loader }),
     requestJobs: jobs,
     activity,
     signAsAuthor:

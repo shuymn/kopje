@@ -76,7 +76,7 @@ import * as quoteVerification from "./domain/quote-verification";
 import * as quotes from "./domain/quotes";
 import * as remoteCollections from "./domain/remote-collections";
 import * as remoteMedia from "./domain/remote-media";
-import { resolveSearch } from "./domain/remote-statuses";
+import { refreshPoll, resolveSearch } from "./domain/remote-statuses";
 import * as replyWalks from "./domain/reply-walks";
 import * as reports from "./domain/reports";
 import * as scheduled from "./domain/scheduled-statuses";
@@ -332,6 +332,8 @@ export const STORE_RPC = {
   verifyCredentials: accounts.verifyCredentials,
   userinfo: accounts.userinfo,
   updateCredentials: accountActions.updateCredentials,
+  profile: accountActions.profile,
+  updateProfile: accountActions.updateProfile,
   preferences: accounts.preferences,
   relationships: accounts.relationships,
   familiarFollowers: accounts.familiarFollowers,
@@ -437,8 +439,11 @@ export const STORE_RPC = {
   getMarkers: markers.getMarkers,
   saveMarkers: markers.saveMarkers,
 
-  // Polls (domain/polls.ts).
+  // Polls (domain/polls.ts): a read that may find the poll due for a refresh, the refresh's reservation before the
+  // Worker's fetch, and the refresh that applies what it fetched (remote-statuses.ts).
   getPoll: polls.getPoll,
+  reservePollRefresh: polls.reservePollRefresh,
+  refreshPoll,
   vote: polls.vote,
 
   // The cron's round of polls (jobs/scheduled.ts): those that ended, and the Updates of counts that are due.
