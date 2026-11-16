@@ -463,15 +463,17 @@ describe("the follow lists as pages", () => {
     const h = await community(["alice", "bob"]);
     await remote(h, "carol");
     const missing = await (await h.request("/@nobody")).text();
-    for (const path of [
-      "/@nobody/followers",
-      "/@nobody/following",
-      "/@carol@remote.example/followers",
-      "/@alice@other.example/following",
-      "/@/followers",
-    ]) {
+    // Where Mastodon serves its web app's shell, the same 404 with `noindex` (test/web-robots.test.ts).
+    const missingShell = await (await h.request("/@nobody@kopje.test")).text();
+    for (const [path, bytes] of [
+      ["/@nobody/followers", missing],
+      ["/@nobody/following", missing],
+      ["/@carol@remote.example/followers", missingShell],
+      ["/@alice@other.example/following", missingShell],
+      ["/@/followers", missing],
+    ] as const) {
       const response = await h.request(path);
-      expect([path, response.status, await response.text()]).toEqual([path, 404, missing]);
+      expect([path, response.status, await response.text()]).toEqual([path, 404, bytes]);
     }
     // The guarded branch: the same shapes of a served account answer.
     expect((await h.request("/@alice@kopje.test/followers")).status).toBe(200);

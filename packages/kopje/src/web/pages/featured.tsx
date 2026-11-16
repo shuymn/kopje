@@ -26,7 +26,7 @@ export type FeaturedView = {
   cursor: PageCursor;
   paging: Paging;
   site: Site;
-  // Mastodon serves its web app's shell at this URL (app/public-pages.tsx appShellHandle).
+  // Mastodon serves its web app's shell at this URL (app/public-pages.tsx mastodonShell).
   shell: boolean;
 };
 

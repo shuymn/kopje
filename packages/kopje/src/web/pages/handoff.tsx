@@ -12,8 +12,9 @@ import { authorizeInteraction, type RemoteTarget, type TargetPreview } from "../
 // a server, or with one refused, the dialog's form as a page of its own; with a server, a link to its
 // /authorize_interaction with the target's id, after the target itself (`preview`: the account's row, or the post's
 // author's row and the start of its text, two lines at most). The page goes nowhere by itself: it never redirects,
-// fetches, stores or signs in. Mastodon 4.7.5 serves its web app's shell at both paths (home#index,
-// config/routes.rb:179), so neither is indexed (Robots).
+// fetches, stores or signs in. Neither is indexed (Robots): Mastodon 4.7.5 serves no page at either path, its web app's
+// shell at the status's (home#index, config/routes.rb:179) and a 404 at the account's, whose `interact` its status
+// route reads as a status id (:174).
 
 export const HandoffFormPage: FC<{ site: Site; target: RemoteTarget; problem: boolean }> = ({
   site,

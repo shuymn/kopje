@@ -238,22 +238,19 @@ describe("the HTML 404", () => {
     const bytes = await missing.text();
     expect(missing.status).toBe(404);
     expect(text(one(parseHtml(bytes), "h1"))).toBe("Not found");
+    // Where Mastodon serves its web app's shell, the same page with `noindex`, whatever the target
+    // (test/web-robots.test.ts).
+    const shellBytes = bytes.replace("</head>", '<meta name="robots" content="noindex"/></head>');
+    expect(shellBytes).not.toBe(bytes);
     const paths = [
       "/@alice/100000000000000001",
       statusPath(hidden),
       `${statusPath(hidden)}/embed`,
       `/@alice/${remote}`,
-      `/@carol@carol.example/${remote}`,
-      "/@carol@carol.example",
       "/@alice/tagged/a-b",
       "/@nobody/tagged/cats",
-      "/@zed@nowhere.example/tagged/cats",
       "/@nobody/with_replies",
       "/@nobody/media",
-      "/@carol@carol.example/with_replies",
-      "/@carol@carol.example/media",
-      "/@alice/with_replies/x",
-      "/@alice/media/x",
       "/privacy-policy",
       "/terms-of-service/2026-11-01",
       // Shapes no route serves.
@@ -264,8 +261,6 @@ describe("the HTML 404", () => {
       "/@alice/featured-nothing",
       "/@alice/12345678901234567890",
       "/@alice/123x",
-      `${statusPath(hidden)}/reblogs-nothing`,
-      "/@alice/1/embed/x",
       "/tags",
       "/tags/cats/x",
       // A hashtag page for a name that is not a hashtag, or past the bound of the hashtags Kopje lists.
@@ -274,12 +269,27 @@ describe("the HTML 404", () => {
       "/tags/%20",
       `/tags/${"a".repeat(257)}`,
     ];
-    for (const path of paths) {
+    const shellPaths = [
+      `/@carol@carol.example/${remote}`,
+      "/@carol@carol.example",
+      "/@zed@nowhere.example/tagged/cats",
+      "/@carol@carol.example/with_replies",
+      "/@carol@carol.example/media",
+      // Shapes no route serves.
+      "/@alice/with_replies/x",
+      "/@alice/media/x",
+      `${statusPath(hidden)}/reblogs-nothing`,
+      "/@alice/1/embed/x",
+    ];
+    for (const [path, expected] of [
+      ...paths.map((path) => [path, bytes] as const),
+      ...shellPaths.map((path) => [path, shellBytes] as const),
+    ]) {
       const response = await h.request(path);
       expect([path, response.status]).toEqual([path, 404]);
       expect(response.headers.get("content-type"), path).toBe("text/html; charset=UTF-8");
       expect(response.headers.get("cache-control"), path).toBe("public, max-age=60");
-      expect(await response.text(), path).toBe(bytes);
+      expect(await response.text(), path).toBe(expected);
     }
   });
 });

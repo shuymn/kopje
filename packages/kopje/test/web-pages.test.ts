@@ -629,11 +629,17 @@ describe("permalink (VIS-4)", () => {
     paths.push(`/@alice/${(await boost.json<{ id: string }>()).id}`);
     paths.push(`/@alice/${bobs.id}`);
     const remote = await seedStatus(h.store, { accountId: carol, visibility: "public" });
-    paths.push(`/@carol@carol.example/${remote}`, `/@alice/${remote}`, "/@alice/not-an-id");
-    for (const path of paths) {
+    paths.push(`/@alice/${remote}`, "/@alice/not-an-id");
+    // Where Mastodon serves its web app's shell, the same 404 with `noindex` (test/web-robots.test.ts).
+    const missingShell = await page(h, "/@carol@carol.example/100000000000000001");
+    expect(missingShell.response.status).toBe(404);
+    for (const [path, expected] of [
+      ...paths.map((path) => [path, missing] as const),
+      [`/@carol@carol.example/${remote}`, missingShell] as const,
+    ]) {
       const hidden = await page(h, path);
       expect(hidden.response.status, path).toBe(404);
-      expect(hidden.html, path).toBe(missing.html);
+      expect(hidden.html, path).toBe(expected.html);
       expect((await h.request(path, AP)).status, `${path} (AP)`).toBe(404);
     }
   });

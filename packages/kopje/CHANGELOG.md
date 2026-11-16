@@ -274,10 +274,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   checks no reference (the migration bench's upgrade from `0093_annual_reports` takes 12,349 ms with this file and
   11,736 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the
   release is at least a minor version, and rolling back past it needs a point-in-time restore.
-- The hashtag page and the followers and following pages always carry `noindex`, as Mastodon's do, and so do a post's
-  Boosts, Favourites and Quotes tabs, the handoff pages and every page under the `/@username@domain` spelling, where
-  Mastodon serves its web app ([docs/web-pages.md](docs/web-pages.md)). No Store migration and no `wrangler.jsonc`
-  change.
+- The hashtag page and the followers and following pages always carry `noindex`, as Mastodon's do, and so do the
+  handoff pages and every page, 404 and 410 at a URL where Mastodon serves its web app: a post's Boosts, Favourites and
+  Quotes tabs, the `/@username@domain` spelling and the pages under a stored username with a dot
+  ([docs/web-pages.md](docs/web-pages.md), "Robots"). No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 

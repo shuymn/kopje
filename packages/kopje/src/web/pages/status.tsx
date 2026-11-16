@@ -33,17 +33,13 @@ export type StatusView = {
   site: Site;
   thread?: (Thread & { cursor: PageCursor }) | undefined;
   embed: string;
-  // Mastodon serves its web app's shell at this URL whatever the tab (app/public-pages.tsx appShellHandle).
+  // Mastodon serves its web app's shell at this URL (app/public-pages.tsx mastodonShell).
   shell: boolean;
 };
 
 // The tabs in the order the page shows them, and the count each is named by.
 // The id of the focal post's menu of further actions.
 const ACTIONS_MENU = "actions";
-
-// The tabs Mastodon 4.7.5 has no route of its own for: `/@username/:id/<tab>` reaches home#index
-// (config/routes.rb:179), its web app's shell, which is never indexed (Robots).
-const SHELL_TABS: ReadonlySet<StatusTabKind> = new Set(["reblogs", "favourites", "quotes"]);
 
 const STATUS_TABS: readonly { kind: StatusTabKind; count: CountKind }[] = [
   { kind: "replies", count: "replies" },
@@ -99,7 +95,7 @@ export const StatusPage: FC<StatusView> = ({ status, parent, history, site, thre
       head={
         <>
           <meta name="description" content={description} />
-          <Robots shell={shell || SHELL_TABS.has(kind)} paged={thread !== undefined && thread.cursor !== null} />
+          <Robots shell={shell} paged={thread !== undefined && thread.cursor !== null} />
           <meta property="og:site_name" content={domain} />
           <meta property="og:type" content="article" />
           <meta property="og:title" content={title} />

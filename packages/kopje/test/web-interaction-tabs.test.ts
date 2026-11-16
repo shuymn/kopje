@@ -792,7 +792,9 @@ describe("a status page’s tabs as pages", () => {
   it("answer the same 404 bytes for every hidden or unknown status, and move a legacy id to the same tab", async () => {
     const h = await community(["alice", "bob"]);
     const { alice } = h.users;
-    const missing = await (await h.request("/@nobody")).text();
+    // A tab's URL is one where Mastodon serves its web app's shell: the 404 there carries `noindex`
+    // (test/web-robots.test.ts).
+    const missing = await (await h.request("/@nobody@kopje.test")).text();
     const hidden: string[] = [];
     for (const visibility of ["private", "direct", "limited"] as const) {
       hidden.push(await seedStatus(h.store, { accountId: alice.id, visibility }));
