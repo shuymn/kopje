@@ -269,6 +269,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   Store migration and no `wrangler.jsonc` change.
 - Text stripping, the removal of CDATA lines from a link card's structured data, and the matching of usernames take
   linear time on long input. No Store migration and no `wrangler.jsonc` change.
+- An actor document whose `inbox` is missing, null or blank is refused, as Mastodon refuses it: its activities are
+  answered without effect and nothing of it is stored. Kopje stored such an actor with no inbox (or, for an empty
+  string, with a URL resolved from the document's own), and a refetch of a stored actor cleared its inbox. No Store
+  migration and no `wrangler.jsonc` change.
 - An `Update(Person)` applies the profile and handle the actor it carries states, so a rename or a profile change no
   longer waits for the sender's actor cache (3 minutes on Mastodon). Keys and inboxes still come only from the actor
   document Kopje fetches ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts). No Store migration and

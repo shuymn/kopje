@@ -3726,7 +3726,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   interoperability policy, not another server's behaviour, an actor id and an inbox or shared inbox URL from a remote
   actor document are at most 2,048 bytes (`ACTOR_URI_LIMIT` and `INBOX_URL_LIMIT` in
   `src/federation/remote-actor.ts`): an over-long id or inbox makes the actor unusable, and an over-long shared inbox
-  is ignored. Mastodon sets no length limit; Misskey stores inbox URLs in 512-character columns.
+  is ignored. Mastodon sets no length limit; Misskey stores inbox URLs in 512-character columns. A document whose own
+  `inbox` member is blank (missing, null, false, whitespace alone, `[]` or `{}`) is no actor either, fetched or
+  embedded, as Mastodon's `ProcessAccountService` raises for one (`process_account_service.rb:24`), so it stores
+  nothing, a stored row's inbox included (`remoteActorInput`; `test/inbox-actor-update.test.ts` ("an actor document
+  whose inbox is blank")).
   `test/inbox-verify4.test.ts` ("enqueues and fully expands an audience whose targets exceed what one row can hold",
   "refuses an actor whose inbox URL is over the cap", "refuses an actor whose id is over the cap"),
   `test/delivery-chunks.test.ts` (the chunk boundary, lane order across intents, an Update replacing a partly expanded

@@ -378,6 +378,61 @@ describe("an embedded actor Kopje cannot read", () => {
   });
 });
 
+// Mastodon's ProcessAccountService#call raises for a document whose own `inbox` is blank (Ruby's blank?,
+// process_account_service.rb:24) before it touches the account, fetched or embedded alike; Kopje's reader refuses it the
+// same way (remote-actor.ts remoteActorInput), so nothing of it is stored, a new actor's row nor a stored one's.
+describe("an actor document whose inbox is blank", () => {
+  it.each([
+    ["missing", undefined],
+    ["null", null],
+    ["empty", ""],
+    ["whitespace alone", " \u3000\n"],
+    ["false", false],
+    ["an empty array", []],
+    ["an empty object", {}],
+  ])("is refused fetched or embedded, for a new actor and a stored one (inbox %s)", async (_name, inbox) => {
+    const { t, bob } = await bobWorld();
+    // Fetched, a new actor: its Follow stores nothing.
+    const fresh = await mastodonActor(t.web, "fresh", { key: 1 });
+    t.web.serve(fresh.uri, { ...fresh.document, inbox });
+    const follow = (actor: TestActor) => ({
+      "@context": AS,
+      id: `${actor.uri}#follows/${nextId()}`,
+      type: "Follow",
+      actor: actor.uri,
+      object: `${LOCAL}/ap/users/dave`,
+    });
+    expect(await receive(t, fresh, follow(fresh))).toMatchObject({ status: 202, reason: "invalid-actor" });
+    expect(await accountId(t.store, fresh.uri)).toBeUndefined();
+    // Fetched, a stored actor: an Update naming bob by URI fetches his document, which changes nothing.
+    const before = { row: await row(t, bob.uri), keys: await keys(t, bob.uri) };
+    t.web.serve(bob.uri, { ...bob.document, inbox, name: "refetched" });
+    const byUri = updateOf(bob, bob.uri);
+    expect(await receive(t, bob, byUri)).toMatchObject({ status: 202, reason: "invalid-actor" });
+    expect(await row(t, bob.uri)).toEqual(before.row);
+    // Embedded, a stored actor: nothing of it is applied.
+    t.web.serve(bob.uri, bob.document);
+    const embedding = updateOf(bob, embedded(bob, { inbox, name: "embedded" }));
+    expect(await receive(t, bob, embedding)).toMatchObject({ status: 202, reason: "invalid-actor" });
+    expect(await row(t, bob.uri)).toEqual(before.row);
+    expect(await keys(t, bob.uri)).toEqual(before.keys);
+    // Embedded, a new actor: the document fetched for its key is stored as for any activity, nothing of the embedded.
+    const carol = await mastodonActor(t.web, "carol", { origin: OTHER, key: 2 });
+    const carolUpdate = updateOf(carol, embedded(carol, { inbox, name: "embedded" }));
+    expect(await receive(t, carol, carolUpdate)).toMatchObject({ status: 202, reason: "invalid-actor" });
+    expect(await row(t, carol.uri)).toMatchObject({
+      display_name: "carol <b>display</b>",
+      inbox_url: `${carol.uri}/inbox`,
+    });
+    // The same documents with an inbox are stored (the branch ran).
+    t.web.serve(fresh.uri, fresh.document);
+    expect(await receive(t, fresh, follow(fresh))).toMatchObject({ status: 202 });
+    expect(await accountId(t.store, fresh.uri)).toBeDefined();
+    expect(await t.post(bob, updateOf(bob, embedded(bob, { name: "embedded" })))).toBe(202);
+    expect((await row(t, bob.uri)).display_name).toBe("embedded");
+  });
+});
+
 describe("how the embedded actor is read (D3)", () => {
   const CONTEXTS = "https://contexts.example";
   // A context at `path` reached through `hops` same-origin redirects: hops + 1 requests.

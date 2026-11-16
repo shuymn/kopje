@@ -211,13 +211,33 @@ export function claimedHandle(document: unknown, uri: string, preferredUsername:
     : null;
 }
 
+// Ruby's [[:space:]] on a Unicode string (the White_Space property), which ActiveSupport's String#blank? reads.
+const RUBY_BLANK = /^[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/u;
+
+// Whether the document's own `inbox` member is blank as Mastodon 4.7 reads it (`json['inbox'].blank?`,
+// ProcessAccountService#call, process_account_service.rb:24): missing, null, false, a string of whitespace alone, an
+// empty array or an empty object. A value that is not blank but no inbox URL is not refused here (Mastodon stores no
+// inbox for it, valid_collection_uri).
+function blankInbox(document: unknown): boolean {
+  const inbox = typeof document === "object" && document !== null ? (document as { inbox?: unknown }).inbox : undefined;
+  return (
+    inbox === undefined ||
+    inbox === null ||
+    inbox === false ||
+    (typeof inbox === "string" && RUBY_BLANK.test(inbox)) ||
+    (Array.isArray(inbox) && inbox.length === 0) ||
+    (typeof inbox === "object" && !Array.isArray(inbox) && Object.keys(inbox).length === 0)
+  );
+}
+
 // The columns of a remote account (null if the document cannot be one). Display names are plain text; the bio is
 // sanitized HTML (HTML-1); URLs are http(s) or null (HTML-3). Misskey's extensions (_misskey_summary, isCat, ...) are
 // not interpreted; they stay in raw with the rest of the document. confirmed is left null: the Worker's path that
-// stores the document confirms the claim (federation/resolve.ts confirmedInput).
+// stores the document confirms the claim (federation/resolve.ts confirmedInput). A document whose inbox is blank is
+// none, fetched or embedded, as Mastodon raises before it touches the account (blankInbox): nothing of it is stored.
 export async function remoteActorInput(actor: Actor, document: unknown): Promise<RemoteActorInput | null> {
   const uri = actor.id;
-  if (uri === null || !isStorableActorId(uri.href)) {
+  if (uri === null || !isStorableActorId(uri.href) || blankInbox(document)) {
     return null;
   }
   const claim = claimedHandle(document, uri.href, text(actor.preferredUsername));

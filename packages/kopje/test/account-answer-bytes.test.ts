@@ -249,17 +249,18 @@ describe("one account has a known size (RES-2)", () => {
       `<p>${'日本語の自己紹介と<a href="https://example.com/a">リンク</a>です。'.repeat(2_000)}</p>`,
       `<p>${'\u0001"<b>x</b>'.repeat(10_000)}</p>`,
     ]) {
-      const actor = await Person.fromJsonLd({
+      const document = {
         "@context": "https://www.w3.org/ns/activitystreams",
         id: "https://example.com/users/u",
         type: "Person",
         preferredUsername: "u",
+        inbox: "https://example.com/users/u/inbox",
         summary,
         url: long,
         icon: { type: "Image", url: long },
         image: { type: "Image", url: "https://example.com/header.png" },
-      });
-      const input = await remoteActorInput(actor, {});
+      };
+      const input = await remoteActorInput(await Person.fromJsonLd(document), document);
       const note = input!.note;
       expect(jsonStringBytes(note)).toBeLessThanOrEqual(REMOTE_BIO_BYTES);
       // Most of the bound is used, and the stored bio parses as HTML without a structural error (no tag cut
