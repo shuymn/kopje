@@ -896,9 +896,10 @@ Notification policy (`PATCH`/`PUT /api/v1/notifications/policy` and `/api/v2/not
 conditions themselves follow 4.7.5):
 
 - The v1 booleans (`filter_not_following`, `filter_not_followers`, `filter_new_accounts`, `filter_private_mentions`,
-  `filter_bots`) are read as Rails casts booleans: `0`, `f`, `false`, `off` and a blank value accept. Mastodon's
-  setters take any value Ruby holds true (`notification_policy.rb`), so a form's `false`, `0` or `off` filters there
-  and only JSON `false` or `null` accepts; clients mean these values as booleans. Accepted, 2026-11-15.
+  `filter_bots`) are read as Rails casts booleans: `0`, `f`, `F`, `false`, `FALSE`, `off`, `OFF` and a blank value
+  accept. Mastodon's setters take any value Ruby holds true (`notification_policy.rb`), so a form's `false`, `0` or
+  `off` filters there and only JSON `false` or `null` accepts; clients mean these values as booleans. Accepted,
+  2026-11-15.
 - A v2 value (`for_not_following`, `for_not_followers`, `for_new_accounts`, `for_private_mentions`,
   `for_limited_accounts`, `for_bots`) other than `accept`, `filter`, `drop` or 0 to 2 answers 422
   `'<value>' is not a valid <field>` and changes nothing. Mastodon's enum raises an error no handler rescues, so it
@@ -937,8 +938,9 @@ Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; th
 - `instance_media_attachments` is always 0 bytes (`human_value` `0 Bytes`): Kopje does not count its cache of remote
   attachments' files, which `kopje.remote_media.usage` reports for the whole cache.
 - An absent or empty `domain` counts 0; Mastodon's total then counts the local accounts.
-- `include_subdomains` is read as a boolean: empty, `0`, `f`, `false` and `off` (any case) are false; Mastodon takes
-  any value sent as true, `"false"` included. The series counts the domain itself only, as Mastodon 4.7.5 does.
+- `include_subdomains` is read as Rails casts a boolean: empty, `0`, `f`, `F`, `false`, `FALSE`, `off` and `OFF` are
+  false; Mastodon takes any value sent as true, `"false"` included. The series counts the domain itself only, as
+  Mastodon 4.7.5 does.
 - `new_users`, `opened_reports` and `resolved_reports` without both dates answer 422; Mastodon answers 500.
 - `start_at` and `end_at` (of measures and of retention) are read as ISO 8601 only, and only when both the date
   written and the UTC instant lie from 1583-01-01 to 9998-12-31; any other value answers 422 `Invalid date
