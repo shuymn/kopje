@@ -66,6 +66,7 @@ import {
   announce,
   AS,
   create,
+  DAVE,
   followed,
   localStatus,
   mastodonNote,
@@ -920,20 +921,25 @@ describe("a revocation’s failing batch, and a call’s allowance (RES-5)", () 
   };
 
   it("commits the Delete and its revocation when the first batch fails, and the round at its due time revokes", async () => {
-    const { t, carol, stamp, quote, target } = await accepted();
-    // The batch revokes the quote (its row and its target's count), then fails at the revocation's end.
+    const { t, bob, carol, stamp, quote, target } = await accepted();
+    // bob's other quote names the stamp, which does not name it: pending, for the batch alone.
+    const other = quoting(bob, target.id, stamp);
+    expect(await t.post(bob, create(bob, other))).toBe(202);
+    expect(await quoteOf(t, other.id)).toMatchObject({ state: "pending" });
+    // The batch rejects the pending quote, then fails at the revocation's end.
     await sql(
       t.store,
       `CREATE TRIGGER test_revocation_fails BEFORE UPDATE OF pending ON quote_revocations WHEN NEW.pending = 0
 			BEGIN SELECT RAISE(ABORT, 'test: the batch fails'); END`,
     );
     quiet();
-    const count = await quotesCount(t, target.id);
-    expect(count).toBe(1);
+    expect(await quotesCount(t, target.id)).toBe(1);
     expect(await t.post(carol, remove(carol, stamp))).toBe(202);
-    // The batch's writes were rolled back; the Delete's retraction and its revocation committed, backing off.
-    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
-    expect(await quotesCount(t, target.id)).toBe(count);
+    // The quote the stamp approved was revoked before the batch (revokeStamp), and stays so; the batch's writes were
+    // rolled back; the Delete's retraction and its revocation committed, backing off.
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "revoked" });
+    expect(await quotesCount(t, target.id)).toBe(0);
+    expect(await quoteOf(t, other.id)).toMatchObject({ state: "pending" });
     expect(
       await sql(
         t.store,
@@ -946,11 +952,11 @@ describe("a revocation’s failing batch, and a call’s allowance (RES-5)", () 
       { pending: 1, attempts: 1, due_at: NOW + JOB_RETRY_DELAYS_MS[0]! },
     ]);
     await sql(t.store, "DROP TRIGGER test_revocation_fails");
-    // Not due: a round leaves it. At its due time, it revokes, and the revocation is done and fresh.
+    // Not due: a round leaves it. At its due time, it rejects, and the revocation is done and fresh.
     expect(await t.store.runInboundJobs(BUILD, { now: NOW })).toMatchObject({ pending: false });
-    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
+    expect(await quoteOf(t, other.id)).toMatchObject({ state: "pending" });
     await t.store.runInboundJobs(BUILD, { now: NOW + JOB_RETRY_DELAYS_MS[0]! });
-    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "revoked" });
+    expect(await quoteOf(t, other.id)).toMatchObject({ state: "rejected" });
     expect(await sql(t.store, "SELECT pending, attempts, due_at FROM quote_revocations")).toEqual([
       { pending: 0, attempts: 0, due_at: null },
     ]);
@@ -2863,6 +2869,32 @@ describe("the holder of a stamp (stampHolder, RES-6)", () => {
     expect(after.grown.rows).toBe(after.atCap.rows);
     expect(after.grown.rows).toBe(2 * STAMP_HOLDER_CANDIDATES);
   }, 60_000);
+
+  it("fans out the holder on the stamp's Delete only within the cap, and revokes every quote naming it", async () => {
+    for (const [ahead, notified] of [
+      [3, [{ account_id: DAVE }]],
+      [2000, []],
+    ] as const) {
+      const { t, carol, pair, holderId, flood } = await flooded();
+      const boosted = await t.request(`/api/v1/statuses/${holderId}/reblog`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${t.tokens.dave}` },
+      });
+      expect(boosted.status).toBe(200);
+      await flood(ahead);
+      expect(await t.post(carol, remove(carol, pair.stamp))).toBe(202);
+      for (let more = true, round = 0; more; round++) {
+        expect(round).toBeLessThan(50);
+        more = (await t.store.runInboundJobs(BUILD, { now: NOW })).pending;
+      }
+      expect(
+        await sql(t.store, "SELECT state, count(*) AS n FROM quotes WHERE approval_uri = ? GROUP BY state", pair.stamp),
+      ).toEqual([{ state: "revoked", n: ahead + 1 }]);
+      expect(
+        await sql(t.store, "SELECT account_id FROM notifications WHERE type = 'update' AND status_id = ?", holderId),
+      ).toEqual(notified);
+    }
+  }, 120_000);
 
   it("renews the holder's check on a relayed Delete only when it is within the cap", async () => {
     const { t, carol, pair, flood } = await flooded();

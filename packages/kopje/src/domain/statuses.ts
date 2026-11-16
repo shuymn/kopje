@@ -97,6 +97,7 @@ import {
   acceptedQuoteWindow,
   answeredRequests,
   ensureQuotedAccess,
+  fanOutQuoteChange,
   localQuoteOf,
   noteQuote,
   type QuotedForPost,
@@ -2493,7 +2494,12 @@ export const revokeQuote = userWriteOperation<RevokeInput, RevokeResult>((db, in
     ) {
       return { status: "invalid", error: "The revocation could not be signed" };
     }
-    state = revokeQuoteRow(db, input.quotingId, quoted, input.expected, input.now) ?? state;
+    const moved = revokeQuoteRow(db, input.quotingId, quoted, input.expected, input.now);
+    if (moved !== null) {
+      // RevokeQuoteService#distribute_update (revoke_quote_service.rb:17-21 in v4.7.5).
+      fanOutQuoteChange(db, input.quotingId, input.now);
+      state = moved;
+    }
     if (signed !== null) {
       const reach = [statusReach(db, quoted, noteQuote), statusReach(db, input.quotingId, noteQuote)].filter(
         (r) => r !== null,

@@ -10,6 +10,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Added
 
+- A stamp's revocation and `POST /api/v1/statuses/:id/quotes/:quoting_status_id/revoke` notify the quoting post's
+  mentions, boosters and quoters as an edit does, as Mastodon does. No Store migration and no `wrangler.jsonc` change.
 - Search with `resolve=true` and the interaction page follow a URL whose page is HTML to the ActivityPub document its
   `Link` header names, or else the page's `<link rel="alternate">`, as Mastodon does
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Search). No Store migration and no `wrangler.jsonc`
