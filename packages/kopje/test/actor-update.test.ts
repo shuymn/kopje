@@ -98,6 +98,13 @@ describe("the parity comparison", () => {
 describe("Update(Person)", () => {
   it("sends the changed profile to the followers, the latest edit only", async () => {
     const h = await setup();
+    // Image descriptions and display settings are stored, and published by neither document.
+    await sql(
+      h.store,
+      `UPDATE accounts SET avatar_description = 'A cat', header_description = 'A field', show_featured = 0,
+				show_media = 0, show_media_replies = 0 WHERE id = ?`,
+      h.users.alice.id,
+    );
     expect((await patch(h, { display_name: "First" })).status).toBe(200);
     expect(
       (
