@@ -1,4 +1,4 @@
-import { ACCOUNTS_URI_INDEX, LOCAL_ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
+import { ACCOUNTS_URI_INDEX, LOCAL_ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX, STATUSES_URI_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { parseAddress } from "../platform/domain-name";
 import { sameOrigin } from "../platform/http-url";
@@ -854,14 +854,16 @@ function updateMentions(
 // ---------------------------------------------------------------------------------------------------------------
 
 // What the Worker fetched for a resolve query (federation/resolve.ts): an account, or a status with its author, each
-// fetched through the safe loader signed by the instance actor and parsed as inbound documents are. none: nothing was
-// fetched (a local URL, an unusable answer, a failed fetch); the query is then looked up by uri in stored data only,
-// unless `gone`: the URL's last fetch answered 410. revision: the actor's (the author's) as read before its document was
-// fetched (remote-actors.ts DocumentRevision).
+// fetched through the safe loader signed by the instance actor and parsed as inbound documents are. revision: the
+// actor's (the author's) as read before its document was fetched (remote-actors.ts DocumentRevision). local: a target
+// on this instance, which nothing is fetched for (resolutionTarget). none: nothing resolved; `last` is the status of
+// the last answer the URL's own fetches received (Mastodon's FetchResourceService#response_code), null when none did
+// (federation/resolve.ts resolveUrl), and storeResolved answers stored data by it.
 export type Resolved =
   | { kind: "account"; actor: RemoteActorInput; revision: DocumentRevision }
   | { kind: "status"; status: RemoteStatusInput; author: RemoteActorInput; revision: DocumentRevision }
-  | { kind: "none"; gone?: true };
+  | { kind: "local" }
+  | { kind: "none"; last: number | null };
 
 // The queries resolve=true fetches (Mastodon's SearchService#url_query? and AccountSearchService's address forms): an
 // http(s) URL, or an address (parseAddress in platform/domain-name.ts: user@domain, @user@domain or acct:user@domain).
@@ -875,15 +877,16 @@ export function webfingerUrl(username: string, host: string): string {
 }
 
 // What a search resolution of the trimmed `query` fetches (federation/resolve.ts resolveWith), read one way for the
-// fetch and for its preparation (inbox.ts resolutionGate): an address, by its WebFinger, or a URL; null when nothing is
-// fetched: an address on the instance `domain`, a URL on its host (both answered from stored data), or a query that is
-// neither.
-export type ResolutionTarget = { kind: "address"; username: string; domain: string } | { kind: "url"; href: string };
+// fetch and for its preparation (inbox.ts resolutionGate): an address, by its WebFinger, or a URL; local, nothing, for
+// an address on the instance `domain` or a URL on its host (answered from stored data); null, nothing, for a query that
+// is neither.
+export type FetchTarget = { kind: "address"; username: string; domain: string } | { kind: "url"; href: string };
+export type ResolutionTarget = FetchTarget | { kind: "local" };
 
 export function resolutionTarget(query: string, domain: string): ResolutionTarget | null {
   const address = parseAddress(query);
   if (address !== null) {
-    return address.domain === domain ? null : { kind: "address", ...address };
+    return address.domain === domain ? { kind: "local" } : { kind: "address", ...address };
   }
   let url: URL;
   try {
@@ -891,11 +894,11 @@ export function resolutionTarget(query: string, domain: string): ResolutionTarge
   } catch {
     return null;
   }
-  return url.host === domain ? null : { kind: "url", href: url.href };
+  return url.host === domain ? { kind: "local" } : { kind: "url", href: url.href };
 }
 
 // The first request a resolution of `target` makes.
-export function firstRequestOf(target: ResolutionTarget): string {
+export function firstRequestOf(target: FetchTarget): string {
   return target.kind === "address" ? webfingerUrl(target.username, target.domain) : target.href;
 }
 
@@ -911,17 +914,71 @@ export type StoredResolution =
   | { kind: "status"; id: string | undefined; quotesDue: boolean }
   | { kind: "none" };
 
+// Mastodon 4.7.5's ResolveURLService::USERNAME_STATUS_RE: `/@`, Account::USERNAME_RE (case-insensitive, which Ruby's
+// case folding extends to U+017F and U+212A), `/`, an optional `statuses/` and an id, at the end of the path (`\Z`,
+// before a final newline too). URI_PARTS splits a URI as Addressable::URI.parse does (RFC 3986, appendix B): what
+// precedes the path, the path, and the query and fragment.
+const USERNAME_CHAR = "[a-zA-Z0-9_\\u017F\\u212A]";
+const USERNAME_STATUS_RE = new RegExp(
+  `/@(${USERNAME_CHAR}+(?:[.-]+${USERNAME_CHAR}+)*)/(?:statuses/)?([0-9a-zA-Z]+)(?=\\n?$)`,
+);
+const URI_PARTS = /^((?:[^:/?#]+:)?(?:\/\/[^/?#]*)?)([^?#]*)([\s\S]*)$/;
+
+// The uri process_url_from_db guesses for a status's web address `url` (resolve_url_service.rb:50-54): the URL with its
+// path replaced by /users/<username>/statuses/<id> when the path matches USERNAME_STATUS_RE, everything else kept as
+// written (Addressable's path=); null when it does not match.
+export function guessedStatusUri(url: string): string | null {
+  const parts = URI_PARTS.exec(url);
+  const matched = parts === null ? null : USERNAME_STATUS_RE.exec(parts[2] ?? "");
+  if (parts === null || matched === null) {
+    return null;
+  }
+  return `${parts[1] ?? ""}/users/${matched[1] ?? ""}/statuses/${matched[2] ?? ""}${parts[3] ?? ""}`;
+}
+
+// The last answers after which process_url_from_db looks stored data up (resolve_url_service.rb:39, :44).
+const ACCOUNT_AFTER: ReadonlySet<number | null> = new Set([500, 502, 503, 504, null]);
+const STATUS_AFTER: ReadonlySet<number | null> = new Set([401, 403, 404]);
+
+// The stored account whose uri is `uri` (a unique key).
+function storedAccount(db: Db, uri: string): StoredResolution | null {
+  const row = db.first<{ id: string }>(`SELECT id FROM accounts INDEXED BY ${ACCOUNTS_URI_INDEX} WHERE uri = ?1`, uri);
+  return row === undefined ? null : { kind: "account", id: row.id };
+}
+
+// The stored original whose uri is `uri`, or whose uri is `guessed` and whose url is `uri`, the lower id of two
+// (Mastodon's scope.first; ids are 18 digits, so text order is numeric): two seeks of a unique key. Never a boost,
+// whose uri is its Announce's id. It arrives as a root, and its quote is verified as any root's.
+function storedStatus(db: Db, uri: string, guessed: string | null, now: number): StoredResolution | null {
+  const row = db.first<{ id: string; account_id: string }>(
+    `SELECT id, account_id FROM statuses INDEXED BY ${STATUSES_URI_INDEX} WHERE uri = ?1 AND reblog_of_id IS NULL
+		UNION ALL SELECT id, account_id FROM statuses INDEXED BY ${STATUSES_URI_INDEX}
+			WHERE uri = ?2 AND url = ?1 AND reblog_of_id IS NULL
+		ORDER BY id LIMIT 1`,
+    uri,
+    guessed,
+  );
+  if (row === undefined) {
+    return null;
+  }
+  promoteQuote(db, row.id, quoteArrival(db, row.account_id, null), now);
+  return { kind: "status", id: row.id, quotesDue: quoteDue(db, row.id, now) };
+}
+
 // Stores what was resolved with the validation of inbound activities (ID-3, ID-7, HTML-1, HTML-3, RES-4): the one
-// ingestion of search resolution and of /authorize_interaction (domain/interaction.ts). An actor document superseded
-// since its revision was read is not stored; the stored row is answered instead. A fetched status goes through
-// storeFetchedStatus, so one Kopje stores is applied as its author's Update (Mastodon's ResolveURLService hands the
-// fetched body to FetchRemoteStatusService, resolve_url_service.rb:28). With nothing fetched (a 404 included), the
-// query is looked up by uri in stored data and nothing is removed (process_url_from_db, :38-61); a stored status found
-// so arrives as a root, and its quote is verified as any root's. After a 410 (`gone`) nothing is answered and nothing
-// is removed: Mastodon answers a stored status only after a 401, 403 or 404 (:44).
+// ingestion of search resolution (`viewer` true) and of /authorize_interaction (domain/interaction.ts, `viewer` false).
+// An actor document superseded since its revision was read is not stored; the stored row is answered instead. A
+// fetched status goes through storeFetchedStatus, so one Kopje stores is applied as its author's Update (Mastodon's
+// ResolveURLService hands the fetched body to FetchRemoteStatusService, resolve_url_service.rb:28). A local target is
+// looked up by uri. A URL that resolved nothing is answered from stored data as process_url_from_db answers it
+// (:38-63), by the last answer of its fetches: after a 500, 502, 503, 504 or none, the stored account whose uri it is;
+// after a 401, 403 or 404, for a viewer only (Mastodon's on_behalf_of), the stored status whose uri it is or that its
+// web address names (guessedStatusUri); nothing otherwise, and for an address. Nothing stored is removed on any branch
+// (ID-7).
 export function storeResolved(
   db: Db,
   { query, resolved, now, origin }: Pick<ResolveInput, "query" | "resolved" | "now" | "origin">,
+  viewer: boolean,
 ): StoredResolution {
   const storedActor = (actor: RemoteActorInput, revision: DocumentRevision): RemoteRow | undefined => {
     const stored = upsertRemoteActor(db, actor, origin, now, revision);
@@ -947,27 +1004,16 @@ export function storeResolved(
         quotesDue: stored.statusId !== undefined && quoteDue(db, stored.statusId, now),
       };
     }
+    case "local":
+      return storedStatus(db, query, null, now) ?? storedAccount(db, query) ?? { kind: "none" };
     case "none": {
-      if (resolved.gone === true) {
+      const { last } = resolved;
+      if (!isUrlQuery(query)) {
         return { kind: "none" };
       }
-      const byUri = db.first<{ kind: string; id: string }>(
-        `SELECT 'status' AS kind, id FROM statuses WHERE uri = ?1 AND reblog_of_id IS NULL
-				UNION ALL SELECT 'account', id FROM accounts WHERE uri = ?1
-				LIMIT 1`,
-        query,
-      );
-      if (byUri === undefined) {
-        return { kind: "none" };
-      }
-      if (byUri.kind === "account") {
-        return { kind: "account", id: byUri.id };
-      }
-      const author = db.first<{ account_id: string }>("SELECT account_id FROM statuses WHERE id = ?", byUri.id);
-      if (author !== undefined) {
-        promoteQuote(db, byUri.id, quoteArrival(db, author.account_id, null), now);
-      }
-      return { kind: "status", id: byUri.id, quotesDue: quoteDue(db, byUri.id, now) };
+      const account = ACCOUNT_AFTER.has(last) ? storedAccount(db, query) : null;
+      const status = viewer && STATUS_AFTER.has(last) ? storedStatus(db, query, guessedStatusUri(query), now) : null;
+      return account ?? status ?? { kind: "none" };
     }
   }
 }
@@ -996,7 +1042,7 @@ export const resolveSearch = userWriteOperation<ResolveInput, ResolveResult>((db
     const found = visible === null ? null : presentStatus(db, visible, options);
     return { accounts: [], statuses: found === null ? [] : [found] };
   };
-  const stored = storeResolved(db, input);
+  const stored = storeResolved(db, input, true);
   switch (stored.kind) {
     case "account":
       return account(stored.id);
