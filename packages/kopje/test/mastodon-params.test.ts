@@ -157,6 +157,42 @@ const RECIPES: Record<string, Recipe> = {
       return { path: "/api/v1/timelines/link", params: { url } };
     },
   },
+  // Collections under both prefixes: a fresh slot for each create (the owner keeps only the world's collection), the
+  // owner's own memberships, and bob featured afresh by each add.
+  ...Object.fromEntries(
+    (["/api/v1", "/api/v1_alpha"] as const).flatMap((prefix): [string, Recipe][] => [
+      [
+        `POST ${prefix}/collections`,
+        {
+          baseline: async (w) => {
+            await sql(
+              w.h.store,
+              "DELETE FROM collections WHERE account_id = ? AND id <> ?",
+              w.owner.id,
+              w.ids.collection!,
+            );
+            return {
+              path: `${prefix}/collections`,
+              params: { name: fresh("c"), sensitive: "false", discoverable: "true" },
+            };
+          },
+        },
+      ],
+      [
+        `GET ${prefix}/accounts/:id/in_collections`,
+        { baseline: (w) => ({ path: `${prefix}/accounts/${w.owner.id}/in_collections` }) },
+      ],
+      [
+        `POST ${prefix}/collections/:id/items`,
+        {
+          baseline: async (w) => {
+            await sql(w.h.store, "DELETE FROM collection_items WHERE collection_id = ?", w.ids.collection!);
+            return { path: `${prefix}/collections/${w.ids.collection}/items`, params: { account_id: w.bob.id } };
+          },
+        },
+      ],
+    ]),
+  ),
   // Placeholders and features Kopje does not serve: the answer they give.
   "POST /api/v1/emails/confirmations": {
     status: { code: 403, reason: "no sign-ups (MD-1): no user was signed up through an app" },

@@ -28,7 +28,7 @@ export const ACCOUNT_SEARCHES = [
     name: "v2",
     path: (params: string) => `/api/v2/search?type=accounts&${params}`,
     accounts: (body: unknown) => (body as { accounts: Acct[] }).accounts,
-    empty: { accounts: [], statuses: [], hashtags: [] },
+    empty: { accounts: [], statuses: [], hashtags: [], collections: [] },
   },
   {
     name: "v1",

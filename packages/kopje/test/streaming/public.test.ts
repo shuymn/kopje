@@ -354,7 +354,10 @@ describe("update on public and hashtag streams", () => {
         `/api/v1/statuses/${status.id}`,
         bearer(
           h.users.bob.token,
-          json({ status: "after #cats", poll: { options: ["yes", "no"], expires_in: 3600 } }, { method: "PUT" }),
+          json(
+            { status: "after #cats", poll: { options: ["yes", "no"], expires_in: 3600, multiple: false } },
+            { method: "PUT" },
+          ),
         ),
       );
       expect(edited.status).toBe(200);

@@ -9,6 +9,10 @@ import {
   availableLocalSql,
   availableSql,
   cardEligibleSql,
+  collectionFoundSql,
+  collectionItemShownSql,
+  collectionListedSql,
+  collectionShownSql,
   blockedSql,
   blocksSql,
   canView,
@@ -22,9 +26,11 @@ import {
   followListedSql,
   followListsShownSql,
   homeFilterSql,
+  inCollectionsSql,
   inDomainSql,
   listableSql,
   listedForSql,
+  mayFeatureSql,
   mentionableBySql,
   notifiedSql,
   quotePolicySql,
@@ -299,6 +305,138 @@ describe("the policy fragments agree with the model of their rules", () => {
               m.reportCounted(s, owner) ? [`${name(m.world, owner)} ${m.status(s).name}`] : [],
             ),
           ),
+    ));
+
+  // R45's rows over a world, which carries none: one collection per account (discoverable for an even owner), an item
+  // of every account in every collection in a state drawn from the pair, an unresolved pending item in each, and the
+  // accounts' discoverable and locked flags drawn from their index.
+  const collectionId = (o: number) => String(300000000000000000n + BigInt(o));
+  const itemState = (o: number, x: number) => (o + 2 * x) % 4;
+  const memberDiscoverable = (x: number) => x % 3 !== 2;
+  const memberLocked = (x: number) => x % 2 === 1;
+  function withCollections(evaluate: Evaluate): Evaluate {
+    return (db, world) => {
+      db.run("DELETE FROM collection_items");
+      db.run("DELETE FROM collections");
+      const T = "2026-01-01T00:00:00.000Z";
+      world.accounts.forEach((account, o) => {
+        db.run(
+          "UPDATE accounts SET discoverable = ?, locked = ? WHERE id = ?",
+          memberDiscoverable(o) ? 1 : 0,
+          memberLocked(o) ? 1 : 0,
+          accountId(o),
+        );
+        db.run(
+          `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, uri, created_at, updated_at)
+					VALUES (?, ?, ?, 'c', 0, ?, ?, ?, ?)`,
+          collectionId(o),
+          accountId(o),
+          account.local ? 1 : 0,
+          o % 2 === 0 ? 1 : 0,
+          account.local ? null : `https://remote.example/c/${o}`,
+          T,
+          T,
+        );
+        const items = [null, ...accounts(world)].map((x, n) => [
+          String(400000000000000000n + BigInt(o * 1000 + n)),
+          collectionId(o),
+          x === null ? null : accountId(x),
+          x === null ? `https://remote.example/u/${o}` : null,
+          x === null ? 0 : itemState(o, x),
+        ]);
+        db.run(
+          `INSERT INTO collection_items (id, collection_id, account_id, object_uri, state, position, created_at, updated_at)
+					SELECT value ->> 0, value ->> 1, value ->> 2, value ->> 3, value ->> 4, 1, ?2, ?2 FROM json_each(?1)`,
+          JSON.stringify(items),
+          T,
+        );
+      });
+      return evaluate(db, world);
+    };
+  }
+
+  // Every (viewer, owner, member) of an item a fragment over items accepts; the unresolved item's member is named so.
+  function viewerItems(
+    fragment: (i: string, c: string, viewer: string) => string,
+    model: (m: PolicyModel, owner: number, member: number | null, state: number, viewer: Viewer) => boolean,
+  ) {
+    return agree(
+      withCollections((db, world) => {
+        const named = namer(world);
+        return db
+          .all<{ v: string | null; o: string; x: string | null }>(
+            `SELECT v.id AS v, c.account_id AS o, i.account_id AS x FROM ${VIEWERS} v CROSS JOIN collections c
+							JOIN collection_items i ON i.collection_id = c.id WHERE ${fragment("i", "c", "v.id")}`,
+          )
+          .map((row) => `${named(row.v, row.o)} ${row.x === null ? "unresolved" : named(row.x)}`);
+      }),
+      (m) =>
+        viewers(m.world).flatMap((viewer) =>
+          accounts(m.world).flatMap((owner) =>
+            [null, ...accounts(m.world)].flatMap((x) =>
+              model(m, owner, x, x === null ? 0 : itemState(owner, x), viewer)
+                ? [`${name(m.world, viewer)} ${name(m.world, owner)} ${x === null ? "unresolved" : name(m.world, x)}`]
+                : [],
+            ),
+          ),
+        ),
+    );
+  }
+
+  // Every (viewer, owner) of a collection a fragment over collections accepts.
+  function viewerCollections(
+    fragment: (c: string, viewer: string) => string,
+    model: (m: PolicyModel, owner: number, viewer: Viewer) => boolean,
+  ) {
+    return agree(
+      withCollections(
+        pairs(`SELECT v.id AS x, c.account_id AS y FROM ${VIEWERS} v CROSS JOIN collections c
+					WHERE ${fragment("c", "v.id")}`),
+      ),
+      (m) =>
+        viewers(m.world).flatMap((viewer) =>
+          accounts(m.world).flatMap((owner) =>
+            model(m, owner, viewer) ? [`${name(m.world, viewer)} ${name(m.world, owner)}`] : [],
+          ),
+        ),
+    );
+  }
+
+  it("collectionFoundSql (R45)", () =>
+    viewerCollections(
+      (c) => collectionFoundSql(c),
+      (m, owner) => m.collectionFound(owner),
+    ));
+
+  it("collectionShownSql (R45)", () =>
+    viewerCollections(collectionShownSql, (m, owner, viewer) => m.collectionShown(owner, viewer)));
+
+  it("collectionListedSql (R45)", () =>
+    viewerCollections(collectionListedSql, (m, owner, viewer) => m.collectionListed(owner, owner % 2 === 0, viewer)));
+
+  it("collectionItemShownSql (R45)", () =>
+    viewerItems(collectionItemShownSql, (m, owner, x, state, viewer) =>
+      m.collectionItemShown(owner, x, state, viewer),
+    ));
+
+  it("inCollectionsSql (R45)", () =>
+    viewerItems(inCollectionsSql, (m, owner, x, _state, viewer) => m.inCollections(owner, x, viewer)));
+
+  it("mayFeatureSql (R45)", () =>
+    agree(
+      withCollections(
+        pairs(
+          `SELECT o.id AS x, a.id AS y FROM accounts o CROSS JOIN accounts a WHERE ${mayFeatureSql("o.id", "a.id")}`,
+        ),
+      ),
+      (m) =>
+        accounts(m.world).flatMap((owner) =>
+          accounts(m.world).flatMap((x) =>
+            m.mayFeature(owner, x, memberDiscoverable, memberLocked)
+              ? [`${name(m.world, owner)} ${name(m.world, x)}`]
+              : [],
+          ),
+        ),
     ));
 
   it("listableSql (R8)", () => viewerStatusPairs(listableSql, (m, s, viewer) => m.listable(s, viewer), true));

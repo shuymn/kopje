@@ -215,7 +215,7 @@ describe("the admin account entity (REST::Admin::AccountSerializer)", () => {
       invite_request: null,
       ips: [],
       account: expect.objectContaining({ id: ids.alice, username: "alice", acct: "alice" }),
-      role: { id: "-99", name: "", permissions: "0", color: "", highlighted: false },
+      role: { id: "-99", name: "", permissions: "0", color: "", highlighted: false, collection_limit: 10 },
     });
     expect((await show(ids.owner)).role).toEqual({
       id: "3",
@@ -223,6 +223,7 @@ describe("the admin account entity (REST::Admin::AccountSerializer)", () => {
       permissions: String(ADMIN_PERMISSIONS),
       color: "",
       highlighted: true,
+      collection_limit: 10,
     });
     expect(await show(ids.carol)).toMatchObject({
       domain: "remote.example",

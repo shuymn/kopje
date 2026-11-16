@@ -108,6 +108,7 @@ import {
   REMOTE_FIELD_LINK_BYTES,
   REMOTE_FIELD_LINKS_BYTES,
   REMOTE_VERIFIED_SHOWN,
+  REPORT_COLLECTION_IDS,
   SPOILER_CUT_LIMIT,
   SPOILER_READ_BYTES,
   STATIC_URL_LIMIT,
@@ -1643,13 +1644,15 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
   const reporter = await maximalAccount(t, false, fill);
   const [report] = await sql<{ id: string }>(
     t.store,
-    `INSERT INTO reports (account_id, target_account_id, status_ids, uri, comment, created_at, assigned_account_id,
-			action_taken_by_account_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING CAST(id AS TEXT) AS id`,
+    `INSERT INTO reports (account_id, target_account_id, status_ids, collection_ids, uri, comment, created_at,
+			assigned_account_id, action_taken_by_account_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING CAST(id AS TEXT) AS id`,
     reporter,
     (await sql<{ account_id: string }>(t.store, "SELECT account_id FROM statuses WHERE id = ?", quote))[0]!.account_id,
     // status_ids at its stored bound: 100 ids (2,101 bytes), the rest naming no stored status.
     JSON.stringify([quote, quoted, ...Array.from({ length: 98 }, (_, i) => String(990000000000000000 + i))]),
+    // collection_ids at its stored bound: 50 ids of 18 digits, naming no stored collection (none is read).
+    JSON.stringify(Array.from({ length: REPORT_COLLECTION_IDS }, (_, i) => String(980000000000000000 + i))),
     atLimit(`https://${HOST}/payloads/`, 4096),
     REPORT_COMMENTS[fill],
     new Date(NOW).toISOString(),
@@ -3089,7 +3092,7 @@ describe("the table of maxima (RES-3)", () => {
     expect({ ...kinds, most }).toEqual({
       status: 5_818_830,
       conversation: 7_568_003,
-      notification: 6_625_860,
+      notification: 6_626_929,
       announcement: ANNOUNCEMENT,
       most: 7_568_003,
     });

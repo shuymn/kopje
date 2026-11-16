@@ -156,6 +156,13 @@ dump carries it as it is, so a restored Store's work keeps its count. A dump tak
 restores into a Store at its own migrations, whose upgrade gives every quote `0`. A file built from legacy data has no
 quotes.
 
+A received quote's `broadcast` (migration `0104_quote_broadcast`) is the integer `0`, `1` or `2`: whether its current
+verification work notifies when its decision moves the quote's state (`2` while a failure that may pass waits for the
+next verification). Text that reads as one of them is stored as that integer by the column's affinity, and anything
+else fails with `CHECK constraint failed`. A dump carries it as it is, so a restored Store's work decides as it would
+have. A dump taken before 0104 has no such column: it restores into a Store at its own migrations, whose upgrade gives
+every quote `0`, so a work under way then decides without notifying. A file built from legacy data has no quotes.
+
 Authorized apps (migration `0086_authorized_apps`): `oauth_clients.authorized` is the integer `1` for an app a user
 has authorized (a code was issued for it) and `0` otherwise. Text or a real that reads as one of them is stored as
 that integer by the column's affinity; anything else fails with `oauth_client_authorized`. A dump carries it as it
@@ -481,13 +488,34 @@ kept as dumped: a time after the Store's clock reads as none, so that poll is du
 read, and the next write of the poll issues another revision, the maximum included. A dump taken before 0100 has none
 of these columns: it restores into a Store at its own migrations, which then upgrades, giving every poll NULL, NULL
 and 0. A file built from legacy data writes the defaults.
+Collections (migration `0103_collections`): a `collections` row names its owner (`account_id`, whose delete cascades
+to it), and holds `local` (0 or 1), a `name` of 1 to 40 characters for a local collection and 1 to 256 for a remote
+one, a `description` (NULL, or at most 100 and 2,048 characters), each at most 4 UTF-8 bytes a character with no NUL,
+a `language` (NULL or a supported locale), `sensitive` and `discoverable` (0 or 1), a `tag` (NULL, or a hashtag's
+display name of 1 to 1,024 bytes and at most 256 characters), `uri`, `url` and `total_items` (NULL on a local row; on
+a remote one an https URL of printable ASCII within 2,048 bytes, NULL or such a URL, and NULL or an integer to
+2^31 - 1), and a 24-byte ISO `created_at` and `updated_at`. A `collection_items` row names its collection (whose
+delete cascades to it) and its member (`account_id`, whose delete cascades to it; NULL only on a remote item not yet
+resolved, `object_uri` then naming it), one row per member and collection, and holds a `state` (0 pending, 1
+accepted, 2 rejected, 3 revoked), a `position` from 1 to 2^31 - 1, its remote URIs and item-check columns, and the
+two times; its CHECKs tie the columns to each other (an accepted row has an account, a
+verified authorization has an account and is unique per member, a retraction is held only by a pending row without
+either authorization, the check's token and watched answer only by a queued check). An account holds at most 50
+collections, and a collection at most 50 items, of which at most 25 pending or accepted. Anything else fails with the
+CHECK's name (`collection_name`, `collection_item_state`, `collection_item_accepted` and the others),
+`UNIQUE constraint failed`, `collections: past the per-account bound`, `collection_items: past the per-collection
+bound` or `collection_items: past the live bound`. A restored row is presented as it was dumped; the cron deletes a
+rejected or revoked item a day after its `updated_at`. A dump taken before 0103 has no such table: it restores into a
+Store at its own migrations, which then upgrades. A file built from legacy data has no row.
 
 A report (migration `0054_remote_reports`) names any account as its reporter (`account_id`), once per `uri` and
 reported account, with `status_ids` of at most 100 ids within 2,101 UTF-8 bytes (compact JSON of 18-digit ids), a
 `uri` within 4,096 JSON-escaped UTF-8 bytes and a `comment` within 20,000 UTF-8 bytes (and 5,000 code points up to any
-NUL). A chunk past these fails with `report_status_ids_within_100_ids_and_2101_bytes`,
-`report_uri_within_4096_json_bytes`, `report_comment_within_20000_bytes` or
-`UNIQUE constraint failed: reports.uri, reports.target_account_id`. `sqlite_sequence` carries the report id counter,
+NUL), and `collection_ids` (migration `0103_collections`: NULL, or compact JSON of at most 50 ids of 18 ASCII digits,
+which name no row by foreign key). A chunk past these fails with `report_status_ids_within_100_ids_and_2101_bytes`,
+`report_uri_within_4096_json_bytes`, `report_comment_within_20000_bytes`, `reports: collection_ids past its stored
+bound` or `UNIQUE constraint failed: reports.uri, reports.target_account_id`. A dump taken before 0103 has no
+`collection_ids`: every report then reads NULL. `sqlite_sequence` carries the report id counter,
 so a restored Store never gives a report id twice.
 
 ### Body order
@@ -518,7 +546,7 @@ These are excluded because they must not be restored blindly:
 | `card_images`                                              | Card images, re-encoded with no original kept; a restored Store shows its cards without them (`status_cards` keeps the links)                          |
 | `remote_media*`                                            | The cache of remote media and its R2 ledger: a target starts with an empty cache, shows remote URLs, and fetches them again                            |
 | `backup_media`                                             | The scheduled backup's media index for one bucket ([backup.md](backup.md)); a restored Store starts a fresh media baseline                             |
-| `reply_walk*`                                              | Walks of remote replies collections under way (the context's refresh, migration `0099_reply_walks`): job state; a restored Store starts none           |
+| `reply_walk*`                                              | Walks of remote replies collections under way (context or Create walks, migration `0099_reply_walks`): job state; a restored Store starts none         |
 | `stream_*`                                                 | The streaming API's registry of subscriptions, journal of events and position: state of the open sockets of one object                                 |
 | `_cf_*`, `sqlite_*` (except `sqlite_sequence`)             | Platform and SQLite internals                                                                                                                          |
 

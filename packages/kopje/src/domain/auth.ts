@@ -309,8 +309,18 @@ export const ADMIN_PERMISSIONS: number =
   ADMIN_PERMISSION.manageFederation |
   ADMIN_PERMISSION.viewDashboard;
 
+// UserRole#collection_limit of every role (Mastodon's default, user_role.rb:8): Kopje has no role editor.
+export const COLLECTION_LIMIT = 10;
+
 // A role as Mastodon's REST::RoleSerializer presents it (permissions is a string).
-export type Role = { id: string; name: string; permissions: string; color: string; highlighted: boolean };
+export type Role = {
+  id: string;
+  name: string;
+  permissions: string;
+  color: string;
+  highlighted: boolean;
+  collection_limit: number;
+};
 
 // The OAuth admin's role: Mastodon's Owner (id 3 on a default install, db/seeds/03_roles.rb), with exactly the
 // permissions Kopje serves. Not `administrator` (bit 1), which implies every permission (UserRole#can?).
@@ -320,10 +330,18 @@ export const OWNER_ROLE: Role = {
   permissions: String(ADMIN_PERMISSIONS),
   color: "",
   highlighted: true,
+  collection_limit: COLLECTION_LIMIT,
 };
 
 // Every other local account's role: Mastodon's default (everyone) role, id -99.
-export const EVERYONE_ROLE: Role = { id: "-99", name: "", permissions: "0", color: "", highlighted: false };
+export const EVERYONE_ROLE: Role = {
+  id: "-99",
+  name: "",
+  permissions: "0",
+  color: "",
+  highlighted: false,
+  collection_limit: COLLECTION_LIMIT,
+};
 
 // The role a local account's credential account presents: Owner for the OAuth admin, read in the transaction that
 // presents it through the operation's one lookup (adminAccountIdOnce, which its `roles` shares), and the everyone role

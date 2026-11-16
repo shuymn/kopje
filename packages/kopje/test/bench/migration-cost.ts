@@ -122,12 +122,13 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // 0097_profile_descriptions reads no row (five columns of accounts with constant defaults and no CHECK, and two
 // triggers); 0098_card_attribution adds a column to status_cards and recreates its triggers (no row read, the attached
 // and pending cards seeded); 0101_pin_refresh tests its column's CHECK on every collection_pins_pending row
-// (MAX_REMOTE_PINS of each of SHAPE.collectionSyncs remote accounts, seeded while it is pending);
-// 0105_media_description_bytes reads every media attachment's description and rewrites the imported ones seeded while
-// it is pending (1,000 malformed runs of 50,000 bytes and 1,000 BLOBs of 10,000, after longMedia's rows). A
-// migration that reads another table must add it here before it is measured. The measured time is the whole upgrade,
-// from before the bookmark to after the verification: Date.now() in workerd moves only between I/O events, so the clock
-// is read across an await on each side.
+// (MAX_REMOTE_PINS of each of SHAPE.collectionSyncs remote accounts, seeded while it is pending); 0102_quote_state_stream
+// reads no row (one trigger); 0104_quote_broadcast adds a checked column to quotes, which SQLite tests against each
+// quote, as 0094 does; 0105_media_description_bytes reads every media attachment's description and rewrites the
+// imported ones seeded while it is pending (1,000 malformed runs of 50,000 bytes and 1,000 BLOBs of 10,000, after
+// longMedia's rows). A migration that reads another table must add it here before it is measured. The measured time is
+// the whole upgrade, from before the bookmark to after the verification: Date.now() in workerd moves only between I/O
+// events, so the clock is read across an await on each side.
 
 export const UPGRADE_BUDGET_MS = 20_000;
 
@@ -1098,6 +1099,10 @@ it("applies the migration to the benchmark store within the budget", async () =>
     const authorFetches = has("quotes", "author_fetches")
       ? { quotes: count("quotes"), zero: count("quotes WHERE author_fetches = 0") }
       : undefined;
+    // 0104_quote_broadcast: the column, and the quotes holding its default.
+    const quoteBroadcast = has("quotes", "broadcast")
+      ? { quotes: count("quotes"), zero: count("quotes WHERE broadcast = 0") }
+      : undefined;
     // 0098_card_attribution: the column, and the cards holding NULL.
     const cardAuthors = has("status_cards", "unverified_author_account_id")
       ? { cards: count("status_cards"), none: count("status_cards WHERE unverified_author_account_id IS NULL") }
@@ -1175,6 +1180,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
           profileSettings,
           cardAuthors,
           pinRefresh,
+          quoteBroadcast,
         },
       };
     }
@@ -1212,6 +1218,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
         profileSettings,
         cardAuthors,
         pinRefresh,
+        quoteBroadcast,
       },
     };
   });
@@ -1315,6 +1322,11 @@ it("applies the migration to the benchmark store within the budget", async () =>
   if (applied.includes("0101_pin_refresh")) {
     const rows = Math.min(Math.round(SHAPE.collectionSyncs * scale), accounts - SHAPE.local) * MAX_REMOTE_PINS;
     expect([seeded.pendingPins, measured.pinRefresh]).toEqual([rows, { rows, pending: rows }]);
+  }
+  // 0104 tested its CHECK against every seeded quote, received and local, each taking the default.
+  if (applied.includes("0104_quote_broadcast")) {
+    expect(seeded.quotes).toBeGreaterThan(0);
+    expect(measured.quoteBroadcast).toEqual({ quotes: seeded.quotes, zero: seeded.quotes });
   }
   // 0105 found the seeded descriptions past its bound and rewrote each within it, the malformed runs to 40,000 bytes.
   if (applied.includes("0105_media_description_bytes")) {

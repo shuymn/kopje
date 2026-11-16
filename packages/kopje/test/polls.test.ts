@@ -12,6 +12,7 @@ import {
   MIN_EXPIRATION_S,
   POLL_ROUND,
   pollRound,
+  editPoll,
   STALE_SWEEP,
   UPDATE_DELAY_MS,
 } from "../src/domain/polls";
@@ -20,7 +21,7 @@ import { API_BODY_LIMIT } from "../src/mastodon/params";
 import { type ApiHarness, bearer, json, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
-import { remoteAccounts } from "./read-helpers";
+import { remoteAccounts, staleStatistics, watchedCursor } from "./read-helpers";
 import {
   block,
   community,
@@ -558,12 +559,12 @@ describe("editing a status with a poll", () => {
       return await response.json<PolledStatus>();
     };
     h.now.mockReturnValue(NOW + MINUTE);
-    // The same choices: the votes stay, and the end moves to expires_in from the edit.
-    const same = await edit({ poll: { options: ["a", "b"], expires_in: 600, hide_totals: true } });
+    // The same choices and multiple: the votes stay, and the end moves to expires_in from the edit.
+    const same = await edit({ poll: { options: ["a", "b"], expires_in: 600, multiple: false, hide_totals: true } });
     expect(same.poll).toMatchObject({ votes_count: 1, expires_at: at(NOW + MINUTE + 600_000) });
     expect(same.edited_at).toBe(at(NOW + MINUTE));
     // New choices drop the votes.
-    const changed = await edit({ poll: { options: ["a", "c"], expires_in: 600 } });
+    const changed = await edit({ poll: { options: ["a", "c"], expires_in: 600, multiple: false } });
     expect(changed.poll).toMatchObject({ votes_count: 0, voters_count: 0 });
     expect((await getJson<Poll>(h, `/api/v1/polls/${status.id}`, bob.token)).body).toMatchObject({
       voted: false,
@@ -580,6 +581,152 @@ describe("editing a status with a poll", () => {
       null,
     ]);
   });
+
+  // Mastodon 4.7.5's update_poll! (update_status_service.rb:94) compares the choices as sent with the stored ones, and
+  // poll[multiple] cast by ActiveModel::Type::Boolean (nil for absent or blank) with the stored boolean.
+  async function votedPoll(options: string[] = ["a", "b"]) {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const status = await polled(h, alice, { options, expires_in: 600 });
+    expect(await (await voteOn(h, bob, status.id, [0])).json()).toMatchObject({ votes_count: 1 });
+    const edit = async (poll: Record<string, unknown>, form = false) => {
+      const path = `/api/v1/statuses/${status.id}`;
+      const response = form
+        ? await h.request(
+            path,
+            bearer(alice.token, {
+              method: "PUT",
+              body: new URLSearchParams([
+                ["status", "which?"],
+                ...Object.entries(poll).flatMap(([key, value]): [string, string][] =>
+                  Array.isArray(value)
+                    ? value.map((v): [string, string] => [`poll[${key}][]`, String(v)])
+                    : [[`poll[${key}]`, String(value)]],
+                ),
+              ]),
+            }),
+          )
+        : await send(h, alice, path, { status: "which?", poll }, "PUT");
+      expect(response.status, await response.clone().text()).toBe(200);
+      return (await response.json<PolledStatus>()).poll;
+    };
+    return { h, status, edit };
+  }
+
+  it("drops the votes when poll[multiple] is absent or blank, storing it false", async () => {
+    for (const poll of [
+      { options: ["a", "b"], expires_in: 600 },
+      { options: ["a", "b"], expires_in: 600, multiple: "" },
+    ]) {
+      const { edit } = await votedPoll();
+      expect(await edit(poll, "multiple" in poll), JSON.stringify(poll)).toMatchObject({
+        votes_count: 0,
+        multiple: false,
+      });
+    }
+  });
+
+  it("drops the votes when the choices as sent differ from the stored ones before they are stripped", async () => {
+    const { h, status, edit } = await votedPoll();
+    expect(await edit({ options: [" a", "b"], expires_in: 600, multiple: false })).toMatchObject({ votes_count: 0 });
+    // The stored choices are stripped as before.
+    expect(await sql(h.store, "SELECT options FROM polls WHERE status_id = ?", status.id)).toEqual([
+      { options: JSON.stringify(["a", "b"]) },
+    ]);
+  });
+
+  it("keeps the votes when poll[multiple] casts to the stored false", async () => {
+    const { edit } = await votedPoll();
+    expect(await edit({ options: ["a", "b"], expires_in: 600, multiple: "0" }, true)).toMatchObject({
+      votes_count: 1,
+      multiple: false,
+    });
+  });
+
+  // An import keeps a stored array's own JSON spelling, and its values as dumped: the comparison is of the decoded
+  // elements, never of the text.
+  it.each([
+    { stored: '[ "a", "b" ]', sent: ["a", "b"], kept: true },
+    { stored: '["a","b"]', sent: ["a", "b"], kept: true },
+    { stored: '[" a","b"]', sent: [" a", "b"], kept: true },
+    { stored: '["a",1]', sent: ["a", "1"], kept: false },
+    { stored: '["a",["b"]]', sent: ["a", '["b"]'], kept: false },
+    { stored: '["a","b"]', sent: ["a", "b", ""], kept: false },
+  ])("compares the stored array $stored with the sent $sent by its elements", async ({ stored, sent, kept }) => {
+    const { h, status, edit } = await votedPoll();
+    await sql(h.store, "UPDATE polls SET options = ? WHERE status_id = ?", stored, status.id);
+    expect(await edit({ options: sent, expires_in: 600, multiple: false })).toMatchObject({
+      votes_count: kept ? 1 : 0,
+    });
+  });
+
+  // The comparison (polls.ts livePoll) seeks one poll by its key and walks its stored array, at most 100 values (the
+  // CHECK of migration 0013), against the sent ones, at most 101 (the read cap): measured at 100 stored values, sent
+  // equal (every value compared) and sent with one more, its rows read stay the same as the table of polls grows,
+  // under statistics taken before it grew.
+  it(
+    "reads one poll by its key at 100 stored and 101 sent values, however many polls there are",
+    { timeout: 60_000 },
+    async () => {
+      const h = await community(["alice", "bob"]);
+      const { alice } = h.users;
+      const status = await polled(h, alice, { options: ["a", "b"], expires_in: 600 });
+      const stored = Array.from({ length: 100 }, (_, n) => `option ${n}`);
+      await sql(
+        h.store,
+        "UPDATE polls SET options = ?, tallies = ? WHERE status_id = ?",
+        JSON.stringify(stored),
+        JSON.stringify(stored.map(() => 0)),
+        status.id,
+      );
+      // Each edit runs in a transaction rolled back, so every capture compares the same stored poll.
+      const compared = (sent: string[]) =>
+        runInDurableObject(h.store, (_instance, state) => {
+          const statements: { query: string; rows: number; same: unknown }[] = [];
+          const real = state.storage.sql;
+          const counting = {
+            exec: (query: string, ...params: SqlStorageValue[]) => {
+              const cursor = real.exec(query, ...params);
+              const entry = { query, rows: 0, same: undefined as unknown };
+              statements.push(entry);
+              return watchedCursor(
+                cursor,
+                () => (entry.rows = cursor.rowsRead),
+                (rows) => (entry.same = rows[0]?.same_options),
+              );
+            },
+          } as unknown as SqlStorage;
+          const poll = { options: ["a", "b"], expiresIn: 600, multiple: false, hideTotals: false };
+          try {
+            state.storage.transactionSync(() => {
+              editPoll(new Db(counting), status.id, { ...poll, sent: { options: sent, multiple: false } }, NOW);
+              throw new Error("rolled back");
+            });
+          } catch {
+            // The edit's writes are undone.
+          }
+          const read = statements.filter((statement) => statement.query.includes("same_options"));
+          expect(read).toHaveLength(1);
+          return { rows: read[0]!.rows, same: read[0]!.same };
+        });
+      const capture = async () => ({ equal: await compared(stored), longer: await compared([...stored, "one more"]) });
+      const { before, after } = await staleStatistics(h, {
+        capture,
+        grow: async () => {
+          for (let n = 0; n < 40; n++) {
+            const id = await seedStatus(h.store, { accountId: alice.id, visibility: "public", content: `<p>${n}</p>` });
+            await sql(h.store, `INSERT INTO polls (status_id, options, tallies) VALUES (?, '["x","y"]', '[0,0]')`, id);
+          }
+        },
+      });
+      expect(await sql(h.store, "SELECT count(*) AS n FROM polls")).toEqual([{ n: 41 }]);
+      expect(before.equal.same).toBe(1);
+      expect(before.longer.same).toBe(0);
+      // The poll's row and its 100 stored values; a join with the sent array would read 101 more per stored value.
+      expect(before.equal.rows).toBeLessThanOrEqual(1 + stored.length);
+      expect(after).toEqual(before);
+    },
+  );
 });
 
 describe("editing a status with media and a poll", () => {
