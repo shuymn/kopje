@@ -5,7 +5,7 @@ import { collectionValue } from "../domain/collection-requests";
 import { ACTOR_URI_LIMIT } from "../domain/profile-bounds";
 import type { Handle, RemoteActorInput } from "../domain/remote-actors";
 import { hostDomain, normalizeDomain } from "../platform/domain-name";
-import { httpUrl } from "../platform/http-url";
+import { boundedHref, httpUrl } from "../platform/http-url";
 import { DOMAIN_BYTES, isRemoteUsername, isStorableActorId, REMOTE_USERNAME_LIMIT } from "../platform/identity-bounds";
 import { railsBlank } from "../platform/rails-blank";
 import { storedDisplayName, storedProfileDescription, storedProfileUrl, storedText } from "../platform/stored-bounds";
@@ -295,8 +295,7 @@ function blankInbox(document: unknown): boolean {
 function sharedInboxUri(document: Record<string, unknown>): string | null {
   const member = isObject(document.endpoints) ? document.endpoints.sharedInbox : document.sharedInbox;
   const value = collectionValue(member);
-  const href = value !== null && sharedInboxSpelling(value) ? (httpUrl(value)?.href ?? null) : null;
-  return href !== null && href.length <= INBOX_URL_LIMIT ? href : null;
+  return value !== null && sharedInboxSpelling(value) ? boundedHref(value, INBOX_URL_LIMIT) : null;
 }
 
 // RFC 3986's pchar literals: unreserved, sub-delims, ":" and "@".

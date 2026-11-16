@@ -3041,10 +3041,7 @@ function personalFallback(db: Db, row: LaneRow, now: number, status: number | nu
 		ORDER BY a.id`,
         row.id,
       );
-  const personal = candidates.find((c) => {
-    const host = hostOf(c.uri);
-    return c.retracts === 1 || (c.available === 1 && (host === null || !hostCovered(db, host)));
-  });
+  const personal = candidates.find((c) => c.retracts === 1 || (c.available === 1 && !inboxCovered(db, c.uri)));
   if (personal === undefined || !isDeliverableInbox(personal.inbox) || laneOf(personal.inbox) !== row.lane) {
     return false;
   }
