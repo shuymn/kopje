@@ -168,15 +168,16 @@ function quoteRow(db: Db, statusId: string): QuoteRow | undefined {
 
 // Mastodon's ActivityPub::Activity::Create#process_quote and ProcessStatusUpdateService#update_quote!: the quote a
 // stored status's Note names, written with its work. A Note that names none removes the status's quote; a Tombstone is
-// a deleted quote, with no work; a quote whose target or stamp changed starts over as pending (the count trigger takes
-// an accepted one off its target); an unchanged one is promoted when its status arrived as a root. A stamp of this
+// a deleted quote, with no work; a quote whose target changed, or whose stamp changed where Mastodon resets it, starts
+// over as pending (the count trigger takes an accepted one off its target); one Mastodon keeps is promoted when its
+// status arrived as a root. A stamp of this
 // instance's origin is not a remote stamp, and is dropped (StatusParser#quote_approval_uri). A quoted Note embedded in
 // the status (Mastodon's safe_prefetched_embed) is stored first, with one hop less of work, only when it
 // is the status's author's own (its attributedTo is the author, its id on the author's origin): the author vouches for
 // it as for the status itself, so a private self-quote that its server serves nobody is still known. A withdrawn status
 // (its Delete recorded, its removal under way) is never linked as the quoted status.
 // Answers whether it rewrote the stamp: wrote the quote back with an approval URI other than the stored one (after its
-// normalization). A legacy form alone, a deleted quote named again, a new or removed quote and a promotion do not.
+// normalization). A kept quote, a deleted quote named again, a new or removed quote and a promotion do not.
 export function recordQuote(
   db: Db,
   status: { id: string; uri: string; author: { id: string; uri: string } },
@@ -188,10 +189,10 @@ export function recordQuote(
   const named = quote === undefined || quote === null || (!quote.tombstone && quote.uri === status.uri) ? null : quote;
   const existing = db.first<{
     quoted_uri: string | null;
+    quoted_account_id: string | null;
     approval_uri: string | null;
     state: QuoteState;
-    legacy: number;
-  }>("SELECT quoted_uri, approval_uri, state, legacy FROM quotes WHERE status_id = ?", status.id);
+  }>("SELECT quoted_uri, quoted_account_id, approval_uri, state FROM quotes WHERE status_id = ?", status.id);
   if (named === null) {
     if (existing !== undefined) {
       db.run("DELETE FROM quotes WHERE status_id = ?", status.id);
@@ -222,20 +223,29 @@ export function recordQuote(
       ? null
       : named.approvalUri;
   const legacy = named.legacy ? 1 : 0;
-  // An unchanged quote is only promoted. So is a deleted quote of a local status that is gone or withdrawn, which the
-  // Note still names, whatever stamp or legacy form it now carries: the status's removal detached it (R35), and only
-  // Kopje's answer to a QuoteRequest changes the state of a quote of a local status (VIS-28), never a received Note.
-  // Mastodon's update_quote! and update_quote_approval! likewise keep a quote whose quoted status is gone in its state
+  const localTarget = originOf(named.uri) === ctx.origin;
+  // A quote Mastodon never resets is kept, its stored form and state as they are, and only promoted: the same target,
+  // still a quote or still a Tombstone, and any of
+  //   - the same stamp: the legacy form alone changes nothing, as Mastodon changes `legacy` only with a reset
+  //     (process_status_update_service.rb:346, :368 in v4.7.5);
+  //   - a local target, whatever stamp or form: only Kopje's answer to its QuoteRequest decides it (VIS-28, C20 of
+  //     test/quote-model.ts), and Mastodon stores no approval for it (quote.rb:40; :341, verify_quote_service.rb:17);
+  //   - an accepted self-quote, which needs no stamp (FEP-044f): a recorded departure, v4.7.5 fetches a self-quote's
+  //     stamp (docs/mastodon-deviations.md, "Quote verification").
+  // So is a deleted quote of a local status that is gone or withdrawn, which the Note still names, whatever stamp or
+  // legacy form it now carries: the status's removal detached it (R35), and Mastodon's update_quote! and
+  // update_quote_approval! likewise keep a quote whose quoted status is gone in its state
   // (process_status_update_service.rb:288-336; verify_quote_service.rb:16-17).
   if (
     existing !== undefined &&
     existing.quoted_uri === named.uri &&
-    ((existing.approval_uri === approval &&
-      existing.legacy === legacy &&
-      (existing.state === "deleted") === named.tombstone) ||
+    (((existing.state === "deleted") === named.tombstone &&
+      (existing.approval_uri === approval ||
+        localTarget ||
+        (existing.state === "accepted" && existing.quoted_account_id === status.author.id))) ||
       (existing.state === "deleted" &&
         !named.tombstone &&
-        originOf(named.uri) === ctx.origin &&
+        localTarget &&
         db.first("SELECT 1 AS x FROM statuses WHERE uri = ? AND withdrawn = 0", named.uri) === undefined))
   ) {
     promoteQuote(db, status.id, arrival, ctx.now);
@@ -243,7 +253,7 @@ export function recordQuote(
   }
   // A quote of a local status is decided by Kopje's answer to its QuoteRequest alone (answerQuoteRequest), never by a
   // verification round: it gets no work.
-  const work = !named.tombstone && arrival.hops > 0 && originOf(named.uri) !== ctx.origin;
+  const work = !named.tombstone && arrival.hops > 0 && !localTarget;
   db.run(
     `INSERT INTO quotes (status_id, quoted_uri, quoted_status_id, quoted_account_id, state, legacy, approval_uri,
 			verify_after, attempts, hops, fetch_as, generation, updated_at)
@@ -272,11 +282,12 @@ export function recordQuote(
 }
 
 // ProcessStatusUpdateService#handle_implicit_update!: an Update that names no newer version never changes which status
-// is quoted, but a changed stamp of the same quote is recorded (and verified again); anything else only promotes the
-// quote, the status having arrived again as a root. Answers whether it rewrote the stamp: Mastodon broadcasts the
-// update when it moved the quote's state (process_status_update_service.rb:73-83 in v4.7.5), which
-// update_quote_approval! does when the approval URI changes (:346), whatever the legacy form; Kopje verifies the stamp
-// in later rounds, so its write-back is where the state is known to move (remote-statuses.ts).
+// is quoted, but a changed stamp of the same quote is recorded (and verified again) where Mastodon resets it
+// (recordQuote); anything else only promotes the quote, the status having arrived again as a root. Answers whether it
+// rewrote the stamp: Mastodon broadcasts the update when it moved the quote's state
+// (process_status_update_service.rb:73-83 in v4.7.5), which update_quote_approval! does when the approval URI changes
+// (:346), whatever the legacy form; Kopje verifies the stamp in later rounds, so its write-back is where the state is
+// known to move (remote-statuses.ts).
 export function refreshQuote(
   db: Db,
   status: { id: string; uri: string; author: { id: string; uri: string } },

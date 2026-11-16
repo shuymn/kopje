@@ -405,6 +405,60 @@ describe("storing and verifying a received quote (VerifyQuoteService)", () => {
     expect(stamp).not.toBe(second);
   });
 
+  // Mastodon changes `legacy` only with a reset (process_status_update_service.rb:346, :368 in v4.7.5).
+  it("keeps an accepted quote accepted, and its stored form, when an Update changes only the legacy form", async () => {
+    const { t, bob, carol } = await world();
+    const { target, stamp, quote } = quotedPair(t, bob, carol);
+    expect(await t.post(bob, create(bob, quote))).toBe(202);
+    const kept = { state: "accepted", legacy: 0, approval_uri: stamp, verify_after: null };
+    expect(await quoteOf(t, quote.id)).toMatchObject(kept);
+    t.web.fetched.length = 0;
+    // The same stamp, the quote named by _misskey_quote and quoteUri only (a legacy form): a same-version Update, then
+    // a newer one, whose content shows the explicit branch ran.
+    const legacy = { ...quote, quote: undefined } as Note;
+    expect(await t.postOnly(bob, update(bob, legacy, quote.published as string))).toBe(202);
+    expect(await quoteOf(t, quote.id)).toMatchObject(kept);
+    const edited = { ...legacy, content: "<p>edited</p>" };
+    expect(await t.postOnly(bob, update(bob, edited, "2026-10-11T12:30:00Z"))).toBe(202);
+    expect(await statusRow(t.store, quote.id)).toMatchObject({ content: "<p>edited</p>" });
+    expect(await quoteOf(t, quote.id)).toMatchObject(kept);
+    await rounds(t, NOW);
+    expect(t.web.fetched).not.toContain(stamp);
+    expect(await quotesCount(t, target.id)).toBe(1);
+  });
+
+  // A self-quote needs no approval (FEP-044f): a departure from v4.7.5, which fetches its stamp
+  // (verify_quote_service.rb:40-51; docs/mastodon-deviations.md, "Quote verification").
+  it("keeps an accepted self-quote when an Update names a stamp, and never fetches it", async () => {
+    const { t, bob } = await world();
+    const own = mastodonNote(bob);
+    t.web.serve(own.id, { "@context": AS, ...own });
+    const quote = quoting(bob, own.id, null);
+    expect(await t.post(bob, create(bob, quote))).toBe(202);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted", approval_uri: null });
+    const written = async () =>
+      (
+        await sql<{ updated_at: string }>(
+          t.store,
+          "SELECT q.updated_at FROM quotes q JOIN statuses s ON s.id = q.status_id WHERE s.uri = ?",
+          quote.id,
+        )
+      )[0]!.updated_at;
+    const before = await written();
+    const stamp = stampUri(bob);
+    t.web.fail(stamp, 404);
+    t.web.fetched.length = 0;
+    // Right after the Update: no write-back, so no work that could fetch the stamp.
+    expect(await t.postOnly(bob, update(bob, { ...quote, quoteAuthorization: stamp }, quote.published as string))).toBe(
+      202,
+    );
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted", approval_uri: null, verify_after: null });
+    expect(await written()).toBe(before);
+    await rounds(t, NOW);
+    expect(t.web.fetched).not.toContain(stamp);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
+  });
+
   it("verifies a chain two levels below the status that arrived, however long the chain", async () => {
     async function chain(length: number) {
       const { t, bob, carol } = await world();

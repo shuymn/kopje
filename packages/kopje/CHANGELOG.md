@@ -309,6 +309,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A conversation whose stored last status is a boost (only a restored row can name one) shows no last status instead
   of the boost, in `GET /api/v1/conversations`, its read and unread answers and on the `direct` stream. No Store
   migration and no `wrangler.jsonc` change.
+- An `Update` of a remote quote post that changes only its legacy quote form, or names a stamp for a quote that needs
+  none (a quote of a local post, as Mastodon keeps it, or a self-quote,
+  [docs/mastodon-deviations.md](docs/mastodon-deviations.md), Quote verification), no longer sets the accepted quote
+  back to pending. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

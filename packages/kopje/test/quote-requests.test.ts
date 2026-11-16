@@ -756,6 +756,34 @@ describe("concurrency: the test table", () => {
     expect((await deliveries(t)).length).toBe(before);
   });
 
+  // C20 of test/quote-model.ts: only Kopje's answer decides a quote of a local status, and Mastodon keeps it too (it
+  // stores no approval for it: quote.rb:40; process_status_update_service.rb:341, verify_quote_service.rb:17).
+  it("3e: a quote of a local status keeps its state whatever stamp or legacy form an Update names", async () => {
+    const { t, bob, mine } = await world();
+    const { note, authorization, stamp: served } = await accepted(t, bob, mine.uri);
+    const foreign = `${bob.uri}/quote_authorizations/${nextId()}`;
+    const versions: [Note, string][] = [
+      [{ ...note, quoteAuthorization: foreign }, note.published as string],
+      [note, note.published as string],
+      [{ ...note, quote: undefined }, note.published as string],
+      [{ ...note, quoteAuthorization: foreign, content: "<p>edited</p>" }, "2026-10-11T13:00:00Z"],
+    ];
+    for (const [version, updated] of versions) {
+      expect(await t.post(bob, update(bob, version, updated))).toBe(202);
+      expect(await quoteOf(t, note.id)).toMatchObject({ state: "accepted", authorization_id: authorization });
+      expect((await stamp(t, served)).status).toBe(200);
+    }
+    // The newer Update applied: its content is stored, its stamp is not.
+    expect(
+      await sql(
+        t.store,
+        `SELECT s.content, q.approval_uri, q.legacy FROM statuses s JOIN quotes q ON q.status_id = s.id
+				WHERE s.uri = ?`,
+        note.id,
+      ),
+    ).toEqual([{ content: "<p>edited</p>", approval_uri: null, legacy: 0 }]);
+  });
+
   it("4: a Delete of the quoting status meanwhile leaves the request unanswered; after acceptance it retires the stamp before its batches end", async () => {
     const { t, bob, mine } = await world();
     const note = quoteNote(t, bob, mine.uri);
