@@ -416,6 +416,7 @@ describe("an address that resolves nothing", () => {
           query,
           resolved: { kind: "none", last: null } as const,
           now: NOW,
+          storeNow: NOW,
           origin: "https://kopje.test",
         };
         const stored = storeResolved(db, input, true);
