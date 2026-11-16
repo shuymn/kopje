@@ -77,8 +77,8 @@ function notIncluded(attribute: string): Problem {
 }
 
 // ActiveModel's too_long error on `attribute`.
-function tooLong(attribute: string, maximum: number, unit = "characters"): Problem {
-  return { attribute, type: "too_long", description: `is too long (maximum is ${maximum} ${unit})` };
+function tooLong(attribute: string, maximum: number): Problem {
+  return { attribute, type: "too_long", description: `is too long (maximum is ${maximum} characters)` };
 }
 
 // The validation problems of a form's avatar and header files (profileFiles), by image.
