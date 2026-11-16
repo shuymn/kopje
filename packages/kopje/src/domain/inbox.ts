@@ -756,9 +756,10 @@ export const UNDONE_ANSWER_SIGNERS_SQL = `SELECT l.account_id AS id,
 	FROM local_accounts l`;
 
 // Our follow of `actor` that an Accept or Reject answers (ID-6: only the followed side answers):
-//   - the Follow's id equals the edge's uri, with the actor as its target; or
-//   - the edge has no uri (it never named an id: local follows made before outbound delivery existed, and migrated
-//     rows), and the embedded Follow names its follower and the actor as its pair.
+//   - the Follow's id equals the edge's uri, with the actor as its target, whatever type the embedded object gives (as
+//     Mastodon's Accept and Reject look our follow up by the object's id before its type, accept.rb:5, reject.rb:5-7);
+//   - or the edge has no uri (it never named an id: local follows made before outbound delivery existed, and migrated
+//     rows), and the embedded Follow (typed so, or untyped) names its follower and the actor as its pair.
 // An id that names another generation of the edge (the edge has a different uri) answers nothing. The one exception is
 // a Reject with Misskey's pair-shaped id (`/follows/<follower>/<followee>`): Misskey rejects a follower it removes with
 // the pair, not with our Follow's id, so for a Reject (pairReject) the pair matches our follow whatever its uri. As
@@ -775,9 +776,6 @@ function ourFollow(
 ): { id: string; follower: string } | "not-target" | null {
   if (ref.object !== null && ref.object !== actor.uri) {
     return "not-target";
-  }
-  if (ref.type !== null && ref.type !== "Follow") {
-    return null;
   }
   if (ref.id !== null) {
     const named = localAccount(db, ref.actor);
@@ -803,7 +801,7 @@ function ourFollow(
       return byUri;
     }
   }
-  if (ref.object === null) {
+  if (ref.object === null || (ref.type !== null && ref.type !== "Follow")) {
     return null;
   }
   const follower = localAccount(db, ref.actor);

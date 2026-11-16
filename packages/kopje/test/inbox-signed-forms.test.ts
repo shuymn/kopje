@@ -568,6 +568,8 @@ describe("D1 through the inbox: what the received form stores", () => {
     "Reject of an accepted follow, its object's type the absolute IRI",
     "Reject typed as:Reject, of an accepted follow",
     "Block typed as:Block, by an accepted follow's target",
+    // Unsigned, read as given: our follow by its id, whatever its type (D6).
+    "Reject of an accepted follow, its object's type as:Follow, unsigned",
   ])("%s ends alice's follow and her reading of his followers-only status, as in Mastodon", async (name) => {
     const { t, bob, status } = await world();
     const id = await followersOnly(t, bob);
@@ -575,6 +577,22 @@ describe("D1 through the inbox: what the received form stores", () => {
     expect(await aliceFollows(t, bob)).toEqual([]);
     expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(404);
     expect(applied(name).effect).toMatchObject({ local_follows_removed: 1 });
+  });
+
+  it("an unsigned Accept of an as:Follow accepts alice's request by its id, as in Mastodon", async () => {
+    const { t, bob, status } = await world();
+    await sql(
+      t.store,
+      `UPDATE follows SET uri = ?, state = 'pending'
+        WHERE account_id = ? AND target_account_id = (SELECT id FROM accounts WHERE uri = ?)`,
+      "https://kopje.test/ap/follows/1",
+      ALICE,
+      bob.uri,
+    );
+    const name = "Accept object type as an IRI, unsigned";
+    expect(await t.post(bob, body(name, status))).toBe(202);
+    expect(await aliceFollows(t, bob)).toEqual([{ state: "accepted" }]);
+    expect(applied(name).effect).toEqual({ local_requests_removed: 1, local_follows: ["alice"] });
   });
 
   it.each(["Undo object type as the absolute IRI", "Undo typed as:Undo"])(
