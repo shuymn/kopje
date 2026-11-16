@@ -417,6 +417,8 @@ describe("an actor document whose inbox is blank", () => {
     ["null", null],
     ["empty", ""],
     ["whitespace alone", " \u3000\n"],
+    // U+0085 is White_Space, which Ruby's [[:space:]] matches and String#trim does not.
+    ["a next line (U+0085) alone", "\u0085"],
     ["false", false],
     ["an empty array", []],
     ["an empty object", {}],
@@ -459,6 +461,17 @@ describe("an actor document whose inbox is blank", () => {
     expect(await receive(t, fresh, follow(fresh))).toMatchObject({ status: 202 });
     expect(await accountId(t.store, fresh.uri)).toBeDefined();
     expect(await t.post(bob, updateOf(bob, embedded(bob, { name: "embedded" })))).toBe(202);
+    expect((await row(t, bob.uri)).display_name).toBe("embedded");
+  });
+
+  // U+FEFF is not White_Space, though String#trim removes it.
+  it("takes an inbox of a zero width no-break space (U+FEFF) alone, fetched or embedded", async () => {
+    const { t, bob } = await bobWorld();
+    t.web.serve(bob.uri, { ...bob.document, inbox: "\uFEFF", name: "refetched" });
+    expect(await receive(t, bob, updateOf(bob, bob.uri))).toMatchObject({ status: 202, reason: "actor-updated" });
+    expect((await row(t, bob.uri)).display_name).toBe("refetched");
+    const embedding = updateOf(bob, embedded(bob, { inbox: "\uFEFF", name: "embedded" }));
+    expect(await receive(t, bob, embedding)).toMatchObject({ status: 202, reason: "actor-updated" });
     expect((await row(t, bob.uri)).display_name).toBe("embedded");
   });
 });

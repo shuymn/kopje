@@ -6,6 +6,7 @@ import type { Handle, RemoteActorInput } from "../domain/remote-actors";
 import { hostDomain, normalizeDomain } from "../platform/domain-name";
 import { httpUrl } from "../platform/http-url";
 import { DOMAIN_BYTES, isRemoteUsername, isStorableActorId, REMOTE_USERNAME_LIMIT } from "../platform/identity-bounds";
+import { railsBlank } from "../platform/rails-blank";
 import { storedDisplayName, storedProfileUrl, storedText } from "../platform/stored-bounds";
 import { sanitizeRemoteBio } from "../security/html";
 import { MAX_PUBLIC_KEYS, readableKeys } from "./key-entries";
@@ -211,20 +212,17 @@ export function claimedHandle(document: unknown, uri: string, preferredUsername:
     : null;
 }
 
-// Ruby's [[:space:]] on a Unicode string (the White_Space property), which ActiveSupport's String#blank? reads.
-const RUBY_BLANK = /^[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$/u;
-
 // Whether the document's own `inbox` member is blank as Mastodon 4.7 reads it (`json['inbox'].blank?`,
-// ProcessAccountService#call, process_account_service.rb:24): missing, null, false, a string of whitespace alone, an
-// empty array or an empty object. A value that is not blank but no inbox URL is not refused here (Mastodon stores no
-// inbox for it, valid_collection_uri).
+// ProcessAccountService#call, process_account_service.rb:24): missing, null, false, a string of whitespace alone
+// (railsBlank), an empty array or an empty object. A value that is not blank but no inbox URL is not refused here
+// (Mastodon stores no inbox for it, valid_collection_uri).
 function blankInbox(document: unknown): boolean {
   const inbox = typeof document === "object" && document !== null ? (document as { inbox?: unknown }).inbox : undefined;
   return (
     inbox === undefined ||
     inbox === null ||
     inbox === false ||
-    (typeof inbox === "string" && RUBY_BLANK.test(inbox)) ||
+    (typeof inbox === "string" && railsBlank(inbox)) ||
     (Array.isArray(inbox) && inbox.length === 0) ||
     (typeof inbox === "object" && !Array.isArray(inbox) && Object.keys(inbox).length === 0)
   );
