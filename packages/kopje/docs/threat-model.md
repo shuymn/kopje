@@ -1188,8 +1188,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   The Worker sends only the token's sha256 to the Store, which validates it (DATA-5). Each subscription
   needs its stream's scope (`read:statuses` for `user`, `list`, `direct`, `public*` and `hashtag*`, `read:notifications`
   for `user:notification`), a `list` subscription the viewer's own list, and notifications
-  go on `user` only with `read:notifications` too. A write records ids only (`stream_events`, by a trigger); each
-  message is made later in its own transaction, which authorizes the socket's token again and runs the reference for
+  go on `user` only with `read:notifications` too. A write records ids only (`stream_events`, by a trigger, and by
+  `journalStatusUpdate` under the edit trigger's condition for a change of a local status's quote policy, which leaves
+  `edited_at`); each message is made later in its own transaction, which authorizes the socket's token again and
+  runs the reference for
   its event and stream (R33): for a `notification` on `user` or `user:notification`, the recipient's notification
   list positioned at it (R15: kept, and not filtered by their policy, as Mastodon pushes none of those), presented as
   REST presents it; for an `update` on `user`, home positioned at the status (R9, the read with `max_id` just above it,
@@ -1241,6 +1243,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   and the unit presents the announcement as it is when sent: published, its entity; otherwise its delete. An expiry by
   the cron sends nothing, as Mastodon's. `streamAnnouncement` in `src/domain/stream-journal.ts`, `streamedAnnouncement`
   and `streamedAnnouncementReaction` in `src/domain/announcements.ts`; `test/streaming/announcements.test.ts`.
+  _Enforced (main)_ for a quote policy change (`PUT /api/v1/statuses/:id` with only the policy, and
+  `/interaction_policy`): one `edit` event when the stored policy changed, sent as an edit's (`status.update`);
+  `journalStatusUpdate` and `EDIT_LISTENED_SQL` in `src/domain/stream-journal.ts`, its callers in
+  `src/domain/statuses.ts`; `test/streaming/status-update-journal.test.ts` (the listener condition equal to
+  `stream_status_edited`'s for every listener set and visibility).
 
 - **VIS-27: a quote reveals nothing its quoted status hides.** R35 applies VIS-1/R2 to the quoted status for the
   same viewer, whatever the quoting status's own visibility: `unauthorized` carries no content, and the filter states
@@ -4100,7 +4107,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   delete goes on. A unit is one subject (the status, or one captured boost) for one viewer, so a delete with 40 boosts
   is 41 units for each viewer, each within a unit's worst case; the position names the viewer and the subject within the
   event. The status and edit triggers write one journal row per status write, under the same span, and no batched delete
-  or purge fires them. a delete's capture also holds each viewer's lists (at most 16 for the status and each boost,
+  or purge fires them; a quote policy change writes at most one (`journalStatusUpdate`), under the same span. a
+  delete's capture also holds each viewer's lists (at most 16 for the status and each boost,
   within the same 16 KiB); a list's check is one narrowed read. A conversation's change moves its owner's mark,
   which journals one 'conversation' event for the owner unless one is still ahead of the position, so a burst is one
   row and a busy owner waits behind the others (FIFO); its units are the owner's newest 20 changes up to a

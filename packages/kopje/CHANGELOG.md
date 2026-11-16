@@ -95,6 +95,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   upgrade checks every reference of the Store (the migration bench's upgrade from `0093_annual_reports` takes 10,877 ms
   with this file and 10,633 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store
   migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+- Changing a post's quote policy, through `PUT /api/v1/statuses/:id` or `/interaction_policy`, sends `status.update`
+  to the streaming clients that show it, as Mastodon does. No Store migration and no `wrangler.jsonc` change.
 
 ### Changed
 
