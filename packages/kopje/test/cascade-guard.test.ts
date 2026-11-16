@@ -97,7 +97,7 @@ const WRITING_TRIGGERS: Record<string, string> = {
   reject_replays_follow_stored:
     "fires on a follow insert, which no batched delete or purge makes (a remote follower's follow of a local account deletes its pair's held Reject, one row at most)",
   statuses_filter_text_stale:
-    "fires only on a text change of a status that keeps its measure: every hide (statuses.ts local delete, inbox.ts hideRemoteStatus) clears filter_text_units in the same SET, so it writes no other row",
+    "fires only on a text change of a status that keeps its measure: every hide (statuses.ts local delete, remote-removal.ts hideRemoteStatus) clears filter_text_units in the same SET, so it writes no other row",
   polls_revision:
     "one polls row, the poll's own revision, per update of a column it watches (POLL_REVISION_COLUMNS), which no batched delete or purge makes: a status's removal deletes its poll (STATUS_EXEMPT's polls entry) and a vote purge deletes poll_votes and keeps the counts; the updates are the poll's own writers (polls.ts resetPoll, editPoll, countVotes, storeRemotePoll, markPollFetched, pollRound) and the local DELETE's end mark (statuses.ts deleteStatus), within its request maximum (test/local-delete.test.ts REQUEST_ROWS, whose status has a poll)",
 };

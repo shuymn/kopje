@@ -13399,3 +13399,64 @@ describe("0100_poll_refresh", () => {
     });
   });
 });
+
+describe("0101_pin_refresh", () => {
+  const NAME = "0101_pin_refresh";
+  const at = NAMES.indexOf(NAME);
+  const ACCOUNT = "100000000000000001";
+
+  it("follows 0100, declared foreignKeys: 'unchanged'", () => {
+    expect(NAMES[at - 1]).toBe("0100_poll_refresh");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+  });
+
+  it("keeps every sync row a pending row, and holds refresh to 0 and 1", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://remote.example/users/a', 'a', 'remote.example')",
+        ACCOUNT,
+      );
+      for (const n of ["1", "2"]) {
+        sql.exec(
+          `INSERT INTO collection_pins_pending (account_id, uri, pinned_at)
+					VALUES (?, 'https://remote.example/users/a/statuses/' || ?, '2026-11-16T00:00:00.000Z')`,
+          ACCOUNT,
+          n,
+        );
+      }
+      const before = sql.exec("SELECT * FROM collection_pins_pending ORDER BY uri").toArray();
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      expect(sql.exec("SELECT * FROM collection_pins_pending ORDER BY uri").toArray()).toEqual(
+        before.map((row) => ({ ...row, refresh: 0 })),
+      );
+      const set = (value: SqlStorageValue) =>
+        sql.exec(
+          "UPDATE collection_pins_pending SET refresh = ? WHERE uri = 'https://remote.example/users/a/statuses/1'",
+          value,
+        );
+      for (const value of [1, 0, 1]) {
+        set(value);
+      }
+      expect(
+        sql.exec("SELECT refresh, typeof(refresh) AS t FROM collection_pins_pending ORDER BY uri").toArray(),
+      ).toEqual([
+        { refresh: 1, t: "integer" },
+        { refresh: 0, t: "integer" },
+      ]);
+      const refused = /CHECK constraint failed: refresh IN \(0, 1\)/;
+      for (const value of [2, -1, "x", 0.5]) {
+        expect(() => set(value), String(value)).toThrow(refused);
+      }
+      expect(() => set(null)).toThrow(/NOT NULL constraint failed/);
+      expect(() =>
+        sql.exec(
+          `INSERT INTO collection_pins_pending (account_id, uri, pinned_at, refresh)
+					VALUES (?, 'https://remote.example/users/a/statuses/3', '2026-11-16T00:00:00.000Z', 2)`,
+          ACCOUNT,
+        ),
+      ).toThrow(refused);
+    });
+  });
+});

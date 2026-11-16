@@ -1285,10 +1285,19 @@ ID-7 in `docs/threat-model.md`):
   Mastodon moves `edited_at` only on a significant edit (`process_status_update_service.rb`), so after a newer
   metadata-only `Update` it applies an older content `Update`: an author editing A, then B, then A again, whose final A
   arrives before B, ends at B there. Mastodon's behaviour is an ordering bug.
-- A status Kopje fetches again that it stores (search, `/authorize_interaction`) is applied as its author's `Update`, as
-  `FetchRemoteStatusService` turns a stored status's `Create` into an `Update` (`fetch_remote_status_service.rb:48`). A
-  status fetched because it was not stored (a boost's original, a quoted status, an `Add`, a quote request's instrument)
-  that a delivery stored before the fetch completed keeps the stored version; Mastodon applies the fetched one.
+- A status Kopje fetches again that it stores (search, `/authorize_interaction`, a pin sync) is applied as its author's
+  `Update`, as `FetchRemoteStatusService` turns a stored status's `Create` into an `Update`
+  (`fetch_remote_status_service.rb:48`). A pin sync fetches every status its account lists on its origin and applies
+  only the account's own, as Mastodon's `expected_actor_uri`. A status fetched because it was not stored (a boost's
+  original, a quoted status, an `Add`, a quote request's instrument) that a delivery stored before the fetch completed
+  keeps the stored version; Mastodon applies the fetched one.
+- A public or unlisted status stored under the URI a pin sync fetches is removed when that URI answers 404 without a
+  redirect, as Mastodon's `fetch_status` (`fetch_remote_status_service.rb:86-98`); no retraction is recorded, as
+  Mastodon keeps no tombstone, so a later `Create` of it is stored again. A 410, a redirected 404 and a private status's
+  404 remove nothing; search removes nothing (`resolve_url_service.rb:38-61`). Kopje's removal runs in its job's
+  batches after the status is hidden, where Mastodon's `RemoveStatusService` deletes the row at once: an `Update` that
+  arrives in between applies to the hidden row and goes with it, where Mastodon's would create the status again if it
+  is recent.
 - An `Update` whose `updated` is more than five minutes ahead of the clock is ignored (`src/domain/remote-statuses.ts`);
   Mastodon has no such check. The edit is lost until another delivery or a later edit: the sender does not send it
   again when the receiver's clock catches up.

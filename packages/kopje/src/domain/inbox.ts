@@ -70,7 +70,6 @@ import {
   recordJobAttempt,
   resetJobAttempts,
 } from "./job-attempts";
-import { deleteCard } from "./link-cards";
 import { listsHolding } from "./lists";
 import { END_FOLLOW_NOTIFICATIONS_SQL, notify } from "./notifications";
 import { readOperation, writeOperation } from "./operation";
@@ -85,7 +84,6 @@ import {
   quoteArrival,
   recheckStamp,
   rejectOurQuote,
-  retireQuoteOf,
   revokeStamp,
   sweepQuoteRequests,
 } from "./quotes";
@@ -112,6 +110,7 @@ import {
 } from "./remote-actors";
 import { collectionOf, featureRemote, pinRemote, unfeatureRemote, unpinRemote } from "./remote-collections";
 import { retireAccountSlots, retireStatusMediaSlots } from "./remote-media";
+import { HIDE_ROWS, hideRemoteStatus, startRemoval } from "./remote-removal";
 import { followersUri, type RemoteStatusInput, statusByUri, visibilityOf } from "./remote-status-reads";
 import {
   hasLocalFollowers,
@@ -2271,31 +2270,11 @@ const deleteObject: Handler<"Delete"> = (db, actor, activity, { now }) => {
   if (status.reblog_of_id !== null) {
     return applied("boost-deleted", removeBoost(db, actor, { id: status.id, original: status.reblog_of_id }, now));
   }
-  // R32: the streaming delete is captured when the job is created, before the first batch removes its mentions; the
-  // job row is the marker, so a Delete delivered again (or the later batches) captures nothing more. It writes outside
-  // the batch's budget, which deleteStatusBatch starts after it.
-  const created = db.first(
-    `INSERT INTO inbound_jobs (kind, key, actor_uri, created_at) VALUES ('delete', ?, ?, ?) ON CONFLICT DO NOTHING
-		RETURNING key`,
-    status.id,
-    actor.uri,
-    now,
-  );
-  // The hide follows the capture (which reads the audience it ends), before any batch removes a mention (VIS-1), also
-  // outside the batch's budget: from here no one sees the status, no local account may boost it (it is direct) or
-  // unboost it (removalBegunSql), so its kept local boosts are fixed in this transaction.
-  if (created !== undefined) {
-    streamDelete(db, status.id, now);
-    hideRemoteStatus(db, status.id);
-  }
-  // Its accepted quote ends now, before any batch, outside the batch's budget (one quote row, its target's count and
-  // the revocation of Kopje's authorization if it holds one): neither the quotes list nor the count of its target
-  // shows it (VIS-27), and no stamp is served (VIS-28), while the removal runs.
-  retireQuoteOf(db, status.id, now);
+  const created = startRemoval(db, status.id, actor.uri, now);
   // The forwards are recorded by the request that created the job only, and staged before any of their evidence goes
   // (stageForwards and its barriers); so this transaction runs no batch once it recorded one.
   if (
-    created !== undefined &&
+    created &&
     status.reblog_of_id === null &&
     activity.proven !== undefined &&
     isDistributable(status.visibility) &&
@@ -2519,24 +2498,6 @@ function stageForwards(db: Db, originalId: string, budget: JobBudget): boolean {
     }
   }
   return true;
-}
-
-// The hide of a remote status whose Delete is recorded (VIS-1): it writes the status, the account's last status, which
-// the trigger of migration 0021_directory moves back, and deletes the status's card (link-cards.ts: a direct status
-// holds none), and the copy of withdrawn on its own quote row when that row is marked local (migration
-// 0091_live_local_quotes; only an import marks a remote status's quote so), so four rows at most, and nothing once done. It also marks the status withdrawn (its retraction is
-// recorded), which refuses a local unboost of it (statuses.ts unboostableId) and skips its recounts
-// (deleteStatusWithin).
-const HIDE_ROWS = 4;
-function hideRemoteStatus(db: Db, statusId: string): void {
-  db.run(
-    `UPDATE statuses SET withdrawn = 1, visibility = 'direct', content = '', spoiler_text = '', search_text = NULL,
-			filter_text_units = NULL
-		WHERE id = ? AND (withdrawn = 0 OR visibility <> 'direct' OR content <> '' OR spoiler_text <> ''
-			OR search_text IS NOT NULL)`,
-    statusId,
-  );
-  deleteCard(db, statusId);
 }
 
 // A Delete relayed by another server (federation/inbound.ts, ID-1's exception), never applied to an actor. Of a stored

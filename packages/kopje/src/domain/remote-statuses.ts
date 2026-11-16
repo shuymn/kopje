@@ -58,10 +58,10 @@ import { measureFilterText, presentStatus, type Status } from "./status-presente
 import { MAX_STATUS_EDITS, notifyEdited, recordEdit, recountStatus, writeTags } from "./statuses";
 
 // Remote statuses: Create, Update and the originals of boosts and search results, stored as Mastodon 4.7.5's
-// ActivityPub::Activity::Create and ProcessStatusUpdateService store them; a search result Kopje already stores is
-// its author's Update (storeFetchedStatus). The Worker has parsed the object as Mastodon reads it (compacted JSON),
-// sanitized its content (HTML-1), kept only http(s) URLs (HTML-3) and cut it to the bounds below (RES-2, RES-4); here
-// it is authorized against the stored state (ID-3, ID-6, ID-7) and written.
+// ActivityPub::Activity::Create and ProcessStatusUpdateService store them; a search result or a pin sync's status
+// Kopje already stores is its author's Update (storeFetchedStatus). The Worker has parsed the object as Mastodon reads
+// it (compacted JSON), sanitized its content (HTML-1), kept only http(s) URLs (HTML-3) and cut it to the bounds below
+// (RES-2, RES-4); here it is authorized against the stored state (ID-3, ID-6, ID-7) and written.
 //
 // Addressing goes through interpretAddressing (audience.ts): known accounts in to/cc that are not mentioned, and the
 // owner of the personal inbox it came to, are silent mentions; a direct status with any is limited (VIS-2). Unknown
@@ -805,7 +805,12 @@ export function updateRemoteStatus(
 // whose lookup by atomUri keeps what it finds). An update that stops before its quote step (an older version, one
 // past the skew, or none for an edited status) still has the status arrive again as a root, as storeRemoteStatus's
 // known branch does (promoteQuote), and its outcome names the stored status unless that is retracted.
-function storeFetchedStatus(db: Db, author: Author, input: RemoteStatusInput, ctx: UpdateContext): StatusOutcome {
+export function storeFetchedStatus(
+  db: Db,
+  author: Author,
+  input: RemoteStatusInput,
+  ctx: UpdateContext,
+): StatusOutcome {
   if (db.first(`SELECT 1 AS x WHERE ${availableSql("?1")}`, author.id) === undefined) {
     return { applied: false, reason: "author-unavailable" };
   }

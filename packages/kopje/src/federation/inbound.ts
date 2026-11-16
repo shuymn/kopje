@@ -1309,7 +1309,7 @@ async function prepare(
     if (fetched.kind === "transient") {
       return { status: 503, reason: "object-unavailable" };
     }
-    if (fetched.kind === "unusable") {
+    if (fetched.kind !== "ok") {
       return { status: 202, reason: "unusable-object" };
     }
     return { type: activity.kind, id: activity.id, object: fetched.status };
