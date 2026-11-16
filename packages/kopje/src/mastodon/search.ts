@@ -24,15 +24,15 @@ import { limitParam, offsetParam, type Params, parseBoolean } from "./params";
 // Limit and offset are Mastodon 4.7.5's SearchService#call's: a limit of 0 (limit_param keeps it) answers nothing and
 // resolves nothing (search_service.rb:17), and the offset counts only with a type (`:11`).
 //
-// resolve=true: a URL query is answered by its lookup alone, never by the plain search, and by nothing past offset 0 or
-// for a type the lookup did not find (`:19-20`). A local collection's URL (its uri or url) answers that collection when
-// R45 shows it to the viewer (ResolveURLService#process_local_url), with no fetch. Otherwise, after the token is
-// verified, a URL or user@domain query is fetched (federation/resolve.ts, signed by the instance actor) and stored by
-// the Store with inbound validation; a URL of this instance is never fetched, and the Store finds what it names on
-// Kopje's routes (remote-statuses.ts localSearchTarget). A URL query answers with what it resolved to, if the viewer
-// may see it. A URL lookup whose answer is empty whatever it finds (an offset past 0, a type other than accounts and
-// statuses) fetches nothing, where Mastodon fetches and stores first (docs/mastodon-deviations.md, Search). An address
-// is resolved only when accounts are searched at offset 0, as only AccountSearchService resolves one (`:90-100`,
+// resolve=true: a URL query is answered by its lookup alone, if the viewer may see what it resolved to, never by the
+// plain search, and by nothing past offset 0 or for a type the lookup did not find (`:19-20`). A local collection's URL
+// (its uri or url) answers that collection when R45 shows it to the viewer (ResolveURLService#process_local_url), with
+// no fetch. Otherwise, after the token is verified, a URL or user@domain query is fetched (federation/resolve.ts,
+// signed by the instance actor) and stored by the Store with inbound validation; a URL of this instance is never
+// fetched, and the Store finds what it names on Kopje's routes (remote-statuses.ts localSearchTarget). A URL lookup
+// whose answer is empty whatever it finds (an offset past 0, a type other than accounts and statuses) fetches nothing,
+// where Mastodon fetches and stores first (docs/mastodon-deviations.md, Search). An address is resolved only when
+// accounts are searched at offset 0, as only AccountSearchService resolves one (`:90-100`,
 // account_search_service.rb:206), and answers the account search with the resolved account first, which the Store's
 // search puts there (resolvedAccountId), so the answer budget (RES-3) covers it. Unauthenticated requests are refused
 // before anything is fetched (401, the route's scope), and a request the Store could not store for (resolveQuery) is

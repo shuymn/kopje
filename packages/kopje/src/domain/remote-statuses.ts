@@ -1249,7 +1249,7 @@ function localSearchTarget(db: Db, query: string, now: number): StoredResolution
       `SELECT 1 AS x FROM statuses INDEXED BY ${STATUSES_ID_INDEX} WHERE id = ?1 AND reblog_of_id IS NULL`,
       id,
     ) !== undefined;
-  return id !== null && original ? { kind: "status", id, quotesDue: false } : none;
+  return original ? { kind: "status", id, quotesDue: false } : none;
 }
 
 // Stores what was resolved (storeResolved), then answers with it only if the viewer may see it (VIS-1): an account only
