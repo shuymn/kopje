@@ -12,7 +12,7 @@ import {
   readParams,
   SENT_FILE,
 } from "../src/mastodon/params";
-import { rubyToI } from "../src/platform/ruby-to-i";
+import { rubyNumberToI, rubyToI } from "../src/platform/ruby-to-i";
 import toI from "./fixtures/ruby-to-i/to-i.json";
 import { multipartForm } from "./media-helpers";
 
@@ -30,6 +30,17 @@ describe("rubyToI", () => {
       const exact = BigInt(ruby);
       const capped = exact > max ? max : exact < -max ? -max : exact;
       expect(rubyToI(value)).toBe(Number(capped));
+    },
+  );
+
+  // A JSON number's to_i, null where Ruby raises (a Float past its range), which Kopje reads as the cap.
+  it.each(toI.numbers.map((row) => [row.json, row.to_i] as const))(
+    "reads the JSON number %s as Ruby's to_i of it, %s",
+    (json, ruby) => {
+      const number = JSON.parse(json) as number;
+      const exact = ruby === null ? (number < 0 ? -max : max) : BigInt(ruby);
+      const capped = exact > max ? max : exact < -max ? -max : exact;
+      expect(rubyNumberToI(number)).toBe(Number(capped));
     },
   );
 });
@@ -107,6 +118,13 @@ describe("Params#last", () => {
     const json = await read(post(JSON.stringify({ a: 1, b: 2 }), "application/json", "?a=4&a=5"));
     expect([json.last("a"), json.last("b"), json.get("a")]).toEqual(["5", "2", "4"]);
     expect((await read(post("b=1", "application/x-www-form-urlencoded"))).last("a")).toBeUndefined();
+  });
+
+  it("reads a JSON number by Ruby's to_i of the number, and a string by String#to_i", async () => {
+    const p = await read(post('{"a":1e21,"b":"1e21","c":1e-7,"d":-0.5,"e":3.9}', "application/json"));
+    expect(["a", "b", "c", "d", "e"].map((name) => p.last(name))).toEqual(["9007199254740991", "1e21", "0", "0", "3"]);
+    // Other reads keep the number as JSON writes it.
+    expect([p.get("a"), p.get("c")]).toEqual(["1e+21", "1e-7"]);
   });
 
   it("reads a declared file in the body over a query text, as Rails' last-part rule", async () => {

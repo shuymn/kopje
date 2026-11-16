@@ -1117,7 +1117,8 @@ Request parameters:
 - An integer parameter (`limit`, `offset`, a mute's `duration`, a filter's `expires_in`, `poll[expires_in]`, oEmbed's
   `maxwidth` and `maxheight`) whose `to_i` is past 9,007,199,254,740,991 (2^53 − 1) is read as that, where Ruby reads
   any length: oEmbed's `width` and `height` show 9,007,199,254,740,991 for a larger `maxwidth` or `maxheight`, where
-  Mastodon shows the number sent.
+  Mastodon shows the number sent. A JSON number past a Float's range (`1e400`) is read as that too, where Mastodon
+  answers 500.
 - A `limit` whose `to_i` is 0 (`0`, `-0`, `abc`) answers `[]` without a `Link` on the timelines and the notifications
   (v1 and v2), as Mastodon's do, and reads as 1 on the other lists paged by `max_id`, `since_id` and `min_id`: an
   account's statuses, followers, following and endorsements, bookmarks, favourites, conversations, blocks, mutes,

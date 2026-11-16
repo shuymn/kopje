@@ -1,6 +1,6 @@
 import { readBoundedBody } from "../platform/body";
 import { utf8Length } from "../platform/dump-format";
-import { rubyToI } from "../platform/ruby-to-i";
+import { rubyNumberToI, rubyToI } from "../platform/ruby-to-i";
 
 // Request parameters as Mastodon reads them: the query string merged with a JSON, urlencoded or multipart body
 // (clients send all three). JSON is flattened to form names, so `{"source":{"privacy":"public"}}` reads as
@@ -41,13 +41,17 @@ export const SENT_FILE = "(file)";
 // "absent"`: a field a JSON body sent as null is read as not sent, where other reads take it as blank.
 export type ObjectOptions = { files?: readonly string[]; nulls?: "absent" };
 
+// A parameter's name and text, and the number a JSON body sent as it: `text` is the number as JSON writes it, and
+// integer parameters read `number` (Params#last).
+export type ParamEntry = readonly [name: string, text: string, number?: number];
+
 // A file part's value while objects() groups the parts; no text value equals it.
 const FILE_VALUE: unique symbol = Symbol("file part");
 type Value = string | typeof FILE_VALUE;
 
 export class Params {
   constructor(
-    readonly entries: readonly (readonly [string, string])[],
+    readonly entries: readonly ParamEntry[],
     readonly files: ReadonlyMap<string, File> = new Map(),
     // The JSON object prefixes the body sent, empty objects included (sentObject).
     readonly objectPrefixes: ReadonlySet<string> = new Set(),
@@ -59,7 +63,7 @@ export class Params {
     // them as absent).
     private readonly nulls: ReadonlySet<string> = new Set(),
     // The body's entries the query replaced (withQuery), which repeated() still counts.
-    private readonly replaced: readonly (readonly [string, string])[] = [],
+    private readonly replaced: readonly ParamEntry[] = [],
   ) {}
 
   // These body parameters with the query's merged in, as Rails' `request_parameters.merge(query_parameters)`, a
@@ -67,7 +71,7 @@ export class Params {
   // `poll[expires_in]` leaves none of a body's `poll`, its options included, and a query `expires_in[]` replaces a body
   // `expires_in`. A declared name is the exception: the body wins, and the query's last value is read only when the
   // body has none (docs/mastodon-deviations.md). The query's entries follow the body's.
-  withQuery(query: readonly (readonly [string, string])[], declared: readonly string[]): Params {
+  withQuery(query: readonly ParamEntry[], declared: readonly string[]): Params {
     const names = new Set(declared);
     const keys = new Set(query.map(([key]) => topKey(key)).filter((key) => !names.has(key)));
     const kept = (name: string) => !keys.has(topKey(name));
@@ -98,10 +102,12 @@ export class Params {
     return this.entries.find(([key]) => key === name)?.[1];
   }
 
-  // Rails' `params[name]`: the last value (Rack assigns a repeated plain name, so the last wins), the query's for a
-  // top-level key the query sent, else the body's (withQuery). Integer parameters are read so.
+  // Rails' `params[name]` as an integer parameter reads it: the last value (Rack assigns a repeated plain name, so the
+  // last wins), the query's for a top-level key the query sent, else the body's (withQuery); a JSON number as the
+  // decimal of its Ruby to_i, so `1e21` reads as 10^21 (capped as rubyToI caps), where the string "1e21" reads as 1.
   last(name: string): string | undefined {
-    return this.entries.findLast(([key]) => key === name)?.[1];
+    const entry = this.entries.findLast(([key]) => key === name);
+    return entry?.[2] === undefined ? entry?.[1] : String(rubyNumberToI(entry[2]));
   }
 
   // A declared file parameter whose effective value is a file (readParams' typed selection): then get(name) is
@@ -302,7 +308,7 @@ async function parseCounted(
     return { params: new Params([]), formText: type === "application/json" ? null : 0 };
   }
   if (type === "application/json") {
-    const entries: [string, string][] = [];
+    const entries: ParamEntry[] = [];
     const objects = new Set<string>();
     const empty = new Set<string>();
     const nulls = new Set<string>();
@@ -345,7 +351,7 @@ async function parseCounted(
 
 // JSON and form text for a declared name keeps only its last value, so get(name) reads what Rails would assign.
 function selectDeclared(
-  entries: [string, string][],
+  entries: ParamEntry[],
   files: Map<string, File>,
   objects: Set<string>,
   empty: Set<string>,
@@ -365,7 +371,7 @@ function selectDeclared(
 }
 
 type Flattening = {
-  entries: [string, string][];
+  entries: ParamEntry[];
   objects: Set<string>;
   empty: Set<string>;
   nulls: Set<string>;
@@ -411,11 +417,16 @@ function flatten(value: unknown, state: Flattening, prefix = "", depth = 0): voi
       flatten(item, state, prefix === "" ? key : `${prefix}[${key}]`, depth + 1);
     }
   } else if (prefix !== "") {
-    // Scalars only here: strings as they are, numbers and booleans as JSON writes them, null as blank (and noted).
+    // Scalars only here: strings as they are, numbers (kept as well) and booleans as JSON writes them, null as blank
+    // (and noted).
     if (value === null) {
       state.nulls.add(prefix);
     }
-    state.entries.push([prefix, typeof value === "string" ? value : value === null ? "" : JSON.stringify(value)]);
+    if (typeof value === "number") {
+      state.entries.push([prefix, JSON.stringify(value), value]);
+    } else {
+      state.entries.push([prefix, typeof value === "string" ? value : value === null ? "" : JSON.stringify(value)]);
+    }
   }
 }
 

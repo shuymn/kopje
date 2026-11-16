@@ -189,6 +189,20 @@ describe("posting a poll", () => {
     });
   });
 
+  // Rails' JSON params keep a number as a Float, which Expireable#expires_in= reads by Ruby's to_i; the same text sent
+  // as a string is read by String#to_i.
+  it("reads a JSON number expires_in by Ruby's to_i of the number", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const deadline = async (expires_in: unknown) =>
+      refusal(await send(h, alice, "/api/v1/statuses", { status: "q", poll: { options: ["a", "b"], expires_in } }));
+    expect(await deadline(1e21)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Deadline is too far into the future" },
+    });
+    expect(await deadline("1e21")).toEqual({ status: 422, body: { error: "Validation failed: Deadline is too soon" } });
+  });
+
   // The strip is linear (platform/strip.ts): a choice with a run inside, filling the body (API_BODY_LIMIT), is read
   // within a generous time, with an invalid token (checked after the poll is read) and with alice's, whose 422 shows
   // the choice reached its length check.

@@ -16,3 +16,12 @@ export function rubyToI(value: string): number {
   // 0 - 0 is 0, where -0 would be -0.
   return match[1] === "-" ? 0 - magnitude : magnitude;
 }
+
+// Ruby's to_i of a JSON number, as Rails' JSON params hold it (a Float, or an Integer): toward zero, so `1e-7` is 0 and
+// `1e21` is 10^21, where the string "1e21" is 1 (test/fixtures/ruby-to-i, "numbers"). Capped as rubyToI caps; a number
+// past Float's range (`1e400`) is read as the cap, where Ruby raises FloatDomainError (Mastodon answers 500).
+export function rubyNumberToI(value: number): number {
+  const magnitude = Math.min(Math.trunc(Math.abs(value)), Number.MAX_SAFE_INTEGER);
+  // 0 - 0 is 0, where -0 would be -0.
+  return value < 0 ? 0 - magnitude : magnitude;
+}

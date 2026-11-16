@@ -136,6 +136,22 @@ describe("filters API", () => {
     }
   });
 
+  // Rails' JSON params keep a number as a Float, which Expireable#expires_in= reads by Ruby's to_i; the same text sent
+  // as a string is read by String#to_i.
+  it("reads a JSON number expires_in by Ruby's to_i of the number", async () => {
+    const h = await community(["alice"]);
+    const after = (seconds: number) => new Date(NOW + seconds * 1000).toISOString();
+    for (const [expires_in, expected] of [
+      [1e-7, after(0)],
+      ["1e-7", after(1)],
+      [1.5e3, after(1500)],
+      ["1.5e3", after(1)],
+    ] as const) {
+      const created = await createFilter(h, h.users.alice, { title: "t", context: ["home"], expires_in });
+      expect([expires_in, created.expires_at]).toEqual([expires_in, expected]);
+    }
+  });
+
   it("creates, shows, updates and deletes a filter with its keywords, as REST::FilterSerializer shows it", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;

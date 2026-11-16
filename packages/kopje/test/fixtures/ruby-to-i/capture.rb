@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 
 # Ruby's String#to_i (base 10, rb_int_parse_cstr in bignum.c) for to-i.json (params.test.ts, "rubyToI"): each value and
-# what Ruby reads it as, written as text so a value past 2^53 keeps its digits. Mastodon 4.7.5 runs on Ruby 4.0.9;
-# capture with its image, without network:
+# what Ruby reads it as; then each JSON number as Rails' JSON params hold it (a Float or an Integer) and its to_i (null
+# where it raises). Written as text, so a value past 2^53 keeps its digits. Mastodon 4.7.5 runs on Ruby 4.0.9; capture
+# with its image, without network:
 #
 #   docker run --rm -i --network none --entrypoint ruby ghcr.io/mastodon/mastodon:v4.7.5 - < capture.rb > to-i.json
 
@@ -28,4 +29,20 @@ VALUES = [
   "-#{'9' * 30}"
 ].freeze
 
-puts JSON.pretty_generate({ ruby: RUBY_VERSION, rows: VALUES.map { |value| { value: value, to_i: value.to_i.to_s } } })
+# JSON texts, parsed as Rails parses a JSON body: `1e21` is a Float, where the string "1e21" reads as 1.
+NUMBERS = %w[0 1 -1 3.9 -3.9 0.5 -0.5 -0.0 1.0 1e-7 -1e-7 1e21 -1e21 1E3 1.5e2 2.5e-1 12345678901234567890123
+             -12345678901234567890123 9007199254740993 1e400].freeze
+
+def to_i(number)
+  number.to_i.to_s
+rescue FloatDomainError
+  nil
+end
+
+puts JSON.pretty_generate(
+  {
+    ruby: RUBY_VERSION,
+    rows: VALUES.map { |value| { value: value, to_i: value.to_i.to_s } },
+    numbers: NUMBERS.map { |json| { json: json, to_i: to_i(JSON.parse(json)) } }
+  }
+)

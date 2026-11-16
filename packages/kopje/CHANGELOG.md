@@ -307,7 +307,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   actor id that is not an http or https URL, which the Worker never stores, now stops the conversion
   (`remote-actor-uri-not-http`). No Store migration and no `wrangler.jsonc` change.
 - Integer parameters are read as Rails reads them: the last of repeated values, the query's before the body's, as
-  Ruby's `String#to_i` reads it (underscores, a `0d` prefix, ASCII whitespace only), and a negative `limit` as its
+  Ruby's `String#to_i` reads it (underscores, a `0d` prefix, ASCII whitespace only), a JSON number by Ruby's `to_i`
+  of the number (`1e21` is 10^21 and `1e-7` is 0, where the string `"1e21"` is 1), and a negative `limit` as its
   absolute value (#1729). A top-level key the query sends replaces the body's whole value under it, as Rails merges
   them: a query `poll[expires_in]` leaves none of a body's `poll`, its choices included, and a query `expires_in[]`
   drops a body's `expires_in`; a body's file parameter still wins over the query's. A `limit` of 0, or one that is not a number, answers no statuses and no `Link` on the home,

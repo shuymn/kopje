@@ -776,6 +776,27 @@ describe("mutes", () => {
     expect(await expiry("?duration=30", ["5"])).toBe(after(30));
   });
 
+  // Rails' JSON params keep a number as a Float, which Ruby's to_i truncates; the same text sent as a string is read by
+  // String#to_i.
+  it("reads a JSON number duration by Ruby's to_i of the number", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const path = `/api/v1/accounts/${bob.id}/mute`;
+    const after = (seconds: number) => new Date(NOW + seconds * 1000).toISOString();
+    for (const [duration, expected] of [
+      [1e-7, null],
+      ["1e-7", after(1)],
+      [-0.5, null],
+      [1.5e3, after(1500)],
+      ["1.5e3", after(1)],
+      [1e21, "9999-12-31T23:59:59.999Z"],
+      ["1e21", after(1)],
+    ] as const) {
+      const relationship = await relate(h, alice, path, { duration });
+      expect([duration, relationship.muting_expires_at]).toEqual([duration, expected]);
+    }
+  });
+
   it("hides the muted account from timelines and search; notifications only when it mutes them", async () => {
     const h = await community(["alice", "bob"]);
     const { alice, bob } = h.users;
