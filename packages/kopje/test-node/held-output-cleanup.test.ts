@@ -77,7 +77,9 @@ const ACCOUNT = "acct-test";
 // wrangler as the driver runs it: `whoami`, `deploy`, `delete`, `deployments status` and `versions view`, each logged,
 // against Workers that exist while their files do, each file holding the BENCH_RUN its deploy carried. As wrangler
 // does, it dumps an upload's body when its log is debug and unsanitized, and writes an output file when asked.
-// Interrupted by SIGTERM, a deploy's command ends but its upload lands later, as a remote deploy may.
+// Interrupted by SIGTERM, a deploy's command ends but its upload lands later, as a remote deploy may. A deploy logs its
+// start only once the driver's record names its process, so a test that stops the driver there finds it named however
+// slowly the record was written.
 const FAKE_WRANGLER = `
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -112,6 +114,11 @@ if (command === "whoami") {
   name = config.name;
   mark = config.vars?.BENCH_RUN ?? "";
   const token = JSON.parse(readFileSync(option("--secrets-file"), "utf8")).BENCH_TOKEN;
+  const record = join(state, "records", name + ".json");
+  const named = () => existsSync(record) && JSON.parse(readFileSync(record, "utf8")).deployPid === process.pid;
+  for (let i = 0; i < 400 && !named(); i += 1) {
+    await wait(25);
+  }
   log("deploy start " + token);
   log("deploy name " + name);
   const output = Object.keys(env).filter((key) => key.startsWith("WRANGLER_OUTPUT_FILE_"));
