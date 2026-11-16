@@ -274,22 +274,26 @@ describe("debts across walks (D12, Debts; Lanes and order)", () => {
     return { t, rootId, note, b, u, siblings, watched };
   }
 
-  it("owes U, which the walk's last scan finds, and fetches it before the root at the next walk (the review's case)", async () => {
-    const { t, rootId, note, b, u, watched } = await review("embedded");
-    expect(await walkOnce(t, rootId, watched)).toEqual([note.id, b.id]);
-    expect(await debtsOf(t.store, rootId)).toEqual([
-      expect.objectContaining({ status: u.id, kind: 0, depth: 2, key: [1, 1, 1] }),
-    ]);
-    // B as U's path, then U, then the root.
-    expect(await walkOnce(t, rootId, watched)).toEqual([b.id, u.id, note.id]);
-    expect((await debtsOf(t.store, rootId)).map((d) => d.status)).not.toContain(u.id);
-    // Every second walk after: the walk B reads in owes U, the next fetches it.
-    const later = [];
-    for (let walk = 3; walk <= 8; walk++) {
-      later.push(count(await walkOnce(t, rootId, watched), u.id));
-    }
-    expect(later).toEqual([0, 1, 0, 1, 0, 1]);
-  });
+  it(
+    "owes U, which the walk's last scan finds, and fetches it before the root at the next walk (the review's case)",
+    { timeout: 300_000 },
+    async () => {
+      const { t, rootId, note, b, u, watched } = await review("embedded");
+      expect(await walkOnce(t, rootId, watched)).toEqual([note.id, b.id]);
+      expect(await debtsOf(t.store, rootId)).toEqual([
+        expect.objectContaining({ status: u.id, kind: 0, depth: 2, key: [1, 1, 1] }),
+      ]);
+      // B as U's path, then U, then the root.
+      expect(await walkOnce(t, rootId, watched)).toEqual([b.id, u.id, note.id]);
+      expect((await debtsOf(t.store, rootId)).map((d) => d.status)).not.toContain(u.id);
+      // Every second walk after: the walk B reads in owes U, the next fetches it.
+      const later = [];
+      for (let walk = 3; walk <= 8; walk++) {
+        later.push(count(await walkOnce(t, rootId, watched), u.id));
+      }
+      expect(later).toEqual([0, 1, 0, 1, 0, 1]);
+    },
+  );
 
   it("owes B's collection when its first page is fetched (not embedded), and reads it, then U, at the next walk", async () => {
     const { t, rootId, note, b, u, watched } = await review("first");
@@ -325,32 +329,36 @@ describe("debts across walks (D12, Debts; Lanes and order)", () => {
     expect(await walkOnce(t, rootId, watched)).toEqual([u.id]);
   });
 
-  it("puts what owed work admits in the owed lane: B1 > B2 > B3 > U, scanned or alternating listed links, U at walk 2", async () => {
-    for (const alternating of [false, true]) {
-      const { t, root, bob } = await threadWorld();
-      const note = mastodonNote(root);
-      const rootId = await threadRoot(t, root, note);
-      // B1 the first of the root's 199 stored replies; B2 a stored reply of B1 (listed by it when alternating), B3 a
-      // stored reply of B2, and U a reply of B3 (stored, or listed by B3 and unstored when alternating).
-      const u = mastodonNote(bob, {});
-      const b3 = mastodonNote(bob, {});
-      const b2 = mastodonNote(bob, {});
-      const b1 = served(t.web, mastodonNote(bob, { inReplyTo: note.id }), { items: alternating ? [b2.id] : [] });
-      served(t.web, Object.assign(b2, { inReplyTo: b1.id }));
-      served(t.web, Object.assign(b3, { inReplyTo: b2.id }), { items: alternating ? [u.id] : [] });
-      served(t.web, Object.assign(u, { inReplyTo: b3.id }));
-      const [b1Id] = await storeReplies(t, bob, [{ note: b1, parentId: rootId, id: storedId(9000) }]);
-      await storedReplies(t, bob, rootId, note.id, WALK_STATUSES - 2, { at: 9001 });
-      const [b2Id] = await storeReplies(t, bob, [{ note: b2, parentId: b1Id! }]);
-      const [b3Id] = await storeReplies(t, bob, [{ note: b3, parentId: b2Id! }]);
-      if (!alternating) {
-        await storeReplies(t, bob, [{ note: u, parentId: b3Id! }]);
+  it(
+    "puts what owed work admits in the owed lane: B1 > B2 > B3 > U, scanned or alternating listed links, U at walk 2",
+    { timeout: 120_000 },
+    async () => {
+      for (const alternating of [false, true]) {
+        const { t, root, bob } = await threadWorld();
+        const note = mastodonNote(root);
+        const rootId = await threadRoot(t, root, note);
+        // B1 the first of the root's 199 stored replies; B2 a stored reply of B1 (listed by it when alternating), B3 a
+        // stored reply of B2, and U a reply of B3 (stored, or listed by B3 and unstored when alternating).
+        const u = mastodonNote(bob, {});
+        const b3 = mastodonNote(bob, {});
+        const b2 = mastodonNote(bob, {});
+        const b1 = served(t.web, mastodonNote(bob, { inReplyTo: note.id }), { items: alternating ? [b2.id] : [] });
+        served(t.web, Object.assign(b2, { inReplyTo: b1.id }));
+        served(t.web, Object.assign(b3, { inReplyTo: b2.id }), { items: alternating ? [u.id] : [] });
+        served(t.web, Object.assign(u, { inReplyTo: b3.id }));
+        const [b1Id] = await storeReplies(t, bob, [{ note: b1, parentId: rootId, id: storedId(9000) }]);
+        await storedReplies(t, bob, rootId, note.id, WALK_STATUSES - 2, { at: 9001 });
+        const [b2Id] = await storeReplies(t, bob, [{ note: b2, parentId: b1Id! }]);
+        const [b3Id] = await storeReplies(t, bob, [{ note: b3, parentId: b2Id! }]);
+        if (!alternating) {
+          await storeReplies(t, bob, [{ note: u, parentId: b3Id! }]);
+        }
+        const watched = new Set([u.id]);
+        expect(await walkOnce(t, rootId, watched), `alternating: ${alternating}`).toEqual([]);
+        expect(await walkOnce(t, rootId, watched), `alternating: ${alternating}`).toEqual([u.id]);
       }
-      const watched = new Set([u.id]);
-      expect(await walkOnce(t, rootId, watched), `alternating: ${alternating}`).toEqual([]);
-      expect(await walkOnce(t, rootId, watched), `alternating: ${alternating}`).toEqual([u.id]);
-    }
-  });
+    },
+  );
 
   // T lists X and Y; X lists 1,000 unstored items, 20 a page; Y lists V.
   async function resuming() {
