@@ -685,7 +685,14 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
     // never edited (such as the Update of a poll's counts, which names one only once the status was edited), still
     // refreshes the counts, the end and the voters of its poll, and verifies a changed stamp of the same quote again;
     // the quoted status itself changes only with a newer version.
-    const restamped = refreshQuote(db, { id: existing.id, uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
+    const restamped = refreshQuote(
+      db,
+      { id: existing.id, uri, author },
+      input.quote,
+      { ...arrival, broadcast: true, version: "same" },
+      ctx,
+      storeRemoteStatus,
+    );
     const policyChanged =
       db.run(
         "UPDATE statuses SET quote_policy = ?1 WHERE id = ?2 AND quote_policy <> ?1",
@@ -755,7 +762,14 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
   writeMedia(db, existing.id, author, media, ctx);
   measureFilterText(db, existing.id, iso(ctx.now));
   noteStatusEmoji(db, existing.id, ctx.now);
-  recordQuote(db, { id: existing.id, uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
+  recordQuote(
+    db,
+    { id: existing.id, uri, author },
+    input.quote,
+    { ...arrival, version: "newer" },
+    ctx,
+    storeRemoteStatus,
+  );
   if (significant) {
     // ProcessStatusUpdateService#reset_preview_card!: the card is fetched again from the Update's first Link, else its
     // anchors (:447-450). A change of the Links alone is not significant (:187), nor here a quote's, so neither
