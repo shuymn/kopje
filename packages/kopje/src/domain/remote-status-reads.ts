@@ -1,7 +1,7 @@
 import type { Db } from "../db/sql";
 import { spoilerReadSql, statusEditedSql, statusPublishedSql } from "../platform/stored-bounds";
 import { isPublicCollection, type Visibility } from "./audience";
-import { collectionSql, selectedCollectionUri } from "./collection-requests";
+import { collectionSql, collectionUri } from "./collection-requests";
 import { type EmojiCandidate } from "./custom-emojis";
 import { type CardCandidate, type CardLink } from "./link-cards";
 import { type RemotePollInput } from "./polls";
@@ -116,7 +116,7 @@ export function followersUri(db: Db, accountId: string): string | null {
     `SELECT ${collectionSql("raw", "followers")} AS followers FROM accounts WHERE id = ?`,
     accountId,
   );
-  return selectedCollectionUri(row?.followers ?? null);
+  return collectionUri(row?.followers ?? null);
 }
 
 // The visibility a fetched original would be stored with (before silent mentions), for VIS-6's check before anything

@@ -55,10 +55,7 @@ export type CollectionRead = string | typeof UNREADABLE;
 // collectionRead, with an unreadable collection as null, which no addressing names: a status addressed to it is direct,
 // never more visible than Mastodon makes it.
 export function collectionUri(value: unknown): string | null {
-  return readable(collectionRead(value));
-}
-
-function readable(read: CollectionRead): string | null {
+  const read = collectionRead(value);
   return read === UNREADABLE ? null : read;
 }
 
@@ -132,15 +129,6 @@ export function collectionSql(raw: string, member: "followers" | "following"): s
 						WHERE i.key = 'id' ORDER BY i.id DESC LIMIT 1) END
 				FROM json_each(m.value) AS f WHERE f.key = 0) END
 		FROM json_each(${raw}) AS m WHERE m.key = '${member}' ORDER BY m.id DESC LIMIT 1)`;
-}
-
-// collectionRead of what collectionSql selected, and collectionUri of it.
-export function selectedCollection(selected: string | null): CollectionRead {
-  return selected === null ? NONE : storedCollectionUri(selected);
-}
-
-export function selectedCollectionUri(selected: string | null): string | null {
-  return readable(selectedCollection(selected));
 }
 
 // The collections a stored actor document names (collectionUri), normalized as fetch targets.

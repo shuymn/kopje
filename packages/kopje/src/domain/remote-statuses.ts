@@ -27,7 +27,7 @@ import {
   type Visibility,
 } from "./audience";
 import { userWriteOperation } from "./auth";
-import { collectionSql, selectedCollection, UNREADABLE } from "./collection-requests";
+import { collectionRead, collectionSql, UNREADABLE } from "./collection-requests";
 import { emojiSnapshot } from "./custom-emojis";
 import { insertWithFreshId, remoteId } from "./ids";
 import { enqueueCard, remoteCardLink } from "./link-cards";
@@ -143,8 +143,8 @@ function remoteQuotePolicy(db: Db, author: Author, policy: RemoteQuotePolicyInpu
 		FROM accounts WHERE id = ?`,
     author.id,
   );
-  const followers = selectedCollection(row?.followers ?? null);
-  const following = selectedCollection(row?.following ?? null);
+  const followers = collectionRead(row?.followers ?? null);
+  const following = collectionRead(row?.following ?? null);
   // A string past an unreadable collection (collection-requests.ts storedCollectionUri) adds nothing: Mastodon may
   // store that collection as the very string, and then reads the entry as it, before any later match, so neither a
   // later collection's flag nor unsupported_policy (which lets anyone ask) is known to be Mastodon's. Adding nothing

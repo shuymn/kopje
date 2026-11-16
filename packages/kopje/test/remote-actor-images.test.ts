@@ -6,7 +6,6 @@ import {
   collectionRead,
   collectionSql,
   collectionUri,
-  selectedCollectionUri,
   UNREADABLE,
 } from "../src/domain/collection-requests";
 import { followersOf } from "../src/domain/inbox";
@@ -305,7 +304,7 @@ describe("an actor's followers and following are read as Mastodon reads them (#1
   const QUOTE_FLAGS = { public: 2, followers: 4, following: 8, unsupportedPolicy: 1 };
 
   // What collectionSql selects of `member` in a stored document (`raw`, by default one holding it alone), as selected
-  // (the string), and read by selectedCollectionUri.
+  // (the string), and read by collectionUri.
   async function selection(
     t: Setup,
     member: unknown,
@@ -318,8 +317,7 @@ describe("an actor's followers and following are read as Mastodon reads them (#1
     );
     return row!.m;
   }
-  const selected = async (t: Setup, member: unknown, raw?: string) =>
-    selectedCollectionUri(await selection(t, member, raw));
+  const selected = async (t: Setup, member: unknown, raw?: string) => collectionUri(await selection(t, member, raw));
 
   // An actor whose followers and following are `followers` and `following`, followed by alice, and the outbox,
   // followers and following collections its sync fetches, served.
