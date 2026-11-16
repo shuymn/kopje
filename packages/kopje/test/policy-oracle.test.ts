@@ -20,6 +20,7 @@ import {
   domainBlocksSql,
   endorsementListedSql,
   endorsementsShownSql,
+  featureApprovalSql,
   filteredForSql,
   findableBySql,
   followableBySql,
@@ -435,6 +436,26 @@ describe("the policy fragments agree with the model of their rules", () => {
             m.mayFeature(owner, x, memberDiscoverable, memberLocked)
               ? [`${name(m.world, owner)} ${name(m.world, x)}`]
               : [],
+          ),
+        ),
+    ));
+
+  it("featureApprovalSql (R45)", () =>
+    agree(
+      withCollections((db, world) => {
+        const named = namer(world);
+        return db
+          .all<{ x: string | null; y: string; answer: string }>(
+            `SELECT v.id AS x, a.id AS y, ${featureApprovalSql("a", "v.id")} AS answer FROM ${VIEWERS} v
+							CROSS JOIN accounts a`,
+          )
+          .map((row) => `${named(row.x, row.y)} ${row.answer}`);
+      }),
+      (m) =>
+        viewers(m.world).flatMap((viewer) =>
+          accounts(m.world).map(
+            (x) =>
+              `${name(m.world, viewer)} ${name(m.world, x)} ${m.featureApproval(x, viewer, memberDiscoverable, memberLocked)}`,
           ),
         ),
     ));

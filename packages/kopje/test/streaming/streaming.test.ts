@@ -149,6 +149,20 @@ describe("the subscribe protocol", () => {
     expect(inbox.rest().map((m) => [m.stream, m.event])).toEqual([[["user:notification"], "notification"]]);
   });
 
+  // #1589 2-T3: an account in a streamed notification is presented for its subscriber. Fails if the stream presents it
+  // for no viewer (feature_approval.current_user denied).
+  it("presents a streamed notification's account for its subscriber", async () => {
+    const h = await community(["alice", "bob"]);
+    await sql(h.store, "UPDATE accounts SET discoverable = 1, locked = 0 WHERE id = ?", h.users.bob.id);
+    const inbox = await subscribed(h, h.users.alice.token, "user:notification");
+    await settled(h, inbox);
+    await follow(h, h.users.bob, h.users.alice.id);
+    await drained(h, inbox);
+    expect(notifications(inbox.rest(), "user:notification")).toMatchObject([
+      { type: "follow", account: { id: h.users.bob.id, feature_approval: { current_user: "automatic" } } },
+    ]);
+  });
+
   it("sends no fallback: the event carries the notification as REST shows it without supported_types", async () => {
     const h = await community(["owner", "alice", "carol"]);
     await setSetting(h.store, "admin_email", "owner@example.com");

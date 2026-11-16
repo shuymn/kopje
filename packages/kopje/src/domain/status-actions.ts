@@ -1,6 +1,6 @@
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
-import type { Present } from "./accounts";
+import type { PresentInput } from "./accounts";
 import { featuredActivity, PIN_LIMIT, recordOutbound } from "./activities";
 import { announceFeatured } from "./actor-update";
 import { requiresMention, type Visibility } from "./audience";
@@ -21,7 +21,7 @@ import { type Acted, presented, viewable } from "./statuses";
 // the notifications about statuses of the conversation from being written (notifiedSql in audience.ts), and only
 // audience.ts reads it.
 
-type ActionInput = { id: string; now: number; present: Present };
+type ActionInput = { id: string; now: number; present: PresentInput };
 
 // ---- The stored bound of pins: migration 0089_pin_cap (RES-2, RES-4)
 //

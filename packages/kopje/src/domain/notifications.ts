@@ -1,7 +1,7 @@
 import type { Db } from "../db/sql";
 import { notificationCollectionKeysPastBoundSql } from "../platform/stored-bounds";
 import { type AccountWarning, presentAccountWarning } from "./account-warnings";
-import { type Account, accountsOf, type Page, type PageQuery, type Present } from "./accounts";
+import { type Account, accountsOf, type Page, type PageQuery, presentFor, type PresentInput } from "./accounts";
 import { adminAccountIdOnce } from "./admin-authority";
 import { admit, admittedPage, ARRAY_ANSWER_BYTES, firstUses } from "./answer-budget";
 import {
@@ -377,18 +377,22 @@ function* notificationStream(
   db: Db,
   rows: readonly WithVisibleStatus<NotificationRow, "status_id">[],
   viewer: UserContext,
-  present: Present & Pick<PresentOptions, "proper">,
+  present: PresentInput & Pick<PresentOptions, "proper">,
   fallback: ReadonlySet<string>,
 ): Generator<Notification | undefined, undefined> {
   const statusIds = [...new Set(rows.flatMap((row) => (row.status_id === null ? [] : [row.status_id])))];
   const shared = presentation(db, statusIds, { ...present, viewer });
   const statusOf = firstUses(statusIds, statusStream(db, shared, statusIds));
   const accountIds = [...new Set(rows.map((row) => row.from_account_id))];
-  const accountOf = firstUses(accountIds, accountsOf(db, accountIds, present, NOTIFICATION_CHUNK));
+  const accountOf = firstUses(
+    accountIds,
+    accountsOf(db, accountIds, presentFor(present, viewer.accountId), NOTIFICATION_CHUNK),
+  );
   for (const row of rows) {
     const account = accountOf(row.from_account_id);
     const status = row.status_id === null ? undefined : statusOf(row.status_id);
-    const report = row.report_id === null ? undefined : presentReport(db, row.report_id, present);
+    const report =
+      row.report_id === null ? undefined : presentReport(db, row.report_id, presentFor(present, viewer.accountId));
     const warning = warningOf(db, row, viewer.accountId, account);
     if (
       account === undefined ||
@@ -448,7 +452,7 @@ export type ListNotificationsInput = {
   includeFiltered: boolean;
   // The types that carry a fallback (notification-fallback.ts fallbackTypes); none when left out.
   fallbackTypes?: string[];
-  present: Present;
+  present: PresentInput;
 };
 
 export type ShownColumns = Omit<NotificationRow, "status_id">;
@@ -531,7 +535,7 @@ export const listNotifications = userReadOperation<ListNotificationsInput, Page<
 );
 
 export const getNotification = userReadOperation<
-  { id: string; present: Present; fallbackTypes?: string[] },
+  { id: string; present: PresentInput; fallbackTypes?: string[] },
   Notification | null
 >(
   // Api::V1::NotificationsController#show finds any of the viewer's notifications, filtered or not, and renders it
@@ -544,7 +548,12 @@ export const getNotification = userReadOperation<
 // `id`, which is the list read (R15, unfiltered and kept, any type) restricted to that id, since ids are unique; and
 // its presentation, without a fallback (NotifyService renders the event without supported types). Null when the list
 // would not show it now.
-export function streamedNotification(db: Db, viewer: UserContext, id: string, present: Present): Notification | null {
+export function streamedNotification(
+  db: Db,
+  viewer: UserContext,
+  id: string,
+  present: PresentInput,
+): Notification | null {
   // NotifyService#push_to_streaming_api! renders the notification without relationships (InlineRenderer), so a boost
   // it names shows its original's flags (PresentOptions.proper); an imported row can name one.
   return notificationById(db, viewer, id, { ...present, proper: true }, false, new Set());
@@ -582,7 +591,7 @@ function notificationById(
   db: Db,
   viewer: UserContext,
   id: string,
-  present: Present & Pick<PresentOptions, "proper">,
+  present: PresentInput & Pick<PresentOptions, "proper">,
   includeFiltered: boolean,
   fallback: ReadonlySet<string>,
 ): Notification | null {

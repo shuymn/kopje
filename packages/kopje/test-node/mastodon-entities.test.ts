@@ -83,7 +83,6 @@ const MAPPING: Record<string, Mapping> = {
 const ACCOUNT: Record<string, Exception> = {
   // No silencing or memorializing.
   ...accepted("MD-2", "limited", "memorial"),
-  ...open(1589, "collections", "feature_approval"),
   // Left out, as with e-mail subscriptions off.
   ...accepted("MD-3", "email_subscriptions"),
 };

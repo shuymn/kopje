@@ -9,7 +9,7 @@ import {
   storedMediaDescription,
   storedMediaMeta,
 } from "../platform/stored-bounds";
-import { type CredentialAccount, credentialAccount, type Present } from "./accounts";
+import { type CredentialAccount, credentialAccount, presentFor, type PresentInput } from "./accounts";
 import { actorSnapshot, recordActorUpdate } from "./actor-update";
 import { userMediaDeleteOperation, userReadOperation, userWriteOperation } from "./auth";
 import { allocateLocalId } from "./ids";
@@ -434,13 +434,13 @@ export function applyProfileImage(db: Db, accountId: string, kind: ProfileImage,
 // HeadersController#destroy): the account shows the default image again, the upload behind the removed one is doomed
 // as a replaced one is, and other servers receive the Update a profile edit sends. Answers the CredentialAccount.
 export const removeProfileImage = userMediaDeleteOperation<
-  { kind: ProfileImage; present: Present; now: number },
+  { kind: ProfileImage; present: PresentInput; now: number },
   CredentialAccount | null
 >((db, { kind, present, now }, { accountId }) => {
   const before = actorSnapshot(db, accountId);
   applyProfileImage(db, accountId, kind, null);
   recordActorUpdate(db, accountId, before, now);
-  return credentialAccount(db, accountId, present);
+  return credentialAccount(db, accountId, presentFor(present, accountId));
 });
 
 export type MediaChanges = { description?: string | undefined; focus?: { x: number; y: number } | undefined };

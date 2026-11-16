@@ -35,7 +35,7 @@ async function setup() {
     });
   const present = (id = h.users.alice.id) =>
     runInDurableObject(h.store, (_instance, state) =>
-      presentAccountById(new Db(state.storage.sql), id, { origin: ORIGIN }),
+      presentAccountById(new Db(state.storage.sql), id, { origin: ORIGIN, viewerId: null }),
     );
   return { ...h, codec, patch, present };
 }

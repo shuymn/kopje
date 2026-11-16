@@ -378,7 +378,7 @@ describe("moderation_warning: plans (RES-7)", () => {
           });
           return written;
         });
-        const account = presentAccountById(db, bob.id, PRESENT)!;
+        const account = presentAccountById(db, bob.id, { ...PRESENT, viewerId: null })!;
         expect(presentAccountWarning(db, id, account)).toMatchObject({ id, text: phase });
         return plans.map(({ query, plan }) => ({ query, plan }));
       });

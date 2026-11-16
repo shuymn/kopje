@@ -16,6 +16,8 @@ import {
   type PageQuery,
   type Present,
   presentAccountsWithin,
+  presentFor,
+  type PresentInput,
   routeAccountId,
 } from "./accounts";
 import { ANSWER_BYTES, jsonBytes } from "./answer-budget";
@@ -257,7 +259,7 @@ function mayFeature(db: Db, owner: string, member: string): boolean {
 // for an account not found; no collections when R45 refuses its owner. `owner`: the account's id, which the links name;
 // `full`: the page holds `limit` collections, so a next page may follow.
 export const accountCollections = optionalUserReadOperation<
-  { account: string; offset: number; limit: number; present: Present },
+  { account: string; offset: number; limit: number; present: PresentInput },
   { owner: string; collections: Collection[]; full: boolean } | null
 >((db, input, { accountId: viewer }) => {
   const owner = routeAccountId(db, input.account);
@@ -296,7 +298,7 @@ export type InCollectionsResult =
 // the same walk (at most IN_COLLECTIONS_MAX_OFFSET; past it the page is empty), the owner's availability tested on
 // those alone, outside the window's LIMIT. A page cut at its window links on from its last candidate.
 export const inCollections = optionalUserReadOperation<
-  { account: string; page: PageQuery; offset: number; present: Present },
+  { account: string; page: PageQuery; offset: number; present: PresentInput },
   InCollectionsResult
 >((db, input, { accountId: viewer }) => {
   if (viewer === null) {
@@ -389,7 +391,7 @@ function shown(db: Db, id: string, viewer: string | null): boolean {
 }
 
 // GET /api/v1/collections/:id: 404 unless R45 finds it, 403 unless it shows it to the viewer.
-export const showCollection = optionalUserReadOperation<{ id: string; present: Present }, ShowResult>(
+export const showCollection = optionalUserReadOperation<{ id: string; present: PresentInput }, ShowResult>(
   (db, input, { accountId: viewer }) => {
     const row = foundCollection(db, input.id);
     if (row === undefined) {
@@ -398,7 +400,7 @@ export const showCollection = optionalUserReadOperation<{ id: string; present: P
     if (!shown(db, row.id, viewer)) {
       return { status: "forbidden" };
     }
-    return { status: "ok", value: withAccounts(db, row, viewer, input.present) };
+    return { status: "ok", value: withAccounts(db, row, viewer, presentFor(input.present, viewer)) };
   },
 );
 
@@ -534,7 +536,7 @@ function ownView(db: Db, id: string, owner: string, origin: string): Collection 
 // before any is read (docs/mastodon-deviations.md, "Collections"). Every item of a local account is accepted, at
 // position 1 (CollectionItem#set_position reads no collection yet).
 export const createCollection = userWriteOperation<
-  CollectionFields & { accountIds: readonly string[]; now: number; present: Present },
+  CollectionFields & { accountIds: readonly string[]; now: number; present: PresentInput },
   CollectionResult
 >((db, input, { accountId: owner }) => {
   const requested = [...new Set(input.accountIds)];
@@ -646,7 +648,7 @@ function ownCollection(db: Db, id: string, viewer: string): CollectionRow | "not
 // PATCH and PUT /api/v1/collections/:id (UpdateCollectionService): what is sent changes, the rest stays; tag_name's
 // errors before the collection's validations; updated_at moves only when a value changes.
 export const updateCollection = userWriteOperation<
-  CollectionFields & { id: string; now: number; present: Present },
+  CollectionFields & { id: string; now: number; present: PresentInput },
   CollectionResult
 >((db, input, { accountId: viewer }) => {
   const row = ownCollection(db, input.id, viewer);
@@ -932,7 +934,7 @@ export function localCollectionId(url: string, origin: string): string | null {
 
 // Search with resolve=true of a local collection's URL (ResolveURLService#check_collection): the collection when R45
 // shows it to the viewer, as the viewer sees it; null otherwise.
-export const resolvedCollection = userReadOperation<{ id: string; present: Present }, Collection | null>(
+export const resolvedCollection = userReadOperation<{ id: string; present: PresentInput }, Collection | null>(
   (db, input, { accountId: viewer }) => {
     const row = foundCollection(db, input.id);
     return row === undefined || !shown(db, row.id, viewer)

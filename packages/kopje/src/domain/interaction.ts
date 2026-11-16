@@ -2,7 +2,14 @@ import type { Db } from "../db/sql";
 import { parseAddress } from "../platform/domain-name";
 import { httpUrl } from "../platform/http-url";
 import { followAccount } from "./account-actions";
-import { type Account, accountByAddress, presentAccountById, resolveAccountId } from "./accounts";
+import {
+  type Account,
+  accountByAddress,
+  type Present,
+  presentAccountById,
+  presentFor,
+  resolveAccountId,
+} from "./accounts";
 import { instanceDomainOf } from "./actors";
 import { availableSql, viewableStatusId } from "./audience";
 import { contextOf, userWriteOperation } from "./auth";
@@ -37,7 +44,7 @@ export type InteractionResult = { target: InteractionTarget; quotesDue: boolean 
 
 // A target on this instance: a local account by its address or profile URL, or a local status by its permalink if an
 // anonymous viewer may see it (pageStatus, VIS-4's read of the status page); none for anything else.
-function localTarget(db: Db, query: string, present: ResolveInput["present"]): StoredResolution {
+function localTarget(db: Db, query: string, present: Present): StoredResolution {
   const none: StoredResolution = { kind: "none" };
   const domain = instanceDomainOf(db);
   if (domain === null) {
@@ -74,10 +81,12 @@ function localTarget(db: Db, query: string, present: ResolveInput["present"]): S
 export const resolveInteraction = userWriteOperation.atStoreTime("storeNow")<ResolveInput, InteractionResult>((
   db,
   input,
+  { accountId },
 ) => {
+  const present = presentFor(input.present, accountId);
   const fetched = storeResolved(db, input, false);
   const stored =
-    fetched.kind === "none" && input.resolved.kind === "local" ? localTarget(db, input.query, input.present) : fetched;
+    fetched.kind === "none" && input.resolved.kind === "local" ? localTarget(db, input.query, present) : fetched;
   const notFound: InteractionResult = { target: { kind: "not_found" }, quotesDue: false };
   switch (stored.kind) {
     case "none":
@@ -85,7 +94,7 @@ export const resolveInteraction = userWriteOperation.atStoreTime("storeNow")<Res
     case "account": {
       const { id } = stored;
       const available = id !== undefined && db.first(`SELECT 1 AS ok WHERE ${availableSql("?1")}`, id) !== undefined;
-      const account = available ? presentAccountById(db, id, input.present) : undefined;
+      const account = available ? presentAccountById(db, id, present) : undefined;
       return account === undefined ? notFound : { target: { kind: "account", account }, quotesDue: false };
     }
     case "status": {
@@ -123,7 +132,7 @@ export const webFollow = userWriteOperation<WebFollowInput, WebFollowResult>((db
   const result = followAccount(db, { target: targetId, now: input.now }, accountId);
   const named = (outcome: FollowOutcome): WebFollowResult => ({
     outcome,
-    account: presentAccountById(db, targetId, input.present) ?? null,
+    account: presentAccountById(db, targetId, presentFor(input.present, accountId)) ?? null,
   });
   switch (result.status) {
     case "not_found":

@@ -1,7 +1,7 @@
 import { ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { CARD_PUBLIC_LINK_INDEX } from "../platform/stored-bounds";
-import { type Page, type PageQuery, type Present, routeAccountId } from "./accounts";
+import { type Page, type PageQuery, type PresentInput, routeAccountId } from "./accounts";
 import { admit, type Admitted, admittedPage, ARRAY_ANSWER_BYTES } from "./answer-budget";
 import {
   audienceSql,
@@ -128,7 +128,7 @@ function windowStatuses(
   rule: StatusRule,
   window: Window,
   cursor: Cursor,
-  present: Present,
+  present: PresentInput,
   and?: string,
   ...params: SqlStorageValue[]
 ): Page<Status> {
@@ -142,7 +142,7 @@ function windowStatusesWithin(
   rule: StatusRule,
   window: Window,
   cursor: Cursor,
-  present: Present,
+  present: PresentInput,
   admission: StatusAdmission,
   and?: string,
   ...params: SqlStorageValue[]
@@ -186,7 +186,7 @@ function presentedPage(
   ids: readonly VisibleStatusId[],
   keys: readonly string[],
   ascending: boolean,
-  present: Present,
+  present: PresentInput,
   admission: StatusAdmission = answerAdmission,
 ): Page<Status> {
   const shared = presentation(db, ids, { ...present, viewer });
@@ -288,7 +288,7 @@ function followedAuthorSql(author: string): string {
 // has no streams. A status in more than one stream is shown once. Mentions by accounts the viewer does not follow, or
 // in public, unlisted and private statuses, are never read, and neither are a hashtag's statuses that are not public.
 // The followed hashtags are capped (MAX_FOLLOWED_TAGS in tags.ts).
-export const homeTimeline = userReadOperation<{ page: PageQuery; present: Present }, Page<Status>>(
+export const homeTimeline = userReadOperation<{ page: PageQuery; present: PresentInput }, Page<Status>>(
   (db, { page, present }, _viewer, viewer) => {
     const cursor = statusPage(page);
     const and = streamBitsSql(followOptionsSql(FOLLOWED_REPLIES_SQL));
@@ -438,20 +438,21 @@ function repliesPolicySql(policy: RepliesPolicy, list: string): string {
 // and languages), with the list's replies_policy deciding which replies to others pass; exclusive does not matter here.
 // As home, a page reads one merged candidate window of each active member's statuses through statuses_feed
 // (listWindow), then applies the rule to it. Null when the list is not the viewer's.
-export const listTimeline = userReadOperation<{ id: string; page: PageQuery; present: Present }, Page<Status> | null>(
-  (db, { id, page, present }, _viewer, viewer) => {
-    const list = ownList(db, viewer.accountId, id);
-    if (list === undefined) {
-      return null;
-    }
-    const cursor = statusPage(page);
-    const and = followOptionsSql(repliesPolicySql(list.replies_policy, "?4"));
-    const window = listWindow(db, viewer, list.id, cursor);
-    // Only the policy `list` reads the list (?4).
-    const params = list.replies_policy === "list" ? [list.id] : [];
-    return windowStatuses(db, viewer, "homeFilter", window, cursor, present, and, ...params);
-  },
-);
+export const listTimeline = userReadOperation<
+  { id: string; page: PageQuery; present: PresentInput },
+  Page<Status> | null
+>((db, { id, page, present }, _viewer, viewer) => {
+  const list = ownList(db, viewer.accountId, id);
+  if (list === undefined) {
+    return null;
+  }
+  const cursor = statusPage(page);
+  const and = followOptionsSql(repliesPolicySql(list.replies_policy, "?4"));
+  const window = listWindow(db, viewer, list.id, cursor);
+  // Only the policy `list` reads the list (?4).
+  const params = list.replies_policy === "list" ? [list.id] : [];
+  return windowStatuses(db, viewer, "homeFilter", window, cursor, present, and, ...params);
+});
 
 // A list's candidate window, as homeWindow's, with a stream per active member; a member the rule rejects as a whole
 // has no stream.
@@ -543,7 +544,7 @@ export type PublicTimelineInput = {
   local: boolean;
   remote: boolean;
   onlyMedia: boolean;
-  present: Present;
+  present: PresentInput;
 };
 
 // Local and remote public statuses that are not boosts, and not replies except to the author's own statuses
@@ -788,7 +789,7 @@ function tagWindow(
   );
 }
 
-export type LinkTimelineInput = { url: string | null; page: PageQuery; present: Present };
+export type LinkTimelineInput = { url: string | null; page: PageQuery; present: PresentInput };
 
 // What the link timeline shows of a link's public copies beyond the list rule (Mastodon's LinkFeed): a public
 // original (publicConditions, local and remote alike; the live checks: an import's reblog_of_id is linked after its
@@ -828,7 +829,7 @@ export const linkTimeline = optionalUserReadOperation<LinkTimelineInput, Page<St
   return windowStatuses(db, viewer, "listable", window, cursor, input.present, LINK_FEED_SQL);
 });
 
-export type StatusRepliesInput = { id: string; page: PageQuery; present: Present };
+export type StatusRepliesInput = { id: string; page: PageQuery; present: PresentInput };
 
 // The direct replies of the status `id` that the list rule passes for the viewer, oldest first (a status page's Replies
 // tab): with no cursor or `min_id`, ascending from the cursor; with `max_id`, descending below it,
@@ -871,7 +872,7 @@ export type AccountStatusesInput = {
   excludeDirect: boolean;
   pinned: boolean;
   tagged: string | null;
-  present: Present;
+  present: PresentInput;
 };
 
 // An account's statuses as the viewer may see them (Mastodon's Status.permitted_for): nothing when either blocks the
@@ -1049,7 +1050,7 @@ export function accountStatusIds(db: Db, viewer: ViewerContext, accountId: strin
 // a window of readWindow(limit) of the viewer's edges from the cursor (bookmarks_account, favourites_account), then
 // applies the rule to their statuses.
 function edgeList(table: "bookmarks" | "favourites") {
-  return userReadOperation<{ page: PageQuery; present: Present }, Page<Status>>(
+  return userReadOperation<{ page: PageQuery; present: PresentInput }, Page<Status>>(
     (db, { page, present }, _viewer, viewer) => {
       const { accountId, now } = viewer;
       const ascending = page.minId !== undefined;

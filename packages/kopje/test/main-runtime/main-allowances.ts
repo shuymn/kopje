@@ -13,6 +13,16 @@ export const ROW_ALLOWANCES: Readonly<Record<string, { readonly rows: number; re
   },
 };
 
+// The statements the current flows run that main's never ran, by the current statement's id, each with its reason: no
+// rewrite of one of main's, so the witnesses run it as it is on both sides, as often as recorded, and pair the other
+// statements in order.
+export const ADDED_STATEMENTS: Readonly<Record<string, { readonly reason: string }>> = {
+  // featureApprovalReads (src/domain/audience.ts).
+  b67cdfa213ad6a9c: {
+    reason: "#1589 D16: feature_approval.current_user, one read per chunk of the accounts presented to a viewer",
+  },
+};
+
 // The leading parameters main's statement takes where the rewrite binds more: main's text runs with those alone.
 export const MAIN_PARAMETERS: Readonly<Record<string, { readonly count: number; readonly reason: string }>> = {
   // notificationPolicySql (src/domain/audience.ts).

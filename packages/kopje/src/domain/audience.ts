@@ -1314,16 +1314,60 @@ export function collectionItemShownSql(i: string, c: string, viewer: string): st
 		AND (${viewer} IS NULL OR NOT ${blocksSql(viewer, `${i}.account_id`)}))`;
 }
 
-// R45 (AccountPolicy#feature?, Account#featureable_by?): whether `owner` may feature the account `member`: the member
-// is available, neither blocks the other, and the member is local, discoverable, and unlocked, followed (accepted) by
-// the owner, or the owner itself. A remote member has no policy Kopje reads yet, so it is refused (Mastodon's
-// `missing`).
+// R45 (Account#feature_policy_for_account, feature_approval.current_user): the answer to `viewer` (NULL: none signed
+// in) of whether it may feature the account row `a`. First Mastodon's policy in its order: 'denied' for no viewer; a
+// local account 'denied' when not discoverable (to itself too), else 'denied' when locked and the viewer neither
+// follows it (accepted) nor is it, else 'automatic'; a remote account 'missing', as Kopje stores no remote policy yet
+// (Mastodon answers 'automatic' to the account itself first, which a local viewer never is). Then only ever to
+// 'denied': when either blocks the other or the account is unavailable (R1), the refusals AccountPolicy#feature? adds
+// (docs/mastodon-deviations.md, "Collections"), so 'missing' stays reachable otherwise.
+export function featureApprovalSql(a: string, viewer: string): string {
+  return `CASE WHEN ${viewer} IS NULL OR NOT ${availableSql(`${a}.id`)} OR ${blocksSql(`${a}.id`, viewer)}
+			OR ${blocksSql(viewer, `${a}.id`)} THEN 'denied'
+		WHEN ${a}.domain IS NOT NULL THEN 'missing'
+		WHEN ${a}.discoverable IS NOT 1 THEN 'denied'
+		WHEN ${a}.locked = 1 AND ${a}.id <> ${viewer} AND NOT EXISTS (SELECT 1 FROM main.follows pff
+			WHERE pff.account_id = ${viewer} AND pff.target_account_id = ${a}.id AND pff.state = 'accepted') THEN 'denied'
+		ELSE 'automatic' END`;
+}
+
+export type FeatureApproval = "automatic" | "manual" | "unknown" | "missing" | "denied";
+
+// The viewer ?2's answer for an account: its id and one of five words (at most 9 bytes, 'automatic').
+export const FEATURE_APPROVAL_COLUMNS = fixedColumns(
+  { id: "a.id", current_user: featureApprovalSql("a", "?2") },
+  { id: 18, current_user: 9 },
+);
+
+// The answers of featureApprovalSql to one viewer (null: none signed in, every answer 'denied' without a read).
+export type FeatureApprovalReads = {
+  // One row per account, in no order: one statement, the accounts by their key.
+  of(db: Db, accountIds: readonly string[]): Map<string, FeatureApproval>;
+};
+
+export function featureApprovalReads(viewerId: string | null): FeatureApprovalReads {
+  return {
+    of(db, accountIds) {
+      if (viewerId === null || accountIds.length === 0) {
+        return new Map();
+      }
+      const rows = db.all<{ id: string; current_user: FeatureApproval }>(
+        `SELECT ${selectSql(FEATURE_APPROVAL_COLUMNS.columns)} FROM main.accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
+				WHERE a.id IN (SELECT value FROM json_each(?1))`,
+        JSON.stringify(accountIds),
+        viewerId,
+      );
+      return new Map(rows.map((row) => [row.id, row.current_user]));
+    },
+  };
+}
+
+// R45 (AccountPolicy#feature?, Account#featureable_by?): whether `owner` may feature the account `member`: the answer
+// to the owner is 'automatic' or 'manual' (featureApprovalSql). A remote member answers 'missing' until Kopje reads
+// remote policies, so it is refused.
 export function mayFeatureSql(owner: string, member: string): string {
-  return `(${availableSql(member)} AND NOT ${blocksSql(owner, member)} AND NOT ${blocksSql(member, owner)}
-		AND EXISTS (SELECT 1 FROM main.accounts pfm INDEXED BY ${ACCOUNTS_ID_INDEX}
-			WHERE pfm.id = ${member} AND pfm.domain IS NULL AND pfm.discoverable = 1
-				AND (pfm.id = ${owner} OR pfm.locked = 0 OR EXISTS (SELECT 1 FROM main.follows pff
-					WHERE pff.account_id = ${owner} AND pff.target_account_id = ${member} AND pff.state = 'accepted'))))`;
+  return `coalesce((SELECT ${featureApprovalSql("pfm", owner)} FROM main.accounts pfm INDEXED BY ${ACCOUNTS_ID_INDEX}
+		WHERE pfm.id = ${member}) IN ('automatic', 'manual'), 0)`;
 }
 
 // R45 (Account#featured_in_collections, AccountPolicy#index_featured_in_collections?): whether the item `i` of the

@@ -676,7 +676,12 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
 - Creating an 11th collection answers Mastodon's 422 with the message "Collections are too many, no more than 10 are
   allowed", where Mastodon's message is a missing-translation text (it has no English text for that error). Accepted,
   2026-11-16.
-- Only local accounts can be featured yet: a remote account answers 403, as one that refuses. Tracked by #1589.
+- Only local accounts can be featured yet: a remote account answers 403, as one that refuses, and its
+  `feature_approval` is `[]`, `[]` and `missing`. Tracked by #1589.
+- An account's `feature_approval.current_user` is `denied` when either account blocks the other or the account is
+  unavailable, where Mastodon may answer `automatic` (or `manual`) and then refuse the add; every other answer is
+  Mastodon's. The instance's contact account answers `denied` (no viewer), where Mastodon's cached instance answer
+  carries whichever viewer's answer filled the cache. Accepted, 2026-11-16.
 - A collection's page (`/collections/:id`) is served for a local collection only (a remote collection's `url` is its
   own server's), and the profile pages do not list an account's collections, where Mastodon's web client does.
   Accepted, 2026-11-16.
@@ -1124,12 +1129,12 @@ Feed streams (the `public*` and `hashtag*` streams of `/api/v1/streaming`; Masto
 streaming server's per-connection filter; R33 in [visibility.md](visibility.md)):
 
 - A status on `public*` and `hashtag*` is presented as REST presents it to the subscriber: its `favourited`,
-  `reblogged`, `muted`, `bookmarked`, `pinned`, poll `voted` and `own_votes`, quote approval, quote state and card
-  `missing_attribution` are the subscriber's, and `filtered` follows REST's filters (keyword and status filters, every
-  match). Mastodon renders these streams once with no viewer (the flags and votes absent, quote approval `denied`,
-  quotes judged for a signed-out reader) and adds `filtered` from keyword filters alone; Mastodon's web client, which
-  replaces the status on `status.update`, then shows the subscriber's favourite and bookmark as unset (Elk replaces the
-  text and keeps its marks).
+  `reblogged`, `muted`, `bookmarked`, `pinned`, poll `voted` and `own_votes`, quote approval, quote state, card
+  `missing_attribution` and the accounts' `feature_approval.current_user` are the subscriber's, and `filtered` follows
+  REST's filters (keyword and status filters, every match). Mastodon renders these streams once with no viewer (the
+  flags and votes absent, quote approval and feature approval `denied`, quotes judged for a signed-out reader) and adds
+  `filtered` from keyword filters alone; Mastodon's web client, which replaces the status on `status.update`, then shows
+  the subscriber's favourite and bookmark as unset (Elk replaces the text and keeps its marks).
   Kopje's payload is what the subscriber's next read shows (`test/streaming/public.test.ts`). Accepted, 2026-11-16.
 
 Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; the keys not served are MD-2):

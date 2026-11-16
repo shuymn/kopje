@@ -11,7 +11,7 @@ import { parseAddress } from "../platform/domain-name";
 import { sameOrigin } from "../platform/http-url";
 import { iso } from "../platform/iso-time";
 import { STATUS_EMOJIS_BYTES, storedMediaMeta, storedTime } from "../platform/stored-bounds";
-import { type Account, type Present, presentAccountById } from "./accounts";
+import { type Account, presentAccountById, presentFor, type PresentInput } from "./accounts";
 import {
   availableSql,
   domainBlocksSql,
@@ -848,7 +848,7 @@ export type PollRefreshInput = {
   now: number;
   storeNow: number;
   origin: string;
-  present: Present;
+  present: PresentInput;
 };
 
 // poll: the poll as the reader sees it now, null when its status is gone or no longer visible to them (404).
@@ -1005,7 +1005,7 @@ export type ResolveInput = {
   now: number;
   storeNow: number;
   origin: string;
-  present: Present;
+  present: PresentInput;
 };
 
 // quotesDue: the status found has a quote whose verification is due (the Worker asks the Queue for a job round).
@@ -1138,7 +1138,7 @@ export const resolveSearch = userWriteOperation.atStoreTime("storeNow")<ResolveI
   const account = (id: string | undefined): ResolveResult => {
     const findable =
       id !== undefined && db.first(`SELECT 1 AS found WHERE ${findableBySql("?2", "?1")}`, accountId, id) !== undefined;
-    const found = findable ? presentAccountById(db, id, input.present) : undefined;
+    const found = findable ? presentAccountById(db, id, presentFor(input.present, accountId)) : undefined;
     return { accounts: found === undefined ? [] : [found], statuses: [] };
   };
   const status = (id: string | undefined): ResolveResult => {

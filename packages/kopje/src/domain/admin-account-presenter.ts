@@ -1,6 +1,6 @@
 import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
-import { type Account, accountsOf, type Present } from "./accounts";
+import { type Account, accountsOf, presentFor, type PresentInput } from "./accounts";
 import { EVERYONE_ROLE, OWNER_ROLE, type Role } from "./auth";
 
 // The Admin::Account entity, for admin-accounts.ts and the reports it is nested in (reports.ts).
@@ -43,7 +43,7 @@ export function* adminAccountStream(
   db: Db,
   ids: readonly string[],
   adminId: string,
-  present: Present,
+  present: PresentInput,
   chunk = ADMIN_ACCOUNT_CHUNK,
 ): Generator<AdminAccount | undefined, undefined> {
   for (let next = 0; next < ids.length; next += chunk) {
@@ -57,7 +57,7 @@ export function* adminAccountStream(
         )
         .map((row) => [row.id, row]),
     );
-    const accounts = accountsOf(db, slice, present, chunk);
+    const accounts = accountsOf(db, slice, presentFor(present, adminId), chunk);
     for (const id of slice) {
       const account = accounts.next().value;
       const row = rows.get(id);

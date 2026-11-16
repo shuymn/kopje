@@ -8,7 +8,8 @@ import {
   type PageQuery,
   type PartialAccount,
   partialAccountsOf,
-  type Present,
+  presentFor,
+  type PresentInput,
 } from "./accounts";
 import { adminAccountIdOnce } from "./admin-authority";
 import { admittedPage, ANSWER_BYTES, ARRAY_ANSWER_BYTES, firstUses, jsonBytes } from "./answer-budget";
@@ -405,7 +406,7 @@ function admitGroups(
   groups: readonly Found[],
   range: Range | null,
   statusOf: (id: string) => Status | undefined,
-  options: { expandAccounts: ExpandAccounts; present: Present; fallback: ReadonlySet<string> },
+  options: { expandAccounts: ExpandAccounts; present: PresentInput; fallback: ReadonlySet<string> },
   budget: number,
   work: GroupWork,
   limits: Limits,
@@ -453,7 +454,7 @@ function admitGroups(
     const wholeIds = partialMode
       ? sampled.slice(0, 1).filter((id) => !admitted.accounts.has(id))
       : unknown.filter((id) => !admitted.accounts.has(id));
-    const presented = accountsOf(db, wholeIds, options.present, SAMPLE_ACCOUNTS);
+    const presented = accountsOf(db, wholeIds, presentFor(options.present, viewer.accountId), SAMPLE_ACCOUNTS);
     for (const id of wholeIds) {
       const account = presented.next().value;
       if (account !== undefined) {
@@ -462,7 +463,10 @@ function admitGroups(
     }
     const samples = partialMode ? sampled : sampleIds.filter((id) => admitted.accounts.has(id) || whole.has(id));
     const status = first.status_id === null ? undefined : statusOf(first.status_id);
-    const report = first.report_id === null ? undefined : presentReport(db, first.report_id, options.present);
+    const report =
+      first.report_id === null
+        ? undefined
+        : presentReport(db, first.report_id, presentFor(options.present, viewer.accountId));
     // An ungrouped notification's one sample is whole in either mode, and its warning reuses it.
     const sample = samples[0] === undefined ? undefined : (whole.get(samples[0]) ?? admitted.accounts.get(samples[0]));
     const warning = warningOf(db, first, viewer.accountId, sample);
@@ -583,7 +587,7 @@ export type ListGroupedInput = {
   expandAccounts: ExpandAccounts;
   // The types that carry a fallback (notification-fallback.ts fallbackTypes); none when left out.
   fallbackTypes?: string[];
-  present: Present;
+  present: PresentInput;
 };
 
 // A page of groups, with the cursors of its Link header: next (max_id) and prev (min_id), both whenever the page found
@@ -803,7 +807,7 @@ function firstOfGroup(db: Db, viewer: UserContext, groupKey: string): Shown | un
 // GET /api/v2/notifications/:group_key: the group with its shown notifications among its newest GROUP_COUNT and the
 // one firstOfGroup found (membersOf), newest first, without page fields; null when firstOfGroup finds none.
 export const getNotificationGroup = userReadOperation<
-  { groupKey: string; present: Present; fallbackTypes?: string[] },
+  { groupKey: string; present: PresentInput; fallbackTypes?: string[] },
   GroupedNotifications | null
 >((db, { groupKey, present, fallbackTypes }, _viewer, viewer) => {
   const first = firstOfGroup(db, viewer, groupKey);
@@ -827,7 +831,7 @@ export const getNotificationGroup = userReadOperation<
 // by notification id with max_id and since_id (Notifications::AccountsController, which reads no min_id and no
 // `ungrouped-` key). A page reads a window of readWindow(limit) of the group's notifications from the cursor.
 export const notificationGroupAccounts = userReadOperation<
-  { groupKey: string; page: PageQuery; present: Present },
+  { groupKey: string; page: PageQuery; present: PresentInput },
   Page<Account>
 >((db, { groupKey, page, present }, _viewer, viewer) => {
   const size = readWindow(page.limit);
@@ -852,7 +856,7 @@ export const notificationGroupAccounts = userReadOperation<
       admitAccounts(
         db,
         traversal.map((row) => row.from_account_id),
-        present,
+        presentFor(present, viewer.accountId),
         ARRAY_ANSWER_BYTES,
         true,
       ),

@@ -484,22 +484,36 @@ export class PolicyModel {
     );
   }
 
-  // R45: the owner may feature the member when the member is available, neither blocks the other, and the member is
-  // local, discoverable, and unlocked, followed (accepted) by the owner, or the owner itself. A remote member is refused.
+  // R45 (feature_approval.current_user): the answer to `viewer` for featuring `x`. Mastodon's policy in its order (no
+  // viewer: denied; a local account: denied unless discoverable, then denied while locked unless the viewer follows it
+  // or is it, else automatic; a remote one: missing, no policy being stored), then denied when either blocks the other
+  // or `x` is unavailable.
+  featureApproval(
+    x: number,
+    viewer: Viewer,
+    discoverable: (x: number) => boolean,
+    locked: (x: number) => boolean,
+  ): "automatic" | "missing" | "denied" {
+    if (viewer === null || !this.available(x) || this.blocks(x, viewer) || this.blocks(viewer, x)) {
+      return "denied";
+    }
+    if (!this.account(x).local) {
+      return "missing";
+    }
+    if (!discoverable(x)) {
+      return "denied";
+    }
+    return locked(x) && x !== viewer && !this.follows(viewer, x) ? "denied" : "automatic";
+  }
+
+  // R45: the owner may feature the member when the member's answer to it is automatic or manual.
   mayFeature(
     owner: number,
     member: number,
     discoverable: (x: number) => boolean,
     locked: (x: number) => boolean,
   ): boolean {
-    return (
-      this.available(member) &&
-      !this.blocks(owner, member) &&
-      !this.blocks(member, owner) &&
-      this.account(member).local &&
-      discoverable(member) &&
-      (member === owner || !locked(member) || this.follows(owner, member))
-    );
+    return ["automatic", "manual"].includes(this.featureApproval(member, owner, discoverable, locked));
   }
 
   // R45: an item lists its collection among those featuring the viewer when it is the viewer's, in any state, and the

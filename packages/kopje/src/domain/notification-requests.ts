@@ -1,7 +1,7 @@
 import { STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
-import { type Account, accountsOf, type Page, type PageQuery, type Present } from "./accounts";
+import { type Account, accountsOf, type Page, type PageQuery, presentFor, type PresentInput } from "./accounts";
 import { admit, admittedPage, ARRAY_ANSWER_BYTES, firstUses } from "./answer-budget";
 import {
   availableSql,
@@ -146,7 +146,7 @@ function* requestStream(
   db: Db,
   viewer: { accountId: string; now: string },
   rows: readonly RequestRow[],
-  present: Present & Pick<PresentOptions, "proper">,
+  present: PresentInput & Pick<PresentOptions, "proper">,
 ): Generator<NotificationRequest | undefined, undefined> {
   // The last status of each request whose mention the notification rule still shows the viewer (R15 at the time of
   // the read, which includes R2): not after the viewer blocks or mutes its sender, or one it mentions.
@@ -174,7 +174,10 @@ function* requestStream(
     statusStream(db, presentation(db, statusIds, { ...present, viewer }), statusIds),
   );
   const accountIds = [...new Set(rows.map((row) => row.from_account_id))];
-  const accountOf = firstUses(accountIds, accountsOf(db, accountIds, present, NOTIFICATION_CHUNK));
+  const accountOf = firstUses(
+    accountIds,
+    accountsOf(db, accountIds, presentFor(present, viewer.accountId), NOTIFICATION_CHUNK),
+  );
   for (const row of rows) {
     const account = accountOf(row.from_account_id);
     yield account === undefined
@@ -197,7 +200,7 @@ function* requestStream(
 // first, paged by id (to_a_paginated_by_id; min_id reads up from it). A page reads a window of readWindow(limit) of the
 // viewer's requests from the cursor (notification_requests_account, windows.ts), then keeps those of available senders.
 export const listNotificationRequests = userReadOperation<
-  { page: PageQuery; present: Present },
+  { page: PageQuery; present: PresentInput },
   Page<NotificationRequest>
 >((db, { page, present }, _viewer, viewer) => {
   const ascending = page.minId !== undefined;
@@ -236,21 +239,22 @@ export const listNotificationRequests = userReadOperation<
 // GET /api/v1/notifications/requests/:id: one of the viewer's requests, whoever its sender (Mastodon's find has no
 // without_suspended); anyone else's is not found. Rendered without relationships (the list passes them), so a boost as
 // its last status shows its original's flags (PresentOptions.proper).
-export const getNotificationRequest = userReadOperation<{ id: string; present: Present }, NotificationRequest | null>(
-  (db, { id, present }, _viewer, viewer) => {
-    if (!isIntegerKey(id)) {
-      return null;
-    }
-    const row = db.first<RequestRow>(
-      `SELECT ${REQUEST_COLUMNS} FROM notification_requests r WHERE r.account_id = ?1 AND r.id = CAST(?2 AS INTEGER)`,
-      viewer.accountId,
-      id,
-    );
-    return row === undefined
-      ? null
-      : (requestStream(db, viewer, [row], { ...present, proper: true }).next().value ?? null);
-  },
-);
+export const getNotificationRequest = userReadOperation<
+  { id: string; present: PresentInput },
+  NotificationRequest | null
+>((db, { id, present }, _viewer, viewer) => {
+  if (!isIntegerKey(id)) {
+    return null;
+  }
+  const row = db.first<RequestRow>(
+    `SELECT ${REQUEST_COLUMNS} FROM notification_requests r WHERE r.account_id = ?1 AND r.id = CAST(?2 AS INTEGER)`,
+    viewer.accountId,
+    id,
+  );
+  return row === undefined
+    ? null
+    : (requestStream(db, viewer, [row], { ...present, proper: true }).next().value ?? null);
+});
 
 // id and cursor (a notification id): read as TEXT and bound back with CAST (DATA-6: an imported id may pass 2^53).
 type Job = { id: string; account_id: string; from_account_id: string; kind: "accept" | "dismiss"; cursor: string };

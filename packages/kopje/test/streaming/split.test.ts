@@ -942,7 +942,7 @@ describe("the turn's payload budget", () => {
       expect(leftAfterSent).toBeLessThan(skippedPayload);
       const charged = TURN_BUDGET.bytes - leftAfterSent + skippedPayload;
       expect(charged).toBeGreaterThan(TURN_BUDGET.bytes);
-      expect(charged).toBeLessThanOrEqual(18_806_024);
+      expect(charged).toBeLessThanOrEqual(18_818_204);
       await takeAll(inbox);
       await turn(h);
       await echo(inbox);

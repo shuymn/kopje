@@ -811,7 +811,7 @@ describe("the cached images of a chunk of accounts (RES-3)", () => {
           }
         }),
       );
-      const presented = [...accountsOf(db, ids, { origin: ORIGIN })];
+      const presented = [...accountsOf(db, ids, { origin: ORIGIN, viewerId: null })];
       return { statements, presented: presented.filter((a) => a?.avatar.includes("/media/r/")).length };
     });
     const bound = 2 * ANSWER_CHUNK * CACHED_IMAGE_KINDS.length * CACHED_IMAGE_BYTES;

@@ -3,7 +3,7 @@ import { MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
 import { isoTimeSql, storedApplicationId } from "../platform/stored-bounds";
-import type { Page, PageQuery } from "./accounts";
+import { type Page, type PageQuery, presentFor } from "./accounts";
 import { admit, admittedPage, ARRAY_ANSWER_BYTES } from "./answer-budget";
 import {
   type ApiVisibility,
@@ -364,7 +364,7 @@ export const postStatus = userWriteOperation<ScheduleInput, ScheduleResult>((db,
   // As PostStatusService#schedule_status!: allowed_mentions is kept in the params and checked at publication.
   const prepared = preparePost(db, accountId, { ...post, allowedMentions: undefined }, null);
   if (!isPrepared(prepared)) {
-    return refusedPost(db, prepared, input.present);
+    return refusedPost(db, prepared, presentFor(input.present, accountId));
   }
   const errors = scheduleErrors(db, accountId, scheduledAt, input.now, null);
   if (errors.length > 0) {

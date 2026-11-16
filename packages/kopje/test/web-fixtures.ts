@@ -46,6 +46,7 @@ export function account(fields: Partial<Account> = {}): Account {
     show_featured: true,
     emojis: [],
     fields: [],
+    feature_approval: { automatic: ["public"], manual: [], current_user: "denied" },
     ...fields,
   };
 }

@@ -251,7 +251,7 @@ function target(db: Db, id: string, now: number): TargetRow | undefined {
 }
 
 function contentOf(db: Db, row: TargetRow, origin: string): PushContent {
-  const from = presentAccountById(db, row.from_account_id, { origin });
+  const from = presentAccountById(db, row.from_account_id, { origin, viewerId: null });
   const name = from === undefined ? "" : from.display_name === "" ? from.username : from.display_name;
   // The status's content warning, else its text; without a status, the sender's note. Stored HTML is sanitized.
   const spoiler = row.spoiler_text ?? "";

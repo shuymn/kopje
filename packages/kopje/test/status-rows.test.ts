@@ -575,11 +575,12 @@ describe("the hydrate queries (RES-3)", () => {
         `${counts.plainSum} without emoji (${counts.plainPlanned} as planned) in ${counts.plain.chunks} chunk of ${counts.plain.queries} queries`,
     );
     expect(counts.shown).toEqual(Array.from({ length: 40 }, () => 3));
-    // Without emoji: one chunk, 13 queries for the statuses (the window of R among them) and one for their accounts'
-    // cached profile images (cachedImagesOf, one a chunk).
+    // Without emoji: one chunk, 13 queries for the statuses (the window of R among them) and one each for their
+    // accounts' cached profile images and the viewer's feature_approval answers (cachedImagesOf and
+    // featureApprovalReads, one a chunk each).
     expect(counts.plainPlanned).toBeLessThanOrEqual(PAGE_CHUNKS.target);
     expect([counts.plain.windows, counts.plain.chunks, counts.plainPacked]).toEqual([1, 1, 1]);
-    expect(counts.plain.queries).toBeLessThanOrEqual(13 + 1);
+    expect(counts.plain.queries).toBeLessThanOrEqual(13 + 2);
     // With them: the chunks its R packs, each running the plain chunk's queries but its window.
     expect(counts.page.windows).toBe(1);
     expect(counts.page.chunks).toBe(counts.packed);
@@ -957,10 +958,11 @@ describe("query ceilings (RES-3)", () => {
     await sql(h.store, "DELETE FROM filter_keywords");
     const counted = await countedContext(h.store, f, await sha256Hex(f.token));
     // 200 candidates of a few KB of R each: one window of R per 80, each packed into chunks within PAGE_CHUNKS'
-    // target, each about 13 queries (the cards' among them), and one a chunk for its accounts' cached profile images.
+    // target, each about 13 queries (the cards' among them), and two a chunk for its accounts' cached profile images
+    // and the viewer's feature_approval answers.
     expect(counted.windows).toBe(3);
     expect(counted.chunks).toBe(packed(counted.bounds));
-    expect(counted.queries).toBeLessThanOrEqual(65 + counted.chunks);
+    expect(counted.queries).toBeLessThanOrEqual(65 + 2 * counted.chunks);
     console.info(`Context of 200: ${counted.chunks} chunks, ${counted.queries} queries`);
   }, 120_000);
 });
@@ -1013,12 +1015,13 @@ describe("query ceilings of grouped notifications (RES-3)", () => {
         groups: (answer.notification_groups as unknown[]).length,
         // The presenter's reads but its authors': R and the hydrate queries, each by its map's select list (the
         // sample accounts of each group are read by the account map too, apart from the statuses, each read with
-        // its cached profile images).
+        // its cached profile images and the viewer's feature_approval answers).
         queries: reads.filter(
           (query) =>
             query === statusRowBoundSql() ||
             Object.entries(hydrateQueries()).some(
-              ([name, columns]) => name !== "accounts" && name !== "cachedImages" && query.includes(selectSql(columns)),
+              ([name, columns]) =>
+                !["accounts", "cachedImages", "featureApprovals"].includes(name) && query.includes(selectSql(columns)),
             ),
         ).length,
         ...planCounts(reads),
