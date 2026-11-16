@@ -347,6 +347,21 @@ const forms = {
     { extra: "https://other.example/ns#extra" },
   ]),
   "an inline prefix named https": create(note(), [...STATUS_CONTEXT, { https: "https://other.example/" }]),
+
+  // An embedded actor whose inbox is [null] (#1673): not blank as received, blank as compacted.
+  "Update(Person) whose embedded inbox is [null]": signed(
+    [AS, SEC],
+    activity("Update", {
+      to: [PUBLIC],
+      object: { id: BOB, type: "Person", preferredUsername: "bob", name: "Bob renamed", inbox: [null] },
+    }),
+  ),
+  // The patch stops at a member whose array the compaction shortened (a null left out), so the members after it in
+  // the same object stay as the compaction left them.
+  "a null in an array before a one-element array": signed(
+    [AS, SEC],
+    activity("Follow", { to: [null], object: [ALICE] }),
+  ),
 };
 
 // The same bodies without a signature: read as received by both.

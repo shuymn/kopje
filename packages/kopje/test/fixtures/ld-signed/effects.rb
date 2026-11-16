@@ -9,11 +9,12 @@
 # Nothing is kept: each entry runs in its own transaction, rolled back, with Sidekiq's jobs held in memory and dropped
 # (what they would do later, notifications and fetches, is not observed). The entries' local references (kopje.test)
 # are rewritten to records made inside that transaction: the local account, its statuses local-1 and local-2, and its
-# follow request to bob (follows/1); bob's own statuses (deleted, pinned, quoting), his follow of the local account
-# (follows/14) and bob2 are made there too. The output lists, per entry, what bob's activity left: statuses
-# (text, spoiler, sensitive, reply, poll, mentions, visibility), follows and follow requests, favourites, blocks,
-# reblogs, pins, reports, quotes, removed statuses, follows and follow requests, and any error the job would raise
-# (Sidekiq then retries it). effects.json is this over forms.json's entries, run on Mastodon 4.7.5 as alice.
+# follow request to bob (follows/1); bob's own statuses (deleted, pinned, quoting), bob2 and, for an Undo, his follow
+# of the local account (follows/14) are made there too. The output lists, per entry, what bob's activity left: statuses
+# (text, spoiler, sensitive, reply, poll, mentions, visibility), his display name, follows and follow requests,
+# favourites, blocks, reblogs, pins, reports, quotes, removed statuses, follows and follow requests, and any error the
+# job would raise (Sidekiq then retries it). effects.json is this over forms.json's entries, run on Mastodon 4.7.5 as
+# alice.
 
 require 'sidekiq/testing'
 Sidekiq::Testing.fake!
@@ -65,6 +66,7 @@ def effect(bob, before) # rubocop:disable Metrics/AbcSize
       { status: q.status && uri(q.status), state: q.state }
     end,
     moved_to: bob.reload.moved_to_account&.acct,
+    display_name: bob.display_name.presence,
   }.reject { |_, v| v.nil? || v == [] || v == 0 }
 end
 
@@ -83,7 +85,8 @@ results = entries.map do |entry|
     pinned = remote_status(bob, 'pinned')
     quoting = remote_status(bob, 'quoting')
     Quote.create!(account: bob, status: quoting, quoted_status: local1, quoted_account: local, state: :pending)
-    Follow.create!(account: bob, target_account: local, uri: "#{bob.uri}/follows/14")
+    undo = entry['name'].start_with?('Undo')
+    Follow.create!(account: bob, target_account: local, uri: "#{bob.uri}/follows/14") if undo
     StatusPin.create!(account: bob, status: pinned) if entry['name'].start_with?('Remove')
     tag = ActivityPub::TagManager.instance
     body = JSON.generate(entry['received'])

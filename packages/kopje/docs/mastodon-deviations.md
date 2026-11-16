@@ -505,9 +505,9 @@ Accounts (the `Account` and credential account entities):
   "an inbox move sent only by an embedded actor", "an Update(Person) that embeds no actor"). Reason: a holder of a
   still-trusted key could otherwise renew its trust and move the actor's deliveries without a fetch (ID-1 in
   `docs/threat-model.md`). An embedded actor Kopje cannot read applies nothing, as Mastodon drops it. An
-  `Update(Person)` that carries an LD signature (a `signature` object) is read as received, where Mastodon reads its
-  compaction under `full_context` (`process_activity_service.rb:23-38`), so an `inbox` given only by its full IRI is
-  refused and `[null]` taken, where Mastodon does the opposite (#1680). Accepted, 2026-11-16.
+  `Update(Person)` that carries an LD signature is read as received (Reading inbound activities, below): an embedded
+  actor whose `inbox` is `[null]` is read, where Mastodon's reading makes it `[]` and drops the update (#1680).
+  Accepted, 2026-11-16.
 - The account `moved` nests is a bounded projection, not the full account: its identity, counts, flags, display
   settings and images, `note`, `avatar_description` and `header_description` `''` and `fields` `[]`, the display name
   cut at 100 code points, URLs and `uri` read as unset past 512 bytes, and only the emojis its display name references
@@ -1309,10 +1309,13 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   `sensitive: [true]` is read as false, where Mastodon marks the status (so such media are shown unmarked); an
   `inReplyTo` given so is read as absent, where Mastodon's job raises and stores nothing; an `object`, `target` or
   `instrument` given so is refused, and an `Undo`'s or a `Reject`'s read as absent, where Mastodon's job raises too;
-  a single poll option is a poll in both. Compacting would add JSON-LD processing to every signed activity before its
-  HTTP signature is verified, and its readers would read a form other than the one the author proof verifies. This is
-  weighed again when a sender is seen writing one of these forms, or when the fixtures re-captured at a new reference
-  release no longer read the same. Accepted, 2026-11-16.
+  a single poll option is a poll in both. The patch cannot put back an array the compaction shortened (a `null` it
+  left out): an embedded actor's `inbox: [null]` is read, where Mastodon's `[]` drops the update. And it stops there,
+  so the members after it in the same object keep the compaction's single values: an `object` given as a one-element
+  array after `to: [null]` is refused, where Mastodon applies the activity. Compacting would add JSON-LD processing to
+  every signed activity before its HTTP signature is verified, and its readers would read a form other than the one
+  the author proof verifies. This is weighed again when a sender is seen writing one of these forms, or when the
+  fixtures re-captured at a new reference release no longer read the same. Accepted, 2026-11-16.
 - An activity that carries a Linked Data signature is read only where its literal JSON is what Mastodon reads (its
   compaction, patched as above), and is otherwise ignored (answered 202): its contexts must give each ActivityStreams
   term and each property Mastodon's `full_context` defines that context's meaning, give no other property one of those

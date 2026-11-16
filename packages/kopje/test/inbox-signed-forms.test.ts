@@ -264,6 +264,13 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       expect(applied(name)).toEqual({ name, effect: LIKED });
     });
 
+    it("an object as a one-element array after a member the compaction shortened: the patch stops before it", () => {
+      const name = "a null in an array before a one-element array";
+      expect(kopje(form(name))).toEqual({ ok: false, reason: "unsupported" });
+      expect(mastodonReading(form(name))).toMatchObject({ to: [], object: "https://kopje.test/ap/users/alice" });
+      expect(applied(name)).toEqual({ name, effect: { follows: ["alice"] } });
+    });
+
     it("a Note type as an IRI", () => {
       const entry = form("Note type as an IRI");
       expect(kopje(entry)).toEqual({ ok: false, reason: "unsupported" });
@@ -322,6 +329,13 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       expect(asReceived(form(name))).toBe(true);
       expect(statusOf(kopje(form(name)))).toMatchObject({ content: "<p>note 32</p>", inReplyTo: null });
       expect(applied(name)).toEqual({ name, ...RAISED });
+    });
+
+    it("an embedded actor whose inbox is [null] (#1673): not blank as received, blank in Mastodon's reading", () => {
+      const name = "Update(Person) whose embedded inbox is [null]";
+      expect(accepted(kopje(form(name)))).toMatchObject({ type: "UpdateActor", embedded: { inbox: [null] } });
+      expect((mastodonReading(form(name)).object as Json).inbox).toEqual([]);
+      expect(applied(name)).toEqual({ name, effect: {} });
     });
 
     it.each([
@@ -517,6 +531,26 @@ describe("D1 through the inbox: what the received form stores", () => {
       { options: JSON.stringify(["Only"]) },
     ]);
     expect(applied("Question with one option").effect.statuses).toMatchObject([{ poll: ["Only"] }]);
+  });
+
+  it("an Update(Person) whose embedded inbox is [null] applies its profile, where Mastodon drops it", async () => {
+    const { t, bob } = await world();
+    const { "@context": context, ...document } = bob.document as Json;
+    const name = "Update(Person) whose embedded inbox is [null]";
+    const update = {
+      "@context": context,
+      id: `${bob.uri}#updates/inbox-null`,
+      type: "Update",
+      actor: bob.uri,
+      to: [PUBLIC],
+      object: { ...document, name: "Bob renamed", inbox: [null] },
+      signature: form(name).received.signature,
+    };
+    expect(await t.post(bob, update)).toBe(202);
+    expect(await sql(t.store, "SELECT display_name FROM accounts WHERE uri = ?", bob.uri)).toEqual([
+      { display_name: "Bob renamed" },
+    ]);
+    expect(applied(name).effect).toEqual({});
   });
 
   it("a Delete whose object is a one-element array leaves its status, as in Mastodon", async () => {

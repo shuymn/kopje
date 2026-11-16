@@ -488,7 +488,9 @@
   },
   {
     "name": "@id in a Follow's object",
-    "effect": {}
+    "effect": {
+      "follows": ["alice"]
+    }
   },
   {
     "name": "@id in an Undo's object",
@@ -826,6 +828,16 @@
           "media": 0
         }
       ]
+    }
+  },
+  {
+    "name": "Update(Person) whose embedded inbox is [null]",
+    "effect": {}
+  },
+  {
+    "name": "a null in an array before a one-element array",
+    "effect": {
+      "follows": ["alice"]
     }
   },
   {
