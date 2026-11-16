@@ -11,6 +11,8 @@
 //           test/mastodon-params.test.ts checks Kopje reads
 //   cache   what a cache may keep of its answers (see "API caching" below), which test/mastodon-access.test.ts checks
 //           Kopje's caching declarations against
+//   deprecation  the date of the deprecate_api that marks its answers (see "Deprecation" below), which
+//           test/mastodon-access.test.ts checks Kopje's DEPRECATED_ROUTES against
 // and, for the serializers of ENTITIES, the fields they emit (see "Entity fields"), which
 // test-node/mastodon-entities.test.ts checks Kopje's response types carry.
 // Where the Ruby cannot be read with certainty (a conditional callback, an unknown routing statement, a controller
@@ -1089,6 +1091,62 @@ function caching(route, checkout, cache) {
   };
 }
 
+// ---- Deprecation ----
+
+// The deprecate_api (DeprecationConcern) that marks an action's answers with `Deprecation`: a before_action setting the
+// header, so the last one along the chain that applies wins, and its date (`date`, as written; null: none). One with an
+// if:/unless: condition, a sunset:, a date that is not a literal, inside a block, or with an unreadable only:/except:
+// leaves it unresolved.
+/** @param {RawRoute} route @param {string} checkout @param {Map<string, Controller | null>} cache */
+function deprecation(route, checkout, cache) {
+  const controller =
+    route.controller === null
+      ? null
+      : readController(checkout, `app/controllers/${route.controller}_controller.rb`, cache);
+  if (controller === null || route.action === null) {
+    return { date: null, unresolved: ["no controller action"] };
+  }
+  const action = route.action;
+  /** @type {{ date: string | null, reason: string | null }} */
+  let decided = { date: null, reason: null };
+  /** @type {string[]} */
+  const unresolved = [];
+  for (const file of controller.chain) {
+    let classIndent = null;
+    for (const { indent, text: stmt } of statements(readFileSync(join(checkout, file), "utf8"))) {
+      if (/^class\b/.test(stmt) && classIndent === null) {
+        classIndent = indent + 2;
+        continue;
+      }
+      const m = /^deprecate_api\s+(.*)$/s.exec(stmt);
+      if (m === null) {
+        continue;
+      }
+      const [date = "", ...rest] = splitArgs(/** @type {string} */ (m[1]));
+      const { options } = callArgs(rest.join(", "));
+      const only = options.only === undefined ? null : list(options.only);
+      const except = options.except === undefined ? null : list(options.except);
+      if ((options.only !== undefined && only === null) || (options.except !== undefined && except === null)) {
+        unresolved.push(`unreadable only:/except: in \`${stmt}\``);
+        continue;
+      }
+      if ((only !== null && !only.includes(action)) || (except !== null && except.includes(action))) {
+        continue;
+      }
+      const value = literal(date);
+      const decidedElsewhere = "if" in options || "unless" in options || "sunset" in options || indent !== classIndent;
+      decided =
+        typeof value === "string" && !decidedElsewhere
+          ? { date: value, reason: null }
+          : { date: null, reason: `${file}: \`${stmt}\`` };
+    }
+  }
+  if (decided.reason !== null) {
+    unresolved.push(decided.reason);
+  }
+  return { date: decided.date, ...(unresolved.length > 0 ? { unresolved } : {}) };
+}
+
 // ---- Request parameters ----
 
 // The request parameters an action reads, in Kopje's Params form (`a`, `a[]`, `a[b]`, `a[][b]`). Read from the
@@ -1942,6 +2000,7 @@ export function mastodonAccessTable(/** @type {string} */ checkout) {
       return {
         ...access(route, checkout, cache),
         cache: caching(route, checkout, cache),
+        deprecation: deprecation(route, checkout, cache),
         ...(params === null ? {} : { params }),
       };
     });
@@ -1956,6 +2015,7 @@ export function mastodonAccessTable(/** @type {string} */ checkout) {
       "Not read: instance settings (DISALLOW_UNAUTHENTICATED_API_ACCESS, limited federation mode), serializers that read the current user.",
       "unresolved: the Ruby could not be read with certainty; the route is not compared until an exception says why.",
       "cache: public is the Cache-Control helper the action runs (anonymous: cache_if_unauthenticated!, everyone: cache_even_if_authenticated!, null: neither), vary its vary_by (null: empty); cache.unresolved: what could not be read.",
+      "deprecation: date is the date of the deprecate_api that marks the action's answers (null: none); deprecation.unresolved: what could not be read.",
       "params: the request parameters the action reads (names in Params form: a, a[], a[b], a[][b]); params.unresolved: reads it could not name.",
       "entities: the fields each serializer of ENTITIES emits (optional: an if:/unless: decides); entities.unresolved: what could not be read.",
       "On a Mastodon version bump: regenerate, review the new exceptions the tests report, and run a Claude + Codex audit for read-but-dropped parameters.",
