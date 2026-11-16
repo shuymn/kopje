@@ -10,7 +10,7 @@ import {
   withParams,
 } from "./context";
 import { fullMessage, mastodonError, recordNotFound, validationDetails, validationFailed } from "./errors";
-import { linkHeader } from "./pagination";
+import { linkHeader, pageQuery } from "./pagination";
 import { limitParam, offsetParam, type Params, parseBoolean } from "./params";
 
 // Collections (Mastodon 4.7.5's Api::V1::CollectionsController, CollectionItemsController and InCollectionsController,
@@ -121,15 +121,11 @@ export const accountCollections: ApiHandler = withParams(async (c, deps, p) => {
 // Link headers carry max_id and min_id at the /api/v1 route, `limit` only when sent.
 export const inCollections: ApiHandler = withParams(async (c, deps, p) => {
   const limit = limitParam(p, COLLECTIONS_LIMIT, IN_COLLECTIONS_MAX_LIMIT);
-  const cursor = (name: string) => {
-    const value = p.get(name);
-    return value !== undefined && /^\d{1,19}$/.test(value) ? value : undefined;
-  };
   const input = {
     credential: optionalCredential(c, deps),
     now: deps.now(),
     account: c.req.param("id") ?? "",
-    page: { maxId: cursor("max_id"), sinceId: cursor("since_id"), minId: cursor("min_id"), limit },
+    page: { ...pageQuery(p), limit },
     offset: offsetParam(p),
     present: present(c),
   };
