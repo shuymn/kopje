@@ -11,6 +11,7 @@ import { processInbox } from "../src/federation/inbox";
 import { REQUEST_MAX_FETCHES } from "../src/federation/loader";
 import { INBOX_URL_LIMIT } from "../src/federation/remote-actor";
 import { INBOX_BODY_LIMIT } from "../src/federation/spool";
+import { runScheduledJobs } from "../src/jobs/queue";
 import { MAX_JSON_DEPTH, MAX_JSON_NODES } from "../src/platform/json-bounds";
 import { sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
@@ -330,6 +331,35 @@ describe("the freshness an embedded store sets (ID-1)", () => {
     };
     expect(await t.post(bob, follow)).toBe(202);
     expect(fetchedActor(t, bob)).toHaveLength(1);
+  });
+});
+
+// docs/mastodon-deviations.md, Accounts: an inbox move sent only by Update(Person) waits for Kopje's next fetch of the
+// actor's document, which nothing schedules: the 24 hours are the key's trust, not a refetch deadline.
+describe("an inbox move sent only by an embedded actor", () => {
+  it("is not fetched by a scheduled round a day later, and applies at the actor's next activity that needs its key", async () => {
+    const clock = { now: NOW };
+    const { t, bob } = await bobWorld(clock);
+    const moved = { ...bob.document, inbox: `${bob.uri}/inbox-2` };
+    t.web.serve(bob.uri, moved);
+    expect(await t.post(bob, updateOf(bob, moved))).toBe(202);
+    expect((await row(t, bob.uri)).inbox_url).toBe(`${bob.uri}/inbox`);
+    clock.now = NOW + KEY_REFRESH_MS + 60_000;
+    await runScheduledJobs(t.env, { ...inboxDeps(() => t.store, t.web.loader), now: () => clock.now });
+    // The round ran, and read bob's collections (the sync his stored document asked for), never his document.
+    expect(t.web.fetched.some((url) => url.startsWith(`${bob.uri}/`))).toBe(true);
+    expect(fetchedActor(t, bob)).toEqual([]);
+    expect((await row(t, bob.uri)).inbox_url).toBe(`${bob.uri}/inbox`);
+    const follow = {
+      "@context": AS,
+      id: `${bob.uri}#follows/${nextId()}`,
+      type: "Follow",
+      actor: bob.uri,
+      object: `${LOCAL}/ap/users/dave`,
+    };
+    expect(await t.post(bob, follow)).toBe(202);
+    expect(fetchedActor(t, bob)).toHaveLength(1);
+    expect((await row(t, bob.uri)).inbox_url).toBe(`${bob.uri}/inbox-2`);
   });
 });
 

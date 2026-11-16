@@ -446,8 +446,11 @@ Accounts (the `Account` and credential account entities):
   actor it embeds, as Mastodon's `ProcessAccountService` does (`update.rb:23-27`), but not its keys or inboxes, which
   stay those of the last document Kopje fetched; Mastodon takes both from the embedded actor
   (`process_account_service.rb:222-232`, `:264-270`). A key rotation or inbox move sent only by `Update(Person)`
-  applies at Kopje's next fetch of the actor: within 24 hours, or at the first activity signed by a key Kopje does not
-  hold fresh. Reason: a holder of a still-trusted key could otherwise renew its trust and move the actor's deliveries
+  applies at Kopje's next fetch of the actor's document, which nothing schedules: the actor's first activity signed by
+  a key Kopje does not hold fresh (one it does not hold, one that fails, or one its last fetched document listed 24
+  hours ago or more), a stale-author refresh, a search for the actor, or a collection sync's refresh of it. An actor
+  that sends nothing keeps the old keys and inboxes until one of these happens (`test/inbox-actor-update.test.ts`, "an
+  inbox move sent only by an embedded actor"). Reason: a holder of a still-trusted key could otherwise renew its trust and move the actor's deliveries
   without a fetch (ID-1 in `docs/threat-model.md`). An embedded actor Kopje cannot read applies nothing, as Mastodon
   drops it. Accepted, 2026-11-16.
 - The account `moved` nests is a bounded projection, not the full account: its identity, counts, flags and images,
