@@ -24,7 +24,7 @@ const MAINTENANCE = '{"error":"This server is under maintenance. Try again later
 const INTERNAL = '{"error":"Internal Server Error"}';
 const NOSNIFF = { "x-content-type-options": "nosniff" };
 const DOCUMENT_CORS = { "access-control-allow-origin": "*" };
-const API_CORS = { "access-control-allow-origin": "*", "access-control-expose-headers": "Link" };
+const API_CORS = { "access-control-allow-origin": "*", "access-control-expose-headers": "Link,Mastodon-Async-Refresh" };
 
 type Bytes = { status: number; headers: Record<string, string>; body: string };
 

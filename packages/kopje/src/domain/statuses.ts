@@ -111,6 +111,7 @@ import {
   revocableQuote,
   revokeQuoteRow,
 } from "./quotes";
+import { type Refresh, refreshDue, runningRefresh } from "./reply-walk-reads";
 import { normalizeSearchText } from "./search-text";
 import { editMediaSql, MAX_STATUS_MENTION_ROWS, MAX_STATUS_TAGS, pollOptionsSql, statusUriSql } from "./status-bounds";
 import {
@@ -1506,7 +1507,12 @@ const CONTEXT_LIMITS = {
   user: { ancestors: 4096, descendants: 4096, depth: 4096, traversal: 8192 },
 };
 
-export type Context = { ancestors: Status[]; descendants: Status[] };
+type Context = { ancestors: Status[]; descendants: Status[] };
+
+// A context read's answer: the context, the refresh of the status's replies while it runs, which every answer names
+// (Mastodon's add_async_refresh_header), and whether a signed-in viewer's read starts one (advisory: the start decides
+// again, domain/reply-walks.ts startRepliesRefresh).
+export type ContextRead = Context & { refresh: Refresh | null; refreshDue: boolean };
 
 // The JSON of an empty context: each list's items are counted with a separator, one more than they take.
 const CONTEXT_FRAME_BYTES = jsonBytes({ ancestors: [], descendants: [] } satisfies Context);
@@ -1516,8 +1522,9 @@ const CONTEXT_FRAME_BYTES = jsonBytes({ ancestors: [], descendants: [] } satisfi
 // that do not. One answer within ANSWER_BYTES (RES-3), under one presentation: the ancestors take half of it, nearest
 // first, and the descendants the rest with what the ancestors left, in their order; each list keeps its order, and
 // the farthest ancestors and the last descendants past it are left out (no paging, as Mastodon's context has none).
-// Each member is sought by id from the traversal (RES-7).
-export const statusContext = optionalUserReadOperation<{ id: string; present: Present }, Viewed<Context>>(
+// Each member is sought by id from the traversal (RES-7). The refresh of its replies (reply-walk-reads.ts) is read at
+// the viewer's time.
+export const statusContext = optionalUserReadOperation<{ id: string; present: Present }, Viewed<ContextRead>>(
   (db, { id, present }, viewer) => {
     const { accountId: viewerId, now } = viewer;
     const resolved = viewable(db, viewerId, id);
@@ -1546,7 +1553,16 @@ export const statusContext = optionalUserReadOperation<{ id: string; present: Pr
     const budget = ANSWER_BYTES - CONTEXT_FRAME_BYTES;
     const near = presentStatusesWithin(db, shared, up.toReversed(), Math.floor(budget / 2), true);
     const after = presentStatusesWithin(db, shared, down, budget - near.bytes, near.items.length === 0);
-    return { status: "ok", value: { ancestors: near.items.toReversed(), descendants: after.items } };
+    const at = Date.parse(now);
+    return {
+      status: "ok",
+      value: {
+        ancestors: near.items.toReversed(),
+        descendants: after.items,
+        refresh: runningRefresh(db, resolved, at),
+        refreshDue: viewerId !== null && refreshDue(db, resolved, at),
+      },
+    };
   },
 );
 
