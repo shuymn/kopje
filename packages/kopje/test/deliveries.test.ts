@@ -24,11 +24,13 @@ import { readOperation } from "../src/domain/operation";
 import { noteQuote } from "../src/domain/quotes";
 import { hasLocalFollowers } from "../src/domain/remote-statuses";
 import { MAX_REPORT_STATUSES } from "../src/domain/reports";
+import { DNS_NAME_UTF8_BYTES } from "../src/platform/domain-name";
 import { sha256Hex } from "../src/platform/sha256";
 import type { StoreStub } from "../src/platform/store-client";
 import { bearer, json, settleDeliveries, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { acceptQuote } from "./budget-helpers";
+import { blockDomain } from "./domain-block-helpers";
 import { BUILD, claimSent, type SentClaim } from "./helpers";
 import { plannedRun, remoteAccounts, scansOf, staleStatistics } from "./read-helpers";
 import { act, community, post, remoteAccount, remoteFollows, seedStatus } from "./status-helpers";
@@ -796,11 +798,19 @@ describe("outbound reach with stale statistics (RES-7)", () => {
 // a value an import leaves (the column has no CHECK) that is not TEXT of at most PROVENANCE_BYTES bytes holding a JSON
 // array of at most PROVENANCE_MAX values reads as a row without provenance (NET-2, VIS-30, RES-7).
 // EP-T8's stored values (below).
+// The rows availableSql (audience.ts) reads of one remote candidate with every branch at its cap: the
+// accounts_suspended entry and row of an account a domain block's job marked, which availability passes (2; one it
+// makes unavailable ends the rule there, with fewer); and, while a suspend block exists, its coverage: its row by key
+// and the selectors of its two keys (3), then the walk of both keys, one row to start and one per dot. A key is walked
+// only within DNS_NAME_UTF8_BYTES bytes and ends in a non-dot, so it has at most DNS_NAME_UTF8_BYTES - 1 dots.
+const EP_AVAILABLE_CEILING = 2 + 3 + 1 + 2 * (DNS_NAME_UTF8_BYTES - 1);
 // The rows personalFallback's provenance candidates read with every input at its cap (RES-7; the witness below): for
 // each of PROVENANCE_MAX candidates, its account, the activity's rows (one per audience inbox of a Flag, at most
-// 1 + MAX_REPORT_STATUSES) and one index entry past them, its chunk and one past it, and the chunk's TARGET_CHUNK_SIZE
-// targets; and 4 for the row, its activity and the ends of their reads.
-const EP_CANDIDATES_CEILING = PROVENANCE_MAX * (1 + (1 + MAX_REPORT_STATUSES + 1) + 2 + TARGET_CHUNK_SIZE) + 4;
+// 1 + MAX_REPORT_STATUSES) and one index entry past them, its chunk and one past it, the chunk's TARGET_CHUNK_SIZE
+// targets, and its availability; and 4 for the row, its activity and the ends of their reads. The statement's check
+// that a suspend block exists adds no row it counts: the witness reads exactly this with and without the block.
+const EP_CANDIDATES_CEILING =
+  PROVENANCE_MAX * (1 + (1 + MAX_REPORT_STATUSES + 1) + 2 + TARGET_CHUNK_SIZE + EP_AVAILABLE_CEILING) + 4;
 // Ids no account holds, of an account id's 18 digits.
 const absent = (n: number) => Array.from({ length: n }, (_, i) => String(900_000_000_000_000_001n + BigInt(i)));
 // A JSON array of `id` and an astral string, `bytes` UTF-8 bytes long (`["id","…"]`, each astral 4 bytes).
@@ -1000,6 +1010,27 @@ describe("the shared-inbox fallback by the row's provenance (#1686, NET-2)", () 
     expect(await state(h)).toEqual([["Delete", personal("dave"), "pending"]]);
   });
 
+  // A row with provenance moves by its recipient whatever inbox it was written to: one sent to the personal inbox the
+  // recipient has since moved on the same origin follows it there; one the recipient moved to another origin gives up.
+  it("moves a row sent to a personal inbox its recipient moved on the same origin, and not to another (EP-T6)", async () => {
+    for (const [moved, status] of [
+      ["https://remote.example/users/dave/inbox2", "retry"],
+      ["https://elsewhere.example/users/dave/inbox", "gave_up"],
+    ] as const) {
+      const h = await community(["alice"]);
+      const dave = await remoteAccount(h.store, "dave", "remote.example");
+      await unshare(h, dave);
+      await act(h, h.users.alice, `/api/v1/accounts/${dave}/follow`);
+      const round = await claim(h.store, NOW, "a");
+      expect(round.deliveries.map((d) => d.inbox)).toEqual([personal("dave")]);
+      await sql(h.store, "UPDATE accounts SET inbox_url = ? WHERE id = ?", moved, dave);
+      expect(await failed(h, round.deliveries[0]!.id), moved).toMatchObject({ status });
+      expect(await state(h), moved).toEqual([
+        ["Follow", status === "retry" ? moved : personal("dave"), status === "retry" ? "pending" : "gave_up"],
+      ]);
+    }
+  });
+
   // EP-T7: what still keeps a row from moving.
   it("moves no row to another origin, an inbox the activity has, two recipients, or one its provenance does not name (EP-T7)", async () => {
     const cases: [string, (h: Awaited<ReturnType<typeof community>>) => Promise<string>][] = [
@@ -1127,6 +1158,29 @@ describe("the shared-inbox fallback by the row's provenance (#1686, NET-2)", () 
     ).map((r) => r.id);
     const named = ids.slice(0, PROVENANCE_MAX);
     expect(JSON.stringify(named)).toHaveLength(PROVENANCE_BYTES);
+    // Every branch of each candidate's availability (availableSql) at its cap: a suspend block of none of their keys,
+    // so each coverage walk runs to its end; two distinct keys of each candidate (its stored domain and its actor id's
+    // host), each of DNS_NAME_UTF8_BYTES bytes with a dot at every byte but its last, the longest walk; each candidate
+    // marked by a domain block's job, an accounts_suspended entry availability reads and passes; and the deleting and
+    // the instance-suspended accounts' indexes holding other accounts.
+    await blockDomain(h.store, "unrelated.example");
+    const key = (last: string) => `${".".repeat(DNS_NAME_UTF8_BYTES - 1)}${last}`;
+    await sql(
+      h.store,
+      `UPDATE accounts SET domain = ?1, uri = 'https://' || ?2 || '/users/' || username, suspended_at = ?3,
+				suspension_source = 'domain' WHERE id IN (SELECT value FROM json_each(?4))`,
+      key("y"),
+      key("z"),
+      new Date(NOW).toISOString(),
+      JSON.stringify(named),
+    );
+    await sql(
+      h.store,
+      `INSERT INTO accounts (id, uri, username, domain, deleted_at, suspended_at, suspension_source)
+			VALUES ('799999999999999998', 'https://d.example/users/d', 'd', 'd.example', ?1, NULL, NULL),
+				('799999999999999999', 'https://s.example/users/s', 's', 's.example', NULL, ?1, 'account')`,
+      new Date(NOW).toISOString(),
+    );
     const activity = await queuedRow(h.store, h.users.alice.id, provenance(named), { kind: "flag", accounts: ids });
     await sql(
       h.store,
@@ -1226,9 +1280,13 @@ describe("the shared-inbox fallback by the row's provenance (#1686, NET-2)", () 
       ).toHaveLength(2);
     }
     expect(after.plans[0]!.rows).toBe(before.plans[0]!.rows);
-    // The ceiling at these caps: each of PROVENANCE_MAX candidates walks the activity's rows and its chunk's targets.
+    // The ceiling at these caps: each of PROVENANCE_MAX candidates walks the activity's rows, its chunk's targets and
+    // both its keys to their ends.
+    expect(EP_CANDIDATES_CEILING).toBe(35_732); // The figure docs/threat-model.md (NET-2) states.
     expect(before.plans[0]!.rows).toBe(EP_CANDIDATES_CEILING);
-    expect(before.plans[0]!.rows).toBeGreaterThan(PROVENANCE_MAX * (audience + TARGET_CHUNK_SIZE));
+    expect(before.plans[0]!.rows).toBeGreaterThan(
+      PROVENANCE_MAX * (audience + TARGET_CHUNK_SIZE + 2 * (DNS_NAME_UTF8_BYTES - 1)),
+    );
   }, 120_000);
 });
 

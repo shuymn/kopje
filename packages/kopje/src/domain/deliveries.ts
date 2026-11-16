@@ -2983,11 +2983,12 @@ const SHARED_INBOX_MISSING = new Set([404, 405, 410]);
 // serves that recipient alone, and its provenance (VIS-30) says so. A forward's row (Audience.shares; its addressing is
 // the remote author's) moves by its provenance instead (forwardFallback).
 // The recipient is one the row's provenance names (rowProvenanceSql, recipients_many unset), whatever shared inbox it
-// names since: an actor's document read again may name another or none (remote-actor.ts sharedInboxUri). A row without
-// one (queued before migration 0044_delivery_provenance and restored or still queued, recipients_many, a value the read
-// does not admit) takes an audience account whose shared inbox the row's inbox still is, or gives up: the audience of
-// an activity without to may hold several accounts of one origin (a Flag's, reports.ts), and nothing tells which of
-// them the row was written for.
+// names since: an actor's document read again may name another or none (remote-actor.ts sharedInboxUri); so a row sent
+// to a personal inbox the recipient has since moved on the same origin follows it too. A row without one (queued
+// before migration 0044_delivery_provenance and restored or still queued, recipients_many, a value the read does not
+// admit) takes an audience account whose shared inbox the row's inbox still is, or gives up: the audience of an
+// activity without to may hold several accounts of one origin (a Flag's, reports.ts), and nothing tells which of them
+// the row was written for.
 function personalFallback(db: Db, row: LaneRow, now: number, status: number | null, error: string): boolean {
   if (status === null || !SHARED_INBOX_MISSING.has(status) || row.attempts >= MAX_ATTEMPTS) {
     return false;
