@@ -169,6 +169,25 @@ describe("posting a poll", () => {
     expect(await sql(h.store, "SELECT count(*) AS n FROM statuses")).toEqual([{ n: 2 }]);
   });
 
+  // Poll#prepare_options drops a stripped choice that is blank? (U+0085 is, U+FEFF is not); Expireable#expires_in=
+  // reads the duration as sent by present?.
+  it("drops choices blank as Rails", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const status = await polled(h, alice, { options: ["a", "\u0085", "b", "\ufeff"], expires_in: 300 });
+    expect(status.poll?.options.map((option) => option.title)).toEqual(["a", "b", "\ufeff"]);
+    const deadline = async (expires_in: string) =>
+      refusal(await send(h, alice, "/api/v1/statuses", { status: "q", poll: { options: ["a", "b"], expires_in } }));
+    expect(await deadline("\u0085")).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Deadline can't be blank" },
+    });
+    expect(await deadline("\ufeff")).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Deadline is too soon" },
+    });
+  });
+
   // The strip is linear (platform/strip.ts): a choice with a run inside, filling the body (API_BODY_LIMIT), is read
   // within a generous time, with an invalid token (checked after the poll is read) and with alice's, whose 422 shows
   // the choice reached its length check.

@@ -8,6 +8,7 @@ import {
   ringDeliveries,
 } from "../federation/inbox";
 import { verifyQuotes } from "../federation/quotes";
+import { walkReplies } from "../federation/replies";
 import { encodeSpoolRecord, inflate, spoolDigest, type SpoolMessage, spoolMessageOptions } from "../federation/spool";
 import { type Config, envInMaintenance, readConfig } from "../platform/config";
 import { errorFields } from "../platform/error-message";
@@ -166,6 +167,7 @@ const STORE_FAMILIES: Families = STORE_JOB_FAMILIES.map(({ family, run }) => ({
 const WORKER_FAMILIES: Families = [
   { family: "collections", run: async (env, deps) => ({ pending: await syncCollections(env, deps), delivers: false }) },
   { family: "quotes", run: async (env, deps) => ({ pending: await verifyQuotes(env, deps), delivers: false }) },
+  { family: "replies", run: async (env, deps) => ({ pending: await walkReplies(env, deps), delivers: false }) },
 ];
 
 // Runs each family in turn, each its own error boundary; refused: the Store refused a call, which ends the round.
@@ -189,11 +191,12 @@ async function runFamilies(families: Families, env: Env, deps: InboxDeps): Promi
 
 // A round of every job family: the six Store calls (the inbound jobs, domain block cleanups, notification request
 // jobs, moderation jobs, held handshakes and unlock acceptances), then the Worker's syncs of remote accounts'
-// collections (federation/collections.ts) and verifications of received quotes (federation/quotes.ts), eight error
-// boundaries in all. Their work and progress are durable in the Store, so the round is only nudged: one family's failure is logged
-// and stops no other; the Store refusing (maintenance, a retryable or reset error) ends the round with nothing counted
-// (cron resumes it). The deliveries the Store calls recorded are rung before the network work, and one jobs message
-// asks for the next round while any family has work left (RES-5).
+// collections (federation/collections.ts), verifications of received quotes (federation/quotes.ts) and walks of
+// remote replies collections (federation/replies.ts), nine error boundaries in all. Their work and progress are
+// durable in the Store, so the round is only nudged: one family's failure is logged and stops no other; the Store
+// refusing (maintenance, a retryable or reset error) ends the round with nothing counted (cron resumes it). The
+// deliveries the Store calls recorded are rung before the network work, and one jobs message asks for the next round
+// while any family has work left (RES-5).
 export async function jobsRound(env: Env, deps: InboxDeps): Promise<void> {
   const store = await runFamilies(STORE_FAMILIES, env, deps);
   if (store.delivers) {

@@ -11,6 +11,7 @@ import {
   MOVED_ACCOUNT_MAXIMA,
   NOTE_MAXIMA,
   type Peaks,
+  PROFILE_MAXIMA,
   type Shape,
   type ShapeName,
 } from "../test/presented-maxima.js";
@@ -158,6 +159,15 @@ function maximaRows(): Map<string, string[]> {
     share(note.note),
   ]);
   rows.set("Its Create (the Note and its addressing again)", ["", count(note.create), "", "", "", share(note.create)]);
+  const profile = PROFILE_MAXIMA;
+  rows.set("Profile, derived from its caps", [
+    "",
+    count(profile.json),
+    count(profile.conservative),
+    "",
+    "",
+    share(profile.conservative),
+  ]);
   return rows;
 }
 

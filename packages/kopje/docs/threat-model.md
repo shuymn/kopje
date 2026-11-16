@@ -157,12 +157,20 @@ against their own instance. TLS is assumed between all parties.
   meaning"), `test/inbox.test.ts` ("hands on through the rollback drain's check an Ed25519 RFC 9421 request", "answers
   the rollback drain's check of a draft-cavage request naming a key that is not RSA as unverified"),
   `test/cutover-rollback.test.ts` ("sets aside a draft-cavage request naming a key that is not RSA"). A stored key list
-  (with the profile, `movedTo` and routing beside it) is replaced only by a document fetched after the last one stored:
-  every store of a remote actor's document issues a new Store revision
+  and the inboxes beside it are replaced only by a document fetched after the last one stored; the profile, the handle
+  and `movedTo` also by the actor's own `Update(Person)` embedding its document (an object of an actor type whose `id`
+  is the activity's `actor`, its signer), read as a fetched document is (`readEmbeddedActor`) and stored under the
+  revision the inbox gate read before the request's first fetch, in one store with the keys and inboxes of the document
+  the request fetched for its key when it fetched one, else the stored row's (`upsertEmbeddedActor`). Such an
+  `Update(Person)` fetches the actor's document only when its key needs one, as any activity; an embedded document never
+  writes keys, inboxes or a key's freshness (`remote_keys.fetched_at`), so a key's trust still runs from the last
+  fetched document, and it sets `accounts.fetched_at` (the stale-author refresh's clock); one Kopje cannot read applies
+  nothing. Every store of a remote actor's document issues a new Store revision
   (`accounts.document_revision`, never the same value twice in a row, so an imported maximum does not stop it), and
   every writer that fetches a whole document reads the revision before the fetch and stores the document only while it
   still holds, compared in the transaction that would store it. Those writers are the inbox sender in every Store round
-  of its request (a later round never stores its document again), its routing while it is suspended (VIS-30), a relayed
+  of its request (a later round never stores its document again), the embedded document of its `Update(Person)`, its
+  routing while it is suspended (VIS-30, from a fetched document only), a relayed
   `Delete`'s actor (by the actor's revision, not the signer's), a `Move` target, search resolution (which reads a URL's
   revision before its probe and fetches a stored actor's id as that actor, and fetches the actor document a probe or its
   alternate found again after reading its revision, so neither is ever stored), the refresh of a stale boosted or quoted
@@ -189,17 +197,19 @@ against their own instance. TLS is assumed between all parties.
   `upsertRemoteActor`, `applyRefresh`, `receive`, `inboxGate` and `actorGone` in `src/domain/inbox.ts`, `quoteWork` in
   `src/domain/quotes.ts`, `resolveSearch` in `src/domain/remote-statuses.ts`, `src/federation/resolve.ts`,
   `src/federation/actor-gone.ts`, `refetchDocument` in `src/federation/collections.ts`, `completeDocumentRefresh` in
-  `src/domain/remote-collections.ts`; `test/inbox-actor-revision.test.ts`, `test/inbox-gone.test.ts`,
+  `src/domain/remote-collections.ts`, `walkTurn` in `src/federation/replies.ts`, `upsertEmbeddedActor` in
+  `src/domain/remote-actors.ts`, `readEmbeddedActor` in `src/federation/remote-actor.ts`;
+  `test/inbox-actor-revision.test.ts`, `test/inbox-actor-update.test.ts`, `test/inbox-gone.test.ts`,
   `test/quotes.test.ts` ("keeps a Move committed during a stale-author stage’s fetch"),
-  `test/remote-collections.test.ts` ("the document part of a refresh (D9)"). A second exception: a `Delete`
-  another server relays, signed with its own key (a booster or quoter forwarding the author's `Delete` of a status, or a
-  server holding the quoting status forwarding the quoted author's revocation of its stamp, as Mastodon forwards both).
-  Its HTTP signer must own its key by the same rule; the `Delete` is applied as its `actor`'s only when it carries that
-  actor's own proof, an RsaSignature2017 Linked Data Signature or an FEP-8b32 proof, which Fedify verifies in the
-  Worker, before the Store is called, against a key the actor's current document embeds (a legacy key or, for an
-  FEP-8b32 proof, an `assertionMethod` Multikey, within the first `MAX_PUBLIC_KEYS` of each), that document fetched anew
-  in the request, never from a cache, so a key the actor has since replaced proves nothing (no other key is ever
-  loaded).
+  `test/remote-collections.test.ts` ("the document part of a refresh (D9)"), `test/reply-walk-rounds.test.ts` ("a walk's
+  author whose URI answers 410"). A second exception: a `Delete` another server relays, signed with its own key (a
+  booster or quoter forwarding the author's `Delete` of a status, or a server holding the quoting status forwarding the
+  quoted author's revocation of its stamp, as Mastodon forwards both). Its HTTP signer must own its key by the same
+  rule; the `Delete` is applied as its `actor`'s only when it carries that actor's own proof, an RsaSignature2017 Linked
+  Data Signature or an FEP-8b32 proof, which Fedify verifies in the Worker, before the Store is called, against a key
+  the actor's current document embeds (a legacy key or, for an FEP-8b32 proof, an `assertionMethod` Multikey, within the
+  first `MAX_PUBLIC_KEYS` of each), that document fetched anew in the request, never from a cache, so a key the actor
+  has since replaced proves nothing (no other key is ever loaded).
   A proof is considered only on a body in one of the sender profiles (`PROFILES` in `src/federation/author-proof.ts`):
   Mastodon's status `Delete` (the same body from 4.4 to 4.7) and stamp `Delete` (as 4.5.10 to 4.7 write it), signed by
   `LinkedDataSignature#sign!`, which writes `expires` from 4.7.0; Kopje's status and stamp `Delete`; Mastodon's and
@@ -289,7 +299,19 @@ against their own instance. TLS is assumed between all parties.
   json['id'] != response.uri`), so the rule above holds for it as for any fetch. _Enforced (main):_ `fetchAlternate`
   in `src/federation/resolve.ts`; `test/resolve-alternate.test.ts` ("takes an alternate on another origin whose id is
   the href, and none whose id is not", "makes no second hop: an alternate answering HTML that names its own alternate
-  resolves nothing").
+  resolves nothing"). The probe's own document is held to the same check (`fetch_resource_service.rb:54-59`): one whose
+  `id` is not both the URL searched and the URL that answered (another URL of the origin, or one a redirect reached) is
+  taken only as its `id` answers that one terminal fetch, so no other URL of a status's origin speaks for the status
+  that search applies it to as an `Update` (ID-7). _Enforced (main):_ `ownDocument` in `src/federation/resolve.ts`;
+  `test/search-refetch.test.ts` ("updates nothing from another URL of the origin whose document names a stored
+  status's id", "updates nothing from a document its id redirects to"), `test/interaction.test.ts` ("updates nothing
+  from another URL naming a stored status's id"). A replies walk takes a collection's items as ids only, an embedded
+  object never as a status, and fetches a collection or page only on its status's origin (Mastodon's
+  `non_matching_uri_hosts?`); it stores only replies its stored rows link to its root, judging a stored status by its
+  stored parent, never by a fetched one. _Enforced (main):_ `src/domain/reply-walks.ts`, `src/federation/replies.ts`;
+  `test/reply-walk-rounds.test.ts` ("takes only the ids of embedded items", "fetches no collection or page of another
+  origin", "stores no self-parent, no two-node cycle", "judges a stored status by its stored row", "leaves a stored
+  cycle invalid").
 - **ID-3: remote input never changes local actors or local objects.** No inbound activity updates, deletes, moves or
   attributes anything to a local account or local status. _Enforced (main)_ for actors and relationships:
   `upsertRemoteActor` and `localAccount` in `src/domain/inbox.ts`; `test/inbox.test.ts` ("a local actor URI is never
@@ -298,9 +320,11 @@ against their own instance. TLS is assumed between all parties.
   fetches nothing for an address or URL on the instance's domain (`upsertRemoteActor`, `resolutionTarget` in
   `src/domain/remote-statuses.ts`); `test/instance-actor-handle.test.ts`. _Enforced (main)_ for statuses, favourites
   and boosts: a remote object must have its actor's origin and name no other author, and only its stored author
-  updates or deletes it, so a local status is never created, updated or deleted from outside (`storeRemoteStatus` and
-  `updateRemoteStatus` in
-  `src/domain/remote-statuses.ts`, `deleteObject` in `src/domain/inbox.ts`); `test/inbox-statuses.test.ts` ("nobody
+  updates or deletes it, except that a 404 at a remote original's own URI to a pin sync's fetch (an answer of that
+  URI's origin, ID-2) removes it whoever's, as Mastodon's `fetch_status` does; so a local status is never created,
+  updated or deleted from outside (`storeRemoteStatus` and `updateRemoteStatus` in
+  `src/domain/remote-statuses.ts`, `deleteObject` in `src/domain/inbox.ts`, `removeGone` in
+  `src/domain/remote-collections.ts`, which skips a local author's row); `test/inbox-statuses.test.ts` ("nobody
   remote updates a local one (ID-3)", "nothing of anyone else’s (ID-6, ID-3)"). A status matched by an object's
   `atomUri` (Mastodon's `Create#find_existing_status`, which `Update#update_status` also reaches, `Delete#delete_status`
   and `Undo#undo_announce`) keeps the rule: a `Create` or an `Update` whose `atomUri` names another author's status, a
@@ -420,11 +444,41 @@ against their own instance. TLS is assumed between all parties.
   `Undo` that arrives first is recorded and keeps the object, favourite or boost from appearing, and a replay after it
   changes nothing; an `Update` replaces the content only if its `updated` is newer than the last accepted version
   (`statuses.remote_version`, kept as the remote wrote it whether or not the change wrote history, and compared
-  unclamped), so a reordered or repeated one changes no content whenever it arrives; one whose version is equal or
-  missing still refreshes the status's poll (counts, end, voters), its quote policy and the stamp of the same quote
-  (Mastodon's `handle_implicit_update!`), and an older one changes nothing; an `Update` dated more than 5 minutes ahead
+  unclamped), so a reordered or repeated one changes no content whenever it arrives; one whose version equals the
+  stored one, or names none for a status never edited (no `edited_at`), still refreshes the status's poll (counts, end,
+  voters), its quote policy and the stamp of the same quote (Mastodon's `handle_implicit_update!`), and an older one, or
+  one that names none for an edited status, changes nothing (Mastodon's `process_status_update_service.rb:32-34`), so
+  a peer's cached copy from before an edit rolls nothing back; an `Update` dated more than 5 minutes ahead
   of the clock is ignored (no change, history or notification), and its edit waits for another delivery; a status whose
-  `Delete` was recorded takes no `Update`. A stored status is also known by an object's `atomUri` when no status has
+  `Delete` was recorded takes no `Update`. A status Kopje fetches again that it stores under the document's id, by its
+  author (search, `/authorize_interaction`, a signed-in poll read, and a pin sync, which fetches every status its
+  account's featured collection lists on the account's origin, stored or not: `storeFetchedStatus` in
+  `src/domain/remote-statuses.ts`), is applied as that author's `Update` under these rules, as Mastodon's
+  `FetchRemoteStatusService` turns it into one, and one it does not store is its `Create`, its document taken only from
+  its `id` (ID-2); a pin sync applies only its account's own (Mastodon's `expected_actor_uri`), so another author's
+  listed status is fetched and left as stored. A 404 or 410 to a search's or an interaction's fetch removes nothing; a
+  failed fetch answers a stored status only after a 401, 403 or 404 and a stored account only after a 5xx or no answer
+  (`resolve_url_service.rb:38-63`), and the interaction page never a stored status (`test/search-refetch.test.ts`,
+  `test/search-fallback.test.ts`, `test/interaction.test.ts` ("applies a newer version of a stored status it finds
+  again", "finds nothing for a stored status whose fetch answers 410, and keeps it", "shows no stored status after a
+  failed fetch")). A 404 to a pin sync's fetch, answered by the status's own URI with
+  no redirect, removes the status stored under that URI when the fetch completes, judged on the row stored then (a
+  status whose `Create` arrived after the sync's read included), when it is a remote original, public or unlisted, and
+  not withdrawn, whoever its author, as Mastodon's `fetch_status` (`fetch_remote_status_service.rb:86-98`): its removal
+  starts as a `Delete`'s does but records no retraction and no deleted object and forwards nothing, as Mastodon's
+  `RemoveStatusService` keeps no tombstone, so a later `Create` of the uri stores it again once the removal ended; a
+  410, a 404 after a redirect, and a private status's 404 remove nothing (`removeGone` in
+  `src/domain/remote-collections.ts`, `goneAt` in `src/federation/actor-gone.ts`; `test/remote-collections.test.ts`
+  ("a sync's fetch of every listed status")).
+  An `Update` whose poll is accepted, its values changed or not, records the Store's time as the poll's last fetch
+  (`polls.fetched_at`); a refused or removed poll and a `Create` record none (`test/polls-federation.test.ts` ("marks
+  the poll fetched on an accepted Update, not on a Create or a refused one")). A poll read's refresh applies its
+  document only while the poll's revision is still the one its reservation took: every write of the poll moves it to
+  another value within 0 to 2^53 − 1 (the `polls_revision` trigger, the reservation included), so a refresh never
+  overwrites a vote, an `Update` or a newer reservation committed during its fetch (`refreshPoll` in
+  `src/domain/remote-statuses.ts`; `test/poll-refresh.test.ts` ("keeps what commits during the fetch", "only the
+  reservation's own refresh applies", "revisions from the maximum")).
+  A stored status is also known by an object's `atomUri` when no status has
   the object's id (an http(s) URI within `STATUS_URI_LIMIT`, `statusIdentity` in `src/federation/remote-status.ts`): a
   `Create` or `Update` whose id or `atomUri` was retracted or deleted is not applied, an `Update` found by `atomUri`
   edits the stored status under these version rules and its own uri, and a `Delete` or `Undo` that found its status
@@ -477,21 +531,26 @@ against their own instance. TLS is assumed between all parties.
   new kept key (`statuses_account_reblogs_kept`, migration 0075, unique), and the original's removal continues the
   withdrawn boost's `Undo` instead of recording another (`test/unboost.test.ts`). While
   an original's removal runs (its hide, which marks `statuses.withdrawn`, is done: by a local status's `DELETE`, or by
-  a remote status's `Delete` in its own transaction; or its author's purge started: `removalBegunSql` in
+  a remote status's `Delete` in its own transaction, or by a 404 at its own URI to a pin sync's fetch, judged on the
+  row stored when the fetch completes, which records no retraction; or its author's purge started: `removalBegunSql` in
   `src/domain/audience.ts`), its local boosters cannot undo their boosts: an unreblog of it and a `DELETE` of a boost
   of it answer 404 before any write (as Mastodon's unreblog of a discarded status does), so no second `Undo` is
   recorded and no receipt is deleted before the removal's own `Undo` has taken it as a target
   (`test/remote-delete-cleanup.test.ts`). `test/inbox-statuses.test.ts` ("ID-7: duplicate and reordered Create and
   Delete", "ignores an Update that is not newer"), `test/inbox-statuses-edge.test.ts` ("ID-7: the Update watermark",
-  "leaves nothing for every order of Create, Update and Delete", "ID-7: retractions at the per-actor cap", "removes only
+  "leaves nothing for every order of Create, Update and Delete", "ID-7: an Update that names no version, of an edited
+  status", "ID-7: retractions at the per-actor cap", "removes only
   its own id", "withdraws a local boost once", "ID-7: a retryable refusal commits nothing", "ID-6, ID-7: a deleted
   status is not created again by anyone", "after its deliveries are done"), `test/inbox-reactions.test.ts` (every
   arrival order of three reactions and their Undos, a burst retried after its 503s, "is retired by the Store’s clock",
   "Like ids are unique instance-wide, and bounded", "Undos at the retraction cap", "records no
   tombstone, unless a stored favourite needs it removed", "a legacy favourite of a local status").
-  `test/status-delete.test.ts` (generated sequences of a remote author's `Create`, `Update` and `Delete`, local
-  favourites and boosts, job rounds and deliveries, checked after every step against the rules in
-  `test/status-delete-model.ts` and, once settled, against the author's final state as a Mastodon v4.5.11 sender holds
+  `test/status-delete.test.ts` (generated sequences of a remote author's `Create`, `Update` and `Delete`, the `Update`s
+  its poll jobs write 3 minutes after a vote, L's searches of them and the fetches of syncs of the author's featured
+  collection, served from the author's render cache (a deleted status's 404 removing it), L's reads of their polls,
+  each refresh a later step than its reservation and fetch, local favourites and boosts, job rounds and deliveries,
+  checked after every step against the rules in
+  `test/status-delete-model.ts` and, once settled, against the author's final state as a Mastodon v4.7.5 sender holds
   it). A change to a status `Create`, `Update` or `Delete` rule here changes `test/status-delete-model.ts` with it.
   A proven `Delete` of a status delivered again records no second forward (VIS-3): the job's key, read before the
   proof is asked for, fences it, and two deliveries held at their proofs record one set (`test/forward-delete.test.ts`
@@ -516,10 +575,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 
 - **VIS-1: one rule decides who may see a status**, Mastodon's `StatusPolicy#show?`: the statuses of an unavailable
   author (a suspended local account, or a remote account whose deletion has started) are seen by nobody; nor is a
-  withdrawn status (`statuses.withdrawn`: its removal runs in a job, its `Delete` or `Undo` recorded or, for an identity
-  past its stored bound, skipped), its author included (it stays a candidate of its author's reads, where the rule hides
-  it: the cursor rule in `docs/visibility.md`); the author sees all else of their own; an author who blocks the viewer
-  hides everything from them; `public`
+  withdrawn status (`statuses.withdrawn`: its removal runs in a job, its `Delete` or `Undo` recorded, or its own URI
+  answered 404 to a pin sync's fetch (ID-7), or, for an identity past its stored bound, skipped), its author included
+  (it stays a candidate of its author's reads, where the rule hides it: the cursor rule in `docs/visibility.md`); the
+  author sees all else of their own; an author who blocks the viewer hides everything from them; `public`
   and `unlisted` are seen by everyone else; `private` by accepted followers and the mentioned (silent included);
   `direct` and `limited` by the mentioned (silent included) only. Every read path uses the same SQL rule, from the one
   policy module (`docs/visibility.md`; `test-node/policy-boundary.test.ts` keeps the rule out of other modules). A
@@ -677,8 +736,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   nothing through a converted limited boost", "forwards through a local quote in every state", "a direct quote's
   forward reaches its receipts and no follower inbox", "skips a withdrawn quoting status", "the barriers before a
   quote's evidence goes"), `test/migrations.test.ts` ("0091_live_local_quotes").
-  A profile change (API or settings page, images and fields included) records an `Update` of the actor to Public for
-  the followers, only when the published document changed; it replaces the earlier actor Updates still waiting, and
+  A profile change (API or settings page, images, their descriptions and fields included) records an `Update` of the
+  actor to Public for the followers, only when the published document changed (a description is published only while
+  its image exists); it replaces the earlier actor Updates still waiting, and
   is never turned into a Create. A suspended actor sends none. Publication of a cutover records the same Update for
   each local profile whose images the conversion changed (OPS-8). _Enforced (main):_
   `src/domain/actor-update.ts`, `enqueueActivity` in `src/domain/deliveries.ts`; `test/actor-update.test.ts`.
@@ -812,23 +872,23 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   blocks", "shows no more than the followers and following lists show"). The followers and following lists
   (`GET /api/v1/accounts/:id/followers` and `/following`, Mastodon 4.5's `FollowerAccountsController` and
   `FollowingAccountsController`) read the viewer from an optional token and list nothing when the account is suspended,
-  or, to anyone but the account itself, when it hides its network (`hide_collections`, set through `update_credentials`)
-  or blocks the viewer; other viewers do not see the accounts they block, mute (while the mute applies) or are blocked
-  by. The public followers and following pages read the same lists as an anonymous viewer and leave out an unavailable
-  member, which the API lists redacted; an account that hides its network, which its settings page sets too (WEB-4),
-  shows its counts and no list: _Enforced (main):_ `webFollowsPage` in `src/domain/web-pages/follows.ts`
-  (`listFollowsWithin`); `test/web-follow-lists.test.ts` ("is set from the settings page, with its anti-forgery token,
-  and then the lists show only their counts"). Familiar followers show no followers of an account that hides its
-  network, to anyone, the account itself included, and leave out a follower that hides its own (Mastodon's
-  `FamiliarFollowersPresenter`). The ActivityPub followers and following collections of a suspended actor answer 404,
-  and those of an actor that hides its network show `totalItems` only and answer a page with 403. A remote account's
-  setting is learned as Mastodon's ProcessAccountService learns it (its followers or following collection shows no first
-  page) and hides its lists the same way; one Kopje has not learned yet hides nothing, and a collection that cannot be
-  read for now leaves what was learned unless the other one is known to hide its items. Both collections are fetched in
-  every sync, the followers even once the following hides (for their counts, as Mastodon fetches them); one past the
-  network part's caps (`NETWORK_CAPS`, RES-6) is unreadable and hides, as any collection that cannot be read does
-  (`src/federation/collections.ts`, `accounts.hide_collections`; `test/remote-collections.test.ts`). _Enforced (main):_
-  `followListsShownSql` and `followListedSql` in
+  or, to anyone but the account itself, when it hides its network (`hide_collections`, set through `update_credentials`
+  or the profile update) or blocks the viewer; other viewers do not see the accounts they block, mute (while the mute
+  applies) or are blocked by. The public followers and following pages read the same lists as an anonymous viewer and
+  leave out an unavailable member, which the API lists redacted; an account that hides its network, which its settings
+  page sets too (WEB-4), shows its counts and no list: _Enforced (main):_ `webFollowsPage` in
+  `src/domain/web-pages/follows.ts` (`listFollowsWithin`); `test/web-follow-lists.test.ts` ("is set from the settings
+  page, with its anti-forgery token, and then the lists show only their counts"). Familiar followers show no followers
+  of an account that hides its network, to anyone, the account itself included, and leave out a follower that hides its
+  own (Mastodon's `FamiliarFollowersPresenter`). The ActivityPub followers and following collections of a suspended
+  actor answer 404, and those of an actor that hides its network show `totalItems` only and answer a page with 403. A
+  remote account's setting is learned as Mastodon's ProcessAccountService learns it (its followers or following
+  collection shows no first page) and hides its lists the same way; one Kopje has not learned yet hides nothing, and a
+  collection that cannot be read for now leaves what was learned unless the other one is known to hide its items. Both
+  collections are fetched in every sync, the followers even once the following hides (for their counts, as Mastodon
+  fetches them); one past the network part's caps (`NETWORK_CAPS`, RES-6) is unreadable and hides, as any collection
+  that cannot be read does (`src/federation/collections.ts`, `accounts.hide_collections`;
+  `test/remote-collections.test.ts`). _Enforced (main):_ `followListsShownSql` and `followListedSql` in
   `src/domain/audience.ts`, `listFollows` and `familiarFollowers` in `src/domain/accounts.ts`, `getCollection` in
   `src/domain/actors.ts`; `test/accounts.test.ts` ("follower lists for the viewer (R13)"), `test/account-reads.test.ts`
   ("shows no followers of an account that hides its network"), `test/federation.test.ts` ("shows only the size of the
@@ -871,7 +931,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   explicit rule for a parent the viewer may not see; `reblogged_by` lists only `public` and `unlisted` boosts and both
   interactor lists only accounts the viewer may see; a write response (such as deleting a boost) applies VIS-1 to every
   status it embeds, and `source` appears only on the viewer's own status. Aggregate counters are excepted (see accepted
-  risks). Parent references follow Mastodon: `in_reply_to_id` and `in_reply_to_account_id` are shown even when the
+  risks), and so is a replies refresh's `result_count`, which counts the statuses the refresh created whoever may see
+  them, as Mastodon's (`test/async-refreshes.test.ts`, "starts for a signed-in reader and is named, while it runs, to
+  any reader"). Parent references follow Mastodon: `in_reply_to_id` and `in_reply_to_account_id` are shown even when the
   parent is hidden, because they belong to the reply (its ActivityPub object carries `inReplyTo` to every recipient);
   the parent itself stays behind VIS-1. _Enforced (main):_ `src/domain/status-presenter.ts`,
   `src/domain/statuses.ts`, `ACCOUNT_COLUMN_MAP` in `src/domain/account-columns.ts`; `test/statuses.test.ts` ("review
@@ -1029,8 +1091,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   deletes all of its rows in one transaction (a few reads and a write each, no recount of its last status), and a block
   reads the blocker's conversations to find those with the blocked account; both are a local user's action on their
   own data, and rare. Its last
-  status is shown only while the read rule (VIS-1) lets the owner see it, else as null; a block ends the blocker's
-  conversations with the blocked account. _Enforced (main):_ `src/domain/conversations.ts`,
+  status is shown only while the read rule (VIS-1) lets the owner see it and it is not a boost, which no writer links
+  and only a restored row can name (RES-3), else as null; a block ends the blocker's conversations with the blocked
+  account. _Enforced (main):_ `src/domain/conversations.ts`,
   `src/domain/conversation-rows.ts`, migration `0009_conversations` (triggers `statuses_thread` and
   `conversation_statuses_removed`);
   `test/conversations.test.ts`, `test/migrations.test.ts`, `test/policy-endpoints.test.ts`,
@@ -1378,10 +1441,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   suspended (R38) is unavailable (R1) from the suspension's commit: shown to nobody (as any unavailable account), sent
   nothing but retractions (a forwarded `Delete` of a remote original it boosted or quoted among them, VIS-3,
   `test/forward-delete.test.ts` ("sends a forward through a quote to an instance-suspended follower")), and its inbound
-  activity is not applied but for its `Delete`, `DeleteActor`, `Undo` and
-  `Reject`, after a routing refresh of its inbox from a verified document (fenced by its revision as any document,
-  ID-1); no path refreshes its profile, keys or domain, or stores a status of it. Its accepted follows of local
-  accounts are severed in bounded, generation-bound rounds (R38), each with a withdrawing `Reject` to the follower's
+  activity is not applied but for its `Delete`, `DeleteActor`, `Undo` and `Reject`, after a routing refresh of its
+  inbox from a verified document it fetched (never an embedded one; fenced by its revision as any document, ID-1); no
+  path refreshes its profile, keys or domain, or stores or updates a status of it (a search's included,
+  `test/search-refetch.test.ts`). Its accepted follows of local accounts are severed in bounded, generation-bound
+  rounds (R38), each with a withdrawing `Reject` to the follower's
   current personal inbox alone, as Mastodon's `reject_remote_follows!` sends it (a retraction, never refused, but not
   sent to the earlier receivers of what it withdraws); its requests to local accounts are kept, unlisted and
   unanswerable while it is unavailable, as Mastodon keeps `FollowRequest`s; local follows of it are kept.
@@ -1390,12 +1454,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   domain or its actor host) is unavailable from the block's commit, read live; nothing is fetched from a covered host
   (advisory: the writes refuse to store a covered account or its statuses, and refresh no covered row). The verdict for
   the first request after a Store answer that decided the fetch (`inboxGate`, a `receiveActivity` need, a search
-  resolution's `resolutionGate` and its `actorState` before the actor's fetch) comes with that answer and is spent
-  on that request alone; every other request, redirect hops and RFC 9421 retries included, reads it anew
-  (`fetchPreparation` in `src/domain/inbox.ts`, `refusesHost` in
+  resolution's `resolutionGate` and its `actorState` before the actor's fetch, a poll refresh's `reservePollRefresh`)
+  comes with that answer and is spent on that request alone; every other request, redirect hops and RFC 9421 retries
+  included, reads it anew (`fetchPreparation` in `src/domain/fetch-preparation.ts`, `refusesHost` in
   `src/federation/federation.ts`; `test/signed-fetch.test.ts` "fetch preparations in the loaders", "asks the domain
   policy again before the retry", `test/inbox.test.ts` "Store calls on the inbox cold path",
-  `test/search-resolution-store-calls.test.ts`). Its inbound
+  `test/search-resolution-store-calls.test.ts`, `test/poll-refresh-store-calls.test.ts`). Its inbound
   activity is ignored before any fetch but `Delete`, `DeleteActor`, `Undo` and `Reject` verified with a key already
   stored. A block's `reject_media`, whatever its severity, keeps media out of the remote media cache (MEDIA-7;
   [visibility.md](visibility.md), "Instance domain blocks"). It is judged by the account's stored domain only, as
@@ -1488,16 +1552,20 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   deletes its row in the same step; edits never change a visibility. The linked site learns that the instance holds a
   public status naming it, as a reader of that status would. A card is presented only on a public or unlisted status,
   whatever a row holds (an import's), never on a boost's own row or a quoted status, and with each text and URL judged
-  as decoded (`presentCard` in `src/domain/status-presenter.ts`). A local status's Note (the object endpoint, the
-  outbox, the featured collection, every `Create` and `Update`) lists the card's URL as a FEP-8967 `Link` only where
-  the card is presented: an attached row, judged by the presenter's own rule (`shownCardUrl`, shared with
-  `presentCard`; `statusFacts` in `src/domain/activities.ts`). _Enforced (main):_ `cardEligibleSql` in
-  `src/domain/audience.ts`, `src/domain/link-cards.ts`, `deleteStatusBatch` in `src/domain/inbox.ts`;
+  as decoded (`presentCard` in `src/domain/status-presenter.ts`). Its `missing_attribution` is presented to a signed-in
+  viewer only, and is `true` only for the viewer the card's unverified author is: no viewer learns that a page names
+  another account. A local status's Note (the object endpoint, the outbox, the featured collection, every `Create` and
+  `Update`) lists the card's URL as a FEP-8967 `Link` only where the card is presented: an attached row, judged by the
+  presenter's own rule (`shownCardUrl`, shared with `presentCard`; `statusFacts` in `src/domain/activities.ts`).
+  _Enforced (main):_ `cardEligibleSql` in `src/domain/audience.ts`, `src/domain/link-cards.ts`, `deleteStatusBatch` in
+  `src/domain/inbox.ts`;
   `test/link-cards.test.ts` ("enqueues public and unlisted posts only, and resets on a text edit", "enqueues a remote
-  status on creation, resets it on a significant update only, never a private one", "deletes the card with the hide
-  when %i rows are left", "shows no card on a status that is not public or unlisted, even from an imported row",
-  "lists none where the API shows none: a private status's imported card, a blank title", "lists none while the card
-  is pending: the Create at posting, a text edit's Update and an imported row"),
+  status on creation, resets it on a significant update only, never a private one", "deletes the card with the hide when
+  %i rows are left", "shows no card on a status that is not public or unlisted, even from an imported row", "lists none
+  where the API shows none: a private status's imported card, a blank title", "lists none while the card is pending: the
+  Create at posting, a text edit's Update and an imported row", "shows missing_attribution to a signed-in viewer only,
+  true for the card's unverified author"), `test/trend-links.test.ts` ("shows it to a signed-in viewer at both routes,
+  true for the copy's unverified author only"),
   `test/policy-oracle.test.ts` (against `cardEligible` in `test/policy-model.ts`),
   `test-node/policy-boundary.test.ts`.
 
@@ -1528,10 +1596,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   translation languages, privacy policy and terms of service; fourteen routes) needs no token, and a token sent is read
   only for its owner's suspension, as Mastodon's `Api::BaseController#require_not_suspended!` reads it: every answer to
   a request whose token's owner is suspended (AUTH-1's order) is 403 `Your login is currently disabled`, an early 4xx
-  and an error's answer included, with none of the answer's headers (no `Cache-Control`), so the token holder learns of
-  the suspension, as on Mastodon; any other token (unknown, expired or stale of an available owner, an app token)
-  changes nothing, and no activity is recorded (RES-6). The judgment precedes every Store write such a request can make:
-  app registration judges it in the transaction that inserts the app (`registerApp`), and
+  and an error's answer included, with none of the answer's headers; it carries the API's `private, no-store`, and
+  since every route that judges the owner varies by `Authorization` and answers a token only privately, no cache
+  serves the suspended owner's token a stored answer (WEB-7; `test/suspended-tokens.test.ts` ("drops the replaced
+  answer's headers"), `test/api-caching.test.ts` ("a token-reading instance route varies by Authorization")). The token
+  holder learns of the suspension, as on Mastodon; any other token (unknown, expired or stale of an available owner,
+  an app token) changes nothing, and no activity is recorded (RES-6). The judgment precedes every Store write such a
+  request can make: app registration judges it in the transaction that inserts the app (`registerApp`), and
   `GET /api/v1/instance/activity` in the read that runs before either path that keeps the day's answer
   (`instanceActivity`). The hot reads (custom emoji and the public account reads) judge it in their one operation
   (`refuseSuspended` in `src/domain/auth.ts`); every other answer is judged after the handler by the access middleware
@@ -1818,13 +1889,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `/api/*`, `/oauth/token`, `/oauth/revoke`, `/oauth/userinfo` (bearer tokens), and for GET to the public documents
   `/.well-known/*`, `/nodeinfo/*` and local actor documents (`/ap/users/:username`), as Mastodon opens them, only.
   `/oauth/authorize`, `/admin/*`, `/setup` and the web UI send no CORS headers; the profile page `/@:username`, which
-  Mastodon opens, is open only in its ActivityPub form (the actor document), not as HTML. _Enforced (main):_ CORS is
-  added on those paths only (`API_CORS_PATHS` and `DOCUMENT_CORS_PATHS` in `src/app/app.ts`); `test/oauth.test.ts`
-  ("opens the API and token endpoints to browser clients, errors included", which also finds none on the consent
-  page), `test/federation.test.ts` ("documents open to browsers", "opens the profile page only as the actor document,
-  not as HTML"); UI routes send none even for a request with a foreign `Origin` (`test/web-pages.test.ts`,
-  `test/web-session.test.ts`), nor does `/setup`, preflight included (`test/setup.test.ts`). _Gap:_ no test sends
-  `/admin/*` a foreign `Origin`.
+  Mastodon opens, is open only in its ActivityPub form (the actor document), not as HTML. The API exposes `Link` and
+  `Mastodon-Async-Refresh` to scripts, the headers of Mastodon's list Kopje sends. _Enforced (main):_ CORS is added on
+  those paths only (`API_CORS_PATHS` and `DOCUMENT_CORS_PATHS` in `src/app/app.ts`); `test/oauth.test.ts` ("opens the
+  API and token endpoints to browser clients, errors included", which also finds none on the consent page),
+  `test/federation.test.ts` ("documents open to browsers", "opens the profile page only as the actor document, not as
+  HTML"), `test/async-refreshes.test.ts` ("exposes the header to browser clients"); UI routes send none even for a
+  request with a foreign `Origin` (`test/web-pages.test.ts`, `test/web-session.test.ts`), nor does `/setup`, preflight
+  included (`test/setup.test.ts`). _Gap:_ no test sends `/admin/*` a foreign `Origin`.
 - **WEB-4: the web UI applies WEB-1 to every state change.** Each form that changes state checks `Origin` and its
   session; a return or redirect target is a validated local path. _Enforced (main):_ every POST (profile, avatar,
   header, revoking an app, signing out other sessions, sign-out) first requires `Origin` equal to the instance origin
@@ -1917,6 +1989,27 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   host", "changes nothing before setup has fixed the domain", "reads the domain once more only where the route does not
   read it", "drops a spooled inbox request to another host at replay, applying nothing", "serves a rescued snapshot
   only on the domain it records, or a legacy one on the stored domain").
+- **WEB-7: no cache hands one caller's API answer to a caller whose answer differs.** Every answer under `/api/*` (the
+  streaming endpoints excepted, which keep Mastodon's streaming server's headers, MD-8) and of `/oauth/userinfo`
+  carries `Cache-Control: private, no-store`, errors, maintenance and gate answers included, but a 2xx answer the
+  route table declares public; a CORS preflight is answered before it and carries none. The answer of every route that
+  reads the bearer token (any access but `public`, AUTH-2), which can depend on the token through sign-in, a setting
+  (the domain-block list under `show_domain_blocks` and `show_domain_blocks_rationale`) or the owner's suspension
+  (AUTH-2's 403), is public only to a request without an `Authorization` header and carries `Vary: Authorization`
+  (with `Accept-Language` where the content reads it); a request with any `Authorization` header, whatever it holds,
+  is answered `private, no-store`, as Mastodon's `enforce_cache_control!` answers it. Only a route that never reads a
+  token may be public to every request, without `Vary`, and the route table refuses any other at registration. The
+  API reads no cookie. A cache that honours `Vary` and `private` or `no-store` (RFC 9111; Cloudflare's Workers cache,
+  were it enabled) therefore never serves a stored answer to a caller it does not fit. _Enforced (main):_
+  `src/mastodon/caching.ts`, `src/mastodon/routes.ts`, `src/app/app.ts`; `test/api-caching.test.ts` ("an
+  authenticated read is private", "the app registration is private", "an error answer is private", "a refused token
+  is private and varies by Authorization", "a thrown error is private", "an unavailable Store's answer is private", "a
+  maintenance answer is private", "an unknown API path is private", "an off-domain answer stays private", "userinfo
+  is private", "an anonymous public read", "any Authorization header makes it private", "trending statuses vary by
+  language", "an everyone read", "a token-reading instance route varies by Authorization", "the block list varies by
+  Authorization under every setting", "a preflight carries no Cache-Control", "streaming keeps its own headers", "only
+  routes that never read a token declare EVERYONE", "decides every declaration, status class and Authorization"),
+  `test/suspended-tokens.test.ts` ("drops the replaced answer's headers").
 
 ### Setup (SETUP)
 
@@ -2176,7 +2269,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   failure kind and reason, the chain and the hostname only. Its records are writes fenced by the claim token, the row's
   generation (a reset draws a new one), an open claim, a pending row and the status's eligibility now
   (`cardEligibleSql`, R43), so an edit, a delete, a hide or a suspension still in force at the record lets nothing be
-  attached (one lifted within the round is an accepted risk). `test/link-card-rounds.test.ts` ("gives
+  attached (one lifted within the round is an accepted risk). A page's `fediverse:creator` is judged at the record
+  against a local account only, with no request (`unverifiedAuthor` in `src/domain/link-cards.ts`: one seek of the
+  account by name, its attribution domains read within `ATTRIBUTION_DOMAINS_BYTES`, at most 127 variants of a final
+  URL's host within 253 bytes); a name of another server, or of the instance by another spelling, names no account.
+  `test/link-card-rounds.test.ts` ("records the local account a page names and does not credit, judged by the final
+  URL's host", "reads one account row, its domains within ATTRIBUTION_DOMAINS_BYTES, with every input at its cap"),
+  `test/link-cards.test.ts` ("reads a creator as ResolveAccountService does up to its direct-local resolution, and
+  fetches nothing"). `test/link-card-rounds.test.ts` ("gives
   no card for a blank title, a failed fetch or a refused URL, without retrying", "drops the record of a claim whose
   status was edited or deleted during the fetch", "drops the record of a status suspended during the fetch", "starts no
   fetch and follows no redirect once maintenance is entered during a DNS check", "releases a claim unattempted when a
@@ -2291,7 +2391,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   owner's key or the instance actor's, never from the signed-document cache; search with `resolve=true`
   (`GET /api/v2/search`, and `GET /api/v1/accounts/search` for addresses) fetches as the instance actor only, for a
   request whose token is valid, has the scope and names a user (401, 403 or 422 otherwise, before anything is fetched),
-  with WebFinger unsigned; the search after the fetch judges the token again at its own time. A URL that answers 200
+  with WebFinger unsigned; the search after the fetch judges the token again at its own time. A signed-in poll read's
+  refresh fetches the post's document by its signer's key (DATA-7) through the request's own memo, never from the
+  signed-document cache (`createPollFetcher` in `src/federation/poll-refresh.ts`;
+  `test/poll-refresh-store-calls.test.ts` ("Store calls of a poll read")). A URL that answers 200
   with another type is followed as Mastodon 4.7.5's `FetchResourceService` follows it (`process_link_headers ||
   process_html`): to the document its `Link` header names (`rel` exactly `alternate`, `type` exactly
   `application/activity+json`, else the ActivityStreams-profiled `application/ld+json`) and, when that alternate gives
@@ -2332,7 +2435,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   also without a trailing dot (`hostDomain` in `src/platform/domain-name.ts`); the id itself is kept whole for origin
   checks. A search by an alias (any address whose WebFinger names an existing actor) finds the account by its actor id,
   whose own claim decides its address. `test/inbox-handles.test.ts`, `test/inbox-canonical-address.test.ts` ("the
-  canonical address of a remote account", "the domains of WebFinger subjects and addresses, parsed one way").
+  canonical address of a remote account", "the domains of WebFinger subjects and addresses, parsed one way"); a replies
+  walk confirms an author it fetches the same way (`loadActor` in `src/federation/quotes.ts`;
+  `test/reply-walk-rounds.test.ts` ("stores a reply by an unknown author once WebFinger confirms", "stores no reply by
+  an unknown author whose handle WebFinger refuses")).
   Only a username of Mastodon's format (`isRemoteUsername`) is matched against stored accounts by address, so an
   invalidated handle (`! <id>`, `shownHandle` in `src/domain/accounts.ts`) names no account by address; lookup names it
   by `<id>@handle.invalid` (`accountByLookup`); `test/account-invalid-handle.test.ts`.
@@ -2804,18 +2910,21 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 ### Resources (RES)
 
 - **RES-1: input is bounded before it is parsed.** API parameter bodies and inbox bodies stop at 1 MiB, by
-  `Content-Length` or while streaming. Each text field has a raw cap before parsing or counting (status text: 10,000
-  code units). Media uploads have their own limit. _Enforced (main)_ for bodies: `src/platform/body.ts`,
+  `Content-Length` or while streaming. Each text field has a raw cap before parsing or counting (status text and a local
+  bio: 10,000 code units). Media uploads have their own limit. _Enforced (main)_ for bodies: `src/platform/body.ts`,
   `src/mastodon/params.ts`; `test/gate.test.ts` ("refuses an inbox body over 1 MiB", "stops reading a streamed inbox
   body"). _Enforced (main)_ for API bodies: a route's body stops at its limit (1 MiB unless the route sets one), and a
-  route that reads files (`readParams`' file rule: `update_credentials`' avatar and header, the settings page's
-  image) takes a multipart body of the limit plus each file and its part headers (17,858,560 bytes for
-  `update_credentials`), chosen from `Content-Type` before any byte is read, while its text stays within the limit in
-  UTF-8 bytes; a JSON body is refused past 10,000 generated parameter paths (object members, array objects and empty
-  arrays) or 2,097,152 UTF-16 code units of all its keys, charged before each key is built, and past 32 levels of
-  nesting; `update_credentials` checks the token before reading a multipart
-  body; `test/params.test.ts`, `test/profile-images.test.ts` ("takes a multipart body up to the text limit plus two
-  files and refuses one byte more", "answers an invalid or under-scoped token without reading a multipart body").
+  route that reads files (`readParams`' file rule: the avatar and header of `update_credentials` and of the profile
+  update, `PATCH` and `PUT /api/v1/profile`, and the settings page's image) takes a multipart body of the limit plus
+  each file and its part headers (17,858,560 bytes for `update_credentials` and the profile update), chosen from
+  `Content-Type` before any byte is read, while its text stays within the limit in UTF-8 bytes; a JSON body is refused
+  past 10,000 generated parameter paths (object members, array objects and empty arrays) or 2,097,152 UTF-16 code units
+  of all its keys, charged before each key is built, and past 32 levels of nesting; `update_credentials` and the profile
+  update check the token before reading a multipart body (one handler, `credentialsUpdate` in
+  `src/mastodon/accounts.ts`); `test/params.test.ts`, `test/profile-images.test.ts` ("takes a multipart body up to the
+  text limit plus two files and refuses one byte more", "answers an invalid or under-scoped token without reading a
+  multipart body"), `test/profile-api.test.ts` ("answers an invalid or under-scoped token without reading a multipart
+  body").
   _Enforced (main)_ for status text: `test/status-text.test.ts` ("raw input bound"); the Store checks the raw bound of
   the text and warning as sent before it judges a blank text or moves its warning into the text (`convertedPost`, which
   `postStatus` calls, and `editStatus`, in `src/domain/statuses.ts`), and an edit to a blank text checks it again on
@@ -2823,7 +2932,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   in the Store, before the warning moves, posted now or scheduled", "counts the text and the kept warning as written,
   as one string"). _Enforced (main)_ for search terms (500 characters) and media (16 MB and 16,777,216 pixels, read
   with the body bound before parsing): `src/mastodon/search.ts`, `src/mastodon/media.ts`; `test/search.test.ts`
-  ("bounds the query"), `test/media.test.ts` ("refuses a file over 16 MB"). _Enforced (main)_ for remote profiles:
+  ("bounds the query"), `test/media.test.ts` ("refuses a file over 16 MB"). _Enforced (main)_ for a local bio: the
+  note as sent is refused past the status text's raw bound before its links are found and counted (`accountChanges` in
+  `src/mastodon/accounts.ts`, for `update_credentials` and the settings page alike; `test/accounts.test.ts` ("refuses
+  a note past the raw bound before parsing it")). _Enforced (main)_ for remote profiles:
   bios are cut at 50,000 code units before sanitizing, display names at 2,048 and image descriptions at 150 code points
   (`src/security/html.ts`, `src/federation/remote-actor.ts`; `test/profile-descriptions.test.ts`). _Enforced (main):_ a
   timeline marker's `last_read_id` stops at 255 characters, which Mastodon bounds as a bigint (`src/domain/markers.ts`;
@@ -2883,7 +2995,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/platform/json-bounds.ts`, applied by `parseActivity` and by the loaders of `createRemoteLoaders`); JSON-LD
   contexts too, before they are cached and again on every cache hit (an entry may predate the check; `boundedContexts`
   in `src/federation/federation.ts`); and one request fetches at most 8 documents (the fetch budget), so one activity's
-  JSON-LD work is at most 8 bounded documents and their bounded contexts; the Store asks the Worker for documents at
+  JSON-LD work is at most 8 bounded documents and their bounded contexts, besides the activity itself (an
+  `Update(Person)`'s embedded actor is read through JSON-LD within the activity's bounds, its contexts loaded within the
+  same budget: `readEmbeddedActor`, `test/inbox-actor-update.test.ts`); the Store asks the Worker for documents at
   most 3 times per activity, and the revision fence (ID-1) adds no fetch beyond that budget (a stale-author refresh may
   fetch its actor again); statuses are read as compacted JSON, without JSON-LD, as Mastodon reads them;
   `test/inbox-statuses.test.ts` ("refuses an activity or a fetched document past the JSON bounds before reading it",
@@ -2959,7 +3073,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   whose status is public, judged against the parent the dump restores first); the card writers set `public` from the
   status and the final URL they write (`cardPublicSql`), never from a donor; `test/migrations.test.ts`
   ("0071_link_trends"), `test/link-card-rounds.test.ts` ("the trend identity of a card"), `test/trend-dump.test.ts`
-  ("link trends in dumps").
+  ("link trends in dumps"). A card's `unverified_author_account_id`, imports included, is NULL or 18 ASCII digits as
+  text, NULL on a pending row, enforced by migration `0098_card_attribution` (`cardAuthorPastSql`); the record writes
+  it through the same rule, only with the final URL it writes, and a reset clears it; `test/migrations.test.ts`
+  ("0098_card_attribution"), `test/dump-import.test.ts` ("round-trips a card's unverified author (0098), and refuses
+  one past its stored bound on import").
   _Enforced (main)_ for remote field verification: `remote_field_links` rows, imports included, meet the
   [stored bounds](dump-format.md#stored-bounds), enforced by migration `0068_remote_field_verification`, whose triggers
   judge in order the storage classes, the raw bytes, a raw NUL, `json_valid` and the canonical form (no padding or
@@ -3128,7 +3246,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `0097_profile_descriptions`, for imports too), and read as stored; since 0xFF and 599 continuation bytes pass as one
   character and decode to 600 U+FFFD, each description is cut again at 150 code points after decoding
   (`presentedProfileDescription`), at most 902 JSON bytes, and is `''` while the account is unavailable
-  (`test/profile-descriptions.test.ts`). The local actor's `name` and `summary` read both as stored (#1583). Mentions
+  (`test/profile-descriptions.test.ts`). The local actor's `name` and `summary`, and its icon's and image's `summary`,
+  take the same reads and presenters wherever its document is rendered (`ACTOR_ROW_COLUMN_MAP` in
+  `src/domain/actor-row.ts`, `localActorOf`, `documentOf`: the endpoint, every Update and the maintenance snapshot;
+  `test/actor-update.test.ts`). Mentions
   read the username through the same projection (`src/domain/profile-bounds.ts`) and derive `acct` and a fallback url
   from the cut username; the admin account search reads candidates' ids and flags only and tests their text in SQL. The
   actor URI is bounded as stored (`ACTOR_URI_LIMIT`), read through `actorUriSql`, and
@@ -3183,10 +3304,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `hydrate` in status-presenter.ts, `presentAccountsById` and `presentAccount` in accounts.ts) are not exported, so the
   compiler refuses direct use outside their module; the exported paths present one unit or admit within a budget.
   _Enforced (main)_ for each presented status: the status columns of `STORED_COLUMNS` hold their stored bounds
-  (RES-2, stored values) and are read as stored: content and source text within 128 KiB as a
+  (RES-2, stored values) and are read as stored, but the content warning, read through a cut of 16,382 stored bytes
+  (`spoilerReadSql`, which cuts no value a writer stores): content and source text within 128 KiB as a
   JSON string, a content warning within 16 KiB, a status url within 4,096 bytes, attachment URLs within 2,048,
   descriptions within 10,000 code points and meta within 1 KiB, a blurhash within 54 bytes, and an edit's content,
-  warning and choices the same. Columns that keep a read-time projection are read through their helper in
+  warning and choices the same. An import may still hold malformed UTF-8 that passes the triggers' counts and decodes
+  past them (0xFF and any number of continuation bytes is one character to the warning's `substr`; `json_quote`
+  counts a malformed byte as one, and it decodes to a U+FFFD of three bytes), so content, source text and the warning
+  are bounded again after decoding: `''` past 128 KiB of JSON (`presentedContent`) and the warning cut to 2,730 code
+  points past 16 KiB (`presentedSpoiler`), in every presented status, edit version, `/source` answer and Note
+  (`test/status-text-bounds.test.ts`). Columns that keep a read-time projection are read through their helper in
   `src/domain/status-bounds.ts` (accounts and actor ids through `src/domain/profile-bounds.ts`): a uri over 4,096 bytes
   reads as ''; at most 4 attachments per status; at most 200 mentions and 70 hashtags (of the 100 stored) per status,
   the first by account id and by name; at most 100 poll choices of 1,000 code points; each edit-history snapshot's first
@@ -3225,7 +3352,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   admitted within `ARRAY_ANSWER_BYTES` as a backstop that never cuts; the Access admin's page holds at most 50;
   `test/announcement-bounds.test.ts`. _Enforced (main)_ for trends: `GET /api/v1/trends/tags` holds at most 20 hashtags
   (Count), `/statuses` at most 40 statuses within the answer budget, continued at the statuses it consumed (Budget,
-  Offset), `/links` at most 20 links of at most 10,268 bytes each (205,381 a page); the Access admin's pages hold at
+  Offset), `/links` at most 20 links of at most 10,296 bytes each (205,941 a page); the Access admin's pages hold at
   most 20 hashtags, 40 statuses, 20 links and 100 publishers, each field through its bounded projection;
   `test/trends-maxima.test.ts`, `test/trends.test.ts` ("reaches every status once"). _Enforced (main)_ for scheduled
   statuses: a page reads the ids of at most 40 and admits whole scheduled statuses within `ARRAY_ANSWER_BYTES`, each
@@ -3344,6 +3471,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   never dumped). `pruneActivity` in `src/domain/instance-activity.ts`; `test/instance-activity.test.ts` ("keeps today,
   the 184 days before it and tomorrow, and the cutoff moves with the day", "prunes by key at most 500 rows a table a run
   at the worst case, with stale statistics").
+  _Enforced (main)_ for replies walks (migration `0099_reply_walks`): `reply_walks` holds one row per root status, kept
+  while its walk runs (at most a day after its latest start) and an hour after it finishes, a claim deleting at most
+  `WALK_PRUNE_BATCH` (100) expired rows; `reply_walk_nodes` holds at most `WALK_STATUSES` (200) rows a walk, deleted
+  when it ends; neither is dumped. A completion stores at most two statuses (the reply and the self-quote it embeds)
+  and one author, each status with its notifications only within the real-time window and within the per-status
+  figure above, inserts at most 200 nodes and updates at most 400 (`src/domain/reply-walks.ts`;
+  `test/reply-walks.test.ts` ("prunes at most WALK_PRUNE_BATCH finished walks a claim", "records at most
+  WALK_STATUSES nodes", "stores a reply and its embedded self-quote … within the figure")).
 - **RES-5: retries are bounded, but maintenance is not a failure.** Waiting out maintenance consumes no processing
   retry; real processing errors count against `max_retries`. _Enforced (main):_ `src/jobs/queue.ts`; `test/gate.test.ts`
   ("spool consumer"). Deliveries give up after 15 attempts (`min(30s·2^n, 12h)`, n the attempts so far) or at once on a
@@ -3366,20 +3501,21 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   real processing errors"). Jobs rounds: _Enforced (main):_ a jobs message is only a nudge, as the jobs and their
   progress are durable in the Store: it is acked and never retried, and a Queue batch runs at most one jobs round
   however many jobs messages and spool replays with pending jobs it holds, so it sends at most one jobs message for the
-  next round (a live inbox request still sends its own). A round has eight error boundaries: six Store calls (the
+  next round (a live inbox request still sends its own). A round has nine error boundaries: six Store calls (the
   inbound jobs with the stamp revocations, the domain block cleanups, the notification request jobs, the local and
-  remote moderation jobs in one, the held handshakes, the unlock acceptances), then the Worker's collection syncs and
-  quote verifications, each its own round of Store calls and fetches. The deliveries the Store calls recorded are rung
-  once, before the Worker's fetches. A family that fails is logged (`kopje.jobs.family.failed`), counts as having no
-  work left, and stops no other family (the next resolves a new stub); a Store refusal (maintenance, a retryable or
-  reset error) ends the round and counts nothing, and cron runs the next. A call the platform terminates (a CPU or
-  memory limit) fails
+  remote moderation jobs in one, the held handshakes, the unlock acceptances), then the Worker's collection syncs,
+  quote verifications and replies walks, each its own round of Store calls and fetches. The deliveries the Store
+  calls recorded are rung once, before the Worker's fetches. A family that fails is logged (`kopje.jobs.family.failed`),
+  counts as having no work left, and stops no other family (the next resolves a new stub); a Store refusal (maintenance,
+  a retryable or reset error) ends the round and counts nothing, and cron runs the next. A call the platform terminates
+  (a CPU or memory limit) fails
   its own family only, or ends the round when it surfaces as a retryable or reset error; either way that family's
   first item is selected again. `jobsRound` and `handleQueue` in `src/jobs/queue.ts`; `test/job-families.test.ts`
   ("failing stops no family outside its Store call", "ends the round at its first Store call while the Store is
   readonly", "runs one round and sends at most one jobs message for 3 jobs messages and 5 such replays", "keeps its own
   nudge, and its job runs in the next round", "runs the quote verifications when every Store family and the collection
-  syncs throw", "rings for the Store calls’ deliveries before the collection syncs fetch", "ends the round at a
+  syncs throw", "walks when every other family throws: nine boundaries, each logged once", "stops no other family when
+  it throws", "rings for the Store calls’ deliveries before the collection syncs fetch", "ends the round at a
   retryable refusal after an earlier family reported pending", "gives the family after a failure a newly resolved
   stub"). Inbound jobs: _Enforced (main):_ each batch of a purge, `Move` or status deletion runs in its own savepoint
   (`runJobBatch` in `src/domain/inbox.ts`, `isolated` in `src/domain/job-attempts.ts`); a batch that throws a
@@ -3478,11 +3614,20 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   status's author's fetch after its state read, and two WebFinger answers for a claim confirmed through another
   subject. Each reads up to `DOCUMENT_BODY_LIMIT` (1 MiB), 6 MiB against the request's 2 MiB (`REQUEST_MAX_BYTES`), and
   each hop, retry or uncached context takes one more of the 8 fetches. Past either, the next request is refused as a
-  transient failure: a cut probe, alternate or actor fetch resolves nothing (the search answers as without
-  `resolve=true`), and a cut confirmation stores no new actor and leaves a stored one its handle;
+  transient failure: a cut probe, alternate or actor fetch resolves nothing; one refused before it is sent counts as
+  no answer for the stored account of the URL and keeps the earlier answer, and an answer whose body the request's
+  bytes cut counts as its status (`test/search-fallback.test.ts`, "a budget refusal is no answer, a cut read its
+  answer's status"); a cut confirmation stores no new actor and leaves a stored one its handle;
   `test/resolve-alternate.test.ts` ("stops at the request's budget when the alternates and the confirmation need
-  more"). A collection sync's document part, the refresh of an invalidated account, reads at most three documents with
-  the other parts' room for a redirect or a retry each (`PART_DOCUMENTS` in `src/federation/collections.ts`). Every
+  more"). A signed-in read of a remote poll (`GET /api/v1/polls/:id`) refreshes it at most once a minute, however many
+  users read it: the attempt is reserved in a Store write before its fetch (`reservePollRefresh` in
+  `src/domain/polls.ts`), and the next is due once more than a minute has passed, whatever its outcome. The refresh
+  sends one request for the post's document, two with the RFC 9421 retry of a 400 or 401, follows no redirect and
+  loads no JSON-LD context, within the request's budget, and the read makes at most five Store calls after the host
+  check's and none to the KV store (`test/poll-refresh.test.ts` ("reserves the attempt before the fetch", "waits a full
+  minute after any attempt"), `test/poll-refresh-store-calls.test.ts` ("Store calls of a poll read")). A collection
+  sync's document part, the refresh of an invalidated account, reads at most three documents with the other parts'
+  room for a redirect or a retry each (`PART_DOCUMENTS` in `src/federation/collections.ts`). Every
   actor state read (revision and stored handle) is one seek by `accounts`' uri index, pinned with `INDEXED BY` (RES-7):
   the inbox gate's actor and `Move` target, a refresh need's and a quote's author stage's author, a search
   resolution's actor, a sync's document part, and the comparison in the writing transaction
@@ -3521,12 +3666,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   marks an app by its key")). The cron removes unused never-authorized apps after a day (Kopje's own removal, which
   Mastodon 4.5.11 does not make: [mastodon-deviations.md](mastodon-deviations.md), Posting), and expired codes and web
   sessions, 500 of each per run. `registerApp` and `sweepOAuth` in `src/domain/oauth.ts`, `src/mastodon/oauth.ts`;
-  `test/apps-budget.test.ts`. Avatar and header uploads, from `update_credentials` and the settings page alike, go
-  through the media budgets below, one reservation and three transformations each, at most 8 MB each. Unlocking an
-  account: _Enforced (main):_ the update starts a cursor job (`local_accounts.accept_requests_after`) instead of
-  accepting in the request; each job round authorizes at most 20 requests, each in its own transaction through the
-  single authorize path (its delivery admission and recount included), and every step advances or clears the cursor,
-  also when its authorization throws (RES-5) (`src/domain/unlock-accepts.ts`; `test/unlock-accepts.test.ts`: 250
+  `test/apps-budget.test.ts`. Avatar and header uploads, from `update_credentials`, the profile update and the settings
+  page alike, go through the media budgets below, one reservation and three transformations each, at most 8 MB each.
+  Unlocking an account: _Enforced (main):_ the update starts a cursor job (`local_accounts.accept_requests_after`)
+  instead of accepting in the request; each job round authorizes at most 20 requests, each in its own transaction
+  through the single authorize path (its delivery admission and recount included), and every step advances or clears the
+  cursor, also when its authorization throws (RES-5) (`src/domain/unlock-accepts.ts`; `test/unlock-accepts.test.ts`: 250
   requests in rounds of at most 20). Held handshakes (VIS-30): _Enforced (main):_ a follow holds one at most (the
   table's key), which goes with the follow; a claim writes at most `CLAIM_LIMIT` holds; a round runs at most
   `HANDSHAKE_REPLAYS_PER_ROUND` (20) steps, each its own transaction, which takes one hold by two index probes at most
@@ -3658,16 +3803,18 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Images calls and 3 R2 puts; remote media (`src/federation/remote-media.ts`) at most 120 requests and 240 DNS lookups
   (30 files of at most 4 hops: 24 in lane 0, 6 in lane 1), 240 policy reads and 96 own Store calls (6 a round and 3 a
   file), with 60 R2 puts, 100 heads, one list and three deletes; quote verification (`runScheduledJobs`) at most 400
-  requests (`QUOTE_ROUND` 10 × `QUOTE_STAGES` 5 × `REQUEST_MAX_FETCHES` 8) and collection sync at most 16
-  (`COLLECTION_SYNCS_PER_ROUND` 2 × 8): 616 requests, 400 DNS lookups, 400 policy reads and 125 own Store calls
-  (`test/remote-media-rounds.test.ts` ("makes the derived own Store calls and puts through a full round of files with
-  stills")). Contributors with no stated
-  bound, not counted:
-  the DNS lookups of
-  quote verification and collection sync (the loader reads the policy and checks DNS before it charges a fetch,
-  `src/federation/loader.ts`, so a load its budget refuses still looks up; at least two per request, 832 for their 416,
-  with no counter on the rest), their Store calls (claims, work, completion, signing keys, policy reads), the other
-  tasks' Store calls, the media sweep's R2 operations, Queue sends and the backup (which has no request counter). No
+  requests (`QUOTE_ROUND` 10 × `QUOTE_STAGES` 5 × `REQUEST_MAX_FETCHES` 8), collection sync at most 16
+  (`COLLECTION_SYNCS_PER_ROUND` 2 × 8) and replies walks at most 128 (`REPLY_WALKS_PER_ROUND` 2 ×
+  `REPLY_STEPS_PER_WALK` 8 × 8) with at most 37 own Store calls (the Replies walks paragraph below): 744 requests, 400
+  DNS lookups, 400 policy reads and 162 own Store calls (`test/remote-media-rounds.test.ts` ("makes the derived own
+  Store calls and puts through a full round of files with stills"), `test/reply-walk-rounds.test.ts` ("bounds a round:
+  two walks, eight steps each, within their fetch budgets, with the derived Store calls")). Contributors with no
+  stated bound, not counted: the DNS lookups of quote verification, collection sync and replies walks (the loader
+  reads the policy and checks DNS before it charges a fetch, `src/federation/loader.ts`, so a load its budget refuses
+  still looks up; at least two per request, 1,088 for their 544, with no counter on the rest), the Store calls of
+  quote verification and collection sync (claims, work, completion, signing keys, policy reads) and the walks'
+  loaders' signing key and policy reads, the other tasks' Store calls, the media sweep's R2 operations, Queue sends
+  and the backup (which has no request counter). No
   invocation-wide counter is kept, so nothing here bounds the invocation's total against Workers Paid's 10,000
   subrequests.
   Activity: _Enforced (main):_ after the response of an authenticated request (below 400) or of `GET /settings`, the
@@ -3719,7 +3866,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   interoperability policy, not another server's behaviour, an actor id and an inbox or shared inbox URL from a remote
   actor document are at most 2,048 bytes (`ACTOR_URI_LIMIT` and `INBOX_URL_LIMIT` in
   `src/federation/remote-actor.ts`): an over-long id or inbox makes the actor unusable, and an over-long shared inbox
-  is ignored. Mastodon sets no length limit; Misskey stores inbox URLs in 512-character columns.
+  is ignored. Mastodon sets no length limit; Misskey stores inbox URLs in 512-character columns. A document whose own
+  `inbox` member is blank (missing, null, false, whitespace alone, `[]` or `{}`) is no actor either, fetched or
+  embedded, as Mastodon's `ProcessAccountService` raises for one (`process_account_service.rb:24`), so it stores
+  nothing, a stored row's inbox included (`remoteActorInput`; `test/inbox-actor-update.test.ts` ("an actor document
+  whose inbox is blank")).
   `test/inbox-verify4.test.ts` ("enqueues and fully expands an audience whose targets exceed what one row can hold",
   "refuses an actor whose inbox URL is over the cap", "refuses an actor whose id is over the cap"),
   `test/delivery-chunks.test.ts` (the chunk boundary, lane order across intents, an Update replacing a partly expanded
@@ -3762,10 +3913,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `Update`, a key miss or rotation, an authenticated resolve, any other fetch of the actor), and pending work coalesces
   per actor (one `collection_syncs` row, `requestCollectionSync`); no admission policy limits how often an actor's
   document is stored. One generation makes at most 552 requests: 9 read claims (3 parts × `MAX_SYNC_ATTEMPTS`) and 60
-  pin claims (`MAX_REMOTE_PINS` × `MAX_SYNC_ATTEMPTS`), each of 8 fetches; the network part takes at most 6 a round and
-  54 a generation while no document needs the RFC 9421 retry, a round's whole budget (8 a round, 72 a generation) when
-  each needs a redirect and the retry, and 3 documents when nothing fails (`test/remote-collections.test.ts` ("bounds
-  them before and after the network part reads the outbox", "the network part within one round")).
+  pin claims (`MAX_REMOTE_PINS` × `MAX_SYNC_ATTEMPTS`), each of 8 fetches. The pin claims fetch every status the
+  featured collection lists on the account's origin, stored or not (Mastodon's `FetchFeaturedCollectionService`): a
+  read leaves one row for each of the first `MAX_REMOTE_PINS` distinct URIs listed, a pending row for one Kopje does
+  not store and a refresh row for one it does, so a typical generation now fetches every listed status (up to 20)
+  where it fetched only the unstored ones, and updates or removes at most `MAX_REMOTE_PINS` statuses, each a refetch's
+  or a `Delete`'s bounded work (`replacePins`, `completePinFetches` in `src/domain/remote-collections.ts`;
+  `test/remote-collections.test.ts` ("bounds the pin phase with every listed status stored or not at its worst")). The
+  network part takes at most 6 a round and 54 a generation while no document needs the RFC 9421 retry, a round's whole
+  budget (8 a round, 72 a generation) when each needs a redirect and the retry, and 3 documents when nothing fails
+  (`test/remote-collections.test.ts` ("bounds them before and after the network part reads the outbox", "the network
+  part within one round")).
   A `Follow`, or an `Undo` of one, reads at most 33 unsettled answers of its pair, of them at most 65 delivery rows,
   including exposed rows, and 33 unexpanded chunks, so it admits at most 32, 64 and 32, and cancels at most those
   (NET-2); an `Undo` naming no local target first reads at most 33 answers of each local account's pair, twice
@@ -3985,7 +4143,43 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   at most 100 expired rows a call. A revoke records one signed `Delete` and at most 100 `Reject`s (the quoting author's
   answered requests). A Delete of a quoting status retires its one authorization before its batches (three rows); a
   purge's batch deletes a quote holding one within a third of the rows left. `test/quote-requests.test.ts`,
-  `test/cascade-guard.test.ts`. Streaming (VIS-26): _Enforced (main):_ at most 16 sockets per account (429) and 256 per
+  `test/cascade-guard.test.ts`.
+  Replies walks: _Enforced (main):_ only job rounds walk a remote status's replies collection
+  (`src/domain/reply-walks.ts`, `src/federation/replies.ts`), one document a step. A round claims at most
+  `REPLY_WALKS_PER_ROUND` (2) walks one after another and runs at most `REPLY_STEPS_PER_WALK` (8) steps of each, each
+  step with a whole fetch budget of its own (8 fetches), so a round makes at most 16 steps, 128 requests and 37 own
+  Store calls (the domain read, a claim and a release a walk, at most two completions a step), besides the loaders'
+  signing key and policy reads. The Store hands a node to the Worker only by charging it in the same transaction: one of
+  its `NODE_ATTEMPTS` (2) for the document it reads, and at every stage but the status one of the walk's `WALK_PAGES`
+  (100), a document read again past the entries an earlier step took included; the round's last completion hands out and
+  charges nothing, and a charge stays whatever the step's end (a lost lease, a round that died after its fetch). Each
+  hand-out is numbered, and only the completion of the one awaited is applied, once: one repeated, or of an earlier
+  hand-out, changes and charges nothing, a chain of pages that names a page again included (`test/reply-walks.test.ts`
+  ("applies a page's completion once when the page names itself next", "applies a page's completion once when a later
+  page names it again", "applies a transient failure once")). So a walk records at most `WALK_STATUSES` (200) nodes, the
+  root included, and hands out at most 2 × 200 + 100 = 500 documents (4,000 requests) however its rounds end, with no
+  counter of claims. A claim drops at most `REPLY_CLAIM_DROPS` + 1 (4) walks before it answers that more are due, and a
+  hand-out ends at most 200 spent nodes before it finds one to fetch; the lease (`REPLY_WALK_LEASE_MS`, 10 minutes) is
+  checked as the module loads against twice a walk's turn. A step holds a status document and an actor of at most 1 MiB
+  each and carries at most `REPLY_READ_ENTRIES` (200) entries of a chain past its skip to the Store (819,200 bytes at
+  `STATUS_URI_LIMIT`); a later step reads the rest by reading the same document again, while the walk has room
+  (`test/reply-walk-rounds.test.ts` ("reads a page of 400 entries with no next past its first 200 in the same walk",
+  "reads a page's entries past the cap before the next page its URI names", "reads the rest of the replies a status
+  embeds by fetching it for its replies only, storing nothing")). A reply a walk stores verifies its quote one hop short
+  of a root's (`QUOTE_HOPS` − 1), so its quoted status is stored with no quote work of its own, and nothing a walk
+  stores, verifies or syncs starts another walk. Each author document stored requests one sync generation (above), so a
+  walk leads to at most 400 statuses of its own and quotes, 200 + 200 × `QUOTE_AUTHOR_FETCHES` (6) = 1,400 author
+  documents and sync generations and 1,400 × `MAX_REMOTE_PINS` = 28,000 pins, and to nothing past them
+  (`test/reply-walks.test.ts` ("records at most WALK_STATUSES nodes", "reads at most WALK_PAGES collection documents",
+  "charges a page whose round died after its fetch", "hands out at most NODE_ATTEMPTS × WALK_STATUSES + WALK_PAGES
+  documents a walk", "stores replies listed before their parent once it is", "carries at most REPLY_READ_ENTRIES entries
+  of a page of 1 MiB", "answers 'more' after REPLY_CLAIM_DROPS + 1 walks dropped", "ends every node a spent walk holds",
+  "seeks every walk statement by its key, after ANALYZE and growth"), `test/reply-walk-rounds.test.ts` ("crash after
+  fetch", "hands out nothing at the round's last step", "bounds a round: two walks, eight steps each", "applies nothing
+  of a step whose lease another round took", "verifies a walk's reply's quote one hop deep", "starts no walk along an
+  alternating reply and quote chain", "ends discovery at a new author's synced pin", "repeated stale-author applications
+  under a walk")).
+  Streaming (VIS-26): _Enforced (main):_ at most 16 sockets per account (429) and 256 per
   instance (503); 16 subscriptions per socket, 16 stream keys per account and a socket's attachment at most 12 KiB (`Too
   many subscriptions`, 429); incoming messages text only (1003), at most 4 KiB and 120 a minute (1008). The fan-out runs
   in turns, one at a time, each an incoming request to the Store's own stub, which restores the CPU allowance: a turn
@@ -3994,8 +4188,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   filter; one presentation, 512 KiB of payload, 256 sends) and leaves the rest to the next turn. A payload is counted
   in UTF-8 bytes, the measure of the 512 KiB past which it is skipped and logged, and a unit is charged its whole
   payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit: a
-  turn presents at most 18,805,968 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
-  JSON again at most doubles it), S = 7,567,975 being the most JSON a streamed subject presents (`update` and
+  turn presents at most 18,806,024 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
+  JSON again at most doubles it), S = 7,568,003 being the most JSON a streamed subject presents (`update` and
   `status.update` a boost of a quote, `conversation` one whose last status is a boost of a quote, `notification` its
   status, report and warning together, an announcement), derived from the maxima table
   (`test/status-bounds.test.ts`, `test/streaming/split.test.ts`). The journal records nothing once it spans 4,096 ids,
@@ -4387,7 +4581,12 @@ decoded values in UTF-8, which triples such a byte: it is checked in each unit o
 and 65,534 bytes of the two (SQL `octet_length` of the projected values), holding a decoded row within `rowHeapSql` of
 the row and that within the raw fill's, and presenting within the escaped fill's account occurrence
 (`test/status-bounds.test.ts`
-("an account of malformed imported text")). A local account also shows `noindex` and `roles`, at most the Owner's
+("an account of malformed imported text")). A status whose content and source text (0xFF and 131,069 continuation
+bytes) and warning (0xFF and 1,048,575) are malformed, and an edit of it, are checked the same way: they read the raw
+fill's 131,070 bytes of content and source text and 16,382 of the warning, hold a decoded row within `rowHeapSql` of
+the row and that within the raw fill's, and present within the escaped fill's occurrence of each shape
+(`test/status-bounds.test.ts` ("a status of malformed imported text")).
+A local account also shows `noindex` and `roles`, at most the Owner's
 badge: the account occurrence's conservative JSON adds those keys (63 bytes) to the remote one measured, and what a
 local account's four fields at their derived most (37,677 bytes: names of six-byte escapes, each value at 7,822 and
 verified) present past the remote one's fields. Every presented account but the viewer's moved to an account of its own
@@ -4397,48 +4596,62 @@ each nested account counts at the conservative JSON its caps derive, the table's
 its derived 2,399 bytes (a name of 60 code points escaped to six bytes each and a website of 2,000 bytes, which JSON
 writes unescaped, with the key), witnessed by a local original and a local quote whose apps are at those bounds,
 escaped, raw and as malformed imported bytes (`test/status-bounds.test.ts` ("status applications")). Each status and
-boosted original of the fills holds a card at its stored bounds (texts escaped, or ASCII in the raw fill; the boost's
-own row one too, which is not read), and each status a shape shows that may show one (not a boost, and not a quoted
-status, which shows none) counts it at its derived 9,899 bytes (`CARD_JSON_MAX`, `test/link-cards.test.ts`; its image
-URL at 342 bytes, its blurhash at 54 and its alt text at 256 JSON bytes included). The notification shapes are read
-with every fallback type (`supported_types`), and each `admin.report` and `moderation_warning` notification and group
-counts its `fallback` at its derived 28,521 bytes (`FALLBACK_JSON_MAX`, `test/notification-fallback.test.ts`: two
-links, each href at 2,048 characters and username at 255 bytes, every byte escaped to six, and the instance origin
-at a domain of 253 octets: the origin is the stored domain, which `/setup` and `/admin/config` refuse past 253 octets
-and which a request reaches only as a DNS name of at most 253, so a Store configured earlier with a longer name
-receives no request for it). Through the real Store
-RPC, a public timeline page, a context and a search answer of statuses of about 0.98 MB each, each cut at the budget,
-return 7.82 MB of JSON each (`test/answer-budgets.test.ts` ("the Store RPC returns a maximal answer")), and the boost
-of a quote above, alone or as the one status a lookup of it, the quote and the quoted status admits, returns within
-`ANSWER_BYTES` (8 MiB), well under the 32 MiB RPC limit, which `test/status-bounds.test.ts` asserts for the escaped and
-the raw fill; the sizes it logs (5.77 MB escaped, 4.66 MB raw, the fill of the largest SQLite read) are measurements,
-not asserted.
+boosted original of the fills holds a card at its stored bounds (texts escaped, or ASCII in the raw fill, and an
+unverified author other than the viewer; the boost's own row one too, which is not read), and each status a shape shows
+that may show one (not a boost, and not a quoted status, which shows none) counts it at its derived 9,927 bytes
+(`CARD_JSON_MAX`, `test/link-cards.test.ts`; its image URL at 342 bytes, its blurhash at 54, its alt text at 256 JSON
+bytes and a signed-in viewer's `missing_attribution` included). The notification shapes are read with every fallback
+type (`supported_types`), and each `admin.report` and `moderation_warning` notification and group counts its `fallback`
+at its derived 28,521 bytes (`FALLBACK_JSON_MAX`, `test/notification-fallback.test.ts`: two links, each href at 2,048
+characters and username at 255 bytes, every byte escaped to six, and the instance origin at a domain of 253 octets: the
+origin is the stored domain, which `/setup` and `/admin/config` refuse past 253 octets and which a request reaches only
+as a DNS name of at most 253, so a Store configured earlier with a longer name receives no request for it). Through the
+real Store RPC, a public timeline page, a context and a search answer of statuses of about 0.98 MB each, each cut at the
+budget, return 7.82 MB of JSON each (`test/answer-budgets.test.ts` ("the Store RPC returns a maximal answer")), and the
+boost of a quote above, alone or as the one status a lookup of it, the quote and the quoted status admits, returns
+within `ANSWER_BYTES` (8 MiB), well under the 32 MiB RPC limit, which `test/status-bounds.test.ts` asserts for the
+escaped and the raw fill; the sizes it logs (5.77 MB escaped, 4.66 MB raw, the fill of the largest SQLite read) are
+measurements, not asserted.
 
 | Shape                                                            | Most SQLite bytes | Most JSON bytes | Conservative JSON | Rows read | Nodes | Share of 8 MiB |
 | ---------------------------------------------------------------- | ----------------- | --------------- | ----------------- | --------- | ----- | -------------- |
 | Account occurrence, with the account it moved to                 | 124,491           | 142,462         | 150,022           | 1         | 208   | 1.8%           |
 | Moved-to account (nested), derived from its caps                 | 12,456            |                 | 11,137            | 1         |       | 0.1%           |
-| Status                                                           | 4,454,829         | 2,699,529       | 2,705,997         | 1,490     | 2,727 | 32.3%          |
-| Quote (the status and its quoted status)                         | 6,831,064         | 5,389,439       | 5,402,132         | 1,927     | 5,436 | 64.4%          |
-| Boost of a quote                                                 | 7,127,307         | 5,800,405       | 5,818,802         | 1,988     | 6,511 | 69.4%          |
-| Conversation: 12 participants presented, its last status a quote | 8,529,420         | 7,098,952       | 7,151,305         | 2,001     | 7,923 | 85.3%          |
-| Notification group: 8 sample accounts, its status a quote        | 7,905,930         | 6,529,559       | 6,568,692         | 1,994     | 7,112 | 78.3%          |
-| Report: its first status a quote past the 2 MiB allowance        | 7,215,396         | 5,993,768       | 6,013,071         | 1,948     | 6,443 | 71.7%          |
+| Status                                                           | 4,454,847         | 2,699,557       | 2,706,025         | 1,490     | 2,727 | 32.3%          |
+| Quote (the status and its quoted status)                         | 6,831,082         | 5,389,467       | 5,402,160         | 1,927     | 5,436 | 64.4%          |
+| Boost of a quote                                                 | 7,127,325         | 5,800,433       | 5,818,830         | 1,988     | 6,511 | 69.4%          |
+| Conversation: 12 participants presented, its last status a quote | 8,529,438         | 7,098,980       | 7,151,333         | 2,001     | 7,923 | 85.3%          |
+| Notification group: 8 sample accounts, its status a quote        | 7,905,948         | 6,529,587       | 6,568,720         | 1,994     | 7,112 | 78.3%          |
+| Report: its first status a quote past the 2 MiB allowance        | 7,215,414         | 5,993,796       | 6,013,099         | 1,948     | 6,443 | 71.7%          |
 | An admin.report notification of that report                      | 2,368,946         | 410,181         | 442,471           | 1,070     | 529   | 5.3%           |
 | A moderation_warning notification, its local account at bounds   | 134,402           | 294,426         | 364,559           | 7         | 686   | 4.3%           |
 | Its notification group                                           | 134,402           | 294,615         | 364,748           | 7         | 693   | 4.3%           |
-| A filtered favourite of the quote, as include_filtered lists it  | 6,966,335         | 5,532,027       | 5,548,025         | 1,952     | 5,648 | 66.1%          |
+| A filtered favourite of the quote, as include_filtered lists it  | 6,966,353         | 5,532,055       | 5,548,053         | 1,952     | 5,648 | 66.1%          |
 | ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,700,089         | 4,245,597       |                   | 1,338     | 3,172 | 50.6%          |
 | Its Create (the Note and its addressing again)                   |                   | 6,301,685       |                   |           |       | 75.1%          |
+| Profile, derived from its caps                                   |                   | 326,185         | 372,038           |           |       | 4.4%           |
 | Announcement: each part derived from its caps                    |                   | 121,774         | 248,997           |           |       | 3.0%           |
 | Trending hashtag (Tag with history), derived from its caps       |                   | 4,508           | 4,572             |           |       | 0.1%           |
 | Listed hashtag (search, followed, suggested), from its caps      |                   | 4,543           | 5,070             |           |       | 0.1%           |
 | Access admin's trending hashtag, derived from its caps           |                   | 4,551           | 4,625             |           |       | 0.1%           |
 | Access admin's trending status, derived from its caps            |                   | 27,748          | 29,060            |           |       | 0.3%           |
-| Trending link (TrendsLink), derived from its caps                |                   | 4,783           | 10,268            |           |       | 0.1%           |
+| Trending link (TrendsLink), derived from its caps                |                   | 4,783           | 10,296            |           |       | 0.1%           |
 | Access admin's trending link, derived from its caps              |                   | 4,166           | 4,217             |           |       | 0.1%           |
 | Instance activity (12 weeks), derived from its caps              |                   | 1,189           | 1,189             | 8,592     |       | 0.0%           |
 | Scheduled status, derived from its caps                          |                   | 884,345         | 884,889           | 5         |       | 10.5%          |
+
+The Profile (`/api/v1/profile`, `presentProfile` in `src/domain/accounts.ts`) is one unit, derived from the bounds its
+parts hold after decoding: the display name at `DISPLAY_NAME_LIMIT` code points of six-byte escapes
+(`presentedDisplayName`); `formatted_note` at `BIO_JSON_BYTES` (`presentedNote`) and `note` at no more, since
+`htmlToPlainText` never grows a note's JSON; four local fields as written (code points of six-byte escapes, verified)
+and as formatted (37,677 bytes, as above); four image URLs at `PROFILE_URL_LIMIT` as JSON; both descriptions at
+`PROFILE_DESCRIPTION_LIMIT` code points (`presentedProfileDescription`); the attribution domains at
+`ATTRIBUTION_DOMAINS_JSON_MAX` (`presentedAttributionDomains` over `attributionDomainsSql`); and `MAX_FEATURED_TAGS`
+featured hashtags at the list's bound on an origin of a 253-octet host and a port, read through `ACCOUNT_FEATURED_SQL`'s
+`LIMIT` (as many rows read with 12 featured as with 40). A local account with every part at its cap presents the
+measured figure; with its display name, note and descriptions imported as malformed bytes past their decoded bounds it
+presents less (`test/profile-api.test.ts` ("derives the Profile's maximum from its caps, above a witness at them and one
+of malformed bytes")).
 
 A moderation_warning shows its account twice (the sender and the warning's `target_account`, the same local account with
 four local fields at their limits, each value a verified 255-character link whose `&`s the link markup escapes twice,
@@ -4447,8 +4660,12 @@ four local fields at their limits, each value a verified 255-character link whos
 fields shown at the most a value presents, 7,822 bytes derived from the value bound (every character twice as a
 six-byte escape, and one link's markup per 9 characters). As a stream payload, which carries no fallback, encoded again
 as a string, it is at most 337,412 bytes measured and 476,110 conservative (the encoding at most doubles a byte), under
-the hub's 512 KiB. The
-conversation's conservative JSON is 62,897 bytes within 86% of 8 MiB (7,214,202), the least whole percent that keeps
+the hub's 512 KiB. A
+conversation never shows a boost as its last status: no writer links one (`addToConversation`), and its read shows a
+boost that a restored row names, or that the trigger moves back to through a restored link, as `last_status: null`
+(`conversationStream`; `test/conversations.test.ts` ("presents no boost as a conversation's last status")), so the
+quote is the largest last status it shows. The
+conversation's conservative JSON is 62,869 bytes within 86% of 8 MiB (7,214,202), the least whole percent that keeps
 it at least the 4,096 bytes a change may not cross without a review (#1142). Every remote account shown but the
 account occurrence counts its fields at 33,485 JSON bytes, derived from the constants (32 KiB of names and values as
 presented, 16 fields' keys, 4 verification times of 31 bytes and 12 nulls: 565 bytes past the fill's 8 fields); the
@@ -4466,8 +4683,8 @@ escaped to six bytes (a malformed one decodes to a three-byte U+FFFD), a 200-uni
 supported language and a 24-byte time. Pages: 20 hashtags (91,461 bytes at most; 90,178 filled through the Store
 RPC), 20 admin hashtags, 40 admin statuses (1,162,440 at most; 1,093,041 filled through the Store RPC by imported
 rows whose parents pass every bound, half of them with malformed bytes in the username, domain and content). A
-trending link is its card at `CARD_JSON_MAX` (9,899 bytes) with its history (seven days at 400 uses: 358 bytes) and
-the key (11), 10,268 bytes, so a page of 20 is at most 205,381 bytes; 20 links of 2,048-byte URLs with texts of
+trending link is its card at `CARD_JSON_MAX` (9,927 bytes) with its history (seven days at 400 uses: 358 bytes) and
+the key (11), 10,296 bytes, so a page of 20 is at most 205,941 bytes; 20 links of 2,048-byte URLs with texts of
 control characters at their bounds fill 95,681 through the Store RPC. An admin link takes a 2,048-byte URL, the
 title and provider name at their JSON bounds, a 253-byte domain, its publisher's review and the history. A listed
 hashtag (v2 search, `followed_tags`, `featured_tags/suggestions`) takes the lists' name bound instead: 256 code points
@@ -4657,7 +4874,7 @@ reports. Normal: the rows are the larger of 1.25 × the target and the item's ro
 rejected item and, for groups and reports, their state. With the backstop fired, 1.25 × (the target + 1.20 MB) of
 dropped rows more. The 392 KiB timeline cap, the largest multiple of 8 KiB that does, keeps the fallback below half
 the isolate's memory even while the dropped chunk remains live, with at least 4,096 bytes to
-spare under 64 MB (asserted, as above, and exact in `HEAP_PEAKS`; the conversation's JSON keeps 62,897 under its
+spare under 64 MB (asserted, as above, and exact in `HEAP_PEAKS`; the conversation's JSON keeps 62,869 under its
 ceiling): each remote account row's and moved-to account's cached profile images (two rows at their caps, MEDIA-7),
 each status, account and moved-to account row's cached emoji (its first 16 entries, read with the row: `emojiCacheSql`;
 the emoji-cache fill caches every entry of snapshots at their most entries, and a moved-to account counts its at their
@@ -4803,14 +5020,25 @@ heap).
   account's, and its key is chosen only while it is available and still follows the remote account, which is checked
   again then; otherwise the instance actor signs (`localFollower` in `src/domain/follower-signer.ts`,
   `fetchSignerOf` in `src/domain/actors.ts`, the one home of this rule, read by `fetchSigner` and by the fetch
-  preparation of `inboxGate`, of a `receiveActivity` need and of `resolutionGate` (a search resolution, the instance
-  actor); `src/federation/collections.ts`, `receiveInbound` in `src/federation/inbound.ts`;
-  `test/remote-collections.test.ts`, `test/signed-fetch.test.ts` "the signer of a fetch").
+  preparation of `inboxGate`, of a `receiveActivity` need, of `resolutionGate` (a search resolution, the instance
+  actor) and of `reservePollRefresh`; `src/federation/collections.ts`, `receiveInbound` in `src/federation/inbound.ts`;
+  `test/remote-collections.test.ts`, `test/signed-fetch.test.ts` "the signer of a fetch"). A replies walk's fetches (its
+  statuses, their collections and pages, and their authors) have no recipient: the instance actor signs them, as
+  Mastodon's representative signs them, but for the WebFinger lookup that confirms an author's handle, unsigned as every
+  WebFinger request (`JsonLdHelper#fetch_resource_without_id_validation`; `src/federation/replies.ts`;
+  `test/reply-walk-rounds.test.ts` ("signed by the instance actor")).
+  A signed-in read of a remote poll refreshes it from its post's document, fetched as the instance actor for a public
+  or unlisted post, which then tells its server nothing about who read it, and by the reader's key for a private,
+  direct or limited one, which its server reaches only with the reader's access; a fetch refused by the remote or by
+  the domain policy is not sent again by the other signer (`reservePollRefresh` in `src/domain/polls.ts`, whose answer
+  prepares the fetch; [mastodon-deviations.md](mastodon-deviations.md), "Polls").
   A signer is judged when it is chosen: a suspension or unfollow committed after the Store answer that chose it costs
   at most that request's fetches, and the next Store round refuses what they bring (`test/quote-requests.test.ts`);
   activities by their author's key. The instance key never signs an activity attributed to a user: the one activity it
   signs is a forwarded report's `Flag`, whose actor is the instance actor (Mastodon's `Account.representative`).
-  _Enforced (main)_ for fetches: `src/federation/federation.ts`; `test/signed-fetch.test.ts` ("signed fetches").
+  _Enforced (main)_ for fetches: `src/federation/federation.ts`; `test/signed-fetch.test.ts` ("signed fetches"),
+  `test/poll-refresh.test.ts` ("signs a public or unlisted post's fetch as the instance actor, another's as the
+  reader", "a refused fetch answers the stored poll and waits a minute").
   Activities: _Enforced (main):_ a delivery is signed with the key of its lane's account, its RFC 9421 retry included,
   unwrapped once per round (`src/jobs/deliver.ts`); `test/delivery-post.test.ts` ("signs the activity with its author
   key", "confirms the row again right before the retry and sends the body it returns, signed by the author").
@@ -5162,8 +5390,10 @@ The negative cases each area requires, in tests named with the invariant IDs; a 
 
 ## IDs to check by change type
 
-- **Mastodon API endpoint:** AUTH-1, AUTH-2, AUTH-6, VIS-1, VIS-5, VIS-12, RES-1, RES-3, RES-7, DATA-6. Test a wrong
-  scope, a revoked token, another account's resource, and a status the viewer may not see.
+- **Mastodon API endpoint:** AUTH-1, AUTH-2, AUTH-6, VIS-1, VIS-5, VIS-12, RES-1, RES-3, RES-7, DATA-6, WEB-7 (its
+  caching declaration). Test a wrong scope, a revoked token, another account's resource, and a status the viewer may
+  not see.
+- **API middleware or gate:** WEB-5, WEB-6, WEB-7.
 - **Inbound activity handler:** ID-1, ID-3, ID-6, ID-7, ID-8, VIS-2, HTML-1, RES-1, RES-2, RES-6, OPS-1; the inbox
   precheck and the spool also OPS-6 (the cutover's maintenance worker shares them).
 - **Outbound activity or delivery:** VIS-3, VIS-30, NET-2, NET-3, DATA-1, DATA-7, RES-5, RES-6.

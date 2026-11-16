@@ -1148,15 +1148,15 @@ function check(sql: SqlStorage, c: Case): string[] {
       }
     }
 
-    // Search resolution of what is stored, by its uri: an account exactly when account search finds it (R14), a
-    // status exactly when the single-status read shows it (R3) and the viewer does not block its author's domain,
-    // and never a boost.
-    const resolve = (query: string) =>
+    // Search resolution of what is stored, by its uri (storeResolved's fallback: an account after no answer, a status
+    // after a 404): an account exactly when account search finds it (R14), a status exactly when the single-status
+    // read shows it (R3) and the viewer does not block its author's domain, and never a boost.
+    const resolve = (query: string, last: number | null) =>
       ok<{ accounts: Account[]; statuses: Status[] }>(
         run(resolveSearch, {
           ...user,
           query,
-          resolved: { kind: "none" },
+          resolved: { kind: "none", last },
           now,
           origin: "https://kopje.test",
           present: PRESENT,
@@ -1164,7 +1164,7 @@ function check(sql: SqlStorage, c: Case): string[] {
         "resolve",
       );
     world.accounts.forEach((account, x) => {
-      const answered = resolve(account.uri);
+      const answered = resolve(account.uri, null);
       const ids = answered.accounts.map((found) => accountIndex.get(found.id) ?? -1);
       if (ids.length > 0) {
         shown.add("resolve account");
@@ -1174,7 +1174,7 @@ function check(sql: SqlStorage, c: Case): string[] {
       }
     });
     for (const s of all) {
-      const answered = resolve(`https://kopje.test/ap/o/${s}`);
+      const answered = resolve(`https://kopje.test/ap/o/${s}`, 404);
       const ids = answered.statuses.map((value) =>
         status("resolve status", viewer, value, (x) => x === s && m.viewable(x, viewer)),
       );

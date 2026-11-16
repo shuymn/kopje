@@ -65,8 +65,7 @@ const MAPPING: Record<string, Mapping> = {
   "REST::CustomEmojiSerializer": { file: "src/domain/local-emojis.ts", typeName: "ListedEmoji" },
   "REST::AnnualReportSerializer": { file: "src/domain/annual-reports.ts", typeName: "AnnualReport" },
   "REST::PartialAccountSerializer": { file: "src/domain/accounts.ts", typeName: "PartialAccount" },
-  // No Kopje type yet: the profile API.
-  "REST::ProfileSerializer": { deferred: 1583 },
+  "REST::ProfileSerializer": { file: "src/domain/accounts.ts", typeName: "Profile" },
   "REST::CollectionSerializer": { deferred: 1589 },
   "REST::CollectionItemSerializer": { deferred: 1589 },
   "REST::CollectionWithAccountsSerializer": { deferred: 1589 },
@@ -100,7 +99,6 @@ const ENTITY_EXCEPTIONS: Exceptions = {
   "REST::AccountSerializer": ACCOUNT,
   "REST::CredentialAccountSerializer": ACCOUNT,
   "REST::StatusSerializer": open(1589, "collections", "tagged_collections"),
-  "REST::PreviewCardSerializer": open(1586, "attribution of a link's author", "missing_attribution"),
   "REST::MediaAttachmentSerializer": accepted("MD-6", "text_url"),
   "REST::NotificationSerializer": NOTIFICATION,
   "REST::NotificationGroupSerializer": {

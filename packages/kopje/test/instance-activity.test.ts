@@ -41,7 +41,8 @@ import { community } from "./status-helpers";
 
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 const WEEK_MS = 7 * DAY_MS;
-const CACHE = "public, max-age=300, stale-while-revalidate=30, stale-if-error=86400";
+// cache_even_if_authenticated!'s, to a request without a token only (WEB-7: the route reads one).
+const CACHE = "max-age=300, public, stale-while-revalidate=30, stale-if-error=86400";
 const ACTIVITY = "/api/v1/instance/activity";
 
 const counts = (store: StoreStub) =>
@@ -100,15 +101,15 @@ afterEach(() => {
 });
 
 describe("instance activity: the answer", () => {
-  it("answers Mastodon's 12 weeks, the same for every caller, with its Cache-Control and no Vary", async () => {
+  it("answers Mastodon's 12 weeks, the same for every caller, public only to one without a token", async () => {
     const h = await community(["alice"]);
     const app = await appToken(h);
     const bodies: unknown[] = [];
     for (const init of [undefined, bearer("stale"), bearer(h.users.alice.token), bearer(app)]) {
       const response = await h.request(ACTIVITY, init);
       expect(response.status).toBe(200);
-      expect(response.headers.get("cache-control")).toBe(CACHE);
-      expect(response.headers.get("vary")).toBeNull();
+      expect(response.headers.get("cache-control")).toBe(init === undefined ? CACHE : "private, no-store");
+      expect(response.headers.get("vary")).toBe("Authorization");
       expect(response.headers.get("content-type")).toMatch(/^application\/json/);
       const body = await response.json<Record<string, unknown>[]>();
       expect(body).toHaveLength(ACTIVITY_WEEKS);
@@ -141,8 +142,8 @@ describe("instance activity: the answer", () => {
     for (const init of [undefined, bearer("stale")]) {
       const response = await h.request(ACTIVITY, init);
       expect(response.status).toBe(404);
-      expect(response.headers.get("cache-control")).toBeNull();
-      expect(response.headers.get("vary")).toBeNull();
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(response.headers.get("vary")).toBe("Authorization");
       expect(await response.text()).toBe("");
     }
     expect(await keptRow(h.store)).toEqual([]);

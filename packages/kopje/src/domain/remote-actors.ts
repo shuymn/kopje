@@ -71,6 +71,13 @@ export type RemoteActorInput = {
   movedTo: string | null;
 };
 
+// What the actor's own Update(Person) gives from the document it embeds (ID-1): everything but its keys and inboxes,
+// which only a fetched document gives, so that no embedded document can pass them.
+export type RemoteProfileInput = Omit<RemoteActorInput, "keys" | "inboxUrl" | "sharedInboxUrl">;
+
+// What only a fetched document gives: the keys and the inboxes beside them (ID-1).
+type Protocol = Pick<RemoteActorInput, "keys" | "inboxUrl" | "sharedInboxUrl">;
+
 // A refusal that must leave no trace: thrown out of the operation, so its transaction rolls back (the actor's
 // document and keys stored before the handler ran included), and turned into a retryable answer by the Store's RPC
 // (store.ts), which the Worker answers 503.
@@ -179,7 +186,11 @@ export function isDeletedActor(db: Db, uri: string, now: number): boolean {
 // A kept handle stays in SQL: upsertRemoteActor's UPSERT keeps the stored columns, and `stored` (actorState's
 // projection) serves only the Worker-side bookkeeping. Domain blocks also match the actor's host (inDomainSql in
 // audience.ts).
-function acceptedHandle(stored: Handle | null, actor: RemoteActorInput, instanceDomain: string): Handle | null {
+function acceptedHandle(
+  stored: Handle | null,
+  actor: Pick<RemoteActorInput, "confirmed">,
+  instanceDomain: string,
+): Handle | null {
   if (actor.confirmed !== null && actor.confirmed.domain !== instanceDomain) {
     return actor.confirmed;
   }
@@ -243,7 +254,11 @@ function invalidateHolder(db: Db, handle: Handle, uri: string, now: number): voi
 // domain stay frozen; the values passed remote-actor.ts's checks as any refresh's. An account an instance domain block
 // covers takes no refresh at all (its documents are not fetched).
 // A change of the routing issues a new revision (DocumentRevision); the caller has compared the expectation first.
-export function refreshRouting(db: Db, accountId: string, actor: RemoteActorInput): void {
+export function refreshRouting(
+  db: Db,
+  accountId: string,
+  actor: Pick<RemoteActorInput, "inboxUrl" | "sharedInboxUrl">,
+): void {
   db.run(
     `UPDATE accounts SET inbox_url = ?2, shared_inbox_url = ?3,
 			document_revision = ${nextDocumentRevisionSql("document_revision")}
@@ -297,6 +312,38 @@ export function upsertRemoteActor(
   now: number,
   expected?: DocumentRevision,
 ): StoredActor | "superseded" | undefined {
+  return storeActor(db, actor, actor, origin, now, expected);
+}
+
+// The store of the actor's own Update(Person) that embeds its document (ID-1): one store under the revision the inbox
+// gate read (`expected`), issuing one revision, its keys and inboxes those of `fetched`, the document the request fetched
+// for its key, else the stored row's (remote_keys untouched, inbox_url and shared_inbox_url as stored), everything else
+// the embedded `profile`'s. accounts.fetched_at is set either way, the time the account's document was last stored
+// (ACCOUNT_STALE_MS's clock, as Mastodon's last_webfingered_at is set at every processing), so the stale-author refresh
+// does not read a peer's cached document back over it; remote_keys.fetched_at only with `fetched`, so a key's trust
+// still runs from the last fetched document (KEY_REFRESH_MS). A profile alone never creates an account: with no row
+// stored, it is 'superseded'.
+export function upsertEmbeddedActor(
+  db: Db,
+  profile: RemoteProfileInput,
+  fetched: RemoteActorInput | null,
+  origin: string,
+  now: number,
+  expected: DocumentRevision,
+): StoredActor | "superseded" | undefined {
+  return storeActor(db, profile, fetched, origin, now, expected);
+}
+
+// upsertRemoteActor's store, of a document's profile with `protocol`, its keys and inboxes, or with none (the stored
+// row's kept).
+function storeActor(
+  db: Db,
+  actor: RemoteProfileInput,
+  protocol: Protocol | null,
+  origin: string,
+  now: number,
+  expected?: DocumentRevision,
+): StoredActor | "superseded" | undefined {
   if (
     originOf(actor.uri) === origin ||
     db.first("SELECT 1 AS x FROM accounts WHERE uri = ? AND domain IS NULL", actor.uri) !== undefined ||
@@ -304,12 +351,14 @@ export function upsertRemoteActor(
   ) {
     return undefined;
   }
-  if (!revisionHolds(db, actor.uri, expected)) {
+  if (!revisionHolds(db, actor.uri, expected) || (protocol === null && expected === null)) {
     return "superseded";
   }
   const frozen = unavailableRemote(db, actor.uri);
   if (frozen !== undefined) {
-    refreshRouting(db, frozen.id, actor);
+    if (protocol !== null) {
+      refreshRouting(db, frozen.id, protocol);
+    }
     return { ...frozen, syncWaiting: false, frozen: true };
   }
   const published = actor.published === null ? NaN : Date.parse(actor.published);
@@ -353,8 +402,8 @@ export function upsertRemoteActor(
     actor.locked ? 1 : 0,
     actor.discoverable === null ? null : actor.discoverable ? 1 : 0,
     actor.indexable ? 1 : 0,
-    actor.inboxUrl,
-    actor.sharedInboxUrl,
+    protocol?.inboxUrl ?? null,
+    protocol?.sharedInboxUrl ?? null,
     actor.raw,
     new Date(now).toISOString(),
     accountSearchText(searched.username, searched.domain, actor.displayName),
@@ -380,8 +429,10 @@ export function upsertRemoteActor(
 					document_revision = ${nextDocumentRevisionSql("accounts.document_revision")}, actor_type = excluded.actor_type,
 					display_name = excluded.display_name, note = excluded.note, url = excluded.url,
 					avatar_url = excluded.avatar_url, header_url = excluded.header_url, locked = excluded.locked,
-					discoverable = excluded.discoverable, indexable = excluded.indexable, inbox_url = excluded.inbox_url,
-					shared_inbox_url = excluded.shared_inbox_url, raw = excluded.raw, fetched_at = excluded.fetched_at,
+					discoverable = excluded.discoverable, indexable = excluded.indexable,
+					inbox_url = CASE WHEN ?27 THEN accounts.inbox_url ELSE excluded.inbox_url END,
+					shared_inbox_url = CASE WHEN ?27 THEN accounts.shared_inbox_url ELSE excluded.shared_inbox_url END,
+					raw = excluded.raw, fetched_at = excluded.fetched_at,
 					search_text = excluded.search_text, domain = CASE WHEN ?26 THEN accounts.domain ELSE excluded.domain END,
 					emojis = excluded.emojis, avatar_description = excluded.avatar_description,
 					header_description = excluded.header_description, show_featured = COALESCE(?23, accounts.show_featured),
@@ -397,6 +448,7 @@ export function upsertRemoteActor(
         setting(actor.showMedia),
         setting(actor.showRepliesInMedia),
         keep ? 1 : 0,
+        protocol === null ? 1 : 0,
       ),
   );
   const row = remoteAccount(db, actor.uri);
@@ -418,9 +470,11 @@ export function upsertRemoteActor(
     syncProfileFiles(db, row.id, { avatar: actor.avatarUrl, header: actor.headerUrl }, now);
     // Its custom emoji to cache, from the snapshot just stored (remote-media.ts).
     noteEmojiSnapshot(db, emojis, domain, now);
+  }
+  if (row !== undefined && protocol !== null) {
     // The document lists the actor's current keys; keys it no longer lists are not trusted any more.
     db.run("DELETE FROM remote_keys WHERE account_id = ?", row.id);
-    for (const key of actor.keys) {
+    for (const key of protocol.keys) {
       if (!sameOrigin(key.id, actor.uri)) {
         continue;
       }

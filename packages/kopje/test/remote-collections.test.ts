@@ -105,6 +105,13 @@ async function featuredTags(t: Setup, accountId: string): Promise<FeaturedTag[]>
 
 const rows = (t: Setup, table: string) => sql<{ n: number }>(t.store, `SELECT count(*) AS n FROM ${table}`);
 
+// The author's Create of `note`, delivered, with `note` served at its id as the author's server serves every status it
+// posted (a sync fetches every listed status again, those Kopje stores included).
+async function posted(t: Setup, author: TestActor, note: Note): Promise<void> {
+  t.web.serve(note.id, { "@context": AS, ...note });
+  expect(await t.post(author, create(author, note))).toBe(202);
+}
+
 // A round of jobs' syncs, as the Queue's and cron's rounds run them, until none waits.
 function deps(t: Setup, loader: Parameters<typeof inboxDeps>[1] = t.web.loader) {
   return inboxDeps(() => t.store, loader);
@@ -474,7 +481,7 @@ describe("reading a remote account’s collections", () => {
     const bobId = await followed(t, bob);
     expect(await rows(t, "collection_syncs")).toEqual([{ n: 1 }]);
     expect(t.queue.pending.map((m) => m.body)).toContainEqual({ kind: "inbound-jobs" });
-    expect(await t.post(bob, create(bob, stored))).toBe(202);
+    await posted(t, bob, stored);
     await sync(t);
 
     // The collection's order is the profile's; mallory's status and one on another host are not bob's pins.
@@ -515,8 +522,8 @@ describe("reading a remote account’s collections", () => {
     const featured2 = `${bob.uri}/collections/featured2`;
     t.web.serve(featured2, { "@context": AS, id: featured2, type: "OrderedCollection", orderedItems: [fresh.id] });
     const bobId = await followed(t, bob);
-    expect(await t.post(bob, create(bob, old))).toBe(202);
-    expect(await t.post(bob, create(bob, fresh))).toBe(202);
+    await posted(t, bob, old);
+    await posted(t, bob, fresh);
     // When the round asks for the old featured collection, bob's Update naming featured2 arrives first.
     let updated = false;
     const intercepted = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -565,8 +572,8 @@ describe("reading a remote account’s collections", () => {
     const bob = await mastodonActor(t.web, "bob");
     const bobId = await followed(t, bob);
     const [old, unknown, stored] = [mastodonNote(bob), mastodonNote(bob), mastodonNote(bob)];
-    expect(await t.post(bob, create(bob, old))).toBe(202);
-    expect(await t.post(bob, create(bob, stored))).toBe(202);
+    await posted(t, bob, old);
+    await posted(t, bob, stored);
     expect(await t.post(bob, addOrRemove("Add", bob, old.id))).toBe(202);
     t.web.serve(unknown.id, { "@context": AS, ...unknown });
     // An hour later the collection lists the old pin first, then one Kopje fetches later, then a stored one.
@@ -584,18 +591,26 @@ describe("reading a remote account’s collections", () => {
     const stored = Array.from({ length: MAX_REMOTE_PINS - 2 }, () => mastodonNote(bob));
     const [extra, unknown, added] = [mastodonNote(bob), mastodonNote(bob), mastodonNote(bob)];
     for (const note of [...stored, extra]) {
-      expect(await t.post(bob, create(bob, note))).toBe(202);
+      await posted(t, bob, note);
     }
     t.web.serve(unknown.id, { "@context": AS, ...unknown });
     t.web.serve(added.id, { "@context": AS, ...added });
-    // 18 stored and 2 pending: every slot is taken once the read ends.
+    // 18 stored and 2 pending: every slot is taken once the read ends (the 18 refresh rows hold none).
     servedCollections(t, bob, [...stored.map((note) => note.id), unknown.id, added.id], []);
+    const kinds = () =>
+      sql(t.store, "SELECT refresh, count(*) AS n FROM collection_pins_pending GROUP BY refresh ORDER BY refresh");
     const store = storeWithHook(t, "completeCollectionRead", async () => {
-      expect(await rows(t, "collection_pins_pending")).toEqual([{ n: 2 }]);
+      expect(await kinds()).toEqual([
+        { refresh: 0, n: 2 },
+        { refresh: 1, n: MAX_REMOTE_PINS - 2 },
+      ]);
       // Another stored status finds no slot; the Add of a pending one converts its slot (and is fetched for it).
       expect(await t.post(bob, addOrRemove("Add", bob, extra.id))).toBe(202);
       expect(await t.post(bob, addOrRemove("Add", bob, added.id))).toBe(202);
-      expect(await rows(t, "collection_pins_pending")).toEqual([{ n: 1 }]);
+      expect(await kinds()).toEqual([
+        { refresh: 0, n: 1 },
+        { refresh: 1, n: MAX_REMOTE_PINS - 2 },
+      ]);
     });
     const hooked = { ...deps(t), store: () => store };
     for (let round = 0; round < 5 && (await syncCollections(t.env, hooked)); round++) {
@@ -771,7 +786,7 @@ describe("reading a remote account’s collections", () => {
     );
     const bobId = await followed(t, bob);
     for (const note of notes) {
-      expect(await t.post(bob, create(bob, note))).toBe(202);
+      await posted(t, bob, note);
     }
     await sync(t);
     expect(await pinned(t, bobId, null)).toEqual(notes.slice(0, MAX_REMOTE_PINS).map((note) => note.id));
@@ -812,7 +827,7 @@ describe("reading a remote account’s collections", () => {
     const foreign = Array.from({ length: MAX_REMOTE_PINS - 2 }, (_, i) => `${OTHER}/users/bob/statuses/${i}`);
     servedCollections(t, bob, [hashtag("Early"), ...foreign, own.id, late.id, hashtag("Late")], []);
     const bobId = await followed(t, bob);
-    expect(await t.post(bob, create(bob, own))).toBe(202);
+    await posted(t, bob, own);
     await sync(t);
     // The 20th item is pinned; the 21st is not, nor fetched, and the hashtag after it is not featured.
     expect(await pinned(t, bobId, null)).toEqual([own.id]);
@@ -852,7 +867,7 @@ describe("reading a remote account’s collections", () => {
     t.web.serve(`${bob.uri}/followers`, counted(bob, "followers", 1, true));
     t.web.serve(`${bob.uri}/following`, counted(bob, "following", 1, true));
     const bobId = await followed(t, bob);
-    expect(await t.post(bob, create(bob, note))).toBe(202);
+    await posted(t, bob, note);
     await sync(t);
     expect(await pinned(t, bobId, null)).toEqual([note.id]);
 
@@ -875,6 +890,383 @@ describe("reading a remote account’s collections", () => {
     await syncCollections(t.env, deps(t));
     expect((await t.api<Account>(`/api/v1/accounts/${bobId}`, null)).body.hide_collections).toBe(true);
     expect((await t.api<Account[]>(`/api/v1/accounts/${bobId}/followers`, null)).body).toEqual([]);
+  });
+});
+
+// Mastodon's FetchFeaturedCollectionService fetches every status the featured collection lists on the account's host
+// at every sync, with FetchRemoteStatusService and expected_actor_uri (v4.7.5 fetch_featured_collection_service.rb:27-41,
+// fetch_remote_status_service.rb:38-48): one Kopje stores is applied as the account's own Update, another author's is
+// left as stored, and a 404 at its own URI, without a redirect, removes a public or unlisted one, whoever's
+// (fetch_remote_status_service.rb:86-98). The rows of a sync's read: a pending row for a status Kopje does not store, a
+// refresh row for one it does (migration 0101_pin_refresh).
+describe("a sync's fetch of every listed status", () => {
+  const EDITED_AT = "2026-10-11T18:00:00Z";
+
+  // Bob's featured collection listing `items`, and an empty featuredTags collection.
+  function listing(t: Setup, bob: TestActor, items: unknown[]) {
+    t.web.serve(featuredOf(bob), {
+      "@context": AS,
+      id: featuredOf(bob),
+      type: "OrderedCollection",
+      orderedItems: items,
+    });
+    const tags = `${bob.uri}/collections/tags`;
+    t.web.serve(tags, { "@context": AS, id: tags, type: "Collection", items: [] });
+  }
+
+  // `note` as its server serves it after an edit to `content`.
+  function editedServed(t: Setup, note: Note, content: string) {
+    const html = `<p>${content}</p>`;
+    t.web.serve(note.id, { "@context": AS, ...note, content: html, contentMap: { en: html }, updated: EDITED_AT });
+  }
+
+  // A sync asked for again (a later store of the account's document), run until none is due.
+  async function resync(t: Setup, accountId: string, loader = t.web.loader) {
+    await sql(
+      t.store,
+      "INSERT INTO collection_syncs (account_id, due_at) VALUES (?, 0) ON CONFLICT DO NOTHING",
+      accountId,
+    );
+    await sync(t, loader);
+  }
+
+  const contentOf = async (t: Setup, uri: string) => (await statusRow(t.store, uri))?.content;
+
+  const removal = async (t: Setup, uri: string) =>
+    (
+      await sql<{ withdrawn: number; visibility: string; job: number }>(
+        t.store,
+        `SELECT s.withdrawn, s.visibility,
+					EXISTS (SELECT 1 FROM inbound_jobs j WHERE j.kind = 'delete' AND j.key = s.id AND j.done_at IS NULL) AS job
+				FROM statuses s WHERE s.uri = ?`,
+        uri,
+      )
+    )[0];
+
+  const KEPT = { withdrawn: 0, job: 0 };
+  const REMOVING = { withdrawn: 1, visibility: "direct", job: 1 };
+
+  async function jobs(t: Setup) {
+    for (let round = 0; round < 10 && (await runStoreJobs(t.store, BUILD, { now: NOW })).pending; round++) {
+      // Until no batch is left.
+    }
+  }
+
+  it("updates a stored pin whose server serves a newer version", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const pin = mastodonNote(bob);
+    listing(t, bob, [pin.id]);
+    const bobId = await followed(t, bob);
+    await posted(t, bob, pin);
+    await sync(t);
+    expect(await pinned(t, bobId, null)).toEqual([pin.id]);
+    expect(await contentOf(t, pin.id)).not.toContain("edited");
+
+    editedServed(t, pin, "edited");
+    await resync(t, bobId);
+    expect(await pinned(t, bobId, null)).toEqual([pin.id]);
+    expect(await statusRow(t.store, pin.id)).toMatchObject({ content: "<p>edited</p>" });
+    expect((await statusRow(t.store, pin.id))?.edited_at).not.toBeNull();
+  });
+
+  it("fetches and updates the account's listed direct status without pinning it, and asks no other origin", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const direct = mastodonNote(bob, {
+      to: [ALICE_URI],
+      cc: [],
+      tag: [{ type: "Mention", href: ALICE_URI, name: "@alice" }],
+    });
+    const foreign = `${OTHER}/users/bob/statuses/9`;
+    listing(t, bob, [direct.id, foreign]);
+    const bobId = await followed(t, bob);
+    await posted(t, bob, direct);
+    expect(await statusRow(t.store, direct.id)).toMatchObject({ visibility: "direct" });
+    editedServed(t, direct, "edited");
+    await sync(t);
+    expect(t.web.fetched).toContain(direct.id);
+    expect(t.web.fetched).not.toContain(foreign);
+    expect(await statusRow(t.store, direct.id)).toMatchObject({ content: "<p>edited</p>", visibility: "direct" });
+    expect(await pinned(t, bobId, "alice")).toEqual([]);
+  });
+
+  it("fetches another author's listed status on the origin and leaves it as stored, updating the account's own", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const mallory = await mastodonActor(t.web, "mallory", { key: 2 });
+    const [theirs, own] = [mastodonNote(mallory), mastodonNote(bob)];
+    listing(t, bob, [theirs.id, own.id]);
+    const bobId = await followed(t, bob);
+    await followed(t, mallory);
+    await posted(t, mallory, theirs);
+    await posted(t, bob, own);
+    editedServed(t, theirs, "edited by mallory");
+    editedServed(t, own, "edited by bob");
+    await sync(t);
+    // Both were fetched (the branch ran for each); only bob's own is applied, and only it is pinned.
+    expect(t.web.fetched).toEqual(expect.arrayContaining([theirs.id, own.id]));
+    expect(await contentOf(t, theirs.id)).not.toContain("edited");
+    expect(await contentOf(t, own.id)).toBe("<p>edited by bob</p>");
+    expect(await pinned(t, bobId, null)).toEqual([own.id]);
+  });
+
+  it("removes a pinned status gone at its URI (hidden at once, its delete job due, its pin gone), stored again by a later Create", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const pin = mastodonNote(bob);
+    listing(t, bob, [pin.id]);
+    const bobId = await followed(t, bob);
+    await posted(t, bob, pin);
+    await sync(t);
+    expect(await pinned(t, bobId, null)).toEqual([pin.id]);
+    const id = (await statusRow(t.store, pin.id))!.id;
+
+    t.web.fail(pin.id, 404);
+    await sql(
+      t.store,
+      "INSERT INTO stream_subscriptions (account_id, stream_key, sockets) VALUES (?, 'user', 1)",
+      ALICE,
+    );
+    const captures = () =>
+      sql(
+        t.store,
+        `SELECT e.subject, v.account_id FROM stream_events e JOIN stream_delete_viewers v ON v.event_id = e.id
+				WHERE e.kind = 'delete' ORDER BY e.id, v.account_id`,
+      );
+    const again = () => sql(t.store, "INSERT INTO collection_syncs (account_id, due_at) VALUES (?, 0)", bobId);
+    await again();
+    const at = deps(t);
+    // The read's round, then the fetch's, which answers that the removal's batches are due.
+    expect(await syncCollections(t.env, at)).toBe(true);
+    expect(await rows(t, "collection_syncs")).toEqual([{ n: 0 }]);
+    expect(await removal(t, pin.id)).toMatchObject(REMOVING);
+    expect(await pinned(t, bobId, null)).toEqual([]);
+    expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(404);
+    // No retraction is recorded (Mastodon's RemoveStatusService keeps no tombstone).
+    expect(await rows(t, "inbound_retractions")).toEqual([{ n: 0 }]);
+    // Its follower listening is sent the delete (R32), once: a second sync's 404 while the removal runs captures
+    // nothing more.
+    expect(await captures()).toEqual([{ subject: id, account_id: ALICE }]);
+    await again();
+    await syncCollections(t.env, deps(t));
+    expect(await captures()).toEqual([{ subject: id, account_id: ALICE }]);
+    await jobs(t);
+    expect(await statusRow(t.store, pin.id)).toBeUndefined();
+
+    // Once the removal ended, a Create of the same status stores it again.
+    expect(await t.post(bob, create(bob, pin))).toBe(202);
+    expect(await removal(t, pin.id)).toMatchObject(KEPT);
+  });
+
+  it.each([
+    ["a public status: removed", "public", REMOVING],
+    ["a followers-only status: kept", "private", { ...KEPT, visibility: "private" }],
+    ["a boost whose id is the uri: kept", "boost", KEPT],
+    ["a status its server serves: updated and pinned", "served", { ...KEPT, visibility: "public" }],
+  ] as const)("judges a pending row by the row stored when its fetch completes: %s", async (_name, kind, expected) => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const p = kind === "private" ? mastodonNote(bob, { to: [`${bob.uri}/followers`], cc: [] }) : mastodonNote(bob, {});
+    const boosted = mastodonNote(bob);
+    listing(t, bob, [p.id]);
+    if (kind === "served") {
+      editedServed(t, p, "edited");
+    }
+    const bobId = await followed(t, bob);
+    await posted(t, bob, boosted);
+    // Phase 1 commits with P pending; P's delayed Create (or a boost under P's uri) arrives before phase 2's fetch.
+    const store = storeWithHook(t, "completeCollectionRead", async () => {
+      expect(await sql(t.store, "SELECT uri, refresh FROM collection_pins_pending WHERE uri = ?", p.id)).toEqual([
+        { uri: p.id, refresh: 0 },
+      ]);
+      const delivered =
+        kind === "boost"
+          ? {
+              "@context": AS,
+              id: p.id,
+              type: "Announce",
+              actor: bob.uri,
+              published: p.published,
+              to: [PUBLIC],
+              cc: [`${bob.uri}/followers`],
+              object: boosted.id,
+            }
+          : create(bob, p);
+      expect(await t.post(bob, delivered)).toBe(202);
+      expect(await removal(t, p.id)).toMatchObject(KEPT);
+    });
+    const hooked = { ...deps(t), store: () => store };
+    for (let round = 0; round < 5 && (await syncCollections(t.env, hooked)); round++) {
+      // Until no sync is due.
+    }
+    expect(t.web.fetched).toContain(p.id);
+    expect(await removal(t, p.id)).toMatchObject(expected);
+    expect(await pinned(t, bobId, null)).toEqual(kind === "served" ? [p.id] : []);
+    if (kind === "served") {
+      expect(await contentOf(t, p.id)).toBe("<p>edited</p>");
+    }
+  });
+
+  it("removes a listed public status gone at its own URI, whoever's, and keeps a 410, a redirected 404 and a followers-only one", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const mallory = await mastodonActor(t.web, "mallory", { key: 2 });
+    const gone = mastodonNote(bob);
+    const gone410 = mastodonNote(bob);
+    const redirected = mastodonNote(bob);
+    const followersOnly = mastodonNote(bob, { to: [`${bob.uri}/followers`], cc: [] });
+    const theirs = mastodonNote(mallory);
+    const listed = [gone, gone410, redirected, followersOnly, theirs];
+    listing(
+      t,
+      bob,
+      listed.map((note) => note.id),
+    );
+    const bobId = await followed(t, bob);
+    await followed(t, mallory);
+    for (const note of listed) {
+      await posted(t, note === theirs ? mallory : bob, note);
+    }
+    t.web.fail(gone.id, 404);
+    t.web.fail(gone410.id, 410);
+    t.web.redirect(redirected.id, `${MASTODON}/gone`);
+    t.web.fail(followersOnly.id, 404);
+    t.web.fail(theirs.id, 404);
+    await sync(t);
+    // Each was asked for at its URI (the redirected one's 404 came from /gone).
+    expect(t.web.fetched).toEqual(expect.arrayContaining([...listed.map((note) => note.id), `${MASTODON}/gone`]));
+    expect(await removal(t, gone.id)).toMatchObject(REMOVING);
+    expect(await removal(t, theirs.id)).toMatchObject(REMOVING);
+    expect(await removal(t, gone410.id)).toMatchObject({ ...KEPT, visibility: "public" });
+    expect(await removal(t, redirected.id)).toMatchObject({ ...KEPT, visibility: "public" });
+    expect(await removal(t, followersOnly.id)).toMatchObject({ ...KEPT, visibility: "private" });
+    expect(await pinned(t, bobId, null)).toEqual([gone410.id, redirected.id]);
+    expect(await rows(t, "collection_pins_pending")).toEqual([{ n: 0 }]);
+  });
+
+  it("changes nothing for a row unpinRemote deleted between the claim and the fetch's end, 200 or 404", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const [kept, gone] = [mastodonNote(bob), mastodonNote(bob)];
+    listing(t, bob, [kept.id, gone.id]);
+    const bobId = await followed(t, bob);
+    await posted(t, bob, kept);
+    await posted(t, bob, gone);
+    await sync(t);
+    expect(await pinned(t, bobId, null)).toEqual([kept.id, gone.id]);
+
+    // The next sync's fetches: `kept` answers a newer version and `gone` 404; bob removes both pins while the first is
+    // fetched, after the round claimed their rows.
+    editedServed(t, kept, "edited");
+    t.web.fail(gone.id, 404);
+    let removed = false;
+    const removing = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (new Request(input, init).url === kept.id && !removed) {
+        removed = true;
+        expect(await t.post(bob, addOrRemove("Remove", bob, kept.id))).toBe(202);
+        expect(await t.post(bob, addOrRemove("Remove", bob, gone.id))).toBe(202);
+        expect(await rows(t, "collection_pins_pending")).toEqual([{ n: 0 }]);
+      }
+      return t.web.fetch(input, init);
+    }) as typeof fetch;
+    await resync(t, bobId, { ...t.web.loader, fetch: removing });
+    expect(removed).toBe(true);
+    expect(t.web.fetched.filter((url) => url === gone.id)).toHaveLength(2);
+    expect(await contentOf(t, kept.id)).not.toContain("edited");
+    expect(await removal(t, gone.id)).toMatchObject({ ...KEPT, visibility: "public" });
+    expect(await pinned(t, bobId, null)).toEqual([]);
+  });
+
+  it("holds no pin slot with a refresh row: an Add of a new status is admitted beside 10 listed pins", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const pins = Array.from({ length: 10 }, () => mastodonNote(bob));
+    const added = mastodonNote(bob);
+    listing(
+      t,
+      bob,
+      pins.map((note) => note.id),
+    );
+    const bobId = await followed(t, bob);
+    for (const note of [...pins, added]) {
+      await posted(t, bob, note);
+    }
+    const store = storeWithHook(t, "completeCollectionRead", async () => {
+      expect(await sql(t.store, "SELECT count(*) AS n FROM collection_pins_pending WHERE refresh = 1")).toEqual([
+        { n: pins.length },
+      ]);
+      expect(await t.post(bob, addOrRemove("Add", bob, added.id))).toBe(202);
+    });
+    const hooked = { ...deps(t), store: () => store };
+    for (let round = 0; round < 5 && (await syncCollections(t.env, hooked)); round++) {
+      // Until no sync is due.
+    }
+    expect(await pinned(t, bobId, null)).toContain(added.id);
+    expect(await pinned(t, bobId, null)).toHaveLength(pins.length + 1);
+  });
+
+  it("holds no pin slot with MAX_REMOTE_PINS refresh rows: 10 pins and 10 direct statuses listed admit an Add", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const pins = Array.from({ length: MAX_REMOTE_PINS / 2 }, () => mastodonNote(bob));
+    const directs = Array.from({ length: MAX_REMOTE_PINS / 2 }, () =>
+      mastodonNote(bob, { to: [ALICE_URI], cc: [], tag: [{ type: "Mention", href: ALICE_URI, name: "@alice" }] }),
+    );
+    const added = mastodonNote(bob);
+    listing(
+      t,
+      bob,
+      [...pins, ...directs].map((note) => note.id),
+    );
+    const bobId = await followed(t, bob);
+    for (const note of [...pins, ...directs, added]) {
+      await posted(t, bob, note);
+    }
+    const store = storeWithHook(t, "completeCollectionRead", async () => {
+      expect(await sql(t.store, "SELECT refresh, count(*) AS n FROM collection_pins_pending GROUP BY refresh")).toEqual(
+        [{ refresh: 1, n: MAX_REMOTE_PINS }],
+      );
+      expect(await t.post(bob, addOrRemove("Add", bob, added.id))).toBe(202);
+      expect(await pinned(t, bobId, null)).toContain(added.id);
+    });
+    const hooked = { ...deps(t), store: () => store };
+    for (let round = 0; round < 5 && (await syncCollections(t.env, hooked)); round++) {
+      // Until no sync is due.
+    }
+    expect(await pinned(t, bobId, null)).toContain(added.id);
+    expect(await pinned(t, bobId, null)).toHaveLength(pins.length + 1);
+  });
+
+  it("counts a window of imported sync rows past MAX_REMOTE_PINS as full: 25 or 21 refresh rows refuse an Add, 20 admit it", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const bobId = await followed(t, bob);
+    await sql(t.store, "DELETE FROM collection_syncs");
+    const [first, second] = [mastodonNote(bob), mastodonNote(bob)];
+    await posted(t, bob, first);
+    await posted(t, bob, second);
+    const imported = (n: number) =>
+      sql(
+        t.store,
+        `WITH RECURSIVE k(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM k WHERE i < ?2)
+				INSERT INTO collection_pins_pending (account_id, uri, pinned_at, refresh)
+				SELECT ?1, ?3 || '/statuses/imported' || i, '2026-10-01T00:00:00.000Z', 1 FROM k`,
+        bobId,
+        n,
+        bob.uri,
+      );
+    for (const n of [MAX_REMOTE_PINS + 5, MAX_REMOTE_PINS + 1]) {
+      await sql(t.store, "DELETE FROM collection_pins_pending");
+      await imported(n);
+      expect(await t.post(bob, addOrRemove("Add", bob, first.id))).toBe(202);
+      expect(await pinned(t, bobId, null)).toEqual([]);
+    }
+    // With MAX_REMOTE_PINS of them, as many as a read writes, the window holds no pending row: the Add is admitted.
+    await sql(t.store, "DELETE FROM collection_pins_pending");
+    await imported(MAX_REMOTE_PINS);
+    expect(await t.post(bob, addOrRemove("Add", bob, second.id))).toBe(202);
+    expect(await pinned(t, bobId, null)).toEqual([second.id]);
   });
 });
 
@@ -948,7 +1340,7 @@ describe("a round’s claim of a sync", () => {
     const note = mastodonNote(bob);
     t.web.serve(featured2, { "@context": AS, id: featured2, type: "OrderedCollection", orderedItems: [note.id] });
     t.web.serve(bob.uri, { ...bob.document, featured: featured2 });
-    expect(await t.post(bob, create(bob, note))).toBe(202);
+    await posted(t, bob, note);
     const update = { "@context": AS, id: `${bob.uri}#updates/${nextId()}`, type: "Update", actor: bob.uri };
     expect(await t.post(bob, { ...update, object: { ...bob.document, featured: featured2 } })).toBe(202);
     await sync(t);
@@ -1080,7 +1472,9 @@ describe("ends discovery at a synced pin", () => {
     const root = quotingServed(t, bob, p[0]!.id, a[0]!);
     expect(await t.post(bob, create(bob, root))).toBe(202);
     await allRounds(t);
-    // P₀ is stored by verification at one hop less, P₁ at none; A₀'s and A₁'s syncs find them held and pin them.
+    // P₀ is stored by verification at one hop less, P₁ at none; A₀'s and A₁'s syncs find them held, pin them and fetch
+    // each once more (a refresh row: two fetches by the verification, one by the sync), which neither promotes.
+    expect([fetchesOf(t, p[0]!.id), fetchesOf(t, p[1]!.id)]).toEqual([3, 3]);
     expect(await quoteOf(t, root.id)).toMatchObject({ state: "accepted", hops: QUOTE_HOPS });
     expect(await quoteOf(t, p[0]!.id)).toMatchObject({ state: "accepted", hops: QUOTE_HOPS - 1 });
     expect(await quoteOf(t, p[1]!.id)).toEqual({ state: "pending", hops: 0, verify_after: null });
@@ -1943,6 +2337,116 @@ describe("the requests of one generation", () => {
       after: { networkPerRound: 6, networkPerGeneration: 54, networkHealthy: 3, perCall: 16, perGeneration: 552 },
       retried: { networkPerRound: 8, networkPerGeneration: 72, networkHealthy: 3, perCall: 16, perGeneration: 552 },
     });
+  });
+
+  // The pin phase at its worst, through the real Worker and Store: MAX_REMOTE_PINS + 5 statuses listed on the origin
+  // (bob's own, his direct ones and another author's, every other one stored, so pending and refresh rows mixed),
+  // handed to the read's end directly so that replacePins alone bounds the rows; every listed document behind three
+  // same-origin redirects, each hop answered 401 to draft-cavage and taken with the RFC 9421 retry
+  // (REQUEST_MAX_FETCHES requests), its last hop answering 503 to the first two chains and the edited document to the
+  // third, so each row spends MAX_SYNC_ATTEMPTS claims of a whole budget before it makes progress.
+  it("bounds the pin phase with every listed status stored or not at its worst", { timeout: 120_000 }, async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const mallory = await mastodonActor(t.web, "mallory", { key: 2 });
+    const bobId = await followed(t, bob);
+    await followed(t, mallory);
+    const direct = { to: [ALICE_URI], cc: [], tag: [{ type: "Mention", href: ALICE_URI, name: "@alice" }] };
+    const notes = Array.from({ length: MAX_REMOTE_PINS + 5 }, (_, i) =>
+      i % 5 === 1 ? mastodonNote(mallory) : i % 5 === 2 ? mastodonNote(bob, direct) : mastodonNote(bob),
+    );
+    for (const [i, note] of notes.entries()) {
+      if (i % 2 === 0) {
+        const author = note.attributedTo === bob.uri ? bob : mallory;
+        expect(await t.post(author, create(author, note))).toBe(202);
+      }
+    }
+    await sql(t.store, "DELETE FROM collection_syncs");
+    await sql(t.store, "INSERT INTO collection_syncs (account_id, due_at) VALUES (?, 0)", bobId);
+    const read = await t.store.claimCollectionSync(BUILD, { now: NOW });
+    if (read === null || read === "more" || read.phase !== "read") {
+      throw new Error("no read claimed");
+    }
+    await t.store.completeCollectionRead(BUILD, {
+      now: NOW,
+      origin: LOCAL,
+      accountUri: bob.uri,
+      generation: read.generation,
+      token: read.token,
+      parts: ALL_PARTS,
+      pins: { uris: notes.map((note) => note.id) },
+      tags: null,
+      hideCollections: null,
+      counts: { statuses: null, following: null, followers: null },
+    });
+    expect(
+      await sql(
+        t.store,
+        "SELECT refresh, count(*) AS n FROM collection_pins_pending GROUP BY refresh ORDER BY refresh",
+      ),
+    ).toEqual([
+      { refresh: 0, n: MAX_REMOTE_PINS / 2 },
+      { refresh: 1, n: MAX_REMOTE_PINS / 2 },
+    ]);
+
+    const byId = new Map(notes.map((note) => [note.id, note]));
+    const chains = new Map<string, number>();
+    const requests: string[] = [];
+    const hostile = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const [base, hop] = request.url.split("?hop=") as [string, string | undefined];
+      const note = byId.get(base);
+      if (note === undefined) {
+        return t.web.fetch(input, init);
+      }
+      requests.push(request.url);
+      if (!request.headers.has("signature-input")) {
+        return new Response(null, { status: 401 });
+      }
+      const n = hop === undefined ? 0 : Number(hop);
+      if (n < 3) {
+        return new Response(null, { status: 302, headers: { location: `${base}?hop=${n + 1}` } });
+      }
+      const chain = (chains.get(base) ?? 0) + 1;
+      chains.set(base, chain);
+      if (chain < MAX_SYNC_ATTEMPTS) {
+        return new Response(null, { status: 503 });
+      }
+      const html = "<p>edited</p>";
+      return Response.json(
+        { "@context": AS, ...note, content: html, contentMap: { en: html }, updated: "2026-10-11T18:00:00Z" },
+        { headers: { "content-type": "application/activity+json" } },
+      );
+    }) as typeof fetch;
+    const at = { ...deps(t, { ...t.web.loader, fetch: hostile }), now: () => NOW };
+    for (let call = 0; (await rows(t, "collection_syncs"))[0]!.n > 0; call++) {
+      expect(call).toBeLessThan(MAX_REMOTE_PINS * MAX_SYNC_ATTEMPTS);
+      await sql(t.store, "UPDATE collection_syncs SET due_at = ?", NOW);
+      await syncCollections(t.env, at);
+    }
+    // Each of the first MAX_REMOTE_PINS was asked for in MAX_SYNC_ATTEMPTS chains of REQUEST_MAX_FETCHES requests, and
+    // none after them ever: the pin claims' worst. With the read's worst (MAX_SYNC_ATTEMPTS claims of a whole budget
+    // for each of its three parts, "bounds them" below), the generation stays within 552 requests.
+    const first = notes.slice(0, MAX_REMOTE_PINS).map((note) => note.id);
+    expect(first.map((uri) => requests.filter((url) => url.startsWith(uri)).length)).toEqual(
+      first.map(() => MAX_SYNC_ATTEMPTS * REQUEST_MAX_FETCHES),
+    );
+    expect(requests.filter((url) => notes.slice(MAX_REMOTE_PINS).some((note) => url.startsWith(note.id)))).toEqual([]);
+    expect(requests.length).toBe(MAX_REMOTE_PINS * MAX_SYNC_ATTEMPTS * REQUEST_MAX_FETCHES);
+    expect(3 * MAX_SYNC_ATTEMPTS * REQUEST_MAX_FETCHES + requests.length).toBe(552);
+    // The updates: bob's own among the first MAX_REMOTE_PINS, each once; another author's and those after none.
+    const edited = await sql<{ uri: string }>(
+      t.store,
+      "SELECT uri FROM statuses WHERE uri IN (SELECT value FROM json_each(?)) AND content = '<p>edited</p>'",
+      JSON.stringify(notes.map((note) => note.id)),
+    );
+    expect(edited.map((row) => row.uri).toSorted()).toEqual(
+      notes
+        .slice(0, MAX_REMOTE_PINS)
+        .filter((note) => note.attributedTo === bob.uri)
+        .map((note) => note.id)
+        .toSorted(),
+    );
   });
 });
 

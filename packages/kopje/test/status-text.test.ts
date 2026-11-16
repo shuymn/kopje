@@ -5,6 +5,7 @@ import {
   exceedsRawLength,
   MAX_RAW_LENGTH,
   MAX_URL_LENGTH,
+  noteLength,
   parseStatusText,
   renderStatusHtml,
   statusLength,
@@ -209,5 +210,48 @@ describe("raw input bound", () => {
     expect(statusLength(long, "")).toBe(long.length);
     const longest = `https://example.com/${"p".repeat(MAX_URL_LENGTH - "https://example.com/".length)}`;
     expect(parseStatusText(longest).segments).toEqual([{ kind: "url", url: longest, text: longest }]);
+  });
+});
+
+// NoteLengthValidator's count of a note (app/validators/note_length_validator.rb), each against Mastodon 4.7.5's own
+// count of the same text (M1: NoteLengthValidator#countable_text and each_grapheme_cluster, through rails runner).
+describe("note length (NoteLengthValidator)", () => {
+  const a = (n: number) => "a".repeat(n);
+  it.each([
+    // Account::MENTION_RE's [[:word:]] holds letter numbers (U+2163), alphabetic symbols (U+24B6) and join controls
+    // (U+200C): in a domain they extend it, and before an @ they are a word character, so no mention starts.
+    ["a letter number as the domain", `@verifier@Ⅳ ${a(490)}`, 500],
+    ["a letter number before the mention", `Ⅳ@verifier@x ${a(489)}`, 502],
+    ["an alphabetic symbol as the domain", `@verifier@Ⓐ ${a(490)}`, 500],
+    ["an alphabetic symbol before the mention", `Ⓐ@verifier@x ${a(489)}`, 502],
+    ["a join control before the mention", `‌@verifier@x ${a(487)}`, 500],
+    ["a join control before the mention, one more", `‌@verifier@x ${a(488)}`, 501],
+    ["a join control in the domain", `@verifier@x‌y ${a(490)}`, 500],
+    ["a domain of one character", `@verifier@x ${a(490)}`, 500],
+    ["a domain of one character, one more", `@verifier@x ${a(491)}`, 501],
+    ["a domain", `@verifier@example.com ${a(490)}`, 500],
+    // A URL takes the character before it into its 23 (URL_PATTERN's $1); at the start there is none.
+    ["a link after a space", `x https://example.com/path ${a(475)}`, 500],
+    ["a link after a space, one more", `x https://example.com/path ${a(476)}`, 501],
+    ["a link first", `https://example.com/path ${a(10)}`, 34],
+    ["a link after CR LF, which takes only the LF", "abc\r\nhttps://example.com", 27],
+    // The mention is read after the links are replaced, so the replacement extends a domain it follows.
+    ["a link glued to a mention's domain", `@verifier@example.com/https://example.com/x ${a(10)}`, 20],
+    ["combining marks", "é".repeat(500), 500],
+    ["combining marks, one more", "é".repeat(501), 501],
+  ])("counts %s as Mastodon does", (_name, note, count) => {
+    expect(noteLength(note)).toBe(count);
+  });
+
+  // Listed (docs/mastodon-deviations.md, Profile credentials): linkify-it reads a link right after # or @, which
+  // Mastodon's URL_PATTERN does not, so Kopje counts each as 23 where Mastodon counts the 22 characters of the text.
+  it("reads the links linkify-it reads", () => {
+    expect(noteLength("#https://example.com/a")).toBe(23);
+    expect(noteLength("@https://example.com/a")).toBe(23);
+  });
+
+  it("refuses to count past the raw bound", () => {
+    expect(() => noteLength("x".repeat(MAX_RAW_LENGTH + 1))).toThrow(RangeError);
+    expect(noteLength("x".repeat(MAX_RAW_LENGTH))).toBe(MAX_RAW_LENGTH);
   });
 });

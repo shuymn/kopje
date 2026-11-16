@@ -61,7 +61,7 @@ import {
   presentedMediaUrl,
   presentStatusesWithin,
 } from "../src/domain/status-presenter";
-import { statusRowBoundSql } from "../src/domain/status-rows";
+import { STATUS_COLUMN_MAP, STATUS_FROM, statusRowBoundSql } from "../src/domain/status-rows";
 import { renderFieldValue } from "../src/domain/status-text";
 import { getStatus, getStatuses, statusHistory } from "../src/domain/statuses";
 import { streamUnit } from "../src/domain/streaming";
@@ -106,6 +106,8 @@ import {
   REMOTE_FIELD_LINK_BYTES,
   REMOTE_FIELD_LINKS_BYTES,
   REMOTE_VERIFIED_SHOWN,
+  SPOILER_CUT_LIMIT,
+  SPOILER_READ_BYTES,
   STATIC_URL_LIMIT,
   STATUS_EMOJIS_BYTES,
   VERIFIED_LINKS_BYTES,
@@ -137,6 +139,7 @@ import {
 import { BUILD } from "./helpers";
 import { ALICE, setup, type Setup } from "./inbox-status-helpers";
 import { localSnapshotAtCap } from "./local-emoji-helpers";
+import { LOCAL_FIELD_VALUE_JSON_MAX, LOCAL_FIELDS_JSON_MAX, localLinkValue } from "./local-field-maxima";
 import {
   CONSERVATIVE_JSON,
   type Fill,
@@ -1412,7 +1415,8 @@ async function maximalStatuses(fill: Fill) {
 // CARD_DIMENSION_MAX whose iframe src is at its raw bound in ASCII (the raw fill) or at its escaped bound with as many
 // & as fit (the others), and its iframe dimensions at CARD_DIMENSION_MAX; and (0070_card_images) a stored image of a
 // 64-byte token at CARD_IMAGE_EDGE_MAX by CARD_IMAGE_EDGE_MAX with a blurhash at BLURHASH_BYTES, its source URL at its
-// bound and its alt text at its JSON bound.
+// bound and its alt text at its JSON bound; and (0098_card_attribution) an unverified author at its stored bound (18
+// digits), an account other than the viewer's (ALICE), so its missing_attribution is false.
 async function maximalCard(t: Setup, statusId: string, fill: Fill): Promise<void> {
   const text = (bytes: number) =>
     fill === "raw" ? "a".repeat(bytes - 2) : C.repeat(Math.floor((bytes - 2) / 6)) + "a".repeat((bytes - 2) % 6);
@@ -1451,11 +1455,13 @@ async function maximalCard(t: Setup, statusId: string, fill: Fill): Promise<void
   );
   await sql(
     t.store,
-    "UPDATE status_cards SET image_url = ?2, image_id = ?3, image_description = ?4 WHERE status_id = ?1",
+    `UPDATE status_cards SET image_url = ?2, image_id = ?3, image_description = ?4, unverified_author_account_id = ?5
+		WHERE status_id = ?1`,
     statusId,
     atLimit("https://img.example/", CARD_URL_LIMIT),
     imageId,
     text(CARD_IMAGE_DESCRIPTION_JSON_BYTES),
+    "222222222222222222",
   );
 }
 
@@ -1828,17 +1834,18 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
     fill,
   ).toEqual([0, 10, 1, 1, 1, 9]);
   // The escaped fill's streamed witnesses of the turn's hard bound (stream-hub.ts): a conversation of alice's with the
-  // table's participants whose last status is the boost of the quote, and a favourite notification of alice's whose
-  // status is that boost, each presented as a stream unit presents it (unfiltered, as R33 reads it).
+  // table's participants whose last status is the quote (it shows no boost: conversationStream), and a favourite
+  // notification of alice's whose status is the boost of the quote, each presented as a stream unit presents it
+  // (unfiltered, as R33 reads it).
   let streamed: FillMeasure["streamed"];
   if (fill === "escaped") {
     const [conversation] = await sql<{ id: string }>(
       t.store,
-      `INSERT INTO conversations (account_id, thread, participants, last_status_id) VALUES (?, 'th-boost', ?, ?)
+      `INSERT INTO conversations (account_id, thread, participants, last_status_id) VALUES (?, 'th-streamed', ?, ?)
 			RETURNING CAST(id AS TEXT) AS id`,
       ALICE,
       JSON.stringify(participants.toSorted()),
-      boost,
+      quote,
     );
     const [notification] = await sql<{ id: string }>(
       t.store,
@@ -1857,13 +1864,13 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
       expect(made.payload, kind).not.toBeNull();
       return made.payload as Record<string, unknown>;
     };
-    const talkOfBoost = await unit("conversation", conversation!.id);
-    expect((talkOfBoost.last_status as { id: string }).id).toBe(boost);
+    const talkOfQuote = await unit("conversation", conversation!.id);
+    expect((talkOfQuote.last_status as { id: string }).id).toBe(quote);
     const notified = await unit("notification", notification!.id);
     expect((notified.status as { id: string }).id).toBe(boost);
     streamed = {
-      conversation: jsonBytes(talkOfBoost),
-      conversationPayload: utf8Length(JSON.stringify(JSON.stringify(talkOfBoost))),
+      conversation: jsonBytes(talkOfQuote),
+      conversationPayload: utf8Length(JSON.stringify(JSON.stringify(talkOfQuote))),
       notification: jsonBytes(notified),
     };
   }
@@ -2043,32 +2050,6 @@ const APPLICATION_JSON_MAX =
 function applicationJson(status: Record<string, unknown>): number {
   return "application" in status ? jsonBytes({ application: status.application }) - 1 : 0;
 }
-
-// The statuses a presented value shows (each object with a quote_approval, which only a Status has).
-// A local field value at its bound that renderFieldValue links: a URL of MAX_FIELD_VALUE code units, its path '&'.
-function localLinkValue(i: number): string {
-  const prefix = `https://x.test/${i}`;
-  return prefix + "&".repeat(MAX_FIELD_VALUE - prefix.length);
-}
-
-// The most JSON a local field value presents (renderFieldValue and linkHtml, src/domain/status-text.ts): every code
-// unit at most twice (in a link's href and its shown text) as an HTML escape of at most six ASCII bytes (&quot;),
-// which JSON keeps, and each link's markup once (its quotes escaped by JSON); a link holds at least 'http://' and a
-// host character, and a separator from the next, so a value of MAX_FIELD_VALUE code units holds at most
-// (MAX_FIELD_VALUE + 1) / 9 of them.
-const LINK_MARKUP =
-  '<a href="" target="_blank" rel="nofollow noopener noreferrer"><span class="invisible"></span><span class="ellipsis">' +
-  '</span><span class="invisible"></span></a>';
-const LOCAL_FIELD_VALUE_JSON_MAX =
-  2 + 12 * MAX_FIELD_VALUE + (jsonBytes(LINK_MARKUP) - 2) * Math.floor((MAX_FIELD_VALUE + 1) / ("http://".length + 2));
-
-// The most JSON a local account's fields present: MAX_FIELDS names of control characters (six bytes each), each value
-// at LOCAL_FIELD_VALUE_JSON_MAX and verified (VERIFIED_AT_JSON_BYTES).
-const LOCAL_FIELDS_JSON_MAX =
-  jsonBytes(
-    Array.from({ length: MAX_FIELDS }, () => ({ name: C.repeat(MAX_FIELD_NAME), value: "", verified_at: "" })),
-  ) +
-  MAX_FIELDS * (LOCAL_FIELD_VALUE_JSON_MAX - 2 + VERIFIED_AT_JSON_BYTES - 2);
 
 // The presented fields with a verification time: a local account's verified fields.
 function verifiedFields(value: unknown): { value: string; verified_at: string }[] {
@@ -2652,6 +2633,138 @@ describe("an account of malformed imported text (RES-3)", () => {
   }, 300_000);
 });
 
+describe("a status of malformed imported text (RES-3)", () => {
+  it("reads and presents within the fills' maxima", async () => {
+    // The raw fill's statuses. The quoted one takes content and source text of 0xFF and 131,069 continuation bytes
+    // (the raw fill's 131,070 bytes; json_quote's 131,072, within contentSql's bound) and a warning of 0xFF and
+    // 1,048,575 continuation bytes (one character to spoilerSql's cut), and two versions of the same; the quote, of the
+    // raw fill as it is, with a version of its own text, is the reference.
+    const { t, quoted, quote, boost } = await maximalStatuses("raw");
+    const text = new Uint8Array(STATUS_CONTENT_BYTES - 2).fill(0x80);
+    text[0] = 0xff;
+    const warning = new Uint8Array(1_048_576).fill(0x80);
+    warning[0] = 0xff;
+    await sql(
+      t.store,
+      `UPDATE statuses SET content = CAST(?1 AS TEXT), source_text = CAST(?1 AS TEXT), spoiler_text = CAST(?2 AS TEXT)
+			WHERE id = ?3`,
+      text.buffer,
+      warning.buffer,
+      quoted,
+    );
+    for (const id of [quoted, quoted, quote]) {
+      await sql(
+        t.store,
+        `INSERT INTO status_edits (status_id, content, spoiler_text, media_json, created_at)
+				SELECT id, content, spoiler_text, '[]', ?2 FROM statuses WHERE id = ?1`,
+        id,
+        new Date(NOW).toISOString(),
+      );
+    }
+    const [own, reference] = await runInDurableObject(t.store, (_instance, state) =>
+      [quoted, quote].map((id) => {
+        const bounds = state.storage.sql
+          .exec<{ stored: number; spoiler: number; content: number; source: number; heap: number }>(
+            `SELECT octet_length(s.spoiler_text) AS stored, octet_length(${STATUS_COLUMN_MAP.spoiler_text}) AS spoiler,
+							octet_length(${STATUS_COLUMN_MAP.content}) AS content,
+							octet_length(${STATUS_COLUMN_MAP.source_text}) AS source, ${rowHeapSql(STATUS_COLUMN_MAP)} AS heap
+						FROM ${STATUS_FROM} WHERE s.id = ?`,
+            id,
+          )
+          .one();
+        const row = state.storage.sql
+          .exec<{ spoiler_text: string; content: string; source_text: string }>(
+            `SELECT ${selectSql(STATUS_COLUMN_MAP)} FROM ${STATUS_FROM} WHERE s.id = ?`,
+            id,
+          )
+          .one();
+        return {
+          ...bounds,
+          decoded: rowHeapBytes(row),
+          spoilers: row.spoiler_text.length,
+          contents: row.content.length,
+          sources: row.source_text.length,
+        };
+      }),
+    );
+    expect(reference).toMatchObject({
+      stored: SPOILER_BYTES - 2,
+      spoiler: SPOILER_BYTES - 2,
+      content: STATUS_CONTENT_BYTES - 2,
+      source: STATUS_CONTENT_BYTES - 2,
+    });
+    // Read: the raw fill's bytes, the warning's SPOILER_READ_BYTES of the 1,048,576 stored.
+    expect(own).toMatchObject({
+      stored: 1_048_576,
+      spoiler: reference!.spoiler,
+      content: reference!.content,
+      source: reference!.source,
+    });
+    // Heap: a malformed byte decodes to one code unit, so each text equals its SQL bound and the row is within it;
+    // that bound is the reference's.
+    expect({ spoilers: own!.spoilers, contents: own!.contents, sources: own!.sources }).toEqual({
+      spoilers: own!.spoiler,
+      contents: own!.content,
+      sources: own!.source,
+    });
+    expect(own!.decoded).toBeLessThanOrEqual(own!.heap);
+    expect(own!.heap).toBeLessThanOrEqual(reference!.heap);
+    // What the three statuses and the quoted one's history read of each text column (decoded, in code units): within
+    // the raw fill's bytes, the versions' warnings too.
+    const viewer = { ...(await credential(t)), scope: "read" as const };
+    const longest = new Map<string, number>();
+    const [items, history] = await runInDurableObject(t.store, (_instance, state) => {
+      const counting = observedSql(state.storage.sql, (rows) => {
+        for (const row of rows) {
+          for (const column of ["spoiler_text", "content", "source_text"]) {
+            const value = row[column];
+            if (typeof value === "string") {
+              longest.set(column, Math.max(longest.get(column) ?? 0, value.length));
+            }
+          }
+        }
+      });
+      const unwrap = (answer: unknown): unknown => {
+        let value = answer as Record<string, unknown>;
+        while (value.status === "ok" && "value" in value) {
+          value = value.value as Record<string, unknown>;
+        }
+        return value;
+      };
+      const present = { origin: ORIGIN };
+      return [
+        [quoted, quote, boost].map((id) =>
+          unwrap(getStatus.run(counting, { credential: viewer, now: NOW, id, present })),
+        ) as Presented[],
+        unwrap(statusHistory.run(counting, { credential: viewer, now: NOW, id: quoted, present })) as Presented[],
+      ] as const;
+    });
+    expect(Object.fromEntries(longest)).toEqual({
+      spoiler_text: SPOILER_READ_BYTES,
+      content: STATUS_CONTENT_BYTES - 2,
+      source_text: STATUS_CONTENT_BYTES - 2,
+    });
+    // Presented: each status within the escaped fill's occurrence of its shape, and the quoted one's text, as a status,
+    // as the quote's and the boost's, and in both versions of its history, within its bounds: content '' and the
+    // warning 2,730 U+FFFD (8,192 JSON bytes).
+    expect(items.map((item) => item.id)).toEqual([quoted, quote, boost]);
+    const shapes = [FILL_SHAPES.escaped.status, FILL_SHAPES.escaped.quote, FILL_SHAPES.escaped.boostOfQuote];
+    for (const [i, item] of items.entries()) {
+      expect(jsonBytes(item)).toBeLessThanOrEqual(shapes[i]!.json);
+    }
+    const shown = [...presentedStatuses(items).filter((status) => status.id === quoted), ...history];
+    expect(shown).toHaveLength(5);
+    for (const status of shown) {
+      expect({ content: status.content, spoiler: status.spoiler_text }).toEqual({
+        content: "",
+        spoiler: "�".repeat(SPOILER_CUT_LIMIT),
+      });
+      expect(jsonBytes(status.content)).toBeLessThanOrEqual(STATUS_CONTENT_BYTES);
+      expect(jsonBytes(status.spoiler_text)).toBeLessThanOrEqual(SPOILER_BYTES);
+    }
+  }, 300_000);
+});
+
 // The least spare the timeline heap and the conversation's JSON keep (#1142).
 const SPARE_FLOOR = 4096;
 
@@ -2744,7 +2857,7 @@ describe("the table of maxima (RES-3)", () => {
     // The conversation's spare under the ceiling (one card in that shape): at least SPARE_FLOOR (#1142), and
     // SHAPE_CEILING_PERCENT is the least whole percent that keeps it.
     const spare = LIMIT - conservative.conversation!;
-    expect(spare).toBe(62_897);
+    expect(spare).toBe(62_869);
     expect(spare).toBeGreaterThanOrEqual(SPARE_FLOOR);
     expect(ceiling(SHAPE_CEILING_PERCENT - 1) - conservative.conversation!).toBeLessThan(SPARE_FLOOR);
     expect(conservative).toEqual(CONSERVATIVE_JSON);
@@ -2800,9 +2913,10 @@ describe("the table of maxima (RES-3)", () => {
   // TURN_BUDGET, and charges it whole once presented, so the unit that crosses it presents at most 2S + 2 bytes
   // (encoding the JSON again at most doubles a byte, plus two quotes), S the most JSON a streamed subject presents:
   // `update` and `status.update` a status, at most a boost of a quote; `conversation` its participants and a last
-  // status, which a stored row may make a boost of a quote; `notification` its account, its status and a report and
-  // a warning (their conservative figures count a fallback each, which a streamed notification does not carry); an
-  // announcement, at its derived maximum (test/announcement-bounds.test.ts).
+  // status, counted as a boost of a quote, which it no longer shows (conversationStream shows at most a quote), so S is
+  // conservative until it is re-derived from the quote conversation (#1610); `notification` its account, its status
+  // and a report and a warning (their conservative figures count a fallback each, which a streamed notification does
+  // not carry); an announcement, at its derived maximum (test/announcement-bounds.test.ts).
   it("bounds what a stream turn presents by the most a streamed subject presents", async () => {
     const c = await conservativeJson();
     const ANNOUNCEMENT = 248_997;
@@ -2814,15 +2928,15 @@ describe("the table of maxima (RES-3)", () => {
     };
     const most = Math.max(...Object.values(kinds));
     expect({ ...kinds, most }).toEqual({
-      status: 5_818_802,
-      conversation: 7_567_975,
-      notification: 6_625_832,
+      status: 5_818_830,
+      conversation: 7_568_003,
+      notification: 6_625_860,
       announcement: ANNOUNCEMENT,
-      most: 7_567_975,
+      most: 7_568_003,
     });
-    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(18_805_968);
+    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(18_806_024);
     const { streamed } = await measureFill("escaped");
-    expect(streamed).toEqual({ conversation: 7_485_716, conversationPayload: 8_305_325, notification: 5_918_775 });
+    expect(streamed).toEqual({ conversation: 7_074_778, conversationPayload: 7_836_062, notification: 5_918_803 });
     expect(streamed!.conversation).toBeLessThanOrEqual(kinds.conversation);
     expect(streamed!.conversationPayload).toBeLessThanOrEqual(2 * most + 2);
     expect(streamed!.notification).toBeLessThanOrEqual(kinds.notification);

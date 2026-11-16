@@ -15,7 +15,10 @@ import {
   MAX_TREND_LINKS,
   MAX_TREND_REVIEWS,
   movedToPastBoundSql,
+  nextDocumentRevisionSql,
   oembedEndpointPastBoundSql,
+  POLL_REVISION_COLUMNS,
+  pollRevisionPastBoundSql,
   PROFILE_DESCRIPTION_COLUMNS,
   PROFILE_SETTING_COLUMNS,
   profileSettingsPastBoundSql,
@@ -86,7 +89,7 @@ const CARD_COLUMNS =
   "status_id, url, due_at, enqueued_at, claim, attempts, generation, title, description, author_name, " +
   "author_url, provider_name, provider_url, language, published_at, fetched_at, card_type, width, " +
   "height, embed_src, iframe_width, iframe_height, image_url, image_id, image_description, link_type, " +
-  "final_url, public";
+  "final_url, public, unverified_author_account_id";
 const REMOTE_FIELD_LINK_COLUMNS =
   "account_id, link_back, links, generation, claim, attempts, due_at, armed_at, hold_until, checked_at";
 const CARD_IMAGE_COLUMNS =
@@ -232,7 +235,7 @@ const STATEMENTS: readonly string[] = [
     cardImagePastBoundSql("NEW"),
     "card_images: a value past its stored bound",
   ),
-  // 0071_link_trends (status_cards' triggers recreated over every column 0067, 0069, 0070 and 0071 add)
+  // 0098_card_attribution (status_cards' triggers recreated over every column 0067, 0069, 0070, 0071 and 0098 add)
   ...boundTriggers(
     "status_cards_bounds",
     "status_cards",
@@ -346,6 +349,19 @@ END;`,
     profileSettingsPastBoundSql("NEW"),
     "accounts: profile setting past its stored bound",
   ),
+  // 0100_poll_refresh: the revision's bound, and a new revision on every write of the poll (one row, by key), the fence
+  // of a refresh (remote-statuses.ts refreshPoll).
+  ...boundTriggers(
+    "polls_revision",
+    "polls",
+    "revision",
+    pollRevisionPastBoundSql("NEW"),
+    "polls: revision past its stored bound",
+  ),
+  `CREATE TRIGGER polls_revision AFTER UPDATE OF ${POLL_REVISION_COLUMNS.join(", ")} ON polls
+BEGIN
+  UPDATE polls SET revision = ${nextDocumentRevisionSql("revision")} WHERE status_id = NEW.status_id;
+END;`,
 ];
 
 // Each registered trigger's statement by its name.
