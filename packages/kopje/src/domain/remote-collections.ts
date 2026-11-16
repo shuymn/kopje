@@ -491,52 +491,54 @@ export type PinFetchesInput = RoundInput & { fetched: Record<string, RemoteStatu
 // embeds is stored, and one Kopje already holds is not promoted: quotes.ts promoteQuote), so a sync stores only the
 // account's own statuses and leads to no other author, sync or status (RES-6). A pin's quote is verified when its
 // status arrives another way (a delivery, a boost, an Add, a search).
-export const completePinFetches = writeOperation<PinFetchesInput, { pending: boolean; jobsPending: boolean }>(
-  (db, input) => {
-    const account = roundAccount(db, input);
-    if (account === null) {
-      return { pending: claimable(db, input.now) !== undefined, jobsPending: false };
+export const completePinFetches = writeOperation.atStoreTime("storeNow")<
+  PinFetchesInput & { storeNow: number },
+  { pending: boolean; jobsPending: boolean }
+>((db, input) => {
+  const account = roundAccount(db, input);
+  if (account === null) {
+    return { pending: claimable(db, input.now) !== undefined, jobsPending: false };
+  }
+  let done = 0;
+  let removed = false;
+  for (const [uri, fetched] of Object.entries(input.fetched)) {
+    const row = db.first<{ pinned_at: string; refresh: number }>(
+      "SELECT pinned_at, refresh FROM collection_pins_pending WHERE account_id = ? AND uri = ?",
+      account.id,
+      uri,
+    );
+    if (row === undefined) {
+      continue;
     }
-    let done = 0;
-    let removed = false;
-    for (const [uri, fetched] of Object.entries(input.fetched)) {
-      const row = db.first<{ pinned_at: string; refresh: number }>(
-        "SELECT pinned_at, refresh FROM collection_pins_pending WHERE account_id = ? AND uri = ?",
-        account.id,
-        uri,
-      );
-      if (row === undefined) {
-        continue;
-      }
-      if (fetched === "gone") {
-        removed = removeGone(db, uri, input.now) || removed;
-      } else if (fetched !== null && fetched.uri === uri) {
-        const stored = storeFetchedStatus(db, account, fetched, {
-          now: input.now,
-          origin: input.origin,
-          deliveredTo: null,
-          fetched: true,
-          quoteHops: 0,
-        });
-        if (row.refresh === 0) {
-          // The status stored, or the one it matched by its atomUri (its own id may name no row); the pending entry's
-          // slot is the one it takes.
-          const status = stored.statusId === undefined ? undefined : pinnableStatus(db, stored.statusId);
-          if (pinnable(status, account.id) && pinsBelowCap(db, account.id, uri)) {
-            db.run(
-              "INSERT INTO status_pins (account_id, status_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
-              account.id,
-              status.id,
-              row.pinned_at,
-            );
-          }
+    if (fetched === "gone") {
+      removed = removeGone(db, uri, input.now) || removed;
+    } else if (fetched !== null && fetched.uri === uri) {
+      const stored = storeFetchedStatus(db, account, fetched, {
+        now: input.now,
+        storeNow: input.storeNow,
+        origin: input.origin,
+        deliveredTo: null,
+        fetched: true,
+        quoteHops: 0,
+      });
+      if (row.refresh === 0) {
+        // The status stored, or the one it matched by its atomUri (its own id may name no row); the pending entry's
+        // slot is the one it takes.
+        const status = stored.statusId === undefined ? undefined : pinnableStatus(db, stored.statusId);
+        if (pinnable(status, account.id) && pinsBelowCap(db, account.id, uri)) {
+          db.run(
+            "INSERT INTO status_pins (account_id, status_id, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+            account.id,
+            status.id,
+            row.pinned_at,
+          );
         }
       }
-      done += db.run("DELETE FROM collection_pins_pending WHERE account_id = ? AND uri = ?", account.id, uri);
     }
-    return { pending: endRound(db, account.id, input.generation, done > 0, input.now), jobsPending: removed };
-  },
-);
+    done += db.run("DELETE FROM collection_pins_pending WHERE account_id = ? AND uri = ?", account.id, uri);
+  }
+  return { pending: endRound(db, account.id, input.generation, done > 0, input.now), jobsPending: removed };
+});
 
 // Mastodon's FetchRemoteStatusService#fetch_status (v4.7.5 fetch_remote_status_service.rb:86-98): a 404 at a listed
 // status's own URI removes the status stored under that URI when the fetch completes, by whichever author (its origin
