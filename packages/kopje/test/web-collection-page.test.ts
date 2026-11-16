@@ -275,6 +275,41 @@ describe("a local collection's page", () => {
     expect(unknown.status).toBe(404);
   });
 
+  // Each form is what Mastodon 4.7.5's Rails (8.1.3.1, Ruby 4.0) makes of it at CollectionsController: 302 where it
+  // redirects or renders the page, 200 where it serves the document, 406 where it serves neither. Each fails if its
+  // rule is dropped: q before order, order between equal q, no Accept read as HTML, a list naming */* read as a
+  // browser's, */* taken as HTML, `text/*` and `application/*` led by HTML, a type Rails cannot read refusing the
+  // request, types looked up by their exact case, the text/xml shuffle, and String#to_f's q truncated to hundredths.
+  it("reads a collection document's Accept as Mastodon's Rails does", async () => {
+    const { h, alice } = await world();
+    const id = await seedCollection(h, alice, 1);
+    const document = `/ap/users/alice/collections/${id}`;
+    const forms: [string | null, number][] = [
+      ["application/json, text/html;q=0.1", 200],
+      ["text/html;q=0.1, application/json", 200],
+      ["text/html;q=0.5, application/json;q=0.5", 302],
+      ["application/json;q=0.5, text/html;q=0.5", 200],
+      ['application/ld+json; profile="https://www.w3.org/ns/activitystreams"', 200],
+      [null, 302],
+      ["application/activity+json, */*;q=0.1", 302],
+      ["*/*", 302],
+      ["*/*;q=0.5, application/json", 200],
+      ["application/*", 302],
+      ["image/png", 406],
+      ["foo, application/json", 406],
+      ["TEXT/HTML, application/json", 200],
+      ["text/xml, application/json, application/xhtml+xml", 302],
+      ["text/html;q=.3, application/json;q=0.2", 302],
+      ["text/html;q=1.e-1, application/json;q=0.2", 200],
+      ["application/json;q=0.285, text/html;q=0.29", 200],
+    ];
+    for (const [accept, status] of forms) {
+      const answer = await h.request(document, accept === null ? {} : { headers: { accept } });
+      const location = status === 302 ? `/collections/${id}` : null;
+      expect([accept, answer.status, answer.headers.get("location")]).toEqual([accept, status, location]);
+    }
+  });
+
   it("reads each page and the site facts in one Store call", async () => {
     const { h, calls } = await countedHarness(["alice", "bob"]);
     const served = await seedCollection(h, h.users.alice.id, 1);

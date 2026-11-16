@@ -19,6 +19,7 @@ import {
 } from "./federation";
 import { signatureKeyId } from "./inbox-request";
 import type { LoaderDeps } from "./loader";
+import { railsFormat } from "./rails-format";
 import { notSetUp } from "./setup-gate";
 import { createSnapshotSaver, snapshotKey } from "./snapshot";
 
@@ -200,12 +201,16 @@ async function respond(c: Context<FederationEnv>, deps: FederationRouteDeps, url
       if (answer.status !== "ok") {
         return null;
       }
-      // CollectionsController#redirect_to_canonical_url: a page request for the document moves to the page.
-      const page =
-        answer.document !== null && wantsPage(c.req.header("accept"))
+      // CollectionsController#show as Rails negotiates its Accept (rails-format.ts): a request it answers with the page
+      // moves to the page (#redirect_to_canonical_url), and one it answers with neither representation is refused.
+      const format = answer.document === null ? "json" : railsFormat(c.req.header("accept"));
+      const response =
+        format === "html"
           ? new Response(null, { status: 302, headers: { location: `/collections/${input.id}` } })
-          : collectionDocument(answer.document);
-      return away(answer.domain) ?? { response: page, source: null };
+          : format === "none"
+            ? new Response("Not Acceptable", { status: 406 })
+            : collectionDocument(answer.document);
+      return away(answer.domain) ?? { response, source: null };
     }
     case COLLECTION_ITEM_ROUTE: {
       const [, username, id] = ITEM.exec(url.pathname)!;
@@ -303,12 +308,6 @@ function collectionDocument(document: string | null, headers: Record<string, str
 }
 
 const NO_STORE = { "cache-control": "no-store" };
-
-// Whether a request for a collection's document asks for a page instead (Rails' request.format.html?): it names
-// text/html and no ActivityPub type (app/negotiation.ts wantsActivityPub).
-function wantsPage(accept: string | undefined): boolean {
-  return accept !== undefined && /text\/html/i.test(accept) && !/application\/(activity\+json|ld\+json)/i.test(accept);
-}
 
 const USERNAME = "([A-Za-z0-9_]{1,64})";
 const FEATURED_COLLECTIONS = new RegExp(`^/ap/users/${USERNAME}/featured_collections$`);

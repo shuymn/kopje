@@ -686,6 +686,10 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   PostgreSQL's bigint (from 1844674407370955163) is the empty page past the last, a `page[]` or `page[key]` is no page
   (the root), and a value that is not UTF-8 is read with each bad sequence replaced, where Mastodon answers 500, 500
   and 400. Accepted, 2026-11-16.
+- A collection's ActivityPub path reads `Accept` as Rails does for Mastodon's `CollectionsController`, but where
+  Mastodon serves the page's HTML at that path, a request whose first type Rails reads is neither HTML nor JSON (as
+  `*/*` alone) while it takes HTML before JSON, Kopje moves it to the page, as it does a request Rails reads as HTML;
+  and a `q` Ruby reads as infinite sorts first, where Mastodon answers 500. Accepted, 2026-11-16.
 - A deleted collection's `Remove` reaches its members as well as the owner's followers, where Mastodon's per-member
   delivery does not reach them. Kopje's collection `Add` and `Remove` carry an `id` and `to`. A member's revocation of
   its item in a local collection, by its route or by blocking the owner, is sent as the owner's `Remove` of the item,
