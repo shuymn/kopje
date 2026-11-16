@@ -8,7 +8,7 @@ import { promisify } from "node:util";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { threadsOf } from "../cli/lib/cutover/verify-expect.js";
-import { MAX_LOCAL_ADDRESSED } from "../src/platform/identity-bounds.js";
+import { isStorableActorId, MAX_LOCAL_ADDRESSED } from "../src/platform/identity-bounds.js";
 import {
   convert as convertIn,
   exportOf as exportIn,
@@ -18,8 +18,9 @@ import {
   rewriteExport,
   verify as verifyWith,
   workspace,
+  writeExport,
 } from "./cutover-helpers.js";
-import type { FixtureOptions } from "./legacy-fixture.js";
+import { buildLegacyFixture, type FixtureOptions } from "./legacy-fixture.js";
 
 // The converter end to end on synthetic exports (DATA-11 to DATA-14): convert, then check the result against
 // expectations computed independently from the export, and show the check fails on each kind of damage.
@@ -809,6 +810,54 @@ describe("remote actors whose ids spell the host otherwise", () => {
     expect(failing(ported.categories)).toEqual(["accounts"]);
     expect(ported.ok).toBe(false);
   });
+
+  // The Worker fetches actors over https only, from their id's origin (ID-2), so it never stores an actor whose id has
+  // another scheme; and the URL parser keeps such an id's host as spelled (percent escapes, capitals), no domain name.
+  for (const actor of [
+    { id: "foo://bücher.example/u/a", preferredUsername: "CaSe" },
+    { id: "foo://b%63.example/u/a", preferredUsername: "a" },
+  ]) {
+    it(`refuse the actor id ${actor.id}, as the Worker never stores it, and the check agrees`, async () => {
+      expect(isStorableActorId(actor.id)).toBe(true);
+      const { texts } = await buildLegacyFixture({ level: 39, extraActors: [actor] });
+      const exportPath = await writeExport(dir(), texts);
+      // The same export without the actor's row, converted: the dump a conversion that leaves the actor out carries.
+      const without = new Map(
+        [...texts].map(([table, text]) => [
+          table,
+          text
+            .split("\n")
+            .filter((line) => !(line.startsWith('INSERT INTO "actors"') && line.includes(actor.id)))
+            .join("\n"),
+        ]),
+      );
+      expect(without.get("actors")?.length).toBeLessThan(texts.get("actors")?.length ?? 0);
+      const untouched = await convert(await writeExport(dir(), without, "without"), { out: "untouched" });
+      expect(untouched.ok).toBe(true);
+      const stopped = await convert(exportPath);
+      expect(stopped.ok).toBe(false);
+      expect((stopped.manifest.conversion as { problems: Record<string, number> }).problems).toEqual({
+        "remote-actor-uri-not-http": 1,
+      });
+      // The check reports the refused identity, and that dump differs from what it expects only by the actor's own
+      // records (a refused identity is still expected, as every identity the converter refuses).
+      const checked = await verifyWith(exportPath, untouched.dumpPath);
+      expect(
+        Object.fromEntries(
+          failing(checked.categories).map((name) => {
+            const { missing, extra, changed } = checked.categories[name] ?? { missing: 0, extra: 0, changed: 0 };
+            return [name, { missing, extra, changed }];
+          }),
+        ),
+      ).toEqual({
+        accounts: { missing: 1, extra: 0, changed: 0 },
+        raw: { missing: 1, extra: 0, changed: 0 },
+        legacy_ids: { missing: 1, extra: 0, changed: 0 },
+      });
+      expect(checked.report).toMatchObject({ identities: { overBound: 1 } });
+      expect(checked.ok).toBe(false);
+    });
+  }
 });
 
 describe("the expected threads", () => {

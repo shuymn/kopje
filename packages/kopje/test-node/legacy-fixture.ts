@@ -79,6 +79,8 @@ export type FixtureOptions = {
   // (https://example.com./u/c), and https://h.example:8443/u/a before https://h.example/u/a, one address once the port
   // is dropped.
   hostSpellings?: boolean;
+  // More remote actors with these ids and preferred usernames, each with an inbox and followers under its id.
+  extraActors?: { id: string; preferredUsername: string }[];
 };
 
 export type LegacyFixture = {
@@ -204,6 +206,7 @@ export async function buildLegacyFixture(options: FixtureOptions): Promise<Legac
     addressed = 0,
     sharedHandles = false,
     hostSpellings = false,
+    extraActors = [],
   } = options;
   const images = imagesAccount === undefined ? IMAGES : `https://imagedelivery.net/${imagesAccount}`;
   if (before0016 !== undefined && level < 16) {
@@ -366,8 +369,12 @@ export async function buildLegacyFixture(options: FixtureOptions): Promise<Legac
     "https://h.example:8443/u/a",
     "https://h.example/u/a",
   ];
-  for (const [i, uri] of (hostSpellings ? spelled : []).entries()) {
-    const name = uri.slice(uri.lastIndexOf("/") + 1);
+  const extra = extraActors.map(({ id, preferredUsername }) => ({ uri: id, name: preferredUsername }));
+  const spelledActors = (hostSpellings ? spelled : []).map((uri) => ({
+    uri,
+    name: uri.slice(uri.lastIndexOf("/") + 1),
+  }));
+  for (const [i, { uri, name }] of [...spelledActors, ...extra].entries()) {
     insert("actors", {
       id: uri,
       type: "Person",
@@ -382,7 +389,7 @@ export async function buildLegacyFixture(options: FixtureOptions): Promise<Legac
         followers: `${uri}/followers`,
       }),
       mastodon_id: snowflake(20 + i, 200 + i),
-      username: name,
+      username: name.toLowerCase(),
       domain: new URL(uri).host,
     });
   }

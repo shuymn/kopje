@@ -303,7 +303,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 - The cutover stores a remote account's domain without the port or trailing dot of its actor id's host, as Kopje
   stores one, so address lookup, the one-account-per-address rule and the filters by domain read a converted account as
-  a fetched one; `verify-conversion` compares the domain (#1725). No Store migration and no `wrangler.jsonc` change.
+  a fetched one; `verify-conversion` compares the domain (#1725). A remote actor id that is not an http or https URL,
+  which the Worker never stores, now stops the conversion (`remote-actor-uri-not-http`). No Store migration and no
+  `wrangler.jsonc` change.
 - Search with `resolve=true` finds a local post by its page URL, a local account by its profile URL (one of its tabs
   included) and a stored remote account by its `/@user@domain` URL on this instance, as Mastodon's search does, when
   the viewer may see them. Search reads `limit` and `offset` as Mastodon's does: a negative `limit` or `offset` is

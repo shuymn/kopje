@@ -615,6 +615,12 @@ export function convertLegacy(
         count(problems, "remote-actor-uri-invalid");
         continue;
       }
+      // The Worker stores only actors fetched over https from their id's origin (federation/loader.ts, ID-2), and the
+      // host of an id of another scheme is no domain name (the URL parser keeps it as spelled): such an id is refused.
+      if (!["http:", "https:"].includes(new URL(uri).protocol)) {
+        count(problems, "remote-actor-uri-not-http");
+        continue;
+      }
       // Refuse an oversized actor identity; never cut it (src/platform/identity-bounds.ts).
       if (!isStorableActorId(uri)) {
         count(problems, "remote-actor-uri-over-limit");

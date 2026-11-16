@@ -319,12 +319,12 @@ recorded after the cutover, once the Access admin reviews them.
 
 **Stops.** The converter writes no dump when it finds rows it cannot carry over (`conversion.problems`: rows in tables
 the legacy code never wrote, unknown object types, statuses whose author is not local where it must be, duplicate URIs,
-a remote actor id longer than 2,048 bytes, a status or boost URI longer than 4,096 bytes (in UTF-8) or a remote username
-outside Mastodon's remote format, which the Worker never stores and which are identities that cannot be cut, a local
-account whose username is the instance domain in any case (`accounts:local-username-is-domain`, which would hold the
-instance actor's WebFinger handle; rename it in legacy first), lists without 18-digit ids, and the like), when rows
-reference accounts or statuses that do not exist and `--accept-deletions` is not given (`conversion.dropped`), or when
-no single KEK candidate unwraps every key.
+a remote actor id that is not an http or https URL or is longer than 2,048 bytes, a status or boost URI longer than
+4,096 bytes (in UTF-8) or a remote username outside Mastodon's remote format, which the Worker never stores and which
+are identities that cannot be cut, a local account whose username is the instance domain in any case
+(`accounts:local-username-is-domain`, which would hold the instance actor's WebFinger handle; rename it in legacy
+first), lists without 18-digit ids, and the like), when rows reference accounts or statuses that do not exist and
+`--accept-deletions` is not given (`conversion.dropped`), or when no single KEK candidate unwraps every key.
 
 **What `--accept-deletions` drops.** Besides the rows bridge migrations remove (Steps), `conversion.dropped` counts rows
 the conversion leaves out because legacy never showed them, or showed them only through what is also left out:
