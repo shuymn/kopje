@@ -781,7 +781,7 @@ export async function receiveInbound(
   // ProcessAccountService drops the Update; a document fetched for the key is still stored, as for any activity.
   let profile: RemoteProfileInput | null | undefined;
   if (embedded !== null) {
-    const read = await readEmbeddedActor(actorUri, embedded, parsed.body["@context"], loaders.context);
+    const read = await readEmbeddedActor(actorUri, parsed.body, loaders.context);
     rethrowStoreError(state);
     if (read.kind === "transient") {
       return { status: 503, reason: "actor-unavailable" };
