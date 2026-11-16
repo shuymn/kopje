@@ -7,7 +7,7 @@ import { rubyStrip } from "../platform/strip";
 import { type Present, resolveApiId } from "./accounts";
 import { pollUpdateActivity, recordOutbound, statusFacts, voteActivity } from "./activities";
 import { instanceDomainOf } from "./actors";
-import { mayVoteSql, viewableStatusId } from "./audience";
+import { isDistributable, mayVoteSql, viewableStatusId, type Visibility } from "./audience";
 import { optionalUserReadOperation, userWriteOperation } from "./auth";
 import { type FetchPreparation, fetchPreparation } from "./fetch-preparation";
 import { requireExactIncrement } from "./ids";
@@ -364,7 +364,7 @@ export const reservePollRefresh = userWriteOperation.atStoreTime("storeNow")<
   if (reserved === undefined) {
     return null;
   }
-  const status = db.first<{ uri: string; author_uri: string; visibility: string; reader: string }>(
+  const status = db.first<{ uri: string; author_uri: string; visibility: Visibility; reader: string }>(
     `SELECT s.uri, a.uri AS author_uri, s.visibility, r.username AS reader
 			FROM statuses s INDEXED BY ${STATUSES_ID_INDEX}
 			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = s.account_id
@@ -376,7 +376,7 @@ export const reservePollRefresh = userWriteOperation.atStoreTime("storeNow")<
   if (status === undefined) {
     return null;
   }
-  const signer = status.visibility === "public" || status.visibility === "unlisted" ? null : status.reader;
+  const signer = isDistributable(status.visibility) ? null : status.reader;
   return {
     statusId,
     uri: status.uri,
