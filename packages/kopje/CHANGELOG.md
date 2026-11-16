@@ -244,9 +244,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `wrangler.jsonc` change.
 - Reading a remote poll (`GET /api/v1/polls/:id`) while signed in refreshes it from its server when it may be stale,
   as Mastodon 4.7.5 does, at most once a minute per poll ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
-  "Polls"). Migration `0100_poll_refresh` adds three columns and a trigger to `polls` (… ms for this file in one local
-  run of the migration bench, at a load average of …). `wrangler.jsonc`: unchanged. This adds a Store migration, so
-  the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+  "Polls"). Migration `0100_poll_refresh` adds three columns and a trigger to `polls` (the migration bench's upgrade
+  from `0093_annual_reports` takes 18,538 ms with this file and 18,493 ms without it, medians of three runs).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
+  back past it needs a point-in-time restore.
 - An `Update` of a remote post that names no edit time no longer resets the poll counts, quote policy or quote
   approval of a post that was edited, as Mastodon ignores it. No Store migration and no `wrangler.jsonc` change.
 - The public pages show a remote post or bio whose sanitized HTML is longer than 50,000 UTF-16 code units whole,
