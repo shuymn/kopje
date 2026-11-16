@@ -222,7 +222,8 @@ Profile credentials (`PATCH /api/v1/accounts/update_credentials`, the settings p
 - A remote account's `show_featured`, `show_media` and `show_media_replies` change only when its actor's
   `showFeatured`, `showMedia` or `showRepliesInMedia` is a JSON boolean, and keep their stored values otherwise, as
   when the key is absent (`process_account_service.rb:258-260`). Mastodon casts any other value as a form value (a
-  string other than a false value is true) and fails the document on `null`.
+  non-empty string other than a false value is true) and fails the document on `null` and on an empty string, which
+  casts to `nil`.
 - Images uploaded before still renditions were made keep `avatar_static` and `header_static` equal to the image until
   they are replaced.
 - The `preview_url` of an animated upload (status media included) is a still.
