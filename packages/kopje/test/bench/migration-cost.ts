@@ -3,6 +3,7 @@ import { expect, inject, it } from "vitest";
 
 import { MIGRATIONS } from "../../src/db/migrations";
 import { MAX_FEATURED_TAGS } from "../../src/domain/featured-tags";
+import { MAX_REMOTE_PINS } from "../../src/domain/remote-collections";
 import { JOURNAL_SPAN } from "../../src/domain/stream-journal";
 import { BUILD, freshStore, testKernel } from "../helpers";
 
@@ -118,7 +119,11 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // reserved-form pass, and its shared-address pass with a seek of accounts_domain_username each), rebuilds that index
 // UNIQUE and reads the pending collection syncs (10,000 seeded while it is pending; KOPJE_BENCH_SHARED_HANDLES=0.1 also
 // seeds the shared addresses and reserved-form usernames it rewrites, 100,000 and 1,000 of the remote accounts);
-// 0102_media_description_bytes reads every media attachment's description and rewrites the imported ones seeded while
+// 0097_profile_descriptions reads no row (five columns of accounts with constant defaults and no CHECK, and two
+// triggers); 0098_card_attribution adds a column to status_cards and recreates its triggers (no row read, the attached
+// and pending cards seeded); 0101_pin_refresh tests its column's CHECK on every collection_pins_pending row
+// (MAX_REMOTE_PINS of each of SHAPE.collectionSyncs remote accounts, seeded while it is pending);
+// 0105_media_description_bytes reads every media attachment's description and rewrites the imported ones seeded while
 // it is pending (1,000 malformed runs of 50,000 bytes and 1,000 BLOBs of 10,000, after longMedia's rows). A
 // migration that reads another table must add it here before it is measured. The measured time is the whole upgrade,
 // from before the bookmark to after the verification: Date.now() in workerd moves only between I/O events, so the clock
@@ -179,7 +184,7 @@ const SHAPE = {
   longSpoilers: 10,
   longAccounts: 1_000,
   longMedia: 1_000,
-  // Imported descriptions 0102_media_description_bytes rewrites (not scaled): malformed runs past its byte bound, and
+  // Imported descriptions 0105_media_description_bytes rewrites (not scaled): malformed runs past its byte bound, and
   // BLOBs at the largest 0048's triggers accept, in the media rows after longMedia's.
   malformedDescriptions: 1_000,
   blobDescriptions: 1_000,
@@ -879,7 +884,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
         SHAPE.longMedia,
       );
     }
-    const descriptionsPending = pending("0102_media_description_bytes");
+    const descriptionsPending = pending("0105_media_description_bytes");
     if (descriptionsPending) {
       run(
         `UPDATE media_attachments SET description = CASE WHEN id < CAST(700000000000000000 + ?1 + ?2 AS TEXT)
@@ -936,6 +941,22 @@ it("applies the migration to the benchmark store within the budget", async () =>
         SHAPE.local,
       );
     }
+    // While 0101_pin_refresh is pending: MAX_REMOTE_PINS pending pins of each of the first remote accounts, as many
+    // accounts as SHAPE.collectionSyncs, the rows it tests its CHECK on.
+    const refreshPending = pending("0101_pin_refresh") && has("collection_pins_pending");
+    if (refreshPending) {
+      run(
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+				INSERT INTO collection_pins_pending (account_id, uri, pinned_at)
+				SELECT CAST(100000000000000000 + ?2 + i / ?3 AS TEXT), 'https://d' || (i % ?4) || '.bench/statuses/p' || i, ?5
+				FROM n WHERE ?1 > 0`,
+        collectionSyncs * MAX_REMOTE_PINS,
+        SHAPE.local,
+        MAX_REMOTE_PINS,
+        SHAPE.domains,
+        now,
+      );
+    }
     if (handlesPending && sharedHandles > 0) {
       run(
         `UPDATE accounts SET username = p.username, domain = p.domain,
@@ -967,7 +988,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
 							HAVING count(*) > iif((SELECT a.domain FROM accounts a WHERE a.id = status_pins.account_id) IS NULL, 5, 20))`,
           )
         : 0;
-    // The descriptions that are not text or pass 40,000 bytes, which 0102_media_description_bytes rewrites, and the
+    // The descriptions that are not text or pass 40,000 bytes, which 0105_media_description_bytes rewrites, and the
     // malformed runs (0xFF and continuation bytes).
     const pastDescriptions = () =>
       count("media_attachments WHERE typeof(description) <> 'text' OR length(CAST(description AS BLOB)) > 40000");
@@ -1020,6 +1041,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
       pastDescriptions: descriptionsPending ? pastDescriptions() : 0,
       malformedDescriptions: descriptionsPending ? count(`media_attachments WHERE ${MALFORMED_RUN}`) : 0,
       collectionSyncs: handlesPending && has("collection_syncs") ? count("collection_syncs") : 0,
+      pendingPins: refreshPending ? count("collection_pins_pending") : 0,
       // The remote rows sharing an address with a row of lower rowid, and those in the reserved form.
       sharedHandles: handlesPending
         ? count(
@@ -1051,7 +1073,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
     const foreignKeyCheck = logs.find((entry) => entry.event === "kopje.store.upgrade.start")?.foreignKeyCheck;
     const jamoLeft = jamoKeys();
     const pinsLeft = pinsPending ? [count("status_pins"), excessPins()] : [0, 0];
-    // 0102_media_description_bytes: the descriptions left past its bound, and the malformed runs it cut to it.
+    // 0105_media_description_bytes: the descriptions left past its bound, and the malformed runs it cut to it.
     const descriptions = descriptionsPending
       ? {
           past: pastDescriptions(),
@@ -1075,6 +1097,14 @@ it("applies the migration to the benchmark store within the budget", async () =>
     // 0094_quote_author_fetches: the column, and the quotes holding its default.
     const authorFetches = has("quotes", "author_fetches")
       ? { quotes: count("quotes"), zero: count("quotes WHERE author_fetches = 0") }
+      : undefined;
+    // 0098_card_attribution: the column, and the cards holding NULL.
+    const cardAuthors = has("status_cards", "unverified_author_account_id")
+      ? { cards: count("status_cards"), none: count("status_cards WHERE unverified_author_account_id IS NULL") }
+      : undefined;
+    // 0101_pin_refresh: the pending pins, and those holding the new column's default.
+    const pinRefresh = has("collection_pins_pending", "refresh")
+      ? { rows: count("collection_pins_pending"), pending: count("collection_pins_pending WHERE refresh = 0") }
       : undefined;
     // 0092_reject_replays: its table, indexes (the unique key's included) and triggers, made and empty.
     const rejectReplays = has("reject_replays")
@@ -1105,6 +1135,27 @@ it("applies the migration to the benchmark store within the budget", async () =>
             .one().unique,
         }
       : undefined;
+    // 0097_profile_descriptions: its columns and triggers, and the accounts holding the columns' defaults.
+    const profileSettings = has("accounts", "show_media_replies")
+      ? {
+          accounts: count(
+            `accounts WHERE avatar_description = '' AND header_description = '' AND show_featured = 1 AND show_media = 1
+							AND show_media_replies = 1`,
+          ),
+          columns: sql
+            .exec<{ name: string }>(
+              "SELECT name FROM pragma_table_info('accounts') WHERE name LIKE '%description' OR name LIKE 'show_%' ORDER BY cid",
+            )
+            .toArray()
+            .map((row) => row.name),
+          triggers: sql
+            .exec<{ name: string }>(
+              "SELECT name FROM sqlite_schema WHERE type = 'trigger' AND name LIKE 'accounts_profile_settings_%' ORDER BY name",
+            )
+            .toArray()
+            .map((row) => row.name),
+        }
+      : undefined;
     if (foreignKeyCheck !== "skipped") {
       return {
         seeded,
@@ -1121,6 +1172,9 @@ it("applies the migration to the benchmark store within the budget", async () =>
           authorFetches,
           botPolicies,
           remoteHandles,
+          profileSettings,
+          cardAuthors,
+          pinRefresh,
         },
       };
     }
@@ -1155,6 +1209,9 @@ it("applies the migration to the benchmark store within the budget", async () =>
         authorFetches,
         botPolicies,
         remoteHandles,
+        profileSettings,
+        cardAuthors,
+        pinRefresh,
       },
     };
   });
@@ -1240,8 +1297,27 @@ it("applies the migration to the benchmark store within the budget", async () =>
     expect(measured.remoteHandles).toEqual({ invalidated: rewritten, refresh: rewritten, unique: 1 });
     expect(measured.foreignKeyCheck).toBe("store");
   }
-  // 0102 found the seeded descriptions past its bound and rewrote each within it, the malformed runs to 40,000 bytes.
-  if (applied.includes("0102_media_description_bytes")) {
+  // 0097 added the five columns and two triggers, every account holding the defaults, and checked no reference.
+  if (applied.includes("0097_profile_descriptions")) {
+    expect(measured.profileSettings).toEqual({
+      accounts,
+      columns: ["avatar_description", "header_description", "show_featured", "show_media", "show_media_replies"],
+      triggers: ["accounts_profile_settings_insert", "accounts_profile_settings_update"],
+    });
+  }
+  // 0098 added the column to every seeded card, attached and pending, each holding NULL.
+  if (applied.includes("0098_card_attribution")) {
+    expect(seeded.cards).toBeGreaterThan(0);
+    const cards = seeded.cards + seeded.pendingCards;
+    expect(measured.cardAuthors).toEqual({ cards, none: cards });
+  }
+  // 0101 tested its CHECK on every seeded pending pin, each holding the default (a pending row).
+  if (applied.includes("0101_pin_refresh")) {
+    const rows = Math.min(Math.round(SHAPE.collectionSyncs * scale), accounts - SHAPE.local) * MAX_REMOTE_PINS;
+    expect([seeded.pendingPins, measured.pinRefresh]).toEqual([rows, { rows, pending: rows }]);
+  }
+  // 0105 found the seeded descriptions past its bound and rewrote each within it, the malformed runs to 40,000 bytes.
+  if (applied.includes("0105_media_description_bytes")) {
     expect(seeded.malformedDescriptions).toBeGreaterThan(0);
     expect(seeded.pastDescriptions).toBeGreaterThan(seeded.malformedDescriptions);
     expect(measured.descriptions).toEqual({ past: 0, cut: seeded.malformedDescriptions });

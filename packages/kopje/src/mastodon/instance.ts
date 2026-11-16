@@ -2,7 +2,7 @@ import { MAX_DISPLAY_NAME, MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS, MAX_NOTE
 import { PIN_LIMIT } from "../domain/activities";
 import { MAX_FEATURED_TAGS } from "../domain/featured-tags";
 import { DEFAULT_THUMBNAIL, DEFAULT_THUMBNAIL_DESCRIPTION, INSTANCE_ICONS } from "../platform/brand-assets";
-import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../platform/stored-bounds";
+import { MAX_MEDIA_DESCRIPTION_LENGTH, PROFILE_DESCRIPTION_LIMIT } from "../platform/stored-bounds";
 import {
   type ApiContext,
   type ApiHandler,
@@ -120,11 +120,14 @@ export const instanceV2: ApiHandler = async (c, deps) => {
       vapid: { public_key: vapidKey(c.env) },
       ...CONFIGURATION,
       // REST::InstanceSerializer's account limits, in its order, from the constants that enforce them: the profile's
-      // in code points (credentialChanges in mastodon/accounts.ts, as Mastodon's `length`), the featured hashtags'
-      // and the pins' in rows.
+      // in code points (accountChanges in mastodon/accounts.ts, as Mastodon's `length`; the note as
+      // NoteLengthValidator counts it), the featured hashtags' and the pins' in rows. Mastodon's v1 serializer has none
+      // of them.
       accounts: {
         max_display_name_length: MAX_DISPLAY_NAME,
         max_note_length: MAX_NOTE,
+        max_avatar_description_length: PROFILE_DESCRIPTION_LIMIT,
+        max_header_description_length: PROFILE_DESCRIPTION_LIMIT,
         max_featured_tags: MAX_FEATURED_TAGS,
         max_pinned_statuses: PIN_LIMIT,
         max_profile_fields: MAX_FIELDS,
@@ -246,10 +249,7 @@ export const domainBlocks: ApiHandler = async (c, deps) => {
 };
 
 // GET /api/v1/instance/activity (Api::V1::Instances::ActivityController, domain/instance-activity.ts): the 12 weeks,
-// the same for every caller (public, Vary empty), with cache_even_if_authenticated!'s Cache-Control; with
-// activity_api_enabled off, Mastodon's head 404 (require_enabled_api!), before the action sets any caching.
-const ACTIVITY_CACHE = "public, max-age=300, stale-while-revalidate=30, stale-if-error=86400";
-
+// the same for every caller; with activity_api_enabled off, Mastodon's head 404 (require_enabled_api!).
 export const activity: ApiHandler = async (c, deps) => {
   const credential = optionalTokenCredential(c, deps);
   const body = judged(
@@ -258,7 +258,7 @@ export const activity: ApiHandler = async (c, deps) => {
   ).value;
   return body === null
     ? new Response(null, { status: 404 })
-    : c.body(body, 200, { "content-type": "application/json", "cache-control": ACTIVITY_CACHE });
+    : c.body(body, 200, { "content-type": "application/json" });
 };
 
 // GET /api/v1/instance/translation_languages: {} when no translation service is configured, as Mastodon's

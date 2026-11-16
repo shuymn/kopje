@@ -1,6 +1,11 @@
-import { ACCOUNTS_ID_INDEX } from "../db/indexes";
+import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { DNS_NAME_OCTETS } from "../platform/domain-name";
+import { SCAN_LIMITS } from "../platform/html-scan";
+import { sqliteLower } from "../platform/identity-bounds";
+import { railsBlank } from "../platform/rails-blank";
 import {
+  attributionDomainsSql,
   CARD_CLAIMED_INDEX,
   CARD_DUE_INDEX,
   CARD_EMBED_SRC_BYTES,
@@ -13,6 +18,7 @@ import {
   CARD_TYPES,
   CARD_URL_LIMIT,
   type CardType,
+  cardAuthorPastSql,
   cardDimensionSql,
   cardEmbedSrcPastSql,
   cardLanguagePastSql,
@@ -29,11 +35,13 @@ import {
   OEMBED_TEMPLATE_BYTES,
   oembedHostPastSql,
   oembedTemplatePastSql,
+  presentedAttributionDomains,
   profileUrlSql,
   SAFE_INTEGER_MAX,
   storedCountSql,
   storedText,
 } from "../platform/stored-bounds";
+import { rubyStrip } from "../platform/strip";
 import { cutJsonString } from "../security/html";
 import { cardEligibleSql, cardPublicSql } from "./audience";
 import { linkCardImage } from "./card-images";
@@ -82,6 +90,10 @@ import { parseStatusText } from "./status-text";
 //   its DNS check (NET-3).
 // - The hide step of a remote status's delete (inbox.ts deleteStatusBatch), the one place a stored status's visibility
 //   becomes ineligible, deletes its row in the same step (deleteCard).
+// - The unverified author (migration 0098_card_attribution; Mastodon's PreviewCard#unverified_author_account, its
+//   API's missing_attribution): judged once, by recordCard, for a card made from a page that names a fediverse:creator
+//   (unverifiedAuthor); an oEmbed card names none. A copy carries its donor's, a reset clears it, and nothing else
+//   writes it.
 
 // Anchors a remote status's capture keeps (federation/remote-status.ts), and the raw href's bound, in UTF-16 code
 // units: past it the anchor is over-long (no card if it is the pick).
@@ -216,7 +228,7 @@ export function enqueueCard(db: Db, statusId: string, link: string | null, now: 
 				description = '', author_name = '', author_url = '', provider_name = '', provider_url = '', language = NULL,
 				published_at = NULL, fetched_at = NULL, card_type = 0, width = 0, height = 0, embed_src = '',
 				iframe_width = NULL, iframe_height = NULL, image_url = '', image_id = NULL, image_description = '',
-				link_type = ${LINK_TYPES.unknown}, final_url = '', public = 0`,
+				link_type = ${LINK_TYPES.unknown}, final_url = '', public = 0, unverified_author_account_id = NULL`,
       statusId,
       link,
       now,
@@ -241,6 +253,14 @@ export const CARD_CLAIM_WALK = 64;
 export const CARD_ROUND_CLAIMS = 6;
 
 const DOMAIN = /^[a-z0-9.-]{1,253}$/;
+
+// The domain /setup fixed (one key of instance_settings) when it passes DOMAIN, else null.
+function instanceDomain(db: Db): string | null {
+  const domain = db.first<{ value: SqlStorageValue }>(
+    "SELECT value FROM instance_settings WHERE name = 'domain'",
+  )?.value;
+  return typeof domain === "string" && DOMAIN.test(domain) ? domain : null;
+}
 
 // The host an oEmbed endpoint is cached under (one rule): the WHATWG hostname of `url` (lowercase, punycode),
 // when it passes DOMAIN; else null. The lookup takes the claim URL's (Mastodon's fetch_link_card_service.rb:110), the
@@ -308,6 +328,7 @@ const CARD_FIELDS = [
   "image_description",
   "link_type",
   "final_url",
+  "unverified_author_account_id",
 ];
 
 // The raw candidates the donor copy takes by its index, before the image predicate.
@@ -341,10 +362,8 @@ const CACHED_TEMPLATE = `SELECT CASE WHEN NOT (${oembedTemplatePastSql("template
 // are written.
 export const claimCards = writeOperation<{ now: number }, CardClaims>((db, { now }) => {
   const out: CardClaims = { domain: null, claims: [], expired: 0, attached: 0, deferred: 0, givenUp: 0 };
-  const domain = db.first<{ value: SqlStorageValue }>(
-    "SELECT value FROM instance_settings WHERE name = 'domain'",
-  )?.value;
-  if (typeof domain !== "string" || !DOMAIN.test(domain) || !Number.isSafeInteger(now) || now < 0) {
+  const domain = instanceDomain(db);
+  if (domain === null || !Number.isSafeInteger(now) || now < 0) {
     return out;
   }
   out.domain = domain;
@@ -455,7 +474,8 @@ export const claimCards = writeOperation<{ now: number }, CardClaims>((db, { now
 // (null: the attribute omitted); '' for no src; the image's source URL ('' for none, migration 0070_card_images) and
 // its alt text; the link type (LINK_TYPES, an extracted page's only: an oEmbed card is unknown) and the final URL, the
 // card's trend identity (migration 0071_link_trends: the fetched page's URL after redirects, or the claim URL when a
-// cached endpoint answered with no page fetched).
+// cached endpoint answered with no page fetched); and the page's fediverse:creator as the scan decoded it (null for
+// none, and for an oEmbed card).
 export type CardFields = {
   title: string;
   description: string;
@@ -475,6 +495,7 @@ export type CardFields = {
   imageDescription: string;
   linkType: LinkType;
   finalUrl: string;
+  creator: string | null;
 };
 
 export type CardOutcome = { kind: "card"; fields: CardFields } | { kind: "none" } | { kind: "unattempted" };
@@ -529,13 +550,97 @@ function cacheEndpoint(db: Db, endpoint: unknown, now: number): void {
   );
 }
 
+// ---- The unverified author (the module's head)
+
+// A card's fediverse:creator as kept, in UTF-16 code units: the scan's bound (platform/html-scan.ts
+// SCAN_LIMITS.valueChars); a longer one is none, in the round (federation/link-cards.ts storedFields) and in
+// recordCard.
+export const CARD_CREATOR_CHARS = SCAN_LIMITS.valueChars;
+
+// Ruby's String#split on a string separator, without a limit: its trailing empty fields dropped.
+function rubySplit(value: string, separator: string): string[] {
+  const fields = value.split(separator);
+  while (fields.at(-1) === "") {
+    fields.pop();
+  }
+  return fields;
+}
+
+// The local username a card's fediverse:creator `creator` names, as ResolveAccountService resolves a name without
+// WebFinger (resolve_account_service.rb:18-38, :71-88): none when it is blank (Rails' present?); else stripped (Ruby's
+// strip), one leading @ removed and split on @ (rubySplit), the first field the username; local when there is no
+// second field or it is `domain` in any ASCII case (sqliteLower) after one trailing / is removed
+// (TagManager#local_domain?, tag_manager.rb:13-15). Any other domain names no local account: a remote account is
+// never unverified, and nothing is fetched. A name Mastodon reaches only through WebFinger (another spelling of the
+// domain, a port, an alias) names none here (docs/mastodon-deviations.md, "Link previews").
+export function creatorUsername(creator: string, domain: string): string | null {
+  if (railsBlank(creator)) {
+    return null;
+  }
+  const [username, host] = rubySplit(rubyStrip(creator).replace(/^@/, ""), "@");
+  if (username === undefined || username === "") {
+    return null;
+  }
+  if (host === undefined) {
+    return username;
+  }
+  return sqliteLower(host.endsWith("/") ? host.slice(0, -1) : host) === sqliteLower(domain) ? username : null;
+}
+
+// DomainNormalizable.domain_variants (domain_normalizable.rb:21-24): the host and each suffix of it after a dot
+// (a.b.example: a.b.example, b.example, example), its labels split as rubySplit splits.
+export function domainVariants(host: string): string[] {
+  const labels = rubySplit(host, ".");
+  return labels.map((_, i) => labels.slice(i).join("."));
+}
+
+// The local account a creator names, its id and its attribution domains as read (attributionDomainsSql: '[]' past
+// ATTRIBUTION_DOMAINS_BYTES): one seek of the unique accounts_local_username, then its local row by key.
+const CREATOR_ACCOUNT_SQL = `SELECT a.id, ${attributionDomainsSql("l.attribution_domains")} AS domains
+	FROM accounts a INDEXED BY accounts_local_username
+	CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
+	WHERE a.domain IS NULL AND lower(a.username) = lower(?1)`;
+
+// The account a card's creator names and does not credit, else null (FetchLinkCardService#attempt_opengraph,
+// fetch_link_card_service.rb:152-171): the local account creatorUsername names for the instance's domain, when none of
+// its attribution domains (presentedAttributionDomains) is one of the variants of the host of `finalUrl`, compared
+// exactly as stored (Account::AttributionDomains#can_be_attributed_from?, attribution_domains.rb:14-17). The host is
+// the final URL's WHATWG hostname (lowercase, punycode, no port: Mastodon's normalized host of the page's same-host
+// canonical URL); none without one or past DNS_NAME_OCTETS. The account's availability is not judged (Mastodon's
+// find_remote does not), and a later change of its domains or name does not judge the card again. The domain and the
+// account are read only for a creator and a host.
+function unverifiedAuthor(db: Db, creator: string, finalUrl: string): string | null {
+  let host: string;
+  try {
+    host = new URL(finalUrl).hostname;
+  } catch {
+    return null;
+  }
+  if (host === "" || host.length > DNS_NAME_OCTETS) {
+    return null;
+  }
+  const domain = instanceDomain(db);
+  const username = domain === null ? null : creatorUsername(creator, domain);
+  if (username === null) {
+    return null;
+  }
+  const account = db.first<{ id: SqlStorageValue; domains: SqlStorageValue }>(CREATOR_ACCOUNT_SQL, username);
+  if (account === undefined || typeof account.id !== "string" || typeof account.domains !== "string") {
+    return null;
+  }
+  const variants = new Set(domainVariants(host));
+  return presentedAttributionDomains(account.domains).some((domain) => variants.has(domain)) ? null : account.id;
+}
+
 // The outcome of one claim, under its fence, and the endpoint a cold claim discovered (cached whatever the outcome,
 // unattempted included, as Mastodon caches it before fetching it). A card's texts are stored by storedCardText; an
 // optional URL, the language and the publication time the triggers would refuse are dropped by the triggers' own
 // rules (cardUrlPastSql, cardLanguagePastSql, isoTimeSql), and a title they refuse or that is empty means no card. A
 // video whose embed_src the rule refuses (cardEmbedSrcPastSql) is stored as a link without iframe dimensions; a
 // dimension past its rule is 0 (the card's) or NULL (the iframe's). A final URL the stored rule refuses is '', and the
-// card then has no trend identity (it fails closed); public is set from the status and the final URL written.
+// card then has no trend identity (it fails closed); public is set from the status and the final URL written. The
+// unverified author is judged from a creator within CARD_CREATOR_CHARS (unverifiedAuthor) and kept by the stored rule
+// (cardAuthorPastSql) only with the final URL written.
 export const recordCard = writeOperation<
   CardFence & { outcome: CardOutcome; endpoint?: CardEndpoint; now: number },
   { held: boolean }
@@ -563,6 +668,12 @@ export const recordCard = writeOperation<
     provider_name: storedCardText(fields?.providerName, CARD_TEXTS.provider_name),
   };
   const type = fields !== null && typeof fields.type === "string" && Object.hasOwn(CARD_TYPES, fields.type);
+  const finalUrl = boundedString(fields?.finalUrl, CARD_URL_LIMIT);
+  const creator = fields?.creator;
+  const author =
+    typeof creator === "string" && creator.length <= CARD_CREATOR_CHARS
+      ? unverifiedAuthor(db, creator, finalUrl)
+      : null;
   const attached =
     fields !== null &&
     db.run(
@@ -581,7 +692,9 @@ export const recordCard = writeOperation<
 				image_description = ?20,
 				link_type = CASE WHEN ?21 = ${LINK_TYPES.article} THEN ${LINK_TYPES.article} ELSE ${LINK_TYPES.unknown} END,
 				final_url = CASE WHEN ${cardUrlPastSql("?22", false)} THEN '' ELSE ?22 END,
-				public = CASE WHEN NOT (${cardUrlPastSql("?22", false)}) AND ${cardPublicSql("?1")} THEN 1 ELSE 0 END
+				public = CASE WHEN NOT (${cardUrlPastSql("?22", false)}) AND ${cardPublicSql("?1")} THEN 1 ELSE 0 END,
+				unverified_author_account_id = CASE WHEN ${cardUrlPastSql("?22", false)} OR (${cardAuthorPastSql("?23")})
+					THEN NULL ELSE ?23 END
 			WHERE ${FENCE} AND ?4 <> '' AND NOT (${cardTextPastSql("?4", CARD_TEXTS.title)})
 				AND NOT (${cardTextPastSql("?5", CARD_TEXTS.description)})
 				AND NOT (${cardTextPastSql("?6", CARD_TEXTS.author_name)})
@@ -608,7 +721,8 @@ export const recordCard = writeOperation<
       boundedString(fields.imageUrl, CARD_URL_LIMIT),
       storedCardText(fields.imageDescription, CARD_IMAGE_DESCRIPTION_JSON_BYTES),
       fields.linkType === "article" ? LINK_TYPES.article : LINK_TYPES.unknown,
-      boundedString(fields.finalUrl, CARD_URL_LIMIT),
+      finalUrl,
+      author,
     ) > 0;
   if (!attached) {
     deleteCard(db, statusId);

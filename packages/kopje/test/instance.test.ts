@@ -49,10 +49,13 @@ const RULES = [
   { id: "r2", text: "No spam", hint: "", translations: {} },
 ];
 
-// v2's configuration.accounts: the constants that enforce each limit, in REST::InstanceSerializer's order.
+// v2's configuration.accounts: the constants that enforce each limit, in REST::InstanceSerializer's order (the image
+// descriptions' at Mastodon's MAX_DESCRIPTION_LENGTH, PROFILE_DESCRIPTION_LIMIT). v1's has none of them.
 const ACCOUNT_LIMITS = {
   max_display_name_length: MAX_DISPLAY_NAME,
   max_note_length: MAX_NOTE,
+  max_avatar_description_length: 150,
+  max_header_description_length: 150,
   max_featured_tags: MAX_FEATURED_TAGS,
   max_pinned_statuses: PIN_LIMIT,
   max_profile_fields: MAX_FIELDS,
@@ -213,6 +216,7 @@ describe("instance account limits", () => {
   const accounts = async (h: ApiHarness) =>
     (await (await h.request("/api/v2/instance")).json<Accounts>()).configuration.accounts;
 
+  // A field's name and value past their limits are cut to them, as Account::Field#sanitize reads them, not refused.
   it("accepts each advertised limit and refuses one past it, the profile's in code points", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
@@ -237,17 +241,7 @@ describe("instance account limits", () => {
       [
         "max_profile_fields",
         (n) => ({ fields_attributes: fields(n) }),
-        (n) => `Fields is too long (maximum is ${n} fields)`,
-      ],
-      [
-        "profile_field_name_limit",
-        (n) => ({ fields_attributes: [{ name: text(n), value: "v" }] }),
-        (n) => `Fields is too long (maximum is ${n} characters each)`,
-      ],
-      [
-        "profile_field_value_limit",
-        (n) => ({ fields_attributes: [{ name: "n", value: text(n) }] }),
-        (n) => `Fields is too long (maximum is ${n} characters each)`,
+        (n) => `Fields is too long (maximum is ${n} characters)`,
       ],
     ];
     for (const [key, body, message] of cases) {
@@ -255,6 +249,14 @@ describe("instance account limits", () => {
       expect(await patch(body(limit)), key).toEqual([200, undefined]);
       expect(await patch(body(limit + 1)), key).toEqual([422, `Validation failed: ${message(limit)}`]);
     }
+    const nameLimit = limits.profile_field_name_limit!;
+    const valueLimit = limits.profile_field_value_limit!;
+    expect(await patch({ fields_attributes: [{ name: text(nameLimit + 1), value: text(valueLimit + 1) }] })).toEqual([
+      200,
+      undefined,
+    ]);
+    const [row] = await sql<{ fields: string }>(h.store, "SELECT fields FROM local_accounts");
+    expect(JSON.parse(row!.fields)).toEqual([{ name: text(nameLimit), value: text(valueLimit) }]);
     const tags = limits.max_featured_tags!;
     for (let i = 0; i < tags; i++) {
       expect((await act(h, alice, "/api/v1/featured_tags", { name: `t${i}` })).status).toBe(200);

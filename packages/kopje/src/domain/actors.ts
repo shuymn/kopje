@@ -1,10 +1,17 @@
+import { selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import type { ImportAuthority } from "../platform/store-admin";
-import { ACCOUNT_EMOJIS_BYTES, presentedAttributionDomains } from "../platform/stored-bounds";
+import {
+  ACCOUNT_EMOJIS_BYTES,
+  presentedAttributionDomains,
+  presentedDisplayName,
+  presentedNote,
+  presentedProfileDescription,
+} from "../platform/stored-bounds";
 import { base64ToBytes, bytesToBase64 } from "../security/key-wrap";
 import { type FieldSource, fieldSources } from "./accounts";
-import { ACTOR_ROW_COLUMNS, type ActorRow } from "./actor-row";
+import { ACTOR_ROW_COLUMN_MAP, type ActorRow } from "./actor-row";
 import { accessAdminRefusal } from "./admin-authority";
 import { availableLocalSql, availableSql, followListsShownSql } from "./audience";
 import { type EmojiTag, localEmojiTags } from "./custom-emojis";
@@ -23,6 +30,14 @@ export type LocalActor = {
   note: string;
   avatarUrl: string | null;
   headerUrl: string | null;
+  // The image descriptions as presented (presentedProfileDescription), published as the icon's and image's `summary`
+  // (federation.ts).
+  avatarDescription: string;
+  headerDescription: string;
+  // The display settings as stored, published on every actor, a suspended one's too (federation.ts withMastodonTerms).
+  showFeatured: boolean;
+  showMedia: boolean;
+  showRepliesInMedia: boolean;
   locked: boolean;
   discoverable: boolean | null;
   indexable: boolean;
@@ -56,17 +71,22 @@ export const getInstanceDomain = readOperation<void, string | null>((db) => inst
 
 // A local actor by username, case-insensitively (local usernames are unique regardless of case).
 export function localActorOf(db: Db, username: string): LocalActor | null {
-  const row = db.first<ActorRow>(`SELECT ${ACTOR_ROW_COLUMNS} ${LOCAL_BY_USERNAME}`, username);
+  const row = db.first<ActorRow>(`SELECT ${selectSql(ACTOR_ROW_COLUMN_MAP)} ${LOCAL_BY_USERNAME}`, username);
   if (row === undefined) {
     return null;
   }
   return {
     username: row.username,
     actorType: row.actor_type,
-    displayName: row.display_name,
-    note: row.note,
+    displayName: presentedDisplayName(row.display_name),
+    note: presentedNote(row.note),
     avatarUrl: row.avatar_url,
     headerUrl: row.header_url,
+    avatarDescription: presentedProfileDescription(row.avatar_description),
+    headerDescription: presentedProfileDescription(row.header_description),
+    showFeatured: row.show_featured !== 0,
+    showMedia: row.show_media !== 0,
+    showRepliesInMedia: row.show_media_replies !== 0,
     locked: row.locked === 1,
     discoverable: row.discoverable === null ? null : row.discoverable === 1,
     indexable: row.indexable === 1,

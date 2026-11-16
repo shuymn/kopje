@@ -18,7 +18,6 @@ import {
   type ApiDeps,
   type ApiHandler,
   authorized,
-  refuseAfterAuth,
   storeCall,
   userCredential,
   withParams,
@@ -72,6 +71,8 @@ const THUMBNAIL_FILE: FileRule = { names: ["thumbnail"], maxBytes: 0 };
 
 const TOO_LARGE = "Validation failed: File file size must be less than 16 MB";
 const INVALID_TYPE = "Validation failed: File content type is invalid";
+// The message of an image past IMAGE_MATRIX_LIMIT pixels, without its attribute.
+export const PIXELS_PROBLEM = `dimensions exceed ${IMAGE_MATRIX_LIMIT} pixels`;
 
 function mediaId(c: ApiContext): string {
   return c.req.param("id") ?? "";
@@ -174,14 +175,16 @@ async function readMediaForm(request: Request, ms: number): Promise<MediaForm> {
   return { file: new Uint8Array(await file.arrayBuffer()), params };
 }
 
-export type Failure = { status: number; error: string };
+// `problem`: which validation error a 422 is, for a caller that names its own attribute (profile images,
+// mastodon/accounts.ts storeProfileImages).
+export type Failure = { status: number; error: string; problem?: "content_type" | "pixels" | "expired" };
 
 // What the pipeline reads of the request context: the bindings and the raw request (its body is the form).
 export type UploadContext = { env: Env; req: { raw: Request } };
 
 const PROCESSING_FAILURES: Record<"unsupported" | "too_large" | "quota" | "failed", Failure> = {
-  unsupported: { status: 422, error: INVALID_TYPE },
-  too_large: { status: 422, error: `Validation failed: File dimensions exceed ${IMAGE_MATRIX_LIMIT} pixels` },
+  unsupported: { status: 422, error: INVALID_TYPE, problem: "content_type" },
+  too_large: { status: 422, error: `Validation failed: File ${PIXELS_PROBLEM}`, problem: "pixels" },
   quota: { status: 503, error: "Media processing is unavailable. Try again later." },
   failed: { status: 500, error: "Error processing uploaded media" },
 };
@@ -287,7 +290,7 @@ export const uploadMedia: ApiHandler = async (c, deps) => {
 export const UPLOAD_SAVE_RESERVE_MS = 60_000;
 
 const EXPIRED_MESSAGE = "Validation failed: The upload expired";
-const EXPIRED: Failure = { status: 422, error: EXPIRED_MESSAGE };
+const EXPIRED: Failure = { status: 422, error: EXPIRED_MESSAGE, problem: "expired" };
 
 async function processUpload(
   c: UploadContext,
@@ -501,11 +504,16 @@ export const updateMedia: ApiHandler = withParams(
   async (c, deps, p) => {
     const description = p.get("description");
     const problem = mediaProblem(p, description);
+    const credential = userCredential(c, deps);
     if (problem !== undefined) {
-      return refuseAfterAuth(c, deps, mastodonError(422, problem));
+      // MediaController#set_media_attachment finds the media (404) before update! validates it (422): a read, so it is
+      // answered in readonly maintenance too, as an edit's target is (statuses.ts editTarget).
+      const found = authorized(
+        await storeCall(c, deps, (s, b) => s.getMedia(b, { credential, id: mediaId(c), now: deps.now() })),
+      );
+      return found === null ? recordNotFound() : mastodonError(422, problem);
     }
     const changes: MediaChanges = { description, focus: parseFocus(p.get("focus")) };
-    const credential = userCredential(c, deps);
     const media = authorized(
       await storeCall(c, deps, (s, b) => s.updateMedia(b, { credential, id: mediaId(c), changes, now: deps.now() })),
     );

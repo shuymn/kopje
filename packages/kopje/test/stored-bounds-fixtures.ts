@@ -83,7 +83,7 @@ export const JSON_BOUNDED = Object.entries(STORED_COLUMNS).flatMap(([table, colu
 type Covered = typeof STORED_COLUMNS;
 
 // The covered columns as 0048_stored_bounds bounded them: the description by cutSql's character cut, which
-// 0102_media_description_bytes replaced, and the rest as STORED_COLUMNS has them.
+// 0105_media_description_bytes replaced, and the rest as STORED_COLUMNS has them.
 export const COLUMNS_0048: Covered = {
   ...STORED_COLUMNS,
   media_attachments: (STORED_COLUMNS.media_attachments ?? []).map((c) =>

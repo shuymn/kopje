@@ -1,4 +1,4 @@
--- Kopje Store schema 0102: media descriptions bounded by bytes. Never edit after release (checksummed).
+-- Kopje Store schema 0105: media descriptions bounded by bytes. Never edit after release (checksummed).
 --
 -- RES-2: media_attachments.description is bounded in UTF-8 bytes as well as in characters. 0048's projection cut it
 -- at 10,000 of SQLite's characters, which count a malformed UTF-8 run as one, so an imported value could hold any

@@ -15,7 +15,13 @@ import {
   MAX_TREND_LINKS,
   MAX_TREND_REVIEWS,
   movedToPastBoundSql,
+  nextDocumentRevisionSql,
   oembedEndpointPastBoundSql,
+  POLL_REVISION_COLUMNS,
+  pollRevisionPastBoundSql,
+  PROFILE_DESCRIPTION_COLUMNS,
+  PROFILE_SETTING_COLUMNS,
+  profileSettingsPastBoundSql,
   remoteFieldLinkRowPastBoundSql,
   remoteMediaObjectPastBoundSql,
   remoteMediaSlotPastBoundSql,
@@ -83,7 +89,7 @@ const CARD_COLUMNS =
   "status_id, url, due_at, enqueued_at, claim, attempts, generation, title, description, author_name, " +
   "author_url, provider_name, provider_url, language, published_at, fetched_at, card_type, width, " +
   "height, embed_src, iframe_width, iframe_height, image_url, image_id, image_description, link_type, " +
-  "final_url, public";
+  "final_url, public, unverified_author_account_id";
 const REMOTE_FIELD_LINK_COLUMNS =
   "account_id, link_back, links, generation, claim, attempts, due_at, armed_at, hold_until, checked_at";
 const CARD_IMAGE_COLUMNS =
@@ -114,7 +120,7 @@ const PIN_CAP_REFUSED = "status_pins: more pins than the account may keep";
 // Each trigger's statement, by the migration that last defines it.
 const STATEMENTS: readonly string[] = [
   // 0048_stored_bounds: a write where P(NEW.x) IS NOT NEW.x. media_attachments' pair is as
-  // 0102_media_description_bytes made it again, over its description's P.
+  // 0105_media_description_bytes made it again, over its description's P.
   ...Object.entries(STORED_COLUMNS).flatMap(([table, columns]) =>
     boundTriggers(
       `${table}_bounds`,
@@ -230,7 +236,7 @@ const STATEMENTS: readonly string[] = [
     cardImagePastBoundSql("NEW"),
     "card_images: a value past its stored bound",
   ),
-  // 0071_link_trends (status_cards' triggers recreated over every column 0067, 0069, 0070 and 0071 add)
+  // 0098_card_attribution (status_cards' triggers recreated over every column 0067, 0069, 0070, 0071 and 0098 add)
   ...boundTriggers(
     "status_cards_bounds",
     "status_cards",
@@ -336,6 +342,27 @@ END;`,
     "NEW.name = 'wrapstodon' AND NEW.value IS NOT 'true' AND NEW.value IS NOT 'false'",
     SETTING_REFUSED,
   ),
+  // 0097_profile_descriptions
+  ...boundTriggers(
+    "accounts_profile_settings",
+    "accounts",
+    [...PROFILE_DESCRIPTION_COLUMNS, ...PROFILE_SETTING_COLUMNS].join(", "),
+    profileSettingsPastBoundSql("NEW"),
+    "accounts: profile setting past its stored bound",
+  ),
+  // 0100_poll_refresh: the revision's bound, and a new revision on every write of the poll (one row, by key), the fence
+  // of a refresh (remote-statuses.ts refreshPoll).
+  ...boundTriggers(
+    "polls_revision",
+    "polls",
+    "revision",
+    pollRevisionPastBoundSql("NEW"),
+    "polls: revision past its stored bound",
+  ),
+  `CREATE TRIGGER polls_revision AFTER UPDATE OF ${POLL_REVISION_COLUMNS.join(", ")} ON polls
+BEGIN
+  UPDATE polls SET revision = ${nextDocumentRevisionSql("revision")} WHERE status_id = NEW.status_id;
+END;`,
 ];
 
 // Each registered trigger's statement by its name.

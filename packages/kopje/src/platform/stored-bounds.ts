@@ -1,11 +1,12 @@
 // RES-2: the stored bounds of the columns a remote server controls or a converted row may carry. Each column has a
 // projection P, the SQL builder below, and a writer that ingestion, the local write paths, the cutover's conversion and
-// its verification apply. The triggers of 0048_stored_bounds (media_attachments' as 0102_media_description_bytes made
+// its verification apply. The triggers of 0048_stored_bounds (media_attachments' as 0105_media_description_bytes made
 // them again) refuse what is not a fixed point of P (domain/stored-triggers.ts), and reads take the columns of
 // STORED_COLUMNS as stored; pollOptionsSql is also the read projection of polls.options. Every writer's
 // output, as SQLite stores it, is a fixed point of the column's P, and P(P(x)) = P(x) for any stored string
-// (test/stored-bounds.test.ts). An account's display name and note, which malformed UTF-8 can pass P with, are read
-// and presented through their own bounds ("Account text as presented").
+// (test/stored-bounds.test.ts). An account's display name and note, and a status's content, source text and content
+// warning, which malformed UTF-8 can pass P with, are read and presented through their own bounds ("Account text as
+// presented", "Status text as presented").
 //
 // Text writers replace a lone surrogate with U+FFFD and remove U+0000 (storedText), then cut by code points, as
 // SQLite's substr and length count them. JSON-bounded columns (bio, content, content warning, source text) keep the
@@ -33,6 +34,12 @@ export const MAX_MEDIA_DESCRIPTION_LENGTH = 10_000;
 // A stored media description, in UTF-8 bytes: a code point takes at most four, so no description a writer stores
 // (storedMediaDescription) passes it.
 export const MEDIA_DESCRIPTION_BYTES = 4 * MAX_MEDIA_DESCRIPTION_LENGTH;
+// A profile image description (accounts.avatar_description, header_description), in code points: Mastodon's
+// Account::Avatar::MAX_DESCRIPTION_LENGTH and Account::Header::MAX_DESCRIPTION_LENGTH (a local one's validation),
+// 150 in v4.7.5. Kopje holds a remote one to it too (docs/mastodon-deviations.md). Its raw bytes as stored: at most
+// four a code point.
+export const PROFILE_DESCRIPTION_LIMIT = 150;
+export const PROFILE_DESCRIPTION_BYTES = 4 * PROFILE_DESCRIPTION_LIMIT;
 // A poll's choices (RES-4): at most this many, each at most this many code points as read.
 export const MAX_REMOTE_OPTIONS = 100;
 export const MAX_REMOTE_OPTION_LENGTH = 1000;
@@ -104,10 +111,14 @@ export function sourceTextSql(column: string): string {
   return jsonBoundSql(column, CONTENT_JSON_BYTES, "''");
 }
 
-// statuses.spoiler_text and status_edits.spoiler_text: past SPOILER_JSON_BYTES, cut to the code points that fit
-// however they escape (6 bytes each at most), so the warning stays.
+// The code points a content warning past SPOILER_JSON_BYTES is cut to: those that fit however they escape (6 bytes
+// each at most).
+export const SPOILER_CUT_LIMIT = Math.floor((SPOILER_JSON_BYTES - 2) / 6);
+
+// statuses.spoiler_text and status_edits.spoiler_text: past SPOILER_JSON_BYTES, cut to SPOILER_CUT_LIMIT code points,
+// so the warning stays.
 export function spoilerSql(column: string): string {
-  return jsonBoundSql(column, SPOILER_JSON_BYTES, `substr(${column}, 1, ${Math.floor((SPOILER_JSON_BYTES - 2) / 6)})`);
+  return jsonBoundSql(column, SPOILER_JSON_BYTES, `substr(${column}, 1, ${SPOILER_CUT_LIMIT})`);
 }
 
 // statuses.url: NULL past STATUS_URL_LIMIT, so it reads as its uri.
@@ -121,7 +132,7 @@ export function mediaUrlSql(column: string): string {
   return byteBoundSql(column, MEDIA_URL_LIMIT);
 }
 
-// media_attachments.description (0102_media_description_bytes): text cut at MEDIA_DESCRIPTION_BYTES (textCut, which
+// media_attachments.description (0105_media_description_bytes): text cut at MEDIA_DESCRIPTION_BYTES (textCut, which
 // also makes a BLOB text), then at MAX_MEDIA_DESCRIPTION_LENGTH of SQLite's characters, so within both. SQLite counts
 // a malformed run as one character, which the byte cut bounds; on text within MEDIA_DESCRIPTION_BYTES it is cutSql's
 // cut.
@@ -191,6 +202,13 @@ export function storedMediaDescription(text: string): string {
   return cutCodePoints(storedText(text), MAX_MEDIA_DESCRIPTION_LENGTH);
 }
 
+// accounts.avatar_description and header_description as stored: storedText's output, at most
+// PROFILE_DESCRIPTION_LIMIT code points, so within profileSettingsPastBoundSql. A local one is validated at the limit
+// before (mastodon/accounts.ts), so this removes only NUL and lone surrogates from it.
+export function storedProfileDescription(text: string): string {
+  return cutCodePoints(storedText(text), PROFILE_DESCRIPTION_LIMIT);
+}
+
 // accounts.url, avatar_url and header_url as stored: none past PROFILE_URL_LIMIT.
 export function storedProfileUrl(url: string | null): string | null {
   return withinBytes(url, PROFILE_URL_LIMIT);
@@ -243,6 +261,50 @@ export function presentedDisplayName(stored: string): string {
 // text JSON.stringify and json_quote write the same bytes, so no note a writer stored changes.
 export function presentedNote(stored: string): string {
   return ENCODER.encode(JSON.stringify(stored)).length <= BIO_JSON_BYTES ? stored : "";
+}
+
+// A profile image description as presented: its first PROFILE_DESCRIPTION_LIMIT code points after decoding (each at
+// most six JSON bytes). 0xFF and 599 continuation bytes pass profileSettingsPastBoundSql as one character and decode
+// to 600 U+FFFD, which this cuts to PROFILE_DESCRIPTION_LIMIT.
+export function presentedProfileDescription(stored: string): string {
+  return cutCodePoints(stored, PROFILE_DESCRIPTION_LIMIT);
+}
+
+// ---- Status text as presented (RES-3)
+
+// An imported content, source text or content warning (statuses, status_edits) may hold malformed UTF-8 that passes
+// contentSql's, sourceTextSql's and spoilerSql's counts and decodes past them: json_quote copies a malformed byte as
+// one, and it decodes to a U+FFFD of three bytes; 0xFF and any number of continuation bytes is one character to
+// spoilerSql's substr, so the warning has no stored ceiling but the Store's value limit. The warning is read through a
+// byte cut, and the presenters bound all three again after decoding, as an account's text is.
+
+// The stored bytes a content warning is read with: a writer's is at most this (its JSON string, quotes included,
+// within SPOILER_JSON_BYTES), so none is cut. Content and source text need no read cut: their trigger's byte branch
+// already holds a malformed value to CONTENT_JSON_BYTES - 2 bytes.
+export const SPOILER_READ_BYTES = SPOILER_JSON_BYTES - 2;
+
+// statuses.spoiler_text and status_edits.spoiler_text as every read into JavaScript takes them: the column itself
+// within SPOILER_READ_BYTES stored bytes (NULL, an outer join's missing row, included), else its first
+// SPOILER_READ_BYTES bytes as text, SQL octet_length of the projected value. Statements that copy, compare or measure
+// the warning in SQL read the column, so a stored value is never written back cut.
+export function spoilerReadSql(column: string): string {
+  return `CASE WHEN length(CAST(${column} AS BLOB)) <= ${SPOILER_READ_BYTES} THEN ${column}
+		ELSE ${byteCut(column, SPOILER_READ_BYTES)} END`;
+}
+
+// A content or source text as presented: contentSql's rule after decoding, '' when its JSON string passes
+// CONTENT_JSON_BYTES. For well-formed text JSON.stringify and json_quote write the same bytes, so no value a writer
+// stored changes.
+export function presentedContent(stored: string): string {
+  return ENCODER.encode(JSON.stringify(stored)).length <= CONTENT_JSON_BYTES ? stored : "";
+}
+
+// A content warning as presented: spoilerSql's rule after decoding, its first SPOILER_CUT_LIMIT code points when its
+// JSON string passes SPOILER_JSON_BYTES.
+export function presentedSpoiler(stored: string): string {
+  return ENCODER.encode(JSON.stringify(stored)).length <= SPOILER_JSON_BYTES
+    ? stored
+    : cutCodePoints(stored, SPOILER_CUT_LIMIT);
 }
 
 // ---- Attribution domains (local_accounts.attribution_domains)
@@ -326,7 +388,7 @@ export const STORED_COLUMNS: Readonly<Record<string, readonly StoredColumn[]>> =
       stored: (column) => `coalesce(${mediaUrlSql(column)}, '')`,
     },
     { column: "preview_url", projection: mediaUrlSql },
-    // Its projection is 0102_media_description_bytes', which rewrote the column to it; 0048's was cutSql's.
+    // Its projection is 0105_media_description_bytes', which rewrote the column to it; 0048's was cutSql's.
     { column: "description", projection: mediaDescriptionSql },
     { column: "meta", projection: mediaMetaSql },
   ],
@@ -337,7 +399,7 @@ export const STORED_COLUMNS: Readonly<Record<string, readonly StoredColumn[]>> =
   ],
 };
 
-// Migration 0102_media_description_bytes before its triggers (stored-triggers.ts emits those): 0048's pair on
+// Migration 0105_media_description_bytes before its triggers (stored-triggers.ts emits those): 0048's pair on
 // media_attachments dropped, then every description that is not a fixed point of mediaDescriptionSql set to P(x).
 export function mediaDescriptionBytesMigrationSql(): string {
   const p = mediaDescriptionSql("description");
@@ -965,6 +1027,35 @@ export function indexablePastBoundSql(column: string): string {
   return `CASE WHEN ${column} IS NULL THEN 0
 	WHEN typeof(${column}) <> 'integer' THEN 1
 	WHEN ${column} NOT IN (0, 1) THEN 1
+	ELSE 0 END`;
+}
+
+// ---- Profile descriptions and display settings: migration 0097_profile_descriptions
+
+// The image descriptions and display settings of accounts (Mastodon's avatar_description, header_description,
+// show_featured, show_media, show_media_replies): every description text of at most PROFILE_DESCRIPTION_BYTES bytes,
+// without NUL, of at most PROFILE_DESCRIPTION_LIMIT characters; every setting the integer 0 or 1. True when `row`
+// holds anything else, each column judged in order: the storage class (column affinity has already stored numeric
+// text as an integer in a setting, and a number as its text in a description; NULL reaches a BEFORE trigger before
+// NOT NULL), then the raw bytes, then NUL, then the characters (SQLite's length, which a NUL would stop), or the
+// value.
+export const PROFILE_DESCRIPTION_COLUMNS = ["avatar_description", "header_description"] as const;
+export const PROFILE_SETTING_COLUMNS = ["show_featured", "show_media", "show_media_replies"] as const;
+
+export function profileSettingsPastBoundSql(row: string): string {
+  const descriptions = PROFILE_DESCRIPTION_COLUMNS.map((name) => {
+    const column = `${row}.${name}`;
+    return `WHEN typeof(${column}) <> 'text' THEN 1
+	WHEN length(CAST(${column} AS BLOB)) > ${PROFILE_DESCRIPTION_BYTES} THEN 1
+	WHEN instr(CAST(${column} AS BLOB), x'00') > 0 THEN 1
+	WHEN length(${column}) > ${PROFILE_DESCRIPTION_LIMIT} THEN 1`;
+  });
+  const settings = PROFILE_SETTING_COLUMNS.map((name) => {
+    const column = `${row}.${name}`;
+    return `WHEN typeof(${column}) <> 'integer' THEN 1
+	WHEN ${column} NOT IN (0, 1) THEN 1`;
+  });
+  return `CASE ${[...descriptions, ...settings].join("\n\t")}
 	ELSE 0 END`;
 }
 
@@ -1691,14 +1782,22 @@ function snowflakePastSql(value: string): string {
 	ELSE 0 END`;
 }
 
+// True when `value` is no card author (status_cards.unverified_author_account_id, migration 0098_card_attribution):
+// NULL is one; else an 18-digit snowflake as TEXT. The triggers and the writer (domain/link-cards.ts recordCard)
+// share it.
+export function cardAuthorPastSql(value: string): string {
+  return `${value} IS NOT NULL AND ${snowflakePastSql(value)}`;
+}
+
 // True when the row `row` holds a value past its stored bound: 0067's rules (statusCardBaseCases), then card_type,
 // width and height, embed_src (cardEmbedSrcPastSql), iframe_width and iframe_height (0069), then image_url ('' or a
 // card URL, cardUrlPastSql), image_id (NULL or a snowflake) and image_description (a card text of
 // CARD_IMAGE_DESCRIPTION_JSON_BYTES) of 0070, then link_type (LINK_TYPES), final_url ('' or a card URL) and public (0
-// or 1) of 0071, then the invariants: a video card and only one holds an embed_src, no iframe dimension is kept without
-// one, no image id without an image URL, and public = 1 only on an attached row with a final URL whose status is
-// public (the membership of status_cards_public_link: one key seek of statuses). The CHECKs of the table hold the
-// row's structure (pending or attached, an attached title).
+// or 1) of 0071, then unverified_author_account_id (cardAuthorPastSql) of 0098, then the invariants: a video card and
+// only one holds an embed_src, no iframe dimension is kept without one, no image id without an image URL, public = 1
+// only on an attached row with a final URL whose status is public (the membership of status_cards_public_link: one key
+// seek of statuses), and no author on a pending row. The CHECKs of the table hold the row's structure (pending or
+// attached, an attached title).
 export function statusCardPastBoundSql(row: string): string {
   const c = (name: string) => `${row}.${name}`;
   return `CASE ${statusCardBaseCases(row)}
@@ -1714,12 +1813,24 @@ export function statusCardPastBoundSql(row: string): string {
 	${cardCountCase(c("link_type"), false, LINK_TYPES.article)}
 	WHEN ${c("final_url")} IS NOT '' AND ${cardUrlPastSql(c("final_url"), false)} THEN 1
 	${cardCountCase(c("public"), false, 1)}
+	WHEN ${cardAuthorPastSql(c("unverified_author_account_id"))} THEN 1
 	WHEN (${c("card_type")} = ${CARD_TYPES.video}) <> (${c("embed_src")} <> '') THEN 1
 	WHEN ${c("embed_src")} = '' AND (${c("iframe_width")} IS NOT NULL OR ${c("iframe_height")} IS NOT NULL) THEN 1
 	WHEN ${c("image_url")} IS '' AND ${c("image_id")} IS NOT NULL THEN 1
 	WHEN ${c("public")} = 1 AND (${c("fetched_at")} IS NULL OR ${c("final_url")} = ''
 		OR (SELECT ps.visibility FROM main.statuses ps WHERE ps.id = ${c("status_id")}) IS NOT 'public') THEN 1
+	WHEN ${c("unverified_author_account_id")} IS NOT NULL AND ${c("fetched_at")} IS NULL THEN 1
 	ELSE 0 END`;
+}
+
+// The statements of 0098_card_attribution before its triggers (domain/stored-triggers.ts): the column, added to the
+// schema only, and status_cards' two triggers dropped; test/migrations.test.ts compares the file with it.
+export function cardAttributionMigrationSql(): string {
+  return `ALTER TABLE status_cards ADD COLUMN unverified_author_account_id TEXT;
+
+DROP TRIGGER status_cards_bounds_insert;
+DROP TRIGGER status_cards_bounds_update;
+`;
 }
 
 // A card's link type (status_cards.link_type, Mastodon's PreviewCard link_type, link_details_extractor.rb:139-145):
@@ -1977,6 +2088,61 @@ export function nextDocumentRevisionSql(current: string | null): string {
   return current === null
     ? draw
     : `(${current} + 1 + ${draw} % ${DOCUMENT_REVISION_MAX}) % ${DOCUMENT_REVISION_MAX + 1}`;
+}
+
+// ---- A remote poll's refresh: migration 0100_poll_refresh (domain/polls.ts pollDueSql)
+
+// polls.fetched_at and refresh_at: NULL, or a time in ms on the Store's clock, an integer from 0 to 2^53 - 1 (the
+// columns' CHECK, emitted by pollRefreshMigrationSql).
+function pollTimeCheckSql(column: string): string {
+  return `${column} IS NULL OR (typeof(${column}) = 'integer' AND ${column} BETWEEN 0 AND ${SAFE_INTEGER_MAX})`;
+}
+
+// The stored poll time `column` as a refresh's due check reads it at the Store's time `now`: the value, or NULL when
+// it is not an integer or lies after `now` (an imported or skewed time), so such a poll is due as one never fetched.
+export function pollTimeReadSql(column: string, now: string): string {
+  return `CASE WHEN typeof(${column}) = 'integer' AND ${column} <= ${now} THEN ${column} END`;
+}
+
+// polls.revision: an integer from 0 to POLL_REVISION_MAX, the fence of a poll's refresh (domain/polls.ts), issued anew
+// by the trigger polls_revision on every write of the poll's values and by a refresh's reservation, as
+// nextDocumentRevisionSql issues accounts.document_revision. A row the upgrade carries holds 0.
+/** @alias */
+export const POLL_REVISION_MAX = SAFE_INTEGER_MAX;
+
+// True when `row` holds a revision past its stored bound: not an integer, or outside 0..POLL_REVISION_MAX.
+export function pollRevisionPastBoundSql(row: string): string {
+  const column = `${row}.revision`;
+  return `CASE WHEN typeof(${column}) <> 'integer' THEN 1
+	WHEN ${column} NOT BETWEEN 0 AND ${POLL_REVISION_MAX} THEN 1
+	ELSE 0 END`;
+}
+
+// The columns of a poll whose write moves its revision (the trigger polls_revision): everything a refresh would
+// overwrite or a reader shows, and fetched_at, which an accepted Update writes even when it changes no value. Not
+// refresh_at (the reservation sets the revision itself), update_due_at, stale, hide_totals or created_at.
+export const POLL_REVISION_COLUMNS = [
+  "options",
+  "cut_options",
+  "tallies",
+  "multiple",
+  "expires_at",
+  "votes_count",
+  "voters_count",
+  "ended",
+  "generation",
+  "removed",
+  "fetched_at",
+] as const;
+
+// The statements of 0100_poll_refresh before its triggers (domain/stored-triggers.ts): the two times, each with a CHECK
+// that reads every existing row once, and the revision, with a constant default and no CHECK, which reads none.
+// test/migrations.test.ts compares the file with it.
+export function pollRefreshMigrationSql(): string {
+  return `ALTER TABLE polls ADD COLUMN fetched_at INTEGER CHECK (${pollTimeCheckSql("fetched_at")});
+ALTER TABLE polls ADD COLUMN refresh_at INTEGER CHECK (${pollTimeCheckSql("refresh_at")});
+ALTER TABLE polls ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+`;
 }
 
 // ---- Filter text units: migration 0079_filter_text_units (domain/status-presenter.ts measureFilterText)

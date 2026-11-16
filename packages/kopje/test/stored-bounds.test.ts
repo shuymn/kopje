@@ -64,6 +64,10 @@ import {
   presentedAppName,
   storedApplicationId,
   storedBlurhash,
+  storedProfileDescription,
+  presentedProfileDescription,
+  profileSettingsPastBoundSql,
+  PROFILE_DESCRIPTION_LIMIT,
   storedDisplayName,
   storedInstanceSetting,
   storedMediaDescription,
@@ -397,15 +401,15 @@ describe("stored bounds (RES-2)", () => {
 
   // An actor's display name of lone surrogates is stored as U+FFFD, three bytes each, and reads back at that size.
   it("stores a display name of lone surrogates from ingestion within three bytes a character, read back alike", async () => {
-    const actor = await Person.fromJsonLd({
+    const document = {
       "@context": "https://www.w3.org/ns/activitystreams",
       id: "https://remote.example/users/s",
       type: "Person",
       preferredUsername: "s",
       name: "\ud800".repeat(DISPLAY_NAME_LIMIT),
       inbox: "https://remote.example/users/s/inbox",
-    });
-    const input = await remoteActorInput(actor, {});
+    };
+    const input = await remoteActorInput(await Person.fromJsonLd(document), document);
     expect(input).not.toBeNull();
     const store = await migratedStore();
     const stored = await runInDurableObject(store, (_instance, state) =>
@@ -1010,4 +1014,56 @@ describe("media blurhash (0065_media_blurhash)", () => {
       ).toBe(1);
     });
   }, 60_000);
+});
+
+describe("profile descriptions and settings (0097_profile_descriptions)", () => {
+  // The trigger's verdict on a row whose avatar description is `description` and whose settings are within the bound.
+  const pastBound = (sql: Sql, description: SqlStorageValue) =>
+    sql
+      .exec<{ v: number }>(
+        `SELECT ${profileSettingsPastBoundSql("r")} AS v FROM (SELECT ?1 AS avatar_description, '' AS header_description,
+					1 AS show_featured, 1 AS show_media, 0 AS show_media_replies) r`,
+        description,
+      )
+      .one().v;
+
+  it("stores what the trigger accepts: the writer's output is within it, whatever it is given", async () => {
+    await runInDurableObject(freshStore(), (_instance, state) => {
+      const sql = state.storage.sql;
+      fc.assert(
+        fc.property(
+          fc.oneof(
+            fc.string({ unit: "binary", maxLength: 2 * PROFILE_DESCRIPTION_LIMIT }),
+            fc.string({ unit: "grapheme", maxLength: PROFILE_DESCRIPTION_LIMIT + 10 }),
+            fc.constantFrom(
+              "𠀀".repeat(PROFILE_DESCRIPTION_LIMIT + 1),
+              "\u0001".repeat(PROFILE_DESCRIPTION_LIMIT + 1),
+              `${"a".repeat(PROFILE_DESCRIPTION_LIMIT)}\u0000b`,
+              "\ud800".repeat(PROFILE_DESCRIPTION_LIMIT),
+            ),
+          ),
+          (input) => {
+            const written = storedProfileDescription(input);
+            expect(pastBound(sql, written), JSON.stringify(input)).toBe(0);
+            expect(storedProfileDescription(written)).toBe(written);
+          },
+        ),
+        { numRuns: 1000 },
+      );
+      // The guarded branch: one character more is refused.
+      expect(pastBound(sql, "a".repeat(PROFILE_DESCRIPTION_LIMIT + 1))).toBe(1);
+    });
+  }, 60_000);
+
+  it("presents at most PROFILE_DESCRIPTION_LIMIT code points of a decoded import", () => {
+    // 0xFF and 599 continuation bytes: one character to SQLite, 600 U+FFFD decoded.
+    const decoded = new TextDecoder().decode(new Uint8Array(600).fill(0x80).fill(0xff, 0, 1));
+    expect(decoded).toBe("\ufffd".repeat(600));
+    expect(presentedProfileDescription(decoded)).toBe("\ufffd".repeat(PROFILE_DESCRIPTION_LIMIT));
+    expect(jsonBytes(presentedProfileDescription(decoded))).toBe(452);
+    for (const value of ["\u0001".repeat(PROFILE_DESCRIPTION_LIMIT), "𠀀".repeat(PROFILE_DESCRIPTION_LIMIT), ""]) {
+      expect(presentedProfileDescription(value)).toBe(value);
+    }
+    expect(jsonBytes(presentedProfileDescription("\u0001".repeat(PROFILE_DESCRIPTION_LIMIT + 1)))).toBe(902);
+  });
 });

@@ -1,4 +1,5 @@
 import { runInDurableObject } from "cloudflare:test";
+import jsonld from "jsonld/dist/jsonld.esm.js";
 import { describe, expect, it } from "vitest";
 
 import { version as packageVersion } from "../package.json";
@@ -17,6 +18,7 @@ import {
   setDomain,
 } from "./federation-helpers";
 import { BUILD, migratedStore } from "./helpers";
+import { contexts } from "./quote-helpers";
 
 // Identity goldens: every expected value is a literal. The domain is fixed at /setup ('social.example'), where the
 // requests go (WEB-6).
@@ -134,6 +136,43 @@ describe("actor document", () => {
     });
   });
 
+  // ActivityPub::ActorSerializer: `icon` and `image` only while the account is available and has the image, each with
+  // its description as `summary` when present? (ImageSerializer#summary?).
+  it("publishes the image descriptions as the icon's and image's summary, and none without the image", async () => {
+    const { json, store } = await instance();
+    const set = (assignments: string) =>
+      runInDurableObject(store, (_instance, state) => {
+        state.storage.sql.exec(`UPDATE accounts SET ${assignments} WHERE id = ?`, ALICE);
+      });
+    const images = async () => {
+      const body = (await json("/ap/users/Alice")).body as Record<string, unknown>;
+      return { icon: body.icon, image: body.image };
+    };
+    await set(`avatar_url = 'https://cdn.test/a.png', header_url = 'https://cdn.test/h.png',
+			avatar_description = 'A cat', header_description = '𠀀 field'`);
+    expect(await images()).toEqual({
+      icon: { type: "Image", url: "https://cdn.test/a.png", summary: "A cat" },
+      image: { type: "Image", url: "https://cdn.test/h.png", summary: "𠀀 field" },
+    });
+    // '' publishes no summary.
+    await set("avatar_description = ''");
+    expect(await images()).toEqual({
+      icon: { type: "Image", url: "https://cdn.test/a.png" },
+      image: { type: "Image", url: "https://cdn.test/h.png", summary: "𠀀 field" },
+    });
+    // Without the image, nor its description.
+    await set("avatar_description = 'A cat', header_url = NULL");
+    expect(await images()).toEqual({
+      icon: { type: "Image", url: "https://cdn.test/a.png", summary: "A cat" },
+      image: undefined,
+    });
+    // Suspended, neither.
+    await runInDurableObject(store, (_instance, state) => {
+      state.storage.sql.exec("UPDATE local_accounts SET suspended_at = '2026-01-01T00:00:00.000Z'");
+    });
+    expect(await images()).toEqual({ icon: undefined, image: undefined });
+  });
+
   it("publishes only http(s) aliases, dropping invalid and relative ones", async () => {
     const { json, store } = await instance();
     const stored = ["https://old.example/users/alice", "javascript:alert(1)", "/users/alice", "HTTP://Older.example/a"];
@@ -184,6 +223,9 @@ describe("actor document", () => {
     expect(document.attributionDomains).toEqual(["writer.example", "news.example"]);
     expect(document["@context"]).toContainEqual({
       toot: "http://joinmastodon.org/ns#",
+      showFeatured: "toot:showFeatured",
+      showMedia: "toot:showMedia",
+      showRepliesInMedia: "toot:showRepliesInMedia",
       attributionDomains: { "@id": "toot:attributionDomains", "@container": "@set" },
     });
     expect(document).toMatchObject({ id: "https://social.example/ap/users/Alice", type: "Person" });
@@ -212,6 +254,52 @@ describe("actor document", () => {
     const actor = (await json("/actor")).body as Record<string, unknown>;
     expect(actor).not.toHaveProperty("webfinger");
     expect(JSON.stringify(actor["@context"])).not.toContain("socialweb/webfinger");
+  });
+
+  // ActivityPub::ActorSerializer: show_featured, show_media and show_media_replies (as showRepliesInMedia) with the
+  // profile_settings terms of context_helper.rb, on every actor, a suspended one's too.
+  it("publishes the display settings with their context terms, suspended too", async () => {
+    const { json, store } = await instance();
+    const settings = async () => {
+      const document = (await json("/ap/users/Alice")).body as Record<string, unknown>;
+      // What a JSON-LD processor reads: each value under its toot: IRI.
+      const [expanded] = await jsonld.expand(document, { documentLoader: contexts });
+      const read = (term: string) =>
+        (expanded?.[`http://joinmastodon.org/ns#${term}`] as { "@value": unknown }[] | undefined)?.map(
+          (v) => v["@value"],
+        );
+      return {
+        compact: [document.showFeatured, document.showMedia, document.showRepliesInMedia],
+        expanded: [read("showFeatured"), read("showMedia"), read("showRepliesInMedia")],
+        suspended: document.suspended,
+      };
+    };
+    // An account that never changed them: Mastodon's defaults.
+    expect(await settings()).toEqual({
+      compact: [true, true, true],
+      expanded: [[true], [true], [true]],
+      suspended: undefined,
+    });
+    // Each read from its own column (no local writer yet: set in SQL).
+    await runInDurableObject(store, (_instance, state) => {
+      state.storage.sql.exec(
+        "UPDATE accounts SET show_featured = 0, show_media = 1, show_media_replies = 0 WHERE id = ?",
+        ALICE,
+      );
+    });
+    expect(await settings()).toEqual({
+      compact: [false, true, false],
+      expanded: [[false], [true], [false]],
+      suspended: undefined,
+    });
+    await runInDurableObject(store, (_instance, state) => {
+      state.storage.sql.exec("UPDATE local_accounts SET suspended_at = '2026-01-01T00:00:00.000Z'");
+    });
+    expect(await settings()).toEqual({
+      compact: [false, true, false],
+      expanded: [[false], [true], [false]],
+      suspended: true,
+    });
   });
 
   it("answers 404 for an unknown actor and for a differently cased path", async () => {
