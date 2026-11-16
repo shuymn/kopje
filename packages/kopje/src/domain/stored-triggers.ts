@@ -349,7 +349,7 @@ END;`,
     profileSettingsPastBoundSql("NEW"),
     "accounts: profile setting past its stored bound",
   ),
-  // 0099_poll_refresh: the revision's bound, and a new revision on every write of the poll (one row, by key), the fence
+  // 0100_poll_refresh: the revision's bound, and a new revision on every write of the poll (one row, by key), the fence
   // of a refresh (remote-statuses.ts refreshPoll).
   ...boundTriggers(
     "polls_revision",

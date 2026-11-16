@@ -13251,8 +13251,8 @@ describe("0099_reply_walks", () => {
   });
 });
 
-describe("0099_poll_refresh", () => {
-  const NAME = "0099_poll_refresh";
+describe("0100_poll_refresh", () => {
+  const NAME = "0100_poll_refresh";
   const at = NAMES.indexOf(NAME);
   const [ACCOUNT, STATUS, OTHER] = ["100000000000000001", "100000000000000002", "100000000000000003"];
   const REVISION_REFUSED = /polls: revision past its stored bound/;
@@ -13265,8 +13265,8 @@ describe("0099_poll_refresh", () => {
       .replace(/\n{3,}/g, "\n\n")
       .trim();
 
-  it("follows 0098, declared foreignKeys: 'unchanged', and writes the generator's statements and triggers", () => {
-    expect(NAMES[at - 1]).toBe("0098_card_attribution");
+  it("follows 0099, declared foreignKeys: 'unchanged', and writes the generator's statements and triggers", () => {
+    expect(NAMES[at - 1]).toBe("0099_reply_walks");
     expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
     expect(POLL_REVISION_MAX).toBe(2 ** 53 - 1);
     expect(statements(MIGRATIONS[at]?.sql ?? "")).toBe(

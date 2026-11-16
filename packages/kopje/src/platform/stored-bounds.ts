@@ -2026,7 +2026,7 @@ export function nextDocumentRevisionSql(current: string | null): string {
     : `(${current} + 1 + ${draw} % ${DOCUMENT_REVISION_MAX}) % ${DOCUMENT_REVISION_MAX + 1}`;
 }
 
-// ---- A remote poll's refresh: migration 0099_poll_refresh (domain/polls.ts pollDueSql)
+// ---- A remote poll's refresh: migration 0100_poll_refresh (domain/polls.ts pollDueSql)
 
 // polls.fetched_at and refresh_at: NULL, or a time in ms on the Store's clock, an integer from 0 to 2^53 - 1 (the
 // columns' CHECK, emitted by pollRefreshMigrationSql).
@@ -2071,7 +2071,7 @@ export const POLL_REVISION_COLUMNS = [
   "fetched_at",
 ] as const;
 
-// The statements of 0099_poll_refresh before its triggers (domain/stored-triggers.ts): the two times, each with a CHECK
+// The statements of 0100_poll_refresh before its triggers (domain/stored-triggers.ts): the two times, each with a CHECK
 // that reads every existing row once, and the revision, with a constant default and no CHECK, which reads none.
 // test/migrations.test.ts compares the file with it.
 export function pollRefreshMigrationSql(): string {

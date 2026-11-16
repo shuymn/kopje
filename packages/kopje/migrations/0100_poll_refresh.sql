@@ -1,4 +1,4 @@
--- Kopje Store schema 0099: a remote poll's refresh on read (Mastodon 4.7.5's Poll#possibly_stale?). Never edit after
+-- Kopje Store schema 0100: a remote poll's refresh on read (Mastodon 4.7.5's Poll#possibly_stale?). Never edit after
 -- release (checksummed).
 --
 --   polls.fetched_at        NULL, or the Store's time in ms when an Update with this poll was last accepted
