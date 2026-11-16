@@ -729,7 +729,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (`/@user/featured`) shows the account's featured hashtags as the API lists them, at most ten, and the accounts it
   endorses that R28 lists (VIS-19), paged both ways by account id as the API pages them; its pager may move on by the
   id of an endorsed account that is unavailable, as the API's `Link` header does (RES-7), and shows nothing else of
-  it. A status page shows its thread: the ancestors an anonymous viewer may see among the 40 nearest (the walk goes on
+  it. A local collection's page (`/collections/:id`) shows the collection as R45 shows it to an anonymous viewer
+  (VIS-33), discoverable or not: its name, owner, description and hashtag, and its accepted members that are
+  available, in their order, as many as the page budget admits (RES-3); an unknown id or a remote collection's answers
+  the same 404 page, and a suspended owner's 410 as its profile does (`src/domain/web-pages/collection.ts`;
+  `test/web-collection-page.test.ts`).
+  A status page shows its thread: the ancestors an anonymous viewer may see among the 40 nearest (the walk goes on
   past those it hides, and a hidden one leaves no id, URL or text in the page), and its direct replies that are public
   or unlisted and that the rule passes, oldest first, paged both ways by the ids of the replies' candidates (never a
   private, direct or limited reply's) or by a boundary derived from the request alone. Its other tabs read as the API's

@@ -90,6 +90,7 @@ import { runModerationJobs, suspendAccount } from "./domain/suspension";
 import * as tags from "./domain/tags";
 import * as timelines from "./domain/timelines";
 import * as trends from "./domain/trends";
+import * as collectionPages from "./domain/web-pages/collection";
 import * as featuredPages from "./domain/web-pages/featured";
 import * as followPages from "./domain/web-pages/follows";
 import * as interactPages from "./domain/web-pages/interact";
@@ -297,6 +298,7 @@ export const STORE_RPC = {
   webDocument: sitePages.webDocument,
   webProfilePage: profilePages.webProfilePage,
   webFeaturedPage: featuredPages.webFeaturedPage,
+  webCollectionPage: collectionPages.webCollectionPage,
   webFollowsPage: followPages.webFollowsPage,
   webTagPage: tagPages.webTagPage,
   webStatusPage: statusPages.webStatusPage,

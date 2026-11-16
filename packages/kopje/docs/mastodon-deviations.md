@@ -573,6 +573,9 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   allowed", where Mastodon's message is a missing-translation text (it has no English text for that error). Accepted,
   2026-11-16.
 - Only local accounts can be featured yet: a remote account answers 403, as one that refuses. Tracked by #1589.
+- A collection's page (`/collections/:id`) is served for a local collection only (a remote collection's `url` is its
+  own server's), and the profile pages do not list an account's collections, where Mastodon's web client does.
+  Accepted, 2026-11-16.
 
 Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model WEB-6):
 

@@ -900,3 +900,35 @@ export function flaggedCollections(
     JSON.stringify(ids),
   );
 }
+
+// ---- The public page of a local collection (web-pages/collection.ts).
+
+type PageOwner = { id: string; account: Account } | { status: "not_found" } | { status: "suspended" };
+
+// A local collection's page (Mastodon's CollectionsController#show, as HTML), as an anonymous viewer reads it (VIS-4):
+// the local collection `id` (as the route names it), its owner answered for first by `owner` (the page's account read,
+// by key: a suspended owner's page is gone, as its profile), then R45 with no viewer, discoverable or not
+// (discoverable governs listings only). Not found for an unknown id or a remote collection's: its url is its own
+// server's. Each row read by key, the items as shownItems reads them.
+export function localCollectionOf(
+  db: Db,
+  id: string,
+  origin: string,
+  owner: (accountId: string) => PageOwner,
+): { collection: Collection; owner: Account } | { status: "not_found" } | { status: "suspended" } {
+  const row = db.first<CollectionRow>(
+    `SELECT ${COLLECTION_COLUMNS} FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
+			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
+		WHERE c.id = ? AND c.local = 1`,
+    id,
+  );
+  if (row === undefined) {
+    return { status: "not_found" };
+  }
+  const found = owner(row.account_id);
+  if ("status" in found) {
+    return found;
+  }
+  const [collection] = shown(db, row.id, null) ? presentCollections(db, [row], null, origin) : [];
+  return collection === undefined ? { status: "not_found" } : { collection, owner: found.account };
+}
