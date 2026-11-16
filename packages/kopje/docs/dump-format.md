@@ -467,6 +467,15 @@ stored bound`. A description of malformed bytes that SQLite counts as fewer char
 points after decoding. A dump taken before 0097 has none of these columns: it restores into a Store at its own
 migrations, which then upgrades, giving every account `''` and `1`. A file built from legacy data writes the defaults.
 
+Poll refresh state (migration `0099_poll_refresh`): `polls.fetched_at` and `refresh_at` are NULL or an integer from
+0 to 2^53 - 1 (epoch milliseconds, the Store's clock), and `revision` is an integer from 0 to 2^53 - 1. Column
+affinity applies first, so numeric text or an integral REAL is stored as the integer. Anything else fails with the
+CHECK's text for the two times and with `polls: revision past its stored bound` for the revision. A restored value is
+kept as dumped: a time after the Store's clock reads as none, so that poll is due for a refresh at its next signed-in
+read, and the next write of the poll issues another revision, the maximum included. A dump taken before 0099 has none
+of these columns: it restores into a Store at its own migrations, which then upgrades, giving every poll NULL, NULL
+and 0. A file built from legacy data writes the defaults.
+
 A report (migration `0054_remote_reports`) names any account as its reporter (`account_id`), once per `uri` and
 reported account, with `status_ids` of at most 100 ids within 2,101 UTF-8 bytes (compact JSON of 18-digit ids), a
 `uri` within 4,096 JSON-escaped UTF-8 bytes and a `comment` within 20,000 UTF-8 bytes (and 5,000 code points up to any
