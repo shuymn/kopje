@@ -3111,30 +3111,21 @@ describe("the table of maxima (RES-3)", () => {
 
   // The most a stream turn presents (stream-hub.ts, RES-6): a turn starts a unit while UNIT_WORST is left of
   // TURN_BUDGET, and charges it whole once presented, so the unit that crosses it presents at most 2S + 2 bytes
-  // (encoding the JSON again at most doubles a byte, plus two quotes), S the most JSON a streamed subject presents:
-  // `update` and `status.update` a status, at most a boost of a quote; `conversation` its participants and a last
-  // status, counted as a boost of a quote, which it no longer shows (conversationStream shows at most a quote), so S is
-  // conservative until it is re-derived from the quote conversation (#1610); `notification` its account, its status
-  // and a report and a warning (their conservative figures count a fallback each, which a streamed notification does
-  // not carry); an announcement, at its derived maximum (test/announcement-bounds.test.ts).
+  // (encoding the JSON again at most doubles a byte, plus two quotes), S the most JSON a streamed subject presents
+  // (streamedKinds): the quote conversation's, since a conversation shows no boost as its last status. The streamed
+  // witnesses, a conversation whose last status is the quote and a notification whose status is the boost of the
+  // quote, present within their kinds.
   it("bounds what a stream turn presents by the most a streamed subject presents", async () => {
-    const c = await conservativeJson();
-    const ANNOUNCEMENT = 248_997;
-    const kinds = {
-      status: c.boostOfQuote!,
-      conversation: c.conversation! - c.quote! + c.boostOfQuote!,
-      notification: c.boostOfQuote! + c.reportNotification! + c.warningNotification!,
-      announcement: ANNOUNCEMENT,
-    };
+    const kinds = await streamedKinds();
     const most = Math.max(...Object.values(kinds));
     expect({ ...kinds, most }).toEqual({
       status: 5_818_830,
-      conversation: 7_568_003,
+      conversation: 7_151_333,
       notification: 6_625_860,
-      announcement: ANNOUNCEMENT,
-      most: 7_568_003,
+      announcement: ANNOUNCEMENT_JSON,
+      most: 7_151_333,
     });
-    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(18_806_024);
+    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(17_972_684);
     const { streamed } = await measureFill("escaped");
     expect(streamed).toEqual({ conversation: 7_074_778, conversationPayload: 7_836_062, notification: 5_918_803 });
     expect(streamed!.conversation).toBeLessThanOrEqual(kinds.conversation);

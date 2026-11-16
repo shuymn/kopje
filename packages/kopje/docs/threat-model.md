@@ -4204,11 +4204,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   sent one stream's envelope at a time, so a unit's isolate peak is its rows, its presented object and four frames of
   the largest at most, 47,872,237 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
   whole payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit:
-  a turn presents at most 18,806,024 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
-  JSON again at most doubles it), S = 7,568,003 being the most JSON a streamed subject presents (`update` and
-  `status.update` a boost of a quote, `conversation` one whose last status is a boost of a quote, `notification` its
-  status, report and warning together, an announcement), derived from the maxima table
-  (`test/status-bounds.test.ts`, `test/streaming/split.test.ts`). The journal records nothing once it spans 4,096 ids,
+  a turn presents at most 17,972,684 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
+  JSON again at most doubles it), S = 7,151,333 being the most JSON a streamed subject presents, the quote
+  conversation's (`update` and `status.update` a boost of a quote, `conversation` one whose last status is a quote, as a
+  conversation shows no boost as its last status, `notification` its status, report and warning together, an
+  announcement), derived from the maxima table (`test/status-bounds.test.ts`, `test/streaming/split.test.ts`). The
+  journal records nothing once it spans 4,096 ids,
   and is pruned behind the position, at
   most 500 rows a call: the finished journal rows first, so the span shrinks at once, then a delete's capture rows, in
   further turns until none is left. A turn that read anything moves the position, also past what it read with nothing to
