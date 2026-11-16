@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { jsonBytes } from "../src/domain/answer-budget";
+import { notifiedCollection } from "../src/domain/collection-presenter";
 import {
   addCollectionItem,
   COLLECTION_JSON_MAX,
@@ -275,6 +276,25 @@ describe("presentation, fallback and push titles (2-T7)", () => {
         return rest;
       }),
     );
+  });
+
+  // Fails if notifiedCollection leaves R45 to its callers' R15: handed a notification whose collection R45 hides from
+  // its recipient (the owner blocks it, which leaves the collection_update stored), it presents the collection.
+  it("presents no collection R45 hides from the recipient, whatever its caller read", async () => {
+    const { h, alice, bob } = await world();
+    const collection = await created(h, alice, [bob]);
+    expect((await call(h, "PATCH", `/api/v1/collections/${collection}`, alice, { name: "renamed" })).status).toBe(200);
+    const [row] = await rows(h, "collection_update");
+    const presented = () =>
+      runInDurableObject(
+        h.store,
+        (_instance, state) =>
+          notifiedCollection(new Db(state.storage.sql), String(row!.id), bob.id, "https://kopje.test")?.id ?? null,
+      );
+    expect(await presented()).toBe(collection);
+    expect((await call(h, "POST", `/api/v1/accounts/${bob.id}/block`, alice)).status).toBe(200);
+    expect((await rows(h, "collection_update")).map((r) => r.id)).toEqual([row!.id]);
+    expect(await presented()).toBeNull();
   });
 
   // RES-3: a collection notification adds no shape to "Maxima of presented units" (docs/threat-model.md): its account,
