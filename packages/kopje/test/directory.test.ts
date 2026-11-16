@@ -181,12 +181,12 @@ describe("the profile directory", () => {
     const anonymous = await h.request("/api/v1/directory");
     expect(anonymous.status).toBe(200);
     expect(anonymous.headers.get("cache-control")).toBe(
-      "public, max-age=15, stale-while-revalidate=30, stale-if-error=86400",
+      "max-age=15, public, stale-while-revalidate=30, stale-if-error=86400",
     );
-    expect(anonymous.headers.get("vary")).toContain("Authorization");
+    expect(anonymous.headers.get("vary")).toBe("Authorization");
     const signed = await h.request("/api/v1/directory", bearer(h.users.alice.token));
     expect(signed.status).toBe(200);
-    expect(signed.headers.get("cache-control")).toBeNull();
+    expect(signed.headers.get("cache-control")).toBe("private, no-store");
     expect((await h.request("/api/v1/directory", bearer("nope"))).status).toBe(401);
     // Any scope will do (Mastodon declares none).
     expect((await h.request("/api/v1/directory", bearer(await scopedToken(h, "write:statuses")))).status).toBe(200);

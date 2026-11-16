@@ -5,13 +5,23 @@ import { selectSql } from "../src/db/columns";
 import { Db } from "../src/db/sql";
 import { jsonBytes } from "../src/domain/answer-budget";
 import { deleteStatusBatch, PURGE_BATCH } from "../src/domain/inbox";
-import { CARD_CANDIDATES, CARD_RAW_HREF_LIMIT, localCardLink } from "../src/domain/link-cards";
+import {
+  CARD_CANDIDATES,
+  CARD_CREATOR_CHARS,
+  CARD_RAW_HREF_LIMIT,
+  type CardFields,
+  creatorUsername,
+  domainVariants,
+  localCardLink,
+} from "../src/domain/link-cards";
 import type { RemoteStatusInput } from "../src/domain/remote-status-reads";
 import { MAX_STATUS_MEDIA } from "../src/domain/remote-statuses";
 import { CARD_JSON_MAX, cardIframe, type CardRow, presentCard } from "../src/domain/status-presenter";
 import { CARD_COLUMN_MAP } from "../src/domain/status-rows";
+import { storedFields } from "../src/federation/link-cards";
 import { parseRemoteStatus } from "../src/federation/remote-status";
 import { WEB_PAGE_URL_LIMIT } from "../src/federation/web-page";
+import { SCAN_LIMITS } from "../src/platform/html-scan";
 import { MAX_JSON_NODES, withinJsonBounds } from "../src/platform/json-bounds";
 import type { StoreStub } from "../src/platform/store-client";
 import {
@@ -33,6 +43,7 @@ import {
 import { bearer, json, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
+import { appToken } from "./read-helpers";
 import { community, outbound, post, remoteAccount, remoteFollows } from "./status-helpers";
 
 // A link of 0 by 0 without an embed, as 0069_card_embeds defaults a row.
@@ -49,8 +60,17 @@ const LINK_ROW = {
   image_height: null,
   blurhash: null,
 };
-const presentFor = (card: Partial<Omit<CardRow, "status_id">> & Pick<CardRow, "url" | "title">, origin = ORIGIN) =>
-  presentCard({ visibility: "public" }, { status_id: "1", ...boundCard("ascii"), ...LINK_ROW, ...card }, origin);
+const presentFor = (
+  card: Partial<Omit<CardRow, "status_id">> & Pick<CardRow, "url" | "title">,
+  origin = ORIGIN,
+  viewerId: string | null = null,
+) =>
+  presentCard(
+    { visibility: "public" },
+    { status_id: "1", ...boundCard("ascii"), ...LINK_ROW, unverified_author_account_id: null, ...card },
+    origin,
+    viewerId,
+  );
 
 // Status cards (domain/link-cards.ts, federation/link-cards.ts): Mastodon's FetchLinkCardService (v4.5.11) as one
 // copy per status, fetched by the cron's round through the web-page sink (NET-3).
@@ -784,16 +804,19 @@ function boundCard(fill: "escaped" | "astral" | "ascii") {
 }
 
 // An origin of a 253-byte host (four labels of 63 bytes and one of 1), so a card image's URL is at its bound.
+// A signed-in viewer that is not the card's unverified author.
+const VIEWER = "100000000000000009";
 const LONG_ORIGIN = `https://${["a".repeat(63), "b".repeat(63), "c".repeat(63), "d".repeat(59), "e"].join(".")}`;
 
 async function attach(store: StoreStub, statusId: string, card: Record<string, string | null>): Promise<void> {
   await sql(
     store,
     `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, description, author_name, author_url,
-			provider_name, provider_url, language, published_at, fetched_at)
-		VALUES (?1, ?2, 0, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1)
+			provider_name, provider_url, language, published_at, fetched_at, unverified_author_account_id)
+		VALUES (?1, ?2, 0, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, ?11)
 		ON CONFLICT (status_id) DO UPDATE SET url = ?2, due_at = NULL, title = ?3, description = ?4, author_name = ?5,
-			author_url = ?6, provider_name = ?7, provider_url = ?8, language = ?9, published_at = ?10, fetched_at = 1`,
+			author_url = ?6, provider_name = ?7, provider_url = ?8, language = ?9, published_at = ?10, fetched_at = 1,
+			unverified_author_account_id = ?11`,
     statusId,
     card.url ?? null,
     card.title ?? null,
@@ -804,8 +827,82 @@ async function attach(store: StoreStub, statusId: string, card: Record<string, s
     card.provider_url ?? "",
     card.language ?? null,
     card.published_at ?? null,
+    card.unverified_author_account_id ?? null,
   );
 }
+
+describe("the unverified author's creator and host (creatorUsername, domainVariants)", () => {
+  it("reads a creator as ResolveAccountService does up to its direct-local resolution, and fetches nothing", () => {
+    for (const [creator, username] of [
+      ["alice", "alice"],
+      ["@alice", "alice"],
+      ["alice@kopje.test", "alice"],
+      ["@alice@KOPJE.TEST", "alice"],
+      ["alice@kopje.test/", "alice"],
+      [" alice@kopje.test\n", "alice"],
+      ["\u0000\talice\v\f\r", "alice"],
+      ["alice@", "alice"],
+      ["alice@kopje.test@x", "alice"],
+      ["alice@other.example", null],
+      ["a@@kopje.test", null],
+      // One leading @ removed: the next is an empty username.
+      ["@@alice", null],
+      // One trailing / removed.
+      ["alice@kopje.test//", null],
+      ["", null],
+      ["@", null],
+      ["\u3000", null],
+      // U+3000 is blank (Rails) but not stripped (Ruby).
+      ["\u3000alice", "\u3000alice"],
+      // Names Mastodon may reach through WebFinger: an alias and an explicit port.
+      ["alice@www.kopje.test", null],
+      ["alice@kopje.test:443", null],
+    ] as const) {
+      expect(creatorUsername(creator, "kopje.test"), JSON.stringify(creator)).toBe(username);
+    }
+    // The Unicode spelling of a punycode domain, which only IDNA (Mastodon's WebFinger lookup) would equate.
+    expect(creatorUsername("alice@bücher.example", "xn--bcher-kva.example")).toBeNull();
+    expect(creatorUsername("alice@XN--BCHER-KVA.example", "xn--bcher-kva.example")).toBe("alice");
+  });
+
+  it("gives a host and each suffix after a dot, a trailing dot's empty label dropped", () => {
+    expect(domainVariants("a.b.example")).toEqual(["a.b.example", "b.example", "example"]);
+    expect(domainVariants("example.com.")).toEqual(["example.com", "com"]);
+    expect(domainVariants("example")).toEqual(["example"]);
+    expect(domainVariants("")).toEqual([]);
+  });
+
+  it("keeps a creator within the scan's bound in the round's fields, and none past it", () => {
+    expect(CARD_CREATOR_CHARS).toBe(SCAN_LIMITS.valueChars);
+    const fields: CardFields = {
+      title: "t",
+      description: "",
+      authorName: "",
+      authorUrl: "",
+      providerName: "",
+      providerUrl: "",
+      language: null,
+      publishedAt: null,
+      type: "link",
+      width: 0,
+      height: 0,
+      embedSrc: "",
+      iframeWidth: null,
+      iframeHeight: null,
+      imageUrl: "",
+      imageDescription: "",
+      linkType: "unknown",
+      finalUrl: "",
+      creator: null,
+    };
+    // Astral characters count two code units each.
+    const kept = `alice${"\u{1f600}".repeat(1021)}x`;
+    expect(kept).toHaveLength(CARD_CREATOR_CHARS);
+    expect(storedFields({ ...fields, creator: kept }).creator).toBe(kept);
+    expect(storedFields({ ...fields, creator: `${kept}a` }).creator).toBeNull();
+    expect(storedFields(fields).creator).toBeNull();
+  });
+});
 
 describe("presentation", () => {
   const SHAPE = {
@@ -826,6 +923,8 @@ describe("presentation", () => {
     embed_url: "",
     blurhash: null,
     published_at: "2026-10-11T00:00:00.000Z",
+    // Every request below is signed in.
+    missing_attribution: false,
     authors: [{ name: "Ann", url: "https://e.example/ann", account: null }],
   };
   const stored = {
@@ -864,6 +963,46 @@ describe("presentation", () => {
       await h.request("/api/v1/timelines/home", bearer(alice.token))
     ).json<{ id: string; card: unknown }[]>();
     expect(home.find((s) => s.id === status.id)?.card).toEqual(SHAPE);
+  });
+
+  it("shows missing_attribution to a signed-in viewer only, true for the card's unverified author", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const status = await post(h, alice, { status: "card https://e.example/a" });
+    await attach(h.store, status.id, { ...stored, unverified_author_account_id: bob.id });
+    const boost = await (
+      await h.request(`/api/v1/statuses/${status.id}/reblog`, bearer(alice.token, { method: "POST" }))
+    ).json<{ id: string }>();
+    const app = await appToken(h);
+    const cards = async (token: string | null) =>
+      Promise.all(
+        [status.id, boost.id].map(async (id) => {
+          const shown = await (
+            await h.request(`/api/v1/statuses/${id}`, token === null ? {} : bearer(token))
+          ).json<{ card: unknown; reblog: { card: unknown } | null }>();
+          return (shown.reblog?.card ?? shown.card) as Record<string, unknown>;
+        }),
+      );
+    for (const card of await cards(bob.token)) {
+      expect(card).toEqual({ ...SHAPE, missing_attribution: true });
+      // After published_at and before authors, as REST::PreviewCardSerializer writes its attributes, then authors.
+      expect(Object.keys(card).slice(-2)).toEqual(["missing_attribution", "authors"]);
+    }
+    for (const card of await cards(alice.token)) {
+      expect(card).toEqual(SHAPE);
+    }
+    // An anonymous request and an app token: no key, the card otherwise the same.
+    for (const token of [null, app]) {
+      for (const card of await cards(token)) {
+        const { missing_attribution: _, ...anonymous } = SHAPE;
+        expect(card, String(token)).toEqual(anonymous);
+      }
+    }
+    // No unverified author: false for everyone signed in.
+    await sql(h.store, "UPDATE status_cards SET unverified_author_account_id = NULL WHERE status_id = ?", status.id);
+    for (const card of await cards(bob.token)) {
+      expect(card.missing_attribution).toBe(false);
+    }
   });
 
   it("shows no card on a status that is not public or unlisted, even from an imported row", async () => {
@@ -947,23 +1086,26 @@ describe("presentation", () => {
   });
 
   it("reads only text within its raw bounds out of SQLite, whatever the row stores", async () => {
+    const AUTHOR_BLOB = new TextEncoder().encode("123456789012345678").buffer as ArrayBuffer;
     const h = await community(["alice"]);
     const rows = await runInDurableObject(h.store, (_instance, state) =>
       [
-        [new TextEncoder().encode("https://e.example/").buffer as ArrayBuffer, 7],
-        ["x".repeat(CARD_URL_LIMIT + 1), "y".repeat(CARD_TEXTS.title - 1)],
-      ].map(([url, title]) =>
+        [new TextEncoder().encode("https://e.example/").buffer as ArrayBuffer, 7, AUTHOR_BLOB],
+        ["x".repeat(CARD_URL_LIMIT + 1), "y".repeat(CARD_TEXTS.title - 1), "12345678\u0000123456789"],
+        ["https://e.example/", "t", "123456789012345678"],
+      ].map(([url, title, author]) =>
         state.storage.sql
           .exec(
             `SELECT ${selectSql(CARD_COLUMN_MAP)} FROM (SELECT '1' AS value) j,
 							(SELECT ?1 AS url, ?2 AS title, ?2 AS description, ?2 AS author_name, ?1 AS author_url,
 								?2 AS provider_name, ?1 AS provider_url, ?2 AS language, ?2 AS published_at, ?1 AS card_type,
 								?2 AS width, ?3 AS height, ?1 AS embed_src, ?3 AS iframe_width, -1 AS iframe_height,
-								?1 AS image_description) c,
+								?1 AS image_description, ?4 AS unverified_author_account_id) c,
 							(SELECT ?2 AS token, ?3 AS width, ?1 AS height, ?1 AS blurhash) i`,
             url!,
             title!,
             CARD_DIMENSION_MAX + 1,
+            author!,
           )
           .one(),
       ),
@@ -991,6 +1133,9 @@ describe("presentation", () => {
       description: "y".repeat(CARD_TEXTS.title - 1),
       language: null,
     });
+    // 0098_card_attribution: an author past the stored rule (a BLOB of digits, a NUL inside) is NULL; 18 digits are
+    // read as stored.
+    expect(rows.map((row) => row.unverified_author_account_id)).toEqual([null, null, "123456789012345678"]);
   });
 
   it("presents a video from its fixed template, a photo without an image, and judges each stored value again", () => {
@@ -1096,7 +1241,9 @@ describe("presentation", () => {
 
   it("derives CARD_JSON_MAX from the bounds, at or above every fill", () => {
     expect(new URL(LONG_ORIGIN).hostname).toHaveLength(253);
-    const full = presentFor(boundCard("ascii"), LONG_ORIGIN)!;
+    // A signed-in viewer's card holds missing_attribution, false at its longest.
+    const full = presentFor(boundCard("ascii"), LONG_ORIGIN, VIEWER)!;
+    expect(full.missing_attribution).toBe(false);
     expect(full.image).toHaveLength(CARD_IMAGE_URL_BYTES);
     expect(full.blurhash).toHaveLength(BLURHASH_BYTES);
     expect(full.type).toBe("video");
@@ -1135,16 +1282,18 @@ describe("presentation", () => {
       CARD_IMAGE_DESCRIPTION_JSON_BYTES -
       2;
     expect({ skeleton, html, growth, images, max, perStatus: max - jsonBytes(null) }).toEqual({
-      skeleton: 305,
+      skeleton: 333,
       html: 733,
       growth: 740,
       images: 646,
       max: CARD_JSON_MAX,
-      perStatus: 9_895,
+      perStatus: 9_923,
     });
-    expect(CARD_JSON_MAX).toBe(8_513 + 740 + 646);
+    // A link card's 8,513, an embed's growth, 0070's fields and `,"missing_attribution":false`.
+    expect(jsonBytes({ a: 1, missing_attribution: false }) - jsonBytes({ a: 1 })).toBe(28);
+    expect(CARD_JSON_MAX).toBe(8_513 + 740 + 646 + 28);
     const measured = (["escaped", "astral", "ascii"] as const).map((fill) =>
-      jsonBytes(presentFor(boundCard(fill), LONG_ORIGIN)),
+      jsonBytes(presentFor(boundCard(fill), LONG_ORIGIN, VIEWER)),
     );
     expect(measured[0]).toBe(CARD_JSON_MAX);
     for (const bytes of measured) {

@@ -946,10 +946,11 @@ function presentableCopy(db: Db, url: string): CardRow | undefined {
   );
 }
 
-// The link `url` as listed, or null without a presentable qualifying copy now: its card and its history.
-function presentTrendLink(db: Db, url: string, origin: string, now: number): TrendLink | null {
+// The link `url` as listed, or null without a presentable qualifying copy now: its card, for the viewer `viewerId`
+// (missing_attribution: presentCard), and its history.
+function presentTrendLink(db: Db, url: string, origin: string, now: number, viewerId: string | null): TrendLink | null {
   const card = presentableCopy(db, url);
-  const presented = presentCard({ visibility: "public" }, card, origin);
+  const presented = presentCard({ visibility: "public" }, card, origin, viewerId);
   return presented === null ? null : { ...presented, history: linkHistory(db, url, now) };
 }
 
@@ -993,12 +994,13 @@ export function linkHistory(db: Db, url: string, now: number): TagHistory[] {
 }
 
 // GET /api/v1/trends/links (Api::V1::Trends::LinksController): the allowed trending links, `language` first, then by
-// score, the same for everyone, each its qualifying copy's card (R41) with its history; `read` is the rows the page
-// read toward its limit, a row without a qualifying copy now among them (skipped).
+// score, the same for everyone, each its qualifying copy's card (R41, missing_attribution for a signed-in viewer) with
+// its history; `read` is the rows the page read toward its limit, a row without a qualifying copy now among them
+// (skipped).
 export const trendingLinks = optionalUserReadOperation<
   { offset: number; limit: number; language: string; now: number; present: Present },
   TrendPage<TrendLink>
->((db, { offset, limit, language, present, now }) => {
+>((db, { offset, limit, language, present, now }, viewer) => {
   const settings = trendSettings(db);
   if (!settings.trends || limit === 0 || offset >= TREND_ALLOWED_ROWS) {
     return { items: [], read: 0 };
@@ -1009,7 +1011,7 @@ export const trendingLinks = optionalUserReadOperation<
     limit,
     offset,
   );
-  const items = rows.flatMap((row) => presentTrendLink(db, row.url, present.origin, now) ?? []);
+  const items = rows.flatMap((row) => presentTrendLink(db, row.url, present.origin, now, viewer.accountId) ?? []);
   return { items, read: rows.length };
 });
 
