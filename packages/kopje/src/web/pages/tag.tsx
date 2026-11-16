@@ -35,7 +35,8 @@ export const TagPage: FC<TagView> = ({ tag, statuses, stub, parents, cursor, pag
   const { m } = useUi();
   const { domain } = site;
   const base = tagPath(tag);
-  // A page with a cursor names its cursor-less page as canonical, and is not indexed.
+  // A page with a cursor names its cursor-less page as canonical. No page is indexed, as Mastodon's
+  // (tags/show.html.haml).
   const canonical = `https://${domain}${base}`;
   const title = m.tag.title(tag);
   const pager = newestFirstPager(base, cursor, paging);
@@ -45,7 +46,7 @@ export const TagPage: FC<TagView> = ({ tag, statuses, stub, parents, cursor, pag
       chrome={site}
       head={
         <>
-          {cursor === null ? null : <meta name="robots" content="noindex, follow" />}
+          <meta name="robots" content="noindex" />
           <meta property="og:site_name" content={domain} />
           <meta property="og:type" content="website" />
           <meta property="og:title" content={title} />

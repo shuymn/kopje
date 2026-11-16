@@ -11,7 +11,7 @@ import { type PagerTexts, Tabs } from "../components/basics";
 import { ActionsMenu, DialogOpener } from "../components/dialog";
 import { HISTORY_DIALOG, HistoryDialog } from "../components/history";
 import { Icon } from "../components/icon";
-import { Layout } from "../components/layout";
+import { Layout, Robots } from "../components/layout";
 import { PostCard, PostFeed, PostStub, ThreadUp } from "../components/post";
 import { EMBED_DIALOG, EmbedDialog, INTERACT_DIALOG, RemoteDialog } from "../components/remote";
 import { statusSummary } from "../safe-html";
@@ -33,6 +33,8 @@ export type StatusView = {
   site: Site;
   thread?: (Thread & { cursor: PageCursor }) | undefined;
   embed: string;
+  // Mastodon serves its web app's shell at this URL (app/public-pages.tsx mastodonShell).
+  shell: boolean;
 };
 
 // The tabs in the order the page shows them, and the count each is named by.
@@ -61,7 +63,7 @@ function statusTabPath(status: Status, kind: StatusTabKind): string {
 // recorded versions has its history in a dialog after the post, which the post's "Edited" opens, and the post opens two
 // more: to open it on the viewer's server, and its embed code. The head names the status's oEmbed as Mastodon's status
 // page does (statuses/show.html.haml: api_oembed_url with the status page's URL and format json).
-export const StatusPage: FC<StatusView> = ({ status, parent, history, site, thread, embed }) => {
+export const StatusPage: FC<StatusView> = ({ status, parent, history, site, thread, embed, shell }) => {
   const { m } = useUi();
   const { domain } = site;
   const author = status.account;
@@ -80,7 +82,7 @@ export const StatusPage: FC<StatusView> = ({ status, parent, history, site, thre
   const lcp = likelyLcp(post);
   const poster = lcp !== null && (lcp.kind === "video" || lcp.kind === "gifv") ? lcp.preview : null;
   const kind = thread?.list.kind ?? "replies";
-  // A tab page with a cursor names its cursor-less page as canonical, and is not indexed.
+  // A tab page with a cursor names its cursor-less page as canonical.
   const canonical = kind === "replies" ? (status.url ?? undefined) : `https://${domain}${statusTabPath(status, kind)}`;
   const remote =
     status.url === null
@@ -93,7 +95,7 @@ export const StatusPage: FC<StatusView> = ({ status, parent, history, site, thre
       head={
         <>
           <meta name="description" content={description} />
-          {thread === undefined || thread.cursor === null ? null : <meta name="robots" content="noindex, follow" />}
+          <Robots shell={shell} paged={thread !== undefined && thread.cursor !== null} />
           <meta property="og:site_name" content={domain} />
           <meta property="og:type" content="article" />
           <meta property="og:title" content={title} />
