@@ -605,6 +605,38 @@ describe("a debt's path and depth (D12, Applying a debt; Guarantees, Depth)", ()
       expect((await walkOnce(t, c2Id, deep)).toSorted()).toEqual([...deep].toSorted());
     },
   );
+
+  it(
+    "settles at its reading's cut the collection debt a status WALK_STATUSES - 1 links deep holds from a shorter path",
+    { timeout: 180_000 },
+    async () => {
+      const { t, root, bob } = await threadWorld();
+      const note = mastodonNote(root);
+      // T > c1 > … > c200, each listed by its parent: a walk holds T and c1 to c199, and cuts c199's reading.
+      const cs: Note[] = [];
+      for (let i = 0; i < WALK_STATUSES; i++) {
+        cs.push(mastodonNote(bob, { inReplyTo: i === 0 ? note.id : cs[i - 1]!.id }));
+      }
+      cs.forEach((c, i) => served(t.web, c, { items: i + 1 < cs.length ? [cs[i + 1]!.id] : [] }));
+      const rootId = await threadRoot(t, root, note, { items: [cs[0]!.id] });
+      const held = cs.slice(0, WALK_STATUSES - 1).map((c) => c.id);
+      const watched = new Set(cs.map((c) => c.id));
+      expect(await walkOnce(t, rootId, watched)).toEqual(held);
+      expect(await debtsOf(t.store, rootId)).toEqual([]);
+      // c199 owes T its collection at depth WALK_STATUSES - 2, as when its path was a link shorter. c1's row debt goes
+      // first: the walk holds c1 to c199 in the owed lane and is full before a consideration could meet c199's debt,
+      // so only c199's cut can settle it.
+      const idOf = async (c: Note) => (await statusRow(t.store, c.id))!.id;
+      await owedDebt(t.store, rootId, await idOf(cs[0]!), { depth: 1, key: [1, 1, 1] });
+      await owedDebt(t.store, rootId, await idOf(cs[WALK_STATUSES - 2]!), {
+        kind: 1,
+        depth: WALK_STATUSES - 2,
+        key: [1, 2, 0],
+      });
+      expect(await walkOnce(t, rootId, watched)).toEqual(held);
+      expect(await debtsOf(t.store, rootId)).toEqual([]);
+    },
+  );
 });
 
 describe("payment and keys (D12, Debts; Keys)", () => {
@@ -668,6 +700,56 @@ describe("payment and keys (D12, Debts; Keys)", () => {
       ]);
     },
   );
+
+  it("keeps the key and place of an owed node's collection debt not applied when its reading from the start is cut", async () => {
+    const { t, root, bob } = await threadWorld();
+    const note = mastodonNote(root);
+    const rootId = await threadRoot(t, root, note);
+    // T > B > U, B listing U and U listing 300 unstored items; B's row debt goes before U's collection debt.
+    const items = Array.from({ length: 300 }, (_, i) => servedReply(t.web, bob, `${OTHER_ORIGIN}/u-parent-${i}`));
+    const b = mastodonNote(bob, { inReplyTo: note.id });
+    const u = servedReply(t.web, bob, b.id, { items: items.map((item) => item.id) });
+    served(t.web, b, { items: [u.id] });
+    const [bId] = await storeReplies(t, bob, [{ note: b, parentId: rootId }]);
+    const [uId] = await storeReplies(t, bob, [{ note: u, parentId: bId! }]);
+    await owedDebt(t.store, rootId, bId!, { depth: 1, key: [1, 1, 1] });
+    await owedDebt(t.store, rootId, uId!, { kind: 1, offset: 17, depth: 2, key: [1, 2, 0] });
+    // B's debt applied, B reads U into the owed lane; U's reading starts at 0, U's debt never considered, and is cut
+    // full after 197 items: U's debt, after the last one considered, keeps its key and place.
+    const watched = new Set([b.id, u.id, ...items.map((item) => item.id)]);
+    expect(await walkOnce(t, rootId, watched)).toEqual([
+      b.id,
+      u.id,
+      ...items.slice(0, WALK_STATUSES - 3).map((item) => item.id),
+    ]);
+    expect((await debtsOf(t.store, rootId)).filter((d) => d.status === b.id || d.status === u.id)).toEqual([
+      { status: u.id, kind: 1, page: null, offset: 17, depth: 2, key: [1, 2, 0] },
+    ]);
+  });
+
+  it("considers only earlier walks' debts: an applied debt cut again at spent WALK_PAGES, keyed to the walk, is not met again", async () => {
+    const { t, root, bob } = await threadWorld();
+    const note = mastodonNote(root);
+    const rootId = await threadRoot(t, root, note);
+    // A's collection is a document of its own, so its reading takes a page, and the walk's pages are spent.
+    const a = servedReply(t.web, bob, note.id, { shape: "collection" });
+    const [aId] = await storeReplies(t, bob, [{ note: a, parentId: rootId }]);
+    await owedDebt(t.store, rootId, aId!, { kind: 1, offset: 5, depth: 1, key: [1, 1, 0] });
+    vi.setSystemTime(nextWalkAt());
+    await startWalk(t.store, rootId, Date.now());
+    await sql(t.store, "UPDATE reply_walks SET pages = ? WHERE status_id = ?", WALK_PAGES, rootId);
+    const before = t.web.fetched.length;
+    await walkRounds(t, 2000);
+    // A fetched once; its reading cut at its place before a fetch, the debt re-keyed to walk 2 (A's seq 1), which no
+    // consideration of walk 2 meets.
+    expect(t.web.fetched.slice(before)).toEqual([a.id, note.id]);
+    expect(await debtsOf(t.store, rootId)).toEqual([
+      { status: a.id, kind: 1, page: null, offset: 5, depth: 1, key: [2, 1, 0] },
+    ]);
+    expect(
+      await sql<{ debts_seen: number }>(t.store, "SELECT debts_seen FROM reply_walks WHERE status_id = ?", rootId),
+    ).toEqual([{ debts_seen: 1 }]);
+  });
 });
 
 describe("the hand-out's order (D12, Lanes and order)", () => {
