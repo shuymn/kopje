@@ -434,8 +434,9 @@ against their own instance. TLS is assumed between all parties.
   (`statuses.remote_version`, kept as the remote wrote it whether or not the change wrote history, and compared
   unclamped), so a reordered or repeated one changes no content whenever it arrives; one whose version equals the
   stored one, or names none for a status never edited (no `edited_at`), still refreshes the status's poll (counts, end,
-  voters), its quote policy and the stamp of the same quote (Mastodon's `handle_implicit_update!`), and an older one, or
-  one that names none for an edited status, changes nothing (Mastodon's `process_status_update_service.rb:32-34`), so
+  voters), its quote policy and the stamp of the same quote, and verifies the same quote again (Mastodon's
+  `handle_implicit_update!`), and an older one, or one that names none for an edited status, changes nothing
+  (Mastodon's `process_status_update_service.rb:32-34`), so
   a peer's cached copy from before an edit rolls nothing back; an `Update` dated more than 5 minutes ahead
   of the clock is ignored (no change, history or notification), and its edit waits for another delivery; a status whose
   `Delete` was recorded takes no `Update`. A status Kopje fetches again that it stores under the document's id, by its
@@ -873,10 +874,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   notifies the quoted account of an accepted quote and each active mention, each without a kept notification, as
   Mastodon's does (`fan_out_on_write_service.rb:62-75`, `local_notification_worker.rb:15-16`): a `quote` or `mention`
   notification its recipient dismissed or cleared is written and pushed again at the author's next significant edit,
-  quote stamp change or policy-only edit, and at a quote state change Mastodon broadcasts (a stamp's `Delete` that
-  revokes the accepted quote it approved, the `Delete` of a local quote's stamp, the revoke API, an `Accept` of a local
-  quote's request; `fanOutQuoteChange` in `src/domain/quotes.ts`); a kept one is a repeat. Its push is sent only for a
-  newly inserted row. A
+  reset of an accepted quote by a new stamp or policy-only edit, and at a quote state change Mastodon broadcasts (a
+  stamp's `Delete` that revokes the accepted quote it approved, the `Delete` of a local quote's stamp, the revoke API,
+  an `Accept` of a local quote's request, and a round's decision that moves the state of a work whose first
+  verification is a same-version `Update`'s that reset nothing or a relayed `Delete`'s recheck, or that follows a
+  failure that may pass: `quotes.broadcast`; `fanOutQuoteChange` in `src/domain/quotes.ts`); a kept one is a repeat.
+  Its push is sent only for a newly inserted row. A
   remote favourite notifies when it is created and its notification goes with it, as Mastodon's does: a further `Like`
   it tracks notifies nothing, and an `Undo` followed by the next reaction's `Like` notifies (and pushes) again, while
   the reverse order does not;
@@ -885,7 +888,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/timelines.test.ts` ("notifies followers who asked to be notified, once"); the update fan-out: `notifyEdited` in
   `src/domain/update-fan-out.ts`, `test/edit-fan-out.test.ts` ("…but not one alice holds: the same row, no new
   push", "…but not a kept one: the same row, no new push", "a local quote's stamp Delete fans out its status once; a
-  repeated Delete none"). Push: _Enforced (main):_ `notify` records pushes for the
+  repeated Delete none", "an approval Update notifies when the round accepts the quote, not before", "a new stamp on
+  an accepted quote notifies at the Update; its acceptance by the round notifies no more"). Push: _Enforced (main):_
+  `notify` records pushes for the
   row it inserted only, never for a repeat (`queuePushes` in `src/domain/notifications.ts`); `test/push-send.test.ts`
   ("pushes every notification type Kopje emits, once each (VIS-10)").
 - **VIS-11: earlier versions keep the original audience.** Edit history and earlier versions are visible only to the
@@ -3308,7 +3313,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   mention key per local account, whatever a converted or imported status holds (`LOCAL_MENTIONS_SQL`, `notifyEdited` in
   `src/domain/update-fan-out.ts`); `test/edit-fan-out.test.ts` ("reads no more for 10,000 converted mention rows: one
   key probe per local account", "replaces each update, quoted_update and cleared mention within the formula; a kept
-  one writes nothing"). A quote state change runs that fan-out at most once, and a stamp's `Delete` at most twice: for
+  one writes nothing"). A quote state change runs that fan-out at most once (a round's decision:
+  `test/edit-fan-out.test.ts` ("a decision writes at most one update fan-out's bound beside its own rows (RES-4)")),
+  and a stamp's `Delete` at most twice: for
   the local quote holding the stamp (`revokeLocalStamp`) and for the received quote it approved (`stampHolder`), never
   for the quotes its batches reject or revoke (`revokeStamp` in `src/domain/quotes.ts`; `test/edit-fan-out.test.ts`
   ("a stamp's Delete fans out at most twice: the local quote holding it, then the received one it approved")).
@@ -4038,7 +4045,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   meets live work (due, leased or backing off) raises its budget and signer only, so arrivals that keep coming neither
   discard a fetch in flight nor reset its attempts and backoff, and a fetch refused under a signer the work has since
   left, or answered gone to it (a stamp's 404 then rejects or revokes nothing: Mastodon answers 404 to a viewer it
-  refuses), is retried with the current one within those attempts. Every author stage of a verification that stores,
+  refuses), is retried with the current one within those attempts. An `Update` that keeps a pending or accepted quote
+  renews its work by the same rule (`promoteQuote`, `reverifyQuote`): it starts one only when none is live, so
+  `Update`s add at most one work between two decisions whatever their number, and so at most one stamp fetch toward
+  the quoted author's server, to the stamp stored, which passed `stampValid` (`test/quotes.test.ts` ("adds no stamp
+  fetch for Updates that reach an accepted quote's live verification")).
+  Every author stage of a verification that stores,
   refreshes or (on a failed refetch) stamps the quoted status's author counts in its quote's `author_fetches`, apart
   from its attempts: at most `QUOTE_AUTHOR_FETCHES` (6) a work, whose renewal starts the count again, and an author
   stage with none left fetches nothing and ends the work, so a work whose rounds die after the author stage, reclaimed

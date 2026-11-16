@@ -1189,8 +1189,9 @@ ID-7 in `docs/threat-model.md`):
   author's later `Create`.
 - An `Update` replaces the content only when its `updated` is newer than the stored version (the last accepted
   `updated`, else `edited_at`, else `published`); one whose version is equal, or missing for a status never edited,
-  still refreshes the poll, the quote policy and the stamp of the same quote, as Mastodon's `handle_implicit_update!`
-  does; one missing for an edited status changes nothing, as in Mastodon (`process_status_update_service.rb:32-34`).
+  still refreshes the poll and the quote policy, records a changed stamp of the same quote, and verifies the same quote
+  again, as Mastodon's `handle_implicit_update!` does; one missing for an edited status changes nothing, as in
+  Mastodon (`process_status_update_service.rb:32-34`).
   Mastodon moves `edited_at` only on a significant edit (`process_status_update_service.rb`), so after a newer
   metadata-only `Update` it applies an older content `Update`: an author editing A, then B, then A again, whose final A
   arrives before B, ends at B there. Mastodon's behaviour is an ordering bug.
@@ -1222,15 +1223,32 @@ Quote approvals (a local account's quote of a remote status; Mastodon's `Activit
 Quote verification (a received quote and its stamp; Mastodon's `ActivityPub::VerifyQuoteService` and
 `ProcessStatusUpdateService`; VIS-28 in [threat-model.md](threat-model.md)):
 
+- Kopje verifies a quote in job rounds after the status or its `Update` is stored, not inline, so the notifications of
+  a verification Mastodon would broadcast (a same-version `Update`'s, a retried one's) come at the round's decision,
+  within minutes of the activity. Accepted, 2026-11-16.
+- An `Update` naming the same stamp does not verify a rejected or revoked quote again; Mastodon fetches the stamp, which
+  a Mastodon server answers 404 once it has rejected or revoked the quote (`quote_authorizations_controller.rb:23-28`),
+  and a revoked stamp never accepts a quote in Kopje (VIS-28). Accepted, 2026-11-16.
+- An accepted quote whose stamp, fetched again, no longer names it is revoked; Mastodon keeps it accepted
+  (`verify_quote_service.rb:23-24`, `:32`). A stamp that no longer proves the approval does not keep it. Accepted,
+  2026-11-16.
+- A rejected or revoked quote that an `Update` gives another stamp is pending until its round decides; Mastodon keeps
+  it rejected or revoked meanwhile, and broadcasts only if the stamp accepts it, where Kopje's round also notifies when
+  it rejects the quote again. Accepted, 2026-11-16.
 - An accepted self-quote (the quoting status's author is the quoted one) keeps its state whatever stamp an `Update`
   names, and Kopje never fetches its stamp. Mastodon 4.7.5 fetches it (`fast_track_approval!` answers false after
   accepting, `verify_quote_service.rb:40-51`), revokes the quote when the stamp answers 404, and resets it when a
   verified stamp changes. A self-quote needs no approval (FEP-044f, and Mastodon's own comment at `:43`). Accepted,
   2026-11-16.
-- A status that arrives again (an `Update`, a boost, a delivered `Create`) while its pending quote's verification is in
-  flight, or waits to retry after a failure that may pass, is answered by that verification, not by a fetch of its
-  own, and the wait runs out as it was; Mastodon verifies the quote at each `Update`
-  (`process_status_update_service.rb:60`, `:348`) and has no deferred work to interrupt. Accepted, 2026-11-16.
+- A status that arrives again (an `Update`, a boost, a delivered `Create`) while its quote's verification is in flight,
+  or waits to retry after a failure that may pass, is answered by that verification, not by a fetch of its own, and
+  the wait runs out as it was; Mastodon verifies the quote at each `Update` (`process_status_update_service.rb:60`,
+  `:348`) and has no deferred work to interrupt. Kopje's notification of that verification's move follows the first of
+  those `Update`s (or the first after a failure that may pass), as Mastodon's first verification is the one that
+  moves the state. When the stamp's answer changes between them, Mastodon notifies once more or once less: a stamp gone
+  after a same-version `Update` and before a significant newer one is notified once by Mastodon (the edit) and twice
+  by Kopje (the edit and the decision); gone after a significant newer `Update` and before a same-version one, twice by
+  Mastodon and once by Kopje (the edit). Accepted, 2026-11-16.
 
 Forwarded deletes (a remote author's `Delete` of a status that local accounts boosted or quoted; Mastodon's
 `ActivityPub::Forwarder`, `app/lib/activitypub/forwarder.rb`, run by `Activity::Delete#delete_status`):

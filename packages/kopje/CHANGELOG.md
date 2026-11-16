@@ -222,6 +222,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   becomes, as Mastodon 4.6 does (`mastodon#39114`). Posts and bios stored earlier show them after their next update; a
   post whose HTML has them counts that update as an edit once. A line break with attributes ends a line for filters,
   as one without does. No Store migration and no `wrangler.jsonc` change.
+- A remote quote's verification notifies the quoting post's mentions, boosters and quoters as Mastodon does: when a
+  same-version `Update`'s or a retried verification changes the quote's state, and no longer when an `Update` brings a
+  pending quote's stamp, before it is verified. Every `Update` that names the same quote verifies a pending or accepted
+  quote again ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Quote verification). Migration
+  `0100_quote_broadcast`; no `wrangler.jsonc` change.
 
 ### Fixed
 
