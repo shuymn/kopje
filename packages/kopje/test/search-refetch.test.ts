@@ -164,23 +164,18 @@ describe("search of a stored status applies the served document as an Update", (
     expect(await row(t, id)).toMatchObject({ content: "<p>edited</p>", edited_at: at(60) });
   });
 
-  // D8: a 404 removes nothing on search (Mastodon's process_url_from_db answers the stored status).
-  it("keeps and answers a stored status whose fetch answers 404", async () => {
+  // D8: a 404 or a 410 removes nothing on search. Mastodon's process_url_from_db answers the stored status only after a
+  // 401, 403 or 404 (resolve_url_service.rb:44), so a 410 answers nothing.
+  it.each([
+    { name: "keeps and answers a stored status whose fetch answers 404", status: 404, answered: true },
+    { name: "answers nothing for a stored status whose fetch answers 410, and keeps it", status: 410, answered: false },
+  ])("$name", async ({ status, answered }) => {
     const { t, note, id } = await stored();
-    t.web.fail(note.id, 404);
+    t.web.fail(note.id, status);
     t.web.fetched.length = 0;
-    expect((await search(t, note.id)).body.statuses).toMatchObject([{ id }]);
-    expect(t.web.fetched).toContain(note.id);
-    expect(await row(t, id)).toMatchObject({ content: note.content });
-  });
-
-  // A 410 answers nothing, as Mastodon's process_url_from_db answers a stored status only after a 401, 403 or 404
-  // (resolve_url_service.rb:44), and removes nothing (D8).
-  it("answers nothing for a stored status whose fetch answers 410, and keeps it", async () => {
-    const { t, note, id } = await stored();
-    t.web.fail(note.id, 410);
-    t.web.fetched.length = 0;
-    expect((await search(t, note.id)).body.statuses).toEqual([]);
+    const { statuses } = (await search(t, note.id)).body;
+    if (answered) expect(statuses).toMatchObject([{ id }]);
+    else expect(statuses).toEqual([]);
     expect(t.web.fetched).toContain(note.id);
     expect(await row(t, id)).toMatchObject({ content: note.content });
   });
@@ -231,21 +226,16 @@ describe("search takes a status document only from its id", () => {
   });
 
   // Mastodon serves a status at its page URL with the Note's id: the id is fetched again and its document applied.
-  it("applies the document its id serves when searched by the status's page URL", async () => {
+  it.each([
+    { name: "applies the document its id serves when searched by the status's page URL", redirect: false },
+    { name: "applies the document its id serves when searched through a redirect", redirect: true },
+  ])("$name", async ({ redirect }) => {
     const { t, note, id } = await stored();
     const page = note.url as string;
+    if (redirect) t.web.redirect(`${origin(note)}/short`, page);
     serveAt(t, page, note);
     serve(t, { ...note, content: "<p>edited</p>", updated: at(60) });
-    await search(t, page);
-    expect(await row(t, id)).toMatchObject({ content: "<p>edited</p>", edited_at: at(60), edits: 2 });
-  });
-
-  it("applies the document its id serves when searched through a redirect", async () => {
-    const { t, note, id } = await stored();
-    t.web.redirect(`${origin(note)}/short`, note.url as string);
-    serveAt(t, note.url as string, note);
-    serve(t, { ...note, content: "<p>edited</p>", updated: at(60) });
-    await search(t, `${origin(note)}/short`);
+    await search(t, redirect ? `${origin(note)}/short` : page);
     expect(await row(t, id)).toMatchObject({ content: "<p>edited</p>", edited_at: at(60), edits: 2 });
   });
 
