@@ -603,6 +603,9 @@ WEB-5, WEB-7):
   included), following and reporting), so it has none to report; its 429s (app registration, `/login`) carry none
   either. Accepted, 2026-11-16.
 - No `X-XSS-Protection`, `Server`, `X-Request-Id` or `X-Runtime`. Accepted, 2026-11-16.
+- No `Strict-Transport-Security` from the Worker. Mastodon's `force_ssl` adds `max-age=63072000; includeSubDomains` to
+  every HTTPS answer; Kopje leaves HSTS to the operator's Cloudflare zone setting, which also covers the zone's other
+  subdomains, so a deployment sends it only when the operator turns it on. Accepted, 2026-11-16.
 - OAuth's token endpoints, WebFinger, NodeInfo and ActivityPub documents carry `nosniff` and their own caching, not
   Mastodon's `X-Frame-Options` and `Referrer-Policy`, which Rails adds to every answer. Accepted, 2026-11-16.
 - A path under `/api/` that names no route is answered 404 with the API's policy (`default-src 'none'`); Mastodon routes
