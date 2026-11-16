@@ -651,7 +651,7 @@ export const unendorse: ApiHandler = async (c, deps) => {
 // ANSWER_BYTES (8 MiB, RES-3); one cut by the bytes links next to the rest (unlimitedResponse).
 export const endorsements: ApiHandler = withParams(async (c, deps, p) => {
   const query = pageQuery(p);
-  const page = p.get("limit") === "0" ? null : query;
+  const page = p.last("limit") === "0" ? null : query;
   const input = { credential: userCredential(c, deps), page, from: query.maxId, present: present(c) };
   const result = authorized(await storeCall(c, deps, (s, b) => s.listEndorsements(b, input)));
   return page === null ? unlimitedResponse(c, result) : pageResponse(c, result, page.limit);

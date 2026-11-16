@@ -245,7 +245,7 @@ describe(`request parameters match Mastodon v${mastodon.mastodon}`, () => {
   it("observes the reads of a real request through the spies", async () => {
     observer.clear();
     await (await w.h.request("/api/v1/timelines/home?limit=1", bearer(w.owner.token))).body?.cancel();
-    expect(observer.reads()).toContainEqual({ method: "get", name: "limit" });
+    expect(observer.reads()).toContainEqual({ method: "last", name: "limit" });
     observer.clear();
     await (await w.h.request("/api/v1/accounts/lookup?acct=carol@remote.example")).body?.cancel();
     expect(observer.reads()).toContainEqual({ method: "query", name: "acct" });
