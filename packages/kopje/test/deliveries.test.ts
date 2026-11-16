@@ -805,13 +805,22 @@ describe("outbound reach with stale statistics (RES-7)", () => {
 // and the selectors of its two keys (3), then the walk of both keys, one row to start and one per dot. A key is walked
 // only within DNS_NAME_UTF8_BYTES bytes and ends in a non-dot, so it has at most DNS_NAME_UTF8_BYTES - 1 dots.
 const EP_AVAILABLE_CEILING = 2 + 3 + 1 + 2 * (DNS_NAME_UTF8_BYTES - 1);
+// The values the audience check reads for the provenance's candidates: each walks the activity's audience accounts up
+// to it, reading the one at each place before its own. A Flag's audience is at most 1 + MAX_REPORT_STATUSES distinct
+// accounts in id order (reportForwardees), and the most is read with the PROVENANCE_MAX candidates at its end: the
+// places from its length - PROVENANCE_MAX to its last. An id the audience does not hold reads it once and no account.
+const EP_AUDIENCE_READS =
+  PROVENANCE_MAX * (1 + MAX_REPORT_STATUSES - PROVENANCE_MAX) + (PROVENANCE_MAX * (PROVENANCE_MAX - 1)) / 2;
 // The rows personalFallback's provenance candidates read with every input at its cap (RES-7; the witness below): for
 // each of PROVENANCE_MAX candidates, its account, the activity's rows (one per audience inbox of a Flag, at most
 // 1 + MAX_REPORT_STATUSES) and one index entry past them, its chunk and one past it, the chunk's TARGET_CHUNK_SIZE
-// targets, and its availability; and 4 for the row, its activity and the ends of their reads. The statement's check
-// that a suspend block exists adds no row it counts: the witness reads exactly this with and without the block.
+// targets, and its availability; the audience check's values; and 4 for the row, its activity and the ends of their
+// reads. The statement's check that a suspend block exists adds no row it counts: the witness reads exactly this with
+// and without the block.
 const EP_CANDIDATES_CEILING =
-  PROVENANCE_MAX * (1 + (1 + MAX_REPORT_STATUSES + 1) + 2 + TARGET_CHUNK_SIZE + EP_AVAILABLE_CEILING) + 4;
+  PROVENANCE_MAX * (1 + (1 + MAX_REPORT_STATUSES + 1) + 2 + TARGET_CHUNK_SIZE + EP_AVAILABLE_CEILING) +
+  EP_AUDIENCE_READS +
+  4;
 // Ids no account holds, of an account id's 18 digits.
 const absent = (n: number) => Array.from({ length: n }, (_, i) => String(900_000_000_000_000_001n + BigInt(i)));
 // A JSON array of `id` and an astral string, `bytes` UTF-8 bytes long (`["id","…"]`, each astral 4 bytes).
@@ -1032,6 +1041,32 @@ describe("the shared-inbox fallback by the row's provenance (#1686, NET-2)", () 
     }
   });
 
+  // Only an account the activity's audience names is a candidate, as without provenance: a row of an activity without
+  // to that reaches followers (a pin's Add: audience followers, no accounts) never moves, though its provenance names
+  // the followers behind the inbox. Moved to one of them, it would serve that follower alone, and the pin's later
+  // Remove would wait behind it in the lane.
+  it("moves no row of a pin's Add, whose provenance names followers its audience does not (NET-2)", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const fans = [await remoteAccount(h.store, "fan", "remote.example"), await remoteAccount(h.store, "fan2")];
+    for (const fan of fans) {
+      await remoteFollows(h.store, fan, alice.id);
+    }
+    const status = await post(h, alice, { status: "pin me" });
+    // The actor's featured collection is known already, so the pin sends its Add alone.
+    await sql(h.store, "UPDATE local_accounts SET featured_announced = 1 WHERE account_id = ?", alice.id);
+    const create = await claim(h.store, NOW, "c");
+    expect(await complete(h.store, create.deliveries[0]!.id, "c", NOW, OK)).toMatchObject({ status: "delivered" });
+    await act(h, alice, `/api/v1/statuses/${status.id}/pin`);
+    const round = await claim(h.store, NOW, "a");
+    expect(round.deliveries.map((d) => d.inbox)).toEqual([SHARED]);
+    expect(await sql(h.store, "SELECT recipient_accounts AS r FROM deliveries")).toEqual([
+      { r: JSON.stringify(fans.toSorted()) },
+    ]);
+    expect(await failed(h, round.deliveries[0]!.id)).toMatchObject({ status: "gave_up" });
+    expect(await state(h)).toEqual([["Add", SHARED, "gave_up"]]);
+  });
+
   // A retraction moves to its first candidate whether or not that one is available, as the send-time check never
   // refuses one (VIS-30): an Undo still reaches a recipient suspended since it was queued.
   it("moves an Undo to the personal inbox of a recipient unavailable since", async () => {
@@ -1197,10 +1232,10 @@ describe("the shared-inbox fallback by the row's provenance (#1686, NET-2)", () 
   });
 
   // RES-7: the provenance's candidates, every input at its cap at once: the provenance at PROVENANCE_MAX ids in
-  // PROVENANCE_BYTES bytes, each a candidate that reaches both checks; the activity (a Flag) at its audience's cap
-  // (1 + MAX_REPORT_STATUSES accounts), with a row at each audience inbox and an unexpanded chunk of TARGET_CHUNK_SIZE
-  // targets, none at a candidate's inbox, so each check walks them all. After ANALYZE, other activities' rows and chunks
-  // and other accounts grow; the statement reads the same rows, by key.
+  // PROVENANCE_BYTES bytes, the last of the audience's, each a candidate that reaches both checks; the activity (a
+  // Flag) at its audience's cap (1 + MAX_REPORT_STATUSES accounts), with a row at each audience inbox and an unexpanded
+  // chunk of TARGET_CHUNK_SIZE targets, none at a candidate's inbox, so each check walks them all. After ANALYZE, other
+  // activities' rows and chunks and other accounts grow; the statement reads the same rows, by key.
   it("reads the provenance's candidates by key, flat as other rows grow (RES-7)", async () => {
     const h = await community(["alice"]);
     const audience = 1 + MAX_REPORT_STATUSES;
@@ -1215,7 +1250,7 @@ describe("the shared-inbox fallback by the row's provenance (#1686, NET-2)", () 
     const ids = (
       await sql<{ id: string }>(h.store, "SELECT id FROM accounts WHERE domain = 'remote.example' ORDER BY id")
     ).map((r) => r.id);
-    const named = ids.slice(0, PROVENANCE_MAX);
+    const named = ids.slice(-PROVENANCE_MAX);
     expect(JSON.stringify(named)).toHaveLength(PROVENANCE_BYTES);
     // Every branch of each candidate's availability (availableSql) at its cap: a suspend block of none of their keys,
     // so each coverage walk runs to its end; two distinct keys of each candidate (its stored domain and its actor id's
@@ -1341,7 +1376,7 @@ describe("the shared-inbox fallback by the row's provenance (#1686, NET-2)", () 
     expect(after.plans[0]!.rows).toBe(before.plans[0]!.rows);
     // The ceiling at these caps: each of PROVENANCE_MAX candidates walks the activity's rows, its chunk's targets and
     // both its keys to their ends.
-    expect(EP_CANDIDATES_CEILING).toBe(35_732); // The figure docs/threat-model.md (NET-2) states.
+    expect(EP_CANDIDATES_CEILING).toBe(37_212); // The figure docs/threat-model.md (NET-2) states.
     expect(before.plans[0]!.rows).toBe(EP_CANDIDATES_CEILING);
     expect(before.plans[0]!.rows).toBeGreaterThan(
       PROVENANCE_MAX * (audience + TARGET_CHUNK_SIZE + 2 * (DNS_NAME_UTF8_BYTES - 1)),

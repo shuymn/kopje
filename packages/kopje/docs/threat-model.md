@@ -2199,15 +2199,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/remote-actor-images.test.ts` ("keeps a spelling only where Kopje POSTs to Mastodon's URL")). Such a row moves in
   place to a distinct personal inbox on the same origin (same lane, within the row's attempts) if its inbox answers 404,
   405 or 410: for a row whose provenance names its recipients (VIS-30, read only within 337 bytes and 16 ids), the first
-  available one it names, whatever shared inbox that one names since, so a row sent to a personal inbox its recipient
-  has since moved on the same origin follows it; for a row without, an audience account whose shared inbox the row's
-  inbox still is, so a row whose recipient names another shared inbox since gives up (a `Flag`'s audience may hold
-  several accounts of one origin, and nothing tells which the row was for); a forward's row without provenance does not
-  move (`personalFallback` and `forwardFallback` in `src/domain/deliveries.ts`; `test/deliveries.test.ts` ("the
-  shared-inbox fallback by the row's provenance")). Each candidate is sought by id, and the candidates' read is at most
-  35,732 rows with every input at its cap, each candidate's availability walked to its end (RES-7; "reads the
-  provenance's candidates by key, flat as other rows grow"). Targets pass NET-3; a non-public activity is never sent to
-  a redirect target. Claims
+  available one it names among the accounts the activity's audience names, whatever shared inbox that one names since,
+  so a row sent to a personal inbox its recipient has since moved on the same origin follows it; for a row without, an
+  audience account whose shared inbox the row's inbox still is, so a row whose recipient names another shared inbox
+  since gives up (a `Flag`'s audience may hold several accounts of one origin, and nothing tells which the row was for);
+  a follower is no candidate, so a row of an activity without `to` that reaches followers (a pin's `Add` or `Remove`)
+  does not move; a forward's row without provenance does not move (`personalFallback` and `forwardFallback` in
+  `src/domain/deliveries.ts`; `test/deliveries.test.ts` ("the shared-inbox fallback by the row's provenance")). Each
+  candidate is sought by id, and the candidates' read is at most 37,212 rows with every input at its cap, each
+  candidate's availability walked to its end (RES-7; "reads the provenance's candidates by key, flat as other rows
+  grow"). Targets pass NET-3; a non-public activity is never sent to a redirect target. Claims
   serialize each lane; the POST timeout (30 s) is shorter than the lease (60 s), and completion requires the current
   lease token, so a stale completion cannot settle a later claim. A POST answered 400 or 401 is sent once more at once,
   signed with RFC 9421 by the same key (`@method`, `@target-uri`, `content-digest`), as Mastodon 4.7's `Request#perform`

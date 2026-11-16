@@ -2982,9 +2982,11 @@ const SHARED_INBOX_MISSING = new Set([404, 405, 410]);
 // addressed activity (followers, accounts named in to/cc) and personal copies (addressee) never move. A moved row
 // serves that recipient alone, and its provenance (VIS-30) says so. A forward's row (Audience.shares; its addressing is
 // the remote author's) moves by its provenance instead (forwardFallback).
-// The recipient is one the row's provenance names (rowProvenanceSql, recipients_many unset), whatever shared inbox it
-// names since: an actor's document read again may name another or none (remote-actor.ts sharedInboxUri); so a row sent
-// to a personal inbox the recipient has since moved on the same origin follows it too. A row without one (queued
+// The recipient is an account the activity's audience names that the row's provenance names too (rowProvenanceSql,
+// recipients_many unset), whatever shared inbox it names since: an actor's document read again may name another or none
+// (remote-actor.ts sharedInboxUri); so a row sent to a personal inbox the recipient has since moved on the same origin
+// follows it too. A follower the provenance names is no candidate, so a row of an activity without to that reaches
+// followers (an Add or Remove of a pin) never moves, as without provenance. A row without one (queued
 // before migration 0044_delivery_provenance and restored or still queued, recipients_many, a value the read does not
 // admit) takes an audience account whose shared inbox the row's inbox still is, or gives up: the audience of an
 // activity without to may hold several accounts of one origin (a Flag's, reports.ts), and nothing tells which of them
@@ -3006,11 +3008,11 @@ function personalFallback(db: Db, row: LaneRow, now: number, status: number | nu
 				AND ${rowProvenanceSql("recipient_accounts")} IS NOT NULL`,
       row.id,
     ) !== undefined;
-  // The candidates in id order: the accounts the row's provenance names (at most PROVENANCE_MAX), or the audience's at
-  // this shared inbox (as many as the activity addresses). For content, the first one the send-time check would still
-  // send to (sendRefused): one it would refuse would lose the delivery at the next claim, though another recipient
-  // there may be available. A retraction takes the first, as it is never refused. Each account is sought by id (RES-7),
-  // and each candidate's row and target check reads the activity's own rows and chunks.
+  // The candidates in id order: the audience's accounts the row's provenance names (at most PROVENANCE_MAX), or the
+  // audience's at this shared inbox (as many as the activity addresses). For content, the first one the send-time check
+  // would still send to (sendRefused): one it would refuse would lose the delivery at the next claim, though another
+  // recipient there may be available. A retraction takes the first, as it is never refused. Each account is sought by
+  // id (RES-7), and each candidate's row and target check reads the activity's own rows and chunks.
   type Candidate = { inbox: string; id: string; uri: string; retracts: number; available: number };
   const candidates = named
     ? db.all<Candidate>(
@@ -3020,6 +3022,7 @@ function personalFallback(db: Db, row: LaneRow, now: number, status: number | nu
 				CROSS JOIN (SELECT id, retracts, body FROM outbound_activities WHERE id = CAST(?2 AS INTEGER) LIMIT 1) o
 				CROSS JOIN json_each(d.provenance) r CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = r.value
 			WHERE d.addressee IS NULL AND json_type(o.body, '$.activity.to') IS NOT 'array'
+				AND EXISTS (SELECT 1 FROM json_each(o.body, '$.audience.accounts') n WHERE n.value = r.value)
 				AND a.domain IS NOT NULL AND a.inbox_url <> d.inbox_url
 				AND NOT EXISTS (SELECT 1 FROM deliveries e INDEXED BY deliveries_activity
 					WHERE e.activity_id = o.id AND e.inbox_url = a.inbox_url)
