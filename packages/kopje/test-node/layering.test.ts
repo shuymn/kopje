@@ -72,9 +72,9 @@ const SOURCES = sources("src");
 // batch fails, the runtime tests show (test/stream-delete.test.ts unless named):
 // - deleteStatus: the captures of a status's boosts and its tombstone, and the streaming suite;
 // - unreblog: "captures a local boost removed by unreblog, by its own id, before it is hidden";
-// - deleteObject: "names the viewers a mention authorized, once, through every batch and a redelivery", and in
-//   test/inbound-job-isolation.test.ts a failing first batch that keeps its capture and a redelivered Delete whose job
-//   exists that captures nothing;
+// - startRemoval, for inbox.ts deleteObject: "names the viewers a mention authorized, once, through every batch and a
+//   redelivery", and in test/inbound-job-isolation.test.ts a failing first batch that keeps its capture and a
+//   redelivered Delete whose job exists that captures nothing;
 // - removeBoost: "captures a remote boost removed by Delete or Undo, by its own id".
 // This inventory fails on any other site, which then needs a witness of its own. No capture function runs under a
 // batch's budget (JobBudget, RowBudget): a capture a budget could skip is invisible to those tests, which never
@@ -82,7 +82,7 @@ const SOURCES = sources("src");
 const CAPTURES = {
   "src/domain/statuses.ts deleteStatus": 1,
   "src/domain/statuses.ts unreblog": 1,
-  "src/domain/inbox.ts deleteObject": 1,
+  "src/domain/remote-removal.ts startRemoval": 1,
   "src/domain/inbox.ts removeBoost": 1,
 };
 
