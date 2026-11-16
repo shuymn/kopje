@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 
@@ -42,7 +42,6 @@ type Totals = { seq: number; frames: number; bytes: number };
 
 // The object: one start at a time, its sockets by name, its persistent totals and ends.
 class FakeObject {
-  #starts = 0;
   start = { id: "", at: 0, kind: "fresh" as "fresh" | "wake" };
   sendReturns = "unknown";
   heldMib = 0;
@@ -51,12 +50,15 @@ class FakeObject {
   readonly events: { at: number; name: string; kind: string; code: number | null; reason: string }[] = [];
   readonly sent = new Map<string, number>();
   // Faults: an answer lost after the frames left, hands refused, a listing that shows no socket, a reset past a heap,
-  // and a connection the object keeps open after the client's Close.
+  // a connection the object keeps open after the client's Close, and state answers held back (each read as it was
+  // asked) until released.
   loseHandAnswers = false;
   refuseHands: (name: string) => boolean = () => false;
   hideSockets = false;
   resetPastMib = Number.POSITIVE_INFINITY;
   keepOpenAfterClose = false;
+  holdState = false;
+  readonly heldStates: (() => void)[] = [];
   readonly server: Server;
 
   constructor() {
@@ -82,6 +84,13 @@ class FakeObject {
     this.server.close();
   }
 
+  releaseState() {
+    this.holdState = false;
+    for (const answer of this.heldStates.splice(0)) {
+      answer();
+    }
+  }
+
   // A reset: every socket ends, the heap is gone, and the object starts fresh.
   reset() {
     for (const socket of this.sockets.values()) {
@@ -93,8 +102,8 @@ class FakeObject {
   }
 
   #restart() {
-    this.#starts += 1;
-    this.start = { id: `start-${this.#starts}`, at: Date.now(), kind: "fresh" };
+    // A start id as the object makes it: a UUID, so frame 0 carries one at full length.
+    this.start = { id: randomUUID(), at: Date.now(), kind: "fresh" };
     this.sendReturns = "unknown";
   }
 
@@ -155,8 +164,8 @@ class FakeObject {
       res.end(JSON.stringify(body));
     };
     switch (`${req.method} ${url.pathname}`) {
-      case "GET /state":
-        json(200, {
+      case "GET /state": {
+        const body = {
           start: this.start,
           at: Date.now(),
           heldMib: this.heldMib,
@@ -165,8 +174,14 @@ class FakeObject {
           names: this.totals,
           events: this.events,
           surface: { bufferedAmount: false, ping: false, sendReturns: this.sendReturns, webSocket: [], state: [] },
-        });
+        };
+        if (this.holdState) {
+          this.heldStates.push(() => json(200, body));
+        } else {
+          json(200, body);
+        }
         return;
+      }
       case "POST /hand": {
         if (!this.sockets.has(name) || this.refuseHands(name)) {
           json(409, { error: "no open socket", start: this.start });
@@ -282,6 +297,46 @@ describe("held-output driver", () => {
     await run.poll();
     await run.done();
     const outcome = classify(records).runs.find((r) => r.run === "r4");
+    expect(outcome?.class).toBe("inconclusive");
+    expect(outcome?.resets).toHaveLength(1);
+    expect(outcome?.clients[0]?.ends.map((e) => e.cause)).toEqual(["reset"]);
+  });
+
+  it("reads the start a hello names in full", async () => {
+    const { records, context, target } = await setup();
+    const run = new Run(context, target, "r8", { measurement: "m2" });
+    await run.begin();
+    await run.client("a", { mode: "control" });
+    fake.reset();
+    // No state answer comes: only the second client's frame 0 can name the new start.
+    fake.holdState = true;
+    await run.client("b", { mode: "control" });
+    expect(records.filter((r) => r.type === "start").map((r) => r.id)).toEqual([fake.start.id]);
+    fake.releaseState();
+    await run.done();
+  });
+
+  it("keeps a start's last sighting at when it was asked about, so a late state answer hides no reset", async () => {
+    const { records, context, target } = await setup();
+    const run = new Run(context, target, "r7", { measurement: "m3" });
+    await run.begin();
+    // A state read before the client exists, answered only after the client was handed frames and the reset ended it.
+    fake.holdState = true;
+    const polled = run.poll();
+    await eventually(() => fake.heldStates.length === 1);
+    const pending = run.client("t", { mode: "control" });
+    await eventually(() => (run.clients[0]?.receivedFrames ?? 0) > 0);
+    const client = run.clients[0]!;
+    await run.hand(client, 2, KIB);
+    fake.reset();
+    await client.closed;
+    await new Promise((done) => setTimeout(done, 5));
+    fake.releaseState();
+    await polled;
+    await pending;
+    await run.poll();
+    await run.done();
+    const outcome = classify(records).runs.find((r) => r.run === "r7");
     expect(outcome?.class).toBe("inconclusive");
     expect(outcome?.resets).toHaveLength(1);
     expect(outcome?.clients[0]?.ends.map((e) => e.cause)).toEqual(["reset"]);

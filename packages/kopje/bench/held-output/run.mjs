@@ -2,9 +2,9 @@
 // itself, since no signal of unsent output reaches JavaScript (RES-6). It deploys `worker.ts` as a temporary Worker
 // named `kopje-bench-held-<random>` at the compatibility date and flags of the package's wrangler.jsonc, drives it
 // with clients of its own, writes what it observed as JSON lines and the outcomes `classify.mjs` gives them, and
-// deletes the Worker, also when a run fails or the process gets SIGINT, SIGTERM or SIGHUP (printing the delete command
-// if the delete fails too). `--local` runs the same object under `wrangler dev` on the pinned workerd instead and
-// samples the workerd process's resident memory.
+// deletes the Worker, also when a run fails or the process gets SIGINT, SIGTERM or SIGHUP, and confirms it is gone
+// (printing the delete command when it cannot). `--local` runs the same object under `wrangler dev` on the pinned
+// workerd instead and samples the workerd process's resident memory.
 //
 //   pnpm --filter kopje bench:held-output [--local] [--runs m1,m2,...] [--out <dir>] [--quick]
 //
@@ -33,14 +33,24 @@
 // approaches the isolate's memory.
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { copyFileSync, createWriteStream, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  copyFileSync,
+  createWriteStream,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { connect as tcpConnect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { connect as tlsConnect } from "node:tls";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { parseArgs } from "node:util";
+import { inspect, parseArgs } from "node:util";
 
 import { classify, parseObservations } from "./classify.mjs";
 
@@ -65,11 +75,29 @@ const PROBE_CAP_MIB = { local: 512, deployed: 4096 };
 // How long a resumed client may take to receive what it was handed.
 const DRAIN_WAIT_MS = 10 * MINUTE_MS;
 const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+// What a client keeps of each message's start to parse: frame 0's `<seq> <ms> <start id> <kind> ` fits with room.
+const HEAD_BYTES = 128;
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, "../..");
 const require = createRequire(import.meta.url);
-const wrangler = join(dirname(require.resolve("wrangler/package.json")), "bin", "wrangler.js");
+const WRANGLER = join(dirname(require.resolve("wrangler/package.json")), "bin", "wrangler.js");
+// How the removal of a deployed Worker waits: for a deploy that did not finish to land (it may, after its command
+// ended), and between attempts to delete it and confirm it is gone.
+const CLEANUP = { settleMs: MINUTE_MS, retryMs: 15_000, attempts: 4 };
+
+// Every token this process made: whatever it prints or keeps shows them masked.
+/** @type {Set<string>} */
+const tokens = new Set();
+
+/** @param {string} text */
+function masked(text) {
+  let result = text;
+  for (const token of tokens) {
+    result = result.replaceAll(token, "<token>");
+  }
+  return result;
+}
 
 /**
  * The frames to hand each client this tick: up to `offered` each, while its backlog stays within CLIENT_BACKLOG_BYTES
@@ -197,6 +225,8 @@ class Client {
   /** @type {NodeJS.Timeout | null} */
   #timer = null;
   #paused = false;
+  // When the client asked for its socket: the start that answers with frame 0 was alive then.
+  #connectingAt = 0;
 
   // Bytes handed, hands whose answer was lost included (`unknownBytes`), and received; frame 0 counts on both sides.
   handedBytes = 0;
@@ -236,6 +266,7 @@ class Client {
   /** Opens the socket and resolves once the 101 arrived. */
   connect() {
     const { target } = this.run;
+    this.#connectingAt = Date.now();
     const key = randomBytes(16).toString("base64");
     const request = [
       `GET /ws?name=${encodeURIComponent(this.name)} HTTP/1.1`,
@@ -328,8 +359,8 @@ class Client {
         if (this.#frame.opcode >= 8) {
           this.#control.push(Buffer.from(part));
         } else {
-          if (this.#headLength < 48) {
-            const kept = Buffer.from(part.subarray(0, 48 - this.#headLength));
+          if (this.#headLength < HEAD_BYTES) {
+            const kept = Buffer.from(part.subarray(0, HEAD_BYTES - this.#headLength));
             this.#head.push(kept);
             this.#headLength += kept.length;
           }
@@ -389,7 +420,7 @@ class Client {
     if (seq === 0) {
       // Frame 0 is handed by the object as it accepts the socket, and names the start that accepted it.
       if (match?.[3] !== undefined) {
-        this.run.saw({ id: match[3], kind: match[4] === "wake" ? "wake" : "fresh" });
+        this.run.saw({ id: match[3], kind: match[4] === "wake" ? "wake" : "fresh" }, this.#connectingAt);
       }
       this.connectedAt = Date.now();
       this.handedBytes += this.#messageBytes;
@@ -593,7 +624,8 @@ export class Run {
   probing = false;
   // The MiB the running headroom probe holds.
   probeHeld = 0;
-  // The start last seen in any answer (a state, a hand, a close, an alloc, a frame 0), and when.
+  // The start last seen in any answer (a state, a hand, a close, a frame 0), and when the latest of those answers was
+  // asked for: the start was alive then, and no later moment is known, however late the answer arrived.
   /** @type {{ id: string, at: number } | null} */
   #start = null;
   // Starts seen before it: a late answer from one of them is no new start.
@@ -641,9 +673,10 @@ export class Run {
   }
 
   async begin() {
+    const asked = Date.now();
     const state = await answeringState(this.target, 60_000, this.signal);
     this.#seenEvents = state.events.length;
-    this.#observe(state);
+    this.#observe(state, asked);
     this.#timer = setInterval(() => {
       void this.poll();
       for (const client of this.clients) {
@@ -655,28 +688,30 @@ export class Run {
   /** Reads the object's state once, after any read already running. */
   poll() {
     this.#polling = this.#polling.then(async () => {
+      const asked = Date.now();
       const state = await stateOf(this.target);
       if (state !== null) {
-        this.#observe(state);
+        this.#observe(state, asked);
       }
     });
     return this.#polling;
   }
 
   /**
-   * Notes the start an answer came from. A new one is recorded with what the run held under the one before: the
-   * sockets listed, every client connected and not yet ended by the last answer from that start (so a reset between
-   * two polls is not missed), and the heap.
+   * Notes the start an answer came from, and when that answer was asked for. A new start is recorded with what the
+   * run held under the one before: the sockets listed, every client connected and not yet ended when the latest
+   * answer from that start was asked for (so neither a reset between two polls nor a late answer hides one), and the
+   * heap.
    * @param {{ id: string, kind: "fresh" | "wake" }} start
+   * @param {number} asked
    */
-  saw(start) {
-    const now = Date.now();
+  saw(start, asked) {
     if (this.#start === null) {
-      this.#start = { id: start.id, at: now };
+      this.#start = { id: start.id, at: asked };
       return;
     }
     if (start.id === this.#start.id) {
-      this.#start.at = now;
+      this.#start.at = Math.max(this.#start.at, asked);
       return;
     }
     if (this.#retired.has(start.id)) {
@@ -689,7 +724,7 @@ export class Run {
     ).length;
     this.record({
       type: "start",
-      at: now,
+      at: Date.now(),
       id: start.id,
       kind: start.kind,
       since,
@@ -698,12 +733,19 @@ export class Run {
       probe: this.probing,
     });
     this.#retired.add(this.#start.id);
-    this.#start = { id: start.id, at: now };
+    this.#start = { id: start.id, at: asked };
   }
 
-  /** @param {State} state */
-  #observe(state) {
-    this.saw(state.start);
+  /**
+   * @param {State} state
+   * @param {number} asked
+   */
+  #observe(state, asked) {
+    this.saw(state.start, asked);
+    if (this.#retired.has(state.start.id)) {
+      // A snapshot from a start already replaced is older than what the run knows of the object.
+      return;
+    }
     // The runtime's surface, per start, whenever it changes: `sendReturns` is known only once the start has sent.
     const surface = `${state.start.id} ${JSON.stringify(state.surface)}`;
     if (surface !== this.#surface) {
@@ -735,7 +777,7 @@ export class Run {
         });
       }
     }
-    this.#seenEvents = state.events.length;
+    this.#seenEvents = Math.max(this.#seenEvents, state.events.length);
     // The object's totals are what it sent: a hand whose answer was lost is found here, and never counted below them.
     for (const client of this.clients) {
       const totals = state.names[client.name];
@@ -788,6 +830,7 @@ export class Run {
     };
     const query = `name=${encodeURIComponent(client.name)}&frames=${frames}&bytes=${bytes}`;
     let answer;
+    const asked = Date.now();
     try {
       answer = await call(this.target, "POST", `/hand?${query}`);
     } catch (error) {
@@ -803,7 +846,7 @@ export class Run {
       return null;
     }
     const hand = /** @type {HandAnswer} */ (answer.body);
-    this.saw(hand.start);
+    this.saw(hand.start, asked);
     client.handedBytes += hand.bytes - planned;
     this.record({
       type: "hand",
@@ -821,9 +864,10 @@ export class Run {
    * @param {Client} client
    */
   async closeByObject(client) {
+    const asked = Date.now();
     const { body } = await call(this.target, "POST", `/close?name=${encodeURIComponent(client.name)}`);
     const closed = /** @type {{ at: number, start: Start }} */ (body);
-    this.saw(closed.start);
+    this.saw(closed.start, asked);
     this.record({ type: "closed", client: client.name, at: closed.at, by: "object" });
   }
 
@@ -1267,34 +1311,51 @@ function workerdUnder(root) {
 }
 
 /**
+ * What a caller may replace: the wrangler the driver runs, and the waits of the removal.
+ * @typedef {{ wrangler?: string, cleanup?: typeof CLEANUP }} Overrides
+ */
+
+/**
  * Runs `fn` against the bench object, deployed or local, and removes it however `fn` ends.
  * @param {{ local: boolean, compat: { date: string, flags: string[] }, out: string, label: string,
- *   signal: AbortSignal, log: (line: string) => void }} options
+ *   signal: AbortSignal, log: (line: string) => void } & Overrides} options
  * @param {(target: Target) => Promise<void>} fn
  */
-async function withTarget({ local, compat, out, label, signal, log }, fn) {
+export async function withTarget({ local, compat, out, label, signal, log, wrangler, cleanup }, fn) {
   const dir = mkdtempSync(join(tmpdir(), "kopje-bench-held-"));
-  const name = `kopje-bench-held-${randomBytes(4).toString("hex")}`;
-  // The deployed object is public on workers.dev while it runs: it answers only requests that carry this run's token.
-  // The token is a secret binding (`.dev.vars` locally, a secrets file deployed), whose value wrangler never prints,
-  // unlike a var's; and every wrangler output kept in the output directory is masked, its own logs included.
-  const token = randomBytes(32).toString("hex");
-  const config = join(dir, "wrangler.jsonc");
-  // A copy of the object's source: `wrangler dev` reloads on a change to its main module, which would reset the
-  // object mid-run if the tree were edited.
-  copyFileSync(join(here, "worker.ts"), join(dir, "worker.ts"));
-  writeFileSync(config, JSON.stringify(workerConfig(name, compat), null, 2));
-  if (local) {
-    writeFileSync(join(dir, ".dev.vars"), `BENCH_TOKEN=${token}\n`, { mode: 0o600 });
-  } else {
-    writeFileSync(join(dir, "secrets.json"), JSON.stringify({ BENCH_TOKEN: token }), { mode: 0o600 });
-  }
-  /** @param {string} text */
-  const mask = (text) => text.replaceAll(token, "<token>");
-  // wrangler's own debug logs go to the temporary directory, which is removed with the token in it.
-  const env = { ...process.env, WRANGLER_SEND_METRICS: "false", WRANGLER_LOG_PATH: join(dir, "logs") };
-  const setup = { dir, name, config, token, mask, env, logFile: join(out, `wrangler-${label}.log`), signal, log };
+  // Everything written to the directory, the token's file first among them, is removed with it however this ends.
   try {
+    const name = `kopje-bench-held-${randomBytes(4).toString("hex")}`;
+    // The deployed object is public on workers.dev while it runs: it answers only requests that carry this run's
+    // token. The token is a secret binding (`.dev.vars` locally, a secrets file deployed), whose value wrangler never
+    // prints, unlike a var's; and whatever the driver prints or keeps shows it masked, wrangler's output included.
+    const token = randomBytes(32).toString("hex");
+    tokens.add(token);
+    const config = join(dir, "wrangler.jsonc");
+    // A copy of the object's source: `wrangler dev` reloads on a change to its main module, which would reset the
+    // object mid-run if the tree were edited.
+    copyFileSync(join(here, "worker.ts"), join(dir, "worker.ts"));
+    writeFileSync(config, JSON.stringify(workerConfig(name, compat), null, 2));
+    if (local) {
+      writeFileSync(join(dir, ".dev.vars"), `BENCH_TOKEN=${token}\n`, { mode: 0o600 });
+    } else {
+      writeFileSync(join(dir, "secrets.json"), JSON.stringify({ BENCH_TOKEN: token }), { mode: 0o600 });
+    }
+    // wrangler's own debug logs go to the temporary directory, which is removed with the token in it.
+    const env = { ...process.env, WRANGLER_SEND_METRICS: "false", WRANGLER_LOG_PATH: join(dir, "logs") };
+    /** @type {Setup} */
+    const setup = {
+      dir,
+      name,
+      config,
+      token,
+      env,
+      wrangler: wrangler ?? WRANGLER,
+      cleanup: cleanup ?? CLEANUP,
+      logFile: join(out, `wrangler-${label}.log`),
+      signal,
+      log,
+    };
     if (local) {
       await runLocal(setup, fn);
     } else {
@@ -1306,15 +1367,39 @@ async function withTarget({ local, compat, out, label, signal, log }, fn) {
 }
 
 /**
- * @typedef {{ dir: string, name: string, config: string, token: string, mask: (text: string) => string,
- *   env: NodeJS.ProcessEnv, logFile: string, signal: AbortSignal, log: (line: string) => void }} Setup
+ * @typedef {{ dir: string, name: string, config: string, token: string, env: NodeJS.ProcessEnv, wrangler: string,
+ *   cleanup: typeof CLEANUP, logFile: string, signal: AbortSignal, log: (line: string) => void }} Setup
  */
+
+/**
+ * Runs wrangler in a process group of its own, so that a signal to the driver's group (a terminal's Ctrl-C, a SIGTERM
+ * to the group) reaches the driver alone, which lets wrangler finish instead of cutting a deploy or a delete short.
+ * @param {Setup} setup
+ * @param {string[]} args
+ * @returns {Promise<{ code: number | null, output: string }>}
+ */
+function runWrangler({ dir, env, wrangler }, args) {
+  return new Promise((done) => {
+    const child = spawn(process.execPath, [wrangler, ...args], {
+      cwd: dir,
+      env,
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    /** @type {Buffer[]} */
+    const output = [];
+    child.stdout.on("data", (data) => output.push(/** @type {Buffer} */ (data)));
+    child.stderr.on("data", (data) => output.push(/** @type {Buffer} */ (data)));
+    child.on("error", (error) => done({ code: null, output: String(error) }));
+    child.on("close", (code) => done({ code, output: Buffer.concat(output).toString("utf8") }));
+  });
+}
 
 /**
  * @param {Setup} setup
  * @param {(target: Target) => Promise<void>} fn
  */
-async function runLocal({ dir, config, token, mask, env, logFile, signal, log }, fn) {
+async function runLocal({ dir, config, token, env, wrangler, logFile, signal, log }, fn) {
   const port = await freePort();
   const inspector = await freePort();
   // The output stays in the temporary directory until wrangler stops; only its masked copy is kept.
@@ -1378,7 +1463,7 @@ async function runLocal({ dir, config, token, mask, env, logFile, signal, log },
       }
     }
     await new Promise((done) => output.end(done));
-    writeFileSync(logFile, mask(readFileSync(raw, "utf8")));
+    writeFileSync(logFile, masked(readFileSync(raw, "utf8")));
   }
 }
 
@@ -1386,23 +1471,22 @@ async function runLocal({ dir, config, token, mask, env, logFile, signal, log },
  * @param {Setup} setup
  * @param {(target: Target) => Promise<void>} fn
  */
-async function runDeployed({ dir, name, config, token, mask, env, logFile, signal, log }, fn) {
+async function runDeployed(setup, fn) {
+  const { dir, name, config, token, logFile, signal, log } = setup;
+  // Whether the deploy ran to its end; one that did not may still land after its command ended.
+  let settled = false;
   try {
     log(`deploying ${name}`);
-    let printed;
-    try {
-      printed = execFileSync(
-        process.execPath,
-        [wrangler, "deploy", "--config", config, "--secrets-file", join(dir, "secrets.json")],
-        { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], env },
-      );
-    } catch (error) {
-      const { stdout, stderr } = /** @type {{ stdout?: string, stderr?: string }} */ (error);
-      writeFileSync(logFile, mask(`${stdout ?? ""}${stderr ?? ""}`));
-      throw error;
+    const secrets = join(dir, "secrets.json");
+    const deploy = await runWrangler(setup, ["deploy", "--config", config, "--secrets-file", secrets]);
+    rmSync(secrets, { force: true });
+    writeFileSync(logFile, masked(deploy.output));
+    settled = deploy.code === 0;
+    if (!settled) {
+      // Its output stays in the masked log: an error carrying it would print it unmasked.
+      throw new Error(`${name}: wrangler deploy exited with ${deploy.code ?? "an error"} (${logFile})`);
     }
-    writeFileSync(logFile, mask(printed));
-    const url = /https:\/\/[\w.-]+\.workers\.dev/.exec(printed)?.[0];
+    const url = /https:\/\/[\w.-]+\.workers\.dev/.exec(deploy.output)?.[0];
     if (url === undefined) {
       throw new Error(`${name}: deploy printed no workers.dev URL (${logFile})`);
     }
@@ -1413,21 +1497,44 @@ async function runDeployed({ dir, name, config, token, mask, env, logFile, signa
     log(`${name}: ${url}`);
     await fn(target);
   } finally {
-    log(`deleting ${name}`);
-    try {
-      execFileSync(process.execPath, [wrangler, "delete", "--config", config, "--force"], {
-        cwd: dir,
-        stdio: ["ignore", "ignore", "inherit"],
-        env,
-      });
-    } catch {
-      console.error(`held-output: deleting ${name} failed; delete it with: pnpm exec wrangler delete ${name} --force`);
-    }
+    await removeWorker(setup, settled);
   }
 }
 
-/** @param {string[]} argv */
-async function main(argv) {
+/**
+ * Deletes the Worker and confirms that it is gone, retrying both; prints the command to delete it by hand when that
+ * cannot be confirmed. After a deploy that did not run to its end, it first waits for that deploy to land.
+ * @param {Setup} setup
+ * @param {boolean} settled
+ */
+async function removeWorker(setup, settled) {
+  const { name, config, cleanup, logFile, log } = setup;
+  if (!settled) {
+    log(`${name}: waiting ${cleanup.settleMs / 1000} s for a deploy that did not finish to land`);
+    await delay(cleanup.settleMs);
+  }
+  for (let attempt = 1; attempt <= cleanup.attempts; attempt += 1) {
+    log(`deleting ${name}${attempt > 1 ? ` (attempt ${attempt})` : ""}`);
+    const deleted = await runWrangler(setup, ["delete", "--config", config, "--force"]);
+    // Gone once the API says the Worker does not exist (its code 10007); any other answer leaves it in doubt.
+    const status = await runWrangler(setup, ["deployments", "status", "--config", config, "--json"]);
+    appendFileSync(logFile, masked(`${deleted.output}${status.output}`));
+    if (status.code !== 0 && status.output.includes("[code: 10007]")) {
+      log(`${name}: deleted`);
+      return;
+    }
+    if (attempt < cleanup.attempts) {
+      await delay(cleanup.retryMs);
+    }
+  }
+  console.error(`held-output: ${name} may remain; delete it with: pnpm exec wrangler delete ${name} --force`);
+}
+
+/**
+ * @param {string[]} argv
+ * @param {Overrides} overrides
+ */
+async function main(argv, overrides) {
   const { values } = parseArgs({
     args: argv,
     options: {
@@ -1453,10 +1560,14 @@ async function main(argv) {
   const stream = createWriteStream(observations, { flags: "a" });
   /** @param {string} line */
   const log = (line) => console.log(`held-output: ${line}`);
+  // A terminal gone (SIGHUP) makes every later write fail: that must not stop the removal of what was started.
+  process.stdout.on("error", () => {});
+  process.stderr.on("error", () => {});
   // Every way the process is asked to stop takes one path: the abort ends each run's waits and sockets, and each
   // Worker is deleted (or wrangler dev stopped) before the process exits. A further signal while that runs is ignored,
-  // so it cannot cut a deletion short; an uncaught error takes the same path. Only SIGKILL skips it: the delete
-  // command for each Worker is then `pnpm exec wrangler delete <name> --force`, the name printed when it was deployed.
+  // and wrangler runs in a process group of its own, so neither a deploy nor a delete is cut short; an uncaught error
+  // takes the same path. Only SIGKILL skips it: the delete command for each Worker is then
+  // `pnpm exec wrangler delete <name> --force`, the name printed when it was deployed.
   const controller = new AbortController();
   /**
    * @param {string} why
@@ -1491,11 +1602,14 @@ async function main(argv) {
     : [runs.filter((r) => r === "m1" || r === "m5"), ...runs.filter((r) => r !== "m1" && r !== "m5").map((r) => [r])];
   /** @param {Measurement[]} group */
   const runGroup = (group) =>
-    withTarget({ local, compat, out, label: group.join("-"), signal: controller.signal, log }, async (target) => {
-      for (const measurement of group) {
-        await MEASUREMENTS[measurement](context, target);
-      }
-    });
+    withTarget(
+      { local, compat, out, label: group.join("-"), signal: controller.signal, log, ...overrides },
+      async (target) => {
+        for (const measurement of group) {
+          await MEASUREMENTS[measurement](context, target);
+        }
+      },
+    );
   /** @type {unknown} */
   let failure = null;
   try {
@@ -1527,9 +1641,19 @@ async function main(argv) {
   }
 }
 
+/**
+ * The command: runs the measurements, and on a failure prints it with every token masked and exits with 1.
+ * @param {string[]} argv
+ * @param {Overrides} [overrides]
+ */
+export async function cli(argv, overrides = {}) {
+  try {
+    await main(argv, overrides);
+  } catch (error) {
+    process.stderr.write(`${masked(inspect(error))}\n`, () => process.exit(1));
+  }
+}
+
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main(process.argv.slice(2)).catch((/** @type {unknown} */ error) => {
-    console.error(error);
-    process.exit(1);
-  });
+  void cli(process.argv.slice(2));
 }
