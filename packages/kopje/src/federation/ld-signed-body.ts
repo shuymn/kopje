@@ -32,10 +32,10 @@ const AS = "https://www.w3.org/ns/activitystreams";
 function definitionsOf(url: string): Json {
   const document = preloadedContexts[url] as { "@context"?: unknown } | undefined;
   const context = document?.["@context"];
-  if (typeof context !== "object" || context === null || Array.isArray(context)) {
+  if (!isObject(context)) {
     throw new Error(`no preloaded context object: ${url}`);
   }
-  return context as Json;
+  return context;
 }
 
 // A term, not a keyword or a compact or absolute IRI.
