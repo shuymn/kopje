@@ -360,9 +360,7 @@ describe("origins", () => {
     const { id } = await walkOf(t, root, note, [local, g.id, h.id]);
     await walkRounds(t);
     expect(await storedOf(t.store, [g.id, h.id, nested.id, hidden.id])).toEqual([g.id, h.id, nested.id]);
-    expect(t.web.fetched.filter((url) => !url.startsWith(MASTODON_ORIGIN) && !url.startsWith(OTHER_ORIGIN))).toEqual(
-      [],
-    );
+    expect(t.web.fetched.filter((url) => ![MASTODON_ORIGIN, OTHER_ORIGIN].includes(new URL(url).origin))).toEqual([]);
     // Nodes: the root, g, h, nested; pages: g's page only.
     expect(await walkRow(t.store, id)).toMatchObject({ nodes: 4, pages: 1, result_count: 3 });
   });
@@ -383,7 +381,7 @@ describe("origins", () => {
     await walkOf(t, root, note, [ofBlocked.id, ofSuspended.id, g.id]);
     await walkRounds(t);
     expect(await storedOf(t.store, [ofBlocked.id, ofSuspended.id, g.id])).toEqual([g.id]);
-    expect(t.web.fetched.filter((url) => url.startsWith("https://blocked.example"))).toEqual([]);
+    expect(t.web.fetched.filter((url) => new URL(url).origin === "https://blocked.example")).toEqual([]);
     expect(fetches(t, ofSuspended.id)).toBe(1);
   });
 });
