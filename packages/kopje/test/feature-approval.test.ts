@@ -86,7 +86,7 @@ describe("feature_approval", () => {
   });
 
   // 2-T3. Fails if a caller presents its accounts for no viewer (viewerId null): bob's answers read denied.
-  it("is answered to the viewer on a status's account and a notification's", async () => {
+  it("is answered to the viewer on a status's account and a notification's, grouped or not", async () => {
     const h = await community(["alice", "bob"]);
     const { alice, bob } = h.users;
     await set(h, alice.id, "discoverable = 1, locked = 0");
@@ -105,6 +105,12 @@ describe("feature_approval", () => {
     expect(timeline.body.map((entry) => entry.account.feature_approval.current_user)).toEqual(["automatic"]);
     const listed = await getJson<{ account: { feature_approval: Approval } }[]>(h, "/api/v1/notifications", bob.token);
     expect(listed.body.map((entry) => entry.account.feature_approval.current_user)).toEqual(["automatic"]);
+    const grouped = await getJson<{ accounts: { feature_approval: Approval }[] }>(
+      h,
+      "/api/v2/notifications",
+      bob.token,
+    );
+    expect(grouped.body.accounts.map((account) => account.feature_approval.current_user)).toEqual(["automatic"]);
     // Followed, alice's own credential account answers itself.
     await follow(h, bob, alice.id);
     const own = await getJson<{ feature_approval: Approval }>(h, "/api/v1/accounts/verify_credentials", alice.token);
