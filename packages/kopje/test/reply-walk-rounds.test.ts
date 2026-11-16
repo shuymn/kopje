@@ -636,7 +636,8 @@ describe("charges", () => {
     expect(1 + 1 + others.length + 1).toBe(REPLY_STEPS_PER_WALK);
     const counting = countingStore(t.store);
     const deps = inboxDeps(() => counting.stub, t.web.loader);
-    expect(await walkReplies(t.env, deps)).toBe(false);
+    // The walk is due again after the round: its nodes' scans (#1607 D12) are left.
+    expect(await walkReplies(t.env, deps)).toBe(true);
     const completions = counting.records.filter((record) => record.name === "completeReplyStep");
     // The turn's eighth step (P) is told no more and hands out nothing; X, returned, keeps one attempt.
     const last = completions[REPLY_STEPS_PER_WALK - 1]!;
@@ -1083,12 +1084,12 @@ describe("reading a collection: raw entries, skips and reading again (RepliesRea
     return counting.records
       .filter((record) => record.name === "completeReplyStep")
       .map((record) => record.args[1] as ReplyStepInput)
-      .filter((input) => input.author === undefined);
+      .filter((input) => input.author === undefined && input.step.stage !== "store");
   }
 
   const readsOf = (inputs: readonly ReplyStepInput[], uri: string) =>
     inputs.filter((input) => input.step.uri === uri).map(({ step }) => ({ stage: step.stage, skip: step.skip }));
-  // A step as handed out, without its number.
+  // A step as handed out, without its number (the Store-only steps of the walk's scans left out by countedRounds).
   const placeOf = ({ step }: ReplyStepInput) => ({
     uri: step.uri,
     stage: step.stage,

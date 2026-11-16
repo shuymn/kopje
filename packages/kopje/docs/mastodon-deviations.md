@@ -631,8 +631,23 @@ in [threat-model.md](threat-model.md)):
   document only on the origin of the status whose replies it holds, where Mastodon compares hosts only
   (`non_matching_uri_hosts?`): an item or document on the same host under another scheme or port is passed over.
   Accepted, 2026-11-16.
-- A refresh does not fetch the stored replies a node's collection does not list, which Mastodon fetches when their
-  authors have no local follower (`FetchAllRepliesService#filter_replies`) (#1607). Gap.
+- Once a node's replies collection has been read, a refresh also fetches the node's stored public replies of remote
+  authors the collection did not list, after its listed ones, as Mastodon's (`fetch_all_replies_service.rb:33-49`),
+  each skipped as Mastodon skips a listed one (published within 5 minutes, or refreshed within 15). Mastodon fetches
+  only those whose author has no local follower or a local follow newer than the reply's last update (`unsubscribed`,
+  `fetch_replies_concern.rb:27-33`); Kopje fetches them whoever follows their authors, since it keeps neither a follow's
+  acceptance time nor a status's update time. Kopje examines at most 200 of a node's stored public replies a refresh,
+  in id order from where the node's last examination ended, whichever refresh it was, so a node with more is covered
+  over several refreshes; Mastodon examines all of them each time. A refresh holds 200 statuses where Mastodon's takes
+  up to 1,000: what a refresh had no room for (a stored reply it could not admit, the rest of a collection it could not
+  read) is done first at the thread's next refreshes, oldest first, a collection continuing where it stopped, so a
+  reply may wait a few refreshes where Mastodon fetches it at once, and a thread wider than a refresh is covered over
+  several. Depth is a limit: a post's refreshes fetch replies at most 199 links below it, since a refresh holds 200
+  posts and stores a reply only with its whole chain to the post; Mastodon's takes up to 1,000
+  (`fetch_all_replies_worker.rb:15-17,33-44`), so a chain of 201 replies below a post gets its last two from that
+  post's refreshes in Mastodon and not in Kopje, where only the refreshes of a reply within 199 links of them (its
+  context read) fetch them. Private stored replies are not fetched (they answer the refresh's signer 404 and change
+  nothing in Mastodon). Accepted, 2026-11-16.
 
 Annual reports (`/api/v1/annual_reports`, `wrapstodon` of `/api/v2/instance`; MD-9):
 

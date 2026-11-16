@@ -39,7 +39,9 @@ import { createPageItems, createRepliesOf, fetchRemoteStatus, idOf, statusIdenti
 // and the status's author when the Store asks for it, through the safe loader (NET-1) within a whole fetch budget of
 // its own (RES-6), signed by the instance actor, as Mastodon's representative signs these fetches (DATA-7), and never
 // from the signed-document cache (NET-4); then the Store applies it and hands out the next node, which the step has
-// already been charged for. Embedded replies and pages are read in the step that holds them, at most
+// already been charged for. A step the Store hands out at the stage `store` (a scan of stored replies or a debt's
+// consideration ran in the hand-out: domain/reply-walk-debts.ts) fetches nothing and is one of the turn's steps all the
+// same. Embedded replies and pages are read in the step that holds them, at most
 // REPLY_READ_ENTRIES entries past the step's skip; the Store has the rest read by a step that reads the same document
 // again (RepliesRead). Nothing of this instance's origin is fetched, and a collection or page only on its node's
 // origin. A create walk's steps read as Create#fetch_replies reads (remote-status.ts createRepliesOf): a node's first
@@ -137,6 +139,10 @@ async function fetchStep(
   loader: DocumentLoader,
   kind: ClaimedWalk["kind"],
 ): Promise<StepFetched> {
+  // A Store-only step (a scan or a debt's consideration ran in its hand-out) fetches nothing.
+  if (step.stage === "store") {
+    return { kind: "none" };
+  }
   const nodeOrigin = originOf(step.uri);
   if (nodeOrigin === null || nodeOrigin === origin) {
     return { kind: "failed" };

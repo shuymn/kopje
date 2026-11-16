@@ -93,10 +93,17 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   collections"). The replies it fetches notify as other fetched statuses do, only when published within the last 6
   hours. A refresh applies the edits of the statuses it fetches that Kopje already holds, the refreshed one included,
   and removes a public or unlisted reply whose address answers 404 (not the refreshed status itself), as Mastodon does.
-  Migration `0099_reply_walks`: two empty tables and their indexes, kept out of dumps; as it creates a table, the
-  upgrade checks every reference of the Store (the migration bench's upgrade from `0093_annual_reports` takes 10,877 ms
-  with this file and 10,633 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store
-  migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+  It also fetches the stored public replies of remote authors that a status's collection does not list, examining 200
+  a status a refresh and going on there at the next; what a refresh had no room for (stored replies, the rest of a
+  collection) is fetched first at the thread's next refreshes, oldest first, and a refresh reaches replies at most 199
+  levels below the status whose context it reads. Migration `0099_reply_walks`: two empty tables and their indexes,
+  kept out of dumps; as it creates a table, the upgrade checks every reference of the Store (the migration bench's
+  upgrade from `0093_annual_reports` takes 10,877 ms with this file and 10,633 ms without it, medians of three runs).
+  Migration `0106_reply_walk_debts`: two more empty tables and their indexes, kept out of dumps, and columns of the
+  walk tables with their defaults; as it creates a table, the upgrade checks every reference of the Store (<ms> for
+  this file in one local run of the migration bench, at a load average of <x>). `wrangler.jsonc`: unchanged. This adds
+  Store migrations, so the release is at least a minor version, and rolling back past them needs a point-in-time
+  restore.
 - The local actor publishes its image descriptions as the icon's and image's `summary`, and its display settings as
   `showFeatured`, `showMedia` and `showRepliesInMedia` with their context terms, a suspended actor's settings too, as
   Mastodon 4.6 does; a description changed while its image exists sends an `Update` of the actor. No Store migration

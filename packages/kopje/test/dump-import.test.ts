@@ -104,6 +104,41 @@ describe("dump", () => {
     expect(await target.setupState(BUILD)).toEqual({ complete: true });
   });
 
+  it("leaves a replies walk's cursors and debts out, and an import with both empty (0106_reply_walk_debts)", async () => {
+    const source = await seeded();
+    await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      const [a, b] = sql
+        .exec<{ id: string }>("SELECT id FROM statuses ORDER BY id LIMIT 2")
+        .toArray()
+        .map((row) => row.id);
+      sql.exec("INSERT INTO reply_walk_cursors (status_id, after_id) VALUES (?, ?)", a!, b!);
+      sql.exec(
+        `INSERT INTO reply_walk_debts (root_id, status_id, kind, owed_walk, owed_seq, owed_pos, depth)
+				VALUES (?, ?, 0, 1, 1, 1, 1)`,
+        a!,
+        b!,
+      );
+    });
+    const { text } = await dumpViaRpc(source, 4096);
+    const { trailer } = splitDump(text) as { trailer: DumpTrailer };
+    expect(trailer.tables.map((t) => t.name).filter((name) => name.startsWith("reply_walk"))).toEqual([]);
+    const target = await migratedStore();
+    await copyConfig(source, target);
+    const { report } = await importViaRpc(target, text, 8 * 1024);
+    expect(report).toMatchObject({ ok: true, foreignKeyViolations: 0, problems: [] });
+    const counts = (store: StoreStub) =>
+      runInDurableObject(store, (_instance, state) =>
+        state.storage.sql
+          .exec(
+            "SELECT (SELECT count(*) FROM reply_walk_cursors) AS cursors, (SELECT count(*) FROM reply_walk_debts) AS debts",
+          )
+          .one(),
+      );
+    expect(await counts(source)).toEqual({ cursors: 1, debts: 1 });
+    expect(await counts(target)).toEqual({ cursors: 0, debts: 0 });
+  });
+
   it("round-trips a remote report and the report id counter (0054_remote_reports)", async () => {
     const source = await seeded();
     await runInDurableObject(source, (_instance, state) => {

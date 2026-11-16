@@ -749,14 +749,17 @@ describe("a completion's transaction (RES-4)", () => {
         expect(await storedOf(t.store, [w.id, q.id])).toEqual([w.id, q.id]);
         expect((await walkRow(t.store, id))?.nodes).toBe(WALK_STATUSES);
       }
-      // The walk's statements, each writing one row by its key: 98 items inserted; W made valid, the 100 nodes deferred
-      // on it returned, W ended and the next node charged: within WALK_STATUSES inserts and 2 × WALK_STATUSES
-      // updates; the walk's counters once.
+      // The walk's statements, each writing one row by its key: 98 items inserted; W made valid at its depth, the 100
+      // nodes deferred on it returned, W ended (scan-due: it read its page) and the next node charged: within
+      // WALK_STATUSES inserts and 2 × WALK_STATUSES updates; the walk's counters once; and the root's debts of W paid,
+      // its row debt at its status stage's end and its collection debt at its reading's end (none held here: they
+      // delete nothing), at most two (#1607 D12).
       for (const { out } of [stale, fresh]) {
         expect(out.walk).toEqual({
           "INSERT INTO reply_walk_nodes": 98,
           "UPDATE reply_walk_nodes": 1 + 100 + 1 + 1,
           "UPDATE reply_walks": 1,
+          "DELETE FROM reply_walk_debts": 2,
         });
         expect(out.walk["INSERT INTO reply_walk_nodes"]).toBeLessThanOrEqual(WALK_STATUSES);
         expect(out.walk["UPDATE reply_walk_nodes"]).toBeLessThanOrEqual(2 * WALK_STATUSES);
@@ -769,7 +772,9 @@ describe("a completion's transaction (RES-4)", () => {
       // The rest, the same in both: the walk's rows above and what the two statuses' and erin's stores write for any
       // fetched status (rows, mentions, the quote, the account, and the triggers' counters; erin's last status moves to
       // W only, Q's id being lower).
-      const walkRows = Object.values(stale.out.walk).reduce((a, b) => a + b, 0);
+      const walkRows = Object.entries(stale.out.walk)
+        .filter(([write]) => write !== "DELETE FROM reply_walk_debts")
+        .reduce((a, [, n]) => a + n, 0);
       expect(stale.out.changes - walkRows).toBe(19);
     },
   );

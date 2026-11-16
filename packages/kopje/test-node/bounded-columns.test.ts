@@ -391,6 +391,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "statusPublishedSql",
   // A counter or time as read, within its range, or NULL (platform/stored-bounds.ts), a number.
   "storedCountSql",
+  // Whether a status's removal has begun: a predicate (domain/audience.ts).
+  "removalBegunSql",
   // Whether a value is no remote field link list or link back: predicates (platform/stored-bounds.ts).
   "remoteFieldLinksPastBoundSql",
   "remoteLinkBackPastBoundSql",
@@ -695,7 +697,10 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/remote-removal.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/remote-statuses.ts accounts.uri": { count: 2, reason: IDENTITY },
   "src/domain/reply-walk-reads.ts statuses.uri": { count: 1, reason: IDENTITY },
-  "src/domain/reply-walks.ts statuses.uri": { count: 1, reason: IDENTITY },
+  // A node's parent (storedPlace) and the root a Store-only step names (storeStep).
+  "src/domain/reply-walks.ts statuses.uri": { count: 2, reason: IDENTITY },
+  // A scanned reply recorded or owed by its URI, and a debt's path compared with the walk's nodes (#1607 D12).
+  "src/domain/reply-walk-debts.ts statuses.uri": { count: 2, reason: IDENTITY },
   // A stored node's author, compared with its fetched document's (storedPlace).
   "src/domain/reply-walks.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/reports.ts accounts.uri": { count: 1, reason: IDENTITY },
