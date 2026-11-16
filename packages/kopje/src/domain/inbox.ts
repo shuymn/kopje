@@ -122,6 +122,7 @@ import {
   storeRemoteStatus,
   updateRemoteStatus,
 } from "./remote-statuses";
+import { createWalkDue } from "./reply-walk-create";
 import { fileRemoteReports } from "./reports";
 import {
   canRetract,
@@ -2740,6 +2741,7 @@ function storeContext(db: Db, input: StoreReceiveInput): UpdateContext {
     origin: input.origin,
     deliveredTo: deliveredTo(db, input.recipient),
     fetched: false,
+    readReplies: { storeNow: input.storeNow },
   };
 }
 
@@ -2765,6 +2767,7 @@ const quoteRequest: Handler<"QuoteRequest"> = (db, actor, activity, input) => {
       origin: input.origin,
       deliveredTo: deliveredTo(db, input.recipient),
       prefetched: input.prefetched?.statuses[activity.instrument],
+      storeNow: input.storeNow,
     },
     storeRemoteStatus,
   );
@@ -2941,10 +2944,10 @@ function newOriginal(
   db: Db,
   actor: RemoteRow,
   activity: Extract<InboundActivity, { type: "Announce" }>,
-  input: ReceiveInput,
+  input: StoreReceiveInput,
 ): Original | ReceiveResult {
   const { now, origin } = input;
-  const context = { now, origin, deliveredTo: null, fetched: true };
+  const context = { now, origin, deliveredTo: null, fetched: true, readReplies: { storeNow: input.storeNow } };
   const embedded = activity.embedded;
   if (embedded !== null && embedded.uri === activity.object && embedded.attributedTo === actor.uri) {
     const stored = storeRemoteStatus(db, actor, embedded, context);
@@ -3361,6 +3364,7 @@ const add: Handler<"Add"> = (db, actor, activity, input) => {
       origin: input.origin,
       deliveredTo: null,
       fetched: true,
+      readReplies: { storeNow: input.storeNow },
     });
     // The status stored, or the one it matched by its atomUri (its own id may name no row); a document of another id
     // than the one asked for pins nothing.
@@ -3520,9 +3524,10 @@ function receive(db: Db, input: StoreReceiveInput): ReceiveResult {
   }
   const handler = HANDLERS[activity.type] as Handler<typeof activity.type>;
   const result = handler(db, actor, activity, input);
-  // A sync of the actor's collections was asked for, or quotes have verification work due (only the job rounds verify
-  // them): the Worker asks the Queue for a round (cron runs one regardless).
-  const waiting = ("syncWaiting" in actor && actor.syncWaiting) || quotesDue(db, now);
+  // A sync of the actor's collections was asked for, or quotes have verification work due, or a create walk is (only
+  // the job rounds verify and walk them): the Worker asks the Queue for a round (cron runs one regardless).
+  const waiting =
+    ("syncWaiting" in actor && actor.syncWaiting) || quotesDue(db, now) || createWalkDue(db, input.storeNow);
   return waiting ? { ...result, jobsPending: true } : result;
 }
 

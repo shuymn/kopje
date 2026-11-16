@@ -587,8 +587,9 @@ Followers synchronisation (Mastodon's `Collection-Synchronization` header and
   repaired by a later delivery; each server keeps delivering and distributing by its own follow records. Mastodon 4.6
   also stopped sending it from 25,000 followers (`mastodon#37302`). Accepted, 2026-11-15.
 
-Replies collections (the context's refresh and `GET /api/v1_alpha/async_refreshes/:id`; Mastodon's
-`ContextsController#show`, `FetchAllRepliesWorker` and `AsyncRefresh`; RES-6 in [threat-model.md](threat-model.md)):
+Replies collections (the context's refresh, `GET /api/v1_alpha/async_refreshes/:id` and the replies a created status
+lists; Mastodon's `ContextsController#show`, `FetchAllRepliesWorker`, `AsyncRefresh` and `Create#fetch_replies`; RES-6
+in [threat-model.md](threat-model.md)):
 
 - A signed-in reader's context read of a remote public or unlisted status starts a refresh of its replies, as Mastodon
   4.7.5's does, from 5 minutes after the status was published and at most every 15 minutes, and answers
@@ -602,10 +603,11 @@ Replies collections (the context's refresh and `GET /api/v1_alpha/async_refreshe
   at most twice (Mastodon's `FetchAllRepliesWorker`: 1,000 statuses and 500 pages). It reads each collection until it
   ends or those caps are spent, where Mastodon takes the first 5 items of a reply's collection: the caps bound the
   work, and the 5-item stop loses replies Mastodon itself means to fetch. Accepted, 2026-11-16.
-- A refresh stores only the replies its stored rows link to the status, each under a reply it stored or found stored; a
-  status listed whose parent is not such a reply by the refresh's end is not stored, and a stored one is judged by its
-  stored parent. Mastodon stores every status a collection lists. Items are taken from any server, and their collections
-  only from the replying status's own server, as Mastodon's. Accepted, 2026-11-16.
+- A refresh, or a created status's walk below, stores only the replies its stored rows link to the status, each under a
+  reply it stored or found stored; a status listed whose parent is not such a reply by the walk's end is not stored, and
+  a stored one is judged by its stored parent. Mastodon stores every status a collection lists. A refresh takes items
+  from any server, as Mastodon's, and a created status's walk only from the listing status's own server; both read
+  collections only from the replying status's own server, as Mastodon's (but by origin, below). Accepted, 2026-11-16.
 - Only the refreshed status is paced: the replies a refresh reaches record nothing, so opening one of them later may
   refresh it at once, where Mastodon skips each fetched status for 15 minutes. A reply a refresh stores verifies its
   quote one hop short of a delivered status's, so its quoted status is stored with no quote work of its own.
@@ -615,8 +617,23 @@ Replies collections (the context's refresh and `GET /api/v1_alpha/async_refreshe
   the record is gone, the next refresh has a new id, where Mastodon's repeats; in between, the id answers 404 in both.
   `result_count` counts the statuses the latest refresh created, whoever may see them, as Mastodon's. Accepted,
   2026-11-16.
+- A status Kopje creates from a delivery or a user's request (an inbound `Create` or `Update`, a boost's original, an
+  `Add`'s status, a `QuoteRequest`'s quoting status, a search or `/authorize_interaction`) has the first 5 replies on
+  its own server that its replies collection's first page lists fetched, as Mastodon's `Create` does, and so does each
+  of those replies, up to 20 statuses and 10 collection documents a thread (Mastodon: up to 1,000 statuses a request).
+  A status Kopje stores otherwise (a reply a walk stores, a quoted status a verification stores, a pinned status a
+  profile's sync stores) has none fetched, where Mastodon fetches them for every status it creates: so no chain of
+  replies, quotes and pins starts walks without end. A walk not ended a day after its status arrived is dropped at its
+  next claim, which newer walks may delay. Accepted, 2026-11-16.
+- A created status's walk starts only for a public or unlisted status, where Mastodon's `Create#fetch_replies` checks no
+  visibility: the replies of a private, direct or limited status Kopje creates are not fetched. A created status's walk
+  takes an item only on the origin (scheme, host and port) of the status that lists it, and both walks read a collection
+  document only on the origin of the status whose replies it holds, where Mastodon compares hosts only
+  (`non_matching_uri_hosts?`): an item or document on the same host under another scheme or port is passed over.
+  Accepted, 2026-11-16.
 - A refresh does not update the statuses it finds stored, the refreshed one included, nor delete one whose document
-  is gone, nor refetch stored replies the collection no longer lists, all of which Mastodon does (#1607). Gap.
+  is gone, nor refetch stored replies the collection no longer lists, all of which Mastodon does; nor does a created
+  status's walk fetch the listed replies Kopje already stores, which Mastodon fetches again (#1607). Gap.
 
 Annual reports (`/api/v1/annual_reports`, `wrapstodon` of `/api/v2/instance`; MD-9):
 

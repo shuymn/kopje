@@ -3471,12 +3471,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   never dumped). `pruneActivity` in `src/domain/instance-activity.ts`; `test/instance-activity.test.ts` ("keeps today,
   the 184 days before it and tomorrow, and the cutoff moves with the day", "prunes by key at most 500 rows a table a run
   at the worst case, with stale statistics").
-  _Enforced (main)_ for replies walks (migration `0099_reply_walks`): `reply_walks` holds one row per root status, kept
-  while its walk runs (at most a day after its latest start) and an hour after it finishes, a claim deleting at most
-  `WALK_PRUNE_BATCH` (100) expired rows; `reply_walk_nodes` holds at most `WALK_STATUSES` (200) rows a walk, deleted
-  when it ends; neither is dumped. A completion stores at most two statuses (the reply and the self-quote it embeds)
-  and one author, each status with its notifications only within the real-time window and within the per-status
-  figure above, inserts at most 200 nodes and updates at most 400 (`src/domain/reply-walks.ts`;
+  _Enforced (main)_ for replies walks (migration `0099_reply_walks`): `reply_walks` holds one row per root status, a
+  context walk's kept while it runs (at most a day after its latest start) and an hour after it finishes, a claim
+  deleting at most `WALK_PRUNE_BATCH` (100) expired rows, a create walk's until it ends or its claim a day after it was
+  recorded; `reply_walk_nodes` holds at most `WALK_STATUSES` (200) rows a context walk and `CREATE_WALK_STATUSES` (20)
+  a create walk, deleted when it ends; neither is dumped. A store that creates a remote status records at most one
+  create walk, one walk row and at most 1 + `CREATE_WALK_ITEMS` (5) = 6 nodes, in its transaction
+  (`src/domain/reply-walk-create.ts`; `test/reply-walk-create.test.ts` ("records at most CREATE_WALK_ITEMS items on
+  the status's origin that it does not store")). A completion stores at most two statuses (the reply and the self-quote
+  it embeds) and one author, each status with its notifications only within the real-time window and within the
+  per-status figure above, inserts at most 200 nodes and updates at most 400 (`src/domain/reply-walks.ts`;
   `test/reply-walks.test.ts` ("prunes at most WALK_PRUNE_BATCH finished walks a claim", "records at most
   WALK_STATUSES nodes", "stores a reply and its embedded self-quote … within the figure")).
 - **RES-5: retries are bounded, but maintenance is not a failure.** Waiting out maintenance consumes no processing
@@ -4123,7 +4127,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   stale again, still applies at most 6 author documents (the column's CHECK holds the same bound). Each author
   document stored requests one collection sync generation (at most 552 requests, above). So a status arriving from
   outside at `QUOTE_HOPS` (2) leads to at most 3 statuses of its quote chain, at most 1 + 2 × 6 = 13 author documents
-  and sync generations (at most 7,176 requests) and 13 × `MAX_REMOTE_PINS` = 260 pins, and to nothing further
+  and sync generations (at most 7,176 requests) and 13 × `MAX_REMOTE_PINS` = 260 pins, and to nothing further but
+  the create walk of its replies (Replies walks, below)
   (`test/remote-collections.test.ts` ("counts each author document a quote applies, interrupted rounds included",
   "ends a quote's work with no fetch once its author fetches are spent", "stores one author an attempt for a quoted
   status whose author changes at each fetch", "keeps a quote's retries after its author is stored")).
@@ -4179,6 +4184,29 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   of a step whose lease another round took", "verifies a walk's reply's quote one hop deep", "starts no walk along an
   alternating reply and quote chain", "ends discovery at a new author's synced pin", "repeated stale-author applications
   under a walk")).
+  Create walks: _Enforced (main):_ a remote status a store creates has its replies walked (a create walk, Mastodon's
+  `Create#fetch_replies`; `src/domain/reply-walk-create.ts`) only when the store's context sets `readReplies`, which
+  only the stores of what was delivered or what a user asked for do (an inbound `Create` or `Update`, an `Announce`'s
+  original, an `Add`'s status, a `QuoteRequest`'s quoting status, a search or interaction resolution); a walk's own
+  stores, quote verification's and a collection sync's never do, so nothing a walk causes starts another walk and no
+  walk's caps start afresh. A create walk runs in the same family, steps and charges as a context walk, takes a node's
+  first `CREATE_WALK_ITEMS` (5) items on the node's origin that Kopje does not store, reads first pages only, and
+  records at most `CREATE_WALK_STATUSES` (20) nodes and hands out at most `CREATE_WALK_PAGES` (10) documents, so at most
+  2 × 20 + 10 = 50 documents (400 requests) however its rounds end; the Store applies the item rule and the first-page
+  rule whatever the Worker hands it, at every stage (a completion that read a page ends the node, whatever next it
+  names). Context walks are claimed first; create walks wait in the order the Store recorded them (the rowid, whatever
+  the Worker's clock or the Store's says), each back in its place at every release (one whose round died holding it is
+  due behind them once its lease runs out), and one the Store recorded a day ago by its own clock is dropped at its
+  claim. Its at most `CREATE_WALK_STATUSES` − 1 replies each lead to a context walk's reply's follow-on work (above)
+  (`test/reply-walk-create.test.ts` ("records at most CREATE_WALK_STATUSES nodes and CREATE_WALK_ITEMS items a page",
+  "hands out at most CREATE_WALK_PAGES documents", "hands out at most NODE_ATTEMPTS × (CREATE_WALK_STATUSES - 1) +
+  CREATE_WALK_PAGES documents", "records the same of a page, and ends the node there", "ends a status's node at the
+  first page its completion embeds, whatever next it names", "a walk's reply: its collection is read by the context walk
+  alone", "quote verification's quoted status, fetched or embedded: its collection is never read", "a collection sync's
+  pin: its collection is never read", "starts no walk along an alternating reply and quote chain longer than a walk",
+  "claims context walks first, then create walks in the order they were queued", "claims create walks in the order the
+  Store recorded them, whatever the Worker's clock or its own says", "claims at once the walk of a Create whose Worker
+  clock is ahead of the Store's, as its answer asks")).
   Streaming (VIS-26): _Enforced (main):_ at most 16 sockets per account (429) and 256 per
   instance (503); 16 subscriptions per socket, 16 stream keys per account and a socket's attachment at most 12 KiB (`Too
   many subscriptions`, 429); incoming messages text only (1003), at most 4 KiB and 120 a minute (1008). The fan-out runs

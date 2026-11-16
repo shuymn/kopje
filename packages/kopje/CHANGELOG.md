@@ -105,6 +105,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Remote accounts' image descriptions (up to 150 characters) and display settings are read from their actors, as
   Mastodon 4.7 reads them ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Profile credentials); an
   account stored earlier shows them once its actor is stored again. No Store migration and no `wrangler.jsonc` change.
+- A public or unlisted remote status Kopje stores from a delivery or a user's request has the replies on its own server
+  that its replies collection's first page lists fetched too, as Mastodon 4.7.5 does on `Create`: at most 5 a status and
+  20 a thread, reading at most 10 collection documents. Statuses Kopje stores while fetching replies, quotes or pinned
+  statuses start no such fetch ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Replies collections"). No
+  Store migration and no `wrangler.jsonc` change.
 
 ### Changed
 
