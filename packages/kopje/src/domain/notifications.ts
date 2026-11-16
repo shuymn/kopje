@@ -1,4 +1,5 @@
 import type { Db } from "../db/sql";
+import { notificationCollectionKeysPastBoundSql } from "../platform/stored-bounds";
 import { type AccountWarning, presentAccountWarning } from "./account-warnings";
 import { type Account, accountsOf, type Page, type PageQuery, type Present } from "./accounts";
 import { adminAccountIdOnce } from "./admin-authority";
@@ -43,7 +44,10 @@ export const END_FOLLOW_NOTIFICATIONS_SQL =
 // A favourite, a boost or a follow also records the group it joins in the API v2's grouped notifications
 // (group_key, which v1 shows too); notification-groups.ts reads them. An admin.report names its report (report_id) and
 // is the OAuth admin's alone (R37; reports.ts notifies it). A moderation_warning names its warning (account_warning_id)
-// and is its target's alone, sent by the target itself (R42; admin-accounts.ts notifies it).
+// and is its target's alone, sent by the target itself (R42; admin-accounts.ts notifies it). An added_to_collection
+// names the member's item (collection_item_id) and a collection_update the collection (collection_id), each sent by the
+// collection's owner and gone with what it names (migration 0107_collection_notifications; collections.ts notifies
+// them).
 
 export type NotificationType =
   | "mention"
@@ -57,7 +61,9 @@ export type NotificationType =
   | "quote"
   | "quoted_update"
   | "admin.report"
-  | "moderation_warning";
+  | "moderation_warning"
+  | "added_to_collection"
+  | "collection_update";
 
 export type Notification = {
   id: string;
@@ -86,6 +92,9 @@ export type NotifyInput = {
   reportId?: string;
   // The warning of a moderation_warning.
   accountWarningId?: string;
+  // The item of an added_to_collection, and the collection of a collection_update (Notification#target_collection).
+  collectionItemId?: string;
+  collectionId?: string;
   // Mastodon's `silenced` option (LocalNotificationWorker to NotifyService): the policy's limited accounts condition
   // applies. Set only for a remote Create's tagged mention of a local account it does not address
   // (remote-statuses.ts notifyCreated).
@@ -98,21 +107,24 @@ export type NotifyInput = {
 // policy filters (NotifyService#filter?) is written with `filtered` set and no group (Notification#set_group_key!
 // skips it): it is not pushed, does not join a conversation, and a mention opens or updates the request of its sender
 // (update_notification_request!, app/services/notify_service.rb:229-256); every read leaves it out unless asked.
-// The natural key makes a repeat a no-op, except for `update` and `quoted_update`: every edit notifies again, so the
-// previous one is replaced (and gets a newer id; LocalNotificationWorker). The replacement is judged first: an edit the
-// rule refuses (its conversation muted since) leaves the previous one as it is, as a mute keeps the notifications
-// written before it. An edit is never filtered or dropped by the policy. An admin.report is keyed by its report too
-// (migrations 0040 and 0041), so each report notifies once, as LocalNotificationWorker keys it by its activity; a
-// moderation_warning by its warning (0062 and 0063).
+// The natural key makes a repeat a no-op, except for `update`, `quoted_update` and `collection_update`: every edit
+// notifies again, so the previous one is replaced (and gets a newer id; LocalNotificationWorker). The replacement is
+// judged first: an edit the rule refuses (its conversation muted since) leaves the previous one as it is, as a mute
+// keeps the notifications written before it. An edit is never filtered or dropped by the policy. An admin.report is
+// keyed by its report too (migrations 0040 and 0041), so each report notifies once, as LocalNotificationWorker keys it
+// by its activity; a moderation_warning by its warning (0062 and 0063); an added_to_collection by its item and a
+// collection_update by its collection (0107).
 export function notify(db: Db, input: NotifyInput): void {
   const now = new Date(input.now).toISOString();
   // The OAuth admin, for R37 in the rule (shownSql); only an admin.report needs it.
   const admin = input.type === "admin.report" ? adminAccountIdOnce(db) : null;
   const reportId = input.reportId ?? null;
   const accountWarningId = input.accountWarningId ?? null;
+  const collectionItemId = input.collectionItemId ?? null;
+  const collectionId = input.collectionId ?? null;
   if (input.type === "update" || input.type === "quoted_update") {
     const eligible = db.first(
-      `SELECT 1 AS ok WHERE ${notifiedSql("?1", "?5", "?2", "?3", "?4", "NULL", "NULL")}`,
+      `SELECT 1 AS ok WHERE ${notifiedSql("?1", "?5", "?2", "?3", "?4", "NULL", "NULL", "NULL", "NULL")}`,
       input.recipientId,
       input.fromId,
       input.statusId,
@@ -129,6 +141,28 @@ export function notify(db: Db, input: NotifyInput): void {
       input.type,
       input.fromId,
       input.statusId,
+    );
+  }
+  if (input.type === "collection_update") {
+    const eligible = db.first(
+      `SELECT 1 AS ok WHERE ${notifiedSql("?1", "'collection_update'", "?2", "NULL", "?3", "NULL", "NULL", "NULL", "?4")}`,
+      input.recipientId,
+      input.fromId,
+      now,
+      collectionId,
+    );
+    if (eligible === undefined) {
+      return;
+    }
+    // The previous one by the whole natural key, which a collection_update holds with its collection alone.
+    db.run(
+      `DELETE FROM notifications INDEXED BY notifications_natural
+			WHERE account_id = ?1 AND type = 'collection_update' AND from_account_id = ?2 AND IFNULL(status_id, '') = ''
+				AND IFNULL(report_id, 0) = 0 AND IFNULL(account_warning_id, 0) = 0 AND IFNULL(collection_item_id, '') = ''
+				AND IFNULL(collection_id, '') = ?3 AND collection_id = ?3`,
+      input.recipientId,
+      input.fromId,
+      collectionId,
     );
   }
   // A type the policy never filters is accepted without reading it (notificationPolicySql's first arm).
@@ -154,6 +188,7 @@ export function notify(db: Db, input: NotifyInput): void {
     `DELETE FROM notifications INDEXED BY notifications_natural
 			WHERE account_id = ?1 AND type = ?2 AND from_account_id = ?3 AND IFNULL(status_id, '') = IFNULL(?4, '') AND IFNULL(report_id, 0) = IFNULL(CAST(?5 AS INTEGER), 0)
 			AND IFNULL(account_warning_id, 0) = IFNULL(CAST(?6 AS INTEGER), 0)
+			AND IFNULL(collection_item_id, '') = IFNULL(?7, '') AND IFNULL(collection_id, '') = IFNULL(?8, '')
 			AND NOT ${keptSql("notifications")}`,
     input.recipientId,
     input.type,
@@ -161,14 +196,18 @@ export function notify(db: Db, input: NotifyInput): void {
     input.statusId,
     reportId,
     accountWarningId,
+    collectionItemId,
+    collectionId,
   );
-  // Each new row's id as TEXT, bound back with CAST (DATA-6).
+  // Each new row's id as TEXT, bound back with CAST (DATA-6). Collection keys the triggers of 0107 would refuse are
+  // not written (notificationCollectionKeysPastBoundSql).
   const inserted = db.all<{ id: string }>(
     `INSERT INTO notifications (account_id, type, from_account_id, status_id, report_id, account_warning_id,
-			created_at, group_key, filtered)
-		SELECT ?1, ?2, ?3, ?4, CAST(?9 AS INTEGER), CAST(?10 AS INTEGER), ?5, ?6, ?7
+			collection_item_id, collection_id, created_at, group_key, filtered)
+		SELECT ?1, ?2, ?3, ?4, CAST(?9 AS INTEGER), CAST(?10 AS INTEGER), ?11, ?12, ?5, ?6, ?7
 		WHERE EXISTS (SELECT 1 FROM local_accounts WHERE account_id = ?1)
-			AND ${notifiedSql("?1", "?2", "?3", "?4", "?5", "?8", "CAST(?10 AS INTEGER)")}
+			AND NOT (${notificationCollectionKeysPastBoundSql("?2", "?11", "?12")})
+			AND ${notifiedSql("?1", "?2", "?3", "?4", "?5", "?8", "CAST(?10 AS INTEGER)", "?11", "?12")}
 		ON CONFLICT DO NOTHING RETURNING CAST(id AS TEXT) AS id`,
     input.recipientId,
     input.type,
@@ -180,6 +219,8 @@ export function notify(db: Db, input: NotifyInput): void {
     admin,
     reportId,
     accountWarningId,
+    collectionItemId,
+    collectionId,
   );
   for (const { id } of inserted) {
     if (filtered) {

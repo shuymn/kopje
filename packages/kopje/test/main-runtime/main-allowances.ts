@@ -17,4 +17,8 @@ export const ROW_ALLOWANCES: Readonly<Record<string, { readonly rows: number; re
 export const MAIN_PARAMETERS: Readonly<Record<string, { readonly count: number; readonly reason: string }>> = {
   // notificationPolicySql (src/domain/audience.ts).
   ba1325440a987793: { count: 5, reason: "#1582 D5: the limited flag ?6" },
+  // notify's delete of the row it replaces (src/domain/notifications.ts).
+  caea065fa6952c2a: { count: 6, reason: "#1589: the collection keys ?7 and ?8 (migration 0107)" },
+  // notify's insert (src/domain/notifications.ts).
+  b32922276dba79b0: { count: 10, reason: "#1589: the collection keys ?11 and ?12 (migration 0107)" },
 };

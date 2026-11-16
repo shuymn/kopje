@@ -1,3 +1,4 @@
+import { writeEach } from "../db/by-ids";
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import {
@@ -30,8 +31,10 @@ import {
 import { COLLECTION_LIMIT, optionalUserReadOperation, userReadOperation, userWriteOperation } from "./auth";
 import { allocateLocalId, insertWithFreshId, requestedId, storedIdOf } from "./ids";
 import { blank } from "./lists";
+import { notify } from "./notifications";
 import { writeOperation } from "./operation";
 import { usernameSql } from "./profile-bounds";
+import { RowBudget } from "./row-budget";
 import { isHashtagName } from "./status-text";
 import { TAG_NAME_TOO_LONG, withinTagNameBound } from "./tag-bounds";
 import { normalizeTag, tagDisplayName } from "./tag-name";
@@ -43,7 +46,10 @@ import { ABOVE_EVERY_ID, BELOW_EVERY_ID, readWindow, statusCursor, windowOf, win
 // CollectionWithAccountsSerializer). A local account features up to COLLECTION_MAX_ITEMS accounts in each of up to
 // COLLECTION_LIMIT collections; who sees what is R45 (audience.ts, docs/visibility.md). Only local accounts can be
 // featured yet: a remote one fails the consent rule (mayFeatureSql). The stored bounds are migration 0100's CHECKs and
-// triggers (stored-bounds.ts, stored-triggers.ts).
+// triggers (stored-bounds.ts, stored-triggers.ts). A member added is notified added_to_collection, and the accepted
+// members of a collection whose name, description, sensitivity or tag changes collection_update (notifications.ts:
+// local recipients only, R15); each notification goes with its item or collection (migration
+// 0107_collection_notifications), its pushes with it.
 
 // in_collections honours `offset` as a raw skip of candidates up to this many (ten default pages); past it the page is
 // empty (docs/mastodon-deviations.md, "Collections").
@@ -53,7 +59,7 @@ const IN_COLLECTIONS_MAX_OFFSET = 400;
 // within it is the same uniqueness error and in_collections still lists them.
 const RETIRED_ITEM_TTL_MS = 24 * 60 * 60 * 1000;
 
-// The rows the cleanup deletes per round (RES-4).
+// The rows the cleanup writes per round (RES-4): the retired items and their notifications' pushes and notifications.
 export const RETIRED_ROWS_PER_ROUND = 500;
 
 // Collection#user_does_not_exceed_limit's error (errors.add(:base, :too_many, count: limit)). Mastodon has no English
@@ -590,10 +596,23 @@ export const createCollection = userWriteOperation<
     },
   );
   for (const member of members) {
-    insertItem(db, id, member, 1, input.now);
+    notifyAdded(db, owner, member, insertItem(db, id, member, 1, input.now), input.now);
   }
   return { status: "ok", collection: ownView(db, id, owner, input.present.origin) };
 });
+
+// CreateCollectionService and AddAccountToCollectionService notify a local member of its new item
+// (LocalNotificationWorker, added_to_collection); notify writes it for a local recipient other than the owner (R15).
+function notifyAdded(db: Db, owner: string, member: string, item: string, now: number): void {
+  notify(db, {
+    recipientId: member,
+    type: "added_to_collection",
+    fromId: owner,
+    statusId: null,
+    collectionItemId: item,
+    now,
+  });
+}
 
 function insertItem(db: Db, collection: string, member: string, position: number, now: number): string {
   const at = new Date(now).toISOString();
@@ -650,7 +669,8 @@ export const updateCollection = userWriteOperation<
   if (problems.length > 0) {
     return { status: "invalid", problems };
   }
-  const changed = (Object.keys(base) as (keyof CollectionValues)[]).some((key) => values[key] !== base[key]);
+  const differs = (key: keyof CollectionValues) => values[key] !== base[key];
+  const changed = (Object.keys(base) as (keyof CollectionValues)[]).some(differs);
   if (changed) {
     db.run(
       `UPDATE collections INDEXED BY ${COLLECTIONS_ID_INDEX}
@@ -666,10 +686,40 @@ export const updateCollection = userWriteOperation<
       row.id,
     );
   }
+  if (NOTIFIED_CHANGES.some(differs)) {
+    notifyUpdated(db, row.id, viewer, input.now);
+  }
   return { status: "ok", collection: ownView(db, row.id, viewer, input.present.origin) };
 });
 
-// DELETE /api/v1/collections/:id (DeleteCollectionService): the collection and, by the foreign key, its items.
+// The changes a collection's members are notified of (NotifyOfCollectionUpdateService#significantly_changed?:
+// description, description_html, name, sensitive, tag_id): not its language or discoverability.
+const NOTIFIED_CHANGES: readonly (keyof CollectionValues)[] = ["name", "description", "sensitive", "tag"];
+
+// NotifyOfCollectionUpdateService: each accepted member of the collection `id` is notified collection_update, which
+// replaces its earlier one of the collection (notify); a local one only. At most COLLECTION_MAX_ITEMS live items, read
+// through collection_items_order.
+function notifyUpdated(db: Db, id: string, owner: string, now: number): void {
+  const members = db.all<{ account_id: string }>(
+    `SELECT account_id FROM collection_items INDEXED BY collection_items_order
+		WHERE collection_id = ? AND state = ? AND account_id IS NOT NULL ORDER BY position, id`,
+    id,
+    COLLECTION_ITEM_STATES.accepted,
+  );
+  for (const { account_id } of members) {
+    notify(db, {
+      recipientId: account_id,
+      type: "collection_update",
+      fromId: owner,
+      statusId: null,
+      collectionId: id,
+      now,
+    });
+  }
+}
+
+// DELETE /api/v1/collections/:id (DeleteCollectionService): the collection and, by the foreign keys, its items, their
+// notifications, its collection_update notifications and their pushes (at most MAX_PUSH_BACKLOG in all).
 export const deleteCollection = userWriteOperation<{ id: string }, "ok" | "not_found" | "forbidden">(
   (db, input, { accountId: viewer }) => {
     const row = ownCollection(db, input.id, viewer);
@@ -690,8 +740,9 @@ export type ItemResult =
 
 // POST /api/v1/collections/:collection_id/items (AddAccountToCollectionService), in the controller's order: the
 // collection (404), a blank account_id (422), the account (404, unavailable included), the owner (403), consent (403),
-// then the item's uniqueness in any state and the live bound (422). At MAX_STORED_ITEMS stored rows the oldest retired row of the
-// collection is deleted first. The new item is accepted, after every other (CollectionItem#set_position).
+// then the item's uniqueness in any state and the live bound (422). At MAX_STORED_ITEMS stored rows the oldest retired
+// row of the collection is deleted first, with its notification and that notification's pushes (by the foreign keys).
+// The new item is accepted, after every other (CollectionItem#set_position).
 export const addCollectionItem = userWriteOperation<{ collection: string; account: string; now: number }, ItemResult>(
   (db, input, { accountId: viewer }) => {
     const row = foundCollection(db, input.collection);
@@ -731,6 +782,7 @@ export const addCollectionItem = userWriteOperation<{ collection: string; accoun
     }
     const position = Math.min((counts?.last ?? 0) + 1, COLLECTION_POSITION_MAX);
     const id = insertItem(db, row.id, member, position, input.now);
+    notifyAdded(db, viewer, member, id, input.now);
     const item = { collection_id: row.id, id, state: COLLECTION_ITEM_STATES.accepted, account_id: member };
     return { status: "ok", item: presentItem({ ...item, created_at: new Date(input.now).toISOString() }) };
   },
@@ -755,7 +807,8 @@ function collectionItem(
   return found === undefined ? null : { row, item: found };
 }
 
-// DELETE /api/v1/collections/:collection_id/items/:id (DeleteCollectionItemService): the owner deletes any item.
+// DELETE /api/v1/collections/:collection_id/items/:id (DeleteCollectionItemService): the owner deletes any item, and
+// by the foreign keys its notification and that notification's pushes.
 export const removeCollectionItem = userWriteOperation<
   { collection: string; item: string },
   "ok" | "not_found" | "forbidden"
@@ -797,8 +850,9 @@ export const revokeCollectionItem = userWriteOperation<
 });
 
 // BlockService#handle_collections, in the block's transaction: the blocker's items in the target's collections are
-// revoked, and the target's items in the blocker's collections deleted. Each reads one account's collections (at most
-// MAX_STORED_COLLECTIONS) and one item of each by its member key, so at most that many rows each.
+// revoked, and the target's items in the blocker's collections deleted, with their notifications and those
+// notifications' pushes (by the foreign keys). Each reads one account's collections (at most MAX_STORED_COLLECTIONS)
+// and one item of each by its member key, so at most that many items each.
 export function severCollections(db: Db, blocker: string, target: string, now: number): void {
   db.run(
     `UPDATE collection_items INDEXED BY collection_items_member
@@ -819,18 +873,48 @@ export function severCollections(db: Db, blocker: string, target: string, now: n
   );
 }
 
+// The retired items unchanged since ?1, oldest first, at most ?2 (the rows a round has left): one bounded range of
+// collection_items_retired.
+const RETIRED_WINDOW = `SELECT id FROM collection_items INDEXED BY collection_items_retired
+	WHERE state IN (2, 3) AND updated_at < ?1 ORDER BY updated_at, id LIMIT ?2`;
+
 // The cron's cleanup (CollectionItemCleanupScheduler): rejected and revoked items unchanged for RETIRED_ITEM_TTL_MS,
-// oldest first through collection_items_retired, at most RETIRED_ROWS_PER_ROUND rows a round.
-export const pruneCollectionItems = writeOperation<{ now: number }, { deleted: number }>((db, { now }) => ({
-  deleted: db.all(
-    `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id IN
-			(SELECT id FROM collection_items INDEXED BY collection_items_retired
-				WHERE state IN (2, 3) AND updated_at < ?1 ORDER BY updated_at, id LIMIT ?2)
-		RETURNING id`,
-    new Date(now - RETIRED_ITEM_TTL_MS).toISOString(),
-    RETIRED_ROWS_PER_ROUND,
-  ).length,
-}));
+// oldest first, child-first so that no delete cascades (as inbox.ts purgeReports): within the window of the oldest
+// (RETIRED_WINDOW), the pushes of their notifications (pending or leased: a leased push whose row is gone completes as
+// nothing), then the notifications left without one, then the items left without a notification. Each statement reads
+// only the window and takes what the round has left, so a round writes at most RETIRED_ROWS_PER_ROUND rows, and the
+// next one continues from the oldest left. `deleted`: the rows written.
+export const pruneCollectionItems = writeOperation<{ now: number }, { deleted: number }>((db, { now }) => {
+  const budget = new RowBudget(db, RETIRED_ROWS_PER_ROUND);
+  const cutoff = new Date(now - RETIRED_ITEM_TTL_MS).toISOString();
+  const writes = [
+    {
+      ids: `SELECT CAST(d.id AS TEXT) AS id FROM (${RETIRED_WINDOW}) w
+				CROSS JOIN notifications n INDEXED BY notifications_collection_item ON n.collection_item_id = w.id
+				CROSS JOIN push_deliveries d INDEXED BY push_deliveries_notification ON d.notification_id = n.id LIMIT ?2`,
+      each: "DELETE FROM push_deliveries WHERE id = CAST(?1 AS INTEGER)",
+    },
+    {
+      ids: `SELECT CAST(n.id AS TEXT) AS id FROM (${RETIRED_WINDOW}) w
+				CROSS JOIN notifications n INDEXED BY notifications_collection_item ON n.collection_item_id = w.id
+			WHERE NOT EXISTS (SELECT 1 FROM push_deliveries d INDEXED BY push_deliveries_notification
+				WHERE d.notification_id = n.id) LIMIT ?2`,
+      each: "DELETE FROM notifications WHERE id = CAST(?1 AS INTEGER)",
+    },
+    {
+      ids: `SELECT w.id FROM (${RETIRED_WINDOW}) w
+			WHERE NOT EXISTS (SELECT 1 FROM notifications n INDEXED BY notifications_collection_item
+				WHERE n.collection_item_id = w.id) LIMIT ?2`,
+      each: `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id = ?1`,
+    },
+  ];
+  for (const write of writes) {
+    if (budget.left() > 0) {
+      writeEach(db, write, cutoff, budget.left());
+    }
+  }
+  return { deleted: budget.spent() };
+});
 
 // ---- Collections named by reports and search.
 

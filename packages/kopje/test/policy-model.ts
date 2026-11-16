@@ -57,7 +57,13 @@ export const NOTIFICATION_TYPES = [
   "quoted_update",
   "admin.report",
   "moderation_warning",
+  "added_to_collection",
+  "collection_update",
 ] as const satisfies readonly NotificationType[];
+
+// The collection a collection notification is about (an added_to_collection's item's, a collection_update's own), by
+// its owner; null for none.
+export type ModelCollectionKey = { kind: "item" | "collection"; owner: number };
 const EVERY_TYPE: Exclude<NotificationType, (typeof NOTIFICATION_TYPES)[number]> extends never ? true : false = true;
 void EVERY_TYPE;
 
@@ -885,8 +891,15 @@ export class PolicyModel {
   }
 
   // R15 as notify writes a notification: shown, and its status (if any) not in a conversation the recipient mutes.
-  notified(r: number, type: NotificationType, from: number, s: number | null, warned: number | null = null): boolean {
-    return (s === null || !this.conversationMuted(r, s)) && this.shown(r, type, from, s, warned);
+  notified(
+    r: number,
+    type: NotificationType,
+    from: number,
+    s: number | null,
+    warned: number | null = null,
+    collection: ModelCollectionKey | null = null,
+  ): boolean {
+    return (s === null || !this.conversationMuted(r, s)) && this.shown(r, type, from, s, warned, collection);
   }
 
   // R15's policy part (NotifyService::FilterCondition) for a recipient with Mastodon's default policy and no
@@ -963,8 +976,17 @@ export class PolicyModel {
   // in the author's own conversation (a known partner that is the author), and that home's filter passes. A
   // quoted_update is shown while its status's quote is accepted and the recipient may see the quoted status. An
   // admin.report is shown to the OAuth admin alone (R37). A moderation_warning is shown only from the recipient itself,
-  // naming a warning of the recipient (`warned`: the target of the warning it names, null for none; R42).
-  shown(r: number, type: NotificationType, from: number, s: number | null, warned: number | null = null): boolean {
+  // naming a warning of the recipient (`warned`: the target of the warning it names, null for none; R42). An
+  // added_to_collection names an item and a collection_update a collection (`collection`), shown while it is the
+  // sender's and R45 shows it to the recipient.
+  shown(
+    r: number,
+    type: NotificationType,
+    from: number,
+    s: number | null,
+    warned: number | null = null,
+    collection: ModelCollectionKey | null = null,
+  ): boolean {
     if (
       (from === r && type !== "poll" && type !== "moderation_warning") ||
       !this.available(from) ||
@@ -1006,6 +1028,14 @@ export class PolicyModel {
         return r === this.admin;
       case "moderation_warning":
         return from === r && warned === r;
+      case "added_to_collection":
+      case "collection_update":
+        return (
+          collection !== null &&
+          collection.kind === (type === "added_to_collection" ? "item" : "collection") &&
+          collection.owner === from &&
+          this.collectionShown(collection.owner, r)
+        );
       default:
         return true;
     }
@@ -1015,7 +1045,13 @@ export class PolicyModel {
   // is shown (R15), and not filtered, to a local, available recipient, the subscription's token is still valid, its alert for the type
   // is on, and its policy lets the sender through (followed: the recipient follows the sender; follower: the sender
   // follows the recipient; none: nobody).
-  pushed(sub: ModelSubscription, type: NotificationType, from: number, s: number | null): boolean {
+  pushed(
+    sub: ModelSubscription,
+    type: NotificationType,
+    from: number,
+    s: number | null,
+    collection: ModelCollectionKey | null = null,
+  ): boolean {
     const r = sub.recipient;
     const policy =
       sub.policy === "all" ||
@@ -1024,7 +1060,7 @@ export class PolicyModel {
     return (
       this.account(r).local &&
       this.available(r) &&
-      this.shown(r, type, from, s) &&
+      this.shown(r, type, from, s, null, collection) &&
       !this.filtered(r, type, from, s) &&
       (sub.tokenExpiresAt === null || sub.tokenExpiresAt > this.world.now) &&
       sub.alerts.includes(type) &&

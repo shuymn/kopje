@@ -162,6 +162,45 @@ function groupKeyOf(n: SeededNotification): string | null {
     : null;
 }
 
+// The collection keys of a seeded notification of a collection type: the sender's collection (one per account), and
+// for an added_to_collection the recipient's item in it, each written once; none for another type.
+function collectionKeysOf(
+  sql: SqlStorage,
+  world: Case["world"],
+  n: SeededNotification,
+): { item: string | null; collection: string | null } {
+  if (n.type !== "added_to_collection" && n.type !== "collection_update") {
+    return { item: null, collection: null };
+  }
+  const T = "2026-01-01T00:00:00.000Z";
+  const local = world.accounts[n.from]?.local === true;
+  const collection = String(700_000_000_000_000_000n + BigInt(n.from));
+  sql.exec(
+    `INSERT OR IGNORE INTO collections (id, account_id, local, name, sensitive, discoverable, uri, created_at, updated_at)
+		VALUES (?, ?, ?, 'c', 0, 1, ?, ?, ?)`,
+    collection,
+    accountId(n.from),
+    local ? 1 : 0,
+    local ? null : `https://remote.example/c/${n.from}`,
+    T,
+    T,
+  );
+  if (n.type === "collection_update") {
+    return { item: null, collection };
+  }
+  const item = String(710_000_000_000_000_000n + BigInt(n.from * 1000 + n.recipient));
+  sql.exec(
+    `INSERT OR IGNORE INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
+		VALUES (?, ?, ?, 1, 1, ?, ?)`,
+    item,
+    collection,
+    accountId(n.recipient),
+    T,
+    T,
+  );
+  return { item, collection: null };
+}
+
 // Writes the case and returns the notifications it seeded, by id.
 function writeCase(sql: SqlStorage, { world, edges, discoverable }: Case): Map<string, SeededNotification> {
   sql.exec("DELETE FROM oauth_tokens");
@@ -205,16 +244,20 @@ function writeCase(sql: SqlStorage, { world, edges, discoverable }: Case): Map<s
   }
   const notifications = new Map<string, SeededNotification>();
   for (const n of edges.notifications) {
+    const keys = collectionKeysOf(sql, world, n);
     const { id } = sql
       .exec<{ id: string }>(
-        `INSERT INTO notifications (account_id, type, from_account_id, status_id, group_key, filtered)
-				VALUES (?, ?, ?, ?, ?, ?) RETURNING CAST(id AS TEXT) AS id`,
+        `INSERT INTO notifications (account_id, type, from_account_id, status_id, group_key, filtered,
+					collection_item_id, collection_id)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING CAST(id AS TEXT) AS id`,
         accountId(n.recipient),
         n.type,
         accountId(n.from),
         n.status === null ? null : statusId(n.status),
         groupKeyOf(n),
         n.filtered ? 1 : 0,
+        keys.item,
+        keys.collection,
       )
       .one();
     notifications.set(id, n);
@@ -1214,7 +1257,11 @@ function check(sql: SqlStorage, c: Case): string[] {
       ) {
         problems.push(`notifications ${nameOf(viewer)}: ${notification.id} is not a notification seeded for them`);
       }
-      if (from === undefined || !m.shown(viewer, notification.type, from, s)) {
+      const collection =
+        row?.type === "added_to_collection" || row?.type === "collection_update"
+          ? { kind: row.type === "added_to_collection" ? ("item" as const) : ("collection" as const), owner: row.from }
+          : null;
+      if (from === undefined || !m.shown(viewer, notification.type, from, s, null, collection)) {
         problems.push(`notifications ${nameOf(viewer)}: ${notification.type} from ${notification.account.id}`);
       }
       // A filtered notification is shown only when asked for (include_filtered, account_id).

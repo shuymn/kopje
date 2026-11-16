@@ -159,7 +159,7 @@ function* requestStream(
       where: "r.account_id = ?1 AND r.id IN (SELECT CAST(value AS INTEGER) FROM json_each(?2))",
       // The request's own column, not `s.id`: shownSql names its own `statuses s`, inside which `s.id` would be that
       // status and not this one.
-      and: shownSql("?1", "'mention'", "r.from_account_id", "r.last_status_id", "?3", "NULL", "NULL"),
+      and: shownSql("?1", "'mention'", "r.from_account_id", "r.last_status_id", "?3", "NULL", "NULL", "NULL", "NULL"),
     },
     viewer.accountId,
     JSON.stringify(rows.map((row) => row.id)),
@@ -285,7 +285,7 @@ function jobBatch(db: Db, job: Job, now: string): void {
         `SELECT CAST(n.id AS TEXT) AS id, n.type, n.status_id FROM notifications n INDEXED BY notifications_from
 				WHERE n.from_account_id = ?1 AND n.id >= CAST(?2 AS INTEGER) AND n.id <= CAST(?3 AS INTEGER)
 					AND n.account_id = ?4 AND n.filtered = 1
-					AND ${keptSql("n")} AND ${notifiedSql("?4", "n.type", "n.from_account_id", "n.status_id", "?5", "NULL", "n.account_warning_id")}
+					AND ${keptSql("n")} AND ${notifiedSql("?4", "n.type", "n.from_account_id", "n.status_id", "?5", "NULL", "n.account_warning_id", "n.collection_item_id", "n.collection_id")}
 				ORDER BY n.id DESC`,
         ...params,
         now,

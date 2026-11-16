@@ -2734,3 +2734,19 @@ export function reportCollectionIdsOf(raw: string | null): string[] {
   }
   return ids.every((id): id is string => typeof id === "string" && WARNING_STATUS_ID.test(id)) ? ids : [];
 }
+
+// ---- Collection notifications: migration 0107_collection_notifications (domain/notifications.ts)
+
+// True when a notification of `type` keyed by `item` (collection_item_id) and `collection` (collection_id) is past
+// their stored bound: each is NULL or 18 ASCII digits as TEXT (the type, then the bytes, then NUL, then the digits),
+// an added_to_collection names its item and no collection, a collection_update its collection and no item, and any
+// other type neither. The triggers of 0107 (over NEW) and notify's insert (over its parameters) share it.
+export function notificationCollectionKeysPastBoundSql(type: string, item: string, collection: string): string {
+  const malformed = (id: string) => `WHEN ${id} IS NOT NULL AND (typeof(${id}) <> 'text'
+		OR length(CAST(${id} AS BLOB)) <> 18 OR instr(CAST(${id} AS BLOB), x'00') > 0 OR ${id} GLOB '*[^0-9]*') THEN 1`;
+  return `CASE ${malformed(item)}
+	${malformed(collection)}
+	WHEN ${type} = 'added_to_collection' THEN ${item} IS NULL OR ${collection} IS NOT NULL
+	WHEN ${type} = 'collection_update' THEN ${collection} IS NULL OR ${item} IS NOT NULL
+	ELSE ${item} IS NOT NULL OR ${collection} IS NOT NULL END`;
+}

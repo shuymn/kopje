@@ -1,6 +1,8 @@
 import { fixedColumns, selectSql } from "../db/columns";
 import {
   ACCOUNTS_ID_INDEX,
+  COLLECTION_ITEMS_ID_INDEX,
+  COLLECTIONS_ID_INDEX,
   INSTANCE_DOMAIN_BLOCKS_DOMAIN_INDEX,
   POLL_VOTES_KEY_INDEX,
   POLLS_STATUS_INDEX,
@@ -1369,7 +1371,10 @@ function silencedSql(r: string, a: string, now: string): string {
 // accepted and the recipient may see the quoted status by itself (R35, VIS-27: Mastodon checks neither). An
 // admin.report is shown only while its recipient is `admin`, the OAuth admin's account id (R37; NULL for none), so it
 // leaves every read, push and stream when the admin changes; it goes with its report (notifications.report_id, ON
-// DELETE CASCADE).
+// DELETE CASCADE). An added_to_collection (about the item `item`) and a collection_update (about the collection
+// `collection`) are shown while their collection is the sender's and R45 shows it to the recipient
+// (collectionShownSql: the owner available and blocking the recipient neither directly, both terms of this rule for
+// the sender, nor by domain); each goes with its item or collection (migration 0107_collection_notifications).
 // The terms are written so that every statement holding the rule prepares on workerd (docs/engineering.md "Queries":
 // each domain coverage walk is resolved within CTE_GUARD_LIMIT cursors), without reading more than the rule as it
 // reads: a type's arm is written only where `type` may be that type, an arm that reads walks comes as early as the
@@ -1382,6 +1387,8 @@ export function shownSql(
   now: string,
   admin: string,
   warning: string,
+  item: string,
+  collection: string,
 ): string {
   const terms = [
     `(${from} <> ${r} OR ${type} IN ('poll', 'moderation_warning'))`,
@@ -1404,6 +1411,23 @@ export function shownSql(
       `EXISTS (SELECT 1 FROM main.quotes nq INDEXED BY ${QUOTES_STATUS_INDEX}
 			CROSS JOIN main.statuses nt INDEXED BY ${STATUSES_ID_INDEX} ON nt.id = nq.quoted_status_id
 			WHERE nq.status_id = ${status} AND nq.state = 'accepted' AND ${viewableSql("nt", r)})`,
+    ),
+    // R45 for the collection a collection notification is about: the sender's own (its availability and direct
+    // blocks are the terms above), not domain-blocked by it.
+    armSql(
+      type,
+      "added_to_collection",
+      `(EXISTS (SELECT 1 FROM main.collection_items nci INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
+				CROSS JOIN main.collections ncc INDEXED BY ${COLLECTIONS_ID_INDEX} ON ncc.id = nci.collection_id
+			WHERE nci.id = ${item} AND ncc.account_id = ${from})
+			AND NOT ${domainBlocksSql(from, r)})`,
+    ),
+    armSql(
+      type,
+      "collection_update",
+      `(EXISTS (SELECT 1 FROM main.collections ncu INDEXED BY ${COLLECTIONS_ID_INDEX}
+			WHERE ncu.id = ${collection} AND ncu.account_id = ${from})
+			AND NOT ${domainBlocksSql(from, r)})`,
     ),
     // The boost is the sender's (nr.account_id = from): visibleSql's availability and author-block terms over it are
     // availableSql(from) and NOT blocksSql(from, r) above.
@@ -1444,7 +1468,17 @@ function armSql(type: string, t: string, body: string): string | undefined {
 // R15 for the stored notification row `n` (an alias) of recipient `r`: shownSql over its own columns, as the reads
 // and the pushes of stored notifications judge them.
 export function shownNotificationSql(n: string, r: string, now: string, admin: string): string {
-  return shownSql(r, `${n}.type`, `${n}.from_account_id`, `${n}.status_id`, now, admin, `${n}.account_warning_id`);
+  return shownSql(
+    r,
+    `${n}.type`,
+    `${n}.from_account_id`,
+    `${n}.status_id`,
+    now,
+    admin,
+    `${n}.account_warning_id`,
+    `${n}.collection_item_id`,
+    `${n}.collection_id`,
+  );
 }
 
 // R31 (Account#muting_conversation?): whether `owner` mutes the conversation `thread`, an expression for a status's
@@ -1466,10 +1500,12 @@ export function notifiedSql(
   now: string,
   admin: string,
   warning: string,
+  item: string,
+  collection: string,
 ): string {
   return `((${status} IS NULL OR NOT EXISTS (SELECT 1 FROM main.statuses nc INDEXED BY ${STATUSES_ID_INDEX} WHERE nc.id = ${status}
 			AND ${conversationMutedSql(r, "nc.thread")}))
-		AND ${shownSql(r, type, from, status, now, admin, warning)})`;
+		AND ${shownSql(r, type, from, status, now, admin, warning, item, collection)})`;
 }
 
 // ---- Notification policies (R15 as notify writes; Mastodon 4.5's NotifyService::DropCondition and FilterCondition).
@@ -1506,9 +1542,9 @@ export function keptSql(n: string): string {
 		AND ${n}.id > ${dismissedSql(`${n}.account_id`, `${n}.group_key`)})`;
 }
 
-// The types a policy may filter or drop (Notification::PROPERTIES, app/models/notification.rb:37-83: `filterable`):
-// mention, reblog, follow, follow_request, favourite and quote. A post notification (`status`), an edit (`update`) and
-// a poll's end are never filtered.
+// The types a policy may filter or drop (Notification::PROPERTIES, app/models/notification.rb:37-105: `filterable`):
+// mention, reblog, follow, follow_request, favourite, quote and added_to_collection. A post notification (`status`),
+// an edit (`update`), a poll's end and a collection_update are never filtered.
 export const FILTERABLE_TYPES: readonly string[] = [
   "mention",
   "reblog",
@@ -1516,6 +1552,7 @@ export const FILTERABLE_TYPES: readonly string[] = [
   "follow_request",
   "favourite",
   "quote",
+  "added_to_collection",
 ];
 
 // A policy's choice for a condition (NotificationPolicy's enums, app/models/notification_policy.rb:35-40 in v4.7.5).
