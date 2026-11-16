@@ -467,9 +467,24 @@ Accounts (the `Account` and credential account entities):
 - A remote actor's document is stored only while the Store revision read before its fetch holds (ID-1 in
   `docs/threat-model.md`): a document fetched before another store of the actor committed is not stored. Mastodon
   serializes the processing of one account (`process_account_service.rb:30`) but stores whatever document it processes
-  last (`process_account_service.rb:95-103`). So an `Update(Person)` whose fetch raced another store answers 503,
-  having written nothing, and a retry is judged afresh; a `Move` whose target was stored meanwhile answers 503 too;
-  another activity, a stale-author refresh and a search resolution use the stored account.
+  last (`process_account_service.rb:95-103`). So an `Update(Person)` whose document or fetch raced another store
+  answers 503, having written nothing, and a retry is judged afresh; a `Move` whose target was stored meanwhile answers
+  503 too; another activity, a stale-author refresh and a search resolution use the stored account.
+- An `Update(Person)` applies the profile, the handle (confirmed by WebFinger when it changes) and `movedTo` of the
+  actor it embeds, as Mastodon's `ProcessAccountService` does (`update.rb:23-27`), but not its keys or inboxes, which
+  stay those of the last document Kopje fetched; Mastodon takes both from the embedded actor
+  (`process_account_service.rb:222-232`, `:264-270`). A key rotation or inbox move sent only by `Update(Person)`
+  applies at Kopje's next fetch of the actor's document, which nothing schedules: the actor's first activity signed by
+  a key Kopje does not hold fresh (one it does not hold, one that fails, or one its last fetched document listed 24
+  hours ago or more), an `Update(Person)` that embeds no actor (its object the actor's URI, or not an actor), which is
+  fetched whatever its key, a stale-author refresh, a search for the actor, or a collection sync's refresh of it. An
+  actor that sends nothing keeps the old keys and inboxes until one of these happens (`test/inbox-actor-update.test.ts`,
+  "an inbox move sent only by an embedded actor", "an Update(Person) that embeds no actor"). Reason: a holder of a
+  still-trusted key could otherwise renew its trust and move the actor's deliveries without a fetch (ID-1 in
+  `docs/threat-model.md`). An embedded actor Kopje cannot read applies nothing, as Mastodon drops it. An
+  `Update(Person)` that carries an LD signature (a `signature` object) is read as received, where Mastodon reads its
+  compaction under `full_context` (`process_activity_service.rb:23-38`), so an `inbox` given only by its full IRI is
+  refused and `[null]` taken, where Mastodon does the opposite (#1680). Accepted, 2026-11-16.
 - The account `moved` nests is a bounded projection, not the full account: its identity, counts, flags, display
   settings and images, `note`, `avatar_description` and `header_description` `''` and `fields` `[]`, the display name
   cut at 100 code points, URLs and `uri` read as unset past 512 bytes, and only the emojis its display name references

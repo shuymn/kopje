@@ -337,6 +337,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   counted as Mastodon counts it (characters as shown, a link as 23, a remote mention by its username), so a note Kopje
   refused for length may now be saved; a note longer than 10,000 UTF-16 code units as sent is refused, as a post's
   text is, and the settings page's bio takes up to that many. No Store migration and no `wrangler.jsonc` change.
+- An actor document whose `inbox` is missing, null or blank is refused, as Mastodon refuses it: its activities are
+  answered without effect and nothing of it is stored. Kopje stored such an actor with no inbox (or, for an empty
+  string, with a URL resolved from the document's own), and a refetch of a stored actor cleared its inbox. No Store
+  migration and no `wrangler.jsonc` change.
+- An `Update(Person)` applies the profile and handle the actor it carries states, so a rename or a profile change no
+  longer waits for the sender's actor cache (3 minutes on Mastodon). Keys and inboxes still come only from the actor
+  document Kopje fetches ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts). No Store migration and
+  no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 
