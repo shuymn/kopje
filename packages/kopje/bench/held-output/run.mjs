@@ -75,7 +75,7 @@ const PROBE_CAP_MIB = { local: 512, deployed: 4096 };
 // How long a resumed client may take to receive what it was handed.
 const DRAIN_WAIT_MS = 10 * MINUTE_MS;
 const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-// What a client keeps of each message's start to parse: frame 0's `<seq> <ms> <start id> <kind> ` fits with room.
+// What a client keeps of each message's start to parse: frame 0's `<seq> <ms> <start id> <kind> <generation> ` fits.
 const HEAD_BYTES = 128;
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -151,7 +151,7 @@ function planOf(quick) {
 }
 
 /** @typedef {ReturnType<typeof planOf>} Plan */
-/** @typedef {{ id: string, at: number, kind: "fresh" | "wake" }} Start */
+/** @typedef {{ id: string, at: number, kind: "fresh" | "wake", generation: number }} Start */
 /**
  * @typedef {{ start: Start, at: number, heldMib: number, keepalive: boolean,
  *   sockets: { name: string, readyState: number }[],
@@ -236,6 +236,9 @@ class Client {
   // When frame 0 arrived, and when the socket ended or the driver closed it.
   /** @type {number | null} */
   connectedAt = null;
+  // Whether the bench asked for the socket's end (the object's close, or the driver's): such an end is no sign of a
+  // reset.
+  closeRequested = false;
   /** @type {number | null} */
   endedAt = null;
   ended = false;
@@ -413,14 +416,15 @@ class Client {
       return;
     }
     const head = Buffer.concat(this.#head).toString("latin1");
-    const match = /^(\d+) (\d+) (?:(\S+) (fresh|wake) )?/.exec(head);
+    const match = /^(\d+) (\d+) (?:(\S+) (fresh|wake) (\d+) )?/.exec(head);
     const seq = Number(match?.[1] ?? -1);
     const handAt = Number(match?.[2] ?? Number.NaN);
     const age = Date.now() - handAt;
     if (seq === 0) {
       // Frame 0 is handed by the object as it accepts the socket, and names the start that accepted it.
       if (match?.[3] !== undefined) {
-        this.run.saw({ id: match[3], kind: match[4] === "wake" ? "wake" : "fresh" }, this.#connectingAt);
+        const start = { id: match[3], kind: match[4] === "wake" ? "wake" : "fresh", generation: Number(match[5]) };
+        this.run.saw(/** @type {Start} */ (start), this.#connectingAt);
       }
       this.connectedAt = Date.now();
       this.handedBytes += this.#messageBytes;
@@ -501,6 +505,7 @@ class Client {
     if (this.#socket === null || this.ended) {
       return;
     }
+    this.closeRequested = true;
     this.endedAt ??= Date.now();
     this.run.record({ type: "closed", client: this.name, at: this.endedAt, by: "client" });
     this.#socket.destroy();
@@ -624,14 +629,13 @@ export class Run {
   probing = false;
   // The MiB the running headroom probe holds.
   probeHeld = 0;
-  // The start last seen in any answer (a state, a hand, a close, a frame 0), and when the latest of those answers was
-  // asked for: the start was alive then, and no later moment is known, however late the answer arrived.
-  /** @type {{ id: string, at: number } | null} */
+  // The newest start seen in any answer (a state, a hand, a close, a frame 0), by generation, and when the latest of
+  // its answers was asked for: the start was alive then, and no later moment is known, however late the answer came.
+  /** @type {{ id: string, generation: number, at: number } | null} */
   #start = null;
-  // Starts seen before it: a late answer from one of them is no new start.
-  /** @type {Set<string>} */
-  #retired = new Set();
-  #listed = 0;
+  // The run's sockets the newest state listed.
+  /** @type {string[]} */
+  #listed = [];
   #heldMib = 0;
   /** @type {State | null} */
   #state = null;
@@ -698,42 +702,47 @@ export class Run {
   }
 
   /**
-   * Notes the start an answer came from, and when that answer was asked for. A new start is recorded with what the
-   * run held under the one before: the sockets listed, every client connected and not yet ended when the latest
-   * answer from that start was asked for (so neither a reset between two polls nor a late answer hides one), and the
-   * heap.
-   * @param {{ id: string, kind: "fresh" | "wake" }} start
+   * Notes the start an answer came from, and when that answer was asked for; an answer from an older generation than
+   * the newest seen is late, and changes nothing. A newer start is recorded with what the run held open under the one
+   * before: the sockets the newest state listed and every client connected and not yet ended when the latest answer
+   * from that start was asked for (so neither a reset between two polls nor a late answer hides one), less those whose
+   * end the bench asked for, and the heap.
+   * @param {Start} start
    * @param {number} asked
    */
   saw(start, asked) {
     if (this.#start === null) {
-      this.#start = { id: start.id, at: asked };
+      this.#start = { id: start.id, generation: start.generation, at: asked };
       return;
     }
-    if (start.id === this.#start.id) {
-      this.#start.at = Math.max(this.#start.at, asked);
-      return;
-    }
-    if (this.#retired.has(start.id)) {
+    if (start.generation <= this.#start.generation) {
+      if (start.generation === this.#start.generation) {
+        this.#start.at = Math.max(this.#start.at, asked);
+      }
       return;
     }
     const since = this.#start.at;
-    // An end within the millisecond of that last answer may be the reset's own: it counts as held.
-    const connected = this.clients.filter(
-      (c) => c.connectedAt !== null && (c.endedAt === null || c.endedAt >= since),
-    ).length;
+    /** @param {string} name */
+    const closed = (name) => this.clients.some((c) => c.name === name && c.ended && c.closeRequested);
+    const open = new Set(this.#listed.filter((name) => !closed(name)));
+    for (const c of this.clients) {
+      // An end within the millisecond of that last answer may be the reset's own: it counts as held.
+      if (c.connectedAt !== null && (c.endedAt === null || (c.endedAt >= since && !c.closeRequested))) {
+        open.add(c.name);
+      }
+    }
     this.record({
       type: "start",
       at: Date.now(),
       id: start.id,
       kind: start.kind,
+      generation: start.generation,
       since,
-      listedBefore: Math.max(this.#listed, connected),
+      listedBefore: open.size,
       heldMibBefore: Math.max(this.#heldMib, this.probing ? this.probeHeld : 0),
       probe: this.probing,
     });
-    this.#retired.add(this.#start.id);
-    this.#start = { id: start.id, at: asked };
+    this.#start = { id: start.id, generation: start.generation, at: asked };
   }
 
   /**
@@ -742,7 +751,7 @@ export class Run {
    */
   #observe(state, asked) {
     this.saw(state.start, asked);
-    if (this.#retired.has(state.start.id)) {
+    if (state.start.generation < (this.#start?.generation ?? 0)) {
       // A snapshot from a start already replaced is older than what the run knows of the object.
       return;
     }
@@ -758,7 +767,7 @@ export class Run {
       this.#listing = listing;
       this.record({ type: "listed", at: Date.now(), sockets: mine.map((s) => [s.name, s.readyState]) });
     }
-    this.#listed = mine.length;
+    this.#listed = mine.map((s) => s.name);
     this.#heldMib = state.heldMib;
     for (const event of state.events.slice(this.#seenEvents)) {
       if ((event.kind === "close" || event.kind === "error") && event.name.startsWith(`${this.id}.`)) {
@@ -864,6 +873,7 @@ export class Run {
    * @param {Client} client
    */
   async closeByObject(client) {
+    client.closeRequested = true;
     const asked = Date.now();
     const { body } = await call(this.target, "POST", `/close?name=${encodeURIComponent(client.name)}`);
     const closed = /** @type {{ at: number, start: Start }} */ (body);

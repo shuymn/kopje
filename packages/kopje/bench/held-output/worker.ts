@@ -16,10 +16,12 @@
 // runs.
 //
 // A frame is `<seq> <hand time in ms> ` padded with `x` to its size, so a client reads each frame's age without the
-// object keeping one record per frame; frame 0 also names the start that accepted the socket (`<id> <kind> `). Totals
-// and ends live in the object's storage, so a reset loses none; the start id is random per start of the object, and
-// `kind` says whether the start found sockets still listed (a wake from hibernation, which the runtime keeps
-// connected) or none (a fresh start, which after a reset means its sockets ended).
+// object keeping one record per frame; frame 0 also names the start that accepted the socket
+// (`<id> <kind> <generation> `). Totals and ends live in the object's storage, so a reset loses none; the start id is
+// random per start of the object, its generation counts the object's starts in its storage (so answers order by
+// start however late they arrive), and `kind` says whether the start found sockets still listed (a wake from
+// hibernation, which the runtime keeps connected) or none (a fresh start, which after a reset means its sockets
+// ended).
 import { DurableObject } from "cloudflare:workers";
 
 interface Env {
@@ -34,9 +36,9 @@ const KEEPALIVE_MS = 5_000;
 // What one /hand may ask: a fixed ceiling on the request's own work.
 const MAX_FRAMES = 65_536;
 const MAX_FRAME_BYTES = MIB;
-const HELLO_BYTES = 64;
+const HELLO_BYTES = 96;
 
-type Start = { id: string; at: number; kind: "fresh" | "wake" };
+type Start = { id: string; at: number; kind: "fresh" | "wake"; generation: number };
 
 // What the runtime's WebSocket offers JavaScript: any of these would be a signal of unsent output (RES-6).
 type Surface = {
@@ -67,7 +69,6 @@ export class HeldOutput extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.#start = { id: crypto.randomUUID(), at: Date.now(), kind: ctx.getWebSockets().length > 0 ? "wake" : "fresh" };
     ctx.storage.sql.exec(
       `CREATE TABLE IF NOT EXISTS totals
        (name TEXT PRIMARY KEY, seq INTEGER NOT NULL, frames INTEGER NOT NULL, bytes INTEGER NOT NULL)`,
@@ -78,6 +79,16 @@ export class HeldOutput extends DurableObject<Env> {
         code INTEGER, reason TEXT)`,
     );
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value INTEGER NOT NULL)");
+    ctx.storage.sql.exec(
+      `INSERT INTO settings (key, value) VALUES ('generation', 1)
+       ON CONFLICT (key) DO UPDATE SET value = value + 1`,
+    );
+    this.#start = {
+      id: crypto.randomUUID(),
+      at: Date.now(),
+      kind: ctx.getWebSockets().length > 0 ? "wake" : "fresh",
+      generation: this.#setting("generation") ?? 1,
+    };
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -135,7 +146,8 @@ export class HeldOutput extends DurableObject<Env> {
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server, [name]);
     this.#record(Date.now(), name, "accept", null, null);
-    this.#sendFrames(server, name, 1, HELLO_BYTES, `${this.#start.id} ${this.#start.kind} `);
+    const { id, kind, generation } = this.#start;
+    this.#sendFrames(server, name, 1, HELLO_BYTES, `${id} ${kind} ${generation} `);
     return new Response(null, { status: 101, webSocket: client });
   }
 

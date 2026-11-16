@@ -28,8 +28,8 @@ export const PROBE_STEP_BYTES = 1024 * 1024;
 /**
  * @typedef {{ type: "run", run: string, measurement: string, at: number, volume?: number, frameBytes?: number,
  *   baseline?: string }} RunRecord
- * @typedef {{ type: "start", run: string, at: number, id: string, kind: "fresh" | "wake", since: number,
- *   listedBefore: number, heldMibBefore: number, probe: boolean }} StartRecord
+ * @typedef {{ type: "start", run: string, at: number, id: string, kind: "fresh" | "wake", generation?: number,
+ *   since: number, listedBefore: number, heldMibBefore: number, probe: boolean }} StartRecord
  * @typedef {{ type: "hand", run: string, client: string, at: number, firstSeq: number, frames: number,
  *   bytes: number }} HandRecord
  * @typedef {{ type: "hand-unknown", run: string, client: string, at: number, frames: number, bytes: number }}
