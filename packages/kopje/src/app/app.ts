@@ -19,7 +19,7 @@ import { FEDERATION_PATHS, requireSetup } from "../federation/setup-gate";
 import { rescueFromSnapshot } from "../federation/snapshot";
 import { createAdmission, INBOX_BODY_LIMIT, spoolInbox } from "../federation/spool";
 import { ActivityMemo } from "../mastodon/activity";
-import { apiCaching } from "../mastodon/caching";
+import { apiHeaders } from "../mastodon/caching";
 import type { AuthorSignature } from "../mastodon/context";
 import { maintenanceError, mastodonError, recordNotFound } from "../mastodon/errors";
 import { mastodonApi } from "../mastodon/routes";
@@ -77,7 +77,7 @@ const API_CORS_PATHS = ["/api/*", "/oauth/token", "/oauth/revoke", "/oauth/useri
 
 // The Api::BaseController answers of Mastodon: the API and OpenID Connect's userinfo. The other OAuth endpoints are
 // Doorkeeper's, outside ApplicationController, and set their own headers (mastodon/oauth.ts).
-const API_CACHING_PATHS = ["/api/*", "/oauth/userinfo"];
+const API_HEADER_PATHS = ["/api/*", "/oauth/userinfo"];
 
 // WEB-3: cross-origin GET for /.well-known, NodeInfo and local actor documents; the profile page (HTML) stays closed.
 // As Mastodon v4.5.11 opens them (config/initializers/cors.rb).
@@ -122,10 +122,11 @@ export function createApp({
     app.use(path, documentCors);
   }
 
-  // WEB-7: every Mastodon API answer's Cache-Control and Vary (mastodon/caching.ts). After CORS, whose preflight
-  // answer keeps none, and before the gates, so their answers, notFound's and onError's get them too.
-  for (const path of API_CACHING_PATHS) {
-    app.use(path, apiCaching);
+  // WEB-5, WEB-7: every Mastodon API answer's security headers, Cache-Control and Vary (mastodon/caching.ts). After
+  // CORS, whose preflight answer keeps none, and before the gates, so their answers, notFound's and onError's get them
+  // too.
+  for (const path of API_HEADER_PATHS) {
+    app.use(path, apiHeaders);
   }
 
   // Spooling within the Queue's admission budget (federation/spool.ts): over it, or when it cannot be read, 503.

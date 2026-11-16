@@ -1,20 +1,29 @@
 import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 
-// The Cache-Control and Vary of every Mastodon API answer (WEB-7). Each route of the table (mastodon/routes.ts)
-// declares a Caching, which mastodonApi sets as the request's `caching` before anything else of the route runs;
-// apiCaching (registered in app/app.ts on /api/* and /oauth/userinfo, after CORS and before the maintenance gate)
-// writes both headers on the answer as it leaves, whatever produced it: the handler, an early refusal, the
-// suspended owner's 403 (AUTH-2), a gate, notFound or onError. An answer of no route (none matched, or a gate
-// answered first) carries no declaration and is private with no Vary, as Mastodon's catch-all. Headers a handler set
-// are overwritten. A CORS preflight (answered before this middleware) and the streaming endpoints (MD-8: Mastodon's
-// streaming server, not Rails) are left as they are.
+// The headers of every Mastodon API answer: its Cache-Control and Vary (WEB-7) and the API's security headers
+// (WEB-5). Each route of the table (mastodon/routes.ts) declares a Caching, which mastodonApi sets as the request's
+// `caching` before anything else of the route runs; apiHeaders (registered in app/app.ts on /api/* and
+// /oauth/userinfo, after CORS and before the maintenance gate) writes the headers on the answer as it leaves, whatever
+// produced it: the handler, an early refusal, the suspended owner's 403 (AUTH-2), a gate, notFound or onError. An
+// answer of no route (none matched, or a gate answered first) carries no declaration and is private with no Vary, as
+// Mastodon's catch-all. Headers a handler set are overwritten. A CORS preflight (answered before this middleware) and
+// the streaming endpoints (MD-8: Mastodon's streaming server, not Rails) are left as they are.
 //
 // Mastodon (v4.7.5): every controller answer starts `private, no-store` (ApplicationController
 // set_cache_control_defaults); Api::BaseController declares `vary_by 'Authorization'`; cache_if_unauthenticated!
 // makes a 2xx public for 15 s and cache_even_if_authenticated! for 5 min (Api::CachingConcern); and
 // enforce_cache_control! makes an answer private again when its Vary names Authorization and the request sent a
 // non-blank Authorization header, whatever the header holds. Directives are in Rails' order (max-age first).
+// Api::BaseController's policy (Api::ContentSecurityPolicy) and the Rails defaults a browser acts on
+// (config/environments/production.rb: X-Frame-Options, Referrer-Policy; nosniff is every answer's, app/app.ts) are on
+// every API answer; X-XSS-Protection: 0 (obsolete) and Server (a product name) are not sent.
+
+const SECURITY_HEADERS: readonly [string, string][] = [
+  ["content-security-policy", "default-src 'none'; frame-ancestors 'none'; form-action 'none'"],
+  ["x-frame-options", "DENY"],
+  ["referrer-policy", "same-origin"],
+];
 
 const ANONYMOUS_CONTROL = "max-age=15, public, stale-while-revalidate=30, stale-if-error=86400";
 const LONG_CONTROL = "max-age=300, public, stale-while-revalidate=30, stale-if-error=86400";
@@ -74,7 +83,7 @@ function streamingPath(path: string): boolean {
   return path === "/api/v1/streaming" || path.startsWith("/api/v1/streaming/");
 }
 
-export const apiCaching = createMiddleware<CachingEnv>(async (c, next) => {
+export const apiHeaders = createMiddleware<CachingEnv>(async (c, next) => {
   if (streamingPath(c.req.path)) {
     return next();
   }
@@ -92,6 +101,9 @@ export const apiCaching = createMiddleware<CachingEnv>(async (c, next) => {
 });
 
 function writeHeaders(c: Context, cacheControl: string, vary: string | null): void {
+  for (const [name, value] of SECURITY_HEADERS) {
+    c.res.headers.set(name, value);
+  }
   c.res.headers.set("cache-control", cacheControl);
   if (vary === null) {
     c.res.headers.delete("vary");
