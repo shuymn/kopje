@@ -34,8 +34,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Link previews"). Migration `0098_card_attribution`: a
   column of `status_cards` and its two triggers, reading no row; as the triggers name `main.statuses`, the upgrade
   checks every reference of the Store (the migration bench's upgrade from `0093_annual_reports` takes 15,089 ms with
-  this file and 14,870 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor
-  version, and rolling back past it needs a point-in-time restore.
+  this file and 14,870 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store
+  migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
 - `GET /api/v1/donation_campaigns` answers 204 to a signed-in user, as Mastodon does with no donation campaign
   source, and 422 to a request without a user. `POST /api/v1/accounts/:account_id/email_subscriptions` answers 404, as
   Mastodon does with e-mail subscriptions off. Both had no route.
