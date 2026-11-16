@@ -1,5 +1,5 @@
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Db } from "../src/db/sql";
 import type { Poll } from "../src/domain/poll-presenter";
@@ -43,6 +43,15 @@ function question(actor: TestActor, extra: Record<string, unknown> = {}): Note {
     ],
     ...extra,
   });
+}
+
+// The Question as a Note: the same status with no poll.
+function withoutPoll(object: Note): Note {
+  const POLL_KEYS = ["oneOf", "anyOf", "votersCount", "endTime", "closed"];
+  return {
+    ...(Object.fromEntries(Object.entries(object).filter(([key]) => !POLL_KEYS.includes(key))) as Note),
+    type: "Note",
+  };
 }
 
 function implicitUpdate(actor: TestActor, object: Note, n: number) {
@@ -461,6 +470,131 @@ describe("a remote Question", () => {
     expect(
       await sql(t.store, "SELECT account_id, from_account_id, status_id FROM notifications WHERE type = 'poll'"),
     ).toEqual([{ account_id: ALICE, from_account_id: bobId, status_id: id }]);
+  });
+});
+
+// Poll#last_fetched_at (#1655, P2): polls.fetched_at is the Store's time of the last Update whose poll was accepted,
+// changed or not, delivered or fetched; a Create, a refused implicit change and a removal leave it. The Store's clock
+// is faked (StoreKernel reads Date at each call), each step a second apart, so the time names the step that wrote it.
+describe("the time a remote poll was fetched", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const stamp = (t: Setup) =>
+    sql<{ fetched_at: number | null; revision: number; options: string; tallies: string }>(
+      t.store,
+      "SELECT fetched_at, revision, options, tallies FROM polls",
+    ).then((rows) => rows[0]!);
+
+  it("marks the poll fetched on an accepted Update, not on a Create or a refused one", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const at = (seconds: number) => {
+      vi.setSystemTime(NOW + seconds * 1000);
+      return NOW + seconds * 1000;
+    };
+    at(1);
+    const object = question(bob);
+    await remotePoll(t, bob, object);
+    const created = await stamp(t);
+    expect(created.fetched_at).toBeNull();
+    const counts = (cats: number) =>
+      question(bob, {
+        id: object.id,
+        oneOf: [
+          { type: "Note", name: "cats", replies: { type: "Collection", totalItems: cats } },
+          { type: "Note", name: "dogs", replies: { type: "Collection", totalItems: 1 } },
+        ],
+      });
+    // An implicit update with new counts: written.
+    const written = at(2);
+    expect(await t.post(bob, implicitUpdate(bob, counts(5), 1))).toBe(202);
+    const afterWritten = await stamp(t);
+    expect(afterWritten).toMatchObject({ fetched_at: written, tallies: "[5,1]" });
+    expect(afterWritten.revision).not.toBe(created.revision);
+    // The same counts again: accepted, unchanged, and marked all the same (the revision moves with the mark).
+    const unchanged = at(3);
+    expect(await t.post(bob, implicitUpdate(bob, counts(5), 2))).toBe(202);
+    const afterUnchanged = await stamp(t);
+    expect(afterUnchanged).toMatchObject({ fetched_at: unchanged, tallies: "[5,1]" });
+    expect(afterUnchanged.revision).not.toBe(afterWritten.revision);
+    // New choices without a newer version: refused, its counts kept, and not marked.
+    at(4);
+    const renamed = {
+      ...counts(9),
+      oneOf: [
+        { type: "Note", name: "birds" },
+        { type: "Note", name: "fish" },
+      ],
+    };
+    expect(await t.post(bob, implicitUpdate(bob, renamed, 3))).toBe(202);
+    expect(await stamp(t)).toEqual(afterUnchanged);
+    // The same choices with a newer version: an edit, accepted and marked.
+    const edited = at(5);
+    expect(await t.post(bob, update(bob, renamed, "2026-10-11T12:30:00Z"))).toBe(202);
+    expect(await stamp(t)).toMatchObject({ fetched_at: edited, options: '["birds","fish"]' });
+    // A newer version without a poll: removed, and not marked.
+    at(6);
+    expect(await t.post(bob, update(bob, withoutPoll(renamed), "2026-10-11T12:40:00Z"))).toBe(202);
+    expect(await sql(t.store, "SELECT removed, fetched_at FROM polls")).toEqual([{ removed: 1, fetched_at: edited }]);
+  });
+
+  // P7: each write of a poll's values costs one more row, the trigger's. Derived by running the same steps on two
+  // Stores, one without polls_revision: the difference in SQLite's total_changes() at each step is the trigger's rows.
+  it("costs one more row for each write of a poll", async () => {
+    const steps = async (withTrigger: boolean) => {
+      const t = await setup();
+      if (!withTrigger) {
+        await sql(t.store, "DROP TRIGGER polls_revision");
+      }
+      const bob = await mastodonActor(t.web, "bob");
+      await followed(t, bob);
+      const anyOf = (names: string[], counts: number[]) =>
+        names.map((name, i) => ({ type: "Note", name, replies: { type: "Collection", totalItems: counts[i] } }));
+      const object = question(bob, { oneOf: undefined, anyOf: anyOf(["cats", "dogs"], [2, 1]) });
+      const id = await remotePoll(t, bob, object);
+      const total = () =>
+        runInDurableObject(
+          t.store,
+          (_instance, state) => state.storage.sql.exec<{ n: number }>("SELECT total_changes() AS n").one().n,
+        );
+      const deltas: Record<string, number> = {};
+      const step = async (name: string, run: () => Promise<unknown>) => {
+        const before = await total();
+        await run();
+        deltas[name] = (await total()) - before;
+      };
+      await step("implicit, new counts", () =>
+        t.post(bob, implicitUpdate(bob, { ...object, anyOf: anyOf(["cats", "dogs"], [3, 1]) }, 1)),
+      );
+      await step("implicit, same counts", () =>
+        t.post(bob, implicitUpdate(bob, { ...object, anyOf: anyOf(["cats", "dogs"], [3, 1]) }, 2)),
+      );
+      const renamed = { ...object, anyOf: anyOf(["birds", "fish"], [0, 0]) };
+      await step("explicit, new choices", () => t.post(bob, update(bob, renamed, "2026-10-11T12:30:00Z")));
+      await step("a local vote of two choices", () =>
+        api(t, `/api/v1/polls/${id}/votes`, { method: "POST", body: JSON.stringify({ choices: ["0", "1"] }) }),
+      );
+      await step("explicit, no poll", () => t.post(bob, update(bob, withoutPoll(renamed), "2026-10-11T12:40:00Z")));
+      expect(await sql(t.store, "SELECT removed, votes_count FROM polls")).toEqual([{ removed: 1, votes_count: 0 }]);
+      return deltas;
+    };
+    const [triggered, bare] = [await steps(true), await steps(false)];
+    const trigger = Object.fromEntries(Object.entries(triggered).map(([name, n]) => [name, n - bare[name]!]));
+    expect(trigger).toEqual({
+      // fetched_at after the counts: two; fetched_at alone: one.
+      "implicit, new counts": 2,
+      "implicit, same counts": 1,
+      // resetPoll, the new values, fetched_at.
+      "explicit, new choices": 3,
+      // Each choice's tally, then the voters (n + 1 for n choices).
+      "a local vote of two choices": 3,
+      // resetPoll alone: a removed poll is not marked.
+      "explicit, no poll": 1,
+    });
   });
 });
 

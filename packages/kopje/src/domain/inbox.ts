@@ -116,7 +116,7 @@ import {
   MAX_STATUS_MENTION_ROWS,
   firstRequestOf,
   resolutionTarget,
-  type StoreContext,
+  type UpdateContext,
   storeRemoteStatus,
   updateRemoteStatus,
 } from "./remote-statuses";
@@ -2758,8 +2758,14 @@ function deliveredTo(db: Db, recipient: string | null | undefined): string | nul
   );
 }
 
-function storeContext(db: Db, input: ReceiveInput): StoreContext {
-  return { now: input.now, origin: input.origin, deliveredTo: deliveredTo(db, input.recipient), fetched: false };
+function storeContext(db: Db, input: StoreReceiveInput): UpdateContext {
+  return {
+    now: input.now,
+    storeNow: input.storeNow,
+    origin: input.origin,
+    deliveredTo: deliveredTo(db, input.recipient),
+    fetched: false,
+  };
 }
 
 function outcome(result: { applied: boolean; reason: string }): ReceiveResult {

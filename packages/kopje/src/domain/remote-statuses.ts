@@ -24,7 +24,7 @@ import { emojiSnapshot } from "./custom-emojis";
 import { insertWithFreshId, remoteId } from "./ids";
 import { enqueueCard, remoteCardLink } from "./link-cards";
 import { notify } from "./notifications";
-import { isLocalPoll, receiveVote, remotePollChanges, storeRemotePoll } from "./polls";
+import { isLocalPoll, markPollFetched, receiveVote, remotePollChanges, storeRemotePoll } from "./polls";
 import { linkQuotes, promoteQuote, QUOTE_HOPS, quoteArrival, quoteDue, recordQuote, refreshQuote } from "./quotes";
 import { withinRealTimeWindow } from "./real-time-window";
 import {
@@ -87,6 +87,10 @@ export type StoreContext = {
   // quoting status's when it is stored as a quoted target during verification.
   quoteHops?: number;
 };
+
+// The context of a path that may update a stored status (updateRemoteStatus): also the Store's own time, which an
+// accepted poll records as fetched (polls.ts markPollFetched).
+export type UpdateContext = StoreContext & { storeNow: number };
 
 export type StatusOutcome = { applied: boolean; reason: string; statusId?: string };
 
@@ -626,7 +630,12 @@ function extendAudience(db: Db, existing: StoredStatus, deliveredTo: string | nu
 //     names a stored status: Update#update_status reaches Create#create_status, which finds that status
 //     (find_existing_status) and treats it as a Create of it would, and ProcessStatusUpdateService updates it as by its
 //     id, under that status's uri.
-export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusInput, ctx: StoreContext): StatusOutcome {
+export function updateRemoteStatus(
+  db: Db,
+  author: Author,
+  input: RemoteStatusInput,
+  ctx: UpdateContext,
+): StatusOutcome {
   if (!sameOrigin(input.uri, author.uri)) {
     return { applied: false, reason: "foreign-object" };
   }
@@ -691,7 +700,11 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
         remoteQuotePolicy(db, author, input.quotePolicy),
         existing.id,
       ) > 0;
-    const pollUpdated = input.poll !== undefined && storeRemotePoll(db, existing.id, input.poll, false, ctx.now);
+    const poll = input.poll === undefined ? undefined : storeRemotePoll(db, existing.id, input.poll, false, ctx.now);
+    if (poll !== undefined) {
+      markPollFetched(db, existing.id, poll, ctx.storeNow);
+    }
+    const pollUpdated = poll === "written";
     // It broadcasts the update when it moved the quote's state (:82 in v4.7.5): a changed stamp, which resets the quote
     // (refreshQuote). Not a legacy form alone, the same stamp, the poll or the quote policy.
     if (restamped) {
@@ -726,7 +739,7 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
   if (significant && versions === 0) {
     recordEdit(db, existing.id, existing.published_at);
   }
-  storeRemotePoll(db, existing.id, input.poll ?? null, true, ctx.now);
+  markPollFetched(db, existing.id, storeRemotePoll(db, existing.id, input.poll ?? null, true, ctx.now), ctx.storeNow);
   db.run(
     `UPDATE statuses SET content = ?, spoiler_text = ?, sensitive = ?, language = ?, raw = ?, search_text = ?,
 			remote_version = ?, edited_at = CASE WHEN ? THEN ? ELSE edited_at END, quote_policy = ?, emojis = ?,
@@ -784,7 +797,7 @@ export function updateRemoteStatus(db: Db, author: Author, input: RemoteStatusIn
 // whose lookup by atomUri keeps what it finds). An update that stops before its quote step (an older version, one
 // past the skew, or none for an edited status) still has the status arrive again as a root, as storeRemoteStatus's
 // known branch does (promoteQuote), and its outcome names the stored status unless that is retracted.
-function storeFetchedStatus(db: Db, author: Author, input: RemoteStatusInput, ctx: StoreContext): StatusOutcome {
+function storeFetchedStatus(db: Db, author: Author, input: RemoteStatusInput, ctx: UpdateContext): StatusOutcome {
   if (db.first(`SELECT 1 AS x WHERE ${availableSql("?1")}`, author.id) === undefined) {
     return { applied: false, reason: "author-unavailable" };
   }
@@ -899,7 +912,15 @@ export function firstRequestOf(target: ResolutionTarget): string {
   return target.kind === "address" ? webfingerUrl(target.username, target.domain) : target.href;
 }
 
-export type ResolveInput = { query: string; resolved: Resolved; now: number; origin: string; present: Present };
+// storeNow: the Store's own time (atStoreTime), which a fetched poll records (UpdateContext).
+export type ResolveInput = {
+  query: string;
+  resolved: Resolved;
+  now: number;
+  storeNow: number;
+  origin: string;
+  present: Present;
+};
 
 // quotesDue: the status found has a quote whose verification is due (the Worker asks the Queue for a job round).
 export type ResolveResult = { accounts: Account[]; statuses: Status[]; quotesDue?: boolean };
@@ -921,7 +942,7 @@ export type StoredResolution =
 // is removed: Mastodon answers a stored status only after a 401, 403 or 404 (:44).
 export function storeResolved(
   db: Db,
-  { query, resolved, now, origin }: Pick<ResolveInput, "query" | "resolved" | "now" | "origin">,
+  { query, resolved, now, storeNow, origin }: Pick<ResolveInput, "query" | "resolved" | "now" | "storeNow" | "origin">,
 ): StoredResolution {
   const storedActor = (actor: RemoteActorInput, revision: DocumentRevision): RemoteRow | undefined => {
     const stored = upsertRemoteActor(db, actor, origin, now, revision);
@@ -937,6 +958,7 @@ export function storeResolved(
       }
       const stored = storeFetchedStatus(db, author, resolved.status, {
         now,
+        storeNow,
         origin,
         deliveredTo: null,
         fetched: true,
@@ -976,7 +998,12 @@ export function storeResolved(
 // if account search would find it (findableBySql, R14), a status by the rule of a single status (canView, R3, as
 // Mastodon's ResolveURLService authorizes show?), unless the viewer blocks its author's domain. A private object a
 // server answered the instance actor with is stored with its audience and shown to nobody else.
-export const resolveSearch = userWriteOperation<ResolveInput, ResolveResult>((db, input, { accountId }, viewer) => {
+export const resolveSearch = userWriteOperation.atStoreTime("storeNow")<ResolveInput, ResolveResult>((
+  db,
+  input,
+  { accountId },
+  viewer,
+) => {
   const options = { ...input.present, viewer };
   const account = (id: string | undefined): ResolveResult => {
     const findable =

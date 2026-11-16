@@ -69,7 +69,10 @@ function localTarget(db: Db, query: string, present: ResolveInput["present"]): S
   }
 }
 
-export const resolveInteraction = userWriteOperation<ResolveInput, InteractionResult>((db, input) => {
+export const resolveInteraction = userWriteOperation.atStoreTime("storeNow")<ResolveInput, InteractionResult>((
+  db,
+  input,
+) => {
   const fetched = storeResolved(db, input);
   const stored =
     fetched.kind === "none" && input.resolved.kind === "none" ? localTarget(db, input.query, input.present) : fetched;

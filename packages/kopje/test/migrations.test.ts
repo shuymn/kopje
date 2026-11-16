@@ -109,6 +109,9 @@ import {
   cardAttributionMigrationSql,
   PROFILE_DESCRIPTION_BYTES,
   PROFILE_DESCRIPTION_LIMIT,
+  POLL_REVISION_COLUMNS,
+  POLL_REVISION_MAX,
+  pollRefreshMigrationSql,
 } from "../src/platform/stored-bounds";
 import { NOW } from "./app-helpers";
 import { ACCOUNT_EMOJIS_FULL, accountAtCap, padded, STATUS_EMOJIS_FULL, statusAtCap } from "./emoji-fixtures";
@@ -398,9 +401,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(72);
+      expect(STORED_TRIGGERS.size).toBe(75);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        72 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        75 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -13054,6 +13057,155 @@ describe("0098_card_attribution", () => {
         AUTHOR,
       );
       expect(author(PENDING)).toEqual({ v: AUTHOR, t: "text" });
+    });
+  });
+});
+
+describe("0099_poll_refresh", () => {
+  const NAME = "0099_poll_refresh";
+  const at = NAMES.indexOf(NAME);
+  const [ACCOUNT, STATUS, OTHER] = ["100000000000000001", "100000000000000002", "100000000000000003"];
+  const REVISION_REFUSED = /polls: revision past its stored bound/;
+  const label = (value: unknown) => JSON.stringify(value, (_k, v: unknown) => (v instanceof ArrayBuffer ? "BLOB" : v));
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+
+  it("follows 0098, declared foreignKeys: 'unchanged', and writes the generator's statements and triggers", () => {
+    expect(NAMES[at - 1]).toBe("0098_card_attribution");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    expect(POLL_REVISION_MAX).toBe(2 ** 53 - 1);
+    expect(statements(MIGRATIONS[at]?.sql ?? "")).toBe(
+      statements(
+        `${pollRefreshMigrationSql()}\n${emitTriggers(["polls_revision_insert", "polls_revision_update", "polls_revision"])}`,
+      ),
+    );
+  });
+
+  it("polls.fetched_at, refresh_at and revision", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?, 'https://remote.test/users/a', 'a', 'remote.test')",
+        ACCOUNT,
+      );
+      for (const id of [STATUS, OTHER]) {
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+					VALUES (?1, 'https://remote.test/s/' || ?1, ?2, 'public', 'x', '2026-11-16T00:00:00.000Z')`,
+          id,
+          ACCOUNT,
+        );
+      }
+      sql.exec(
+        `INSERT INTO polls (status_id, options, tallies, expires_at, votes_count, voters_count)
+				VALUES (?, '["a","b"]', '[1,2]', '2026-11-17T00:00:00.000Z', 3, 3)`,
+        STATUS,
+      );
+      const before = sql.exec("SELECT * FROM polls").one();
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      // A carried poll was never fetched nor tried, and holds revision 0: it is due at its first signed-in read.
+      expect(sql.exec("SELECT * FROM polls").one()).toEqual({
+        ...before,
+        fetched_at: null,
+        refresh_at: null,
+        revision: 0,
+      });
+
+      const read = (column: string) =>
+        sql.exec(`SELECT ${column} AS v, typeof(${column}) AS t FROM polls WHERE status_id = ?`, STATUS).one();
+      const update = (column: string, value: SqlStorageValue) =>
+        sql.exec(`UPDATE polls SET ${column} = ? WHERE status_id = ?`, value, STATUS);
+      const insert = (column: string, value: SqlStorageValue) => {
+        sql.exec("DELETE FROM polls WHERE status_id = ?", OTHER);
+        sql.exec(
+          `INSERT INTO polls (status_id, options, tallies, ${column}) VALUES (?, '["a","b"]', '[0,0]', ?)`,
+          OTHER,
+          value,
+        );
+      };
+      // The times' CHECK: NULL, 0, 2^53 - 1 and what INTEGER affinity stores as an integer are kept; -1, past 2^53 - 1,
+      // a REAL that is not integral, a text and a BLOB are refused, on insert and on update.
+      for (const column of ["fetched_at", "refresh_at"]) {
+        for (const [value, kept] of [
+          [null, null],
+          [0, 0],
+          [POLL_REVISION_MAX, POLL_REVISION_MAX],
+          ["7", 7],
+          [8.0, 8],
+        ] as const) {
+          update(column, value);
+          expect(read(column), `${column} ${String(value)}`).toEqual({
+            v: kept,
+            t: kept === null ? "null" : "integer",
+          });
+          insert(column, value);
+        }
+        for (const value of [-1, 2 ** 53, 1.5, "x", blob("7")] as SqlStorageValue[]) {
+          expect(() => update(column, value), `${column} ${label(value)}`).toThrow(/CHECK constraint failed/);
+          expect(() => insert(column, value), `${column} ${label(value)}`).toThrow(/CHECK constraint failed/);
+        }
+        expect(read(column)).toEqual({ v: 8, t: "integer" });
+        update(column, null);
+      }
+      // The revision's triggers: 0, 2^53 - 1 and integer affinity's integers kept; anything else refused, NULL included.
+      for (const [value, kept] of [
+        [0, 0],
+        [POLL_REVISION_MAX, POLL_REVISION_MAX],
+        ["7", 7],
+        [8.0, 8],
+      ] as const) {
+        update("revision", value);
+        expect(read("revision")).toEqual({ v: kept, t: "integer" });
+        insert("revision", value);
+      }
+      for (const value of [null, -1, 2 ** 53, 1.5, "x", blob("7")] as SqlStorageValue[]) {
+        expect(() => update("revision", value), label(value)).toThrow(REVISION_REFUSED);
+        expect(() => insert("revision", value), label(value)).toThrow(REVISION_REFUSED);
+      }
+
+      // polls_revision: a write of any of the poll's columns moves the revision, from any stored value the maximum
+      // included, to another value within the bound; a write of the others moves nothing.
+      const revision = () =>
+        sql.exec<{ v: number }>("SELECT revision AS v FROM polls WHERE status_id = ?", STATUS).one().v;
+      const values: Record<(typeof POLL_REVISION_COLUMNS)[number], SqlStorageValue> = {
+        options: '["c","d"]',
+        cut_options: "[1]",
+        tallies: "[4,5]",
+        multiple: 1,
+        expires_at: "2026-11-18T00:00:00.000Z",
+        votes_count: 9,
+        voters_count: null,
+        ended: 1,
+        generation: 1,
+        removed: 1,
+        fetched_at: 5,
+      };
+      for (const column of POLL_REVISION_COLUMNS) {
+        for (const start of [0, POLL_REVISION_MAX]) {
+          update("revision", start);
+          update(column, values[column]);
+          const moved = revision();
+          expect(moved, `${column} from ${start}`).not.toBe(start);
+          expect(moved).toBeGreaterThanOrEqual(0);
+          expect(moved).toBeLessThanOrEqual(POLL_REVISION_MAX);
+        }
+      }
+      update("revision", POLL_REVISION_MAX);
+      for (const [column, value] of [
+        ["refresh_at", 6],
+        ["update_due_at", "2026-11-18T00:00:00.000Z"],
+        ["stale", 1],
+        ["hide_totals", 1],
+      ] as const) {
+        update(column, value);
+        expect(revision(), column).toBe(POLL_REVISION_MAX);
+      }
     });
   });
 });

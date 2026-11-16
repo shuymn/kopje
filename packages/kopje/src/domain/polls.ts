@@ -537,30 +537,34 @@ export function remotePollChanges(db: Db, statusId: string, poll: RemotePollInpu
   );
 }
 
+// What storeRemotePoll did: refused an implicit update that changes the choices; left no poll (`removed`, whether one
+// was there or not); or accepted the poll, its values `written` or `unchanged`.
+export type StoredPoll = "refused" | "removed" | "unchanged" | "written";
+
 // Writes or refreshes the poll of a remote status as ProcessStatusUpdateService#update_poll! does. With `significant`
 // (a new status, or an Update newer than the stored version), anything: a new poll, new choices or a new multiple
 // (which drop the votes cast, Poll#reset_votes!), or no poll any more. Otherwise (an implicit update, such as the
 // Update of counts Mastodon's DistributePollUpdateWorker sends) only the counts, the end and the voters of a poll whose
-// choices stay. Whether anything was written. A poll whose end has been handled is never ended again.
+// choices stay. A poll whose end has been handled is never ended again.
 export function storeRemotePoll(
   db: Db,
   statusId: string,
   poll: RemotePollInput | null,
   significant: boolean,
   now: number,
-): boolean {
+): StoredPoll {
   const row = db.first<{ removed: number }>("SELECT removed FROM polls WHERE status_id = ?", statusId);
   const exists = row !== undefined;
   const live = row?.removed === 0;
   const changes = remotePollChanges(db, statusId, poll);
   if (changes && !significant) {
-    return false;
+    return "refused";
   }
   if (poll === null) {
     if (live) {
       resetPoll(db, statusId, true);
     }
-    return live;
+    return "removed";
   }
   const options = JSON.stringify(poll.options);
   const tallies = JSON.stringify(poll.tallies);
@@ -581,27 +585,37 @@ export function storeRemotePoll(
       iso(now),
       JSON.stringify(poll.cut),
     );
-    return true;
+    return "written";
   }
   if (changes && live) {
     resetPoll(db, statusId, false);
   }
-  return (
-    db.run(
-      `UPDATE polls SET options = ?2, multiple = ?3, tallies = ?4, votes_count = ?5, voters_count = ?6, expires_at = ?7,
+  return db.run(
+    `UPDATE polls SET options = ?2, multiple = ?3, tallies = ?4, votes_count = ?5, voters_count = ?6, expires_at = ?7,
 				removed = 0, ended = CASE WHEN removed = 1 THEN 0 ELSE ended END, cut_options = ?8
 			WHERE status_id = ?1 AND (removed = 1 OR options IS NOT ?2 OR multiple IS NOT ?3 OR tallies IS NOT ?4
 				OR voters_count IS NOT ?6 OR expires_at IS NOT ?7 OR cut_options IS NOT ?8)`,
-      statusId,
-      options,
-      poll.multiple ? 1 : 0,
-      tallies,
-      votes,
-      poll.votersCount,
-      expiresAt,
-      JSON.stringify(poll.cut),
-    ) > 0
-  );
+    statusId,
+    options,
+    poll.multiple ? 1 : 0,
+    tallies,
+    votes,
+    poll.votersCount,
+    expiresAt,
+    JSON.stringify(poll.cut),
+  ) > 0
+    ? "written"
+    : "unchanged";
+}
+
+// Poll#last_fetched_at, which ProcessStatusUpdateService#update_poll! sets on every Update whose poll it accepts
+// (process_status_update_service.rb:162 in v4.7.5): `storeNow`, the Store's time, for a poll `stored` as accepted
+// (written or unchanged), never for a refused or removed one, nor on a Create. The write moves the poll's revision
+// (polls_revision), so a refresh reserved before it applies nothing (refreshPoll).
+export function markPollFetched(db: Db, statusId: string, stored: StoredPoll, storeNow: number): void {
+  if (stored === "written" || stored === "unchanged") {
+    db.run("UPDATE polls SET fetched_at = ?2 WHERE status_id = ?1", statusId, storeNow);
+  }
 }
 
 // ---- Purges (inbox.ts): votes go in bounded batches, so a status or account with many never deletes them at once.
