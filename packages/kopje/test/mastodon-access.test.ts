@@ -295,26 +295,29 @@ function sides(route: (typeof ROUTES)[number], covers = grants) {
 const describeSides = (name: string, { kopje, mastodon, source }: ReturnType<typeof sides>) =>
   `${name}\n  Kopje:    ${kopje}\n  Mastodon: ${mastodon} (${source})`;
 
+// A route's two sides against its exception, if any: a difference needs one, and one must still describe the difference.
+function compareSides(name: string, now: ReturnType<typeof sides>, exception: Exception | undefined, table: string) {
+  if (exception === undefined) {
+    if (now.kopje !== now.mastodon) {
+      expect.fail(`${describeSides(name, now)}\nMatch Mastodon, or add the route to ${table} with the reason.`);
+    }
+    return;
+  }
+  if (now.kopje === now.mastodon) {
+    expect.fail(`${name} matches Mastodon now: remove its exception (${exception.reason})`);
+  }
+  if (now.kopje !== exception.kopje || now.mastodon !== exception.mastodon) {
+    expect.fail(
+      `${describeSides(name, now)}\nThe exception was written for\n  Kopje:    ${exception.kopje}\n` +
+        `  Mastodon: ${exception.mastodon}\nRevisit it (${exception.reason}).`,
+    );
+  }
+}
+
 describe(`route access matches Mastodon v${mastodon.mastodon}`, () => {
-  it.each(ROUTES.map((route) => [`${route.method} ${route.path}`, route] as const))("%s", (name, route) => {
-    const exception = EXCEPTIONS[name];
-    const now = sides(route);
-    if (exception === undefined) {
-      if (now.kopje !== now.mastodon) {
-        expect.fail(`${describeSides(name, now)}\nMatch Mastodon, or add the route to EXCEPTIONS with the reason.`);
-      }
-      return;
-    }
-    if (now.kopje === now.mastodon) {
-      expect.fail(`${name} matches Mastodon now: remove its exception (${exception.reason})`);
-    }
-    if (now.kopje !== exception.kopje || now.mastodon !== exception.mastodon) {
-      expect.fail(
-        `${describeSides(name, now)}\nThe exception was written for\n  Kopje:    ${exception.kopje}\n` +
-          `  Mastodon: ${exception.mastodon}\nRevisit it (${exception.reason}).`,
-      );
-    }
-  });
+  it.each(ROUTES.map((route) => [`${route.method} ${route.path}`, route] as const))("%s", (name, route) =>
+    compareSides(name, sides(route), EXCEPTIONS[name], "EXCEPTIONS"),
+  );
 
   // AUTH-2: a route under /api/ reads a token sent at least for its owner's suspension (require_not_suspended!), but
   // the five instance reads whose Mastodon controllers read a user only in limited federation mode; the OAuth and
@@ -539,26 +542,7 @@ describe(`route caching matches Mastodon v${mastodon.mastodon}`, () => {
     return now === undefined ? [] : [[`${route.method} ${route.path}`, now] as const];
   });
 
-  it.each(compared)("%s", (name, now) => {
-    const exception = CACHING_EXCEPTIONS[name];
-    if (exception === undefined) {
-      if (now.kopje !== now.mastodon) {
-        expect.fail(
-          `${describeSides(name, now)}\nMatch Mastodon, or add the route to CACHING_EXCEPTIONS with the reason.`,
-        );
-      }
-      return;
-    }
-    if (now.kopje === now.mastodon) {
-      expect.fail(`${name} matches Mastodon now: remove its exception (${exception.reason})`);
-    }
-    if (now.kopje !== exception.kopje || now.mastodon !== exception.mastodon) {
-      expect.fail(
-        `${describeSides(name, now)}\nThe exception was written for\n  Kopje:    ${exception.kopje}\n` +
-          `  Mastodon: ${exception.mastodon}\nRevisit it (${exception.reason}).`,
-      );
-    }
-  });
+  it.each(compared)("%s", (name, now) => compareSides(name, now, CACHING_EXCEPTIONS[name], "CACHING_EXCEPTIONS"));
 
   it("declares nothing public on a route Mastodon does not have", () => {
     const absent = ROUTES.filter((route) => cachingSides(route) === undefined);
