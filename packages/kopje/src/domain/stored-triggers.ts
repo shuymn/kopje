@@ -47,6 +47,18 @@ function boundTriggers(prefix: string, table: string, watched: string, when: str
   ];
 }
 
+// The BEFORE INSERT and BEFORE UPDATE OF `owner` triggers `<prefix>_insert` and `<prefix>_update` on `table` that abort
+// with `message` when `full` holds of the NEW row, the update's only when `owner` changes: a cap per owner, which a row
+// passes by an insert or by moving to another owner (0089, 0103).
+function ownerCapTriggers(prefix: string, table: string, owner: string, full: string, message: string): string[] {
+  const body = `BEGIN\n  SELECT RAISE(ABORT, '${message}');\nEND;`;
+  const moved = `NEW.${owner} IS NOT OLD.${owner}`;
+  return [
+    `CREATE TRIGGER ${prefix}_insert BEFORE INSERT ON ${table}\nWHEN ${full}\n${body}`,
+    `CREATE TRIGGER ${prefix}_update BEFORE UPDATE OF ${owner} ON ${table}\nWHEN ${moved} AND ${full}\n${body}`,
+  ];
+}
+
 // A cap trigger that refuses only a new key when `table` holds `max` rows (0057's shape).
 function capTrigger(table: string, key: string, max: number): string {
   return `CREATE TRIGGER ${table}_cap BEFORE INSERT ON ${table}
@@ -319,16 +331,13 @@ BEGIN
   SELECT RAISE(ABORT, 'account_invitations: an invitation is added or removed, never changed');
 END;`,
   // 0089_pin_cap: a pin past its account's limit, inserted or moved to another account.
-  `CREATE TRIGGER status_pins_cap_insert BEFORE INSERT ON status_pins
-WHEN ${pinsFullSql("NEW.account_id", "NEW.status_id")}
-BEGIN
-  SELECT RAISE(ABORT, '${PIN_CAP_REFUSED}');
-END;`,
-  `CREATE TRIGGER status_pins_cap_update BEFORE UPDATE OF account_id ON status_pins
-WHEN NEW.account_id IS NOT OLD.account_id AND ${pinsFullSql("NEW.account_id", "NEW.status_id")}
-BEGIN
-  SELECT RAISE(ABORT, '${PIN_CAP_REFUSED}');
-END;`,
+  ...ownerCapTriggers(
+    "status_pins_cap",
+    "status_pins",
+    "account_id",
+    pinsFullSql("NEW.account_id", "NEW.status_id"),
+    PIN_CAP_REFUSED,
+  ),
   // 0093_annual_reports
   ...boundTriggers(
     "instance_settings_wrapstodon",
@@ -338,16 +347,13 @@ END;`,
     SETTING_REFUSED,
   ),
   // 0103_scheduled_media_cap: an upload held past what its scheduled status may hold, inserted or moved to it.
-  `CREATE TRIGGER media_attachments_scheduled_cap_insert BEFORE INSERT ON media_attachments
-WHEN ${heldFullSql("NEW.scheduled_status_id", "NEW.id")}
-BEGIN
-  SELECT RAISE(ABORT, '${HELD_CAP_REFUSED}');
-END;`,
-  `CREATE TRIGGER media_attachments_scheduled_cap_update BEFORE UPDATE OF scheduled_status_id ON media_attachments
-WHEN NEW.scheduled_status_id IS NOT OLD.scheduled_status_id AND ${heldFullSql("NEW.scheduled_status_id", "NEW.id")}
-BEGIN
-  SELECT RAISE(ABORT, '${HELD_CAP_REFUSED}');
-END;`,
+  ...ownerCapTriggers(
+    "media_attachments_scheduled_cap",
+    "media_attachments",
+    "scheduled_status_id",
+    heldFullSql("NEW.scheduled_status_id", "NEW.id"),
+    HELD_CAP_REFUSED,
+  ),
 ];
 
 // Each registered trigger's statement by its name.
