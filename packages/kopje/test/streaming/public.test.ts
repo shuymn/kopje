@@ -319,6 +319,39 @@ describe("update on public and hashtag streams", () => {
   });
 });
 
+// missing_attribution follows the subscriber's relationship fields here (favourited, reblogged, bookmarked), which
+// Kopje presents for the subscriber where Mastodon's anonymous payload leaves them out (#1625).
+describe("missing_attribution on public and hashtag streams", () => {
+  it("is present exactly when the payload's favourited is, true for the card's unverified author only", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const erin = await remoteAccount(h.store, "erin");
+    const inboxes: [string, Inbox][] = [
+      [alice.id, await feeds(h, alice.token)],
+      [bob.id, await feeds(h, bob.token)],
+    ];
+    const id = await remoteStatus(h, erin);
+    await sql(
+      h.store,
+      `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at, unverified_author_account_id)
+			VALUES (?, 'https://e.example/a', 0, 0, 'T', 1, ?)`,
+      id,
+      alice.id,
+    );
+    await h.store.streamTick(BUILD);
+    await drained(h, ...inboxes.map(([, inbox]) => inbox));
+    for (const [viewer, inbox] of inboxes) {
+      const sent = inbox.rest();
+      expect(sent.map((m) => m.stream?.[0])).toEqual(["public", "public:remote", "hashtag"]);
+      for (const message of sent) {
+        const payload = JSON.parse(message.payload!) as { favourited?: boolean; card: Record<string, unknown> };
+        expect(payload.card, viewer).toMatchObject({ title: "T", missing_attribution: viewer === alice.id });
+        expect("missing_attribution" in payload.card).toBe("favourited" in payload);
+      }
+    }
+  });
+});
+
 describe("custom emoji on public streams (RES-2)", () => {
   // RES-3: a status and author at their presented emoji bounds are streamed whole within the payload bound.
   it("sends a status and its author with their emojis at the bound", async () => {
@@ -488,7 +521,7 @@ describe("feeds at the caps", () => {
 // past it; REST shows the status whole either way. R is a payload less its descriptions' bytes.
 describe("payloads with descriptions at their length (D8)", () => {
   // R of the plain fill's S2 update and of carol's boost of S2 (pinned by "sends ... beside plain text").
-  const PLAIN_R = { quote: 83_759, boost: 93_262 };
+  const PLAIN_R = { quote: 84_013, boost: 93_643 };
 
   // A world: alice and carol with the fill's profile, bob following carol, on public:local and user; console.warn
   // spied for the hub's skips.
@@ -587,8 +620,8 @@ describe("payloads with descriptions at their length (D8)", () => {
   // each status (links), then also each profile field and poll choice (every). R past 524,288 less the descriptions'
   // 320,000 bytes.
   it.each([
-    ["links", FILLS.links, { quote: 223_929, boost: 233_432 }],
-    ["every", FILLS.every, { quote: 234_809, boost: 249_556 }],
+    ["links", FILLS.links, { quote: 224_183, boost: 233_813 }],
+    ["every", FILLS.every, { quote: 235_063, boost: 249_937 }],
   ] as const)(
     "skips a status and its quote, and its boost, whose %s fill takes the rest past it",
     async (_name, fill, rests) => {
@@ -702,7 +735,7 @@ describe("payloads with descriptions at their length (D8)", () => {
         expect(shown.rest).toBeLessThanOrEqual(STREAM_LIMITS.payloadBytes - 4 * encodedTwice(descriptions[0]!));
         rests.push(shown.rest);
       }
-      expect(rests).toEqual([117_226, 131_973]);
+      expect(rests).toEqual([117_353, 132_227]);
       expect(skips(warn)).toEqual([]);
     } finally {
       warn.mockRestore();

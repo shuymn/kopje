@@ -168,6 +168,7 @@ export const STORE_RPC = {
   claimCollectionSync: remoteCollections.claimCollectionSync,
   completeCollectionRead: remoteCollections.completeCollectionRead,
   completePinFetches: remoteCollections.completePinFetches,
+  completeDocumentRefresh: remoteCollections.completeDocumentRefresh,
 
   // Verification of received quotes (domain/quotes.ts): the work read, applied and claimed by the Worker's job rounds
   // (federation/quotes.ts).
@@ -219,7 +220,7 @@ export const STORE_RPC = {
 
   // The revision a search resolution reads before it fetches an actor's document, with that fetch's policy verdict
   // (federation/resolve.ts).
-  actorRevision: inbox.getActorRevision,
+  actorState: inbox.getActorState,
 
   // A stored actor whose own URI answered 410 is deleted under the revision read before that fetch
   // (federation/actor-gone.ts).

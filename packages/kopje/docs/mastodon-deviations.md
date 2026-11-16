@@ -40,8 +40,8 @@ Other documents point here rather than repeat the release.
   `test/streaming/public.test.ts`. Accepted, 2026-11-15.
 - **Federation.** Kopje federates with every Mastodon series upstream still supports (its `SECURITY.md`), so it names
   no single release here. A behaviour takes as its reference the release its code and the threat model name:
-  remote-status ingestion and canonical-address confirmation follow Mastodon v4.7.5, with Kopje's canonical-address
-  fallback and failure handling under NET-4. A supported series whose activities Kopje refuses or misreads is a gap.
+  remote-status ingestion and handle confirmation follow Mastodon v4.7.5, with Kopje's failure handling under NET-4. A
+  supported series whose activities Kopje refuses or misreads is a gap.
 
 ## Following a Mastodon release
 
@@ -223,6 +223,10 @@ Profile credentials (`PATCH /api/v1/accounts/update_credentials`, the settings p
   saved before this check or imported, stay stored and are hidden from `source.attribution_domains` and the actor's
   `attributionDomains`: an entry whose JSON string passes 1,022 bytes is left out, and a list past 102,302 bytes in all
   (100 such domains pass it) is shown as none. Accepted, 2026-11-15.
+- A JSON `true` or `false` sent as `avatar_description` or `header_description` is stored and shown as `true` or
+  `false`, as Kopje reads every JSON scalar where it expects text (a number as JSON writes it, as Mastodon stores it
+  too); Mastodon casts a boolean to `t` or `f`. Either is a client's error, `true` is what the client sent, and a
+  description reads JSON as the other text parameters do. Accepted, 2026-11-16.
 - A bio that is only whitespace once stripped (Rails' `blank?`, Unicode spaces included) is stored empty, so its
   `source.note` is `''`, where Mastodon gives the whitespace back; its `note` is `''` in both. Kopje stores the bio
   once, as the HTML it presents and federates.
@@ -281,6 +285,11 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
   account's attribution domains cover the page's host. An Account in every status's card would take the status lists
   past their answer budgets (RES-3), and Kopje stores neither the handle nor remote accounts' attribution domains.
   Clients lose only the card's link to the author's profile. Accepted, 2026-10-23.
+- `missing_attribution` is `true` only for the local account a page's `fediverse:creator` names directly: by its
+  username alone or with the instance's domain (in any ASCII case, with one trailing `/`). A creator naming the
+  instance by another spelling (the Unicode form of its domain, an explicit port) or by an alias domain names no
+  account, so the card's `missing_attribution` is `false` for everyone, where Mastodon's WebFinger lookup may resolve
+  such a name to the local account.
 - A quoted status (a status's `quote.quoted_status`) shows no card, where Mastodon's `ShallowStatusSerializer` shows
   it, so a status with its quote stays within the answer budgets (RES-3); the quoted status's own read shows it.
 - A local status's Note lists its card as a FEP-8967 `Link` after its media, as Mastodon 4.7 does, only where the API
@@ -394,6 +403,21 @@ Accounts (the `Account` and credential account entities):
   where Mastodon's `ResolveAccountService` answers the account (`resolve_account_service.rb:31-34`). Its featured
   hashtags' URLs name it by the placeholder, which Kopje's web sends on to its profile; Mastodon's name its stored
   username.
+- A remote account's handle is the one its actor document claims, its `webfinger` (FEP-2c59), else its
+  `preferredUsername` at its host, once WebFinger confirms it for that actor, as Mastodon 4.7's
+  `ProcessAccountService#check_webfinger!` does (threat model NET-4). Where Mastodon drops a whole document whose new
+  handle it cannot confirm, Kopje keeps the stored handle and stores the rest of the document (profile, keys, inboxes,
+  `movedTo`), as Mastodon's key-only refresh does (`process_account_service.rb:49-51`), so an unconfirmed rename never
+  blocks a key rotation. A new actor id that confirms a handle another account holds gets an account of its own, and
+  the holder's handle is invalidated (above); Mastodon moves the held account to the new id and has its local
+  followers follow it again (`process_account_service.rb:53-55`). Kopje keys an account's identity, its revision fence
+  (ID-1) and its tombstones (ID-7) by actor id, and a WebFinger answer alone does not move local follows to another
+  actor: the old account keeps its followers, and a server that changes implementation can send `Move`. An invalidated
+  account is refreshed as Mastodon's `AccountRefreshWorker` refreshes it, by a refetch of its document that the
+  invalidation asks for, and a status fetched by it refetches it first however recently it was fetched; the refetches
+  an invalidation asks for run at most once per account a day, where Mastodon bounds none, so two actors whose
+  WebFinger answers alternate stop taking the handle from each other, the last one invalidated staying so until its
+  own document, a search or the next day's invalidation refreshes it.
 - A remote account its `Delete` removes stays stored, unavailable (R1 in `docs/visibility.md`), while its purge runs;
   Mastodon destroys it after purging its content in the Delete handler (`app/services/delete_account_service.rb`).
   Meanwhile `GET /api/v1/accounts/:id`, every `/api/v1/accounts/:id/...` route and lookup answer 404 for it, and
@@ -427,13 +451,14 @@ Accounts (the `Account` and credential account entities):
   last (`process_account_service.rb:95-103`). So an `Update(Person)` whose fetch raced another store answers 503,
   having written nothing, and a retry is judged afresh; a `Move` whose target was stored meanwhile answers 503 too;
   another activity, a stale-author refresh and a search resolution use the stored account.
-- The account `moved` nests is a bounded projection, not the full account: its identity, counts, flags and images,
-  `note` `''` and `fields` `[]`, the display name cut at 100 code points, URLs and `uri` read as unset past 512 bytes,
-  and only the emojis its display name references within 2,048 bytes of JSON; it never shows a `moved` of its own,
-  as in Mastodon. A target whose domain passes 253 bytes, or an id that names no account, shows no `moved`. Mastodon's
-  web client stores a nested account as the target's own entity (`actions/importer/index.js:39-40`, which
-  `reducers/accounts.ts` replaces), so it shows the target with an empty bio and no fields until it fetches the target
-  again, and each later import of the source does so again.
+- The account `moved` nests is a bounded projection, not the full account: its identity, counts, flags, display
+  settings and images, `note`, `avatar_description` and `header_description` `''` and `fields` `[]`, the display name
+  cut at 100 code points, URLs and `uri` read as unset past 512 bytes, and only the emojis its display name references
+  within 2,048 bytes of JSON; it never shows a `moved` of its own, as in Mastodon. A target whose domain passes 253
+  bytes, or an id that names no account, shows no `moved`. Mastodon's web client stores a nested account as the
+  target's own entity (`actions/importer/index.js:39-40`, which `reducers/accounts.ts` replaces), so it shows the target
+  with an empty bio, no image descriptions and no fields until it fetches the target again, and each later import of
+  the source does so again.
 - A remote account's `followers_count`, `following_count` and `statuses_count` are the `totalItems` of its followers,
   following and outbox collections, as `ProcessAccountService#set_fetchable_attributes!` sets them
   (`process_account_service.rb:162-164`), but read by the background collection sync that each stored actor document
@@ -449,20 +474,22 @@ Accounts (the `Account` and credential account entities):
   followers collection past them hides the network. Mastodon also refreshes a remote account in the background a week
   after its last fetch, up to six hours later, when a `Create` or `Update` of it arrives (`account.rb:69-70,258-261`;
   `create.rb:5`); Kopje refreshes only when it stores the actor's document, and before storing a status it fetched by a
-  stale account (below). Mastodon signs the count fetches as `Account.representative` (`json_ld_helper.rb:232-235`);
-  Kopje signs them as its other collection fetches (DATA-7: a local follower's key, else the instance actor's).
+  stale account (below), an account with an invalidated handle included. Mastodon signs the count fetches as
+  `Account.representative` (`json_ld_helper.rb:232-235`); Kopje signs them as its other collection fetches (DATA-7: a
+  local follower's key, else the instance actor's).
 - Before storing a status it fetched by another account than the activity's sender (the original of a boost, a quoted
   status), Kopje refetches that account when its document was stored at least a day ago, as
   `FetchRemoteStatusService#account_from_uri` refetches a `possibly_stale?` account
   (`fetch_remote_status_service.rb:67-71`, `account.rb:71,254-256`). An account the instance suspended or a domain block
-  covers is not refetched (R38), and its status is refused as in Mastodon (`:44`). The refetch does not look the account
-  up by WebFinger. An account whose refetch answers 404 or 410 has no new status stored, as in Mastodon, and a 410 at
-  its URI deletes it (above); a 404 or 410 that arrives after another request's failed refetch of the same account is
-  not applied. Where any other failure would make Mastodon store nothing or retry the job, Kopje stores the status
-  under the stored account and tries that account again only a day later. A sender's own statuses are stored under the
-  sender, as fresh as its key (24 hours, ID-1). The pinned statuses a collection sync fetches use the stored account
-  however long ago the sync was asked for, where Mastodon checks the account when it fetches them. Search always
-  fetches the account.
+  covers is not refetched (R38), and its status is refused as in Mastodon (`:44`). The refetch confirms a handle its
+  document claims by WebFinger when it is not the stored one, as `ProcessAccountService` does; an account with an
+  invalidated handle is refetched whenever it was last fetched (`possibly_stale?`). An account whose refetch answers 404
+  or 410 has no new status stored, as in Mastodon, and a 410 at its URI deletes it (above); a 404 or 410 that arrives
+  after another request's failed refetch of the same account is not applied. Where any other failure would make Mastodon
+  store nothing or retry the job, Kopje stores the status under the stored account and tries that account again only a
+  day later. A sender's own statuses are stored under the sender, as fresh as its key (24 hours, ID-1). The pinned
+  statuses a collection sync fetches use the stored account however long ago the sync was asked for, where Mastodon
+  checks the account when it fetches them. Search always fetches the account.
 - `source.follow_requests_count` counts, among the account's newest 120 pending follow requests, those of available
   accounts (R1 in `docs/visibility.md`), at most 40, as the first page of `GET /api/v1/follow_requests` lists them.
   Mastodon 4.5.21 counts up to 40 requests of accounts that are not suspended (`suspended_at`) among all of them
@@ -720,12 +747,21 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
     Nokogiri HTML5 tree does (in presence or in order), so Kopje resolves nothing where Mastodon may resolve, never
     another document. An href past 2,048 characters decoded or 8,192 as written resolves nothing too, however short its
     character references decode (Mastodon decodes any length).
-  - The page and both alternates are charged to the request's 2 MiB of fetched bytes, so a page alternate after a
-    large header alternate can be refused for that budget; Mastodon has no request-wide byte budget.
+  - The page and both alternates are charged to the request's 8 fetches and 2 MiB of fetched bytes, as are the
+    actor's fetch and the WebFinger answers that confirm its handle after them, so a page alternate after a large
+    header alternate, or a confirmation after them, can be refused for that budget, and a new actor whose
+    confirmation is refused so is not stored; Mastodon has no request-wide budget.
   - A failure Kopje adds to Mastodon's on a header alternate (the domain policy, which Mastodon applies only after
     fetching, or a document past the JSON bounds) ends the resolution with nothing instead of trying the page.
   - The first request keeps the document fetch's redirect rule (same origin, at most 5), where Mastodon follows 3 hops
     to any origin; the alternates follow none, as Mastodon's.
+- With `resolve=true`, a URL whose fetches resolve nothing is answered with the stored status or account whose uri it
+  is, unless the last of them answered 410, after which nothing is answered (`src/federation/resolve.ts` resolveUrl);
+  nothing stored is removed. Mastodon answers a stored status only after a 401, 403 or 404 and a stored account only
+  after a 5xx or no answer (`resolve_url_service.rb:38-44`), so Kopje also answers a stored status after any other
+  HTTP status, a network failure or an unusable document, and a stored actor's account after a failure of its fetch
+  other than the 410 that deletes it. It never looks a status up by its `url` either, as Mastodon does for a `/@user/id`
+  path (`:50-55`). These differences are tracked by #1662.
 
 Hashtags (the `Tag` entity):
 
@@ -891,9 +927,10 @@ Notification policy (`PATCH`/`PUT /api/v1/notifications/policy` and `/api/v2/not
 conditions themselves follow 4.7.5):
 
 - The v1 booleans (`filter_not_following`, `filter_not_followers`, `filter_new_accounts`, `filter_private_mentions`,
-  `filter_bots`) are read as Rails casts booleans: `0`, `f`, `false`, `off` and a blank value accept. Mastodon's
-  setters take any value Ruby holds true (`notification_policy.rb`), so a form's `false`, `0` or `off` filters there
-  and only JSON `false` or `null` accepts; clients mean these values as booleans. Accepted, 2026-11-15.
+  `filter_bots`) are read as Rails casts booleans: `0`, `f`, `F`, `false`, `FALSE`, `off`, `OFF` and a blank value
+  accept. Mastodon's setters take any value Ruby holds true (`notification_policy.rb`), so a form's `false`, `0` or
+  `off` filters there and only JSON `false` or `null` accepts; clients mean these values as booleans. Accepted,
+  2026-11-15.
 - A v2 value (`for_not_following`, `for_not_followers`, `for_new_accounts`, `for_private_mentions`,
   `for_limited_accounts`, `for_bots`) other than `accept`, `filter`, `drop` or 0 to 2 answers 422
   `'<value>' is not a valid <field>` and changes nothing. Mastodon's enum raises an error no handler rescues, so it
@@ -932,8 +969,9 @@ Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; th
 - `instance_media_attachments` is always 0 bytes (`human_value` `0 Bytes`): Kopje does not count its cache of remote
   attachments' files, which `kopje.remote_media.usage` reports for the whole cache.
 - An absent or empty `domain` counts 0; Mastodon's total then counts the local accounts.
-- `include_subdomains` is read as a boolean: empty, `0`, `f`, `false` and `off` (any case) are false; Mastodon takes
-  any value sent as true, `"false"` included. The series counts the domain itself only, as Mastodon 4.7.5 does.
+- `include_subdomains` is read as Rails casts a boolean: empty, `0`, `f`, `F`, `false`, `FALSE`, `off` and `OFF` are
+  false; Mastodon takes any value sent as true, `"false"` included. The series counts the domain itself only, as
+  Mastodon 4.7.5 does.
 - `new_users`, `opened_reports` and `resolved_reports` without both dates answer 422; Mastodon answers 500.
 - `start_at` and `end_at` (of measures and of retention) are read as ISO 8601 only, and only when both the date
   written and the UTC instant lie from 1583-01-01 to 9998-12-31; any other value answers 422 `Invalid date
@@ -1150,11 +1188,16 @@ ID-7 in `docs/threat-model.md`):
   object's host is the sender's (`delete.rb`), another actor's `Delete` leaves a `Tombstone` that also blocks the
   author's later `Create`.
 - An `Update` replaces the content only when its `updated` is newer than the stored version (the last accepted
-  `updated`, else `edited_at`, else `published`); one whose version is equal or missing still refreshes the poll, the
-  quote policy and the stamp of the same quote, as Mastodon's `handle_implicit_update!` does. Mastodon moves `edited_at`
-  only on a significant edit (`process_status_update_service.rb`), so after a newer metadata-only `Update` it applies an
-  older content `Update`: an author editing A, then B, then A again, whose final A arrives before B, ends at B there.
-  Mastodon's behaviour is an ordering bug.
+  `updated`, else `edited_at`, else `published`); one whose version is equal, or missing for a status never edited,
+  still refreshes the poll, the quote policy and the stamp of the same quote, as Mastodon's `handle_implicit_update!`
+  does; one missing for an edited status changes nothing, as in Mastodon (`process_status_update_service.rb:32-34`).
+  Mastodon moves `edited_at` only on a significant edit (`process_status_update_service.rb`), so after a newer
+  metadata-only `Update` it applies an older content `Update`: an author editing A, then B, then A again, whose final A
+  arrives before B, ends at B there. Mastodon's behaviour is an ordering bug.
+- A status Kopje fetches again that it stores (search, `/authorize_interaction`) is applied as its author's `Update`, as
+  `FetchRemoteStatusService` turns a stored status's `Create` into an `Update` (`fetch_remote_status_service.rb:48`). A
+  status fetched because it was not stored (a boost's original, a quoted status, an `Add`, a quote request's instrument)
+  that a delivery stored before the fetch completed keeps the stored version; Mastodon applies the fetched one.
 - An `Update` whose `updated` is more than five minutes ahead of the clock is ignored (`src/domain/remote-statuses.ts`);
   Mastodon has no such check. The edit is lost until another delivery or a later edit: the sender does not send it
   again when the receiver's clock catches up.

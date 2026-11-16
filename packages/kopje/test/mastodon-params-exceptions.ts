@@ -34,12 +34,6 @@ export const PARAM_EXCEPTIONS: Exceptions = {
   "GET /api/v1/timelines/link": accepted("MD-5", "local", "remote"),
 
   // Gaps of the Mastodon 4.6 and 4.7 client API, each tracked by its issue.
-  "PATCH /api/v1/accounts/update_credentials": open(
-    1583,
-    "the profile image descriptions of Mastodon 4.6",
-    "avatar_description",
-    "header_description",
-  ),
   "POST /api/v1/reports": open(1589, "collections", "collection_ids[]"),
 
   // Admin features not served.

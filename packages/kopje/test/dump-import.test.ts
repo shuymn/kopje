@@ -251,6 +251,44 @@ describe("dump", () => {
     expect((await importViaRpc(target, text)).report).toMatchObject({ ok: true, problems: [] });
   }, 120_000);
 
+  // A dump taken before 0096_remote_handles, of remote rows sharing an address, restores and upgrades through 0096,
+  // which invalidates all but the oldest; the upgraded Store's own export restores into a Store at the latest file; a
+  // dump holding two remote rows of one address is refused by the UNIQUE index (D6).
+  it("restores a dump taken before 0096_remote_handles with shared addresses, and refuses a duplicate after it", async () => {
+    const remote = (n: number, username: string) =>
+      `INSERT INTO accounts (id, uri, username, domain) VALUES ('10000000000000000${n}', 'https://d.example/actors/${n}',
+				'${username}', 'd.example')`;
+    const restored = await restoredBefore(
+      "0096_remote_handles",
+      (sql) => {
+        sql.exec(remote(1, "alice"));
+        sql.exec(remote(2, "Alice"));
+      },
+      async (sql, upgrade) => {
+        expect(await upgrade()).toMatchObject({ ok: true, applied: ["0096_remote_handles"] });
+        expect(sql.exec("SELECT username FROM accounts ORDER BY rowid").toArray()).toEqual([
+          { username: "alice" },
+          { username: "! 100000000000000002" },
+        ]);
+      },
+    );
+    await runInDurableObject(restored, async (_instance, state) => {
+      expect(await testKernel(state).upgrade()).toMatchObject({ ok: true });
+    });
+    const { text } = await dumpViaRpc(restored, 64 * 1024);
+    const target = await migratedStore();
+    await copyConfig(restored, target);
+    expect((await importViaRpc(target, text)).report).toMatchObject({ ok: true, problems: [] });
+    // The same dump with the invalidated row given the address back.
+    const literal = "'! 100000000000000002'";
+    expect(text).toContain(literal);
+    const duplicate = await migratedStore();
+    await copyConfig(restored, duplicate);
+    expect(String(await rejectionOf(importViaRpc(duplicate, text.replace(literal, "'ALICE'"))))).toMatch(
+      /UNIQUE constraint failed: index 'accounts_domain_username'/,
+    );
+  }, 120_000);
+
   // RES-2: a dump taken before 0048_stored_bounds, of rows past their stored bounds, restores into a Store at the
   // same migrations, which then upgrades through 0048 to P(x) of every value.
   it("restores a dump taken before 0048_stored_bounds, which then upgrades through it", async () => {
@@ -582,6 +620,89 @@ describe("dump", () => {
     await copyConfig(source, target);
     expect(String(await rejectionOf(importViaRpc(target, dump)))).toMatch(
       /accounts: static image past its stored bound/,
+    );
+  }, 120_000);
+
+  it("round-trips descriptions and settings (0097), and refuses one past its bound on import", async () => {
+    const source = await seeded(0);
+    // At the bound: 150 four-byte characters (600 bytes), and 150 ASCII characters; the settings off, on, off.
+    const avatar = "𠀀".repeat(150);
+    const header = "h".repeat(150);
+    const id = await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      const local = sql
+        .exec<{ id: string }>("SELECT id FROM accounts WHERE domain IS NULL ORDER BY id LIMIT 1")
+        .one().id;
+      sql.exec(
+        `UPDATE accounts SET avatar_description = ?1, header_description = ?2, show_featured = 0, show_media = 1,
+					show_media_replies = 0 WHERE id = ?3`,
+        avatar,
+        header,
+        local,
+      );
+      return local;
+    });
+    const { text } = await dumpViaRpc(source);
+    const restored = await migratedStore();
+    await copyConfig(source, restored);
+    await importViaRpc(restored, text);
+    await runInDurableObject(restored, (_instance, state) => {
+      expect(
+        state.storage.sql
+          .exec(
+            `SELECT avatar_description AS a, header_description AS h, show_featured AS f, show_media AS m,
+							show_media_replies AS r FROM accounts WHERE id = ?`,
+            id,
+          )
+          .one(),
+      ).toEqual({ a: avatar, h: header, f: 0, m: 1, r: 0 });
+    });
+    // A dump from elsewhere, as its text could hold it: a description of 151 characters, one of malformed bytes past
+    // the characters, a setting of 2, and NULL for each.
+    const values = `'${avatar}','${header}',0,1,0)`;
+    expect(text.split(values)).toHaveLength(2);
+    for (const past of [
+      `'${avatar}','${header}h',0,1,0)`,
+      `'${avatar}',CAST(X'${"4180".repeat(76)}' AS TEXT),0,1,0)`,
+      `'${avatar}','${header}',0,2,0)`,
+      `NULL,'${header}',0,1,0)`,
+      `'${avatar}','${header}',0,1,NULL)`,
+    ]) {
+      const dump = text.replace(values, past);
+      const target = await migratedStore();
+      await copyConfig(source, target);
+      expect(String(await rejectionOf(importViaRpc(target, dump))), past).toMatch(
+        /accounts: profile setting past its stored bound/,
+      );
+    }
+  }, 120_000);
+
+  it("restores a dump taken before 0097_profile_descriptions, which then upgrades through it", async () => {
+    await restoredBefore(
+      "0097_profile_descriptions",
+      (sql) => {
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username) VALUES ('100000000000000001', 'https://kopje.test/ap/users/a', 'a')",
+        );
+        sql.exec(
+          `INSERT INTO accounts (id, uri, username, domain)
+						VALUES ('100000000000000002', 'https://remote.test/users/b', 'b', 'remote.test')`,
+        );
+      },
+      async (sql, upgrade) => {
+        expect(await upgrade()).toMatchObject({ ok: true, applied: ["0097_profile_descriptions"] });
+        expect(
+          sql
+            .exec(
+              `SELECT id, avatar_description AS a, header_description AS h, show_featured AS f, show_media AS m,
+								show_media_replies AS r FROM accounts ORDER BY id`,
+            )
+            .toArray(),
+        ).toEqual([
+          { id: "100000000000000001", a: "", h: "", f: 1, m: 1, r: 1 },
+          { id: "100000000000000002", a: "", h: "", f: 1, m: 1, r: 1 },
+        ]);
+      },
     );
   }, 120_000);
 
@@ -1163,6 +1284,83 @@ describe("dump", () => {
         expect(sql.exec("SELECT unverified_links FROM local_accounts").toArray()).toEqual([{ unverified_links: null }]);
       },
     );
+  }, 120_000);
+
+  it("restores a dump taken before 0098_card_attribution, which then upgrades through it", async () => {
+    await restoredBefore(
+      "0098_card_attribution",
+      (sql) => {
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username) VALUES ('100000000000000001', 'https://kopje.test/ap/users/a', 'a')",
+        );
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+					VALUES ('100000000000000002', 'https://kopje.test/s/2', '100000000000000001', 'public', 'x',
+						'2026-11-16T00:00:00.000Z')`,
+        );
+        sql.exec(
+          `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at)
+					VALUES ('100000000000000002', 'https://a.example/', 5, 7, 't', 9)`,
+        );
+      },
+      async (sql, upgrade) => {
+        expect(await upgrade()).toMatchObject({ ok: true, applied: ["0098_card_attribution"] });
+        expect(sql.exec("SELECT title, unverified_author_account_id FROM status_cards").toArray()).toEqual([
+          { title: "t", unverified_author_account_id: null },
+        ]);
+      },
+    );
+  }, 120_000);
+
+  it("round-trips a card's unverified author (0098), and refuses one past its stored bound on import", async () => {
+    const source = await seeded(1);
+    const [account, status] = await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      const row = sql
+        .exec<{ id: string; account_id: string }>("SELECT id, account_id FROM statuses ORDER BY id LIMIT 1")
+        .one();
+      sql.exec(
+        `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at, unverified_author_account_id)
+				VALUES (?, 'https://a.example/', 5, 7, 't', 9, ?)`,
+        row.id,
+        row.account_id,
+      );
+      return [row.account_id, row.id];
+    });
+    const { text } = await dumpViaRpc(source);
+    const restored = await migratedStore();
+    await copyConfig(source, restored);
+    expect((await importViaRpc(restored, text)).report).toMatchObject({ ok: true, problems: [] });
+    const authors = (store: StoreStub) =>
+      runInDurableObject(store, (_instance, state) =>
+        state.storage.sql
+          .exec(
+            "SELECT status_id, unverified_author_account_id AS a, typeof(unverified_author_account_id) AS t FROM status_cards",
+          )
+          .toArray(),
+      );
+    expect(await authors(restored)).toEqual([{ status_id: status, a: account, t: "text" }]);
+    // A dump from elsewhere, as its text could hold it: 17 digits, a BLOB of 18 digits, and an author on a pending row.
+    const line = text.split("\n").find((l) => l.startsWith('INSERT INTO "status_cards"'));
+    expect(line).toContain(`'${account}');`);
+    // The row made pending: due_at 5 and fetched_at NULL (its title is judged on attached rows only, and the triggers
+    // refuse nothing else of it: test/migrations.test.ts "0098_card_attribution").
+    const pending = line!
+      .replace("'https://a.example/',NULL,5,", "'https://a.example/',5,5,")
+      .replace("NULL,NULL,9,0,", "NULL,NULL,NULL,0,");
+    expect(pending.match(/NULL/g)?.length).toBe(line!.match(/NULL/g)!.length);
+    for (const changed of [
+      line!.replace(`'${account}');`, `'${account.slice(1)}');`),
+      line!.replace(`'${account}');`, `X'${[...account].map((c) => c.charCodeAt(0).toString(16)).join("")}');`),
+      pending,
+    ]) {
+      expect(changed).not.toBe(line);
+      const target = await migratedStore();
+      await copyConfig(source, target);
+      expect(String(await rejectionOf(importViaRpc(target, text.replace(line!, changed))))).toMatch(
+        /status_cards: a value past its stored bound/,
+      );
+    }
   }, 120_000);
 
   it("writes the documented format and leaves out bookkeeping", async () => {

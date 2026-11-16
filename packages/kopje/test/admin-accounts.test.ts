@@ -572,7 +572,9 @@ describe("the admin account list: converted text of any length (RES-2)", () => {
   it("matches the prefix of a huge username without reading it, and shows it cut", async () => {
     const { h, ids, admin } = await world();
     const huge = `ali${"u".repeat(1_500_000)}`;
-    await sql(h.store, "UPDATE accounts SET username = ? WHERE id IN (?, ?)", huge, ids.carol, ids.erin);
+    // One remote account holds an address (0096_remote_handles): erin's ends in one more letter, past the prefixes.
+    await sql(h.store, "UPDATE accounts SET username = ? WHERE id = ?", huge, ids.carol);
+    await sql(h.store, "UPDATE accounts SET username = ? WHERE id = ?", `${huge}e`, ids.erin);
     const list = async (query: string) =>
       (await call(h, `/api/v2/admin/accounts?${query}`, admin)).body as AdminAccountBody[];
     // The username drives the read (its index range, within a domain too), and is a residual of the suspended

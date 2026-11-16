@@ -3,8 +3,8 @@ import type { FC } from "hono/jsx";
 import { type CredentialAccount, MAX_DISPLAY_NAME, MAX_NOTE, type Visibility } from "../../domain/accounts";
 import type { Authorizations } from "../../domain/web-session";
 import { httpUrl } from "../../platform/http-url";
-import { MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS } from "../../platform/stored-bounds";
-import { Alert, Csrf, DateTime } from "../components/basics";
+import { MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS, PROFILE_DESCRIPTION_LIMIT } from "../../platform/stored-bounds";
+import { Alert, Csrf, DateTime, TextArea } from "../components/basics";
 import { Icon } from "../components/icon";
 import { type Chrome, Layout } from "../components/layout";
 import { utcDate } from "../format";
@@ -67,15 +67,22 @@ const FIELD_VALUE = "field-value";
 
 // A text control's native limit for a server limit of `points` code points. `maxlength` counts UTF-16 code units, of
 // which a code point takes at most two, so this lets through every value the server accepts; the server's check
-// (credentialChanges in mastodon/accounts.ts) decides, and answers a longer value with its message.
+// (accountChanges in mastodon/accounts.ts) decides, and answers a longer value with its message.
 function codeUnitsFor(points: number): number {
   return 2 * points;
 }
 
-// The avatar's or header's section: its heading above its card, the current image, then the upload form.
-const ImageForm: FC<{ kind: "avatar" | "header"; current: string; csrf: string }> = ({ kind, current, csrf }) => {
+// The avatar's or header's section: its heading above its card, the current image, the upload form, then the form of
+// its description, which posts to /settings/profile on its own (descriptions are independent of the images).
+const ImageForm: FC<{ kind: "avatar" | "header"; current: string; description: string; csrf: string }> = ({
+  kind,
+  current,
+  description,
+  csrf,
+}) => {
   const { m } = useUi();
   const hint = `${kind}-hint`;
+  const descriptionHint = `${kind}-description-hint`;
   return (
     <section class="stack image-form">
       <h2>{kind === "avatar" ? m.settings.avatar : m.settings.header}</h2>
@@ -99,6 +106,25 @@ const ImageForm: FC<{ kind: "avatar" | "header"; current: string; csrf: string }
             </p>
           </div>
           <button type="submit">{m.settings.upload}</button>
+        </form>
+        <form method="post" action="/settings/profile">
+          <Csrf token={csrf} />
+          <div class="field">
+            <label>
+              {kind === "avatar" ? m.settings.avatarDescription : m.settings.headerDescription}
+              <TextArea
+                name={`${kind}_description`}
+                rows={2}
+                maxlength={codeUnitsFor(PROFILE_DESCRIPTION_LIMIT)}
+                describedBy={descriptionHint}
+                value={description}
+              />
+            </label>
+            <p class="hint" id={descriptionHint}>
+              {m.settings.descriptionHint(PROFILE_DESCRIPTION_LIMIT)}
+            </p>
+          </div>
+          <button type="submit">{m.settings.saveDescription}</button>
         </form>
       </div>
     </section>
@@ -156,9 +182,7 @@ export const SettingsPage: FC<SettingsView> = ({ chrome, account, authorizations
               </label>
               <label>
                 {m.settings.bio}
-                <textarea name="note" rows={4} maxlength={codeUnitsFor(MAX_NOTE)}>
-                  {account.source.note}
-                </textarea>
+                <TextArea name="note" rows={4} maxlength={codeUnitsFor(MAX_NOTE)} value={account.source.note} />
               </label>
               <fieldset class="pairs">
                 <legend>{m.settings.fields}</legend>
@@ -214,8 +238,8 @@ export const SettingsPage: FC<SettingsView> = ({ chrome, account, authorizations
             </form>
           </div>
         </section>
-        <ImageForm kind="avatar" current={account.avatar} csrf={csrf} />
-        <ImageForm kind="header" current={account.header} csrf={csrf} />
+        <ImageForm kind="avatar" current={account.avatar} description={account.avatar_description} csrf={csrf} />
+        <ImageForm kind="header" current={account.header} description={account.header_description} csrf={csrf} />
         <section class="stack">
           <h2>{m.settings.authorizedApps}</h2>
           {authorizations.apps.length === 0 ? (

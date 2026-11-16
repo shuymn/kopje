@@ -49,7 +49,7 @@ Mastodon, decided as [mastodon-deviations.md](mastodon-deviations.md) says.
   send (`confirmDelivery`, the retry's included), a one-time write (`ensureInstanceActorKey`).
 - **A fetch's preparation (its signer and the policy verdict for its first request) is read in the answer that decides
   the fetch** (`FetchPreparation` in `src/domain/inbox.ts`, which names those answers), and a search resolution's
-  actor revision read (`actorRevision`) carries the verdict for the actor's fetch the same way. It is optional: the
+  actor state read (`actorState`) carries the verdict for the actor's fetch the same way. It is optional: the
   Worker reads what is missing (`fetchSigner`, `fetchRefused`) as it would without it.
 - **A federation GET is one read**, the setup check included (`src/domain/federation-reads.ts`; a route that does not
   read there reads the domain in the setup gate first, `src/federation/setup-gate.ts`).

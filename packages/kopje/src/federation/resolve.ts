@@ -1,12 +1,13 @@
-import { FetchError } from "@fedify/fedify";
+import { FetchError, type RemoteDocument } from "@fedify/fedify";
 
 import type { ResolutionStart } from "../domain/inbox";
-import type { DocumentRevision, RemoteActorInput } from "../domain/remote-actors";
+import type { ActorState, DocumentRevision, Handle, RemoteActorInput } from "../domain/remote-actors";
 import { type Resolved, resolutionTarget, webfingerUrl } from "../domain/remote-statuses";
 import { readConfig, userKek } from "../platform/config";
-import { hostDomain, normalizeDomain } from "../platform/domain-name";
+import { normalizeDomain } from "../platform/domain-name";
 import { scanAlternate } from "../platform/html-scan";
 import { sameOrigin } from "../platform/http-url";
+import { isRemoteUsername } from "../platform/identity-bounds";
 import { withinJsonBounds } from "../platform/json-bounds";
 import { parseLinkHeader } from "../platform/link-header";
 import { callStore, type StoreResolver } from "../platform/store-client";
@@ -22,6 +23,7 @@ import {
 import { typeIs } from "./json-shapes";
 import {
   type FetchBudget,
+  isTransientLoadError,
   type OtherAnswer,
   RefusedFetchError,
   type ResolveAnswer,
@@ -41,15 +43,15 @@ import { ACTOR_TYPES, CONVERTED_TYPES, idOf, parseRemoteStatus, STATUS_TYPES } f
 //
 // As Mastodon's ResolveURLService and ResolveAccountService, with these differences: a URL that answers 200 with
 // another type is followed to its alternate as FetchResourceService follows it (alternateOf: the Link header's, then a
-// text/html page's first <link rel="alternate">, whose differences docs/mastodon-deviations.md lists under Search), and
-// an address is stored under the host of the actor its WebFinger names (no second WebFinger round trip to confirm a
-// split domain). An actor's revision is
-// read from the Store before its document is fetched (a URL naming an actor is fetched again after that read,
-// actorAfterRevision), and the document is stored only while it holds (ID-1, domain/remote-actors.ts DocumentRevision):
-// the probe, and the WebFinger that follows the fetch on a host another server may name, can delay the store past a
-// newer one. A URL is first read as a stored actor's id, before any probe: such a URL is resolved as that actor, so a
-// 410 at it deletes the actor under the revision read before the fetch (ID-1, actor-gone.ts); a probe's 410 deletes
-// nothing, having no revision read before it.
+// text/html page's first <link rel="alternate">, whose differences docs/mastodon-deviations.md lists under Search),
+// and an actor is stored under the handle its document claims once WebFinger confirms it for the actor
+// (confirmHandle), never under the address searched for. An actor's state is read from the Store before its document
+// is fetched (a URL naming an actor, directly or through an alternate, is fetched again after that read,
+// actorAfterRevision), and the document is stored only while its revision holds (ID-1, domain/remote-actors.ts
+// DocumentRevision): the probe, an alternate's fetch and the WebFinger that confirms the claim can delay the store
+// past a newer one. A URL is first read as a stored actor's id, before any probe: such a URL is resolved as that actor,
+// so a 410 at it deletes the actor under the revision read before the fetch (ID-1, actor-gone.ts); a 410 at the probe
+// or at an alternate deletes nothing, having no revision read before it.
 
 // requestJobs: asks for a jobs round (a gone actor's purge, actor-gone.ts); absent, cron runs it. budget: the request's
 // fetch budget (RES-6) at its start; absent, requestBudget's (a test passes one with prior use).
@@ -69,6 +71,7 @@ export type ResolverDeps = {
 export type Resolver = (env: Env, query: string, start?: ResolutionStart) => Promise<Resolved>;
 
 const NONE: Resolved = { kind: "none" };
+const GONE: Resolved = { kind: "none", gone: true };
 
 export function createResolver(deps: ResolverDeps): Resolver {
   return async (env, query, start) => {
@@ -101,11 +104,11 @@ export function createResolver(deps: ResolverDeps): Resolver {
       budget,
       start?.prefetch?.signer,
     );
-    // The verdict that comes with the revision serves the actor's fetch, the next request, alone (refusesHost).
-    const revisionOf = async (uri: string) => {
-      const read = await callStore(() => store().actorRevision(build, { uri }));
+    // The verdict that comes with the state serves the actor's fetch, the next request, alone (refusesHost).
+    const stateOf = async (uri: string) => {
+      const read = await callStore(() => store().actorState(build, { uri }));
       state.ticket = read.ticket;
-      return read.revision;
+      return read.state;
     };
     const settle = goneSettler(store, build, deps.now);
     const settleGone: Resolving["settleGone"] = async (fetched, uri, revision) => {
@@ -113,7 +116,7 @@ export function createResolver(deps: ResolverDeps): Resolver {
         await deps.requestJobs?.(env);
       }
     };
-    const resolved = await resolveWith({ ...loaders, revisionOf, settleGone, budget }, query.trim(), domain);
+    const resolved = await resolveWith({ ...loaders, stateOf, domain, settleGone, budget }, query.trim());
     if (state.storeError !== null) {
       throw state.storeError;
     }
@@ -121,31 +124,47 @@ export function createResolver(deps: ResolverDeps): Resolver {
   };
 }
 
-// The loaders, the Store read of an actor's revision, what a gone actor's document does (actor-gone.ts), and the
-// request's fetch budget (RES-6), whose deadline bounds a page's scan.
+// The loaders, the Store read of an actor's state, this instance's domain, what a gone actor's document does
+// (actor-gone.ts), and the request's fetch budget (RES-6), whose deadline bounds a page's scan.
 type Resolving = RemoteLoaders & {
   resolve: ResolveLoader;
-  revisionOf: (uri: string) => Promise<DocumentRevision>;
+  stateOf: (uri: string) => Promise<ActorState>;
+  domain: string;
   settleGone: (fetched: FetchedActor, uri: string, revision: DocumentRevision) => Promise<void>;
   budget: FetchBudget;
 };
 
-// An actor's document, fetched after its revision was read (`revision`, when the caller read it already) with a memo
-// of its own (afterRevisionRead): the request's loader may already hold a response for that URL fetched before the
-// read (the URL's own probe), which must not be stored under it; the refetch costs one more fetch of the budget
-// (RES-6).
+// An actor's document, fetched after its state was read (`read`, when the caller read it already) with a memo of its
+// own (afterRevisionRead): the request's loader may already hold a response for that URL fetched before the read (the
+// URL's own probe), which must not be stored under it; the refetch costs one more fetch of the budget (RES-6).
 async function actorAfterRevision(
   loaders: Resolving,
   uri: string,
-  read?: DocumentRevision,
-): Promise<{ fetched: FetchedActor; revision: DocumentRevision }> {
-  const revision = read === undefined ? await loaders.revisionOf(uri) : read;
-  return { fetched: await fetchActor(uri, afterRevisionRead(loaders).document, loaders.context), revision };
+  read?: ActorState,
+): Promise<{ fetched: FetchedActor; state: ActorState }> {
+  const state = read ?? (await loaders.stateOf(uri));
+  return { fetched: await fetchActor(uri, afterRevisionRead(loaders).document, loaders.context), state };
+}
+
+// A document fetched after its actor's state was read, with its claim confirmed (confirmedInput); null when the actor
+// cannot be stored: no usable document, or a new actor whose claim WebFinger did not confirm.
+async function storable(
+  loaders: Resolving,
+  fetched: FetchedActor,
+  state: ActorState,
+): Promise<{ actor: RemoteActorInput; revision: DocumentRevision } | null> {
+  if (fetched.kind !== "ok" || fetched.input === null) {
+    return null;
+  }
+  const checked = await confirmedInput(loaders, fetched.input, state.handle, loaders.domain);
+  return state.handle === null && checked.outcome !== "confirmed"
+    ? null
+    : { actor: checked.input, revision: state.revision };
 }
 
 // A local address or URL is answered from stored data (resolveSearch's lookup by uri).
-async function resolveWith(loaders: Resolving, query: string, domain: string): Promise<Resolved> {
-  const target = resolutionTarget(query, domain);
+async function resolveWith(loaders: Resolving, query: string): Promise<Resolved> {
+  const target = resolutionTarget(query, loaders.domain);
   if (target === null) {
     return NONE;
   }
@@ -154,45 +173,35 @@ async function resolveWith(loaders: Resolving, query: string, domain: string): P
     : resolveUrl(loaders, target.href);
 }
 
-// An actor, with the canonical address its host declares (declaredDomain), and its revision before the fetch (`read`,
-// when the caller read it already). A 410 at its URI deletes a stored actor under that revision (actor-gone.ts).
-async function resolveAccount(loaders: Resolving, uri: string, read?: DocumentRevision): Promise<Resolved> {
-  const { fetched, revision } = await actorAfterRevision(loaders, uri, read);
+// An actor, under the handle WebFinger confirmed for it, and its revision before the fetch (`read`, when the caller
+// read its state already). A 410 at its URI deletes a stored actor under that revision (actor-gone.ts).
+async function resolveAccount(loaders: Resolving, uri: string, read?: ActorState): Promise<Resolved> {
+  const { fetched, state } = await actorAfterRevision(loaders, uri, read);
   if (fetched.kind === "gone") {
-    await loaders.settleGone(fetched, uri, revision);
+    await loaders.settleGone(fetched, uri, state.revision);
   }
-  if (fetched.kind !== "ok" || fetched.input === null) {
-    return NONE;
-  }
-  const actor = fetched.input;
-  const confirmed = await declaredDomain(loaders, actor);
-  return {
-    kind: "account",
-    actor: confirmed === undefined ? actor : { ...actor, confirmedDomain: confirmed },
-    revision,
-  };
+  const found = await storable(loaders, fetched, state);
+  return found === null ? NONE : { kind: "account", ...found };
 }
 
 type WebFinger = { subject: string | null; self: string | null };
 
-// A WebFinger (RFC 7033) answer for acct:username@host: its subject and the actor its self link names; 'missing'
-// when the server answers that there is no such account (404 or 410, an authoritative negative); null when there is no
-// usable answer (a network error, a timeout, a 5xx, the fetch budget, or a document that cannot be read), which
-// proves nothing either way.
+// A WebFinger (RFC 7033) answer for acct:username@host: its subject and the actor its self link names; 'transient'
+// when another try may answer (isTransientLoadError: a network error, a timeout, a 5xx, the fetch budget or deadline);
+// 'refused' for any other failure (404 or 410, any other refusal, or a document that cannot be read).
 async function webfingerAt(
-  loaders: RemoteLoaders,
+  loaders: Pick<RemoteLoaders, "webfinger">,
   username: string,
   host: string,
-): Promise<WebFinger | "missing" | null> {
+): Promise<WebFinger | "transient" | "refused"> {
   let jrd: unknown;
   try {
     jrd = (await loaders.webfinger(webfingerUrl(username, host))).document;
   } catch (error) {
-    const status = error instanceof FetchError ? error.response?.status : undefined;
-    return status === 404 || status === 410 ? "missing" : null;
+    return isTransientLoadError(error) ? "transient" : "refused";
   }
   if (!withinJsonBounds(jrd) || typeof jrd !== "object" || jrd === null) {
-    return null;
+    return "refused";
   }
   const { subject, links } = jrd as { subject?: unknown; links?: unknown };
   const self = (Array.isArray(links) ? links : []).find(
@@ -219,69 +228,123 @@ function splitAcct(subject: string | null): { username: string; domain: string }
   return username === "" || domain === null ? null : { username, domain };
 }
 
-// The canonical domain of an actor's address, as Mastodon's ActivityPub::ProcessAccountService#check_webfinger! and
-// ResolveAccountService#process_webfinger! decide it (v4.7.5): the actor's own host declares the address in the subject
-// of its WebFinger for acct:<preferredUsername>@<host>, and a subject on another domain is only a candidate, which
-// that domain must confirm: its WebFinger for the subject names the same actor id as self. Confirmed: the candidate;
-// the host's answer naming the actor under its own name, or any answer that does not confirm: the host. undefined
-// when the host gives no usable answer (the Store then keeps what it has for this exact username, accountDomain).
-// The address a search was made with plays no part: an alias never sets or replaces the canonical domain.
-async function declaredDomain(loaders: RemoteLoaders, actor: RemoteActorInput): Promise<string | undefined> {
-  // The actor's host, in the normalized form; an actor id with a port (or that does not normalize) is not checked:
-  // the Store keeps what it has for this username (accountDomain).
-  const host = normalizeDomain(hostDomain(actor.uri));
-  if (host === null) {
-    return undefined;
-  }
-  const declared = await webfingerAt(loaders, actor.username, host);
-  if (declared === null) {
-    return undefined;
-  }
-  if (declared === "missing") {
-    return host;
-  }
-  const subject = splitAcct(declared.subject);
-  if (subject === null || subject.username.toLowerCase() !== actor.username.toLowerCase()) {
-    return host;
-  }
-  if (subject.domain === host) {
-    return declared.self === actor.uri ? host : undefined;
-  }
-  // A transient failure at the candidate keeps what is stored for this username; only an authoritative answer
-  // (missing, or naming another subject or actor) gives the host.
-  const candidate = await webfingerAt(loaders, subject.username, subject.domain);
-  if (candidate === null) {
-    return undefined;
-  }
-  const confirmed = candidate === "missing" ? null : splitAcct(candidate.subject);
-  return candidate !== "missing" &&
-    candidate.self === actor.uri &&
-    confirmed?.username.toLowerCase() === subject.username.toLowerCase() &&
-    confirmed.domain === subject.domain
-    ? subject.domain
-    : host;
+// The outcome of confirming a claimed handle (confirmHandle): the handle confirmed, in the spelling of the subject that
+// confirmed it; refused (the claim is not this actor's, or an answer refused it); or transient (another try may
+// answer).
+export type Confirmation = { kind: "confirmed"; handle: Handle } | { kind: "refused" } | { kind: "transient" };
+
+// Whether two handles are one address: the username case-insensitively, the normalized domain exactly.
+function sameHandle(a: Handle, b: Handle): boolean {
+  return a.username.toLowerCase() === b.username.toLowerCase() && a.domain === b.domain;
 }
 
-// An address: the actor its WebFinger names, found by its actor id. Its canonical address is the one its host
-// declares (declaredDomain), never the address searched for.
+// D3, Mastodon 4.7.5's ActivityPub::ProcessAccountService#check_webfinger!: the handle an actor document claims
+// (remote-actor.ts claimedHandle) is the actor's only when WebFinger at that address names this actor id. WebFinger
+// acct:<claim>, unsigned, through the request's webfinger loader (its fetch budget and deadline, RES-6): a subject
+// equal to the claim (sameHandle) whose self link is exactly the actor id confirms the claim; another subject is
+// followed once, and must answer with an equal subject and the same self link, confirming that answer's subject. The
+// username confirmed passes isRemoteUsername (Mastodon's USERNAME_ONLY_RE). A claim or a subject on this instance's
+// domain is refused without a fetch: no remote actor holds a local address (ID-3). The self equalities and the second
+// subject's equality are what keep an actor from taking a handle on a domain it does not control: that domain's
+// WebFinger must name this actor id. At most two WebFinger loads.
+async function confirmHandle(
+  loaders: Pick<RemoteLoaders, "webfinger">,
+  uri: string,
+  claim: Handle,
+  instanceDomain: string,
+): Promise<Confirmation> {
+  if (claim.domain === instanceDomain) {
+    return { kind: "refused" };
+  }
+  const first = await webfingerAt(loaders, claim.username, claim.domain);
+  if (first === "transient" || first === "refused") {
+    return { kind: first };
+  }
+  const subject = splitAcct(first.subject);
+  if (subject === null || !isRemoteUsername(subject.username)) {
+    return { kind: "refused" };
+  }
+  if (sameHandle(subject, claim)) {
+    return first.self === uri ? { kind: "confirmed", handle: claim } : { kind: "refused" };
+  }
+  if (subject.domain === instanceDomain) {
+    return { kind: "refused" };
+  }
+  const second = await webfingerAt(loaders, subject.username, subject.domain);
+  if (second === "transient" || second === "refused") {
+    return { kind: second };
+  }
+  const confirmed = splitAcct(second.subject);
+  return confirmed !== null &&
+    sameHandle(confirmed, subject) &&
+    second.self === uri &&
+    isRemoteUsername(confirmed.username)
+    ? { kind: "confirmed", handle: confirmed }
+    : { kind: "refused" };
+}
+
+// D4: a document about to be stored, with its claim confirmed unless it equals the stored handle (the username exactly,
+// the domain equal), as ProcessAccountService skips check_webfinger! for an unchanged handle. stored: the actor's
+// stored handle as read before the fetch (actorState), null when it has no row. The outcome: 'kept' (not looked up),
+// or confirmHandle's. Only a confirmed handle is set in the input; the Store keeps a stored row's handle otherwise, and
+// stores no new actor without one (domain/remote-actors.ts acceptedHandle), so a wrong skip can only keep a handle.
+export async function confirmedInput(
+  loaders: Pick<RemoteLoaders, "webfinger">,
+  input: RemoteActorInput,
+  stored: Handle | null,
+  instanceDomain: string,
+): Promise<{ input: RemoteActorInput; outcome: "kept" | Confirmation["kind"] }> {
+  if (stored !== null && input.claim.username === stored.username && input.claim.domain === stored.domain) {
+    return { input: { ...input, confirmed: null }, outcome: "kept" };
+  }
+  const confirmation = await confirmHandle(loaders, input.uri, input.claim, instanceDomain);
+  return {
+    input: { ...input, confirmed: confirmation.kind === "confirmed" ? confirmation.handle : null },
+    outcome: confirmation.kind,
+  };
+}
+
+// An address: the actor its WebFinger names, found by its actor id. It is stored under the handle its document claims
+// and WebFinger confirms (confirmHandle), never under the address searched for.
 async function resolveAddress(loaders: Resolving, username: string, domain: string): Promise<Resolved> {
   const found = await webfingerAt(loaders, username, domain);
-  const href = found === null || found === "missing" ? null : found.self;
+  const href = typeof found === "string" ? null : found.self;
   return href === null ? NONE : resolveAccount(loaders, href);
 }
 
 // A URL: an actor, or a status with its author (the author has the status's origin, as for inbound objects). A stored
 // remote actor's id is resolved as that actor, under the revision read here before any fetch (ID-1); any other URL is
-// probed, and a 200 answer that is not ActivityPub is followed to the document its alternate names (alternateOf).
+// probed (probeUrl). Nothing resolved after a 410, the last answer of the probe's fetches, is `gone`: the search then
+// answers no stored object (storeResolved), as Mastodon's process_url_from_db answers a stored status only after a 401,
+// 403 or 404 (resolve_url_service.rb:44), its response code the last fetch's (fetch_resource_service.rb:47).
 async function resolveUrl(loaders: Resolving, url: string): Promise<Resolved> {
-  const stored = await loaders.revisionOf(url);
-  if (stored !== null) {
+  const stored = await loaders.stateOf(url);
+  if (stored.revision !== null) {
     return resolveAccount(loaders, url, stored);
   }
+  const last = { gone: false };
+  const resolve: ResolveLoader = async (href, terminal) => {
+    try {
+      const answer = await loaders.resolve(href, terminal);
+      last.gone = false;
+      return answer;
+    } catch (error) {
+      last.gone = error instanceof FetchError && error.response?.status === 410;
+      throw error;
+    }
+  };
+  const resolved = await probeUrl({ ...loaders, resolve }, url);
+  return resolved.kind === "none" && last.gone ? GONE : resolved;
+}
+
+// A URL that names no stored actor, probed: a 200 answer that is not ActivityPub is followed to the document its
+// alternate names (alternateOf), and a document is taken as ownDocument takes it.
+async function probeUrl(loaders: Resolving, url: string): Promise<Resolved> {
   let document: unknown;
   try {
     const answer = await loaders.resolve(url, false);
-    document = answer.kind === "document" ? answer.remote.document : await alternateOf(loaders, answer);
+    document =
+      answer.kind === "document" ? await ownDocument(loaders, url, answer.remote) : await alternateOf(loaders, answer);
   } catch {
     return NONE;
   }
@@ -300,10 +363,26 @@ async function resolveUrl(loaders: Resolving, url: string): Promise<Resolved> {
   if (!sameOrigin(status.attributedTo, status.uri)) {
     return NONE;
   }
-  const { fetched: author, revision } = await actorAfterRevision(loaders, status.attributedTo);
-  return author.kind === "ok" && author.input !== null
-    ? { kind: "status", status, author: author.input, revision }
-    : NONE;
+  const { fetched, state } = await actorAfterRevision(loaders, status.attributedTo);
+  const author = await storable(loaders, fetched, state);
+  return author === null ? NONE : { kind: "status", status, author: author.actor, revision: author.revision };
+}
+
+// The probe's document, as FetchResourceService#process_response takes it (v4.7.5, fetch_resource_service.rb:54-59):
+// as served when its id is the URL searched and the URL that answered, after any redirect; otherwise, when Mastodon
+// takes it (takes), only as its id answers, fetched once, terminal (fetchAlternate), so a document another URL serves,
+// directly or through a redirect, never stands for the status its id names (storeResolved would apply it to that
+// status). An actor's is taken as served: resolveAccount fetches its id again after reading its state.
+async function ownDocument(loaders: Resolving, url: string, remote: RemoteDocument): Promise<unknown> {
+  const { document, documentUrl } = remote;
+  if (typeof document !== "object" || document === null || typeIs((document as { type?: unknown }).type, ACTOR_TYPES)) {
+    return document;
+  }
+  const id = idOf(document);
+  if (id === url && documentUrl === url) {
+    return document;
+  }
+  return id === null || !takes(document) ? undefined : fetchAlternate(loaders, id);
 }
 
 // The types Mastodon's ACTIVITY_STREAM_LINK_TYPES names, in the order process_link_headers tries them.
@@ -398,14 +477,18 @@ async function fetchAlternate(loaders: Resolving, href: string): Promise<object 
   if (typeof document !== "object" || document === null) {
     return undefined;
   }
-  const record = document as { "@context"?: unknown; type?: unknown; id?: unknown };
+  return takes(document) && (document as { id?: unknown }).id === href && documentUrl === href ? document : undefined;
+}
+
+// Whether Mastodon takes a document (fetch_resource_service.rb:54): of the ActivityStreams context, and of a type it
+// takes (TAKEN_TYPES).
+function takes(document: object): boolean {
+  const record = document as { "@context"?: unknown; type?: unknown };
   const context = record["@context"];
   const supported = Array.isArray(context)
     ? context.some((entry) => entry === ACTIVITYSTREAMS)
     : context === ACTIVITYSTREAMS;
-  return supported && typeIs(record.type, TAKEN_TYPES) && record.id === href && documentUrl === href
-    ? document
-    : undefined;
+  return supported && typeIs(record.type, TAKEN_TYPES);
 }
 
 // Whether a failed alternate fetch is one of Mastodon's nil answers rather than a raised failure: a status other than

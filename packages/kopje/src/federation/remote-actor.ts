@@ -2,10 +2,10 @@ import { type DocumentLoader, exportSpki, FetchError } from "@fedify/fedify";
 import { type Actor, getActorTypeName, type Image, isActor, Link, lookupObject, Multikey } from "@fedify/vocab";
 
 import { ACTOR_URI_LIMIT } from "../domain/profile-bounds";
-import type { RemoteActorInput } from "../domain/remote-actors";
-import { hostDomain } from "../platform/domain-name";
+import type { Handle, RemoteActorInput } from "../domain/remote-actors";
+import { hostDomain, normalizeDomain } from "../platform/domain-name";
 import { httpUrl } from "../platform/http-url";
-import { isRemoteUsername, isStorableActorId } from "../platform/identity-bounds";
+import { DOMAIN_BYTES, isRemoteUsername, isStorableActorId, REMOTE_USERNAME_LIMIT } from "../platform/identity-bounds";
 import { storedDisplayName, storedProfileUrl, storedText } from "../platform/stored-bounds";
 import { sanitizeRemoteBio } from "../security/html";
 import { MAX_PUBLIC_KEYS } from "./key-entries";
@@ -153,13 +153,44 @@ export async function ownKeys(actor: Actor, uri: URL): Promise<{ id: string; pem
 
 const KEY_ALGORITHMS: ReadonlySet<string> = new Set(["RSASSA-PKCS1-v1_5", "Ed25519"]);
 
+// The longest webfinger value read: `acct:`, a username, `@` and a domain at their bounds.
+const CLAIM_LIMIT = 5 + REMOTE_USERNAME_LIMIT + 1 + DOMAIN_BYTES;
+
+// The handle an actor document claims, as Mastodon 4.7 reads it (ProcessAccountService#extract_username_and_domain!):
+// its FEP-2c59 `webfinger`, read from the document's JSON by that spelling, when it is a string of at most CLAIM_LIMIT
+// UTF-16 code units that, without a leading `acct:`, holds exactly one `@` between a username isRemoteUsername accepts
+// and a domain normalizeDomain accepts (normalized); else its preferredUsername (as Fedify parsed it) at the actor id's
+// normalized host; else null, and the document is not an actor Kopje stores. Mastodon splits `a@b@c` into a and b, and
+// checks the username only after WebFinger; Kopje reads such a value as malformed and falls back. The claim is only
+// a candidate: the Store takes a handle once WebFinger confirms it (federation/resolve.ts confirmHandle,
+// domain/remote-actors.ts acceptedHandle).
+export function claimedHandle(document: unknown, uri: string, preferredUsername: string | null): Handle | null {
+  const webfinger =
+    typeof document === "object" && document !== null ? (document as { webfinger?: unknown }).webfinger : undefined;
+  if (typeof webfinger === "string" && webfinger.length <= CLAIM_LIMIT) {
+    const parts = webfinger.replace(/^acct:/, "").split("@");
+    const domain = parts.length === 2 ? normalizeDomain(parts[1]!) : null;
+    if (domain !== null && isRemoteUsername(parts[0]!)) {
+      return { username: parts[0]!, domain };
+    }
+  }
+  const host = normalizeDomain(hostDomain(uri));
+  return preferredUsername !== null && isRemoteUsername(preferredUsername) && host !== null
+    ? { username: preferredUsername, domain: host }
+    : null;
+}
+
 // The columns of a remote account (null if the document cannot be one). Display names are plain text; the bio is
 // sanitized HTML (HTML-1); URLs are http(s) or null (HTML-3). Misskey's extensions (_misskey_summary, isCat, ...) are
-// not interpreted; they stay in raw with the rest of the document.
+// not interpreted; they stay in raw with the rest of the document. confirmed is left null: the Worker's path that
+// stores the document confirms the claim (federation/resolve.ts confirmedInput).
 export async function remoteActorInput(actor: Actor, document: unknown): Promise<RemoteActorInput | null> {
   const uri = actor.id;
-  const username = text(actor.preferredUsername);
-  if (uri === null || !isStorableActorId(uri.href) || username === null || !isRemoteUsername(username)) {
+  if (uri === null || !isStorableActorId(uri.href)) {
+    return null;
+  }
+  const claim = claimedHandle(document, uri.href, text(actor.preferredUsername));
+  if (claim === null) {
     return null;
   }
   const inboxUrl = httpUrl(actor.inboxId?.href ?? null)?.href ?? null;
@@ -173,8 +204,8 @@ export async function remoteActorInput(actor: Actor, document: unknown): Promise
   const images: Images = actor;
   return {
     uri: uri.href,
-    username,
-    domain: hostDomain(uri.href),
+    claim,
+    confirmed: null,
     actorType: getActorTypeName(actor),
     displayName: storedDisplayName(text(actor.name) ?? ""),
     note: sanitizeRemoteBio(storedText(text(actor.summary) ?? "")),

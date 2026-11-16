@@ -52,7 +52,6 @@ const NOT_CARRIED: Record<string, string> = {
   backup_media: "the backup media index of one bucket; a converted Store starts a fresh baseline",
   card_images: "card images Kopje's image round stores; legacy Wildebeest has none, and a carried status gets no card",
   card_oembed_endpoints: "oEmbed endpoints Kopje's card round discovers; legacy Wildebeest has none",
-  collection_syncs: "work Kopje asks for when it stores a remote account's document; legacy has none",
   collection_pins_pending: "pinned statuses a sync of Kopje has yet to fetch; legacy has none",
   conversation_mutes:
     "legacy never wrote its conversation_mutes table, and a legacy row there stops the conversion (UNUSED_LEGACY_TABLES)",
@@ -144,6 +143,10 @@ const DERIVED: Record<string, { by: string; why: string }> = {
     by: "backfillConversations",
     why: "the conversations of the direct statuses carried, as migration 0009_conversations backfills them",
   },
+  collection_syncs: {
+    by: "requestHandleRefreshes",
+    why: "the refresh requests of the remote accounts the conversion invalidated, as migration 0096_remote_handles backfills them",
+  },
 };
 
 const ASSIGNED = "INTEGER PRIMARY KEY, assigned on insert";
@@ -151,17 +154,24 @@ const DEFAULT = "left at its default by the converter (NOT_CONVERTED)";
 
 // Columns of carried tables the converter leaves at their schema defaults.
 const NOT_CONVERTED: Record<string, string> = {
-  "accounts.confirmed_username": "set when Kopje confirms a WebFinger domain; legacy has none",
+  "accounts.confirmed_username": "unused since 0096_remote_handles (the stored handle is the confirmed one): NULL",
   "accounts.emojis": "legacy has no custom emoji",
   "accounts.indexable": "legacy has no indexable setting: NULL, presented as false",
   "accounts.moved_to_account_id": "legacy keeps no account move: NULL, no pointer",
   "accounts.avatar_static_url": "legacy keeps no still image: NULL, the static is the avatar",
   "accounts.header_static_url": "legacy keeps no still image: NULL, the static is the header",
+  "accounts.avatar_description": "legacy has no image descriptions: '', none",
+  "accounts.header_description": "legacy has no image descriptions: '', none",
+  "accounts.show_featured": "legacy has no display settings: 1, Mastodon's default",
+  "accounts.show_media": "legacy has no display settings: 1, Mastodon's default",
+  "accounts.show_media_replies": "legacy has no display settings: 1, Mastodon's default",
   "accounts.deleted_at": "set when a remote actor deletes itself in Kopje; legacy has no account being deleted",
   "accounts.document_revision": "0: Kopje issues a remote actor's revision when it stores its next document",
   "accounts.suspended_at": "set when the admin suspends a remote account in Kopje; legacy has no such suspension",
   "accounts.suspension_source": "set with accounts.suspended_at; legacy has no such suspension",
   "accounts.hide_collections": "learned when Kopje reads a remote account's collections; legacy learned none",
+  "accounts.handle_refreshed_at":
+    "set when Kopje invalidates a remote handle a confirmed one takes; NULL, as 0096 leaves it",
   "accounts.last_status_id": "written by the triggers of 0021_directory as the carried statuses are inserted",
   "blocks.id": ASSIGNED,
   "bookmarks.id": ASSIGNED,
@@ -224,6 +234,7 @@ const FROM_RAW = "remote: read from raw, which is compared byte for byte; local:
 
 // Columns of carried tables verify-conversion does not compare.
 const NOT_VERIFIED: Record<string, string> = {
+  "accounts.avatar_description": DEFAULT,
   "accounts.confirmed_username": DEFAULT,
   "accounts.created_at": TIME,
   "accounts.deleted_at": DEFAULT,
@@ -231,6 +242,8 @@ const NOT_VERIFIED: Record<string, string> = {
   "accounts.fetched_at": TIME,
   "accounts.followers_count": ACCOUNT_COUNTER,
   "accounts.following_count": ACCOUNT_COUNTER,
+  "accounts.handle_refreshed_at": DEFAULT,
+  "accounts.header_description": DEFAULT,
   "accounts.hide_collections": DEFAULT,
   "accounts.indexable": DEFAULT,
   "accounts.moved_to_account_id": DEFAULT,
@@ -242,8 +255,17 @@ const NOT_VERIFIED: Record<string, string> = {
   "accounts.last_status_id": "derived by triggers from the statuses, which are compared",
   "accounts.search_text": SEARCH,
   "accounts.shared_inbox_url": FROM_RAW,
+  "accounts.show_featured": DEFAULT,
+  "accounts.show_media": DEFAULT,
+  "accounts.show_media_replies": DEFAULT,
   "accounts.statuses_count": ACCOUNT_COUNTER,
   "blocks.created_at": TIME,
+  "collection_syncs.attempts": DEFAULT,
+  "collection_syncs.due_at": "0: due at once (HANDLE_REFRESH_REQUESTS)",
+  "collection_syncs.generation": DEFAULT,
+  "collection_syncs.parts_read": DEFAULT,
+  "collection_syncs.read_through": DEFAULT,
+  "collection_syncs.token": DEFAULT,
   "conversations.stream_seq": "the streaming change sequence, 0 until the owner subscribes to `direct`",
   "blocks.id": DEFAULT,
   "bookmarks.created_at": TIME,

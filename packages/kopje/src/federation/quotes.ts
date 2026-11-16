@@ -9,7 +9,7 @@ import {
   type QuoteVerified,
   type StampInput,
 } from "../domain/quotes";
-import type { RemoteActorInput } from "../domain/remote-actors";
+import type { Handle, RemoteActorInput } from "../domain/remote-actors";
 import type { RemoteStatusInput } from "../domain/remote-status-reads";
 import { readConfig, userKek } from "../platform/config";
 import { errorFields } from "../platform/error-message";
@@ -23,6 +23,7 @@ import type { InboxDeps } from "./inbox";
 import { isTransientLoadError, REQUEST_DEADLINE_MS, requestBudget } from "./loader";
 import { type FetchedActor, fetchActor } from "./remote-actor";
 import { fetchRemoteStatus, idOf } from "./remote-status";
+import { confirmedInput } from "./resolve";
 
 // The Worker's part of verifying a received quote (domain/quotes.ts, Mastodon's ActivityPub::VerifyQuoteService), run
 // only by the job rounds (jobs/queue.ts, after the Store's inbound jobs, from the Queue and cron; an inbox request that
@@ -120,21 +121,32 @@ async function loadStamp(uri: string, origin: string, loader: DocumentLoader): P
   return stamp === null ? { kind: "unusable" } : { kind: "ok", value: stamp };
 }
 
-// The quoted status's author, parsed as any actor (none of this instance's origin is fetched), and the fetch's own
-// outcome when the author is gone (a 410 at its URI deletes a stored author, actor-gone.ts).
+// The quoted status's author, parsed as any actor (none of this instance's origin is fetched), its claim confirmed
+// (confirmedInput) against the handle `stored` read before the fetch: an author with no stored row whose claim
+// WebFinger refuses is unusable, and one whose confirmation may pass later is transient; a stored author keeps its
+// handle either way. With it, the fetch's own outcome when the author is gone (a 410 at its URI deletes a stored
+// author, actor-gone.ts).
 async function loadActor(
   uri: string,
   origin: string,
   loaders: RemoteLoaders,
+  stored: Handle | null,
 ): Promise<{ author: Fetched<RemoteActorInput>; gone?: FetchedActor }> {
   if (originOf(uri) === null || originOf(uri) === origin) {
     return { author: { kind: "unusable" } };
   }
   const fetched = await fetchActor(uri, loaders.document, loaders.context);
-  if (fetched.kind === "ok") {
-    return { author: fetched.input === null ? { kind: "unusable" } : { kind: "ok", value: fetched.input } };
+  if (fetched.kind !== "ok") {
+    return fetched.kind === "gone" ? { author: { kind: "gone" }, gone: fetched } : { author: { kind: fetched.kind } };
   }
-  return fetched.kind === "gone" ? { author: { kind: "gone" }, gone: fetched } : { author: { kind: fetched.kind } };
+  if (fetched.input === null) {
+    return { author: { kind: "unusable" } };
+  }
+  const checked = await confirmedInput(loaders, fetched.input, stored, new URL(origin).host);
+  if (stored === null && checked.outcome !== "confirmed") {
+    return { author: { kind: checked.outcome === "transient" ? "transient" : "unusable" } };
+  }
+  return { author: { kind: "ok", value: checked.input } };
 }
 
 type Rpc = <T>(call: (store: StoreStub) => Promise<T>) => Promise<T>;
@@ -178,9 +190,9 @@ async function verifyQuote(
     if (work.stage === "quoted" && work.fetch !== null) {
       input.quoted = await loadStatus(work.fetch, origin, loaders.document);
     } else if (work.stage === "author" && work.fetch !== null) {
-      const loaded = await loadActor(work.fetch, origin, loaders);
+      const loaded = await loadActor(work.fetch, origin, loaders, work.authorState.handle);
       input.author = loaded.author;
-      input.authorRevision = work.authorRevision;
+      input.authorRevision = work.authorState.revision;
       gone = loaded.gone;
     } else if (work.stage === "stamp" && work.fetch !== null) {
       input.stamp = await loadStamp(work.fetch, origin, loaders.document);
@@ -192,7 +204,7 @@ async function verifyQuote(
     }
     // A stored author whose URI answered 410, under the revision read with the stage's work, before its fetch.
     if (gone !== undefined && work.fetch !== null) {
-      goneJobs ||= (await run.settle(gone, work.fetch, work.authorRevision)).jobsPending;
+      goneJobs ||= (await run.settle(gone, work.fetch, work.authorState.revision)).jobsPending;
     }
     let result: QuoteVerified;
     try {

@@ -177,3 +177,39 @@ describe("delete on a list", () => {
     expect(sent(carol, seen[1]!)).toEqual([]);
   });
 });
+
+// StatusCacheHydrator#hydrate (status_cache_hydrator.rb:95): a status streamed on user or list carries its card's
+// missing_attribution for the subscriber, as REST presents it to them.
+describe("missing_attribution on user and list", () => {
+  it("presents a streamed boost's card to each subscriber, true for the card's unverified author only", async () => {
+    const h = await community(["alice", "bob", "carol", "dave"]);
+    const { alice, bob, carol, dave } = h.users;
+    const original = await post(h, dave, { status: "linked https://e.example/a", visibility: "public" });
+    await sql(
+      h.store,
+      `UPDATE status_cards SET due_at = NULL, fetched_at = 1, title = 'T', unverified_author_account_id = ?
+			WHERE status_id = ?`,
+      alice.id,
+      original.id,
+    );
+    const inboxes: [User, Inbox][] = [];
+    for (const viewer of [alice, carol]) {
+      await follow(h, viewer, bob.id);
+      const list = await createList(h, viewer, [bob.id]);
+      inboxes.push([viewer, await listen(h, viewer.token, list, "user")]);
+    }
+    const boost = await (await act(h, bob, `/api/v1/statuses/${original.id}/reblog`)).json<{ id: string }>();
+    await drained(h, ...inboxes.map(([, inbox]) => inbox));
+    for (const [viewer, inbox] of inboxes) {
+      const sent = inbox.rest();
+      expect(sent.map((m) => [m.stream?.[0], m.event, idOf(m)])).toEqual([
+        ["user", "update", boost.id],
+        ["list", "update", boost.id],
+      ]);
+      for (const message of sent) {
+        const payload = JSON.parse(message.payload!) as { reblog: { card: Record<string, unknown> } };
+        expect(payload.reblog.card, viewer.id).toMatchObject({ title: "T", missing_attribution: viewer === alice });
+      }
+    }
+  });
+});

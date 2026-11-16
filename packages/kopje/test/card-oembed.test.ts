@@ -320,6 +320,7 @@ describe("the conversion of a document", () => {
       imageUrl: "",
       imageDescription: "",
       linkType: "unknown",
+      creator: null,
     });
     expect(card(oembedCard(doc({ type: "photo", url: "x", width: "640", height: 480 }), ENDPOINT))).toMatchObject({
       type: "photo",

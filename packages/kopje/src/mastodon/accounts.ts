@@ -18,7 +18,7 @@ import { PROFILE_IMAGES, type ProfileImage } from "../domain/media";
 import { parseAddress } from "../platform/domain-name";
 import { PROFILE_IMAGE_LIMIT, PROFILE_TOO_LARGE, profileImageProblem, SIGNATURE_BYTES } from "../platform/images";
 import { StoreUnavailableError } from "../platform/store-errors";
-import { withinAttributionDomainBound, yieldsMoreThan } from "../platform/stored-bounds";
+import { PROFILE_DESCRIPTION_LIMIT, withinAttributionDomainBound, yieldsMoreThan } from "../platform/stored-bounds";
 import { rubyStrip } from "../platform/strip";
 import { grantsAny } from "../security/scopes";
 import {
@@ -64,12 +64,25 @@ export const verifyCredentials: ApiHandler = async (c, deps) => {
 const VISIBILITIES: readonly string[] = ["public", "unlisted", "private", "direct"];
 const LANGUAGE = /^[a-z]{2,3}$/;
 
-// The changes update_credentials asks for, and the validation problems with them (Mastodon's messages). Shared by the
-// API and the settings page (app/web.tsx), which posts the same names. Avatar and header come through the media
-// pipeline on the settings page only.
-export function credentialChanges(p: Params): { changes: CredentialChanges; problems: string[] } {
+// The changes both update_credentials and the profile update ask for (Mastodon's account_params), and the validation
+// problems with them, with Mastodon's messages in its order (Account::Avatar's and Account::Header's description
+// checks come before the display name's).
+function accountChanges(p: Params): { changes: CredentialChanges; problems: string[] } {
   const changes: CredentialChanges = {};
   const problems: string[] = [];
+  // Stored as sent: Mastodon strips neither. '' clears one; an absent one is kept.
+  const avatarDescription = p.get("avatar_description");
+  const headerDescription = p.get("header_description");
+  for (const [attribute, description] of [
+    ["Avatar", avatarDescription],
+    ["Header", headerDescription],
+  ] as const) {
+    if (description !== undefined && yieldsMoreThan(description, PROFILE_DESCRIPTION_LIMIT)) {
+      problems.push(`${attribute} description is too long (maximum is ${PROFILE_DESCRIPTION_LIMIT} characters)`);
+    }
+  }
+  changes.avatarDescription = avatarDescription;
+  changes.headerDescription = headerDescription;
   // Account#prepare_contents strips both before they are validated and stored; a NUL left inside counts here and is
   // dropped when stored (storedText).
   const rawName = p.get("display_name");
@@ -87,29 +100,6 @@ export function credentialChanges(p: Params): { changes: CredentialChanges; prob
       problems.push(`Note is too long (maximum is ${MAX_NOTE} characters)`);
     }
     changes.note = note;
-  }
-  const privacy = p.get("source[privacy]");
-  if (privacy !== undefined) {
-    if (!VISIBILITIES.includes(privacy)) {
-      problems.push("Privacy is not included in the list");
-    }
-    changes.privacy = privacy as Visibility;
-  }
-  // UserSettings' default_quote_policy (public, followers or nobody). Mastodon raises on any other value (an error
-  // answered 500); Kopje refuses it as it refuses another privacy.
-  const quotePolicy = p.get("source[quote_policy]");
-  if (quotePolicy !== undefined) {
-    if (!QUOTE_POLICY_NAMES.includes(quotePolicy as QuotePolicyName)) {
-      problems.push("Quote policy is not included in the list");
-    }
-    changes.quotePolicy = quotePolicy as QuotePolicyName;
-  }
-  const language = p.get("source[language]");
-  if (language !== undefined) {
-    if (language !== "" && !LANGUAGE.test(language)) {
-      problems.push("Language is not a valid language code");
-    }
-    changes.language = language === "" ? null : language;
   }
   // fields_attributes replaces every field; a pair with both parts blank is dropped, as Mastodon does. An empty JSON
   // object (`{}`, `{"0":{}}`) is a sent, empty hash, which clears them (Account#fields_attributes=).
@@ -144,6 +134,37 @@ export function credentialChanges(p: Params): { changes: CredentialChanges; prob
   changes.discoverable = parseBoolean(p.get("discoverable"));
   changes.indexable = parseBoolean(p.get("indexable"));
   changes.hideCollections = parseBoolean(p.get("hide_collections"));
+  return { changes, problems };
+}
+
+// The changes update_credentials asks for: accountChanges and its source[...] (Mastodon's user_params), with their
+// validation problems. Shared by the API and the settings page (app/web.tsx), which posts the same names. Avatar and
+// header come through the media pipeline on the settings page only.
+export function credentialChanges(p: Params): { changes: CredentialChanges; problems: string[] } {
+  const { changes, problems } = accountChanges(p);
+  const privacy = p.get("source[privacy]");
+  if (privacy !== undefined) {
+    if (!VISIBILITIES.includes(privacy)) {
+      problems.push("Privacy is not included in the list");
+    }
+    changes.privacy = privacy as Visibility;
+  }
+  // UserSettings' default_quote_policy (public, followers or nobody). Mastodon raises on any other value (an error
+  // answered 500); Kopje refuses it as it refuses another privacy.
+  const quotePolicy = p.get("source[quote_policy]");
+  if (quotePolicy !== undefined) {
+    if (!QUOTE_POLICY_NAMES.includes(quotePolicy as QuotePolicyName)) {
+      problems.push("Quote policy is not included in the list");
+    }
+    changes.quotePolicy = quotePolicy as QuotePolicyName;
+  }
+  const language = p.get("source[language]");
+  if (language !== undefined) {
+    if (language !== "" && !LANGUAGE.test(language)) {
+      problems.push("Language is not a valid language code");
+    }
+    changes.language = language === "" ? null : language;
+  }
   changes.sensitive = parseBoolean(p.get("source[sensitive]"));
   return { changes, problems };
 }

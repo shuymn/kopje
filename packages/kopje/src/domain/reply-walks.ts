@@ -8,7 +8,7 @@ import { userReadOperation, userWriteOperation } from "./auth";
 import { fetchedAuthor, type Prefetched } from "./inbox";
 import { writeOperation } from "./operation";
 import { QUOTE_HOPS } from "./quotes";
-import { type DocumentRevision, isDeletedActor, type RemoteActorInput } from "./remote-actors";
+import { type ActorState, type DocumentRevision, isDeletedActor, type RemoteActorInput } from "./remote-actors";
 import type { RemoteStatusInput } from "./remote-status-reads";
 import { storeRemoteStatus } from "./remote-statuses";
 import {
@@ -125,10 +125,10 @@ export type ReplyStepInput = {
   author?: { uri: string; document: RemoteActorInput | null | "gone"; revision?: DocumentRevision };
 };
 
-// need: the step is not applied yet, and the Store needs the status's author (unknown, or stale: refresh, with the
-// revision read here). next: the node handed out, charged. done: the walk is over for this claim (finished, or the
+// need: the step is not applied yet, and the Store needs the status's author (unknown, or stale: refresh, with its
+// state read here). next: the node handed out, charged. done: the walk is over for this claim (finished, or the
 // claim lost).
-export type AuthorNeed = { uri: string; refresh: boolean; revision?: DocumentRevision };
+export type AuthorNeed = { uri: string; refresh: boolean; state?: ActorState };
 export type ReplyStepAnswer = { next: ReplyStep | null; need: AuthorNeed | null; done: boolean };
 
 // The walk's counters, changed in memory by a step and written once (saveWalk); handout: the number of the hand-out
@@ -456,8 +456,8 @@ function judge(
   const found = fetchedAuthor(db, authorUri, prefetched, input.origin, input.now);
   if ("reason" in found) {
     if (found.need !== undefined) {
-      const { uri, refresh, revision } = found.need;
-      return { uri, refresh: refresh === true, ...(revision === undefined ? {} : { revision }) };
+      const { uri, refresh, state } = found.need;
+      return { uri, refresh: refresh === true, ...(state === undefined ? {} : { state }) };
     }
     endNode(db, walk.id, node.uri);
     return null;

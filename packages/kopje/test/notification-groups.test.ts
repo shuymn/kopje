@@ -134,11 +134,12 @@ describe("grouped notifications (API v2)", () => {
 
   it("answers partial accounts with expand_accounts=partial_avatars, and refuses another value", async () => {
     const { h, alice, bob, carol, dave } = await scene();
-    // Carol's avatar with its still (migration 0061_account_static_images), as an animated upload leaves them.
+    // Carol's avatar with its still (migration 0061_account_static_images), as an animated upload leaves them, and
+    // its description (0097_profile_descriptions).
     const [avatar, still] = ["https://kopje.test/media/AAAA/full.webp", "https://kopje.test/media/AAAA/small.webp"];
     await sql(
       h.store,
-      "UPDATE accounts SET avatar_url = ?, avatar_static_url = ? WHERE id = ?",
+      "UPDATE accounts SET avatar_url = ?, avatar_static_url = ?, avatar_description = 'A cat' WHERE id = ?",
       avatar,
       still,
       carol.id,
@@ -155,6 +156,7 @@ describe("grouped notifications (API v2)", () => {
         url: expect.stringContaining("carol"),
         avatar,
         avatar_static: still,
+        avatar_description: "A cat",
       },
     ]);
     const full = await grouped(h, "/api/v2/notifications?expand_accounts=full", alice.token);

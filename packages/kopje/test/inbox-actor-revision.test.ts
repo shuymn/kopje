@@ -6,7 +6,7 @@ import { Db } from "../src/db/sql";
 import { KEY_REFRESH_MS } from "../src/domain/inbox";
 import {
   ACCOUNT_STALE_MS,
-  actorRevision,
+  actorState,
   type DocumentRevision,
   type RemoteActorInput,
   upsertRemoteActor,
@@ -17,7 +17,7 @@ import { DOCUMENT_REVISION_MAX } from "../src/platform/stored-bounds";
 import { sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
 import { migratedStore } from "./helpers";
-import { actorDefaults, MASTODON, mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
+import { actorDefaults, confirmedAs, MASTODON, mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
 import {
   accountId,
   ALICE,
@@ -102,8 +102,7 @@ const expire = (t: Setup, uri: string, keyId?: string) =>
 const documentOf = (uri: string): RemoteActorInput => ({
   ...actorDefaults(),
   uri,
-  username: uri.split("/").at(-1)!,
-  domain: new URL(uri).host,
+  ...confirmedAs(uri.split("/").at(-1)!, new URL(uri).host),
   displayName: "d",
   inboxUrl: `${uri}/inbox`,
   movedTo: null,
@@ -440,6 +439,8 @@ describe("the Move target and search resolution (ID-1, ID-4)", () => {
     const t = await setup();
     const carol = await carolAt(t, 1);
     await followed(t, carol);
+    // The stored handle differs from carol's claim, so each store of her document confirms it by WebFinger (D4).
+    await sql(t.store, "UPDATE accounts SET username = 'carol0' WHERE uri = ?", carol.uri);
     await carolAt(t, 2);
     const webfinger = hold(
       t,
@@ -611,7 +612,7 @@ describe("a refresh need after the request fetched the document (ID-1, ID-4)", (
   });
 });
 
-describe("the revision reads’ plans (RES-7)", () => {
+describe("the actor state reads’ plans (RES-7)", () => {
   it("seek one row by the uri index, for a stored actor and a missing one, after growth under stale statistics", async () => {
     const t = await setup();
     const bob = await bobAt(t, 1);
@@ -621,17 +622,20 @@ describe("the revision reads’ plans (RES-7)", () => {
       runInDurableObject(t.store, (_instance, state) => {
         const plans: PlannedStatement[] = [];
         const db = new Db(plannedSql(state.storage.sql, /document_revision END AS revision/, plans));
-        const read = [actorRevision(db, bob.uri), actorRevision(db, missing)];
+        const states = [actorState(db, bob.uri), actorState(db, missing)];
+        const read = states.map((state) => state.revision);
+        const handles = states.map((state) => state.handle);
         // The comparison in a writing transaction, for both rows: superseded, so nothing is written.
         state.storage.transactionSync(() => {
           const stale = { ...documentOf(bob.uri), displayName: "stale" };
           expect(upsertRemoteActor(db, stale, "https://kopje.test", NOW, (read[0] ?? 0) + 1)).toBe("superseded");
           expect(upsertRemoteActor(db, documentOf(missing), "https://kopje.test", NOW, 0)).toBe("superseded");
         });
-        return { read, plans };
+        return { read, handles, plans };
       });
     const { after } = await staleStatistics(t, { capture, grow: () => remoteAccounts(t, 100, 200) });
     expect(after.read).toEqual([expect.any(Number), null]);
+    expect(after.handles).toEqual([{ username: "bob", domain: "mastodon.example" }, null]);
     expect(after.plans).toHaveLength(4);
     for (const { query, plan, rows } of after.plans) {
       expect(scansOf(plan, ["accounts"]), `${query}\n${plan.join("\n")}`).toEqual([]);
@@ -669,7 +673,7 @@ describe("upsertRemoteActor’s comparison (DocumentRevision)", () => {
 
   it("stores a new row under null, and supersedes null once a row is stored, one of revision 0 included", async () => {
     await inStore((db) => {
-      expect(actorRevision(db, URI)).toBeNull();
+      expect(actorState(db, URI).revision).toBeNull();
       expect(put(db, 1, null)).toMatchObject({ uri: URI, frozen: false });
       const first = stored(db)!;
       expect(first).toMatchObject({ display_name: "r 1", pem: "pem 1" });
@@ -691,7 +695,7 @@ describe("upsertRemoteActor’s comparison (DocumentRevision)", () => {
   it("stores under the current revision and issues another; supersedes an older one", async () => {
     await inStore((db) => {
       put(db, 1, null);
-      const read = actorRevision(db, URI)!;
+      const read = actorState(db, URI).revision!;
       expect(put(db, 2, read)).toMatchObject({ uri: URI });
       const second = stored(db)!;
       expect(second).toMatchObject({ display_name: "r 2", pem: "pem 2" });
@@ -704,9 +708,9 @@ describe("upsertRemoteActor’s comparison (DocumentRevision)", () => {
   it("stores unfenced, and an unfenced store supersedes an expectation read before it", async () => {
     await inStore((db) => {
       put(db, 1);
-      const read = actorRevision(db, URI)!;
+      const read = actorState(db, URI).revision!;
       expect(put(db, 2)).toMatchObject({ uri: URI });
-      expect(actorRevision(db, URI)).not.toBe(read);
+      expect(actorState(db, URI).revision).not.toBe(read);
       expect(put(db, 3, read)).toBe("superseded");
       expect(stored(db)).toMatchObject({ display_name: "r 2" });
     });
@@ -717,7 +721,7 @@ describe("upsertRemoteActor’s comparison (DocumentRevision)", () => {
       put(db, 1);
       db.run("UPDATE accounts SET document_revision = ? WHERE uri = ?", DOCUMENT_REVISION_MAX, URI);
       expect(put(db, 2, DOCUMENT_REVISION_MAX)).toMatchObject({ uri: URI });
-      const next = actorRevision(db, URI)!;
+      const next = actorState(db, URI).revision!;
       expect(next).not.toBe(DOCUMENT_REVISION_MAX);
       expect(Number.isSafeInteger(next) && next >= 0).toBe(true);
       expect(put(db, 3, DOCUMENT_REVISION_MAX)).toBe("superseded");
@@ -729,13 +733,13 @@ describe("upsertRemoteActor’s comparison (DocumentRevision)", () => {
       put(db, 1);
       const id = db.first<{ id: string }>("SELECT id FROM accounts WHERE uri = ?", URI)!.id;
       suspendRemote(db, id, null, NOW);
-      const read = actorRevision(db, URI)!;
+      const read = actorState(db, URI).revision!;
       const moved = { ...document(2), inboxUrl: `${URI}/inbox-2` };
       expect(upsertRemoteActor(db, moved, "https://kopje.test", NOW, read + 1)).toBe("superseded");
       expect(db.first("SELECT inbox_url FROM accounts WHERE id = ?", id)).toEqual({ inbox_url: `${URI}/inbox` });
       expect(upsertRemoteActor(db, moved, "https://kopje.test", NOW, read)).toMatchObject({ frozen: true });
       expect(db.first("SELECT inbox_url FROM accounts WHERE id = ?", id)).toEqual({ inbox_url: `${URI}/inbox-2` });
-      expect(actorRevision(db, URI)).not.toBe(read);
+      expect(actorState(db, URI).revision).not.toBe(read);
     });
   });
 });

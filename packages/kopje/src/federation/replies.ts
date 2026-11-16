@@ -170,7 +170,7 @@ async function fetchAuthor(
     return "transient";
   }
   const kept = document === "transient" ? null : document;
-  return { uri: need.uri, document: kept, ...(need.revision === undefined ? {} : { revision: need.revision }) };
+  return { uri: need.uri, document: kept, ...(need.state === undefined ? {} : { revision: need.state.revision }) };
 }
 
 // A Store refusal inside a loader (a signing key's RPC in maintenance) made the fetch fail: no outcome of the step's.
@@ -215,11 +215,7 @@ async function walkTurn(turn: Turn, claim: ClaimedWalk): Promise<boolean> {
       if (answer.need !== null) {
         // A revision read after the step's first fetch takes a fresh memo (afterRevisionRead).
         const need = answer.need;
-        const author = await fetchAuthor(
-          need,
-          origin,
-          need.revision === undefined ? loaders : afterRevisionRead(loaders),
-        );
+        const author = await fetchAuthor(need, origin, need.state === undefined ? loaders : afterRevisionRead(loaders));
         rethrowStoreError(state);
         const retried =
           author === "transient" ? { ...input, fetched: { kind: "transient" } as const } : { ...input, author };

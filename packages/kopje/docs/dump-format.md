@@ -405,6 +405,12 @@ a snapshot: the next cron round works the links out again, and since a dump hold
 qualifies and a link trends again only from cards recorded after the restore. A file built from legacy data has no
 row.
 
+Card attribution (migration `0098_card_attribution`): a `status_cards` row also holds `unverified_author_account_id`,
+NULL or 18 ASCII digits as text (no foreign key: a restored one may name no account, and then no viewer sees the flag),
+NULL on a pending row; anything else fails with `status_cards: a value past its stored bound`. A row of a dump taken
+before 0098 takes NULL. A restored value is presented as it was dumped; nothing judges a card again until its next
+fetch.
+
 Instance activity (migration `0072_activity_tracking`): an `activity_counts` row holds a `kind` (`statuses` or
 `registrations`), a `day` (text of exactly 10 bytes, a calendar date `YYYY-MM-DD` with no NUL) and a `value` (an
 integer from 1 to 1e12), one per kind and day; an `activity_logins` row holds a `day` by the same rule and an
@@ -451,6 +457,15 @@ Notification policies' bot condition (migration `0095_notification_policy_bots`)
 (`CHECK constraint failed: for_bots IN ('accept', 'filter', 'drop')`). A dump taken before 0095 has no such column: it
 restores into a Store at its own migrations, which then upgrades, giving every policy `accept`. A file built from
 legacy data has no row.
+
+Profile image descriptions and display settings (migration `0097_profile_descriptions`): `accounts.avatar_description`
+and `header_description` are text of at most 600 UTF-8 bytes, with no NUL and at most 150 characters as SQLite counts
+them, `''` for none; `show_featured`, `show_media` and `show_media_replies` are the integer 0 or 1. Column affinity
+applies first, so a number written to a description is stored as its text, and numeric text (`'1'`, `' 1'`, `'1.0'`)
+written to a setting as the integer. Anything else, NULL included, fails with `accounts: profile setting past its
+stored bound`. A description of malformed bytes that SQLite counts as fewer characters is presented cut at 150 code
+points after decoding. A dump taken before 0097 has none of these columns: it restores into a Store at its own
+migrations, which then upgrades, giving every account `''` and `1`. A file built from legacy data writes the defaults.
 
 A report (migration `0054_remote_reports`) names any account as its reporter (`account_id`), once per `uri` and
 reported account, with `status_ids` of at most 100 ids within 2,101 UTF-8 bytes (compact JSON of 18-digit ids), a

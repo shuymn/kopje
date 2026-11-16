@@ -538,6 +538,20 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   },
   // A held Reject's Follow id judged against its stored bound: a predicate (deliveries.ts heldFollowUriSql).
   'src/domain/deliveries.ts interpolation heldFollowUriSql("uri")': { count: 2, reason: PREDICATE },
+  // actorState's stored handle, cut to what a claim can be (remote-actors.ts).
+  "src/domain/remote-actors.ts interpolation REMOTE_USERNAME_LIMIT": {
+    count: 1,
+    reason: "a number constant (the longest remote username a claim can be), naming no column",
+  },
+  "src/domain/remote-actors.ts interpolation DOMAIN_BYTES": {
+    count: 1,
+    reason: "a number constant (the longest domain a claim can be), naming no column",
+  },
+  // invalidateHolder: whether the holder's refresh was asked for within the day.
+  "src/domain/remote-actors.ts interpolation ACCOUNT_STALE_MS": {
+    count: 1,
+    reason: "a number constant (the day an invalidation's refresh request holds), naming no column",
+  },
   "src/domain/remote-media.ts interpolation SAFE_INTEGER_MAX": {
     count: 1,
     reason: "a number constant (the bound of a slot id an object may name), naming no column",
@@ -711,6 +725,16 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/status-bounds.ts interpolation mediaMetaSql(meta)": { count: 1, reason: SNAPSHOT },
   "src/domain/status-bounds.ts interpolation mediaDescriptionSql(text('description'))": { count: 1, reason: SNAPSHOT },
   "src/domain/quotes.ts accounts.username": { count: 2, reason: `a local signer or quoted author (${LOCAL})` },
+  // actorState's three: the stored handle, read only as TEXT within REMOTE_USERNAME_LIMIT bytes, compared with a claim
+  // and used for upsertRemoteActor's bookkeeping (a kept handle is copied in SQL, never written back from this read).
+  "src/domain/remote-actors.ts accounts.username": {
+    count: 3,
+    reason: "a remote account's stored handle, compared with a claim or derived from, never presented or written back",
+  },
+  "src/domain/remote-collections.ts accounts.username": {
+    count: 1,
+    reason: "the invalidated prefix tested in SQL (accounts.ts shownHandle's), a boolean, never the username",
+  },
   "src/domain/snapshot.ts accounts.username": { count: 1, reason: LOCAL },
   "src/domain/statuses.ts accounts.username": { count: 1, reason: LOCAL },
   "src/domain/streaming.ts status_tags.name": {

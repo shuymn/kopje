@@ -17,10 +17,11 @@ import {
 } from "./inbox-status-helpers";
 
 // The canonical address of a remote account (NET-4, VIS-5), as Mastodon 4.7.5's
-// ActivityPub::ProcessAccountService#check_webfinger! and ResolveAccountService decide it: the actor's own host
-// declares the address in the subject of its WebFinger answer, another domain in it is a candidate that must name the
-// same actor back, and the confirmation holds only for the (username, domain, actor id) it was made for. Aliases never
-// set it. Domain blocks match the stored domain and the actor's host alike.
+// ActivityPub::ProcessAccountService#check_webfinger! and ResolveAccountService decide it: the handle the actor's
+// document claims (here its preferredUsername at its host) is confirmed by WebFinger there, whose answer may name
+// another subject once, which must name the same actor back; that subject is the address stored. A stored account
+// keeps its address while a new claim is not confirmed, and a new actor is not stored without one. Aliases never set
+// it. Domain blocks match the stored domain and the actor's host alike.
 
 const HOST = "social.example";
 const CANONICAL = "nice.example";
@@ -38,15 +39,14 @@ type Found = { accounts: { id: string; acct: string }[] };
 const resolve = (t: Setup, address: string, as: "alice" | "dave" = "alice") =>
   t.api<Found>(`/api/v2/search?resolve=true&type=accounts&q=${encodeURIComponent(address)}`, as);
 
-const stored = (t: Setup, uri: string) =>
-  sql(t.store, "SELECT username, domain, confirmed_username FROM accounts WHERE uri = ?", uri);
+const stored = (t: Setup, uri: string) => sql(t.store, "SELECT username, domain FROM accounts WHERE uri = ?", uri);
 
 describe("the canonical address of a remote account", () => {
   it("stores the domain the actor’s host declares and that domain confirms (split domain), with unsigned WebFinger", async () => {
     const t = await setup();
     const ali = await splitDomain(t);
     expect((await resolve(t, `ali@${CANONICAL}`)).body.accounts.map((a) => a.acct)).toEqual([`ali@${CANONICAL}`]);
-    expect(await stored(t, ali.uri)).toEqual([{ username: "ali", domain: CANONICAL, confirmed_username: "ali" }]);
+    expect(await stored(t, ali.uri)).toEqual([{ username: "ali", domain: CANONICAL }]);
     const webfinger = t.web.fetched.flatMap((url, i) =>
       url.includes("/.well-known/webfinger") ? [t.web.signers[i]] : [],
     );
@@ -54,26 +54,35 @@ describe("the canonical address of a remote account", () => {
     expect(new Set(webfinger)).toEqual(new Set(["unsigned"]));
     // An inbound activity with the same username keeps it; the exact address finds it.
     await t.post(ali, { "@context": AS, id: `${ali.uri}#follow`, type: "Follow", actor: ali.uri, object: DAVE_URI });
-    expect(await stored(t, ali.uri)).toEqual([{ username: "ali", domain: CANONICAL, confirmed_username: "ali" }]);
+    expect(await stored(t, ali.uri)).toEqual([{ username: "ali", domain: CANONICAL }]);
     const exact = await t.api<Found>(`/api/v2/search?type=accounts&q=ali%40${CANONICAL}`);
     expect(exact.body.accounts.map((a) => a.acct)).toEqual([`ali@${CANONICAL}`]);
   });
 
-  it("falls back to the actor’s host when the username changes after the confirmation", async () => {
+  it("keeps the address when a new username is not confirmed, and takes it once its WebFinger names the actor", async () => {
     const t = await setup();
     const ali = await splitDomain(t);
     await resolve(t, `ali@${CANONICAL}`);
     ali.document.preferredUsername = "admin";
     t.web.serve(ali.uri, ali.document);
-    const update = { "@context": AS, id: `${ali.uri}#update`, type: "Update", actor: ali.uri, object: ali.document };
-    expect(await t.post(ali, update)).toBe(202);
-    expect(await stored(t, ali.uri)).toEqual([{ username: "admin", domain: HOST, confirmed_username: null }]);
+    const update = (n: number) => ({
+      "@context": AS,
+      id: `${ali.uri}#update-${n}`,
+      type: "Update",
+      actor: ali.uri,
+      object: ali.document,
+    });
+    expect(await t.post(ali, update(1))).toBe(202);
+    expect(await stored(t, ali.uri)).toEqual([{ username: "ali", domain: CANONICAL }]);
+    serveWebFinger(t.web, `acct:admin@${HOST}`, `acct:admin@${HOST}`, ali.uri);
+    expect(await t.post(ali, update(2))).toBe(202);
+    expect(await stored(t, ali.uri)).toEqual([{ username: "admin", domain: HOST }]);
     const id = (await accountId(t.store, ali.uri))!;
     const shown = await t.api<{ acct: string }>(`/api/v1/accounts/${id}`);
     expect(shown.body.acct).toBe(`admin@${HOST}`);
   });
 
-  it("keeps the actor’s host when the declared domain does not name the actor back", async () => {
+  it("stores no actor whose host names a domain that does not name the actor back", async () => {
     const t = await setup();
     const evil = await mastodonActor(t.web, "alice", { origin: "https://evil.example", key: 3 });
     serveWebFinger(t.web, "acct:alice@evil.example", "acct:alice@victim.example", evil.uri);
@@ -83,10 +92,8 @@ describe("the canonical address of a remote account", () => {
       "acct:alice@victim.example",
       "https://victim.example/users/alice",
     );
-    expect((await resolve(t, "alice@evil.example")).body.accounts.map((a) => a.acct)).toEqual(["alice@evil.example"]);
-    expect(await stored(t, evil.uri)).toEqual([
-      { username: "alice", domain: "evil.example", confirmed_username: null },
-    ]);
+    expect((await resolve(t, "alice@evil.example")).body.accounts).toEqual([]);
+    expect(await stored(t, evil.uri)).toEqual([]);
     // victim.example's own address resolves to its own actor, never to the claimant.
     const victim = await resolve(t, "alice@victim.example");
     expect(victim.body.accounts.map((a) => a.acct)).not.toContain("alice@evil.example");
@@ -105,13 +112,13 @@ describe("the canonical address of a remote account", () => {
     expect((await resolve(t, "anyone@alias.example", "dave")).body.accounts.map((a) => a.acct)).toEqual([
       `ali@${CANONICAL}`,
     ]);
-    expect(await stored(t, ali.uri)).toEqual([{ username: "ali", domain: CANONICAL, confirmed_username: "ali" }]);
+    expect(await stored(t, ali.uri)).toEqual([{ username: "ali", domain: CANONICAL }]);
     // While the host does not answer, the alias leaves the stored address as it is.
     t.web.fail(`https://${HOST}/.well-known/webfinger?resource=${encodeURIComponent(`acct:ali@${HOST}`)}`, 503);
     expect((await resolve(t, "anyone@alias.example", "dave")).body.accounts.map((a) => a.acct)).toEqual([
       `ali@${CANONICAL}`,
     ]);
-    expect(await stored(t, ali.uri)).toEqual([{ username: "ali", domain: CANONICAL, confirmed_username: "ali" }]);
+    expect(await stored(t, ali.uri)).toEqual([{ username: "ali", domain: CANONICAL }]);
     // A block of the canonical domain holds through the alias, for search and the inbox.
     await sql(t.store, "INSERT INTO domain_blocks (account_id, domain) VALUES (?, ?)", ALICE, CANONICAL);
     expect((await resolve(t, "anyone@alias.example")).body.accounts).toEqual([]);
@@ -201,13 +208,13 @@ describe("the domains of WebFinger subjects and addresses, parsed one way", () =
     "acct:ali@127.0.0.1",
     "acct:ali@localhost",
   ]) {
-    it(`keeps the actor’s host for a declared subject it cannot read exactly: ${subject}`, async () => {
+    it(`stores no actor whose host answers a subject it cannot read exactly: ${subject}`, async () => {
       const t = await setup();
       const ali = await declaring(t, subject);
       // Even if a domain would confirm whatever a looser parser read from it.
       serveWebFinger(t.web, `acct:ali@${CANONICAL}`, `acct:ali@${CANONICAL}`, ali.uri);
       await resolve(t, `ali@${HOST}`);
-      expect(await stored(t, ali.uri)).toEqual([{ username: "ali", domain: HOST, confirmed_username: null }]);
+      expect(await stored(t, ali.uri)).toEqual([]);
       expect(t.web.fetched.filter((url) => url.startsWith(`https://${CANONICAL}/`))).toEqual([]);
     });
   }
@@ -217,7 +224,7 @@ describe("the domains of WebFinger subjects and addresses, parsed one way", () =
     const ali = await declaring(t, `acct:ali@NICE.Example`);
     serveWebFinger(t.web, `acct:ali@${CANONICAL}`, `acct:ali@${CANONICAL}`, ali.uri);
     await resolve(t, `ali@${HOST}`);
-    expect(await stored(t, ali.uri)).toEqual([{ username: "ali", domain: CANONICAL, confirmed_username: "ali" }]);
+    expect(await stored(t, ali.uri)).toEqual([{ username: "ali", domain: CANONICAL }]);
 
     const u = await setup();
     const idn = "ニース.example";
@@ -226,7 +233,7 @@ describe("the domains of WebFinger subjects and addresses, parsed one way", () =
     const other = await declaring(u, `acct:ali@${idn}`);
     serveWebFinger(u.web, `acct:ali@${ascii}`, `acct:ali@${ascii}`, other.uri);
     await resolve(u, `ali@${HOST}`);
-    expect(await stored(u, other.uri)).toEqual([{ username: "ali", domain: ascii, confirmed_username: "ali" }]);
+    expect(await stored(u, other.uri)).toEqual([{ username: "ali", domain: ascii }]);
   });
 
   it("fetches nothing for an address whose domain carries a port", async () => {
@@ -254,7 +261,7 @@ describe("host spellings, transient failures, IDN addresses and candidate subjec
     expect((await t.api<Found>("/api/v2/search?type=accounts&q=blocked.example")).body.accounts).toEqual([]);
   });
 
-  it("keeps a confirmation through a transient failure at the candidate, and drops it on an authoritative 404", async () => {
+  it("keeps the stored address through a transient failure and a refusal at the other subject", async () => {
     const t = await setup();
     const ali = await splitDomain(t);
     await resolve(t, `ali@${CANONICAL}`);
@@ -262,13 +269,13 @@ describe("host spellings, transient failures, IDN addresses and candidate subjec
     serveWebFinger(t.web, "acct:anyone@alias.example", "acct:anyone@alias.example", ali.uri);
     t.web.fail(candidate, 503);
     await resolve(t, "anyone@alias.example", "dave");
-    expect(await stored(t, ali.uri)).toEqual([{ username: "ali", domain: CANONICAL, confirmed_username: "ali" }]);
+    expect(await stored(t, ali.uri)).toEqual([{ username: "ali", domain: CANONICAL }]);
     t.web.fail(candidate, 404);
     await resolve(t, "anyone@alias.example", "dave");
-    expect(await stored(t, ali.uri)).toEqual([{ username: "ali", domain: HOST, confirmed_username: null }]);
+    expect(await stored(t, ali.uri)).toEqual([{ username: "ali", domain: CANONICAL }]);
   });
 
-  it("stores no confirmation when the candidate names the actor under another subject", async () => {
+  it("stores no actor when the other subject's answer names it under a third subject", async () => {
     for (const subject of [`acct:someone@${CANONICAL}`, "acct:ali@other.example"]) {
       const t = await setup();
       const ali = await mastodonActor(t.web, "ali", { origin: `https://${HOST}`, key: 3 });
@@ -276,7 +283,7 @@ describe("host spellings, transient failures, IDN addresses and candidate subjec
       // The right actor id as self, under the wrong subject.
       serveWebFinger(t.web, `acct:ali@${CANONICAL}`, subject, ali.uri);
       await resolve(t, `ali@${HOST}`);
-      expect(await stored(t, ali.uri), subject).toEqual([{ username: "ali", domain: HOST, confirmed_username: null }]);
+      expect(await stored(t, ali.uri), subject).toEqual([]);
     }
   });
 

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { Resolved } from "../src/domain/remote-statuses";
+import { type Resolved, webfingerUrl } from "../src/domain/remote-statuses";
 import {
   DOCUMENT_BODY_LIMIT,
   type FetchBudget,
@@ -11,12 +11,12 @@ import {
 } from "../src/federation/loader";
 import { createResolver } from "../src/federation/resolve";
 import { LINK_HEADER_CHARS } from "../src/platform/link-header";
-import { apiHarness, seedAccount } from "./api-helpers";
+import { apiHarness, seedAccount, sql } from "./api-helpers";
 import { countingStore, harness, NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount } from "./federation-helpers";
 import { BUILD, completeSetup, migratedStore } from "./helpers";
-import { AP, MASTODON, mastodonActor, RemoteWeb } from "./inbox-helpers";
+import { AP, MASTODON, mastodonActor, RemoteWeb, serveWebFinger } from "./inbox-helpers";
 import { ALICE, AS, mastodonNote, token } from "./inbox-status-helpers";
 import { attr, parseHtml, query } from "./web-dom";
 import { postForm, signIn } from "./web-helpers";
@@ -140,7 +140,8 @@ describe("resolve through a Link header alternate (T10.1, T10.3, T10.4)", () => 
     const note = t.note();
     t.routes.set(PAGE, () => html(page(), { link: `<${note.id}>; rel="alternate"; type="application/activity+json"` }));
     expect(await foundUri(t, PAGE)).toBe(note.id);
-    expect(t.fetched()).toEqual([PAGE, note.id, t.bob.uri]);
+    // The author, fetched after its state read, and the WebFinger that confirms its handle (NET-4).
+    expect(t.fetched()).toEqual([PAGE, note.id, t.bob.uri, webfingerUrl("bob", "mastodon.example")]);
 
     const profile = "https://blog.example/about";
     t.routes.set(profile, () =>
@@ -372,10 +373,11 @@ describe("the bounds of the header and the page (T10.10, T10.11, T10.14, T10.15)
       return kind;
     };
     t.routes.set(PAGE, () => html(page(linkTag(note.id))));
-    // (a) Seven fetches spent: the page is the eighth, the alternate would be the ninth.
+    // (a) Seven fetches spent: the page is the eighth, the alternate would be the ninth. Four left: the page, the
+    // alternate, the author and the WebFinger that confirms its handle (NET-4).
     expect(await resolve({ fetches: 1 })).toBe("none");
     expect(t.fetched()).toEqual([PAGE]);
-    expect(await resolve({ fetches: 3 })).toBe("status");
+    expect(await resolve({ fetches: 4 })).toBe("status");
     // (b) Fewer bytes left than the page holds (a 600 KiB page, 500 KiB left): nothing, where the alternate and the
     // author would fit.
     const padded = page(linkTag(note.id)).padEnd(600 * 1024, " ");
@@ -533,5 +535,160 @@ describe("the interaction page (T10.16)", () => {
     const found = await postForm(h, browser, "/authorize_interaction", fields);
     expect(found.status).toBe(200);
     expect(await found.text()).toContain("the alternate note");
+  });
+});
+
+// An actor reached through an alternate is the actor a direct URL reaches (resolveUrl → resolveAccount): its state read,
+// its refetch after it and its handle's confirmation (NET-4), all within the request's one fetch budget (RES-6).
+describe("verified handles through an alternate (NET-4, RES-6)", () => {
+  type Row = { username: string; domain: string; display_name: string };
+  const row = (t: World, uri: string) =>
+    sql<Row>(t.store, "SELECT username, domain, display_name FROM accounts WHERE uri = ?", uri);
+
+  it("stores an actor an alternate names under its handle only as a direct URL would", async () => {
+    // A world of its own per search: the actor's URI searched directly, or a page whose alternate is that URI.
+    const outcome = async (via: "direct" | "alternate", prepare: (t: World) => Promise<string>) => {
+      const t = await world();
+      const uri = await prepare(t);
+      t.routes.set(PAGE, () => html(page(linkTag(uri))));
+      const from = t.fetched().length;
+      const accts = (await t.search(via === "direct" ? uri : PAGE)).accounts.map((account) => account.acct);
+      return { uri, accts, row: await row(t, uri), fetched: t.fetched().slice(from) };
+    };
+    // A new actor claiming a handle whose WebFinger names another actor (the handle's owner): nothing is stored.
+    const claimant = async (t: World) => {
+      const carol = await mastodonActor(t.web, "carol", { key: 2, extra: { webfinger: "carol@victim.example" } });
+      serveWebFinger(
+        t.web,
+        "acct:carol@victim.example",
+        "acct:carol@victim.example",
+        "https://victim.example/users/carol",
+      );
+      return carol.uri;
+    };
+    // A stored actor (bob@mastodon.example) whose document now claims a handle nothing confirms (no WebFinger answer
+    // there) and a new name: the name is stored, the handle kept.
+    const renamed = async (t: World) => {
+      expect((await t.search(t.bob.uri)).accounts.map((account) => account.acct)).toEqual(["bob@mastodon.example"]);
+      t.web.serve(t.bob.uri, { ...t.bob.document, name: "Robert", webfinger: "robert@victim.example" });
+      return t.bob.uri;
+    };
+    for (const [prepare, claim, accts, rows] of [
+      [claimant, webfingerUrl("carol", "victim.example"), [], []],
+      [
+        renamed,
+        webfingerUrl("robert", "victim.example"),
+        ["bob@mastodon.example"],
+        [{ username: "bob", domain: "mastodon.example", display_name: "Robert" }],
+      ],
+    ] as const) {
+      const direct = await outcome("direct", prepare);
+      const alternate = await outcome("alternate", prepare);
+      // Each fetched the actor after its state read and looked its claim up (the confirmation ran); the alternate's
+      // actor was fetched twice, as a probe's is: once as the alternate, once after the state read.
+      expect(direct.fetched.slice(-2)).toEqual([direct.uri, claim]);
+      expect(alternate.fetched).toEqual([PAGE, alternate.uri, alternate.uri, claim]);
+      for (const seen of [direct, alternate]) {
+        expect(seen.accts).toEqual(accts);
+        expect(seen.row).toEqual(rows);
+      }
+    }
+  });
+
+  it("stops at the request's budget when the alternates and the confirmation need more", async () => {
+    // PAGE answers after `hops` same-origin redirects, its Link header naming a header alternate that answers 404 (a
+    // nil answer) and its <link> the actor. The actor claims <name>@alias.example, whose WebFinger names
+    // <name>@mastodon.example, which names the actor: confirmed through another subject, two WebFinger loads. The
+    // requests: the hops and the page, the header alternate, the page alternate, the refetch after the actor's state
+    // read, two WebFinger answers; 8 with two hops, 9 with three.
+    const run = async (hops: number, stored: boolean) => {
+      const t = await world();
+      const name = stored ? "robert" : "dave";
+      const uri = stored ? t.bob.uri : `${MASTODON}/users/dave`;
+      if (stored) {
+        expect((await t.search(t.bob.uri)).accounts.map((account) => account.acct)).toEqual(["bob@mastodon.example"]);
+        t.web.serve(uri, { ...t.bob.document, name: "Robert", webfinger: `${name}@alias.example` });
+      } else {
+        await mastodonActor(t.web, "dave", { key: 2, extra: { webfinger: "dave@alias.example" } });
+      }
+      serveWebFinger(t.web, `acct:${name}@alias.example`, `acct:${name}@mastodon.example`, uri);
+      serveWebFinger(t.web, `acct:${name}@mastodon.example`, `acct:${name}@mastodon.example`, uri);
+      const nil = "https://blog.example/nil";
+      t.routes.set(nil, () => new Response("Not Found", { status: 404 }));
+      for (let hop = 0; hop < hops; hop++) {
+        const location = `${PAGE}/${hop + 1}`;
+        t.routes.set(
+          hop === 0 ? PAGE : `${PAGE}/${hop}`,
+          () => new Response(null, { status: 302, headers: { location } }),
+        );
+      }
+      t.routes.set(hops === 0 ? PAGE : `${PAGE}/${hops}`, () =>
+        html(page(linkTag(uri)), { link: `<${nil}>; rel="alternate"; type="application/activity+json"` }),
+      );
+      const from = t.fetched().length;
+      const accts = (await t.search(PAGE)).accounts.map((account) => account.acct);
+      const fetched = t.fetched().slice(from);
+      expect(fetched.slice(hops + 1, hops + 4)).toEqual([nil, uri, uri]);
+      return { accts, row: await row(t, uri), fetched, second: webfingerUrl(name, "mastodon.example"), name };
+    };
+    for (const stored of [false, true]) {
+      // Within the budget: the second subject confirms, and the handle is taken.
+      const within = await run(2, stored);
+      expect(within.fetched).toHaveLength(REQUEST_MAX_FETCHES);
+      expect(within.fetched.at(-1)).toBe(within.second);
+      expect(within.accts).toEqual([`${within.name}@mastodon.example`]);
+      // One hop more: the second WebFinger would be the ninth request and is never sent. A transient failure: a new
+      // actor is not stored, a stored one keeps its handle and takes the rest of its document.
+      const past = await run(3, stored);
+      expect(past.fetched).toHaveLength(REQUEST_MAX_FETCHES);
+      expect(past.fetched.at(-1)).toBe(webfingerUrl(past.name, "alias.example"));
+      expect(past.fetched).not.toContain(past.second);
+      expect(past.accts).toEqual(stored ? ["bob@mastodon.example"] : []);
+      expect(past.row).toEqual(stored ? [{ username: "bob", domain: "mastodon.example", display_name: "Robert" }] : []);
+    }
+  });
+});
+
+// A resolution that ends with nothing after a 410, the last answer of the probe's fetches, is `gone` (resolve.ts
+// resolveUrl), and the search then answers no stored status (storeResolved): Mastodon's process_url_from_db reads the
+// last fetch's response code (fetch_resource_service.rb:47) and answers a stored status only after a 401, 403 or 404
+// (resolve_url_service.rb:44).
+describe("a resolution gone after a 410", () => {
+  const ALT = "https://blog.example/alt";
+  const answer = (status: number) => () => new Response("", { status });
+  const resolve = (t: World, url = PAGE) =>
+    t.resolver({ fetches: REQUEST_MAX_FETCHES, bytes: REQUEST_MAX_BYTES, deadline: Date.now() + REQUEST_DEADLINE_MS })(
+      t.h.env,
+      url,
+    );
+
+  it("is gone when the probe answers 410, and when the id its document names does", async () => {
+    const t = await world();
+    t.routes.set(PAGE, answer(410));
+    expect(await resolve(t)).toEqual({ kind: "none", gone: true });
+    t.routes.set(PAGE, answer(404));
+    expect(await resolve(t)).toEqual({ kind: "none" });
+    // The note's own origin serves it at another URL (the loader refuses an id on another origin).
+    const note = t.note();
+    const other = `${new URL(note.id).origin}/other`;
+    t.routes.set(other, () => Response.json({ "@context": AS, ...note }, { headers: { "content-type": AP } }));
+    t.routes.set(note.id, answer(410));
+    expect(await resolve(t, other)).toEqual({ kind: "none", gone: true });
+    expect(t.fetched().slice(-2)).toEqual([other, note.id]);
+  });
+
+  // The header alternate answers 410; the page alternate's answer comes last.
+  it.each<[string, Route]>([
+    ["404", answer(404)],
+    ["an HTML 200", () => html(page())],
+  ])("is not gone when a later alternate answers %s", async (_label, last) => {
+    const t = await world();
+    t.routes.set(PAGE, () =>
+      html(page(linkTag(ALT)), { link: `<${PAGE}/gone>; rel="alternate"; type="application/activity+json"` }),
+    );
+    t.routes.set(`${PAGE}/gone`, answer(410));
+    t.routes.set(ALT, last);
+    expect(await resolve(t)).toEqual({ kind: "none" });
+    expect(t.fetched()).toEqual([PAGE, `${PAGE}/gone`, ALT]);
   });
 });
