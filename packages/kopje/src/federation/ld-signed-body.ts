@@ -19,7 +19,11 @@ import { MASTODON_CONTEXT_TERMS, MASTODON_NAMED_CONTEXTS } from "./mastodon-cont
 //      ActivityStreams gives it; any other name a string IRI, or an object of @id (required), @type (@id or an IRI)
 //      and @container (@set or @list) only, each IRI absolute or compact over a namespace prefix of the active context
 //      written as an absolute IRI: a name of ACTIVITY_VOCABULARY its IRI there, any other name an IRI outside it;
-//   3. every key of the body but the top-level @context, signature and proof is a plain name.
+//   3. every key of the body but the top-level @context, signature and proof is a plain name;
+//   4. no `type` or `@type` in it, outside the signature (which the compaction leaves out) and a @context, is an array
+//      of two values or more one of which is not a string (typesSortable): Ruby's json-ld sorts such an array before
+//      it reads the node, comparing a string with any other value raises an ArgumentError Mastodon does not rescue,
+//      and its job raises and applies nothing.
 //
 // Then every name of the vocabulary means what full_context makes it, no other name or keyword alias reaches one of its
 // IRIs, and no base or vocabulary is set: no key Kopje reads is renamed, aliased or given another meaning by the
@@ -661,20 +665,58 @@ const preloaded = (url: string) => {
 // @type.
 const PROOF_CONTEXTS: ReadonlySet<string> = new Set([AS, ...SIGNED_CONTEXT_URLS.keys()]);
 
-// The contexts a body and its proof may give before the proof is expanded, each URL or object of a @context and each
-// type (whose context, if it has one, applies in its node): jsonld.js processes a context again in each node whose
-// active context differs, so their number, more than their size, makes the expansion's cost. A real body and its
-// proof give a dozen.
+// The contexts a body and its proof may give before the proof is expanded, each URL or object of a @context, each type
+// (whose context, if it has one, applies in its node) and each key of SCOPED_NAMES (whose context applies in its
+// value): jsonld.js processes a context again in each node whose active context differs, so their number, more than
+// their size, makes the expansion's cost. A real body and its proof give a dozen.
 const PROOF_CONTEXT_LIMIT = 32;
 
 const contextEntries = (value: unknown) => (Array.isArray(value) ? value.length : value === undefined ? 0 : 1);
 
+// The names a context in PROOF_CONTEXTS defines with a context of their own, at any depth (DataIntegrityProof,
+// proofPurpose, service, Multikey, JsonWebKey): JSON-LD processes that context wherever the name is a key (a
+// property-scoped context), as it does wherever the name is a type. An inline definition has none (2).
+function scopedNames(definitions: Json, names: Set<string>): Set<string> {
+  for (const [name, definition] of Object.entries(definitions)) {
+    if (isObject(definition) && definition["@context"] !== undefined) {
+      names.add(name);
+      if (isObject(definition["@context"])) {
+        scopedNames(definition["@context"], names);
+      }
+    }
+  }
+  return names;
+}
+const SCOPED_NAMES: ReadonlySet<string> = [...URL_DEFINITIONS.values()].reduce(
+  (names, definitions) => scopedNames(definitions, names),
+  new Set<string>(),
+);
+
+// The keywords a node, value, list or set object holds that both expanders read alike; a @graph, @included or
+// @reverse key has Mastodon read the body as received before anything is expanded (jsonLdValues). Every other key that
+// starts with @ (a keyword of contexts and frames such as @version, @vocab, @none or @json, or a string shaped like a
+// keyword) Ruby's json-ld drops and jsonld.js keeps as a member, so a proof with one is not compared.
+const NODE_KEYWORDS: ReadonlySet<string> = new Set([
+  "@context",
+  "@id",
+  "@type",
+  "@value",
+  "@language",
+  "@direction",
+  "@index",
+  "@list",
+  "@set",
+  "@nest",
+]);
+
 // A proof as Mastodon's JSON-LD library and jsonld.js both expand it, or undefined: each @context in it, at any depth,
 // one the rules (1, 2) read, or URLs of PROOF_CONTEXTS alone, so that no name there is a keyword but @id and @type and
-// no context is fetched, and no more contexts and types than `contexts` leaves; and each @set object (with an @index or
-// not) its value, which Mastodon's library reads it as, so that one of nothing leaves nothing where jsonld.js leaves an
-// empty node. A @value and a language map are left as they are (a JSON literal's value is data, a language map's keys
-// are tags). A map under @nest is not a node, its members its node's: one with a @set is not read, nor a @set object
+// no context is fetched; no more contexts, types and keys of SCOPED_NAMES than `contexts` leaves; no key of an object
+// that starts with @ but NODE_KEYWORDS; and each @set object (with an @index or not) its value, which Mastodon's
+// library reads it as, so that one of nothing leaves nothing where jsonld.js leaves an empty node. A @value is left as
+// it is (a JSON literal's value is data), and so is a language map, an object under a name of LANGUAGE_MAPS (its keys
+// are tags, its values strings, and jsonld.js refuses any other); an array there holds values and nodes, compared as
+// any other. A map under @nest is not a node, its members its node's: one with a @set is not read, nor a @set object
 // with a @context.
 function comparableProof(value: unknown, contexts: { left: number }, nested = false): { value: unknown } | undefined {
   if (Array.isArray(value)) {
@@ -712,8 +754,14 @@ function comparableProof(value: unknown, contexts: { left: number }, nested = fa
   }
   const members: [string, unknown][] = [];
   for (const [key, member] of Object.entries(value)) {
+    if (key.startsWith("@") && !NODE_KEYWORDS.has(key)) {
+      return undefined;
+    }
+    if (SCOPED_NAMES.has(key) && --contexts.left < 0) {
+      return undefined;
+    }
     const comparable =
-      key === "@context" || key === "@value" || LANGUAGE_MAPS.has(key)
+      key === "@context" || key === "@value" || (LANGUAGE_MAPS.has(key) && isObject(member))
         ? { value: member }
         : comparableProof(member, contexts, key === "@nest");
     if (comparable === undefined) {
@@ -735,8 +783,9 @@ const PROOF_IRI = "https://w3id.org/security#proof";
 // for that container and its @id typing (which only makes a string a node reference, kept either way). Where the proof
 // is not comparable or the expansion raises, the body is read as named, less than Mastodon reads where it reads it as
 // received. Mastodon's 1,000 values (checked first) and PROOF_CONTEXT_LIMIT bound the expansion (RES-6):
-// test/inbox-signed-forms.test.ts holds its time at those bounds, and test/ld-signed-proof-shapes.test.ts its result to
-// Mastodon's reading of each proof to depth 3.
+// test/inbox-signed-forms.test.ts holds its time at those bounds on each path a context applies by, and
+// test/ld-signed-proof-shapes.test.ts its result to Mastodon's reading of each proof to depth 3 and of a proof holding
+// each keyword of JSON-LD 1.1 and its framing.
 async function proofExpandsToSomething(json: Json): Promise<boolean> {
   const left = PROOF_CONTEXT_LIMIT - contextEntries(json["@context"]) - contextEntries(json.type);
   const proof = left < 0 ? undefined : comparableProof(json.proof, { left });
@@ -775,13 +824,46 @@ async function mastodonReadsAsReceived(json: Json, meanings: ReadonlyMap<string,
 // the rules hold it to; any other type, and every type of a body outside that shape, is read as given.
 export type TypeReader = (type: string) => string;
 
+// Rule (4): no `type` or `@type` of the body (its proof included) outside the signature and a @context is an array of
+// two values or more one of which is not a string. Ruby's json-ld sorts the values of every key that expands to @type
+// before it reads the object (expand.rb, the type-scoped contexts), and a string compared with a null, a number, a
+// boolean, an object or an array raises an ArgumentError, which ProcessActivityService does not rescue, so Mastodon's
+// job raises and applies nothing. An array of such values alone may sort, and JSON::LD then refuses it (Mastodon reads
+// the body as received), as may one past Mastodon's JSON-LD limits, which it reads as received unexpanded: Kopje
+// refuses those too, and reads less. Each value is visited once.
+function typesSortable(json: Json): boolean {
+  const pending: unknown[] = [json];
+  while (pending.length > 0) {
+    const value = pending.pop();
+    if (Array.isArray(value)) {
+      pending.push(...(value as unknown[]));
+    } else if (isObject(value)) {
+      for (const [key, member] of Object.entries(value)) {
+        if (key === "@context" || (value === json && key === "signature")) {
+          continue;
+        }
+        if (
+          (key === "type" || key === "@type") &&
+          Array.isArray(member) &&
+          member.length > 1 &&
+          member.some((item) => typeof item !== "string")
+        ) {
+          return false;
+        }
+        pending.push(member);
+      }
+    }
+  }
+  return true;
+}
+
 // Whether an LD-signed activity is read (its signature an object), and then how its types are read and its body as
 // Mastodon's compaction names its members (namedAsCompacted): null when the rules refuse it. Run after
 // withinJsonBounds, so the work is bounded by its values, and a proof's expansion by Mastodon's 1,000 values and
 // PROOF_CONTEXT_LIMIT too.
 export async function ldSignedReading(json: Json): Promise<{ readType: TypeReader; body: Json } | null> {
   const context = readContext(json["@context"]);
-  if (context === null || !bodyKeysReadable(json)) {
+  if (context === null || !bodyKeysReadable(json) || !typesSortable(json)) {
     return null;
   }
   let compacts: boolean | undefined;
@@ -798,7 +880,7 @@ export async function ldSignedReading(json: Json): Promise<{ readType: TypeReade
   return { readType, body: asReceived ? json : namedAsCompacted(json, context.meanings) };
 }
 
-// Whether the rules (1-3) read an LD-signed body at all (ldSignedReading is null for no other).
+// Whether the rules (1-4) read an LD-signed body at all (ldSignedReading is null for no other).
 export function ldSignedBodyReadable(json: Json): boolean {
-  return readContext(json["@context"]) !== null && bodyKeysReadable(json);
+  return readContext(json["@context"]) !== null && bodyKeysReadable(json) && typesSortable(json);
 }

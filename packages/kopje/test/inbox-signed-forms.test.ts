@@ -11,6 +11,8 @@ import { sql } from "./api-helpers";
 import { harness, inboxDeps, NOW } from "./app-helpers";
 import { fixtureKeyGen } from "./federation-helpers";
 import corpusFixture from "./fixtures/ld-signed/corpus.json";
+import edgeShapesFixture from "./fixtures/ld-signed/edge-shapes.json";
+import { edgeShapes, KEYWORD_PROOFS } from "./fixtures/ld-signed/edge-shapes.mjs";
 import effectsFixture from "./fixtures/ld-signed/effects.json";
 import formsFixture from "./fixtures/ld-signed/forms.json";
 import proofShapesFixture from "./fixtures/ld-signed/proof-shapes.json";
@@ -1104,6 +1106,67 @@ describe("D1 through the inbox: what the received form stores", () => {
     },
   );
 
+  // An edge shape's body and Mastodon's reading of it (edge-shapes.json).
+  let edges: ReturnType<typeof edgeShapes> | undefined;
+  function edge(name: string): { body: Json; reading: string | undefined } {
+    edges ??= edgeShapes();
+    const index = edges.findIndex((shape) => shape.name === name);
+    expect(index).toBeGreaterThanOrEqual(0);
+    return { body: edges[index]!.body, reading: edgeShapesFixture.readings[index] };
+  }
+
+  // A proof of a @language beside a key that starts with @ but is no keyword of a node (one of contexts or frames):
+  // Mastodon's json-ld drops the key, so that the proof keeps nothing and Mastodon reads the compaction, where jsonld.js
+  // keeps it as a member. Kopje does not compare such a proof, and reads the body as named.
+  it.each(KEYWORD_PROOFS.map((shape) => `${shape.context} ${JSON.stringify(shape.proof)}`))(
+    "a QuoteRequest left undefined, its proof %s, leaves bob's quote pending, as in Mastodon",
+    async (name) => {
+      const { body: received, reading } = edge(name);
+      expect(reading).toBe("c");
+      const { t, bob, status } = await world();
+      const quote = await bobsQuote(t, bob, status);
+      expect(await t.post(bob, placed(received, status, ""))).toBe(202);
+      expect(await quote()).toBe("pending");
+    },
+  );
+
+  // A type array of two values or more one of which is not a string: Mastodon's json-ld sorts it before reading the
+  // node and raises, and its job applies nothing, so Kopje refuses the body (typesSortable). Given one type, the
+  // QuoteRequest (its type defined) approves bob's quote in both.
+  it.each([
+    ["the instrument's type: [null, type]", "pending"],
+    ["a node's type under an undefined name: [type, null]", "pending"],
+    ["the proof's type: [5, type]", "pending"],
+    ["the proof's @type: [{}, type]", "pending"],
+    ["a node's type in the proof: [true, type]", "pending"],
+    ["the instrument's type: type", "accepted"],
+    ["the proof's type: type", "accepted"],
+  ])("a QuoteRequest, its type defined, with %s, leaves bob's quote %s, as in Mastodon", async (name, state) => {
+    const { body: received, reading } = edge(name);
+    expect(reading === "e").toBe(state === "pending");
+    const { t, bob, status } = await world();
+    const quote = await bobsQuote(t, bob, status);
+    expect(await t.post(bob, placed(received, status, ""))).toBe(202);
+    expect(await quote()).toBe(state);
+  });
+
+  it.each([
+    ["[null, type]", true],
+    ["[[type], type]", true],
+    ["type", false],
+  ])(
+    "an LD-signed Delete of bob's status, its object's type %s: the status stays %s, as in Mastodon",
+    async (given, stays) => {
+      const { body: received, reading } = edge(`a Delete's object's type: ${given}`);
+      expect(reading === "e").toBe(stays);
+      const { t, bob } = await world();
+      const deleted = "https://mastodon.example/users/bob/statuses/deleted";
+      expect(await t.post(bob, create(bob, mastodonNote(bob, { id: deleted })))).toBe(202);
+      expect(await t.post(bob, received)).toBe(202);
+      expect((await statusRow(t.store, deleted)) !== undefined).toBe(stays);
+    },
+  );
+
   // Mastodon's Accept seeks our quote by the object's id whatever its type (Accept#quote_request_from_object).
   it.each(["left undefined", "defined"])(
     "an Accept of our quote request, its object's type %s, accepts it, as in Mastodon",
@@ -1219,17 +1282,24 @@ describe("D1 through the inbox: what the received form stores", () => {
     expect(applied(name).effect).toEqual(stays ? {} : { removed_statuses: [deleted] });
   });
 
-  // Under the data-integrity context, with a proof that keeps nothing (a @language beside a null member, which Mastodon
-  // compacts: LANGUAGE_PROOFS), the atomUri is still read as the compaction names it.
-  it("a Delete by an atomUri left undefined, with a proof that keeps nothing: the status stays, as in Mastodon", async () => {
-    const { t, bob, status } = await world();
-    const deleted = "https://mastodon.example/users/bob/statuses/deleted";
-    expect(await t.post(bob, create(bob, mastodonNote(bob, { id: deleted, atomUri: deleted })))).toBe(202);
-    const { "@context": context, proof } = proofShapeBody(LANGUAGE_PROOFS[0]!);
-    const received = { ...body("Delete by an atomUri left undefined", status), "@context": context, proof };
-    expect(await t.post(bob, received)).toBe(202);
-    expect(await statusRow(t.store, deleted)).toBeDefined();
-  });
+  // Under the data-integrity context, with a proof that keeps nothing (a @language beside a null member, or beside a
+  // keyword of contexts, both of which Mastodon compacts: LANGUAGE_PROOFS, KEYWORD_PROOFS), the atomUri is still read
+  // as the compaction names it.
+  it.each([
+    ["a null member", LANGUAGE_PROOFS[0]!],
+    ["@version", KEYWORD_PROOFS[0]!],
+  ])(
+    "a Delete by an atomUri left undefined, with a proof of a @language beside %s: the status stays, as in Mastodon",
+    async (_, shape) => {
+      const { t, bob, status } = await world();
+      const deleted = "https://mastodon.example/users/bob/statuses/deleted";
+      expect(await t.post(bob, create(bob, mastodonNote(bob, { id: deleted, atomUri: deleted })))).toBe(202);
+      const { "@context": context, proof } = proofShapeBody(shape);
+      const received = { ...body("Delete by an atomUri left undefined", status), "@context": context, proof };
+      expect(await t.post(bob, received)).toBe(202);
+      expect(await statusRow(t.store, deleted)).toBeDefined();
+    },
+  );
 
   it.each([
     ["left undefined", []],
@@ -1741,18 +1811,64 @@ describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", (
       return dataIntegrity(proof);
     };
     const proofOfTypedNodes = (count: number) => typedNodes(28, count);
+    // The other paths by which a context applies in a proof: a key whose definition has a context (property-scoped:
+    // `service` under cid/v1, which the proof names and which takes one more of 32, and the data-integrity contexts'
+    // DataIntegrityProof), `depth` deep around plain names, and nodes with a context in an array under a language
+    // map's name (its items are values and nodes, not a language map), the last holding plain names.
+    const wrapped = (depth: number, count: number, wrap: (inner: Json) => Json, outer: Json = {}) => {
+      let proof: Json = names(count);
+      for (let level = 0; level < depth; level++) {
+        proof = wrap(proof);
+      }
+      return dataIntegrity({ ...outer, ...proof });
+    };
+    const serviceKeys = (depth: number, count: number) =>
+      wrapped(depth, count, (inner) => ({ service: inner }), { "@context": "https://www.w3.org/ns/cid/v1" });
+    const dataIntegrityKeys = (depth: number, count: number) =>
+      wrapped(depth, count, (inner) => ({ DataIntegrityProof: inner }));
+    // proofPurpose, defined with a context of its own in DataIntegrityProof's: two of 32 for each typed node.
+    const proofPurposes = (depth: number, count: number) =>
+      wrapped(depth, count, (inner) => ({ type: "DataIntegrityProof", proofPurpose: inner }));
+    const languageMapNodes = (nodes: number, count: number) =>
+      dataIntegrity({
+        contentMap: Array.from({ length: nodes }, (_, i) => ({
+          "@context": "https://w3id.org/security/data-integrity/v2",
+          ...(i === nodes - 1 ? names(count) : {}),
+        })),
+      });
 
-    it("a proof past PROOF_CONTEXT_LIMIT is not expanded, and the body is read as named", async () => {
-      const body: Json = typedNodes(29, 1);
-      expect(withinJsonBounds(body)).toBe(true);
-      const reading = await ldSignedReading(body);
-      expect(reading?.body).not.toBe(body);
-      expect(reading?.body.proof).toBe(body.proof);
-    });
+    it.each([
+      ["typed nodes", typedNodes(29, 1)],
+      ["`service` keys", serviceKeys(28, 1)],
+      ["DataIntegrityProof keys", dataIntegrityKeys(29, 1)],
+      ["typed nodes with proofPurpose keys", proofPurposes(15, 1)],
+      ["nodes with a context under a language map's name", languageMapNodes(29, 1)],
+    ] as [string, Json][])(
+      "a proof of %s past PROOF_CONTEXT_LIMIT is not expanded, and the body is read as named",
+      async (_, body) => {
+        expect(withinJsonBounds(body)).toBe(true);
+        const reading = await ldSignedReading(body);
+        expect(reading?.body).not.toBe(body);
+        expect(reading?.body.proof).toBe(body.proof);
+      },
+    );
 
     it.each([
       ["a proof of plain names", proofOfNames],
       ["a proof of typed nodes, as many as its contexts may be", proofOfTypedNodes],
+      ["a proof of `service` keys, as many as its contexts may be", (count: number) => serviceKeys(27, count)],
+      [
+        "a proof of DataIntegrityProof keys, as many as its contexts may be",
+        (count: number) => dataIntegrityKeys(28, count),
+      ],
+      [
+        "a proof of typed nodes with proofPurpose keys, as many as its contexts may be",
+        (count: number) => proofPurposes(14, count),
+      ],
+      [
+        "a proof of nodes under a language map's name, as many as its contexts may be",
+        (count: number) => languageMapNodes(28, count),
+      ],
     ])("a data-integrity proof expanded within Mastodon's values: %s", async (_, build) => {
       const body = filledToValues(build);
       expect(withinJsonBounds(body)).toBe(true);

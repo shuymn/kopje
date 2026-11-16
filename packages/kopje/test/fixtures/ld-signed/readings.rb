@@ -1,15 +1,15 @@
 # frozen_string_literal: true
 
-# Mastodon's reading of each body proof-shapes.mjs or sensitive-shapes.mjs writes, as compact.rb reads a body
-# (ActivityPub::ProcessActivityService#call in v4.7.5: check_jsonld_limits!, compact under full_context,
+# Mastodon's reading of each body proof-shapes.mjs, edge-shapes.mjs or sensitive-shapes.mjs writes, as compact.rb reads
+# a body (ActivityPub::ProcessActivityService#call in v4.7.5: check_jsonld_limits!, compact under full_context,
 # check_jsonld_limits! again, patch_for_forwarding!), with Mastodon's own JsonLdHelper, context_helper.rb and JSON-LD
 # preloads, outside Rails: each context Mastodon would fetch is served from the copy the input carries (Fedify's
 # preloaded one), so it runs with no network. Writes { reference, readings }, one letter per body in order: `c`
 # compacted, `k` compacted and then refused by the limits (a @graph the compaction wrote: a proof kept something), `r`
 # refused by JSON::LD (Mastodon reads both of those as received, without the signature), `e` any other error (its job
-# raises, and applies nothing). With `sensitive`, also { sensitive }, one letter per body: `t` where the status
-# Mastodon creates from the object it reads is sensitive (Create#process_status, create.rb:115: the object's
-# `sensitive` or false, as its boolean column casts it), `f` where not. Run as each generator says.
+# raises, and applies nothing). With `sensitive`, also { sensitive }, one letter per body: `t` where the status Mastodon
+# creates from the object it reads is sensitive (Create#process_status, create.rb:115: the object's `sensitive` or
+# false, as its boolean column casts it), `f` where not. Run as each generator says.
 
 require 'bundler/setup'
 require 'json'

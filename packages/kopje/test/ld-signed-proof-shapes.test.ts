@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { ldSignedReading } from "../src/federation/ld-signed-body";
+import edgeCaptured from "./fixtures/ld-signed/edge-shapes.json";
+import { edgeShapes } from "./fixtures/ld-signed/edge-shapes.mjs";
 import captured from "./fixtures/ld-signed/proof-shapes.json";
 import { proofShapeBody, proofShapes } from "./fixtures/ld-signed/proof-shapes.mjs";
 
@@ -42,8 +44,8 @@ function readLess(proof: unknown): boolean {
 // contexts' @graph container makes it do when JSON-LD's expansion keeps something of the proof; Kopje reads such a body
 // as received only then (proofExpandsToSomething), and as named otherwise. proof-shapes.json is Mastodon 4.7.5's
 // reading of every shape proof-shapes.mjs writes: `c` compacted, `k` refused by the limits after the compaction (the
-// proof kept something), `r` refused by JSON::LD, `e` any other error (its job raises and applies nothing, so that such
-// a body, like one Mastodon compacts, is read as named).
+// proof kept something), `r` refused by JSON::LD, `e` any other error (its job raises and applies nothing, so that
+// such a body is refused: each is a type array Ruby's json-ld cannot sort, typesSortable).
 describe("an LD-signed body with a data-integrity proof, read as Mastodon's compaction keeps the proof (ID-1)", () => {
   const shapes = proofShapes();
 
@@ -62,7 +64,7 @@ describe("an LD-signed body with a data-integrity proof, read as Mastodon's comp
       const kopje = reading === null ? "refused" : reading.body === body ? "received" : "named";
       const mastodon = captured.readings[index]!;
       const label = `${shape.context} ${JSON.stringify(shape.proof)}`;
-      if ((mastodon === "c" || mastodon === "e") && kopje !== "named") {
+      if ((mastodon === "c" && kopje !== "named") || (mastodon === "e" && kopje !== "refused")) {
         more.push(label);
       }
       if (mastodon === "k" && kopje !== "received" && !readLess(shape.proof)) {
@@ -77,9 +79,47 @@ describe("an LD-signed body with a data-integrity proof, read as Mastodon's comp
       "c named": 997,
       "k received": 20323,
       "k named": 156,
-      "r named": 59145,
+      "r named": 59125,
       "r received": 467,
-      "e named": 106,
+      "r refused": 20,
+      "e refused": 106,
     });
   }, 300_000);
+});
+
+// ID-1: edge-shapes.json is Mastodon 4.7.5's reading of each body edge-shapes.mjs writes, where jsonld.js and Mastodon's
+// json-ld part: a proof holding a key that starts with @ (each keyword of JSON-LD 1.1 and its framing, and strings
+// shaped like one), which Kopje compares only for a node's keywords (comparableProof), and a type array Ruby's json-ld
+// cannot sort, in each place of a body, which Kopje refuses (typesSortable).
+describe("an LD-signed body where jsonld.js and Mastodon's json-ld part, read no more than Mastodon (ID-1)", () => {
+  const shapes = edgeShapes();
+
+  it("edge-shapes.json is Mastodon 4.7.5's reading of each shape", () => {
+    expect(edgeCaptured.reference).toBe("mastodon-4.7.5");
+    expect(edgeCaptured.readings).toHaveLength(shapes.length);
+  });
+
+  it("reads as received no body Mastodon compacts, and refuses each whose job raises", async () => {
+    const more: string[] = [];
+    const tally: Record<string, number> = {};
+    for (const [index, { name, body }] of shapes.entries()) {
+      const reading = await ldSignedReading(body);
+      const kopje = reading === null ? "refused" : reading.body === body ? "received" : "named";
+      const mastodon = edgeCaptured.readings[index]!;
+      if ((mastodon === "c" && kopje === "received") || (mastodon === "e" && kopje !== "refused")) {
+        more.push(name);
+      }
+      tally[`${mastodon} ${kopje}`] = (tally[`${mastodon} ${kopje}`] ?? 0) + 1;
+    }
+    expect(more).toEqual([]);
+    expect(tally).toEqual({
+      "c named": 3541,
+      "k received": 885,
+      "k named": 1164,
+      "r named": 1231,
+      "r received": 12,
+      "r refused": 14,
+      "e refused": 42,
+    });
+  });
 });
