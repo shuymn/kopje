@@ -1439,6 +1439,12 @@ Quote verification (a received quote and its stamp; Mastodon's `ActivityPub::Ver
   after a same-version `Update` and before a significant newer one is notified once by Mastodon (the edit) and twice
   by Kopje (the edit and the decision); gone after a significant newer `Update` and before a same-version one, twice by
   Mastodon and once by Kopje (the edit). Accepted, 2026-11-16.
+- When a remote post that quotes a local post with an approval is edited to quote another post, Kopje retires the
+  approval (it never verifies again) but sends no `Delete` of it, where Mastodon 4.7.5 sends one to the servers both
+  posts reach (`RevokeQuoteService`, run by `ProcessStatusUpdateService#update_quote!`,
+  `process_status_update_service.rb:362`). Neither Mastodon nor Kopje edits a quote's target, and servers that receive
+  the edit drop the old quote themselves. When software that sends such an edit appears, Kopje sends the `Delete` as
+  Mastodon does. Accepted, 2026-11-16.
 
 Forwarded deletes (a remote author's `Delete` of a status that local accounts boosted or quoted; Mastodon's
 `ActivityPub::Forwarder`, `app/lib/activitypub/forwarder.rb`, run by `Activity::Delete#delete_status`):
