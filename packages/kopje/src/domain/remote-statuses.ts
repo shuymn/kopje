@@ -27,6 +27,7 @@ import {
   type Visibility,
 } from "./audience";
 import { userWriteOperation } from "./auth";
+import { collectionRead, collectionSql, UNREADABLE } from "./collection-requests";
 import { emojiSnapshot } from "./custom-emojis";
 import { insertWithFreshId, remoteId } from "./ids";
 import { enqueueCard, remoteCardLink } from "./link-cards";
@@ -132,31 +133,44 @@ function versionOf(value: string | null, now: number): number {
 }
 
 // StatusParser#quote_policy (Status::InteractionPolicyConcern's flags, audience.ts QUOTE_POLICY_FLAGS) of a remote
-// status by `author`: each half's flags from the URIs it lists: the public collection, the author's followers and
-// following collections (as its stored actor document names them), the author itself (which means nobody, so it adds
-// nothing), and anything else unsupported_policy; automatic in the high 16 bits. A Note that states no policy is 0,
-// nobody, as Mastodon stores it. Stored at a status's first store and on every Update of it (explicit or implicit),
-// never from a Create of a status already stored, so a replayed Create cannot bring an older policy back
-// (test/quote-authoring.test.ts concurrency table, row 2). Advisory (FEP-044f): it decides only whether a local user
-// may ask (R36); the quoted author's answer decides the quote.
+// status by `author`: each half's flags from the entries it lists, read in Mastodon's order (quote_subpolicy,
+// status_parser.rb:179-196, which deletes each match before the next): the public collection, the author's followers
+// collection, then its following collection (as its stored actor document names them: '' when it names none, as
+// Mastodon stores it, which a listed "" matches), the author itself (which means nobody, so it adds nothing), and
+// anything else, a value that is not a string among them, unsupported_policy; automatic in the high 16 bits. A Note
+// that states no policy is 0, nobody, as Mastodon stores it. Stored at a status's first store and on every Update of it
+// (explicit or implicit), never from a Create of a status already stored, so a replayed Create cannot bring an older
+// policy back (test/quote-authoring.test.ts concurrency table, row 2). Advisory (FEP-044f): it decides only whether a
+// local user may ask (R36); the quoted author's answer decides the quote.
 function remoteQuotePolicy(db: Db, author: Author, policy: RemoteQuotePolicyInput | null | undefined): number {
   if (policy === null || policy === undefined) {
     return 0;
   }
-  const collections = db.first<{ followers: string | null; following: string | null }>(
-    `SELECT CASE WHEN json_type(raw, '$.followers') = 'text' THEN json_extract(raw, '$.followers') END AS followers,
-			CASE WHEN json_type(raw, '$.following') = 'text' THEN json_extract(raw, '$.following') END AS following
+  const row = db.first<{ followers: string | null; following: string | null }>(
+    `SELECT ${collectionSql("raw", "followers")} AS followers, ${collectionSql("raw", "following")} AS following
 		FROM accounts WHERE id = ?`,
     author.id,
   );
-  const flags = (entries: readonly string[]): number => {
+  const followers = collectionRead(row?.followers ?? null);
+  const following = collectionRead(row?.following ?? null);
+  // A string past an unreadable collection (collection-requests.ts storedCollectionUri) adds nothing: Mastodon may
+  // store that collection as the very string, and then reads the entry as it, before any later match, so neither a
+  // later collection's flag nor unsupported_policy (which lets anyone ask) is known to be Mastodon's. Adding nothing
+  // grants no one more than Mastodon does. A value that is not a string matches no collection.
+  const flags = (entries: readonly (string | null)[]): number => {
     let half = 0;
     for (const entry of new Set(entries)) {
-      if (isPublicCollection(entry)) {
+      if (entry === null) {
+        half |= QUOTE_POLICY_FLAGS.unsupported_policy;
+      } else if (isPublicCollection(entry)) {
         half |= QUOTE_POLICY_FLAGS.public;
-      } else if (entry === collections?.followers) {
+      } else if (followers === UNREADABLE) {
+        // Past an unreadable collection.
+      } else if (entry === followers) {
         half |= QUOTE_POLICY_FLAGS.followers;
-      } else if (entry === collections?.following) {
+      } else if (following === UNREADABLE) {
+        // Past an unreadable collection.
+      } else if (entry === following) {
         half |= QUOTE_POLICY_FLAGS.following;
       } else if (entry !== author.uri) {
         half |= QUOTE_POLICY_FLAGS.unsupported_policy;

@@ -45,6 +45,7 @@ import {
   removalBegunSql,
 } from "./audience";
 import { userReadOperation } from "./auth";
+import { collectionUri } from "./collection-requests";
 import {
   beginRetraction,
   cancelFollowAnswers,
@@ -2091,6 +2092,30 @@ export const STATUS_CHILDREN: readonly {
 			WHERE status_id IN (SELECT status_id FROM quotes WHERE status_id = ?1 LIMIT CAST(?2 / 3 AS INTEGER))`,
     ],
   },
+  // A replies walk's scan cursor of the status, and the debts it is the root or the owed status of (migration
+  // 0106_reply_walk_debts, reply-walk-debts.ts): a root's debts by its primary key, a status's by
+  // reply_walk_debts_depth.
+  {
+    table: "reply_walk_cursors",
+    column: "status_id",
+    remove: [
+      "DELETE FROM reply_walk_cursors WHERE status_id IN (SELECT status_id FROM reply_walk_cursors WHERE status_id = ?1 LIMIT ?2)",
+    ],
+  },
+  {
+    table: "reply_walk_debts",
+    column: "root_id",
+    remove: [
+      "DELETE FROM reply_walk_debts WHERE root_id = ?1 AND status_id IN (SELECT status_id FROM reply_walk_debts WHERE root_id = ?1 LIMIT ?2)",
+    ],
+  },
+  {
+    table: "reply_walk_debts",
+    column: "status_id",
+    remove: [
+      "DELETE FROM reply_walk_debts WHERE status_id = ?1 AND root_id IN (SELECT root_id FROM reply_walk_debts INDEXED BY reply_walk_debts_depth WHERE status_id = ?1 LIMIT ?2)",
+    ],
+  },
 ];
 
 const STATUS_CHILDREN_EXIST = STATUS_CHILDREN.map(
@@ -2899,12 +2924,9 @@ function originalById(db: Db, id: string): Original | undefined {
   return db.first<Original>(ORIGINAL_BY_ID, id);
 }
 
-function followersOf(raw: string | null): string | null {
-  if (raw === null) {
-    return null;
-  }
-  const followers = (JSON.parse(raw) as { followers?: unknown }).followers;
-  return typeof followers === "string" ? followers : null;
+// The followers collection a fetched actor document names (collection-requests.ts collectionUri).
+export function followersOf(raw: string | null): string | null {
+  return raw === null ? null : collectionUri((JSON.parse(raw) as { followers?: unknown }).followers);
 }
 
 // Mastodon's Announce#visibility_from_audience.
