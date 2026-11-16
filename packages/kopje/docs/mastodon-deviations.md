@@ -511,7 +511,10 @@ Replies collections (the context's refresh and `GET /api/v1_alpha/async_refreshe
   4.7.5's does, from 5 minutes after the status was published and at most every 15 minutes, and answers
   `Mastodon-Async-Refresh` while it runs. Kopje also starts none while 16 run, where Mastodon has no such cap, nor while
   the instance does not accept writes (the env's `MAINTENANCE=readonly`, the Store's readonly maintenance, an
-  unpublished import), a state Mastodon does not have; a read then answers as one not due. Accepted, 2026-11-16.
+  unpublished import), a state Mastodon does not have; a read then answers as one not due. Kopje starts none for a
+  boost, whose URI names its Announce activity, not a status; Mastodon starts one for a remote boost as for an original
+  (`should_fetch_replies?` does not exclude it), its job fetching the boost's URI, and answers `Mastodon-Async-Refresh`
+  while it runs. Accepted, 2026-11-16.
 - A refresh records at most 200 statuses, the root included, and reads at most 100 collection documents, each fetched
   at most twice (Mastodon's `FetchAllRepliesWorker`: 1,000 statuses and 500 pages). It reads each collection until it
   ends or those caps are spent, where Mastodon takes the first 5 items of a reply's collection: the caps bound the
