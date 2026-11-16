@@ -132,10 +132,11 @@ const ENVELOPE_BYTES =
 // The rows a DELETE of an original writes at most (RES-6), at every input's maximum: the streaming capture (an event,
 // a tombstone and 256 viewers), DELETE_SUPERSEDES earlier activities superseded (an update and a delete each, and the
 // end of the staging of one still staging, which only an import holds: outbound_activities_staging_ended), the
-// intent, the hide and the account's last status (its trigger), the card, trend row, review, author's pin and poll,
-// its own quote (the quote, its withdrawn copy written by the hide's trigger, migration 0091_live_local_quotes, its
-// target's count, Kopje's revocation and its streaming journal row, stream_quote_state), MAX_STATUS_TAGS hashtags,
-// MAX_STATUS_MEDIA media, the two counts and the job.
+// intent, the hide and the account's last status (its trigger), the card, trend row, review, author's pin and poll
+// (its end and the revision that end writes, polls_revision of migration 0100_poll_refresh), its own quote (the quote,
+// its withdrawn copy written by the hide's trigger, migration 0091_live_local_quotes, its target's count, Kopje's
+// revocation and its streaming journal row, stream_quote_state), MAX_STATUS_TAGS hashtags, MAX_STATUS_MEDIA media, the
+// two counts and the job.
 // The signed Delete of a public or unlisted status as stored (activities.ts signedDeleteEnvelope), at its maxima, over
 // a skeleton whose status uri and actor id are the short canonical U and A: its status's uri three times (the activity
 // id, the Tombstone and its atomUri), its author's actor id three times (actor, the signature's creator and the
@@ -185,7 +186,7 @@ function canonicalUri(prefix: string, limit: number): string {
 }
 
 const SUPERSEDE_ROWS = 3 * DELETE_SUPERSEDES;
-const REQUEST_ROWS = 258 + SUPERSEDE_ROWS + 1 + 2 + 5 + 5 + MAX_STATUS_TAGS + MAX_STATUS_MEDIA + 2 + 1;
+const REQUEST_ROWS = 258 + SUPERSEDE_ROWS + 1 + 2 + 6 + 5 + MAX_STATUS_TAGS + MAX_STATUS_MEDIA + 2 + 1;
 
 describe("the Delete of a local status (VIS-3, RES-6)", () => {
   it("stores its envelope within its derived bound, the identities at their bound at the worst escaping", async () => {
