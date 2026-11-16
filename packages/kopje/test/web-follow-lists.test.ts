@@ -425,15 +425,16 @@ describe("the follow lists as pages", () => {
     }
   });
 
-  it("mark a page with a cursor noindex, follow, with its cursor-less URL canonical, and send no script", async () => {
+  // Every page is noindex, as Mastodon's (follower_accounts/index.html.haml, following_accounts/index.html.haml).
+  it("mark every page noindex, with its cursor-less URL canonical, and send no script", async () => {
     const h = await community(["alice"]);
     for (const direction of ["followers", "following"] as const) {
       const path = `/@alice/${direction}`;
       for (const [query, robots] of [
-        ["", []],
-        ["?max_id=200000000000000000", ["noindex, follow"]],
-        ["?min_id=1", ["noindex, follow"]],
-        ["?max_id=x1", []],
+        ["", ["noindex"]],
+        ["?max_id=200000000000000000", ["noindex"]],
+        ["?min_id=1", ["noindex"]],
+        ["?max_id=x1", ["noindex"]],
       ] as const) {
         const response = await h.request(path + query);
         const doc = parseHtml(await response.text());

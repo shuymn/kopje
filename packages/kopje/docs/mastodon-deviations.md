@@ -707,6 +707,12 @@ WEB-5, WEB-7):
   errors too; a revocation's `{}` and the authorization server metadata carry none, where Mastodon's Rack adds
   `max-age=0, private, must-revalidate` and an ETag, and `no-cache` to a revocation's error. Accepted, 2026-11-16.
 
+Public pages ([web-pages.md](web-pages.md)):
+
+- A profile, a post (with its tabs) and the featured page send no `robots` meta on their first page, as Mastodon's for
+  an account that does not ask for `noindex` (none does, see Accounts); their pages with a cursor, which Mastodon does
+  not serve, send `noindex, follow`. Accepted, 2026-11-16.
+
 Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`):
 
 - An application's `id` is its `client_id`, Kopje's only stable key of an application; the `client_id` is a public

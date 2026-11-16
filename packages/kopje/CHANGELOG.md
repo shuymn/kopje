@@ -245,6 +245,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   becomes, as Mastodon 4.6 does (`mastodon#39114`). Posts and bios stored earlier show them after their next update; a
   post whose HTML has them counts that update as an edit once. A line break with attributes ends a line for filters,
   as one without does. No Store migration and no `wrangler.jsonc` change.
+- The hashtag page and the followers and following pages always carry `noindex`, as Mastodon's do. No Store migration
+  and no `wrangler.jsonc` change.
 
 ### Fixed
 
