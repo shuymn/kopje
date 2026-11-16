@@ -909,6 +909,9 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
   `type` other than `accounts` and `statuses`, `hashtags` included) fetches nothing; Mastodon 4.7.5 fetches and stores
   the resource first (`search_service.rb:19-20`). A remote server would see a fetch whose result no answer shows.
   Accepted, 2026-11-16.
+- A `limit` or `offset` given as an array or a nested parameter (`limit[]=1`, `offset[a]=-1`) is not read: the search
+  answers as without it, or 400 when the other one is negative. Mastodon 4.7.5 answers 500 to both, as its pagination
+  check calls `to_i` on the array or hash. Accepted, 2026-11-17.
 - A URL that answers with an HTML page or another type is followed to the ActivityPub document its `Link` header or
   `<link rel="alternate">` names, as Mastodon 4.7.5's `FetchResourceService` follows it, with these differences
   (`src/federation/resolve.ts`):
