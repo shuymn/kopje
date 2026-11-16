@@ -1914,7 +1914,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `X-Content-Type-Options: nosniff`. _Enforced (main):_ one middleware sets `nosniff`
   on every response (API, federation, inbox, media, errors and maintenance answers), and API and federation bodies
   are written by Hono's `c.json` and Fedify with their JSON types; `src/app/app.ts`; `test/inbox-statuses.test.ts`
-  ("WEB-5: responses declare their type").
+  ("WEB-5: responses declare their type"). API answers also carry Mastodon's API policy, `Content-Security-Policy:
+  default-src 'none'; frame-ancestors 'none'; form-action 'none'`, `X-Frame-Options: DENY` and `Referrer-Policy:
+  same-origin`, so a browser that opens one runs, frames and leaks nothing: every answer under `/api/*` (streaming
+  excepted, MD-8) and of `/oauth/userinfo`, errors, gates and AUTH-2's 403 included; a CORS preflight is answered
+  before them (`apiHeaders` in `src/mastodon/caching.ts`; `test/api-headers.test.ts` ("every API answer carries the
+  API's security headers", "a preflight, streaming and the answers outside the API carry none")).
   Web UI pages: _Enforced (main):_ `text/html; charset=UTF-8` and `nosniff` on every page and error page; static
   assets get `nosniff` from `public/_headers`;
   `test/web-pages.test.ts`, `test/web-session.test.ts`, `test/error-pages.test.ts`, `test-node/stylesheet.test.ts`.

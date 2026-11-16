@@ -321,6 +321,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   languages, policies, activity, domain blocks and peer search among them) is public only to a request without one
   and varies by `Authorization`, so no cache serves a stored answer to a signed-in or suspended account. No Store
   migration and no `wrangler.jsonc` change.
+- API answers carry Mastodon's `Content-Security-Policy`, `X-Frame-Options` and `Referrer-Policy`, and Mastodon's
+  deprecated routes (`/api/v1/instance`, `/api/v1/filters`, `/api/v1/suggestions`, `/api/v1/trends`,
+  `/api/v1/accounts/:id/identity_proofs`) its `Deprecation` header. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

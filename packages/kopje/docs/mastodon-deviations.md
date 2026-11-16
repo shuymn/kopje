@@ -595,8 +595,20 @@ Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model
   query on the domain (301), any other method answers 421 Misdirected Request, and a port other than 443 is another
   host. Besides `/health`, it answers the admin API, media URLs and `/` on any host, and streaming is covered.
 
-API caching (`Cache-Control` and `Vary` of the Mastodon API; threat model WEB-7):
+API answer headers (the security headers, `Deprecation`, `Cache-Control` and `Vary` of the Mastodon API; threat model
+WEB-5, WEB-7):
 
+- No `X-RateLimit-Limit`, `-Remaining` or `-Reset`: Kopje limits no API requests per token, user or address (Mastodon:
+  300 every 5 minutes per token and per address, 1,500 per user, and per-action limits on posting (boosts and edits
+  included), following and reporting), so it has none to report; its 429s (app registration, `/login`) carry none
+  either. Accepted, 2026-11-16.
+- No `X-XSS-Protection`, `Server`, `X-Request-Id` or `X-Runtime`. Accepted, 2026-11-16.
+- OAuth's token endpoints, WebFinger, NodeInfo and ActivityPub documents carry `nosniff` and their own caching, not
+  Mastodon's `X-Frame-Options` and `Referrer-Policy`, which Rails adds to every answer. Accepted, 2026-11-16.
+- A path under `/api/` that names no route is answered 404 with the API's policy (`default-src 'none'`); Mastodon routes
+  it to `ApplicationController#raise_not_found` (`config/routes.rb`, `*unmatched_route`), whose answer carries its
+  app-wide policy (`config/initializers/content_security_policy.rb`), which allows its own scripts, styles and media.
+  Accepted, 2026-11-16.
 - `Vary` names what the route declares. Mastodon's also names `Origin` on every answer (rack-cors) and `Accept` where
   its controller declares an empty `vary_by` (Rails adds it to a rendered answer). Kopje's CORS answer is `*` for every
   origin, and an API answer is JSON whatever `Accept` says. Accepted, 2026-11-16.
