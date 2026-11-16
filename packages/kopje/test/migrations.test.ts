@@ -109,6 +109,10 @@ import {
   ANNUAL_REPORT_ARCHETYPES,
   annualReportsMigrationSql,
   WRAPSTODON_SETTING_BOUNDS,
+  MAX_MEDIA_DESCRIPTION_LENGTH,
+  MEDIA_DESCRIPTION_BYTES,
+  mediaDescriptionBytesMigrationSql,
+  mediaDescriptionSql,
   cardAttributionMigrationSql,
   collectionsMigrationSql,
   PROFILE_DESCRIPTION_BYTES,
@@ -126,6 +130,7 @@ import { byText } from "./sort";
 import {
   blurhashOf,
   BOUNDED,
+  COLUMNS_0048,
   columnsSql,
   inserter,
   JSON_BOUNDED,
@@ -5467,15 +5472,17 @@ describe("0048_stored_bounds", () => {
       await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
       seedBounded(sql);
       const tables = TABLES;
-      const expected = tables.map((table) => sql.exec(storedSql(table)).toArray());
+      const expected = tables.map((table) => sql.exec(storedSql(table, COLUMNS_0048)).toArray());
       for (const table of tables) {
-        expect(sql.exec<{ n: number }>(movedCountSql(table)).one().n, table).toBeGreaterThanOrEqual(2);
+        expect(sql.exec<{ n: number }>(movedCountSql(table, COLUMNS_0048)).one().n, table).toBeGreaterThanOrEqual(2);
       }
 
       expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
-      // Each stored value is, byte for byte (hex), P of the value before, row by row.
+      // Each stored value is, byte for byte (hex), P of the value before, row by row, by 0048's projections.
       expect(tables.map((table) => sql.exec(columnsSql(table)).toArray())).toEqual(expected);
-      expect(tables.map((table) => sql.exec<{ n: number }>(movedCountSql(table)).one().n)).toEqual([0, 0, 0, 0]);
+      expect(tables.map((table) => sql.exec<{ n: number }>(movedCountSql(table, COLUMNS_0048)).one().n)).toEqual([
+        0, 0, 0, 0,
+      ]);
       // The rows at their bounds are unchanged; the JSON-bounded values of 400,000 U+0001 are past their bounds.
       for (const table of tables) {
         const rows = sql.exec(textSql(table)).toArray();
@@ -13927,6 +13934,144 @@ describe("0104_quote_broadcast", () => {
         expect(() => set(value), value instanceof ArrayBuffer ? "a blob" : String(value)).toThrow(/constraint failed/);
       }
       expect(flag()).toEqual({ n: 2, type: "integer" });
+    });
+  });
+});
+
+describe("0105_media_description_bytes", () => {
+  const NAME = "0105_media_description_bytes";
+  const at = NAMES.indexOf(NAME);
+  const REFUSED = /media_attachments: a value past its stored bound/;
+  const ACCOUNT = "100000000000000001";
+  // 0xFF and `continuation` continuation bytes: one character to SQLite's length and substr, `continuation + 1`
+  // U+FFFD once decoded; only an import stores such text.
+  const malformedRun = (continuation: number) => {
+    const bytes = new Uint8Array(continuation + 1).fill(0x80);
+    bytes[0] = 0xff;
+    return bytes.buffer;
+  };
+  const hex = (buffer: ArrayBufferLike) =>
+    Array.from(new Uint8Array(buffer), (b) => b.toString(16).toUpperCase().padStart(2, "0")).join("");
+  const P = mediaDescriptionSql("description");
+  // Each row's description as bytes and its storage class, and P's, by id.
+  const read = (sql: SqlStorage) =>
+    sql
+      .exec<{ id: string; kind: string; bytes: string; p_kind: string; p_bytes: string }>(
+        `SELECT id, typeof(description) AS kind, hex(CAST(description AS BLOB)) AS bytes, typeof(${P}) AS p_kind,
+					hex(CAST((${P}) AS BLOB)) AS p_bytes FROM media_attachments ORDER BY id`,
+      )
+      .toArray();
+  const moved = (sql: SqlStorage) =>
+    sql.exec<{ n: number }>(`SELECT count(*) AS n FROM media_attachments WHERE (${P}) IS NOT description`).one().n;
+  // Inserts an unattached media row of ACCOUNT with `description`, bound as given (an ArrayBuffer as text with
+  // `text`, else as a BLOB).
+  const insert = (sql: SqlStorage, n: number, description: string | ArrayBuffer, text = true) =>
+    sql.exec(
+      `INSERT INTO media_attachments (id, account_id, type, url, description)
+			VALUES (?, ?, 'image', 'https://r.test/m.png', ${text ? "CAST(? AS TEXT)" : "?"})`,
+      `3${String(n).padStart(17, "0")}`,
+      ACCOUNT,
+      description,
+    );
+  const account = (sql: SqlStorage) =>
+    sql.exec("INSERT INTO accounts (id, uri, username, domain) VALUES (?, 'https://r.test/u', 'u', 'r.test')", ACCOUNT);
+
+  it("follows 0104, declared foreignKeys: 'unchanged', and writes the generator's statements and the triggers", () => {
+    expect(NAMES[at - 1]).toBe("0104_quote_broadcast");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    // The byte bound is four bytes a code point of MAX_MEDIA_DESCRIPTION_LENGTH (the header states both).
+    expect([MAX_MEDIA_DESCRIPTION_LENGTH, MEDIA_DESCRIPTION_BYTES]).toEqual([10_000, 40_000]);
+    expectGenerated(
+      at,
+      `${mediaDescriptionBytesMigrationSql()}\n${emitTriggers(["media_attachments_bounds_insert", "media_attachments_bounds_update"])}`,
+    );
+  });
+
+  it("rewrites imported descriptions to P, keeps those at the bounds byte for byte, and leaves only fixed points", async () => {
+    const store = freshStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      account(sql);
+      const astral = "\u{1F600}";
+      const kept: (string | ArrayBuffer)[] = [
+        "",
+        "a".repeat(MAX_MEDIA_DESCRIPTION_LENGTH),
+        astral.repeat(MAX_MEDIA_DESCRIPTION_LENGTH),
+        `a\u0000${"b".repeat(100)}`,
+        // Lone surrogates as their three-byte encodings, 30,000 bytes: within both bounds, so kept.
+        new Uint8Array(3 * MAX_MEDIA_DESCRIPTION_LENGTH).map((_, i) => [0xed, 0xa0, 0x80][i % 3] ?? 0).buffer,
+      ];
+      const imported = [malformedRun(50_000), malformedRun(999_999)];
+      for (const [i, value] of [...kept, ...imported].entries()) {
+        insert(sql, i + 1, value);
+      }
+      // A BLOB within 10,000 bytes, which 0048's projection keeps as it is.
+      insert(sql, 8, malformedRun(9_999), false);
+      // The seed reached the table past 0048's triggers, byte for byte.
+      const before = read(sql);
+      expect(before.map((row) => [row.kind, row.bytes])).toEqual([
+        ...[...kept, ...imported].map((value) => [
+          "text",
+          typeof value === "string" ? hex(new TextEncoder().encode(value).buffer) : hex(value),
+        ]),
+        ["blob", hex(malformedRun(9_999))],
+      ]);
+      expect(moved(sql)).toBe(3);
+
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      // Each value is P of the value before, row by row, as bytes: the values at the bounds unchanged, the malformed
+      // runs cut to MEDIA_DESCRIPTION_BYTES and the BLOB made text.
+      const after = read(sql);
+      expect(after.map((row) => [row.kind, row.bytes])).toEqual(before.map((row) => [row.p_kind, row.p_bytes]));
+      expect(after.slice(0, kept.length)).toEqual(before.slice(0, kept.length));
+      expect(after.slice(kept.length).map((row) => [row.kind, row.bytes.length / 2])).toEqual([
+        ["text", MEDIA_DESCRIPTION_BYTES],
+        ["text", MEDIA_DESCRIPTION_BYTES],
+        ["text", 10_000],
+      ]);
+      expect(moved(sql)).toBe(0);
+    });
+  }, 120_000);
+
+  it("refuses a description one byte past MEDIA_DESCRIPTION_BYTES that 0048 accepted, and a BLOB, and accepts one at it", async () => {
+    const store = freshStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      const sql = state.storage.sql;
+      const past = malformedRun(MEDIA_DESCRIPTION_BYTES);
+      const at40k = malformedRun(MEDIA_DESCRIPTION_BYTES - 1);
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      account(sql);
+      // 0048's triggers take the value past the byte bound: one character to its cut.
+      insert(sql, 1, past);
+      expect(sql.exec("SELECT length(CAST(description AS BLOB)) AS n FROM media_attachments").one().n).toBe(
+        MEDIA_DESCRIPTION_BYTES + 1,
+      );
+      sql.exec("DELETE FROM media_attachments");
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      // P moves it (the triggers refuse what P moves).
+      expect(
+        sql.exec(`SELECT (${mediaDescriptionSql("CAST(?1 AS TEXT)")}) IS NOT CAST(?1 AS TEXT) AS moved`, past).one()
+          .moved,
+      ).toBe(1);
+      expect(() => insert(sql, 1, past)).toThrow(REFUSED);
+      expect(() => insert(sql, 1, blob("alt"), false)).toThrow(REFUSED);
+      insert(sql, 1, at40k);
+      const id = "300000000000000001";
+      expect(() =>
+        sql.exec("UPDATE media_attachments SET description = CAST(? AS TEXT) WHERE id = ?", past, id),
+      ).toThrow(REFUSED);
+      expect(() => sql.exec("UPDATE media_attachments SET description = ? WHERE id = ?", blob("alt"), id)).toThrow(
+        REFUSED,
+      );
+      // A writer's update that keeps the stored description (media.ts, statuses.ts: COALESCE) passes.
+      sql.exec(
+        "UPDATE media_attachments SET description = COALESCE(NULL, description), focus_x = 0.5 WHERE id = ?",
+        id,
+      );
+      expect(
+        sql.exec("SELECT hex(CAST(description AS BLOB)) AS h, focus_x FROM media_attachments WHERE id = ?", id).one(),
+      ).toEqual({ h: hex(at40k), focus_x: 0.5 });
     });
   });
 });
