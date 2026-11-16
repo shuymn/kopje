@@ -236,6 +236,21 @@ const RULES: readonly Rule[] = [
     },
   },
   {
+    // The readers of quotes (audience.ts, update-fan-out.ts, store-import.ts) never write one: only quotes.ts decides a
+    // quote's state, and a status's batched delete detaches or deletes the quotes it leaves (inbox.ts).
+    name: "writes quotes",
+    pattern: new RegExp(
+      `\\b(?:INTO|UPDATE|DELETE\\s+FROM)\\s+${table(["quotes", "quote_revocations", "quote_requests"])}`,
+      "i",
+    ),
+    allowed: {
+      "src/domain/quotes.ts":
+        "quotes, their verification work, revocations, answered QuoteRequests and Kopje’s authorizations",
+      "src/domain/inbox.ts":
+        "a status’s batched delete detaches the quotes of it and deletes its own (STATUS_CHILDREN)",
+    },
+  },
+  {
     // R40: announcements are the operator's; who sees one, its dismissals and its reactions are decided in one module.
     name: "reads or writes announcements",
     pattern: readsOrWrites("announcements", "announcement_reactions", "announcement_dismissals"),
@@ -416,6 +431,11 @@ const RULE_FIXTURES: readonly [name: string, flagged: string, passed: string][] 
     "db.all('SELECT quotes_count FROM statuses')",
   ],
   [
+    "writes quotes",
+    "db.run(\"UPDATE quotes SET state = 'revoked' WHERE status_id = ?\")",
+    "db.run('UPDATE quotes_archive SET x = 1')",
+  ],
+  [
     "reads or writes announcements",
     "db.run('INSERT OR IGNORE INTO announcement_dismissals (id) VALUES (1)')",
     "db.all('SELECT announcements_count FROM x')",
@@ -536,6 +556,20 @@ describe("policy boundary", () => {
       passed: {},
     },
     { path: "src/domain/admin-measures.ts", over: SOURCES },
+  );
+  // The update fan-out reads the accepted quotes it notifies, and is refused a write of one.
+  guardFixtures(
+    violations,
+    {
+      flagged: {
+        "a quote's state written by the update fan-out": [
+          "db.all('SELECT 1 FROM quotes q')\ndb.run(\"UPDATE quotes SET state = 'revoked' WHERE status_id = ?\")",
+          "src/domain/update-fan-out.ts writes quotes",
+        ],
+      },
+      passed: {},
+    },
+    { path: "src/domain/update-fan-out.ts", over: SOURCES },
   );
 });
 
