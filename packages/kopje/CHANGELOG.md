@@ -292,9 +292,20 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   checks no reference (the migration bench's upgrade from `0093_annual_reports` takes 12,204 ms with this file and
   12,545 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the
   release is at least a minor version, and rolling back past it needs a point-in-time restore.
+- The hashtag page and the followers and following pages always carry `noindex`, as Mastodon's do, and so do the
+  handoff pages and every page, 404 and 410 at a URL where Mastodon serves its web app: a post's Boosts, Favourites and
+  Quotes tabs, the `/@username@domain` spelling and the pages under a stored username with a dot
+  ([docs/web-pages.md](docs/web-pages.md), "Robots"). No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 
+- Search with `resolve=true` finds a local post by its page URL, a local account by its profile URL (one of its tabs
+  included) and a stored remote account by its `/@user@domain` URL on this instance, as Mastodon's search does, when
+  the viewer may see them. Search reads `limit` and `offset` as Mastodon's does: a negative `limit` or `offset` is
+  refused with 400, `limit=0` answers nothing, and `offset` counts only with a `type`. A URL looked up with
+  `resolve=true` is no longer also searched as text, and an address is resolved only when accounts are searched
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Search). No Store migration and no `wrangler.jsonc`
+  change.
 - A remote actor whose `endpoints` has an unexpected type or value is no longer refused, and its shared inbox is read
   as Mastodon reads it, and kept only when Kopje would send to the same URL as Mastodon
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts). A delivery queued to a shared inbox that

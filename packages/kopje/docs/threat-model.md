@@ -780,15 +780,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   anonymous viewer, whatever session the browser holds: its one Store call is a page read whose input has no credential,
   and its routes read no cookie, so a page is the same with and without a session. A reply's parent is linked only when
   an anonymous viewer may see it, and a hidden parent leaves nothing in the page. Every path of a page's shape that no
-  page serves answers the same 404 page as a hidden case. The profile's posts tab leaves out replies to others and lists
-  the account's boosts whose boost and original an anonymous viewer may see (VIS-6), its first page led by the pins an
-  anonymous viewer may see; its posts-and-replies tab lists replies but no boosts, its media tab posts with media, and
-  its tagged tab includes replies. Each tab pages both ways by the ids of the read's candidates or by a boundary derived
-  from the request alone ([visibility.md](visibility.md), "Read bounds"), so a status hidden by its visibility never
-  supplies a cursor. `/tags/:name` lists the hashtag's local public statuses only, replies included and boosts not, by
-  the hashtag timeline's rule for an anonymous viewer, paged the same way. A hashtag whose posts are all hidden shows
-  none of them: no hidden post, its text or its author's name appears, though its pager may move on by the id of a
-  public post whose author is unavailable, as any window does (RES-7).
+  page serves answers the same 404 page as a hidden case. The 404 page carries `noindex` where Mastodon serves its web
+  app's shell at the URL, which the path alone decides (`mastodonShell`, [web-pages.md](web-pages.md), "Robots"), so a
+  hidden case answers the same bytes as an unknown one at a URL of the same shape. The profile's posts tab leaves out
+  replies to others and lists the account's boosts whose boost and original an anonymous viewer may see (VIS-6), its
+  first page led by the pins an anonymous viewer may see; its posts-and-replies tab lists replies but no boosts, its
+  media tab posts with media, and its tagged tab includes replies. Each tab pages both ways by the ids of the read's
+  candidates or by a boundary derived from the request alone ([visibility.md](visibility.md), "Read bounds"), so a
+  status hidden by its visibility never supplies a cursor. `/tags/:name` lists the hashtag's local public statuses only,
+  replies included and boosts not, by the hashtag timeline's rule for an anonymous viewer, paged the same way. A hashtag
+  whose posts are all hidden shows none of them: no hidden post, its text or its author's name appears, though its pager
+  may move on by the id of a public post whose author is unavailable, as any window does (RES-7).
   The followers and following pages are listed under VIS-8 and page both ways by follow id. The Featured tab
   (`/@user/featured`) shows the account's featured hashtags as the API lists them, at most ten, and the accounts it
   endorses that R28 lists (VIS-19), paged both ways by account id as the API pages them; its pager may move on by the
@@ -856,10 +858,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the actor’s host on every path", "never lets a third-party alias replace a confirmed domain or evade a block on it").
   Account search finds an account that is available and not on a domain the viewer blocks (`findableBySql`). Search
   resolution answers an account only when account search would find it, and a status by the rule of a single status
-  (VIS-1, `canView`, as Mastodon's `ResolveURLService` authorizes `show?`) unless the viewer blocks its author's domain.
+  (VIS-1, `canView`, as Mastodon's `ResolveURLService` authorizes `show?`) unless the viewer blocks its author's domain,
+  a URL of this instance included, which it finds on Kopje's routes with nothing fetched (`localSearchTarget`).
   _Enforced (main):_ `findAccountIds` and `searchAccountIds` in `src/domain/accounts.ts`, `resolveSearch` in
   `src/domain/remote-statuses.ts`; `test/inbox-statuses.test.ts` ("answers a status by the single-status rule"),
-  `test/policy-endpoints.test.ts`.
+  `test/search-local-urls.test.ts` ("answers only what the viewer may see"), `test/policy-endpoints.test.ts`.
 - **VIS-6: a wrapper reveals nothing its target hides.** A boost is visible only if its original is; boosting is limited
   to `public` and `unlisted` statuses and one's own `private` ones (`StatusPolicy#reblog?`). _Enforced (main):_
   `viewableSql`; `test/visibility.test.ts` ("a boost of an original the viewer may not see is hidden with it"),
@@ -1954,8 +1957,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   together by one route helper. The bundle writes no HTML, script or script URL, and is served directly (no redirect) as
   JavaScript with `nosniff`. Their 404 and 410 pages and every other page keep the script-free CSP.
   `src/app/web-headers.ts`, `src/app/public-pages.tsx`, `scripts/build-assets.mjs`; `test/web-pages.test.ts` ("sends a
-  CSP naming only the L1 bundle"), `test/web-interaction-tabs.test.ts` ("mark a page with a cursor noindex, follow, with
-  the tab’s cursor-less URL canonical, and load the L1 bundle"), `test-node/client-assets.test.ts` ("is committed as the
+  CSP naming only the L1 bundle"), `test/web-interaction-tabs.test.ts` ("mark every page noindex, with the tab’s
+  cursor-less URL canonical, and load the L1 bundle"), `test-node/client-assets.test.ts` ("is committed as the
   bytes a rebuild gives"), `test-node/stylesheet.test.ts` ("serves the fingerprinted assets as immutable"). The copy
   control: _Enforced (main):_ every public page reads, links and submits its forms without script, and the bundle's one
   control is the copy button of a handle, a status URL or embed code ([web-pages.md](web-pages.md)): rendered `hidden`
@@ -3327,8 +3330,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 - **RES-3: lists are bounded.** Pageable lists return at most 80 items; relationships read at most 100 ids; any other
   collection names its count and byte bound. _Enforced (main):_ `src/mastodon/pagination.ts`, `MAX_RELATIONSHIP_IDS` in
   `src/domain/accounts.ts`. _Gap: neither cap is tested._ _Enforced (main)_ for search: at
-  most 40 results per type (80 for the account search), and offsets past 10,000 answer an empty page;
-  `test/search.test.ts` ("bounds the query, the limit and the offset"). _Enforced (main):_
+  most 40 results per type (80 for the account search), `limit=0` answers nothing, and offsets past 10,000 answer an
+  empty page, where an offset of `/api/v2/search` counts only with a `type`, as Mastodon's; `test/search.test.ts`
+  ("bounds the query, the limit and the offset", "reads the limit and the offset as SearchService#call does").
+  _Enforced (main):_
   the domain block list (`GET /api/v1/domain_blocks`) returns at most 200 domains, as Mastodon's does
   (`src/mastodon/blocks.ts`). _Enforced (main):_ `GET /api/v1/instance/peers` lists at most
   10,000 domains (`MAX_PEERS` in `src/domain/instance.ts`); `GET /api/v1/instance/domain_blocks` admits whole
@@ -3756,9 +3761,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   recipients, collection expansion and notifications. The revision fence (ID-1) adds no additional inbox receive
   round; a stale-author refresh fetches its actor again after reading the revision, within the fetch budget. Search
   resolution makes one more Store call (`actorState`) before each actor fetch and before a URL's probe, and fetches the
-  actor document a probe or an alternate found a second time after it (within the request's fetch budget of 8). A
-  probe answered 200 with another type follows at most two alternates, the `Link` header's and then the page's, one
-  fetch and one domain-policy read (`fetchRefused`) each, and no second hop; the page's body, read only for the page's
+  actor document a probe or an alternate found a second time after it (within the request's fetch budget of 8). It
+  fetches nothing for `limit=0`, for a URL whose answer is empty whatever it finds (a `type` with an offset past 0, a
+  `type` other than `accounts` and `statuses`), or for an address when accounts are not searched
+  (`test/search-resolution-store-calls.test.ts`, "the limit, offset and type of a resolving search"). A probe answered
+  200 with another type follows at most two alternates, the `Link` header's and then the page's, one fetch and one
+  domain-policy read (`fetchRefused`) each, and no second hop; the page's body, read only for the page's
   alternate, is charged to the request's bytes like any document, so a page alternate after a large header alternate
   can be refused for budget ([mastodon-deviations.md](mastodon-deviations.md), Search);
   `test/resolve-alternate.test.ts` ("charges the page and every alternate to the request's budget (RES-6)"). A fetch
@@ -4552,7 +4560,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (`src/domain/search.ts`, `searchAccountIds` in `src/domain/accounts.ts`); `test/search.test.ts` ("filters before
   LIMIT"), `test/search-edge.test.ts` (rows read stay flat as favourites, bookmarks, accounts and tagged statuses grow
   fourfold, pending follows included; `max_id` reaches past each window; an exact address outside every window is
-  found). _Enforced (main):_ the peers list seeks each next domain on the (domain,
+  found). A search resolution of a URL of this instance reads the instance's domain, then one status by its key (and
+  that row again for the boost check) or one account by its address index (`localSearchTarget` in
+  `src/domain/remote-statuses.ts`). _Enforced (main):_ the peers list seeks each next domain on the (domain,
   username) index, so it reads rows by domain returned, not by account known; the public block list reads the suspend
   blocks in chunks of 500 from the partial index `instance_domain_blocks_public` (migration `0049_instance_bounds`),
   so its rows read are the admitted blocks and at most one chunk more, whatever the noop blocks

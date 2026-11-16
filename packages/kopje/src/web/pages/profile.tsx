@@ -8,7 +8,7 @@ import type { ParentLink } from "../../domain/web-pages/parents";
 import type { ProfileTab } from "../../domain/web-pages/profile";
 import type { Site } from "../../domain/web-pages/site";
 import { Tabs } from "../components/basics";
-import { Layout } from "../components/layout";
+import { Layout, Robots } from "../components/layout";
 import { InlineText, PostCard, PostFeed, PostStub } from "../components/post";
 import { ProfileHead } from "../components/profile";
 import type { Messages } from "../messages";
@@ -34,6 +34,8 @@ export type ProfileView = {
   paging: Paging;
   site: Site;
   actorUri: string;
+  // Mastodon serves its web app's shell at this URL (app/public-pages.tsx mastodonShell).
+  shell: boolean;
 };
 
 // The cursor-less path of a profile tab.
@@ -85,11 +87,12 @@ export const ProfilePage: FC<ProfileView> = ({
   paging,
   site,
   actorUri,
+  shell,
 }) => {
   const { m } = useUi();
   const { domain } = site;
   const base = tabPath(account.username, tab);
-  // A page with a cursor names its cursor-less page as canonical, and is not indexed.
+  // A page with a cursor names its cursor-less page as canonical.
   const canonical = `https://${domain}${base}`;
   // The page's emoji allowance, spent in document order: the profile card, then the posts.
   const allowance = emojiAllowance();
@@ -124,7 +127,7 @@ export const ProfilePage: FC<ProfileView> = ({
       head={
         <>
           <meta name="description" content={description} />
-          {cursor === null ? null : <meta name="robots" content="noindex, follow" />}
+          <Robots shell={shell} paged={cursor !== null} />
           <meta property="og:site_name" content={domain} />
           <meta property="og:type" content="profile" />
           <meta property="og:title" content={title} />

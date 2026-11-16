@@ -1,7 +1,7 @@
 import type { Child, FC } from "hono/jsx";
 
 import { Card, LinkButton } from "../components/basics";
-import { type Chrome, Layout } from "../components/layout";
+import { type Chrome, Layout, Robots } from "../components/layout";
 import { useUi } from "../ui";
 
 // A page with one message: 404 and 410 of the public pages (the same bytes for every hidden case of a page shape), the
@@ -14,8 +14,10 @@ export const MessagePage: FC<{
   link?: { href: string; text: string } | undefined;
   // More ways on, after the message (an error page's).
   actions?: Child;
-}> = ({ chrome, title, message, link, actions }) => (
-  <Layout title={title} chrome={chrome}>
+  // A public page's answer where Mastodon serves its web app's shell (app/public-pages.tsx mastodonShell).
+  shell?: boolean;
+}> = ({ chrome, title, message, link, actions, shell = false }) => (
+  <Layout title={title} chrome={chrome} head={<Robots shell={shell} paged={false} />}>
     <h1>{title}</h1>
     <Card as="section" class="pad">
       <p>{message}</p>
@@ -34,7 +36,11 @@ export type ErrorStatus = 404 | 500 | 503;
 // The one error page: the public pages' 404 (with the site's chrome) and app.ts's Store-free 404, 500 and 503 (without
 // it) look the same apart from the chrome's name, whose header and footer give the way on. A 500 or a 503 also offers
 // the same URL again.
-export const ErrorView: FC<{ chrome: Chrome | null; status: ErrorStatus }> = ({ chrome, status }) => {
+export const ErrorView: FC<{ chrome: Chrome | null; status: ErrorStatus; shell?: boolean }> = ({
+  chrome,
+  status,
+  shell = false,
+}) => {
   const { m } = useUi();
   const texts: Record<ErrorStatus, [string, string]> = {
     404: [m.errors.notFoundTitle, m.errors.notFound],
@@ -47,6 +53,7 @@ export const ErrorView: FC<{ chrome: Chrome | null; status: ErrorStatus }> = ({ 
       chrome={chrome}
       title={title}
       message={message}
+      shell={shell}
       actions={
         status === 404 ? undefined : (
           <p class="actions">
