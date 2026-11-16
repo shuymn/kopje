@@ -58,6 +58,7 @@ import {
 import type { storeRemoteStatus } from "./remote-statuses";
 import { isDeleted, RETRACTION_TTL_MS } from "./retractions";
 import { RowBudget } from "./row-budget";
+import { journalHead, quietJournaledEdit } from "./stream-journal";
 
 // How a received status is stored: remote-statuses.ts storeRemoteStatus, which its callers pass. Storing a status
 // records its quote here, and a quote fetches and stores its quoted status, at most QUOTE_HOPS deep; this module
@@ -913,12 +914,12 @@ function revocationItem(db: Db, revocation: Revocation, left: () => number, now:
 
 // One batch of a revocation (Mastodon's Delete#revoke_quote, Quote#reject!): the quotes still pending or accepted that
 // name the stamp and quote a status by the actor (a seek of quotes_approval, whatever other quotes name the stamp)
-// become rejected or revoked, at most `left() / 2` (each row and the count trigger it fires). The predicate is the
-// cursor: a processed row leaves it. Clears the revocation's pending mark once none is left. Returns whether rows
-// remain.
+// become rejected or revoked, at most `left() / 3` (each row, the count trigger it fires and its streaming journal row,
+// stream_quote_state). The predicate is the cursor: a processed row leaves it. Clears the revocation's pending mark
+// once none is left. Returns whether rows remain.
 function revocationBatch(db: Db, approvalUri: string, actorUri: string, left: () => number, now: number) {
   const actorId = db.first<{ id: string }>("SELECT id FROM accounts WHERE uri = ?", actorUri)?.id;
-  const room = Math.floor(left() / 2);
+  const room = Math.floor(left() / 3);
   if (actorId !== undefined && room > 0) {
     db.run(
       `UPDATE quotes SET state = CASE state WHEN 'accepted' THEN 'revoked' ELSE 'rejected' END, verify_after = NULL,
@@ -1246,6 +1247,9 @@ export function answerQuoteRequest(
     return { kind: "answered", reason: "quote-accepted-again" };
   }
   const authorization = freshAuthorization();
+  // The move's `status.update` (stream_quote_state) is quiet: Mastodon broadcasts it with skip_notifications
+  // (activity/quote_request.rb:41 in v4.7.5), so no account only a mention shows the quoting status to is sent it.
+  const head = journalHead(db);
   db.run(
     `UPDATE quotes SET state = 'accepted', authorization_id = ?3, activity_uri = ?4, verify_after = NULL,
 			lease_until = NULL, recheck = 0, need_author = NULL, generation = ${NEW_GENERATION}, updated_at = ?5
@@ -1256,6 +1260,7 @@ export function answerQuoteRequest(
     request.id,
     iso(now),
   );
+  quietJournaledEdit(db, head, quotingId);
   ensureQuotedAccess(db, quotingId, quoted.account_id);
   recordOutbound(
     db,
@@ -1293,8 +1298,10 @@ export function sweepQuoteRequests(db: Db, now: number): void {
 // accepted, is retired at once, whether or not it holds an authorization of Kopje's (an imported one may hold none), so
 // it leaves its target's quotes list and count (quotes_accepted, the trigger quotes_count_changed) and its stamp is
 // never served (the trigger quotes_authorization_retired records it) while the status's removal runs in batches. At
-// most three rows: a status has one quote. With `pending` (a local status's hide, statuses.ts deleteStatus), a pending
-// quote ends too, revoked: no Accept of its QuoteRequest applies once its status is withdrawn (acceptOurQuote).
+// most four rows, a status having one quote: the quote, its target's count, the authorization's revocation and the
+// streaming journal's row (stream_quote_state; sent to no one for a hidden status). With `pending` (a local status's
+// hide, statuses.ts deleteStatus), a pending quote ends too, revoked: no Accept of its QuoteRequest applies once its
+// status is withdrawn (acceptOurQuote).
 export function retireQuoteOf(db: Db, statusId: string, now: number, pending = false): void {
   db.run(
     `UPDATE quotes SET state = 'revoked', authorization_id = NULL, verify_after = NULL, lease_until = NULL,

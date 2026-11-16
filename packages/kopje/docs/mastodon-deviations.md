@@ -1118,6 +1118,19 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   (`app/services/update_status_service.rb:121`, `:124`, `:174-176` in v4.7.5), so it snapshots a version (`:31`,
   `:170-172`) and sets `edited_at` (`:126`). Accepted, 2026-11-15.
 
+Streaming (`status.update`; Mastodon's `FanOutOnWriteService` with `update: true`; VIS-26 in
+[threat-model.md](threat-model.md)):
+
+- A quote's state change sends `status.update` for the quoting status whatever made it. Kopje verifies a received quote
+  after storing the status, so its decision streams the state a Mastodon client got in the status's first event:
+  Mastodon decides inline before its own fan-out (`app/lib/activitypub/activity/create.rb:81-93` in v4.7.5) and sends
+  no event for it. A rejection of a local account's quote request (`activity/reject.rb:37`, "TODO: broadcast an
+  update?") and a revocation's rejection of the other quotes naming the revoked stamp stream too, where Mastodon sends
+  nothing; a reset of an accepted quote by an `Update` and the round's decision are two events where Mastodon sends
+  one. A repeated `QuoteRequest` of a quote already accepted sends none, where Mastodon broadcasts again
+  (`activity/quote_request.rb:41`). Each event reaches only the listeners REST would show the status to (R33).
+  Accepted, 2026-11-16.
+
 Pinned statuses (`StatusPin`, the actor's `featured` collection):
 
 - Migration `0089_pin_cap` deleted each account's pins past its limit (5 for a local account, 20 for a remote one; a

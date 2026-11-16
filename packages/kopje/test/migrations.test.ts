@@ -33,6 +33,7 @@ import { accountSearchText } from "../src/domain/search-text";
 import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
 import { MAX_RAW_LENGTH } from "../src/domain/status-text";
 import { emitTriggers, STORED_TRIGGERS } from "../src/domain/stored-triggers";
+import { EDIT_LISTENED_SQL, JOURNAL_SPAN } from "../src/domain/stream-journal";
 import { moderationRound, runModerationJobs } from "../src/domain/suspension";
 import { normalizeOnce, normalizeTag } from "../src/domain/tag-name";
 import { parseRemoteStatus } from "../src/federation/remote-status";
@@ -357,6 +358,10 @@ const HAND_WRITTEN_TRIGGERS: readonly { reason: string; names: readonly string[]
       "reject_replays_guard_insert",
       "reject_replays_guard_update",
     ],
+  },
+  {
+    reason: "0100: the stream journal's row for a quote's state change (the listener condition of stream-journal.ts)",
+    names: ["stream_quote_state"],
   },
 ];
 
@@ -13245,5 +13250,134 @@ describe("0099_reply_walks", () => {
       sql.exec("DELETE FROM reply_walks");
       expect(sql.exec("SELECT count(*) AS n FROM reply_walk_nodes").one().n).toBe(0);
     });
+  });
+});
+
+describe("0100_quote_state_stream", () => {
+  const NAME = "0100_quote_state_stream";
+  const at = NAMES.indexOf(NAME);
+  const [R, Q, O] = ["100000000000000001", "200000000000000001", "200000000000000002"];
+
+  it("follows 0099, declared foreignKeys: 'unchanged', and adds one trigger whose listener condition is EDIT_LISTENED_SQL", async () => {
+    expect(NAMES[at - 1]).toBe("0099_reply_walks");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      const triggers = () =>
+        sql
+          .exec<{ name: string; sql: string }>(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name",
+          )
+          .toArray();
+      const before = triggers().map((t) => t.name);
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      const added = triggers().filter((t) => !before.includes(t.name));
+      expect(added.map((t) => t.name)).toEqual(["stream_quote_state"]);
+      // The listener condition is journalStatusUpdate's text, read for the quoting status; the span is JOURNAL_SPAN's.
+      expect(added[0]!.sql).toContain(`FROM statuses s WHERE s.id = NEW.status_id AND ${EDIT_LISTENED_SQL};`);
+      expect(added[0]!.sql).toContain(
+        `coalesce((SELECT max(id) FROM stream_events) - (SELECT min(id) FROM stream_events), 0) < ${JOURNAL_SPAN}`,
+      );
+    });
+  });
+
+  // R's status Q quotes O; `user` is a listener on `user` once `listening` is set.
+  async function quoted(listening: boolean) {
+    const store = freshStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      sql.exec("INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://x.test/u/1', 'u', 'x.test')", R);
+      for (const id of [Q, O]) {
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, published_at)
+						VALUES (?1, 'https://x.test/s/' || ?1, ?2, 'private', '2026-11-01T00:00:00.000Z')`,
+          id,
+          R,
+        );
+      }
+      sql.exec(
+        `INSERT INTO quotes (status_id, quoted_uri, state, updated_at)
+					VALUES (?1, 'https://x.test/s/' || ?2, 'pending', '2026-11-01T00:00:00.000Z')`,
+        Q,
+        O,
+      );
+      if (listening) {
+        sql.exec("INSERT INTO stream_subscriptions (account_id, stream_key, sockets) VALUES (?, 'user', 1)", R);
+      }
+    });
+    return store;
+  }
+
+  const journal = (sql: SqlStorage) =>
+    sql
+      .exec<{ kind: string; subject: string; created_at: string }>(
+        "SELECT kind, subject, created_at FROM stream_events ORDER BY id",
+      )
+      .toArray();
+
+  it("journals one edit of the quoting status, dated by the quote, for each state change while someone listens", async () => {
+    await runInDurableObject(await quoted(true), (_instance, state) => {
+      const sql = state.storage.sql;
+      const moves = [
+        ["rejected", ""],
+        ["pending", ""],
+        ["accepted", `, quoted_status_id = '${O}', quoted_account_id = '${R}'`],
+        ["revoked", ""],
+        ["deleted", ""],
+      ] as const;
+      for (const [i, [to, extra]] of moves.entries()) {
+        sql.exec(
+          `UPDATE quotes SET state = ?, updated_at = ?${extra} WHERE status_id = ?`,
+          to,
+          `2026-11-0${i + 2}T00:00:00.000Z`,
+          Q,
+        );
+      }
+      expect(journal(sql)).toEqual(
+        moves.map((_, i) => ({ kind: "edit", subject: Q, created_at: `2026-11-0${i + 2}T00:00:00.000Z` })),
+      );
+    });
+  });
+
+  it("journals nothing for a write that sets the state to its own value, nor while nobody listens", async () => {
+    await runInDurableObject(await quoted(true), (_instance, state) => {
+      const sql = state.storage.sql;
+      // The trigger's event: the state is in the SET, its value unchanged (a retry's write, a write-back to pending).
+      sql.exec("UPDATE quotes SET state = 'pending', attempts = attempts + 1 WHERE status_id = ?", Q);
+      sql.exec("UPDATE quotes SET state = state, approval_uri = 'https://x.test/a/1' WHERE status_id = ?", Q);
+      expect(
+        sql.exec<{ attempts: number; approval_uri: string }>("SELECT attempts, approval_uri FROM quotes").one(),
+      ).toEqual({
+        attempts: 1,
+        approval_uri: "https://x.test/a/1",
+      });
+      expect(journal(sql)).toEqual([]);
+    });
+    await runInDurableObject(await quoted(false), (_instance, state) => {
+      const sql = state.storage.sql;
+      sql.exec("UPDATE quotes SET state = 'rejected' WHERE status_id = ?", Q);
+      expect(sql.exec<{ state: string }>("SELECT state FROM quotes").one().state).toBe("rejected");
+      expect(journal(sql)).toEqual([]);
+    });
+  });
+
+  it("takes no row once the journal spans JOURNAL_SPAN ids, and one below it", async () => {
+    for (const [low, taken] of [
+      [1, false],
+      [2, true],
+    ] as const) {
+      await runInDurableObject(await quoted(true), (_instance, state) => {
+        const sql = state.storage.sql;
+        for (const id of [low, 1 + JOURNAL_SPAN]) {
+          sql.exec("INSERT INTO stream_events (id, kind, subject, created_at) VALUES (?, 'status', ?, '')", id, O);
+        }
+        sql.exec("UPDATE quotes SET state = 'rejected' WHERE status_id = ?", Q);
+        expect(journal(sql).map((row) => row.kind)).toEqual(
+          taken ? ["status", "status", "edit"] : ["status", "status"],
+        );
+      });
+    }
   });
 });

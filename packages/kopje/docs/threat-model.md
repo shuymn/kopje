@@ -1188,11 +1188,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   The Worker sends only the token's sha256 to the Store, which validates it (DATA-5). Each subscription
   needs its stream's scope (`read:statuses` for `user`, `list`, `direct`, `public*` and `hashtag*`, `read:notifications`
   for `user:notification`), a `list` subscription the viewer's own list, and notifications
-  go on `user` only with `read:notifications` too. A write records ids only (`stream_events`, by a trigger, and by
-  `journalStatusUpdate` under the edit trigger's condition for a change of a local status's quote policy, which leaves
-  `edited_at`); each message is made later in its own transaction, which authorizes the socket's token again and
-  runs the reference for
-  its event and stream (R33): for a `notification` on `user` or `user:notification`, the recipient's notification
+  go on `user` only with `read:notifications` too. A write records ids only (`stream_events`, by a trigger: an edit of
+  a status by the one on `statuses.edited_at`, a quote's state change by the one on `quotes.state`, an edit event of
+  its quoting status; and by `journalStatusUpdate` under the same condition for a change of a local status's quote
+  policy, which moves neither); each message is made later in its own transaction, which authorizes the socket's token
+  again and runs the reference for its event and stream (R33): for a `notification` on `user` or `user:notification`,
+  the recipient's notification
   list positioned at it (R15: kept, and not filtered by their policy, as Mastodon pushes none of those), presented as
   REST presents it; for an `update` on `user`, home positioned at the status (R9, the read with `max_id` just above it,
   narrowed to it), for a status published within 6 hours of its arrival; for a `status.update`, home positioned at it
@@ -1249,8 +1250,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (Mastodon's `skip_notifications`); `journalStatusUpdate`, `QUIET_EDIT_SUBJECT` and `EDIT_LISTENED_SQL` in
   `src/domain/stream-journal.ts`, its callers in `src/domain/statuses.ts`, the `quiet_edit` unit in
   `src/domain/streaming.ts`; `test/streaming/status-update-journal.test.ts` (the listener condition equal to
-  `stream_status_edited`'s for every listener set and visibility, with or without mentions; "a quote policy change and
-  a held mention").
+  `stream_status_edited`'s for every listener set and visibility, with or without mentions; "a quote policy change and a
+  held mention"). _Enforced (main)_ for a quote's state change: one `edit` event of the quoting status for each change,
+  whichever writer makes it, the quoting status judged when sent (a hidden one is sent to no one), and for a quote
+  accepted by its `QuoteRequest` a quiet one (Mastodon's `skip_notifications`: `answerQuoteRequest` rewrites the row
+  the trigger wrote, `quietJournaledEdit`); migration `0100_quote_state_stream` (its condition `EDIT_LISTENED_SQL`'s
+  text); `test/streaming/quote-updates.test.ts` (one case per writer; "an accepted QuoteRequest and a held mention"),
+  `test/streaming/status-update-journal.test.ts` ("quietJournaledEdit"), `test/migrations.test.ts`
+  ("0100_quote_state_stream").
 
 - **VIS-27: a quote reveals nothing its quoted status hides.** R35 applies VIS-1/R2 to the quoted status for the
   same viewer, whatever the quoting status's own visibility: `unauthorized` carries no content, and the filter states
@@ -3881,16 +3888,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   of [visibility.md](visibility.md)). Neither job recounts an original whose removal has begun (`removalBegunSql`), so
   the recounts read none of its boosts and favourites while its boosts go one by one (each recount would read them
   all). A job round that stages target chunks of an intent recorded earlier rings the delivery doorbell (`delivers`)
-  as a new intent does (`test/remote-delete-cleanup.test.ts`). A local status's `DELETE` writes at most 473 rows
+  as a new intent does (`test/remote-delete-cleanup.test.ts`). A local status's `DELETE` writes at most 474 rows
   (`REQUEST_ROWS`: the streaming capture, `DELETE_SUPERSEDES` earlier activities superseded with the end of the staging
   of each one still staging, which only an import holds (`outbound_activities_staging_ended`), the intent, the hide, its
   card, trend row, review, pin and poll, its own quote with the copy of its withdrawn (migration
-  `0091_live_local_quotes`), `MAX_STATUS_TAGS` hashtags, `MAX_STATUS_MEDIA` media, two counts
-  and the job; signing writes none), and stores a `Delete` envelope within its derived JSON-escaped byte bound: 426,999
-  bytes unsigned (`ENVELOPE_BYTES`), 432,117 signed (`SIGNED_ENVELOPE_BYTES`: the signed activity, the creator at
-  `ACTOR_URI_LIMIT`, a signatureValue at `SIGNATURE_VALUE_MAX`, which `signedAs` enforces, and the addressing that
-  places its copies), whose activity alone is at most 19,621 bytes, within the `FORWARD_BODY_MAX` a Kopje forwarder
-  takes (VIS-3). A staging call of a signed `Delete` that starts in a phase placing addressed accounts first checks
+  `0091_live_local_quotes`) and its journal row (`stream_quote_state`), `MAX_STATUS_TAGS` hashtags, `MAX_STATUS_MEDIA`
+  media, two counts and the job; signing writes none), and stores a `Delete` envelope within its derived JSON-escaped
+  byte bound: 426,999 bytes unsigned (`ENVELOPE_BYTES`), 432,117 signed (`SIGNED_ENVELOPE_BYTES`: the signed activity,
+  the creator at `ACTOR_URI_LIMIT`, a signatureValue at `SIGNATURE_VALUE_MAX`, which `signedAs` enforces, and the
+  addressing that places its copies), whose activity alone is at most 19,621 bytes, within the `FORWARD_BODY_MAX` a
+  Kopje forwarder takes (VIS-3).
+  A staging call of a signed `Delete` that starts in a phase placing addressed accounts first checks
   its `addressing` (`stagedAddressing`): three reads of the intent's row (its shape, then each list) and, for each of
   its at most 202 entries, two seeks by unique key, outside `STAGING_READ`. Its job's batches
   (`deleteStatusBatch`) take the rest within `PURGE_BATCH`: leftover hashtags and
@@ -4037,7 +4045,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   "ends a quote's work with no fetch once its author fetches are spent", "stores one author an attempt for a quoted
   status whose author changes at each fetch", "keeps a quote's retries after its author is stored")).
   A stamp's `Delete` writes one `quote_revocations` row and changes the quotes naming it in batches of at most
-  500 rows counted with `total_changes()` (a row and its count trigger), the first in the request and the rest in the
+  500 rows counted with `total_changes()` (a third of the rows left a batch: a row, its count trigger and its streaming
+  journal row, `stream_quote_state`), the first in the request and the rest in the
   inbound job rounds, each of which runs at most 100 revocation batches (`REVOCATION_BATCHES`) within one 500-row
   allowance, every batch's rows counted against it (a failed one's rolled-back writes included) and its retry state's
   row reserved before the batch is given the rest, however many revocations are pending
@@ -4045,12 +4054,22 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   write", "keeps a due retry that runs through within the allowance", "keeps a batch that fails after its writes within
   the allowance")). A newly stored status links at most 100 unresolved quotes naming it. `src/domain/quotes.ts`,
   `src/federation/quotes.ts`; `test/quotes.test.ts` ("verifies a chain two levels below the status that arrived",
-  "processes … quotes naming the stamp in bounded batches"), `test/cascade-guard.test.ts` (a purged status's accepted
-  quote within the exact budget), `test/policy-bounds.test.ts` ("received quotes cost their work a bounded read").
+  "processes … quotes naming the stamp in bounded batches", "writes at most its allowance in each batch while someone
+  listens"), `test/cascade-guard.test.ts` (a purged status's accepted quote within the exact budget, "a quoted
+  status's detach while someone listens"), `test/policy-bounds.test.ts` ("received quotes cost their work a bounded
+  read"). A quote's state change journals at most one row (`stream_quote_state`, migration `0100_quote_state_stream`:
+  none while nobody could be sent it or once the journal spans 4,096 ids, and none for a write that keeps the state; an
+  import inserts, firing nothing; a quote accepted by its `QuoteRequest` writes that row once more, made quiet by
+  `quietJournaledEdit`, the journal's newest row by its key, only if past the head read before the move), so a round's
+  decisions journal at most `QUOTE_ROUND` (10), and a quoted status's removal detaches its quotes a fourth of the rows
+  left a batch (the quote, its target's count, an authorization's revocation and the journal row)
+  (`test/streaming/quote-updates.test.ts`, `test/streaming/status-update-journal.test.ts` ("quietJournaledEdit"),
+  `test/migrations.test.ts` ("0100_quote_state_stream"), `test/import-triggers.test.ts`).
   QuoteRequests: one fetch (the instrument, between Store rounds, which write nothing) and one answer per request id,
   kept 30 days in `quote_requests` and at most 100 live per actor (503 past the cap, nothing evicted); the sweep removes
   at most 100 expired rows a call. A revoke records one signed `Delete` and at most 100 `Reject`s (the quoting author's
-  answered requests). A Delete of a quoting status retires its one authorization before its batches (three rows); a
+  answered requests). A Delete of a quoting status retires its one authorization before its batches (four rows, the
+  journal's among them: `test/forward-delete.test.ts` `DELETE_HANDLER_ROWS`); a
   purge's batch deletes a quote holding one within a third of the rows left. `test/quote-requests.test.ts`,
   `test/cascade-guard.test.ts`.
   Replies walks: _Enforced (main):_ only job rounds walk a remote status's replies collection

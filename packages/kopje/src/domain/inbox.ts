@@ -2023,7 +2023,8 @@ export const STATUS_CHILDREN: readonly {
   // becoming deleted in the same statement (the quotes CHECK refuses an accepted quote without its target), its work
   // ended; an accepted one also takes itself off this status's count (the trigger quotes_count_changed) and, for a
   // quote of a local status, has Kopje's authorization retired (the trigger quotes_authorization_retired records it in
-  // quote_revocations), so a batch takes a third of the rows left.
+  // quote_revocations) and its state change journaled for its quoting status (the trigger stream_quote_state, while
+  // someone listens), so a batch takes a fourth of the rows left. A quote in another state keeps it: nothing journaled.
   {
     table: "quotes",
     column: "quoted_status_id",
@@ -2031,7 +2032,7 @@ export const STATUS_CHILDREN: readonly {
       `UPDATE quotes INDEXED BY ${QUOTES_STATUS_INDEX}
 			SET quoted_status_id = NULL, quoted_account_id = NULL, generation = ${NEW_GENERATION}, lease_until = NULL,
 				state = CASE state WHEN 'accepted' THEN 'deleted' ELSE state END, verify_after = NULL, authorization_id = NULL
-			WHERE status_id IN (SELECT status_id FROM quotes WHERE quoted_status_id = ?1 LIMIT CAST(?2 / 3 AS INTEGER))`,
+			WHERE status_id IN (SELECT status_id FROM quotes WHERE quoted_status_id = ?1 LIMIT CAST(?2 / 4 AS INTEGER))`,
     ],
   },
   // The status's own quote, one row at most: deleted before the status, so it never cascades, with the count of its
