@@ -874,8 +874,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Mastodon's does (`fan_out_on_write_service.rb:62-75`, `local_notification_worker.rb:15-16`): a `quote` or `mention`
   notification its recipient dismissed or cleared is written and pushed again at the author's next significant edit,
   quote stamp change or policy-only edit, and at a quote state change Mastodon broadcasts (a stamp's `Delete` that
-  revokes the accepted quote it approved, the `Delete` of a local quote's stamp, the revoke API; `fanOutQuoteChange` in
-  `src/domain/quotes.ts`); a kept one is a repeat. Its push is sent only for a newly inserted row. A
+  revokes the accepted quote it approved, the `Delete` of a local quote's stamp, the revoke API, an `Accept` of a local
+  quote's request; `fanOutQuoteChange` in `src/domain/quotes.ts`); a kept one is a repeat. Its push is sent only for a
+  newly inserted row. A
   remote favourite notifies when it is created and its notification goes with it, as Mastodon's does: a further `Like`
   it tracks notifies nothing, and an `Undo` followed by the next reaction's `Like` notifies (and pushes) again, while
   the reverse order does not;
@@ -1268,9 +1269,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   draws a fresh 128-bit random authorization id; the id exists exactly while the quote is accepted (a CHECK), and every
   way out of `accepted` (a revoke, the quoter's `Update` replacing or dropping the quote, the quoted status's delete,
   the quoting status's `Delete`, which retires it in its first transaction before any batch, and a purge) records it in
-  `quote_revocations` through a trigger, whatever the statement. A revocation Mastodon broadcasts (a stamp's `Delete` of
-  the accepted quote it approved, the `Delete` of a local quote's stamp, the revoke API) runs the quoting status's
-  update fan-out after the move, in a savepoint of its own, so a failing fan-out is logged
+  `quote_revocations` through a trigger, whatever the statement. A revocation or approval Mastodon broadcasts (a
+  stamp's `Delete` of the accepted quote it approved, the `Delete` of a local quote's stamp, the revoke API, an `Accept`
+  of a local quote's request) runs the quoting status's update fan-out after the move, in a savepoint of its own, so a
+  failing fan-out is logged
   (`kopje.quote.fan_out.failed`) and does not undo it (`fanOutQuoteChange`; `test/edit-fan-out.test.ts` ("…and still
   revokes when the fan-out fails, logging it")). Kopje serves a stamp only for the current id of an
   accepted quote of an available author's public or unlisted status, named by that author in the path, with the quoting

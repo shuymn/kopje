@@ -30,7 +30,7 @@ import {
   token,
   update,
 } from "./inbox-status-helpers";
-import { quoteAccept, quoteRequest, quoting, serveStamp } from "./quote-helpers";
+import { quoteAccept, quoteReject, quoteRequest, quoting, serveStamp } from "./quote-helpers";
 import { observedSql, remoteAccounts, staleStatistics, watchedCursor } from "./read-helpers";
 
 // Mastodon's update fan-out (notifyEdited in src/domain/update-fan-out.ts; docs/visibility.md R15, docs/threat-model.md
@@ -616,6 +616,54 @@ describe("a quote state change's update fan-out (DistributionWorker with update:
     expect(await stateOf(t, mine.id)).toBe("pending");
     return { t, bob, mine, stamp: `${bob.uri}/quote_authorizations/${nextId()}` };
   }
+
+  it("an Accept of our quote request notifies the quote's booster and a dismissed mention", async () => {
+    const { t, bob, mine, stamp } = await ours();
+    await boost(t, mine.id);
+    const [mentioned] = await rowsOf(t, "mention");
+    await dismiss(t, "dave", mentioned!.id);
+    expect(await updates(t)).toEqual([]);
+    expect(await t.post(bob, quoteAccept(bob, mine.uri, stamp))).toBe(202);
+    expect(await stateOf(t, mine.id)).toBe("accepted");
+    const again = await rowsOf(t, "mention");
+    expect(again).toMatchObject([{ account_id: DAVE }]);
+    const update = await updates(t);
+    expect(update).toMatchObject([{ account_id: DAVE, status_id: mine.id }]);
+    expect(await pushed(t)).toEqual(expect.arrayContaining([again[0]!.id, update[0]!.id]));
+  });
+
+  // reject.rb:37 in v4.7.5: "TODO: broadcast an update?".
+  it("…but a Reject notifies no one, though the quote's state moved", async () => {
+    const { t, bob, mine } = await ours();
+    await boost(t, mine.id);
+    const [mentioned] = await rowsOf(t, "mention");
+    await dismiss(t, "dave", mentioned!.id);
+    const pushes = await pushed(t);
+    expect(await t.post(bob, quoteReject(bob, mine.uri))).toBe(202);
+    expect(await stateOf(t, mine.id)).toBe("rejected");
+    expect(await rowsOf(t, "mention")).toEqual([]);
+    expect(await updates(t)).toEqual([]);
+    expect(await pushed(t)).toEqual(pushes);
+  });
+
+  // quote_request.rb:41 in v4.7.5 broadcasts with skip_notifications.
+  it("accepting a QuoteRequest notifies the quoted author's quote only", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await subscribe(t, DAVE, ["update"]);
+    const mine = await localStatus(t, { status: "quote me", visibility: "public" });
+    const note = quoting(bob, mine.uri, null);
+    t.web.serve(note.id, { "@context": AS, ...note });
+    expect(await t.post(bob, create(bob, note), { path: "/ap/users/alice/inbox" })).toBe(202);
+    const statusId = (await statusRow(t.store, note.id))!.id;
+    expect(await stateOf(t, statusId)).toBe("pending");
+    await boost(t, statusId);
+    expect(await t.post(bob, quoteRequest(bob, mine.uri, note.id))).toBe(202);
+    expect(await stateOf(t, statusId)).toBe("accepted");
+    expect(await rowsOf(t, "quote")).toMatchObject([{ account_id: ALICE }]);
+    expect(await updates(t)).toEqual([]);
+    expect(await pushed(t)).toEqual([]);
+  });
 
   it("a local quote's stamp Delete fans out its status once; a repeated Delete none", async () => {
     const { t, bob, mine, stamp } = await ours();

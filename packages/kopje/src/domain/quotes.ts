@@ -1204,7 +1204,8 @@ type QuotedTarget = {
 // quote row, never the fetched document, says what the instrument quotes; only a transition into accepted draws an
 // authorization (VIS-28). Bounds: one answer per request id (ID-7), at most MAX_QUOTE_REQUESTS_PER_ACTOR live ones per
 // actor (RetryLater past it), one fetch. What is answered and what is ignored: docs/visibility.md (R36) and
-// docs/threat-model.md (VIS-28); a withdrawn status (its Delete recorded) is an unknown object.
+// docs/threat-model.md (VIS-28); a withdrawn status (its Delete recorded) is an unknown object. An acceptance notifies
+// the quoted author's `quote` only: Mastodon's broadcast skips the notifications (quote_request.rb:41 in v4.7.5).
 export function answerQuoteRequest(
   db: Db,
   actor: { id: string; uri: string },
@@ -1620,7 +1621,8 @@ function recordStampUpdate(db: Db, statusId: string, authorId: string, now: numb
 // row's quoted_account_id, cleared by a detach, row 15), with a result on the actor's origin that the actor never
 // revoked nor retracted (rows 8, the same checks as verification), on a pending quote, and only when no other local
 // quote holds that stamp of the actor (quotes_local_stamp, row 9: the update is ignored on the unique index). Then the
-// quoting status's Update carries the stamp. Returns whether it applied.
+// quoting status's Update carries the stamp, and its update fan-out runs (fanOutQuoteChange; accept.rb:47-58 in
+// v4.7.5). Returns whether it applied.
 export function acceptOurQuote(
   db: Db,
   actor: { id: string; uri: string },
@@ -1651,14 +1653,15 @@ export function acceptOurQuote(
     return false;
   }
   recordStampUpdate(db, quote.status_id, quote.author_id, now);
+  fanOutQuoteChange(db, quote.status_id, now);
   return true;
 }
 
 // Mastodon's Quote#reject!: compare-and-set pending to rejected or accepted to revoked; the latter sends an Update
-// without the stamp, superseding waiting Updates that carry it. Only the author's stamp Delete writes
-// quote_revocations, so it still runs revocation batches for received quotes. Keep the stamp until that Delete is
-// forwarded: uniqueness prevents reuse before forwarding (row 9), and the Delete's record afterwards (row 8).
-// Returns whether it applied.
+// without the stamp, superseding waiting Updates that carry it. No update fan-out runs (reject.rb:37 in v4.7.5, "TODO:
+// broadcast an update?"). Only the author's stamp Delete writes quote_revocations, so it still runs revocation batches
+// for received quotes. Keep the stamp until that Delete is forwarded: uniqueness prevents reuse before forwarding (row
+// 9), and the Delete's record afterwards (row 8). Returns whether it applied.
 export function rejectOurQuote(db: Db, actor: { id: string }, requestId: string | null, now: number): boolean {
   const quote = answeredQuote(db, actor, requestId);
   if (quote === undefined) {

@@ -206,7 +206,8 @@ local mention, each when it has no kept notification (the mentions without the l
 boosters and quoters: on a significant remote edit (text, spoiler text, media or poll), on a remote `Update` of the same
 version that changes its quote's approval stamp (not its legacy form alone), on the quote state changes Mastodon
 broadcasts (a stamp's `Delete` that revokes the accepted quote it approved, not the other quotes its batches reject or
-revoke; the `Delete` of a local quote's stamp; the revoke API), and on every accepted local edit, one that
+revoke; the `Delete` of a local quote's stamp; the revoke API; an `Accept` of a local quote's request, not its
+`Reject` nor an accepted `QuoteRequest`), and on every accepted local edit, one that
 changes only the quote policy through `PUT /api/v1/statuses/:id` included (not through `/interaction_policy`). So a
 quote or mention notification the policy dropped or this rule refused at the time, or one its recipient dismissed or
 cleared, is notified then.
