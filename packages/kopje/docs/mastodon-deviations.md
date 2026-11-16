@@ -724,6 +724,13 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
     fetching, or a document past the JSON bounds) ends the resolution with nothing instead of trying the page.
   - The first request keeps the document fetch's redirect rule (same origin, at most 5), where Mastodon follows 3 hops
     to any origin; the alternates follow none, as Mastodon's.
+- With `resolve=true`, a URL whose fetches resolve nothing is answered with the stored status or account whose uri it
+  is, unless the last of them answered 410, after which nothing is answered (`src/federation/resolve.ts` resolveUrl);
+  nothing stored is removed. Mastodon answers a stored status only after a 401, 403 or 404 and a stored account only
+  after a 5xx or no answer (`resolve_url_service.rb:38-44`), so Kopje also answers a stored status after any other
+  HTTP status, a network failure or an unusable document, and a stored actor's account after a failure of its fetch
+  other than the 410 that deletes it. It never looks a status up by its `url` either, as Mastodon does for a `/@user/id`
+  path (`:50-55`). These differences are tracked by #1662.
 
 Hashtags (the `Tag` entity):
 
@@ -1148,11 +1155,16 @@ ID-7 in `docs/threat-model.md`):
   object's host is the sender's (`delete.rb`), another actor's `Delete` leaves a `Tombstone` that also blocks the
   author's later `Create`.
 - An `Update` replaces the content only when its `updated` is newer than the stored version (the last accepted
-  `updated`, else `edited_at`, else `published`); one whose version is equal or missing still refreshes the poll, the
-  quote policy and the stamp of the same quote, as Mastodon's `handle_implicit_update!` does. Mastodon moves `edited_at`
-  only on a significant edit (`process_status_update_service.rb`), so after a newer metadata-only `Update` it applies an
-  older content `Update`: an author editing A, then B, then A again, whose final A arrives before B, ends at B there.
-  Mastodon's behaviour is an ordering bug.
+  `updated`, else `edited_at`, else `published`); one whose version is equal, or missing for a status never edited,
+  still refreshes the poll, the quote policy and the stamp of the same quote, as Mastodon's `handle_implicit_update!`
+  does; one missing for an edited status changes nothing, as in Mastodon (`process_status_update_service.rb:32-34`).
+  Mastodon moves `edited_at` only on a significant edit (`process_status_update_service.rb`), so after a newer
+  metadata-only `Update` it applies an older content `Update`: an author editing A, then B, then A again, whose final A
+  arrives before B, ends at B there. Mastodon's behaviour is an ordering bug.
+- A status Kopje fetches again that it stores (search, `/authorize_interaction`) is applied as its author's `Update`, as
+  `FetchRemoteStatusService` turns a stored status's `Create` into an `Update` (`fetch_remote_status_service.rb:48`). A
+  status fetched because it was not stored (a boost's original, a quoted status, an `Add`, a quote request's instrument)
+  that a delivery stored before the fetch completed keeps the stored version; Mastodon applies the fetched one.
 - An `Update` whose `updated` is more than five minutes ahead of the clock is ignored (`src/domain/remote-statuses.ts`);
   Mastodon has no such check. The edit is lost until another delivery or a later edit: the sender does not send it
   again when the receiver's clock catches up.

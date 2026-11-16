@@ -289,7 +289,13 @@ against their own instance. TLS is assumed between all parties.
   json['id'] != response.uri`), so the rule above holds for it as for any fetch. _Enforced (main):_ `fetchAlternate`
   in `src/federation/resolve.ts`; `test/resolve-alternate.test.ts` ("takes an alternate on another origin whose id is
   the href, and none whose id is not", "makes no second hop: an alternate answering HTML that names its own alternate
-  resolves nothing").
+  resolves nothing"). The probe's own document is held to the same check (`fetch_resource_service.rb:54-59`): one whose
+  `id` is not both the URL searched and the URL that answered (another URL of the origin, or one a redirect reached) is
+  taken only as its `id` answers that one terminal fetch, so no other URL of a status's origin speaks for the status
+  that search applies it to as an `Update` (ID-7). _Enforced (main):_ `ownDocument` in `src/federation/resolve.ts`;
+  `test/search-refetch.test.ts` ("updates nothing from another URL of the origin whose document names a stored
+  status's id", "updates nothing from a document its id redirects to"), `test/interaction.test.ts` ("updates nothing
+  from another URL naming a stored status's id").
 - **ID-3: remote input never changes local actors or local objects.** No inbound activity updates, deletes, moves or
   attributes anything to a local account or local status. _Enforced (main)_ for actors and relationships:
   `upsertRemoteActor` and `localAccount` in `src/domain/inbox.ts`; `test/inbox.test.ts` ("a local actor URI is never
@@ -420,11 +426,20 @@ against their own instance. TLS is assumed between all parties.
   `Undo` that arrives first is recorded and keeps the object, favourite or boost from appearing, and a replay after it
   changes nothing; an `Update` replaces the content only if its `updated` is newer than the last accepted version
   (`statuses.remote_version`, kept as the remote wrote it whether or not the change wrote history, and compared
-  unclamped), so a reordered or repeated one changes no content whenever it arrives; one whose version is equal or
-  missing still refreshes the status's poll (counts, end, voters), its quote policy and the stamp of the same quote
-  (Mastodon's `handle_implicit_update!`), and an older one changes nothing; an `Update` dated more than 5 minutes ahead
+  unclamped), so a reordered or repeated one changes no content whenever it arrives; one whose version equals the
+  stored one, or names none for a status never edited (no `edited_at`), still refreshes the status's poll (counts, end,
+  voters), its quote policy and the stamp of the same quote (Mastodon's `handle_implicit_update!`), and an older one, or
+  one that names none for an edited status, changes nothing (Mastodon's `process_status_update_service.rb:32-34`), so
+  a peer's cached copy from before an edit rolls nothing back; an `Update` dated more than 5 minutes ahead
   of the clock is ignored (no change, history or notification), and its edit waits for another delivery; a status whose
-  `Delete` was recorded takes no `Update`. A stored status is also known by an object's `atomUri` when no status has
+  `Delete` was recorded takes no `Update`. A status Kopje fetches again that it stores under the document's id, by its
+  author (search and `/authorize_interaction`: `storeFetchedStatus` in `src/domain/remote-statuses.ts`), is applied as
+  that author's `Update` under these rules, as Mastodon's `FetchRemoteStatusService` turns it into one, and one it does
+  not store is its `Create`, its document taken only from its `id` (ID-2); a 404 or 410 to such a fetch removes
+  nothing, and a 410 answers nothing, as Mastodon answers a stored status only after a 401, 403 or 404
+  (`resolve_url_service.rb:44`) (`test/search-refetch.test.ts`, `test/interaction.test.ts` ("applies a newer version
+  of a stored status it finds again", "finds nothing for a stored status whose fetch answers 410, and keeps it")).
+  A stored status is also known by an object's `atomUri` when no status has
   the object's id (an http(s) URI within `STATUS_URI_LIMIT`, `statusIdentity` in `src/federation/remote-status.ts`): a
   `Create` or `Update` whose id or `atomUri` was retracted or deleted is not applied, an `Update` found by `atomUri`
   edits the stored status under these version rules and its own uri, and a `Delete` or `Undo` that found its status
@@ -483,15 +498,17 @@ against their own instance. TLS is assumed between all parties.
   recorded and no receipt is deleted before the removal's own `Undo` has taken it as a target
   (`test/remote-delete-cleanup.test.ts`). `test/inbox-statuses.test.ts` ("ID-7: duplicate and reordered Create and
   Delete", "ignores an Update that is not newer"), `test/inbox-statuses-edge.test.ts` ("ID-7: the Update watermark",
-  "leaves nothing for every order of Create, Update and Delete", "ID-7: retractions at the per-actor cap", "removes only
+  "leaves nothing for every order of Create, Update and Delete", "ID-7: an Update that names no version, of an edited
+  status", "ID-7: retractions at the per-actor cap", "removes only
   its own id", "withdraws a local boost once", "ID-7: a retryable refusal commits nothing", "ID-6, ID-7: a deleted
   status is not created again by anyone", "after its deliveries are done"), `test/inbox-reactions.test.ts` (every
   arrival order of three reactions and their Undos, a burst retried after its 503s, "is retired by the Store’s clock",
   "Like ids are unique instance-wide, and bounded", "Undos at the retraction cap", "records no
   tombstone, unless a stored favourite needs it removed", "a legacy favourite of a local status").
-  `test/status-delete.test.ts` (generated sequences of a remote author's `Create`, `Update` and `Delete`, local
+  `test/status-delete.test.ts` (generated sequences of a remote author's `Create`, `Update` and `Delete`, the `Update`s
+  its poll jobs write 3 minutes after a vote, L's searches of them served from the author's render cache, local
   favourites and boosts, job rounds and deliveries, checked after every step against the rules in
-  `test/status-delete-model.ts` and, once settled, against the author's final state as a Mastodon v4.5.11 sender holds
+  `test/status-delete-model.ts` and, once settled, against the author's final state as a Mastodon v4.7.5 sender holds
   it). A change to a status `Create`, `Update` or `Delete` rule here changes `test/status-delete-model.ts` with it.
   A proven `Delete` of a status delivered again records no second forward (VIS-3): the job's key, read before the
   proof is asked for, fences it, and two deliveries held at their proofs record one set (`test/forward-delete.test.ts`
@@ -1381,7 +1398,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/forward-delete.test.ts` ("sends a forward through a quote to an instance-suspended follower")), and its inbound
   activity is not applied but for its `Delete`, `DeleteActor`, `Undo` and
   `Reject`, after a routing refresh of its inbox from a verified document (fenced by its revision as any document,
-  ID-1); no path refreshes its profile, keys or domain, or stores a status of it. Its accepted follows of local
+  ID-1); no path refreshes its profile, keys or domain, or stores or updates a status of it (a search's included,
+  `test/search-refetch.test.ts`). Its accepted follows of local
   accounts are severed in bounded, generation-bound rounds (R38), each with a withdrawing `Reject` to the follower's
   current personal inbox alone, as Mastodon's `reject_remote_follows!` sends it (a retraction, never refused, but not
   sent to the earlier receivers of what it withdraws); its requests to local accounts are kept, unlisted and
