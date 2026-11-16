@@ -136,8 +136,13 @@ describe("collections over ActivityPub: the actor (D19)", () => {
       const update = await runInDurableObject(store, (_instance, state) =>
         actorDocument(new Db(state.storage.sql), "111111111111111111"),
       );
+      // What Mastodon's InteractionPolicyParser reads, by the raw keys: automaticApproval as a list, `as:Public` and
+      // `Public` as the public collection.
+      const raw = (document.interactionPolicy as { canFeature?: { automaticApproval?: unknown } } | undefined)
+        ?.canFeature?.automaticApproval;
       return {
         featuredCollections: document.featuredCollections,
+        mastodon: [raw].flat().map((value) => (value === "as:Public" || value === "Public" ? PUBLIC : value)),
         expanded: approval?.map((value) => value["@id"]),
         update: { featuredCollections: update?.featuredCollections, interactionPolicy: update?.interactionPolicy },
       };
@@ -152,10 +157,12 @@ describe("collections over ActivityPub: the actor (D19)", () => {
     ];
     for (const [discoverable, locked, approval] of cases) {
       await set(discoverable, locked);
-      // The Update writes it as Mastodon's ActorSerializer does; the endpoint as Fedify compacts it, the same IRIs.
+      // The Update writes it as Mastodon's ActorSerializer does; the endpoint as Fedify compacts it (`as:Public`, a
+      // single value), which Mastodon's parser and a JSON-LD processor read as the same.
       const policy = { canFeature: { automaticApproval: [approval] } };
       expect(await read(), `${discoverable} ${locked}`).toEqual({
         featuredCollections: `${id}/featured_collections`,
+        mastodon: [approval],
         expanded: [approval],
         update: { featuredCollections: `${id}/featured_collections`, interactionPolicy: policy },
       });
