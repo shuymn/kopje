@@ -10,6 +10,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Added
 
+- A stamp's revocation, the approval of a local account's quote and
+  `POST /api/v1/statuses/:id/quotes/:quoting_status_id/revoke` notify the quoting post's mentions, boosters and quoters
+  as an edit does, as Mastodon does. No Store migration and no `wrangler.jsonc` change.
 - Search with `resolve=true` and the interaction page follow a URL whose page is HTML to the ActivityPub document its
   `Link` header names, or else the page's `<link rel="alternate">`, as Mastodon does
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Search). No Store migration and no `wrangler.jsonc`
@@ -113,6 +116,24 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Changing a post's quote policy, through `PUT /api/v1/statuses/:id` or `/interaction_policy`, sends `status.update`
   to the streaming clients that show it, as Mastodon does: through `/interaction_policy`, not to an account that only
   a mention of it shows it to. No Store migration and no `wrangler.jsonc` change.
+- A change of a quote's state (verified, rejected, approved or revoked) sends `status.update` for the quoting post to
+  the streaming clients that show it ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Streaming); for a
+  quote accepted by its `QuoteRequest`, as Mastodon, not to an account that only a mention of it shows it to.
+  Migration `0102_quote_state_stream`: one trigger, made without reading or writing a row (the migration bench's
+  upgrade from `0093_annual_reports` takes 18,491 ms with this file and 18,702 ms without it, medians of three runs).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
+  back past it needs a point-in-time restore.
+- Collections: an account can feature up to 25 accounts in up to 10 collections (`/api/v1/collections`,
+  `/api/v1/accounts/:id/collections`, `/api/v1/accounts/:id/in_collections`, also under `/api/v1_alpha` with a
+  `Deprecation` header), with the `read:collections` and `write:collections` scopes, as Mastodon 4.6 serves them; only
+  local accounts can be featured yet ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections").
+  Reports take `collection_ids[]` (forwarded in the `Flag` after the statuses, and read from an inbound one), roles
+  present `collection_limit`, search with `resolve=true` finds a local collection by its URL, and each local collection
+  has a public page at its `url`. Migration `0103_collections`: two new tables and a column of `reports`, reading no
+  row; as it creates tables, the upgrade checks every reference of the Store (the migration bench's upgrade from
+  `0093_annual_reports` takes 16,319 ms with this file and 16,404 ms without it, medians of three runs).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
+  back past it needs a point-in-time restore.
 
 ### Changed
 
@@ -245,11 +266,21 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   becomes, as Mastodon 4.6 does (`mastodon#39114`). Posts and bios stored earlier show them after their next update; a
   post whose HTML has them counts that update as an edit once. A line break with attributes ends a line for filters,
   as one without does. No Store migration and no `wrangler.jsonc` change.
+- A remote quote's verification notifies the quoting post's mentions, boosters and quoters as Mastodon does: when a
+  same-version `Update`'s or a retried verification changes the quote's state, and no longer when an `Update` brings a
+  pending quote's stamp, before it is verified. Every `Update` that names the same quote verifies a pending or accepted
+  quote again ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Quote verification). Migration
+  `0104_quote_broadcast` adds a column of `quotes` with its default, reading every row for its CHECK; the upgrade
+  checks no reference (the migration bench's upgrade from `0093_annual_reports` takes 12,349 ms with this file and
+  11,736 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the
+  release is at least a minor version, and rolling back past it needs a point-in-time restore.
 - The hashtag page and the followers and following pages always carry `noindex`, as Mastodon's do. No Store migration
   and no `wrangler.jsonc` change.
 
 ### Fixed
 
+- A fetched ActivityPub document, WebFinger answer or JSON-LD context is taken only from a 200 answer, as Mastodon takes
+  them; another 2xx answer is a failed fetch. No Store migration and no `wrangler.jsonc` change.
 - Boolean parameters of the Mastodon API are read as Rails casts them in every endpoint: only `0`, `f`, `F`, `false`,
   `FALSE`, `off`, `OFF` and a blank value are false, so `False` or `Off` is now true, as in Mastodon (it was read as
   false). No Store migration and no `wrangler.jsonc` change.
@@ -395,6 +426,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   longer discards that verification, nor cuts short its wait after a failure that may pass; a fetch refused under the
   key the verification no longer uses, or a stamp gone to it, is retried with the current one rather than rejecting
   the quote. No Store migration and no `wrangler.jsonc` change.
+- A stamp's revocation reads a bounded number of the quotes naming it to find the one it approved. No Store migration
+  and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

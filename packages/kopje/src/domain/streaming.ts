@@ -150,9 +150,9 @@ function carriesNotifications(grant: StreamGrant, key: string): boolean {
 }
 
 // Whether a subscription with the key `key` may carry an event of `kind` (the journal's: a notification inserted, a
-// status inserted, a status edited, or edited quietly (stream-journal.ts QUIET_EDIT_SUBJECT: no mention reference), a
-// delete captured, a merge done; or a conversation changed) for a token with `grant`, before any reference is read: the
-// streams and scopes each event goes to.
+// status inserted, a status edited or its quote's state or quote policy changed, or a quote policy changed quietly
+// (stream-journal.ts QUIET_EDIT_SUBJECT: no mention reference), a delete captured, a merge done; or a conversation
+// changed) for a token with `grant`, before any reference is read: the streams and scopes each event goes to.
 export function mayCarry(kind: string, grant: StreamGrant, key: string): boolean {
   const timeline = key === "user" || keyList(key) !== null || isFeedKey(key);
   switch (kind) {

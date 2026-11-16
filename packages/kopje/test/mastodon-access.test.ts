@@ -27,6 +27,31 @@ type MastodonRoute = (typeof mastodon.routes)[number];
 // Both sides as sides() writes them, and why they differ.
 type Exception = { kopje: string; mastodon: string; reason: string };
 
+// The collections routes under `prefix` (mastodon/collections.ts): R45 is the Store's (Mastodon: Pundit, unresolved),
+// and in_collections answers a request without a user 422 whether or not it sent a token.
+function collectionExceptions(prefix: string): Record<string, Exception> {
+  const read = "optional token, scopes read read:collections, no user required";
+  return {
+    [`GET ${prefix}/accounts/:id/collections`]: {
+      kopje: read,
+      mastodon: `unresolved (Pundit policy: authorize @account, :index_collections?; verify_authorized): ${read}`,
+      reason: "R45 is the Store's (Mastodon: Pundit AccountPolicy#index_collections?, unresolved)",
+    },
+    [`GET ${prefix}/accounts/:id/in_collections`]: {
+      kopje: read,
+      mastodon: "required token, scopes read read:collections, user required",
+      reason:
+        "authorize_if_got_token! then require_user!: without a token the answer is require_user!'s 422, not a 401, " +
+        "which the handler gives (domain/collections.ts inCollections)",
+    },
+    [`GET ${prefix}/collections/:id`]: {
+      kopje: read,
+      mastodon: `unresolved (Pundit policy: authorize @collection, :show?; verify_authorized): ${read}`,
+      reason: "R45 is the Store's (Mastodon: Pundit CollectionPolicy#show?, unresolved)",
+    },
+  };
+}
+
 const EXCEPTIONS: Record<string, Exception> = {
   // Not Mastodon /api routes.
   "POST /oauth/token": {
@@ -146,6 +171,8 @@ const EXCEPTIONS: Record<string, Exception> = {
   },
 
   // Mastodon's StatusPolicy#show? (Pundit) decides per viewer; Kopje's Store applies the visibility rules.
+  ...collectionExceptions("/api/v1"),
+  ...collectionExceptions("/api/v1_alpha"),
   "GET /api/v1/statuses/:id": {
     kopje: "optional token, scopes read read:statuses, no user required",
     mastodon:
@@ -601,7 +628,36 @@ const TRENDS_CONDITION =
   "{ request.path == '/api/v1/trends' }`): not deprecated";
 const NEVER_THAT_PATH = "Mastodon's condition is the request path, which on this route is never /api/v1/trends";
 
+// The collections and items controllers deprecate their actions `if: :alpha_path?`, which the fixture leaves
+// unresolved: Kopje lists them deprecated under /api/v1_alpha alone (DEPRECATED_ROUTES).
+function collectionDeprecationExceptions(prefix: "/api/v1" | "/api/v1_alpha"): Record<string, Exception> {
+  const alpha = prefix === "/api/v1_alpha";
+  const condition = (controller: string) =>
+    `unresolved (app/controllers/api/v1/${controller}_controller.rb: \`deprecate_api '2026-06-10', if: :alpha_path?\`): ` +
+    "not deprecated";
+  const exception = (controller: string): Exception => ({
+    kopje: alpha ? "deprecated 2026-06-10" : "not deprecated",
+    mastodon: condition(controller),
+    reason: alpha
+      ? "Mastodon's condition is the request path, which on this route is always under /api/v1_alpha"
+      : "Mastodon's condition is the request path, which on this route is never under /api/v1_alpha",
+  });
+  return {
+    [`GET ${prefix}/accounts/:id/collections`]: exception("collections"),
+    [`POST ${prefix}/collections`]: exception("collections"),
+    [`GET ${prefix}/collections/:id`]: exception("collections"),
+    [`PATCH ${prefix}/collections/:id`]: exception("collections"),
+    [`PUT ${prefix}/collections/:id`]: exception("collections"),
+    [`DELETE ${prefix}/collections/:id`]: exception("collections"),
+    [`POST ${prefix}/collections/:id/items`]: exception("collection_items"),
+    [`DELETE ${prefix}/collections/:id/items/:item_id`]: exception("collection_items"),
+    [`POST ${prefix}/collections/:id/items/:item_id/revoke`]: exception("collection_items"),
+  };
+}
+
 const DEPRECATION_EXCEPTIONS: Record<string, Exception> = {
+  ...collectionDeprecationExceptions("/api/v1"),
+  ...collectionDeprecationExceptions("/api/v1_alpha"),
   "GET /api/v1/trends": {
     kopje: "deprecated 2022-03-30",
     mastodon: TRENDS_CONDITION,

@@ -979,9 +979,9 @@ const RECEIVE_SWEEP_ROWS = 4 * SWEEP_BATCH;
 // The Delete handler's own rows, apart from the batch's budget: the retraction, the deleted object and the job (3); the
 // streaming capture, an event, a tombstone and 256 viewers (258, R32); the hide, the status, the last status, the
 // card and the copy of withdrawn on the status's own quote row when an import marked it local (4, migration
-// 0091_live_local_quotes); retireQuoteOf, the quote, its target's count and the authorization's revocation (3); the
-// forwards and the job's bound.
-const DELETE_HANDLER_ROWS = 3 + 258 + 4 + 3 + MAX_FORWARD_OWNERS + 1;
+// 0091_live_local_quotes); retireQuoteOf, the quote, its target's count, the authorization's revocation and the
+// state change's journal row (4, stream_quote_state: 256 accounts listen); the forwards and the job's bound.
+const DELETE_HANDLER_ROWS = 3 + 258 + 4 + 4 + MAX_FORWARD_OWNERS + 1;
 
 // Every other input of the first transaction at its most for the original `o`: it quotes alice's status holding
 // Kopje's authorization, its quote row marked local (as an import may: the hide writes its copy of withdrawn), has a
