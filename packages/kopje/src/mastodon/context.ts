@@ -13,6 +13,7 @@ import { callStore, type StoreResolver, type StoreStub } from "../platform/store
 import type { RequiredScope } from "../security/scopes";
 import type { TokenGenerator } from "../security/tokens";
 import type { ActivityMemo } from "./activity";
+import type { CachingEnv } from "./caching";
 import { INVALID_TOKEN, invalidTokenError, mastodonError } from "./errors";
 import { type Params, type ReadOptions, readParams } from "./params";
 
@@ -44,8 +45,11 @@ export type AuthorSignature = { activity: Record<string, unknown>; keyId: string
 type RequestCredential = { tokenHash: string; scope: RequiredScope | null; admin?: true };
 
 // ownerJudged: on an anonymous route with a token, whether an operation judged the token's owner (judged), so the
-// access middleware does not judge the answer again.
-export type ApiEnv = { Bindings: Env; Variables: { credential: RequestCredential | null; ownerJudged: boolean } };
+// access middleware does not judge the answer again. caching: the route's declaration (mastodon/caching.ts).
+export type ApiEnv = {
+  Bindings: Env;
+  Variables: { credential: RequestCredential | null; ownerJudged: boolean } & CachingEnv["Variables"];
+};
 
 export type ApiContext = Context<ApiEnv>;
 

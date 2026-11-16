@@ -248,10 +248,7 @@ export const domainBlocks: ApiHandler = async (c, deps) => {
 };
 
 // GET /api/v1/instance/activity (Api::V1::Instances::ActivityController, domain/instance-activity.ts): the 12 weeks,
-// the same for every caller (public, Vary empty), with cache_even_if_authenticated!'s Cache-Control; with
-// activity_api_enabled off, Mastodon's head 404 (require_enabled_api!), before the action sets any caching.
-const ACTIVITY_CACHE = "public, max-age=300, stale-while-revalidate=30, stale-if-error=86400";
-
+// the same for every caller; with activity_api_enabled off, Mastodon's head 404 (require_enabled_api!).
 export const activity: ApiHandler = async (c, deps) => {
   const credential = optionalTokenCredential(c, deps);
   const body = judged(
@@ -260,7 +257,7 @@ export const activity: ApiHandler = async (c, deps) => {
   ).value;
   return body === null
     ? new Response(null, { status: 404 })
-    : c.body(body, 200, { "content-type": "application/json", "cache-control": ACTIVITY_CACHE });
+    : c.body(body, 200, { "content-type": "application/json" });
 };
 
 // GET /api/v1/instance/translation_languages: {} when no translation service is configured, as Mastodon's
