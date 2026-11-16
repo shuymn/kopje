@@ -422,10 +422,13 @@ function jsonLdValues(value: unknown): number {
   return count;
 }
 
-export const FULL_CONTEXT_VALUES = jsonLdValues([
+// Mastodon 4.7's full_context: its named contexts and its extension object, in order.
+const FULL_CONTEXT = [
   ...MASTODON_NAMED_CONTEXTS.at(-1)!,
   Object.fromEntries(Object.entries(MASTODON_CONTEXT_TERMS).map(([name, definitions]) => [name, definitions.at(-1)])),
-]);
+];
+
+export const FULL_CONTEXT_VALUES = jsonLdValues(FULL_CONTEXT);
 
 function namesOf(url: string, test: (definition: unknown) => boolean): Set<string> {
   return new Set(Object.entries(definitionsOf(url)).flatMap(([name, definition]) => (test(definition) ? [name] : [])));
@@ -487,11 +490,8 @@ function mastodonCompacts(json: Json, prefixes: Prefixes): boolean {
   return true;
 }
 
-// What each name full_context defines means: Mastodon 4.7's named contexts and its extension object, in order.
-const FULL_CONTEXT_MEANINGS = readContext([
-  ...MASTODON_NAMED_CONTEXTS.at(-1)!,
-  Object.fromEntries(Object.entries(MASTODON_CONTEXT_TERMS).map(([name, definitions]) => [name, definitions.at(-1)])),
-])!.meanings;
+// What each name full_context defines means.
+const FULL_CONTEXT_MEANINGS = readContext(FULL_CONTEXT)!.meanings;
 
 // The name the compaction under full_context writes for a type's IRI, of every name it defines (TYPE_NAMES is the
 // vocabulary's). No two such names share an IRI (JSON-LD would rank them by length and order);
