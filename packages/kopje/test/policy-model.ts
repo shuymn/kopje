@@ -451,6 +451,57 @@ export class PolicyModel {
     return author === owner && withdrawn !== true;
   }
 
+  // R45: a collection is found while its owner is available.
+  collectionFound(owner: number): boolean {
+    return this.available(owner);
+  }
+
+  // R45: a found collection is shown to an anonymous viewer, and to an account its owner blocks neither by account nor
+  // by domain.
+  collectionShown(owner: number, viewer: Viewer): boolean {
+    return this.collectionFound(owner) && (viewer === null || !this.blocked(owner, viewer));
+  }
+
+  // R45: a shown collection is listed among its owner's when discoverable, and always to the owner.
+  collectionListed(owner: number, discoverable: boolean, viewer: Viewer): boolean {
+    return this.collectionShown(owner, viewer) && (discoverable || viewer === owner);
+  }
+
+  // R45: an item (state 0 pending, 1 accepted, 2 rejected, 3 revoked) of the owner's collection is shown to the viewer
+  // when its member is known and available, accepted (or pending, to the owner), and not blocked by the viewer.
+  collectionItemShown(owner: number, member: number | null, state: number, viewer: Viewer): boolean {
+    return (
+      member !== null &&
+      this.available(member) &&
+      (state === 1 || (state === 0 && viewer === owner)) &&
+      !this.blocks(viewer, member)
+    );
+  }
+
+  // R45: the owner may feature the member when the member is available, neither blocks the other, and the member is
+  // local, discoverable, and unlocked, followed (accepted) by the owner, or the owner itself. A remote member is refused.
+  mayFeature(
+    owner: number,
+    member: number,
+    discoverable: (x: number) => boolean,
+    locked: (x: number) => boolean,
+  ): boolean {
+    return (
+      this.available(member) &&
+      !this.blocks(owner, member) &&
+      !this.blocks(member, owner) &&
+      this.account(member).local &&
+      discoverable(member) &&
+      (member === owner || !locked(member) || this.follows(owner, member))
+    );
+  }
+
+  // R45: an item lists its collection among those featuring the viewer when it is the viewer's, in any state, and the
+  // collection is found.
+  inCollections(owner: number, member: number | null, viewer: Viewer): boolean {
+    return member !== null && member === viewer && this.collectionFound(owner);
+  }
+
   // R41's list (StatusTrend.allowed, trendingStatuses): of the stored trend rows, each author's top-scoring ones (the
   // maximum over every stored row of the author, taken before allowance), allowed (the status's review, else the
   // author's, else `byDefault`) and trendable, by score then id (newest first), the first 200; then for `viewer`,

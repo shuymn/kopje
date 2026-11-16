@@ -356,6 +356,15 @@ const HOLDS: [page: PageName, selector: string, count: number][] = [
   ["featured", "ul.hashtags > li > span.name", 1],
   ["featured", "ul.accounts > li .who", 2],
   ["featured", ".pager a.btn", 1],
+  // A collection's page: its heading above the owner's row, its hashtag linked, its members as rows in one card and
+  // no pager; a sensitive one's description and members inside its disclosure.
+  ["collection", "main > .stack > h1 + .who", 1],
+  ["collection", 'main a[href="/tags/walks"]', 1],
+  ["collection", "ul.accounts", 1],
+  ["collection", "ul.accounts > li .who", 2],
+  ["collection", ".pager", 0],
+  ["collection", "details", 0],
+  ["collection-sensitive", "details.cw > .stack > p + section ul.accounts > li .who", 2],
   // The hashtag page: its heading, a stub, the reply-to line and both pager links offered.
   ["tag", "main > h1", 1],
   ["tag", "main > h1 > svg", 0],

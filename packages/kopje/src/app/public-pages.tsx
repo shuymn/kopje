@@ -15,6 +15,7 @@ import { PACKAGE_VERSION, SOFTWARE_REPOSITORY } from "../platform/package-versio
 import type { StoreStub } from "../platform/store-client";
 import { L1Context } from "../web/components/layout";
 import { AboutPage } from "../web/pages/about";
+import { CollectionPage } from "../web/pages/collection";
 import { DocumentPage } from "../web/pages/document";
 import { EmbedPage } from "../web/pages/embed";
 import { FeaturedPage } from "../web/pages/featured";
@@ -291,6 +292,31 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
     );
   });
 
+  // A local collection's url (Mastodon's CollectionsController#show): its page, as an anonymous viewer reads it. HTML
+  // only.
+  pageGet("/collections/:id{[0-9]{1,19}}", async (c) => {
+    const page = await pageCall(c, (s, b) => s.webCollectionPage(b, { id: c.req.param("id") }));
+    switch (page.status) {
+      case "not_set_up":
+        return notSetUp(c);
+      case "not_found":
+        return notFound(c, page.site);
+      case "suspended":
+        return gone(c, page.site);
+    }
+    return publicPage(
+      c,
+      200,
+      <CollectionPage
+        collection={page.collection}
+        owner={page.owner}
+        tag={page.tag}
+        accounts={page.accounts}
+        site={page.site}
+      />,
+    );
+  });
+
   // VIS-4: a status an anonymous viewer may see, or 404 for anything else, alike. Its page is its Replies tab, and its
   // other tabs are below it, each paged both ways. The Replies tab serves the object to an ActivityPub
   // client, which reads the status alone; the other tabs are HTML only. A legacy id moves to the same tab.
@@ -441,6 +467,7 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
   };
   pageGet("/@*", missing);
   pageGet("/tags/*", missing);
+  pageGet("/collections/*", missing);
 
   return app;
 }
