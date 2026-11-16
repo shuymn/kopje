@@ -389,6 +389,14 @@ export function offsetParam(p: Params): number {
   return Math.max(Number.parseInt(p.get("offset") ?? "0", 10) || 0, 0);
 }
 
+// Whether Ruby's String#to_i reads `value` as negative (rb_int_parse_cstr in Ruby 4.0.9's bignum.c, Mastodon 4.7.5's
+// Ruby): after ASCII whitespace (ISSPACE), a `-`, an optional `0d` prefix, then digits with single underscores between
+// them, one of them not 0; whatever follows is ignored, so `-2abc` and ` -1` are negative and `-_1` or `--1` are 0.
+const RUBY_NEGATIVE = /^[\t\n\v\f\r ]*-(?:0[dD])?[0-9]+(?:_[0-9]+)*/;
+export function rubyNegative(value: string): boolean {
+  return /[1-9]/.test(RUBY_NEGATIVE.exec(value)?.[0] ?? "");
+}
+
 // `limit` as Api::BaseController#limit_param reads it: `fallback` when absent, else the absolute value, at most `max`
 // (an unreadable one is 0).
 export function limitParam(p: Params, fallback: number, max: number): number {

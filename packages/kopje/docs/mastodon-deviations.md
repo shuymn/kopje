@@ -913,6 +913,13 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
   readonly maintenance, an unpublished import): nothing is fetched, and the search answers from local data as without
   it. Mastodon has no such state and resolves whenever it is asked; Kopje could not store what it fetched then, and a
   remote server would see a fetch for nothing.
+- With `resolve=true`, a URL lookup whose answer is empty whatever it finds (a `type` with an `offset` past 0, or a
+  `type` other than `accounts` and `statuses`, `hashtags` included) fetches nothing; Mastodon 4.7.5 fetches and stores
+  the resource first (`search_service.rb:19-20`). A remote server would see a fetch whose result no answer shows.
+  Accepted, 2026-11-16.
+- A `limit` or `offset` given as an array or a nested parameter (`limit[]=1`, `offset[a]=-1`) is not read: the search
+  answers as without it, or 400 when the other one is negative. Mastodon 4.7.5 answers 500 to both, as its pagination
+  check calls `to_i` on the array or hash. Accepted, 2026-11-17.
 - A URL that answers with an HTML page or another type is followed to the ActivityPub document its `Link` header or
   `<link rel="alternate">` names, as Mastodon 4.7.5's `FetchResourceService` follows it, with these differences
   (`src/federation/resolve.ts`):
@@ -940,8 +947,15 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
   nothing stored is removed. A fetch Kopje refuses before it is sent (the domain policy, the request's fetches or
   deadline, a redirect to another origin or past 5) counts as no answer and keeps the earlier answer, as Mastodon
   counts a connection error; an answer whose body the request's bytes cut counts as its status, as Mastodon records
-  the status before it reads the body within its limit. A boost is never answered (Mastodon's lookup by uri may find
-  one by its `Announce` id).
+  the status before it reads the body within its limit. A boost is never answered, here or for a status page URL of
+  this instance (Mastodon's lookup by uri may find one by its `Announce` id, and its status page route by its id).
+- With `resolve=true`, a URL of this instance is read on Kopje's routes as Mastodon 4.7.5's router reads its own, with
+  three differences. `/@user@<this domain>` finds the local account, as Kopje's profile page serves that spelling,
+  where Mastodon routes it to its web app and finds no account (`Account.find_remote` with its own domain,
+  `resolve_url_service.rb:116`). A status id in the URL is matched as written (an API id or a legacy id), where
+  Mastodon casts it as Rails casts an integer, so `0123` or `123-x` finds status 123. A URL that RFC 3986 does not
+  admit (a space, `|`, `\`, a character outside ASCII, a `%` without two hex digits) finds nothing, where Mastodon's
+  search answers 404: its router cannot parse the URL and raises `ActionController::RoutingError`.
 
 Polls (`GET /api/v1/polls/:id`):
 

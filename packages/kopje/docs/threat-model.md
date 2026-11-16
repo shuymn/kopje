@@ -856,10 +856,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the actor’s host on every path", "never lets a third-party alias replace a confirmed domain or evade a block on it").
   Account search finds an account that is available and not on a domain the viewer blocks (`findableBySql`). Search
   resolution answers an account only when account search would find it, and a status by the rule of a single status
-  (VIS-1, `canView`, as Mastodon's `ResolveURLService` authorizes `show?`) unless the viewer blocks its author's domain.
+  (VIS-1, `canView`, as Mastodon's `ResolveURLService` authorizes `show?`) unless the viewer blocks its author's domain,
+  a URL of this instance included, which it finds on Kopje's routes with nothing fetched (`localSearchTarget`).
   _Enforced (main):_ `findAccountIds` and `searchAccountIds` in `src/domain/accounts.ts`, `resolveSearch` in
   `src/domain/remote-statuses.ts`; `test/inbox-statuses.test.ts` ("answers a status by the single-status rule"),
-  `test/policy-endpoints.test.ts`.
+  `test/search-local-urls.test.ts` ("answers only what the viewer may see"), `test/policy-endpoints.test.ts`.
 - **VIS-6: a wrapper reveals nothing its target hides.** A boost is visible only if its original is; boosting is limited
   to `public` and `unlisted` statuses and one's own `private` ones (`StatusPolicy#reblog?`). _Enforced (main):_
   `viewableSql`; `test/visibility.test.ts` ("a boost of an original the viewer may not see is hidden with it"),
@@ -3309,8 +3310,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 - **RES-3: lists are bounded.** Pageable lists return at most 80 items; relationships read at most 100 ids; any other
   collection names its count and byte bound. _Enforced (main):_ `src/mastodon/pagination.ts`, `MAX_RELATIONSHIP_IDS` in
   `src/domain/accounts.ts`. _Gap: neither cap is tested._ _Enforced (main)_ for search: at
-  most 40 results per type (80 for the account search), and offsets past 10,000 answer an empty page;
-  `test/search.test.ts` ("bounds the query, the limit and the offset"). _Enforced (main):_
+  most 40 results per type (80 for the account search), `limit=0` answers nothing, and offsets past 10,000 answer an
+  empty page, where an offset of `/api/v2/search` counts only with a `type`, as Mastodon's; `test/search.test.ts`
+  ("bounds the query, the limit and the offset", "reads the limit and the offset as SearchService#call does").
+  _Enforced (main):_
   the domain block list (`GET /api/v1/domain_blocks`) returns at most 200 domains, as Mastodon's does
   (`src/mastodon/blocks.ts`). _Enforced (main):_ `GET /api/v1/instance/peers` lists at most
   10,000 domains (`MAX_PEERS` in `src/domain/instance.ts`); `GET /api/v1/instance/domain_blocks` admits whole
@@ -3738,9 +3741,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   recipients, collection expansion and notifications. The revision fence (ID-1) adds no additional inbox receive
   round; a stale-author refresh fetches its actor again after reading the revision, within the fetch budget. Search
   resolution makes one more Store call (`actorState`) before each actor fetch and before a URL's probe, and fetches the
-  actor document a probe or an alternate found a second time after it (within the request's fetch budget of 8). A
-  probe answered 200 with another type follows at most two alternates, the `Link` header's and then the page's, one
-  fetch and one domain-policy read (`fetchRefused`) each, and no second hop; the page's body, read only for the page's
+  actor document a probe or an alternate found a second time after it (within the request's fetch budget of 8). It
+  fetches nothing for `limit=0`, for a URL whose answer is empty whatever it finds (a `type` with an offset past 0, a
+  `type` other than `accounts` and `statuses`), or for an address when accounts are not searched
+  (`test/search-resolution-store-calls.test.ts`, "the limit, offset and type of a resolving search"). A probe answered
+  200 with another type follows at most two alternates, the `Link` header's and then the page's, one fetch and one
+  domain-policy read (`fetchRefused`) each, and no second hop; the page's body, read only for the page's
   alternate, is charged to the request's bytes like any document, so a page alternate after a large header alternate
   can be refused for budget ([mastodon-deviations.md](mastodon-deviations.md), Search);
   `test/resolve-alternate.test.ts` ("charges the page and every alternate to the request's budget (RES-6)"). A fetch
@@ -4534,7 +4540,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (`src/domain/search.ts`, `searchAccountIds` in `src/domain/accounts.ts`); `test/search.test.ts` ("filters before
   LIMIT"), `test/search-edge.test.ts` (rows read stay flat as favourites, bookmarks, accounts and tagged statuses grow
   fourfold, pending follows included; `max_id` reaches past each window; an exact address outside every window is
-  found). _Enforced (main):_ the peers list seeks each next domain on the (domain,
+  found). A search resolution of a URL of this instance reads the instance's domain, then one status by its key (and
+  that row again for the boost check) or one account by its address index (`localSearchTarget` in
+  `src/domain/remote-statuses.ts`). _Enforced (main):_ the peers list seeks each next domain on the (domain,
   username) index, so it reads rows by domain returned, not by account known; the public block list reads the suspend
   blocks in chunks of 500 from the partial index `instance_domain_blocks_public` (migration `0049_instance_bounds`),
   so its rows read are the admitted blocks and at most one chunk more, whatever the noop blocks
