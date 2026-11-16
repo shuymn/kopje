@@ -463,7 +463,9 @@ export const SCHEDULED_PAGE = { limit: 20, max: 40 };
 // GET /api/v1/scheduled_statuses: the viewer's scheduled statuses by id, newest first, paged by id
 // (to_a_paginated_by_id); a page of ids from the account's own index, whoever else has scheduled statuses. Each is read
 // and presented by key as admission reaches it, within ANSWER_BYTES (RES-3): a page cut there continues from its last
-// admitted scheduled status (admittedPage).
+// admitted scheduled status (admittedPage). One whose params cannot be read is left out, so a page reads toward its
+// limit by its ids (Page.cut), as followedTags does: its ends are the ids read, and the Link header passes over the
+// rows left out as Mastodon's passes over absent ones.
 export const listScheduled = userReadOperation<{ page: PageQuery }, Page<ScheduledStatus>>(
   (db, { page }, { accountId }) => {
     const ascending = page.minId !== undefined;
@@ -489,7 +491,7 @@ export const listScheduled = userReadOperation<{ page: PageQuery }, Page<Schedul
       }
     }
     return admittedPage(
-      { rows: ids, newest: ids[0] ?? null, oldest: ids.at(-1) ?? null },
+      { rows: ids, newest: ids[0] ?? null, oldest: ids.at(-1) ?? null, cut: ids.length >= page.limit },
       ascending,
       (id) => id,
       (traversal) => admit(presented(traversal), ARRAY_ANSWER_BYTES, true),

@@ -1166,6 +1166,65 @@ describe("a scheduled status whose params cannot be read (RES-2)", () => {
     ]);
   });
 
+  // Restored before 0104: 42 scheduled statuses of alice (…001 to …042), some with unreadable params. A page reads
+  // toward its limit by the ids it read (Page.cut), so its Link header, from those ids, passes over the rows it leaves
+  // out, and a walk either way reaches every readable row once, as Mastodon's walk over the same rows with the
+  // unreadable ones absent does.
+  it("pages on past the rows it leaves out, by the ids it read", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const id = (n: number) => String(740000000000000000n + BigInt(n));
+    const newestFirst = (from: number, to: number) => Array.from({ length: from - to + 1 }, (_, i) => id(from - i));
+    const restore = (unreadable: (n: number) => boolean) =>
+      beforeParamsBound(h, (sql) => {
+        sql.exec("DELETE FROM scheduled_statuses");
+        for (let n = 1; n <= 42; n++) {
+          sql.exec(
+            "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, ?, ?)",
+            id(n),
+            alice.id,
+            at(NOW + HOUR + n * MINUTE),
+            unreadable(n) ? "{}\0" : "{}",
+          );
+        }
+      });
+    // The pages a walk from `path` reaches by its `rel` link, until one links no further.
+    const follow = async (path: string, rel: "next" | "prev") => {
+      const pages: string[][] = [];
+      let next: string | undefined = path;
+      while (next !== undefined && pages.length < 10) {
+        const response = await h.request(next, bearer(alice.token));
+        pages.push((await response.json<Scheduled[]>()).map((s) => s.id));
+        next = new RegExp(`<https://kopje\\.test([^>]+)>; rel="${rel}"`).exec(response.headers.get("link") ?? "")?.[1];
+      }
+      return pages;
+    };
+    const base = "/api/v1/scheduled_statuses?limit=40";
+    const link = (max: number, min: number) =>
+      `<https://kopje.test${base}&max_id=${id(max)}>; rel="next", <https://kopje.test${base}&min_id=${id(min)}>; rel="prev"`;
+    const cases: { unreadable: (n: number) => boolean; first: string[]; readable: string[] }[] = [
+      // The newest unreadable: the first page shows 39 and links next from …003, the 40th id it read. Mastodon, with
+      // …042 absent, shows …041 to …002 and links next from …002; either walk then reaches …001.
+      { unreadable: (n) => n === 42, first: newestFirst(41, 3), readable: newestFirst(41, 1) },
+      // All but the oldest unreadable: the first page is empty and still links next from …003.
+      { unreadable: (n) => n >= 2, first: [], readable: [id(1)] },
+      // All but the newest unreadable: a min_id page of none still links prev from the newest id it read.
+      { unreadable: (n) => n <= 41, first: [id(42)], readable: [id(42)] },
+    ];
+    for (const { unreadable, first, readable } of cases) {
+      await restore(unreadable);
+      const response = await h.request(base, bearer(alice.token));
+      expect((await response.json<Scheduled[]>()).map((s) => s.id)).toEqual(first);
+      expect(response.headers.get("link")).toBe(link(3, 42));
+      expect((await follow(base, "next")).flat()).toEqual(readable);
+      expect((await follow(`${base}&min_id=0`, "prev")).toReversed().flat()).toEqual(readable);
+    }
+    // The min_id page of …001 to …040, all unreadable: empty, linking prev from …040 and next from …001.
+    const oldest = await h.request(`${base}&min_id=0`, bearer(alice.token));
+    expect(await oldest.json()).toEqual([]);
+    expect(oldest.headers.get("link")).toBe(link(1, 40));
+  });
+
   // The decision moves from JSON.parse alone to the read's SQL prefilter and storedParams. Over the values on which
   // json_valid and JSON.parse disagree, and the forms near them: storedParams after paramsReadSql is null exactly where
   // JSON.parse throws on what workerd returns (or reads no object), for every value the CHECK lets a restore store,
