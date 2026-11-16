@@ -15,14 +15,17 @@ import {
 } from "./context";
 import { mastodonError } from "./errors";
 import { pageQuery } from "./pagination";
-import { limitParam, offsetParam, type Params, parseBoolean } from "./params";
+import { limitParam, offsetParam, type Params, parseBoolean, rubyNegative } from "./params";
 
 // GET /api/v2/search: accounts, statuses and hashtags from local data (domain/search.ts). Hashtags are recent
 // autocomplete over the viewer's library and the newest public statuses, not a catalogue of every tag. Collections
 // are found only by resolve=true.
 //
-// Limit and offset are Mastodon 4.7.5's SearchService#call's: a limit of 0 (limit_param keeps it) answers nothing and
-// resolves nothing (search_service.rb:17), and the offset counts only with a type (`:11`).
+// Limit and offset are Mastodon 4.7.5's: a `limit` or `offset` that Ruby's to_i reads as negative is refused (400) after
+// a missing q, as Api::V2::SearchController's before_actions order them (require_valid_pagination_options!,
+// api/pagination.rb); a limit of 0 (limit_param keeps it) answers nothing and resolves nothing (search_service.rb:17),
+// and the offset counts only with a type (`:11`). The token is judged first (refuseAfterAuth); the route takes no
+// anonymous request, so the controller's 401s for an anonymous offset or resolve never apply.
 //
 // resolve=true: a URL query is answered by its lookup alone, if the viewer may see what it resolved to, never by the
 // plain search, and by nothing past offset 0 or for a type the lookup did not find (`:19-20`). A local collection's URL
@@ -65,7 +68,14 @@ export function searchParams(p: Params): SearchParams {
 
 export const search: ApiHandler = withParams(async (c, deps, p) => {
   // Rails' params.require refuses a blank q here (the account search answers it with an empty list).
-  const parsed = p.get("q")?.trim() === "" ? { error: mastodonError(400, "Missing parameter q") } : searchParams(p);
+  const q = p.get("q");
+  if (q === undefined || q.trim() === "") {
+    return refuseAfterAuth(c, deps, mastodonError(400, "Missing parameter q"));
+  }
+  if ([p.get("limit"), p.get("offset")].some((value) => value !== undefined && rubyNegative(value))) {
+    return refuseAfterAuth(c, deps, mastodonError(400, "Pagination values for `offset` and `limit` must be positive"));
+  }
+  const parsed = searchParams(p);
   if ("error" in parsed) {
     return refuseAfterAuth(c, deps, parsed.error);
   }

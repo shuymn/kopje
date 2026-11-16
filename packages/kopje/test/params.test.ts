@@ -10,9 +10,54 @@ import {
   parseBoolean,
   type ReadOptions,
   readParams,
+  rubyNegative,
   SENT_FILE,
 } from "../src/mastodon/params";
 import { multipartForm } from "./media-helpers";
+
+// Ruby's String#to_i (rb_int_parse_cstr, bignum.c of Ruby 4.0.9, Mastodon 4.7.5's Ruby), each value as Ruby reads it.
+describe("rubyNegative", () => {
+  it.each([
+    ["-2", -2],
+    ["-2abc", -2],
+    [" -1", -1],
+    ["\t\n\v\f\r-3", -3],
+    ["  \t-0_0_1x", -1],
+    ["-1e3", -1],
+    ["-2.5", -2],
+    ["-0_1", -1],
+    ["-1__2", -1],
+    ["-1_", -1],
+    ["-0d5", -5],
+    ["-0D5", -5],
+    ["-0d0_1", -1],
+    ["-", 0],
+    ["", 0],
+    ["2", 2],
+    ["-abc", 0],
+    ["--1", 0],
+    ["+-1", 0],
+    ["- 1", 0],
+    ["\u00a0-1", 0],
+    ["-0", 0],
+    ["-00", 0],
+    ["-0.5", 0],
+    ["-_1", 0],
+    ["-0_", 0],
+    ["-0__1", 0],
+    ["-0_ 1", 0],
+    ["-0d", 0],
+    ["-0dx5", 0],
+    ["-0d_5", 0],
+    ["-0d0d5", 0],
+    ["-0x5", 0],
+    ["-0b1", 0],
+    ["-0o7", 0],
+    ["-\u0663", 0],
+  ])("reads %j as Ruby's to_i reads it, %i", (value, toI) => {
+    expect(rubyNegative(value)).toBe(toI < 0);
+  });
+});
 
 describe("Params#objects", () => {
   it("reads indexed (JSON) and sequential (form) objects", () => {
