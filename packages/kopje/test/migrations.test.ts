@@ -13966,7 +13966,8 @@ describe("0107_collection_notifications", () => {
     }
   });
 
-  // 2-T8. Fails if the insert trigger's type arms are dropped (a collection_update without its collection is written).
+  // 2-T8. Fails if the insert trigger's type arms are dropped (a collection_update without its collection is written),
+  // or the update trigger's (a key changed within its type is refused).
   it("keeps every row as it was and holds the collection keys to their type", async () => {
     await upgraded((sql) => {
       expect(sql.exec("SELECT type, collection_item_id, collection_id FROM notifications").toArray()).toEqual([
@@ -13994,6 +13995,9 @@ describe("0107_collection_notifications", () => {
       expect(() =>
         sql.exec("UPDATE notifications SET type = 'collection_update' WHERE type = 'added_to_collection'"),
       ).toThrow(REFUSED);
+      // A key changed within its type is written, where the update trigger's ELSE arm would refuse any key.
+      sql.exec("UPDATE notifications SET collection_item_id = ? WHERE type = 'added_to_collection'", OTHER_ITEM);
+      sql.exec("UPDATE notifications SET collection_id = ? WHERE type = 'collection_update'", OTHER_COLLECTION);
       expect(sql.exec("SELECT count(*) AS n FROM notifications").one().n).toBe(3);
     });
   });
