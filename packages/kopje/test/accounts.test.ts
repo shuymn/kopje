@@ -76,7 +76,7 @@ describe("credentials", () => {
         attribution_domains: [],
         quote_policy: "public",
       },
-      role: { id: "-99", name: "", permissions: "0", color: "", highlighted: false },
+      role: { id: "-99", name: "", permissions: "0", color: "", highlighted: false, collection_limit: 10 },
     });
   });
 

@@ -27,7 +27,7 @@ import {
   inCollectionsSql,
   mayFeatureSql,
 } from "./audience";
-import { COLLECTION_LIMIT, optionalUserReadOperation, userWriteOperation } from "./auth";
+import { COLLECTION_LIMIT, optionalUserReadOperation, userReadOperation, userWriteOperation } from "./auth";
 import { allocateLocalId, insertWithFreshId, requestedId, storedIdOf } from "./ids";
 import { blank } from "./lists";
 import { writeOperation } from "./operation";
@@ -831,3 +831,72 @@ export const pruneCollectionItems = writeOperation<{ now: number }, { deleted: n
     RETIRED_ROWS_PER_ROUND,
   ).length,
 }));
+
+// ---- Collections named by reports and search.
+
+// The local collection a URL names by its route (ActivityPub::TagManager#uri_to_local_collection,
+// ResolveURLService#process_local_url): its stored id when the URL is a local collection's uri
+// (`/ap/users/:username/collections/:id`) or url (`/collections/:id`) on `origin`, whatever the username; null for
+// any other.
+export function localCollectionId(url: string, origin: string): string | null {
+  if (!url.startsWith(`${origin}/`)) {
+    return null;
+  }
+  const id = /^(?:ap\/users\/[^/?#]+\/)?collections\/(\d{1,18})$/.exec(url.slice(origin.length + 1))?.[1];
+  return id === undefined ? null : storedIdOf(id);
+}
+
+// Search with resolve=true of a local collection's URL (ResolveURLService#check_collection): the collection when R45
+// shows it to the viewer, as the viewer sees it; null otherwise.
+export const resolvedCollection = userReadOperation<{ id: string; present: Present }, Collection | null>(
+  (db, input, { accountId: viewer }) => {
+    const row = foundCollection(db, input.id);
+    return row === undefined || !shown(db, row.id, viewer)
+      ? null
+      : (presentCollections(db, [row], viewer, input.present.origin)[0] ?? null);
+  },
+);
+
+// ReportService#reported_collection_ids (`@target_account.collections.find(ids)`): the target's collections the
+// `raw` ids name, in any visibility, each read as Ruby's to_i reads it, in the order given; null unless each names one
+// of them, and a different one (ActiveRecord's find counts the records found against the distinct ids sent). At most
+// `raw.length` rows read, each by key.
+export function reportedCollectionIds(db: Db, target: string, raw: readonly string[]): string[] | null {
+  const found = db.all<{ id: string }>(
+    `SELECT c.id FROM json_each(?1) w CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = w.value
+		WHERE c.account_id = ?2 ORDER BY w.key`,
+    JSON.stringify(raw.map((id) => storedIdOf(requestedId(id)))),
+    target,
+  );
+  const ids = [...new Set(found.map((row) => row.id))];
+  return ids.length === raw.length ? ids : null;
+}
+
+// The ActivityPub ids of the collections `ids`, in that order (ActivityPub::FlagSerializer#collection_uris), each read
+// by key.
+export function collectionUris(db: Db, ids: readonly string[], origin: string): string[] {
+  return db
+    .all<Pick<CollectionRow, "id" | "local" | "username" | "uri">>(
+      `SELECT c.id, c.local, ${usernameSql("a.username")} AS username, c.uri FROM json_each(?1) w
+				CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = w.value
+				CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
+			ORDER BY w.key`,
+      JSON.stringify(ids),
+    )
+    .map((row) => collectionUri(row, origin));
+}
+
+// The local collections an inbound Flag names among its objects (ActivityPub::Activity::Flag#perform's
+// collection_from_uri, by route on `origin`), with their owners, each read by key.
+export function flaggedCollections(
+  db: Db,
+  objects: readonly string[],
+  origin: string,
+): { id: string; account_id: string }[] {
+  const ids = [...new Set(objects.flatMap((uri) => localCollectionId(uri, origin) ?? []))];
+  return db.all<{ id: string; account_id: string }>(
+    `SELECT c.id, c.account_id FROM json_each(?1) w CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
+			ON c.id = w.value ORDER BY w.key`,
+    JSON.stringify(ids),
+  );
+}

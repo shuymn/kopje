@@ -978,6 +978,7 @@ export function flagActivity(input: {
   actorUri: string;
   targetUri: string;
   statusUris: readonly string[];
+  collectionUris: readonly string[];
   comment: string;
   recipients: readonly string[];
 }) {
@@ -988,7 +989,7 @@ export function flagActivity(input: {
       type: "Flag",
       actor: input.actorUri,
       content: input.comment,
-      object: [input.targetUri, ...input.statusUris],
+      object: [input.targetUri, ...input.statusUris, ...input.collectionUris],
     },
     audience: { followers: false, accounts: [...input.recipients] },
     signedBy: "instance",

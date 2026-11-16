@@ -3546,6 +3546,7 @@ describe("a report reads its statuses by key, however long the account's history
       credential: { tokenHash: REPORT_TOKEN, scope: "write:reports", now: NOW } as const,
       account: TARGET_ID,
       statusIds: [REPORTED],
+      collectionIds: [],
       comment: "spam",
       category: undefined,
       ruleIds: [],

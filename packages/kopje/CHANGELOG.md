@@ -89,7 +89,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `/api/v1/accounts/:id/collections`, `/api/v1/accounts/:id/in_collections`, also under `/api/v1_alpha` with a
   `Deprecation` header), with the `read:collections` and `write:collections` scopes, as Mastodon 4.6 serves them; only
   local accounts can be featured yet ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections").
-  Migration `0099_collections`: two new tables and a column of `reports`, reading no row; as it creates tables, the
+  Reports take `collection_ids[]` (forwarded in the `Flag` after the statuses, and read from an inbound one), roles
+  present `collection_limit`, and search with `resolve=true` finds a local collection by its URL. Migration
+  `0099_collections`: two new tables and a column of `reports`, reading no row; as it creates tables, the
   upgrade checks every reference of the Store (the migration bench's figure is recorded with the release).
   `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
   back past it needs a point-in-time restore.

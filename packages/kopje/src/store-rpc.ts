@@ -428,6 +428,7 @@ export const STORE_RPC = {
   addCollectionItem: collections.addCollectionItem,
   removeCollectionItem: collections.removeCollectionItem,
   revokeCollectionItem: collections.revokeCollectionItem,
+  resolvedCollection: collections.resolvedCollection,
   pruneCollectionItems: collections.pruneCollectionItems,
 
   // Conversations (domain/conversations.ts).

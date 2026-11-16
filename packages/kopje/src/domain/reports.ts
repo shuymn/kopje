@@ -3,6 +3,7 @@ import type { Db } from "../db/sql";
 import { blockedDomain } from "../platform/domain-name";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import type { ImportAuthority } from "../platform/store-admin";
+import { REPORT_COLLECTION_IDS } from "../platform/stored-bounds";
 import { accountUrl, type Page, type PageQuery, type Present, presentAccountById, resolveAccountId } from "./accounts";
 import { flagActivity, instanceActorUri, recordOutbound } from "./activities";
 import { type AdminAccount, adminAccountStream } from "./admin-account-presenter";
@@ -17,6 +18,7 @@ import {
   userWriteOperation,
   viewerOf,
 } from "./auth";
+import { collectionUris, flaggedCollections, reportedCollectionIds } from "./collections";
 import { type InstanceRule, parseRules } from "./instance";
 import { reportsRejected } from "./instance-domain-blocks";
 import { logAction } from "./moderation-log";
@@ -40,6 +42,8 @@ import { edgeRangeSql } from "./windows";
 //   - Each reported status must be one of the account's that the reporter may see by AccountStatusesFilter (R11,
 //     report_service.rb:82, `.find` of all of them): one that is not, or that is not the account's, makes the whole
 //     report not found. Kopje keeps no deleted status, so with_discarded finds no more than the rule does.
+//   - Each reported collection (Mastodon 4.7.5's collection_ids, report_service.rb:102-104) must be one of the
+//     account's, in any visibility (reportedCollectionIds), or the whole report is not found.
 //   - rule_ids make the category `violation` (report_service.rb:11); a blank category is `other`. Report's validations
 //     (app/models/report.rb:53-56, 168-170) then hold: a comment of at most 1,000 characters, and a violation names
 //     rules that all exist, each once; their messages are Rails'.
@@ -53,10 +57,14 @@ import { edgeRangeSql } from "./windows";
 //
 // Bounds (RES-7): Mastodon sets none on status_ids or forward_to_domains; Kopje takes at most MAX_REPORT_STATUSES and
 // MAX_FORWARD_DOMAINS (more answer 422 before any status is read). The statuses are read by key, and the replied-to
-// accounts through them.
+// accounts through them. More than MAX_REPORT_COLLECTIONS distinct collection ids always name one that is not the
+// account's (it holds at most that many), so they answer 404 before any collection is read.
 
 export const MAX_REPORT_STATUSES = 100;
 export const MAX_FORWARD_DOMAINS = 100;
+// The collections a report names at most: the stored bound of reports.collection_ids, which is an account's stored
+// collections (MAX_STORED_COLLECTIONS).
+export const MAX_REPORT_COLLECTIONS = REPORT_COLLECTION_IDS;
 // Report::COMMENT_SIZE_LIMIT (app/models/report.rb:30).
 const MAX_REPORT_COMMENT = 1_000;
 
@@ -66,6 +74,7 @@ const CATEGORIES = new Set(["other", "spam", "legal", "violation"]);
 export type ReportInput = {
   account: string;
   statusIds: string[];
+  collectionIds: string[];
   comment: string | undefined;
   category: string | undefined;
   ruleIds: string[];
@@ -114,6 +123,14 @@ export const createReport = userWriteOperation<ReportInput, ReportResult>((db, i
   if (statuses.length !== statusIds.length) {
     return { status: "not_found" };
   }
+  const requestedCollections = [...new Set(input.collectionIds.filter((id) => id !== ""))];
+  const collectionIds =
+    requestedCollections.length > MAX_REPORT_COLLECTIONS
+      ? null
+      : reportedCollectionIds(db, target, requestedCollections);
+  if (collectionIds === null) {
+    return { status: "not_found" };
+  }
   const category = ruleIds.length > 0 ? "violation" : blank(input.category) ? "other" : (input.category as string);
   const comment = blank(input.comment) ? "" : (input.comment as string);
   const errors = validate(db, { category, comment, ruleIds });
@@ -129,12 +146,13 @@ export const createReport = userWriteOperation<ReportInput, ReportResult>((db, i
   const domain = instanceDomain(db, input.present);
   const uri = `${instanceActorUri(domain)}#reports/${crypto.randomUUID()}`;
   const row = db.first<ReportRow>(
-    `INSERT INTO reports (account_id, target_account_id, status_ids, comment, category, rule_ids, forwarded, uri,
-			created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${REPORT_COLUMNS}`,
+    `INSERT INTO reports (account_id, target_account_id, status_ids, collection_ids, comment, category, rule_ids,
+			forwarded, uri, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${REPORT_COLUMNS}`,
     viewer.accountId,
     target,
     JSON.stringify(statusIds),
+    collectionIds.length === 0 ? null : JSON.stringify(collectionIds),
     comment,
     category,
     ruleIds.length === 0 ? null : JSON.stringify(ruleIds),
@@ -154,6 +172,7 @@ export const createReport = userWriteOperation<ReportInput, ReportResult>((db, i
           actorUri: instanceActorUri(domain),
           targetUri: account.uri,
           statusUris: statuses.map((status) => status.uri),
+          collectionUris: collectionUris(db, collectionIds, `https://${domain}`),
           comment,
           recipients,
         }),
@@ -169,9 +188,9 @@ export const createReport = userWriteOperation<ReportInput, ReportResult>((db, i
 // Application, with the account's uri as the object and the comment as plain text, AbuseReportService.ts:121-143);
 // Mastodon when a user forwards one (from its instance actor, naming the account and the statuses).
 
-// The object entries a Flag is read for at most: one account and MAX_REPORT_STATUSES statuses (RES-7). Mastodon reads
-// them all.
-export const MAX_FLAG_OBJECTS = MAX_REPORT_STATUSES + 1;
+// The object entries a Flag is read for at most: one account, MAX_REPORT_STATUSES statuses and MAX_REPORT_COLLECTIONS
+// collections (RES-7). Mastodon reads them all.
+export const MAX_FLAG_OBJECTS = 1 + MAX_REPORT_STATUSES + MAX_REPORT_COLLECTIONS;
 // ActivityPub::Activity::Flag::COMMENT_SIZE_LIMIT (flag.rb:4), in code points.
 export const MAX_REMOTE_REPORT_COMMENT = 5_000;
 // The unresolved reports one remote actor may have at most (RES-7): a Flag that would pass it files none. Per actor,
@@ -229,6 +248,9 @@ export function fileRemoteReports(
 		WHERE s.reblog_of_id IS NULL ORDER BY j.key`,
     objects,
   );
+  // The local collections it names (by route on the instance's origin), with their owners; a target's at most
+  // MAX_STORED_COLLECTIONS. A remote collection is not looked up yet.
+  const collections = flaggedCollections(db, flagObjects(flag.objects), `https://${configuredDomain(db) ?? ""}`);
   const repliesToLocal = (target: string) =>
     statuses.some((status) => status.account_id === target && status.replies_to_local === 1);
   const distinct = [
@@ -269,14 +291,16 @@ export function fileRemoteReports(
   for (const target of fresh) {
     const named = statuses.filter((status) => status.account_id === target).map((status) => status.id);
     const statusIds = remoteReportStatusIds(db, actor.domain, target, named.slice(0, MAX_REPORT_STATUSES));
+    const collectionIds = collections.filter((c) => c.account_id === target).map((c) => c.id);
     const row = db.first<ReportRow>(
-      `INSERT INTO reports (account_id, target_account_id, status_ids, comment, category, rule_ids, forwarded, uri,
-				created_at)
-			VALUES (?, ?, ?, ?, 'other', NULL, 0, ?, ?) ON CONFLICT (uri, target_account_id) DO NOTHING
+      `INSERT INTO reports (account_id, target_account_id, status_ids, collection_ids, comment, category, rule_ids,
+				forwarded, uri, created_at)
+			VALUES (?, ?, ?, ?, ?, 'other', NULL, 0, ?, ?) ON CONFLICT (uri, target_account_id) DO NOTHING
 			RETURNING ${REPORT_COLUMNS}`,
       actor.id,
       target,
       JSON.stringify(statusIds.map((status) => status.id)),
+      collectionIds.length === 0 ? null : JSON.stringify(collectionIds),
       comment,
       flag.id,
       new Date(now).toISOString(),
@@ -346,11 +370,12 @@ function validate(db: Db, report: { category: string; comment: string; ruleIds: 
 }
 
 // The domain fixed at /setup, which names the instance actor.
+function configuredDomain(db: Db): string | undefined {
+  return db.first<{ value: string }>("SELECT value FROM instance_settings WHERE name = 'domain'")?.value;
+}
+
 function instanceDomain(db: Db, present: Present): string {
-  return (
-    db.first<{ value: string }>("SELECT value FROM instance_settings WHERE name = 'domain'")?.value ??
-    new URL(present.origin).host
-  );
+  return configuredDomain(db) ?? new URL(present.origin).host;
 }
 
 // ---- The Mastodon admin API's reports (Api::V1::Admin::ReportsController, app/controllers/api/v1/admin/

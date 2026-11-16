@@ -108,9 +108,6 @@ const ENTITY_EXCEPTIONS: Exceptions = {
     ...accepted("MD-9", "annual_report"),
   },
   "REST::AnnouncementSerializer": accepted("MD-4", "statuses"),
-  "REST::ReportSerializer": open(1589, "collections", "collection_ids"),
-  "REST::RoleSerializer": open(1589, "collections", "collection_limit"),
-  "REST::SearchSerializer": open(1589, "collections", "collections"),
   // No share page.
   "REST::AnnualReportSerializer": accepted("MD-9", "share_url"),
 };
