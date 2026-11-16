@@ -4000,16 +4000,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   of [visibility.md](visibility.md)). Neither job recounts an original whose removal has begun (`removalBegunSql`), so
   the recounts read none of its boosts and favourites while its boosts go one by one (each recount would read them
   all). A job round that stages target chunks of an intent recorded earlier rings the delivery doorbell (`delivers`)
-  as a new intent does (`test/remote-delete-cleanup.test.ts`). A local status's `DELETE` writes at most 474 rows
+  as a new intent does (`test/remote-delete-cleanup.test.ts`). A local status's `DELETE` writes at most 475 rows
   (`REQUEST_ROWS`: the streaming capture, `DELETE_SUPERSEDES` earlier activities superseded with the end of the staging
   of each one still staging, which only an import holds (`outbound_activities_staging_ended`), the intent, the hide, its
-  card, trend row, review, pin and poll, its own quote with the copy of its withdrawn (migration
-  `0091_live_local_quotes`) and its journal row (`stream_quote_state`), `MAX_STATUS_TAGS` hashtags, `MAX_STATUS_MEDIA`
-  media, two counts and the job; signing writes none), and stores a `Delete` envelope within its derived JSON-escaped
-  byte bound: 426,999 bytes unsigned (`ENVELOPE_BYTES`), 432,117 signed (`SIGNED_ENVELOPE_BYTES`: the signed activity,
-  the creator at `ACTOR_URI_LIMIT`, a signatureValue at `SIGNATURE_VALUE_MAX`, which `signedAs` enforces, and the
-  addressing that places its copies), whose activity alone is at most 19,621 bytes, within the `FORWARD_BODY_MAX` a
-  Kopje forwarder takes (VIS-3).
+  card, trend row, review, pin and poll with the revision its end writes (`polls_revision`), its own quote with the copy
+  of its withdrawn (migration `0091_live_local_quotes`) and its journal row (`stream_quote_state`), `MAX_STATUS_TAGS`
+  hashtags, `MAX_STATUS_MEDIA` media, two counts and the job; signing writes none), and stores a `Delete` envelope
+  within its derived JSON-escaped byte bound: 426,999 bytes unsigned (`ENVELOPE_BYTES`), 432,117 signed
+  (`SIGNED_ENVELOPE_BYTES`: the signed activity, the creator at `ACTOR_URI_LIMIT`, a signatureValue at
+  `SIGNATURE_VALUE_MAX`, which `signedAs` enforces, and the addressing that places its copies), whose activity alone is
+  at most 19,621 bytes, within the `FORWARD_BODY_MAX` a Kopje forwarder takes (VIS-3).
   A staging call of a signed `Delete` that starts in a phase placing addressed accounts first checks
   its `addressing` (`stagedAddressing`): three reads of the intent's row (its shape, then each list) and, for each of
   its at most 202 entries, two seeks by unique key, outside `STAGING_READ`. Its job's batches
