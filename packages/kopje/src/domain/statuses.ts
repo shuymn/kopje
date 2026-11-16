@@ -6,6 +6,9 @@ import { iso } from "../platform/iso-time";
 import { railsBlank } from "../platform/rails-blank";
 import {
   isoTimeSql,
+  presentedContent,
+  presentedSpoiler,
+  spoilerReadSql,
   STATUS_EMOJIS_BYTES,
   statusPublishedSql,
   storedBlurhash,
@@ -110,6 +113,7 @@ import {
   revocableQuote,
   revokeQuoteRow,
 } from "./quotes";
+import { type Refresh, refreshDue, runningRefresh } from "./reply-walk-reads";
 import { normalizeSearchText } from "./search-text";
 import { editMediaSql, MAX_STATUS_MENTION_ROWS, MAX_STATUS_TAGS, pollOptionsSql, statusUriSql } from "./status-bounds";
 import {
@@ -933,7 +937,8 @@ type OwnStatus = {
 };
 
 // The viewer's own status `id`, unless it is withdrawn (R2: its author no longer sees it): what an edit, a delete and
-// a write on an own status find (ownStatusId's rule).
+// a write on an own status find (ownStatusId's rule). The warning is read through its byte cut (spoilerReadSql); an
+// edit that keeps it copies the stored value in SQL.
 function ownStatus(db: Db, accountId: string, id: string): OwnStatus | null {
   const resolved = resolveStatusId(db, id);
   if (resolved === null) {
@@ -941,8 +946,9 @@ function ownStatus(db: Db, accountId: string, id: string): OwnStatus | null {
   }
   return (
     db.first<OwnStatus>(
-      `SELECT id, account_id, reblog_of_id, in_reply_to_id, visibility, content, source_text, spoiler_text, sensitive,
-				language, ${statusPublishedSql("statuses")} AS published_at
+      `SELECT id, account_id, reblog_of_id, in_reply_to_id, visibility, content, source_text,
+				${spoilerReadSql("spoiler_text")} AS spoiler_text, sensitive, language,
+				${statusPublishedSql("statuses")} AS published_at
 			FROM statuses WHERE id = ? AND account_id = ? AND withdrawn = 0`,
       resolved,
       accountId,
@@ -1516,7 +1522,12 @@ const CONTEXT_LIMITS = {
   user: { ancestors: 4096, descendants: 4096, depth: 4096, traversal: 8192 },
 };
 
-export type Context = { ancestors: Status[]; descendants: Status[] };
+type Context = { ancestors: Status[]; descendants: Status[] };
+
+// A context read's answer: the context, the refresh of the status's replies while it runs, which every answer names
+// (Mastodon's add_async_refresh_header), and whether a signed-in viewer's read starts one (advisory: the start decides
+// again, domain/reply-walks.ts startRepliesRefresh).
+export type ContextRead = Context & { refresh: Refresh | null; refreshDue: boolean };
 
 // The JSON of an empty context: each list's items are counted with a separator, one more than they take.
 const CONTEXT_FRAME_BYTES = jsonBytes({ ancestors: [], descendants: [] } satisfies Context);
@@ -1526,8 +1537,9 @@ const CONTEXT_FRAME_BYTES = jsonBytes({ ancestors: [], descendants: [] } satisfi
 // that do not. One answer within ANSWER_BYTES (RES-3), under one presentation: the ancestors take half of it, nearest
 // first, and the descendants the rest with what the ancestors left, in their order; each list keeps its order, and
 // the farthest ancestors and the last descendants past it are left out (no paging, as Mastodon's context has none).
-// Each member is sought by id from the traversal (RES-7).
-export const statusContext = optionalUserReadOperation<{ id: string; present: Present }, Viewed<Context>>(
+// Each member is sought by id from the traversal (RES-7). The refresh of its replies (reply-walk-reads.ts) is read at
+// the viewer's time.
+export const statusContext = optionalUserReadOperation<{ id: string; present: Present }, Viewed<ContextRead>>(
   (db, { id, present }, viewer) => {
     const { accountId: viewerId, now } = viewer;
     const resolved = viewable(db, viewerId, id);
@@ -1556,7 +1568,16 @@ export const statusContext = optionalUserReadOperation<{ id: string; present: Pr
     const budget = ANSWER_BYTES - CONTEXT_FRAME_BYTES;
     const near = presentStatusesWithin(db, shared, up.toReversed(), Math.floor(budget / 2), true);
     const after = presentStatusesWithin(db, shared, down, budget - near.bytes, near.items.length === 0);
-    return { status: "ok", value: { ancestors: near.items.toReversed(), descendants: after.items } };
+    const at = Date.parse(now);
+    return {
+      status: "ok",
+      value: {
+        ancestors: near.items.toReversed(),
+        descendants: after.items,
+        refresh: runningRefresh(db, resolved, at),
+        refreshDue: viewerId !== null && refreshDue(db, resolved, at),
+      },
+    };
   },
 );
 
@@ -1697,16 +1718,16 @@ export function editVersions(
         created_at: string;
         emojis: string | null;
       }>(
-        `SELECT content, spoiler_text, sensitive, ${editMediaSql("media_json")} AS media_json, poll_options, created_at,
-					emojis
+        `SELECT content, ${spoilerReadSql("spoiler_text")} AS spoiler_text, sensitive,
+					${editMediaSql("media_json")} AS media_json, poll_options, created_at, emojis
 				FROM status_edits WHERE id = CAST(? AS INTEGER)`,
         editId,
       );
       yield edit === undefined
         ? undefined
         : {
-            content: edit.content,
-            spoiler_text: edit.spoiler_text,
+            content: presentedContent(edit.content),
+            spoiler_text: presentedSpoiler(edit.spoiler_text),
             sensitive: edit.sensitive === 1,
             created_at: edit.created_at,
             poll: editPollOf(edit.poll_options),
@@ -1778,7 +1799,7 @@ export const statusSource = userReadOperation<{ id: string }, Viewed<StatusSourc
     resolved === null
       ? undefined
       : db.first<{ id: string; source_text: string | null; content: string; spoiler_text: string }>(
-          `SELECT id, source_text, content, spoiler_text
+          `SELECT id, source_text, content, ${spoilerReadSql("spoiler_text")} AS spoiler_text
 					FROM statuses WHERE id = ? AND account_id = ? AND reblog_of_id IS NULL AND withdrawn = 0`,
           resolved,
           accountId,
@@ -1786,7 +1807,14 @@ export const statusSource = userReadOperation<{ id: string }, Viewed<StatusSourc
   if (row === undefined) {
     return { status: "not_found" };
   }
-  return { status: "ok", value: { id: row.id, text: row.source_text ?? row.content, spoiler_text: row.spoiler_text } };
+  return {
+    status: "ok",
+    value: {
+      id: row.id,
+      text: presentedContent(row.source_text ?? row.content),
+      spoiler_text: presentedSpoiler(row.spoiler_text),
+    },
+  };
 });
 
 // ---------------------------------------------------------------------------------------------------------------

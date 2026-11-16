@@ -420,6 +420,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "rowHeapSql",
   // A column map's select list: its values are checked where the map names them (`column <alias.column>`).
   "selectSql",
+  // A content warning cut to its read bytes (platform/stored-bounds.ts), no bounded column.
+  "spoilerReadSql",
   // As rowHeapSql: the heap of the rows one status reads (status-rows.ts), a number.
   "statusRowTerms",
   // statuses.url read through its stored bound (platform/stored-bounds.ts).
@@ -688,6 +690,8 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/remote-collections.ts accounts.uri": { count: 3, reason: IDENTITY },
   "src/domain/remote-collections.ts statuses.uri": { count: 1, reason: IDENTITY },
   "src/domain/remote-statuses.ts accounts.uri": { count: 1, reason: IDENTITY },
+  "src/domain/reply-walk-reads.ts statuses.uri": { count: 1, reason: IDENTITY },
+  "src/domain/reply-walks.ts statuses.uri": { count: 1, reason: IDENTITY },
   "src/domain/reports.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/status-actions.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/status-actions.ts statuses.uri": { count: 1, reason: IDENTITY },

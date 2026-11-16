@@ -133,29 +133,32 @@ if (prototype[recorder] === undefined) {
 }
 prototype[recorder] = record;
 
-// workerd's error when the connection to a Node service (Miniflare's loopback server) drops before the answer: seen on
-// a loaded host, with main's code too, at a request the service had not received.
+// workerd's error when the connection to a Node service (Miniflare's loopback server) drops: thrown by the fetch when
+// it drops before the answer's head, by reading the body when it drops after it (the server's own refusal of a request
+// it gave up on is a bare status line and a reset). Seen on a loaded host, with main's code too.
 const DROPPED = "Network connection lost.";
 
-// The refused statements of `sql`, as `service` measures them. A dropped connection is retried once: the measure is a
-// pure function of the statements, so the second request measures exactly what the first would have. Any other
+// The refused statements of `sql`, as `service` measures them. A dropped answer is asked for once more: the measure is
+// a pure function of the statements, so the second request measures exactly what the first would have. Any other
 // failure, a refusal or a second drop fails the caller.
 export async function measureWith(service: Pick<Fetcher, "fetch">, sql: string[]): Promise<DeepStatement[]> {
   const body = JSON.stringify(sql);
-  const send = () => service.fetch("http://sql-depth/", { method: "POST", body });
-  let response: Response;
+  const answer = async (): Promise<DeepStatement[]> => {
+    const response = await service.fetch("http://sql-depth/", { method: "POST", body });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`the SQL depth service answered ${response.status}: ${text}`);
+    }
+    return JSON.parse(text) as DeepStatement[];
+  };
   try {
-    response = await send();
+    return await answer();
   } catch (error) {
     if (!(error instanceof Error && error.message === DROPPED)) {
       throw error;
     }
-    response = await send();
+    return answer();
   }
-  if (!response.ok) {
-    throw new Error(await response.text());
-  }
-  return response.json();
 }
 
 export function measure(sql: string[]): Promise<DeepStatement[]> {

@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Db } from "../src/db/sql";
 import {
   CARD_CLAIM_WALK,
+  CARD_CREATOR_CHARS,
   CARD_EXPIRE_BATCH,
   CARD_EXPIRE_MS,
   CARD_FRESH_MS,
@@ -34,7 +35,10 @@ import { WEB_PAGE_MAX_REDIRECTS, WEB_PAGE_TIMEOUT_MS } from "../src/federation/w
 import { outputMaxUnits, SCAN_LIMITS } from "../src/platform/html-scan";
 import type { StoreStub } from "../src/platform/store-client";
 import {
+  ATTRIBUTION_DOMAIN_BYTES,
+  ATTRIBUTION_DOMAINS_BYTES,
   CARD_DIMENSION_MAX,
+  MAX_ATTRIBUTION_DOMAINS,
   OEMBED_ENDPOINT_TTL_MS,
   OEMBED_ENDPOINTS_MAX,
   OEMBED_EXPIRE_BATCH,
@@ -46,7 +50,7 @@ import { NOW } from "./app-helpers";
 import { blockDomain } from "./domain-block-helpers";
 import { BUILD, deferred } from "./helpers";
 import { linkCardRoundMemory } from "./memory-model";
-import { plannedRun, scansOf, staleStatistics } from "./read-helpers";
+import { measuredStatements, plannedRun, scansOf, staleStatistics } from "./read-helpers";
 import { community, post } from "./status-helpers";
 
 // The cron's link card round (federation/link-cards.ts) over the Store's claim and record (domain/link-cards.ts).
@@ -67,6 +71,7 @@ const LINK = {
   imageDescription: "",
   linkType: "unknown",
   finalUrl: "",
+  creator: null,
 } as const;
 const HTML = { "content-type": "text/html; charset=utf-8" };
 const PAGE = '<html lang="en"><head><title> Site title </title><meta name="description" content="About"></head></html>';
@@ -1549,4 +1554,184 @@ describe("the trend identity of a card (0071_link_trends: link_type, final_url, 
     });
     expect(await identity(w, id)).toMatchObject({ link_type: 0, final_url: "", public: 0, fetched_at: null });
   });
+});
+
+describe("the unverified author (0098_card_attribution)", () => {
+  type CardWorld = Awaited<ReturnType<typeof world>>;
+  type Author = { author: string | null; title: string; fetched_at: number | null };
+  const authorOf = async (w: CardWorld, id: string) =>
+    (
+      await sql<Author>(
+        w.h.store,
+        "SELECT unverified_author_account_id AS author, title, fetched_at FROM status_cards WHERE status_id = ?",
+        id,
+      )
+    )[0];
+  const fields = (extra: Partial<CardFields>): CardFields => ({
+    title: "Title",
+    description: "",
+    authorName: "",
+    authorUrl: "",
+    providerName: "",
+    providerUrl: "",
+    language: null,
+    publishedAt: null,
+    ...LINK,
+    ...extra,
+  });
+  const setDomains = (w: CardWorld, list: unknown) =>
+    sql(
+      w.h.store,
+      "UPDATE local_accounts SET attribution_domains = ? WHERE account_id = ?",
+      typeof list === "string" ? list : JSON.stringify(list),
+      w.alice.id,
+    );
+  let pages = 0;
+  // A new status of alice's linking a page of its own, claimed alone and recorded with the fields `extra`.
+  const claimOne = async (w: CardWorld) => {
+    const id = await w.postLink(`https://site.example/p${++pages}`);
+    const claims = (await w.op(claimCards, { now: w.clock.t })).claims;
+    expect(claims.map((c) => c.statusId)).toEqual([id]);
+    return { id, claim: claims[0]! };
+  };
+  const recorded = async (w: CardWorld, extra: Partial<CardFields>) => {
+    const { id, claim } = await claimOne(w);
+    const outcome = { kind: "card" as const, fields: fields(extra) };
+    expect(await w.op(recordCard, { ...claim, outcome, now: w.clock.t })).toEqual({ held: true });
+    return (await authorOf(w, id))!;
+  };
+  const PAGE_URL = "https://a.example/post";
+  const CREATOR = '<meta name="fediverse:creator" content="@alice@kopje.test">';
+
+  it("records the local account a page names and does not credit, judged by the final URL's host", async () => {
+    const w = await world();
+    expect(await recorded(w, { creator: "alice", finalUrl: PAGE_URL })).toEqual({
+      author: w.alice.id,
+      title: "Title",
+      fetched_at: NOW,
+    });
+    // A domain equal to the host, or a parent of it, credits the account.
+    await setDomains(w, ["a.example"]);
+    expect((await recorded(w, { creator: "@alice@kopje.test", finalUrl: PAGE_URL })).author).toBeNull();
+    await setDomains(w, ["other.example", "example"]);
+    expect((await recorded(w, { creator: "alice", finalUrl: PAGE_URL })).author).toBeNull();
+    // Compared exactly as stored: an uppercase domain, or a child of the host, credits nothing.
+    for (const domain of ["A.example", "b.a.example"]) {
+      await setDomains(w, [domain]);
+      expect((await recorded(w, { creator: "ALICE@kopje.test/", finalUrl: PAGE_URL })).author, domain).toBe(w.alice.id);
+    }
+    // A remote name, an unknown username, a blank creator or none, a final URL that is absent or that the stored rule
+    // refuses, and one whose host is past a DNS name's 253 bytes (the card is attached all the same): none.
+    await setDomains(w, []);
+    for (const extra of [
+      { creator: "alice@remote.example", finalUrl: PAGE_URL },
+      { creator: "nobody", finalUrl: PAGE_URL },
+      { creator: " \u3000", finalUrl: PAGE_URL },
+      { creator: null, finalUrl: PAGE_URL },
+      { creator: "alice", finalUrl: "" },
+      { creator: "alice", finalUrl: "https://a.example/b|c" },
+      { creator: "alice", finalUrl: "http://a.example/post" },
+      { creator: "alice", finalUrl: `https://${"a.".repeat(126)}bc/x` },
+    ]) {
+      expect(await recorded(w, extra), JSON.stringify(extra)).toMatchObject({ author: null, fetched_at: NOW });
+    }
+    // The creator within CARD_CREATOR_CHARS, stripped; past it, none.
+    const padded = `alice${" ".repeat(CARD_CREATOR_CHARS - 5)}`;
+    expect((await recorded(w, { creator: padded, finalUrl: PAGE_URL })).author).toBe(w.alice.id);
+    expect((await recorded(w, { creator: `${padded} `, finalUrl: PAGE_URL })).author).toBeNull();
+  });
+
+  it("records none for an oEmbed card, and judges a page an endpoint falls back to", async () => {
+    const ENDPOINT = "https://provider.example/oembed?url=https%3A%2F%2Fsite.example%2Fa&format=json";
+    const DOC = JSON.stringify({ version: "1.0", type: "link", title: "Embed title", author_name: "alice" });
+    const declaring = `<html><head><title>Page title</title>${CREATOR}
+			<link rel="alternate" type="application/json+oembed" href="${ENDPOINT.replaceAll("&", "&amp;")}"></head></html>`;
+    // Each case in a world of its own, the page naming alice: cold (the page declares the endpoint) or with the endpoint
+    // cached (it is asked before the page), the endpoint answering or failing. The endpoint's card is kept without the
+    // page's creator; when the endpoint fails, the page's own card records alice.
+    for (const [cached, status, author, title] of [
+      [false, 200, null, "Embed title"],
+      [false, 404, "alice", "Page title"],
+      [true, 200, null, "Embed title"],
+      [true, 404, "alice", "Page title"],
+    ] as const) {
+      const w = await world();
+      if (cached) {
+        await sql(
+          w.h.store,
+          "INSERT INTO card_oembed_endpoints (domain, template, expires_at) VALUES ('site.example', ?, ?)",
+          TEMPLATE,
+          w.clock.t + 1000,
+        );
+      }
+      w.setRoutes({ [SITE]: page(declaring), [ENDPOINT]: () => new Response(DOC, { status }) });
+      const id = await w.postLink(SITE);
+      const label = `${cached ? "cached" : "cold"} ${status}`;
+      expect(await w.round(), label).toMatchObject({ attached: 1 });
+      expect(await authorOf(w, id), label).toMatchObject({ author: author === null ? null : w.alice.id, title });
+    }
+  });
+
+  it("copies a donor's author with its card, and clears it at a reset", async () => {
+    const w = await world();
+    w.setRoutes({ [SITE]: page(`<html><head><title>t</title>${CREATOR}</head></html>`) });
+    const donor = await w.postLink(SITE);
+    expect(await w.round()).toMatchObject({ attached: 1 });
+    expect((await authorOf(w, donor))?.author).toBe(w.alice.id);
+    const copy = await w.postLink(SITE);
+    w.requests.length = 0;
+    expect(await w.op(claimCards, { now: w.clock.t })).toMatchObject({ attached: 1, claims: [] });
+    expect(w.requests).toEqual([]);
+    expect((await authorOf(w, copy))?.author).toBe(w.alice.id);
+    // A text edit enqueues the row again (enqueueCard), its author cleared with the card's fields.
+    const response = await w.h.request(
+      `/api/v1/statuses/${donor}`,
+      bearer(w.alice.token, json({ status: "again https://other.example/" }, { method: "PUT" })),
+    );
+    expect(response.status).toBe(200);
+    expect(await authorOf(w, donor)).toEqual({ author: null, title: "", fetched_at: null });
+    expect((await authorOf(w, copy))?.author).toBe(w.alice.id);
+  });
+
+  it(
+    "reads one account row, its domains within ATTRIBUTION_DOMAINS_BYTES, with every input at its cap",
+    { timeout: 60_000 },
+    async () => {
+      const w = await world();
+      // At their caps at once: MAX_ATTRIBUTION_DOMAINS domains of ATTRIBUTION_DOMAIN_BYTES, none covering, so every
+      // one is compared; a final URL whose host has 127 labels within a DNS name's 253 bytes (127 variants); and a
+      // creator of CARD_CREATOR_CHARS whose name matches, so the account is read.
+      const stored = Array.from(
+        { length: MAX_ATTRIBUTION_DOMAINS },
+        (_, i) => `${String(i).padStart(3, "0")}${"d".repeat(ATTRIBUTION_DOMAIN_BYTES - 3)}`,
+      );
+      expect(new TextEncoder().encode(JSON.stringify(stored)).length).toBe(ATTRIBUTION_DOMAINS_BYTES - 1);
+      const host = `${"a.".repeat(126)}b`;
+      expect([host.length, host.split(".").length]).toEqual([253, 127]);
+      const creator = `alice${" ".repeat(CARD_CREATOR_CHARS - 5)}`;
+      const finalUrl = `https://${host}/x`;
+      const measured = async (list: unknown) => {
+        await setDomains(w, list);
+        const { id, claim } = await claimOne(w);
+        const outcome = { kind: "card" as const, fields: fields({ creator, finalUrl }) };
+        const { output, statements } = await measuredStatements(
+          w.h,
+          recordCard,
+          { ...claim, outcome, now: w.clock.t },
+          true,
+        );
+        expect(output).toEqual({ held: true });
+        const reads = statements.filter((s) => s.query.includes("accounts_local_username"));
+        return { author: (await authorOf(w, id))?.author, reads: reads.map((s) => [s.rows, s.returned]) };
+      };
+      expect(await measured(stored)).toEqual({ author: w.alice.id, reads: [[2, 1]] });
+      // The last of them covering the host ("b" is a variant) shows each is compared.
+      expect((await measured([...stored.slice(0, -1), "b"])).author).toBeNull();
+      // A domain past MAX_ATTRIBUTION_DOMAINS is not read; nor is a column past ATTRIBUTION_DOMAINS_BYTES (an
+      // import's), read as none.
+      expect((await measured([...stored, "b"])).author).toBe(w.alice.id);
+      const past = `["b",${JSON.stringify(" ".repeat(ATTRIBUTION_DOMAINS_BYTES))}]`;
+      expect((await measured(past)).author).toBe(w.alice.id);
+    },
+  );
 });

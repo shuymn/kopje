@@ -19,6 +19,7 @@ import {
   domainBlock,
   follow,
   getJson,
+  interactWith,
   mute,
   post,
   remoteAccount,
@@ -316,6 +317,100 @@ describe("update on public and hashtag streams", () => {
       ["hashtag #Cats", "status.update", status.id],
       ["hashtag:local #Cats", "status.update", status.id],
     ]);
+  });
+
+  // A departure (mastodon-deviations.md, feed streams): Mastodon renders these streams once with no viewer.
+  it("a feed carries the subscriber's own fields, as REST shows them", async () => {
+    const h = await community(["alice", "bob"]);
+    const status = await post(h, h.users.bob, {
+      status: "before #cats",
+      visibility: "public",
+      quote_approval_policy: "public",
+      poll: { options: ["yes", "no"], expires_in: 3600 },
+    });
+    const poll = (status as Status & { poll: { id: string } }).poll.id;
+    await interactWith(h, h.users.alice, status.id);
+    expect((await act(h, h.users.alice, `/api/v1/polls/${poll}/votes`, { choices: [1] })).status).toBe(200);
+    const filter = await h.request(
+      "/api/v2/filters",
+      bearer(
+        h.users.alice.token,
+        json({
+          title: "Later",
+          context: ["public"],
+          filter_action: "warn",
+          keywords_attributes: [{ keyword: "after" }],
+        }),
+      ),
+    );
+    expect(filter.status).toBe(200);
+    const inbox = await subscribed(h, h.users.alice.token, "public:local");
+    inbox.send({ type: "subscribe", stream: "hashtag", tag: "cats" });
+    await settled(h, inbox);
+    // The fan-out presents at the Store's clock, the API at NOW: the same instant, so the poll reads the same.
+    const clock = vi.spyOn(Date, "now").mockReturnValue(NOW);
+    try {
+      const edited = await h.request(
+        `/api/v1/statuses/${status.id}`,
+        bearer(
+          h.users.bob.token,
+          json({ status: "after #cats", poll: { options: ["yes", "no"], expires_in: 3600 } }, { method: "PUT" }),
+        ),
+      );
+      expect(edited.status).toBe(200);
+      await drained(h, inbox);
+    } finally {
+      clock.mockRestore();
+    }
+    expect(events(inbox)).toEqual([
+      ["public:local", "status.update", status.id],
+      ["hashtag cats", "status.update", status.id],
+    ]);
+    const rest = await getJson<Status>(h, `/api/v1/statuses/${status.id}`, h.users.alice.token);
+    expect(rest.body).toMatchObject({
+      favourited: true,
+      reblogged: true,
+      bookmarked: true,
+      poll: { voted: true, own_votes: [1] },
+      quote_approval: { current_user: "automatic" },
+      filtered: [{ filter: { title: "Later" }, keyword_matches: ["after"] }],
+    });
+    for (let i = 0; i < 2; i++) {
+      expect(JSON.parse((await inbox.next()).payload!)).toEqual(rest.body);
+    }
+  });
+});
+
+// missing_attribution follows the subscriber's relationship fields here (favourited, reblogged, bookmarked), which
+// Kopje presents for the subscriber where Mastodon's anonymous payload leaves them out (#1625).
+describe("missing_attribution on public and hashtag streams", () => {
+  it("is present exactly when the payload's favourited is, true for the card's unverified author only", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const erin = await remoteAccount(h.store, "erin");
+    const inboxes: [string, Inbox][] = [
+      [alice.id, await feeds(h, alice.token)],
+      [bob.id, await feeds(h, bob.token)],
+    ];
+    const id = await remoteStatus(h, erin);
+    await sql(
+      h.store,
+      `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at, unverified_author_account_id)
+			VALUES (?, 'https://e.example/a', 0, 0, 'T', 1, ?)`,
+      id,
+      alice.id,
+    );
+    await h.store.streamTick(BUILD);
+    await drained(h, ...inboxes.map(([, inbox]) => inbox));
+    for (const [viewer, inbox] of inboxes) {
+      const sent = inbox.rest();
+      expect(sent.map((m) => m.stream?.[0])).toEqual(["public", "public:remote", "hashtag"]);
+      for (const message of sent) {
+        const payload = JSON.parse(message.payload!) as { favourited?: boolean; card: Record<string, unknown> };
+        expect(payload.card, viewer).toMatchObject({ title: "T", missing_attribution: viewer === alice.id });
+        expect("missing_attribution" in payload.card).toBe("favourited" in payload);
+      }
+    }
   });
 });
 
