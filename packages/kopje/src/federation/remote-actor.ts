@@ -79,15 +79,25 @@ export async function loadActor(
 // not an Image or a Link, or a `followers` or `following` that is not a collection, where Mastodon stores the account.
 const SPELLED_MEMBERS: readonly string[] = ["icon", "image", "followers", "following"];
 
-// The only form of an actor document Fedify is handed (readActor, author-proof.ts verifyAuthorProof): a shallow copy
-// without SPELLED_MEMBERS, so none of them can refuse the actor. Removing a member never grants anything: the id
-// Fedify checks (ID-2) and the keys it finds (ID-1) are the document's own, or none. Anything that is not an object is
-// returned as it is.
+// The only form of an actor document Fedify is handed (readActor, actorViewLoader, author-proof.ts verifyAuthorProof):
+// a shallow copy without SPELLED_MEMBERS, so none of them can refuse the actor. Removing a member never grants
+// anything: the id Fedify checks (ID-2) and the keys it finds (ID-1) are the document's own, or none. Anything that is
+// not an object is returned as it is.
 export function fedifyActorView(document: unknown): unknown {
   if (!isObject(document)) {
     return document;
   }
   return Object.fromEntries(Object.entries(document).filter(([key]) => !SPELLED_MEMBERS.includes(key)));
+}
+
+// `loader` answering each document as fedifyActorView gives it: the loader Fedify is handed where it loads documents
+// itself (inbound.ts verifyHttpSignature: a key it fetches, at the key's URL or as its owner's document). A document
+// that is not an actor's loses nothing it reads.
+export function actorViewLoader(loader: DocumentLoader): DocumentLoader {
+  return async (url, options) => {
+    const remote = await loader(url, options);
+    return { ...remote, document: fedifyActorView(remote.document) };
+  };
 }
 
 // An actor document as served at `uri`, parsed by Fedify's lookupObject over a loader that answers its view

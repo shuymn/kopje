@@ -134,14 +134,16 @@ against their own instance. TLS is assumed between all parties.
   document is read (`readableKeys`), so the actor stays usable; any other document, and a key spelled otherwise (either
   property or the key material under a compact or absolute IRI, an entry with its own `@context` or a `@nest`), is read
   as fetched. Fedify parses an actor document without its `icon`, `image`, `followers` and `following`, which Kopje
-  reads by their spelling as Mastodon does (`fedifyActorView` in `src/federation/remote-actor.ts`), so a value of a type
-  Fedify does not expect there refuses neither the actor nor its keys; leaving members out never adds a key or changes
-  the id (`test/remote-actor-images.test.ts`, "verifies a signature by an actor whose icon is not an Image"). A key id
-  the Store does not hold fresh, or whose stored key fails, is resolved from the document at that id, as Kopje reads an
-  actor's keys, and its owner judged as for any fetched key (`storedKeys`, `verify`). An RFC 9421
-  signature verifies with an RSA or Ed25519 key, the algorithm its own; a draft-cavage signature only with an RSA key,
-  and one that names any other key is answered as a signature that does not verify (401), live, on replay and in the
-  rollback drain. A stored key (`remote_keys`, kept per key id with its owner, whatever the shape of the key URL) is
+  reads by their spelling as Mastodon does (`fedifyActorView` in `src/federation/remote-actor.ts`), also one it loads
+  itself while verifying an HTTP signature, live, on replay and in the rollback drain (a key at the actor's URL, or a
+  key document's owner: `actorViewLoader`), so a value of a type Fedify does not expect there refuses neither the actor
+  nor its keys; leaving members out never adds a key or changes the id (`test/remote-actor-images.test.ts`, "verifies a
+  signature by an actor whose icon is not an Image", "verifies a key Fedify fetches itself, by an actor whose icon is
+  not an Image"). A key id the Store does not hold fresh, or whose stored key fails, is resolved from the document at
+  that id, as Kopje reads an actor's keys, and its owner judged as for any fetched key (`storedKeys`, `verify`). An RFC
+  9421 signature verifies with an RSA or Ed25519 key, the algorithm its own; a draft-cavage signature only with an RSA
+  key, and one that names any other key is answered as a signature that does not verify (401), live, on replay and in
+  the rollback drain. A stored key (`remote_keys`, kept per key id with its owner, whatever the shape of the key URL) is
   trusted for 24 hours after its document was fetched; after that, or when its signature fails, the key and the actor
   document are fetched anew, bypassing the document cache. The one exception is an actor's own `Delete` when its key (by
   the status its fetch actually returned) and its actor document both answer 404 or 410: it is verified with its own

@@ -12,12 +12,14 @@ import {
 import { followersOf } from "../src/domain/inbox";
 import { MAX_URL_LENGTH } from "../src/domain/status-text";
 import { syncCollections } from "../src/federation/collections";
+import { verifySpooledRequest } from "../src/federation/inbound";
+import { processInbox } from "../src/federation/inbox";
 import { fedifyActorView, profileImage, remoteActorInput } from "../src/federation/remote-actor";
 import { httpUrl } from "../src/platform/http-url";
 import { PROFILE_URL_LIMIT } from "../src/platform/stored-bounds";
 import { sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
-import { MASTODON, mastodonActor, type TestActor } from "./inbox-helpers";
+import { LOCAL, MASTODON, mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
 import {
   type Acct,
   ALICE,
@@ -124,6 +126,66 @@ describe("an actor whose icon or image is not an Image is stored (#1672)", () =>
     ]);
     expect(await account(t, erin.uri)).toEqual(expected(erin, { avatar_url: null, header_url: null }));
     expect(t.web.fetched.filter((url) => url === erin.uri)).toEqual([erin.uri]);
+  });
+
+  // The key forms Fedify fetches itself (inbound.ts verifyHttpSignature): the actor's document at the key's own URL
+  // (GoToSocial's), and a key document of its own, whose owner's document Fedify then loads. Each verifies, live,
+  // replayed from the spool and through the rollback drain's check, whether the icon is an Image or a Document.
+  it("verifies a key Fedify fetches itself, by an actor whose icon is not an Image (ID-1)", async () => {
+    const mention = { cc: [ALICE_URI], tag: [{ type: "Mention", href: ALICE_URI, name: "@alice@kopje.test" }] };
+    for (const icon of [{ type: "Image", url: PNG }, DOCUMENT]) {
+      for (const form of ["the actor at the key's URL", "a key document"]) {
+        const name = `${icon.type}${form === "a key document" ? "key" : "gts"}`.toLowerCase();
+        const keyed = async (t: Setup) => {
+          const actor = await mastodonActor(t.web, name);
+          const keyId = form === "a key document" ? `${MASTODON}/keys/${name}` : `${actor.uri}/main-key`;
+          const key = { id: keyId, owner: actor.uri, publicKeyPem: actor.pem };
+          const document = { ...actor.document, icon, publicKey: key };
+          t.web.serve(actor.uri, document);
+          t.web.serve(
+            keyId,
+            form === "a key document"
+              ? { "@context": "https://w3id.org/security/v1", type: "CryptographicKey", ...key }
+              : document,
+          );
+          return { actor, keyId };
+        };
+        const label = `${icon.type}, ${form}`;
+        const live = await setup();
+        const { actor, keyId } = await keyed(live);
+        const init = await signedInit(actor, "/inbox", create(actor, mastodonNote(actor, mention)), { keyId });
+        const spooled = {
+          url: `${LOCAL}/inbox`,
+          method: "POST",
+          headers: [...new Headers(init.headers)],
+          body: new TextEncoder().encode(init.body as string),
+          receivedAt: NOW,
+        };
+        expect(await live.post(actor, create(actor, mastodonNote(actor, mention)), { keyId }), label).toBe(202);
+        expect(live.web.fetched, label).toContain(keyId);
+        expect(
+          await verifySpooledRequest({ ...live.web.loader, userAgent: "Kopje/test" }, "kopje.test", spooled),
+          label,
+        ).toMatchObject({ ok: true, actor: actor.uri });
+        const replay = await setup();
+        await keyed(replay);
+        expect(
+          await processInbox(
+            replay.env,
+            inboxDeps(() => replay.store, replay.web.loader),
+            spooled,
+            "replay",
+          ),
+          label,
+        ).toMatchObject({ status: 202 });
+        expect(replay.web.fetched, label).toContain(keyId);
+        for (const t of [live, replay]) {
+          expect(await account(t, actor.uri), label).toMatchObject({
+            avatar_url: icon.type === "Image" ? PNG : null,
+          });
+        }
+      }
+    }
   });
 
   it("a reference is not fetched", async () => {
