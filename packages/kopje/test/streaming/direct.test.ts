@@ -90,7 +90,7 @@ describe("conversation on direct", () => {
     const { alice, bob } = h.users;
     await follow(h, alice, bob.id);
     const inbox = await subscribed(h, alice.token, "direct");
-    // A conversation whose last status presents about 0.97 MB, past the 512 KiB of one message, and a small one.
+    // A conversation whose last status presents about 0.97 MB, past the 254 KiB of one message, and a small one.
     const author = await remoteAccount(h.store, "big");
     const big = await bigStatus(h, author, NOW, { visibility: "direct", mentions: [{ accountId: alice.id }] });
     await runInDurableObject(h.store, (_instance, state) =>

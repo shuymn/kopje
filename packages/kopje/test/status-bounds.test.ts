@@ -3067,21 +3067,29 @@ describe("the table of maxima (RES-3)", () => {
   }, 600_000);
 
   // A moderation_warning is streamed as its notification's JSON encoded again as a string (stream-hub.ts), which
-  // escapes each backslash and quote once more: the most of every fill, and the conservative payload (the escaped
-  // fill's plus twice its notification's conservative JSON over its measured, as encoding again at most doubles a
-  // byte), stay within the hub's payload limit.
-  it("keeps the moderation_warning stream payload within the hub’s limit", async () => {
-    const fills = await Promise.all(FILLS.map(measureFill));
-    const payloads = fills.map((fill) => fill.warningPayload);
+  // escapes each backslash and quote once more. The conservative payload is the escaped fill's plus twice its
+  // notification's conservative JSON over its measured, as encoding again at most doubles a byte. The fills whose
+  // warned account has its fields and texts at their limits pass the hub's payload limit, so such a warning is skipped
+  // on the stream and shown by the notifications list (docs/mastodon-deviations.md, "Streaming."); the raw fill's is
+  // within it.
+  it("measures the moderation_warning stream payload against the hub’s limit", async () => {
+    const payloads = Object.fromEntries(
+      await Promise.all(FILLS.map(async (fill) => [fill, (await measureFill(fill)).warningPayload] as const)),
+    );
     const escaped = await measureFill("escaped");
     const conservative = await conservativeJson();
     const payload =
       escaped.warningPayload + 2 * (conservative.warningNotification! - escaped.shapes.warningNotification!.json);
-    expect({ measured: Math.max(...payloads), conservative: payload }).toEqual({
-      measured: 337_412,
+    expect({ ...payloads, conservative: payload }).toEqual({
+      escaped: 335_844,
+      derived: 335_844,
+      raw: 238_612,
+      "emoji-poll": 335_844,
+      "emoji-cache": 337_412,
       conservative: 476_110,
     });
-    expect(payload).toBeLessThan(STREAM_LIMITS.payloadBytes);
+    expect(payloads.raw).toBeLessThanOrEqual(STREAM_LIMITS.payloadBytes);
+    expect(payloads.escaped).toBeGreaterThan(STREAM_LIMITS.payloadBytes);
     // The derived bounds of a local field value and of a local account's fields, and the fill's linked value.
     expect({
       value: LOCAL_FIELD_VALUE_JSON_MAX,
@@ -3128,7 +3136,7 @@ describe("the table of maxima (RES-3)", () => {
       announcement: ANNOUNCEMENT_JSON,
       most: 7_151_333,
     });
-    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(17_972_684);
+    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(18_236_876);
     const { streamed } = await measureFill("escaped");
     expect(streamed).toEqual({ conversation: 7_074_778, conversationPayload: 7_836_062, notification: 5_918_803 });
     expect(streamed!.conversation).toBeLessThanOrEqual(kinds.conversation);

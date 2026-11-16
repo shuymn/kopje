@@ -3428,12 +3428,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/domain/status-presenter.ts`, `src/domain/status-rows.ts`; `test/answer-budgets.test.ts`,
   `test/status-rows.test.ts`, `test/notification-budgets.test.ts`, `test/notification-group-budgets.test.ts`,
   `test/conversation-budgets.test.ts`, `test/account-page-budgets.test.ts`, `test/activitypub-budgets.test.ts`,
-  `test/admin-reports.test.ts`). Streaming events stay one unit each, and an event over 512 KiB is skipped whole,
+  `test/admin-reports.test.ts`). Streaming events stay one unit each, and an event over 254 KiB is skipped whole,
   measured from its presented object before any of it is encoded (RES-6). Its
   payload counts the media descriptions with the rest of the event, formatted text expanded as it is encoded (a link
-  written twice, profile fields, poll choices), so a local post and its quote reach it with descriptions at their
-  length beside long links, or with descriptions of control characters such as U+0001, as statuses near their stored
-  bounds do (remote ones, or local content filled by mentions). The skip is an accepted departure
+  written twice, profile fields, poll choices), so a local post and its quote reach it with descriptions of emoji at
+  their length, a post or its boost beside long text and profiles, or with descriptions of control characters such as
+  U+0001, as statuses near their stored bounds do (remote ones, or local content filled by mentions); so do a
+  moderation warning whose account's fields and text are at their limits and an announcement at its derived maximum.
+  The skip is an accepted departure
   (`docs/mastodon-deviations.md`, "Streaming."; `test/streaming/public.test.ts`). The raw presenters (`present` and
   `hydrate` in status-presenter.ts, `presentAccountsById` and `presentAccount` in accounts.ts) are not exported, so the
   compiler refuses direct use outside their module; the exported paths present one unit or admit within a budget.
@@ -4439,13 +4441,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   in turns, one at a time, each an incoming request to the Store's own stub, which restores the CPU allowance: a turn
   spends at most 512 checks, 64 presentations and 4,096 sends, runs a unit only while what is left covers a unit's
   worst case (35 checks: 16 tokens, home, the mention, one for each of 16 keys (lists and feeds) and the feeds' mention
-  filter; one presentation, 512 KiB of payload, 256 sends) and leaves the rest to the next turn. A payload is counted
+  filter; one presentation, 254 KiB of payload, 256 sends) and leaves the rest to the next turn. A payload is counted
   in UTF-8 bytes as encoded, measured from the presented object before anything is encoded (`encodedTwiceBytes`): the
-  measure of the 512 KiB past which it is skipped and logged with no string made. A unit within it is encoded once and
+  measure of the 254 KiB past which it is skipped and logged with no string made (254 KiB keeps the largest frame and
+  its terminating byte within 256 KiB). A unit within it is encoded once and
   sent one stream's envelope at a time, so a unit's isolate peak is its rows, its presented object and four frames of
-  the largest at most, 47,878,111.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
+  the largest at most, 46,821,343.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
   whole payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit:
-  a turn presents at most 17,972,684 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
+  a turn presents at most 18,236,876 bytes, 4 MiB less 254 KiB plus 2S + 2 for the unit that crosses it (encoding the
   JSON again at most doubles it), S = 7,151,333 being the most JSON a streamed subject presents, the quote
   conversation's (`update` and `status.update` a boost of a quote, `conversation` one whose last status is a quote, as a
   conversation shows no boost as its last status, `notification` its status, report and warning together, an
@@ -4925,8 +4928,10 @@ four local fields at their limits, each value a verified 255-character link whos
 (U+0001, or malformed bytes read back as U+FFFD) and 100 status ids. Its conservative JSON counts each of the eight
 fields shown at the most a value presents, 7,822 bytes derived from the value bound (every character twice as a
 six-byte escape, and one link's markup per 9 characters). As a stream payload, which carries no fallback, encoded again
-as a string, it is at most 337,412 bytes measured and 476,110 conservative (the encoding at most doubles a byte), under
-the hub's 512 KiB. A
+as a string, it is at most 337,412 bytes measured and 476,110 conservative (the encoding at most doubles a byte), past
+the hub's 254 KiB: such a warning is skipped on the stream and shown by the notifications list
+(`docs/mastodon-deviations.md`, "Streaming."; `test/status-bounds.test.ts` ("measures the moderation_warning stream
+payload against the hub’s limit")). A
 conversation never shows a boost as its last status: no writer links one (`addToConversation`), and its read shows a
 boost that a restored row names, or that the trigger moves back to through a restored link, as `last_status: null`
 (`conversationStream`; `test/conversations.test.ts` ("presents no boost as a conversation's last status")), so the
@@ -4993,14 +4998,15 @@ username (twice, also in `acct`), a 2,048-byte profile URL escaped to two bytes 
 host (53,761). Emoji: the 12,288-byte presented bound. Reactions: 8 custom emoji of 128-byte shortcodes with two
 512-byte images and a count of `Number.MAX_SAFE_INTEGER` (9,801). Content: the 65,536-byte budget. Keys, id, times and
 flags: 282. One announcement is at most 248,997 bytes (3.0% of 8 MiB), the list at most 3,983,969, a stream payload
-double-encoded at most 497,996, under 512 KiB. The fills in `test/announcement-bounds.test.ts` and
-`test/streaming/announcements.test.ts` exercise escaping, IDNA, NFKC expansion and Store RPC/stream delivery within
-these bounds. The rows the list reads are bounded from per-column maxima (`ANNOUNCEMENT_ROW_CAPS` in
-`src/domain/announcements.ts`, which a RowMeter enforces as they are read): 333,440 bytes for the list and its
-dismissals, held throughout, and 5,493,376 for one presentation's mention, emoji and reaction rows (64, 1,024 and 8
-rows at their widest columns); past the cap an announcement is shown escaped with nothing read for it. With the
-derived answer at three times its JSON and one rendering at a time (the budget, the one segment built past it, at
-most 310,064 bytes, and the fallback), the list's heap is at most about 20.1 MB.
+double-encoded at most 497,996, past the hub's 254 KiB, so an announcement at it is skipped on the stream and listed by
+`GET /api/v1/announcements` (`docs/mastodon-deviations.md`, "Streaming."). The fills in
+`test/announcement-bounds.test.ts` and `test/streaming/announcements.test.ts` exercise escaping, IDNA, NFKC expansion
+and Store RPC/stream delivery within these bounds. The rows the list reads are bounded from per-column maxima
+(`ANNOUNCEMENT_ROW_CAPS` in `src/domain/announcements.ts`, which a RowMeter enforces as they are read): 333,440 bytes
+for the list and its dismissals, held throughout, and 5,493,376 for one presentation's mention, emoji and reaction rows
+(64, 1,024 and 8 rows at their widest columns); past the cap an announcement is shown escaped with nothing read for it.
+With the derived answer at three times its JSON and one rendering at a time (the budget, the one segment built past it,
+at most 310,064 bytes, and the fallback), the list's heap is at most about 20.1 MB.
 
 Mentions whose url is derived read and present less (the derived fill of `test/presented-maxima.ts`): a derived url
 within the bound is at most the stored bound, and a longer one presents as ''.
@@ -5193,7 +5199,7 @@ the largest timeline item's; a conversation its read's; a notification its statu
 warning's together; an announcement its list's and one presentation's, `ANNOUNCEMENT_ROW_CAPS`), three times its
 conservative JSON (the presented object), and four frames of `MESSAGE_MAX` at two bytes a code unit (the payload encoded
 once and twice, then the twice-encoded payload and one envelope) with its presentation's scratch (a moved-to account's
-emoji, 18,060 bytes; an announcement's rendering). `MESSAGE_MAX` is the largest frame, 525,898 bytes: the payload limit,
+emoji, 18,060 bytes; an announcement's rendering). `MESSAGE_MAX` is the largest frame, 261,706 bytes: the payload limit,
 the envelope's keys (31), the longest event (`"announcement.reaction"`, 23) and the longest stream (`["hashtag:local",
 tag]` with a 256-byte tag escaped at six a byte, 1,556). Imported text of malformed UTF-8 reads and presents within the
 fills (the account, status and attachment witnesses of "Maxima of presented units"), so the figures hold for it.
@@ -5203,10 +5209,10 @@ within half of the Store isolate's 128 MB, and pins them (`STREAM_UNIT_PEAKS` an
 
 | Stream unit (Store isolate)                            | Rows, with 25% headroom | Presented objects | Strings and scratch | Peak     |
 | ------------------------------------------------------ | ----------------------- | ----------------- | ------------------- | -------- |
-| Status (`update`, `status.update`: a boost of a quote) | 19.34 MB                | 17.46 MB          | 2.12 MB             | 38.92 MB |
-| Conversation (its last status a quote)                 | 23.02 MB                | 21.45 MB          | 2.12 MB             | 46.59 MB |
-| Notification (its status, report and warning together) | 25.88 MB                | 19.88 MB          | 2.12 MB             | 47.88 MB |
-| Announcement                                           | 7.28 MB                 | 0.75 MB           | 2.97 MB             | 11.01 MB |
+| Status (`update`, `status.update`: a boost of a quote) | 19.34 MB                | 17.46 MB          | 1.06 MB             | 37.86 MB |
+| Conversation (its last status a quote)                 | 23.02 MB                | 21.45 MB          | 1.06 MB             | 45.54 MB |
+| Notification (its status, report and warning together) | 25.88 MB                | 19.88 MB          | 1.06 MB             | 46.82 MB |
+| Announcement                                           | 7.28 MB                 | 0.75 MB           | 1.92 MB             | 9.95 MB  |
 
 ### Data and keys (DATA)
 

@@ -67,8 +67,9 @@ export const STREAM_LIMITS = {
   tagBytes: 256,
   // A presented subject whose payload passes this many UTF-8 bytes, measured before it is encoded, is skipped and
   // logged; the events media descriptions at their length can push past it are an accepted departure
-  // (docs/mastodon-deviations.md, "Streaming.").
-  payloadBytes: 512 * 1024,
+  // (docs/mastodon-deviations.md, "Streaming."). 254 KiB keeps the largest frame (MESSAGE_MAX, its envelope with the
+  // longest stream and event) and its terminating NUL within 2^18 bytes, so a fresh socket takes any unit (RES-6).
+  payloadBytes: 254 * 1024,
 };
 
 // Test hook: a turn that leaves work calls this instead of requesting a continuation, as if it failed (cron resumes).
