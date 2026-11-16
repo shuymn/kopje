@@ -275,13 +275,21 @@ describe("admin operations", () => {
           role: unknown;
         }>()
       ).role;
-    expect(await role(OWNER)).toEqual({ id: "3", name: "Owner", permissions: "1080", color: "", highlighted: true });
+    expect(await role(OWNER)).toEqual({
+      id: "3",
+      name: "Owner",
+      permissions: "1080",
+      color: "",
+      highlighted: true,
+      collection_limit: 10,
+    });
     expect(await role("alice@example.com")).toEqual({
       id: "-99",
       name: "",
       permissions: "0",
       color: "",
       highlighted: false,
+      collection_limit: 10,
     });
     // The role follows the match: once admin_email names alice, she is the Owner and the owner is not.
     await setSetting(h.store, "admin_email", "alice@example.com");

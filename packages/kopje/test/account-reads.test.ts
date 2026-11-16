@@ -310,7 +310,7 @@ describe("a remote account whose deletion has started", () => {
     expect(ACCOUNT_ROUTES.map((route) => `${route.method} ${route.path}`)).toEqual(
       expect.arrayContaining(["GET /api/v1/accounts/:id", "GET /api/v1/accounts/:id/statuses"]),
     );
-    expect(ACCOUNT_ROUTES.length).toBe(20);
+    expect(ACCOUNT_ROUTES.length).toBe(22);
     // Each route reaches the account first: before the deletion none answers 404.
     for (const route of ACCOUNT_ROUTES) {
       expect({ route: route.path, status: await statusOf(h, route, remote, token) }).not.toMatchObject({ status: 404 });

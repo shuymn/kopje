@@ -47,7 +47,7 @@ describe("the instance actor's handle", () => {
       expect(search.accounts(local.body).map((a: Acct) => a.id)).toEqual([carol]);
     }
     const byUrl = await t.api(`/api/v2/search?resolve=true&q=${encodeURIComponent(ACTOR)}`);
-    expect(byUrl).toEqual({ status: 200, body: { accounts: [], statuses: [], hashtags: [] } });
+    expect(byUrl).toEqual({ status: 200, body: { accounts: [], statuses: [], hashtags: [], collections: [] } });
     expect(t.web.fetched).toEqual([]);
     expect(await instanceRows(t)).toEqual([{ n: 0 }]);
   });

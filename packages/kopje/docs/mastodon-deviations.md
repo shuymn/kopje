@@ -658,6 +658,29 @@ Annual reports (`/api/v1/annual_reports`, `wrapstodon` of `/api/v2/instance`; MD
   `kopje-admin instance wrapstodon=false` (Mastodon's admin setting, on by default). A Mastodon admin can also generate
   a report by hand from a console, which its owner then reads; Kopje has no such path. Accepted, 2026-11-15.
 
+Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_collections`, also under
+`/api/v1_alpha`; R45 in [visibility.md](visibility.md)):
+
+- A collection whose owner is suspended, hidden or otherwise unavailable is not found, and an unavailable member is
+  left out of `items` and `accounts`, where Mastodon shows both: Kopje hides an unavailable account everywhere (R1).
+  Accepted, 2026-11-16.
+- The `Link` headers of `GET /api/v1/accounts/:id/collections` continue while a page is full, step by the page's
+  limit and never carry a negative offset, where Mastodon's `next` stops after the first page (`offset * limit`), its
+  links step by at most 80, and its `prev` can be negative. Accepted, 2026-11-16.
+- `GET /api/v1/accounts/:id/in_collections` lists memberships newest first (Mastodon: no order) and pages by a bounded
+  window of candidates: a page may be short or empty while later memberships exist, and its `Link` headers carry
+  `max_id`/`min_id`, not `offset`; an `offset` is honoured up to 400 and answers an empty page past it. Accepted,
+  2026-11-16.
+- Creating a collection with more than 25 distinct `account_ids[]` answers the too-many error without looking the
+  accounts up, where Mastodon first answers 404 or 403 for an unknown or refused one. Accepted, 2026-11-16.
+- Creating an 11th collection answers Mastodon's 422 with the message "Collections are too many, no more than 10 are
+  allowed", where Mastodon's message is a missing-translation text (it has no English text for that error). Accepted,
+  2026-11-16.
+- Only local accounts can be featured yet: a remote account answers 403, as one that refuses. Tracked by #1589.
+- A collection's page (`/collections/:id`) is served for a local collection only (a remote collection's `url` is its
+  own server's), and the profile pages do not list an account's collections, where Mastodon's web client does.
+  Accepted, 2026-11-16.
+
 Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model WEB-6):
 
 - Mastodon allows `LOCAL_DOMAIN`, `WEB_DOMAIN` and `ALTERNATE_DOMAINS` as hosts and exempts exactly `/health`; on any
@@ -1263,6 +1286,19 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   (`app/services/update_status_service.rb:121`, `:124`, `:174-176` in v4.7.5), so it snapshots a version (`:31`,
   `:170-172`) and sets `edited_at` (`:126`). Accepted, 2026-11-15.
 
+Streaming (`status.update`; Mastodon's `FanOutOnWriteService` with `update: true`; VIS-26 in
+[threat-model.md](threat-model.md)):
+
+- A quote's state change sends `status.update` for the quoting status whatever made it. Kopje verifies a received quote
+  after storing the status, so its decision streams the state a Mastodon client got in the status's first event:
+  Mastodon decides inline before its own fan-out (`app/lib/activitypub/activity/create.rb:81-93` in v4.7.5) and sends
+  no event for it. A rejection of a local account's quote request (`activity/reject.rb:37`, "TODO: broadcast an
+  update?") and a revocation's rejection of the other quotes naming the revoked stamp stream too, where Mastodon sends
+  nothing; a reset of an accepted quote by an `Update` and the round's decision are two events where Mastodon sends
+  one. A repeated `QuoteRequest` of a quote already accepted sends none, where Mastodon broadcasts again
+  (`activity/quote_request.rb:41`). Each event reaches only the listeners REST would show the status to (R33).
+  Accepted, 2026-11-16.
+
 Pinned statuses (`StatusPin`, the actor's `featured` collection):
 
 - Migration `0089_pin_cap` deleted each account's pins past its limit (5 for a local account, 20 for a remote one; a
@@ -1334,8 +1370,9 @@ ID-7 in `docs/threat-model.md`):
   author's later `Create`.
 - An `Update` replaces the content only when its `updated` is newer than the stored version (the last accepted
   `updated`, else `edited_at`, else `published`); one whose version is equal, or missing for a status never edited,
-  still refreshes the poll, the quote policy and the stamp of the same quote, as Mastodon's `handle_implicit_update!`
-  does; one missing for an edited status changes nothing, as in Mastodon (`process_status_update_service.rb:32-34`).
+  still refreshes the poll and the quote policy, records a changed stamp of the same quote, and verifies the same quote
+  again, as Mastodon's `handle_implicit_update!` does; one missing for an edited status changes nothing, as in
+  Mastodon (`process_status_update_service.rb:32-34`).
   Mastodon moves `edited_at` only on a significant edit (`process_status_update_service.rb`), so after a newer
   metadata-only `Update` it applies an older content `Update`: an author editing A, then B, then A again, whose final A
   arrives before B, ends at B there. Mastodon's behaviour is an ordering bug.
@@ -1376,15 +1413,38 @@ Quote approvals (a local account's quote of a remote status; Mastodon's `Activit
 Quote verification (a received quote and its stamp; Mastodon's `ActivityPub::VerifyQuoteService` and
 `ProcessStatusUpdateService`; VIS-28 in [threat-model.md](threat-model.md)):
 
+- Kopje verifies a quote in job rounds after the status or its `Update` is stored, not inline, so the notifications of
+  a verification Mastodon would broadcast (a same-version `Update`'s, a retried one's) come at the round's decision,
+  within minutes of the activity. Accepted, 2026-11-16.
+- An `Update` naming the same stamp does not verify a rejected or revoked quote again; Mastodon fetches the stamp, which
+  a Mastodon server answers 404 once it has rejected or revoked the quote (`quote_authorizations_controller.rb:23-28`),
+  and a revoked stamp never accepts a quote in Kopje (VIS-28). Accepted, 2026-11-16.
+- An accepted quote whose stamp, fetched again, no longer names it is revoked; Mastodon keeps it accepted
+  (`verify_quote_service.rb:23-24`, `:32`). A stamp that no longer proves the approval does not keep it. Accepted,
+  2026-11-16.
+- A rejected or revoked quote that an `Update` gives another stamp is pending until its round decides; Mastodon keeps
+  it rejected or revoked meanwhile, and broadcasts only if the stamp accepts it, where Kopje's round also notifies when
+  it rejects the quote again. Accepted, 2026-11-16.
 - An accepted self-quote (the quoting status's author is the quoted one) keeps its state whatever stamp an `Update`
   names, and Kopje never fetches its stamp. Mastodon 4.7.5 fetches it (`fast_track_approval!` answers false after
   accepting, `verify_quote_service.rb:40-51`), revokes the quote when the stamp answers 404, and resets it when a
   verified stamp changes. A self-quote needs no approval (FEP-044f, and Mastodon's own comment at `:43`). Accepted,
   2026-11-16.
-- A status that arrives again (an `Update`, a boost, a delivered `Create`) while its pending quote's verification is in
-  flight, or waits to retry after a failure that may pass, is answered by that verification, not by a fetch of its
-  own, and the wait runs out as it was; Mastodon verifies the quote at each `Update`
-  (`process_status_update_service.rb:60`, `:348`) and has no deferred work to interrupt. Accepted, 2026-11-16.
+- A status that arrives again (an `Update`, a boost, a delivered `Create`) while its quote's verification is in flight,
+  or waits to retry after a failure that may pass, is answered by that verification, not by a fetch of its own, and
+  the wait runs out as it was; Mastodon verifies the quote at each `Update` (`process_status_update_service.rb:60`,
+  `:348`) and has no deferred work to interrupt. Kopje's notification of that verification's move follows the first of
+  those `Update`s (or the first after a failure that may pass), as Mastodon's first verification is the one that
+  moves the state. When the stamp's answer changes between them, Mastodon notifies once more or once less: a stamp gone
+  after a same-version `Update` and before a significant newer one is notified once by Mastodon (the edit) and twice
+  by Kopje (the edit and the decision); gone after a significant newer `Update` and before a same-version one, twice by
+  Mastodon and once by Kopje (the edit). Accepted, 2026-11-16.
+- When a remote post that quotes a local post with an approval is edited to quote another post, Kopje retires the
+  approval (it never verifies again) but sends no `Delete` of it, where Mastodon 4.7.5 sends one to the servers both
+  posts reach (`RevokeQuoteService`, run by `ProcessStatusUpdateService#update_quote!`,
+  `process_status_update_service.rb:362`). Neither Mastodon nor Kopje edits a quote's target, and servers that receive
+  the edit drop the old quote themselves. When software that sends such an edit appears, Kopje sends the `Delete` as
+  Mastodon does. Accepted, 2026-11-16.
 
 Forwarded deletes (a remote author's `Delete` of a status that local accounts boosted or quoted; Mastodon's
 `ActivityPub::Forwarder`, `app/lib/activitypub/forwarder.rb`, run by `Activity::Delete#delete_status`):

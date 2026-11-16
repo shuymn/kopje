@@ -56,7 +56,8 @@ import { isDeleted } from "./retractions";
 import { normalizeSearchText } from "./search-text";
 import { MAX_STATUS_MEDIA, MAX_STATUS_MENTION_ROWS, MAX_STATUS_TAGS, MAX_TAG_LENGTH } from "./status-bounds";
 import { measureFilterText, presentStatus, type Status } from "./status-presenter";
-import { MAX_STATUS_EDITS, notifyEdited, recordEdit, recountStatus, writeTags } from "./statuses";
+import { MAX_STATUS_EDITS, recordEdit, recountStatus, writeTags } from "./statuses";
+import { notifyEdited } from "./update-fan-out";
 
 // Remote statuses: Create, Update and the originals of boosts and search results, stored as Mastodon 4.7.5's
 // ActivityPub::Activity::Create and ProcessStatusUpdateService store them; a search result or a pin sync's status
@@ -709,9 +710,16 @@ export function updateRemoteStatus(
   if (Number.isNaN(version) || version === stored) {
     // ProcessStatusUpdateService#handle_implicit_update!: an Update that names the stored version, or none for a status
     // never edited (such as the Update of a poll's counts, which names one only once the status was edited), still
-    // refreshes the counts, the end and the voters of its poll, and verifies a changed stamp of the same quote again;
-    // the quoted status itself changes only with a newer version.
-    const restamped = refreshQuote(db, { id: existing.id, uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
+    // refreshes the counts, the end and the voters of its poll, and verifies the same quote again (refreshQuote); the
+    // quoted status itself changes only with a newer version.
+    const reset = refreshQuote(
+      db,
+      { id: existing.id, uri, author },
+      input.quote,
+      { ...arrival, broadcast: true, version: "same" },
+      ctx,
+      storeRemoteStatus,
+    );
     const policyChanged =
       db.run(
         "UPDATE statuses SET quote_policy = ?1 WHERE id = ?2 AND quote_policy <> ?1",
@@ -723,9 +731,10 @@ export function updateRemoteStatus(
       markPollFetched(db, existing.id, poll, ctx.storeNow);
     }
     const pollUpdated = poll === "written";
-    // It broadcasts the update when it moved the quote's state (:82 in v4.7.5): a changed stamp, which resets the quote
-    // (refreshQuote). Not a legacy form alone, the same stamp, the poll or the quote policy.
-    if (restamped) {
+    // It broadcasts the update when it moved the quote's state (:82 in v4.7.5): the reset of an accepted quote, at
+    // once; a move its verification makes notifies at that work's decision (quotes.ts finish). Not a legacy form
+    // alone, the same stamp, the poll or the quote policy.
+    if (reset) {
       notifyEdited(db, existing.id, author.id, ctx.now);
     }
     return pollUpdated
@@ -785,7 +794,14 @@ export function updateRemoteStatus(
   writeMedia(db, existing.id, author, media, ctx);
   measureFilterText(db, existing.id, iso(ctx.now));
   noteStatusEmoji(db, existing.id, ctx.now);
-  recordQuote(db, { id: existing.id, uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
+  recordQuote(
+    db,
+    { id: existing.id, uri, author },
+    input.quote,
+    { ...arrival, version: "newer" },
+    ctx,
+    storeRemoteStatus,
+  );
   if (significant) {
     // ProcessStatusUpdateService#reset_preview_card!: the card is fetched again from the Update's first Link, else its
     // anchors (:447-450). A change of the Links alone is not significant (:187), nor here a quote's, so neither

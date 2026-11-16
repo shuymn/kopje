@@ -10,8 +10,9 @@ export const JOURNAL_SPAN = 4096;
 // Whether some listener could be sent an `edit` event (`status.update`) of the status `s`: an account on `user` or
 // `user:notification`, on a list, or, for a public status that is not a boost, on a `public*` or `hashtag*` stream.
 // Who is sent it is judged when it is sent (R33). The listener condition of stream_status_edited (migration
-// 0056_announcements), checked equal to it by test/streaming/status-update-journal.test.ts.
-const EDIT_LISTENED_SQL = `(
+// 0056_announcements), checked equal to it by test/streaming/status-update-journal.test.ts, and the text of
+// stream_quote_state's (migration 0102_quote_state_stream; test/migrations.test.ts).
+export const EDIT_LISTENED_SQL = `(
     EXISTS (SELECT 1 FROM stream_subscriptions WHERE stream_key IN ('user', 'user:notification'))
     OR EXISTS (SELECT 1 FROM stream_subscriptions WHERE stream_key > 'list:' AND stream_key < 'list;')
     OR (s.visibility = 'public' AND s.reblog_of_id IS NULL
@@ -26,9 +27,9 @@ const EDIT_LISTENED_SQL = `(
 export const QUIET_EDIT_SUBJECT = "quiet:";
 
 // One `edit` event (`status.update`) of the status `statusId`, for a write that changes what its listeners are shown
-// but leaves `edited_at`, whose trigger journals every other edit: a local status's quote policy (statuses.ts, VIS-26).
-// Without `mentions`, the row is a quiet edit (QUIET_EDIT_SUBJECT). Under EDIT_LISTENED_SQL and JOURNAL_SPAN, as the
-// trigger: at most one row a call.
+// but no column a trigger watches (`statuses.edited_at`, `quotes.state`): a local status's quote policy (statuses.ts,
+// VIS-26). Without `mentions`, the row is a quiet edit (QUIET_EDIT_SUBJECT). Under EDIT_LISTENED_SQL and JOURNAL_SPAN,
+// as the triggers: at most one row a call.
 export function journalStatusUpdate(db: Db, statusId: string, now: number, { mentions }: { mentions: boolean }): void {
   if (journalFull(db, "edit")) {
     return;
@@ -39,6 +40,28 @@ export function journalStatusUpdate(db: Db, statusId: string, now: number, { men
     statusId,
     iso(now),
     mentions ? "" : QUIET_EDIT_SUBJECT,
+  );
+}
+
+// The journal's newest id ("0" when it is empty), as text (DATA-6): read before a write whose trigger may journal an
+// `edit` row that quietJournaledEdit then makes quiet. One seek of the primary key.
+export function journalHead(db: Db): string {
+  return db.first<{ head: string }>("SELECT CAST(coalesce((SELECT max(id) FROM stream_events), 0) AS TEXT) AS head")!
+    .head;
+}
+
+// Makes the `edit` row of the status `statusId` that the write just before journaled a quiet edit (QUIET_EDIT_SUBJECT),
+// for a state move Mastodon broadcasts with skip_notifications: the journal's newest row, if it is past `head`
+// (journalHead, read in this transaction before that write), that status's and an `edit`. An id is never given twice
+// (the newest row is never pruned), so a row past `head` is this transaction's, and no older row is touched; when the
+// trigger journaled nothing (nobody listening, a full journal), nothing is. At most one row, by its primary key.
+export function quietJournaledEdit(db: Db, head: string, statusId: string): void {
+  db.run(
+    `UPDATE stream_events SET subject = ?3 || subject
+		WHERE id = (SELECT max(id) FROM stream_events) AND id > CAST(?1 AS INTEGER) AND kind = 'edit' AND subject = ?2`,
+    head,
+    statusId,
+    QUIET_EDIT_SUBJECT,
   );
 }
 

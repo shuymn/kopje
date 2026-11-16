@@ -10,6 +10,7 @@ import {
   DOMAIN_BLOCK_WINDOW,
   runDomainBlockCleanups,
 } from "../src/domain/blocks";
+import { severCollections } from "../src/domain/collections";
 import { JOB_RETRY_DELAYS_MS } from "../src/domain/job-attempts";
 import { publicTimeline } from "../src/domain/timelines";
 import { sha256Hex } from "../src/security/tokens";
@@ -72,6 +73,28 @@ async function sent(h: ApiHarness) {
     superseded: row.superseded,
     inboxes: deliveries.filter((d) => d.activity_id === row.id).map((d) => d.inbox_url),
   }));
+}
+
+// Counts the rows each statement reads.
+function countingSql(real: SqlStorage): { sql: SqlStorage; read: () => number } {
+  let read = 0;
+  const sql = {
+    exec: (query: string, ...params: SqlStorageValue[]) => {
+      const cursor = real.exec(query, ...params);
+      return Object.defineProperty(
+        watchedCursor(cursor, () => (read += cursor.rowsRead)),
+        "rowsWritten",
+        {
+          get() {
+            const written = cursor.rowsWritten;
+            read += cursor.rowsRead;
+            return written;
+          },
+        },
+      );
+    },
+  } as unknown as SqlStorage;
+  return { sql, read: () => read };
 }
 
 describe("blocks", () => {
@@ -281,6 +304,124 @@ describe("blocks", () => {
     const undo = { id: `${blockId}/undo`, object: { id: blockId, type: "Block", actor: carolUri, object: ALICE_URI } };
     expect(await from({ type: "Undo", ...undo })).toMatchObject({ applied: true });
     expect(await relationship(h, alice, carol)).toMatchObject({ blocked_by: false });
+  });
+
+  // BlockService#handle_collections (VIS-33): the blocker's memberships of the target's collections are revoked, the
+  // target's of the blocker's deleted; an inbound Block changes no membership.
+  it("revokes and deletes the collection memberships a block severs", async () => {
+    const h = await community(["alice", "bob", "carol"]);
+    const { alice, bob, carol } = h.users;
+    const dave = await remoteAccount(h.store, "dave");
+    await sql(h.store, "UPDATE accounts SET discoverable = 1");
+    const collection = async (user: User, members: string[]) => {
+      const response = await act(h, user, "/api/v1/collections", {
+        name: "c",
+        sensitive: false,
+        discoverable: true,
+        account_ids: members,
+      });
+      expect(response.status).toBe(200);
+      return (await response.json<{ collection: { id: string } }>()).collection.id;
+    };
+    const ofAlice = await collection(alice, [bob.id, carol.id]);
+    const ofBob = await collection(bob, [alice.id, carol.id]);
+    const ofCarol = await collection(carol, [alice.id, bob.id]);
+    // dave's membership of alice's collection and alice's of dave's, written directly (only local accounts are
+    // featured through the API yet).
+    const at = new Date(NOW).toISOString();
+    await sql(
+      h.store,
+      `INSERT INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
+			VALUES ('610000000000000001', ?1, ?2, 1, 3, ?3, ?3)`,
+      ofAlice,
+      dave,
+      at,
+    );
+    await sql(
+      h.store,
+      `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, uri, created_at, updated_at)
+			VALUES ('610000000000000002', ?1, 0, 'dave', 0, 1, 'https://remote.example/users/dave/c/1', ?2, ?2)`,
+      dave,
+      at,
+    );
+    await sql(
+      h.store,
+      `INSERT INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
+			VALUES ('610000000000000003', '610000000000000002', ?1, 1, 1, ?2, ?2)`,
+      alice.id,
+      at,
+    );
+    const items = () =>
+      sql<{ collection_id: string; account_id: string; state: number }>(
+        h.store,
+        "SELECT collection_id, account_id, state FROM collection_items ORDER BY collection_id, account_id",
+      );
+    const before = await items();
+
+    // An inbound Block of alice by dave changes no membership.
+    expect(
+      await receive(h.store, "https://remote.example/users/dave", {
+        type: "Block",
+        id: "https://remote.example/users/dave#blocks/1",
+        object: ALICE_URI,
+      }),
+    ).toMatchObject({ applied: true });
+    expect(await items()).toEqual(before);
+
+    await relate(h, alice, `/api/v1/accounts/${bob.id}/block`);
+    const expected = before
+      .filter((item) => !(item.collection_id === ofAlice && item.account_id === bob.id))
+      .map((item) => (item.collection_id === ofBob && item.account_id === alice.id ? { ...item, state: 3 } : item));
+    expect(await items()).toEqual(expected);
+    expect(expected.filter((item) => item.collection_id === ofCarol)).toHaveLength(2);
+  });
+
+  it("reads only the two accounts' collections to sever a block's memberships (RES-7)", async () => {
+    const h = await community(["alice", "bob", "carol"]);
+    const { alice, bob, carol } = h.users;
+    // alice's collection featuring bob and bob's featuring alice, and carol's 40 collections, each featuring alice and
+    // bob: none of carol's is the block's.
+    await sql(
+      h.store,
+      `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, created_at, updated_at)
+			VALUES ('640000000000000001', ?1, 1, 'a', 0, 1, ?3, ?3), ('640000000000000002', ?2, 1, 'b', 0, 1, ?3, ?3)`,
+      alice.id,
+      bob.id,
+      new Date(NOW).toISOString(),
+    );
+    await sql(
+      h.store,
+      `INSERT INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
+			VALUES ('650000000000000001', '640000000000000001', ?2, 1, 1, ?3, ?3),
+				('650000000000000002', '640000000000000002', ?1, 1, 1, ?3, ?3)`,
+      alice.id,
+      bob.id,
+      new Date(NOW).toISOString(),
+    );
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 40)
+			INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, created_at, updated_at)
+			SELECT printf('62%016d', i), ?1, 1, 'c' || i, 0, 1, ?2, ?2 FROM n`,
+      carol.id,
+      new Date(NOW).toISOString(),
+    );
+    await sql(
+      h.store,
+      `INSERT INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
+			SELECT printf('63%016d', 2 * CAST(substr(c.id, 3) AS INTEGER) + m.k), c.id, m.id, 1, 1 + m.k, ?3, ?3
+			FROM collections c, (SELECT ?1 AS id, 0 AS k UNION ALL SELECT ?2, 1) m WHERE c.account_id = ?4`,
+      alice.id,
+      bob.id,
+      new Date(NOW).toISOString(),
+      carol.id,
+    );
+    const read = await runInDurableObject(h.store, (_instance, state) => {
+      const { sql: counting, read } = countingSql(state.storage.sql);
+      state.storage.transactionSync(() => severCollections(new Db(counting), alice.id, bob.id, NOW));
+      return read();
+    });
+    expect(read).toBe(12);
   });
 });
 
@@ -980,26 +1121,6 @@ describe("domain blocks", () => {
   });
 
   // A SqlStorage that counts the rows each statement reads.
-  function countingSql(real: SqlStorage): { sql: SqlStorage; read: () => number } {
-    let read = 0;
-    const sql = {
-      exec: (query: string, ...params: SqlStorageValue[]) => {
-        const cursor = real.exec(query, ...params);
-        return Object.defineProperty(
-          watchedCursor(cursor, () => (read += cursor.rowsRead)),
-          "rowsWritten",
-          {
-            get() {
-              const written = cursor.rowsWritten;
-              read += cursor.rowsRead;
-              return written;
-            },
-          },
-        );
-      },
-    } as unknown as SqlStorage;
-    return { sql, read: () => read };
-  }
 
   // Runs the domain block operation in its own transaction, with the storage's savepoint as the kernel passes it
   // (Db.savepoint), over a SqlStorage that counts the rows each statement reads.

@@ -33,6 +33,7 @@ import * as annualReports from "./domain/annual-reports";
 import { checkAdminCredential, checkCredential, checkNotSuspended } from "./domain/auth";
 import * as blocks from "./domain/blocks";
 import * as cardImages from "./domain/card-images";
+import * as collections from "./domain/collections";
 import * as conversations from "./domain/conversations";
 import * as deliveries from "./domain/deliveries";
 import { directory } from "./domain/directory";
@@ -90,6 +91,7 @@ import { runModerationJobs, suspendAccount } from "./domain/suspension";
 import * as tags from "./domain/tags";
 import * as timelines from "./domain/timelines";
 import * as trends from "./domain/trends";
+import * as collectionPages from "./domain/web-pages/collection";
 import * as featuredPages from "./domain/web-pages/featured";
 import * as followPages from "./domain/web-pages/follows";
 import * as interactPages from "./domain/web-pages/interact";
@@ -307,6 +309,7 @@ export const STORE_RPC = {
   webDocument: sitePages.webDocument,
   webProfilePage: profilePages.webProfilePage,
   webFeaturedPage: featuredPages.webFeaturedPage,
+  webCollectionPage: collectionPages.webCollectionPage,
   webFollowsPage: followPages.webFollowsPage,
   webTagPage: tagPages.webTagPage,
   webStatusPage: statusPages.webStatusPage,
@@ -429,6 +432,19 @@ export const STORE_RPC = {
   addListAccounts: lists.addListAccounts,
   removeListAccounts: lists.removeListAccounts,
   accountLists: lists.accountLists,
+
+  // Collections (domain/collections.ts); the cron's cleanup is pruneCollectionItems.
+  accountCollections: collections.accountCollections,
+  inCollections: collections.inCollections,
+  showCollection: collections.showCollection,
+  createCollection: collections.createCollection,
+  updateCollection: collections.updateCollection,
+  deleteCollection: collections.deleteCollection,
+  addCollectionItem: collections.addCollectionItem,
+  removeCollectionItem: collections.removeCollectionItem,
+  revokeCollectionItem: collections.revokeCollectionItem,
+  resolvedCollection: collections.resolvedCollection,
+  pruneCollectionItems: collections.pruneCollectionItems,
 
   // Conversations (domain/conversations.ts).
   listConversations: conversations.listConversations,

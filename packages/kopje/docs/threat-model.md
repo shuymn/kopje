@@ -446,8 +446,9 @@ against their own instance. TLS is assumed between all parties.
   (`statuses.remote_version`, kept as the remote wrote it whether or not the change wrote history, and compared
   unclamped), so a reordered or repeated one changes no content whenever it arrives; one whose version equals the
   stored one, or names none for a status never edited (no `edited_at`), still refreshes the status's poll (counts, end,
-  voters), its quote policy and the stamp of the same quote (Mastodon's `handle_implicit_update!`), and an older one, or
-  one that names none for an edited status, changes nothing (Mastodon's `process_status_update_service.rb:32-34`), so
+  voters), its quote policy and the stamp of the same quote, and verifies the same quote again (Mastodon's
+  `handle_implicit_update!`), and an older one, or one that names none for an edited status, changes nothing
+  (Mastodon's `process_status_update_service.rb:32-34`), so
   a peer's cached copy from before an edit rolls nothing back; an `Update` dated more than 5 minutes ahead
   of the clock is ignored (no change, history or notification), and its edit waits for another delivery; a status whose
   `Delete` was recorded takes no `Update`. A status Kopje fetches again that it stores under the document's id, by its
@@ -772,7 +773,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (`/@user/featured`) shows the account's featured hashtags as the API lists them, at most ten, and the accounts it
   endorses that R28 lists (VIS-19), paged both ways by account id as the API pages them; its pager may move on by the
   id of an endorsed account that is unavailable, as the API's `Link` header does (RES-7), and shows nothing else of
-  it. A status page shows its thread: the ancestors an anonymous viewer may see among the 40 nearest (the walk goes on
+  it. A local collection's page (`/collections/:id`) shows the collection as R45 shows it to an anonymous viewer
+  (VIS-33), discoverable or not: its name, owner, description and hashtag, and its accepted members that are
+  available, in their order, as many as the page budget admits (RES-3); an unknown id or a remote collection's answers
+  the same 404 page, and a suspended owner's 410 as its profile does (`src/domain/web-pages/collection.ts`;
+  `test/web-collection-page.test.ts`).
+  A status page shows its thread: the ancestors an anonymous viewer may see among the 40 nearest (the walk goes on
   past those it hides, and a hidden one leaves no id, URL or text in the page), and its direct replies that are public
   or unlisted and that the rule passes, oldest first, paged both ways by the ids of the replies' candidates (never a
   private, direct or limited reply's) or by a boundary derived from the request alone. Its other tabs read as the API's
@@ -910,17 +916,25 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   notifies the quoted account of an accepted quote and each active mention, each without a kept notification, as
   Mastodon's does (`fan_out_on_write_service.rb:62-75`, `local_notification_worker.rb:15-16`): a `quote` or `mention`
   notification its recipient dismissed or cleared is written and pushed again at the author's next significant edit,
-  quote stamp change or policy-only edit; a kept one is a repeat. Its push is sent only for a newly inserted row. A
+  reset of an accepted quote by a new stamp or policy-only edit, and at a quote state change Mastodon broadcasts (a
+  stamp's `Delete` that revokes the accepted quote it approved, the `Delete` of a local quote's stamp, the revoke API,
+  an `Accept` of a local quote's request, and a round's decision that moves the state of a work whose first
+  verification is a same-version `Update`'s that reset nothing or a relayed `Delete`'s recheck, or that follows a
+  failure that may pass: `quotes.broadcast`; `fanOutQuoteChange` in `src/domain/quotes.ts`); a kept one is a repeat.
+  Its push is sent only for a newly inserted row. A
   remote favourite notifies when it is created and its notification goes with it, as Mastodon's does: a further `Like`
   it tracks notifies nothing, and an `Undo` followed by the next reaction's `Like` notifies (and pushes) again, while
   the reverse order does not;
   `test/inbox-reactions.test.ts` ("VIS-10: the favourite notification follows the aggregate"). _Enforced (main):_
   `notify` in `src/domain/notifications.ts`; `test/statuses.test.ts` ("a retry has no second side effect"),
   `test/timelines.test.ts` ("notifies followers who asked to be notified, once"); the update fan-out: `notifyEdited` in
-  `src/domain/statuses.ts`, `test/edit-fan-out.test.ts` ("…but not one alice holds: the same row, no new push", "…but
-  not a kept one: the same row, no new push"). Push: _Enforced (main):_ `notify` records pushes for the row it
-  inserted only, never for a repeat (`queuePushes` in `src/domain/notifications.ts`); `test/push-send.test.ts`
-  ("pushes every notification type Kopje emits, once each (VIS-10)").
+  `src/domain/update-fan-out.ts`, `test/edit-fan-out.test.ts` ("…but not one alice holds: the same row, no new
+  push", "…but not a kept one: the same row, no new push", "a local quote's stamp Delete fans out its status once; a
+  repeated Delete none", "an approval Update notifies when the round accepts the quote, not before", "a new stamp on
+  an accepted quote notifies at the Update; its acceptance by the round notifies no more", "…and from a same-version
+  Update's work whose fetch it raced: its acceptance notifies"). Push: _Enforced (main):_ `notify` records pushes for
+  the row it inserted only, never for a repeat (`queuePushes` in `src/domain/notifications.ts`);
+  `test/push-send.test.ts` ("pushes every notification type Kopje emits, once each (VIS-10)").
 - **VIS-11: earlier versions keep the original audience.** Edit history and earlier versions are visible only to the
   status's original audience, and an edit of a non-public status never widens that audience (a recipient added by an
   edit does not see earlier versions). This differs from Mastodon on purpose. _Enforced (main):_
@@ -1204,13 +1218,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   only statuses of that account the reporter may see by the account statuses rule (R11, VIS-1); any other status refuses
   the whole report as not found, so a report cannot probe for a status the reporter may not see. Forwarded (only for a
   remote account and `forward`), it is a `Flag` from the instance actor carrying the reporter's comment and the uris of
-  the account and its reported statuses, never the reporter's identity (DATA-7). It goes only to the inboxes Mastodon's
-  `ReportService` chooses (R23, `reportForwardees`): the account's server when its domain is listed (by default its
-  own), and the servers of the accounts the reported statuses reply to on the listed domains, less the account's own
-  inboxes; by Kopje's rule for an activity without `to`, each by shared inbox when it has one. A replied-to server may
-  so learn the uri of a status it was not sent, as with Mastodon; the uri carries no content, and the status is served,
-  or not, by its own server, the reported account's. The work is bounded (RES-7): at most 100 statuses and 100 domains,
-  the statuses and replied-to accounts read by key. _Enforced (main):_ `src/domain/reports.ts`,
+  the account, its reported statuses and its reported collections (any of the account's, whatever their visibility, as
+  Mastodon's `@target_account.collections.find`), never the reporter's identity (DATA-7). It goes only to the inboxes
+  Mastodon's `ReportService` chooses (R23, `reportForwardees`): the account's server when its domain is listed (by
+  default its own), and the servers of the accounts the reported statuses reply to on the listed domains, less the
+  account's own inboxes; by Kopje's rule for an activity without `to`, each by shared inbox when it has one. A
+  replied-to server may so learn the uri of a status it was not sent, as with Mastodon; the uri carries no content, and
+  the status is served, or not, by its own server, the reported account's. The work is bounded (RES-7): at most 100
+  statuses, 100 domains and 50 collections (more answer 404 before any collection is read, since an account holds at
+  most 50), the statuses, collections and replied-to accounts read by key. _Enforced (main):_ `src/domain/reports.ts`,
   `accountStatusIds` in `src/domain/timelines.ts`, `reportForwardees` in `src/domain/audience.ts`, `flagActivity` in
   `src/domain/activities.ts`, `purgeRelationships` and `PURGED_ACCOUNT_CHILDREN` in `src/domain/inbox.ts`, migration
   `0022_reports`; `test/reports.test.ts`, `test-node/policy-boundary.test.ts`, `test/policy-bounds.test.ts`,
@@ -1225,11 +1241,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   The Worker sends only the token's sha256 to the Store, which validates it (DATA-5). Each subscription
   needs its stream's scope (`read:statuses` for `user`, `list`, `direct`, `public*` and `hashtag*`, `read:notifications`
   for `user:notification`), a `list` subscription the viewer's own list, and notifications
-  go on `user` only with `read:notifications` too. A write records ids only (`stream_events`, by a trigger, and by
-  `journalStatusUpdate` under the edit trigger's condition for a change of a local status's quote policy, which leaves
-  `edited_at`); each message is made later in its own transaction, which authorizes the socket's token again and
-  runs the reference for
-  its event and stream (R33): for a `notification` on `user` or `user:notification`, the recipient's notification
+  go on `user` only with `read:notifications` too. A write records ids only (`stream_events`, by a trigger: an edit of
+  a status by the one on `statuses.edited_at`, a quote's state change by the one on `quotes.state`, an edit event of
+  its quoting status; and by `journalStatusUpdate` under the same condition for a change of a local status's quote
+  policy, which moves neither); each message is made later in its own transaction, which authorizes the socket's token
+  again and runs the reference for its event and stream (R33): for a `notification` on `user` or `user:notification`,
+  the recipient's notification
   list positioned at it (R15: kept, and not filtered by their policy, as Mastodon pushes none of those), presented as
   REST presents it; for an `update` on `user`, home positioned at the status (R9, the read with `max_id` just above it,
   narrowed to it), for a status published within 6 hours of its arrival; for a `status.update`, home positioned at it
@@ -1286,8 +1303,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (Mastodon's `skip_notifications`); `journalStatusUpdate`, `QUIET_EDIT_SUBJECT` and `EDIT_LISTENED_SQL` in
   `src/domain/stream-journal.ts`, its callers in `src/domain/statuses.ts`, the `quiet_edit` unit in
   `src/domain/streaming.ts`; `test/streaming/status-update-journal.test.ts` (the listener condition equal to
-  `stream_status_edited`'s for every listener set and visibility, with or without mentions; "a quote policy change and
-  a held mention").
+  `stream_status_edited`'s for every listener set and visibility, with or without mentions; "a quote policy change and a
+  held mention"). _Enforced (main)_ for a quote's state change: one `edit` event of the quoting status for each change,
+  whichever writer makes it, the quoting status judged when sent (a hidden one is sent to no one), and for a quote
+  accepted by its `QuoteRequest` a quiet one (Mastodon's `skip_notifications`: `answerQuoteRequest` rewrites the row
+  the trigger wrote, `quietJournaledEdit`); migration `0102_quote_state_stream` (its condition `EDIT_LISTENED_SQL`'s
+  text); `test/streaming/quote-updates.test.ts` (one case per writer; "an accepted QuoteRequest and a held mention"),
+  `test/streaming/status-update-journal.test.ts` ("quietJournaledEdit"), `test/migrations.test.ts`
+  ("0102_quote_state_stream").
 
 - **VIS-27: a quote reveals nothing its quoted status hides.** R35 applies VIS-1/R2 to the quoted status for the
   same viewer, whatever the quoting status's own visibility: `unauthorized` carries no content, and the filter states
@@ -1313,9 +1336,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   way out of `accepted` (a revoke, the quoter's `Update` replacing or dropping the quote, the quoted status's delete,
   the quoting status's `Delete`, which retires it in its first transaction before any batch, and a purge) records it in
   `quote_revocations` through a trigger, whatever the statement. A received quote of a local status, and an accepted
-  self-quote, keep their state whatever stamp or legacy form the quoting status's `Update` names (`recordQuote`).
-  Kopje serves a stamp only for the current id of an accepted quote of an available author's public or unlisted
-  status, named by that author in the path, with the quoting status present and its author not being purged, ids only,
+  self-quote, keep their state whatever stamp or legacy form the quoting status's `Update` names (`recordQuote`). A
+  revocation or approval Mastodon broadcasts (a stamp's `Delete` of the accepted quote it approved, the `Delete` of a
+  local quote's stamp, the revoke API, an `Accept` of a local quote's request) runs the quoting status's update fan-out
+  after the move, in a savepoint of its own, so a failing fan-out is logged (`kopje.quote.fan_out.failed`) and does not
+  undo it, nor keeps any notification it wrote before it failed (`fanOutQuoteChange`; `test/edit-fan-out.test.ts`
+  ("…and still revokes when the fan-out fails part way, keeping none of its notifications, and logs it")). Kopje serves
+  a stamp only for the current id of an accepted quote of an available author's public or unlisted status, named by
+  that author in the path, with the quoting status present and its author not being purged, ids only,
   `Cache-Control: no-store`; a recorded id answers 404 for good. A revoked quote may be accepted again by a later
   request, with a new id, as Mastodon does; the author's lasting tools are the policy and blocks. A revoke records, in
   one transaction and only while the quote still holds the id its `Delete` was signed for, the quoted author's LD-signed
@@ -1580,6 +1608,25 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   true for the copy's unverified author only"),
   `test/policy-oracle.test.ts` (against `cardEligible` in `test/policy-model.ts`),
   `test-node/policy-boundary.test.ts`.
+
+- **VIS-33: a collection and its members are shown only as R45 allows.** A collection (migration `0103_collections`) is
+  found only while its owner is available; it is shown to a viewer the owner does not block, and listed among the
+  owner's collections only when discoverable or to the owner. A member is shown only while available, accepted (or
+  pending, to the owner), and not blocked by the viewer; an account's memberships (`in_collections`) are listed to that
+  account only. An account is added only with its consent: local, available, discoverable, unlocked or followed by the
+  owner (or the owner itself), with no block either way. A local account's block of another revokes the blocker's
+  memberships of the blocked account's collections and deletes the blocked account's memberships of the blocker's
+  collections, as Mastodon's `BlockService#handle_collections` does; an inbound `Block` changes no membership, and R45
+  hides the blocked side's view. A member alone revokes its membership, which keeps the row (and the collection) but no
+  longer shows it.
+  _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`, `collectionItemShownSql`,
+  `mayFeatureSql` and `inCollectionsSql` in `src/domain/audience.ts`, `src/domain/collections.ts`, `severCollections`
+  (`src/domain/collections.ts`, run by a local block in `src/domain/blocks.ts`); `test/collections.test.ts` ("shows a
+  collection and its items only as R45 allows", "asks the member's consent: discoverable, and unlocked or followed, no
+  block either way, local", "lets only the item's account revoke it, which keeps the row and the membership listed"),
+  `test/blocks.test.ts` ("revokes and deletes the collection memberships a block severs"), `test/policy-oracle.test.ts`
+  (against `collectionFound`, `collectionShown`, `collectionListed`, `collectionItemShown`, `mayFeature` and
+  `inCollections` in `test/policy-model.ts`), `test-node/policy-boundary.test.ts`.
 
 ### Authorization (AUTH)
 
@@ -3095,6 +3142,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   it through the same rule, only with the final URL it writes, and a reset clears it; `test/migrations.test.ts`
   ("0098_card_attribution"), `test/dump-import.test.ts` ("round-trips a card's unverified author (0098), and refuses
   one past its stored bound on import").
+  _Enforced (main)_ for collections: `collections` and `collection_items` rows and `reports.collection_ids`, imports
+  included, meet the [stored bounds](dump-format.md#stored-bounds), enforced by migration `0103_collections`: each
+  column's class and length by locality (a local name of 40 characters and description of 100, a remote one of 256
+  and 2,048), an item's columns tied to its state, at most 50 stored collections an account, 50 stored items and 25
+  live (pending or accepted) items a collection, whether inserted, revived or moved, and at most 50 report collection
+  ids of 18 digits; the writers check the same bounds first (`src/domain/collections.ts`, `reportCollectionIdsOf`);
+  `test/migrations.test.ts` ("0103_collections"), `test/dump-import.test.ts` ("round-trips collections and a report's
+  collection ids (0100), and refuses a dump past their bounds").
   _Enforced (main)_ for remote field verification: `remote_field_links` rows, imports included, meet the
   [stored bounds](dump-format.md#stored-bounds), enforced by migration `0068_remote_field_verification`, whose triggers
   judge in order the storage classes, the raw bytes, a raw NUL, `json_valid` and the canonical form (no padding or
@@ -3393,9 +3448,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   stores", "deletes a status with many children in bounded batches"), `test/inbox-statuses-edge.test.ts` ("RES-4: bounds
   at their limits", "writes at most … rows per batch, hiding included"). The update fan-out of an edit reads one
   mention key per local account, whatever a converted or imported status holds (`LOCAL_MENTIONS_SQL`, `notifyEdited` in
-  `src/domain/statuses.ts`); `test/edit-fan-out.test.ts` ("reads no more for 10,000 converted mention rows: one key
-  probe per local account", "replaces each update, quoted_update and cleared mention within the formula; a kept one
-  writes nothing"). _Enforced (main)_ for pins: `status_pins` holds
+  `src/domain/update-fan-out.ts`); `test/edit-fan-out.test.ts` ("reads no more for 10,000 converted mention rows: one
+  key probe per local account", "replaces each update, quoted_update and cleared mention within the formula; a kept
+  one writes nothing"). A quote state change runs that fan-out at most once (a round's decision:
+  `test/edit-fan-out.test.ts` ("a decision writes at most one update fan-out's bound beside its own rows (RES-4)")),
+  and a stamp's `Delete` at most twice: for
+  the local quote holding the stamp (`revokeLocalStamp`) and for the received quote it approved (`stampHolder`), never
+  for the quotes its batches reject or revoke (`revokeStamp` in `src/domain/quotes.ts`; `test/edit-fan-out.test.ts`
+  ("a stamp's Delete fans out at most twice: the local quote holding it, then the received one it approved")).
+  _Enforced (main)_ for pins: `status_pins` holds
   at most an account's pin limit, `PIN_LIMIT` (5) for a local account (by its row's domain, which precedes its pins in
   any import order) and `MAX_REMOTE_PINS` (20) for a remote one (`pinCapSql` in `src/domain/status-actions.ts`),
   imported rows included: the triggers `status_pins_cap_insert` and
@@ -3500,6 +3561,18 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   per-status figure above, inserts at most 200 nodes and updates at most 400 (`src/domain/reply-walks.ts`;
   `test/reply-walks.test.ts` ("prunes at most WALK_PRUNE_BATCH finished walks a claim", "records at most
   WALK_STATUSES nodes", "stores a reply and its embedded self-quote … within the figure")).
+  _Enforced (main)_ for collections: an account holds at most 10 collections through the API (`COLLECTION_LIMIT`) and
+  50 stored, a collection at most 25 live items and 50 stored (VIS-33's triggers, RES-2); an add that meets the stored
+  bound deletes the collection's oldest retired item first. The 5-minute cron deletes retired (rejected or revoked)
+  items a day after they retired, at most 500 a run, oldest first, through `collection_items_retired`
+  (`pruneCollectionItems` in `src/domain/collections.ts`). A block's step reads the blocker's and the target's
+  collections (at most 50 each) and writes at most 50 items each way. The purge of a remote account deletes its items,
+  the items of its collections and then its collections, each step counted against the batch's budget
+  (`src/domain/inbox.ts`). `test/collections.test.ts` ("evicts the oldest retired item when an add meets the stored
+  bound", "deletes retired items a day old, RETIRED_ROWS_PER_ROUND a round, keeping younger and live ones"),
+  `test/blocks.test.ts` ("revokes and deletes the collection memberships a block severs"),
+  `test/inbox-regressions.test.ts` ("purges a remote account's collections and memberships within the batch budget"),
+  `test/cascade-guard.test.ts`.
 - **RES-5: retries are bounded, but maintenance is not a failure.** Waiting out maintenance consumes no processing
   retry; real processing errors count against `max_retries`. _Enforced (main):_ `src/jobs/queue.ts`; `test/gate.test.ts`
   ("spool consumer"). Deliveries give up after 15 attempts (`min(30s·2^n, 12h)`, n the attempts so far) or at once on a
@@ -3993,16 +4066,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   of [visibility.md](visibility.md)). Neither job recounts an original whose removal has begun (`removalBegunSql`), so
   the recounts read none of its boosts and favourites while its boosts go one by one (each recount would read them
   all). A job round that stages target chunks of an intent recorded earlier rings the delivery doorbell (`delivers`)
-  as a new intent does (`test/remote-delete-cleanup.test.ts`). A local status's `DELETE` writes at most 473 rows
+  as a new intent does (`test/remote-delete-cleanup.test.ts`). A local status's `DELETE` writes at most 475 rows
   (`REQUEST_ROWS`: the streaming capture, `DELETE_SUPERSEDES` earlier activities superseded with the end of the staging
   of each one still staging, which only an import holds (`outbound_activities_staging_ended`), the intent, the hide, its
-  card, trend row, review, pin and poll, its own quote with the copy of its withdrawn (migration
-  `0091_live_local_quotes`), `MAX_STATUS_TAGS` hashtags, `MAX_STATUS_MEDIA` media, two counts
-  and the job; signing writes none), and stores a `Delete` envelope within its derived JSON-escaped byte bound: 426,999
-  bytes unsigned (`ENVELOPE_BYTES`), 432,117 signed (`SIGNED_ENVELOPE_BYTES`: the signed activity, the creator at
-  `ACTOR_URI_LIMIT`, a signatureValue at `SIGNATURE_VALUE_MAX`, which `signedAs` enforces, and the addressing that
-  places its copies), whose activity alone is at most 19,621 bytes, within the `FORWARD_BODY_MAX` a Kopje forwarder
-  takes (VIS-3). A staging call of a signed `Delete` that starts in a phase placing addressed accounts first checks
+  card, trend row, review, pin and poll with the revision its end writes (`polls_revision`), its own quote with the copy
+  of its withdrawn (migration `0091_live_local_quotes`) and its journal row (`stream_quote_state`), `MAX_STATUS_TAGS`
+  hashtags, `MAX_STATUS_MEDIA` media, two counts and the job; signing writes none), and stores a `Delete` envelope
+  within its derived JSON-escaped byte bound: 426,999 bytes unsigned (`ENVELOPE_BYTES`), 432,117 signed
+  (`SIGNED_ENVELOPE_BYTES`: the signed activity, the creator at `ACTOR_URI_LIMIT`, a signatureValue at
+  `SIGNATURE_VALUE_MAX`, which `signedAs` enforces, and the addressing that places its copies), whose activity alone is
+  at most 19,621 bytes, within the `FORWARD_BODY_MAX` a Kopje forwarder takes (VIS-3).
+  A staging call of a signed `Delete` that starts in a phase placing addressed accounts first checks
   its `addressing` (`stagedAddressing`): three reads of the intent's row (its shape, then each list) and, for each of
   its at most 202 entries, two seeks by unique key, outside `STAGING_READ`. Its job's batches
   (`deleteStatusBatch`) take the rest within `PURGE_BATCH`: leftover hashtags and
@@ -4123,8 +4197,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the work it read (a number drawn anew whenever the quote's target, stamp, stage or outcome changes), so a late or
   concurrent outcome is discarded. Only job rounds verify quotes: an inbox request that makes work due only asks the
   Queue for a round, and a round leases what it claims, so nothing else touches the work meanwhile; a relayed `Delete`
-  without the author's proof renews only idle work, leaves work that is due or backing off as it is, and only marks a
-  leased one to be checked once more, so replays never keep a genuine 404 from applying. A job round (Queue or cron)
+  without the author's proof renews only idle work, keeps the due time, attempts and generation of work that is due or
+  backing off (it sets only the flag the decision notifies by), and only marks a leased one to be checked once more, so
+  replays never keep a genuine 404 from applying; it seeks the accepted quote the stamp approved among at most
+  `STAMP_HOLDER_CANDIDATES` (16) accepted quotes naming the stamp, the author filter applied outside that cap
+  (`stampHolder`), so the actor's own self-quotes naming its stamp cost a fixed read (`test/quotes.test.ts` ("reads at
+  most STAMP_HOLDER_CANDIDATES quotes naming the stamp, past statistics taken before they grew")).
+  A job round (Queue or cron)
   verifies at most 10 quotes, each stage with a whole budget of its own (8 fetches, redirect hops, RFC 9421 retries
   and contexts included), so a heavy or failing quote starves no other, and charges every failure of a stage, a budget
   or deadline that ran out included, as it does a stage the Store cannot apply, except the refresh of a stored author,
@@ -4141,7 +4220,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   meets live work (due, leased or backing off) raises its budget and signer only, so arrivals that keep coming neither
   discard a fetch in flight nor reset its attempts and backoff, and a fetch refused under a signer the work has since
   left, or answered gone to it (a stamp's 404 then rejects or revokes nothing: Mastodon answers 404 to a viewer it
-  refuses), is retried with the current one within those attempts. Every author stage of a verification that stores,
+  refuses), is retried with the current one within those attempts. An `Update` that keeps a pending or accepted quote
+  renews its work by the same rule (`promoteQuote`, `reverifyQuote`): it starts one only when none is live, so
+  `Update`s add at most one work between two decisions whatever their number, and so at most one stamp fetch toward
+  the quoted author's server, to the stamp stored, which passed `stampValid` (`test/quotes.test.ts` ("adds no stamp
+  fetch for Updates that reach an accepted quote's live verification")).
+  Every author stage of a verification that stores,
   refreshes or (on a failed refetch) stamps the quoted status's author counts in its quote's `author_fetches`, apart
   from its attempts: at most `QUOTE_AUTHOR_FETCHES` (6) a work, whose renewal starts the count again, and an author
   stage with none left fetches nothing and ends the work, so a work whose rounds die after the author stage, reclaimed
@@ -4154,7 +4238,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   fetches are spent", "stores one author an attempt for a quoted status whose author changes at each fetch", "keeps a
   quote's retries after its author is stored")).
   A stamp's `Delete` writes one `quote_revocations` row and changes the quotes naming it in batches of at most
-  500 rows counted with `total_changes()` (a row and its count trigger), the first in the request and the rest in the
+  500 rows counted with `total_changes()` (a third of the rows left a batch: a row, its count trigger and its streaming
+  journal row, `stream_quote_state`), the first in the request and the rest in the
   inbound job rounds, each of which runs at most 100 revocation batches (`REVOCATION_BATCHES`) within one 500-row
   allowance, every batch's rows counted against it (a failed one's rolled-back writes included) and its retry state's
   row reserved before the batch is given the rest, however many revocations are pending
@@ -4162,12 +4247,22 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   write", "keeps a due retry that runs through within the allowance", "keeps a batch that fails after its writes within
   the allowance")). A newly stored status links at most 100 unresolved quotes naming it. `src/domain/quotes.ts`,
   `src/federation/quotes.ts`; `test/quotes.test.ts` ("verifies a chain two levels below the status that arrived",
-  "processes … quotes naming the stamp in bounded batches"), `test/cascade-guard.test.ts` (a purged status's accepted
-  quote within the exact budget), `test/policy-bounds.test.ts` ("received quotes cost their work a bounded read").
+  "processes … quotes naming the stamp in bounded batches", "writes at most its allowance in each batch while someone
+  listens"), `test/cascade-guard.test.ts` (a purged status's accepted quote within the exact budget, "a quoted
+  status's detach while someone listens"), `test/policy-bounds.test.ts` ("received quotes cost their work a bounded
+  read"). A quote's state change journals at most one row (`stream_quote_state`, migration `0102_quote_state_stream`:
+  none while nobody could be sent it or once the journal spans 4,096 ids, and none for a write that keeps the state; an
+  import inserts, firing nothing; a quote accepted by its `QuoteRequest` writes that row once more, made quiet by
+  `quietJournaledEdit`, the journal's newest row by its key, only if past the head read before the move), so a round's
+  decisions journal at most `QUOTE_ROUND` (10), and a quoted status's removal detaches its quotes a fourth of the rows
+  left a batch (the quote, its target's count, an authorization's revocation and the journal row)
+  (`test/streaming/quote-updates.test.ts`, `test/streaming/status-update-journal.test.ts` ("quietJournaledEdit"),
+  `test/migrations.test.ts` ("0102_quote_state_stream"), `test/import-triggers.test.ts`).
   QuoteRequests: one fetch (the instrument, between Store rounds, which write nothing) and one answer per request id,
   kept 30 days in `quote_requests` and at most 100 live per actor (503 past the cap, nothing evicted); the sweep removes
   at most 100 expired rows a call. A revoke records one signed `Delete` and at most 100 `Reject`s (the quoting author's
-  answered requests). A Delete of a quoting status retires its one authorization before its batches (three rows); a
+  answered requests). A Delete of a quoting status retires its one authorization before its batches (four rows, the
+  journal's among them: `test/forward-delete.test.ts` `DELETE_HANDLER_ROWS`); a
   purge's batch deletes a quote holding one within a third of the rows left. `test/quote-requests.test.ts`,
   `test/cascade-guard.test.ts`.
   Replies walks: _Enforced (main):_ only job rounds walk a remote status's replies collection
@@ -4454,20 +4549,21 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   quote by its id's unique index; a request's cap reads at most 100 rows of its actor; a revoke's `Reject`s read at most
   100 rows of the quoting author by one seek of `quote_requests_instrument`, whatever other actors' requests name the
   same instrument; quoters' reach reads the accepted quotes of the status through `quotes_accepted`, as its boosts are
-  read. _Enforced (main)_ for inbound `Flag`s (R34): at most `MAX_FLAG_OBJECTS` (101) object entries are read, each by
-  key; one remote actor may have at most `MAX_UNRESOLVED_REMOTE_REPORTS` (100) unresolved reports, counted by one
-  bounded range of `reports_account_state` and checked against the Flag's new reports before any is written (per actor,
-  not per server: a server's several actors each have theirs; a server-wide quota is not kept); whether the reported
-  account has a follower on the reporter's server is two probes of at most `FOLLOWER_PROBE` (1,000) rows each (its
-  followers, the server's accounts), so a private status of an account with more followers, on a server with more stored
-  accounts, none of them in either window, is not attached (accepted). The admin's list filtered by reporter and
-  reported account reads `reports_pair_state` (no residual, however many others report the account); every report
-  (`resolved` and `unresolved` both true) reads the two states' ranges of the filter's index, each cut at the limit
-  and merged by id, so at most 2 × limit index entries and 5 × limit + 1 rows (1,001 at the cap of 200) however many
-  reports lie around them (`test/admin-reports.test.ts` ("every report reads two ranges")); and a local suspension's
-  reach reads the account's reporters a round of `REPORTER_ROUND` (250) at a time, a seek and an account read each,
-  resumed by account id (`test/inbox-flag.test.ts`, `test/policy-bounds.test.ts`, `test/admin-suspension.test.ts`
-  ("the account's reporters")).
+  read. _Enforced (main)_ for inbound `Flag`s (R34): at most `MAX_FLAG_OBJECTS` (151: the account, 100 statuses and 50
+  collections) object entries are read, each by key, a local collection by its route; one remote actor may have at most
+  `MAX_UNRESOLVED_REMOTE_REPORTS` (100) unresolved reports, counted by one bounded range of `reports_account_state` and
+  checked against the Flag's new reports before any is written (per actor, not per server: a server's several actors
+  each have theirs; a server-wide quota is not kept); whether the reported account has a follower on the reporter's
+  server is two probes of at most `FOLLOWER_PROBE` (1,000) rows each (its followers, the server's accounts), so a
+  private status of an account with more followers, on a server with more stored accounts, none of them in either
+  window, is not attached (accepted). The admin's list filtered by reporter and reported account reads
+  `reports_pair_state` (no residual, however many others report the account); every report (`resolved` and `unresolved`
+  both true) reads the two states' ranges of the filter's index, each cut at the limit and merged by id, so at most 2 ×
+  limit index entries and 5 × limit + 1 rows (1,001 at the cap of 200) however many reports lie around them
+  (`test/admin-reports.test.ts` ("every report reads two ranges")); and a local suspension's reach reads the account's
+  reporters a round of `REPORTER_ROUND` (250) at a time, a seek and an account read each, resumed by account id
+  (`test/inbox-flag.test.ts`, `test/policy-bounds.test.ts`, `test/admin-suspension.test.ts` ("the account's
+  reporters")).
   _Enforced (main)_ for trends (MD-5): the round reads the newest 4,000 public originals from yesterday 00:00 UTC, at
   most 100 hashtag rows of each and 8,000 in all, cut raw before any rule (materialized), returns at most 1,600 hashtag
   groups (each takes 5 of the 8,000 rows), keeps the first 400 whose names are well-formed and in their own normalized
@@ -4672,8 +4768,8 @@ measurements, not asserted.
 | Boost of a quote                                                 | 7,127,325         | 5,800,433       | 5,818,830         | 1,988     | 6,511 | 69.4%          |
 | Conversation: 12 participants presented, its last status a quote | 8,529,438         | 7,098,980       | 7,151,333         | 2,001     | 7,923 | 85.3%          |
 | Notification group: 8 sample accounts, its status a quote        | 7,905,948         | 6,529,587       | 6,568,720         | 1,994     | 7,112 | 78.3%          |
-| Report: its first status a quote past the 2 MiB allowance        | 7,215,414         | 5,993,796       | 6,013,099         | 1,948     | 6,443 | 71.7%          |
-| An admin.report notification of that report                      | 2,368,946         | 410,181         | 442,471           | 1,070     | 529   | 5.3%           |
+| Report: its first status a quote past the 2 MiB allowance        | 7,216,465         | 5,993,840       | 6,013,143         | 1,948     | 6,443 | 71.7%          |
+| An admin.report notification of that report                      | 2,369,997         | 411,250         | 443,540           | 1,070     | 580   | 5.3%           |
 | A moderation_warning notification, its local account at bounds   | 134,402           | 294,426         | 364,559           | 7         | 686   | 4.3%           |
 | Its notification group                                           | 134,402           | 294,615         | 364,748           | 7         | 693   | 4.3%           |
 | A filtered favourite of the quote, as include_filtered lists it  | 6,966,353         | 5,532,055       | 5,548,053         | 1,952     | 5,648 | 66.1%          |
@@ -4744,6 +4840,17 @@ the bounds (left out), fills 715,687 bytes through the API (`test/tag-history-bo
 past the name bound are refused, and lists leave out stored names past it or not well-formed UTF-8 (`tag-bounds.ts`;
 `test/tag-names.test.ts`); v2 search shows a malformed name decoded, identified by its stored bytes, at most 12,750
 bytes (a 1,024-byte key of U+FFFD, nine bytes each in the url).
+
+A local collection's maximum is derived from its bounds (`COLLECTION_JSON_MAX`, 9,165 bytes;
+`test/collections.test.ts` ("derives COLLECTION_JSON_MAX from the bounds, and fits the answers of a full account")):
+its name and description at 40 and 100 characters JSON escapes to six bytes each, its language the longest supported,
+its tag at the tag-name bound with the URL encoding each byte in three, 25 accepted items (its 25 retired ones are not
+shown), an owner's username at its bound and an instance domain of 253 octets; the fill measures within 2 bytes of it
+(`local` and `discoverable` true). Its `CollectionWithAccounts` adds at most 26 accounts (the owner and the members) at
+the account occurrence's conservative JSON, within `ANSWER_BYTES`, and the presenter admits accounts within what the
+collection leaves of it. An account's list holds at most its 50 stored collections (10 made through the API, each
+then within `COLLECTION_JSON_MAX`); a remote collection, stored only by an import yet, has larger text bounds (256 and
+2,048 characters, URIs of 2,048 bytes) and the same 25 shown items.
 
 A scheduled status's maximum is derived from its caps (`test/scheduled-statuses.test.ts`, "a scheduled status at its
 caps"): an 18-digit id and a 24-character time, or null for a stored value that is not a time Kopje writes (the
@@ -5492,7 +5599,7 @@ OWASP, html5sec and sanitize-html vectors in `test/fixtures/` (`test/html.test.t
 | Signed-fetch cache entries may outlive a remote block or key change by up to 5 minutes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Measured CPU savings on personal inboxes                                                                                                                                                                                                                                                                                                                                                                                                                 | blocks must apply at once                                                                                                |
 | OAuth client secrets are stored in plaintext, so R5 can act as any registered app (no user scopes)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Matches Mastodon; app tokens carry no user authority                                                                                                                                                                                                                                                                                                                                                                                                     | app tokens gain user-level powers                                                                                        |
 | Aggregate counters (`reblogs_count`, `favourites_count`, `replies_count`) include interactions the viewer cannot see                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Mastodon parity; clients rely on the counts                                                                                                                                                                                                                                                                                                                                                                                                              | counters must hide private interactions                                                                                  |
-| An inbound `Flag` differs from Mastodon's: one whose id is not on its actor's server is ignored (Mastodon files it without a uri); a redelivery files nothing (one report per Flag id and account, where Mastodon files one per delivery); a status's own mention admits it, where Mastodon's mention term is any mention of the domain (`report_service.rb:89`); only originals are attached; at most 101 objects are read                                                                                                                                                                                                                                                                                                                                                                                               | Each keeps a report tied to one signed activity of its server, and the uncorrelated term would attach any status once one mentions the domain                                                                                                                                                                                                                                                                                                            | Mastodon changes its `Flag` handling                                                                                     |
+| An inbound `Flag` differs from Mastodon's: one whose id is not on its actor's server is ignored (Mastodon files it without a uri); a redelivery files nothing (one report per Flag id and account, where Mastodon files one per delivery); a status's own mention admits it, where Mastodon's mention term is any mention of the domain (`report_service.rb:89`); only originals are attached; at most 151 objects are read                                                                                                                                                                                                                                                                                                                                                                                               | Each keeps a report tied to one signed activity of its server, and the uncorrelated term would attach any status once one mentions the domain                                                                                                                                                                                                                                                                                                            | Mastodon changes its `Flag` handling                                                                                     |
 | One remote actor may have at most 100 unresolved reports, not one server: a server with several actors that send Flags has 100 for each                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Mastodon and Misskey send Flags from one instance or system actor; a server-wide quota would need its own counter                                                                                                                                                                                                                                                                                                                                        | a server is seen spreading reports over actors                                                                           |
 | The follower probe (two windows of 1,000 rows) can leave out a private status of an account with more followers when the reporter's server has more stored accounts and neither window holds a follower there                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | It bounds the work of a Flag (RES-7); the report is still filed with its other statuses                                                                                                                                                                                                                                                                                                                                                                  | such reports are seen missing statuses                                                                                   |
 | The admin is shown a report's statuses only while its reporter may still see them, and a remote report's `status_ids` keep the ids admitted when it was filed; a remote report's comment (which may hold a NUL, Mastodon's PostgreSQL stores none) is kept until its reporter's or its target's purge                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | The rule the report was made under (R37); the comment is plain text the admin alone reads                                                                                                                                                                                                                                                                                                                                                                | Mastodon changes what it shows                                                                                           |

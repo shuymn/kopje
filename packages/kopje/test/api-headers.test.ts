@@ -214,9 +214,13 @@ describe("Deprecation", () => {
     for (const [label, response, expected] of answers) {
       expect(deprecationOf(response), label).toEqual(expected);
     }
-    // The table holds these ten routes and no other.
+    // The table holds these ten routes, the collections routes under /api/v1_alpha (test/collections.test.ts) and no
+    // other.
     const deprecated = answers.filter(([, , expected]) => expected.deprecation !== null).map(([label]) => label);
-    expect([...DEPRECATED_ROUTES.keys()].toSorted()).toEqual(deprecated.toSorted());
+    const alpha = (key: string) => key.includes(" /api/v1_alpha/");
+    const keys = [...DEPRECATED_ROUTES.keys()];
+    expect(keys.filter(alpha).filter((key) => !key.includes("collections"))).toEqual([]);
+    expect(keys.filter((key) => !alpha(key)).toSorted()).toEqual(deprecated.toSorted());
   });
 
   it("an early refusal carries it; a suspended owner's 403 does not", async () => {

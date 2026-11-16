@@ -4,6 +4,7 @@ import { type Account, presentAccountsWithin, resolveAccountId, type SearchInput
 import { admit, ANSWER_BYTES, jsonBytes } from "./answer-budget";
 import { listableSql, statusReads } from "./audience";
 import { type UserContext, userReadOperation } from "./auth";
+import type { Collection } from "./collections";
 import { statusQueryTerms } from "./search-text";
 import { tagNameSql } from "./status-bounds";
 import { presentation, presentStatusesWithin, type Status } from "./status-presenter";
@@ -55,10 +56,17 @@ export type SearchRequest = SearchInput & {
   minId?: string | undefined;
 };
 
-export type SearchResults = { accounts: Account[]; statuses: Status[]; hashtags: Hashtag[] };
+// REST::SearchSerializer. `collections` holds only what resolve=true found (mastodon/search.ts): this search never
+// lists one.
+export type SearchResults = { accounts: Account[]; statuses: Status[]; hashtags: Hashtag[]; collections: Collection[] };
 
 // The JSON of an empty answer: each list's items are counted with a separator, one more than they take.
-const SEARCH_FRAME_BYTES = jsonBytes({ accounts: [], statuses: [], hashtags: [] } satisfies SearchResults);
+const SEARCH_FRAME_BYTES = jsonBytes({
+  accounts: [],
+  statuses: [],
+  hashtags: [],
+  collections: [],
+} satisfies SearchResults);
 
 export const search = userReadOperation<SearchRequest, SearchResults>((db, input, viewer, context) => {
   let left = ANSWER_BYTES - SEARCH_FRAME_BYTES;
@@ -74,7 +82,12 @@ export const search = userReadOperation<SearchRequest, SearchResults>((db, input
   left -= statuses.bytes;
   leading &&= statuses.items.length === 0;
   const hashtags = input.types.includes("hashtags") ? searchHashtags(db, input, context, viewer.now) : [];
-  return { accounts: accounts.items, statuses: statuses.items, hashtags: admit(hashtags, left, leading).items };
+  return {
+    accounts: accounts.items,
+    statuses: statuses.items,
+    hashtags: admit(hashtags, left, leading).items,
+    collections: [],
+  };
 });
 
 // Numbered parameters, so fragments that use ?1 (the viewer) can be combined with any number of terms.

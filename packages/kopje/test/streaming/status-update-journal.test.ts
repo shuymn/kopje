@@ -2,7 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Db } from "../../src/db/sql";
-import { JOURNAL_SPAN, journalStatusUpdate } from "../../src/domain/stream-journal";
+import { JOURNAL_SPAN, journalHead, journalStatusUpdate, quietJournaledEdit } from "../../src/domain/stream-journal";
 import { iso } from "../../src/platform/iso-time";
 import { type ApiHarness, bearer, json, sql } from "../api-helpers";
 import { NOW } from "../app-helpers";
@@ -233,9 +233,10 @@ describe("journalStatusUpdate", () => {
   });
 
   // Each listener set (the subscriptions of one local account) against each status, without a socket: the rows
-  // journalStatusUpdate writes, with and without mentions, and those stream_status_edited writes for an edited_at
-  // change of the same status.
-  it("journals exactly when the edit trigger does, for every listener set and status", async () => {
+  // journalStatusUpdate writes, with and without mentions, those stream_status_edited writes for an edited_at change
+  // of the same status, and those stream_quote_state writes for a state change of the status's quote (migration
+  // 0102_quote_state_stream).
+  it("journals exactly when the edit triggers do, for every listener set and status", async () => {
     const h = await community(["alice"]);
     const listener = h.users.alice.id;
     const author = await remoteAccount(h.store, "author");
@@ -248,6 +249,13 @@ describe("journalStatusUpdate", () => {
       visibility: "public",
       reblogOfId: statuses["public"]!,
     });
+    // Each status quotes another, pending.
+    await sql(
+      h.store,
+      `INSERT INTO quotes (status_id, quoted_uri, state, updated_at)
+			SELECT value, 'https://remote.example/quoted', 'pending', '2026-10-12T00:00:00.000Z' FROM json_each(?)`,
+      JSON.stringify(Object.values(statuses)),
+    );
     const sets: Record<string, string[]> = {
       none: [],
       user: ["user"],
@@ -264,7 +272,7 @@ describe("journalStatusUpdate", () => {
     const outcome = await runInDurableObject(h.store, (_instance, state) => {
       const db = new Db(state.storage.sql);
       const count = () => db.first<{ n: number }>("SELECT COUNT(*) AS n FROM stream_events")!.n;
-      const rows: Record<string, Record<string, [number, number, number]>> = {};
+      const rows: Record<string, Record<string, [number, number, number, number]>> = {};
       let at = 0;
       for (const [set, keys] of Object.entries(sets)) {
         rows[set] = {};
@@ -284,7 +292,13 @@ describe("journalStatusUpdate", () => {
           });
           db.run("DELETE FROM stream_events");
           db.run("UPDATE statuses SET edited_at = ? WHERE id = ?", iso(NOW + ++at), id);
-          rows[set][name] = [journaled[0]!, journaled[1]!, count()];
+          const edited = count();
+          db.run("DELETE FROM stream_events");
+          db.run(
+            "UPDATE quotes SET state = CASE state WHEN 'pending' THEN 'rejected' ELSE 'pending' END WHERE status_id = ?",
+            id,
+          );
+          rows[set][name] = [journaled[0]!, journaled[1]!, edited, count()];
         }
       }
       db.run("DELETE FROM stream_subscriptions");
@@ -308,7 +322,7 @@ describe("journalStatusUpdate", () => {
       "direct and public:local": publicOnly,
     };
     const all = (map: Record<string, number>) =>
-      Object.fromEntries(Object.entries(map).map(([name, n]) => [name, [n, n, n]]));
+      Object.fromEntries(Object.entries(map).map(([name, n]) => [name, [n, n, n, n]]));
     expect(outcome).toEqual(Object.fromEntries(Object.entries(expected).map(([set, map]) => [set, all(map)])));
   });
 
@@ -350,5 +364,59 @@ describe("journalStatusUpdate", () => {
       { id: 1 + JOURNAL_SPAN, kind: "status", subject: "1" },
     ]);
     expect(warn.mock.calls).toEqual([[{ event: "kopje.stream.journal-full", kind: "edit" }]]);
+  });
+});
+
+// The rewrite answerQuoteRequest makes of the row its move journaled (test/streaming/quote-updates.test.ts "an accepted
+// QuoteRequest and a held mention"): only a row past the head read before the write, the journal's newest, an `edit`
+// of that status; one row at most.
+describe("quietJournaledEdit", () => {
+  it("rewrites only the newest row past the head, an edit of the status, and never an older one", async () => {
+    const h = await community(["alice"]);
+    const outcome = await runInDurableObject(h.store, (_instance, state) => {
+      const db = new Db(state.storage.sql);
+      const at = "2026-10-12T00:00:00.000Z";
+      const journal = (kind: string, subject: string) =>
+        db.run("INSERT INTO stream_events (kind, subject, created_at) VALUES (?, ?, ?)", kind, subject, at);
+      const rewrite = (head: string, status: string) => {
+        quietJournaledEdit(db, head, status);
+        return db.first<{ n: number }>("SELECT changes() AS n")!.n;
+      };
+      const rows = () =>
+        db.all<{ kind: string; subject: string }>("SELECT kind, subject FROM stream_events ORDER BY id");
+      db.run("DELETE FROM stream_events");
+      const empty = journalHead(db);
+      // An older edit of the status, and nothing journaled since the head: untouched.
+      journal("edit", "1");
+      const head = journalHead(db);
+      const none = rewrite(head, "1");
+      // Past the head: another status's edit, then a notification, then neither rewritten.
+      journal("edit", "2");
+      const other = rewrite(head, "1");
+      journal("notification", "1");
+      const notification = rewrite(head, "1");
+      // The status's edit, newest and past the head: rewritten, once.
+      const before = journalHead(db);
+      journal("edit", "1");
+      const once = rewrite(before, "1");
+      const again = rewrite(before, "1");
+      const after = rows();
+      db.run("DELETE FROM stream_events");
+      return { empty, none, other, notification, once, again, after };
+    });
+    expect(outcome).toEqual({
+      empty: "0",
+      none: 0,
+      other: 0,
+      notification: 0,
+      once: 1,
+      again: 0,
+      after: [
+        { kind: "edit", subject: "1" },
+        { kind: "edit", subject: "2" },
+        { kind: "notification", subject: "1" },
+        { kind: "edit", subject: "quiet:1" },
+      ],
+    });
   });
 });

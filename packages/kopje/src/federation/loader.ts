@@ -94,7 +94,7 @@ export class RefusedFetchError extends FetchError {}
 // above, and fetching it again under the same caps would not help.
 export class CappedFetchError extends RefusedFetchError {}
 
-// A 2xx answer read within the rules whose body is no usable document: not JSON, a root that is not an object (ID-8),
+// A 200 answer read within the rules whose body is no usable document: not JSON, a root that is not an object (ID-8),
 // or an id on another origin (ID-2). Search resolution tells it from the refusals above (federation/resolve.ts).
 export class UnusableDocumentError extends RefusedFetchError {}
 
@@ -228,7 +228,7 @@ function checked(deps: LoaderDeps, remote: RemoteDocument): RemoteDocument {
   return deps.checkDocument === undefined ? remote : deps.checkDocument(remote);
 }
 
-// The status of the answer whose reading threw `error` (load marks it, `answered`): a non-2xx, or a 2xx refused for its
+// The status of the answer whose reading threw `error` (load marks it, `answered`): any but 200, or a 200 refused for its
 // type, its size (the document's cap or the request's remaining bytes, RES-6), its root or its id. Null for a request
 // that got no answer: refused before it was sent (NET-1, the domain policy, the request's fetches or deadline), a
 // network error, a timeout, or a redirect refused. Search resolution reads it as Mastodon's
@@ -416,8 +416,7 @@ async function readPage(response: Response, media: MediaType, final: URL, deps: 
   return html;
 }
 
-// A status the caller does not take (non-ok, or a terminal resolve request's 2xx other than 200), as Fedify reads one:
-// the status and headers kept, not the body.
+// A status the caller does not take (any but 200), as Fedify reads one: the status and headers kept, not the body.
 function statusError(response: Response, final: URL): FetchError {
   return new FetchError(
     final,
@@ -472,9 +471,12 @@ async function readDocument(
     await response.body?.cancel();
     throw new RefusedFetchError(final, `Refused document redirected to ${final.origin}`);
   }
-  if (!response.ok) {
+  // A document, a WebFinger answer or a JSON-LD context is taken only from a 200, as Mastodon 4.7.5 takes each
+  // (fetch_resource_service.rb:47, json_ld_helper.rb:284 and :396, webfinger.rb:72 and :89): another 2xx is a failed
+  // fetch of its status. Keep the status for Fedify (it treats 404 and 410 differently from transient failures), not
+  // the body.
+  if (response.status !== 200) {
     await response.body?.cancel();
-    // Keep the status for Fedify (it treats 404 and 410 differently from transient failures), not the body.
     throw statusError(response, final);
   }
   const media = parseMediaType(response.headers.get("content-type") ?? "");
