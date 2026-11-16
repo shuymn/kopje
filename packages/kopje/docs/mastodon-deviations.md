@@ -567,8 +567,8 @@ in [threat-model.md](threat-model.md)):
   of those replies, up to 20 statuses and 10 collection documents a thread (Mastodon: up to 1,000 statuses a request).
   A status Kopje stores otherwise (a reply a walk stores, a quoted status a verification stores, a pinned status a
   profile's sync stores) has none fetched, where Mastodon fetches them for every status it creates: so no chain of
-  replies, quotes and pins starts walks without end. A walk not ended a day after its status arrived is dropped.
-  Accepted, 2026-11-16.
+  replies, quotes and pins starts walks without end. A walk not ended a day after its status arrived is dropped at its
+  next claim, which newer walks may delay. Accepted, 2026-11-16.
 - A created status's walk starts only for a public or unlisted status, where Mastodon's `Create#fetch_replies` checks no
   visibility: the replies of a private, direct or limited status Kopje creates are not fetched. A created status's walk
   takes an item only on the origin (scheme, host and port) of the status that lists it, and both walks read a collection
