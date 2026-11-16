@@ -170,6 +170,7 @@ describe("a local collection's page", () => {
     await seedItem(h, closed, 2, bob, 1);
     const shown = await page(h, open);
     expect(metas(shown.doc)).toEqual({
+      robots: "noindex, noarchive",
       description: "Seen",
       "og:site_name": "kopje.test",
       "og:type": "website",
@@ -181,6 +182,7 @@ describe("a local collection's page", () => {
     expect(query(shown.doc, "details")).toEqual([]);
     const hidden = await page(h, closed);
     expect(metas(hidden.doc)).toEqual({
+      robots: "noindex, noarchive",
       "og:site_name": "kopje.test",
       "og:type": "website",
       "og:title": "Closed",
@@ -214,6 +216,19 @@ describe("a local collection's page", () => {
         lang,
         lang,
       ]);
+    }
+  });
+
+  // W-T9. Fails if the meta is dropped or made conditional (on sensitivity, a description or a language).
+  it("asks every collection page not to be indexed or archived, as Mastodon's", async () => {
+    const { h, alice } = await world();
+    const variants = [{ description: "d", language: "de" }, { description: "d", sensitive: 1 }, {}];
+    for (const [n, fields] of variants.entries()) {
+      const { status, doc } = await page(h, await seedCollection(h, alice, n + 1, fields));
+      const robots = query(doc, "meta")
+        .filter((m) => attr(m, "name") === "robots")
+        .map((m) => attr(m, "content"));
+      expect([fields, status, robots]).toEqual([fields, 200, ["noindex, noarchive"]]);
     }
   });
 

@@ -28,7 +28,8 @@ function collectionPath(id: string): string {
 
 // /collections/:id: a local collection as Mastodon's page and web client show it: its name, its owner, its
 // description and hashtag, then its members as rows in one card. A sensitive collection keeps its description and
-// members behind the post's disclosure, and its head names no description.
+// members behind the post's disclosure, and its head names no description. Every collection page asks not to be
+// indexed or archived, as Mastodon's (collections/show.html.haml).
 export const CollectionPage: FC<CollectionView> = ({ collection, owner, tag, accounts, site }) => {
   const { lang, m } = useUi();
   const { domain } = site;
@@ -57,6 +58,7 @@ export const CollectionPage: FC<CollectionView> = ({ collection, owner, tag, acc
       chrome={site}
       head={
         <>
+          <meta name="robots" content="noindex, noarchive" />
           {summary === null ? null : <meta name="description" content={summary} />}
           <meta property="og:site_name" content={domain} />
           <meta property="og:type" content="website" />
