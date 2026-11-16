@@ -420,6 +420,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "rowHeapSql",
   // A column map's select list: its values are checked where the map names them (`column <alias.column>`).
   "selectSql",
+  // A content warning cut to its read bytes (platform/stored-bounds.ts), no bounded column.
+  "spoilerReadSql",
   // As rowHeapSql: the heap of the rows one status reads (status-rows.ts), a number.
   "statusRowTerms",
   // statuses.url read through its stored bound (platform/stored-bounds.ts).
@@ -682,13 +684,16 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/inbox.ts statuses.uri": { count: 2, reason: IDENTITY },
   "src/domain/local-emojis.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/media.ts accounts.uri": { count: 1, reason: IDENTITY },
-  "src/domain/polls.ts statuses.uri": { count: 1, reason: IDENTITY },
-  "src/domain/polls.ts accounts.uri": { count: 2, reason: IDENTITY },
+  // The poll refresh's reservation: the status to fetch and its author, sent and compared with the document.
+  "src/domain/polls.ts statuses.uri": { count: 2, reason: IDENTITY },
+  "src/domain/polls.ts accounts.uri": { count: 3, reason: IDENTITY },
   "src/domain/quotes.ts statuses.uri": { count: 7, reason: IDENTITY },
   "src/domain/quotes.ts accounts.uri": { count: 7, reason: IDENTITY },
-  "src/domain/remote-collections.ts accounts.uri": { count: 3, reason: IDENTITY },
+  "src/domain/remote-collections.ts accounts.uri": { count: 4, reason: IDENTITY },
   "src/domain/remote-collections.ts statuses.uri": { count: 1, reason: IDENTITY },
-  "src/domain/remote-statuses.ts accounts.uri": { count: 1, reason: IDENTITY },
+  "src/domain/remote-statuses.ts accounts.uri": { count: 2, reason: IDENTITY },
+  "src/domain/reply-walk-reads.ts statuses.uri": { count: 1, reason: IDENTITY },
+  "src/domain/reply-walks.ts statuses.uri": { count: 1, reason: IDENTITY },
   "src/domain/reports.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/status-actions.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/status-actions.ts statuses.uri": { count: 1, reason: IDENTITY },
@@ -714,6 +719,7 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
     reason: "compared with the author's featured tags to count them, never presented",
   },
   "src/domain/oauth.ts accounts.username": { count: 1, reason: LOCAL },
+  "src/domain/polls.ts accounts.username": { count: 1, reason: `the reader who signs a poll refresh (${LOCAL})` },
   "src/domain/polls.ts polls.options": { count: 3, reason: POLL },
   "src/domain/status-bounds.ts interpolation mediaUrlSql(text('url'))": { count: 1, reason: SNAPSHOT },
   "src/domain/status-bounds.ts interpolation mediaUrlSql(text('preview_url'))": { count: 1, reason: SNAPSHOT },

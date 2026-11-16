@@ -88,7 +88,7 @@ describe("indexable", () => {
       ["held", { indexable: true }],
     ] as const;
     for (const [name, extra] of actors) {
-      const actor = await Person.fromJsonLd({
+      const document = {
         "@context": [
           "https://www.w3.org/ns/activitystreams",
           { toot: "http://joinmastodon.org/ns#", indexable: "toot:indexable" },
@@ -98,8 +98,8 @@ describe("indexable", () => {
         preferredUsername: name,
         inbox: `https://remote.example/users/${name}/inbox`,
         ...extra,
-      });
-      const input = await remoteActorInput(actor, {});
+      };
+      const input = await remoteActorInput(await Person.fromJsonLd(document), document);
       expect(input?.indexable).toBe("indexable" in extra);
       // Its claim confirmed, as WebFinger would confirm it (federation/resolve.ts confirmedInput).
       const confirmed = { ...input!, confirmed: input!.claim };

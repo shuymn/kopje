@@ -854,20 +854,22 @@ describe("the turn's payload budget", () => {
   // A turn nearly spent by plain events still starts a unit while UNIT_WORST.bytes is left; the event whose payload
   // passes STREAM_LIMITS.payloadBytes (a quote whose eight descriptions are control characters) is presented, charged
   // whole and skipped, which ends the turn; a small status written after it waits for the next turn. The turn's charge
-  // stays within its hard bound (18,805,968 bytes: test/status-bounds.test.ts, "the most a turn presents").
+  // stays within its hard bound (18,806,024 bytes: test/status-bounds.test.ts, "the most a turn presents").
   it("charges a skipped unit whole and starts no unit after it, within the turn's hard bound", async () => {
     const h = await community(["alice"]);
     const [viewer] = await accounts(h, 1, "4");
     const inbox = await socket(h, viewer!, [{ stream: "public:local" }]);
     const { alice } = h.users;
     await fillProfile(h, alice, FILLS.plain);
-    // The statuses quoted, and one of each shape to measure: a quote and a single status of ordinary descriptions.
+    // The statuses quoted, and one of each shape to measure: a quote and a single status of ordinary descriptions, and
+    // a small status (its text one word, the profile the most of it).
     const ordinary = await describedMedia(h, alice, Array.from({ length: 3 }, () => described("\u{1F600}")).flat());
     const controlled = await describedMedia(h, alice, described("\u0001"));
     const quoted = await writeFilled(h, alice, FILLS.plain, ordinary.slice(0, MAX_STATUS_MEDIA));
     const quotedControls = await writeFilled(h, alice, FILLS.plain, controlled);
     const single = await writeFilled(h, alice, FILLS.plain, ordinary.slice(MAX_STATUS_MEDIA, 2 * MAX_STATUS_MEDIA));
     const quoting = await writeFilled(h, alice, FILLS.plain, ordinary.slice(2 * MAX_STATUS_MEDIA), quoted);
+    const plain = await status(h, alice.id);
     await h.store.streamTick(BUILD);
     await opened(h, [inbox]);
     // The stream presents a status as REST does ("sends a public status ... as REST presents it to the viewer").
@@ -875,17 +877,21 @@ describe("the turn's payload budget", () => {
       utf8Length(JSON.stringify(await (await h.request(`/api/v1/statuses/${id}`, bearer(`split-${viewer}`))).text()));
     const quotePayload = await presented(quoting);
     const singlePayload = await presented(single);
+    const smallPayload = await presented(plain);
     // The oversized event: a quote whose eight descriptions take 7 bytes a character, not 4.
     const oversized = quotePayload + 2 * MAX_STATUS_MEDIA * (7 - 4) * MAX_MEDIA_DESCRIPTION_LENGTH;
     expect(oversized).toBeGreaterThan(STREAM_LIMITS.payloadBytes);
-    // Quotes, then single statuses, until what is left covers UNIT_WORST.bytes and not the oversized payload. The
-    // counts the writes add (alice's statuses, the quoted status's quotes) lengthen each payload by a few bytes, so the
-    // turn is checked below by what the payloads measure once everything is written.
-    const plan: ("quote" | "single")[] = [];
+    // Quotes, then single statuses, then small ones, until what is left covers UNIT_WORST.bytes and not the oversized
+    // payload: a small status is narrower than that window, so the last shape always lands in it. The counts the writes
+    // add (alice's statuses, the quoted status's quotes) lengthen each payload by a few bytes, so the turn is checked
+    // below by what the payloads measure once everything is written.
+    expect(smallPayload).toBeLessThan(oversized - UNIT_WORST.bytes);
+    const plan: ("quote" | "single" | "small")[] = [];
     let left = TURN_BUDGET.bytes;
     for (const [shape, bytes] of [
       ["quote", quotePayload],
       ["single", singlePayload],
+      ["small", smallPayload],
     ] as const) {
       while (left >= oversized && left - bytes >= UNIT_WORST.bytes) {
         plan.push(shape);
@@ -894,16 +900,21 @@ describe("the turn's payload budget", () => {
     }
     expect(left).toBeGreaterThanOrEqual(UNIT_WORST.bytes);
     expect(left).toBeLessThan(oversized);
+    // Media for the quotes and single statuses, which come first in the plan.
     const media = await describedMedia(
       h,
       alice,
-      plan.flatMap(() => described("\u{1F600}")),
+      plan.flatMap((shape) => (shape === "small" ? [] : described("\u{1F600}"))),
     );
     const controls = await describedMedia(h, alice, described("\u0001"));
     await drained(h, inbox);
     STREAM_FAULTS.dropContinuation = () => {};
     const written: string[] = [];
     for (const [i, shape] of plan.entries()) {
+      if (shape === "small") {
+        written.push(await status(h, alice.id));
+        continue;
+      }
       const own = media.slice(i * MAX_STATUS_MEDIA, (i + 1) * MAX_STATUS_MEDIA);
       written.push(await writeFilled(h, alice, FILLS.plain, own, shape === "quote" ? quoted : undefined));
     }
@@ -931,7 +942,7 @@ describe("the turn's payload budget", () => {
       expect(leftAfterSent).toBeLessThan(skippedPayload);
       const charged = TURN_BUDGET.bytes - leftAfterSent + skippedPayload;
       expect(charged).toBeGreaterThan(TURN_BUDGET.bytes);
-      expect(charged).toBeLessThanOrEqual(18_805_968);
+      expect(charged).toBeLessThanOrEqual(18_806_024);
       await takeAll(inbox);
       await turn(h);
       await echo(inbox);

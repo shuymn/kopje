@@ -121,12 +121,12 @@ async function loadStamp(uri: string, origin: string, loader: DocumentLoader): P
   return stamp === null ? { kind: "unusable" } : { kind: "ok", value: stamp };
 }
 
-// The quoted status's author, parsed as any actor (none of this instance's origin is fetched), its claim confirmed
-// (confirmedInput) against the handle `stored` read before the fetch: an author with no stored row whose claim
-// WebFinger refuses is unusable, and one whose confirmation may pass later is transient; a stored author keeps its
-// handle either way. With it, the fetch's own outcome when the author is gone (a 410 at its URI deletes a stored
-// author, actor-gone.ts).
-async function loadActor(
+// The quoted status's author, or a replies walk's (replies.ts), parsed as any actor (none of this instance's origin is
+// fetched), its claim confirmed (confirmedInput) against the handle `stored` read before the fetch: an author with no
+// stored row whose claim WebFinger refuses is unusable, and one whose confirmation may pass later is transient; a
+// stored author keeps its handle either way. With it, the fetch's own outcome when the author is gone (a 410 at its URI
+// deletes a stored author, actor-gone.ts).
+export async function loadActor(
   uri: string,
   origin: string,
   loaders: RemoteLoaders,
