@@ -73,7 +73,7 @@ export const search: ApiHandler = withParams(async (c, deps, p) => {
   if (q === undefined || q.trim() === "") {
     return refuseAfterAuth(c, deps, mastodonError(400, "Missing parameter q"));
   }
-  if ([p.last("limit"), p.last("offset")].some((value) => value !== undefined && rubyToI(value) < 0)) {
+  if ([p.integer("limit"), p.integer("offset")].some((value) => value !== undefined && rubyToI(value) < 0)) {
     return refuseAfterAuth(c, deps, mastodonError(400, "Pagination values for `offset` and `limit` must be positive"));
   }
   const parsed = searchParams(p);

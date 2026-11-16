@@ -161,6 +161,8 @@ describe("filters API", () => {
     ] as const) {
       const created = await createFilter(h, h.users.alice, { title: "t", context: ["home"], expires_in });
       expect([expires_in, created.expires_at]).toEqual([expires_in, expected]);
+      const v1 = await act(h, h.users.alice, "/api/v1/filters", { phrase: "p", context: ["home"], expires_in });
+      expect([expires_in, (await v1.json<{ expires_at: string }>()).expires_at]).toEqual([expires_in, expected]);
     }
   });
 

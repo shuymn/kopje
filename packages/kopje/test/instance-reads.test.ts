@@ -102,6 +102,12 @@ describe("instance details", () => {
     expect(await search("123")).toEqual({ status: 200, body: ["123.example"] });
     // Not a host: Mastodon rescues Addressable's InvalidURIError with [].
     expect(await search("masto/don")).toEqual({ status: 200, body: [] });
+    // Rails' params[:q]: the last value the query gives.
+    expect(await getJson(h, "/api/v1/peers/search?q=pleroma&q=masto")).toEqual({
+      status: 200,
+      body: ["masto.example", "mastodon.example"],
+    });
+    expect(await getJson(h, "/api/v1/peers/search?q=masto&q=pleroma")).toEqual({ status: 200, body: [] });
     // A blank q leaves Mastodon's @domains unset: null.
     for (const path of ["/api/v1/peers/search", "/api/v1/peers/search?q=%20"]) {
       const response = await h.request(path);

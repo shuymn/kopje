@@ -51,7 +51,7 @@ import {
 } from "./context";
 import { mastodonError, moderatingError, recordNotFound as notFound } from "./errors";
 import { pageQuery } from "./pagination";
-import { Params, parseBoolean, RAILS_FALSE } from "./params";
+import { type Params, parseBoolean, RAILS_FALSE } from "./params";
 import { reportResponse } from "./reports";
 import * as trends from "./trends";
 
@@ -128,8 +128,7 @@ function listUrl(c: ApiContext, path: string, names: readonly string[], p: Param
       if (ARRAY_PARAMS.has(name)) {
         return (arrayParam(p, name) ?? []).map((value) => [`${name}[]`, value]);
       }
-      // `limit` as the page reads it (pageQuery).
-      const value = name === "limit" ? p.last(name) : p.get(name);
+      const value = p.get(name);
       return value === undefined ? [] : [[name, value]];
     }),
     ...Object.entries(cursor),
@@ -163,18 +162,13 @@ function reportsUrl(c: ApiContext, p: Params, cursor: Record<string, string>): s
   return listUrl(c, "/api/v1/admin/reports", REPORT_PAGINATION_PARAMS, p, cursor);
 }
 
-// The index's boolean filters, which Rails assigns from a repeated query parameter's last value.
-const REPORT_FLAGS = ["resolved", "unresolved"];
-
 // ReportFilter#status_scope.
 function reportState(resolved: boolean, unresolved: boolean): AdminReportFilter["state"] {
   return resolved && unresolved ? "all" : resolved ? "resolved" : "unresolved";
 }
 
 // GET /api/v1/admin/reports (reports_controller.rb:92-98 next_path/prev_path); paging: listLinks and listAdminReports.
-export const reports: ApiHandler = withParams(async (c, deps, sent) => {
-  // The query with each flag's last value (Params.withQuery's declared names), read here and carried by the Link URLs.
-  const p = new Params([]).withQuery(sent.entries, REPORT_FLAGS);
+export const reports: ApiHandler = withParams(async (c, deps, p) => {
   const page = pageQuery(p, ADMIN_REPORTS_LIMIT, MAX_ADMIN_REPORTS_LIMIT);
   const input = {
     credential: optionalCredential(c, deps),

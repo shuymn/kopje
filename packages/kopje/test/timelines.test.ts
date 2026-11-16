@@ -54,6 +54,19 @@ describe("timeline paging", () => {
     expect(await page("limit=abc")).toEqual(newest.slice(0, 1));
   });
 
+  it("reads a repeated max_id, since_id or min_id as Rails' params[name]: the last value", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const newest: string[] = [];
+    for (let i = 0; i < 12; i++) {
+      newest.unshift((await post(h, alice, { status: `#${i}` })).id);
+    }
+    const page = (query: string) => ids(h, `/api/v1/accounts/${alice.id}/statuses?${query}`, alice.token);
+    expect(await page(`max_id=${newest[0]}&max_id=${newest[5]}&limit=3`)).toEqual(newest.slice(6, 9));
+    expect(await page(`since_id=${newest[1]}&since_id=${newest[3]}`)).toEqual(newest.slice(0, 3));
+    expect(await page(`min_id=${newest[11]}&min_id=${newest[5]}&limit=2`)).toEqual(newest.slice(3, 5));
+  });
+
   // Timelines::BaseController (Mastodon 4.7.5) answers a limit of 0 with no statuses (Feed#get's Redis LIMIT 0 0,
   // Paginable's LIMIT 0) and no Link (insert_pagination_headers skips an empty page), after its lookups.
   it("answers a limit of 0 on home, list, public and hashtag timelines with no statuses and no Link", async () => {

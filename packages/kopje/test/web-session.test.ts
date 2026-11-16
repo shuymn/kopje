@@ -603,9 +603,9 @@ describe("settings page", () => {
       "fields_attributes[2][value]": "",
       "source[privacy]": "unlisted",
     });
-    // Checkboxes: a checked box posts true before its hidden false.
-    fields.append("locked", "true");
+    // Checkboxes: a checked box posts its hidden false, then true; the last value is read.
     fields.append("locked", "false");
+    fields.append("locked", "true");
     fields.append("discoverable", "false");
     const response = await postForm(h, browser, "/settings/profile", fields);
     expect(response.status).toBe(303);

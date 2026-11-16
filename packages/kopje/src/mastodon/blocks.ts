@@ -50,7 +50,7 @@ export const mute: ApiHandler = withParams(async (c, deps, p) => {
     credential: userCredential(c, deps),
     target: c.req.param("id") ?? "",
     notifications: parseBoolean(p.get("notifications")) ?? true,
-    expiresAt: muteExpiry(p.last("duration"), now),
+    expiresAt: muteExpiry(p.integer("duration"), now),
     now,
   };
   return relationshipResponse(c, authorized(await storeCall(c, deps, (s, b) => s.mute(b, input))));

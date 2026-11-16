@@ -41,15 +41,23 @@ export const SENT_FILE = "(file)";
 // "absent"`: a field a JSON body sent as null is read as not sent, where other reads take it as blank.
 export type ObjectOptions = { files?: readonly string[]; nulls?: "absent" };
 
-// A parameter's name and text, and the number a JSON body sent as it: `text` is the number as JSON writes it, and
-// integer parameters read `number` (integerText).
-export type ParamEntry = readonly [name: string, text: string, number?: number];
+// A parameter's name and text, and what a JSON body sent there when it was neither a string nor a boolean: a number,
+// whose `text` is the number as JSON writes it and which integer parameters read (integerText), or null, whose `text`
+// is blank (sentNull, objects' `nulls`). The mark stays on its entry, so a read judges the value it selected.
+export type ParamEntry = readonly [name: string, text: string, json?: number | null];
 
 // An entry's text as integer parameters read it: a JSON number as the decimal of its Ruby to_i (Float#to_i and
 // Integer() of a Float both truncate), so `1e21` reads as 10^21 (capped as rubyToI caps), where the string "1e21" is
 // read by the parameter's own reader.
-function integerText([, text, number]: ParamEntry): string {
-  return number === undefined ? text : String(rubyNumberToI(number));
+function integerText([, text, json]: ParamEntry): string {
+  return typeof json === "number" ? String(rubyNumberToI(json)) : text;
+}
+
+// The entry Rails' `params[name]` holds: the last of `name` (Rack assigns a repeated plain name, so the last wins),
+// which is the query's for a top-level key the query sent, else the body's (withQuery). Read without the accessors,
+// which the parameter conformance check counts as the handler's reads.
+function selected(entries: readonly ParamEntry[], name: string): ParamEntry | undefined {
+  return entries.findLast(([key]) => key === name);
 }
 
 // A file part's value while objects() groups the parts; no text value equals it.
@@ -66,9 +74,6 @@ export class Params {
     readonly emptyLists: ReadonlySet<string> = new Set(),
     // Undeclared file parts of a multipart body in body order; `at` indexes the body's prefix of `entries`.
     private readonly fileParts: readonly FilePart[] = [],
-    // The names a JSON body sent as null, which read as blank (sentNull tells them apart; objects' `nulls` option reads
-    // them as absent).
-    private readonly nulls: ReadonlySet<string> = new Set(),
     // The body's entries the query replaced (withQuery), which repeated() still counts.
     private readonly replaced: readonly ParamEntry[] = [],
   ) {}
@@ -99,20 +104,18 @@ export class Params {
       new Set([...this.objectPrefixes].filter(kept)),
       new Set([...this.emptyLists].filter(kept)),
       this.fileParts.filter(([name]) => kept(name)).map(([name, at]) => [name, keptBefore[at] ?? 0]),
-      new Set([...this.nulls].filter(kept)),
       [...this.replaced, ...this.entries.filter(([key]) => !kept(key))],
     );
   }
 
-  // The first value: the query's, for a top-level key the query sent, else the body's (withQuery).
+  // Rails' `params[name]` (selected): a JSON number as JSON writes it, a JSON null as blank (sentNull).
   get(name: string): string | undefined {
-    return this.entries.find(([key]) => key === name)?.[1];
+    return selected(this.entries, name)?.[1];
   }
 
-  // Rails' `params[name]` as an integer parameter reads it (integerText): the last value (Rack assigns a repeated plain
-  // name, so the last wins), the query's for a top-level key the query sent, else the body's (withQuery).
-  last(name: string): string | undefined {
-    const entry = this.entries.findLast(([key]) => key === name);
+  // Rails' `params[name]` (selected) as an integer parameter reads it (integerText).
+  integer(name: string): string | undefined {
+    const entry = selected(this.entries, name);
     return entry === undefined ? undefined : integerText(entry);
   }
 
@@ -122,10 +125,9 @@ export class Params {
     return this.files.get(name);
   }
 
-  // Whether a JSON body sent `name` as null, which get(name) reads as blank: Rails assigns nil, where a blank string
-  // stays a string.
+  // Whether the value get(name) reads (blank) is a JSON null: Rails assigns nil, where a blank string stays a string.
   sentNull(name: string): boolean {
-    return this.nulls.has(name) && this.get(name) === "";
+    return selected(this.entries, name)?.[2] === null;
   }
 
   // Whether `name` or `name[]` was sent at all, even with no value: an explicitly empty list is not an absent one.
@@ -160,7 +162,7 @@ export class Params {
   objects(name: string, options: ObjectOptions = {}): Record<string, string>[] {
     const prefix = `${name}[`;
     const files = options.files === undefined ? null : new Set(options.files);
-    const absent = options.nulls === "absent" ? this.nulls : new Set<string>();
+    const absentNulls = options.nulls === "absent";
     const indexed = new Map<string, Record<string, Value>>();
     const sequential: Record<string, Value>[] = [];
     const add = (key: string, value: Value) => {
@@ -190,9 +192,9 @@ export class Params {
         add(part[0], FILE_VALUE);
       }
     };
-    this.entries.forEach(([key, value], at) => {
+    this.entries.forEach(([key, value, json], at) => {
       partsBefore(at);
-      if (!absent.has(key)) {
+      if (!(absentNulls && json === null)) {
         add(key, value);
       }
     });
@@ -322,11 +324,10 @@ async function parseCounted(
     const entries: ParamEntry[] = [];
     const objects = new Set<string>();
     const empty = new Set<string>();
-    const nulls = new Set<string>();
     // JSON.parse keeps the last of duplicate keys, so repeated() sees form and query duplicates only. RFC 6749 defines
     // form bodies alone, and Doorkeeper (Mastodon) lets the last JSON key win as well.
-    flatten(JSON.parse(new TextDecoder().decode(body)), { entries, objects, empty, nulls, paths: 0, units: 0 });
-    return { params: selectDeclared(entries, new Map(), objects, empty, nulls, declared), formText: null };
+    flatten(JSON.parse(new TextDecoder().decode(body)), { entries, objects, empty, paths: 0, units: 0 });
+    return { params: selectDeclared(entries, objects, empty, declared), formText: null };
   }
   if (type === "application/x-www-form-urlencoded" || type === "multipart/form-data") {
     const form = await new Response(body, { headers: { "content-type": contentType } }).formData();
@@ -360,32 +361,27 @@ async function parseCounted(
   return { params: new Params([]), formText: null };
 }
 
-// JSON and form text for a declared name keeps only its last value, so get(name) reads what Rails would assign.
+// A JSON body keeps only the last entry of a declared name, whole, as the form's last-part rule does (parseCounted), so
+// withQuery reads the query's value of that name only when the body has none.
 function selectDeclared(
   entries: ParamEntry[],
-  files: Map<string, File>,
   objects: Set<string>,
   empty: Set<string>,
-  nulls: Set<string>,
   declared: ReadonlySet<string>,
 ): Params {
-  if (declared.size === 0) {
-    return new Params(entries, files, objects, empty, [], nulls);
-  }
-  const last = new Map<string, string>();
-  for (const [key, value] of entries) {
-    if (declared.has(key)) {
-      last.set(key, value);
+  const last = new Map<string, ParamEntry>();
+  for (const entry of entries) {
+    if (declared.has(entry[0])) {
+      last.set(entry[0], entry);
     }
   }
-  return new Params([...entries.filter(([key]) => !declared.has(key)), ...last], files, objects, empty, [], nulls);
+  return new Params([...entries.filter(([key]) => !declared.has(key)), ...last.values()], new Map(), objects, empty);
 }
 
 type Flattening = {
   entries: ParamEntry[];
   objects: Set<string>;
   empty: Set<string>;
-  nulls: Set<string>;
   paths: number;
   units: number;
 };
@@ -428,28 +424,25 @@ function flatten(value: unknown, state: Flattening, prefix = "", depth = 0): voi
       flatten(item, state, prefix === "" ? key : `${prefix}[${key}]`, depth + 1);
     }
   } else if (prefix !== "") {
-    // Scalars only here: strings as they are, numbers (kept as well) and booleans as JSON writes them, null as blank
-    // (and noted).
-    if (value === null) {
-      state.nulls.add(prefix);
-    }
-    if (typeof value === "number") {
-      state.entries.push([prefix, JSON.stringify(value), value]);
+    // Scalars only here: strings as they are, booleans as JSON writes them, a number as JSON writes it and null as
+    // blank, each of these two marked on its entry (ParamEntry).
+    if (typeof value === "number" || value === null) {
+      state.entries.push([prefix, value === null ? "" : JSON.stringify(value), value]);
     } else {
-      state.entries.push([prefix, typeof value === "string" ? value : value === null ? "" : JSON.stringify(value)]);
+      state.entries.push([prefix, typeof value === "string" ? value : JSON.stringify(value)]);
     }
   }
 }
 
 // `offset` as Mastodon's offset endpoints read it (params[:offset].to_i): a negative one is 0.
 export function offsetParam(p: Params): number {
-  return Math.max(rubyToI(p.last("offset") ?? "0"), 0);
+  return Math.max(rubyToI(p.integer("offset") ?? "0"), 0);
 }
 
 // `limit` as Api::BaseController#limit_param reads it: `fallback` when absent, else the absolute value of its to_i, at
 // most `max`.
 export function limitParam(p: Params, fallback: number, max: number): number {
-  const limit = p.last("limit");
+  const limit = p.integer("limit");
   return limit === undefined ? fallback : Math.min(Math.abs(rubyToI(limit)), max);
 }
 

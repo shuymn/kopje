@@ -109,8 +109,7 @@ function linkTimelineLinks(c: ApiContext, p: Params, page: Page<unknown>): void 
   const at = (name: "max_id" | "min_id", id: string) => {
     const target = new URL("/api/v1/timelines/link", c.req.url);
     for (const key of ["url", "limit"]) {
-      // `limit` as the page reads it (limitParam).
-      const value = key === "limit" ? p.last(key) : p.get(key);
+      const value = p.get(key);
       if (value !== undefined) {
         target.searchParams.set(key, value);
       }
