@@ -1,5 +1,5 @@
 import { type DocumentLoader, exportSpki, FetchError, type RemoteDocument } from "@fedify/fedify";
-import { type Actor, getActorTypeName, type Image, isActor, Link, lookupObject, Multikey } from "@fedify/vocab";
+import { type Actor, getActorTypeName, isActor, Link, lookupObject, Multikey } from "@fedify/vocab";
 
 import { ACTOR_URI_LIMIT } from "../domain/profile-bounds";
 import type { Handle, RemoteActorInput } from "../domain/remote-actors";
@@ -74,14 +74,32 @@ export async function loadActor(
   return readActor(uri, remote, contextLoader);
 }
 
-// An actor document as served at `uri`, parsed by Fedify's lookupObject over a loader that answers it alone: nothing
-// is fetched but its JSON-LD contexts, through `contextLoader`. lookupObject asks its loader only for the URI it was
-// given (as it parses it: without verifyPortableObject it takes no portable path), and never falls back to its own
-// WebFinger lookup, which would fetch outside the safe loader. An actor whose id is not exactly uri is unusable.
+// The members of an actor document Kopje reads by spelling, as Mastodon 4.7 does (profileImage, collection-requests.ts
+// collectionUri), and Fedify would parse by type: Fedify 2.4.5 fails the whole actor on an `icon` or `image` that is
+// not an Image or a Link, or a `followers` or `following` that is not a collection, where Mastodon stores the account.
+const SPELLED_MEMBERS: readonly string[] = ["icon", "image", "followers", "following"];
+
+// The only form of an actor document Fedify is handed (readActor, author-proof.ts verifyAuthorProof): a shallow copy
+// without SPELLED_MEMBERS, so none of them can refuse the actor. Removing a member never grants anything: the id
+// Fedify checks (ID-2) and the keys it finds (ID-1) are the document's own, or none. Anything that is not an object is
+// returned as it is.
+export function fedifyActorView(document: unknown): unknown {
+  if (!isObject(document)) {
+    return document;
+  }
+  return Object.fromEntries(Object.entries(document).filter(([key]) => !SPELLED_MEMBERS.includes(key)));
+}
+
+// An actor document as served at `uri`, parsed by Fedify's lookupObject over a loader that answers its view
+// (fedifyActorView) alone: nothing is fetched but its JSON-LD contexts, through `contextLoader`. lookupObject asks its
+// loader only for the URI it was given (as it parses it: without verifyPortableObject it takes no portable path), and
+// never falls back to its own WebFinger lookup, which would fetch outside the safe loader. An actor whose id is not
+// exactly uri is unusable. The document answered is the one served.
 async function readActor(uri: string, served: RemoteDocument, contextLoader: DocumentLoader): Promise<ReadActor> {
+  const view = { ...served, document: fedifyActorView(served.document) };
   let object: unknown;
   try {
-    object = await lookupObject(uri, { documentLoader: () => Promise.resolve(served), contextLoader });
+    object = await lookupObject(uri, { documentLoader: () => Promise.resolve(view), contextLoader });
   } catch (error) {
     // A JSON-LD context that failed to load for a reason that may pass is transient too; only a document that
     // cannot be read as served is unusable.
@@ -123,37 +141,43 @@ function text(value: string | { toString(): string } | null | undefined): string
   return value === null || value === undefined ? null : value.toString();
 }
 
-// A profile URL (url, icon, image): http(s) (HTML-3) and within its stored bound, else none, as an invalid one.
+// A profile URL: http(s) (HTML-3) and within its stored bound, else none, as an invalid one.
+function storedHref(value: string | null): string | null {
+  return storedProfileUrl(httpUrl(value)?.href ?? null);
+}
+
+// The actor's url, as Fedify parsed it (a Link gives its href).
 function href(value: URL | Link | null | undefined): string | null {
   const target = value instanceof Link ? value.href : value;
-  return storedProfileUrl(httpUrl(target?.href ?? null)?.href ?? null);
+  return storedHref(target?.href ?? null);
 }
 
-// Icons and headers are taken only when embedded: a reference would cost another fetch per actor (RES-6).
+// Keys are taken only when embedded: a reference would cost another fetch per actor (RES-6).
 const NO_FETCH: DocumentLoader = () => Promise.reject(new Error("not fetched"));
 
-type Images = Record<
-  "getIcon" | "getImage",
-  (options: { documentLoader: DocumentLoader; contextLoader: DocumentLoader }) => Promise<Image | null>
->;
-
-async function imageUrl(get: () => Promise<{ url: URL | Link | null } | null>): Promise<string | null> {
-  try {
-    return href((await get())?.url);
-  } catch {
-    return null;
-  }
-}
-
-// An icon's or image's description as Mastodon 4.7 reads it from the document's JSON by spelling
-// (ProcessAccountService#image_url_and_description, process_account_service.rb:354-379): the property's first value,
-// when it is an object whose type is the string "Image", read by remoteDescription (summary, else name), cut to
-// PROFILE_DESCRIPTION_LIMIT code points (Mastodon cuts at 10,000; docs/mastodon-deviations.md); anything else, a
-// reference included (Kopje fetches no image, NO_FETCH), reads as ''. Mastodon assigns `description || ''` on every
-// processing, so a document without one clears the stored one.
-function imageDescription(value: unknown): string {
+// An icon or image (avatar or header) as Mastodon 4.7 reads it from the document's JSON by spelling
+// (ProcessAccountService#image_url_and_description, process_account_service.rb:354-379): the member's first value; an
+// object whose type is the string "Image" gives its url's first value (a Link's href) and its description, read by
+// remoteDescription (summary, else name) and cut to PROFILE_DESCRIPTION_LIMIT code points (Mastodon cuts at 10,000;
+// docs/mastodon-deviations.md); any other object gives its own href and no description; an href is unwrapped once
+// more, as Mastodon unwraps it after either branch. A reference (a string) is not fetched (RES-6), so it gives none,
+// where Mastodon fetches it. The URL is kept as storedHref keeps it (HTML-3, RES-2): a relative one is none, as
+// Mastodon's avatar_remote_url= refuses a URL without a scheme and host. Mastodon assigns `url || ''` and
+// `description || ''` on every processing, so a document without them clears the stored ones.
+export function profileImage(value: unknown): { url: string | null; description: string } {
   const first: unknown = Array.isArray(value) ? value[0] : value;
-  return isObject(first) && first.type === "Image" ? storedProfileDescription(remoteDescription(first)) : "";
+  if (!isObject(first)) {
+    return { url: null, description: "" };
+  }
+  let url: unknown = first;
+  let description = "";
+  if (first.type === "Image") {
+    url = Array.isArray(first.url) ? first.url[0] : first.url;
+    url = isObject(url) ? url.href : url;
+    description = storedProfileDescription(remoteDescription(first));
+  }
+  url = isObject(url) ? url.href : url;
+  return { url: typeof url === "string" ? storedHref(url) : null, description };
 }
 
 // A display setting (Mastodon 4.6's showFeatured, showMedia, showRepliesInMedia, read from the document's JSON by
@@ -271,9 +295,9 @@ export async function remoteActorInput(actor: Actor, document: unknown): Promise
     return null;
   }
   const sharedInboxUrl = httpUrl(actor.endpoints?.sharedInbox?.href ?? null)?.href ?? null;
-  const options = { documentLoader: NO_FETCH, contextLoader: NO_FETCH };
-  const images: Images = actor;
   const json = isObject(document) ? document : {};
+  const avatar = profileImage(json.icon);
+  const header = profileImage(json.image);
   return {
     uri: uri.href,
     claim,
@@ -282,10 +306,10 @@ export async function remoteActorInput(actor: Actor, document: unknown): Promise
     displayName: storedDisplayName(text(actor.name) ?? ""),
     note: sanitizeRemoteBio(storedText(text(actor.summary) ?? "")),
     url: href(actor.url),
-    avatarUrl: await imageUrl(() => images.getIcon(options)),
-    headerUrl: await imageUrl(() => images.getImage(options)),
-    avatarDescription: imageDescription(json.icon),
-    headerDescription: imageDescription(json.image),
+    avatarUrl: avatar.url,
+    headerUrl: header.url,
+    avatarDescription: avatar.description,
+    headerDescription: header.description,
     showFeatured: displaySetting(json, "showFeatured"),
     showMedia: displaySetting(json, "showMedia"),
     showRepliesInMedia: displaySetting(json, "showRepliesInMedia"),

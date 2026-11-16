@@ -3,6 +3,7 @@ import { Delete } from "@fedify/vocab";
 
 import { RefusedFetchError } from "./loader";
 import { MASTODON_CONTEXT_TERMS, MASTODON_NAMED_CONTEXTS } from "./mastodon-context";
+import { fedifyActorView } from "./remote-actor";
 
 // The author's own proof on a Delete (ID-1's exception, domain/inbox.ts relayedDelete, and the forward of an author's
 // own Delete, recordForwards): a Linked Data Signature (RsaSignature2017, as Mastodon signs a status's or a stamp's
@@ -19,8 +20,9 @@ import { MASTODON_CONTEXT_TERMS, MASTODON_NAMED_CONTEXTS } from "./mastodon-cont
 //     request reached the inbox (OPS-1): one earlier does not prove, as Mastodon's verify_actor! refuses a past one.
 //     Fedify covers it with the signature but compares it with no clock.
 //   - The key must be one the actor's own document embeds: the verifiers load keys through a loader that serves only
-//     that document (fetched and checked as any actor's, inbound.ts), so a key elsewhere, a did:key or a key of
-//     another actor is never found. Fedify then requires the key's owner (or controller) to be the activity's actor.
+//     that document (fetched and checked as any actor's, inbound.ts), in the view Fedify parses for its HTTP
+//     signature's key (remote-actor.ts fedifyActorView), so a key elsewhere, a did:key or a key of another actor is
+//     never found. Fedify then requires the key's owner (or controller) to be the activity's actor.
 //   - Contexts come from Fedify's preloaded set alone, for the verification and every parse: never fetched, never from
 //     the request's loaders or their cache.
 //   - The proven Delete has exactly the literal id, one actor (the author) and one object, the literal object's id.
@@ -343,9 +345,12 @@ export async function verifyAuthorProof(
   ) {
     return false;
   }
+  // The actor's document as Fedify reads it for the HTTP signature's key (remote-actor.ts fedifyActorView), made here
+  // so that no caller hands Fedify another form.
+  const view = fedifyActorView(actorDocument);
   const documentLoader: DocumentLoader = (url) =>
     withoutFragment(url) === expected.actor
-      ? Promise.resolve({ document: actorDocument, documentUrl: expected.actor, contextUrl: null })
+      ? Promise.resolve({ document: view, documentUrl: expected.actor, contextUrl: null })
       : Promise.reject(new RefusedFetchError(new URL(url), "Not the actor document"));
   const options = { documentLoader, contextLoader: preloaded };
   try {
