@@ -7,6 +7,7 @@ import {
   MAX_PARAM_PATHS,
   PARAM_PATH_BUDGET,
   Params,
+  parseBoolean,
   type ReadOptions,
   readParams,
   SENT_FILE,
@@ -364,5 +365,31 @@ describe("Params#list", () => {
     const p = await json({ a: [] });
     expect(p.has("a")).toBe(true);
     expect(p.getAll("a")).toEqual([""]);
+  });
+});
+
+describe("parseBoolean", () => {
+  // ActiveModel::Type::Boolean: only these spellings are false; another case of them is true, as Rails casts it.
+  it.each([
+    ["0", false],
+    ["f", false],
+    ["F", false],
+    ["false", false],
+    ["FALSE", false],
+    ["off", false],
+    ["OFF", false],
+    ["False", true],
+    ["Off", true],
+    ["fAlSe", true],
+    ["true", true],
+    ["1", true],
+    [" ", true],
+  ] as const)("casts %j to %s", (value, cast) => {
+    expect(parseBoolean(value)).toBe(cast);
+  });
+
+  it("reads blank as absent", () => {
+    expect(parseBoolean("")).toBeUndefined();
+    expect(parseBoolean(undefined)).toBeUndefined();
   });
 });

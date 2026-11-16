@@ -24,7 +24,7 @@ const MAINTENANCE = '{"error":"This server is under maintenance. Try again later
 const INTERNAL = '{"error":"Internal Server Error"}';
 const NOSNIFF = { "x-content-type-options": "nosniff" };
 const DOCUMENT_CORS = { "access-control-allow-origin": "*" };
-const API_CORS = { "access-control-allow-origin": "*", "access-control-expose-headers": "Link" };
+const API_CORS = { "access-control-allow-origin": "*", "access-control-expose-headers": "Link,Mastodon-Async-Refresh" };
 // WEB-7: every API answer is private but a 2xx its route declares public; /api/v1/instance declares no Vary.
 const API_PRIVATE = { "cache-control": "private, no-store" };
 

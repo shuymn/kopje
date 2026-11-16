@@ -53,6 +53,7 @@ function excluded(name: string): boolean {
     name === "remote_media_objects" ||
     name === "remote_media_usage" ||
     name === "backup_media" ||
+    name.startsWith("reply_walk") ||
     name.startsWith("stream_") ||
     name.startsWith("_cf_") ||
     (name.startsWith("sqlite_") && name !== SEQUENCE_TABLE)

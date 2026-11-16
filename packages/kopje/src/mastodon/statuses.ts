@@ -1,5 +1,6 @@
 import { API_VISIBILITIES, type ApiVisibility, QUOTE_POLICY_NAMES, type QuotePolicyName } from "../domain/audience";
 import { checkPoll, isPollInput, type PollInput } from "../domain/polls";
+import type { Refresh } from "../domain/reply-walk-reads";
 import { blankText, exceedsRawLength, MAX_STATUS_CHARACTERS, statusLength } from "../domain/status-text";
 import {
   type Acted,
@@ -9,9 +10,12 @@ import {
   UNEXPECTED_MENTIONS,
   type Viewed,
 } from "../domain/statuses";
+import { envInMaintenance } from "../platform/config";
+import { StoreUnavailableError, WRITE_REFUSALS } from "../platform/store-errors";
 import { sha256Hex } from "../security/tokens";
 import {
   type ApiContext,
+  type ApiDeps,
   type ApiHandler,
   authorized,
   optionalCredential,
@@ -419,13 +423,53 @@ export const getStatuses: ApiHandler = withParams(async (c, deps, p) => {
   return c.json(authorized(result));
 });
 
+// Seconds a client waits before polling a refresh again (AsyncRefreshesConcern#add_async_refresh_header's retry).
+const REFRESH_RETRY_SECONDS = 3;
+
+// GET /api/v1/statuses/:id/context (ContextsController#show): the context, and while a refresh of the status's
+// replies runs, Mastodon-Async-Refresh naming it to every reader. A signed-in reader's read of a status the read finds
+// due starts one (domain/reply-walks.ts startRepliesRefresh) in a write call of its own, so that the context is served
+// while the Store refuses writes: none is made while the env is in maintenance, a Store refusing the write answers
+// without a header, and after a start the job rounds are asked for.
 export const statusContext: ApiHandler = async (c, deps) => {
   const credential = optionalCredential(c, deps);
-  const result = await storeCall(c, deps, (s, b) =>
-    s.statusContext(b, { credential, id: statusId(c), now: deps.now(), present: present(c) }),
+  const id = statusId(c);
+  const result = authorized(
+    await storeCall(c, deps, (s, b) => s.statusContext(b, { credential, id, now: deps.now(), present: present(c) })),
   );
-  return viewedResponse(c, authorized(result));
+  if (result.status !== "ok") {
+    return viewedResponse(c, result);
+  }
+  const { refresh, refreshDue, ...context } = result.value;
+  const shown = refreshDue ? await startRefresh(c, deps, id) : refresh;
+  if (shown !== null && shown.status === "running") {
+    c.header(
+      "Mastodon-Async-Refresh",
+      `id="${shown.id}", retry=${REFRESH_RETRY_SECONDS}, result_count=${shown.resultCount}`,
+    );
+  }
+  return c.json(context);
 };
+
+async function startRefresh(c: ApiContext, deps: ApiDeps, id: string): Promise<Refresh | null> {
+  if (envInMaintenance(c.env)) {
+    return null;
+  }
+  try {
+    const started = authorized(
+      await storeCall(c, deps, (s, b) => s.startRepliesRefresh(b, { credential: userCredential(c, deps), id })),
+    );
+    if (started !== null) {
+      requestJobsSoon(c, deps);
+    }
+    return started;
+  } catch (error) {
+    if (error instanceof StoreUnavailableError && WRITE_REFUSALS.has(error.reason)) {
+      return null;
+    }
+    throw error;
+  }
+}
 
 export const statusHistory: ApiHandler = async (c, deps) => {
   const credential = optionalCredential(c, deps);

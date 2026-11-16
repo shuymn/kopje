@@ -20,6 +20,20 @@ export const MAINTENANCE_REASONS = [
 
 export type MaintenanceReason = (typeof MAINTENANCE_REASONS)[number];
 
+// The reasons a Store refuses a write while it still serves reads (store-kernel.ts refusalOf under a hold or an
+// upgrade, store-flags.ts flagRefusal): readonly maintenance, a dump's freeze, an unpublished import, a held or
+// upgrading Store. A read that also writes when it can (a resolving search, a context read's refresh) still answers
+// then.
+export const WRITE_REFUSALS: ReadonlySet<MaintenanceReason> = new Set<MaintenanceReason>([
+  "maintenance",
+  "dump-in-progress",
+  "unpublished",
+  "upgrade-in-progress",
+  "upgrade-failed",
+  "bookmark-failed",
+  "verify-failed",
+]);
+
 // Thrown inside the Store.
 export function storeMaintenanceError(reason: MaintenanceReason): Error {
   return new Error(`${MAINTENANCE_PREFIX}${reason}`);

@@ -3,13 +3,16 @@
 //
 // - Policy: Kopje's documented rules, written from the docs and never from src/: docs/threat-model.md ID-7 (its status
 //   paragraph: the Update watermark, the 5-minute skew, the retractions of a Delete, the cap, local boosts withdrawn
-//   once and the 404s while a removal runs), ID-6 (the authorization table: Create, Update and Delete of statuses),
+//   once and the 404s while a removal runs, which Update refreshes a poll's counts, and a status fetched again by a
+//   search applied as its author's Update), ID-6 (the authorization table: Create, Update and Delete of statuses),
 //   RES-6 (a remote status's removal in bounded batches after its hide), VIS-3 (a proven Delete forwarded through the
 //   local boosts, and the Undo of an unboost staged by its job) and docs/mastodon-deviations.md ("Forwarded deletes").
 //   It holds each status by uri, the live retractions, the local account L's notifications and reactions, the delete
 //   jobs, and Kopje's outbound intents with their deliveries in each lane.
-// - Peer: the author R's server, Mastodon v4.7.5, as a sender only (each rule cites the file and line it models): the
-//   statuses it posted, edited and deleted, and every message it sent, each an independent delivery job.
+// - Peer: the author R's server, Mastodon v4.7.5, as a sender and a server of its statuses (each rule cites the file
+//   and line it models): the statuses it posted, edited and deleted, the votes in their polls and the poll Updates they
+//   scheduled, every message it sent, each an independent delivery job, and the documents it serves from its render
+//   cache.
 //
 // A change to a status Create, Update or Delete rule in docs/threat-model.md changes this file with it.
 
@@ -28,6 +31,13 @@ export const VERSION_SKEW_MS = 5 * MINUTE;
 // Mastodon's Update#object_too_old? (OBJECT_AGE_THRESHOLD = 1.day, update.rb:5,52-56), which Kopje follows for an
 // Update of a status it does not hold (updateRemoteStatus's doc comment: "creates it if it is recent").
 export const UPDATE_CREATES_WITHIN_MS = DAY;
+// docs/visibility.md R15: a status Kopje fetches notifies only when published within the real-time window (6 hours)
+// before it arrived (Mastodon's Status::REAL_TIME_WINDOW).
+export const REAL_TIME_WINDOW_MS = 6 * HOUR;
+// Mastodon's render_with_cache keeps a rendered status 3 minutes (cache_concern.rb:31-32 in v4.7.5).
+export const RENDER_CACHE_MS = 3 * MINUTE;
+// VoteService schedules the poll's Update 3 minutes after a vote (vote_service.rb:48 in v4.7.5).
+export const POLL_UPDATE_DELAY_MS = 3 * MINUTE;
 
 // The ANY_ACTOR row of ID-7: "the Delete of a stored status or boost is also recorded for every actor".
 export const ANY = "*";
@@ -38,11 +48,13 @@ export type Snapshot = { content: "A" | "B" | "C" | ""; sensitive: boolean; medi
 export const sameSnapshot = (a: Snapshot, b: Snapshot) =>
   a.content === b.content && a.sensitive === b.sensitive && a.media === b.media;
 
-// A status object as a sender writes it (the parts the rules read).
+// A status object as a sender writes it (the parts the rules read). Every status is a poll; tally: its first
+// choice's count, what an Update that names no newer version changes.
 export type Obj = {
   uri: string;
   attributedTo: string | null;
   snapshot: Snapshot;
+  tally: number;
   published: number | null;
   updated: number | null;
   inReplyTo: string | null;
@@ -68,6 +80,8 @@ export type Version = { snapshot: Snapshot; at: string };
 export type Stored = {
   author: string;
   snapshot: Snapshot;
+  // Its poll's count (Obj.tally).
+  tally: number;
   // statuses.published_at, as stored (never in the future).
   published: string;
   // statuses.remote_version (ID-7: "the last accepted version ... kept as the remote wrote it"), as an ISO time.
@@ -198,8 +212,9 @@ export class Policy {
   }
 
   // ID-6: "Create needs the actor's origin and no other attributedTo"; ID-7: a recorded Delete keeps it from
-  // appearing; a status exists once per uri, a repeat adds nothing.
-  private create(actor: string, o: Obj, now: number): Answer {
+  // appearing; a status exists once per uri, a repeat adds nothing. A fetched one notifies only within the real-time
+  // window (R15).
+  private create(actor: string, o: Obj, now: number, fetched = false): Answer {
     if (originOf(o.uri) !== originOf(actor)) {
       return { applied: false, reason: "foreign-object" };
     }
@@ -224,6 +239,7 @@ export class Policy {
     this.statuses.set(o.uri, {
       author: actor,
       snapshot: o.snapshot,
+      tally: o.tally,
       published: iso(published),
       version: iso(version),
       editedAt: updated !== null && updated !== published ? iso(updated) : null,
@@ -239,7 +255,9 @@ export class Policy {
       }
     }
     // Every object of the pool mentions and addresses L: L is notified of it.
-    this.notifications.push({ sym: this.sym("n"), type: "mention", status: o.uri, from: actor });
+    if (!fetched || published >= now - REAL_TIME_WINDOW_MS) {
+      this.notifications.push({ sym: this.sym("n"), type: "mention", status: o.uri, from: actor });
+    }
     return { applied: true, reason: "created" };
   }
 
@@ -269,10 +287,18 @@ export class Policy {
       return { applied: false, reason: "not-author" };
     }
     const watermark = Date.parse(stored.version);
-    // An older version changes nothing; one that names no newer version (none, or the same) is the implicit Update,
-    // which here (no poll, no policy) changes nothing either.
-    if (o.updated === null || o.updated <= watermark) {
+    // An older version changes nothing, nor one that names none for an edited status (ID-7: "an older one, or one that
+    // names none for an edited status, changes nothing"). One that names the stored version, or none for a status
+    // never edited, is the implicit Update: it refreshes the poll's counts and nothing else.
+    if (o.updated === null ? stored.editedAt !== null : o.updated < watermark) {
       return { applied: false, reason: "stale" };
+    }
+    if (o.updated === null || o.updated === watermark) {
+      if (o.tally === stored.tally) {
+        return { applied: false, reason: "stale" };
+      }
+      stored.tally = o.tally;
+      return { applied: true, reason: "poll-updated" };
     }
     // A content or media change is significant (an edit row, the original first, and an `update` notification to each
     // local booster); a sensitive flip alone is not. Either way the watermark moves (ID-7).
@@ -281,6 +307,7 @@ export class Policy {
       stored.history.push({ snapshot: stored.snapshot, at: stored.published });
     }
     stored.snapshot = o.snapshot;
+    stored.tally = o.tally;
     stored.version = iso(o.updated);
     if (significant) {
       stored.editedAt = iso(Math.min(o.updated, now));
@@ -293,6 +320,26 @@ export class Policy {
       }
     }
     return { applied: true, reason: significant ? "edited" : "updated" };
+  }
+
+  // ID-7: "a status Kopje fetches again ... is applied as its author's Update, under the same rules", one it does not
+  // hold being its Create (fetched); a search whose fetch answers 404 changes nothing.
+  refetch(actor: string, served: Obj | "gone", now: number): void {
+    if (served === "gone") {
+      return;
+    }
+    const stored = this.statuses.get(served.uri);
+    if (stored !== undefined && stored.author === actor) {
+      this.update(actor, served, now);
+    } else {
+      this.create(actor, served, now, true);
+    }
+  }
+
+  // Whether L's search of `uri` shows it: L may see any of R's statuses that is stored and not hidden (VIS-1).
+  shown(uri: string): boolean {
+    const stored = this.statuses.get(uri);
+    return stored !== undefined && !stored.withdrawn;
   }
 
   // ID-6: "Delete [requires] the stored status's author (a refused Delete records no retraction)"; ID-7: an unknown
@@ -619,7 +666,7 @@ export const RETRY_WINDOW_MS =
 
 export type PeerStatus =
   | { state: "unposted" }
-  | { state: "posted"; published: number; versions: { snapshot: Snapshot; at: number }[] }
+  | { state: "posted"; published: number; versions: { snapshot: Snapshot; at: number }[]; tally: number }
   | { state: "deleted"; published: number | null };
 
 export type Sent = { msg: Msg; at: number };
@@ -632,6 +679,11 @@ export class Peer {
   readonly delivered: Sent[] = [];
   // The time of its last write: Mastodon's times increase strictly (one second apart here).
   private last = 0;
+  // Its render cache, by status uri.
+  private readonly cache = new Map<string, { object: Obj; filledAt: number }>();
+  // The poll Updates scheduled and not yet run, by status uri: when each runs, and the poll's last change (its
+  // updated_at, which names the Update).
+  private readonly polls = new Map<string, { due: number; changed: number }>();
 
   constructor(
     readonly actor: string,
@@ -655,8 +707,16 @@ export class Peer {
     this.sent.push(sent);
   }
 
-  private object(uri: string, snapshot: Snapshot, published: number, updated: number | null): Obj {
-    return { uri, attributedTo: this.actor, snapshot, published, updated, inReplyTo: this.parents.get(uri) ?? null };
+  private object(uri: string, snapshot: Snapshot, tally: number, published: number, updated: number | null): Obj {
+    return {
+      uri,
+      attributedTo: this.actor,
+      snapshot,
+      tally,
+      published,
+      updated,
+      inReplyTo: this.parents.get(uri) ?? null,
+    };
   }
 
   // PostStatusService: a reply only to a status that exists on its server (a deleted one cannot be replied to).
@@ -669,8 +729,8 @@ export class Peer {
       return false;
     }
     const at = this.tick(now);
-    this.statuses.set(uri, { state: "posted", published: at, versions: [{ snapshot, at }] });
-    this.send({ type: "Create", id: `${uri}/activity`, object: this.object(uri, snapshot, at, null) }, at);
+    this.statuses.set(uri, { state: "posted", published: at, versions: [{ snapshot, at }], tally: 0 });
+    this.send({ type: "Create", id: `${uri}/activity`, object: this.object(uri, snapshot, 0, at, null) }, at);
     return true;
   }
 
@@ -685,10 +745,58 @@ export class Peer {
     const at = this.tick(now);
     status.versions.push({ snapshot, at });
     this.send(
-      { type: "Update", id: `${uri}#updates/${at}`, object: this.object(uri, snapshot, status.published, at) },
+      {
+        type: "Update",
+        id: `${uri}#updates/${at}`,
+        object: this.object(uri, snapshot, status.tally, status.published, at),
+      },
       at,
     );
     return true;
+  }
+
+  // VoteService: a vote counts in the poll (vote_service.rb:21-31) and, the poll being its author's here (:35-36),
+  // schedules DistributePollUpdateWorker 3 minutes later (:48). The job's lock (`lock: :until_executed`,
+  // distribute_poll_update_worker.rb:7) refuses another of the same status until it runs, so a vote while one waits adds
+  // only its count to that one. Nothing is written until the job runs (distribute).
+  vote(uri: string, now: number): boolean {
+    const status = this.statuses.get(uri)!;
+    if (status.state !== "posted") {
+      return false;
+    }
+    const at = this.tick(now);
+    status.tally++;
+    const due = this.polls.get(uri)?.due ?? at + POLL_UPDATE_DELAY_MS;
+    this.polls.set(uri, { due, changed: at });
+    return true;
+  }
+
+  // DistributePollUpdateWorker#perform (distribute_poll_update_worker.rb:9-22) for each job due by `now`, at its time:
+  // the status as it is when the job runs, read by Status.find, whose default scope leaves a deleted status out
+  // (status.rb:128), so a status deleted since the vote raises RecordNotFound and sends nothing (:20-21); else an Update
+  // of it as NoteSerializer writes it then (:45-46): its current version and counts, `updated` only once edited
+  // (note_serializer.rb:17). Mastodon names the Update by the poll's updated_at (`#updates/`,
+  // update_poll_serializer.rb:9); `#votes/` here tells it from an edit's.
+  distribute(now: number): void {
+    for (const [uri, job] of [...this.polls].toSorted((a, b) => a[1].due - b[1].due)) {
+      if (job.due > now) {
+        continue;
+      }
+      this.polls.delete(uri);
+      const status = this.statuses.get(uri)!;
+      if (status.state === "posted") {
+        const last = status.versions.at(-1)!;
+        const updated = status.versions.length > 1 ? last.at : null;
+        this.send(
+          {
+            type: "Update",
+            id: `${uri}#votes/${job.changed}`,
+            object: this.object(uri, last.snapshot, status.tally, status.published, updated),
+          },
+          job.due,
+        );
+      }
+    }
   }
 
   // RemoveStatusService: a Delete of the status, signed (proven) or not; a status never posted here is deleted too
@@ -702,6 +810,31 @@ export class Peer {
     this.statuses.set(uri, { state: "deleted", published: status.state === "posted" ? status.published : null });
     this.send({ type: "Delete", id: `${uri}#delete`, object: uri, proven }, at);
     return true;
+  }
+
+  // StatusesController#show behind render_with_cache (statuses_controller.rb:35, cache_concern.rb:31-32): a status
+  // deleted or never posted answers 404 before the cache is read (Status.find in its before_action); else the body the
+  // render that filled the cache wrote, until RENDER_CACHE_MS after that render (nothing refreshes or extends it); else
+  // the current version, rendered and cached at `now`, with `updated` only once edited (note_serializer.rb:17).
+  serve(uri: string, now: number): Obj | "gone" {
+    const status = this.statuses.get(uri)!;
+    if (status.state !== "posted") {
+      return "gone";
+    }
+    const cached = this.cache.get(uri);
+    if (cached !== undefined && now < cached.filledAt + RENDER_CACHE_MS) {
+      return cached.object;
+    }
+    const last = status.versions.at(-1)!;
+    const object = this.object(
+      uri,
+      last.snapshot,
+      status.tally,
+      status.published,
+      status.versions.length > 1 ? last.at : null,
+    );
+    this.cache.set(uri, { object, filledAt: now });
+    return object;
   }
 
   // The undelivered message at `index` (each delivery is its own job, in any order).
