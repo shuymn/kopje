@@ -14,6 +14,7 @@ import {
   appWebsiteSql,
   BLURHASH_BYTES,
   byteBoundSql,
+  cardAuthorPastSql,
   CARD_DIMENSION_MAX,
   CARD_EMBED_SRC_BYTES,
   CARD_IMAGE_DESCRIPTION_JSON_BYTES,
@@ -25,6 +26,7 @@ import {
   CARD_TYPES,
   CARD_URL_LIMIT,
   isoTimeSql,
+  spoilerReadSql,
   statusEditedSql,
   statusPublishedSql,
   storedCountSql,
@@ -52,7 +54,8 @@ import {
 // parent: they belong to the reply, whose ActivityPub object carries inReplyTo to every recipient anyway, and its
 // author chose to publish them. The parent itself (content, author profile, context entry) stays behind the audience
 // rule. in_reply_to_account_id is the conversation partner carried through self-replies.
-// The text and URLs are bounded as stored (platform/stored-bounds.ts), the uri and author as read (RES-2).
+// The text and URLs are bounded as stored (platform/stored-bounds.ts), the content warning, uri and author as read
+// (RES-2; the warning: "Status text as presented").
 export const STATUS_COLUMN_MAP = {
   id: "s.id",
   uri: statusUriSql("s.uri"),
@@ -62,7 +65,7 @@ export const STATUS_COLUMN_MAP = {
   in_reply_to_id: "s.in_reply_to_id",
   in_reply_to_account_id: "s.in_reply_to_account_id",
   visibility: "s.visibility",
-  spoiler_text: "s.spoiler_text",
+  spoiler_text: spoilerReadSql("s.spoiler_text"),
   content: "s.content",
   source_text: "s.source_text",
   sensitive: "s.sensitive",
@@ -190,6 +193,9 @@ export const CARD_COLUMN_MAP = {
   image_width: storedCountSql("i.width", CARD_IMAGE_EDGE_MAX),
   image_height: storedCountSql("i.height", CARD_IMAGE_EDGE_MAX),
   blurhash: cardText("i.blurhash", BLURHASH_BYTES),
+  // 0098_card_attribution: the account the card does not credit, by the stored rule (18 digits as TEXT), else NULL.
+  unverified_author_account_id: `CASE WHEN NOT (${cardAuthorPastSql("c.unverified_author_account_id")})
+		THEN c.unverified_author_account_id END`,
 } as const satisfies ColumnMap;
 
 // The join of a card and its stored image to `j` (card_images, by its key; none while pending or gone), as `c` and

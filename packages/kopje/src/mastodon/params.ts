@@ -377,10 +377,13 @@ export function limitParam(p: Params, fallback: number, max: number): number {
   return limit === undefined ? fallback : Math.min(Math.abs(Number.parseInt(limit, 10) || 0), max);
 }
 
-// Rails' boolean casting: blank is absent, "0", "f", "false" and "off" are false, anything else is true.
+// ActiveModel::Type::Boolean#cast's false values, each in its own case only ('False' casts to true), with blank.
+export const RAILS_FALSE: readonly string[] = ["", "0", "f", "F", "false", "FALSE", "off", "OFF"];
+
+// Rails' boolean casting: blank is absent, a value of RAILS_FALSE is false, anything else is true.
 export function parseBoolean(value: string | undefined): boolean | undefined {
   if (value === undefined || value === "") {
     return undefined;
   }
-  return !["0", "f", "false", "off"].includes(value.toLowerCase());
+  return !RAILS_FALSE.includes(value);
 }

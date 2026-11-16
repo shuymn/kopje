@@ -60,8 +60,8 @@ dump with the Store's own catalog and literals (`src/platform/dump-catalog.ts` a
   `GET /admin/catalog` (or `kopje-admin catalog`) and copy `migrations` and `tables` from there.
 - The catalog is read from the live schema:
   - All tables are included except `kopje_migrations`, `media_orphans`, `card_images`, `remote_media`,
-    `remote_media_objects`, `remote_media_usage`, `backup_media`, `stream_*`, `_cf_*`, and `sqlite_*` other than
-    `sqlite_sequence`.
+    `remote_media_objects`, `remote_media_usage`, `backup_media`, `reply_walk*`, `stream_*`, `_cf_*`, and `sqlite_*`
+    other than `sqlite_sequence`.
     The moderation log (`admin_actions`, migration `0029_admin_reports`) is included like any other table: a
     restored Store keeps who did what, and its ids, so the log keeps pruning its oldest rows.
   - Columns are in declaration order.
@@ -405,6 +405,12 @@ a snapshot: the next cron round works the links out again, and since a dump hold
 qualifies and a link trends again only from cards recorded after the restore. A file built from legacy data has no
 row.
 
+Card attribution (migration `0098_card_attribution`): a `status_cards` row also holds `unverified_author_account_id`,
+NULL or 18 ASCII digits as text (no foreign key: a restored one may name no account, and then no viewer sees the flag),
+NULL on a pending row; anything else fails with `status_cards: a value past its stored bound`. A row of a dump taken
+before 0098 takes NULL. A restored value is presented as it was dumped; nothing judges a card again until its next
+fetch.
+
 Instance activity (migration `0072_activity_tracking`): an `activity_counts` row holds a `kind` (`statuses` or
 `registrations`), a `day` (text of exactly 10 bytes, a calendar date `YYYY-MM-DD` with no NUL) and a `value` (an
 integer from 1 to 1e12), one per kind and day; an `activity_logins` row holds a `day` by the same rule and an
@@ -497,6 +503,7 @@ These are excluded because they must not be restored blindly:
 | `card_images`                                              | Card images, re-encoded with no original kept; a restored Store shows its cards without them (`status_cards` keeps the links)                          |
 | `remote_media*`                                            | The cache of remote media and its R2 ledger: a target starts with an empty cache, shows remote URLs, and fetches them again                            |
 | `backup_media`                                             | The scheduled backup's media index for one bucket ([backup.md](backup.md)); a restored Store starts a fresh media baseline                             |
+| `reply_walk*`                                              | Walks of remote replies collections under way (the context's refresh, migration `0099_reply_walks`): job state; a restored Store starts none           |
 | `stream_*`                                                 | The streaming API's registry of subscriptions, journal of events and position: state of the open sockets of one object                                 |
 | `_cf_*`, `sqlite_*` (except `sqlite_sequence`)             | Platform and SQLite internals                                                                                                                          |
 

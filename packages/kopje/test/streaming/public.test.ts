@@ -381,6 +381,39 @@ describe("update on public and hashtag streams", () => {
   });
 });
 
+// missing_attribution follows the subscriber's relationship fields here (favourited, reblogged, bookmarked), which
+// Kopje presents for the subscriber where Mastodon's anonymous payload leaves them out (#1625).
+describe("missing_attribution on public and hashtag streams", () => {
+  it("is present exactly when the payload's favourited is, true for the card's unverified author only", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const erin = await remoteAccount(h.store, "erin");
+    const inboxes: [string, Inbox][] = [
+      [alice.id, await feeds(h, alice.token)],
+      [bob.id, await feeds(h, bob.token)],
+    ];
+    const id = await remoteStatus(h, erin);
+    await sql(
+      h.store,
+      `INSERT INTO status_cards (status_id, url, enqueued_at, generation, title, fetched_at, unverified_author_account_id)
+			VALUES (?, 'https://e.example/a', 0, 0, 'T', 1, ?)`,
+      id,
+      alice.id,
+    );
+    await h.store.streamTick(BUILD);
+    await drained(h, ...inboxes.map(([, inbox]) => inbox));
+    for (const [viewer, inbox] of inboxes) {
+      const sent = inbox.rest();
+      expect(sent.map((m) => m.stream?.[0])).toEqual(["public", "public:remote", "hashtag"]);
+      for (const message of sent) {
+        const payload = JSON.parse(message.payload!) as { favourited?: boolean; card: Record<string, unknown> };
+        expect(payload.card, viewer).toMatchObject({ title: "T", missing_attribution: viewer === alice.id });
+        expect("missing_attribution" in payload.card).toBe("favourited" in payload);
+      }
+    }
+  });
+});
+
 describe("custom emoji on public streams (RES-2)", () => {
   // RES-3: a status and author at their presented emoji bounds are streamed whole within the payload bound.
   it("sends a status and its author with their emojis at the bound", async () => {
