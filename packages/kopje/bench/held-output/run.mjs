@@ -9,11 +9,13 @@
 //   pnpm --filter kopje bench:held-output [--local] [--runs m1,m2,...] [--out <dir>] [--quick]
 //   pnpm --filter kopje bench:held-output cleanup
 //
-// Before each deploy, the driver writes a record of the Worker (its name, account and times; no token) to
-// `$XDG_STATE_HOME/kopje/bench-held-output` (`~/.local/state` without XDG_STATE_HOME), and removes it only once the
-// Worker is confirmed gone (CLEANUP). A record left behind (the driver was killed, or could not confirm) is what
-// `cleanup` works from: it deletes and confirms each record's Worker. The driver prints that command whenever it
-// cannot confirm a Worker gone.
+// Before each deploy, the driver picks a name no Worker of the account has, and writes a record of the Worker (its
+// name, its run's id, account and times; no token) to `$XDG_STATE_HOME/kopje/bench-held-output` (`~/.local/state`
+// without XDG_STATE_HOME). The Worker carries its run's id (OWNER_VAR), and the driver and `cleanup` delete only a
+// Worker that carries the id its record holds; any other is reported, never deleted. A record goes only once its
+// Worker is confirmed gone (CLEANUP) and its run's temporary directory, which holds the token's file, is removed. A
+// record left behind (the driver was killed, or could not confirm) is what `cleanup` works from; the driver prints
+// that command whenever it cannot finish.
 //
 // Deployed, it uses wrangler's login (CLOUDFLARE_ACCOUNT_ID picks the account when the login has several) and takes
 // about five hours: M1 then M5 on one Worker, M2, M3 and M4 each on their own at the same time, so a reset elsewhere
@@ -1323,17 +1325,28 @@ async function compatibility() {
   return { date: raw.compatibility_date, flags: raw.compatibility_flags ?? [] };
 }
 
+// The var each Worker the bench deploys carries, holding its run's id: the driver and `cleanup` delete only a Worker
+// that carries the id its record holds, and only report any other.
+const OWNER_VAR = "BENCH_RUN";
+
+/** A Worker name under the bench's own prefix, with 64 random bits. */
+function workerName() {
+  return `kopje-bench-held-${randomBytes(8).toString("hex")}`;
+}
+
 /**
  * @param {string} name
  * @param {{ date: string, flags: string[] }} compat
+ * @param {string} run the run's id, which marks the Worker as this run's
  */
-function workerConfig(name, compat) {
+function workerConfig(name, compat, run) {
   return {
     name,
     main: "worker.ts",
     compatibility_date: compat.date,
     compatibility_flags: compat.flags,
     workers_dev: true,
+    vars: { [OWNER_VAR]: run },
     durable_objects: { bindings: [{ name: "HELD", class_name: "HeldOutput" }] },
     migrations: [{ tag: "v1", new_sqlite_classes: ["HeldOutput"] }],
   };
@@ -1391,8 +1404,11 @@ function workerdUnder(root) {
 export async function withTarget({ local, compat, out, label, signal, log, wrangler, cleanup, records }, fn) {
   const dir = mkdtempSync(join(tmpdir(), "kopje-bench-held-"));
   // Everything written to the directory, the token's file first among them, is removed with it however this ends.
+  /** @type {unknown} */
+  let failure = null;
   try {
-    const name = `kopje-bench-held-${randomBytes(4).toString("hex")}`;
+    const name = workerName();
+    const run = randomBytes(16).toString("hex");
     // The deployed object is public on workers.dev while it runs: it answers only requests that carry this run's
     // token. The token is a secret binding (`.dev.vars` locally, a secrets file deployed), whose value wrangler never
     // prints, unlike a var's; and whatever the driver prints or keeps shows it masked, wrangler's output included.
@@ -1402,7 +1418,7 @@ export async function withTarget({ local, compat, out, label, signal, log, wrang
     // A copy of the object's source: `wrangler dev` reloads on a change to its main module, which would reset the
     // object mid-run if the tree were edited.
     copyFileSync(join(here, "worker.ts"), join(dir, "worker.ts"));
-    writeFileSync(config, JSON.stringify(workerConfig(name, compat), null, 2));
+    writeFileSync(config, JSON.stringify(workerConfig(name, compat, run), null, 2));
     if (local) {
       writeFileSync(join(dir, ".dev.vars"), `BENCH_TOKEN=${token}\n`, { mode: 0o600 });
     } else {
@@ -1412,6 +1428,8 @@ export async function withTarget({ local, compat, out, label, signal, log, wrang
     const setup = {
       dir,
       name,
+      run,
+      compat,
       config,
       token,
       env: wranglerEnv(dir),
@@ -1427,15 +1445,47 @@ export async function withTarget({ local, compat, out, label, signal, log, wrang
     } else {
       await runDeployed(setup, fn);
     }
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+  } catch (error) {
+    failure = error;
+  }
+  // A deployed run removed the directory already, before it decided on its record; this removes what is left.
+  failure = withLeft(failure, removeDirectory(dir));
+  if (failure !== null) {
+    throw failure instanceof Error ? failure : new Error("the run failed", { cause: failure });
   }
 }
 
 /**
- * @typedef {{ dir: string, name: string, config: string, token: string, env: NodeJS.ProcessEnv, wrangler: string,
- *   cleanup: typeof CLEANUP, records: string, logFile: string, signal: AbortSignal, log: (line: string) => void }}
- *   Setup
+ * Removes a run's temporary directory, which holds the token's file: null once it is gone, or what is left, named.
+ * @param {string} dir
+ */
+function removeDirectory(dir) {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+    return null;
+  } catch (error) {
+    return `could not remove ${dir}, which holds the token's file: ${String(error)}`;
+  }
+}
+
+/**
+ * A failure, joined by what was left behind, if anything was.
+ * @param {unknown} failure
+ * @param {string | null} left
+ * @returns {unknown}
+ */
+function withLeft(failure, left) {
+  if (left === null) {
+    return failure;
+  }
+  const error = new Error(left);
+  return failure === null ? error : new AggregateError([failure, error], left);
+}
+
+/**
+ * @typedef {{ dir: string, name: string, run: string, compat: { date: string, flags: string[] }, config: string,
+ *   token: string, env: NodeJS.ProcessEnv, wrangler: string, cleanup: typeof CLEANUP, records: string,
+ *   logFile: string, signal: AbortSignal, log: (line: string) => void }} Setup
  * @typedef {{ cwd: string, env: NodeJS.ProcessEnv, wrangler: string }} WranglerAt
  */
 
@@ -1511,30 +1561,52 @@ function keep(file, text) {
 }
 
 /**
- * What the driver keeps of a deployed Worker until it is confirmed gone, outside the run's temporary directory, so
- * that it can be found again however the driver ended: where it is, when it was made, and the run's temporary
- * directory (which holds the token's file until the driver removes it); no token.
- * @typedef {{ name: string, accountId: string, startedAt: number, driverPid: number, deployPid: number | null,
- *   deployEndedAt: number | null, dir: string }} WorkerRecord
+ * What the driver keeps of a deployed Worker until it is confirmed gone and its run's temporary directory removed,
+ * outside that directory, so that it can be found again however the driver ended: where it is, the run's id it
+ * carries (OWNER_VAR), when it was made, its deploy's process, and the temporary directory (which holds the token's
+ * file until it is removed); no token.
+ * @typedef {{ name: string, run: string, accountId: string, startedAt: number, driverPid: number,
+ *   deployPid: number | null, deployEndedAt: number | null, dir: string }} WorkerRecord
  */
 
 /**
- * Writes the record durably: to a new file, synced, renamed over the old one, the directory synced.
+ * Writes the record durably: every byte to a new file, synced, renamed over the old one, the directory synced; then
+ * reads it back, and throws unless it parses to the record.
  * @param {string} records
  * @param {WorkerRecord} record
  */
 function saveRecord(records, record) {
   mkdirSync(records, { recursive: true, mode: 0o700 });
   const file = join(records, `${record.name}.json`);
+  const text = `${JSON.stringify(record)}\n`;
+  const bytes = Buffer.from(text, "utf8");
   const fd = openSync(`${file}.tmp`, "w", 0o600);
   try {
-    writeSync(fd, `${JSON.stringify(record)}\n`);
+    // A write may take fewer bytes than it was given: the rest follows.
+    let written = 0;
+    while (written < bytes.length) {
+      const took = writeSync(fd, bytes, written, bytes.length - written);
+      if (took <= 0) {
+        throw new Error(`${file}.tmp: a write took no bytes`);
+      }
+      written += took;
+    }
     fsyncSync(fd);
   } finally {
     closeSync(fd);
   }
   renameSync(`${file}.tmp`, file);
   syncDirectory(records);
+  /** @type {unknown} */
+  let back = null;
+  try {
+    back = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    // Compared below.
+  }
+  if (JSON.stringify(back) !== JSON.stringify(record)) {
+    throw new Error(`${file}: the record read back is not the one written`);
+  }
 }
 
 /**
@@ -1703,11 +1775,19 @@ async function runLocal({ dir, config, token, env, wrangler, logFile, signal, lo
  * @param {(target: Target) => Promise<void>} fn
  */
 async function runDeployed(setup, fn) {
-  const { dir, name, config, token, records, logFile, signal, log } = setup;
+  const { dir, config, token, run, records, logFile, signal, log } = setup;
   const accountId = await accountOf({ cwd: dir, env: setup.env, wrangler: setup.wrangler });
+  /** @type {WranglerAt} */
+  const at = { cwd: dir, env: { ...setup.env, CLOUDFLARE_ACCOUNT_ID: accountId }, wrangler: setup.wrangler };
+  // The bench deploys only where no Worker is: a name taken already is never deployed over.
+  const name = await freeName(at, setup.name);
+  if (name !== setup.name) {
+    writeFileSync(config, JSON.stringify(workerConfig(name, setup.compat, run), null, 2));
+  }
   /** @type {WorkerRecord} */
   const record = {
     name,
+    run,
     accountId,
     startedAt: Date.now(),
     driverPid: process.pid,
@@ -1715,16 +1795,23 @@ async function runDeployed(setup, fn) {
     deployEndedAt: null,
     dir,
   };
-  // Written before the deploy starts, so that however the driver ends, the record finds the Worker again.
-  saveRecord(records, record);
+  // Written, and read back, before the deploy starts, so that however the driver ends, the record finds the Worker.
+  try {
+    saveRecord(records, record);
+  } catch (error) {
+    rmSync(join(records, `${name}.json`), { force: true });
+    throw new Error(`${name}: its record could not be written, so it is not deployed`, { cause: error });
+  }
+  /** @type {unknown} */
+  let failure = null;
   try {
     log(`deploying ${name} (its record: ${join(records, `${name}.json`)})`);
     const secrets = join(dir, "secrets.json");
-    const at = { cwd: dir, env: { ...setup.env, CLOUDFLARE_ACCOUNT_ID: accountId }, wrangler: setup.wrangler };
     const deploy = await runWrangler(at, ["deploy", "--config", config, "--secrets-file", secrets], (pid) => {
       record.deployPid = pid;
       updateRecord(records, record);
     });
+    // The deploy's command has exited: from now on, only what its requests may still land is waited for.
     record.deployEndedAt = Date.now();
     updateRecord(records, record);
     rmSync(secrets, { force: true });
@@ -1743,41 +1830,111 @@ async function runDeployed(setup, fn) {
     await answeringState(target, 5 * MINUTE_MS, signal);
     log(`${name}: ${url}`);
     await fn(target);
-  } finally {
-    await removeWorker(record, { wrangler: setup.wrangler, cleanup: setup.cleanup, records, logFile });
+  } catch (error) {
+    failure = error;
+  }
+  const confirmed = await removeWorker(record, { wrangler: setup.wrangler, cleanup: setup.cleanup, records, logFile });
+  const left = removeDirectory(dir);
+  settleRecord(records, record, confirmed, left);
+  failure = withLeft(failure, left);
+  if (failure !== null) {
+    throw failure instanceof Error ? failure : new Error("the run failed", { cause: failure });
   }
 }
 
 /**
+ * A name for the Worker that no Worker of the account has: `first`, or another if that one is taken.
+ * @param {WranglerAt} at
+ * @param {string} first
+ */
+async function freeName(at, first) {
+  let name = first;
+  for (let tries = 0; tries < 3; tries += 1) {
+    const status = await runWrangler(at, ["deployments", "status", "--name", name, "--json"]);
+    if (missing(status)) {
+      return name;
+    }
+    if (status.code !== 0) {
+      throw new Error(`cannot tell whether a Worker named ${name} exists, so nothing is deployed: ${lastLine(status)}`);
+    }
+    log(`a Worker named ${name} exists already: trying another name`);
+    name = workerName();
+  }
+  throw new Error("three random Worker names in a row exist already: nothing is deployed");
+}
+
+/**
+ * Whether wrangler's answer says the Worker does not exist (the API's code 10007).
+ * @param {{ code: number | null, output: string }} result
+ */
+function missing(result) {
+  return result.code !== 0 && result.output.includes("[code: 10007]");
+}
+
+/** @param {{ output: string }} result */
+function lastLine(result) {
+  return masked(result.output.trim().split("\n").at(-1) ?? "");
+}
+
+/**
+ * The JSON object in wrangler's output, or null.
+ * @param {string} text
+ * @returns {unknown}
+ */
+function jsonOf(text) {
+  try {
+    return JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whose the Worker wrangler answered for is: this run's when every version of its latest deployment carries the
+ * record's run id in OWNER_VAR, another's when one does not, unknown when that cannot be read.
+ * @param {WranglerAt} at
+ * @param {WorkerRecord} record
+ * @param {string} status the output of `deployments status --json`
+ * @param {string | null} logFile
+ * @returns {Promise<"this run" | "another" | "unknown">}
+ */
+async function ownerOf(at, record, status, logFile) {
+  const versions = /** @type {{ versions?: { version_id?: string }[] } | null} */ (jsonOf(status))?.versions ?? [];
+  if (versions.length === 0) {
+    return "unknown";
+  }
+  for (const { version_id: id } of versions) {
+    if (id === undefined) {
+      return "unknown";
+    }
+    const view = await runWrangler(at, ["versions", "view", id, "--name", record.name, "--json"]);
+    keep(logFile, view.output);
+    const version = /** @type {{ resources?: { bindings?: { name?: string, text?: string }[] } } | null} */ (
+      jsonOf(view.stdout)
+    );
+    const bindings = version?.resources?.bindings;
+    if (view.code !== 0 || bindings === undefined) {
+      return "unknown";
+    }
+    if (!bindings.some((b) => b.name === OWNER_VAR && b.text === record.run)) {
+      return "another";
+    }
+  }
+  return "this run";
+}
+
+/**
  * Deletes the record's Worker and confirms it gone: the API says it does not exist, at least `landingMs` after its
- * deploy ended (a deploy still running is waited for first, up to `landingMs`). Only then is the record removed; when
- * that cannot be confirmed, the record stays and the cleanup command is printed. No write here (a log, the record)
- * stops it by failing. Returns whether the Worker was confirmed gone.
+ * deploy's command exited. It deletes only a Worker that carries the record's run id, and only reports any other. No
+ * write here (a log, the record) stops it by failing. Returns whether the Worker was confirmed gone.
  * @param {WorkerRecord} record
  * @param {{ wrangler: string, cleanup: typeof CLEANUP, records: string, logFile: string | null }} options
  */
-async function removeWorker(record, { wrangler, cleanup, records, logFile }) {
-  const { name } = record;
-  const confirmed = await confirmGone(record, { wrangler, cleanup, records, logFile }).catch(
-    (/** @type {unknown} */ error) => {
-      console.error(`held-output: removing ${name} failed: ${masked(String(error))}`);
-      return false;
-    },
-  );
-  if (confirmed) {
-    try {
-      rmSync(join(records, `${name}.json`), { force: true });
-      syncDirectory(records);
-    } catch (error) {
-      console.error(`held-output: ${name} is gone, but its record could not be removed: ${String(error)}`);
-    }
-    log(`${name}: deleted`);
-  } else {
-    console.error(
-      `held-output: ${name} is not confirmed gone; its record stays in ${records}; run: ${CLEANUP_COMMAND}`,
-    );
-  }
-  return confirmed;
+async function removeWorker(record, options) {
+  return confirmGone(record, options).catch((/** @type {unknown} */ error) => {
+    console.error(`held-output: removing ${record.name} failed: ${masked(String(error))}`);
+    return false;
+  });
 }
 
 /**
@@ -1787,11 +1944,20 @@ async function removeWorker(record, { wrangler, cleanup, records, logFile }) {
 async function confirmGone(record, { wrangler, cleanup, records, logFile }) {
   const { name } = record;
   if (record.deployEndedAt === null) {
-    // The driver ended before its deploy did, or before the deploy started.
+    // The driver ended before its deploy's command did. That command has ended only once its process is gone; until
+    // then, and when the record names no process, the record stays.
+    if (record.deployPid === null) {
+      console.error(`held-output: the record of ${name} names no deploy process, so its deploy's end is unknown`);
+      return false;
+    }
     const until = Date.now() + cleanup.landingMs;
     while (alive(record.deployPid) && Date.now() < until) {
       log(`${name}: its deploy (pid ${record.deployPid}) still runs`);
       await delay(cleanup.retryMs);
+    }
+    if (alive(record.deployPid)) {
+      console.error(`held-output: ${name}: its deploy (pid ${record.deployPid}) still runs`);
+      return false;
     }
     record.deployEndedAt = Date.now();
     updateRecord(records, record);
@@ -1803,11 +1969,9 @@ async function confirmGone(record, { wrangler, cleanup, records, logFile }) {
     const at = { cwd: dir, env: wranglerEnv(dir, record.accountId), wrangler };
     let attempt = 1;
     while (attempt <= cleanup.attempts) {
-      log(`deleting ${name}${attempt > 1 ? ` (attempt ${attempt})` : ""}`);
-      const deleted = await runWrangler(at, ["delete", name, "--force"]);
       const status = await runWrangler(at, ["deployments", "status", "--name", name, "--json"]);
-      keep(logFile, `${deleted.output}${status.output}`);
-      if (status.code !== 0 && status.output.includes("[code: 10007]")) {
+      keep(logFile, status.output);
+      if (missing(status)) {
         const wait = record.deployEndedAt + cleanup.landingMs - Date.now();
         if (wait <= 0) {
           return true;
@@ -1817,21 +1981,63 @@ async function confirmGone(record, { wrangler, cleanup, records, logFile }) {
         await delay(wait);
         continue;
       }
-      log(`${name}: not gone yet: ${masked(status.output.trim().split("\n").at(-1) ?? "")}`);
+      let deleted = false;
+      const owner = status.code === 0 ? await ownerOf(at, record, status.stdout, logFile) : "unknown";
+      if (owner === "another") {
+        console.error(`held-output: a Worker named ${name} exists without this run's ${OWNER_VAR}: it is not deleted`);
+        return false;
+      }
+      if (owner === "this run") {
+        log(`deleting ${name}${attempt > 1 ? ` (attempt ${attempt})` : ""}`);
+        const result = await runWrangler(at, ["delete", name, "--force"]);
+        keep(logFile, result.output);
+        deleted = result.code === 0;
+      } else {
+        log(`${name}: not known gone: ${lastLine(status)}`);
+      }
       attempt += 1;
-      if (attempt <= cleanup.attempts) {
+      // A delete that went through is confirmed at once; anything else is tried again after a pause.
+      if (!deleted && attempt <= cleanup.attempts) {
         await delay(cleanup.retryMs);
       }
     }
     return false;
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeDirectory(dir);
   }
 }
 
 /**
+ * Removes the record once its Worker is confirmed gone and its run's temporary directory removed; otherwise keeps it
+ * and says what remains. Returns whether the record was removed.
+ * @param {string} records
+ * @param {WorkerRecord} record
+ * @param {boolean} confirmed
+ * @param {string | null} left what is left of the temporary directory, or null
+ */
+function settleRecord(records, record, confirmed, left) {
+  const file = join(records, `${record.name}.json`);
+  if (confirmed && left === null) {
+    try {
+      rmSync(file, { force: true });
+      syncDirectory(records);
+      log(`${record.name}: deleted`);
+      return true;
+    } catch (error) {
+      console.error(
+        `held-output: ${record.name} is gone, but its record ${file} could not be removed: ${String(error)}`,
+      );
+      return false;
+    }
+  }
+  const remains = [confirmed ? null : `${record.name} is not confirmed gone`, left].filter((r) => r !== null);
+  console.error(`held-output: ${remains.join("; ")}; its record ${file} stays; run: ${CLEANUP_COMMAND}`);
+  return false;
+}
+
+/**
  * `cleanup`: deletes the Worker of every record left behind and confirms each gone, and removes the temporary
- * directory its driver left. A record whose driver still runs is left to that driver.
+ * directory its driver left; a record goes once both are done. A record whose driver still runs is left to it.
  * @param {Overrides} overrides
  */
 async function cleanupCommand(overrides) {
@@ -1852,17 +2058,13 @@ async function cleanupCommand(overrides) {
       records,
       logFile: null,
     };
-    if (!(await removeWorker(record, options))) {
+    const confirmed = await removeWorker(record, options);
+    if (!settleRecord(records, record, confirmed, removeDirectory(record.dir))) {
       left.push(record.name);
-    }
-    try {
-      rmSync(record.dir, { recursive: true, force: true });
-    } catch (error) {
-      console.error(`held-output: could not remove ${record.dir}: ${String(error)}`);
     }
   }
   if (left.length > 0) {
-    throw new Error(`not confirmed gone: ${left.join(", ")}; their records stay in ${records}`);
+    throw new Error(`not resolved: ${left.join(", ")}; their records stay in ${records}`);
   }
 }
 

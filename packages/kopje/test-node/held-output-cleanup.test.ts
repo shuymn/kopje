@@ -1,6 +1,15 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import * as realFs from "node:fs";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -11,11 +20,17 @@ import { withTarget } from "../bench/held-output/run.mjs";
 
 // How the held-output bench's driver (bench/held-output/run.mjs, #1610) removes what it started: the driver runs in a
 // process of its own, as the command does, against a fake wrangler whose Workers are files, and is stopped the way a
-// terminal stops a command, with a signal to its whole process group, or killed outright.
+// terminal stops a command, with a signal to its whole process group, or killed outright. Where a fault needs the
+// filesystem itself, the driver runs in this process against a mocked `node:fs`.
 
-const fault = vi.hoisted(() => ({ secretWrite: false, made: [] as string[] }));
+const fault = vi.hoisted(() => ({
+  secretWrite: false,
+  lyingRecordWrite: false,
+  stuckRunDir: false,
+  made: [] as string[],
+  opened: new Map<number, string>(),
+}));
 
-// The disk fills while the token's file is written: two bytes short of its end, so the token itself is on disk.
 vi.mock("node:fs", async (importOriginal) => {
   const fs = await importOriginal<typeof realFs>();
   return {
@@ -25,6 +40,7 @@ vi.mock("node:fs", async (importOriginal) => {
       fault.made.push(dir);
       return dir;
     },
+    // The disk fills while the token's file is written: two bytes short of its end, so the token itself is on disk.
     writeFileSync: (file: string, data: string, options?: realFs.WriteFileOptions) => {
       if (fault.secretWrite && /(?:secrets\.json|\.dev\.vars)$/.test(file)) {
         fs.writeFileSync(file, data.slice(0, -2), options);
@@ -32,16 +48,36 @@ vi.mock("node:fs", async (importOriginal) => {
       }
       fs.writeFileSync(file, data, options);
     },
+    openSync: (file: string, flags: string, mode?: number) => {
+      const fd = fs.openSync(file, flags, mode);
+      fault.opened.set(fd, file);
+      return fd;
+    },
+    // A record's write that says it took every byte but took 16.
+    writeSync: (fd: number, buffer: Buffer, offset: number, length: number) => {
+      if (fault.lyingRecordWrite && (fault.opened.get(fd) ?? "").endsWith(".json.tmp")) {
+        fs.writeSync(fd, buffer, offset, Math.min(16, length));
+        return length;
+      }
+      return fs.writeSync(fd, buffer, offset, length);
+    },
+    // The run's temporary directory, which holds the token's file, cannot be removed.
+    rmSync: (path: string, options?: realFs.RmOptions) => {
+      if (fault.stuckRunDir && fault.made.includes(path) && !basename(path).includes("cleanup")) {
+        throw Object.assign(new Error(`EACCES: permission denied, rmdir '${path}'`), { code: "EACCES" });
+      }
+      fs.rmSync(path, options);
+    },
   };
 });
 
 const RUN = pathToFileURL(fileURLToPath(new URL("../bench/held-output/run.mjs", import.meta.url))).href;
 const ACCOUNT = "acct-test";
 
-// wrangler as the driver runs it: `whoami`, `deploy`, `delete` and `deployments status`, each logged, against Workers
-// that exist while their files do. As wrangler does, it dumps an upload's body when its log is debug and unsanitized,
-// and writes an output file when asked. Interrupted by SIGTERM, a deploy's command ends but its upload lands later,
-// as a remote deploy may.
+// wrangler as the driver runs it: `whoami`, `deploy`, `delete`, `deployments status` and `versions view`, each logged,
+// against Workers that exist while their files do, each file holding the BENCH_RUN its deploy carried. As wrangler
+// does, it dumps an upload's body when its log is debug and unsanitized, and writes an output file when asked.
+// Interrupted by SIGTERM, a deploy's command ends but its upload lands later, as a remote deploy may.
 const FAKE_WRANGLER = `
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -56,24 +92,28 @@ const wait = (ms) => new Promise((done) => setTimeout(done, ms));
 const missing = "This Worker does not exist on your account. [code: 10007]";
 const remoteOf = (name) => join(state, "remote-" + name);
 const option = (flag) => args[args.indexOf(flag) + 1];
-const landLater = (name) =>
+const landLater = (name, mark) =>
   spawn(
     process.execPath,
-    ["-e", "setTimeout(() => require('node:fs').writeFileSync(process.argv[1], ''), 800)", remoteOf(name)],
+    ["-e", "setTimeout(() => require('node:fs').writeFileSync(...process.argv.slice(1)), 800)", remoteOf(name), mark],
     { detached: true, stdio: "ignore" },
   ).unref();
 let name = "";
+let mark = "";
 process.on("SIGTERM", () => {
   log(command + " interrupted");
-  if (command === "deploy") landLater(name);
+  if (command === "deploy") landLater(name, mark);
   process.exit(1);
 });
 if (command === "whoami") {
   console.log(JSON.stringify({ loggedIn: true, accounts: [{ id: "acct-test", name: "Test" }] }, null, 4));
 } else if (command === "deploy") {
-  name = JSON.parse(readFileSync(option("--config"), "utf8")).name;
+  const config = JSON.parse(readFileSync(option("--config"), "utf8"));
+  name = config.name;
+  mark = config.vars?.BENCH_RUN ?? "";
   const token = JSON.parse(readFileSync(option("--secrets-file"), "utf8")).BENCH_TOKEN;
   log("deploy start " + token);
+  log("deploy name " + name);
   const output = Object.keys(env).filter((key) => key.startsWith("WRANGLER_OUTPUT_FILE_"));
   const seen = [env.WRANGLER_LOG, env.WRANGLER_LOG_SANITIZE, env.CLOUDFLARE_ACCOUNT_ID, output.join("+") || "-"];
   log("deploy env " + seen.join(" "));
@@ -97,16 +137,27 @@ if (command === "whoami") {
     process.exit(1);
   }
   if (modes.has("deploy-lands-late")) {
-    landLater(name);
+    landLater(name, mark);
     log("deploy failed");
     process.exit(1);
   }
-  writeFileSync(remoteOf(name), "");
+  if (modes.has("another-appears")) {
+    // The deploy fails, and a Worker of that name that is not this run's appears all the same.
+    writeFileSync(remoteOf(name), "another");
+    log("deploy failed");
+    process.exit(1);
+  }
+  writeFileSync(remoteOf(name), mark);
   log("deploy done");
   console.log("Deployed\\n  https://" + name + ".example.workers.dev");
-} else if (command === "delete" || command === "deployments") {
+} else if (command === "delete" || command === "deployments" || command === "versions") {
   name = command === "delete" ? args[0] : option("--name");
   appendFileSync(join(state, "accounts"), env.CLOUDFLARE_ACCOUNT_ID + "\\n");
+  if (command === "deployments" && modes.has("name-taken") && !existsSync(join(state, "taken"))) {
+    // The first name asked about is another's Worker already.
+    writeFileSync(join(state, "taken"), name);
+    writeFileSync(remoteOf(name), "another");
+  }
   if (command === "delete") {
     log("delete start");
     await wait(Number(env.FAKE_DELETE_MS));
@@ -123,13 +174,17 @@ if (command === "whoami") {
     }
     rmSync(remoteOf(name));
     log("delete done");
-  } else if (existsSync(remoteOf(name))) {
-    log("status present");
-    console.log("{}");
-  } else {
-    log("status gone");
+  } else if (!existsSync(remoteOf(name))) {
+    if (command === "deployments") log("status gone");
     console.error(missing);
     process.exit(1);
+  } else if (command === "deployments") {
+    log("status present");
+    console.log(JSON.stringify({ versions: [{ version_id: "v-1", percentage: 100 }] }));
+  } else {
+    const text = readFileSync(remoteOf(name), "utf8");
+    const bindings = [{ type: "plain_text", name: "BENCH_RUN", text }];
+    console.log(JSON.stringify({ id: "v-1", resources: { bindings } }));
   }
 }
 `;
@@ -158,6 +213,12 @@ afterEach(() => {
   }
   driver = null;
   fault.secretWrite = false;
+  fault.lyingRecordWrite = false;
+  fault.stuckRunDir = false;
+  vi.unstubAllEnvs();
+  for (const left of existsSync(join(dir, "tmp")) ? readdirSync(join(dir, "tmp")) : []) {
+    chmodSync(join(dir, "tmp", left), 0o700);
+  }
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -165,7 +226,16 @@ const lines = () => (existsSync(join(dir, "log")) ? readFileSync(join(dir, "log"
 const steps = () => lines().filter((l) => l.startsWith("delete") || l.startsWith("status"));
 const records = () => (existsSync(join(dir, "records")) ? readdirSync(join(dir, "records")) : []);
 const remotes = () => readdirSync(dir).filter((f) => f.startsWith("remote-"));
-const tokenOf = () => lines()[0]?.replace("deploy start ", "") ?? "";
+const remote = (name: string) => readFileSync(join(dir, `remote-${name}`), "utf8");
+const tokenOf = () =>
+  lines()
+    .find((l) => l.startsWith("deploy start "))
+    ?.replace("deploy start ", "") ?? "";
+const deployed = () =>
+  lines()
+    .find((l) => l.startsWith("deploy name "))
+    ?.replace("deploy name ", "") ?? "";
+const leftDirs = () => readdirSync(join(dir, "tmp")).filter((d) => d.startsWith("kopje-bench-held-"));
 
 async function eventually(ready: () => boolean) {
   for (let i = 0; i < 300 && !ready(); i += 1) {
@@ -174,10 +244,6 @@ async function eventually(ready: () => boolean) {
   expect(ready()).toBe(true);
 }
 
-/**
- * Runs the command in a process group of its own; at each line in `signalAt`, once the fake logged it, `kill` goes to
- * the whole group. Resolves when the command ended.
- */
 type Drive = {
   deployMs?: number;
   deleteMs?: number;
@@ -188,6 +254,10 @@ type Drive = {
   env?: Record<string, string>;
 };
 
+/**
+ * Runs the command in a process group of its own; at each line in `signalAt`, once the fake logged it, `kill` goes to
+ * the whole group. Resolves when the command ended.
+ */
 async function drive(
   mode: string,
   { deployMs = 0, deleteMs = 0, landingMs = 0, signalAt = [], kill = "SIGTERM", command = "run", env = {} }: Drive = {},
@@ -219,6 +289,35 @@ async function drive(
   }
   const code = await exited;
   return { code, output, out };
+}
+
+/** The driver in this process, deployed, against the fake wrangler; its run ends as soon as the Worker answers. */
+function deployHere(mode = "") {
+  vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "");
+  vi.stubEnv("FAKE_STATE", dir);
+  vi.stubEnv("FAKE_OUT", join(dir, "out"));
+  vi.stubEnv("FAKE_MODE", mode);
+  vi.stubEnv("FAKE_DEPLOY_MS", "0");
+  vi.stubEnv("FAKE_DELETE_MS", "0");
+  mkdirSync(join(dir, "out"), { recursive: true });
+  fault.made.length = 0;
+  const fn = vi.fn(async () => {});
+  const run = withTarget(
+    {
+      local: false,
+      compat: { date: "2026-10-11", flags: [] },
+      out: join(dir, "out"),
+      label: "m2",
+      // Stopped already: the driver asks the deployed Worker nothing, and goes straight to removing it.
+      signal: AbortSignal.abort(),
+      log: () => {},
+      wrangler: join(dir, "fake-wrangler.mjs"),
+      cleanup: { landingMs: 0, retryMs: 50, attempts: 3 },
+      records: join(dir, "records"),
+    },
+    fn,
+  );
+  return { run, fn };
 }
 
 // Whether `text` holds the token in any form it decodes from: as is, percent-encoded, or base64 at any alignment.
@@ -258,12 +357,18 @@ describe("held-output driver's cleanup", () => {
     "keeps the record until the Worker is confirmed gone long enough after its deploy ended",
     { timeout: 30_000 },
     async () => {
-      // The deploy's command fails, and its upload lands 0.8 s later: after the first delete found nothing.
+      // The deploy's command fails, and its upload lands 0.8 s later: after the first check found nothing.
       const result = await drive("deploy-lands-late", { landingMs: 2_000 });
       expect(result.code).toBe(1);
-      expect(steps().slice(0, 3)).toEqual(["delete start", "delete missing", "status gone"]);
-      expect(steps()).toContain("delete done");
-      expect(steps().at(-1)).toBe("status gone");
+      // The name is checked free, the Worker is gone at first, then there, deleted, and gone for good.
+      expect(steps()).toEqual([
+        "status gone",
+        "status gone",
+        "status present",
+        "delete start",
+        "delete done",
+        "status gone",
+      ]);
       await new Promise((done) => setTimeout(done, 500));
       expect(remotes()).toEqual([]);
       expect(records()).toEqual([]);
@@ -273,6 +378,8 @@ describe("held-output driver's cleanup", () => {
   it("retries a delete that failed until the Worker is confirmed gone", { timeout: 30_000 }, async () => {
     const result = await drive("delete-fails-once", { deployMs: 500, signalAt: ["deploy start"] });
     expect(steps()).toEqual([
+      "status gone",
+      "status present",
       "delete start",
       "delete failed",
       "status present",
@@ -309,7 +416,7 @@ describe("held-output driver's cleanup", () => {
     expect(reveals(text, tokenOf())).toBe(false);
     expect(remotes()).toHaveLength(1);
     // What the killed driver left of its temporary directory, the token's file in it.
-    expect(readdirSync(join(dir, "tmp")).filter((d) => d.startsWith("kopje-bench-held-"))).toHaveLength(1);
+    expect(leftDirs()).toHaveLength(1);
     const cleanup = await drive("", { command: "cleanup", landingMs: 300 });
     expect(cleanup.code).toBe(0);
     expect(remotes()).toEqual([]);
@@ -349,6 +456,94 @@ describe("held-output driver's cleanup", () => {
     expect(reveals(kept, token)).toBe(false);
     expect(lines()).toContain(`deploy env log true ${ACCOUNT} -`);
     expect(readdirSync(dumps)).toEqual([]);
+  });
+
+  it(
+    "never deploys over a name taken already: it picks another, and leaves that Worker alone",
+    { timeout: 30_000 },
+    async () => {
+      await drive("name-taken", { deployMs: 300, signalAt: ["deploy start"] });
+      const taken = readFileSync(join(dir, "taken"), "utf8");
+      expect(deployed()).not.toBe(taken);
+      expect(remotes()).toEqual([`remote-${taken}`]);
+      expect(remote(taken)).toBe("another");
+      expect(records()).toEqual([]);
+    },
+  );
+
+  it("never deletes a Worker that does not carry the run's id, and only reports it", { timeout: 30_000 }, async () => {
+    const result = await drive("another-appears");
+    const name = deployed();
+    expect(result.code).toBe(1);
+    expect(result.output).toContain(`a Worker named ${name} exists without this run's BENCH_RUN: it is not deleted`);
+    expect(records()).toEqual([`${name}.json`]);
+    const cleanup = await drive("", { command: "cleanup" });
+    expect(cleanup.code).toBe(1);
+    expect(steps().filter((l) => l.startsWith("delete"))).toEqual([]);
+    expect(remote(name)).toBe("another");
+    expect(records()).toEqual([`${name}.json`]);
+  });
+
+  it("keeps the record while the deploy it names still runs", { timeout: 30_000 }, async () => {
+    await drive("", { deployMs: 3_000, signalAt: ["deploy start"], kill: "SIGKILL" });
+    // The deploy runs on after its driver was killed: `cleanup` neither deletes nor lets go of anything.
+    const early = await drive("", { command: "cleanup", landingMs: 300 });
+    expect(early.code).toBe(1);
+    expect(early.output).toContain("still runs");
+    expect(steps().filter((l) => l.startsWith("delete"))).toEqual([]);
+    expect(records()).toHaveLength(1);
+    await eventually(() => lines().includes("deploy done"));
+    const late = await drive("", { command: "cleanup", landingMs: 300 });
+    expect(late.code).toBe(0);
+    expect(remotes()).toEqual([]);
+    expect(records()).toEqual([]);
+  });
+
+  it(
+    "keeps the record, and fails naming it, while `cleanup` cannot remove the token's directory",
+    { timeout: 30_000 },
+    async () => {
+      await drive("", { deployMs: 300, signalAt: ["deploy start"], kill: "SIGKILL" });
+      await eventually(() => lines().includes("deploy done"));
+      const [left] = leftDirs();
+      // The directory's entries cannot be removed.
+      chmodSync(join(dir, "tmp", left!), 0o500);
+      const stuck = await drive("", { command: "cleanup" });
+      expect(stuck.code).toBe(1);
+      expect(stuck.output).toContain(`could not remove ${join(dir, "tmp", left!)}`);
+      expect(remotes()).toEqual([]);
+      expect(records()).toHaveLength(1);
+      chmodSync(join(dir, "tmp", left!), 0o700);
+      const freed = await drive("", { command: "cleanup" });
+      expect(freed.code).toBe(0);
+      expect(records()).toEqual([]);
+      expect(leftDirs()).toEqual([]);
+    },
+  );
+
+  it(
+    "keeps the record, and fails naming it, when the run's directory cannot be removed",
+    { timeout: 30_000 },
+    async () => {
+      fault.stuckRunDir = true;
+      const { run } = deployHere();
+      const [made] = fault.made.filter((d) => basename(d).startsWith("kopje-bench-held-"));
+      await expect(run).rejects.toThrow(`could not remove ${made}`);
+      // The Worker was deleted all the same; only the record stays, for `cleanup`.
+      expect(remotes()).toEqual([]);
+      expect(records()).toHaveLength(1);
+      fault.stuckRunDir = false;
+      rmSync(made!, { recursive: true, force: true });
+    },
+  );
+
+  it("deploys nothing unless its record reads back whole", { timeout: 30_000 }, async () => {
+    fault.lyingRecordWrite = true;
+    const { run, fn } = deployHere();
+    await expect(run).rejects.toThrow("its record could not be written, so it is not deployed");
+    expect(fn).not.toHaveBeenCalled();
+    expect(lines().filter((l) => l.startsWith("deploy"))).toEqual([]);
+    expect(records()).toEqual([]);
   });
 
   it.each([
