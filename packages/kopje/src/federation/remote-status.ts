@@ -1,4 +1,4 @@
-import type { DocumentLoader } from "@fedify/fedify";
+import { type DocumentLoader, FetchError } from "@fedify/fedify";
 
 import { isPublicCollection } from "../domain/audience";
 import { isConversationId } from "../domain/conversation-rows";
@@ -509,7 +509,14 @@ export function parseRemoteStatus(
   };
 }
 
-export type FetchedStatus = { kind: "ok"; status: RemoteStatusInput } | { kind: "transient" } | { kind: "unusable" };
+export type FetchedStatus =
+  | { kind: "ok"; status: RemoteStatusInput }
+  | { kind: "transient" }
+  // The document answers 404 or 410. url: the URL that answered, after the same-origin redirects the safe loader
+  // follows (its FetchError's); only a 404 at the status's URI itself removes the status, and only where the caller
+  // says so (actor-gone.ts goneAt, domain/remote-collections.ts completePinFetches).
+  | { kind: "gone"; status: 404 | 410; url: string }
+  | { kind: "unusable" };
 
 // A status fetched by its id through `loader` (the request's signed, budgeted loader: NET-1, NET-4). The loader has
 // checked the document's id against its origin (ID-2); the parsed id must be that same id.
@@ -522,6 +529,10 @@ export async function fetchRemoteStatus(
   try {
     document = (await loader(uri)).document;
   } catch (error) {
+    const status = error instanceof FetchError ? error.response?.status : undefined;
+    if (error instanceof FetchError && (status === 404 || status === 410)) {
+      return { kind: "gone", status, url: error.url.href };
+    }
     return { kind: isTransientLoadError(error) ? "transient" : "unusable" };
   }
   if (!withinJsonBounds(document)) {
