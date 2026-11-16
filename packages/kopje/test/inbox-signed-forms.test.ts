@@ -433,6 +433,23 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       },
     );
 
+    // A proof in the data-integrity context, a @graph container: Mastodon reads the body as received only where
+    // JSON-LD's expansion leaves something of the proof (its compaction's @graph key the limits refuse); of one that
+    // expands to nothing it reads the compaction, the QuoteRequest left undefined a blank node's type, and so does
+    // Kopje (ldSignedReading).
+    it.each([
+      ["a null value", false],
+      ["a language alone", false],
+      ["an empty set", false],
+      ["an array of a null value", false],
+      ["plain names", true],
+    ])("a QuoteRequest left undefined with a proof of %s: read as received %s, as by Mastodon", (variant, received) => {
+      const name = `QuoteRequest, its type left undefined, with a proof of ${variant}`;
+      expect(form(name).fallback !== undefined).toBe(received);
+      expect(kopje(form(name))).toEqual(mastodon(form(name)));
+      expect(kopje(form(name)).ok).toBe(received);
+    });
+
     // A body Kopje can show Mastodon reads as received, by the refusals captured above (too many values as received, a
     // @graph key, a proof the data-integrity context makes a @graph), it reads as received too: the names its context
     // leaves undefined as written (ldSignedReading).
@@ -967,9 +984,16 @@ describe("D1 through the inbox: what the received form stores", () => {
   // Mastodon's compaction names it, a blank node's: what Mastodon's readers do not read applies nothing here either,
   // and the same body with the name defined applies it in both (ldSignedReading).
   it.each([
-    ["left undefined", "pending"],
-    ["defined", "accepted"],
-  ])("a QuoteRequest, its type %s, leaves bob's quote of alice's status %s, as in Mastodon", async (variant, state) => {
+    ["QuoteRequest, its type left undefined", "pending"],
+    ["QuoteRequest, its type defined", "accepted"],
+    // Under the data-integrity context, with a proof that expands to nothing: read as the compaction names it.
+    ["QuoteRequest, its type left undefined, with a proof of a null value", "pending"],
+    ["QuoteRequest, its type left undefined, with a proof of a language alone", "pending"],
+    ["QuoteRequest, its type left undefined, with a proof of an empty set", "pending"],
+    ["QuoteRequest, its type left undefined, with a proof of an array of a null value", "pending"],
+    // With one that leaves a node: read as received, as Mastodon's limits refuse the compaction's @graph.
+    ["QuoteRequest, its type left undefined, with a proof of plain names", "accepted"],
+  ])("a %s leaves bob's quote of alice's status %s, as in Mastodon", async (name, state) => {
     const { t, bob, status } = await world();
     const uri = "https://mastodon.example/users/bob/statuses/quoting";
     expect(await t.post(bob, create(bob, quoting(bob, status.uri, null, { id: uri, atomUri: uri })))).toBe(202);
@@ -977,7 +1001,6 @@ describe("D1 through the inbox: what the received form stores", () => {
     const quote = async () =>
       (await sql<{ state: string }>(t.store, "SELECT state FROM quotes WHERE status_id = ?", id))[0]?.state;
     expect(await quote()).toBe("pending");
-    const name = `QuoteRequest, its type ${variant}`;
     expect(await t.post(bob, body(name, status))).toBe(202);
     expect(await quote()).toBe(state);
     expect(applied(name).effect).toEqual(state === "pending" ? {} : { quote_changes: [{ status: uri, state }] });

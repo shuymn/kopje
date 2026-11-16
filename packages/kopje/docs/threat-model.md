@@ -140,9 +140,11 @@ against their own instance. TLS is assumed between all parties.
   `Hashtag`, `Emoji`, `PropertyValue`, `sensitive`, `quote`, … under the ActivityStreams and security contexts alone)
   the compaction writes as a blank node's name, and one they define otherwise (a `quote` not typed `@id`) as its IRI;
   Mastodon's readers read neither, and nor does Kopje, so such a `QuoteRequest` grants no quote, nor does any for a
-  quote so named. A body Kopje can show Mastodon reads as received it reads as received; where Mastodon gives up the
-  compaction of another, or writes the name for a value of another shape, Kopje reads less. The readings still differ in
-  shapes, values and readers, each listed in `docs/mastodon-deviations.md` ("Reading inbound activities"). None of those
+  quote so named. A body Kopje can show Mastodon reads as received it reads as received: one past its JSON-LD limits as
+  received, and one whose proof, a `@graph` in the data-integrity contexts, keeps something once JSON-LD expands it (of
+  a proof that expands to nothing, a null value, the compaction stands). Where Mastodon gives up the compaction of
+  another, or writes the name for a value of another shape, Kopje reads less. The readings still differ in shapes,
+  values and readers, each listed in `docs/mastodon-deviations.md` ("Reading inbound activities"). None of those
   differences lets Kopje grant an access Mastodon's reading would not (a follow, a status's audience, a lifted block, a
   quote's approval); some leave in place one Mastodon's reading would withdraw (a follow its `Reject` ends, a status its
   `Delete` removes, a block an `Undo` of it lifts), and those are listed there too. The owner is the actor whose

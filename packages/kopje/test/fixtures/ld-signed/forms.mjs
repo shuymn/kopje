@@ -689,6 +689,28 @@ const forms = {
       ],
     ]),
   ),
+
+  // A proof in the data-integrity context, a @graph container: Mastodon reads the body as received only where JSON-LD's
+  // expansion leaves something of the proof, which the compaction then writes under a @graph key; of one that expands
+  // to nothing it reads the compaction, the QuoteRequest left undefined a blank node's type.
+  ...Object.fromEntries(
+    /** @type {[string, unknown][]} */ ([
+      ["a null value", { "@value": null }],
+      ["a language alone", { "@language": "en" }],
+      ["an empty set", { "@set": [] }],
+      ["an array of a null value", [{ "@value": null }]],
+      ["plain names", { type: "DataIntegrityProof", cryptosuite: "eddsa-jcs-2022", proofValue: "z3placeholder" }],
+    ]).map(([variant, proof]) => [
+      `QuoteRequest, its type left undefined, with a proof of ${variant}`,
+      {
+        ...signed(
+          [AS, SEC, DATA_INTEGRITY],
+          activity("QuoteRequest", { object: LOCAL_STATUS, instrument: `${BOB}/statuses/quoting` }),
+        ),
+        proof,
+      },
+    ]),
+  ),
 };
 
 // The same bodies without a signature: read as received by both.

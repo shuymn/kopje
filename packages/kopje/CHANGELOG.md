@@ -252,8 +252,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   contexts give it the meaning `full_context` does, or neither defines it): a `QuoteRequest`, a hashtag, an emoji, a
   profile field, `sensitive`, a quote and the other extension names a body's context leaves undefined or defines
   otherwise are no longer read, as Mastodon reads none of them, so such a `QuoteRequest` no longer approves a quote; a
-  body Mastodon reads as received (past its JSON-LD limits, or with a data-integrity proof) is read as received. No
-  Store migration and no `wrangler.jsonc` change.
+  body Mastodon reads as received (past its JSON-LD limits, or with a data-integrity proof that keeps something once
+  JSON-LD expands it) is read as received, so a proof that expands to nothing, a null value, no longer has such a
+  `QuoteRequest` read as received. No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 

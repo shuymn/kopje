@@ -1488,6 +1488,33 @@
     }
   },
   {
+    "name": "QuoteRequest, its type left undefined, with a proof of a null value",
+    "effect": {}
+  },
+  {
+    "name": "QuoteRequest, its type left undefined, with a proof of a language alone",
+    "effect": {}
+  },
+  {
+    "name": "QuoteRequest, its type left undefined, with a proof of an empty set",
+    "effect": {}
+  },
+  {
+    "name": "QuoteRequest, its type left undefined, with a proof of an array of a null value",
+    "effect": {}
+  },
+  {
+    "name": "QuoteRequest, its type left undefined, with a proof of plain names",
+    "effect": {
+      "quote_changes": [
+        {
+          "status": "https://mastodon.example/users/bob/statuses/quoting",
+          "state": "accepted"
+        }
+      ]
+    }
+  },
+  {
     "name": "@base after ActivityStreams, unsigned",
     "effect": {
       "statuses": [

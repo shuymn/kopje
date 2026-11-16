@@ -532,17 +532,51 @@ function namedAsCompacted(json: Json, meanings: ReadonlyMap<string, Meaning>): J
 
 const AS_RECEIVED: ReadonlySet<string> = new Set(["@context", "signature", "proof"]);
 
-// Whether Mastodon reads an LD-signed body as received, as Kopje can show: its JSON-LD limits refuse it before the
-// compaction (more than 1,000 values, or a @graph, @included or @reverse key; check_jsonld_limits!), or its proof is
-// an object its contexts make a @graph container (the data-integrity contexts), which the compaction writes under a
-// @graph key the limits then refuse.
-function mastodonReadsAsReceived(json: Json, meanings: ReadonlyMap<string, Meaning>): boolean {
-  const { proof } = json;
-  const graph = meanings.get("proof")?.containers.includes("@graph") === true;
-  return (
-    jsonLdValues(json) > JSONLD_BUDGET ||
-    (graph && (isObject(proof) || (Array.isArray(proof) && proof.some((item) => isObject(item)))))
+// The contexts a proof's own @context may name without the rules (1, 2) over it, as a body's may (SIGNED_CONTEXT_URLS).
+const PROOF_CONTEXTS: ReadonlySet<string> = new Set([AS, ...SIGNED_CONTEXT_URLS.keys()]);
+
+// Whether JSON-LD's expansion leaves anything of a value of a @graph container name (`proof` in the data-integrity
+// contexts, typed @id), which the compaction then writes as a graph object, under a @graph key check_jsonld_limits!
+// refuses. It leaves nothing of a null, an array of nothing, a value object whose @value is null (but a JSON
+// literal's), a map of @language alone or a @set of nothing; anything else is a node, a value or a list (a scalar a
+// node reference or a value). A proof's own @context it follows only where the rules (1, 2) accept it or it names
+// contexts a body's may, so that no plain name there aliases a keyword but @id and @type. Where the expansion raises (a
+// keyword given a value of the wrong shape) Mastodon reads the body as received too, which this does not show.
+// test/inbox-signed-forms.test.ts holds the shapes to Mastodon's reading.
+function expandsToSomething(value: unknown): boolean {
+  if (Array.isArray(value)) {
+    return value.some(expandsToSomething);
+  }
+  if (!isObject(value)) {
+    return value !== null && value !== undefined;
+  }
+  const { "@context": context, ...object } = value;
+  const urls = (Array.isArray(context) ? context : [context]).every(
+    (url) => typeof url === "string" && PROOF_CONTEXTS.has(url),
   );
+  if (context !== undefined && !urls && readContext(context) === null) {
+    return false;
+  }
+  if (Object.hasOwn(object, "@value")) {
+    return object["@value"] !== null || object["@type"] === "@json";
+  }
+  if (Object.hasOwn(object, "@list")) {
+    return true;
+  }
+  if (Object.hasOwn(object, "@set")) {
+    return expandsToSomething(object["@set"]);
+  }
+  const keys = Object.keys(object);
+  return !(keys.length === 1 && keys[0] === "@language");
+}
+
+// Whether Mastodon reads an LD-signed body as received, as Kopje can show: its JSON-LD limits refuse it before the
+// compaction (more than 1,000 values, or a @graph, @included or @reverse key; check_jsonld_limits!), or after it, for
+// a proof its contexts make a @graph container of which the expansion leaves something (expandsToSomething). A proof
+// elsewhere than at the top, or one the expansion refuses, is not shown: Kopje then reads the body as named.
+function mastodonReadsAsReceived(json: Json, meanings: ReadonlyMap<string, Meaning>): boolean {
+  const graph = meanings.get("proof")?.containers.includes("@graph") === true;
+  return jsonLdValues(json) > JSONLD_BUDGET || (graph && expandsToSomething(json.proof));
 }
 
 // A type as Mastodon reads it in an LD-signed body of the shape whose compaction Kopje shows succeeds
