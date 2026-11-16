@@ -103,6 +103,12 @@ class FakeObject {
     this.#restart();
   }
 
+  // The object's storage lost: it starts afresh at `generation`, its sockets gone.
+  restartAs(generation: number) {
+    this.reset();
+    this.start = { ...this.start, generation };
+  }
+
   #restart() {
     // A start as the object makes it: a UUID, so frame 0 carries one at full length, and the next generation.
     this.start = { id: randomUUID(), at: Date.now(), kind: "fresh", generation: this.start.generation + 1 };
@@ -376,6 +382,25 @@ describe("held-output driver", () => {
           r.type === "surface" && r.start === c && (r.surface as { sendReturns: string }).sendReturns === "promise",
       ),
     ).toBe(true);
+  });
+
+  it.each([
+    ["goes back", 1],
+    ["repeats with another start id", 2],
+  ])("leaves a run inconclusive when the object's generation %s (its storage was lost)", async (_, generation) => {
+    const { records, context, target } = await setup();
+    fake.reset();
+    const run = new Run(context, target, "r11", { measurement: "m2" });
+    await run.begin();
+    const client = await run.client("c", { mode: "control" });
+    await new Promise((done) => setTimeout(done, 5));
+    fake.restartAs(generation);
+    await client.closed;
+    await run.poll();
+    await run.done();
+    const outcome = classify(records).runs.find((r) => r.run === "r11");
+    expect(outcome?.class).toBe("inconclusive");
+    expect(outcome?.reasons).toContain("the object's storage was lost (its start generations went back)");
   });
 
   it("counts no reset when the object is recreated empty after the bench closed its client", async () => {

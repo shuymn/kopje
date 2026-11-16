@@ -666,10 +666,14 @@ export class Run {
   probing = false;
   // The MiB the running headroom probe holds.
   probeHeld = 0;
-  // The newest start seen in any answer (a state, a hand, a close, a frame 0), by generation, and when the latest of
-  // its answers was asked for: the start was alive then, and no later moment is known, however late the answer came.
-  /** @type {{ id: string, generation: number, at: number } | null} */
+  // The newest start seen in any answer (a state, a hand, a close, a frame 0), by generation; when the latest of its
+  // answers was asked for (the start was alive then, and no later moment is known, however late the answer came); and
+  // when its first answer arrived.
+  /** @type {{ id: string, generation: number, at: number, seenAt: number } | null} */
   #start = null;
+  // Each generation's start id, as seen since the object's storage was last found lost.
+  /** @type {Map<number, string>} */
+  #generations = new Map();
   // The run's sockets the newest state listed.
   /** @type {string[]} */
   #listed = [];
@@ -740,25 +744,36 @@ export class Run {
 
   /**
    * Notes the start an answer came from, and when that answer was asked for; an answer from an older generation than
-   * the newest seen is late, and changes nothing. A newer start is recorded with what the run held open under the one
-   * before: the sockets the newest state listed and every client connected and not yet ended when the latest answer
-   * from that start was asked for (so neither a reset between two polls nor a late answer hides one), less those whose
-   * end the bench asked for, and the heap.
+   * the newest seen is late, and changes nothing, unless the generations went back (the object's storage was lost),
+   * which is recorded as a new start that leaves the run inconclusive. A newer start is recorded with what the run
+   * held open under the one before: the sockets the newest state listed and every client connected and not yet ended
+   * when the latest answer from that start was asked for (so neither a reset between two polls nor a late answer
+   * hides one), less those whose end the bench asked for, and the heap.
    * @param {Start} start
    * @param {number} asked
    */
   saw(start, asked) {
-    if (this.#start === null) {
-      this.#start = { id: start.id, generation: start.generation, at: asked };
+    const current = this.#start;
+    if (current === null) {
+      this.#start = { id: start.id, generation: start.generation, at: asked, seenAt: Date.now() };
+      this.#generations.set(start.generation, start.id);
       return;
     }
-    if (start.generation <= this.#start.generation) {
-      if (start.generation === this.#start.generation) {
-        this.#start.at = Math.max(this.#start.at, asked);
+    // The generations restart when the object's storage is lost: then a generation already seen comes with another
+    // start id, or an older generation answers a question asked after the newest start was seen (a late answer can
+    // only be to a question asked before).
+    const known = this.#generations.get(start.generation);
+    const lost =
+      (known !== undefined && known !== start.id) || (start.generation < current.generation && asked > current.seenAt);
+    if (!lost && start.generation <= current.generation) {
+      if (start.generation === current.generation) {
+        current.at = Math.max(current.at, asked);
+      } else {
+        this.#generations.set(start.generation, start.id);
       }
       return;
     }
-    const since = this.#start.at;
+    const since = current.at;
     /** @param {string} name */
     const closed = (name) => this.clients.some((c) => c.name === name && c.ended && c.closeRequested);
     const open = new Set(this.#listed.filter((name) => !closed(name)));
@@ -778,8 +793,13 @@ export class Run {
       listedBefore: open.size,
       heldMibBefore: Math.max(this.#heldMib, this.probing ? this.probeHeld : 0),
       probe: this.probing,
+      ...(lost ? { storageLost: true } : {}),
     });
-    this.#start = { id: start.id, generation: start.generation, at: asked };
+    if (lost) {
+      this.#generations.clear();
+    }
+    this.#generations.set(start.generation, start.id);
+    this.#start = { id: start.id, generation: start.generation, at: asked, seenAt: Date.now() };
   }
 
   /**
