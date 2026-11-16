@@ -418,10 +418,11 @@ describe("PATCH and PUT /api/v1/profile", () => {
   it("refuses what update_credentials refuses, with the same messages, changing nothing", async () => {
     const { alice, get, send } = await setup();
     const before = (await get()).body;
-    // Compliant hosts padded with U+00AD (two bytes, which IDNA ignores): one byte past ATTRIBUTION_DOMAIN_BYTES, and at
-    // it.
-    const padded = `a${"\u00ad".repeat(506)}.example`;
-    const within = `ab${"\u00ad".repeat(505)}.example`;
+    // Compliant hosts padded with U+00AD (two bytes, which IDNA ignores) in labels of 63 characters as written: one byte
+    // past ATTRIBUTION_DOMAIN_BYTES, and at it.
+    const labels = `${Array.from({ length: 8 }, () => `a${"\u00ad".repeat(62)}`).join(".")}.example`;
+    const padded = `bcdef.${labels}`;
+    const within = `bcde.${labels}`;
     expect([utf8Length(padded), utf8Length(within)]).toEqual([ATTRIBUTION_DOMAIN_BYTES + 1, ATTRIBUTION_DOMAIN_BYTES]);
     for (const body of [
       { avatar_description: W.repeat(PROFILE_DESCRIPTION_LIMIT + 1), show_media: false },
@@ -460,7 +461,13 @@ describe("PATCH and PUT /api/v1/profile", () => {
     const sent = { "source[privacy]": "invalid", "source[language]": "!!", display_name: "Alice" };
     expect(await send("PATCH", sent, alice.token, "/api/v1/accounts/update_credentials")).toEqual({
       status: 422,
-      body: { error: "Validation failed: Privacy is not included in the list, Language is not a valid language code" },
+      body: {
+        error: "Validation failed: Privacy is not included in the list, Language is not a valid language code",
+        details: {
+          privacy: [{ error: "ERR_INCLUSION", description: "is not included in the list" }],
+          language: [{ error: "ERR_INVALID", description: "is not a valid language code" }],
+        },
+      },
     });
     const answered = await send("PATCH", sent);
     expect(answered.status).toBe(200);
