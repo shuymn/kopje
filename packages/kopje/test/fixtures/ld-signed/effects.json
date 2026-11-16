@@ -964,6 +964,80 @@
     }
   },
   {
+    "name": "Undo of a block, both typed as IRIs, with a null id",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a null type",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a null in a type array",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a type over the toot prefix",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a type over the schema prefix",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a proof typed by a number",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a proof of a number tagged with a language",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a proof whose id is null",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, under the ActivityStreams context repeated past the value limit",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with numbers as list members past the value limit once compacted",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with IRIs as lists past the value limit once compacted",
+    "effect": {
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a proof of plain names",
+    "effect": {}
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a number where an IRI is expected",
+    "effect": {}
+  },
+  {
     "name": "@base after ActivityStreams, unsigned",
     "effect": {
       "statuses": [

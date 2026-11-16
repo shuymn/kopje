@@ -820,6 +820,31 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
     ]);
   });
 
+  it("hands on an LD-signed activity whose IRI type Kopje reads as given, as received (ldSignedTypeReader)", async () => {
+    const store = await importedStore();
+    const r = await rollback(store);
+    const signature = { type: "RsaSignature2017", creator: `${r.carol.uri}#main-key`, signatureValue: "placeholder" };
+    // Mastodon reads a body whose proof JSON-LD refuses as received, so Kopje reads its type as given and its inbox
+    // applies nothing; the drain checks the same envelope, which passes, and hands the activity on as received, for
+    // the legacy instance to read as it does any type Kopje does not apply.
+    const compacted = { ...follow(r.carol.uri, 1), type: "as:Follow", signature };
+    const typed = { ...compacted, proof: { "@type": 5 } };
+    expect(parseActivity(new TextEncoder().encode(JSON.stringify(typed)))).toMatchObject({
+      ok: false,
+      reason: "unsupported",
+    });
+    expect(parseActivity(new TextEncoder().encode(JSON.stringify(compacted)))).toMatchObject({
+      ok: true,
+      activity: { type: "Follow" },
+    });
+    await r.spool("/ap/users/alice/inbox", typed);
+    await r.consume();
+    expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 0, noRecipient: 0 });
+    expect(r.legacy.pending.map((m) => (m.body as LegacyInboxMessage).activity)).toMatchObject([
+      { id: `${r.carol.uri}#follows/1`, type: "as:Follow" },
+    ]);
+  });
+
   it("stops with journal-full when valid requests exceed the quota, and goes on once it is raised", async () => {
     const store = await importedStore();
     const r = await rollback(store, { CUTOVER_JOURNAL_MAX_ENTRIES: "1" });

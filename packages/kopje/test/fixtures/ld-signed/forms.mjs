@@ -474,6 +474,69 @@ const forms = {
     ...activity("as:Undo", { object: BLOCK }),
     signature: { ...SIGNATURE, "@graph": [] },
   },
+  // An id or a type JSON-LD refuses (a null, or a type over a prefix the compaction's full_context defines and the
+  // body's context does not); members JSON-LD processes inside a proof, which neither context defines; an @context
+  // that alone passes the value limit; and members the compaction writes as more values than it reads.
+  "Undo of a block, both typed as IRIs, with a null id": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, instrument: { id: null } }),
+  ),
+  "Undo of a block, both typed as IRIs, with a null type": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, tag: [{ type: null }] }),
+  ),
+  "Undo of a block, both typed as IRIs, with a null in a type array": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, tag: [{ type: [null] }] }),
+  ),
+  "Undo of a block, both typed as IRIs, with a type over the toot prefix": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, tag: [{ type: "toot:Foo" }] }),
+  ),
+  "Undo of a block, both typed as IRIs, with a type over the schema prefix": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, tag: [{ type: "schema:Foo" }] }),
+  ),
+  "Undo of a block, both typed as IRIs, with a proof typed by a number": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, proof: { "@type": 5 } }),
+  ),
+  "Undo of a block, both typed as IRIs, with a proof of a number tagged with a language": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, proof: { "@value": 5, "@language": "en" } }),
+  ),
+  "Undo of a block, both typed as IRIs, with a proof whose id is null": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, proof: { "@id": null } }),
+  ),
+  "Undo of a block, both typed as IRIs, under the ActivityStreams context repeated past the value limit": signed(
+    Array.from({ length: 1_000 }, () => AS),
+    activity("as:Undo", { object: BLOCK }),
+  ),
+  "Undo of a block, both typed as IRIs, with numbers as list members past the value limit once compacted": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, instrument: Array.from({ length: 225 }, () => ({ orderedItems: 5 })) }),
+  ),
+  "Undo of a block, both typed as IRIs, with IRIs as lists past the value limit once compacted": signed(
+    [AS, SEC],
+    activity("as:Undo", {
+      object: BLOCK,
+      instrument: Array.from({ length: 320 }, (_, i) => ({ orderedItems: `${BOB}/items/${i}` })),
+    }),
+  ),
+  // Bodies Mastodon compacts that the gate does not hold to: a proof whose members are plain names, and a number where
+  // an IRI is expected.
+  "Undo of a block, both typed as IRIs, with a proof of plain names": signed(
+    [AS, SEC],
+    activity("as:Undo", {
+      object: BLOCK,
+      proof: { type: "DataIntegrityProof", cryptosuite: "eddsa-jcs-2022", proofValue: "z3placeholder" },
+    }),
+  ),
+  "Undo of a block, both typed as IRIs, with a number where an IRI is expected": signed(
+    [AS, SEC],
+    activity("as:Undo", { object: BLOCK, instrument: 5 }),
+  ),
 };
 
 // The same bodies without a signature: read as received by both.

@@ -244,8 +244,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Reading inbound activities), and logged once as
   `kopje.inbox.refused` with reason `ld-context`. Mastodon, Fedify, Misskey and Kopje bodies all pass. The type of one
   that passes, and its embedded object's, given as an IRI (`as:Follow`, or the absolute one) are read as the name
-  Mastodon's compaction gives them in a body Kopje can tell Mastodon compacts, and as given in any other (Mastodon reads
-  a body its JSON-LD limits or processing refuse as received): such a `Reject`, `Undo`, `Block` or `Delete` now ends
+  Mastodon's compaction gives them only in a body of a closed shape whose compaction Kopje can show succeeds, and as
+  given in any other (Mastodon reads a body its JSON-LD limits or processing refuse as received; one it compacts outside
+  that shape applies less, as the deviations page lists): such a `Reject`, `Undo`, `Block` or `Delete` now ends
   the follow or the status Mastodon's ends, and such a `Like` favourites, where Kopje refused them or read them as
   naming nothing. No Store migration and no `wrangler.jsonc` change.
 

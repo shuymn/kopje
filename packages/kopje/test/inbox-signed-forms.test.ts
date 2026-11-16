@@ -271,7 +271,12 @@ describe("D1: forms whose readings differ, each named by its class", () => {
   });
 
   describe("reads less than Mastodon", () => {
-    it.each(["with an array in an array", "under an inline context"])(
+    it.each([
+      "with an array in an array",
+      "under an inline context",
+      "with a proof of plain names",
+      "with a number where an IRI is expected",
+    ])(
       "an Undo of a block typed as IRIs %s: Mastodon compacts it and lifts the block; Kopje cannot tell it does",
       (variant) => {
         const name = `Undo of a block, both typed as IRIs, ${variant}`;
@@ -408,6 +413,23 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       ["with a type that is not a string", /^JSON::LD::JsonLdError::InvalidTypeValue/],
       ["with a language map member that is not a string", /^JSON::LD::JsonLdError::InvalidLanguageMapValue/],
       ["with an IRI over a prefix only full_context defines", /^JSON::LD::JsonLdError::IRIConfusedWithPrefix/],
+      ["with a null id", /^JSON::LD::JsonLdError::InvalidIdValue/],
+      ["with a null type", /^JSON::LD::JsonLdError::InvalidTypeValue/],
+      ["with a null in a type array", /^JSON::LD::JsonLdError::InvalidTypeValue/],
+      ["with a type over the toot prefix", /^JSON::LD::JsonLdError::IRIConfusedWithPrefix/],
+      ["with a type over the schema prefix", /^JSON::LD::JsonLdError::IRIConfusedWithPrefix/],
+      ["with a proof typed by a number", /^JSON::LD::JsonLdError::InvalidTypeValue/],
+      ["with a proof of a number tagged with a language", /^JSON::LD::JsonLdError::InvalidLanguageTaggedValue/],
+      ["with a proof whose id is null", /^JSON::LD::JsonLdError::InvalidIdValue/],
+      [
+        "under the ActivityStreams context repeated past the value limit",
+        /^Mastodon::InvalidJsonLdError: has too many/,
+      ],
+      [
+        "with numbers as list members past the value limit once compacted",
+        /^Mastodon::InvalidJsonLdError: has too many/,
+      ],
+      ["with IRIs as lists past the value limit once compacted", /^Mastodon::InvalidJsonLdError: has too many/],
     ])("an Undo of a block typed as IRIs %s: Mastodon reads it as received, so neither lifts it", (variant, cause) => {
       const name = `Undo of a block, both typed as IRIs, ${variant}`;
       expect(form(name).fallback).toMatch(cause);
@@ -469,21 +491,29 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       }
       expect(names).toBeGreaterThanOrEqual(150);
       expect(renamed.length).toBe(15);
-      // Bodies Mastodon compacts that Kopje cannot tell it does (an inline context, an array in an array): their
-      // types are read as given, so such an activity applies less than Mastodon's.
+      // Bodies Mastodon compacts outside the shape Kopje shows it compacts (an inline context, an array in an array,
+      // a proof, a number where an IRI is expected): their types are read as given, so such an activity applies less
+      // than Mastodon's.
       expect([...kept]).toEqual([
         "Note type as an IRI",
         "Undo of a block, both typed as IRIs, with an array in an array",
         "Undo of a block, both typed as IRIs, under an inline context",
+        "Undo of a block, both typed as IRIs, with a proof of plain names",
+        "Undo of a block, both typed as IRIs, with a number where an IRI is expected",
       ]);
     });
 
-    // Bounds of the same body no capture varies: an object with no type is a node like any other; an id over a prefix
-    // only full_context defines (as the captured `cc` one), a language map member that is an array, or a key that is
-    // no language tag, are ones Kopje does not tell JSON-LD's processing accepts.
+    // The shape's bounds on the same body, where no capture varies them: an object with no id or type is a node like
+    // any other, and a null among IRIs is dropped (as in the captured `to: [null]` forms); an id over a prefix only
+    // full_context defines (as the captured `cc` and type ones) or a blank node, a type naming a keyword alias, and a
+    // language map value other than a map of tags to strings are outside it.
     it.each([
       { added: { instrument: { name: "client" } }, read: "Undo" },
+      { added: { cc: [null] }, read: "Undo" },
       { added: { instrument: { id: "toot:client" } }, read: "as:Undo" },
+      { added: { instrument: { id: "_:client" } }, read: "as:Undo" },
+      { added: { tag: [{ type: "id" }] }, read: "as:Undo" },
+      { added: { summaryMap: 5 }, read: "as:Undo" },
       { added: { summaryMap: { en: ["blocked"] } }, read: "as:Undo" },
       { added: { summaryMap: { "not a tag": "blocked" } }, read: "as:Undo" },
     ])("reads the compacted Undo of a block, given $added, as $read", ({ added, read }) => {
@@ -723,13 +753,48 @@ describe("D1 through the inbox: what the received form stores", () => {
     "with a type that is not a string",
     "with a language map member that is not a string",
     "with an IRI over a prefix only full_context defines",
+    "with a null id",
+    "with a null type",
+    "with a null in a type array",
+    "with a type over the toot prefix",
+    "with a type over the schema prefix",
+    "with a proof typed by a number",
+    "with a proof of a number tagged with a language",
+    "with a proof whose id is null",
+    "under the ActivityStreams context repeated past the value limit",
+    "with numbers as list members past the value limit once compacted",
+    "with IRIs as lists past the value limit once compacted",
     "with an array in an array",
     "under an inline context",
+    "with a proof of plain names",
+    "with a number where an IRI is expected",
   ])("an Undo of a block typed as IRIs %s leaves the block", async (variant) => {
     const { t, bob, status } = await world();
     const id = await blockedStatus(t, bob);
     expect(await t.post(bob, body(`Undo of a block, both typed as IRIs, ${variant}`, status))).toBe(202);
     expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(404);
+  });
+
+  // The spool's replay reads each body through the same envelope as the inbox.
+  it("on replay too, an Undo of a block typed as IRIs lifts it only where Mastodon compacts the body", async () => {
+    const { t, bob, status } = await world();
+    const id = await blockedStatus(t, bob);
+    const maintenance = harness(t.store, { MAINTENANCE: "readonly" }, BUILD, {
+      keygen: fixtureKeyGen,
+      loader: t.web.loader,
+    });
+    const deps = { ...inboxDeps(() => t.store, t.web.loader), now: () => NOW };
+    const replay = async (name: string) => {
+      const init = await signedInit(bob, "/inbox", body(name, status), { at: NOW });
+      expect((await maintenance.request("/inbox", init)).status).toBe(202);
+      await maintenance.queue.deliver((batch) =>
+        handleQueue(batch, { ...maintenance.env, MAINTENANCE: "off" } as Env, deps),
+      );
+    };
+    await replay("Undo of a block, both typed as IRIs, with a proof typed by a number");
+    expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(404);
+    await replay("Undo of a block, both typed as IRIs");
+    expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(200);
   });
 
   it.each(["Undo object type as the absolute IRI", "Undo typed as:Undo"])(

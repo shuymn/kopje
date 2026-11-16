@@ -292,25 +292,28 @@ function bodyKeysReadable(json: Json): boolean {
 
 // Mastodon reads an LD-signed body as received, without its signature, wherever it gives up the compaction
 // (process_activity_service.rb:23-38): when JsonLdHelper#check_jsonld_limits! (json_ld_helper.rb:132-152) refuses the
-// body before or after it, for more than 1,000 values (the compaction's @context, full_context, counted) or a @graph,
-// @included or @reverse key; or when JSON::LD raises (a context it cannot load, an id or a type that is not a string, a
-// language map member that is not a string, an IRI it cannot compact, …). Some of that turns on JSON-LD processing and
-// on what Mastodon's network loads, so Kopje decides it only for bodies whose compaction it can bound, and holds
-// (mastodonCompacts) only where every one of these does:
-//   - check_jsonld_limits! finds no key it refuses in the body as received (the rules read no key of its signature);
-//   - its @context names the ActivityStreams and security/v1 URLs only, both in full_context (no inline object, no
-//     other URL: their definitions or their loading could make the compaction raise or write a @graph, as the
-//     data-integrity context's does for a proof; neither of the two defines a proof, so the expansion drops one);
-//   - every id is a string, and so is every IRI value of ActivityStreams or security/v1, each absolute (directly or
-//     over a prefix of the context) or a blank node; every type is a string or an array of strings; every language map
-//     member is a string or null under a language tag; and no array is directly in another;
-//   - the compaction cannot pass 1,000 values: each value as received becomes at most three (a value object of value
-//     and type), and its @context full_context (so the body as received holds fewer than 1,000 too).
-// Elsewhere Mastodon's reading may be the body as received, so Kopje's is too.
+// body before or after it (more than 1,000 values, or a @graph, @included or @reverse key), or when JSON::LD raises.
+// Kopje runs no JSON-LD processing, so it renames a type only in a body of a closed shape whose compaction it can show
+// succeeds, and reads every other body's types as given: a retraction Mastodon applies may then be missed, never one it
+// does not apply be applied. Under the ActivityStreams context every name expands, by its terms or by its @vocab "_:",
+// and `id` and `type` are the only keyword aliases it and security/v1 define; the rules (3) hold every key but the
+// top-level @context, signature and proof to a plain name. The shape (mastodonCompacts):
+//   - its @context is the ActivityStreams URL, alone or with security/v1's (both in full_context), and it has no proof
+//     (JSON-LD expands a proof's members as any other's, keywords included; the signature is not compacted);
+//   - as received it holds no key check_jsonld_limits! refuses and at most 1,000 values, whatever its @context holds;
+//     and the compaction holds at most 1,000 too: full_context (90 values) for its @context, its signature as received,
+//     and at most three for each other value (a scalar may become a value object of value and type, or a list);
+//   - every `id`, and every value of a name either context types @id but a null or an object, is a string that is an
+//     http(s) IRI as written or over a prefix of the body's context (an IRI with an authority, which the compaction
+//     cannot confuse with a prefix of full_context); every `type` is such an IRI or a name other than `id` and `type`,
+//     or an array of them;
+//   - every value of a language map name is a map of language tags to strings or nulls;
+//   - no array is directly in another.
 const JSONLD_BUDGET = 1_000;
 const UNSUPPORTED_JSONLD_KEYWORDS = new Set(["@graph", "@included", "@reverse"]);
 const SECURITY_V1 = "https://w3id.org/security/v1";
 const LANGUAGE_TAG = /^[A-Za-z]{1,8}(-[A-Za-z0-9]{1,8})*$/;
+const HTTP_IRI = /^https?:\/\//;
 
 // Values as check_jsonld_limits! counts them (each object, array and scalar), or Infinity for a key it refuses.
 function jsonLdValues(value: unknown): number {
@@ -338,26 +341,20 @@ export const FULL_CONTEXT_VALUES = jsonLdValues([
   Object.fromEntries(Object.entries(MASTODON_CONTEXT_TERMS).map(([name, definitions]) => [name, definitions.at(-1)])),
 ]);
 
-function namesOf(url: string, test: (definition: Json) => boolean): Set<string> {
-  return new Set(
-    Object.entries(definitionsOf(url)).flatMap(([name, definition]) =>
-      isObject(definition) && test(definition) ? [name] : [],
-    ),
-  );
+function namesOf(url: string, test: (definition: unknown) => boolean): Set<string> {
+  return new Set(Object.entries(definitionsOf(url)).flatMap(([name, definition]) => (test(definition) ? [name] : [])));
 }
 
-const IRI_VALUED = new Set([
-  "id",
-  ...namesOf(AS, (definition) => definition["@type"] === "@id"),
-  ...namesOf(SECURITY_V1, (definition) => definition["@type"] === "@id"),
-]);
-const LANGUAGE_MAPS = namesOf(AS, (definition) => definition["@container"] === "@language");
+const typedId = (definition: unknown) => isObject(definition) && definition["@type"] === "@id";
+const IRI_VALUED = new Set([...namesOf(AS, typedId), ...namesOf(SECURITY_V1, typedId)]);
+const LANGUAGE_MAPS = namesOf(AS, (definition) => isObject(definition) && definition["@container"] === "@language");
 
 function mastodonCompacts(json: Json, prefixes: Prefixes): boolean {
   const context = json["@context"];
   const received = jsonLdValues(json);
   if (
-    received === Infinity ||
+    received > JSONLD_BUDGET ||
+    json.proof !== undefined ||
     !(Array.isArray(context) ? context : [context]).every((entry) => entry === AS || entry === SECURITY_V1)
   ) {
     return false;
@@ -367,12 +364,12 @@ function mastodonCompacts(json: Json, prefixes: Prefixes): boolean {
   if (1 + FULL_CONTEXT_VALUES + kept + 3 * body > JSONLD_BUDGET) {
     return false;
   }
-  const absolute = (iri: unknown) =>
-    typeof iri === "string" &&
-    (iri.startsWith("_:") || (expand(iri, (prefix) => prefixes.get(prefix)) ?? "").includes("://"));
-  const pending: [string, unknown][] = Object.entries(json).filter(
-    ([key]) => key !== "@context" && key !== "signature",
-  );
+  const iri = (value: unknown) =>
+    typeof value === "string" && HTTP_IRI.test(expand(value, (prefix) => prefixes.get(prefix)) ?? "");
+  const typeName = (value: unknown) =>
+    iri(value) || (typeof value === "string" && isName(value) && value !== "id" && value !== "type");
+  const node = Object.fromEntries(Object.entries(json).filter(([key]) => key !== "@context" && key !== "signature"));
+  const pending: [string, unknown][] = [["", node]];
   while (pending.length > 0) {
     const [key, value] = pending.pop()!;
     if (Array.isArray(value)) {
@@ -380,8 +377,9 @@ function mastodonCompacts(json: Json, prefixes: Prefixes): boolean {
         return false;
       }
       pending.push(...value.map((item): [string, unknown] => [key, item]));
-    } else if (isObject(value) && LANGUAGE_MAPS.has(key)) {
+    } else if (LANGUAGE_MAPS.has(key)) {
       if (
+        !isObject(value) ||
         !Object.entries(value).every(
           ([tag, member]) => LANGUAGE_TAG.test(tag) && (member === null || typeof member === "string"),
         )
@@ -389,26 +387,24 @@ function mastodonCompacts(json: Json, prefixes: Prefixes): boolean {
         return false;
       }
     } else if (isObject(value)) {
-      const { id, type } = value;
-      const types: unknown[] = Array.isArray(type) ? type : [type];
       if (
-        (id !== undefined && id !== null && !absolute(id)) ||
-        !types.every((t) => t === undefined || t === null || typeof t === "string")
+        (Object.hasOwn(value, "id") && !iri(value.id)) ||
+        (Object.hasOwn(value, "type") && !(Array.isArray(value.type) ? value.type : [value.type]).every(typeName))
       ) {
         return false;
       }
-      pending.push(...Object.entries(value).filter(([member]) => member !== "id"));
-    } else if (typeof value === "string" && IRI_VALUED.has(key) && !absolute(value)) {
+      pending.push(...Object.entries(value).filter(([member]) => member !== "id" && member !== "type"));
+    } else if (IRI_VALUED.has(key) && value !== null && !iri(value)) {
       return false;
     }
   }
   return true;
 }
 
-// A type as Mastodon reads it in an LD-signed body it compacts (mastodonCompacts): the compaction writes one given as a
-// compact IRI over a prefix the body's context defines, or as an absolute IRI, as the vocabulary's name for that IRI,
-// and the patch puts no type back. A name keeps the meaning the rules hold it to; any other type, and every type of a
-// body Mastodon may read as received, is read as given.
+// A type as Mastodon reads it in an LD-signed body of the shape whose compaction Kopje shows succeeds
+// (mastodonCompacts): the compaction writes one given as a compact IRI over a prefix the body's context defines, or as
+// an absolute IRI, as the vocabulary's name for that IRI, and the patch puts no type back. A name keeps the meaning
+// the rules hold it to; any other type, and every type of a body outside that shape, is read as given.
 export type TypeReader = (type: string) => string;
 
 // Whether an LD-signed activity is read (its signature an object), and then how its types are read: null when the

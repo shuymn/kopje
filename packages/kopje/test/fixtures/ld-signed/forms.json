@@ -18739,6 +18739,3242 @@
     "fallback": "Mastodon::InvalidJsonLdError: contains unsupported JSON-LD features"
   },
   {
+    "name": "Undo of a block, both typed as IRIs, with a null id",
+    "received": {
+      "@context": ["https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"],
+      "id": "https://mastodon.example/users/bob/activities/145",
+      "type": "as:Undo",
+      "actor": "https://mastodon.example/users/bob",
+      "object": {
+        "id": "https://mastodon.example/users/bob/blocks/1",
+        "type": "as:Block",
+        "actor": "https://mastodon.example/users/bob",
+        "object": "https://kopje.test/ap/users/alice"
+      },
+      "instrument": {
+        "id": null
+      },
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    },
+    "reference": "mastodon-4.7.5",
+    "fallback": "JSON::LD::JsonLdError::InvalidIdValue: invalid @id value: value of @id must be a string or hash if framing: nil"
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a null type",
+    "received": {
+      "@context": ["https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"],
+      "id": "https://mastodon.example/users/bob/activities/146",
+      "type": "as:Undo",
+      "actor": "https://mastodon.example/users/bob",
+      "object": {
+        "id": "https://mastodon.example/users/bob/blocks/1",
+        "type": "as:Block",
+        "actor": "https://mastodon.example/users/bob",
+        "object": "https://kopje.test/ap/users/alice"
+      },
+      "tag": [
+        {
+          "type": null
+        }
+      ],
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    },
+    "reference": "mastodon-4.7.5",
+    "fallback": "JSON::LD::JsonLdError::InvalidTypeValue: invalid type value: @type value must be a string or array of strings: nil"
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a null in a type array",
+    "received": {
+      "@context": ["https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"],
+      "id": "https://mastodon.example/users/bob/activities/147",
+      "type": "as:Undo",
+      "actor": "https://mastodon.example/users/bob",
+      "object": {
+        "id": "https://mastodon.example/users/bob/blocks/1",
+        "type": "as:Block",
+        "actor": "https://mastodon.example/users/bob",
+        "object": "https://kopje.test/ap/users/alice"
+      },
+      "tag": [
+        {
+          "type": [null]
+        }
+      ],
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    },
+    "reference": "mastodon-4.7.5",
+    "fallback": "JSON::LD::JsonLdError::InvalidTypeValue: invalid type value: @type value must be a string or array of strings: nil"
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a type over the toot prefix",
+    "received": {
+      "@context": ["https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"],
+      "id": "https://mastodon.example/users/bob/activities/148",
+      "type": "as:Undo",
+      "actor": "https://mastodon.example/users/bob",
+      "object": {
+        "id": "https://mastodon.example/users/bob/blocks/1",
+        "type": "as:Block",
+        "actor": "https://mastodon.example/users/bob",
+        "object": "https://kopje.test/ap/users/alice"
+      },
+      "tag": [
+        {
+          "type": "toot:Foo"
+        }
+      ],
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    },
+    "reference": "mastodon-4.7.5",
+    "fallback": "JSON::LD::JsonLdError::IRIConfusedWithPrefix: IRI confused with prefix: Absolute IRI 'toot:Foo' confused with prefix 'toot'"
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a type over the schema prefix",
+    "received": {
+      "@context": ["https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"],
+      "id": "https://mastodon.example/users/bob/activities/149",
+      "type": "as:Undo",
+      "actor": "https://mastodon.example/users/bob",
+      "object": {
+        "id": "https://mastodon.example/users/bob/blocks/1",
+        "type": "as:Block",
+        "actor": "https://mastodon.example/users/bob",
+        "object": "https://kopje.test/ap/users/alice"
+      },
+      "tag": [
+        {
+          "type": "schema:Foo"
+        }
+      ],
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    },
+    "reference": "mastodon-4.7.5",
+    "fallback": "JSON::LD::JsonLdError::IRIConfusedWithPrefix: IRI confused with prefix: Absolute IRI 'schema:Foo' confused with prefix 'schema'"
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a proof typed by a number",
+    "received": {
+      "@context": ["https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"],
+      "id": "https://mastodon.example/users/bob/activities/150",
+      "type": "as:Undo",
+      "actor": "https://mastodon.example/users/bob",
+      "object": {
+        "id": "https://mastodon.example/users/bob/blocks/1",
+        "type": "as:Block",
+        "actor": "https://mastodon.example/users/bob",
+        "object": "https://kopje.test/ap/users/alice"
+      },
+      "proof": {
+        "@type": 5
+      },
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    },
+    "reference": "mastodon-4.7.5",
+    "fallback": "JSON::LD::JsonLdError::InvalidTypeValue: invalid type value: @type value must be a string or array of strings: 5"
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a proof of a number tagged with a language",
+    "received": {
+      "@context": ["https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"],
+      "id": "https://mastodon.example/users/bob/activities/151",
+      "type": "as:Undo",
+      "actor": "https://mastodon.example/users/bob",
+      "object": {
+        "id": "https://mastodon.example/users/bob/blocks/1",
+        "type": "as:Block",
+        "actor": "https://mastodon.example/users/bob",
+        "object": "https://kopje.test/ap/users/alice"
+      },
+      "proof": {
+        "@value": 5,
+        "@language": "en"
+      },
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    },
+    "reference": "mastodon-4.7.5",
+    "fallback": "JSON::LD::JsonLdError::InvalidLanguageTaggedValue: invalid language-tagged value: when @language is used, @value must be a string: {\"@value\" => 5, \"@language\" => \"en\"}"
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a proof whose id is null",
+    "received": {
+      "@context": ["https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"],
+      "id": "https://mastodon.example/users/bob/activities/152",
+      "type": "as:Undo",
+      "actor": "https://mastodon.example/users/bob",
+      "object": {
+        "id": "https://mastodon.example/users/bob/blocks/1",
+        "type": "as:Block",
+        "actor": "https://mastodon.example/users/bob",
+        "object": "https://kopje.test/ap/users/alice"
+      },
+      "proof": {
+        "@id": null
+      },
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    },
+    "reference": "mastodon-4.7.5",
+    "fallback": "JSON::LD::JsonLdError::InvalidIdValue: invalid @id value: value of @id must be a string or hash if framing: nil"
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, under the ActivityStreams context repeated past the value limit",
+    "received": {
+      "@context": [
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams",
+        "https://www.w3.org/ns/activitystreams"
+      ],
+      "id": "https://mastodon.example/users/bob/activities/153",
+      "type": "as:Undo",
+      "actor": "https://mastodon.example/users/bob",
+      "object": {
+        "id": "https://mastodon.example/users/bob/blocks/1",
+        "type": "as:Block",
+        "actor": "https://mastodon.example/users/bob",
+        "object": "https://kopje.test/ap/users/alice"
+      },
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    },
+    "reference": "mastodon-4.7.5",
+    "fallback": "Mastodon::InvalidJsonLdError: has too many nodes"
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with numbers as list members past the value limit once compacted",
+    "received": {
+      "@context": ["https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"],
+      "id": "https://mastodon.example/users/bob/activities/154",
+      "type": "as:Undo",
+      "actor": "https://mastodon.example/users/bob",
+      "object": {
+        "id": "https://mastodon.example/users/bob/blocks/1",
+        "type": "as:Block",
+        "actor": "https://mastodon.example/users/bob",
+        "object": "https://kopje.test/ap/users/alice"
+      },
+      "instrument": [
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        },
+        {
+          "orderedItems": 5
+        }
+      ],
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    },
+    "reference": "mastodon-4.7.5",
+    "fallback": "Mastodon::InvalidJsonLdError: has too many nodes"
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with IRIs as lists past the value limit once compacted",
+    "received": {
+      "@context": ["https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"],
+      "id": "https://mastodon.example/users/bob/activities/155",
+      "type": "as:Undo",
+      "actor": "https://mastodon.example/users/bob",
+      "object": {
+        "id": "https://mastodon.example/users/bob/blocks/1",
+        "type": "as:Block",
+        "actor": "https://mastodon.example/users/bob",
+        "object": "https://kopje.test/ap/users/alice"
+      },
+      "instrument": [
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/0"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/1"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/2"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/3"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/4"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/5"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/6"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/7"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/8"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/9"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/10"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/11"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/12"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/13"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/14"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/15"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/16"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/17"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/18"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/19"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/20"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/21"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/22"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/23"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/24"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/25"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/26"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/27"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/28"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/29"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/30"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/31"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/32"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/33"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/34"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/35"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/36"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/37"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/38"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/39"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/40"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/41"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/42"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/43"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/44"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/45"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/46"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/47"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/48"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/49"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/50"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/51"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/52"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/53"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/54"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/55"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/56"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/57"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/58"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/59"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/60"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/61"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/62"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/63"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/64"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/65"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/66"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/67"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/68"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/69"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/70"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/71"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/72"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/73"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/74"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/75"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/76"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/77"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/78"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/79"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/80"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/81"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/82"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/83"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/84"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/85"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/86"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/87"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/88"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/89"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/90"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/91"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/92"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/93"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/94"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/95"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/96"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/97"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/98"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/99"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/100"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/101"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/102"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/103"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/104"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/105"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/106"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/107"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/108"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/109"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/110"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/111"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/112"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/113"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/114"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/115"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/116"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/117"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/118"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/119"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/120"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/121"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/122"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/123"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/124"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/125"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/126"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/127"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/128"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/129"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/130"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/131"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/132"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/133"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/134"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/135"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/136"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/137"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/138"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/139"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/140"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/141"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/142"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/143"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/144"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/145"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/146"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/147"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/148"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/149"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/150"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/151"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/152"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/153"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/154"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/155"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/156"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/157"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/158"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/159"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/160"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/161"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/162"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/163"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/164"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/165"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/166"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/167"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/168"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/169"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/170"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/171"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/172"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/173"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/174"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/175"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/176"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/177"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/178"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/179"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/180"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/181"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/182"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/183"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/184"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/185"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/186"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/187"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/188"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/189"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/190"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/191"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/192"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/193"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/194"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/195"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/196"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/197"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/198"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/199"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/200"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/201"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/202"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/203"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/204"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/205"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/206"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/207"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/208"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/209"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/210"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/211"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/212"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/213"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/214"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/215"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/216"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/217"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/218"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/219"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/220"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/221"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/222"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/223"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/224"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/225"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/226"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/227"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/228"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/229"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/230"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/231"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/232"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/233"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/234"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/235"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/236"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/237"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/238"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/239"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/240"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/241"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/242"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/243"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/244"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/245"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/246"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/247"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/248"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/249"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/250"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/251"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/252"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/253"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/254"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/255"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/256"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/257"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/258"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/259"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/260"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/261"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/262"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/263"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/264"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/265"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/266"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/267"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/268"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/269"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/270"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/271"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/272"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/273"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/274"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/275"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/276"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/277"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/278"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/279"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/280"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/281"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/282"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/283"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/284"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/285"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/286"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/287"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/288"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/289"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/290"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/291"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/292"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/293"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/294"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/295"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/296"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/297"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/298"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/299"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/300"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/301"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/302"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/303"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/304"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/305"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/306"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/307"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/308"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/309"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/310"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/311"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/312"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/313"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/314"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/315"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/316"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/317"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/318"
+        },
+        {
+          "orderedItems": "https://mastodon.example/users/bob/items/319"
+        }
+      ],
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    },
+    "reference": "mastodon-4.7.5",
+    "fallback": "Mastodon::InvalidJsonLdError: has too many nodes"
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a proof of plain names",
+    "received": {
+      "@context": ["https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"],
+      "id": "https://mastodon.example/users/bob/activities/156",
+      "type": "as:Undo",
+      "actor": "https://mastodon.example/users/bob",
+      "object": {
+        "id": "https://mastodon.example/users/bob/blocks/1",
+        "type": "as:Block",
+        "actor": "https://mastodon.example/users/bob",
+        "object": "https://kopje.test/ap/users/alice"
+      },
+      "proof": {
+        "type": "DataIntegrityProof",
+        "cryptosuite": "eddsa-jcs-2022",
+        "proofValue": "z3placeholder"
+      },
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    },
+    "reference": "mastodon-4.7.5",
+    "mastodon": {
+      "@context": [
+        "https://www.w3.org/ns/activitystreams",
+        "https://w3id.org/security/v1",
+        "https://www.w3.org/ns/cid/v1",
+        "https://purl.archive.org/socialweb/webfinger",
+        {
+          "manuallyApprovesFollowers": "as:manuallyApprovesFollowers",
+          "sensitive": "as:sensitive",
+          "Hashtag": "as:Hashtag",
+          "movedTo": {
+            "@id": "as:movedTo",
+            "@type": "@id"
+          },
+          "alsoKnownAs": {
+            "@id": "as:alsoKnownAs",
+            "@type": "@id"
+          },
+          "toot": "http://joinmastodon.org/ns#",
+          "Emoji": "toot:Emoji",
+          "featured": {
+            "@id": "toot:featured",
+            "@type": "@id"
+          },
+          "featuredTags": {
+            "@id": "toot:featuredTags",
+            "@type": "@id"
+          },
+          "schema": "http://schema.org#",
+          "PropertyValue": "schema:PropertyValue",
+          "value": "schema:value",
+          "ostatus": "http://ostatus.org#",
+          "atomUri": "ostatus:atomUri",
+          "inReplyToAtomUri": "ostatus:inReplyToAtomUri",
+          "conversation": "ostatus:conversation",
+          "focalPoint": {
+            "@container": "@list",
+            "@id": "toot:focalPoint"
+          },
+          "blurhash": "toot:blurhash",
+          "discoverable": "toot:discoverable",
+          "indexable": "toot:indexable",
+          "memorial": "toot:memorial",
+          "votersCount": "toot:votersCount",
+          "suspended": "toot:suspended",
+          "attributionDomains": {
+            "@id": "toot:attributionDomains",
+            "@container": "@set"
+          },
+          "showFeatured": "toot:showFeatured",
+          "showMedia": "toot:showMedia",
+          "showRepliesInMedia": "toot:showRepliesInMedia",
+          "QuoteRequest": "https://w3id.org/fep/044f#QuoteRequest",
+          "quote": {
+            "@id": "https://w3id.org/fep/044f#quote",
+            "@type": "@id"
+          },
+          "quoteUri": "http://fedibird.com/ns#quoteUri",
+          "_misskey_quote": "https://misskey-hub.net/ns#_misskey_quote",
+          "quoteAuthorization": {
+            "@id": "https://w3id.org/fep/044f#quoteAuthorization",
+            "@type": "@id"
+          },
+          "gts": "https://gotosocial.org/ns#",
+          "interactionPolicy": {
+            "@id": "gts:interactionPolicy",
+            "@type": "@id"
+          },
+          "canFeature": {
+            "@id": "https://w3id.org/fep/7aa9#canFeature",
+            "@type": "@id"
+          },
+          "canQuote": {
+            "@id": "gts:canQuote",
+            "@type": "@id"
+          },
+          "automaticApproval": {
+            "@id": "gts:automaticApproval",
+            "@type": "@id"
+          },
+          "manualApproval": {
+            "@id": "gts:manualApproval",
+            "@type": "@id"
+          },
+          "QuoteAuthorization": "https://w3id.org/fep/044f#QuoteAuthorization",
+          "interactingObject": {
+            "@id": "gts:interactingObject",
+            "@type": "@id"
+          },
+          "interactionTarget": {
+            "@id": "gts:interactionTarget",
+            "@type": "@id"
+          },
+          "FeatureRequest": "https://w3id.org/fep/7aa9#FeatureRequest",
+          "FeaturedCollection": "https://w3id.org/fep/7aa9#FeaturedCollection",
+          "FeaturedItem": "https://w3id.org/fep/7aa9#FeaturedItem",
+          "FeatureAuthorization": "https://w3id.org/fep/7aa9#FeatureAuthorization",
+          "topic": {
+            "@id": "https://w3id.org/fep/7aa9#topic",
+            "@type": "@id"
+          },
+          "featuredObject": {
+            "@id": "https://w3id.org/fep/7aa9#featuredObject",
+            "@type": "@id"
+          },
+          "featureAuthorization": {
+            "@id": "https://w3id.org/fep/7aa9#featureAuthorization",
+            "@type": "@id"
+          }
+        }
+      ],
+      "id": "https://mastodon.example/users/bob/activities/156",
+      "type": "Undo",
+      "actor": "https://mastodon.example/users/bob",
+      "object": {
+        "id": "https://mastodon.example/users/bob/blocks/1",
+        "type": "Block",
+        "actor": "https://mastodon.example/users/bob",
+        "object": "https://kopje.test/ap/users/alice"
+      },
+      "proof": {
+        "type": "DataIntegrityProof",
+        "cryptosuite": "eddsa-jcs-2022",
+        "proofValue": "z3placeholder"
+      },
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    }
+  },
+  {
+    "name": "Undo of a block, both typed as IRIs, with a number where an IRI is expected",
+    "received": {
+      "@context": ["https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"],
+      "id": "https://mastodon.example/users/bob/activities/157",
+      "type": "as:Undo",
+      "actor": "https://mastodon.example/users/bob",
+      "object": {
+        "id": "https://mastodon.example/users/bob/blocks/1",
+        "type": "as:Block",
+        "actor": "https://mastodon.example/users/bob",
+        "object": "https://kopje.test/ap/users/alice"
+      },
+      "instrument": 5,
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    },
+    "reference": "mastodon-4.7.5",
+    "mastodon": {
+      "@context": [
+        "https://www.w3.org/ns/activitystreams",
+        "https://w3id.org/security/v1",
+        "https://www.w3.org/ns/cid/v1",
+        "https://purl.archive.org/socialweb/webfinger",
+        {
+          "manuallyApprovesFollowers": "as:manuallyApprovesFollowers",
+          "sensitive": "as:sensitive",
+          "Hashtag": "as:Hashtag",
+          "movedTo": {
+            "@id": "as:movedTo",
+            "@type": "@id"
+          },
+          "alsoKnownAs": {
+            "@id": "as:alsoKnownAs",
+            "@type": "@id"
+          },
+          "toot": "http://joinmastodon.org/ns#",
+          "Emoji": "toot:Emoji",
+          "featured": {
+            "@id": "toot:featured",
+            "@type": "@id"
+          },
+          "featuredTags": {
+            "@id": "toot:featuredTags",
+            "@type": "@id"
+          },
+          "schema": "http://schema.org#",
+          "PropertyValue": "schema:PropertyValue",
+          "value": "schema:value",
+          "ostatus": "http://ostatus.org#",
+          "atomUri": "ostatus:atomUri",
+          "inReplyToAtomUri": "ostatus:inReplyToAtomUri",
+          "conversation": "ostatus:conversation",
+          "focalPoint": {
+            "@container": "@list",
+            "@id": "toot:focalPoint"
+          },
+          "blurhash": "toot:blurhash",
+          "discoverable": "toot:discoverable",
+          "indexable": "toot:indexable",
+          "memorial": "toot:memorial",
+          "votersCount": "toot:votersCount",
+          "suspended": "toot:suspended",
+          "attributionDomains": {
+            "@id": "toot:attributionDomains",
+            "@container": "@set"
+          },
+          "showFeatured": "toot:showFeatured",
+          "showMedia": "toot:showMedia",
+          "showRepliesInMedia": "toot:showRepliesInMedia",
+          "QuoteRequest": "https://w3id.org/fep/044f#QuoteRequest",
+          "quote": {
+            "@id": "https://w3id.org/fep/044f#quote",
+            "@type": "@id"
+          },
+          "quoteUri": "http://fedibird.com/ns#quoteUri",
+          "_misskey_quote": "https://misskey-hub.net/ns#_misskey_quote",
+          "quoteAuthorization": {
+            "@id": "https://w3id.org/fep/044f#quoteAuthorization",
+            "@type": "@id"
+          },
+          "gts": "https://gotosocial.org/ns#",
+          "interactionPolicy": {
+            "@id": "gts:interactionPolicy",
+            "@type": "@id"
+          },
+          "canFeature": {
+            "@id": "https://w3id.org/fep/7aa9#canFeature",
+            "@type": "@id"
+          },
+          "canQuote": {
+            "@id": "gts:canQuote",
+            "@type": "@id"
+          },
+          "automaticApproval": {
+            "@id": "gts:automaticApproval",
+            "@type": "@id"
+          },
+          "manualApproval": {
+            "@id": "gts:manualApproval",
+            "@type": "@id"
+          },
+          "QuoteAuthorization": "https://w3id.org/fep/044f#QuoteAuthorization",
+          "interactingObject": {
+            "@id": "gts:interactingObject",
+            "@type": "@id"
+          },
+          "interactionTarget": {
+            "@id": "gts:interactionTarget",
+            "@type": "@id"
+          },
+          "FeatureRequest": "https://w3id.org/fep/7aa9#FeatureRequest",
+          "FeaturedCollection": "https://w3id.org/fep/7aa9#FeaturedCollection",
+          "FeaturedItem": "https://w3id.org/fep/7aa9#FeaturedItem",
+          "FeatureAuthorization": "https://w3id.org/fep/7aa9#FeatureAuthorization",
+          "topic": {
+            "@id": "https://w3id.org/fep/7aa9#topic",
+            "@type": "@id"
+          },
+          "featuredObject": {
+            "@id": "https://w3id.org/fep/7aa9#featuredObject",
+            "@type": "@id"
+          },
+          "featureAuthorization": {
+            "@id": "https://w3id.org/fep/7aa9#featureAuthorization",
+            "@type": "@id"
+          }
+        }
+      ],
+      "id": "https://mastodon.example/users/bob/activities/157",
+      "type": "Undo",
+      "actor": "https://mastodon.example/users/bob",
+      "object": {
+        "id": "https://mastodon.example/users/bob/blocks/1",
+        "type": "Block",
+        "actor": "https://mastodon.example/users/bob",
+        "object": "https://kopje.test/ap/users/alice"
+      },
+      "as:instrument": 5,
+      "signature": {
+        "type": "RsaSignature2017",
+        "creator": "https://mastodon.example/users/bob#main-key",
+        "created": "2026-11-16T12:00:00Z",
+        "signatureValue": "placeholder-signature-value"
+      }
+    }
+  },
+  {
     "name": "@base after ActivityStreams, unsigned",
     "received": {
       "@context": [
