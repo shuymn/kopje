@@ -619,11 +619,12 @@ function finish(
   return { done: !again, due: quotesDue(db, now), state, next: false };
 }
 
-// A failed fetch's outcome: gone or unusable end the work; one that may pass (a fetch budget or deadline that ran out
-// included) charges an attempt: the stage had a whole budget of its own. So does gone or unusable under a signer other
-// than the one the row names now (a root arrival gave the work a recipient's key while the fetch was in flight,
-// promoteQuote): the retry signs with the current one, within the work's attempts. A stale stored author's refetch is
-// not one of these (refreshQuoted).
+// A failed fetch's outcome: gone or unusable end the work, leaving `ends` (the state it keeps, unless a gone stamp
+// rejects or revokes it); one that may pass (a fetch budget or deadline that ran out included) charges an attempt: the
+// stage had a whole budget of its own. So does gone or unusable under a signer other than the one the row names now (a
+// root arrival gave the work a recipient's key while the fetch was in flight, promoteQuote), since a server may refuse
+// one signer only, as Mastodon answers 404 to a viewer it refuses: the retry keeps the state and signs with the current
+// one, within the work's attempts. A stale stored author's refetch is not one of these (refreshQuoted).
 function failed(
   db: Db,
   row: QuoteRow,
@@ -631,9 +632,10 @@ function failed(
   fetched: Fetched<unknown>,
   input: QuoteVerification,
   held: string | null,
+  ends: QuoteState = keep,
 ) {
   return fetched.kind !== "transient" && input.signer === signerOf(db, row)
-    ? finish(db, row, keep, "done", input.now)
+    ? finish(db, row, ends, "done", input.now)
     : finish(db, row, keep, "retry", input.now, held);
 }
 
@@ -786,9 +788,9 @@ function storeQuoted(
 // (linked, or found by its uri and linked now) is decided. Only a pending quote is accepted, and only for a self-quote
 // or a valid stamp; an accepted one being checked again is revoked only when its stamp is gone or no longer valid. A
 // pending quote whose stamp is gone is rejected (Mastodon's VerifyQuoteService); one that fails a check stays pending,
-// its work done. Every failure that may pass charges an attempt, a fetch budget or deadline that ran out included,
-// except a stale stored author's refetch, which falls back to the stored account with no attempt charged, counted as an
-// author fetch (refreshQuoted).
+// its work done. A stamp is gone only to the signer the row names now (failed). Every failure that may pass charges an
+// attempt, a fetch budget or deadline that ran out included, except a stale stored author's refetch, which falls back
+// to the stored account with no attempt charged, counted as an author fetch (refreshQuoted).
 export function verifyQuote(db: Db, input: QuoteVerification, store: StoreRemoteStatus): QuoteVerified {
   const { now } = input;
   const row = quoteRow(db, input.statusId);
@@ -845,11 +847,11 @@ export function verifyQuote(db: Db, input: QuoteVerification, store: StoreRemote
     // The quoted status was stored by this stage: the stamp is the next.
     return { done: false, due: true, state: keep, next: true };
   }
-  if (stamp.kind === "gone") {
-    return finish(db, row, lost(true), "done", now);
-  }
+  // A stamp that is gone rejects a pending quote and revokes an accepted one only when the signer the row names now
+  // fetched it (failed): QuoteAuthorizationsController answers 404 to a viewer StatusPolicy refuses, a public status's
+  // included.
   if (stamp.kind !== "ok") {
-    return failed(db, row, keep, stamp, input, null);
+    return failed(db, row, keep, stamp, input, null, stamp.kind === "gone" ? lost(true) : keep);
   }
   return finish(db, row, stampValid(stamp.value, row, quoted) ? "accepted" : lost(false), "done", now);
 }

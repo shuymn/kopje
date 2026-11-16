@@ -4020,7 +4020,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   ("ends discovery at a synced pin")). A root arrival renews only a pending quote's idle work (`promoteQuote`); one that
   meets live work (due, leased or backing off) raises its budget and signer only, so arrivals that keep coming neither
   discard a fetch in flight nor reset its attempts and backoff, and a fetch refused under a signer the work has since
-  left is retried with the current one within those attempts. Every author stage of a verification that stores,
+  left, or answered gone to it (a stamp's 404 then rejects or revokes nothing: Mastodon answers 404 to a viewer it
+  refuses), is retried with the current one within those attempts. Every author stage of a verification that stores,
   refreshes or (on a failed refetch) stamps the quoted status's author counts in its quote's `author_fetches`, apart
   from its attempts: at most `QUOTE_AUTHOR_FETCHES` (6) a work, whose renewal starts the count again, and an author
   stage with none left fetches nothing and ends the work, so a work whose rounds die after the author stage, reclaimed

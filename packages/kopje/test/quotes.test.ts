@@ -63,6 +63,7 @@ import {
   announce,
   AS,
   create,
+  DAVE,
   followed,
   localStatus,
   mastodonNote,
@@ -2245,6 +2246,72 @@ describe("verifying quotes in stages: rounds, budgets, leases, generations and r
     await rounds(t, NOW);
     expect(t.web.signers[t.web.fetched.indexOf(own.id)]).toBe(`${ALICE_URI}#main-key`);
     expect(await quoteOf(t, quote.id)).toMatchObject({ state: "pending", attempts: 0, verify_after: null });
+  });
+
+  // The stamp's fetch answers 404 under the signer the work named when it began, and 200 to the one it names when the
+  // answer arrives: a server that refuses one viewer (Mastodon's StatusPolicy, a block) rejects no quote for others.
+  const goneToOneSigner = async (t: Setup, stamp: string, signs: () => Promise<void>) => {
+    const served = t.web.served.get(stamp)!;
+    t.web.fail(stamp, 404);
+    const gate = t.web.hold(stamp, { snapshot: true });
+    const round = rounds(t, NOW);
+    await gate.reached;
+    t.web.served.set(stamp, served);
+    await signs();
+    t.web.signers.length = 0;
+    t.web.fetched.length = 0;
+    gate.release();
+    await round;
+    return t.web.signers[t.web.fetched.indexOf(stamp)];
+  };
+
+  it("retries a stamp gone to a signer the quote no longer names, with the current one", async () => {
+    const { t, bob, carol } = await world();
+    await followed(t, bob, DAVE);
+    const pair = quotedPair(t, bob, carol);
+    expect(await t.postOnly(bob, create(bob, pair.quote), { path: "/ap/users/alice/inbox" })).toBe(202);
+    expect(await quoteOf(t, pair.quote.id)).toMatchObject({ state: "pending", fetch_as: ALICE });
+    const refusedTo = await goneToOneSigner(t, pair.stamp, async () => {
+      const again = { ...create(bob, pair.quote), id: `${pair.quote.id}/activity-dave` };
+      expect(await t.postOnly(bob, again, { path: "/ap/users/dave/inbox" })).toBe(202);
+      expect(await quoteOf(t, pair.quote.id)).toMatchObject({ fetch_as: DAVE });
+    });
+    expect(refusedTo).toBe(`${ALICE_URI}#main-key`);
+    expect(await quoteOf(t, pair.quote.id)).toMatchObject({
+      state: "pending",
+      attempts: 1,
+      verify_after: NOW + QUOTE_BACKOFF_MS[0]!,
+    });
+    await rounds(t, NOW + QUOTE_BACKOFF_MS[0]!);
+    expect(await quoteOf(t, pair.quote.id)).toMatchObject({ state: "accepted" });
+    expect(t.web.signers[t.web.fetched.lastIndexOf(pair.stamp)]).toBe(`${LOCAL}/ap/users/dave#main-key`);
+  });
+
+  it("retries a stamp gone to the instance actor once the quote names a recipient", async () => {
+    const { t, carol } = await world();
+    const erin = await mastodonActor(t.web, "erin", { key: 7 });
+    const pair = quotedPair(t, erin, carol);
+    t.web.serve(pair.quote.id, { "@context": AS, ...pair.quote });
+    // Stored by a search while no local account follows erin: the instance actor fetches for it.
+    const found = await t.api<{ statuses: { uri: string }[] }>(
+      `/api/v2/search?q=${encodeURIComponent(pair.quote.id)}&resolve=true&type=statuses`,
+    );
+    expect(found.body.statuses.map((status) => status.uri)).toEqual([pair.quote.id]);
+    expect(await quoteOf(t, pair.quote.id)).toMatchObject({ state: "pending", fetch_as: null });
+    const refusedTo = await goneToOneSigner(t, pair.stamp, async () => {
+      await followed(t, erin);
+      expect(await t.postOnly(erin, create(erin, pair.quote), { path: "/ap/users/alice/inbox" })).toBe(202);
+      expect(await quoteOf(t, pair.quote.id)).toMatchObject({ fetch_as: ALICE });
+    });
+    expect(refusedTo).not.toBe(`${ALICE_URI}#main-key`);
+    expect(await quoteOf(t, pair.quote.id)).toMatchObject({
+      state: "pending",
+      attempts: 1,
+      verify_after: NOW + QUOTE_BACKOFF_MS[0]!,
+    });
+    await rounds(t, NOW + QUOTE_BACKOFF_MS[0]!);
+    expect(await quoteOf(t, pair.quote.id)).toMatchObject({ state: "accepted" });
+    expect(t.web.signers[t.web.fetched.lastIndexOf(pair.stamp)]).toBe(`${ALICE_URI}#main-key`);
   });
 
   it("charges a failed Store stage only to the work and stage it read", async () => {
