@@ -244,8 +244,8 @@ async function walkTurn(turn: Turn, claim: ClaimedWalk): Promise<boolean> {
 }
 
 // One job round (jobs/queue.ts): up to REPLY_WALKS_PER_ROUND walks, claimed one after another. Returns whether a walk
-// is due, or a deletion a gone author's 410 started has its purge a batch left. A Store refusal surfaces as StoreUnavailableError for the caller; a walk whose round died is claimed again
-// after its lease, its charges kept.
+// is due, or a deletion a gone author's 410 started has its purge a batch left. A Store refusal surfaces as
+// StoreUnavailableError for the caller; a walk whose round died is claimed again after its lease, its charges kept.
 export async function walkReplies(env: Env, deps: InboxDeps): Promise<boolean> {
   const build = deps.build(env);
   const store = () => deps.store(env);

@@ -92,9 +92,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   minutes, and at most 16 run at once ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Replies
   collections"). The replies it fetches notify as other fetched statuses do, only when published within the last 6
   hours. Migration `0099_reply_walks`: two empty tables and their indexes, kept out of dumps; as it creates a table, the
-  upgrade checks every reference of the Store (7,059 ms for this file in one local run of the migration bench, at a load
-  average of 6 to 8). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor
-  version, and rolling back past it needs a point-in-time restore.
+  upgrade checks every reference of the Store (the migration bench's upgrade from `0093_annual_reports` takes 10,877 ms
+  with this file and 10,633 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store
+  migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
 
 ### Changed
 
