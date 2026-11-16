@@ -99,6 +99,10 @@ describe("GET /api/v1/trends/tags", () => {
     // prev only past the limit: none at offset == limit, offset - limit at limit + 1.
     expect((await page("/tags?limit=5&offset=5")).prev).toBeNull();
     expect((await page("/tags?limit=5&offset=6")).prev).toBe("/api/v1/trends/tags?limit=5&offset=1");
+    // Rails' last value of each, read by Ruby's to_i.
+    const repeated = await page("/tags?limit=1&limit=5&offset=0&offset=1_0");
+    expect(names(repeated.body)).toEqual(["t010", "t011", "t012", "t013", "t014"]);
+    expect(repeated.next).toBe("/api/v1/trends/tags?limit=5&offset=15");
   });
 
   // At saturation the list is the top 200 of what is allowed now, whatever the page size, between rounds.

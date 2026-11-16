@@ -1,4 +1,5 @@
 import type { Page, PageQuery } from "../domain/accounts";
+import { rubyToI } from "../platform/ruby-to-i";
 import type { ApiContext } from "./context";
 import type { Params } from "./params";
 
@@ -7,13 +8,15 @@ import type { Params } from "./params";
 
 const CURSOR = /^\d{1,19}$/;
 
+// `limit` as limit_param reads it (Api::BaseController#limit_param: `defaultLimit` when absent, else the absolute value
+// of its to_i, at most `maxLimit`), and a limit of 0 as 1 (docs/mastodon-deviations.md, "Request parameters").
 export function pageQuery(params: Params, defaultLimit = 40, maxLimit = 80): PageQuery {
-  const limit = Number.parseInt(params.get("limit") ?? "", 10);
+  const limit = params.last("limit");
   return {
     maxId: cursor(params.get("max_id")),
     sinceId: cursor(params.get("since_id")),
     minId: cursor(params.get("min_id")),
-    limit: Number.isNaN(limit) ? defaultLimit : Math.min(Math.max(limit, 1), maxLimit),
+    limit: limit === undefined ? defaultLimit : Math.min(Math.max(Math.abs(rubyToI(limit)), 1), maxLimit),
   };
 }
 

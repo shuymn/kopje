@@ -18,7 +18,7 @@ import {
 } from "../src/domain/polls";
 import { endPolls } from "../src/jobs/scheduled";
 import { API_BODY_LIMIT } from "../src/mastodon/params";
-import { type ApiHarness, bearer, json, settle, sql } from "./api-helpers";
+import { type ApiHarness, bearer, form, json, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
 import { remoteAccounts, staleStatistics, watchedCursor } from "./read-helpers";
@@ -548,6 +548,31 @@ describe("the Update of a local poll", () => {
 });
 
 describe("editing a status with a poll", () => {
+  // poll[expires_in] as Rails' params hold it: the last value, the query's over the body's; then Ruby's to_i.
+  it("reads poll[expires_in] as Rails' last value on a post and an edit", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const sent = async (path: string, method: string, query: string, durations: string[]) => {
+      const fields: [string, string][] = [
+        ["status", "q"],
+        ["poll[options][]", "a"],
+        ["poll[options][]", "b"],
+        ...durations.map((duration): [string, string] => ["poll[expires_in]", duration]),
+      ];
+      const response = await h.request(`${path}${query}`, bearer(alice.token, form(fields, { method })));
+      expect(response.status, await response.clone().text()).toBe(200);
+      return response.json<PolledStatus>();
+    };
+    const query = (duration: string) => `?${new URLSearchParams([["poll[expires_in]", duration]]).toString()}`;
+    const created = await sent("/api/v1/statuses", "POST", "", ["300", "600"]);
+    expect(created.poll?.expires_at).toBe(at(NOW + 600_000));
+    expect((await sent("/api/v1/statuses", "POST", query("900"), ["600"])).poll?.expires_at).toBe(at(NOW + 900_000));
+    expect((await sent("/api/v1/statuses", "POST", "", ["0d1200"])).poll?.expires_at).toBe(at(NOW + 1_200_000));
+    const path = `/api/v1/statuses/${created.id}`;
+    expect((await sent(path, "PUT", "", ["300", "600"])).poll?.expires_at).toBe(at(NOW + 600_000));
+    expect((await sent(path, "PUT", query("900"), ["600"])).poll?.expires_at).toBe(at(NOW + 900_000));
+  });
+
   it("keeps the votes when the choices stay, drops them when they change, and removes a poll not sent", async () => {
     const h = await community(["alice", "bob"]);
     const { alice, bob } = h.users;

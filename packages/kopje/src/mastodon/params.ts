@@ -1,5 +1,6 @@
 import { readBoundedBody } from "../platform/body";
 import { utf8Length } from "../platform/dump-format";
+import { rubyToI } from "../platform/ruby-to-i";
 
 // Request parameters as Mastodon reads them: the query string merged with a JSON, urlencoded or multipart body
 // (clients send all three). JSON is flattened to form names, so `{"source":{"privacy":"public"}}` reads as
@@ -76,6 +77,14 @@ export class Params {
   // The body's value wins over the query's.
   get(name: string): string | undefined {
     return this.entries.find(([key]) => key === name)?.[1];
+  }
+
+  // Rails' `params[name]`: the query's last value, else the body's last (Rack assigns a repeated plain name, so the
+  // last wins, and Rails merges the query over the body). The entries hold the body's before the query's, and a
+  // declared name's query value only without a body value (withQuery), so the last entry is that value. Integer
+  // parameters are read so.
+  last(name: string): string | undefined {
+    return this.entries.findLast(([key]) => key === name)?.[1];
   }
 
   // A declared file parameter whose effective value is a file (readParams' typed selection): then get(name) is
@@ -384,24 +393,16 @@ function flatten(value: unknown, state: Flattening, prefix = "", depth = 0): voi
   }
 }
 
-// `offset` as Mastodon's offset endpoints read it (params[:offset].to_i): a negative or unreadable one is 0.
+// `offset` as Mastodon's offset endpoints read it (params[:offset].to_i): a negative one is 0.
 export function offsetParam(p: Params): number {
-  return Math.max(Number.parseInt(p.get("offset") ?? "0", 10) || 0, 0);
+  return Math.max(rubyToI(p.last("offset") ?? "0"), 0);
 }
 
-// Whether Ruby's String#to_i reads `value` as negative (rb_int_parse_cstr in Ruby 4.0.9's bignum.c, Mastodon 4.7.5's
-// Ruby): after ASCII whitespace (ISSPACE), a `-`, an optional `0d` prefix, then digits with single underscores between
-// them, one of them not 0; whatever follows is ignored, so `-2abc` and ` -1` are negative and `-_1` or `--1` are 0.
-const RUBY_NEGATIVE = /^[\t\n\v\f\r ]*-(?:0[dD])?[0-9]+(?:_[0-9]+)*/;
-export function rubyNegative(value: string): boolean {
-  return /[1-9]/.test(RUBY_NEGATIVE.exec(value)?.[0] ?? "");
-}
-
-// `limit` as Api::BaseController#limit_param reads it: `fallback` when absent, else the absolute value, at most `max`
-// (an unreadable one is 0).
+// `limit` as Api::BaseController#limit_param reads it: `fallback` when absent, else the absolute value of its to_i, at
+// most `max`.
 export function limitParam(p: Params, fallback: number, max: number): number {
-  const limit = p.get("limit");
-  return limit === undefined ? fallback : Math.min(Math.abs(Number.parseInt(limit, 10) || 0), max);
+  const limit = p.last("limit");
+  return limit === undefined ? fallback : Math.min(Math.abs(rubyToI(limit)), max);
 }
 
 // ActiveModel::Type::Boolean#cast's false values, each in its own case only ('False' casts to true), with blank.

@@ -301,6 +301,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- Integer parameters are read as Rails reads them: the last of repeated values, the query's before the body's, as
+  Ruby's `String#to_i` reads it (underscores, a `0d` prefix, ASCII whitespace only), and a negative `limit` as its
+  absolute value (#1729). A `limit` that is not a number now reads as 1 on a list paged by `max_id` rather than as
+  the default ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Request parameters"). No Store migration
+  and no `wrangler.jsonc` change.
 - Search with `resolve=true` finds a local post by its page URL, a local account by its profile URL (one of its tabs
   included) and a stored remote account by its `/@user@domain` URL on this instance, as Mastodon's search does, when
   the viewer may see them. Search reads `limit` and `offset` as Mastodon's does: a negative `limit` or `offset` is

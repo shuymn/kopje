@@ -71,6 +71,12 @@ describe("GET /api/oembed", () => {
     expect(await sizes("&maxwidth=&maxheight=")).toEqual([0, null]);
     expect(await sizes("&maxwidth=wide&maxheight=tall")).toEqual([0, 0]);
     expect(await sizes("&maxheight=200")).toEqual([400, 200]);
+    // Rails' last value of each, and Ruby's to_i of it: a 0d prefix, ASCII whitespace only.
+    expect(await sizes("&maxwidth=1&maxwidth=500&maxheight=1&maxheight=0d20")).toEqual([500, 20]);
+    expect(await sizes("&maxheight=5&maxheight=")).toEqual([400, null]);
+    expect(await sizes("&maxwidth=%C2%A0300")).toEqual([0, null]);
+    // Past 2^53 - 1, read as that (docs/mastodon-deviations.md, "Request parameters").
+    expect(await sizes("&maxwidth=99999999999999999999")).toEqual([Number.MAX_SAFE_INTEGER, null]);
   });
 
   it("resolves the status page, its other spellings, the object URI and a legacy id", async () => {

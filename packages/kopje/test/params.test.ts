@@ -10,53 +10,28 @@ import {
   parseBoolean,
   type ReadOptions,
   readParams,
-  rubyNegative,
   SENT_FILE,
 } from "../src/mastodon/params";
+import { rubyToI } from "../src/platform/ruby-to-i";
+import toI from "./fixtures/ruby-to-i/to-i.json";
 import { multipartForm } from "./media-helpers";
 
-// Ruby's String#to_i (rb_int_parse_cstr, bignum.c of Ruby 4.0.9, Mastodon 4.7.5's Ruby), each value as Ruby reads it.
-describe("rubyNegative", () => {
-  it.each([
-    ["-2", -2],
-    ["-2abc", -2],
-    [" -1", -1],
-    ["\t\n\v\f\r-3", -3],
-    ["  \t-0_0_1x", -1],
-    ["-1e3", -1],
-    ["-2.5", -2],
-    ["-0_1", -1],
-    ["-1__2", -1],
-    ["-1_", -1],
-    ["-0d5", -5],
-    ["-0D5", -5],
-    ["-0d0_1", -1],
-    ["-", 0],
-    ["", 0],
-    ["2", 2],
-    ["-abc", 0],
-    ["--1", 0],
-    ["+-1", 0],
-    ["- 1", 0],
-    ["\u00a0-1", 0],
-    ["-0", 0],
-    ["-00", 0],
-    ["-0.5", 0],
-    ["-_1", 0],
-    ["-0_", 0],
-    ["-0__1", 0],
-    ["-0_ 1", 0],
-    ["-0d", 0],
-    ["-0dx5", 0],
-    ["-0d_5", 0],
-    ["-0d0d5", 0],
-    ["-0x5", 0],
-    ["-0b1", 0],
-    ["-0o7", 0],
-    ["-\u0663", 0],
-  ])("reads %j as Ruby's to_i reads it, %i", (value, toI) => {
-    expect(rubyNegative(value)).toBe(toI < 0);
+// Ruby 4.0.9's String#to_i of each value (to-i.json, captured by its capture.rb); a magnitude past
+// Number.MAX_SAFE_INTEGER is read as that.
+describe("rubyToI", () => {
+  it("is checked against Mastodon 4.7.5's Ruby", () => {
+    expect(toI.ruby).toBe("4.0.9");
   });
+
+  const max = BigInt(Number.MAX_SAFE_INTEGER);
+  it.each(toI.rows.map((row) => [row.value, row.to_i] as const))(
+    "reads %j as Ruby's to_i reads it, %s",
+    (value, ruby) => {
+      const exact = BigInt(ruby);
+      const capped = exact > max ? max : exact < -max ? -max : exact;
+      expect(rubyToI(value)).toBe(Number(capped));
+    },
+  );
 });
 
 describe("Params#objects", () => {
@@ -110,6 +85,35 @@ async function read(request: Request, options?: ReadOptions): Promise<Params> {
 }
 
 const png = (name = "a.png") => new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
+
+// Rails' params[name]: the query's last value, else the body's last.
+describe("Params#last", () => {
+  it("reads the last of repeated values, in the query or a form body", async () => {
+    expect((await read(new Request("https://kopje.test/x?a=1&a=2"))).last("a")).toBe("2");
+    const form = await read(post("a=1&a=2", "application/x-www-form-urlencoded"));
+    expect([form.last("a"), form.get("a")]).toEqual(["2", "1"]);
+    const parts = await read(
+      multipart([
+        ["a", "1"],
+        ["a", "2"],
+      ]),
+    );
+    expect(parts.last("a")).toBe("2");
+  });
+
+  it("reads the query's value over the body's, form or JSON", async () => {
+    const form = await read(post("a=1", "application/x-www-form-urlencoded", "?a=3"));
+    expect([form.last("a"), form.get("a")]).toEqual(["3", "1"]);
+    const json = await read(post(JSON.stringify({ a: 1, b: 2 }), "application/json", "?a=4&a=5"));
+    expect([json.last("a"), json.last("b"), json.get("a")]).toEqual(["5", "2", "1"]);
+    expect((await read(post("b=1", "application/x-www-form-urlencoded"))).last("a")).toBeUndefined();
+  });
+
+  it("reads a declared file in the body over a query text, as Rails' last-part rule", async () => {
+    const p = await read(multipart([["avatar", png()]], "?avatar=q"), { files: FILES });
+    expect([p.last("avatar"), p.file("avatar")?.name]).toEqual([undefined, "a.png"]);
+  });
+});
 
 describe("readParams: declared files (Rails last-part rule)", () => {
   it("chooses the last part of a declared name, text or file, and never both", async () => {

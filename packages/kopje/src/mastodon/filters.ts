@@ -45,7 +45,7 @@ function filterChanges(p: Params): FilterChanges & { keywords: KeywordAttributes
     title: p.get("title"),
     context: context(p),
     filterAction: p.get("filter_action"),
-    expiresIn: p.get("expires_in"),
+    expiresIn: p.last("expires_in"),
     keywords: p.objects("keywords_attributes").map((entry) => ({
       id: entry.id,
       keyword: entry.keyword,
@@ -66,7 +66,7 @@ function v1Changes(p: Params): FilterV1Changes {
     context: context(p),
     irreversible: p.get("irreversible"),
     wholeWord: p.get("whole_word"),
-    expiresIn: p.get("expires_in"),
+    expiresIn: p.last("expires_in"),
   };
 }
 

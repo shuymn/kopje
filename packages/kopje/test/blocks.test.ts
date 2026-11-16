@@ -14,7 +14,7 @@ import { severCollections } from "../src/domain/collections";
 import { JOB_RETRY_DELAYS_MS } from "../src/domain/job-attempts";
 import { publicTimeline } from "../src/domain/timelines";
 import { sha256Hex } from "../src/security/tokens";
-import { type ApiHarness, bearer, json, login, settleDeliveries, sql } from "./api-helpers";
+import { type ApiHarness, bearer, form, json, login, settleDeliveries, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD, claimSent, runStoreJobs } from "./helpers";
 import { watchedCursor } from "./read-helpers";
@@ -755,6 +755,25 @@ describe("mutes", () => {
       muting: true,
       muting_expires_at: "9999-12-31T23:59:59.999Z",
     });
+  });
+
+  // params[:duration] as Rails holds it: the last value, the query's over the body's; then Ruby's to_i.
+  it("reads duration as Rails' last value, by Ruby's to_i", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const path = `/api/v1/accounts/${bob.id}/mute`;
+    const expiry = async (query: string, durations: string[]) => {
+      const response = await h.request(
+        `${path}${query}`,
+        bearer(alice.token, form(durations.map((duration): [string, string] => ["duration", duration]))),
+      );
+      expect(response.status).toBe(200);
+      return (await response.json<Relationship>()).muting_expires_at;
+    };
+    const after = (seconds: number) => new Date(NOW + seconds * 1000).toISOString();
+    expect(await expiry("", ["1_0"])).toBe(after(10));
+    expect(await expiry("", ["5", "0d20"])).toBe(after(20));
+    expect(await expiry("?duration=30", ["5"])).toBe(after(30));
   });
 
   it("hides the muted account from timelines and search; notifications only when it mutes them", async () => {

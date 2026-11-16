@@ -32,6 +32,22 @@ describe("timeline paging", () => {
     expect(await ids(h, "/api/v1/timelines/home?limit=1&max_id=9999999999999999999", alice.token)).toEqual([p4]);
   });
 
+  // limit as Api::BaseController#limit_param reads it: Rails' last value (the query's, else the body's), Ruby's to_i,
+  // its absolute value; 0 or none read as 1 (docs/mastodon-deviations.md, "Request parameters").
+  it("reads limit as limit_param: the last value, Ruby's to_i, its absolute value", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const newest: string[] = [];
+    for (let i = 0; i < 12; i++) {
+      newest.unshift((await post(h, alice, { status: `#${i}` })).id);
+    }
+    const page = (query: string) => ids(h, `/api/v1/timelines/public?${query}`, alice.token);
+    expect(await page("limit=1&limit=5")).toEqual(newest.slice(0, 5));
+    expect(await page("limit=-5")).toEqual(newest.slice(0, 5));
+    expect(await page("limit=1_0")).toEqual(newest.slice(0, 10));
+    expect(await page("limit=abc")).toEqual(newest.slice(0, 1));
+  });
+
   it("pages bookmarks by the bookmark, not the status", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;

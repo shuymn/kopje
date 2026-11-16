@@ -1,6 +1,7 @@
 import { selectSql } from "../db/columns";
 import { FILTER_STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { rubyToI } from "../platform/ruby-to-i";
 import { resolveApiId } from "./accounts";
 import { canView, type ViewerContext } from "./audience";
 import { userReadOperation, userWriteOperation } from "./auth";
@@ -164,13 +165,13 @@ function normalizeContext(context: readonly string[]): string[] {
   return [...new Set(context.map((c) => c.trim()).filter((c) => c !== ""))];
 }
 
-// Expireable#expires_in=: a blank interval is no expiry; anything else is Ruby's to_i (a leading integer, else 0) in
-// seconds from now. Undefined for a time beyond what a Date holds.
+// Expireable#expires_in=: a blank interval is no expiry; anything else is Ruby's to_i in seconds from now. Undefined
+// for a time beyond what a Date holds.
 function expiresAt(expiresIn: string, now: string): string | null | undefined {
   if (blank(expiresIn)) {
     return null;
   }
-  const seconds = Number(/^\s*[+-]?\d+/.exec(expiresIn)?.[0] ?? "0");
+  const seconds = rubyToI(expiresIn);
   const at = new Date(Date.parse(now) + seconds * 1000);
   return Number.isNaN(at.getTime()) || at.getUTCFullYear() > 9999 ? undefined : at.toISOString();
 }

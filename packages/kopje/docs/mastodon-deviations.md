@@ -1114,6 +1114,16 @@ Request parameters:
   the one read, as Rails assigns them; on `/api/v{1,2}/media` a file followed by a string answers 422 `File can't be
   blank`, where Mastodon answers 400.
 - A query value of a declared file parameter is read only when the body has none (Rails lets the query win).
+- An integer parameter (`limit`, `offset`, a mute's `duration`, a filter's `expires_in`, `poll[expires_in]`, oEmbed's
+  `maxwidth` and `maxheight`) whose `to_i` is past 9,007,199,254,740,991 (2^53 − 1) is read as that, where Ruby reads
+  any length: oEmbed's `width` and `height` show 9,007,199,254,740,991 for a larger `maxwidth` or `maxheight`, where
+  Mastodon shows the number sent.
+- A `limit` whose `to_i` is 0 (`0`, `-0`, `abc`) reads as 1 on a list paged by `max_id`, `since_id` and `min_id` (the
+  timelines but the link timeline, the notifications, the lists of accounts and statuses, the admin reports, accounts
+  and domain blocks). Mastodon 4.7.5 answers the home, public, hashtag and list timelines and the notifications (v1
+  and v2) `[]` without a `Link`, and the other lists 500, as `records_continue?` holds for the empty page and its
+  cursor is read (`Api::Pagination#pagination_max_id`). A list's members and the endorsements answer every item for
+  `limit=0`, as Mastodon's do.
 - Kopje media are images, so `thumbnail` (on `/api/v{1,2}/media` and `/api/v1/media/:id`) and
   `media_attributes[][thumbnail]` (on a status edit) answer 422 `Validation failed: Thumbnail must be blank`, as
   Mastodon validates an image's thumbnail. Any file part or non-empty text is a thumbnail; empty text or JSON `null`

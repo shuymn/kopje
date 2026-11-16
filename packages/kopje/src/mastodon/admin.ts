@@ -1,4 +1,3 @@
-import type { PageQuery } from "../domain/accounts";
 import {
   type AccountActionResult,
   ADMIN_ACCOUNTS_LIMIT,
@@ -51,6 +50,7 @@ import {
   withParams,
 } from "./context";
 import { mastodonError, moderatingError, recordNotFound as notFound } from "./errors";
+import { pageQuery } from "./pagination";
 import { Params, parseBoolean, RAILS_FALSE } from "./params";
 import { reportResponse } from "./reports";
 import * as trends from "./trends";
@@ -99,26 +99,6 @@ export const trendLinks = afterGate(trends.trendLinks);
 // domain/reports.ts). Mastodon's set_report precedes manage_reports policy, after the gate; Kopje's operation checks
 // the permission first (R37, VIS-29), and an authorized lookup of a missing report returns 404.
 
-const CURSOR = /^\d{1,19}$/;
-
-// limit_param(LIMIT) (app/controllers/api/base_controller.rb:33-37): the absolute value, at most twice the default.
-// Mastodon's own answer to 0 (or a limit that is not a number) is a server error, as it reads the cursor of an empty
-// page; Kopje reads it as 1.
-function adminPage(p: Params, fallback = ADMIN_REPORTS_LIMIT, max = MAX_ADMIN_REPORTS_LIMIT): PageQuery {
-  const sent = p.get("limit");
-  const limit = sent === undefined ? fallback : Math.abs(Number.parseInt(sent, 10) || 0);
-  const cursor = (name: string) => {
-    const value = p.get(name);
-    return value !== undefined && CURSOR.test(value) ? value : undefined;
-  };
-  return {
-    maxId: cursor("max_id"),
-    sinceId: cursor("since_id"),
-    minId: cursor("min_id"),
-    limit: Math.min(Math.max(limit, 1), max),
-  };
-}
-
 // A parameter as ActiveModel::Type::Boolean casts it, true or not: absent is nil.
 function railsTrue(value: string | null | undefined): boolean {
   return value != null && !RAILS_FALSE.includes(value);
@@ -148,7 +128,8 @@ function listUrl(c: ApiContext, path: string, names: readonly string[], p: Param
       if (ARRAY_PARAMS.has(name)) {
         return (arrayParam(p, name) ?? []).map((value) => [`${name}[]`, value]);
       }
-      const value = p.get(name);
+      // `limit` as the page reads it (pageQuery).
+      const value = name === "limit" ? p.last(name) : p.get(name);
       return value === undefined ? [] : [[name, value]];
     }),
     ...Object.entries(cursor),
@@ -194,7 +175,7 @@ function reportState(resolved: boolean, unresolved: boolean): AdminReportFilter[
 export const reports: ApiHandler = withParams(async (c, deps, sent) => {
   // The query with each flag's last value (Params.withQuery's declared names), read here and carried by the Link URLs.
   const p = new Params([]).withQuery(sent.entries, REPORT_FLAGS);
-  const page = adminPage(p);
+  const page = pageQuery(p, ADMIN_REPORTS_LIMIT, MAX_ADMIN_REPORTS_LIMIT);
   const input = {
     credential: optionalCredential(c, deps),
     filter: {
@@ -373,7 +354,7 @@ export function adminAccounts(version: 1 | 2): ApiHandler {
     const input = {
       credential: optionalCredential(c, deps),
       filter: parsed.filter,
-      page: adminPage(p, ADMIN_ACCOUNTS_LIMIT, MAX_ADMIN_ACCOUNTS_LIMIT),
+      page: pageQuery(p, ADMIN_ACCOUNTS_LIMIT, MAX_ADMIN_ACCOUNTS_LIMIT),
       present: present(c),
     };
     const result = authorized(await storeCall(c, deps, (s, b) => s.adminAccounts(b, input)));
@@ -514,7 +495,7 @@ function blockRequest(p: Params): BlockRequest {
 // GET /api/v1/admin/domain_blocks: newest first, limit 100 by default and at most 500 (LIMIT, MAX_LIMIT); Link next
 // while a page is full (records_continue?) and prev whenever it has items, carrying only limit (PAGINATION_PARAMS).
 export const domainBlocks: ApiHandler = withParams(async (c, deps, p) => {
-  const page = adminPage(p, DOMAIN_BLOCKS_LIMIT, MAX_DOMAIN_BLOCKS_LIMIT);
+  const page = pageQuery(p, DOMAIN_BLOCKS_LIMIT, MAX_DOMAIN_BLOCKS_LIMIT);
   const input = { credential: optionalCredential(c, deps), page };
   const blocks = authorized(await storeCall(c, deps, (s, b) => s.adminDomainBlocks(b, input)));
   listLinks(c, (cursor) => listUrl(c, "/api/v1/admin/domain_blocks", ["limit"], p, cursor), {

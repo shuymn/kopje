@@ -413,6 +413,9 @@ describe("grouped notifications (API v2)", () => {
     expect(await count("/api/v1/notifications/unread_count?limit=2")).toBe(2);
     expect(await count("/api/v2/notifications/unread_count?limit=2")).toBe(2);
     expect(await count("/api/v1/notifications/unread_count?limit=-3")).toBe(3);
+    // Rails' last value, read by Ruby's to_i.
+    expect(await count("/api/v1/notifications/unread_count?limit=1&limit=-3")).toBe(3);
+    expect(await count("/api/v2/notifications/unread_count?limit=1&limit=0d3")).toBe(3);
     expect(await count("/api/v1/notifications/unread_count?limit=none")).toBe(0);
     // types[] as the lists read it: an empty value matches no type, a scalar is dropped.
     for (const [version, all] of [
