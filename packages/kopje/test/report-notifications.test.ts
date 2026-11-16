@@ -136,6 +136,7 @@ describe("admin.report: who is notified (ReportService#notify_staff!)", () => {
       "created_at",
       "status_ids",
       "rule_ids",
+      "collection_ids",
       "target_account",
     ]);
     expect(notification!.report).toMatchObject({
@@ -902,6 +903,7 @@ describe("admin.report: bounds (RES-7)", () => {
       credential: { tokenHash: "", scope: "write:reports", now: NOW } as const,
       account: carol,
       statusIds: [],
+      collectionIds: [],
       comment: undefined,
       category: undefined,
       ruleIds: [],

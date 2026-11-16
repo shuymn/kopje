@@ -302,6 +302,38 @@ async function publicPages(): Promise<{ pages: Page[]; h: Awaited<ReturnType<typ
   await sql(h.store, "INSERT INTO account_pins (account_id, target_account_id) VALUES (?, ?)", alice.id, dan);
   // dan favourites the parent, which alice boosted and rich quotes: its tabs list each.
   await sql(h.store, "INSERT INTO favourites (account_id, status_id) VALUES (?, ?)", dan, parent.id);
+  // alice's collections: one listing carol, the same behind its sensitive warning, and one with no member.
+  const at = new Date(NOW).toISOString();
+  for (const [n, sensitive, member] of [
+    [1, 0, carol.id],
+    [2, 1, carol.id],
+    [3, 0, null],
+  ] as const) {
+    await sql(
+      h.store,
+      `INSERT INTO collections (id, account_id, local, name, description, language, tag, sensitive, discoverable,
+				created_at, updated_at)
+			VALUES (?, ?, 1, ?, 'Who to read', 'en', 'cats', ?, 1, ?, ?)`,
+      `50000000000000000${n}`,
+      alice.id,
+      `Reading ${n}`,
+      sensitive,
+      at,
+      at,
+    );
+    if (member !== null) {
+      await sql(
+        h.store,
+        `INSERT INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
+				VALUES (?, ?, ?, 1, 1, ?, ?)`,
+        `60000000000000000${n}`,
+        `50000000000000000${n}`,
+        member,
+        at,
+        at,
+      );
+    }
+  }
   await sql(
     h.store,
     "UPDATE local_accounts SET suspended_at = ? WHERE account_id = ?",
@@ -331,6 +363,9 @@ async function publicPages(): Promise<{ pages: Page[]; h: Awaited<ReturnType<typ
   await add("hidden follows", 200, "/@carol/following");
   await add("featured", 200, "/@alice/featured");
   await add("featured, empty", 200, "/@carol/featured");
+  await add("collection", 200, "/collections/500000000000000001");
+  await add("collection, sensitive", 200, "/collections/500000000000000002");
+  await add("collection, empty", 200, "/collections/500000000000000003");
   await add("hashtag", 200, "/tags/cats");
   await add("hashtag, older posts", 200, `/tags/cats?max_id=${tagged.id}`);
   await add("status with media", 200, pathOf(String(parent.url)));
@@ -405,7 +440,7 @@ describe("accessibility contracts", () => {
       expect(response.status, name).toBe(200);
       pages.push({ name, html: await response.text() });
     }
-    expect(pages).toHaveLength(42);
+    expect(pages).toHaveLength(45);
     // The pages hold what the contracts are about: forms, media, a content warning, a pager-free feed.
     const controls = (name: string) =>
       ["input", "select", "textarea"].flatMap((tag) => query(parseHtml(pages.find((p) => p.name === name)!.html), tag));
@@ -451,6 +486,13 @@ describe("accessibility contracts", () => {
     expect(query(featured, "ul", "hashtags").flatMap((list) => query(list, "li"))).toHaveLength(1);
     expect(query(featured, "ul", "accounts").flatMap((list) => query(list, "li"))).toHaveLength(1);
     expect(query(parseHtml(pages.find((p) => p.name === "featured, empty")!.html), "p", "muted")).toHaveLength(2);
+    // A collection's page lists its member, the sensitive one behind its disclosure, the empty one its empty line.
+    const collection = parseHtml(pages.find((p) => p.name === "collection")!.html);
+    expect(query(collection, "ul", "accounts").flatMap((list) => query(list, "li"))).toHaveLength(1);
+    const sensitive = parseHtml(pages.find((p) => p.name === "collection, sensitive")!.html);
+    expect(query(one(sensitive, "details", "cw"), "ul", "accounts")).toHaveLength(1);
+    const empty = parseHtml(pages.find((p) => p.name === "collection, empty")!.html);
+    expect(query(empty, "p", "muted").map(text)).toEqual(["#cats", "No accounts yet."]);
     // The edited post's page holds its history dialog, its opener and its three versions, the oldest behind its
     // warning, beside the dialogs to open it on another server and to embed it, each with its opener.
     const history = parseHtml(pages.find((p) => p.name === "edited status with its history")!.html);

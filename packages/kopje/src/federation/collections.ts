@@ -18,6 +18,7 @@ import { storedCount } from "../platform/stored-bounds";
 import { goneAt, goneSettler, type SettleGone } from "./actor-gone";
 import { createRemoteLoaders, type FederationState, type RemoteLoaders } from "./federation";
 import type { InboxDeps } from "./inbox";
+import { itemsOf } from "./json-shapes";
 import {
   type DocumentCaps,
   isTransientLoadError,
@@ -120,18 +121,6 @@ export async function documentOn(
   } catch (error) {
     return isTransientLoadError(error) ? "transient" : null;
   }
-}
-
-// A collection page's items (Collection and CollectionPage: items; the ordered ones: orderedItems), or null for
-// anything else.
-export function itemsOf(collection: Json): unknown[] | null {
-  const items =
-    collection.type === "Collection" || collection.type === "CollectionPage"
-      ? collection.items
-      : collection.type === "OrderedCollection" || collection.type === "OrderedCollectionPage"
-        ? collection.orderedItems
-        : undefined;
-  return items === undefined ? null : Array.isArray(items) ? items : items === null ? [] : [items];
 }
 
 // The names of the Hashtags among `items`, in order, appended to `names` until it holds MAX_FEATURED_TAGS; the items

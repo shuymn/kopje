@@ -52,11 +52,13 @@ import {
   followersUri,
   type StoredStatus,
 } from "./remote-status-reads";
+import { recordCreateWalk } from "./reply-walk-create";
 import { isDeleted } from "./retractions";
 import { normalizeSearchText } from "./search-text";
 import { MAX_STATUS_MEDIA, MAX_STATUS_MENTION_ROWS, MAX_STATUS_TAGS, MAX_TAG_LENGTH } from "./status-bounds";
 import { measureFilterText, presentStatus, type Status } from "./status-presenter";
-import { MAX_STATUS_EDITS, notifyEdited, recordEdit, recountStatus, writeTags } from "./statuses";
+import { MAX_STATUS_EDITS, recordEdit, recountStatus, writeTags } from "./statuses";
+import { notifyEdited } from "./update-fan-out";
 
 // Remote statuses: Create, Update and the originals of boosts and search results, stored as Mastodon 4.7.5's
 // ActivityPub::Activity::Create and ProcessStatusUpdateService store them; a search result or a pin sync's status
@@ -95,6 +97,12 @@ export type StoreContext = {
   // The work budget of the status's quote (quotes.ts): QUOTE_HOPS when it arrives as a root, one less than its
   // quoting status's when it is stored as a quoted target during verification.
   quoteHops?: number;
+  // A status this store creates has its replies read (reply-walk-create.ts recordCreateWalk), its walk queued at the
+  // Store's own time (atStoreTime): set only by the paths that store what was delivered or what a user asked for (an
+  // inbound Create or Update, an Announce's original, an Add's status, a QuoteRequest's quoting status, a search or
+  // interaction resolution), never by a walk, quote verification or a collection sync, so nothing a walk causes starts
+  // another.
+  readReplies?: { storeNow: number };
 };
 
 // The context of a path that may update a stored status (updateRemoteStatus): also the Store's own time, which an
@@ -502,6 +510,9 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
       now: ctx.now,
     });
   }
+  if (ctx.readReplies !== undefined) {
+    recordCreateWalk(db, { id, uri: input.uri, visibility }, input.replies, ctx.readReplies.storeNow);
+  }
   return { applied: true, reason: "created", statusId: id };
 }
 
@@ -713,9 +724,16 @@ export function updateRemoteStatus(
   if (Number.isNaN(version) || version === stored) {
     // ProcessStatusUpdateService#handle_implicit_update!: an Update that names the stored version, or none for a status
     // never edited (such as the Update of a poll's counts, which names one only once the status was edited), still
-    // refreshes the counts, the end and the voters of its poll, and verifies a changed stamp of the same quote again;
-    // the quoted status itself changes only with a newer version.
-    const restamped = refreshQuote(db, { id: existing.id, uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
+    // refreshes the counts, the end and the voters of its poll, and verifies the same quote again (refreshQuote); the
+    // quoted status itself changes only with a newer version.
+    const reset = refreshQuote(
+      db,
+      { id: existing.id, uri, author },
+      input.quote,
+      { ...arrival, broadcast: true, version: "same" },
+      ctx,
+      storeRemoteStatus,
+    );
     const policyChanged =
       db.run(
         "UPDATE statuses SET quote_policy = ?1 WHERE id = ?2 AND quote_policy <> ?1",
@@ -727,9 +745,10 @@ export function updateRemoteStatus(
       markPollFetched(db, existing.id, poll, ctx.storeNow);
     }
     const pollUpdated = poll === "written";
-    // It broadcasts the update when it moved the quote's state (:82 in v4.7.5): a changed stamp, which resets the quote
-    // (refreshQuote). Not a legacy form alone, the same stamp, the poll or the quote policy.
-    if (restamped) {
+    // It broadcasts the update when it moved the quote's state (:82 in v4.7.5): the reset of an accepted quote, at
+    // once; a move its verification makes notifies at that work's decision (quotes.ts finish). Not a legacy form
+    // alone, the same stamp, the poll or the quote policy.
+    if (reset) {
       notifyEdited(db, existing.id, author.id, ctx.now);
     }
     return pollUpdated
@@ -789,7 +808,14 @@ export function updateRemoteStatus(
   writeMedia(db, existing.id, author, media, ctx);
   measureFilterText(db, existing.id, iso(ctx.now));
   noteStatusEmoji(db, existing.id, ctx.now);
-  recordQuote(db, { id: existing.id, uri, author }, input.quote, arrival, ctx, storeRemoteStatus);
+  recordQuote(
+    db,
+    { id: existing.id, uri, author },
+    input.quote,
+    { ...arrival, version: "newer" },
+    ctx,
+    storeRemoteStatus,
+  );
   if (significant) {
     // ProcessStatusUpdateService#reset_preview_card!: the card is fetched again from the Update's first Link, else its
     // anchors (:447-450). A change of the Links alone is not significant (:187), nor here a quote's, so neither
@@ -1000,7 +1026,8 @@ export function firstRequestOf(target: FetchTarget): string {
   return target.kind === "address" ? webfingerUrl(target.username, target.domain) : target.href;
 }
 
-// storeNow: the Store's own time (atStoreTime), which a fetched poll records (UpdateContext).
+// storeNow: the Store's own time (atStoreTime), which a fetched poll records (UpdateContext) and which queues the
+// create walk of a status the resolution stores.
 export type ResolveInput = {
   query: string;
   resolved: Resolved;
@@ -1104,6 +1131,7 @@ export function storeResolved(
         origin,
         deliveredTo: null,
         fetched: true,
+        readReplies: { storeNow },
       });
       return {
         kind: "status",

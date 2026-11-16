@@ -2,7 +2,7 @@ import { createExecutionContext } from "cloudflare:test";
 import { Hono } from "hono";
 import { describe, expect, it } from "vitest";
 
-import { apiCaching } from "../src/mastodon/caching";
+import { apiHeaders } from "../src/mastodon/caching";
 import type { ApiHandler } from "../src/mastodon/context";
 import { mastodonApi, ROUTES } from "../src/mastodon/routes";
 import { imagesCodec } from "../src/platform/images";
@@ -461,7 +461,7 @@ describe("an anonymous route with a token", () => {
     // Under the API's caching middleware the route's declaration decides, never a handler's header: the anonymous
     // answer is public with Vary, and the suspended owner's 403 private (WEB-7).
     const app = new Hono<{ Bindings: Env }>();
-    app.use("/api/*", apiCaching);
+    app.use("/api/*", apiHeaders);
     app.route("/", api);
     const throughApp = async (token: string | null) => {
       const response = await app.fetch(

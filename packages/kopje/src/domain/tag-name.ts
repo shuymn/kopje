@@ -13,6 +13,11 @@ const FOLD = new Map([...FOLD_FROM].map((char, i) => [char, FOLD_TO[i]!]));
 // Decimal_Number), Thai U+0E47 to U+0E4E, and Tag::HASHTAG_SEPARATORS (_, U+00B7, U+30FB, U+200C).
 const INVALID = /[^\p{Alphabetic}\p{Nd}\u0E47-\u0E4E_\u00B7\u30FB\u200C]/gu;
 
+// Tag's display_name as it normalizes it (`normalizes :display_name`): the characters a hashtag cannot hold dropped.
+export function tagDisplayName(name: string): string {
+  return name.replace(INVALID, "");
+}
+
 // HashtagNormalizer#normalize: NFKC (cjk_width), then String#downcase, which maps each code point on its own (Ruby has
 // no final-sigma rule, so Σ is σ wherever it stands), then ASCIIFolding#fold, then the characters that cannot be in a
 // hashtag dropped. Not idempotent: a dropped character can leave two that compose (U+1100 U+0301 U+1161 gives

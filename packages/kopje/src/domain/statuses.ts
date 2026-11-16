@@ -102,11 +102,10 @@ import {
   acceptedQuoteWindow,
   answeredRequests,
   ensureQuotedAccess,
-  localQuotedAccount,
+  fanOutQuoteChange,
   localQuoteOf,
   noteQuote,
   type QuotedForPost,
-  quotedUpdates,
   type QuoteState,
   recordLocalQuote,
   retireQuoteOf,
@@ -143,8 +142,10 @@ import {
   renderStatusHtml,
   statusLength,
 } from "./status-text";
+import { journalStatusUpdate } from "./stream-journal";
 import { streamDelete } from "./streaming";
 import { forgetStatusTrend } from "./trends";
+import { notifyEdited } from "./update-fan-out";
 import { edgeRangeSql, readWindow, singleWindow, statusCursor, windowJson, windowPage } from "./windows";
 
 // Statuses: posting, editing and deleting local statuses, the per-status reads, and favourite, reblog and
@@ -364,42 +365,6 @@ export function recountStatuses(db: Db, accountId: string): void {
 		WHERE id = ?1 AND domain IS NULL`,
     accountId,
   );
-}
-
-// The local accounts whose kept boost of the status ?1 an edit of it notifies: one unique seek of
-// statuses_account_reblogs_kept per local account (RES-7), so neither the status's remote boosts nor withdrawn
-// generations are read.
-const LOCAL_BOOSTERS_SQL = `SELECT l.account_id FROM local_accounts l
-	CROSS JOIN statuses r INDEXED BY statuses_account_reblogs_kept
-		ON r.account_id = l.account_id AND r.reblog_of_id = ?1 AND r.reblog_of_id IS NOT NULL AND r.withdrawn = 0`;
-
-// The local accounts the status ?1 mentions, not silently: the local accounts drive, each one's mention sought by the
-// mention's key, so the status's other mention rows are never read; nothing caps them in the schema (a converted or
-// imported status may hold any number), and local accounts are operator-sized (RES-4).
-const LOCAL_MENTIONS_SQL = `SELECT l.account_id FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
-	CROSS JOIN status_mentions m ON m.status_id = ?1 AND m.account_id = l.account_id
-	WHERE m.silent = 0`;
-
-// Mastodon's update fan-out, run wherever Mastodon broadcasts an update (each caller says which): FanOutOnWriteService's
-// notifications for `update: true` (fan_out_on_write_service.rb:31-35 in v4.7.5), in its order: the local quoted account of the status's accepted quote (`quote`, notify_quoted_account!, :62-66), each
-// local account the status mentions not silently (`mention`, notify_mentioned_accounts!, :68-75, never limited: an
-// update passes no silenced ids), the local boosters (`update`) and the accepted local quoters (`quoted_update`,
-// notify_about_update!, :87-98). Each goes through LocalNotificationWorker, which writes nothing for a notification
-// that exists (local_notification_worker.rb:15-16): notify's natural key keeps a kept `quote` or `mention`, and one
-// that was dismissed or cleared, or never written (the policy dropped it, R15 refused it), is written now.
-export function notifyEdited(db: Db, statusId: string, fromId: string, now: number): void {
-  const quoted = localQuotedAccount(db, statusId);
-  if (quoted !== null) {
-    notify(db, { recipientId: quoted, type: "quote", fromId, statusId, now });
-  }
-  for (const mention of db.all<{ account_id: string }>(LOCAL_MENTIONS_SQL, statusId)) {
-    notify(db, { recipientId: mention.account_id, type: "mention", fromId, statusId, now });
-  }
-  // A withdrawn boost's booster is not notified (Mastodon discards it).
-  for (const booster of db.all<{ account_id: string }>(LOCAL_BOOSTERS_SQL, statusId)) {
-    notify(db, { recipientId: booster.account_id, type: "update", fromId, statusId, now });
-  }
-  notifyQuotedUpdate(db, statusId, fromId, now);
 }
 
 // replies_count counts public and unlisted replies, as Mastodon does; reblogs_count the boosts not withdrawn (a
@@ -1015,7 +980,8 @@ export const editTarget = userReadOperation<{ id: string }, "ok" | "not_found">(
 // nobody for a status that is not public or unlisted. Where Kopje differs from Mastodon, which counts a changed policy
 // as an edit: the policy is not part of the history, so a change of the policy alone is stored as
 // PUT .../interaction_policy stores it, with an Update but no history entry or edited_at (setQuotePolicy); it notifies
-// as an edit does (notifyEdited), which the interaction policy endpoint does not.
+// as an edit does (notifyEdited) and sends `status.update` as an edit does (journalStatusUpdate), where the interaction
+// policy endpoint notifies no one and sends it to no one through a mention.
 //
 // Deliberate difference from Mastodon: the audience of a private, direct or limited status never widens. A mention
 // added by an edit is linked in the text but adds no recipient, notification or delivery, so neither the status nor
@@ -1095,9 +1061,11 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   const policy = input.quotePolicy === undefined ? null : storedQuotePolicy(input.quotePolicy, current.visibility);
   if (unchanged) {
     // UpdateStatusService counts a changed policy as a change (update_status_service.rb:121, :174-176 in v4.7.5), so
-    // the edit broadcasts (:37, :143-146).
+    // the edit broadcasts (:37, :143-146): the update's notifications, and `status.update`, which the edited_at trigger
+    // does not journal here.
     if (policy !== null && setQuotePolicy(db, accountId, current.id, policy, input.now)) {
       notifyEdited(db, current.id, accountId, input.now);
+      journalStatusUpdate(db, current.id, input.now, { mentions: true });
     }
     return status();
   }
@@ -1177,14 +1145,6 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   return status();
 });
 
-// FanOutOnWriteService#notify_about_update!'s quoted_update: each local quoter (quotes.ts quotedUpdates) about their
-// own quoting status, from the quoted author; a later one replaces the earlier (notify).
-function notifyQuotedUpdate(db: Db, quotedId: string, fromId: string, now: number): void {
-  for (const quote of quotedUpdates(db, quotedId)) {
-    notify(db, { recipientId: quote.account_id, type: "quoted_update", fromId, statusId: quote.status_id, now });
-  }
-}
-
 // A policy-only change sends an Update without a history entry or edited_at; receivers apply it as an implicit update
 // (Notes carry the policy: activities.ts noteOf). Each Update snapshots its commit and supersedes waiting ones. Answers
 // whether the stored policy changed.
@@ -1211,7 +1171,8 @@ export type InteractionPolicyInput = {
 // one of the three (else "Record invalid"). The policy sent, or the author's default_quote_policy when none is, is
 // stored as on posting (storedQuotePolicy). A boost has no policy of its own (its original's is shown): it is answered
 // unchanged. A change writes no history entry and leaves edited_at, and sends an Update (setQuotePolicy); it notifies
-// no one, as the controller broadcasts with skip_notifications (interaction_policies_controller.rb:24-26 in v4.7.5).
+// no one and sends `status.update` but not through a mention (a quiet edit), as the controller broadcasts with
+// skip_notifications (interaction_policies_controller.rb:13, :24-26 in v4.7.5).
 export const updateInteractionPolicy = userWriteOperation<InteractionPolicyInput, Acted<Status>>(
   (db, input, { accountId }, viewer) => {
     const visible = viewable(db, accountId, input.id);
@@ -1233,7 +1194,10 @@ export const updateInteractionPolicy = userWriteOperation<InteractionPolicyInput
     }
     if (row.reblog_of_id === null) {
       const name = input.quotePolicy ?? localAuthor(db, accountId).default_quote_policy;
-      setQuotePolicy(db, accountId, visible, storedQuotePolicy(name, row.visibility), Date.parse(viewer.now));
+      const now = Date.parse(viewer.now);
+      if (setQuotePolicy(db, accountId, visible, storedQuotePolicy(name, row.visibility), now)) {
+        journalStatusUpdate(db, visible, now, { mentions: false });
+      }
     }
     return viewed(presentStatus(db, visible, { ...input.present, viewer, proper: true }));
   },
@@ -2565,7 +2529,12 @@ export const revokeQuote = userWriteOperation<RevokeInput, RevokeResult>((db, in
     ) {
       return { status: "invalid", error: "The revocation could not be signed" };
     }
-    state = revokeQuoteRow(db, input.quotingId, quoted, input.expected, input.now) ?? state;
+    const moved = revokeQuoteRow(db, input.quotingId, quoted, input.expected, input.now);
+    if (moved !== null) {
+      // RevokeQuoteService#distribute_update (revoke_quote_service.rb:17-21 in v4.7.5).
+      fanOutQuoteChange(db, input.quotingId, input.now);
+      state = moved;
+    }
     if (signed !== null) {
       const reach = [statusReach(db, quoted, noteQuote), statusReach(db, input.quotingId, noteQuote)].filter(
         (r) => r !== null,
