@@ -13,8 +13,9 @@ import {
   storeReplies,
   threadRoot,
   threadWorld,
-  walkOnce,
+  walkSteps,
 } from "./reply-thread-helpers";
+import { type RefDoc, referenceWalk, RefWorld } from "./reply-walk-reference";
 
 // Generated threads walked again and again (#1607 D12, the design's section 9): threads of up to 400 statuses at most 6
 // links deep, each link listed by its parent's collection (the child stored or not) or only scanned (a stored reply its
@@ -26,12 +27,19 @@ import {
 // at most 100 stored replies is moved under another stored node, its replies linked to it (as a 404's removal and a
 // later Create leave it). The fake fetch serves every document.
 //
+// Oracle 1, the rules: the reference of reply-walk-reference.ts, written from the designs' text and not from src/,
+// walks the same thread after each of the Store's walks, the ids the Store drew taken as its own, and gives the status
+// steps the walk handed out, in order, the statuses stored with their parents, every root's debts in key order (status,
+// kind, place, depth, key) and the scan cursors, which the Store's must equal.
+//
 // Oracle 2, on the Store alone: in every walk, the debt heading the walking root's queue at its start is applied or
 // dropped in it: gone after the walk, or a collection debt placed behind (the walk's epoch) with its place advanced;
 // after every walk and every move, no status is named by two debts of one depth, none by more than WALK_STATUSES, and
-// the debts number at most WALK_STATUSES × S. Oracle 3, discovery: every status of the thread is fetched by some walk,
-// T's or another root's, within 40 walks of all roots. Oracle 1 (a reference of D12's rules giving each walk's fetches
-// and debts) is not written here.
+// the debts number at most WALK_STATUSES × S.
+//
+// Oracle 3, discovery: every status of the thread is fetched by some walk, T's or another root's, by the walk at which
+// the reference has first fetched them all, a deadline the reference finds; a thread the reference does not finish
+// within 40 walks of all roots fails (the reference or the generator is wrong).
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -131,9 +139,69 @@ const pageOf = (t: Thread, i: number, entries: number) =>
 
 const SEEDS = Array.from({ length: 25 }, (_, k) => 0x1607_0000 + k);
 
+type Snapshot = { ids: Map<string, string>; stored: string[]; debts: string[]; cursors: string[] };
+
+// What oracle 1 compares, read from the Store: its remote statuses with their parents, every root's debts in key order
+// and the scan cursors, by URI; and the ids it drew, which the reference takes.
+async function snapshot(t: Awaited<ReturnType<typeof threadWorld>>["t"]): Promise<Snapshot> {
+  const rows = await sql<{ id: string; uri: string; parent: string | null; local: number }>(
+    t.store,
+    `SELECT s.id, s.uri, p.uri AS parent, l.account_id IS NOT NULL AS local
+			FROM statuses s LEFT JOIN statuses p ON p.id = s.in_reply_to_id
+				LEFT JOIN local_accounts l ON l.account_id = s.account_id`,
+  );
+  const debts = await sql<{ line: string }>(
+    t.store,
+    `SELECT r.uri || ' ' || s.uri || ' k' || d.kind || ' ' || COALESCE(d.page, '-') || '@' || d.page_offset || ' d' ||
+				d.depth || ' [' || d.owed_walk || ',' || d.owed_seq || ',' || d.owed_pos || ']' AS line
+			FROM reply_walk_debts d JOIN statuses r ON r.id = d.root_id JOIN statuses s ON s.id = d.status_id
+			ORDER BY r.uri, d.owed_walk, d.owed_seq, d.owed_pos`,
+  );
+  const cursors = await sql<{ line: string }>(
+    t.store,
+    `SELECT s.uri || ' ' || c.after_id AS line FROM reply_walk_cursors c JOIN statuses s ON s.id = c.status_id
+			ORDER BY s.uri`,
+  );
+  return {
+    ids: new Map(rows.map((row) => [row.uri, row.id])),
+    stored: rows
+      .filter((row) => row.local === 0)
+      .map((row) => `${row.uri} <- ${row.parent ?? "-"}`)
+      .toSorted(),
+    debts: debts.map((row) => row.line),
+    cursors: cursors.map((row) => row.line),
+  };
+}
+
+// The same of the reference's world.
+function referenceSnapshot(world: RefWorld): Omit<Snapshot, "ids"> {
+  const uriOf = (id: string) => world.byId.get(id)!.uri;
+  const debts = [...world.debts]
+    .flatMap(([rootId, owed]) => [...owed.values()].map((d) => ({ root: uriOf(rootId), d })))
+    .toSorted((a, b) =>
+      a.root !== b.root
+        ? a.root < b.root
+          ? -1
+          : 1
+        : a.d.key[0] - b.d.key[0] || a.d.key[1] - b.d.key[1] || a.d.key[2] - b.d.key[2],
+    )
+    .map(
+      ({ root, d }) =>
+        `${root} ${uriOf(d.statusId)} k${d.kind} ${d.place.page ?? "-"}@${d.place.offset} d${d.depth} [${d.key.join(",")}]`,
+    );
+  return {
+    stored: [...world.statuses.values()]
+      .filter((status) => !status.local)
+      .map((status) => `${status.uri} <- ${status.parentId === null ? "-" : uriOf(status.parentId)}`)
+      .toSorted(),
+    debts,
+    cursors: [...world.cursors].map(([id, after]) => `${uriOf(id)} ${after}`).toSorted((a, b) => (a < b ? -1 : 1)),
+  };
+}
+
 describe("generated threads (D12, section 9)", () => {
   it.each(SEEDS)(
-    "seed %i: every status found within 40 walks, each walk's head debt settled, the totals held",
+    "seed %i: each walk as the reference's, its head debt settled, the totals held, every status found by its deadline",
     { timeout: 600_000 },
     async (seed) => {
       const r = random(seed);
@@ -145,18 +213,16 @@ describe("generated threads (D12, section 9)", () => {
         notes.push(mastodonNote(bob, { inReplyTo: notes[thread.parent[i]!]!.id }));
       }
       const uris = notes.map((note) => note.id);
+      const docs = new Map<string, RefDoc>();
+      const serve = (i: number, entries: unknown[]) => {
+        const listing = { items: entries, page: pageOf(thread, i, entries.length), shape: thread.shape[i]! };
+        docs.set(uris[i]!, { inReplyTo: i === 0 ? null : uris[thread.parent[i]!]!, entries, ...listing });
+        return listing;
+      };
       for (let i = 1; i <= n; i++) {
-        const entries = entriesOf(thread, i, uris, r);
-        served(t.web, notes[i]!, { items: entries, page: pageOf(thread, i, entries.length), shape: thread.shape[i]! });
+        served(t.web, notes[i]!, serve(i, entriesOf(thread, i, uris, r)));
       }
-      const rootEntries = entriesOf(thread, 0, uris, r);
-      const ids: string[] = [
-        await threadRoot(t, root, notes[0]!, {
-          items: rootEntries,
-          page: pageOf(thread, 0, rootEntries.length),
-          shape: thread.shape[0]!,
-        }),
-      ];
+      const ids: string[] = [await threadRoot(t, root, notes[0]!, serve(0, entriesOf(thread, 0, uris, r)))];
       for (let i = 1; i <= n; i++) {
         ids.push(
           thread.stored[i]
@@ -168,6 +234,16 @@ describe("generated threads (D12, section 9)", () => {
         if (thread.local[i]! > 0) {
           await localReplies(t, ids[i]!, uris[i]!, thread.local[i]!, 200_000 + i * 1000);
         }
+      }
+      // Oracle 1's world: the served documents, and the statuses as stored now.
+      const world = new RefWorld(docs);
+      const rows = await sql<{ id: string; uri: string; parent: string | null; local: number }>(
+        t.store,
+        `SELECT s.id, s.uri, s.in_reply_to_id AS parent, l.account_id IS NOT NULL AS local
+				FROM statuses s LEFT JOIN local_accounts l ON l.account_id = s.account_id ORDER BY s.id`,
+      );
+      for (const row of rows) {
+        world.store({ id: row.id, uri: row.uri, parentId: row.parent, local: row.local === 1 });
       }
       // The roots: T alone, or T and up to 3 stored descendants in turn.
       const descendants = ids.flatMap((id, i) => (i > 0 && id !== "" ? [i] : []));
@@ -190,11 +266,10 @@ describe("generated threads (D12, section 9)", () => {
       };
       const wanted = new Set(uris.slice(1));
       const found = new Set<string>();
-      let extra = 2;
-      for (let walk = 0; walk < 40 && extra > 0; walk++) {
-        if (found.size === wanted.size) {
-          extra -= 1;
-        }
+      const referenceFound = new Set<string>();
+      // Oracle 3's deadline: the walk by which the reference has fetched every status; two walks more run past it.
+      let deadline: number | undefined;
+      for (let walk = 0; walk < 40 && (deadline === undefined || walk <= deadline + 2); walk++) {
         // A move between walks: a stored status with at most 100 stored replies, under a stored node outside it.
         if (walk > 0 && r() < 0.15) {
           const movable = descendants.filter((i) => thread.parent.filter((p) => p === i).length <= 100);
@@ -211,6 +286,7 @@ describe("generated threads (D12, section 9)", () => {
               uris[to]!,
               ids[moved]!,
             );
+            world.move(ids[moved]!, ids[to]!);
             await totals(`seed ${seed}, after the move before walk ${walk}`);
           }
         }
@@ -219,10 +295,32 @@ describe("generated threads (D12, section 9)", () => {
         const before = await debtsOf(t.store, rootId);
         const head = before[0];
         const epoch = Math.max(0, ...before.map((d) => d.key[0])) + 1;
-        for (const uri of await walkOnce(t, rootId, wanted)) {
+        const steps = await walkSteps(t, rootId);
+        const fetched = steps.filter((step) => step.stage === "status").map((step) => step.uri);
+        for (const uri of fetched) {
           found.add(uri);
         }
         const when = `seed ${seed}, walk ${walk} of root ${rootIndex}`;
+        // Oracle 1: the reference's walk, its ids the Store's.
+        const store = await snapshot(t);
+        const expected = referenceWalk(world, uris[rootIndex]!, (uri) => store.ids.get(uri) ?? `~${uri}`);
+        for (const uri of expected) {
+          referenceFound.add(uri);
+        }
+        expect(fetched, `${when}: the statuses fetched`).toEqual(expected);
+        const reference = referenceSnapshot(world);
+        expect(store.stored, `${when}: the statuses stored`).toEqual(reference.stored);
+        expect(store.debts, `${when}: the debts`).toEqual(reference.debts);
+        expect(store.cursors, `${when}: the cursors`).toEqual(reference.cursors);
+        if (deadline === undefined && [...wanted].every((uri) => referenceFound.has(uri))) {
+          deadline = walk;
+          // Oracle 3: every status fetched by then, by some walk.
+          expect(
+            [...wanted].filter((uri) => !found.has(uri)),
+            `seed ${seed}: statuses not fetched by walk ${walk}`,
+          ).toEqual([]);
+        }
+        // Oracle 2.
         if (head !== undefined) {
           const after: DebtRow | undefined = (await debtsOf(t.store, rootId)).find((d) => d.status === head.status);
           // A row debt paid, its status's collection then cut, is a new collection debt.
@@ -238,10 +336,9 @@ describe("generated threads (D12, section 9)", () => {
         }
         await totals(when);
       }
-      expect(
-        [...wanted].filter((uri) => !found.has(uri)),
-        `seed ${seed}: statuses not fetched within 40 walks`,
-      ).toEqual([]);
+      // Oracle 3: a thread the reference does not finish within 40 walks fails (the reference or the generator is
+      // wrong).
+      expect(deadline, `seed ${seed}: the reference did not fetch every status within 40 walks`).toBeDefined();
     },
   );
 });
