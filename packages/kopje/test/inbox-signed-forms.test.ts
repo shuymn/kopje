@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { isPublicCollection } from "../src/domain/audience";
 import { LIKE_TYPES, parseActivity } from "../src/federation/inbound";
-import { ACTIVITY_VOCABULARY, ldSignedBodyReadable } from "../src/federation/ld-signed-body";
+import { ACTIVITY_VOCABULARY, ldSignedBodyReadable, ldSignedTypeReader } from "../src/federation/ld-signed-body";
 import { ACTOR_TYPES, CONVERTED_TYPES, STATUS_TYPES } from "../src/federation/remote-status";
 import { handleQueue } from "../src/jobs/queue";
 import { MAX_JSON_DEPTH, MAX_JSON_NODES, withinJsonBounds } from "../src/platform/json-bounds";
@@ -17,6 +17,7 @@ import { BUILD } from "./helpers";
 import { AP, mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
 import {
   ALICE,
+  create,
   followed,
   localStatus,
   mastodonNote,
@@ -247,16 +248,6 @@ describe("D1: forms whose readings differ, each named by its class", () => {
   const RAISED = { error: expect.stringMatching(/^TypeError/), effect: {} };
 
   describe("refused where Mastodon applies it", () => {
-    it.each([
-      ["type as a compact IRI", "unsupported"],
-      ["type as an absolute IRI", "unsupported"],
-    ])("an activity %s: the compaction makes it Like", (name, reason) => {
-      const entry = form(name);
-      expect(kopje(entry)).toEqual({ ok: false, reason });
-      expect(accepted(mastodon(entry))).toMatchObject({ type: "Like", object: "https://kopje.test/ap/o/local-1" });
-      expect(applied(name)).toEqual({ name, effect: LIKED });
-    });
-
     it("actor as a one-element array: Mastodon applies it for the request's signer", () => {
       const name = "actor as a one-element array";
       expect(asReceived(form(name))).toBe(true);
@@ -280,18 +271,6 @@ describe("D1: forms whose readings differ, each named by its class", () => {
   });
 
   describe("reads less than Mastodon", () => {
-    it("an Undo or Accept whose embedded type is an IRI", () => {
-      for (const name of ["Undo object type as an IRI", "Accept object type as an IRI"]) {
-        expect(accepted(kopje(form(name))).object, name).toMatchObject({ type: "as:Follow" });
-        expect(accepted(mastodon(form(name))).object, name).toMatchObject({ type: "Follow" });
-      }
-      expect(applied("Undo object type as an IRI").effect).toEqual({ removed_follows: 1 });
-      expect(applied("Accept object type as an IRI").effect).toEqual({
-        local_requests_removed: 1,
-        local_follows: ["alice"],
-      });
-    });
-
     it.each([
       ["content as a one-element array", "content", { text: '["<p>text</p>"]' }],
       ["summary as a one-element array", "spoilerText", { spoiler: '["warning"]' }],
@@ -353,6 +332,70 @@ describe("D1: forms whose readings differ, each named by its class", () => {
   });
 
   describe("the same effect as Mastodon", () => {
+    // The compaction writes a type given as an IRI as the vocabulary's name, and the patch leaves it so: Kopje reads
+    // the activity's type and its embedded object's so (ldSignedTypeReader), and a retraction ends what Mastodon's
+    // ends.
+    it.each([
+      ["type as a compact IRI", LIKED],
+      ["type as an absolute IRI", LIKED],
+      ["Reject typed as:Reject, of an accepted follow", { local_follows_removed: 1 }],
+      ["Undo typed as:Undo", { removed_follows: 1 }],
+      ["Block typed as:Block, by an accepted follow's target", { local_follows_removed: 1, blocks: ["alice"] }],
+      ["Delete typed as:Delete", { removed_statuses: ["https://mastodon.example/users/bob/statuses/deleted"] }],
+    ])("an activity %s: read as the compaction names its type", (name, effect) => {
+      const reading = accepted(kopje(form(name)));
+      expect(reading.type).not.toContain(":");
+      expect(reading).toEqual(accepted(mastodon(form(name))));
+      expect(applied(name)).toEqual({ name, effect });
+    });
+
+    it.each([
+      ["Undo object type as an IRI", { removed_follows: 1 }],
+      ["Undo object type as the absolute IRI", { removed_follows: 1 }],
+      ["Accept object type as an IRI", { local_requests_removed: 1, local_follows: ["alice"] }],
+      ["Accept object type as the absolute IRI", { local_requests_removed: 1, local_follows: ["alice"] }],
+      ["Reject of an accepted follow, its object's type as:Follow", { local_follows_removed: 1 }],
+      ["Reject of an accepted follow, its object's type the absolute IRI", { local_follows_removed: 1 }],
+    ])("an embedded object's type as an IRI, %s: read as Follow", (name, effect) => {
+      const reading = accepted(kopje(form(name)));
+      expect(reading.object).toMatchObject({ type: "Follow" });
+      expect(reading).toEqual(accepted(mastodon(form(name))));
+      expect(applied(name)).toEqual({ name, effect });
+    });
+
+    it("an unsigned body's types are read as given, as Mastodon reads it uncompacted", () => {
+      expect(read(without(form("type as a compact IRI").received, "signature"))).toEqual({
+        ok: false,
+        reason: "unsupported",
+      });
+      const undo = accepted(read(without(form("Undo object type as an IRI").received, "signature")));
+      expect(undo.object).toMatchObject({ type: "as:Follow" });
+    });
+
+    it("every type of an LD-signed fixture is read as Mastodon's compaction names it", () => {
+      const checked: string[] = [];
+      for (const entry of [...corpus, ...forms.values()]) {
+        const readType = ldSignedTypeReader(entry.received);
+        if (readType === null || entry.mastodon === undefined || typeof entry.received.signature !== "object") {
+          continue;
+        }
+        const object = (body: Json) => (typeof body.object === "object" && body.object !== null ? body.object : {});
+        for (const [given, compacted] of [
+          [entry.received.type, entry.mastodon.type],
+          [(object(entry.received) as Json).type, (object(entry.mastodon) as Json).type],
+        ]) {
+          // A name outside the vocabulary means what the body's context makes it (EmojiReact, read as a favourite).
+          const read = typeof given === "string" && (given.includes(":") || ACTIVITY_VOCABULARY.has(given));
+          if (read && typeof compacted === "string") {
+            expect(readType(given), entry.name ?? entry.reference).toBe(compacted);
+            checked.push(given);
+          }
+        }
+      }
+      expect(checked.length).toBeGreaterThanOrEqual(150);
+      expect(checked.filter((type) => type.includes(":")).length).toBe(13);
+    });
+
     it("type as a one-element array: neither applies it", () => {
       const name = "type as a one-element array";
       expect(asReceived(form(name))).toBe(true);
@@ -488,12 +531,75 @@ describe("D1 through the inbox: what the received form stores", () => {
     expect(applied("Follow object as a one-element array").effect).toEqual({});
   });
 
-  it("a Like typed as:Like favourites nothing, where Mastodon's reading favourites", async () => {
+  it("a Like typed as:Like favourites, as Mastodon's reading does", async () => {
     const { t, bob, status } = await world();
     expect(await t.post(bob, body("type as a compact IRI", status))).toBe(202);
-    expect(await favourites(t)).toEqual([]);
-    expect(await t.post(bob, plain("type as a compact IRI", status))).toBe(202);
     expect((await favourites(t)).length).toBe(1);
+    expect(applied("type as a compact IRI").effect).toEqual({ favourites: [LOCAL_STATUS] });
+  });
+
+  // alice's accepted follow of bob, under the id the forms name, and bob's followers-only status, which mentions no
+  // one: alice reads it while she follows him.
+  async function followersOnly(t: Setup, bob: TestActor): Promise<string> {
+    await sql(
+      t.store,
+      "UPDATE follows SET uri = ? WHERE account_id = ? AND target_account_id = (SELECT id FROM accounts WHERE uri = ?)",
+      "https://kopje.test/ap/follows/1",
+      ALICE,
+      bob.uri,
+    );
+    const note = mastodonNote(bob, { to: [`${bob.uri}/followers`], cc: [] });
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    const row = (await statusRow(t.store, note.id))!;
+    expect((await t.api(`/api/v1/statuses/${row.id}`, "alice")).status).toBe(200);
+    return row.id;
+  }
+  const aliceFollows = (t: Setup, bob: TestActor) =>
+    sql(
+      t.store,
+      `SELECT f.state FROM follows f JOIN accounts a ON a.id = f.target_account_id
+        WHERE f.account_id = ? AND a.uri = ?`,
+      ALICE,
+      bob.uri,
+    );
+
+  it.each([
+    "Reject of an accepted follow, its object's type as:Follow",
+    "Reject of an accepted follow, its object's type the absolute IRI",
+    "Reject typed as:Reject, of an accepted follow",
+    "Block typed as:Block, by an accepted follow's target",
+  ])("%s ends alice's follow and her reading of his followers-only status, as in Mastodon", async (name) => {
+    const { t, bob, status } = await world();
+    const id = await followersOnly(t, bob);
+    expect(await t.post(bob, body(name, status))).toBe(202);
+    expect(await aliceFollows(t, bob)).toEqual([]);
+    expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(404);
+    expect(applied(name).effect).toMatchObject({ local_follows_removed: 1 });
+  });
+
+  it.each(["Undo object type as the absolute IRI", "Undo typed as:Undo"])(
+    "%s ends bob's follow of alice, as in Mastodon",
+    async (name) => {
+      const { t, bob, status } = await world();
+      const follow = { "@context": "https://www.w3.org/ns/activitystreams", type: "Follow", actor: bob.uri };
+      const id = "https://mastodon.example/users/bob/follows/14";
+      expect(await t.post(bob, { ...follow, id, object: "https://kopje.test/ap/users/alice" })).toBe(202);
+      expect(await follows(t)).toEqual([{ state: "accepted" }]);
+      expect(await t.post(bob, body(name, status))).toBe(202);
+      expect(await follows(t)).toEqual([]);
+      expect(applied(name).effect).toEqual({ removed_follows: 1 });
+    },
+  );
+
+  it("a Delete typed as:Delete removes its status, as in Mastodon", async () => {
+    const { t, bob, status } = await world();
+    const deleted = "https://mastodon.example/users/bob/statuses/deleted";
+    const note = mastodonNote(bob, { id: deleted, atomUri: deleted });
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    expect(await statusRow(t.store, deleted)).toBeDefined();
+    expect(await t.post(bob, body("Delete typed as:Delete", status))).toBe(202);
+    expect(await statusRow(t.store, deleted)).toBeUndefined();
+    expect(applied("Delete typed as:Delete").effect).toEqual({ removed_statuses: [deleted] });
   });
 
   it("a Create whose content is a one-element array is stored with empty content", async () => {

@@ -40,7 +40,7 @@ import {
 } from "./federation";
 import { typeIs } from "./json-shapes";
 import { MAX_PUBLIC_KEYS } from "./key-entries";
-import { ldSignedBodyReadable } from "./ld-signed-body";
+import { ldSignedTypeReader, type TypeReader } from "./ld-signed-body";
 import {
   createContextLoader,
   createSafeLoader,
@@ -192,11 +192,11 @@ function idOf(value: unknown): string | null {
 // EmojiReaction (Misskey's isLike, core/activitypub/type.ts). A favourite; the emoji is not kept (as Mastodon).
 export const LIKE_TYPES: ReadonlySet<string> = new Set(["Like", "EmojiReact", "EmojiReaction"]);
 
-function refOf(value: unknown): ActivityRef {
+function refOf(value: unknown, readType: TypeReader): ActivityRef {
   if (!isObject(value)) {
     return { id: idOf(value), type: null, actor: null, object: null, atomUri: null };
   }
-  const type = typeof value.type === "string" ? value.type : null;
+  const type = typeof value.type === "string" ? readType(value.type) : null;
   return {
     id: idOf(value),
     type: type !== null && LIKE_TYPES.has(type) ? "Like" : type,
@@ -223,31 +223,35 @@ export function hasActivityStreamsContext(context: unknown): boolean {
   return context === AS_CONTEXT || (Array.isArray(context) && context.some((c) => c === AS_CONTEXT));
 }
 
+// An unsigned activity's types, read as given (Mastodon compacts only an LD-signed one).
+const AS_GIVEN: TypeReader = (type) => type;
+
 // The activity as received (Mastodon reads an LD-signed one as its compaction, patched toward the body as received;
-// one whose literal JSON is not what Mastodon reads is ignored, ldSignedBodyReadable): ids as strings or objects with
-// an id. Other types and objects Kopje does not store are 'unsupported'.
+// one whose context or keys could give what Kopje reads another meaning there is ignored, ldSignedTypeReader): ids as
+// strings or objects with an id. Other types and objects Kopje does not store are 'unsupported'.
 // The envelope every activity must have before anything reads it: the ActivityStreams context, a string id and type,
-// and an actor with an http(s) origin; an LD-signed one, only in the vocabulary Mastodon reads it in (ID-1,
-// ldSignedBodyReadable). Shared by the inbox and the cutover rollback's drain, so neither hands on an activity the
-// other would ignore.
+// and an actor with an http(s) origin; an LD-signed one, only in the vocabulary Mastodon reads it in, its types (the
+// activity's and its embedded object's) as the compaction names them (ID-1, ldSignedTypeReader). Shared by the inbox
+// and the cutover rollback's drain, so neither hands on an activity the other would ignore.
 function activityEnvelope(
   json: Json,
 ):
-  | { ok: true; actor: string; id: string; type: string }
+  | { ok: true; actor: string; id: string; type: string; readType: TypeReader }
   | { ok: false; reason: "no-context" | "ld-context" | "incomplete" } {
   if (!hasActivityStreamsContext(json["@context"])) {
     return { ok: false, reason: "no-context" };
   }
-  if (isObject(json.signature) && !ldSignedBodyReadable(json)) {
+  const readType = isObject(json.signature) ? ldSignedTypeReader(json) : AS_GIVEN;
+  if (readType === null) {
     return { ok: false, reason: "ld-context" };
   }
   const actor = idOf(json.actor);
   const id = typeof json.id === "string" ? json.id : null;
-  const type = typeof json.type === "string" ? json.type : null;
+  const type = typeof json.type === "string" ? readType(json.type) : null;
   if (actor === null || originOf(actor) === null || id === null || type === null) {
     return { ok: false, reason: "incomplete" };
   }
-  return { ok: true, actor, id, type };
+  return { ok: true, actor, id, type, readType };
 }
 
 export function parseActivity(body: Uint8Array): Parsed {
@@ -270,8 +274,8 @@ export function parseActivity(body: Uint8Array): Parsed {
   if (!envelope.ok) {
     return { ok: false, reason: envelope.reason, deleteOfSelf };
   }
-  const { actor, id, type } = envelope;
-  const activity = activityOf(type, id, actor, json, object);
+  const { actor, id, type, readType } = envelope;
+  const activity = activityOf(type, id, actor, json, object, readType);
   if (activity === null) {
     return { ok: false, reason: "unsupported", deleteOfSelf, actor };
   }
@@ -292,7 +296,14 @@ function statusActivity(kind: "Create" | "UpdateStatus", id: string, json: Json)
   return object === null ? null : { type: kind, id, object };
 }
 
-function activityOf(type: string, id: string, actor: string, json: Json, object: string | null): ParsedActivity | null {
+function activityOf(
+  type: string,
+  id: string,
+  actor: string,
+  json: Json,
+  object: string | null,
+  readType: TypeReader,
+): ParsedActivity | null {
   if (LIKE_TYPES.has(type)) {
     return object === null ? null : { type: "Like", id, object };
   }
@@ -303,11 +314,11 @@ function activityOf(type: string, id: string, actor: string, json: Json, object:
     // An Accept of a QuoteRequest names the stamp it grants in result (Accept#accept_quote!: its first value, by id).
     case "Accept": {
       const result: unknown = Array.isArray(json.result) ? json.result[0] : json.result;
-      return { type, id, object: refOf(json.object), result: idOf(result) };
+      return { type, id, object: refOf(json.object, readType), result: idOf(result) };
     }
     case "Reject":
     case "Undo":
-      return { type, id, object: refOf(json.object) };
+      return { type, id, object: refOf(json.object, readType) };
     case "Move":
       // The object of a Move is the actor itself (Mastodon ignores any other).
       return object === actor ? { type, id, target: { local: "" } } : null;

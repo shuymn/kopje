@@ -242,7 +242,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   no `@base`, `@vocab` or other keyword, only preloaded contexts that keep them) and its properties are plain names (no
   `@id`, `@type`, `@value`, nested `@context`, or IRI as a key)
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Reading inbound activities), and logged once as
-  `kopje.inbox.refused` with reason `ld-context`. Mastodon, Fedify, Misskey and Kopje bodies all pass. No Store
+  `kopje.inbox.refused` with reason `ld-context`. Mastodon, Fedify, Misskey and Kopje bodies all pass. The type of one
+  that passes, and its embedded object's, given as an IRI (`as:Follow`, or the absolute one) are read as the name
+  Mastodon's compaction gives them: such a `Reject`, `Undo`, `Block` or `Delete` now ends the follow or the status
+  Mastodon's ends, and such a `Like` favourites, where Kopje refused them or read them as naming nothing. No Store
   migration and no `wrangler.jsonc` change.
 
 ### Fixed

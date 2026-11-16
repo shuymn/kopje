@@ -841,6 +841,56 @@
     }
   },
   {
+    "name": "Reject of an accepted follow, its object's type as:Follow",
+    "effect": {
+      "local_follows_removed": 1
+    }
+  },
+  {
+    "name": "Reject of an accepted follow, its object's type the absolute IRI",
+    "effect": {
+      "local_follows_removed": 1
+    }
+  },
+  {
+    "name": "Undo object type as the absolute IRI",
+    "effect": {
+      "removed_follows": 1
+    }
+  },
+  {
+    "name": "Accept object type as the absolute IRI",
+    "effect": {
+      "local_requests_removed": 1,
+      "local_follows": ["alice"]
+    }
+  },
+  {
+    "name": "Reject typed as:Reject, of an accepted follow",
+    "effect": {
+      "local_follows_removed": 1
+    }
+  },
+  {
+    "name": "Undo typed as:Undo",
+    "effect": {
+      "removed_follows": 1
+    }
+  },
+  {
+    "name": "Block typed as:Block, by an accepted follow's target",
+    "effect": {
+      "local_follows_removed": 1,
+      "blocks": ["alice"]
+    }
+  },
+  {
+    "name": "Delete typed as:Delete",
+    "effect": {
+      "removed_statuses": ["https://mastodon.example/users/bob/statuses/deleted"]
+    }
+  },
+  {
     "name": "@base after ActivityStreams, unsigned",
     "effect": {
       "statuses": [
@@ -876,6 +926,19 @@
           "media": 0
         }
       ]
+    }
+  },
+  {
+    "name": "Reject of an accepted follow, its object's type as:Follow, unsigned",
+    "effect": {
+      "local_follows_removed": 1
+    }
+  },
+  {
+    "name": "Accept object type as an IRI, unsigned",
+    "effect": {
+      "local_requests_removed": 1,
+      "local_follows": ["alice"]
     }
   }
 ]

@@ -122,15 +122,18 @@ against their own instance. TLS is assumed between all parties.
   first of at most three that verifies (`verifyHttpSignature`; Mastodon refuses more than one,
   `docs/mastodon-deviations.md`). A covered digest is compared with the body. The rollback drain's check of a spooled
   request (`verifySpooledRequest`, OPS-9) holds to the same rule. An activity that carries a Linked Data signature is
-  read only where its literal JSON is what Mastodon reads (its compaction, patched back to the body's one-element
-  arrays and public collection IRI): its contexts give every ActivityStreams term and every name of Mastodon's
-  `full_context` that context's meaning, give no other name one of those meanings or a keyword's, set no keyword and
-  name only the preloaded contexts that keep them, and every key of its body is a plain name. Any other is ignored
-  before the gate, on the inbox, its replay and the rollback drain alike
-  (`ldSignedBodyReadable` in `src/federation/ld-signed-body.ts`, called by the envelope check of
-  `src/federation/inbound.ts`); the inbox and its replay log it once, as `kopje.inbox.refused` with reason
-  `ld-context` and nothing of the body (DATA-5). Its type, actor, object, addressing and mentions are therefore the
-  ones Mastodon reads, and the ones VIS-1 reads. The owner is the actor whose document lists the key,
+  read only where nothing Kopje reads from it has another meaning in Mastodon's reading (its compaction, patched back
+  to the body's one-element arrays and public collection IRI): its contexts give every ActivityStreams term and every
+  name of Mastodon's `full_context` that context's meaning, give no other name one of those meanings or a keyword's,
+  set no keyword and name only the preloaded contexts that keep them, and every key of its body but the top-level
+  `@context`, `signature` and `proof` is a plain name. Any other is ignored before the gate, on the inbox, its replay
+  and the rollback drain alike (`ldSignedTypeReader` in `src/federation/ld-signed-body.ts`, called by the envelope
+  check of `src/federation/inbound.ts`); the inbox and its replay log it once, as `kopje.inbox.refused` with reason
+  `ld-context` and nothing of the body (DATA-5). No context can then readdress it, alias its type, actor or object,
+  or redefine a mention; its type and its embedded object's, given as an IRI, are read as the name Mastodon's
+  compaction gives them, so a retraction ends what Mastodon's ends. The two readings still differ in shapes, values
+  and readers, each listed in `docs/mastodon-deviations.md` ("Reading inbound activities"); none of those widens who
+  sees a status (VIS-1). The owner is the actor whose document lists the key,
   by id and key material, and the key names no other owner. An actor's keys are what its document embeds among its
   first `MAX_PUBLIC_KEYS` (10) entries of `publicKey` and of `assertionMethod` (FEP-521a `Multikey`), RSA or Ed25519,
   each with an id on its origin (`ownKeys`); a key listed by reference in `assertionMethod` is not fetched, and a key

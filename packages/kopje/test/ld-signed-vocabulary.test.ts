@@ -2,7 +2,12 @@ import { preloadedContexts } from "@fedify/fedify";
 import jsonld from "jsonld/dist/jsonld.esm.js";
 import { describe, expect, it } from "vitest";
 
-import { ACTIVITY_VOCABULARY, inlineDefinitionIris, SIGNED_CONTEXT_URLS } from "../src/federation/ld-signed-body";
+import {
+  ACTIVITY_VOCABULARY,
+  inlineDefinitionIris,
+  ldSignedTypeReader,
+  SIGNED_CONTEXT_URLS,
+} from "../src/federation/ld-signed-body";
 import corpus from "./fixtures/ld-signed/corpus.json";
 import forms from "./fixtures/ld-signed/forms.json";
 
@@ -128,6 +133,31 @@ describe("ldSignedBodyReadable's tables", () => {
       expect.arrayContaining(["http://schema.org/", "https://join-lemmy.org/context.json"]),
     );
     expect(Object.keys(preloadedContexts).length - computed.size).toBe(3);
+  });
+
+  // A type given as an IRI of the vocabulary, absolute or over ActivityStreams' prefix: the name Kopje reads it as
+  // (ldSignedTypeReader) is the one jsonld.js's compaction under full_context writes, and any type it writes as an
+  // IRI is read as given.
+  it("reads a type given as a vocabulary IRI as jsonld.js's compaction under full_context names it", async () => {
+    const context = [AS, "https://w3id.org/security/v1"];
+    const readType = ldSignedTypeReader({ "@context": context })!;
+    const named: string[] = [];
+    for (const iri of new Set(ACTIVITY_VOCABULARY.values())) {
+      if (iri.startsWith("@")) {
+        continue;
+      }
+      const given = iri.startsWith(`${AS}#`) ? [iri, `as:${iri.slice(AS.length + 1)}`] : [iri];
+      for (const type of given) {
+        const expanded = await jsonld.expand({ "@context": context, type }, options);
+        const compacted = (await jsonld.compact(expanded, { "@context": fullContext }, options)).type as string;
+        expect(readType(type), type).toBe(isName(compacted) ? compacted : type);
+        if (isName(compacted)) {
+          named.push(compacted);
+        }
+      }
+    }
+    expect(named).toEqual(expect.arrayContaining(["Follow", "Like", "Undo", "Reject", "Block", "Delete", "Note"]));
+    expect(named).toContain("QuoteRequest");
   });
 
   it("the rule's IRI for every inline definition in the fixtures equals jsonld.js's", async () => {

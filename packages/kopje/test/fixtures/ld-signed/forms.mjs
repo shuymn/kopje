@@ -115,6 +115,9 @@ function note(extra = {}) {
 const create = (object, context = STATUS_CONTEXT, extra = {}) =>
   signed(context, activity("Create", { to: object.to, cc: object.cc, object, ...extra }));
 const follow = () => ({ id: `${BOB}/follows/${++n}`, type: "Follow", actor: BOB, object: ALICE });
+// alice's follow of bob, and bob's of her, as effects.rb seeds them.
+const OUR_FOLLOW = { id: "https://kopje.test/ap/follows/1", type: "Follow", actor: ALICE, object: BOB };
+const BOBS_FOLLOW = { id: `${BOB}/follows/14`, type: "Follow", actor: BOB, object: ALICE };
 const question = (options) =>
   note({ type: "Question", content: "<p>poll</p>", endTime: "2026-11-17T12:00:00Z", oneOf: options });
 const option = (name) => ({ type: "Note", name, replies: { type: "Collection", totalItems: 0 } });
@@ -362,16 +365,46 @@ const forms = {
     [AS, SEC],
     activity("Follow", { to: [null], object: [ALICE] }),
   ),
+
+  // Rows 1 and 7: a type as an IRI, which the compaction writes as the vocabulary's name and the patch leaves so. The
+  // retractions among them: alice's accepted follow of bob (follows/1) ended by bob, and bob's follow of her (14).
+  "Reject of an accepted follow, its object's type as:Follow": signed(
+    [AS, SEC],
+    activity("Reject", { object: { ...OUR_FOLLOW, type: "as:Follow" } }),
+  ),
+  "Reject of an accepted follow, its object's type the absolute IRI": signed(
+    [AS, SEC],
+    activity("Reject", { object: { ...OUR_FOLLOW, type: `${AS}#Follow` } }),
+  ),
+  "Undo object type as the absolute IRI": signed(
+    [AS, SEC],
+    activity("Undo", { object: { ...BOBS_FOLLOW, type: `${AS}#Follow` } }),
+  ),
+  "Accept object type as the absolute IRI": signed(
+    [AS, SEC],
+    activity("Accept", { object: { id: OUR_FOLLOW.id, type: `${AS}#Follow` } }),
+  ),
+  "Reject typed as:Reject, of an accepted follow": signed([AS, SEC], activity("as:Reject", { object: OUR_FOLLOW })),
+  "Undo typed as:Undo": signed([AS, SEC], activity("as:Undo", { object: BOBS_FOLLOW })),
+  "Block typed as:Block, by an accepted follow's target": signed([AS, SEC], activity("as:Block", { object: ALICE })),
+  "Delete typed as:Delete": signed(
+    [AS, SEC],
+    activity("as:Delete", { object: { id: `${BOB}/statuses/deleted`, type: "Tombstone" }, to: [PUBLIC] }),
+  ),
 };
 
 // The same bodies without a signature: read as received by both.
 const unsigned = Object.fromEntries(
-  ["@base after ActivityStreams", "a keyword alias beside the literal type", "an alias of to with to redefined"].map(
-    (name) => {
-      const { signature: _, ...body } = forms[name];
-      return [`${name}, unsigned`, body];
-    },
-  ),
+  [
+    "@base after ActivityStreams",
+    "a keyword alias beside the literal type",
+    "an alias of to with to redefined",
+    "Reject of an accepted follow, its object's type as:Follow",
+    "Accept object type as an IRI",
+  ].map((name) => {
+    const { signature: _, ...body } = forms[name];
+    return [`${name}, unsigned`, body];
+  }),
 );
 
 const entries = Object.entries({ ...forms, ...unsigned }).map(([name, received]) => ({

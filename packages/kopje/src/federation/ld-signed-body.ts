@@ -8,9 +8,9 @@ import { MASTODON_CONTEXT_TERMS } from "./mastodon-context";
 // (process_activity_service.rb:23-38 and 66-72, JsonLdHelper#patch_for_forwarding!; docs/mastodon-deviations.md,
 // "Reading inbound activities"). Under each key the body and its compaction share, the patch makes a one-element array
 // the compaction made a single value an array again and as:Public the public collection's IRI again; a key the
-// compaction renamed, a value it expanded or typed, and members it merged or dropped stay as it left them. The two
-// readings agree only where the compaction changes nothing else, so such a body is read only when
-// (ldSignedBodyReadable):
+// compaction renamed, a value it expanded or typed, and members it merged or dropped stay as it left them. So that
+// nothing Kopje reads takes another meaning there, such a body is read only when (ldSignedTypeReader,
+// ldSignedBodyReadable):
 //
 //   1. its @context is the ActivityStreams URL, or an array of it, of URLs of SIGNED_CONTEXT_URLS in their positions,
 //      and of objects of plain definitions (2);
@@ -21,13 +21,16 @@ import { MASTODON_CONTEXT_TERMS } from "./mastodon-context";
 //   3. every key of the body but the top-level @context, signature and proof is a plain name.
 //
 // Then every name of the vocabulary means what full_context makes it, no other name or keyword alias reaches one of its
-// IRIs, no base or vocabulary is set, so the compaction renames no key and merges none, and every string Kopje reads
-// keeps its value but the public collection's IRI, which the patch puts back. What still differs is listed by form in
-// the deviations page. The tables are built once from the
-// preloaded contexts and MASTODON_CONTEXT_TERMS, with no JSON-LD processing; test/ld-signed-vocabulary.test.ts
-// holds them to jsonld.js's processing of Mastodon's full_context and of each preloaded context. Kopje reads, from an
-// activity, no name outside the vocabulary that Mastodon also reads (EmojiReact and EmojiReaction, which Kopje reads
-// as a favourite, Mastodon reads in no form; test/inbox-signed-forms.test.ts).
+// IRIs, and no base or vocabulary is set: no key Kopje reads is renamed, aliased or given another meaning by the
+// compaction, and no member is merged into one. The rules do not make the readings equal. The compaction writes a type
+// given as an IRI (as:Follow, or the absolute one) as the vocabulary's name for it, and Kopje reads the activity's
+// type and its embedded object's so (ldSignedTypeReader); it also drops nulls, flattens arrays, and drops or renames
+// what the vocabulary does not define, and the readers on each side read some shapes differently. Those differences
+// are listed by form in the deviations page. The tables are built once from the preloaded contexts and
+// MASTODON_CONTEXT_TERMS, with no JSON-LD processing; test/ld-signed-vocabulary.test.ts holds them to jsonld.js's
+// processing of Mastodon's full_context and of each preloaded context. Kopje reads, from an activity, no name outside
+// the vocabulary that Mastodon also reads (EmojiReact and EmojiReaction, which Kopje reads as a favourite, Mastodon
+// reads in no form; test/inbox-signed-forms.test.ts).
 
 type Json = Record<string, unknown>;
 
@@ -124,6 +127,26 @@ function vocabulary(): ReadonlyMap<string, string> {
 export const ACTIVITY_VOCABULARY = vocabulary();
 const VOCABULARY_IRIS: ReadonlySet<string> = new Set(ACTIVITY_VOCABULARY.values());
 
+// The name the compaction under full_context writes for a type whose IRI is one of the vocabulary's (IRI Compaction with
+// no value, then Term Selection): a name with no container or a @set one, typed @id or untyped; a name with another
+// container, another type or a language is never written. No two such names share an IRI (JSON-LD would rank them by
+// container, type, length and order); test/ld-signed-vocabulary.test.ts holds every IRI to jsonld.js. Mastodon's
+// extension object comes last in full_context, so its definition holds.
+function typeNames(): ReadonlyMap<string, string> {
+  const names = new Map<string, string>();
+  for (const [name, iri] of ACTIVITY_VOCABULARY) {
+    const definition = MASTODON_CONTEXT_TERMS[name]?.at(-1) ?? AS_DEFINITIONS[name];
+    const { "@container": container, "@type": type, "@language": language } = isObject(definition) ? definition : {};
+    const written = type === undefined ? language === undefined : type === "@id";
+    if (!iri.startsWith("@") && (container === undefined || container === "@set") && written) {
+      names.set(iri, name);
+    }
+  }
+  return names;
+}
+
+const TYPE_NAMES = typeNames();
+
 // The preloaded contexts an LD-signed body may name, and where: anywhere, or only before the last ActivityStreams URL
 // (identity/v1 gives five ActivityStreams terms other IRIs, which ActivityStreams then gives back). Each, processed
 // after ActivityStreams (or before it), gives every name it defines, its scoped contexts included, a meaning (2)
@@ -184,8 +207,9 @@ function definitionIri(definition: unknown, prefix: (name: string) => string | u
 }
 
 // Rules (1) and (2) over a body's @context: the IRI of each name its inline objects define, in order (a later
-// definition of a name replaces an earlier one), or null when the context is not one the body is read under.
-export function inlineDefinitionIris(context: unknown): Map<string, string> | null {
+// definition of a name replaces an earlier one), and the namespace prefixes it leaves active; null when the context is
+// not one the body is read under.
+function readContext(context: unknown): { iris: Map<string, string>; prefixes: Prefixes } | null {
   const entries = Array.isArray(context) ? context : [context];
   const lastActivityStreams = entries.lastIndexOf(AS);
   if (lastActivityStreams < 0) {
@@ -230,7 +254,11 @@ export function inlineDefinitionIris(context: unknown): Map<string, string> | nu
     }
     applyPrefixes(entry, active);
   }
-  return iris;
+  return { iris, prefixes: active };
+}
+
+export function inlineDefinitionIris(context: unknown): Map<string, string> | null {
+  return readContext(context)?.iris ?? null;
 }
 
 // Rule (3): every key of every object in the body is a plain name, but the top-level @context, signature and proof
@@ -262,8 +290,24 @@ function bodyKeysReadable(json: Json): boolean {
   return true;
 }
 
-// Whether an LD-signed activity is read (its signature an object): only where its literal JSON is what Mastodon's
-// compaction reads. Run after withinJsonBounds, so the work is bounded by its values.
+// A type as Mastodon reads it in an LD-signed body: the compaction writes one given as a compact IRI over a prefix the
+// body's context defines, or as an absolute IRI, as the vocabulary's name for that IRI, and the patch puts no type
+// back. A name keeps the meaning the rules hold it to; any other type is read as given (Kopje reads none of them).
+export type TypeReader = (type: string) => string;
+
+// Whether an LD-signed activity is read (its signature an object), and then how its types are read: null when the
+// rules refuse it. Run after withinJsonBounds, so the work is bounded by its values.
+export function ldSignedTypeReader(json: Json): TypeReader | null {
+  const context = readContext(json["@context"]);
+  if (context === null || !bodyKeysReadable(json)) {
+    return null;
+  }
+  return (type) => {
+    const iri = expand(type, (prefix) => context.prefixes.get(prefix));
+    return (iri === null ? undefined : TYPE_NAMES.get(iri)) ?? type;
+  };
+}
+
 export function ldSignedBodyReadable(json: Json): boolean {
-  return inlineDefinitionIris(json["@context"]) !== null && bodyKeysReadable(json);
+  return ldSignedTypeReader(json) !== null;
 }
