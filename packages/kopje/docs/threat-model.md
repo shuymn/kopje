@@ -133,8 +133,12 @@ against their own instance. TLS is assumed between all parties.
   other object of keywords but `@id` and `@type`, from none of which Mastodon reads a key) is removed before the
   document is read (`readableKeys`), so the actor stays usable; any other document, and a key spelled otherwise (either
   property or the key material under a compact or absolute IRI, an entry with its own `@context` or a `@nest`), is read
-  as fetched. A key id the Store does not hold fresh, or whose stored key fails, is resolved from the document at that
-  id, as Kopje reads an actor's keys, and its owner judged as for any fetched key (`storedKeys`, `verify`). An RFC 9421
+  as fetched. Fedify parses an actor document without its `icon`, `image`, `followers` and `following`, which Kopje
+  reads by their spelling as Mastodon does (`fedifyActorView` in `src/federation/remote-actor.ts`), so a value of a type
+  Fedify does not expect there refuses neither the actor nor its keys; leaving members out never adds a key or changes
+  the id (`test/remote-actor-images.test.ts`, "verifies a signature by an actor whose icon is not an Image"). A key id
+  the Store does not hold fresh, or whose stored key fails, is resolved from the document at that id, as Kopje reads an
+  actor's keys, and its owner judged as for any fetched key (`storedKeys`, `verify`). An RFC 9421
   signature verifies with an RSA or Ed25519 key, the algorithm its own; a draft-cavage signature only with an RSA key,
   and one that names any other key is answered as a signature that does not verify (401), live, on replay and in the
   rollback drain. A stored key (`remote_keys`, kept per key id with its owner, whatever the shape of the key URL) is
@@ -209,7 +213,9 @@ against their own instance. TLS is assumed between all parties.
   Data Signature or an FEP-8b32 proof, which Fedify verifies in the Worker, before the Store is called, against a key
   the actor's current document embeds (a legacy key or, for an FEP-8b32 proof, an `assertionMethod` Multikey, within the
   first `MAX_PUBLIC_KEYS` of each), that document fetched anew in the request, never from a cache, so a key the actor
-  has since replaced proves nothing (no other key is ever loaded).
+  has since replaced proves nothing (no other key is ever loaded). The proof's key is found in the same view of that
+  document as the HTTP signature's (`fedifyActorView`, made inside `verifyAuthorProof`), so no caller hands Fedify
+  another form of it.
   A proof is considered only on a body in one of the sender profiles (`PROFILES` in `src/federation/author-proof.ts`):
   Mastodon's status `Delete` (the same body from 4.4 to 4.7) and stamp `Delete` (as 4.5.10 to 4.7 write it), signed by
   `LinkedDataSignature#sign!`, which writes `expires` from 4.7.0; Kopje's status and stamp `Delete`; Mastodon's and
@@ -270,7 +276,11 @@ against their own instance. TLS is assumed between all parties.
   forwarded form passing under each release's context, and refused with a key added to the object or a `cc`, another
   object type, the other sender's signature form or a redefined stamp term; no allowed term, nor any term webfinger or
   cid/v1 defines, that is or aliases a decision term; no network fetch while verifying, and an actor document naming a
-  context that is not preloaded refused; the request's shared context cache is not observed by a test),
+  context that is not preloaded refused; the request's shared context cache is not observed by a test; both proof forms
+  by an actor whose `icon` and `followers` are typed `Document`, relayed and applied, and as its own `Delete` proven and
+  forwarded, "proves a Delete by an actor whose icon is a Document, in both proof forms"; a key at the actor's URL that
+  its document does not embed refused though the network serves a document embedding it, and a key of another actor
+  refused before any verifier runs, "refuses a proof by a key the actor does not embed"),
   `test/quotes.test.ts` ("relayed revocations (ID-1’s exception)": Mastodon's stamp `Delete`, signed with or without
   `expires`, a missing proof, a forged signature, a proof by another actor's key, a proof covering another object, a
   valid proof on another activity type, a signed graph with no `Delete` type, a signed `Update` of the stamp read as a
@@ -291,7 +301,8 @@ against their own instance. TLS is assumed between all parties.
   (`packages/kopje/lint/fedify-usage.js`).
 - **ID-2: a fetched document is trusted only for its own origin.** The identity of a fetched object is its parsed `id`
   after JSON-LD processing, and it must have the origin of the final response URL. The loader's literal `id` check is a
-  pre-filter. Cross-origin redirects are refused. _Enforced (main):_ `src/federation/loader.ts`;
+  pre-filter. Cross-origin redirects are refused. An actor's `id` is checked on the view of its document Fedify parses
+  (`fedifyActorView`, ID-1), which only leaves members out. _Enforced (main):_ `src/federation/loader.ts`;
   `test/remote-identity.test.ts`, `test/loader.test.ts`. A search resolution's alternate (the document an HTML or
   other non-ActivityPub answer names in its `Link` header or `<link rel="alternate">`, NET-4) may be on another
   origin than the page, as Mastodon's `FetchResourceService` allows; its request follows no redirect, and its
@@ -2536,9 +2547,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   2,048 bytes and 4,098 JSON bytes (`snapshotMedia` in `src/domain/statuses.ts`; `test/status-bounds.test.ts`
   ("judges a media URL as decoded, then as normalized", "judges an imported snapshot's URLs and blurhash as live
   media")). _Enforced (main)_ for remote actors at ingest (profile URL, avatar, header, inboxes) and links in remote
-  HTML: `src/federation/remote-actor.ts`, `src/security/html.ts`; `test/inbox.test.ts` ("stores the remote actor"),
-  `test/html.test.ts`. _Enforced (main)_ for field links and remote statuses at ingest
-  (the status url and attachment and preview URLs, which are dropped unless http(s)); `src/federation/remote-status.ts`;
+  HTML: `src/federation/remote-actor.ts` (the avatar and header read from the document's JSON by `profileImage`),
+  `src/security/html.ts`; `test/inbox.test.ts` ("stores the remote actor"), `test/remote-actor-images.test.ts` ("keeps
+  only an absolute http(s) URL within its bound"), `test/html.test.ts`. _Enforced (main)_ for field links and remote
+  statuses at ingest (the status url and attachment and preview URLs, which are dropped unless http(s));
+  `src/federation/remote-status.ts`;
   `test/inbox-statuses.test.ts` ("keeps only http(s) media (HTML-1, HTML-3)", "http(s) links only").
   _Enforced (main)_ for custom emoji: an emoji's `url` and `static_url` pass `emojiHref` (http(s), serialized, within
   512 bytes and `EMOJI_URL_ALPHABET`) when an `Emoji` tag is read and again whenever a snapshot is presented, so an

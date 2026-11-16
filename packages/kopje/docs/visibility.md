@@ -247,6 +247,21 @@ interaction itself (VIS-13, VIS-15). A reply is a status of the actor's own: it 
 whatever the author of its parent blocks, as Mastodon stores it, and that author's blocks keep it out of their lists
 and notifications (R7, R15).
 
+A received status's visibility is read from its addressing as Mastodon's `StatusParser#visibility` and
+`Announce#visibility_from_audience` read it (`interpretAddressing` in `src/domain/audience.ts`, `boostVisibility` in
+`src/domain/inbox.ts`): Public in `to` makes it public, Public in `cc` unlisted, its author's followers collection in
+`to` private, and anything else direct (limited with silent recipients, VIS-2). That collection, and the followers and
+following collections a remote quote policy names (R36), are read from the author's stored document as Mastodon's
+`valid_collection_uri` stores them (`collectionRead` in `src/domain/collection-requests.ts`): the last member of the
+name, an array's first value, an object's last `id`, and of a string the URI Addressable writes back from it (the scheme
+`http` or `https` in lower case, then `//` and a host; the port as an integer, the userinfo stripped, the fragment cut
+at a line feed), compared with the addressing as spelled. Any other value is none, which Mastodon stores as an empty
+string and compares as one: a status whose `to` holds `""` is private when its author names no followers collection, and
+a quote policy's `""` names that collection. A value Kopje cannot read as Mastodon stores it is named by no addressing,
+so a status addressed to it is direct, and a quote policy's entries, read in Mastodon's order (the public collection,
+the followers collection, then the following one), add nothing after it but the public collection's flag, and a value
+that is not a string `unsupported_policy` ([mastodon-deviations.md](mastodon-deviations.md), Remote collections).
+
 A quote (R35, VIS-27; Mastodon 4.5's `REST::BaseQuoteSerializer` and `StatusFilter#filter_state_for_quote`) is shown
 with the status that makes it, and never widens what that status's rule passed: the quoted status is judged on its own
 by R2 for the same viewer. `quoteReads(viewer).of` in `src/domain/audience.ts` is the only read of `quotes` for a
