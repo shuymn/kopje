@@ -270,7 +270,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   same-version `Update`'s or a retried verification changes the quote's state, and no longer when an `Update` brings a
   pending quote's stamp, before it is verified. Every `Update` that names the same quote verifies a pending or accepted
   quote again ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Quote verification). Migration
-  `0104_quote_broadcast`; no `wrangler.jsonc` change.
+  `0104_quote_broadcast` adds a column of `quotes` with its default, reading every row for its CHECK; the upgrade
+  checks no reference (the migration bench's upgrade from `0093_annual_reports` takes 12,349 ms with this file and
+  11,736 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the
+  release is at least a minor version, and rolling back past it needs a point-in-time restore.
 
 ### Fixed
 
