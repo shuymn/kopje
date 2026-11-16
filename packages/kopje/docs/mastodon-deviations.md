@@ -682,6 +682,10 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   `featured_collections` and in its `Add` and `Update`) leave out a member that is suspended or otherwise unavailable,
   and that member's `FeaturedItem` answers 404, where Mastodon lists every accepted item; a suspension sends no
   `Update`. Accepted, 2026-11-16.
+- `featured_collections` reads `page` as Mastodon does but where Mastodon fails: a number whose offset passes
+  PostgreSQL's bigint (from 1844674407370955163) is the empty page past the last, a `page[]` or `page[key]` is no page
+  (the root), and a value that is not UTF-8 is read with each bad sequence replaced, where Mastodon answers 500, 500
+  and 400. Accepted, 2026-11-16.
 - A deleted collection's `Remove` reaches its members as well as the owner's followers, where Mastodon's per-member
   delivery does not reach them. Kopje's collection `Add` and `Remove` carry an `id` and `to`. A member's revocation of
   its item in a local collection, by its route or by blocking the owner, is sent as the owner's `Remove` of the item,

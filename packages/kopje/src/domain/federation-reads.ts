@@ -56,7 +56,7 @@ const serialized = (document: Record<string, unknown> | null) => ({
   document: document === null ? null : JSON.stringify(document),
 });
 
-export const apFeaturedCollections = federationRead<DocumentRequest & { page: number | null }, CollectionDocument>(
+export const apFeaturedCollections = federationRead<DocumentRequest & { page: string | null }, CollectionDocument>(
   (db, input) => serialized(featuredCollectionsDocument(db, input)),
 );
 

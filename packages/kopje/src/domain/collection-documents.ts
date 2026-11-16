@@ -1,5 +1,6 @@
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { MAX_STORED_COLLECTIONS } from "../platform/stored-bounds";
 import { followersUri, recordOutbound } from "./activities";
 import { availableSql, blockedSql, collectionItemShownSql, collectionShownSql, PUBLIC_COLLECTION } from "./audience";
 import { allocateLocalId } from "./ids";
@@ -62,6 +63,58 @@ const FEATURE_AUTHORIZATION_CONTEXT = [
 
 // A FeaturedCollection's page holds this many collections (FeaturedCollectionsController::PER_PAGE).
 const FEATURED_COLLECTIONS_PER_PAGE = 5;
+
+// The page past every page an account can have (MAX_STORED_COLLECTIONS collections at most, the 0103 trigger): any
+// larger number serves the same empty page, so a page number is read no further.
+const PAST_EVERY_PAGE = Math.ceil(MAX_STORED_COLLECTIONS / FEATURED_COLLECTIONS_PER_PAGE) + 1;
+
+// FeaturedCollectionsController#page_requested? (`params[:page].present?`): a value of white space alone (ActiveSupport's
+// String#blank?, `[[:space:]]`) asks for no page.
+const BLANK = /^\p{White_Space}*$/u;
+
+const ASCII_SPACE = " \t\n\v\f\r";
+
+const isDigit = (c: string | undefined) => c !== undefined && c >= "0" && c <= "9";
+
+// The page Kaminari serves for `value` (`.page(params[:page])`, kaminari-core 1.2.2): Ruby's String#to_i of it (ASCII
+// white space, a sign, a `0d` prefix, digits with single underscores between them, up to the first other character),
+// and the first page below 1. Past PAST_EVERY_PAGE no more digits are read. Mastodon answers 500 where its offset
+// passes PostgreSQL's bigint; Kopje serves the empty page (docs/mastodon-deviations.md, "Collections").
+function pageNumber(value: string): number {
+  let i = 0;
+  while (i < value.length && ASCII_SPACE.includes(value[i]!)) {
+    i++;
+  }
+  if (value[i] === "-") {
+    return 1;
+  }
+  if (value[i] === "+") {
+    i++;
+  }
+  if (value[i] === "0" && (value[i + 1] === "d" || value[i + 1] === "D") && isDigit(value[i + 2])) {
+    i += 2;
+  }
+  let n = 0;
+  for (; i < value.length; i++) {
+    if (isDigit(value[i])) {
+      n = n * 10 + Number(value[i]);
+      if (n >= PAST_EVERY_PAGE) {
+        return PAST_EVERY_PAGE;
+      }
+    } else if (!(value[i] === "_" && isDigit(value[i - 1]) && isDigit(value[i + 1]))) {
+      break;
+    }
+  }
+  return Math.max(n, 1);
+}
+
+// A query value as Rails' url helpers write it (Hash#to_query, Ruby's CGI.escape): every UTF-8 byte but A-Z, a-z, 0-9,
+// `_`, `.`, `-` and `~` percent-encoded, a space as `+`.
+function queryValue(value: string): string {
+  return encodeURIComponent(value.toWellFormed())
+    .replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+    .replaceAll("%20", "+");
+}
 
 // The ids of a local actor's collections (ActivityPub::TagManager, routes.rb), under its actor id: Kopje's actor ids
 // are /ap/users/<username>, so these are the paths federation/routes.ts serves.
@@ -250,14 +303,16 @@ function localAccountId(db: Db, username: string): string | null {
 
 export type DocumentRequest = { username: string; keyId: string | null };
 
-// /ap/users/:username/featured_collections (FeaturedCollectionsController#index): without a page, an unordered
-// Collection of every collection of the account (discoverable or not) with its first page; page N (from 1) the
-// FeaturedCollections at its place, newest first, FEATURED_COLLECTIONS_PER_PAGE a page, through collections_account
-// (at most MAX_STORED_COLLECTIONS entries whatever the page). Not found unless the account is available and shows its
-// collections to the fetcher (AccountPolicy#index_collections?).
+// /ap/users/:username/featured_collections (FeaturedCollectionsController#index): without a page (`page`, the last
+// `page` of the query, absent or blank), an unordered Collection of every collection of the account (discoverable or
+// not) with its first page; with one, the page pageNumber reads, its id the value as given (`params.fetch(:page, 1)`):
+// the FeaturedCollections at its place, newest first, FEATURED_COLLECTIONS_PER_PAGE a page, through
+// collections_account (at most MAX_STORED_COLLECTIONS entries whatever the page), and `next` and `prev` as Kaminari
+// gives them (none past the last page). Not found unless the account is available and shows its collections to the
+// fetcher (AccountPolicy#index_collections?).
 export function featuredCollectionsDocument(
   db: Db,
-  input: DocumentRequest & { page: number | null },
+  input: DocumentRequest & { page: string | null },
 ): Record<string, unknown> | null {
   const owner = localAccountId(db, input.username);
   if (owner === null) {
@@ -275,7 +330,7 @@ export function featuredCollectionsDocument(
     return null;
   }
   const id = featuredCollectionsUri(head.uri);
-  if (input.page === null) {
+  if (input.page === null || BLANK.test(input.page)) {
     return {
       "@context": AS_CONTEXT,
       id,
@@ -284,21 +339,26 @@ export function featuredCollectionsDocument(
       first: `${id}?page=1`,
     };
   }
-  const rows = db.all<CollectionDocumentRow>(
-    `SELECT ${DOCUMENT_COLUMNS} FROM collections c INDEXED BY collections_account
-			CROSS JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id
-		WHERE c.account_id = ?1 ORDER BY c.created_at DESC, c.id DESC LIMIT ?2 OFFSET ?3`,
-    owner,
-    FEATURED_COLLECTIONS_PER_PAGE,
-    (input.page - 1) * FEATURED_COLLECTIONS_PER_PAGE,
-  );
+  const page = pageNumber(input.page);
+  const pages = Math.ceil(head.total / FEATURED_COLLECTIONS_PER_PAGE);
+  const inRange = page <= pages;
+  const rows = !inRange
+    ? []
+    : db.all<CollectionDocumentRow>(
+        `SELECT ${DOCUMENT_COLUMNS} FROM collections c INDEXED BY collections_account
+				CROSS JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id
+			WHERE c.account_id = ?1 ORDER BY c.created_at DESC, c.id DESC LIMIT ?2 OFFSET ?3`,
+        owner,
+        FEATURED_COLLECTIONS_PER_PAGE,
+        (page - 1) * FEATURED_COLLECTIONS_PER_PAGE,
+      );
   return {
     "@context": FEATURED_COLLECTION_CONTEXT,
-    id: `${id}?page=${input.page}`,
+    id: `${id}?page=${queryValue(input.page)}`,
     type: "CollectionPage",
     totalItems: head.total,
-    ...(input.page * FEATURED_COLLECTIONS_PER_PAGE < head.total ? { next: `${id}?page=${input.page + 1}` } : {}),
-    ...(input.page > 1 ? { prev: `${id}?page=${input.page - 1}` } : {}),
+    ...(inRange && page < pages ? { next: `${id}?page=${page + 1}` } : {}),
+    ...(inRange && page > 1 ? { prev: `${id}?page=${page - 1}` } : {}),
     partOf: id,
     items: documentsOf(db, rows),
   };

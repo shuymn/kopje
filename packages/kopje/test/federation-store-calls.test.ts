@@ -106,7 +106,7 @@ describe("self-gated federation GETs", () => {
       ["/emojis/abc", 404, "text/plain;charset=UTF-8", null, ["apSite"]],
       ["/ap/users/alice/featured_collections", 200, AP_JSON, null, ["apFeaturedCollections"]],
       ["/ap/users/alice/featured_collections?page=1", 200, AP_JSON, null, ["apFeaturedCollections"]],
-      ["/ap/users/alice/featured_collections?page=x", 404, TEXT, null, ["apSite"]],
+      ["/ap/users/alice/featured_collections?page=x", 200, AP_JSON, null, ["apFeaturedCollections"]],
       [`/ap/users/alice/collections/${COLLECTION}`, 200, AP_JSON, null, ["apFeaturedCollection"]],
       ["/ap/users/alice/collections/123", 404, TEXT, null, ["apSite"]],
       [`/ap/users/alice/collection_items/${ITEM}`, 200, AP_JSON, null, ["apFeaturedItem"]],

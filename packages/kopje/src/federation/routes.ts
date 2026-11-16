@@ -185,13 +185,10 @@ async function respond(c: Context<FederationEnv>, deps: FederationRouteDeps, url
     }
     case FEATURED_COLLECTIONS_ROUTE: {
       const username = FEATURED_COLLECTIONS.exec(url.pathname)![1]!;
-      const raw = url.searchParams.get("page");
-      const page = raw === null ? null : PAGE.test(raw) ? Number(raw) : undefined;
+      // params[:page] as Rack parses the query: the last of a repeated key.
+      const page = url.searchParams.getAll("page").at(-1) ?? null;
       const keyId = signatureKeyId(c.req.raw.headers);
-      const answer =
-        page === undefined
-          ? { ...(await read((s, b) => s.apSite(b))), document: null }
-          : await read((s, b) => s.apFeaturedCollections(b, { username, page, keyId }));
+      const answer = await read((s, b) => s.apFeaturedCollections(b, { username, page, keyId }));
       return answer.status === "ok"
         ? (away(answer.domain) ?? { response: collectionDocument(answer.document), source: null })
         : null;
@@ -318,8 +315,6 @@ const FEATURED_COLLECTIONS = new RegExp(`^/ap/users/${USERNAME}/featured_collect
 const COLLECTION = new RegExp(`^/ap/users/${USERNAME}/collections/(\\d{18})$`);
 const ITEM = new RegExp(`^/ap/users/${USERNAME}/collection_items/(\\d{18})$`);
 const AUTHORIZATION = new RegExp(`^/ap/users/${USERNAME}/feature_authorizations/(\\d{18})$`);
-// A page of featured_collections, numbered from 1 (federation.ts parsePage's form); any other value is no page.
-const PAGE = /^[1-9]\d{0,5}$/;
 
 const EMOJI = /^\/emojis\/(\d{18})$/;
 

@@ -180,6 +180,79 @@ describe("collections over ActivityPub: the actor (D19)", () => {
   });
 });
 
+// Each form of `page` as Mastodon 4.7.5 reads it (FeaturedCollectionsController with Kaminari 1.2.2): the last `page`
+// of the query, Ruby's String#to_i of it, the first page below 1, the root for a blank one, the page's id the value as
+// given, CGI-escaped, and no `prev` or `next` past the last page. Each case names the one-line change that fails it.
+describe("collections over ActivityPub: featured_collections reads `page` as Mastodon does (D18)", () => {
+  const root = `${actor("alice")}/featured_collections`;
+  const PAGE_1 = [6, 5, 4, 3, 2].map((n) => `${actor("alice")}/collections/${collectionId(n)}`);
+  const PAGE_2 = [`${actor("alice")}/collections/${collectionId(1)}`];
+  const page = (id: string, items: string[], links: { next?: number; prev?: number } = {}) => ({
+    id: `${root}?page=${id}`,
+    ...(links.next === undefined ? {} : { next: `${root}?page=${links.next}` }),
+    ...(links.prev === undefined ? {} : { prev: `${root}?page=${links.prev}` }),
+    items,
+  });
+  it.each([
+    // Math.max(n, 1) dropped.
+    ["below 1", "0", page("0", PAGE_1, { next: 2 })],
+    // The minus read as a plus.
+    ["negative", "-2", page("-2", PAGE_1, { next: 2 })],
+    // The same clamp: no digits is 0.
+    ["not a number", "x", page("x", PAGE_1, { next: 2 })],
+    // Trailing characters refuse the number instead of ending it.
+    ["digits then others", "2x", page("2x", PAGE_2, { prev: 1 })],
+    // The `0d` prefix not skipped.
+    ["a 0d prefix", "0d2", page("0d2", PAGE_2, { prev: 1 })],
+    // The plus not skipped.
+    ["a plus", "%2B2", page("%2B2", PAGE_2, { prev: 1 })],
+    // Leading white space not skipped.
+    ["leading white space", "%202", page("+2", PAGE_2, { prev: 1 })],
+    // An underscore between digits not skipped.
+    ["an underscore between digits", "0_2", page("0_2", PAGE_2, { prev: 1 })],
+    // `prev` given past the last page.
+    ["past the last page", "3", page("3", [])],
+    // The same: any number past every page is that empty page (Mastodon answers 500 past PostgreSQL's bigint).
+    ["past bigint", "99999999999999999999999", page("99999999999999999999999", [])],
+    // The first `page` read instead of the last.
+    ["repeated", "9&page=2", page("2", PAGE_2, { prev: 1 })],
+    // The value echoed unescaped.
+    ["escaped in its id", "x%20y*", page("x+y%2A", PAGE_1, { next: 2 })],
+    // Not UTF-8: read with U+FFFD, where Mastodon answers 400 (docs/mastodon-deviations.md).
+    ["not UTF-8", "2%FF", page("2%EF%BF%BD", PAGE_2, { prev: 1 })],
+  ])("serves a page for %s", async (_name, value, expected) => {
+    const { h, alice } = await world();
+    for (let n = 2; n <= 6; n++) {
+      await seedCollection(h, alice.id, n);
+    }
+    const body = (await get(h, `/ap/users/alice/featured_collections?page=${value}`)).body;
+    expect({
+      id: body.id,
+      next: body.next,
+      prev: body.prev,
+      items: (body.items as { id: string }[]).map((c) => c.id),
+    }).toEqual({ next: undefined, prev: undefined, ...expected });
+    expect(body).toMatchObject({ type: "CollectionPage", totalItems: 6, partOf: root });
+  });
+
+  // The blank test dropped (an array or a hash is no `page`: Mastodon answers 500, docs/mastodon-deviations.md).
+  it.each([
+    ["empty", "page="],
+    ["white space", "page=%20%C2%A0"],
+    ["an array", "page[]=2"],
+    ["bare", "page"],
+  ])("serves the root when page is %s", async (_name, query) => {
+    const { h } = await world();
+    expect((await get(h, `/ap/users/alice/featured_collections?${query}`)).body).toEqual({
+      "@context": "https://www.w3.org/ns/activitystreams",
+      id: root,
+      type: "Collection",
+      totalItems: 1,
+      first: `${root}?page=1`,
+    });
+  });
+});
+
 describe("collections over ActivityPub: the documents (D18)", () => {
   // 3-T2.
   it("serves featured_collections and its pages of five, newest first", async () => {
@@ -215,11 +288,8 @@ describe("collections over ActivityPub: the documents (D18)", () => {
       partOf: root,
       items: [`${actor("alice")}/collections/${collectionId(1)}`],
     });
-    // A page past the last is empty; anything but a page number is none.
+    // A page past the last is empty (the forms of `page`: below).
     expect((await get(h, "/ap/users/alice/featured_collections?page=3")).body.items).toEqual([]);
-    for (const page of ["0", "x", "-1"]) {
-      expect((await get(h, `/ap/users/alice/featured_collections?page=${page}`)).status, page).toBe(404);
-    }
     // Only the stored spelling of the username, and a local account.
     expect((await get(h, "/ap/users/Alice/featured_collections")).status).toBe(404);
     expect((await get(h, "/ap/users/nobody/featured_collections")).status).toBe(404);
