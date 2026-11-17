@@ -397,8 +397,9 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
   64 `<link>` elements. An `http` endpoint is upgraded to `https` as Mastodon does; one of another scheme, with a port,
   an IP literal or a local name is not tried (the page's OpenGraph is the card), where Mastodon tries it.
 - An endpoint's answer is read whole within 64 KiB (Mastodon: 1 MiB; a longer one is no card), as UTF-8 by
-  JavaScript's `JSON.parse` (Mastodon: Ruby's), within 10,000 values and 32 levels (past them, OpenGraph); a `version` of the number `1`
-  passes as `1.0` does (`JSON.parse` cannot tell them apart). The User-Agent is the cards' own, with " Bot".
+  JavaScript's `JSON.parse` (Mastodon: Ruby's), within 10,000 values and 32 levels (past them, OpenGraph); a `version`
+  of the number `1` passes as `1.0` does (`JSON.parse` cannot tell them apart). The User-Agent is the cards' own, with
+  " Bot".
 - A `type` that is not a string, and a `title`, `author_name` or `provider_name` that is not one, are no card and `''`
   where Rails would cast them; an oEmbed card with a blank title falls back to OpenGraph, where Mastodon saves it. A
   `twitter:player` page with a blank title is no card, where Mastodon saves one with its html.
@@ -1641,8 +1642,10 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   continuation byte, a truncated sequence) make an inbound activity and a JSON-LD context JSON that does not parse,
   decoded strictly (on spool replay and in the cutover rollback's drain too; the signature is verified over the bytes as
   received), where Mastodon refuses them; elsewhere Kopje decodes as Mastodon reads them or as before:
-  - An inbox body: Mastodon answers 400 to one holding them in a value and 500 to one holding them only in a key, as for
-    a lone low surrogate escape (the previous entry); Kopje answers 202 and applies nothing.
+  - An inbox body: Mastodon answers 400 to one holding them in a value and 500 to one holding them only in a key, as
+    for a lone low surrogate escape (the previous entry); Kopje answers 202 and applies nothing. One whose invalid
+    bytes sit only in a member a later duplicate key replaces passes Mastodon's parsing (an unsigned one reaches its
+    401, as the control does; whether it applies a signed one is not verified), where Kopje refuses it.
   - A JSON-LD context: Mastodon's loader refuses one served without a charset wherever they sit (`truncated_body`,
     `request.rb:270-291`, keeps such a body binary, and MultiJson's `json_gem` adapter, `json_gem.rb:42-45`, refuses
     binary input that is not UTF-8) and one served as UTF-8 holding them in a term definition (json-ld 3.3.2,
