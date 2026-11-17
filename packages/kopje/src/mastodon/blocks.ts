@@ -120,10 +120,10 @@ export const unblockDomain: ApiHandler = withParams(async (c, deps, p) => {
 // nothing for any other that is no domain.
 export const previewDomainBlock: ApiHandler = withParams(async (c, deps, p) => {
   const raw = p.get("domain");
-  const domain = raw === undefined ? null : blockedDomain(raw);
   if (raw === undefined || raw.trim() === "") {
     return refuseAfterAuth(c, deps, mastodonError(400, "param is missing or the value is empty: domain"));
   }
+  const domain = blockedDomain(raw);
   if (domain === null) {
     return refuseAfterAuth(c, deps, c.json({ following_count: 0, followers_count: 0 }));
   }
