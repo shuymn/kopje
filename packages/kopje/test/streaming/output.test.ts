@@ -499,6 +499,19 @@ describe("admission from the latest attachment (RES-6)", () => {
     expect((await upgrade(h, carol.token)).status).toBe(503);
   });
 
+  // bob's error reply is charged (one frame, 2,160); his next subscription, accepted with no reply, rewrites the
+  // attachment and keeps that charge.
+  it("keeps a socket's charge across its subscriptions", async () => {
+    const h = await community(["bob"]);
+    const inbox = await opened(h, h.users.bob, ["public:local"]);
+    inbox.send({ type: "subscribe", stream: "kopje-unknown" });
+    await inbox.next((m) => m.error === "Unknown stream type");
+    expect((await servers(h))[0]!.out).toEqual([REPLY, 1]);
+    inbox.send({ type: "subscribe", stream: "public" });
+    const [socket] = await until(h, (listed) => listed[0]!.subs.length === 2);
+    expect(socket).toMatchObject({ subs: ["public:local", "public"], out: [REPLY, 1] });
+  });
+
   // A unit waits before its admission while bob subscribes to another stream; released, the attachment holds the new
   // subscription and the unit's charge.
   it("keeps a subscription made during a unit", async () => {
