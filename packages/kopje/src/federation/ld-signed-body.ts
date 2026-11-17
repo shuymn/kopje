@@ -1,6 +1,7 @@
 import { preloadedContexts } from "@fedify/fedify";
 import jsonld from "jsonld/dist/jsonld.esm.js";
 
+import { railsBoolean } from "../platform/rails-boolean";
 import { FEDIFY_CONTEXT_TERMS } from "./fedify-context";
 import { isObject } from "./json-shapes";
 import { MASTODON_CONTEXT_TERMS, MASTODON_NAMED_CONTEXTS, MASTODON_OLM_TERMS } from "./mastodon-context";
@@ -565,17 +566,18 @@ const SENSITIVE_IRI = FULL_CONTEXT_MEANINGS.get("sensitive")?.iri;
 
 // `sensitive` the body's contexts define otherwise than full_context, which leaves it untyped and so takes any value
 // (takes): the compaction still writes it under the name, an IRI or a typed value as an object, a list as a @list
-// object, an array (an empty one too) as an array, and Mastodon marks the status by any value there but false, an
-// integer 0 and null (its sensitive column is a boolean, which takes an object, an array or a float 0 as true). Kopje
-// reads it as true wherever Mastodon may mark the status, so that a status Mastodon marks is never shown unmarked: not
-// a lone false the definition writes as it is (typed @id or @vocab), nor null. A lone 0 is read as true: its JSON does
-// not tell an integer 0, which Mastodon leaves unmarked, from a float one (0.0), which it marks.
+// object, an array (an empty one too) as an array, and a lone boolean or number the definition types @id or @vocab as
+// it is, and Mastodon marks the status as its boolean column casts that value. Kopje reads a value written as it is by
+// railsBoolean, as an unsigned body's (remote-status.ts), and any other as true, as Mastodon casts an object or an
+// array; null is written as nothing. A float 0 (0.0), which Mastodon marks, parses as 0 and is read as not sensitive.
 function marksSensitive(meaning: Meaning | undefined, value: unknown): boolean {
   if (meaning === undefined || meaning.iri !== SENSITIVE_IRI || value === null) {
     return false;
   }
   const plain = meaning.coercion === "@id" || meaning.coercion === "@vocab";
-  return meaning.containers.includes("@list") || !(plain && value === false);
+  const asIs =
+    plain && !meaning.containers.includes("@list") && (typeof value === "boolean" || typeof value === "number");
+  return !asIs || railsBoolean(value) === true;
 }
 
 // An LD-signed body with its names, as members and as types, read only where Mastodon's compaction under full_context

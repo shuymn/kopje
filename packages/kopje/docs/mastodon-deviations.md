@@ -1546,15 +1546,16 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   (written `expires`). An `Accept` of our quote request is matched by its id whatever its type, as in Mastodon. Kopje
   reads less than Mastodon where a name its context defines otherwise is given a value the compaction still writes under
   the name (an object with an `id`, or an IRI where the context types the name `@id` and `full_context` does not), but
-  for `sensitive`: where the context defines it otherwise, Kopje reads it as true wherever Mastodon may mark the status
-  (an IRI or a value of a datatype, which the compaction writes as an object, a list, written as a `@list` object, an
-  array, an empty one too, and a float `0` (`0.0`), each of which Mastodon takes as true; not a lone `false` where it is
-  typed `@id`), and it marks the status where Mastodon does not in three cases: where the context types it `@id` and
-  gives it an integer `0`, which Kopje's JSON does not tell from a float one; where Mastodon's JSON-LD library refuses
-  that definition (a datatype given as a compact IRI over a prefix of the ActivityStreams context, `xsd:boolean`) and
-  Mastodon reads as received a value its sensitive column takes as false (`false`, `0`, `"false"`, `"0"`), and where the
-  context types it `@id` and gives it two equal values (`[false, false]`), which Mastodon's compaction makes one, so
-  that its patch stops and leaves `false`. It reads less too where Mastodon gives up the compaction of a body Kopje
+  for `sensitive`: where the context defines it otherwise, Kopje reads what the compaction writes under the name as
+  Mastodon's sensitive column casts it (an IRI or a value of a datatype, which the compaction writes as an object, a
+  list, written as a `@list` object, and an array, an empty one too, each true; a lone boolean or number where it is
+  typed `@id`, written as it is). The readings differ in three cases. Where the context types it `@id` and gives it a
+  float `0` (`0.0`), Kopje does not mark the status and Mastodon does, as for a body read as received (below). Kopje
+  marks the status where Mastodon does not where Mastodon's JSON-LD library refuses that definition (a datatype given
+  as a compact IRI over a prefix of the ActivityStreams context, `xsd:boolean`) and Mastodon reads as received a value
+  its sensitive column takes as false (`false`, `0`, `"false"`, `"0"`), and where the context types it `@id` and gives
+  it two equal values (`[false, false]`), which Mastodon's compaction makes one, so that its patch stops and leaves
+  `false`. It reads less too where Mastodon gives up the compaction of a body Kopje
   cannot show it gives up: it reads as received a body Mastodon's JSON-LD limits refuse as received, and one whose
   top-level proof, a `@graph` in the data-integrity contexts, keeps something once expanded, as jsonld.js expands it
   with the preloaded contexts (a proof of a null value, of `@language` alone or beside members that expand to nothing,
@@ -1575,8 +1576,7 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   the compaction gives it. A one-element array both read as received, and each reader then reads it as it reads the same
   body unsigned: an `actor` given so is refused, where Mastodon applies the activity for the request's signer (so such a
   `Reject`, `Undo` or `Delete` leaves what Mastodon's ends, #1717); a text given so is read as empty, where Mastodon
-  stores the array's JSON; `sensitive: [true]` is read as false, where Mastodon marks the status (so such media are
-  shown unmarked); an `inReplyTo` given so is read as absent, where Mastodon's job raises and stores nothing; an
+  stores the array's JSON; an `inReplyTo` given so is read as absent, where Mastodon's job raises and stores nothing; an
   `object`, `target` or `instrument` given so is refused, and an `Undo`'s or a `Reject`'s read as absent, where
   Mastodon's job raises too; a single poll option is a poll in both. The patch cannot put back an array the compaction
   shortened (a `null` it left out): an embedded actor's `inbox: [null]` is read, where Mastodon's `[]` drops the update.
@@ -1623,6 +1623,13 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   four proofs. Of the 147 LD-signed forms the captures hold, 50 are so ignored, and Mastodon applies something of 26;
   every body Mastodon 4.6.11 and 4.7.5 and Fedify 2.4.5 send in the captures passes, and so does each release's actor
   context from 3.5.0 to 4.3.23 (`test/fixtures/ld-signed/context-maps.json`). Accepted, 2026-11-17.
+- A remote status's `sensitive` is read as Mastodon assigns `@status_parser.sensitive || false` to its boolean column
+  (`create.rb:115`, `process_status_update_service.rb:184`; ActiveModel's `Boolean` cast): absent, null, `false`, `0`
+  and the strings `"0"`, `"f"`, `"F"`, `"false"`, `"FALSE"`, `"off"` and `"OFF"` leave it unmarked, `""` refuses the
+  status as the column's `NOT NULL` does (a `Create` stores nothing and an `Update` leaves the status), and any other
+  value marks it (`"False"`, `[]`, `[false]`, an object). A JSON number with a fraction or an exponent that equals zero
+  (`0.0`, `0e0`) is read as not sensitive, where Mastodon's Float marks the status: `JSON.parse` does not tell it from
+  `0`. Accepted, 2026-11-17.
 
 Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NET-1 in `docs/threat-model.md`):
 

@@ -168,7 +168,8 @@ against their own instance. TLS is assumed between all parties.
   are the second layer, held alone to Mastodon's reading by the sweeps below; under the first, no such key or type is
   written, and a proof holds no nested node. Where Mastodon gives up the compaction of
   another, or still writes under a name the body defines otherwise a value of a shape that definition does not coerce,
-  Kopje reads less, but for `sensitive`, which marks the status wherever Mastodon may. The readings still differ in
+  Kopje reads less, but for `sensitive`, which is read as Mastodon's boolean column casts the value the compaction
+  writes under the name (`marksSensitive`, `railsBoolean`). The readings still differ in
   shapes, values and readers, each listed in `docs/mastodon-deviations.md` ("Reading inbound activities"). None of those
   differences lets Kopje grant an access Mastodon's reading would not (a follow, a status's audience, a lifted block, a
   quote's approval); some leave in place one Mastodon's reading would withdraw (a follow its `Reject` ends, a status its

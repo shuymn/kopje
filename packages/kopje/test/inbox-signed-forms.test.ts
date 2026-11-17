@@ -327,13 +327,6 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       expect(applied(name).effect.statuses).toMatchObject([{ text: expect.stringContaining('<h2>["Title"]</h2>') }]);
     });
 
-    it("sensitive as a one-element array, which Mastodon takes as true", async () => {
-      const name = "sensitive as a one-element array";
-      expect(asReceived(form(name))).toBe(true);
-      expect(statusOf(await layered(form(name))).sensitive).toBe(false);
-      expect(applied(name).effect.statuses).toMatchObject([{ sensitive: true, media: 1 }]);
-    });
-
     it("a mention's type as an IRI", async () => {
       const entry = form("Mention type as an IRI");
       expect(statusOf(await layered(entry)).mentions).toEqual([]);
@@ -359,6 +352,15 @@ describe("D1: forms whose readings differ, each named by its class", () => {
   });
 
   describe("the same effect as Mastodon", () => {
+    // Read as received, its value as each reads it unsigned: Mastodon's boolean column takes an array as true, and so
+    // does Kopje (railsBoolean).
+    it("sensitive as a one-element array: marked", async () => {
+      const name = "sensitive as a one-element array";
+      expect(asReceived(form(name))).toBe(true);
+      expect(statusOf(await layered(form(name))).sensitive).toBe(true);
+      expect(applied(name).effect.statuses).toMatchObject([{ sensitive: true, media: 1 }]);
+    });
+
     // The compaction writes a type given as an IRI as the vocabulary's name, and the patch leaves it so: Kopje reads
     // the activity's type and its embedded object's so (ldSignedReading), and a retraction ends what Mastodon's
     // ends.
@@ -488,27 +490,27 @@ describe("D1: forms whose readings differ, each named by its class", () => {
 
     // The same for each definition of `sensitive` the rules admit, given each shape of value (sensitive-shapes.json,
     // Mastodon's reading and the status it creates): a list is written as a @list object, an array, an empty one too,
-    // as an array, each true, and so is a float 0 (0.0), which JSON parses as 0. Kopje marks the status wherever
-    // Mastodon does, and also where the value is an integer 0 typed @id, where Mastodon's json-ld refuses a datatype
-    // given as xsd: (it reads `false`, `0` or `"false"` as received) or keeps one of two equal values typed @id (the
-    // patch then stops at the array of one, and the compaction's false stands).
-    it("sensitive defined otherwise, given each shape: marked wherever Mastodon marks it", async () => {
+    // as an array, each true, and a lone boolean or number typed @id as it is, which both cast as Rails does
+    // (railsBoolean). Kopje marks the status as Mastodon does but for a float 0 (0.0) typed @id, which JSON parses as
+    // 0, and where Mastodon's json-ld refuses a datatype given as xsd: (it reads `false`, `0` or `"false"` as
+    // received) or keeps one of two equal values typed @id (the patch then stops at the array of one, and the
+    // compaction's false stands), where Kopje marks it.
+    it("sensitive defined otherwise, given each shape: marked as Mastodon marks it, but for the listed shapes", async () => {
       const shapes = sensitiveShapes();
       expect(sensitiveShapesFixture.reference).toBe("mastodon-4.7.5");
       expect(sensitiveShapesFixture.sensitive).toHaveLength(shapes.length);
       const more: string[] = [];
+      const less: string[] = [];
       for (const [index, shape] of shapes.entries()) {
         const marked = statusOf(await read(sensitiveShapeBody(shape), SECOND_LAYER)).sensitive === true;
         const mastodon = sensitiveShapesFixture.sensitive[index] === "t";
-        expect(marked || !mastodon, shape.name).toBe(true);
-        if (marked && !mastodon) {
-          more.push(shape.name);
+        if (marked !== mastodon) {
+          (marked ? more : less).push(shape.name);
         }
       }
+      expect(less).toEqual(["typed @id, given 0.0", "typed @id, a set, given 0.0"]);
       expect(more).toEqual([
-        "typed @id, given 0",
         "typed @id, given [false, false]",
-        "typed @id, a set, given 0",
         "typed @id, a set, given [false, false]",
         "typed as xsd:boolean, given false",
         "typed as xsd:boolean, given 0",
@@ -1348,7 +1350,7 @@ describe("D1 through the inbox: what the received form stores", () => {
   // A list, an empty array typed @id and a float 0 typed @id: Mastodon's compaction writes a @list object, an empty
   // array and 0.0 under the name, each of which its boolean column takes as true (sensitive-shapes.json). The body is
   // posted as its text, which keeps the float. Its definition of sensitive is no sender's, so rule (5) refuses it; the
-  // layer under it marks each (the sweep above).
+  // layer under it marks the first two and reads the float as 0, not sensitive (the sweep above).
   it.each(["a list, given false", "typed @id, given []", "typed @id, given 0.0"])(
     "a Note, its sensitive %s, is ignored (rule 5), where Mastodon shows it sensitive",
     async (name) => {

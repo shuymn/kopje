@@ -27,6 +27,7 @@ import { httpUrl } from "../platform/http-url";
 import { STATUS_URI_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import { withinJsonBounds } from "../platform/json-bounds";
 import { railsBlank } from "../platform/rails-blank";
+import { railsBoolean } from "../platform/rails-boolean";
 import {
   CARD_URL_LIMIT,
   storedBlurhash,
@@ -508,6 +509,13 @@ export function parseRemoteStatus(
   if (uri === null) {
     return null;
   }
+  // `@status_parser.sensitive || false` assigned to Mastodon's boolean column (create.rb:115,
+  // process_status_update_service.rb:184): absent, null and false are false; "" casts to nil, which the column's NOT
+  // NULL refuses, so that a Create stores nothing and an Update leaves the status.
+  const sensitive = railsBoolean(object.sensitive ?? false);
+  if (sensitive === null) {
+    return null;
+  }
   const href = urlOf(object.url, "text/html");
   const url = href !== null && withinIdentityBound(href, STATUS_URI_LIMIT) ? href : null;
   const summary = languageString(object, "summary");
@@ -544,7 +552,7 @@ export function parseRemoteStatus(
     spoilerText: converted
       ? ""
       : cutJsonString(cutCodeUnits(storedText(summary ?? ""), MAX_SPOILER_LENGTH), SPOILER_BYTES),
-    sensitive: object.sensitive === true,
+    sensitive,
     language: languageOf(object),
     published: timeOf(object.published),
     updated: timeOf(object.updated),

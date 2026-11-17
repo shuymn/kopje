@@ -354,6 +354,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- A remote status's `sensitive` is read as Mastodon casts it to its boolean column, so any value but `false`, `0`, null
+  and Rails' false strings (`"0"`, `"f"`, `"F"`, `"false"`, `"FALSE"`, `"off"`, `"OFF"`) marks it, where only `true`
+  did (`"true"`, `1` and `[true]` now mark it), and an empty string refuses it, as Mastodon's `NOT NULL` column does: a
+  `Create` stores nothing and an `Update` leaves the status (#1730). An LD-signed status whose context types
+  `sensitive` `@id` and gives it `0` is no longer marked. A `0.0` is read as `0`
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Reading inbound activities"). Statuses already stored
+  keep their mark until their next update. No Store migration and no `wrangler.jsonc` change.
 - The cutover stores a remote account's domain without the port or trailing dots of its actor id's host, as Kopje
   stores one, and `verify-conversion` compares the domain. A Store converted before keeps such domains until a refresh
   confirms each account; the query in [docs/cutover.md](docs/cutover.md) (Verification) lists them (#1725). A remote
