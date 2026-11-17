@@ -55,6 +55,7 @@ import {
   type ViewerContext,
   type FeatureApproval,
   featureApprovalReads,
+  featurePolicyKeys,
 } from "./audience";
 import {
   type Credential,
@@ -146,8 +147,8 @@ export type Account = {
   suspended?: true;
   // Who may feature the account in a collection (REST::AccountSerializer#feature_approval): the policy's halves as
   // keys, from the row as Mastodon reads it also while unavailable (a local account: ["public"], or ["followers"] while
-  // locked, when discoverable, else []; manual []; a remote one [] until Kopje stores its policy), and the answer to
-  // the viewer (featureApprovalSql).
+  // locked, when discoverable, else []; manual []; a remote one each half's keys of its stored policy, in Mastodon's
+  // order, audience.ts featurePolicyKeys), and the answer to the viewer (featureApprovalSql).
   feature_approval: { automatic: string[]; manual: string[]; current_user: FeatureApproval };
   // Present, true, only while the account's handle is invalidated (shownHandle).
   invalid_handle?: true;
@@ -241,6 +242,9 @@ export type AccountRow = {
   show_featured: number;
   show_media: number;
   show_media_replies: number;
+  // A remote account's stored canFeature (accounts.feature_policy, 0114_feature_policies' trigger bounds it); 0 for a
+  // local account.
+  feature_policy: number;
   followers_count: number;
   following_count: number;
   statuses_count: number;
@@ -704,8 +708,13 @@ function presentIdentity(
       : {}),
     ...(suspended ? { suspended: true as const } : {}),
     feature_approval: {
-      automatic: row.domain === null && row.discoverable === 1 ? [row.locked === 1 ? "followers" : "public"] : [],
-      manual: [],
+      automatic:
+        row.domain !== null
+          ? featurePolicyKeys(row.feature_policy >>> 16)
+          : row.discoverable === 1
+            ? [row.locked === 1 ? "followers" : "public"]
+            : [],
+      manual: row.domain !== null ? featurePolicyKeys(row.feature_policy & 0xffff) : [],
       current_user: approvals.get(row.id) ?? "denied",
     },
     ...(handle.invalid ? { invalid_handle: true as const } : {}),

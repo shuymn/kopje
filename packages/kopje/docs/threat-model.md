@@ -3481,6 +3481,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   so a write never fails on it, and the reads project it as an integer; it is never presented
   (`test/migrations.test.ts` ("0073_actor_document_revision"), `test/dump-import.test.ts` ("round-trips
   document_revision")).
+  _Enforced (main)_ for feature policies: `accounts.feature_policy` holds an integer from 0 to 2^32 − 1, and 0 on a
+  local row; the triggers `accounts_feature_policy_insert` and `accounts_feature_policy_update` of migration
+  `0114_feature_policies` refuse any other value, imports included (`featurePolicyPastBoundSql` in
+  `src/platform/stored-bounds.ts`). The only writer (`storeActor` in `src/domain/remote-actors.ts`) stores a remote
+  row's bitmap of at most 21 bits (`remoteFeaturePolicy`), so a write never fails on it, and the presenter reads every
+  value of the bound as flags and never throws (`test/migrations.test.ts` ("0114_feature_policies"),
+  `test/dump-import.test.ts` ("round-trips descriptions and settings (0097), and refuses one past its bound on import"),
+  `test/feature-approval.test.ts` ("reads canFeature's halves as Mastodon's InteractionPolicyParser does")).
   _Enforced (main)_ for static images: `accounts.avatar_static_url` and `header_static_url` hold NULL or text of at
   most 512 bytes without NUL, on a local row whose image is set; the triggers `accounts_static_images_insert` and
   `accounts_static_images_update` of migration `0061_account_static_images` refuse any other value, imports included,
@@ -3628,7 +3636,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   through `MOVED_ACCOUNT_COLUMNS` (`src/domain/account-columns.ts`): every text cut in SQL by its raw bytes and in the
   presenter by its decoded limit (the display name at 100 code points), URLs and actor id within 512 bytes, no note,
   fields or image descriptions, and the emojis its display name references within 2,048 bytes of JSON; one such row
-  reads at most 12,456 bytes from SQLite (25,632 of heap, its cached emoji included) and presents at most 11,340 bytes
+  reads at most 12,464 bytes from SQLite (25,664 of heap, its cached emoji included) and presents at most 11,340 bytes
   of JSON, a target past every profile bound included
   (`test/status-bounds.test.ts` ("the moved-to account"), `test/account-moved.test.ts`). The chunk's targets are read in
   one query, each account presented with its target only when admission reaches it. One account is then at most the
@@ -4835,7 +4843,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   measure of the 254 KiB past which it is skipped and logged with no string made (254 KiB keeps the largest frame and
   its terminating byte within 256 KiB). A unit within it is encoded once and
   sent one stream's envelope at a time, so a unit's isolate peak is its rows, its presented object and four frames of
-  the largest at most, 46,841,416.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
+  the largest at most, 46,841,856.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
   whole payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit:
   a turn presents at most 18,248,244 bytes, 4 MiB less 254 KiB plus 2S + 2 for the unit that crosses it (encoding the
   JSON again at most doubles it), S = 7,157,017 being the most JSON a streamed subject presents, the quote
@@ -5328,18 +5336,18 @@ logs (5.77 MB escaped, 4.66 MB raw, the fill of the largest SQLite read) are mea
 
 | Shape                                                            | Most SQLite bytes | Most JSON bytes | Conservative JSON | Rows read | Nodes | Share of 8 MiB |
 | ---------------------------------------------------------------- | ----------------- | --------------- | ----------------- | --------- | ----- | -------------- |
-| Account occurrence, with the account it moved to                 | 124,491           | 142,608         | 150,428           | 1         | 216   | 1.8%           |
-| Moved-to account (nested), derived from its caps                 | 12,456            |                 | 11,340            | 1         |       | 0.1%           |
-| Status                                                           | 4,454,897         | 2,699,703       | 2,706,431         | 1,492     | 2,735 | 32.3%          |
-| Quote (the status and its quoted status)                         | 6,831,182         | 5,389,759       | 5,402,972         | 1,931     | 5,452 | 64.4%          |
-| Boost of a quote                                                 | 7,127,475         | 5,800,871       | 5,820,048         | 1,994     | 6,535 | 69.4%          |
-| Conversation: 12 participants presented, its last status a quote | 8,530,165         | 7,101,024       | 7,157,017         | 2,030     | 8,035 | 85.3%          |
-| Notification group: 8 sample accounts, its status a quote        | 7,906,448         | 6,531,047       | 6,572,780         | 2,014     | 7,192 | 78.4%          |
-| Report: its first status a quote past the 2 MiB allowance        | 7,216,692         | 5,994,590       | 6,015,173         | 1,957     | 6,485 | 71.7%          |
-| An admin.report notification of that report                      | 2,374,193         | 411,542         | 444,352           | 1,074     | 596   | 5.3%           |
-| A moderation_warning notification, its local account at bounds   | 134,426           | 294,570         | 364,965           | 8         | 694   | 4.4%           |
-| Its notification group                                           | 134,426           | 294,759         | 365,154           | 8         | 701   | 4.4%           |
-| A filtered favourite of the quote, as include_filtered lists it  | 6,966,503         | 5,532,493       | 5,549,271         | 1,958     | 5,672 | 66.2%          |
+| Account occurrence, with the account it moved to                 | 124,499           | 142,608         | 150,428           | 1         | 216   | 1.8%           |
+| Moved-to account (nested), derived from its caps                 | 12,464            |                 | 11,340            | 1         |       | 0.1%           |
+| Status                                                           | 4,454,913         | 2,699,703       | 2,706,431         | 1,492     | 2,735 | 32.3%          |
+| Quote (the status and its quoted status)                         | 6,831,214         | 5,389,759       | 5,402,972         | 1,931     | 5,452 | 64.4%          |
+| Boost of a quote                                                 | 7,127,523         | 5,800,871       | 5,820,048         | 1,994     | 6,535 | 69.4%          |
+| Conversation: 12 participants presented, its last status a quote | 8,530,397         | 7,101,024       | 7,157,017         | 2,030     | 8,035 | 85.3%          |
+| Notification group: 8 sample accounts, its status a quote        | 7,906,608         | 6,531,047       | 6,572,780         | 2,014     | 7,192 | 78.4%          |
+| Report: its first status a quote past the 2 MiB allowance        | 7,216,764         | 5,994,590       | 6,015,173         | 1,957     | 6,485 | 71.7%          |
+| An admin.report notification of that report                      | 2,374,225         | 411,542         | 444,352           | 1,074     | 596   | 5.3%           |
+| A moderation_warning notification, its local account at bounds   | 134,434           | 294,570         | 364,965           | 8         | 694   | 4.4%           |
+| Its notification group                                           | 134,434           | 294,759         | 365,154           | 8         | 701   | 4.4%           |
+| A filtered favourite of the quote, as include_filtered lists it  | 6,966,551         | 5,532,493       | 5,549,271         | 1,958     | 5,672 | 66.2%          |
 | ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,700,089         | 4,245,597       |                   | 1,338     | 3,172 | 50.6%          |
 | Its Create (the Note and its addressing again)                   |                   | 6,301,685       |                   |           |       | 75.1%          |
 | Profile, derived from its caps                                   |                   | 326,185         | 372,038           |           |       | 4.4%           |
@@ -5621,7 +5629,7 @@ not read), each account row's static images count at their stored bound (1,056 b
 hold), each status row's app name and website at their raw bounds (4,544 bytes of heap), each attachment row's blurhash
 at 140 bytes, whether it is remote at 32 and its cached file and icon (two slots at the packed cap, read with the row:
 `mediaCacheSql`; the raw fill caches both of every remote attachment), each presented attachment's four URLs at 4,098
-JSON bytes and its blurhash at 56, each moved-to account's row at its 25,632-byte heap cap and its JSON at 11,340 bytes,
+JSON bytes and its blurhash at 56, each moved-to account's row at its 25,664-byte heap cap and its JSON at 11,340 bytes,
 and its emojis' presentation holds one entry past those it admits at a time (18,060 bytes at three times its literals,
 decoded strings and the larger of its entity and an href normalization makes before rejecting it: `referencedEmojis` in
 `src/domain/custom-emojis.ts`), counted once per answer. Every row term carries 25% headroom; the peak test rejects
@@ -5663,7 +5671,7 @@ within half of the Store isolate's 128 MB, and pins them (`STREAM_UNIT_PEAKS` an
 | Stream unit (Store isolate)                            | Rows, with 25% headroom | Presented objects | Strings and scratch | Peak     |
 | ------------------------------------------------------ | ----------------------- | ----------------- | ------------------- | -------- |
 | Status (`update`, `status.update`: a boost of a quote) | 19.34 MB                | 17.46 MB          | 1.06 MB             | 37.87 MB |
-| Conversation (its last status a quote)                 | 23.02 MB                | 21.47 MB          | 1.06 MB             | 45.56 MB |
+| Conversation (its last status a quote)                 | 23.03 MB                | 21.47 MB          | 1.06 MB             | 45.56 MB |
 | Notification (its status, report and warning together) | 25.89 MB                | 19.89 MB          | 1.06 MB             | 46.84 MB |
 | Announcement                                           | 7.28 MB                 | 0.75 MB           | 1.92 MB             | 9.95 MB  |
 

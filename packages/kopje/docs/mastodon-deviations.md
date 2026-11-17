@@ -814,9 +814,8 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   allowed", where Mastodon's message is a missing-translation text (it has no English text for that error). Accepted,
   2026-11-16.
 - Only local accounts can be featured in a local collection yet: adding a remote account answers 403, as one that
-  refuses, and its `feature_approval` is `[]`, `[]` and `missing`, Mastodon's answer for a remote account whose
-  `canFeature` it has not read. Clients offer no add action for `current_user: missing` (Phanpy hides it), so a remote
-  account looks like one that cannot be featured. Tracked by #1589.
+  refuses, though its `feature_approval` presents the `canFeature` its actor document states, as Mastodon's does, so
+  a client may offer to add it. Tracked by #1589.
 - A local account is not featured in a remote collection yet: Kopje refuses the `FeatureRequest` a Mastodon owner sends
   (it carries no `actor`) and answers none, so that owner's server keeps the item pending, which only the owner sees.
   The account's `GET /api/v1/accounts/:id/in_collections` lists no remote collection, it gets no `added_to_collection`

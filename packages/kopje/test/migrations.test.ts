@@ -60,6 +60,7 @@ import {
   BLURHASH_BYTES,
   CONTACT_USERNAME_BYTES,
   DOCUMENT_REVISION_MAX,
+  FEATURE_POLICY_MAX,
   EMOJI_CATEGORY_BYTES,
   VERIFIED_LINKS_BYTES,
   UNVERIFIED_LINKS_BYTES,
@@ -422,9 +423,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(90);
+      expect(STORED_TRIGGERS.size).toBe(92);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        90 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        92 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -15200,6 +15201,91 @@ describe("0113_featured_collection_syncs", () => {
       sql.exec("DELETE FROM accounts WHERE id = ?", ACCOUNT);
       expect(sql.exec("SELECT count(*) AS n FROM collection_check_quotas").one()).toEqual({ n: 0 });
       expect(sql.exec("SELECT count(*) AS n FROM collection_syncs").one()).toEqual({ n: 0 });
+    });
+  });
+});
+
+// 4-T8: a remote account's stored canFeature (#1589's D23), 0 on every local account.
+describe("0114_feature_policies", () => {
+  const NAME = "0114_feature_policies";
+  const at = NAMES.indexOf(NAME);
+  const REMOTE = "100000000000000001";
+  const LOCAL = "100000000000000002";
+  const REFUSED = /accounts: feature_policy past its stored bound/;
+
+  it("follows 0113 and is declared foreignKeys: 'unchanged'", () => {
+    expect(NAMES[at - 1]).toBe("0113_featured_collection_syncs");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    expect(FEATURE_POLICY_MAX).toBe(2 ** 32 - 1);
+  });
+
+  it("reads 0 on the rows a pre-0114 Store holds, then bounds the policy on insert and update", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec(
+        `INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://remote.test/users/a', 'a', 'remote.test'),
+					(?2, 'https://kopje.test/ap/users/b', 'b', NULL)`,
+        REMOTE,
+        LOCAL,
+      );
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      expect(
+        sql.exec("SELECT id, feature_policy AS p, typeof(feature_policy) AS t FROM accounts ORDER BY id").toArray(),
+      ).toEqual([
+        { id: REMOTE, p: 0, t: "integer" },
+        { id: LOCAL, p: 0, t: "integer" },
+      ]);
+      const update = (value: SqlStorageValue, id = REMOTE) =>
+        sql.exec("UPDATE accounts SET feature_policy = ? WHERE id = ?", value, id);
+      let n = 3;
+      const insert = (value: SqlStorageValue, domain: string | null = "remote.test") =>
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username, domain, feature_policy) VALUES (?1, ?2, 'c' || ?3, ?4, ?5)",
+          `1000000000000000${10 + n}`,
+          `https://remote.test/users/c${n}`,
+          n++,
+          domain,
+          value,
+        );
+      const last = () => `1000000000000000${10 + n - 1}`;
+      // The extrema, Mastodon's widest bitmap (every flag in both halves), and what INTEGER affinity stores as an
+      // integer: numeric text and an integral REAL.
+      for (const [value, stored] of [
+        [0, 0],
+        [0x1f001f, 0x1f001f],
+        [FEATURE_POLICY_MAX, FEATURE_POLICY_MAX],
+        ["7", 7],
+        [8.0, 8],
+      ] as const) {
+        update(value);
+        expect(sql.exec("SELECT feature_policy AS p FROM accounts WHERE id = ?", REMOTE).one().p).toBe(stored);
+        insert(value);
+        expect(
+          sql.exec("SELECT feature_policy AS p, typeof(feature_policy) AS t FROM accounts WHERE id = ?", last()).one(),
+        ).toEqual({ p: stored, t: "integer" });
+      }
+      // In order: a text, a REAL that is not integral, a BLOB, NULL, below 0 and past 32 bits.
+      for (const [name, value] of [
+        ["a text", "x"],
+        ["a REAL", 1.5],
+        ["a BLOB", new Uint8Array([55]).buffer],
+        ["NULL", null],
+        ["below 0", -1],
+        ["past 32 bits", 2 ** 32],
+      ] as [string, SqlStorageValue][]) {
+        expect(() => update(value), name).toThrow(REFUSED);
+        expect(() => insert(value), name).toThrow(REFUSED);
+      }
+      expect(sql.exec("SELECT feature_policy AS p FROM accounts WHERE id = ?", REMOTE).one().p).toBe(8);
+      // A local account holds 0 only: inserted, updated, or a remote row with a policy made local.
+      expect(() => update(1, LOCAL)).toThrow(REFUSED);
+      expect(() => insert(1, null)).toThrow(REFUSED);
+      insert(0, null);
+      expect(() => sql.exec("UPDATE accounts SET domain = NULL WHERE id = ?", REMOTE)).toThrow(REFUSED);
+      expect(sql.exec("SELECT count(*) AS n FROM accounts WHERE domain IS NULL AND feature_policy <> 0").one().n).toBe(
+        0,
+      );
     });
   });
 });

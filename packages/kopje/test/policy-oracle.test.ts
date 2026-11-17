@@ -315,6 +315,13 @@ describe("the policy fragments agree with the model of their rules", () => {
   const itemState = (o: number, x: number) => (o + 2 * x) % 4;
   const memberDiscoverable = (x: number) => x % 3 !== 2;
   const memberLocked = (x: number) => x % 2 === 1;
+  // A remote account's stored canFeature (accounts.feature_policy), one of these by its index and the world's number
+  // of follows, so that each meets the follows either way: none, public automatically, followers by hand, following
+  // automatically with an unsupported manual half, an unsupported automatic half alone, itself alone (disabled) in
+  // both, and followers automatically with following by hand. A local account's is 0.
+  const FEATURE_POLICIES = [0, 2 << 16, 4, (8 << 16) | 1, 1 << 16, (16 << 16) | 16, (4 << 16) | 8];
+  const memberPolicy = (world: World) => (x: number) =>
+    FEATURE_POLICIES[(x + world.follows.length) % FEATURE_POLICIES.length]!;
   function withCollections(evaluate: Evaluate): Evaluate {
     return (db, world) => {
       db.run("DELETE FROM collection_items");
@@ -322,9 +329,10 @@ describe("the policy fragments agree with the model of their rules", () => {
       const T = "2026-01-01T00:00:00.000Z";
       world.accounts.forEach((account, o) => {
         db.run(
-          "UPDATE accounts SET discoverable = ?, locked = ? WHERE id = ?",
+          "UPDATE accounts SET discoverable = ?, locked = ?, feature_policy = ? WHERE id = ?",
           memberDiscoverable(o) ? 1 : 0,
           memberLocked(o) ? 1 : 0,
+          account.local ? 0 : memberPolicy(world)(o),
           accountId(o),
         );
         db.run(
@@ -433,7 +441,7 @@ describe("the policy fragments agree with the model of their rules", () => {
       (m) =>
         accounts(m.world).flatMap((owner) =>
           accounts(m.world).flatMap((x) =>
-            m.mayFeature(owner, x, memberDiscoverable, memberLocked)
+            m.mayFeature(owner, x, memberDiscoverable, memberLocked, memberPolicy(m.world))
               ? [`${name(m.world, owner)} ${name(m.world, x)}`]
               : [],
           ),
@@ -455,7 +463,7 @@ describe("the policy fragments agree with the model of their rules", () => {
         viewers(m.world).flatMap((viewer) =>
           accounts(m.world).map(
             (x) =>
-              `${name(m.world, viewer)} ${name(m.world, x)} ${m.featureApproval(x, viewer, memberDiscoverable, memberLocked)}`,
+              `${name(m.world, viewer)} ${name(m.world, x)} ${m.featureApproval(x, viewer, memberDiscoverable, memberLocked, memberPolicy(m.world))}`,
           ),
         ),
     ));

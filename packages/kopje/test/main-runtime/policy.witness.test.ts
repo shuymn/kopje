@@ -51,15 +51,17 @@ function windowResult(main: string, mine: string): NonNullable<Baseline["result"
   };
 }
 
-// The columns added to the account read since main's base (migration 0097_profile_descriptions), which main's
-// statements cannot read, with their defaults: those of them the rewrite reads and main's text does not, and the
-// comparison of a pair's rows without them, so every row and every other value is still main's.
+// The columns added to the account read since main's base (migrations 0097_profile_descriptions and
+// 0114_feature_policies), which main's statements cannot read, with their defaults: those of them the rewrite reads and
+// main's text does not, and the comparison of a pair's rows without them, so every row and every other value is still
+// main's.
 const ADDED_DEFAULTS = {
   avatar_description: "",
   header_description: "",
   show_featured: 1,
   show_media: 1,
   show_media_replies: 1,
+  feature_policy: 0,
 } as const;
 const ADDED_COLUMNS = Object.keys(ADDED_DEFAULTS);
 const reads = (text: string, column: string) => new RegExp(`\\bAS ${column}(?![A-Za-z0-9_])`).test(text);
@@ -80,7 +82,7 @@ function withoutAdded(columns: readonly string[]): NonNullable<Baseline["result"
 // (#1589 D16, FEATURE_APPROVAL_COLUMNS twice), FEATURE_ROW_BYTES. R's rows as main's statement counts them: each
 // item's bytes less ADDED_ROW_BYTES for each of those account rows and, for a viewer, FEATURE_ROW_BYTES for each of
 // those status rows, counted in the world (itemRows), with every other value, the items and their order still main's.
-const ADDED_ROW_BYTES = Object.values(ADDED_DEFAULTS).reduce(
+const ADDED_ROW_BYTES = Object.values(ADDED_DEFAULTS).reduce<number>(
   (sum, value) => sum + VALUE_BYTES + 2 * new TextEncoder().encode(String(value)).length,
   0,
 );

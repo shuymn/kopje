@@ -568,6 +568,14 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
     count: 1,
     reason: "a number constant (the longest stored inbox the clear on receipt reads), naming no column",
   },
+  'src/domain/remote-actors.ts interpolation collectionSql("raw", "followers")': {
+    count: 1,
+    reason: COLLECTION,
+  },
+  'src/domain/remote-actors.ts interpolation collectionSql("raw", "following")': {
+    count: 1,
+    reason: COLLECTION,
+  },
   'src/domain/remote-status-reads.ts interpolation collectionSql("raw", "followers")': {
     count: 1,
     reason: COLLECTION,

@@ -377,9 +377,10 @@ function quoteOf(object: Json, embed: boolean): RemoteQuoteInput | null {
   };
 }
 
-// Entries of each half of a canQuote policy read at most (RES-1). A policy names a few collections; a longer one only
-// adds unsupported_policy, which an entry past the bound would add anyway unless it named a collection twice.
-const MAX_QUOTE_POLICY_ENTRIES = 32;
+// Entries of each half of a canQuote policy read at most (RES-1), and of an actor's canFeature (remote-actor.ts
+// featurePolicyOf). A policy names a few collections; a longer one only adds unsupported_policy, which an entry past the
+// bound would add anyway unless it named a collection twice.
+export const MAX_QUOTE_POLICY_ENTRIES = 32;
 
 // StatusParser#quote_policy's input: interactionPolicy.canQuote's automaticApproval and manualApproval, as the actor
 // URIs (or collections) they list: each string as listed, whatever its length, as Mastodon compares it (a "" matches a

@@ -10,6 +10,7 @@ import {
   documentRevisionPastBoundSql,
   EMOJI_COLUMNS,
   emojisPastBoundSql,
+  featurePolicyPastBoundSql,
   filterTextUnitsPastBoundSql,
   indexablePastBoundSql,
   INSTANCE_SETTING_BOUNDS,
@@ -459,6 +460,14 @@ END;`,
   ),
   // 0112_delivery_hosts: the hosts deliveries failed to, for every writer and an import (RES-4).
   capTrigger("delivery_hosts", "host", MAX_DELIVERY_HOSTS),
+  // 0114_feature_policies: a remote account's stored canFeature, 0 on a local account.
+  ...boundTriggers(
+    "accounts_feature_policy",
+    "accounts",
+    "feature_policy, domain",
+    featurePolicyPastBoundSql("NEW"),
+    "accounts: feature_policy past its stored bound",
+  ),
 ];
 
 // Each registered trigger's statement by its name.

@@ -825,6 +825,8 @@ describe("collections: R45", () => {
     const hiding = await seedAccount(h.store, { username: "hiding" });
     const remote = await remoteAccount(h.store, "far");
     await discoverable(h, locked, remote);
+    // A remote account whose canFeature approves the public automatically: refused while Kopje sends no FeatureRequest.
+    await sql(h.store, "UPDATE accounts SET feature_policy = ? WHERE id = ?", 2 << 16, remote);
     for (const id of [locked, hiding, remote]) {
       await refused(id);
     }

@@ -2863,3 +2863,20 @@ export function laneHostOf(lane: unknown): string | null {
 export function drainCursorSql(host: string, lane: string): string {
   return `(${lane} = '' OR coalesce(${laneHostSql(lane)} = ${host}, 0))`;
 }
+
+// ---- Feature policies: migration 0114_feature_policies (domain/remote-actors.ts storeActor, #1589's D23)
+
+// accounts.feature_policy: a remote account's FEP-7aa9 canFeature as Mastodon stores it (Account#feature_approval_policy,
+// InteractionPolicy's bitmap: the automatic half in the high 16 bits), an integer from 0 to FEATURE_POLICY_MAX; 0 for
+// every local account (whose policy is read from its own settings) and for a remote one that states none.
+export const FEATURE_POLICY_MAX = 0xffff_ffff;
+
+// True when `row` holds a feature policy past its stored bound: not an integer (INTEGER affinity has already stored
+// numeric text and an integral REAL as one), outside 0..FEATURE_POLICY_MAX, or not 0 on a local account.
+export function featurePolicyPastBoundSql(row: string): string {
+  const column = `${row}.feature_policy`;
+  return `CASE WHEN typeof(${column}) <> 'integer' THEN 1
+	WHEN ${column} NOT BETWEEN 0 AND ${FEATURE_POLICY_MAX} THEN 1
+	WHEN ${column} <> 0 AND ${row}.domain IS NULL THEN 1
+	ELSE 0 END`;
+}
