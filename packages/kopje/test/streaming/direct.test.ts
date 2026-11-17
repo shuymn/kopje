@@ -1,5 +1,5 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 
 import { Db } from "../../src/db/sql";
 import { addToConversation } from "../../src/domain/conversations";
@@ -13,7 +13,16 @@ import { BUILD } from "../helpers";
 import { scopedToken } from "../read-helpers";
 import { byText } from "../sort";
 import { act, community, follow, getJson, post, remoteAccount, seedStatus, type User } from "../status-helpers";
-import { connect, drained, echo, type Inbox, type StreamMessage, subscribed } from "./stream-helpers";
+import {
+  connect,
+  drained,
+  echo,
+  type Inbox,
+  keepWriting,
+  liftInstanceCap,
+  type StreamMessage,
+  subscribed,
+} from "./stream-helpers";
 
 // The `direct` stream and `notifications_merged`. `conversation` is sent when a
 // conversation of the viewer changes, as the conversation list presents it (R33: the row of the viewer, R25), by the
@@ -90,7 +99,7 @@ describe("conversation on direct", () => {
     const { alice, bob } = h.users;
     await follow(h, alice, bob.id);
     const inbox = await subscribed(h, alice.token, "direct");
-    // A conversation whose last status presents about 0.97 MB, past the 512 KiB of one message, and a small one.
+    // A conversation whose last status presents about 0.97 MB, past the 254 KiB of one message, and a small one.
     const author = await remoteAccount(h.store, "big");
     const big = await bigStatus(h, author, NOW, { visibility: "direct", mentions: [{ accountId: alice.id }] });
     await runInDurableObject(h.store, (_instance, state) =>
@@ -233,9 +242,14 @@ const sentStatus = (status: string) => (m: StreamMessage) =>
   m.event === "conversation" && (JSON.parse(m.payload!) as Conversation).last_status?.id === status;
 
 describe("conversations at the caps", () => {
+  // The busy owner's changes while the others are served (3 in a passing run): a bound, so a failing case stops
+  // writing (keepWriting).
+  const STEADY_WRITES = 100;
+
   // 256 owners, each with a `direct` socket (the instance's cap): a turn's token sweep takes 256 checks of its 512, so
   // one turn sends only some of the owners' conversations; the journal's position carries the rest to the next.
   it("reaches the last of 256 owners, then asks for no further turn", async () => {
+    onTestFinished(liftInstanceCap()); // rounds at 256 sockets, not the output cap (RES-6)
     const h = await community(["alice"]);
     const ids = await owners(h, 256);
     const inboxes = await directSockets(h, ids);
@@ -255,6 +269,7 @@ describe("conversations at the caps", () => {
   }, 120_000);
 
   it("sends a change written while a continuation is pending, for an owner the fan-out already passed", async () => {
+    onTestFinished(liftInstanceCap()); // rounds at 256 sockets, not the output cap (RES-6)
     const h = await community(["alice"]);
     const ids = await owners(h, 256);
     const inboxes = await directSockets(h, ids);
@@ -279,24 +294,32 @@ describe("conversations at the caps", () => {
   }, 120_000);
 
   it("serves 240 owners in turn while one owner with 16 sockets keeps changing", async () => {
+    onTestFinished(liftInstanceCap()); // rounds at 256 sockets, not the output cap (RES-6)
     const h = await community(["alice"]);
     const [busy, ...others] = await owners(h, 241);
     const busySockets = await directSockets(h, [busy!], 16);
     const inboxes = await directSockets(h, others);
-    let writing = true;
-    const steady = (async () => {
-      while (writing) {
+    const writing = keepWriting(
+      async () => {
         await changed(h, [busy!]);
         await h.store.streamTick(BUILD);
+      },
+      STEADY_WRITES,
+      [...busySockets, ...inboxes],
+    );
+    let writes = 0;
+    try {
+      const statuses = await changed(h, others);
+      await h.store.streamTick(BUILD);
+      for (const [i, inbox] of inboxes.entries()) {
+        await inbox.next(sentStatus(statuses[i]!));
       }
-    })();
-    const statuses = await changed(h, others);
-    await h.store.streamTick(BUILD);
-    for (const [i, inbox] of inboxes.entries()) {
-      await inbox.next(sentStatus(statuses[i]!));
+    } finally {
+      writes = await writing.stop();
     }
-    writing = false;
-    await steady;
+    // The busy owner was still changing when the last of the others was served.
+    expect(writes).toBeLessThan(STEADY_WRITES);
+    expect(busySockets.filter((inbox) => inbox.isClosed)).toEqual([]);
     await drained(h);
     // Each of the busy owner's sockets was sent its changes too, each at most once.
     for (const inbox of busySockets) {
@@ -311,6 +334,7 @@ describe("conversations at the caps", () => {
   // busy owner writes 20 more changes: they go to its next row, behind the other owners', and the event in progress
   // ends at the ceiling fixed when the fan-out entered it.
   it("ends an owner's event at its ceiling while the owner keeps changing, so the owners after it are served", async () => {
+    onTestFinished(liftInstanceCap()); // rounds at 256 sockets, not the output cap (RES-6)
     const h = await community(["alice"]);
     const ids = await owners(h, 10);
     const [busy, ...others] = ids;
@@ -367,6 +391,7 @@ describe("conversations at the caps", () => {
   }, 120_000);
 
   it("resumes after a failed continuation and hibernation, from the cron, past the owners already sent", async () => {
+    onTestFinished(liftInstanceCap()); // rounds at 256 sockets, not the output cap (RES-6)
     const h = await community(["alice"]);
     const ids = await owners(h, 256);
     const inboxes = await directSockets(h, ids);
@@ -530,8 +555,9 @@ describe("notifications_merged", () => {
     await drained(h, notified, statusesOnly);
     expect(merged(notified)).toEqual([{ stream: ["user:notification"], event: "notifications_merged", payload: "1" }]);
     expect(merged(statusesOnly)).toEqual([]);
-    // The dismiss job's completion sends nothing more.
-    while (await round(h)) {
+    // The dismiss job's completion sends nothing more (its rounds bounded, so a failing case ends).
+    for (let rounds = 1; await round(h); rounds++) {
+      expect(rounds).toBeLessThan(10);
       await drained(h);
     }
     await drained(h, notified);

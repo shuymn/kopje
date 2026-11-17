@@ -3588,12 +3588,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/domain/status-presenter.ts`, `src/domain/status-rows.ts`; `test/answer-budgets.test.ts`,
   `test/status-rows.test.ts`, `test/notification-budgets.test.ts`, `test/notification-group-budgets.test.ts`,
   `test/conversation-budgets.test.ts`, `test/account-page-budgets.test.ts`, `test/activitypub-budgets.test.ts`,
-  `test/admin-reports.test.ts`). Streaming events stay one unit each, and an event over 512 KiB is skipped whole,
+  `test/admin-reports.test.ts`). Streaming events stay one unit each, and an event over 254 KiB is skipped whole,
   measured from its presented object before any of it is encoded (RES-6). Its
   payload counts the media descriptions with the rest of the event, formatted text expanded as it is encoded (a link
-  written twice, profile fields, poll choices), so a local post and its quote reach it with descriptions at their
-  length beside long links, or with descriptions of control characters such as U+0001, as statuses near their stored
-  bounds do (remote ones, or local content filled by mentions). The skip is an accepted departure
+  written twice, profile fields, poll choices), so a local post and its quote reach it with descriptions of emoji at
+  their length, a post or its boost beside long text and profiles, or with descriptions of control characters such as
+  U+0001, as statuses near their stored bounds do (remote ones, or local content filled by mentions); so do a
+  moderation warning whose account's fields and text are at their limits and an announcement at its derived maximum.
+  The skip is an accepted departure
   (`docs/mastodon-deviations.md`, "Streaming."; `test/streaming/public.test.ts`). The raw presenters (`present` and
   `hydrate` in status-presenter.ts, `presentAccountsById` and `presentAccount` in accounts.ts) are not exported, so the
   compiler refuses direct use outside their module; the exported paths present one unit or admit within a budget.
@@ -4717,24 +4719,65 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   alternating reply and quote chain longer than a walk", "claims context walks first, then create walks in the order
   they were queued", "claims create walks in the order the Store recorded them, whatever the Worker's clock or its own
   says", "claims at once the walk of a Create whose Worker clock is ahead of the Store's, as its answer asks")).
-  Streaming (VIS-26): _Enforced (main):_ at most 16 sockets per account (429) and 256 per
-  instance (503); 16 subscriptions per socket, 16 stream keys per account and a socket's attachment at most 12 KiB (`Too
-  many subscriptions`, 429); incoming messages text only (1003), at most 4 KiB and 120 a minute (1008). The fan-out runs
+  Streaming (VIS-26): _Enforced (main):_ at most 16 sockets per account (429) and 256 per instance (503), the 256
+  reached only if the output allowance below holds them (212 fresh sockets at its derived figure, fewer as output is
+  held); 16
+  subscriptions per socket, 16 stream keys per account and a socket's attachment at most 12 KiB of JSON with its clone
+  within the runtime's 16 KiB at any output charge (`Too many subscriptions`, 429); incoming messages text only (1003),
+  at most 4 KiB and 120 a minute (1008). The fan-out runs
   in turns, one at a time, each an incoming request to the Store's own stub, which restores the CPU allowance (60 s,
   Deployment assumptions): a turn
   spends at most 512 checks, 64 presentations and 4,096 sends, runs a unit only while what is left covers a unit's
   worst case (35 checks: 16 tokens, home, the mention, one for each of 16 keys (lists and feeds) and the feeds' mention
-  filter; one presentation, 512 KiB of payload, 256 sends) and leaves the rest to the next turn. A payload is counted
+  filter; one presentation, 254 KiB of payload, 256 sends) and leaves the rest to the next turn. A payload is counted
   in UTF-8 bytes as encoded, measured from the presented object before anything is encoded (`encodedTwiceBytes`): the
-  measure of the 512 KiB past which it is skipped and logged with no string made. A unit within it is encoded once and
+  measure of the 254 KiB past which it is skipped and logged with no string made (254 KiB keeps the largest frame and
+  its terminating byte within 256 KiB). A unit within it is encoded once and
   sent one stream's envelope at a time, so a unit's isolate peak is its rows, its presented object and four frames of
-  the largest at most, 47,898,184.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
+  the largest at most, 46,841,416.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
   whole payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit:
-  a turn presents at most 17,984,052 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
+  a turn presents at most 18,248,244 bytes, 4 MiB less 254 KiB plus 2S + 2 for the unit that crosses it (encoding the
   JSON again at most doubles it), S = 7,157,017 being the most JSON a streamed subject presents, the quote
   conversation's (`update` and `status.update` a boost of a quote, `conversation` one whose last status is a quote, as a
   conversation shows no boost as its last status, `notification` its status, report and warning together, an
-  announcement), derived from the maxima table (`test/status-bounds.test.ts`, `test/streaming/split.test.ts`). The
+  announcement), derived from the maxima table (`test/status-bounds.test.ts`, `test/streaming/split.test.ts`). Held
+  output (#1610). Every frame the hub hands a socket (a unit's frames, an error reply, its Close) is charged to the
+  socket from the send until the socket leaves `getWebSockets()`, closing and closed ones included, since only the end
+  of a connection proves its queue drained: the runtime queues a Close behind the pending frames and keeps a closed
+  socket listed until its connection ends. A frame is charged its UTF-8 bytes and a NUL rounded up to a power of two
+  plus 16 bytes (the allocator assumption) and 2,080 bytes for the two promise arenas it keeps alive (the output gate's
+  branch, and the hub of the write it waits on); a socket also its queue's row vector (96 bytes a row) and
+  insertion-order index (8 bytes a link) at the capacities KJ grows them to for every frame it was handed, with the
+  previous arrays, and `SOCKET_BYTES` for its attachment at the runtime's 16 KiB, its Close and its objects (an
+  ownership table, with allowances for coroutine frames, wrappers and promises, the WebSocket pipe's send, Close and
+  pumps included). A unit that would take a socket past `STREAM_OUTPUT.socketBytes` (5 MiB), or the listed sockets
+  together past `instanceBytes` (16 MiB), closes that socket
+  with 1013 before any of the unit is sent to it (an error reply too, unsent), and an upgrade the instance cannot hold
+  answers 503: a fresh socket is charged 79,104 bytes, so `instanceBytes` holds 212 fresh sockets, fewer as output is
+  held, and the limit of 256 sockets is reached only if it allows (`test/streaming/output.test.ts`, the 213th fresh
+  socket). `instanceBytes` is the largest multiple of 1 MiB within 128,000,000 less 1.25 times the Store isolate's
+  measured idle baseline (the sum of its V8 heap, external and cppgc memory and the native objects its snapshot
+  reports), the largest peak of one request (RES-3) and fixed reservations for the runtime's tables, which keep their
+  largest size after sockets end: the hibernation manager's tag table at the most sockets the charges admit, and the
+  event loop's registry of events in delivery, shared by every manager on the loop and never shrunk, at the most sockets
+  a manager lists (32,768), which a previous release's sockets may reach; so held
+  output, the tables, the baseline and any request fit the isolate together. `socketBytes` is the largest multiple of 1
+  MiB within a third of it, so the instance serves on while two sockets hold their caps, and it takes any unit on a
+  fresh socket (16 frames of `MESSAGE_MAX`, which `payloadBytes` keeps, with its NUL, within 256 KiB). The charges live
+  in each socket's attachment, so they survive hibernation and leave with the socket. So does the hub's close: it
+  marks the attachment with the code (`closed`) before it closes the socket, because the runtime can list a hibernated
+  socket whose client never answered the Close as open again after a wake (seen on a deployed instance), and a marked
+  socket stays closed whatever the runtime reports: closed and logged once, sent nothing, its messages unhandled,
+  counted as closing, and charged until it leaves; a subscription leaves the mark room within the runtime's 16 KiB
+  (`test/streaming/output.test.ts` ("keeps a socket it closed closed when a wake lists it open")). While a listed
+  socket's charge is
+  unknown (a socket of an earlier release, an unreadable attachment), no frame is sent and upgrades answer 503 until it
+  is gone, and its own close (1011) logs `output_closed` with scope `unknown` and its numbers null, its attachment
+  replaced by the mark alone; what such a socket
+  holds is outside the bound while it stays listed, and the tag-table capacity such sockets
+  grew until the runtime discards the object's hibernation manager, which their ending, an eviction that hibernates and
+  a code update do not do; Kopje has no signal of it. `src/stream-output.ts`, `src/stream-hub.ts`;
+  `test/streaming/output.test.ts`, `test-node/stream-output.test.ts`. The
   journal records nothing once it spans 4,096 ids,
   and is pruned behind the position, at
   most 500 rows a call: the finished journal rows first, so the span shrinks at once, then a delete's capture rows, in
@@ -4760,9 +4803,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   on feeds alone; `streamPrune` deletes tombstones after the viewer rows, in the same 500-row calls. A hashtag `tag` is
   at most 256 bytes as sent and normalized (400 `Invalid parameter`). The status and edit triggers also fire for a
   public status that is not a boost while some account listens on a feed, on the same writes as before. Every public
-  status can reach every socket (256 accounts on `public`): it is a unit per account, each within a unit's worst case,
+  status can reach every socket (up to 256 accounts on `public`, as many as the output allowance admits): it is a unit
+  per account, each within a unit's worst case,
   over as many turns as the budget needs, and a turn that resumes an event goes on from the persisted account
-  (`test/streaming/public.test.ts`, 256 sockets on distinct tokens). Every stream event kind must pass
+  (`test/streaming/public.test.ts`, 256 sockets on distinct tokens, the instance's output allowance raised past them, as
+  in the split cases and the conversations at the caps, which test the rounds and not the allowance). Every stream event
+  kind must pass
   `test/streaming/split.test.ts`, which splits one event of the kind (or, for a kind of one unit per event, a batch of
   them) across turns by the budget's own constants and checks that each listener gets it exactly once and the others
   nothing, that it finishes within a bounded number of turns while writes of its kind land between turns, that the
@@ -4773,7 +4819,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   from one home network against a deployed instance (#1211), four silent sockets started at different times each
   closed at 6,010 s of age with a TCP FIN and no close frame (1006 to the client), and a socket the client pinged every
   20 minutes outlived them, to 6,393 s. Kopje sends no server ping; a client reconnects, as Mastodon's clients do, and
-  REST stays the source of truth.
+  REST stays the source of truth. The held-output bound is conditional on premises no runtime contract enforces: the
+  allocator assumption and the ownership table's allowances, derived from workerd's and KJ's source, the idle
+  measurement as a model of the baseline, and the heap model's premises (one request at a time; freed memory reusable).
+  Production's accounting is not open: `bench:held-output` (2026-11-16) found 64 MiB of held output not counted against
+  the JavaScript headroom and the object reset at about 208 MiB held; stopped clients being sent output ended together
+  at 7,147 s, while clients reading slowly or in bursts were not ended in 4 hours and held output for at least 14,397 s.
+  workerd 1.20261113.1 can count each queued frame against the isolate's memory (behind an autogate), which the bound
+  reserves already, and frees a queue's arrays when its pump ends, which the charges overstate. A reading client is
+  closed after its lifetime allowance, and loses edits and deletions sent while it is away
+  ([mastodon-deviations.md](mastodon-deviations.md), "Streaming output").
   A custom emoji upload charges two transformations to the instance's monthly budget (429 past it). Disabled emoji
   versions are kept: their storage, a backup copy to every new destination and two rebuild transformations each after
   a restore are paid indefinitely ([backup.md](backup.md)).
@@ -4930,7 +4985,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   booster checked against the account's follows by key), or past that the account's follows, one key lookup each
   (`test/policy-bounds.test.ts` ("a streamed status reads its item" and "R32: a delete's capture")). A turn reads a
   delete's units eight viewers at a time from the position, each page charged to the turn, never the whole capture.
-  _Gap:_ a status with more than 2,000 boosts costs each listening account its follows (at most 256 accounts, each
+  _Gap:_ a status with more than 2,000 boosts costs each listening account its follows (at most 256 accounts, 212 at the
+  output allowance's derived figure (RES-6), each
   within the follow limit). _Enforced (main):_ a feed's check is the public or the hashtag's
   timeline positioned at the status, read by the status's key (the hashtag's by the status's row of it); the mention
   filter reads the status's mentions by its key, each checked by key; an event's feed listeners are the `public*`
@@ -5215,8 +5271,10 @@ four local fields at their limits, each value a verified 255-character link whos
 (U+0001, or malformed bytes read back as U+FFFD) and 100 status ids. Its conservative JSON counts each of the eight
 fields shown at the most a value presents, 7,822 bytes derived from the value bound (every character twice as a
 six-byte escape, and one link's markup per 9 characters). As a stream payload, which carries no fallback, encoded again
-as a string, it is at most 337,576 bytes measured and 476,798 conservative (the encoding at most doubles a byte), under
-the hub's 512 KiB. A
+as a string, it is at most 337,576 bytes measured and 476,798 conservative (the encoding at most doubles a byte), past
+the hub's 254 KiB: such a warning is skipped on the stream and shown by the notifications list
+(`docs/mastodon-deviations.md`, "Streaming."; `test/status-bounds.test.ts` ("measures the moderation_warning stream
+payload against the hub’s limit")). A
 conversation never shows a boost as its last status: no writer links one (`addToConversation`), and its read shows a
 boost that a restored row names, or that the trigger moves back to through a restored link, as `last_status: null`
 (`conversationStream`; `test/conversations.test.ts` ("presents no boost as a conversation's last status")), so the
@@ -5289,14 +5347,15 @@ username (twice, also in `acct`), a 2,048-byte profile URL escaped to two bytes 
 host (53,761). Emoji: the 12,288-byte presented bound. Reactions: 8 custom emoji of 128-byte shortcodes with two
 512-byte images and a count of `Number.MAX_SAFE_INTEGER` (9,801). Content: the 65,536-byte budget. Keys, id, times and
 flags: 282. One announcement is at most 248,997 bytes (3.0% of 8 MiB), the list at most 3,983,969, a stream payload
-double-encoded at most 497,996, under 512 KiB. The fills in `test/announcement-bounds.test.ts` and
-`test/streaming/announcements.test.ts` exercise escaping, IDNA, NFKC expansion and Store RPC/stream delivery within
-these bounds. The rows the list reads are bounded from per-column maxima (`ANNOUNCEMENT_ROW_CAPS` in
-`src/domain/announcements.ts`, which a RowMeter enforces as they are read): 333,440 bytes for the list and its
-dismissals, held throughout, and 5,493,376 for one presentation's mention, emoji and reaction rows (64, 1,024 and 8
-rows at their widest columns); past the cap an announcement is shown escaped with nothing read for it. With the
-derived answer at three times its JSON and one rendering at a time (the budget, the one segment built past it, at
-most 310,064 bytes, and the fallback), the list's heap is at most about 20.1 MB.
+double-encoded at most 497,996, past the hub's 254 KiB, so an announcement at it is skipped on the stream and listed by
+`GET /api/v1/announcements` (`docs/mastodon-deviations.md`, "Streaming."). The fills in
+`test/announcement-bounds.test.ts` and `test/streaming/announcements.test.ts` exercise escaping, IDNA, NFKC expansion
+and Store RPC/stream delivery within these bounds. The rows the list reads are bounded from per-column maxima
+(`ANNOUNCEMENT_ROW_CAPS` in `src/domain/announcements.ts`, which a RowMeter enforces as they are read): 333,440 bytes
+for the list and its dismissals, held throughout, and 5,493,376 for one presentation's mention, emoji and reaction rows
+(64, 1,024 and 8 rows at their widest columns); past the cap an announcement is shown escaped with nothing read for it.
+With the derived answer at three times its JSON and one rendering at a time (the budget, the one segment built past it,
+at most 310,064 bytes, and the fallback), the list's heap is at most about 20.1 MB.
 
 Mentions without a stored url (the derived fill of `test/presented-maxima.ts`) read and present no more than the escaped
 fill: their url is the actor id, else a url derived from it, each within the stored bound, and '' past it.
@@ -5490,7 +5549,7 @@ the largest timeline item's; a conversation its read's; a notification its statu
 warning's together; an announcement its list's and one presentation's, `ANNOUNCEMENT_ROW_CAPS`), three times its
 conservative JSON (the presented object), and four frames of `MESSAGE_MAX` at two bytes a code unit (the payload encoded
 once and twice, then the twice-encoded payload and one envelope) with its presentation's scratch (a moved-to account's
-emoji, 18,060 bytes; an announcement's rendering). `MESSAGE_MAX` is the largest frame, 525,898 bytes: the payload limit,
+emoji, 18,060 bytes; an announcement's rendering). `MESSAGE_MAX` is the largest frame, 261,706 bytes: the payload limit,
 the envelope's keys (31), the longest event (`"announcement.reaction"`, 23) and the longest stream (`["hashtag:local",
 tag]` with a 256-byte tag escaped at six a byte, 1,556). Imported text of malformed UTF-8 reads and presents within the
 fills (the account, status and attachment witnesses of "Maxima of presented units"), so the figures hold for it.
@@ -5500,10 +5559,15 @@ within half of the Store isolate's 128 MB, and pins them (`STREAM_UNIT_PEAKS` an
 
 | Stream unit (Store isolate)                            | Rows, with 25% headroom | Presented objects | Strings and scratch | Peak     |
 | ------------------------------------------------------ | ----------------------- | ----------------- | ------------------- | -------- |
-| Status (`update`, `status.update`: a boost of a quote) | 19.34 MB                | 17.46 MB          | 2.12 MB             | 38.92 MB |
-| Conversation (its last status a quote)                 | 23.02 MB                | 21.47 MB          | 2.12 MB             | 46.62 MB |
-| Notification (its status, report and warning together) | 25.89 MB                | 19.89 MB          | 2.12 MB             | 47.90 MB |
-| Announcement                                           | 7.28 MB                 | 0.75 MB           | 2.97 MB             | 11.01 MB |
+| Status (`update`, `status.update`: a boost of a quote) | 19.34 MB                | 17.46 MB          | 1.06 MB             | 37.87 MB |
+| Conversation (its last status a quote)                 | 23.02 MB                | 21.47 MB          | 1.06 MB             | 45.56 MB |
+| Notification (its status, report and warning together) | 25.89 MB                | 19.89 MB          | 1.06 MB             | 46.84 MB |
+| Announcement                                           | 7.28 MB                 | 0.75 MB           | 1.92 MB             | 9.95 MB  |
+
+Held stream output (RES-6) is charged within `instanceBytes`, which leaves the measured idle isolate with 25% headroom,
+the largest peak of one request (an answer's, or a turn's with the open sockets' attachments) and the runtime's tag
+table and event registry at their largest (the registry at the most sockets the runtime lists, since it outlives them),
+so the Store isolate's 128 MB holds them together.
 
 ### Data and keys (DATA)
 
@@ -5557,7 +5621,10 @@ within half of the Store isolate's 128 MB, and pins them (`STREAM_UNIT_PEAKS` an
   `src/platform/error-message.ts`, used by `app.onError` (`src/app/app.ts`), the admin API's error handler, the queue
   and spool handlers, the snapshot saver and the Store kernel and admin; `test/log-redaction.test.ts`;
   the log-events lint rule (`packages/kopje/lint/log-events.js`, a syntactic check of every log call's shape and
-  fields). Access failures log only jose's error code, and the CLI never prints secrets (`test/cli.test.ts`). A forward
+  fields). Access failures log only jose's error code, and the CLI never prints secrets (`test/cli.test.ts`).
+  `kopje.stream.output_closed`, `kopje.stream.output_near` and `kopje.stream.output_refused` carry the scope and counts
+  only (frames, charges, caps, listed, closing and unknown sockets), never an account, a token or a stream
+  (`test/streaming/output.test.ts` ("logs the scope and counts only")). A forward
   that is not recorded logs `kopje.inbox.forward_skipped` with its reason and size, and one past its owners' or quotes'
   cap `kopje.inbox.forward_capped` with the caps it passed, and a job bound that is no list of forwards
   `kopje.inbox.forward_bound_invalid` with its size (the intents it names are left staging, as RES-6 says), never

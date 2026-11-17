@@ -1,3 +1,5 @@
+import { STREAM_LIMITS } from "../../src/stream-hub";
+import { STREAM_OUTPUT } from "../../src/stream-output";
 import type { ApiHarness } from "../api-helpers";
 import { BUILD } from "../helpers";
 
@@ -25,13 +27,17 @@ export class Inbox {
     });
   }
 
-  // The next message not yet taken that matches, once it arrives; the ones skipped before it stay to be taken.
+  // The next message not yet taken that matches, once it arrives; the ones skipped before it stay to be taken. Once
+  // the socket has closed with none that matches, it fails: nothing more arrives.
   async next(predicate: (message: StreamMessage) => boolean = () => true): Promise<StreamMessage> {
     for (;;) {
       const index = this.messages.findIndex((message, i) => !this.#taken.has(i) && predicate(message));
       if (index !== -1) {
         this.#taken.add(index);
         return this.messages[index]!;
+      }
+      if (this.#close !== null) {
+        throw new Error(`the socket closed (${this.#close.code}) before the message arrived`);
       }
       await new Promise<void>((resolve) => this.#waiters.push(resolve));
     }
@@ -139,6 +145,43 @@ export async function drained(h: Pick<ApiHarness, "store">, ...inboxes: Inbox[])
     await echo(inbox);
   }
   return result;
+}
+
+// Raises the instance's output cap past every listed socket at its own (the seam), for cases of the fan-out's rounds
+// at socketsPerInstance: at its derived figure the instance admits fewer fresh sockets than that (RES-6). Returns the
+// restore.
+export function liftInstanceCap(): () => void {
+  const { instanceBytes } = STREAM_OUTPUT;
+  STREAM_OUTPUT.instanceBytes = STREAM_LIMITS.socketsPerInstance * STREAM_OUTPUT.socketBytes;
+  return () => {
+    STREAM_OUTPUT.instanceBytes = instanceBytes;
+  };
+}
+
+// Writes while a case waits on its sockets: `write` runs until `stop` is called, `max` times at most, and not again
+// once one of `watched` has closed, so a case whose receive fails (a socket the cap closed) ends within its timeout
+// instead of writing on. `done` resolves to the writes once the writing ends, and `stop` ends it and resolves the same.
+export function keepWriting(
+  write: () => Promise<void>,
+  max: number,
+  watched: readonly Inbox[],
+): { done: Promise<number>; stop: () => Promise<number> } {
+  let writing = true;
+  const done = (async () => {
+    let writes = 0;
+    while (writing && writes < max && !watched.some((inbox) => inbox.isClosed)) {
+      await write();
+      writes++;
+    }
+    return writes;
+  })();
+  return {
+    done,
+    stop: () => {
+      writing = false;
+      return done;
+    },
+  };
 }
 
 // Takes every message left on a socket.

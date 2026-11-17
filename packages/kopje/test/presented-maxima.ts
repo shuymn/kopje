@@ -172,11 +172,11 @@ export const HEAP_PEAKS: Record<"timelines" | "groups" | "reports", Peaks> = {
 // (status-bounds.test.ts "bounds a stream unit's isolate peak by the most a subject presents", RES-6): its rows with
 // 25% headroom, its presented objects, its strings and scratch (four frames of MESSAGE_MAX and the presentation's), and
 // their sum.
-export const MESSAGE_MAX = 525_898;
+export const MESSAGE_MAX = 261_706;
 export type UnitPeak = { rows: number; objects: number; transient: number; peak: number };
 export const STREAM_UNIT_PEAKS: Record<"status" | "conversation" | "notification" | "announcement", UnitPeak> = {
-  status: { rows: 19_340_977.5, objects: 17_460_144, transient: 2_121_652, peak: 38_922_773.5 },
-  conversation: { rows: 23_024_510, objects: 21_471_051, transient: 2_121_652, peak: 46_617_213 },
-  notification: { rows: 25_888_437.5, objects: 19_888_095, transient: 2_121_652, peak: 47_898_184.5 },
-  announcement: { rows: 7_283_520, objects: 746_991, transient: 2_974_810, peak: 11_005_321 },
+  status: { rows: 19_340_977.5, objects: 17_460_144, transient: 1_064_884, peak: 37_866_005.5 },
+  conversation: { rows: 23_024_510, objects: 21_471_051, transient: 1_064_884, peak: 45_560_445 },
+  notification: { rows: 25_888_437.5, objects: 19_888_095, transient: 1_064_884, peak: 46_841_416.5 },
+  announcement: { rows: 7_283_520, objects: 746_991, transient: 1_918_042, peak: 9_948_553 },
 };

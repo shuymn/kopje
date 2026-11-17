@@ -1,5 +1,5 @@
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { Db } from "../../src/db/sql";
 import {
@@ -307,14 +307,45 @@ describe("announcement events at their bounds (RES-3)", () => {
       `<p>#${"\uFDFA".repeat(3333)}</p>`,
       `<p>${"#a ".repeat(599)}#a ${"&quot;".repeat(8200)}</p>`,
     ]);
-    // Each within the entity's derived maximum, and its double-encoded payload within the hub's limit.
+    // Each within the entity's derived maximum. The derived maximum's double-encoded payload passes the hub's limit, so
+    // an announcement at it is skipped and logged and REST lists it ("skips an announcement past the payload limit").
     const derived = derivedAnnouncementMaxima();
     for (const { bytes } of sent) {
       expect(bytes).toBeLessThanOrEqual(derived.entity);
     }
-    expect(derived.stream).toBeLessThan(STREAM_LIMITS.payloadBytes);
+    expect(derived.stream).toBeGreaterThan(STREAM_LIMITS.payloadBytes);
     expect((JSON.parse(events(inbox)[2]!.payload!) as { mentions: unknown[] }).mentions).toHaveLength(16);
   }, 60_000);
+});
+
+describe("announcement events past the payload limit", () => {
+  // docs/mastodon-deviations.md, "Streaming.": an announcement whose payload passes STREAM_LIMITS.payloadBytes (lowered
+  // here between two announcements' payloads) is skipped and logged with its kind, a smaller one is sent, and
+  // GET /api/v1/announcements lists both.
+  it("skips an announcement past the payload limit, which REST lists", async () => {
+    const h = await announcementHarness(["alice"]);
+    const inbox = await subscribed(h, h.users.alice.token, "user");
+    const bound = STREAM_LIMITS.payloadBytes;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    STREAM_LIMITS.payloadBytes = 2_000;
+    try {
+      const small = await h.admin.create({ text: "small" });
+      const large = await h.admin.create({ text: "large ".repeat(1_000) });
+      await drained(h, inbox);
+      expect(events(inbox).map((m) => [m.event, (JSON.parse(m.payload!) as { id: string }).id])).toEqual([
+        ["announcement", small.id],
+      ]);
+      const skipped = warn.mock.calls.filter(
+        ([entry]) => (entry as { event?: string })?.event === "kopje.stream.payload-skipped",
+      );
+      expect(skipped.map(([entry]) => (entry as { kind?: string }).kind)).toEqual(["announcement"]);
+      const listed = await getJson<{ id: string }[]>(h, "/api/v1/announcements", h.users.alice.token);
+      expect(listed.body.map((a) => a.id).toSorted()).toEqual([small.id, large.id].toSorted());
+    } finally {
+      STREAM_LIMITS.payloadBytes = bound;
+      warn.mockRestore();
+    }
+  });
 });
 
 describe("the announcement journal", () => {

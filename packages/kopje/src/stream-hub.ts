@@ -34,9 +34,11 @@ import {
   type StreamUnitAfter,
 } from "./domain/streaming";
 import { normalizeTag } from "./domain/tag-name";
+import { utf8Length } from "./platform/dump-format";
 import { errorFields } from "./platform/error-message";
 import { toStoreUnavailable } from "./platform/store-errors";
 import type { StoreKernel, StoreOperation } from "./platform/store-kernel";
+import { ATTACHMENT_MAX, cloneBound, frame, outputNeed, socketCharge, STREAM_OUTPUT, validOut } from "./stream-output";
 
 // The streaming API's sockets, in the Store, with WebSocket Hibernation (Mastodon 4.5's streaming server). The Worker
 // (mastodon/streaming.ts) authenticates nothing itself: it forwards the upgrade with the token's sha256 only, and the
@@ -51,6 +53,13 @@ import type { StoreKernel, StoreOperation } from "./platform/store-kernel";
 // journal's order until its budget cannot cover a unit's worst case. Each unit is made in its own transaction, the
 // position past it persisted before its messages are sent (at most once); a send that fails closes the sockets left
 // without the unit (1011), and their clients read REST again.
+//
+// Held output (RES-6, stream-output.ts): every frame handed to a socket is charged to it, in its attachment's `out`,
+// until the socket leaves getWebSockets(). A unit's frames, an error reply and an upgrade are admitted from the latest
+// attachments in one synchronous step that writes the new charge before anything is sent; a socket the unit would take
+// past its cap or the instance's is closed (1013) and sent none of it, and an upgrade the instance cannot hold answers
+// 503. While a listed socket's charge is unknown (an attachment that does not read as this release's), nothing is
+// admitted and every upgrade answers 503.
 
 // The caps (RES-6, RES-7). socketsPerInstance can be lowered in tests (STREAM_LIMITS is the seam).
 export const STREAM_LIMITS = {
@@ -67,12 +76,30 @@ export const STREAM_LIMITS = {
   tagBytes: 256,
   // A presented subject whose payload passes this many UTF-8 bytes, measured before it is encoded, is skipped and
   // logged; the events media descriptions at their length can push past it are an accepted departure
-  // (docs/mastodon-deviations.md, "Streaming.").
-  payloadBytes: 512 * 1024,
+  // (docs/mastodon-deviations.md, "Streaming."). 254 KiB keeps the largest frame (MESSAGE_MAX, its envelope with the
+  // longest stream and event) and its terminating NUL within 2^18 bytes, so a fresh socket takes any unit (RES-6).
+  payloadBytes: 254 * 1024,
 };
 
-// Test hook: a turn that leaves work calls this instead of requesting a continuation, as if it failed (cron resumes).
-export const STREAM_FAULTS: { dropContinuation: (() => void) | null } = { dropContinuation: null };
+// Test hooks. dropContinuation: a turn that leaves work calls it instead of requesting a continuation, as if it failed
+// (cron resumes). beforeAdmission: a gate a unit awaits once made, before its admission; beforeAccept: one an upgrade
+// awaits after its token check. failWrite, failSend and failAdmission: whether a socket's attachment write, a
+// send to it (with the stream, "" for an error reply) or its admission throws. Unset, none adds an await or a throw.
+export const STREAM_FAULTS: {
+  dropContinuation: (() => void) | null;
+  beforeAdmission: (() => Promise<void>) | null;
+  beforeAccept: (() => Promise<void>) | null;
+  failWrite: ((ws: WebSocket) => boolean) | null;
+  failSend: ((ws: WebSocket, stream: string) => boolean) | null;
+  failAdmission: ((ws: WebSocket) => boolean) | null;
+} = {
+  dropContinuation: null,
+  beforeAdmission: null,
+  beforeAccept: null,
+  failWrite: null,
+  failSend: null,
+  failAdmission: null,
+};
 
 type Charge = { checks: number; presentations: number; bytes: number; sends: number };
 
@@ -94,9 +121,11 @@ const TURN_HEADER = "x-kopje-turn";
 // A socket's state. since: the journal head when it opened (it receives later events only); convSeq: the
 // highest conversation change sent or skipped on `direct` (raised, and written, before a conversation is sent); rate:
 // the minute its message count started; subs: its subscriptions' keys (a stream's name, `list:<id>`, or
-// `hashtag[:local]:<tag>`), in order; tags: each hashtag key's `tag` as the client sent it (its messages echo it).
+// `hashtag[:local]:<tag>`), in order; tags: each hashtag key's `tag` as the client sent it (its messages echo it);
+// out: the output handed to it over its life, [the sum of frame() over its frames, their number] (stream-output.ts);
+// closed: the code the hub closed it with, written as it closes it (#shut).
 type Attachment = {
-  v: 1;
+  v: 2;
   tokenHash: string;
   accountId: string;
   grant: StreamGrant;
@@ -105,6 +134,8 @@ type Attachment = {
   rate: { window: number; count: number };
   subs: string[];
   tags: Record<string, string>;
+  out: [charged: number, frames: number];
+  closed?: number;
 };
 
 type Socket = { ws: WebSocket; at: Attachment };
@@ -152,6 +183,15 @@ export class StreamHub {
   // The registry is rebuilt from the open sockets by the first turn of this instance.
   #reconciled = false;
   #idle: (() => void)[] = [];
+  // The listed sockets' charge (RES-6): null until recomputed from their attachments (after a wake), recomputed at
+  // each turn and upgrade, raised by each admission, so between recomputations it only overstates. `#unknown` counts
+  // the listed sockets the last recomputation or read found without a charge; `#nearArmed`, whether the instance's
+  // next crossing of three quarters of its cap logs.
+  #charged: number | null = null;
+  #unknown = 0;
+  #nearArmed = true;
+  // The sockets this instance has read or written a close mark on (#shut).
+  readonly #marked = new WeakSet<WebSocket>();
 
   constructor(ctx: DurableObjectState, kernel: StoreKernel, turnRequest: (headers: HeadersInit) => Promise<Response>) {
     this.#ctx = ctx;
@@ -209,7 +249,7 @@ export class StreamHub {
   // Closes every socket, for a Store that can no longer serve them (an import begins, maintenance refuses a turn).
   closeAll(code: number, reason: string): void {
     for (const ws of this.#ctx.getWebSockets()) {
-      close(ws, code, reason);
+      this.#shut(ws, code, reason);
     }
     this.#reconciled = false;
   }
@@ -230,7 +270,7 @@ export class StreamHub {
     if (at.rate.count > STREAM_LIMITS.messagesPerMinute) {
       return this.#drop(ws, at, 1008, "too many messages");
     }
-    ws.serializeAttachment(at);
+    serialize(ws, at);
     const json = parseObject(message);
     if (json?.type === "subscribe") {
       await this.#subscribe(ws, at, json);
@@ -240,8 +280,10 @@ export class StreamHub {
   }
 
   async closed(ws: WebSocket, code: number): Promise<void> {
-    close(ws, code === 1005 || code === 1006 ? 1000 : code, "");
-    const at = peek(ws);
+    const { at, closed } = this.#read(ws);
+    if (closed === null) {
+      close(ws, code === 1005 || code === 1006 ? 1000 : code, "");
+    }
     if (at !== null) {
       await this.#sync(at.accountId, ws);
     }
@@ -266,6 +308,9 @@ export class StreamHub {
     if (accepted.status !== "ok") {
       return refusal(401, "Invalid access token");
     }
+    if (STREAM_FAULTS.beforeAccept !== null) {
+      await STREAM_FAULTS.beforeAccept();
+    }
     const { accountId } = accepted;
     if (this.#open(accountTag(accountId)).length >= STREAM_LIMITS.socketsPerAccount) {
       return refusal(429, "Too many connections");
@@ -273,10 +318,25 @@ export class StreamHub {
     if (this.#open().length >= STREAM_LIMITS.socketsPerInstance) {
       return refusal(503, "Too many connections");
     }
+    // RES-6: a socket is charged from the moment it is listed, so the instance's charge, recomputed now, must leave it
+    // room, and its attachment is written before it is accepted.
+    const instance = this.#recompute();
+    const need = socketCharge(0, 0);
+    if (instance.unknown > 0 || instance.charge + need > STREAM_OUTPUT.instanceBytes) {
+      console.warn({
+        event: "kopje.stream.output_refused",
+        scope: instance.unknown > 0 ? "unknown" : "instance",
+        charge: instance.charge,
+        need,
+        cap: STREAM_OUTPUT.instanceBytes,
+        listed: instance.listed,
+        unknown: instance.unknown,
+      });
+      return refusal(503, "Too many connections");
+    }
     const { 0: client, 1: server } = new WebSocketPair();
-    this.#ctx.acceptWebSocket(server, [accountTag(accountId), `t:${tokenHash}`]);
     const at: Attachment = {
-      v: 1,
+      v: 2,
       tokenHash,
       accountId,
       grant: accepted.grant,
@@ -285,8 +345,16 @@ export class StreamHub {
       rate: { window: Date.now(), count: 0 },
       subs: [],
       tags: {},
+      out: [0, 0],
     };
-    server.serializeAttachment(at);
+    try {
+      serialize(server, at);
+    } catch (error) {
+      console.error({ event: "kopje.stream.accept_failed", ...errorFields(error) });
+      return refusal(500, "An unexpected error occurred");
+    }
+    this.#ctx.acceptWebSocket(server, [accountTag(accountId), `t:${tokenHash}`]);
+    this.#raise(instance.charge + need);
     // ?stream= (with tag and list) subscribes on connect, as a first message would, uncounted.
     const stream = url.searchParams.get("stream");
     if (stream !== null) {
@@ -305,11 +373,11 @@ export class StreamHub {
   async #subscribe(ws: WebSocket, at: Attachment, json: Record<string, unknown>): Promise<void> {
     const name = firstParam(json.stream);
     if (!maySubscribe(at.grant, name)) {
-      return send(ws, { error: "Access token does not have the required scopes", status: 401 });
+      return this.#reply(ws, { error: "Access token does not have the required scopes", status: 401 });
     }
     const stream = STREAM_NAMES.find((known) => known === name);
     if (stream === undefined) {
-      return send(ws, { error: "Unknown stream type", status: 400 });
+      return this.#reply(ws, { error: "Unknown stream type", status: 400 });
     }
     let key: string = stream;
     // A hashtag's tag as the client sent it (Mastodon echoes it); the key holds it normalized, so `#Cats` and `cats`
@@ -317,15 +385,15 @@ export class StreamHub {
     let raw: string | null = null;
     if (stream === "list") {
       if (json.list === undefined || json.list === null || json.list === "") {
-        return send(ws, { error: "Missing list name parameter", status: 400 });
+        return this.#reply(ws, { error: "Missing list name parameter", status: 400 });
       }
       if (typeof json.list !== "string" || !LIST_ID.test(json.list)) {
-        return send(ws, { error: "Invalid parameter", status: 400 });
+        return this.#reply(ws, { error: "Invalid parameter", status: 400 });
       }
       key = listKey(json.list);
     } else if (stream === "hashtag" || stream === "hashtag:local") {
       if (json.tag === undefined || json.tag === null || json.tag === "") {
-        return send(ws, { error: "Missing tag name parameter", status: 400 });
+        return this.#reply(ws, { error: "Missing tag name parameter", status: 400 });
       }
       const tag = typeof json.tag === "string" ? normalizeTag(json.tag) : null;
       if (
@@ -334,7 +402,7 @@ export class StreamHub {
         exceeds(json.tag, STREAM_LIMITS.tagBytes) ||
         exceeds(tag, STREAM_LIMITS.tagBytes)
       ) {
-        return send(ws, { error: "Invalid parameter", status: 400 });
+        return this.#reply(ws, { error: "Invalid parameter", status: 400 });
       }
       key = hashtagKey(stream, tag);
       raw = json.tag;
@@ -351,12 +419,15 @@ export class StreamHub {
     for (const sub of next.subs) {
       keys.set(sub, (keys.get(sub) ?? 0) + 1);
     }
+    // The attachment's clone must fit the runtime's limit with any `out` and a close mark (cloneBound counts each
+    // number as 16 bytes).
     if (
       next.subs.length > STREAM_LIMITS.subscriptionsPerSocket ||
       keys.size > STREAM_LIMITS.keysPerAccount ||
-      exceeds(JSON.stringify(next), STREAM_LIMITS.attachmentBytes)
+      exceeds(JSON.stringify(next), STREAM_LIMITS.attachmentBytes) ||
+      cloneBound({ ...next, closed: 1000 }) > ATTACHMENT_MAX
     ) {
-      return send(ws, { error: "Too many subscriptions", status: 429 });
+      return this.#reply(ws, { error: "Too many subscriptions", status: 429 });
     }
     // The registry first: a subscription it does not hold would journal nothing for the account. A refused write (a
     // dump's freeze, maintenance) leaves the socket unsubscribed and says so, as Mastodon answers an unexpected
@@ -365,7 +436,7 @@ export class StreamHub {
     try {
       const list = keyList(key);
       if (list !== null && !(await this.#run(streamListOwned, { accountId: at.accountId, listId: list }))) {
-        return send(ws, { error: "Not authorized to stream this list", status: 401 });
+        return await this.#reply(ws, { error: "Not authorized to stream this list", status: 401 });
       }
       registered = await this.#run(streamRegister, { accountId: at.accountId, keys: keysOf(keys) });
     } catch (error) {
@@ -375,7 +446,7 @@ export class StreamHub {
       } else {
         console.warn({ event: "kopje.stream.register-failed", ...errorFields(error) });
       }
-      return send(ws, { error: "An unexpected error occurred", status: 500 });
+      return this.#reply(ws, { error: "An unexpected error occurred", status: 500 });
     }
     // On the attachment as it is now (a turn may have raised its convSeq meanwhile); `direct` starts at the mark.
     this.#update(ws, (current) =>
@@ -395,7 +466,7 @@ export class StreamHub {
     const name = firstParam(json.stream);
     const missing = (name === "list" && !json.list) || ((name === "hashtag" || name === "hashtag:local") && !json.tag);
     if (!STREAM_NAMES.includes(name) || missing) {
-      return send(ws, { error: "Error unsubscribing from channel" });
+      return this.#reply(ws, { error: "Error unsubscribing from channel" });
     }
     const key =
       name === "list"
@@ -414,16 +485,185 @@ export class StreamHub {
     await this.#sync(at.accountId);
   }
 
-  // Rewrites a socket's attachment from its current one (an await may have let another handler or a turn write it).
+  // Rewrites a socket's attachment from its current one (an await may have let another handler or a turn write it),
+  // keeping its `out`.
   #update(ws: WebSocket, change: (at: Attachment) => Attachment): void {
-    const current = peek(ws);
+    const current = readAttachment(ws).at;
     if (current !== null) {
-      ws.serializeAttachment(change(current));
+      serialize(ws, { ...change(current), out: current.out });
+    }
+  }
+
+  // An error reply (Mastodon's): admitted as one frame, and sent only once admitted. A socket that is not open is not
+  // answered, and one the reply would take past a cap is closed (1013) instead.
+  async #reply(ws: WebSocket, message: Record<string, unknown>): Promise<void> {
+    const text = JSON.stringify(message);
+    const refused: string[] = [];
+    try {
+      this.#ensureCharged();
+      if (this.#admit(ws, [utf8Length(text)], null, refused)) {
+        if (STREAM_FAULTS.failSend?.(ws, "") === true) {
+          throw new Error("injected send failure");
+        }
+        ws.send(text);
+      }
+    } catch (error) {
+      console.warn({ event: "kopje.stream.send-failed", ...errorFields(error) });
+      this.#shut(ws, 1011, "send failed");
+    }
+    await this.#syncAccounts(refused);
+  }
+
+  // The listed sockets' charge, recomputed from their attachments; a socket whose charge is unknown is closed (1011)
+  // and counted, and stays listed until its connection ends. Reads at most one attachment per listed socket, and every
+  // socket this release lists counts at least socketCharge(0, 0) within instanceBytes.
+  #recompute(): { charge: number; listed: number; unknown: number; closing: number } {
+    const listed = this.#ctx.getWebSockets();
+    let charge = 0;
+    let unknown = 0;
+    let closing = 0;
+    for (const ws of listed) {
+      const { at, closed } = this.#read(ws);
+      if (closed !== null || ws.readyState !== WebSocket.OPEN) {
+        closing++;
+      }
+      if (at === null) {
+        unknown++;
+        this.#restore(ws);
+      } else {
+        charge += socketCharge(at.out[0], at.out[1]);
+      }
+    }
+    this.#charged = charge;
+    this.#unknown = unknown;
+    if (charge <= 0.75 * STREAM_OUTPUT.instanceBytes) {
+      this.#nearArmed = true;
+    } else {
+      this.#near(charge, listed.length, closing);
+    }
+    return { charge, listed: listed.length, unknown, closing };
+  }
+
+  #ensureCharged(): void {
+    if (this.#charged === null) {
+      this.#recompute();
+    }
+  }
+
+  // The instance's charge after an admission or an accepted upgrade; a crossing of three quarters of its cap logs.
+  #raise(charge: number): void {
+    const before = this.#charged ?? 0;
+    this.#charged = charge;
+    if (before <= 0.75 * STREAM_OUTPUT.instanceBytes && charge > 0.75 * STREAM_OUTPUT.instanceBytes) {
+      const listed = this.#ctx.getWebSockets();
+      this.#near(charge, listed.length, listed.filter((ws) => !this.#isOpen(ws)).length);
+    }
+  }
+
+  #near(charge: number, listed: number, closing: number): void {
+    if (this.#nearArmed) {
+      this.#nearArmed = false;
+      console.warn({
+        event: "kopje.stream.output_near",
+        scope: "instance",
+        charge,
+        cap: STREAM_OUTPUT.instanceBytes,
+        listed,
+        closing,
+        unknown: this.#unknown,
+      });
+    }
+  }
+
+  // Admits frames of `sizes` UTF-8 bytes to `ws`, from its latest attachment, in one synchronous step: writes its new
+  // `out` (and, for a conversation, its convSeq raised to `convSeq`) and adds what they need to the instance's charge.
+  // Returns whether they may be sent. A socket that is not open gets nothing; one whose attachment does not read is
+  // closed (1011); while a charge is unknown, or when the frames would take the socket past socketBytes or the listed
+  // sockets past instanceBytes, it is closed (1013, `refused` gets its account) and handed nothing. A write that throws
+  // closes it (1011) with its `out` as it was.
+  #admit(ws: WebSocket, sizes: readonly number[], convSeq: string | null, refused: string[]): boolean {
+    if (!this.#isOpen(ws)) {
+      return false;
+    }
+    if (STREAM_FAULTS.failAdmission?.(ws) === true) {
+      throw new Error("injected admission failure");
+    }
+    const at = this.#restore(ws);
+    if (at === null) {
+      return false;
+    }
+    const [charged, frames] = at.out;
+    const raised = convSeq === null || compareIntegers(at.convSeq, convSeq) >= 0 ? at.convSeq : convSeq;
+    if (sizes.length === 0) {
+      if (raised !== at.convSeq) {
+        this.#write(ws, { ...at, convSeq: raised });
+      }
+      return false;
+    }
+    const need = outputNeed(frames, sizes);
+    const charge = socketCharge(charged, frames);
+    const instance = this.#charged ?? 0;
+    const scope =
+      this.#unknown > 0
+        ? "unknown"
+        : charge + need > STREAM_OUTPUT.socketBytes
+          ? "socket"
+          : instance + need > STREAM_OUTPUT.instanceBytes
+            ? "instance"
+            : null;
+    if (scope !== null) {
+      const fields = { scope, frames, charged, need, instance, listed: this.#ctx.getWebSockets().length };
+      if (scope === "socket") {
+        console.log({ event: "kopje.stream.output_closed", ...fields });
+      } else {
+        console.warn({ event: "kopje.stream.output_closed", ...fields });
+      }
+      this.#shut(ws, 1013, "output allowance", { at, closed: null });
+      refused.push(at.accountId);
+      return false;
+    }
+    const handed = sizes.reduce((sum, bytes) => sum + frame(bytes), 0);
+    if (!this.#write(ws, { ...at, convSeq: raised, out: [charged + handed, frames + sizes.length] })) {
+      return false;
+    }
+    const nearSocket = 0.75 * STREAM_OUTPUT.socketBytes;
+    if (charge <= nearSocket && charge + need > nearSocket) {
+      const listed = this.#ctx.getWebSockets();
+      console.log({
+        event: "kopje.stream.output_near",
+        scope: "socket",
+        charge: charge + need,
+        cap: STREAM_OUTPUT.socketBytes,
+        listed: listed.length,
+        closing: listed.filter((socket) => !this.#isOpen(socket)).length,
+        unknown: this.#unknown,
+      });
+    }
+    this.#raise(instance + need);
+    return true;
+  }
+
+  // Writes a socket's attachment; a write that throws (the clone past the runtime's limit) leaves the attachment as it
+  // was and closes the socket (1011).
+  #write(ws: WebSocket, at: Attachment): boolean {
+    try {
+      serialize(ws, at);
+      return true;
+    } catch (error) {
+      console.warn({ event: "kopje.stream.send-failed", ...errorFields(error) });
+      this.#shut(ws, 1011, "invalid state");
+      return false;
+    }
+  }
+
+  async #syncAccounts(accounts: readonly string[]): Promise<void> {
+    for (const accountId of new Set(accounts)) {
+      await this.#sync(accountId);
     }
   }
 
   async #drop(ws: WebSocket, at: Attachment, code: number, reason: string): Promise<void> {
-    close(ws, code, reason);
+    this.#shut(ws, code, reason);
     await this.#sync(at.accountId, ws);
   }
 
@@ -452,7 +692,7 @@ export class StreamHub {
   // The open sockets (of a tag) with valid attachments; an invalid one is closed (1011).
   #open(tag?: string): Socket[] {
     return this.#ctx.getWebSockets(tag).flatMap((ws) => {
-      if (ws.readyState !== WebSocket.OPEN) {
+      if (!this.#isOpen(ws)) {
         return [];
       }
       const at = this.#restore(ws);
@@ -461,14 +701,71 @@ export class StreamHub {
   }
 
   // A socket's attachment, or null after closing it (1011) for one that does not validate: its account is unknown, so
-  // the next turn rebuilds the registry.
+  // the next turn rebuilds the registry, and so is its charge, so nothing is admitted until a recomputation lists none.
+  // Its close is logged once, as it leaves the open state (`output_closed`, scope `unknown`, its own numbers null: a
+  // previous release's socket at the transition, or an attachment that does not read). Null too for a socket the hub
+  // closed (its mark), which gets nothing more.
   #restore(ws: WebSocket): Attachment | null {
-    const at = peek(ws);
+    const read = this.#read(ws);
+    const { at, closed } = read;
     if (at === null) {
-      close(ws, 1011, "invalid state");
+      if (closed === null && ws.readyState === WebSocket.OPEN) {
+        console.warn({
+          event: "kopje.stream.output_closed",
+          scope: "unknown",
+          frames: null,
+          charged: null,
+          need: null,
+          instance: this.#charged,
+          listed: this.#ctx.getWebSockets().length,
+        });
+      }
+      this.#shut(ws, 1011, "invalid state", read);
       this.#reconciled = false;
+      this.#unknown = Math.max(this.#unknown, 1);
+      return null;
     }
-    return at;
+    return closed === null ? at : null;
+  }
+
+  // A socket's attachment and its close mark, read once; a mark is remembered for the sockets this instance lists.
+  #read(ws: WebSocket): { at: Attachment | null; closed: number | null } {
+    const read = readAttachment(ws);
+    if (read.closed !== null) {
+      this.#marked.add(ws);
+    }
+    return read;
+  }
+
+  // Whether a socket is open: the runtime's readyState, unless the hub has closed it (its mark, read or written by
+  // this instance).
+  #isOpen(ws: WebSocket): boolean {
+    return ws.readyState === WebSocket.OPEN && !this.#marked.has(ws);
+  }
+
+  // Closes a socket the hub ends, marking its attachment with the code first (`closed`; an attachment that does not
+  // read is replaced by the mark alone). The runtime may list a hibernated socket whose client never answered the Close
+  // as open again after a wake (seen on Cloudflare; workerd keeps it closing), and the mark keeps it closed: no second
+  // close or log, no frame, counted as closing, and charged until it leaves getWebSockets(). One already marked is left
+  // as it is. #subscribe leaves the mark room within the runtime's limit; should the write still fail, the mark alone
+  // replaces the attachment, so the socket stays closed and its charge is unknown, as for one that does not read.
+  // `read` is the socket's attachment as read in the same synchronous step, if it was.
+  #shut(ws: WebSocket, code: number, reason: string, read = this.#read(ws)): void {
+    const { at, closed } = read;
+    if (closed !== null) {
+      return;
+    }
+    try {
+      ws.serializeAttachment(at === null ? { closed: code } : { ...at, closed: code });
+    } catch {
+      try {
+        ws.serializeAttachment({ closed: code });
+      } catch {
+        // Not expected for a mark alone; the close still happens, and a wake may list the socket open again.
+      }
+    }
+    this.#marked.add(ws);
+    close(ws, code, reason);
   }
 
   #run<I, O>(operation: StoreOperation<I, O>, input: I): Promise<O> {
@@ -549,6 +846,7 @@ export class StreamHub {
 
   // One turn. Returns whether work is left for the next.
   async #fanOut(budget: Budget): Promise<boolean> {
+    this.#recompute();
     if (!this.#reconciled) {
       await this.#reconcile();
     }
@@ -784,70 +1082,82 @@ export class StreamHub {
     }
     budget.charge({ checks: tokenHashes.length + made.checks });
     const payload = made.streams.length > 0 ? encodedPayload(kind, made.payload, budget) : null;
+    if (STREAM_FAULTS.beforeAdmission !== null) {
+      await STREAM_FAULTS.beforeAdmission();
+    }
+    // Each socket's frames, from the unit's snapshot: the streams as it named them (streamOf) of its subscriptions that
+    // carry the unit, each frame's UTF-8 bytes computed from the envelope's parts (stream-hub envelope).
     const revoked: Socket[] = [];
-    // The unit's frames grouped by the stream as each client named it (streamOf), in the order of the unit's sockets and
-    // their subscriptions: each stream's envelope is made, sent to every socket that subscribes with that name, and
-    // dropped before the next stream's, so the isolate holds one envelope at a time (RES-6). `owed` counts each
-    // socket's frames not yet sent.
-    const streams = new Map<string, WebSocket[]>();
-    const owed = new Map<WebSocket, number>();
+    const plans: { ws: WebSocket; streams: string[] }[] = [];
     for (const socket of unit.sockets) {
       const grant = made.grants[socket.at.tokenHash];
       if (grant === undefined) {
         revoked.push(socket);
         continue;
       }
+      const streams: string[] = [];
       if (payload !== null) {
         for (const sub of socket.at.subs) {
           const target = made.streams.find(({ stream }) => stream === sub);
           if (target !== undefined && grants(grant, target.needs)) {
-            const stream = streamOf(sub, socket.at.tags[sub]);
-            const recipients = streams.get(stream);
-            if (recipients === undefined) {
-              streams.set(stream, [socket.ws]);
-            } else {
-              recipients.push(socket.ws);
-            }
-            owed.set(socket.ws, (owed.get(socket.ws) ?? 0) + 1);
+            streams.push(streamOf(sub, socket.at.tags[sub]));
           }
         }
       }
+      plans.push({ ws: socket.ws, streams });
     }
-    if (kind === "conversation") {
-      for (const { ws } of unit.sockets) {
-        this.#update(ws, (at) => ({
-          ...at,
-          convSeq: compareIntegers(at.convSeq, unit.subject.index) >= 0 ? at.convSeq : unit.subject.index,
-        }));
-      }
-    }
-    if (payload !== null) {
-      try {
-        for (const [stream, recipients] of streams) {
-          const text = envelope(stream, made.event, payload);
-          for (const ws of recipients) {
-            ws.send(text);
-            owed.set(ws, owed.get(ws)! - 1);
-            budget.charge({ sends: 1 });
-          }
+    const eventBytes = utf8Length(JSON.stringify(made.event));
+    const frameBytes = (stream: string) => ENVELOPE_KEYS + utf8Length(stream) + eventBytes + (payload?.bytes ?? 0);
+    // One synchronous section from the first admission to the last send (RES-6). `owed` counts each socket's frames not
+    // yet sent; a socket not admitted owes none. The frames are then grouped by stream as B sends them: each stream's
+    // envelope is made, sent to every admitted socket that subscribes with that name, and dropped before the next
+    // stream's, so the isolate holds one envelope at a time.
+    const owed = new Map(plans.map(({ ws, streams }) => [ws, streams.length]));
+    const refused: string[] = [];
+    try {
+      this.#ensureCharged();
+      for (const { ws, streams } of plans) {
+        const convSeq = kind === "conversation" ? unit.subject.index : null;
+        if (!this.#admit(ws, streams.map(frameBytes), convSeq, refused)) {
+          owed.set(ws, 0);
         }
-      } catch (error) {
-        // The sockets left without one of the unit's frames, the one whose send threw included.
-        console.warn({ event: "kopje.stream.send-failed", ...errorFields(error) });
-        for (const [ws, left] of owed) {
-          if (left > 0) {
-            close(ws, 1011, "send failed");
+      }
+      const recipients = new Map<string, WebSocket[]>();
+      for (const { ws, streams } of plans) {
+        if (owed.get(ws)! > 0) {
+          for (const stream of streams) {
+            recipients.set(stream, [...(recipients.get(stream) ?? []), ws]);
           }
         }
       }
+      for (const [stream, sockets] of recipients) {
+        const text = envelope(stream, made.event, payload!.text);
+        for (const ws of sockets) {
+          if (STREAM_FAULTS.failSend?.(ws, stream) === true) {
+            throw new Error("injected send failure");
+          }
+          ws.send(text);
+          owed.set(ws, owed.get(ws)! - 1);
+          budget.charge({ sends: 1 });
+        }
+      }
+    } catch (error) {
+      // The sockets left without one of the unit's frames, admitted or not yet decided; an admitted one stays charged.
+      console.warn({ event: "kopje.stream.send-failed", ...errorFields(error) });
+      for (const [ws, left] of owed) {
+        if (left > 0) {
+          this.#shut(ws, 1011, "send failed");
+        }
+      }
     }
+    await this.#syncAccounts(refused);
     await this.#revoke(revoked);
     return true;
   }
 
   async #revoke(sockets: Socket[]): Promise<void> {
     for (const { ws } of sockets) {
-      close(ws, 1008, "token revoked");
+      this.#shut(ws, 1008, "token revoked");
     }
     for (const accountId of new Set(sockets.map(({ at }) => at.accountId))) {
       await this.#sync(accountId);
@@ -901,24 +1211,37 @@ function keysOf(keys: Map<string, number>): StreamKeys {
   return [...keys].map(([key, sockets]) => ({ key, sockets }));
 }
 
-// The attachment of a socket, validated: version, field types and sizes. Null for anything else.
-function peek(ws: WebSocket): Attachment | null {
+// A socket's attachment, validated (version, field types and sizes; null for anything else), and the close code the
+// hub marked it with (#shut), also on an attachment that does not otherwise read (the mark alone, written on one of an
+// earlier release).
+function readAttachment(ws: WebSocket): { at: Attachment | null; closed: number | null } {
   let value: unknown;
   try {
     value = ws.deserializeAttachment();
   } catch {
-    return null;
+    return { at: null, closed: null };
   }
   if (typeof value !== "object" || value === null) {
-    return null;
+    return { at: null, closed: null };
   }
+  const marked = (value as { closed?: unknown }).closed;
+  return { at: validAttachment(value), closed: isCloseCode(marked) ? marked : null };
+}
+
+function isCloseCode(code: unknown): code is number {
+  return Number.isInteger(code) && (code as number) >= 1000 && (code as number) <= 4999;
+}
+
+function validAttachment(value: object): Attachment | null {
   const at = value as Partial<Record<keyof Attachment, unknown>>;
   const grant = at.grant as Partial<Record<keyof StreamGrant, unknown>> | null | undefined;
   const rate = at.rate as Partial<Record<"window" | "count", unknown>> | null | undefined;
   const subs = at.subs;
   const tags = at.tags as Record<string, unknown> | null | undefined;
   const valid =
-    at.v === 1 &&
+    at.v === 2 &&
+    validOut(at.out) &&
+    (at.closed === undefined || isCloseCode(at.closed)) &&
     typeof at.tokenHash === "string" &&
     TOKEN_HASH.test(at.tokenHash) &&
     typeof at.accountId === "string" &&
@@ -997,7 +1320,9 @@ function streamOf(key: string, raw: string | undefined): string {
 }
 
 // An outgoing message (streaming/index.js streamToWs): the stream as the client named it (streamOf), the event, and the
-// payload, a JSON string already encoded once for all envelopes.
+// payload, a JSON string already encoded once for all envelopes. ENVELOPE_KEYS is its bytes besides those three.
+const ENVELOPE_KEYS = '{"stream":,"event":,"payload":}'.length;
+
 function envelope(stream: string, event: string, encodedPayload: string): string {
   return `{"stream":${stream},"event":${JSON.stringify(event)},"payload":${encodedPayload}}`;
 }
@@ -1006,7 +1331,7 @@ function envelope(stream: string, event: string, encodedPayload: string): string
 // JSON string, a string (a deleted status's id) encoded once. An object is measured from its presented form
 // (encodedTwiceBytes), with no string made, and charged whole, sent or skipped; a payload past payloadBytes is skipped
 // and logged before any of it is encoded.
-function encodedPayload(kind: string, payload: unknown, budget: Budget): string | null {
+function encodedPayload(kind: string, payload: unknown, budget: Budget): { text: string; bytes: number } | null {
   const object = typeof payload !== "string";
   const bytes = object ? encodedTwiceBytes(payload) : jsonBytes(payload);
   if (object) {
@@ -1016,15 +1341,15 @@ function encodedPayload(kind: string, payload: unknown, budget: Budget): string 
     console.warn({ event: "kopje.stream.payload-skipped", kind });
     return null;
   }
-  return JSON.stringify(object ? JSON.stringify(payload) : payload);
+  return { text: JSON.stringify(object ? JSON.stringify(payload) : payload), bytes };
 }
 
-function send(ws: WebSocket, message: Record<string, unknown>): void {
-  try {
-    ws.send(JSON.stringify(message));
-  } catch (error) {
-    console.warn({ event: "kopje.stream.send-failed", ...errorFields(error) });
+// A socket's attachment write: the one seam a test may make throw (STREAM_FAULTS.failWrite).
+function serialize(ws: WebSocket, at: Attachment): void {
+  if (STREAM_FAULTS.failWrite?.(ws) === true) {
+    throw new Error("injected attachment write failure");
   }
+  ws.serializeAttachment(at);
 }
 
 function close(ws: WebSocket, code: number, reason: string): void {
