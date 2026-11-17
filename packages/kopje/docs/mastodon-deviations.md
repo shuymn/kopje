@@ -1634,8 +1634,11 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   Mastodon assigns it, and Kopje refuses the same: a `Create` of a status not yet stored, or an `Update` that creates
   one, stores nothing (`Status.create!` raises), and an `Update` with a newer `updated` (Mastodon's explicit update)
   changes nothing of the status (its transaction rolls back). An `Update` that names no newer version (the implicit
-  update, which assigns no `sensitive`) still applies its poll's counts, voters and end, its quote and its quote
-  policy, and a `Create` of a status already stored, or of a vote, assigns none and is applied as without it. In a
+  update, which assigns no `sensitive`) still applies what Kopje's implicit update applies, its poll's counts, voters
+  and end, its quote and its quote policy (Mastodon's also stores the status's counts, which Kopje does not read), and
+  a `Create` of a status already stored, or of a vote, assigns none and is applied as without it. Which `Update` is
+  newer differs at one boundary, where Mastodon refuses an `Update` with `""` that Kopje applies as implicit (both
+  "Retractions and edits of remote statuses", below). In a
   body read as received, a JSON number with a fraction or an exponent that equals zero (`0.0`, `0e0`) is read as not
   sensitive, where Mastodon's Float marks the status: `JSON.parse` does not tell it from `0` (an LD-signed body whose
   context types `sensitive` `@id` marks any number instead, above). Accepted, 2026-11-17.
@@ -1663,7 +1666,18 @@ ID-7 in `docs/threat-model.md`):
   `updated`, else `edited_at`, else `published`); one whose version is equal, or missing for a status never edited,
   still refreshes the poll and the quote policy, records a changed stamp of the same quote, and verifies the same quote
   again, as Mastodon's `handle_implicit_update!` does; one missing for an edited status changes nothing, as in
-  Mastodon (`process_status_update_service.rb:32-34`).
+  Mastodon (`process_status_update_service.rb:32-34`). Mastodon takes any `Update` naming an `updated` as an explicit
+  edit of a status it holds without `edited_at` (`:30`; a `Create` stores none when `updated` is missing or equals
+  `published`, `create.rb:112`), where Kopje takes one equal to the stored version (that `published`) as the implicit
+  update and changes nothing for an earlier one. So such an equal `Update` with `sensitive: ""` refreshes the poll, the
+  quote and the quote policy here, where Mastodon's `NOT NULL` refuses the whole `Update`; with any other `sensitive`
+  Mastodon applies its content, which Kopje leaves.
+- A remote status's `likes.totalItems` and `shares.totalItems` are not read: its `favourites_count` and
+  `reblogs_count` count the favourites and boosts Kopje stores of it. Mastodon stores each, when the collection is
+  given as an object, as the status's untrusted count (clamped to 0 to 100,000,000, `status_stat.rb:44-47`) on a
+  `Create` (`create.rb:75`, `:206-216`) and on every `Update`, explicit or implicit
+  (`process_status_update_service.rb:393-405`), and its API answers that count in place of its own
+  (`status_serializer.rb:95-101`), moving it with each favourite and boost it receives (`status.rb:324-341`).
   Mastodon moves `edited_at` only on a significant edit (`process_status_update_service.rb`), so after a newer
   metadata-only `Update` it applies an older content `Update`: an author editing A, then B, then A again, whose final A
   arrives before B, ends at B there. Mastodon's behaviour is an ordering bug.

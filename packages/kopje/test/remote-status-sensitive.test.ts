@@ -174,6 +174,39 @@ describe("a remote status's sensitive", () => {
     expect(await statusRow(t.store, question.id)).toEqual(stored);
   });
 
+  // The watermark's boundary (docs/mastodon-deviations.md, "Retractions and edits of remote statuses"): for a status
+  // never edited, an `updated` equal to its `published` is the stored version, so the Update is implicit here and its
+  // poll applies, where Mastodon (edited_at nil) takes it as an explicit edit and refuses it whole; an earlier one
+  // changes nothing here.
+  it('applies the poll of an Update whose updated is a never-edited status\'s published, with sensitive ""', async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const poll = (cats: number, dogs: number) => ({
+      type: "Question",
+      endTime: "2026-10-12T01:00:00Z",
+      votersCount: cats + dogs,
+      oneOf: [
+        { type: "Note", name: "cats", replies: { type: "Collection", totalItems: cats } },
+        { type: "Note", name: "dogs", replies: { type: "Collection", totalItems: dogs } },
+      ],
+    });
+    const question = mastodonNote(bob, poll(2, 1));
+    await t.post(bob, create(bob, question));
+    const stored = (await statusRow(t.store, question.id))!;
+    const tallies = () => sql(t.store, "SELECT tallies FROM polls WHERE status_id = ?", stored.id);
+
+    const equal = { ...question, ...poll(5, 2), content: "<p>edited</p>", sensitive: "" };
+    expect(await t.post(bob, update(bob, equal, question.published as string))).toBe(202);
+    expect(await tallies()).toEqual([{ tallies: "[5,2]" }]);
+    expect(await statusRow(t.store, question.id)).toEqual(stored);
+
+    const earlier = { ...question, ...poll(9, 9), content: "<p>edited</p>", sensitive: "" };
+    expect(await t.post(bob, update(bob, earlier, "2026-10-11T11:00:00Z"))).toBe(202);
+    expect(await tallies()).toEqual([{ tallies: "[5,2]" }]);
+    expect(await statusRow(t.store, question.id)).toEqual(stored);
+  });
+
   it('leaves the status an Update whose sensitive is "" edits, and applies one of "x"', async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");
