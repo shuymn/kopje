@@ -1266,6 +1266,12 @@ Request parameters:
   for any entry with an `id` (Mastodon reads only entries for the post's media).
   Mastodon may report other validation errors first or alongside it. On `/api/v1/media/:id`, a multipart body larger
   than 1 MiB plus 16 KiB answers 413.
+- An upload (`/api/v{1,2}/media`, `/api/v1/media/:id`) with more than 16 text pairs as sent (the query's
+  included), or with a text value other than `description` and `thumbnail` longer than 20,000 UTF-16 code units, answers
+  422 `Validation failed: A form field is too long`, so a small image cannot carry megabytes of text (RES-1); Mastodon
+  has no such bound.
+- A request whose parameters Kopje refuses as Rack does (a conflicting shape, past a Rack limit) answers 400 with a
+  JSON `error` (`Malformed request body`), where Mastodon answers an empty HTML page.
 - A multipart part with an empty filename is read as a text value, as workerd's parser reads it (Rack drops it as an
   empty file field): empty, it reads as absent; with bytes, a profile image answers 400.
 - A JSON body exceeding 10,000 generated parameter paths (object members, array objects and empty arrays; scalar
