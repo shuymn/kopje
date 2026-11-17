@@ -35,11 +35,12 @@ export const LOCAL = "https://kopje.test";
 export const MASTODON = "https://mastodon.example";
 export const MISSKEY = "https://misskey.example";
 
-// raw: the body's text as served, in place of body's JSON (for what JSON.stringify cannot write, such as 1e400).
+// raw: the body's text or bytes as served, in place of body's JSON (for what JSON.stringify cannot write, such as 1e400
+// or bytes that are not UTF-8).
 type Served = {
   status: number;
   body?: unknown;
-  raw?: string;
+  raw?: string | Uint8Array;
   contentType?: string;
   location?: string;
   delayMs?: number;
@@ -121,7 +122,7 @@ export class RemoteWeb {
     this.served.set(url, { status: 200, body, contentType });
   }
 
-  serveRaw(url: string, raw: string, contentType = AP): void {
+  serveRaw(url: string, raw: string | Uint8Array, contentType = AP): void {
     this.served.set(url, { status: 200, raw, contentType });
   }
 
@@ -337,7 +338,8 @@ export async function signedInit(
   activity: unknown,
   options: SignOptions = {},
 ): Promise<RequestInit> {
-  const body = typeof activity === "string" ? activity : JSON.stringify(activity);
+  // A string or bytes are sent as they are (bytes that are not UTF-8 included).
+  const body = typeof activity === "string" || activity instanceof Uint8Array ? activity : JSON.stringify(activity);
   const rfc9421 = options.rfc9421;
   // Fedify's signer writes Content-Digest from the body it signs; without one (digest false), it is written here.
   const digest =
@@ -345,7 +347,9 @@ export async function signedInit(
       ? {}
       : {
           "content-digest": `sha-256=:${bytesToBase64(
-            new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body))),
+            new Uint8Array(
+              await crypto.subtle.digest("SHA-256", typeof body === "string" ? new TextEncoder().encode(body) : body),
+            ),
           )}:`,
         };
   const unsigned = new Request(`${LOCAL}${path}`, {

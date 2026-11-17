@@ -421,8 +421,9 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
   64 `<link>` elements. An `http` endpoint is upgraded to `https` as Mastodon does; one of another scheme, with a port,
   an IP literal or a local name is not tried (the page's OpenGraph is the card), where Mastodon tries it.
 - An endpoint's answer is read whole within 64 KiB (Mastodon: 1 MiB; a longer one is no card), as UTF-8 by
-  `JSON.parse` in place of Oj, within 10,000 values and 32 levels (past them, OpenGraph); a `version` of the number `1`
-  passes as `1.0` does (`JSON.parse` cannot tell them apart). The User-Agent is the cards' own, with " Bot".
+  JavaScript's `JSON.parse` (Mastodon: Ruby's), within 10,000 values and 32 levels (past them, OpenGraph); a `version`
+  of the number `1` passes as `1.0` does (`JSON.parse` cannot tell them apart). The User-Agent is the cards' own, with
+  " Bot".
 - A `type` that is not a string, and a `title`, `author_name` or `provider_name` that is not one, are no card and `''`
   where Rails would cast them; an oEmbed card with a blank title falls back to OpenGraph, where Mastodon saves it. A
   `twitter:player` page with a blank title is no card, where Mastodon saves one with its html.
@@ -1694,6 +1695,68 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   body read as received, a JSON number with a fraction or an exponent that equals zero (`0.0`, `0e0`) is read as not
   sensitive, where Mastodon's Float marks the status: `JSON.parse` does not tell it from `0` (an LD-signed body whose
   context types `sensitive` `@id` marks any number instead, above). Accepted, 2026-11-17.
+- A JSON text from a remote server whose string token, a key or a value, holds an unpaired surrogate escape is refused
+  as JSON that does not parse, wherever the token sits, a member a later duplicate key replaces included
+  (`jsonTextMalformed` in `src/platform/json-bounds.ts`): an inbound activity (nothing is applied, on spool replay and
+  in the cutover rollback's drain too), a fetched document, WebFinger answer or JSON-LD context (a body that is not
+  JSON, before its key entries are read), an oEmbed document (the card falls back to the page's OpenGraph) and a page's
+  JSON-LD script (skipped, the next one read). Mastodon 4.7.5's parser (json 2.21.2) raises on a high surrogate escape
+  no low one follows, so every path refuses that alike; it keeps a lone low surrogate escape (`\udc00`) as invalid
+  UTF-8, and what follows depends on the path (`test/fixtures/json-surrogates/` holds the parser's verdicts):
+  - An inbox body: Rails reads an ActivityStreams body as request parameters before the action runs, and answers 400 to
+    one holding a lone low surrogate in a value and 500 to one holding it only in a key (the next entry), so it applies
+    nothing either. Only a lone low surrogate in a member a later duplicate key replaces passes (its parameters and
+    `ProcessActivityService`, `process_activity_service.rb:9`, both keep the later value), and Mastodon applies that
+    activity where Kopje applies nothing.
+  - A fetched document (`body_to_json`, `json_ld_helper.rb:366-374`): Mastodon reads it and fails where it stores the
+    value, as PostgreSQL refuses invalid UTF-8 (an actor's name or summary, a key's PEM at
+    `process_account_service.rb:265`, a status's content: no account or status is stored); an actor or a status holding
+    one only in a member Mastodon does not store is stored, where Kopje refuses the document.
+  - A JSON-LD context: Mastodon's JSON-LD library (json-ld 3.3.2) fails on one in a term definition (`context.rb:666`),
+    as Kopje does, and reads one outside `@context`, which Kopje refuses.
+  - A WebFinger answer (`webfinger.rb:15`): Mastodon resolves an address whose answer holds one in a member it does not
+    read (`aliases`), which Kopje does not resolve.
+  - An oEmbed document (`fetch_oembed_service.rb:96`): Mastodon makes its card from one holding it in a member it does
+    not store, and makes no card from one holding it in a member it stores (the card's save fails in PostgreSQL, which
+    `fetch_link_card_service.rb:32` does not rescue); Kopje makes the card from the page's OpenGraph in both.
+  - A page's JSON-LD script (`link_details_extractor.rb:108`): Mastodon takes its title from one holding it in a member
+    it does not read, and makes no card from one holding it in the headline (`link_details_extractor.rb:164` raises);
+    Kopje reads the next script or the page's other data in both.
+
+  Neither fetches a remote NodeInfo document. Accepted, 2026-11-17.
+
+- An inbox body that does not parse as JSON (`JSON.parse` refuses it, or a string token holds an unpaired surrogate) is
+  answered 202 once its signature is checked (401 without a valid one), and nothing is applied (`parseActivity`,
+  `invalid-json`). Mastodon reads an ActivityStreams body as request parameters before the action runs
+  (`config/initializers/mime_types.rb:3` makes `application/activity+json` and `application/ld+json` JSON; actionpack
+  8.1.3.1 reads them in `ParamsWrapper#_wrapper_enabled?`, `params_wrapper.rb:294`, then in `verify_authenticity_token`)
+  and answers such a body before any signature is checked: 400 (`ActionDispatch::Http::Parameters::ParseError`,
+  `parameters.rb:98`, or, for invalid UTF-8 in a value, `ActionController::BadRequest`, `request/utils.rb:41` and
+  `request.rb:438`), or 500 when the invalid UTF-8 sits only in a key (the parameter filter raises on it,
+  `parameter_filter.rb:140`, from `params_wrapper.rb:302`). A Mastodon sender drops a delivery answered 400 as one
+  answered 202 (`json_ld_helper.rb:380-382`, unsalvageable) and retries one answered 500. Accepted, 2026-11-17.
+- Bytes that are not UTF-8 in a JSON text from a remote server (a surrogate's bytes, an overlong form, a lone
+  continuation byte, a truncated sequence) make an inbound activity and a JSON-LD context JSON that does not parse,
+  decoded strictly (on spool replay and in the cutover rollback's drain too; the signature is verified over the bytes as
+  received), where Mastodon refuses them; elsewhere Kopje decodes as Mastodon reads them or as before:
+  - An inbox body: Mastodon answers 400 to one holding them in a value and 500 to one holding them only in a key, as
+    for a lone low surrogate escape (the previous entry); Kopje answers 202 and applies nothing. One whose invalid
+    bytes sit only in a member a later duplicate key replaces passes Mastodon's parsing (an unsigned one reaches its
+    401, as the control does; whether it applies a signed one is not verified), where Kopje refuses it.
+  - A JSON-LD context: Mastodon's loader refuses one served without a charset wherever they sit (`truncated_body`,
+    `request.rb:270-291`, keeps such a body binary, and MultiJson's `json_gem` adapter, `json_gem.rb:42-45`, refuses
+    binary input that is not UTF-8) and one served as UTF-8 holding them in a term definition (json-ld 3.3.2,
+    `context.rb:666`), but reads one served as UTF-8 holding them outside `@context`, which Kopje refuses.
+  - A fetched document or WebFinger answer: Kopje reads each such sequence as U+FFFD. Mastodon keeps the bytes
+    (`body_to_json` and `webfinger.rb:15` parse them as they are), so it stores an actor or a status holding them only
+    in a member it does not store and nothing where PostgreSQL would store them (a name, a summary, a status's content),
+    which Kopje stores with U+FFFD, and both resolve an address whose answer holds them in `aliases`.
+  - An oEmbed document: Kopje refuses it (the card falls back to the page's OpenGraph), where Mastodon reads it
+    (`fetch_oembed_service.rb:96`) and makes its card unless a member it stores holds them.
+  - A page's JSON-LD script: both read each such sequence as U+FFFD, one for each maximal sequence (WHATWG decoding:
+    Mastodon's HTML5 parser, `link_details_extractor.rb:300`; Kopje's HTML rewriter).
+
+  Accepted, 2026-11-17.
 
 Delivery recipients (a local account's followers and poll voters, and the audience a staged `Update` or `Remove`
 reaches; Mastodon's `Account.inboxes`, `app/models/account.rb:490-493`; NET-2 and RES-2 in `docs/threat-model.md`):

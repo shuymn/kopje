@@ -573,11 +573,12 @@ describe("Flag: bounds (RES-2, RES-7)", () => {
     const t = await world();
     const actor = await mastodonInstanceActor(t.web);
     const emoji = "\u{1F600}";
-    const cases: [unknown, string][] = [
+    const cases: [unknown, string | null][] = [
       [emoji.repeat(MAX_REMOTE_REPORT_COMMENT), emoji.repeat(MAX_REMOTE_REPORT_COMMENT)],
       [emoji.repeat(MAX_REMOTE_REPORT_COMMENT + 1), emoji.repeat(MAX_REMOTE_REPORT_COMMENT)],
       ["\u0000" + emoji.repeat(6000), "\u0000" + emoji.repeat(MAX_REMOTE_REPORT_COMMENT - 1)],
-      ["a\uD800b", "a�b"],
+      // #1718: a lone surrogate makes the Flag JSON that does not parse, so no report is filed.
+      ["a\uD800b", null],
       ["   \n\t", ""],
       [{ text: "object" }, ""],
       [42, ""],
@@ -590,8 +591,10 @@ describe("Flag: bounds (RES-2, RES-7)", () => {
         "SELECT comment, length(CAST(comment AS BLOB)) AS bytes FROM reports WHERE uri = ?",
         flag.id,
       );
-      expect(rows.map((row) => row.comment)).toEqual([expected]);
-      expect(rows[0]!.bytes).toBe(new TextEncoder().encode(expected).length);
+      expect(rows.map((row) => row.comment)).toEqual(expected === null ? [] : [expected]);
+      if (expected !== null) {
+        expect(rows[0]!.bytes).toBe(new TextEncoder().encode(expected).length);
+      }
     }
     // The NUL-prefixed fill: 1 + 4,999 × 4 bytes.
     expect(new TextEncoder().encode("\u0000" + emoji.repeat(MAX_REMOTE_REPORT_COMMENT - 1)).length).toBe(19_997);

@@ -1,5 +1,5 @@
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { beforeEach, describe, expect, inject, it } from "vitest";
+import { beforeEach, describe, expect, inject, it, vi } from "vitest";
 
 import { run } from "../cli/lib/main.js";
 import { drainJournal } from "../src/app/cutover";
@@ -220,8 +220,11 @@ async function rollback(store: StoreStub, overrides: Record<string, unknown> = {
     );
     expect(response.status).toBe(expected);
   };
-  const spool = async (path: string, activity: Record<string, unknown>, signer: TestActor = carol) =>
-    post(path, await signedInit(signer, path, activity));
+  const spool = async (
+    path: string,
+    activity: Record<string, unknown> | string | Uint8Array,
+    signer: TestActor = carol,
+  ) => post(path, await signedInit(signer, path, activity));
   // Kopje's consumer, journaling or (journal: false) holding requests as in maintenance.
   const consume = (journal = true, ready = false) =>
     kopje.deliver(
@@ -798,6 +801,57 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
     await r.consume();
     expect((await r.drain()).body).toMatchObject({ sent: 0, unverified: 3 });
     expect(r.legacy.pending).toEqual([]);
+  });
+
+  // #1718: a body or a key document holding an unpaired surrogate is JSON that does not parse, as on the inbox.
+  it("keeps an activity holding an unpaired surrogate or bytes not UTF-8 as invalid JSON", async () => {
+    const store = await importedStore();
+    const r = await rollback(store);
+    const warn = vi.spyOn(console, "warn");
+    try {
+      await r.spool("/ap/users/alice/inbox", { ...follow(r.carol.uri, 1), junk: "\ud800" });
+      // One whose unpaired surrogate a later duplicate key hides from JSON.parse, which Mastodon's parser refuses.
+      const hidden = JSON.stringify({ ...follow(r.carol.uri, 2), junk: "ok" });
+      await r.spool("/ap/users/alice/inbox", hidden.replace(`"junk":"ok"`, String.raw`"junk":"\ud800","junk":"ok"`));
+      // One holding bytes that are not UTF-8 (a surrogate's), which Mastodon's inbox refuses.
+      const [before, after] = JSON.stringify({ ...follow(r.carol.uri, 3), junk: "MARK" }).split("MARK");
+      const encoder = new TextEncoder();
+      await r.spool(
+        "/ap/users/alice/inbox",
+        new Uint8Array([...encoder.encode(before), 0xed, 0xb0, 0x80, ...encoder.encode(after)]),
+      );
+      await r.spool("/ap/users/alice/inbox", { ...follow(r.carol.uri, 4), junk: "\ud83d\ude00" });
+      await r.consume();
+      expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 3 });
+      expect(r.legacy.pending.map((m) => (m.body as LegacyInboxMessage).activity.id)).toEqual([
+        `${r.carol.uri}#follows/4`,
+      ]);
+      expect(warn).toHaveBeenCalledWith({ event: "kopje.cutover.drain.unverified", reason: "invalid-json" });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("keeps an activity whose key document holds an unpaired surrogate, refused for good", async () => {
+    const store = await importedStore();
+    const r = await rollback(store);
+    r.web.serve(r.carol.uri, { ...r.carol.document, junk: "\udc00" });
+    r.web.serve(r.dave.uri, { ...r.dave.document, junk: "\ud83d\ude00" });
+    const warn = vi.spyOn(console, "warn");
+    try {
+      await r.spool("/ap/users/alice/inbox", follow(r.carol.uri, 1));
+      await r.spool("/ap/users/alice/inbox", follow(r.dave.uri, 1), r.dave);
+      await r.consume();
+      expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 1, stopped: null });
+      expect(r.legacy.pending.map((m) => (m.body as LegacyInboxMessage).activity.id)).toEqual([
+        `${r.dave.uri}#follows/1`,
+      ]);
+      // A key fetch that failed for good (not transient): the drain goes on.
+      expect(warn).toHaveBeenCalledWith({ event: "kopje.cutover.drain.unverified", reason: "key-unavailable" });
+      expect(r.web.fetched).toContain(r.carol.uri);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("does not hand on an LD-signed activity Kopje's inbox ignores (ID-1, ldSignedBodyReadable)", async () => {

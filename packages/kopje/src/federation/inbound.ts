@@ -26,7 +26,7 @@ import type { ActorState, RemoteActorInput, RemoteProfileInput } from "../domain
 import { flagObjects, MAX_FLAG_OBJECTS, reportComment } from "../domain/reports";
 import { fetchableHref, sameOrigin } from "../platform/http-url";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
-import { withinJsonBounds } from "../platform/json-bounds";
+import { jsonRefusal, jsonTextMalformed } from "../platform/json-bounds";
 import { isActivityPubMediaType, parseMediaType } from "../platform/media-type";
 import { callStore } from "../platform/store-client";
 import { type GoneSettled, goneSettler, type SettleGone } from "./actor-gone";
@@ -37,6 +37,7 @@ import {
   type FederationDeps,
   type FederationState,
   type RemoteLoaders,
+  withinBounds,
 } from "./federation";
 import { typeIs } from "./json-shapes";
 import { MAX_PUBLIC_KEYS } from "./key-entries";
@@ -261,17 +262,27 @@ async function activityEnvelope(
 
 // `rules` is for tests of the reading's second layer (ldSignedReading); every caller reads under all of them.
 export async function parseActivity(body: Uint8Array, rules: Rules = {}): Promise<Parsed> {
+  let text: string;
   let json: unknown;
   try {
-    json = JSON.parse(new TextDecoder().decode(body));
+    // RES-2: bytes that are not UTF-8 make a body that does not parse, as Mastodon's inbox refuses them (its request
+    // parameters, docs/mastodon-deviations.md); the signature is verified over the bytes as received.
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body);
+    json = JSON.parse(text);
   } catch {
+    return { ok: false, reason: "invalid-json" };
+  }
+  // RES-2: the work of reading an activity is bounded before anything reads it, an LD-signed body's reading included;
+  // a string token with an unpaired surrogate, one a duplicate key hides included, is JSON that does not parse
+  // (json-bounds.ts).
+  const refusal = jsonTextMalformed(text) ? "malformed" : jsonRefusal(json);
+  if (refusal === "malformed") {
     return { ok: false, reason: "invalid-json" };
   }
   if (!isObject(json)) {
     return { ok: false, reason: "not-an-object" };
   }
-  // RES-2: the work of reading an activity is bounded before anything reads it.
-  if (!withinJsonBounds(json)) {
+  if (refusal !== null) {
     return { ok: false, reason: "too-complex" };
   }
   const object = idOf(json.object);
@@ -1397,13 +1408,20 @@ export async function verifySpooledRequest(
   if (media === null || !isActivityPubMediaType(media)) {
     return { ok: false, transient: false, reason: "not-activitystreams" };
   }
+  let text: string;
   let json: unknown;
   try {
-    json = JSON.parse(new TextDecoder().decode(request.body));
+    // As parseActivity reads it: bytes that are not UTF-8 make a body that does not parse.
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(request.body);
+    json = JSON.parse(text);
   } catch {
     return { ok: false, transient: false, reason: "invalid-json" };
   }
-  if (!isObject(json) || !withinJsonBounds(json)) {
+  const refusal = jsonTextMalformed(text) ? "malformed" : jsonRefusal(json);
+  if (refusal === "malformed") {
+    return { ok: false, transient: false, reason: "invalid-json" };
+  }
+  if (!isObject(json) || refusal !== null) {
     return { ok: false, transient: false, reason: "not-an-object" };
   }
   // What Kopje's inbox would ignore is not handed to the legacy instance either.
@@ -1421,13 +1439,8 @@ export async function verifySpooledRequest(
   const deps = { ...loader, budget: requestBudget(Date.now()) };
   const bounded =
     (base: DocumentLoader): DocumentLoader =>
-    async (url, options) => {
-      const remote = await base(url, options);
-      if (!withinJsonBounds(remote.document)) {
-        throw new RefusedFetchError(new URL(remote.documentUrl), "Document exceeds the JSON bounds");
-      }
-      return remote;
-    };
+    async (url, options) =>
+      withinBounds(await base(url, options));
   const documentLoader = requireObjectRoot(bounded(createSafeLoader(deps)));
   const contextLoader = bounded(createContextLoader(deps));
   const signed = new Request(request.url, { method: request.method, headers, body: request.body });

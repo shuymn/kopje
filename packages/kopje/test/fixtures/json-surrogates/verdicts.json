@@ -1,0 +1,166 @@
+{
+  "json": "2.21.2",
+  "ruby": "4.0.9",
+  "cases": [
+    {
+      "text": "{\"a\":\"\\ud800\"}",
+      "parses": false,
+      "error": "incomplete surrogate pair"
+    },
+    {
+      "text": "{\"a\":\"\\udc00\"}",
+      "parses": true
+    },
+    {
+      "text": "{\"a\":\"\\ud800\\udc00\"}",
+      "parses": true
+    },
+    {
+      "text": "{\"a\":\"\\uD83D\\uDE00\"}",
+      "parses": true
+    },
+    {
+      "text": "{\"a\":\"\\uD83D\"}",
+      "parses": false,
+      "error": "incomplete surrogate pair"
+    },
+    {
+      "text": "{\"a\":\"\\ud800A\"}",
+      "parses": false,
+      "error": "incomplete surrogate pair"
+    },
+    {
+      "text": "{\"a\":\"\\ud800\\ud800\"}",
+      "parses": false,
+      "error": "invalid surrogate pair"
+    },
+    {
+      "text": "{\"a\":\"\\ud800\\u0041\"}",
+      "parses": false,
+      "error": "invalid surrogate pair"
+    },
+    {
+      "text": "{\"a\":\"\\udc00\\ud800\"}",
+      "parses": false,
+      "error": "incomplete surrogate pair"
+    },
+    {
+      "text": "{\"a\":\"\\ud800\\n\"}",
+      "parses": false,
+      "error": "incomplete surrogate pair"
+    },
+    {
+      "text": "{\"a\":\"\\ud800\\\"\",\"b\":1}",
+      "parses": false,
+      "error": "incomplete surrogate pair"
+    },
+    {
+      "text": "{\"a\":\"x\\udbff\\udfffy\"}",
+      "parses": true
+    },
+    {
+      "text": "{\"a\":\"\\ud83d\\ude00\\ud800\"}",
+      "parses": false,
+      "error": "incomplete surrogate pair"
+    },
+    {
+      "text": "{\"a\":\"\\ud83d😀\"}",
+      "parses": false,
+      "error": "incomplete surrogate pair"
+    },
+    {
+      "text": "{\"a\":\"😀\"}",
+      "parses": true
+    },
+    {
+      "text": "{\"a\":\"\\u00e9\\u0000\"}",
+      "parses": true
+    },
+    {
+      "text": "\"\\ud800\"",
+      "parses": false,
+      "error": "incomplete surrogate pair"
+    },
+    {
+      "text": "[\"ok\",\"\\ud800\"]",
+      "parses": false,
+      "error": "incomplete surrogate pair"
+    },
+    {
+      "text": "[1,\"\\udc00\",2]",
+      "parses": true
+    },
+    {
+      "text": "{\"\\ud800\":1}",
+      "parses": false,
+      "error": "incomplete surrogate pair"
+    },
+    {
+      "text": "{\"\\udc00\":1}",
+      "parses": true
+    },
+    {
+      "text": "{\"\\ud83d\\ude00\":1}",
+      "parses": true
+    },
+    {
+      "text": "{\"a\\ud800b\":{}}",
+      "parses": false,
+      "error": "incomplete surrogate pair"
+    },
+    {
+      "text": "{\"a\":\"\\\\ud800\"}",
+      "parses": true
+    },
+    {
+      "text": "{\"a\":\"\\\\\\ud800\"}",
+      "parses": false,
+      "error": "incomplete surrogate pair"
+    },
+    {
+      "text": "{\"a\":\"\\\\\\\\ud800\"}",
+      "parses": true
+    },
+    {
+      "text": "{\"\\\\ud800\":\"\\\\udc00\"}",
+      "parses": true
+    },
+    {
+      "text": "{\"a\":\"\\ud800\",\"a\":\"ok\"}",
+      "parses": false,
+      "error": "incomplete surrogate pair"
+    },
+    {
+      "text": "{\"a\":\"ok\",\"a\":\"\\ud800\"}",
+      "parses": false,
+      "error": "incomplete surrogate pair"
+    },
+    {
+      "text": "{\"\\ud800\":1,\"\\ud800\":2}",
+      "parses": false,
+      "error": "incomplete surrogate pair"
+    },
+    {
+      "text": "{\"a\":{\"b\":\"\\ud800\"},\"a\":{}}",
+      "parses": false,
+      "error": "incomplete surrogate pair"
+    },
+    {
+      "text": "{\"a\":[\"\\ud800\"],\"a\":[]}",
+      "parses": false,
+      "error": "incomplete surrogate pair"
+    },
+    {
+      "text": "{\"x\":{\"k\":\"\\udc00\",\"k\":\"ok\"}}",
+      "parses": true
+    },
+    {
+      "text": "{\"a\":\"\\ud800\\udc00\",\"a\":\"\\udc00\"}",
+      "parses": true
+    },
+    {
+      "text": "{\"a\":\"\\udc00\",\"a\":\"ok\"}",
+      "parses": true
+    }
+  ]
+}

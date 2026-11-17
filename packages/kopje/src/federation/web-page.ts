@@ -4,7 +4,7 @@ import { decodedEncoding, readHtmlBody } from "../platform/html-body";
 import type { CharsetSource } from "../platform/html-charset";
 import { type PageScan, type ScanLimits, type Scanner, scanHtml } from "../platform/html-scan";
 import { type PublicShapeViolation, WEB_URL_LIMIT, webUrl } from "../platform/http-url";
-import { withinJsonBounds } from "../platform/json-bounds";
+import { jsonRefusal, jsonTextMalformed } from "../platform/json-bounds";
 import { parseMediaType } from "../platform/media-type";
 import { dnsCheckHost } from "./loader";
 
@@ -559,9 +559,10 @@ async function getPage(
 // The JSON mode: GETs a public https URL as fetchWebPage does (the same hops, redirects, deadline and ceilings, or the
 // caller's tighter options), sending only its User-Agent (no Accept, as Mastodon's FetchOEmbedService), and parses a
 // 200 answer of any content type: its whole body within WEB_JSON_BODY_LIMIT bytes after workerd's Content-Encoding
-// decoding (a longer one is too-large, never parsed), decoded as UTF-8 (fatal), by JSON.parse, within
-// withinJsonBounds. A body that is empty or fails any of these is unparsable (reason json or json-bounds). Peak
-// memory: the body buffer and its copy (readBodyPrefix), the decoded text and the parsed value.
+// decoding (a longer one is too-large, never parsed), decoded as UTF-8 (fatal), by JSON.parse with no unpaired
+// surrogate in a string token (jsonTextMalformed), within the JSON bounds (jsonRefusal). A body that is empty or fails
+// any of these is unparsable (reason json, or json-bounds past the bounds). Peak memory: the body buffer and its copy
+// (readBodyPrefix), the decoded text and the parsed value.
 export async function fetchWebJson(
   input: string | URL,
   deps: WebPageDeps,
@@ -585,14 +586,17 @@ export async function fetchWebJson(
     if (prefix.limitReached) {
       call.stop("too-large");
     }
+    let text = "";
     let value: unknown;
     try {
-      value = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(prefix.bytes));
+      text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(prefix.bytes);
+      value = JSON.parse(text);
     } catch {
       call.stop("unparsable", { reason: "json" });
     }
-    if (!withinJsonBounds(value)) {
-      call.stop("unparsable", { reason: "json-bounds" });
+    const refusal = jsonTextMalformed(text) ? "malformed" : jsonRefusal(value);
+    if (refusal !== null) {
+      call.stop("unparsable", { reason: refusal === "malformed" ? "json" : "json-bounds" });
     }
     return { ok: true as const, finalUrl: url.href, redirects, status: 200 as const, value, cost: call.cost };
   });
