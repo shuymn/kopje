@@ -543,8 +543,9 @@ export class StoreKernel {
       this.#inject("hold");
       this.#writeState("hold", JSON.stringify(hold));
     } catch (error) {
-      // Storage may be unusable. The in-memory hold keeps this isolate readonly, and the durable upgrade marker
-      // keeps a fresh isolate readonly.
+      // Storage may be unusable. The in-memory hold keeps this isolate readonly when the schema is current and
+      // refusing every domain operation otherwise (refusalOf), and the durable upgrade marker does the same for a
+      // fresh isolate.
       this.#log({ event: "kopje.store.hold.persist-failed", ...errorFields(error) }, "error");
     }
     let durable: KernelState;
