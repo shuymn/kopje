@@ -23,7 +23,10 @@ import { writeOperation } from "./operation";
 //     migration 0113_featured_collection_syncs). The walk stops at the round's last claim, so each round reads at most
 //     ITEM_CHECK_CANDIDATES rows and every row it reads moves forward.
 //   - completeItemChecks applies a round's outcomes, each only while its item is pending and holds the token its claim
-//     set (a revision change, a revocation, a Reject and a later claim each replace or clear it): a match accepts the item with
+//     set (a revision change, a revocation, a Reject and a later claim each replace or clear it). An item whose
+//     candidate its member has retracted (ID-7's tombstone: the member's Delete reached Kopje without revoking the
+//     item) is revoked whatever the fetch found, since the member's server may serve a withdrawn authorization from a
+//     cache (Mastodon 4.7.5's FeatureAuthorizationsController, 30 seconds public). Otherwise a match accepts the item with
 //     the candidate as its verified authorization, unless another row of the same member holds that authorization
 //     (only the member's server can have said so), which ends the check as a mismatch; a final refusal (a 4xx other
 //     than 401, 408 and 429) or a document that is no object rejects it; a mismatch or an unsupported document (a
@@ -199,18 +202,35 @@ export const completeItemChecks = writeOperation<{ now: number; results: ItemChe
         attempts: number;
         collection: string;
         local: number | null;
+        retracted: number;
       }>(
         `SELECT account_id, candidate_approval_uri AS candidate, check_attempts AS attempts, collection_id AS collection,
-					(SELECT local FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX} WHERE c.id = collection_id) AS local
+					(SELECT local FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX} WHERE c.id = collection_id) AS local,
+					EXISTS (SELECT 1 FROM accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
+						CROSS JOIN inbound_retractions r ON r.actor_uri = a.uri AND r.target_uri = candidate_approval_uri
+						WHERE a.id = account_id AND r.expires_at > ?3) AS retracted
 				FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} ${CLAIMED}`,
         item,
         token,
+        now,
       );
       if (row === undefined) {
         continue;
       }
       const local = row.local === 1;
-      if (outcome === "transient") {
+      if (row.retracted === 1) {
+        // The member retracted the candidate (retractions.ts isRetracted, read here by the member's stored uri): its
+        // Delete reached Kopje without revoking this item (a bare URI, or before the owner listed it). Revoked,
+        // whatever the fetch found, since a server may serve a withdrawn authorization from a cache.
+        db.run(
+          `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
+						SET state = ${COLLECTION_ITEM_STATES.revoked}, check_token = NULL, check_due_at = NULL, updated_at = ?3
+					${CLAIMED}`,
+          item,
+          token,
+          at,
+        );
+      } else if (outcome === "transient") {
         db.run(
           `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} SET check_token = NULL, check_due_at = ?3
 					${CLAIMED}`,

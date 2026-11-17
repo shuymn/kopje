@@ -3,13 +3,14 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { ourFeatureRequest } from "../src/domain/feature-requests";
+import { SWEEP_BATCH } from "../src/domain/remote-actors";
 import { settleDeliveries, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { mastodon47Signed, mastodonFeatureDelete, signTime } from "./author-proof-helpers";
 import { checkRound, FEATURE_CONTEXT } from "./featured-collection-helpers";
 import { BUILD } from "./helpers";
 import { mastodonActor, type TestActor } from "./inbox-helpers";
-import { ALICE_URI, AS, followed, PUBLIC, setup, type Setup } from "./inbox-status-helpers";
+import { ALICE_URI, AS, followed, PUBLIC, retractionsAtCap, setup, type Setup } from "./inbox-status-helpers";
 import { watchedCursor } from "./read-helpers";
 
 // Remote members of local collections (#1589's D23, Mastodon 4.7.5's AddAccountToCollectionService, FeatureRequest,
@@ -146,11 +147,28 @@ function serve(w: World, a: string, uri: string): void {
   });
 }
 
-const withdraw = (w: World, a: string) => w.t.web.served.delete(a);
-
 // The member's Delete of `a`, embedding it as Mastodon 4.7.5 writes it (interactingObject the collection
 // `uri`, interactionTarget the member).
 const deleted = (w: World, a: string, uri: string) => w.t.post(w.member, mastodonFeatureDelete(w.member, a, uri));
+
+// The member's Delete of `a` by its URI alone.
+const bareDelete = (member: TestActor, a: string) => ({
+  "@context": AS,
+  id: `${a}#delete`,
+  type: "Delete",
+  actor: member.uri,
+  object: a,
+});
+
+// The authorizations the member retracted (ID-7), its retraction cap's filler left out.
+async function retractedBy(w: World): Promise<string[]> {
+  const rows = await sql<{ target_uri: string }>(
+    w.t.store,
+    "SELECT target_uri FROM inbound_retractions WHERE actor_uri = ? ORDER BY target_uri",
+    w.member.uri,
+  );
+  return rows.map((row) => row.target_uri).filter((uri) => !uri.includes("/filler/"));
+}
 
 // The member's request lookup (feature-requests.ts ourFeatureRequest) of `request`: the item it finds, and the rows
 // its statements read.
@@ -319,13 +337,15 @@ describe("a remote member's feature request (D23)", () => {
   });
 
   // 4-T4, delayed deletions. A is the authorization of an earlier membership (the member accepted, was removed and
-  // added again), withdrawn; B the current request's, served until the member withdraws it, which it does before
-  // sending its Delete. The messages arrive in each order, and the check rounds run after the last. Each order's end,
-  // whether it passed through accepted, the fetches of B, and the Add and Remove it sent. Fails if
-  // a Delete acts on the collection and member alone (the Delete(A), Accept(B) orders revoke B), if an Accept after
-  // another authorization's deletion is accepted without a check (Delete(A), Delete(B), Accept(B) accepts B), or if a
-  // later deletion replaces the recorded one and the Accept is decided on it alone (Delete(B), Delete(A), Accept(B)
-  // accepts B).
+  // added again), withdrawn; B the current request's, which the member withdraws before sending its Delete, and which
+  // its server keeps serving from its 30-second public cache (Mastodon 4.7.5's FeatureAuthorizationsController#show,
+  // dist/nginx.conf), so a fetch cannot tell B was withdrawn. The messages arrive in each order, and the check rounds
+  // run after the last. Each order's end, whether it passed through accepted, the fetches of B, and the Add and Remove
+  // it sent. Fails if a Delete acts on the collection and member alone (the Delete(A), Accept(B) orders revoke B), if
+  // an Accept after another authorization's deletion is accepted without a check (Delete(A), Accept(B) fetches
+  // nothing), if a later deletion replaces the recorded one and the Accept is decided on it alone (Delete(B),
+  // Delete(A), Accept(B) accepts B), or if the Accept does not read the member's retraction of B (Delete(A), Delete(B),
+  // Accept(B) fetches B, and accepts it with its Add once the check does not read it either).
   it("decides the Accept by the deletions that came before it, in every order", async () => {
     type Step = "Delete(A)" | "Delete(B)" | "Accept(B)";
     const cases: [Step[], { state: number; activities: string[]; fetches: number }][] = [
@@ -333,7 +353,7 @@ describe("a remote member's feature request (D23)", () => {
       [["Accept(B)", "Delete(B)"], { state: REVOKED, activities: ["Add", "Remove"], fetches: 0 }],
       [["Delete(A)", "Accept(B)"], { state: ACCEPTED, activities: ["Add"], fetches: 1 }],
       [["Accept(B)", "Delete(A)"], { state: ACCEPTED, activities: ["Add"], fetches: 0 }],
-      [["Delete(A)", "Delete(B)", "Accept(B)"], { state: REVOKED, activities: [], fetches: 1 }],
+      [["Delete(A)", "Delete(B)", "Accept(B)"], { state: REVOKED, activities: [], fetches: 0 }],
       [["Delete(A)", "Accept(B)", "Delete(B)"], { state: REVOKED, activities: [], fetches: 0 }],
       [["Delete(B)", "Delete(A)", "Accept(B)"], { state: REVOKED, activities: [], fetches: 0 }],
       [["Delete(B)", "Accept(B)", "Delete(A)"], { state: REVOKED, activities: [], fetches: 0 }],
@@ -351,6 +371,7 @@ describe("a remote member's feature request (D23)", () => {
       expect(again.status).toBe(200);
       const item = await itemOf(w, first.id);
       const b = authorizationOf(w.member, 2);
+      // Served throughout: from the member's server, then from its cache once withdrawn.
       serve(w, b, first.uri);
       const withdrawsB = order.includes("Delete(B)");
       const states: number[] = [];
@@ -358,7 +379,6 @@ describe("a remote member's feature request (D23)", () => {
         if (step === "Delete(A)") {
           await deleted(w, a, first.uri);
         } else if (step === "Delete(B)") {
-          withdraw(w, b);
           await deleted(w, b, first.uri);
         } else {
           await w.t.post(w.member, answer(w.member, "Accept", item.activity_uri!, b));
@@ -509,14 +529,91 @@ describe("a remote member's Delete of its feature authorization (D23)", () => {
     expect(await itemActivities(w.t, accepted.item.id)).toEqual(["Add"]);
   });
 
-  // D23: the first deletion before the member's answer is recorded; a later one changes nothing. Fails if a later
-  // deletion replaces the recorded one.
-  it("records the first deletion of a pending item's authorization, and only the first", async () => {
+  // D23: the first deletion before the member's answer is recorded on the item, a later one as the member's retraction
+  // (ID-7). Fails if a later deletion replaces the recorded one.
+  it("records the first deletion of a pending item's authorization on the item, and a later one as a retraction", async () => {
     const w = await world();
     const { id, uri } = await featuring(w);
     await deleted(w, authorizationOf(w.member, 1), uri);
     await deleted(w, authorizationOf(w.member, 2), uri);
     expect((await itemOf(w, id)).retracted_approval_uri).toBe(authorizationOf(w.member, 1));
+    expect(await retractedBy(w)).toEqual([authorizationOf(w.member, 2)]);
+  });
+
+  // A Delete that reaches no item (by its bare URI, which names no accepted authorization) is kept as the member's
+  // retraction, which the Accept naming it and the check of it read: the Accept ends the item revoked without a fetch,
+  // and a check queued before the Delete ends it revoked though the member's cache still serves the authorization.
+  // Once the retraction expired, an Accept applies. Fails if the Accept does not read the retraction (R accepted, its
+  // Add sent), if the check's completion does not (B accepted, its Add sent), or if the Accept reads an expired
+  // retraction (S revoked).
+  it("revokes at an Accept or a check of an authorization whose bare Delete came before it", async () => {
+    const before = await world();
+    const first = await featuring(before);
+    const r = authorizationOf(before.member, 1);
+    serve(before, r, first.uri);
+    expect(await before.t.post(before.member, bareDelete(before.member, r))).toBe(202);
+    expect(await itemOf(before, first.id)).toMatchObject({ state: PENDING, retracted_approval_uri: null });
+    expect(await retractedBy(before)).toEqual([r]);
+    await before.t.post(before.member, answer(before.member, "Accept", first.item.activity_uri!, r));
+    await checks(before);
+    expect(await itemOf(before, first.id)).toMatchObject({ state: REVOKED, approval_uri: null });
+    expect(await itemActivities(before.t, first.item.id)).toEqual([]);
+    expect(before.t.web.fetched.filter((url) => url === r)).toEqual([]);
+    // A retraction that expired (ID-7's 30 days) no longer decides the Accept, which applies as on Mastodon; the
+    // Accept's own sweep takes SWEEP_BATCH older expired retractions first, so S's is still stored when it is read.
+    const lapsed = await featuring(before);
+    const s = authorizationOf(before.member, 2);
+    await before.t.post(before.member, bareDelete(before.member, s));
+    await sql(before.t.store, "UPDATE inbound_retractions SET expires_at = ? WHERE target_uri = ?", NOW, s);
+    await sql(
+      before.t.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO inbound_retractions (actor_uri, target_uri, expires_at) SELECT ?2, ?2 || '/old/' || i, ?3 FROM n`,
+      SWEEP_BATCH,
+      "https://elsewhere.example/users/x",
+      NOW - 1,
+    );
+    await before.t.post(before.member, answer(before.member, "Accept", lapsed.item.activity_uri!, s));
+    expect(await sql(before.t.store, "SELECT 1 FROM inbound_retractions WHERE target_uri = ?", s)).toHaveLength(1);
+    expect(await itemOf(before, lapsed.id)).toMatchObject({ state: ACCEPTED, approval_uri: s });
+
+    const meanwhile = await world();
+    const second = await featuring(meanwhile);
+    await deleted(meanwhile, authorizationOf(meanwhile.member, 1), second.uri);
+    const b = authorizationOf(meanwhile.member, 2);
+    serve(meanwhile, b, second.uri);
+    await meanwhile.t.post(meanwhile.member, answer(meanwhile.member, "Accept", second.item.activity_uri!, b));
+    expect(await meanwhile.t.post(meanwhile.member, bareDelete(meanwhile.member, b))).toBe(202);
+    // The bare Delete names no accepted authorization: the item still awaits the check of B.
+    expect(await itemOf(meanwhile, second.id)).toMatchObject({ state: PENDING, candidate_approval_uri: b });
+    await checks(meanwhile);
+    expect(meanwhile.t.web.fetched.filter((url) => url === b)).toEqual([b]);
+    expect(await itemOf(meanwhile, second.id)).toMatchObject({
+      state: REVOKED,
+      approval_uri: null,
+      check_due_at: null,
+    });
+    expect(await itemActivities(meanwhile.t, second.item.id)).toEqual([]);
+  });
+
+  // At MAX_RETRACTIONS_PER_ACTOR a later deletion cannot be kept as a retraction, so the pending item ends revoked: its
+  // Accept, and a check, would otherwise accept an authorization the member withdrew. Fails if the item stays pending
+  // at the cap (B, served from the cache, accepted with its Add).
+  it("ends a pending item revoked at a later deletion it cannot keep, at the member's retraction cap", async () => {
+    const w = await world();
+    const { id, uri, item } = await featuring(w);
+    await retractionsAtCap(w.t, w.member);
+    await deleted(w, authorizationOf(w.member, 1), uri);
+    expect(await itemOf(w, id)).toMatchObject({ state: PENDING, retracted_approval_uri: authorizationOf(w.member, 1) });
+    const b = authorizationOf(w.member, 2);
+    serve(w, b, uri);
+    await deleted(w, b, uri);
+    expect(await itemOf(w, id)).toMatchObject({ state: REVOKED, retracted_approval_uri: null });
+    expect(await retractedBy(w)).toEqual([]);
+    await w.t.post(w.member, answer(w.member, "Accept", item.activity_uri!, b));
+    await checks(w);
+    expect(await itemOf(w, id)).toMatchObject({ state: REVOKED, approval_uri: null });
+    expect(await itemActivities(w.t, item.id)).toEqual([]);
   });
 });
 

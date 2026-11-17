@@ -19,7 +19,7 @@ import { sanitizeRemoteCodePoints } from "../security/html";
 import { localCollectionUri, recordItemRemove } from "./collection-documents";
 import { notifyUpdated, remoteCollectionTag } from "./collections";
 import { allocateLocalId, insertWithFreshId } from "./ids";
-import { isRetracted } from "./retractions";
+import { isRetracted, retract } from "./retractions";
 import { TREND_LANGUAGES } from "./trend-languages";
 
 // Remote accounts' collections (FEP-7aa9, Mastodon 4.7.5's ActivityPub::ProcessFeaturedCollectionService and
@@ -572,17 +572,22 @@ export function removeFeaturedItem(db: Db, collection: string, uri: string): boo
 //     completion or Accept accepts it (no token, no queue); a local collection's item that was accepted has its Remove
 //     sent to the collection's reach (a pending one was never announced);
 //   - a local collection's pending item whose member has not answered (no approval_uri, no candidate): the first such
-//     authorization is recorded as its retracted_approval_uri, which the member's Accept reads (feature-requests.ts);
-//     a later one changes nothing;
-//   - any other: nothing, so a delayed Delete of an authorization since replaced leaves the replacement alone.
-// At most one row is read by each lookup and one written. 'revoked' or 'recorded' when the row changed, else null.
+//     authorization is recorded as its retracted_approval_uri; a later, different one as the member's retraction
+//     (ID-7's tombstone, retractions.ts retract), and when the member is at MAX_RETRACTIONS_PER_ACTOR, which keeps it
+//     from being recorded, the item ends revoked instead. The member's Accept (feature-requests.ts) and a check's
+//     completion (collection-checks.ts) read both, so no positive answer for an authorization the member withdrew
+//     accepts the item, even one the member's server still serves from a cache;
+//   - any other: nothing, so a delayed Delete of an authorization since replaced leaves the replacement alone (the
+//     caller records it as the member's retraction, inbox.ts retractUnknown).
+// At most one row is read by each lookup and one written. 'revoked', 'recorded' (on the row) or 'retracted' (as the
+// member's retraction) when the Delete was kept, else null.
 export function revokeFeatureAuthorization(
   db: Db,
   member: { id: string; uri: string },
   authorization: string,
   feature: { collection: string | null; member: string | null } | null,
   now: number,
-): "revoked" | "recorded" | null {
+): "revoked" | "recorded" | "retracted" | null {
   const row =
     db.first<MemberRow>(
       `SELECT ${MEMBER_ROW} FROM collection_items i INDEXED BY collection_items_approval
@@ -612,21 +617,47 @@ export function revokeFeatureAuthorization(
     }
     return "revoked";
   }
-  if (row.local !== 1) {
+  if (
+    row.local !== 1 ||
+    row.state !== COLLECTION_ITEM_STATES.pending ||
+    row.approval !== null ||
+    row.candidate !== null ||
+    row.retracted === authorization
+  ) {
     return null;
   }
-  const recorded = db.run(
-    `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} SET retracted_approval_uri = ?2
-		WHERE id = ?1 AND state = ${COLLECTION_ITEM_STATES.pending} AND approval_uri IS NULL
-			AND candidate_approval_uri IS NULL AND retracted_approval_uri IS NULL`,
+  if (row.retracted === null) {
+    db.run(
+      `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} SET retracted_approval_uri = ?2 WHERE id = ?1`,
+      row.id,
+      authorization,
+    );
+    return "recorded";
+  }
+  if (retract(db, member.uri, authorization, now)) {
+    return "retracted";
+  }
+  db.run(
+    `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
+			SET state = ${COLLECTION_ITEM_STATES.revoked}, retracted_approval_uri = NULL, updated_at = ?2
+		WHERE id = ?1`,
     row.id,
-    authorization,
+    new Date(now).toISOString(),
   );
-  return recorded > 0 ? "recorded" : null;
+  return "revoked";
 }
 
-type MemberRow = { id: string; collection: string; state: number; local: number };
-const MEMBER_ROW = "i.id, i.collection_id AS collection, i.state, c.local";
+type MemberRow = {
+  id: string;
+  collection: string;
+  state: number;
+  local: number;
+  approval: string | null;
+  candidate: string | null;
+  retracted: string | null;
+};
+const MEMBER_ROW = `i.id, i.collection_id AS collection, i.state, c.local, i.approval_uri AS approval,
+	i.candidate_approval_uri AS candidate, i.retracted_approval_uri AS retracted`;
 
 // The member's row in the collection `uri`: a stored remote collection's, by collections_uri, else a local
 // collection's, by the id its uri ends with, when the uri is exactly the one Kopje writes for it.

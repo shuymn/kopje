@@ -25,6 +25,9 @@ export const CHECK_LEASE_MS = 10 * 60_000;
 export const CHECK_BACKOFF_MS = 15 * 60_000;
 // ID-7: a retraction holds for 30 days.
 const RETRACTION_MS = 30 * DAY_MS;
+// Mastodon v4.7.5 serves a feature authorization publicly cacheable for 30 seconds
+// (app/controllers/activitypub/feature_authorizations_controller.rb:12).
+const AUTHORIZATION_CACHE_MS = 30_000;
 
 export type Owner = "O" | "X";
 export type ItemState = "pending" | "accepted" | "rejected" | "revoked";
@@ -93,6 +96,8 @@ export class FeaturePolicy {
   readonly deletes = new Set<string>();
   // ID-7: the item uris an owner's Remove named while Kopje held no such item, with the time it was recorded.
   readonly retracted = new Map<string, number>();
+  // ID-7: the authorizations whose Delete revoked no row, kept as M's retraction, with the time it was recorded.
+  readonly withdrawals = new Map<string, number>();
   readonly log: Logged[] = [];
   // Violations of the rules' own guarantees (Evidence, Revocations received, Fences), checked as each rule applies.
   readonly problems: string[] = [];
@@ -156,7 +161,8 @@ export class FeaturePolicy {
   // ID-6: the member's Delete of its authorization `authorization`, direct or relayed with its proof, which names the
   // collection of `named`. Its row is the member's row whose verified authorization it is, else the member's row in
   // that collection; that row is revoked (unqueued, unclaimed) only while the authorization is its current one, its
-  // verified authorization, or its candidate while none is verified. Any other Delete changes nothing.
+  // verified authorization, or its candidate while none is verified. Any other Delete changes no row and is kept as
+  // M's retraction of the authorization (ID-7), which a check's completion reads.
   deleteReceived(authorization: string, named: Owner, relayed: boolean, now: number): string {
     this.deletes.add(authorization);
     const row = [...this.rows.values()].find((r) => r.approval === authorization) ?? this.rows.get(named);
@@ -170,6 +176,9 @@ export class FeaturePolicy {
       if (result !== "nothing") {
         Object.assign(row, { state: "revoked", due: null, token: null, changed: now });
       }
+    }
+    if (result === "nothing") {
+      this.withdrawals.set(authorization, now);
     }
     this.record({ k: "delete", authorization, relayed, result });
     return `K.Delete:${result}`;
@@ -219,9 +228,10 @@ export class FeaturePolicy {
   }
 
   // A check's completion, applied only to a pending item under its claim's token (a revision change, a revocation, an
-  // owner's removal and a later claim each replace or clear it). A match accepts with the candidate as the verified
-  // authorization, unless another row of M holds it, which ends the check as a mismatch; gone rejects; a mismatch
-  // ends the check; a transient failure backs off. Each clears the token.
+  // owner's removal and a later claim each replace or clear it). A candidate M retracted is revoked, whatever the
+  // fetch found. A match accepts with the candidate as the verified authorization, unless another row of M holds it,
+  // which ends the check as a mismatch; gone rejects; a mismatch ends the check; a transient failure backs off. Each
+  // clears the token.
   complete(token: string, outcome: ItemCheckOutcome, now: number): string {
     const entry = [...this.rows].find(([, r]) => r.token === token);
     let result: string;
@@ -229,7 +239,10 @@ export class FeaturePolicy {
       result = "fenced";
     } else {
       const [owner, row] = entry;
-      if (outcome === "transient") {
+      if ((this.withdrawals.get(row.candidate) ?? -Infinity) + RETRACTION_MS > now) {
+        Object.assign(row, { state: "revoked", token: null, due: null, changed: now });
+        result = "retracted";
+      } else if (outcome === "transient") {
         Object.assign(row, { token: null, due: now + CHECK_BACKOFF_MS * 4 ** Math.max(row.attempts - 1, 0) });
         result = "transient";
       } else if (outcome === "gone") {
@@ -395,6 +408,9 @@ export class MemberPolicy {
   readonly blockRetracted = new Set<string>();
   // The authorizations whose Delete Kopje processed.
   readonly deletes = new Set<string>();
+  // ID-7: the authorizations whose Delete neither revoked R's item nor was recorded as its first deletion, kept as R's
+  // retraction, with the time it was recorded.
+  readonly withdrawals = new Map<string, number>();
   // What Kopje queued for R's inbox, in order.
   readonly queued: ToMember[] = [];
   readonly problems: string[] = [];
@@ -495,23 +511,24 @@ export class MemberPolicy {
     return "L.unblock";
   }
 
-  // D23: R's Accept of `request` with `result`. Only a pending item awaiting no check changes, and the first deletion
-  // Kopje recorded decides it: none accepts (the Add queued), `result` itself revokes, another queues a check of
-  // `result` (attempts 0, due now) and clears the deletion.
+  // D23: R's Accept of `request` with `result`. Only a pending item awaiting no check changes. A `result` whose Delete
+  // Kopje kept before it (the item's first deletion, or R's retraction) revokes; otherwise the first deletion decides
+  // it: none accepts (the Add queued), another queues a check of `result` (attempts 0, due now) and clears the
+  // deletion.
   accept(request: string, result: string, now: number): string {
     const row = this.row?.request === request ? this.row : undefined;
     const pending = row?.state === "pending";
     let outcome: string;
     if (row === undefined || row.state !== "pending" || row.candidate !== null) {
       outcome = "ignored";
+    } else if (row.retracted === result || this.withdrawn(result, now)) {
+      Object.assign(row, { state: "revoked", retracted: null, changed: now });
+      outcome = "revoked";
     } else if (row.retracted === null) {
       this.accepting(row, result, this.issued.has(`${request} ${result}`));
       Object.assign(row, { state: "accepted", approval: result, changed: now });
       this.queue({ type: "Add", item: row.item, authorization: result });
       outcome = "accepted";
-    } else if (row.retracted === result) {
-      Object.assign(row, { state: "revoked", retracted: null, changed: now });
-      outcome = "revoked";
     } else {
       Object.assign(row, { retracted: null, candidate: result, due: now, attempts: 0, token: null, changed: now });
       outcome = "check";
@@ -532,9 +549,15 @@ export class MemberPolicy {
     return `K.Reject:${outcome}`;
   }
 
+  // ID-7: whether R's retraction of `authorization` holds at `now`.
+  private withdrawn(authorization: string, now: number): boolean {
+    return (this.withdrawals.get(authorization) ?? -Infinity) + RETRACTION_MS > now;
+  }
+
   // ID-6: R's Delete of `authorization`, which names C and R. The item is revoked (unqueued, unclaimed; its Remove
   // queued if it was accepted) only while `authorization` is its current one (its approval_uri, else its candidate);
-  // else a pending item with no authorization, candidate or recorded deletion records it as its first; else nothing.
+  // else a pending item with no authorization or candidate records it as its first deletion, or, holding another,
+  // keeps it as R's retraction (`retracted`); any other Delete changes no row and is kept as R's retraction too.
   deleted(authorization: string, now: number): string {
     this.deletes.add(authorization);
     const row = this.row;
@@ -553,15 +576,16 @@ export class MemberPolicy {
         }
       }
     }
-    if (
-      outcome === "nothing" &&
-      row?.state === "pending" &&
-      row.approval === null &&
-      row.candidate === null &&
-      row.retracted === null
-    ) {
-      row.retracted = authorization;
-      outcome = "recorded";
+    if (outcome === "nothing" && row?.state === "pending" && row.approval === null && row.candidate === null) {
+      if (row.retracted === null) {
+        row.retracted = authorization;
+        outcome = "recorded";
+      } else if (row.retracted !== authorization) {
+        outcome = "retracted";
+      }
+    }
+    if (outcome === "nothing" || outcome === "retracted") {
+      this.withdrawals.set(authorization, now);
     }
     this.record({ k: "K.Delete", authorization, outcome });
     return `K.Delete:${outcome}`;
@@ -632,13 +656,16 @@ export class MemberPolicy {
     return `K.fetch:${outcome === "gone" ? "404" : outcome}`;
   }
 
-  // A completion, only for a pending item under its claim's token: a match accepts with the candidate (the Add
-  // queued), gone revokes, a transient failure backs off.
+  // A completion, only for a pending item under its claim's token: a candidate R retracted revokes whatever the fetch
+  // found; else a match accepts with the candidate (the Add queued), gone revokes, a transient failure backs off.
   complete(token: string, outcome: ItemCheckOutcome, now: number): string {
     const row = this.row;
     let result: string;
     if (row === undefined || row.token !== token || row.state !== "pending") {
       result = "fenced";
+    } else if (this.withdrawn(row.candidate!, now)) {
+      Object.assign(row, { state: "revoked", token: null, due: null, changed: now });
+      result = "retracted";
     } else if (outcome === "transient") {
       Object.assign(row, { token: null, due: now + CHECK_BACKOFF_MS * 4 ** Math.max(row.attempts - 1, 0) });
       result = "transient";
@@ -688,6 +715,8 @@ export class MemberPeer {
   // before their Block (undo.rb:121-125, delete_later!).
   lBlocks = false;
   private readonly laterDeletes = new Set<string>();
+  // When R's server stopped serving each authorization it served.
+  private readonly withdrawnAt = new Map<string, number>();
   readonly outbox: FromMember[] = [];
   readonly issued = new Set<string>();
   private ids = 0;
@@ -705,6 +734,23 @@ export class MemberPeer {
   // feature_authorizations_controller.rb:22-28: served while its item is accepted.
   served(authorization: string): boolean {
     return this.item?.authorization === authorization && this.item.state === "accepted";
+  }
+
+  // A fetch from outside R's server at `now`: what it serves, or, for AUTHORIZATION_CACHE_MS after it stopped serving
+  // an authorization (revoked, or its item destroyed), the copy a cache in front of it kept (the controller's
+  // `expires_in 30.seconds, public: true`, :12, which dist/nginx.conf's proxy cache honours), as if fetched just
+  // before.
+  fetched(authorization: string, now: number): boolean {
+    return (
+      this.served(authorization) || (this.withdrawnAt.get(authorization) ?? -Infinity) + AUTHORIZATION_CACHE_MS > now
+    );
+  }
+
+  // R's item stops being served at `now`.
+  private withdraw(now: number): void {
+    if (this.item?.state === "accepted") {
+      this.withdrawnAt.set(this.item.authorization, now);
+    }
   }
 
   // lib/activitypub/activity/feature_request.rb:6-62. AccountPolicy#feature? (policies/account_policy.rb:68-70):
@@ -764,11 +810,12 @@ export class MemberPeer {
   }
 
   // remove.rb:18-20, :50-54: the item with the uri is destroyed, whatever its state.
-  remove(item: string): string {
+  remove(item: string, now: number): string {
     let destroyed: string | null = null;
     let result: "destroyed" | "nothing" = "nothing";
     if (this.item?.uri === item) {
       destroyed = this.item.authorization;
+      this.withdraw(now);
       this.item = undefined;
       result = "destroyed";
     } else if (this.unowned.delete(item)) {
@@ -785,6 +832,7 @@ export class MemberPeer {
     if (item === undefined || (cause === "revoke" && item.state !== "accepted")) {
       return null;
     }
+    this.withdraw(now);
     Object.assign(item, { state: "revoked", changed: now });
     this.outbox.push({ type: "Delete", authorization: item.authorization });
     this.record({ k: "R.revoke", authorization: item.authorization, cause });

@@ -463,6 +463,7 @@ const REQUIRED = [
   "K.complete:mismatch",
   "K.complete:transient",
   "K.complete:fenced",
+  "K.complete:retracted",
   "via read",
   "via add",
   "via remove",
@@ -755,7 +756,7 @@ function processAtMember(w: MemberWorld, pick: number | ((m: ToMember) => boolea
       : job!.type === "Add"
         ? w.peer.add(job!.item, job!.authorization, now)
         : job!.type === "Remove"
-          ? w.peer.remove(job!.item)
+          ? w.peer.remove(job!.item, now)
           : job!.type === "Block"
             ? w.peer.receivedBlock(job!.id)
             : w.peer.receivedUndo(job!.id);
@@ -836,9 +837,10 @@ async function memberClaim(w: MemberWorld): Promise<void> {
   memberStep(w, `claim (${checks.length})`, ...w.policy.claim(w.clock.now, checks[0]?.token ?? null));
 }
 
-// A claimed check's fetch: R's server serves an authorization while its item is accepted.
+// A claimed check's fetch: R's server serves an authorization while its item is accepted, and its cache for a while
+// after (MemberPeer.fetched), so a fetch at the clock's moment of a withdrawal still matches.
 function memberFetch(w: MemberWorld, flight: MemberFlight, transient: boolean): void {
-  flight.outcome = transient ? "transient" : w.peer.served(flight.authorization) ? "match" : "gone";
+  flight.outcome = transient ? "transient" : w.peer.fetched(flight.authorization, w.clock.now) ? "match" : "gone";
   memberStep(w, `fetch ${flight.token.slice(0, 8)}`, w.policy.fetched(flight.token, flight.outcome));
 }
 
@@ -1125,6 +1127,7 @@ const MEMBER_REQUIRED = [
   "K.Delete:revoked",
   "K.Delete:candidate-revoked",
   "K.Delete:recorded",
+  "K.Delete:retracted",
   "K.Delete:nothing",
   "K.Block:blocked",
   "K.Undo:undone",
@@ -1192,6 +1195,22 @@ describe("a remote member of a local collection: Kopje against its policy and a 
     expect(w.peer.item?.state).toBe("revoked");
     expect(accepted(w, 2)).toBe(passes);
     expect(w.policy.queued.some((m) => m.type === "Add" && auth(2)(m.authorization))).toBe(passes);
+  });
+
+  // R withdrew B, which its cache still serves; Kopje receives the delayed Delete(A), then Delete(B), then Accept(B). B's Delete is kept as R's retraction (A holds the item's first deletion), and the Accept
+  // ends the item revoked without a check, so the cached B never accepts it. Fails if the Accept does not read the
+  // retraction (Kopje queues a check the policy does not).
+  it("never accepts B, served from R's cache, at Delete(A), Delete(B) and then Accept(B)", async () => {
+    const w = await memberRun([...REASKED, { k: "revoke" }, DELETE_A, DELETE_B, ACCEPT_B, { k: "claim" }]);
+    expect(w.stats["K.Delete:recorded"]).toBe(1);
+    expect(w.stats["K.Delete:retracted"]).toBe(1);
+    expect(w.stats["K.Accept:revoked"]).toBe(1);
+    expect(w.stats["K.claim"]).toBeUndefined();
+    // A check of B would have matched: R's cache still serves it.
+    expect(w.peer.served(`${w.r.uri}/feature_authorizations/2`)).toBe(false);
+    expect(w.peer.fetched(`${w.r.uri}/feature_authorizations/2`, w.clock.now)).toBe(true);
+    expect(accepted(w, 2)).toBe(false);
+    expect(w.policy.row).toMatchObject({ state: "revoked", approval: null });
   });
 
   it("revokes at R's Delete of B after its Accept of B", async () => {

@@ -4,17 +4,19 @@ import { sameOrigin } from "../platform/http-url";
 import { COLLECTION_ITEM_STATES, COLLECTION_URI_BYTES } from "../platform/stored-bounds";
 import { recordItemAdd } from "./collection-documents";
 import { storableUrl } from "./remote-featured-collections";
+import { isRetracted } from "./retractions";
 
 // A remote member's answer to Kopje's FeatureRequest (#1589's D23, Mastodon 4.7.5's Accept#accept_feature_request! and
 // Reject#reject_feature_request!). The request is the pending item collections.ts insertItem wrote, named by its
 // activity_uri; only the item's own account answers it (ID-6). An Accept changes only a pending item whose earlier
-// answer awaits no check (no candidate_approval_uri), and is decided by the first deletion of the member's
-// authorization Kopje recorded before it (retracted_approval_uri, remote-featured-collections.ts
-// revokeFeatureAuthorization):
-//   - none: accepted with the result R as its approval_uri, and the item's Add sent to the collection's reach;
-//   - R itself: revoked, nothing sent (the member withdrew R before its Accept arrived);
+// answer awaits no check (no candidate_approval_uri). Its result R ends the item revoked, with nothing sent, when the
+// member's Delete of R reached Kopje before it: as the item's first deletion (retracted_approval_uri), or as the
+// member's retraction of R (ID-7's tombstone, retractions.ts), where remote-featured-collections.ts
+// revokeFeatureAuthorization keeps every later deletion and a Delete that named no item. Otherwise the first deletion
+// decides it:
+//   - none: accepted with R as its approval_uri, and the item's Add sent to the collection's reach;
 //   - another one: R becomes the candidate of a check (collection-checks.ts), which accepts it only if the member's
-//     server still serves R, since Kopje keeps only the first deletion and R's own may be among those it did not keep.
+//     server serves R under the check's claim and the member has not retracted R by then.
 // Each clears the recorded deletion. An Accept without a result Kopje can store on the member's host, with a result
 // the member already holds as another row's approval_uri, after a removal (no row), a rejection or a revocation, or
 // while a check is queued, changes nothing (Mastodon accepts the item whatever its state:
@@ -75,6 +77,16 @@ export function acceptFeatureRequest(
     return null;
   }
   const at = new Date(now).toISOString();
+  if (item.retracted === result || isRetracted(db, actor.uri, result, now)) {
+    db.run(
+      `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
+				SET state = ${COLLECTION_ITEM_STATES.revoked}, retracted_approval_uri = NULL, updated_at = ?2
+			WHERE id = ?1`,
+      item.id,
+      at,
+    );
+    return "revoked";
+  }
   if (item.retracted === null) {
     db.run(
       `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
@@ -86,16 +98,6 @@ export function acceptFeatureRequest(
     );
     recordItemAdd(db, { id: item.id, collection: item.collection }, now);
     return "accepted";
-  }
-  if (item.retracted === result) {
-    db.run(
-      `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
-				SET state = ${COLLECTION_ITEM_STATES.revoked}, retracted_approval_uri = NULL, updated_at = ?2
-			WHERE id = ?1`,
-      item.id,
-      at,
-    );
-    return "revoked";
   }
   db.run(
     `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
