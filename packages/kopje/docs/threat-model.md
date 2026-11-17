@@ -146,8 +146,9 @@ against their own instance. TLS is assumed between all parties.
   and nothing of the body (DATA-5). No context can then readdress it, alias its type, actor or object, or redefine a
   mention: this keeps meanings, and does not make the two readings equal. Its type and its embedded object's, given as
   an absolute IRI, are read as the name Mastodon's compaction gives them only in a body of a closed shape whose
-  compaction Kopje can show succeeds (`mastodonCompacts`), and as given in any other, which Mastodon may read as
-  received: a body its
+  compaction Kopje can show succeeds (`mastodonCompacts`; wider for a retraction, each of its further forms captured
+  from Mastodon's library and compacted alike by jsonld.js, #1717), and as given in any other, which Mastodon may read
+  as received: a body its
   JSON-LD limits or processing refuse is never one Kopje renames a type in. Kopje reads a name, as a member or as a
   type, only where the compaction writes it so, whatever the body's shape (`namedAsCompacted`): where it means in the
   body's contexts what it means in `full_context` (a type, where the IRI they give it is the one `full_context` names
@@ -182,11 +183,15 @@ against their own instance. TLS is assumed between all parties.
   `Block` or `Delete` by the name its type is read as, `RETRACTIONS`) is read as the compaction writes it where Kopje
   shows the compaction succeeds: its `actor` given as a one-element array, as that element; a node reference given as
   `{"@id": …}` alone under a name both contexts type `@id`, as its IRI where the compaction writes it as given
-  (`referencesAsIris`; the compaction shown of the body so read, its values counted as received); and a member after
-  a certain stop of Mastodon's patch given as a one-element array, as that element (`patchedAsMastodon`). Its actor is
-  still the signer's or the activity is a relay, and it ends only what its signer did or holds, or lifts its own block;
-  every other type keeps the reading as received. The owner is the actor whose document lists the key, by id and key
-  material, and the key names no other owner. An actor's keys are what its
+  (`referencesAsIris`; the compaction shown of the body so read, its values counted as received); and a member at or
+  after a certain stop of Mastodon's patch, as the compaction writes it where Kopje shows it writes each value as given
+  (`patchedAsMastodon`). A member Kopje's readers read (an `id`, `type`, `actor` or `object`) that Kopje does not read
+  as Mastodon does there, or after an array whose stop it does not tell, refuses the activity, as does an `Undo` whose
+  undone activity's type is an array. An `Undo` that is applied, read so or as received, still ends the follow, block
+  or like its undone activity's id names whatever that activity's `object` is, as an unsigned one does (#1773). Its
+  actor is still the signer's or the activity is a relay, and it ends only what its signer did or holds, or lifts its
+  own block; every other type keeps the reading as received. The owner is the actor whose document lists the key, by
+  id and key material, and the key names no other owner. An actor's keys are what its
   document embeds among its first `MAX_PUBLIC_KEYS` (10) entries of `publicKey` and of `assertionMethod` (FEP-521a
   `Multikey`), RSA or Ed25519, each with an id on its origin (`ownKeys`); a key listed by reference in `assertionMethod`
   is not fetched, and a key the signature's verification resolved joins them only within the same first ten
@@ -237,7 +242,9 @@ against their own instance. TLS is assumed between all parties.
   context rebases its IRIs", "ignores an LD-signed activity that aliases a keyword or a member beside the literal one",
   "a spooled LD-signed activity outside the vocabulary is ignored on replay", "reads an LD-signed activity in a real
   sender's vocabulary", "rule (5): an LD-signed activity outside what real senders write is ignored", "#1717:
-  LD-signed retractions in the forms Mastodon compacts"),
+  LD-signed retractions in the forms Mastodon compacts", "bounds the values of Mastodon's compaction of each captured
+  retraction"), `test/ld-written-values.test.ts` ("are at most the bound mastodonCompacts takes, for any body
+  jsonld.js compacts"),
   `test/ld-signed-vocabulary.test.ts` ("the vocabulary is jsonld.js's processing", "the allowed context URLs are the
   preloaded ones", "FEDIFY_CONTEXT_TERMS is every inline definition @fedify/vocab writes, by name", "every inline
   definition Mastodon 3.5 to 4.3 writes is one rule (5) admits"),

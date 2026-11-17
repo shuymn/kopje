@@ -12,7 +12,10 @@
 # the activity's handler reads (its type, ActivityPub::Activity#object_uri, and of an embedded object its type and the
 # ids of its actor and object, as value_or_id reads them), or { name, error } where the service or one of those reads
 # raised (the job then applies nothing), or { name, relayed: true } where it judged the body relayed, or { name } where
-# it returned without one. Run as retractions.mjs says.
+# it returned without one. Each also gains `inbox`, the error where Mastodon's inbox raises on the body as received
+# before it queues the job (inboxes_controller.rb skip_unknown_actor_activity: its own unknown_affected_account?, read
+# from the controller's source, with the account lookup that follows the read stubbed), so that the request answers 500
+# and nothing is applied whatever the service reads. Run as retractions.mjs says.
 
 require 'bundler/setup'
 require 'json'
@@ -63,6 +66,7 @@ class Account
   def initialize(uri) = (@uri = uri)
   def suspended? = false
   def local? = false
+  def self.exists?(**) = true
 end
 load '/opt/mastodon/lib/mastodon/version.rb'
 load '/opt/mastodon/app/helpers/context_helper.rb'
@@ -98,6 +102,18 @@ class ActivityPub::Activity
   end
 end
 
+# The request's check before the job: the controller's own method over the body it parses.
+class InboxCheck
+  include JsonLdHelper
+
+  CONTROLLER = File.read('/opt/mastodon/app/controllers/activitypub/inboxes_controller.rb')
+  class_eval(CONTROLLER[/^  def unknown_affected_account\?\n.*?^  end\n/m] || raise('no unknown_affected_account?'))
+
+  attr_reader :parsed_body
+
+  def initialize(body) = (@parsed_body = JSON.parse(body))
+end
+
 readings = input['entries'].map do |entry|
   $handed = nil
   $relayed = false
@@ -110,6 +126,11 @@ readings = input['entries'].map do |entry|
     result[:error] = "#{e.class}: #{e.message[0, 80]}"
   end
   result[:relayed] = true if $relayed
+  begin
+    InboxCheck.new(JSON.generate(entry['body'])).unknown_affected_account?
+  rescue StandardError => e
+    result[:inbox] = "#{e.class}: #{e.message[0, 80]}"
+  end
   result
 end
 puts JSON.pretty_generate({ reference: "mastodon-#{Mastodon::Version.to_a.join('.')}", readings: readings })

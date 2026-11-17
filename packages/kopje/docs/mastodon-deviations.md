@@ -1810,9 +1810,34 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   non-http(s) IRI (one whose http(s) scheme is upper-case or not followed by `//` included), a number or a boolean where
   an IRI is expected (`cc: true`), a type naming `id` or `type`, a language map given as an array or of another shape, a
   body whose compaction stays within the limit where the count of three per value passes it), such an activity applies
-  less than Mastodon's: a retraction so typed is missed (an `Undo` of a block leaves the block), as #1717 tracks. Kopje
-  reads a name, as a member or as a type, only where the compaction writes it so, as Mastodon's readers read it,
-  whatever the body's shape: a member's name where it means in the body's contexts what it means in `full_context`, or
+  less than Mastodon's: a retraction so typed is missed (an `Undo` of a block leaves the block), as #1717 tracks. A
+  retraction, a `Reject`, `Undo`, `Block` or `Delete` by the name its type is read as, is read as the compaction names
+  it in some of these too, each where Mastodon's library compacts it (`test/fixtures/ld-signed/forms.json`) and
+  jsonld.js compacts it alike: under an inline context of definitions Mastodon or Fedify write (below), each value of a
+  name it types `@id` held to the rule for an IRI-typed property's (one over a prefix only `full_context` defines makes
+  Mastodon's library raise; a datatype given as a compact IRI, `xsd:boolean`, it refuses and jsonld.js takes); with an
+  array directly in another, which JSON-LD flattens (an `actor` so given is read as its one element, as the compaction
+  writes it), but under a name with a `@list` container (a list of lists); with a proof whose keys are plain names,
+  which the ActivityStreams and security contexts leave undefined (its nodes held to the rules above, not a
+  data-integrity proof's `@graph`); with a number or a boolean where an IRI is expected (`cc: true`), which the
+  compaction writes under the property's IRI, but as its `object` or `actor` (an `actor: 5` Mastodon applies for the
+  request's signer, and Kopje refuses); with an `id`, or a value where an IRI is expected, that is a blank node, a
+  relative reference or an IRI of another scheme (`urn:…`, `HTTPS://…`), which the compaction, having no base, writes as
+  given, but one shaped like a keyword (`@foo`, dropped), a blank node with no label or one holding `_:` (labelled
+  anew), one over a prefix only `full_context` defines (`as://…`, which raises), and one jsonld.js writes otherwise
+  (empty, holding whitespace, or with a `.` or `..` segment before its first `?` or `#`, one either ends too, where a
+  query or a fragment is kept as given), or with `//` other than right after a scheme that is no name of `full_context`
+  (`//…`, `a//b`, `tag://…`); an activity's or its undone object's `id`
+  that is not on its actor's origin is then refused all the same (ID-6), where Mastodon's `Undo` of a block reads
+  neither; with a type naming `id` or `type`, which JSON-LD expands to the keyword and the compaction
+  writes as that alias again; with a string or an array of strings under a language map property, which JSON-LD reads
+  as values of the property (`content` for `contentMap`), or a map whose lower-case tag holds an array of strings, but
+  a number or a node there, an array in such an array (which jsonld.js refuses), or an upper-case tag holding one
+  (which jsonld.js lower-cases); and with more values than three for each allows, where its compaction stays within
+  1,000 as counted by what it writes under each name (a value under a name that means the same on both sides, with no
+  container, its own count; any other three), at most the values Mastodon's library and jsonld.js write. Kopje reads a
+  name, as a member or as a type, only where the compaction writes it so, as Mastodon's readers read it, whatever the
+  body's shape: a member's name where it means in the body's contexts what it means in `full_context`, or
   neither defines it (in a typed node, as the type's own context makes it mean on each side: the data-integrity
   contexts' `DataIntegrityProof`, the Multikey and CID contexts' `Multikey`); a type's where the IRI the body's contexts
   give it is the one `full_context` names so. A name `full_context` defines that the body's contexts leave undefined
@@ -1869,22 +1894,47 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   as a one-element array after `to: [null]` is refused, where Mastodon applies the activity, but in a retraction. A
   retraction, a `Reject`, `Undo`, `Block` or `Delete` by the name its type is read as, is read in these forms as the
   compaction writes them, where Kopje shows the compaction succeeds (the closed shape above;
-  `test/fixtures/ld-signed/retractions.json` holds what Mastodon's own service hands its handler from each): its `actor`
-  given as a one-element array of a string or of a node with an `id` is read as that element, as Mastodon tells a relay
-  by it and applies the activity for its signer; and, in each object the patch stops in, a member after the stop given
-  as a one-element array of a string or an object (its `object`, an embedded activity's `actor` or `object`) is read as
-  that element, as the compaction writes it, and so through the objects in it. Kopje reads a stop only where it is
-  certain, an array holding a `null` beside http(s) IRIs only under a name typed `@id` with no container (`to: [null]`,
-  `cc: [a, a, null]`; an array of equal values is not shortened and stops neither). Where the patch stops at another
-  member (one holding a value the name does not take), or in an object holding a key shaped like an array index, whose
-  order JavaScript does not keep, such a member is refused, where Mastodon applies an `Undo` or a `Reject` (#1717). A
-  `Delete` whose `object` is given so after a certain stop is applied, the signer's own status or account deleted,
-  where Mastodon applies nothing: its inbox reads the `object` of a `Delete` or an `Update` before anything else
-  (`inboxes_controller.rb` `unknown_affected_account?`, `value_or_id`), which raises on an array, and answers 500 each
-  time it is sent again; an `Undo` or a `Reject` given so is applied by both. Such an `actor` of two elements is
-  refused, as Mastodon's job raises, and one of `null`, which Mastodon's compaction writes as `[]` and so applies for
-  the signer, is refused too (Kopje reads less). Each ends what its signer did or holds, or lifts its own block, so
-  reading it so grants nothing its signer could not send directly; every other type keeps the reading as received.
+  `test/fixtures/ld-signed/retractions.json` holds what Mastodon's own service hands its handler from each), each value
+  only where Kopje shows the compaction writes it as given, an http(s) IRI under no namespace of `full_context`'s
+  prefixes: its `actor` given as a one-element array of such an IRI or of a node whose `id` is one is read as that
+  element, as Mastodon tells a relay by it and applies the activity for its signer; and the member the patch stops at,
+  and, in each object the patch stops in, each member after it (its `object`, an embedded activity's `actor` or
+  `object`), given as an array under a name typed `@id` with no container whose values, the arrays in it flattened and
+  its `null`s dropped, are such IRIs or nodes whose `id`, if they have one, is one, is read as the compaction writes it,
+  those values, one as itself (`object: [null, a]` or `[[], a]` as `a`, `to: [null]` as `[]`), and so through the
+  objects in it; a `type` given there as an array of one is read as that type, as the compaction writes the name of its
+  IRI. Kopje tells where the patch stops only at an array under a name typed `@id` with no container whose values, the
+  arrays in it flattened, are `null`s and http(s) IRIs: it stops where they are fewer or more than its elements, as
+  JSON-LD's expansion flattens an array in another and drops a `null` (`to: [null]`, `cc: [a, a, null]`,
+  `object: [[a], []]`, `to: [[a, b]]`, `to: [[]]`; an array of equal values is not shortened and stops neither), and not
+  where they are as many, nor at an array of such IRIs and nodes. A member Kopje's readers read (the `id`, `type`,
+  `actor` or `object` of the activity, and so of each node it gives as one of them) that Kopje does not read as Mastodon
+  does makes the activity refused, where Kopje, reading it as received, would end what an `Undo` names by its id: after
+  the stop, one the compaction writes otherwise than as given (an IRI under such a namespace, which it writes as a
+  compact IRI, `as:Public`; one of another scheme, `tag:`; a node so identified); and after any other array, whose stop
+  Kopje does not tell (one holding a value the name does not take, `to: [5, a]`, or an IRI of another scheme beside a
+  `null`), or in an object holding a key shaped like an array index, whose order JavaScript does not keep, one the
+  patch would put back otherwise than the compaction writes it (an array, the public collection). Where Mastodon applies
+  such an `Undo` or a `Reject`, Kopje reads less (#1717). Any other member there, which no reader reads, is read as
+  received. A `Delete` typed by its plain name whose `object` is an array is read as received, and its array refused,
+  as Mastodon applies nothing: its inbox reads the `object` of a `Delete` or an `Update` so typed whose actor is present
+  before anything else (`inboxes_controller.rb` `unknown_affected_account?`, `value_or_id`), which raises on an array,
+  and answers 500 each time it is sent again; one typed as an IRI, which that check passes, and an `Undo` or a `Reject`
+  given so are applied by both. Such an `actor` of two values is refused, as Mastodon's job raises; one of a `null`
+  beside the signer is read as the signer's, as the patch stops at it; and one of `null` alone, which Mastodon's
+  compaction writes as `[]` and so applies for the signer, is refused too (Kopje reads less), as is one of an IRI Kopje
+  does not show the compaction writes as given (in a scheme of mixed case, or a namespace's own IRI), which Mastodon
+  reads as another actor than the signer. An `Undo` of a `Follow`, a `Block` or a `Like` whose undone activity's
+  `object` the patch gives back as an array (given as one, or as an array in another, which the compaction flattens) is
+  refused, as Mastodon's handler raises on it (`undo.rb` `target_uri`); where the patch stops at it or before it,
+  Mastodon reads the compaction's single value and applies it where it names an account, as Kopje does where it reads
+  the stop and that value as given. An `Undo` whose undone activity's type is an array of types is refused too, as
+  `undo.rb` takes no array as a type, where Kopje would read it as an `Undo` by reference; an empty one both read as
+  none. An `Undo` Kopje does apply, read so or as received (Mastodon's own fallback included), ends the follow, block
+  or like its undone activity's id names whatever that activity's `object` is, where Mastodon ends nothing for a target
+  that names no local account, as every `Undo` does (tracked by #1773).
+  Each ends what its signer did or holds, or lifts its own block, so reading it so grants nothing its signer could not
+  send directly; every other type keeps the reading as received.
   Compacting would add JSON-LD processing to every signed activity before its HTTP signature is verified, and its
   readers would read a form other than the one the author proof verifies. This is weighed again when a sender is seen
   writing one of these forms, or when the fixtures re-captured at a new reference release no longer read the same.
