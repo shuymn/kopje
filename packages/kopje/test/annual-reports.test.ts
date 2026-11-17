@@ -440,6 +440,19 @@ describe("the sources", () => {
     expect(await pick((w) => [{ id: idIn(YEAR, 1), account: w.alice }])).toBeNull();
   });
 
+  // TopStatuses ranks by the status's own boosts (status_stats.reblogs_count), never by the untrusted count an import
+  // may have stored on the owner's status (migration 0113_untrusted_counts).
+  it("picks the top status by its own boosts, whatever untrusted count it stores", async () => {
+    const w = await world();
+    await posts(w, [
+      { id: idIn(YEAR, 1), account: w.alice, reblogs: 2 },
+      { id: idIn(YEAR, 2), account: w.alice, reblogs: 3 },
+    ]);
+    await sql(w.h.store, "UPDATE statuses SET untrusted_reblogs_count = 100000000 WHERE id = ?", idIn(YEAR, 1));
+    await generated(w);
+    expect((await reportRows(w))[0]?.top_status_id).toBe(idIn(YEAR, 2));
+  });
+
   it("picks the most used hashtag of counted posts, more than one use, ties by name, passing over a refused name", async () => {
     const pick = async (list: (w: World) => Post[]) => {
       const w = await world();

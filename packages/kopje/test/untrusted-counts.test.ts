@@ -363,6 +363,18 @@ describe("a status's shown favourites and boosts counts", () => {
     expect(await shown(reply)).toEqual([1, 2]);
   });
 
+  // A zero its server gives is a count, shown over the status's own.
+  it("show a remote status's untrusted zeros over its own counts", async () => {
+    const { h, reply, shown } = await world();
+    await sql(
+      h.store,
+      `UPDATE statuses SET favourites_count = 5, reblogs_count = 6, untrusted_favourites_count = 0,
+				untrusted_reblogs_count = 0 WHERE id = ?`,
+      reply,
+    );
+    expect(await shown(reply)).toEqual([0, 0]);
+  });
+
   // The triggers keep any other value out (UC5); the presentation reads one past them as none all the same.
   it("read an untrusted count past its bound as none", async () => {
     const { h, reply, shown } = await world();
