@@ -172,6 +172,18 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `0093_annual_reports` takes 16,114 ms with this file and 16,184 ms without it). Hosts are counted from the upgrade
   on: stop one already gone with `kopje-admin hosts stop <host>`. `wrangler.jsonc`: unchanged. This adds a Store
   migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+- Remote accounts' collections are read and shown, with members whose authorization is verified: a remote account's
+  sync reads its FEP-7aa9 `featuredCollections` (at most 2 pages, 10 embedded collections of 25 embedded members), and
+  background rounds check each member's `FeatureAuthorization` on its own server, at most 250 checks a UTC day for one
+  owner's collections; the owner's `Add`, `Remove` and `Update` (with or without an `id`, as Mastodon sends them) keep
+  them current, and a member's `Delete` of its authorization, sent by the member or relayed by the owner with the
+  member's signature, revokes its membership; search with `resolve=true` finds one by its URL, and an inbound report
+  attaches the remote collections it names ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
+  "Collections"). Migration `0113_featured_collection_syncs`: a column of `collection_syncs`, reading only the pending
+  syncs, and a new table; as it creates a table, the upgrade checks every reference of the Store (the migration bench's
+  upgrade from `0093_annual_reports` takes 22,046 ms with this file and 22,003 ms without it, medians of three runs).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling back
+  past it needs a point-in-time restore.
 
 ### Changed
 
@@ -250,15 +262,18 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   and rolling back past it needs a point-in-time restore.
 - Kopje follows the client API of Mastodon v4.7.5, its reference release, where it followed v4.5.11
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). The differences from v4.7.5 are listed there or tracked
-  by issues. `/api/v1/instance` and `/api/v2/instance` still advertise `version` 4.5.0, and `api_versions.mastodon`
-  rises only to 9 (below), since clients switch the 4.6 and 4.7 features on by them; they rise once Kopje serves those
-  features. No Store migration and no `wrangler.jsonc` change.
-- `/api/v2/instance` advertises `api_versions.mastodon` 9, where it advertised 7, so the official Android app reads
-  `/api/v1/profile` and its display settings, the iOS app writes those settings, and Phanpy edits the avatar and
-  header descriptions there. `version` stays 4.5.0, as no Mastodon release
-  advertised 8 or 9; 10 and 11 wait on remote accounts' collections
-  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "What Kopje follows"). No Store migration and no
-  `wrangler.jsonc` change.
+  by issues. What `/api/v1/instance` and `/api/v2/instance` advertise follows the features Kopje serves, since clients
+  switch features on by it (below). No Store migration and no `wrangler.jsonc` change.
+- `/api/v2/instance` advertises `api_versions.mastodon` 11, where it advertised 7, and both instance endpoints
+  `version` 4.6.1, the first release to advertise 11, where they said 4.5.0. From 8 and 9 the official Android app
+  reads `/api/v1/profile` and its display settings, the iOS app writes those settings, and Phanpy edits the avatar and
+  header descriptions there. From 10 clients show collections: the official Android and iOS apps, Ice Cubes and Phanpy
+  list an account's collections, a remote account's included, the Android app and Phanpy open them and let a member
+  revoke its item, Ice Cubes and Phanpy take the two collection notification types, and Phanpy finds a collection by
+  its URL. From 11 Tuba edits the profile's display settings through `/api/v1/profile`. A remote account cannot be
+  featured yet, a local account is not featured in a remote collection, and statuses carry no `tagged_collections`
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "What Kopje follows" and "Collections"). No Store
+  migration and no `wrangler.jsonc` change.
 - `GET /api/v1/annual_reports/:id` takes a token with `read:accounts`, as Mastodon 4.7.5 does; it asked for
   `write:accounts`.
 - A mention that a remote server tags but leaves out of the status's audience (Mastodon 4.6 and later do so for
@@ -416,6 +431,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   LD-signed activity with a node whose `type` and `@type` together give two types or more one of which is not a string
   or is shaped like a keyword on a line, or a type beside `@set`, on which Mastodon's job raises and applies nothing, is
   ignored. No Store migration and no `wrangler.jsonc` change.
+- Apply LD-signed Reject, Undo, Block and Delete activities whose actor is a one-element array, whose object follows a
+  member the compaction shortens, or whose object is given as {"@id": ...}, as Mastodon does (#1717). Each is applied
+  only where Kopje shows Mastodon's compaction of it succeeds, and none is applied when another server relays it
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Reading inbound activities"). No Store migration and no
+  `wrangler.jsonc` change.
 - Every domain check reads a host without any of its trailing dots, in the Worker as in SQL: an instance domain block
   of `example.com` covers a fetch, an inbox, an actor and a delivery on `example.com..`, and an actor whose id is there
   claims its handle at `example.com`, where Mastodon drops a single trailing dot
@@ -706,6 +726,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   read, so a row that is not UTF-8 is no longer read twice or deleted unread
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Delivery recipients"). No Store migration and no
   `wrangler.jsonc` change.
+- [docs/upgrade.md](docs/upgrade.md) says what the Store serves in each state `kopje-admin health` can report during
+  an upgrade: it refuses every request, reads and sign-ins included, while the new migrations are not all applied,
+  and is readonly until they are verified, also when an upgrade fails and holds (#1753). It said that the Store stayed
+  readonly throughout. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

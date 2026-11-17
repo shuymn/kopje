@@ -15,7 +15,7 @@ import { MASTODON_CONTEXT_TERMS, MASTODON_OLM_TERMS } from "../src/federation/ma
 import { ACTOR_TYPES, CONVERTED_TYPES, STATUS_TYPES } from "../src/federation/remote-status";
 import { handleQueue } from "../src/jobs/queue";
 import { MAX_JSON_DEPTH, MAX_JSON_NODES, withinJsonBounds } from "../src/platform/json-bounds";
-import { sql } from "./api-helpers";
+import { settle, settleDeliveries, sql } from "./api-helpers";
 import { harness, inboxDeps, NOW } from "./app-helpers";
 import { fixtureKeyGen } from "./federation-helpers";
 import contextMaps from "./fixtures/ld-signed/context-maps.json";
@@ -26,6 +26,23 @@ import effectsFixture from "./fixtures/ld-signed/effects.json";
 import formsFixture from "./fixtures/ld-signed/forms.json";
 import proofShapesFixture from "./fixtures/ld-signed/proof-shapes.json";
 import { LANGUAGE_PROOFS, proofShapeBody, proofShapes } from "./fixtures/ld-signed/proof-shapes.mjs";
+import retractionsFixture from "./fixtures/ld-signed/retractions.json";
+import {
+  BOB_BLOCK,
+  BOB_BOOST,
+  BOB_FOLLOW,
+  BOB_LIKE,
+  BOB_STATUS,
+  FORMS,
+  type Form,
+  LANGUAGE_MAPS,
+  OUR_FOLLOW,
+  referencesDelete,
+  type Retraction,
+  RETRACTIONS,
+  retraction,
+  retractionEntries,
+} from "./fixtures/ld-signed/retractions.mjs";
 import sensitiveShapesFixture from "./fixtures/ld-signed/sensitive-shapes.json";
 import { sensitiveShapeBody, sensitiveShapes, sensitiveShapeText } from "./fixtures/ld-signed/sensitive-shapes.mjs";
 import { BUILD } from "./helpers";
@@ -33,8 +50,11 @@ import { AP, mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
 import {
   accountId,
   ALICE,
+  announce,
   create,
+  DAVE,
   followed,
+  like,
   localStatus,
   mastodonNote,
   notifications,
@@ -242,10 +262,23 @@ describe("D2: real LD-signed payloads read as Mastodon reads them", () => {
     expect(accepted(await kopje(react))).toMatchObject({ type: "Like", object: "https://kopje.test/ap/o/remote-1" });
   });
 
-  it("refuses Mastodon's Add, Remove and FeatureRequest in both forms, as they carry no id or no actor", async () => {
-    for (const entry of corpus.filter((e) => /^(Add|Remove)\(Hashtag\)$|^FeatureRequest$/.test(e.name))) {
-      expect(await kopje(entry), `${entry.sender} ${entry.name}`).toEqual({ ok: false, reason: "incomplete" });
-      expect(await mastodon(entry)).toEqual({ ok: false, reason: "incomplete" });
+  // #1589's D20: Mastodon's Add and Remove carry no id, and are read without one (the Store applies them to a
+  // collection target only); a FeatureRequest carries no actor.
+  it("reads Mastodon's Add and Remove, and refuses FeatureRequest (no actor), in both forms", async () => {
+    const entries = corpus.filter((e) => /^(Add|Remove)\(Hashtag\)$|^FeatureRequest$/.test(e.name));
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) {
+      const name = `${entry.sender} ${entry.name}`;
+      if (entry.name === "FeatureRequest") {
+        expect(await kopje(entry), name).toEqual({ ok: false, reason: "incomplete" });
+        expect(await mastodon(entry)).toEqual({ ok: false, reason: "incomplete" });
+        continue;
+      }
+      expect(accepted(await kopje(entry)), name).toMatchObject({
+        type: entry.name.slice(0, -"(Hashtag)".length),
+        id: null,
+      });
+      expect(await kopje(entry), name).toEqual(await mastodon(entry));
     }
   });
 
@@ -1804,7 +1837,6 @@ describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", (
       "@id in inReplyTo",
       "@id in a Mention's href",
       "@id in a Follow's object",
-      "@id in an Undo's object",
       "@id in an Accept's result",
       "a redefined as",
       "a prefix naming the ActivityStreams namespace",
@@ -1817,6 +1849,13 @@ describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", (
     ])("ignores %s", async (name) => {
       expect(await kopje(form(name))).toEqual(LD_CONTEXT);
       expect((await mastodon(form(name))).ok).toBe(true);
+    });
+
+    // #1717: a retraction's object given as {"@id": …} is read as its IRI, as Mastodon reads it, where Kopje shows the
+    // compaction succeeds; a Follow's still is not (above).
+    it("reads @id in an Undo's object as Mastodon does", async () => {
+      expect(await kopje(form("@id in an Undo's object"))).toMatchObject({ ok: true, activity: { type: "Undo" } });
+      expect(await kopje(form("@id in an Undo's object"))).toEqual(await mastodon(form("@id in an Undo's object")));
     });
 
     it.each([
@@ -2312,6 +2351,520 @@ describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", (
       const elapsed = performance.now() - started;
       expect(response.status).toBe(401);
       expect(elapsed).toBeLessThan(GENEROUS_MS);
+    });
+  });
+});
+
+// #1717: an LD-signed retraction in a form Mastodon 4.7.5 applies, read as its compaction writes it where Kopje shows
+// the compaction succeeds (ld-signed-body.ts RETRACTIONS), beside what Mastodon's ProcessActivityService handed on
+// (retractions.json), and through the inbox: the relationship Mastodon's handler ends, the reading that ends with it,
+// and every other relationship left.
+describe("#1717: LD-signed retractions in the forms Mastodon compacts", () => {
+  const BOB = "https://mastodon.example/users/bob";
+  type Handled = Json | null;
+  type Captured = { name: string; reading?: Record<string, string | null>; error?: string; relayed?: boolean };
+  const captured = new Map((retractionsFixture.readings as Captured[]).map((entry) => [entry.name, entry]));
+
+  // What Mastodon's handler reads of an entry (delete.rb, block.rb, undo.rb, reject.rb), or null where it applies
+  // nothing: its inbox answered 500 before the service ran, its job raised, it took the body as relayed (a placeholder
+  // signature verifies nothing), it handed nothing on, the object it handed on has no IRI (value_or_id of {"@id": …} as
+  // received), which each handler seeks nothing by, or it undoes a Follow, a Block or a Like that names no object, which
+  // undo.rb seeks what to end by (target_uri) and returns without. retractions.rb runs the service alone, so the
+  // inbox's check is the one here: inboxes_controller.rb unknown_affected_account? reads a Delete's or an Update's
+  // object with value_or_id when it has an actor, which raises on an array and answers 500, each time it is sent again.
+  const UNDONE_BY_TARGET = new Set(["Follow", "Block", "Like"]);
+  function mastodonHandles(name: string, body: Json): Handled {
+    const entry = captured.get(name);
+    expect(entry, name).toBeDefined();
+    const reading = entry!.reading;
+    const actor = body.actor;
+    const present = Array.isArray(actor) ? actor.length > 0 : typeof actor === "string" && actor.trim() !== "";
+    if ((body.type === "Delete" || body.type === "Update") && present && Array.isArray(body.object)) {
+      return null;
+    }
+    if (reading === undefined || reading.object === null) {
+      return null;
+    }
+    if (reading.type === "Undo" && UNDONE_BY_TARGET.has(reading.object_type ?? "") && reading.object_object === null) {
+      return null;
+    }
+    const { type, object } = reading;
+    return type === "Undo" || type === "Reject"
+      ? {
+          type,
+          object,
+          objectType: reading.object_type ?? null,
+          objectActor: reading.object_actor ?? null,
+          objectObject: reading.object_object ?? null,
+        }
+      : { type, object };
+  }
+
+  // The same of Kopje's reading of a body bob sends: null where it ignores the body, reads another actor (a relay,
+  // which applies none of these forms; LR-g), or reads an Undo or a Reject that names no object, which its handlers
+  // ignore (domain/inbox.ts undo, reject).
+  async function kopjeHandles(body: Json): Promise<Handled> {
+    const parsed = await parseActivity(bytes(body));
+    if (!parsed.ok || parsed.actor !== BOB) {
+      return null;
+    }
+    const activity = parsed.activity as Json;
+    if (activity.type === "Undo" || activity.type === "Reject") {
+      const ref = activity.object as Json;
+      if (ref.id === null) {
+        return null;
+      }
+      return {
+        type: activity.type,
+        object: ref.id,
+        objectType: ref.type,
+        objectActor: ref.actor,
+        objectObject: ref.object,
+      };
+    }
+    return activity.type === "DeleteActor"
+      ? { type: "Delete", object: parsed.actor }
+      : { type: activity.type, object: typeof activity.object === "string" ? activity.object : null };
+  }
+
+  // The controls Mastodon applies and Kopje does not (it reads less, docs/mastodon-deviations.md): an actor of [null],
+  // which Mastodon's compaction writes as [] (no actor, so not a relay) and applies as the signer's; a Delete's object
+  // of {"@id": …} beside its type, and one under a name not typed @id, which rule (3) refuses; one of an IRI the
+  // compaction writes as a compact IRI (as:Public); one in a body of more values than Kopje shows the compaction keeps
+  // within Mastodon's 1,000 (its estimate of three for each); an object after the patch's stop in an object holding a
+  // key shaped like an array index, whose order Kopje cannot tell from Ruby's; a Create, which keeps the reading as
+  // received; and the bodies rules (3) and (5) refuse whatever the forms read.
+  // What the forms change of the readings of the fixtures' bodies (LR-f): the retractions in them, and the one of
+  // forms.json, each a retraction (carol's actor is a relay's, which applies none; an object array reads nothing).
+  const CHANGED = [
+    "@id in an Undo's object",
+    ...Object.keys(FORMS).flatMap((form) => Object.keys(RETRACTIONS).map((name) => `${name}, ${form}`)),
+    "Delete(status), actor as an array of carol",
+    "Delete(status), actor as an array of bob's node",
+    'Delete(status), object as an array of {"@id": its id}',
+    'Delete(status), object and 10 IRIs in cc as {"@id": …}',
+    "Undo(Follow) typed as absolute IRIs, actor as a one-element array",
+    "Delete(status), object as a one-element array after to of carol twice and null",
+    "Undo(Follow), its Follow's actor and object as one-element arrays after to: [null]",
+    'Undo(Follow), its Follow\'s object as {"@id": its id}',
+    'Delete(status), object as {"@id": its id}, source holding url as {"@id": …}',
+  ];
+
+  const READS_LESS = [
+    "Delete(status), actor as an array of null",
+    'Delete(status), object as {"@id": its id}, content as {"@id": an IRI}',
+    'Delete(status), object as {"@id": its id}, to as [{"@id": the public collection}]',
+    'Delete(status), object as {"@id": its id}, under a context that leaves object untyped',
+    'Delete(status), object and 493 IRIs in cc as {"@id": …}',
+    "Create, actor as a one-element array",
+    'Undo(Follow), object as a one-element array after to: [null], beside a key "0"',
+    'Create, object as {"@id": its id}',
+    "Undo(Follow), its Follow typed by @type",
+    "Undo(Follow) typed as a compact IRI",
+    "Undo(Follow) under a definition no sender writes",
+    'Delete(status), object as {"@id": its id} with its type',
+  ];
+  // What Kopje applies and Mastodon does not (docs/mastodon-deviations.md): the signer's own Delete whose object is an
+  // array after a certain stop of the patch, which Mastodon's inbox answers 500 before reading.
+  const READS_MORE = [
+    "Delete(status), object as a one-element array after to: [null]",
+    "Delete(actor), object as a one-element array after to: [null]",
+    "Delete(status), object as a one-element array after to of carol twice and null",
+  ];
+
+  it("reads each retraction as Mastodon reads it, but where it reads less or Mastodon's inbox refuses it", async () => {
+    const entries = retractionEntries();
+    expect(retractionsFixture.reference).toBe("mastodon-4.7.5");
+    expect([...captured.keys()]).toEqual(entries.map((entry) => entry.name));
+    for (const entry of entries) {
+      if (
+        Object.keys(RETRACTIONS).some((name) => Object.keys(FORMS).some((form) => entry.name === `${name}, ${form}`))
+      ) {
+        expect(mastodonHandles(entry.name, entry.body) !== null || READS_MORE.includes(entry.name), entry.name).toBe(
+          true,
+        );
+      }
+    }
+    const less: string[] = [];
+    const more: string[] = [];
+    for (const entry of entries) {
+      const ours = await kopjeHandles(entry.body);
+      const theirs = mastodonHandles(entry.name, entry.body);
+      if (ours === null && theirs !== null) {
+        less.push(entry.name);
+      } else if (ours !== null && theirs === null) {
+        more.push(entry.name);
+      } else {
+        expect(ours, entry.name).toEqual(theirs);
+      }
+    }
+    expect(less).toEqual(READS_LESS);
+    expect(more).toEqual(READS_MORE);
+  });
+
+  // LR-f (1): the forms change the reading of no other body (D4). Over every LD-signed body of the fixtures, the
+  // reading with them and without them (the reading before #1717) differ only for the retractions below, the bodies
+  // they were added for; and every other activity's object is the received body's, so that parseActivity, which takes
+  // the object from the body read, takes every other activity's as it took it before.
+  it("change the reading of no other body of the fixtures", async () => {
+    const signed = (body: unknown) => typeof (body as Json).signature === "object" && (body as Json).signature !== null;
+    const bodies = [
+      ...corpus.map((entry) => [entry.name, entry.received] as const),
+      ...[...forms.values()].map((entry) => [entry.name, entry.received] as const),
+      ...edgeShapes().map((shape) => [shape.name, shape.body as Json] as const),
+      ...proofShapes().map((shape) => [JSON.stringify(shape), proofShapeBody(shape) as Json] as const),
+      ...sensitiveShapes().map((shape) => [JSON.stringify(shape), sensitiveShapeBody(shape) as Json] as const),
+      ...retractionEntries().map((entry) => [entry.name, entry.body] as const),
+    ].filter(([, body]) => signed(body));
+    const idOf = (value: unknown) =>
+      typeof value === "string" ? value : typeof value === "object" && value !== null ? (value as Json).id : undefined;
+    const readingOf = async (body: Json, rules: Rules) => {
+      const reading = await ldSignedReading(body, rules);
+      const typeOf = (value: unknown) => (typeof value === "string" ? reading!.readType(value) : value);
+      const object = body.object as Json | undefined;
+      return reading === null
+        ? null
+        : { body: reading.body, type: typeOf(body.type), objectType: typeOf(object?.type) };
+    };
+    const retractions = new Set(["Reject", "Undo", "Block", "Delete"]);
+    const changed: string[] = [];
+    for (const [name, body] of bodies) {
+      const before = await readingOf(body, { retractions: false });
+      const after = await readingOf(body, {});
+      if (JSON.stringify(after) !== JSON.stringify(before)) {
+        changed.push(name);
+      }
+      if (after !== null && !retractions.has(after.type as string)) {
+        expect(idOf(after.body.object), name).toEqual(idOf(body.object));
+      }
+    }
+    expect(bodies.length).toBeGreaterThan(500);
+    expect(changed).toEqual(CHANGED);
+  });
+
+  describe("through the inbox", () => {
+    type World = {
+      t: Setup;
+      bob: TestActor;
+      carol: TestActor;
+      bobId: string;
+      carolId: string;
+      status: { id: string; uri: string };
+    };
+    const CAROL_ORIGIN = "https://fans.example";
+
+    // alice follows bob (mastodon.example) and carol (fans.example), each stored by a Follow of dave, and has a public
+    // status.
+    async function world(): Promise<World> {
+      const t = await setup();
+      const bob = await mastodonActor(t.web, "bob");
+      const carol = await mastodonActor(t.web, "carol", { origin: CAROL_ORIGIN, key: 3 });
+      const bobId = await followed(t, bob);
+      const carolId = await followed(t, carol);
+      const status = await localStatus(t, { status: "local", visibility: "public" });
+      return { t, bob, carol, bobId, carolId, status };
+    }
+
+    const placed = (json: Json, w: World) =>
+      JSON.parse(JSON.stringify(json).replaceAll("https://kopje.test/ap/o/local-1", w.status.uri)) as Json;
+
+    const edges = async (t: Setup, from: string, to: string) =>
+      sql(t.store, "SELECT state FROM follows WHERE account_id = ? AND target_account_id = ?", from, to);
+    const blocksOf = async (t: Setup, from: string) =>
+      sql(t.store, "SELECT target_account_id AS target FROM blocks WHERE account_id = ? ORDER BY id", from);
+    const read = async (t: Setup, id: string, as: "alice" | "dave" = "alice") =>
+      (await t.api(`/api/v1/statuses/${id}`, as)).status;
+
+    // The inboxes a new followers-only status of alice's is delivered to.
+    async function deliveredTo(t: Setup): Promise<string[]> {
+      const posted = await localStatus(t, { status: "followers", visibility: "private" });
+      await settleDeliveries(t.store);
+      const rows = await sql<{ inbox_url: string }>(
+        t.store,
+        `SELECT DISTINCT d.inbox_url FROM deliveries d JOIN outbound_activities o ON o.id = d.activity_id
+          WHERE json_extract(o.body, '$.activity.object.id') = ? ORDER BY d.inbox_url`,
+        posted.uri,
+      );
+      return rows.map((row) => row.inbox_url);
+    }
+
+    // bob's Note, stored: public unless `extra` says otherwise.
+    async function bobsNote(w: World, extra: Json = {}, actor = w.bob): Promise<string> {
+      const note = mastodonNote(actor, extra);
+      expect(await w.t.post(actor, create(actor, note))).toBe(202);
+      return (await statusRow(w.t.store, note.id))!.id;
+    }
+    const FOLLOWERS = (actor: TestActor) => ({ to: [`${actor.uri}/followers`], cc: [] });
+    const follow = (actor: TestActor, id: string) => ({
+      "@context": AS,
+      id,
+      type: "Follow",
+      actor: actor.uri,
+      object: "https://kopje.test/ap/users/alice",
+    });
+    const block = (actor: TestActor, id: string) => ({ ...follow(actor, id), type: "Block" });
+
+    // For each retraction (the effects of Mastodon's handlers, delete.rb, block.rb, undo.rb and reject.rb): the world
+    // it ends something in, what is observed of it, and what the retraction leaves of that (the rest unchanged).
+    type Scenario = (w: World) => Promise<{ observe: () => Promise<Json>; ended: Json }>;
+    const SCENARIOS: Record<Retraction, Scenario> = {
+      // bob's follow of alice: the delivery of her followers-only statuses to him ends (Kopje serves none to a remote
+      // fetch, visibility.md R4); carol's follow of her, and alice's of bob, stay.
+      "Undo(Follow)": async ({ t, bob, carol, bobId, carolId }) => {
+        expect(await t.post(bob, follow(bob, BOB_FOLLOW))).toBe(202);
+        expect(await t.post(carol, follow(carol, `${carol.uri}/follows/1`))).toBe(202);
+        return {
+          observe: async () => ({
+            bobFollows: await edges(t, bobId, ALICE),
+            carolFollows: await edges(t, carolId, ALICE),
+            aliceFollowsBob: await edges(t, ALICE, bobId),
+            deliveredTo: await deliveredTo(t),
+          }),
+          ended: { bobFollows: [], deliveredTo: [`${CAROL_ORIGIN}/inbox`] },
+        };
+      },
+      // alice's follow of bob (OUR_FOLLOW): her reading of his followers-only status ends; dave's follow of him stays.
+      "Reject(Follow)": async (w) => {
+        const { t, bobId } = w;
+        await sql(
+          t.store,
+          "UPDATE follows SET uri = ? WHERE account_id = ? AND target_account_id = ?",
+          OUR_FOLLOW,
+          ALICE,
+          bobId,
+        );
+        await sql(
+          t.store,
+          "INSERT INTO follows (account_id, target_account_id, state) VALUES (?, ?, 'accepted')",
+          DAVE,
+          bobId,
+        );
+        const id = await bobsNote(w, FOLLOWERS(w.bob));
+        return {
+          observe: async () => ({
+            aliceFollows: await edges(t, ALICE, bobId),
+            daveFollows: await edges(t, DAVE, bobId),
+            aliceReads: await read(t, id),
+            daveReads: await read(t, id, "dave"),
+          }),
+          ended: { aliceFollows: [], aliceReads: 404 },
+        };
+      },
+      // bob's favourite of alice's status, its count and its notification; carol's stay.
+      "Undo(Like)": async ({ t, bob, carol, status }) => {
+        expect(await t.post(bob, like(bob, status.uri, { id: BOB_LIKE }))).toBe(202);
+        expect(await t.post(carol, like(carol, status.uri))).toBe(202);
+        return {
+          observe: async () => ({
+            count: (await t.api<Json>(`/api/v1/statuses/${status.id}`)).body.favourites_count,
+            likers: await sql(t.store, "SELECT account_id FROM favourites ORDER BY account_id"),
+            notified: await sql(
+              t.store,
+              "SELECT from_account_id FROM notifications WHERE type = 'favourite' ORDER BY from_account_id",
+            ),
+          }),
+          ended: {
+            count: 1,
+            likers: [{ account_id: await accountId(t.store, carol.uri) }],
+            notified: [{ from_account_id: await accountId(t.store, carol.uri) }],
+          },
+        };
+      },
+      // bob's boost of alice's status and its count; carol's stays.
+      "Undo(Announce)": async ({ t, bob, carol, status }) => {
+        expect(await t.post(bob, announce(bob, status.uri, { id: BOB_BOOST }))).toBe(202);
+        expect(await t.post(carol, announce(carol, status.uri))).toBe(202);
+        return {
+          observe: async () => ({
+            count: (await t.api<Json>(`/api/v1/statuses/${status.id}`)).body.reblogs_count,
+            boosters: await sql(
+              t.store,
+              "SELECT account_id FROM statuses WHERE reblog_of_id = ? ORDER BY account_id",
+              status.id,
+            ),
+          }),
+          ended: { count: 1, boosters: [{ account_id: await accountId(t.store, carol.uri) }] },
+        };
+      },
+      // bob blocks alice: both follows between them end, and her reading of his followers-only status; carol's
+      // follows of and by alice stay.
+      Block: async (w) => {
+        const { t, bob, carol, bobId, carolId } = w;
+        expect(await t.post(bob, follow(bob, BOB_FOLLOW))).toBe(202);
+        expect(await t.post(carol, follow(carol, `${carol.uri}/follows/1`))).toBe(202);
+        const id = await bobsNote(w, FOLLOWERS(bob));
+        return {
+          observe: async () => ({
+            bobFollows: await edges(t, bobId, ALICE),
+            aliceFollowsBob: await edges(t, ALICE, bobId),
+            bobBlocks: await blocksOf(t, bobId),
+            aliceReads: await read(t, id),
+            carolFollows: await edges(t, carolId, ALICE),
+            aliceFollowsCarol: await edges(t, ALICE, carolId),
+          }),
+          ended: { bobFollows: [], aliceFollowsBob: [], bobBlocks: [{ target: ALICE }], aliceReads: 404 },
+        };
+      },
+      // bob's block of alice, which hides his status from her; carol's block of her stays.
+      "Undo(Block)": async (w) => {
+        const { t, bob, carol, bobId, carolId } = w;
+        const bobs = await bobsNote(w);
+        const carols = await bobsNote(w, {}, carol);
+        expect(await t.post(bob, block(bob, BOB_BLOCK))).toBe(202);
+        expect(await t.post(carol, block(carol, `${carol.uri}/blocks/1`))).toBe(202);
+        return {
+          observe: async () => ({
+            bobBlocks: await blocksOf(t, bobId),
+            carolBlocks: await blocksOf(t, carolId),
+            aliceReadsBob: await read(t, bobs),
+            aliceReadsCarol: await read(t, carols),
+          }),
+          ended: { bobBlocks: [], aliceReadsBob: 200 },
+        };
+      },
+      // One of bob's statuses; his other stays.
+      "Delete(status)": async (w) => {
+        const deleted = await bobsNote(w, { id: BOB_STATUS, atomUri: BOB_STATUS });
+        const kept = await bobsNote(w);
+        return {
+          observe: async () => ({ deleted: await read(w.t, deleted), kept: await read(w.t, kept) }),
+          ended: { deleted: 404 },
+        };
+      },
+      // bob's account and both his statuses, then their rows once the purge has run; carol's status and her follow of
+      // alice stay.
+      "Delete(actor)": async (w) => {
+        const { t, carol, bobId, carolId } = w;
+        const [first, second] = [await bobsNote(w), await bobsNote(w)];
+        const carols = await bobsNote(w, {}, carol);
+        expect(await t.post(carol, follow(carol, `${carol.uri}/follows/1`))).toBe(202);
+        return {
+          observe: async () => ({
+            first: await read(t, first),
+            second: await read(t, second),
+            account: (await t.api(`/api/v1/accounts/${bobId}`)).status,
+            rows: await sql(
+              t.store,
+              "SELECT (SELECT count(*) FROM statuses WHERE account_id = ?1) AS statuses, (SELECT count(*) FROM accounts WHERE id = ?1) AS accounts",
+              bobId,
+            ),
+            carols: await read(t, carols),
+            carolFollows: await edges(t, carolId, ALICE),
+          }),
+          ended: { first: 404, second: 404, account: 404, rows: [{ statuses: 0, accounts: 0 }] },
+        };
+      },
+    };
+
+    // `body` (bob's, the world's status in place of the fixture's), delivered by bob: what it ends.
+    async function delivered(
+      name: Retraction,
+      body: (w: World) => Json,
+    ): Promise<{ before: Json; after: Json; ended: Json }> {
+      const w = await world();
+      const { observe, ended } = await SCENARIOS[name](w);
+      const before = await observe();
+      for (const [key, value] of Object.entries(ended)) {
+        expect(before[key], key).not.toEqual(value);
+      }
+      expect(await w.t.post(w.bob, placed(body(w), w))).toBe(202);
+      await settle(w.t.store);
+      return { before, after: await observe(), ended };
+    }
+
+    const AS_SENT = "as Mastodon sends it";
+    it.each(
+      Object.keys(RETRACTIONS).flatMap((name) =>
+        [AS_SENT, ...Object.keys(FORMS)].map((form) => [name as Retraction, form] as const),
+      ),
+    )(
+      "%s, %s: ends what Mastodon's handler ends, and only that",
+      async (name, form) => {
+        const { before, after, ended } = await delivered(name, () =>
+          form === AS_SENT ? retraction(name) : FORMS[form as Form](retraction(name)),
+        );
+        expect(after).toEqual({ ...before, ...ended });
+      },
+      30_000,
+    );
+
+    // The spool's replay reads each body through the same envelope as the inbox (OPS-1).
+    it.each(Object.keys(FORMS) as Form[])("on replay too: Delete(status), %s, ends it", async (form) => {
+      const w = await world();
+      const { observe, ended } = await SCENARIOS["Delete(status)"](w);
+      const before = await observe();
+      const maintenance = harness(w.t.store, { MAINTENANCE: "readonly" }, BUILD, {
+        keygen: fixtureKeyGen,
+        loader: w.t.web.loader,
+      });
+      const body = placed(FORMS[form](retraction("Delete(status)")), w);
+      const init = await signedInit(w.bob, "/inbox", body, { at: NOW });
+      expect((await maintenance.request("/inbox", init)).status).toBe(202);
+      expect(await observe()).toEqual(before);
+      const deps = { ...inboxDeps(() => w.t.store, w.t.web.loader), now: () => NOW };
+      await maintenance.queue.deliver((batch) =>
+        handleQueue(batch, { ...maintenance.env, MAINTENANCE: "off" } as Env, deps),
+      );
+      await settle(w.t.store);
+      expect(await observe()).toEqual({ ...before, ...ended });
+    });
+
+    // Mastodon gives up the compaction of the same body with another node whose id is null (JSON::LD's
+    // InvalidIdValue) and reads it as received, where its handler raises on the array (retractions.json): Kopje, which
+    // cannot show that compaction succeeds, reads it as received too, and ends nothing.
+    it.each(Object.keys(FORMS) as Form[])(
+      "Delete(status), %s, with a target whose id is null: ends nothing",
+      async (form) => {
+        const { before, after } = await delivered("Delete(status)", () => ({
+          ...FORMS[form](retraction("Delete(status)")),
+          target: { id: null },
+        }));
+        expect(after).toEqual(before);
+      },
+    );
+
+    // Mastodon's JSON-LD limits count the values of the body as received (check_jsonld_limits!), its references given
+    // as {"@id": …} too: past 1,000 it reads the body as received, its object as no IRI, and ends nothing; Kopje, which
+    // shows the compaction only within them, ends nothing either (retractions.json).
+    it.each([
+      [10, "ends it"],
+      [494, "ends nothing"],
+    ] as const)('Delete(status), its object and %i IRIs in cc as {"@id": …}: %s', async (n, outcome) => {
+      const { before, after, ended } = await delivered("Delete(status)", () => referencesDelete(n));
+      expect(after).toEqual(outcome === "ends it" ? { ...before, ...ended } : before);
+    });
+
+    // A reference in an embedded node, under a name typed @id or not, is read as its IRI, as the compaction writes it;
+    // one in a language map is not, as JSON-LD refuses the map and Mastodon reads the body as received, its object as no
+    // IRI; and a two-element array after the patch's stop stays an array, which Mastodon's handler raises on
+    // (retractions.json).
+    const entry = (name: string) => retractionEntries().find((other) => other.name === name)!.body;
+    it.each([
+      ["Undo(Follow)", 'Undo(Follow), its Follow\'s object as {"@id": its id}'],
+      ["Delete(status)", 'Delete(status), object as {"@id": its id}, source holding url as {"@id": …}'],
+    ] as const)("%s: %s ends what Mastodon's handler ends", async (scenario, name) => {
+      const { before, after, ended } = await delivered(scenario, () => entry(name));
+      expect(after).toEqual({ ...before, ...ended });
+    });
+    it.each([
+      ...LANGUAGE_MAPS.map((map) => `Delete(status), object as {"@id": its id}, ${map} holding to as {"@id": …}`),
+      "Delete(status), object as a two-element array after to: [null]",
+    ])("%s: ends nothing", async (name) => {
+      const { before, after } = await delivered("Delete(status)", () => entry(name));
+      expect(after).toEqual(before);
+    });
+
+    // D4 under the forms (LR-f): rule (3) refuses a keyword as a key, and rule (5) a type as a compact IRI and an inline
+    // definition no sender writes, where Mastodon ends the follow (retractions.json); the same Undo as Mastodon sends it
+    // ends it (above).
+    it.each([
+      "Undo(Follow), its Follow typed by @type",
+      "Undo(Follow) typed as a compact IRI",
+      "Undo(Follow) under a definition no sender writes",
+    ])("%s: ends nothing", async (name) => {
+      const entry = retractionEntries().find((other) => other.name === name)!;
+      const { before, after } = await delivered("Undo(Follow)", () => entry.body);
+      expect(after).toEqual(before);
     });
   });
 });

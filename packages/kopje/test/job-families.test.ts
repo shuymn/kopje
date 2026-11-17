@@ -685,11 +685,15 @@ describe("the replies family (RES-5)", () => {
   const claimedQuotes = "SELECT 1 FROM quotes WHERE generation > 0";
   const env = (t: Awaited<ReturnType<typeof setup>>) => ({ ...t.env, MAINTENANCE: "off" }) as unknown as Env;
 
-  it("walks when every other family throws: ten boundaries, each logged once", async () => {
+  it("walks when every other family throws: eleven boundaries, each logged once", async () => {
     const { t, answer } = await walking();
-    const failing = failingStore(t.store, [...STORE_CALLS, "claimCollectionSync", "claimQuotes"], () => {
-      return new Error("test: fails");
-    });
+    const failing = failingStore(
+      t.store,
+      [...STORE_CALLS, "claimCollectionSync", "claimItemChecks", "claimQuotes"],
+      () => {
+        return new Error("test: fails");
+      },
+    );
     const failures = await failuresOf(() =>
       jobsRound(
         env(t),
@@ -697,11 +701,11 @@ describe("the replies family (RES-5)", () => {
       ),
     );
     expect(failures).toEqual(
-      [...STORE_JOB_FAMILIES.map(({ family }) => family), "collections", "quotes"].map(
+      [...STORE_JOB_FAMILIES.map(({ family }) => family), "collections", "collection_checks", "quotes"].map(
         (family) => expect.objectContaining({ family }) as unknown,
       ),
     );
-    expect(failures.length + 1).toBe(10);
+    expect(failures.length + 1).toBe(11);
     expect(await storedOf(t.store, [answer.id])).toEqual([answer.id]);
   }, 60_000);
 

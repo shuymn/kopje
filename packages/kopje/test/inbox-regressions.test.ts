@@ -1000,23 +1000,26 @@ describe("second review: deletion, keys and generations", () => {
       MASTODON,
       new Date(NOW).toISOString(),
     );
+    // The claims of checks of his collections' items today (domain/collection-checks.ts).
+    await sql(t.store, "INSERT INTO collection_check_quotas (account_id, day, used) VALUES (?, 20738, 7)", bobId);
     const left = async () => [
       await count(t.store, "SELECT 1 FROM collection_items WHERE account_id = ?", bobId),
       await count(t.store, "SELECT 1 FROM collection_items WHERE collection_id GLOB '58*'"),
       await count(t.store, "SELECT 1 FROM collections WHERE account_id = ?", bobId),
+      await count(t.store, "SELECT 1 FROM collection_check_quotas WHERE account_id = ?", bobId),
     ];
-    expect(await left()).toEqual([1, owned * per, owned]);
+    expect(await left()).toEqual([1, owned * per, owned, 1]);
     t.web.fail(bob.uri, 410);
     expect(await t.post(bob, deleteSelf(bob))).toBe(202);
     // One batch writes at most PURGE_BATCH rows: bob's membership goes first, then his collections' items.
-    const [memberships, items, collections] = (await left()) as [number, number, number];
+    const [memberships, items, collections] = (await left()) as [number, number, number, number];
     expect(memberships).toBe(0);
     expect(1 + owned * per - items + owned - collections).toBeLessThanOrEqual(PURGE_BATCH);
     expect(items + collections).toBeGreaterThan(0);
     for (let run = 0; run < 4 && (await accountId(t.store, bob.uri)) !== undefined; run++) {
       await runScheduledJobs({ ...t.env, MAINTENANCE: "off" } as Env, t.deps);
     }
-    expect(await left()).toEqual([0, 0, 0]);
+    expect(await left()).toEqual([0, 0, 0, 0]);
     expect(await accountId(t.store, bob.uri)).toBeUndefined();
     // The local collection stays, without bob.
     expect(await count(t.store, "SELECT 1 FROM collections WHERE id = '590000000000000002'")).toBe(1);
