@@ -462,8 +462,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `wrangler.jsonc` change.
 
 - [docs/mastodon-deviations.md](docs/mastodon-deviations.md) lists the remaining differences from Mastodon 4.7.5 in
-  cursors and other request parameter edge cases, Web Push subscriptions and titles, v1 notifications' `next` link, a
-  remote status's `url` and a media `focus` (#1734, #1759, #1766). No Store migration and no `wrangler.jsonc` change.
+  cursors and other request parameter edge cases, Web Push subscriptions and titles, the `next` link of v1
+  notifications and the timelines, a remote status's `url` and a media `focus` (#1734, #1759, #1766). No Store
+  migration and no `wrangler.jsonc` change.
 
 ### Fixed
 

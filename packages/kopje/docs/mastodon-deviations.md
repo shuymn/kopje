@@ -1466,12 +1466,18 @@ conditions themselves follow 4.7.5):
   `'<value>' is not a valid <field>` and changes nothing. Mastodon's enum raises an error no handler rescues, so it
   answers 500. Accepted, 2026-11-15.
 
-Notifications (`GET /api/v1/notifications`):
+Notifications and timelines (`GET /api/v1/notifications`, `/api/v1/timelines/home`, `/list/:id`, `/public` and
+`/tag/:hashtag`):
 
-- A page links `next` only when it is full, as Kopje's other lists paged by `max_id` do (`linkHeader` in
-  `src/mastodon/pagination.ts`). Mastodon's links `next` whenever the page is not empty
-  (`Api::V1::NotificationsController#next_path`), so a client that follows it past a short page reads an empty one
-  there, where Kopje's short page is the end. Accepted, 2026-11-18.
+- A page links `next` when it is full or was cut (`Page.cut`: its read stopped at its byte or candidate bound, so a
+  page short of its `limit`, even an empty one, continues from where the read stopped), and `prev` whenever it has an
+  item. An uncut page short of its `limit` has no `next` and is the end. Every Kopje list paged by `max_id` shares
+  this rule (`linkHeader` and `pageResponse` in `src/mastodon/pagination.ts`), which is Mastodon's on its other lists
+  (`next_path` with `records_continue?`). On these five Mastodon 4.7.5 links `next` whenever the page is not empty:
+  `Api::V1::NotificationsController#next_path` (`notifications_controller.rb:75-76`) and the timelines'
+  `next_path`, which has no condition, behind `Api::V1::Timelines::BaseController`, which skips the `Link` of an empty
+  page alone. A client that follows `next` past an uncut short page there reads an empty page, where Kopje's has no
+  `next` to follow. The link timeline builds its own `Link` with Mastodon's rule. Accepted, 2026-11-18.
 
 Grouped notifications (`GET /api/v2/notifications`; the bounds and what enforces them are RES-7 in
 [threat-model.md](threat-model.md)):
