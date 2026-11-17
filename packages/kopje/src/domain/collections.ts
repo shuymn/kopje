@@ -1,6 +1,7 @@
 import { writeEach } from "../db/by-ids";
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { railsBlank } from "../platform/rails-blank";
 import {
   COLLECTION_DESCRIPTION_LENGTH,
   COLLECTION_ITEM_STATES,
@@ -52,7 +53,6 @@ import {
   shownItems,
 } from "./collection-presenter";
 import { allocateLocalId, insertWithFreshId, requestedId, storedIdOf } from "./ids";
-import { blank } from "./lists";
 import { notify } from "./notifications";
 import { writeOperation } from "./operation";
 import { usernameSql } from "./profile-bounds";
@@ -342,7 +342,7 @@ export function remoteCollectionTag(name: string): string | null {
 // Lengths are in characters (code points).
 function valueProblems(values: CollectionValues): Problem[] {
   const problems: Problem[] = [];
-  if (values.name === null || blank(values.name)) {
+  if (values.name === null || railsBlank(values.name)) {
     problems.push({ attribute: "name", type: "blank", description: "can't be blank" });
   }
   if (values.name !== null && [...values.name].length > COLLECTION_NAME_LENGTH.local) {
@@ -685,7 +685,7 @@ export const addCollectionItem = userWriteOperation<{ collection: string; accoun
     if (row === undefined) {
       return { status: "not_found" };
     }
-    if (blank(input.account)) {
+    if (railsBlank(input.account)) {
       return { status: "account_missing" };
     }
     const member = availableAccount(db, input.account);

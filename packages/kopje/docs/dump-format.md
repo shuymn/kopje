@@ -373,6 +373,14 @@ it, and shorten its own), never pass the allowance (`docs/threat-model.md`, RES-
 reads an upper bound. A dump taken before 0079 has no such column: it restores into a Store at its own migrations,
 which then upgrades. A file built from legacy data writes NULL.
 
+Untrusted counts (migration `0114_untrusted_counts`): `statuses.untrusted_favourites_count` and
+`untrusted_reblogs_count` are each NULL, or an integer from 0 to 100,000,000 (text or a REAL holding such an integer is
+stored as that integer, by the column's affinity); anything else fails with `statuses: untrusted_favourites_count past
+its stored bound` (or `untrusted_reblogs_count`). They are the favourites and boosts count a remote status's server
+gave, which the API shows for that status in place of Kopje's own count; a local status's are never read. A dump taken
+before 0114 has no such columns: it restores into a Store at its own migrations, whose upgrade adds them NULL. A file
+built from legacy data writes NULL.
+
 Pinned statuses (migration `0089_pin_cap`): `status_pins` holds at most 5 rows per local account (`accounts.domain`
 NULL, which its row holds before any of its pins, whatever order a file puts other rows in) and 20 per remote one,
 whatever their statuses' visibility; a chunk that adds a pin past an account's limit fails with `status_pins: more
@@ -473,11 +481,11 @@ of that actor's document issues another (threat-model ID-1), the maximum include
 such column: it restores into a Store at its own migrations, which then upgrades, and every row reads 0. A file built
 from legacy data leaves it at 0.
 
-Feature policies (migration `0114_feature_policies`): `accounts.feature_policy` is a remote account's FEP-7aa9
+Feature policies (migration `0115_feature_policies`): `accounts.feature_policy` is a remote account's FEP-7aa9
 `canFeature` as Mastodon stores it, an integer from 0 to 2^32 - 1 (INTEGER affinity stores numeric text and an integral
 REAL as one), and 0 on a local account; anything else, NULL included, fails with `accounts: feature_policy past its
 stored bound`. A restored row keeps its value until the Store stores that actor's next document. A dump taken before
-0114 has no such column: it restores into a Store at its own migrations, which then upgrades, and every row reads 0
+0115 has no such column: it restores into a Store at its own migrations, which then upgrades, and every row reads 0
 (Mastodon's `missing`: no local account may feature the account until its document is stored again). A file built
 from legacy data leaves it at 0.
 

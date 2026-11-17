@@ -52,7 +52,7 @@ function windowResult(main: string, mine: string): NonNullable<Baseline["result"
 }
 
 // The columns added to the account read since main's base (migrations 0097_profile_descriptions and
-// 0114_feature_policies), which main's statements cannot read, with their defaults: those of them the rewrite reads and
+// 0115_feature_policies), which main's statements cannot read, with their defaults: those of them the rewrite reads and
 // main's text does not, and the comparison of a pair's rows without them, so every row and every other value is still
 // main's.
 const ADDED_DEFAULTS = {

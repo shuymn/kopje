@@ -2260,6 +2260,32 @@ export function presentedCountSql(column: string): string {
 		ELSE 0 END`;
 }
 
+// ---- Untrusted status counts: migration 0114_untrusted_counts (platform/untrusted-count.ts, domain/status-rows.ts)
+
+// statuses.untrusted_favourites_count and untrusted_reblogs_count: NULL (none received), or an integer from 0 to
+// MAX_UNTRUSTED_COUNT, the likes and shares totalItems a remote status gives, clamped as Mastodon 4.7.5 clamps them
+// (StatusStat::MAX_UNTRUSTED_COUNT, status_stat.rb).
+export const MAX_UNTRUSTED_COUNT = 100_000_000;
+
+// True when `column` holds an untrusted count past its stored bound: not NULL and not an integer (INTEGER affinity has
+// already stored numeric text and an integral REAL as one), or outside 0..MAX_UNTRUSTED_COUNT.
+export function untrustedCountPastBoundSql(column: string): string {
+  return `CASE WHEN ${column} IS NULL THEN 0
+	WHEN typeof(${column}) <> 'integer' THEN 1
+	WHEN ${column} < 0 THEN 1
+	WHEN ${column} > ${MAX_UNTRUSTED_COUNT} THEN 1
+	ELSE 0 END`;
+}
+
+// untrustedCountPastBoundSql's acceptance of a value the Store is handed to write: null, or a safe integer within
+// 0..MAX_UNTRUSTED_COUNT.
+export function withinUntrustedCount(value: unknown): value is number | null {
+  return (
+    value === null ||
+    (Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= MAX_UNTRUSTED_COUNT)
+  );
+}
+
 // ---- Remote media: migration 0077_remote_media
 
 // The cache of remote media in the media bucket under remote/ (domain/remote-media.ts, the only writer of the three
@@ -2864,7 +2890,7 @@ export function drainCursorSql(host: string, lane: string): string {
   return `(${lane} = '' OR coalesce(${laneHostSql(lane)} = ${host}, 0))`;
 }
 
-// ---- Feature policies: migration 0114_feature_policies (domain/remote-actors.ts storeActor, #1589's D23)
+// ---- Feature policies: migration 0115_feature_policies (domain/remote-actors.ts storeActor, #1589's D23)
 
 // accounts.feature_policy: a remote account's FEP-7aa9 canFeature as Mastodon stores it (Account#feature_approval_policy,
 // InteractionPolicy's bitmap: the automatic half in the high 16 bits), an integer from 0 to FEATURE_POLICY_MAX; 0 for

@@ -2,6 +2,7 @@ import { ACCOUNTS_ID_INDEX, ACCOUNTS_URI_INDEX, STATUSES_URI_INDEX } from "../db
 import type { Db } from "../db/sql";
 import { blockedDomain } from "../platform/domain-name";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
+import { railsBlank } from "../platform/rails-blank";
 import type { ImportAuthority } from "../platform/store-admin";
 import { REPORT_COLLECTION_IDS } from "../platform/stored-bounds";
 import {
@@ -98,8 +99,8 @@ export type ReportResult =
   | { status: "not_found" }
   | { status: "invalid"; errors: string[] };
 
-// Ruby's String#blank?, which `presence` reads.
-const blank = (value: string | undefined): boolean => value === undefined || /^\s*$/u.test(value);
+// Rails' blank? of a parameter, which `presence` reads: absent, or a String railsBlank finds blank.
+const blank = (value: string | undefined): boolean => value === undefined || railsBlank(value);
 
 export const createReport = userWriteOperation<ReportInput, ReportResult>((db, input, _viewer, viewer) => {
   const target = resolveAccountId(db, input.account);

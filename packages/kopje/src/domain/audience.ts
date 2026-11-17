@@ -1315,7 +1315,7 @@ export function collectionItemShownSql(i: string, c: string, viewer: string): st
 }
 
 // InteractionPolicy::POLICY_FLAGS: a remote account's stored feature policy (accounts.feature_policy, migration
-// 0114_feature_policies) holds these flags in each half, the automatic half in the high 16 bits; SubPolicy#as_keys
+// 0115_feature_policies) holds these flags in each half, the automatic half in the high 16 bits; SubPolicy#as_keys
 // lists a half's flags in this order.
 export const FEATURE_POLICY_FLAGS = {
   unsupported_policy: 1,

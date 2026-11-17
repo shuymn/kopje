@@ -1,4 +1,5 @@
 import { blockedDomain } from "../platform/domain-name";
+import { railsBlank } from "../platform/rails-blank";
 import { rubyToI } from "../platform/ruby-to-i";
 import { relationshipResponse } from "./accounts";
 import {
@@ -85,10 +86,12 @@ export const domainBlocks: ApiHandler = withParams(async (c, deps, p) => {
   return pageResponse(c, result, page.limit);
 });
 
-// The `domain` parameter as a domain block stores it (`blockedDomain`); null when absent or not a domain name.
+// The `domain` parameter as a domain block stores it (`blockedDomain`); null when absent, blank as sent (railsBlank:
+// AccountDomainBlock's presence) or not a domain name.
 function domainParam(p: Params): { domain: string | null; blank: boolean } {
-  const raw = (p.get("domain") ?? "").trim();
-  return { domain: raw === "" ? null : blockedDomain(raw), blank: raw === "" };
+  const raw = p.get("domain");
+  const blank = raw === undefined || railsBlank(raw);
+  return { domain: blank ? null : blockedDomain(raw), blank };
 }
 
 export const blockDomain: ApiHandler = withParams(async (c, deps, p) => {
@@ -112,11 +115,15 @@ export const unblockDomain: ApiHandler = withParams(async (c, deps, p) => {
   return c.json({});
 });
 
+// Mastodon's PreviewsController has no presence check (it normalizes whatever it is sent), so the preview does not take
+// the block's: it keeps its own rule, 400 for an absent domain or one empty once trimmed (String#trim), and counts
+// nothing for any other that is no domain.
 export const previewDomainBlock: ApiHandler = withParams(async (c, deps, p) => {
-  const { domain, blank } = domainParam(p);
-  if (blank) {
+  const raw = p.get("domain");
+  if (raw === undefined || raw.trim() === "") {
     return refuseAfterAuth(c, deps, mastodonError(400, "param is missing or the value is empty: domain"));
   }
+  const domain = blockedDomain(raw);
   if (domain === null) {
     return refuseAfterAuth(c, deps, c.json({ following_count: 0, followers_count: 0 }));
   }

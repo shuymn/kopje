@@ -1,4 +1,5 @@
 import type { Db } from "../db/sql";
+import { railsBlank } from "../platform/rails-blank";
 import type { PageQuery } from "./accounts";
 import { MAX_BLOCK_LABELS } from "./audience";
 import { type Admin, ADMIN_PERMISSION, adminReadOperation, adminWriteOperation } from "./auth";
@@ -111,8 +112,9 @@ function found(db: Db, id: string): DomainBlockResult {
 export const createAdminDomainBlock = adminWriteOperation<BlockRequest & { domain?: string }, DomainBlockResult>(
   ADMIN_PERMISSION.manageFederation,
   (db, request, admin) => {
-    const raw = request.domain?.trim() ?? "";
-    const named = raw === "" ? null : blockDomainOf(raw);
+    // DomainBlock's presence: blank as sent (railsBlank), before blockDomainOf trims and normalizes it.
+    const raw = request.domain;
+    const named = raw === undefined || railsBlank(raw) ? null : blockDomainOf(raw);
     const severity = request.severity ?? "silence";
     // The conflict check comes first (see above), only for a domain within the bounds.
     if (named?.ok === true) {

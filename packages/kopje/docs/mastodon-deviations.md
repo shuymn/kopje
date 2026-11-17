@@ -949,7 +949,7 @@ Public pages ([web-pages.md](web-pages.md)):
   send `noindex`. Every other page, 404 and 410 sends what Mastodon's answer at the same URL sends
   ([web-pages.md](web-pages.md), "Robots"). Accepted, 2026-11-16.
 
-Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`):
+Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/peers/search`, `/api/v1/preferences`):
 
 - An application's `id` is its `client_id`, Kopje's only stable key of an application; the `client_id` is a public
   identifier (RFC 6749 §2.2).
@@ -989,6 +989,11 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`
   `REST::ExtendedDescriptionSerializer`, without `safe_links_only`), keeping h1 to h6 and relative links as written.
   `test/instance-reads.test.ts` ("keeps a document’s headings in the API, as the pages show them"), `test/html.test.ts`
   ("keeps headings as h2 to h4, without attributes, under the page’s own h1"). Accepted, 2026-10-28.
+- `GET /api/v1/peers/search` answers `[]` for a `q` that IDNA cannot encode as a host, such as U+FEFF (not blank to
+  Rails). Mastodon 4.7.5 answers 500 to it: `TagManager#normalize_domain` raises `IDN::Idna::IdnaError`, and the
+  controller rescues only `Addressable::URI::InvalidURIError`. Such a `q` names no peer, so Kopje answers it as it
+  answers a host Addressable refuses. `test/param-blank.test.ts` ("answers the peer search null for a blank q only").
+  Accepted, 2026-11-18.
 
 OAuth (`/oauth/authorize`, `/oauth/token/info`, `/oauth/introspect`):
 
@@ -1098,6 +1103,11 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
 - A `limit` or `offset` given as an array or a nested parameter (`limit[]=1`, `offset[a]=-1`) is not read: the search
   answers as without it, or 400 when the other one is negative. Mastodon 4.7.5 answers 500 to both, as its pagination
   check calls `to_i` on the array or hash. Accepted, 2026-11-17.
+- `/api/v2/search` finds no hashtag for a `q` that a hashtag's name normalizes to nothing (U+FEFF, an emoji). Mastodon
+  4.7.5 without Elasticsearch finds every listable hashtag, up to `limit`: `Tag.matches_name` searches the names that
+  start with the normalized term, and an empty term starts every name. A query of characters no hashtag can hold names
+  no hashtag. `test/param-blank.test.ts` ("finds no hashtag for a q a hashtag's name normalizes to nothing").
+  Accepted, 2026-11-18.
 - A URL that answers with an HTML page or another type is followed to the ActivityPub document its `Link` header or
   `<link rel="alternate">` names, as Mastodon 4.7.5's `FetchResourceService` follows it, with these differences
   (`src/federation/resolve.ts`):
@@ -1819,8 +1829,8 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   one, stores nothing (`Status.create!` raises), and an `Update` with a newer `updated` (Mastodon's explicit update)
   changes nothing of the status (its transaction rolls back). An `Update` that names no newer version (the implicit
   update, which assigns no `sensitive`) still applies what Kopje's implicit update applies, its poll's counts, voters
-  and end, its quote and its quote policy (Mastodon's also stores the status's counts, which Kopje does not read), and
-  a `Create` of a status already stored, or of a vote, assigns none and is applied as without it. Which `Update` is
+  and end, its quote, its quote policy and its untrusted counts, and a `Create` of a status already stored, or of a
+  vote, assigns none and is applied as without it. Which `Update` is
   newer differs at one boundary, where Mastodon refuses an `Update` with `""` that Kopje applies as implicit (both
   "Retractions and edits of remote statuses", below). In a
   body read as received, a JSON number with a fraction or an exponent that equals zero (`0.0`, `0e0`) is read as not
@@ -1974,17 +1984,28 @@ ID-7 in `docs/threat-model.md`):
   edit of a status it holds without `edited_at` (`:30`; a `Create` stores none when `updated` is missing or equals
   `published`, `create.rb:112`), where Kopje takes one equal to the stored version (that `published`) as the implicit
   update and changes nothing for an earlier one. So such an equal `Update` with `sensitive: ""` refreshes the poll, the
-  quote and the quote policy here, where Mastodon's `NOT NULL` refuses the whole `Update`; with any other `sensitive`
-  Mastodon applies its content, which Kopje leaves.
-- A remote status's `likes.totalItems` and `shares.totalItems` are not read: its `favourites_count` and
-  `reblogs_count` count the favourites and boosts Kopje stores of it. Mastodon stores each, when the collection is
-  given as an object, as the status's untrusted count (clamped to 0 to 100,000,000, `status_stat.rb:44-47`) on a
-  `Create` (`create.rb:75`, `:206-216`) and on every `Update`, explicit or implicit
-  (`process_status_update_service.rb:393-405`), and its API answers that count in place of its own
-  (`status_serializer.rb:95-101`), moving it with each favourite and boost it receives (`status.rb:324-341`).
-  Mastodon moves `edited_at` only on a significant edit (`process_status_update_service.rb`), so after a newer
-  metadata-only `Update` it applies an older content `Update`: an author editing A, then B, then A again, whose final A
-  arrives before B, ends at B there. Mastodon's behaviour is an ordering bug.
+  quote, the quote policy and the untrusted counts here, where Mastodon's `NOT NULL` refuses the whole `Update`; with
+  any other `sensitive` Mastodon applies its content, which Kopje leaves. Mastodon moves `edited_at` only on a
+  significant edit (`process_status_update_service.rb`), so after a newer metadata-only `Update` it applies an older
+  content `Update`: an author editing A, then B, then A again, whose final A arrives before B, ends at B there.
+  Mastodon's behaviour is an ordering bug.
+- A remote status's `favourites_count` and `reblogs_count` are, as in Mastodon, the untrusted counts its server gives
+  as `likes.totalItems` and `shares.totalItems`, read as Mastodon stores them (an object's `totalItems`, cast and
+  clamped to 0 to 100,000,000, on a `Create` and on every `Update`, a refetch and a poll's refresh included; `""`
+  clears one, and a missing or null one keeps it), and moved with each favourite and boost Kopje stores of the status
+  (`status.rb:324-341`); without one, the favourites and boosts Kopje stores of it. Kopje moves an untrusted count by
+  how far the status's own count moves when it is counted again, where Mastodon adds or takes one for each favourite
+  or boost; the two differ only where the own count was stale, which Kopje corrects at that count. An own count an
+  import stored as text moves it by nothing. A status stored before migration `0114_untrusted_counts`, or carried over
+  by the cutover, has none until its server's next `Update` of it or a refetch. A `totalItems` written as a JSON
+  integer too large for a double (past about 1.8e308) is read as no count, clearing a stored one, where Mastodon reads
+  the exact integer and clamps it to 100,000,000, or 0 when negative: `JSON.parse` gives an infinity, which Kopje reads
+  as it reads a number with an exponent past that range (`1e400`), no count in both. Accepted, 2026-11-17.
+- The answer to `POST /api/v1/statuses/:id/unfavourite` and `/unreblog` of a remote status with an untrusted count
+  shows its `favourites_count` and `reblogs_count` after the change, as a read afterwards does. Mastodon's answer shows
+  the untrusted count before it: its serializer prefers that count over the one the controller hands it
+  (`status_serializer.rb:95-101`), and the count moves only in the later `UnfavouriteWorker` or `RemovalWorker`.
+  Accepted, 2026-11-18.
 - A status Kopje fetches again that it stores (search, `/authorize_interaction`, a pin sync, a replies walk, its root
   included) is applied as its author's `Update`, as `FetchRemoteStatusService` turns a stored status's `Create` into an
   `Update` (`fetch_remote_status_service.rb:48`). A pin sync fetches every status its account lists on its origin and

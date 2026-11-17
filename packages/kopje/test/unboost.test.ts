@@ -1062,7 +1062,7 @@ describe("an unboost’s reads under stale statistics (RES-7)", () => {
       "UNION SELECT r.id FROM main.follows f CROSS JOIN main.statuses r INDEXED BY statuses_account_reblogs_kept",
       "CROSS JOIN statuses r INDEXED BY statuses_reblog ON r.reblog_of_id = o.id",
       "EXISTS (SELECT 1 FROM statuses INDEXED BY statuses_reblog WHERE reblog_of_id = ?1)",
-      "reblogs_count = (SELECT COUNT(*) FROM statuses r INDEXED BY statuses_reblog",
+      "(SELECT COUNT(*) FROM statuses r INDEXED BY statuses_reblog WHERE r.reblog_of_id = ?1 AND r.reblog_of_id IS NOT NULL AND r.withdrawn = 0) AS reblogs",
     ]) {
       expect(
         [...seen.keys()].some((query) => query.includes(fragment)),

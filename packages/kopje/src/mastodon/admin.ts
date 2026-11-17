@@ -38,6 +38,7 @@ import {
 import { blockedDomain } from "../platform/domain-name";
 import { railsBlank } from "../platform/rails-blank";
 import { railsBoolean } from "../platform/rails-boolean";
+import { rubyStrip } from "../platform/strip";
 import { sha256Hex } from "../security/tokens";
 import {
   type ApiContext,
@@ -117,7 +118,7 @@ const ARRAY_PARAMS = new Set(["role_ids"]);
 // when neither was sent.
 function arrayParam(p: Params, name: string): string[] | undefined {
   const scalar = p.get(name);
-  const values = [...(scalar !== undefined && scalar.trim() !== "" ? [scalar] : []), ...(p.list(name) ?? [])];
+  const values = [...(scalar !== undefined && !railsBlank(scalar) ? [scalar] : []), ...(p.list(name) ?? [])];
   return values.length === 0 ? undefined : values;
 }
 
@@ -259,7 +260,9 @@ const TOO_BROAD = "search term too broad; add a filter or a longer prefix";
 type ParsedAccountFilter = { filter: AdminAccountFilter; names: readonly string[] } | { error: string };
 
 // The request's filter as AccountFilter reads it after each controller's translated_filter_params, with the names the
-// Link URLs carry. A parameter sent blank is not sent (`value.present?`). v1 lists local accounts that are active
+// Link URLs carry. A parameter sent blank (railsBlank) is not sent (`value.present?`); a search attribute that is sent
+// is then read as AccountFilter reads it (`text`), and kept even when that leaves it empty: by_domain=%00 is
+// `where(domain: '')`, never no condition. v1 lists local accounts that are active
 // unless told otherwise: remote selects remote accounts (whatever local says), the last of the states sent wins, and
 // staff selects the staff. v2 has no defaults, and reads origin, status, permissions=staff and role_ids[].
 //
@@ -271,18 +274,19 @@ type ParsedAccountFilter = { filter: AdminAccountFilter; names: readonly string[
 function accountFilter(version: 1 | 2, p: Params): ParsedAccountFilter {
   const sent = (name: string) => {
     const value = p.get(name);
-    return value !== undefined && value.trim() !== "" ? value : undefined;
+    return value === undefined || railsBlank(value) ? undefined : value;
   };
-  const text = (name: string, read: (value: string) => string = (value) => value.trim()) => {
+  // AccountFilter#scope_for: by_domain, username, display_name and email stripped as Ruby strips (rubyStrip), ip and
+  // invited_by as sent.
+  const text = (name: string, read: (value: string) => string = (value) => value) => {
     const value = sent(name);
-    const kept = value === undefined ? "" : read(value);
-    return kept === "" ? null : kept;
+    return value === undefined ? null : read(value);
   };
   const searches = {
-    username: text("username", (value) => value.trim().replace(/^@/, "")),
-    byDomain: text("by_domain", (value) => value.trim().toLowerCase()),
-    displayName: text("display_name"),
-    email: text("email"),
+    username: text("username", (value) => rubyStrip(value).replace(/^@/, "")),
+    byDomain: text("by_domain", (value) => rubyStrip(value).toLowerCase()),
+    displayName: text("display_name", rubyStrip),
+    email: text("email", rubyStrip),
     ip: text("ip"),
   };
   let origin: string | null;
@@ -399,13 +403,13 @@ export function actOnAccount(action: AdminAccountAction): ApiHandler {
 
 // POST /api/v1/admin/accounts/:account_id/action (Api::V1::Admin::AccountActionsController#create): type, report_id,
 // warning_preset_id, text and send_email_notification, as form fields (Fedilab) or JSON. A type, report_id or
-// warning_preset_id sent blank is not sent (`present?`); text is as sent, empty when absent (text_for_warning's
-// compact.join). No email is sent: send_email_notification decides whether a local target is warned
+// warning_preset_id sent blank (railsBlank) is not sent (`present?`); text is as sent, empty when absent
+// (text_for_warning's compact.join). No email is sent: send_email_notification decides whether a local target is warned
 // (domain/admin-accounts.ts). Answers an empty object (render_empty) once the action is done.
 export const accountAction: ApiHandler = withParams(async (c, deps, p) => {
   const sent = (name: string) => {
     const value = p.get(name);
-    return value === undefined || value.trim() === "" ? null : value;
+    return value === undefined || railsBlank(value) ? null : value;
   };
   const input = {
     credential: optionalCredential(c, deps),

@@ -233,8 +233,9 @@ function profileChanges(p: Params, images: ImageProblems): { changes: Credential
   return { changes, problems };
 }
 
-// Account::AttributionDomains' normalization: each value stripped of surrounding whitespace and of an http://,
-// https:// and *. prefix, blanks dropped, duplicates removed. Values are kept as written otherwise.
+// Account::AttributionDomains' normalization: each value stripped as Ruby strips (rubyStrip) and of an http://,
+// https:// and *. prefix, then dropped when blank (`presence`: railsBlank), duplicates removed. Values are kept as
+// written otherwise.
 function normalizeAttributionDomains(values: readonly string[]): string[] {
   const domains = values
     .map((value) =>
@@ -243,7 +244,7 @@ function normalizeAttributionDomains(values: readonly string[]): string[] {
         .replace(/^https:\/\//, "")
         .replace(/^\*\./, ""),
     )
-    .filter((value) => value !== "");
+    .filter((value) => !railsBlank(value));
   return [...new Set(domains)];
 }
 
@@ -515,7 +516,8 @@ export const register: ApiHandler = async (c, deps) => {
 // acct (Rails' params[:acct], the last value the query gives) is "user" or "user@domain"; the instance's own host means
 // a local account.
 export const lookupAccount: ApiHandler = async (c, deps) => {
-  const acct = (c.req.queries("acct")?.at(-1) ?? "").trim().replace(/^@/, "");
+  // ResolveAccountService: stripped as Ruby strips (rubyStrip), then one leading @ dropped.
+  const acct = rubyStrip(c.req.queries("acct")?.at(-1) ?? "").replace(/^@/, "");
   const at = acct.indexOf("@");
   const username = at === -1 ? acct : acct.slice(0, at);
   const host = at === -1 ? null : acct.slice(at + 1).toLowerCase();
@@ -552,11 +554,13 @@ export const searchAccounts: ApiHandler = withParams(async (c, deps, p) => {
   const resolving = parseBoolean(p.get("resolve")) === true && parsed.offset === 0;
   // Mastodon's limit_param(40) can be 0 (`limit=0`, a non-number), which answers [] before resolving
   // (account_search_service.rb:196); pageQuery serves at least one.
-  if (parsed.offset > MAX_SEARCH_OFFSET || limitParam(p, 40, 80) === 0) {
+  // AccountSearchService strips q as Ruby does (rubyStrip) and drops one leading @: a query then blank (railsBlank)
+  // finds nothing, before any resolution (account_search_service.rb:173, :200).
+  const query = rubyStrip(parsed.query);
+  if (parsed.offset > MAX_SEARCH_OFFSET || limitParam(p, 40, 80) === 0 || railsBlank(query.replace(/^@/, ""))) {
     authorized(await storeCall(c, deps, (s, b) => s.checkCredential(b, userCredential(c, deps))));
     return c.json([]);
   }
-  const query = parsed.query.trim();
   let resolvedAccountId: string | undefined;
   if (resolving && parseAddress(query) !== null) {
     try {
@@ -570,7 +574,7 @@ export const searchAccounts: ApiHandler = withParams(async (c, deps, p) => {
   const accounts = await storeCall(c, deps, (s, b) =>
     s.searchAccounts(b, {
       credential: userCredential(c, deps),
-      query: parsed.query,
+      query,
       limit,
       offset: parsed.offset,
       following,

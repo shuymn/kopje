@@ -1,6 +1,6 @@
 import type { Db } from "../db/sql";
+import { railsBlank } from "../platform/rails-blank";
 import { userReadOperation, userWriteOperation } from "./auth";
-import { blank } from "./lists";
 
 // Timeline markers (Mastodon 4.5's Marker and Api::V1::MarkersController): where a user stopped reading home and
 // notifications, so that another client can continue from there. One row per account and timeline (migration
@@ -55,7 +55,7 @@ export type SaveMarkersResult = { status: "ok"; markers: Markers } | { status: "
 
 // Marker's validation of last_read_id (presence), with Rails' message, and Kopje's bound.
 function lastReadIdErrors(lastReadId: string): string[] {
-  if (blank(lastReadId)) {
+  if (railsBlank(lastReadId)) {
     return ["Last read can't be blank"];
   }
   if ([...lastReadId].length > MAX_LAST_READ_ID) {

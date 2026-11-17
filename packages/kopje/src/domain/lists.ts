@@ -1,4 +1,5 @@
 import type { Db } from "../db/sql";
+import { railsBlank } from "../platform/rails-blank";
 import {
   type Account,
   type AccountAdmission,
@@ -84,11 +85,6 @@ export type ListResult =
   | { status: "not_found" }
   | { status: "invalid"; errors: string[] };
 
-// Ruby's String#blank?: empty or whitespace only.
-export function blank(text: string): boolean {
-  return /^\s*$/u.test(text);
-}
-
 // List's validations, in the order Mastodon runs them (the replies_policy enum, the title, then the per-account limit
 // on create), with Rails' messages. `title` is the title the list would have.
 function listErrors(db: Db, ownerId: string, title: string, changes: ListChanges, creating: boolean): string[] {
@@ -96,7 +92,7 @@ function listErrors(db: Db, ownerId: string, title: string, changes: ListChanges
   if (changes.repliesPolicy !== undefined && !(REPLIES_POLICIES as readonly string[]).includes(changes.repliesPolicy)) {
     errors.push("Replies policy is not included in the list");
   }
-  if (blank(title)) {
+  if (railsBlank(title)) {
     errors.push("Title can't be blank");
   }
   // Ruby counts characters (code points), not UTF-16 units.

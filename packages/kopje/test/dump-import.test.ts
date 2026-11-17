@@ -23,6 +23,7 @@ import { toStoreUnavailable } from "../src/platform/store-errors";
 import { applyStagedLinks, MAX_LINK_STATEMENT_BYTES } from "../src/platform/store-import";
 import {
   MAX_MEDIA_DESCRIPTION_LENGTH,
+  MAX_UNTRUSTED_COUNT,
   MEDIA_DESCRIPTION_BYTES,
   mediaDescriptionSql,
 } from "../src/platform/stored-bounds";
@@ -719,7 +720,7 @@ describe("dump", () => {
       ).toEqual({ a: avatar, h: header, f: 0, m: 1, r: 0 });
     });
     // A dump from elsewhere, as its text could hold it: a description of 151 characters, one of malformed bytes past
-    // the characters, a setting of 2, and NULL for each; and the local account's feature policy (0114, the last
+    // the characters, a setting of 2, and NULL for each; and the local account's feature policy (0115, the last
     // column) not 0.
     const values = `'${avatar}','${header}',0,1,0,0)`;
     expect(text.split(values)).toHaveLength(2);
@@ -1417,6 +1418,134 @@ describe("dump", () => {
         ["text", 3],
       ]);
     });
+  }, 120_000);
+
+  // RES-2, UC5: a remote status's untrusted counts (0114) at both ends of their bound and NULL are dumped and restored
+  // as they are; a dump holding one past either end, a fraction, other text or a BLOB is refused at apply, and numeric
+  // text or an integral REAL restores as the integer INTEGER affinity stores. Each probe rewrites the one count PROBE
+  // in the dump's text.
+  it("round-trips untrusted counts (0114) at their bounds, and refuses one past them on import", async () => {
+    const PROBE = 98_765_431;
+    const rows: [string, number | null, number | null][] = [
+      ["990000000000000031", 0, MAX_UNTRUSTED_COUNT],
+      ["990000000000000032", null, 0],
+      ["990000000000000033", PROBE, null],
+    ];
+    const read = `SELECT id, untrusted_favourites_count AS f, typeof(untrusted_favourites_count) AS ft,
+				untrusted_reblogs_count AS r FROM statuses WHERE id GLOB '99000000000000003*' ORDER BY id`;
+    const source = await seeded(0);
+    await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      const remote = sql
+        .exec<{ id: string }>("SELECT id FROM accounts WHERE domain IS NOT NULL ORDER BY id LIMIT 1")
+        .one().id;
+      for (const [id, favourites, reblogs] of rows) {
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, published_at, untrusted_favourites_count,
+						untrusted_reblogs_count)
+					VALUES (?1, 'https://remote.test/o/' || ?1, ?2, 'public', '2026-11-17T00:00:00.000Z', ?3, ?4)`,
+          id,
+          remote,
+          favourites,
+          reblogs,
+        );
+      }
+    });
+    const { text } = await dumpViaRpc(source);
+    expect(text.split(String(PROBE))).toHaveLength(2);
+    const restored = await migratedStore();
+    await copyConfig(source, restored);
+    await importViaRpc(restored, text);
+    const expected = rows.map(([id, f, r]) => ({ id, f, ft: f === null ? "null" : "integer", r }));
+    expect(await runInDurableObject(restored, (_instance, state) => state.storage.sql.exec(read).toArray())).toEqual(
+      expected,
+    );
+    // A dump from elsewhere, as its text could hold it, applied chunk by chunk (its trailer, sealed over the original
+    // literal, is not the point): the status's row as stored, or the refusal of its chunk.
+    const applied = async (literal: string) => {
+      const target = await migratedStore();
+      await copyConfig(source, target);
+      const crafted = text.replace(String(PROBE), literal);
+      const id = await beginImport(target, crafted);
+      let seq = 0;
+      for (const chunk of await importChunks(crafted, 64 * 1024)) {
+        const result = await target.importChunk(BUILD, ACCESS, id, ++seq, chunk);
+        if (!result.ok) {
+          return result.message;
+        }
+      }
+      return runInDurableObject(target, (_instance, state) => state.storage.sql.exec(read).toArray()[2]);
+    };
+    for (const [literal, value] of [
+      ["'5'", 5],
+      ["'5.0'", 5],
+      ["'1e3'", 1000],
+      ["5.0", 5],
+      [`'${MAX_UNTRUSTED_COUNT}'`, MAX_UNTRUSTED_COUNT],
+    ] as const) {
+      expect(await applied(literal), literal).toEqual({ ...expected[2], f: value, ft: "integer" });
+    }
+    for (const literal of [
+      "-1",
+      String(MAX_UNTRUSTED_COUNT + 1),
+      `'${MAX_UNTRUSTED_COUNT + 1}'`,
+      "9223372036854775807",
+      "1.5",
+      "'abc'",
+      "''",
+      "X'35'",
+    ]) {
+      expect(await applied(literal), literal).toMatch(/statuses: untrusted_favourites_count past its stored bound/);
+    }
+  }, 300_000);
+
+  // UC6: a dump taken before 0114_untrusted_counts restores into a Store at its own migrations, whose upgrade adds both
+  // columns NULL to every status it carries and their triggers; that Store's own export restores into a Store at the
+  // latest file with the same rows.
+  it("restores a dump taken before 0114_untrusted_counts, which then upgrades through it and exports again", async () => {
+    const restored = await restoredBefore(
+      "0114_untrusted_counts",
+      (sql) => {
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username, domain) VALUES ('190000000000000003', 'https://r.test/u', 'u', 'r.test')",
+        );
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, published_at, favourites_count, reblogs_count)
+					VALUES ('990000000000000041', 'https://r.test/o/1', '190000000000000003', 'public', '2026-11-17T00:00:00.000Z',
+						3, 'many')`,
+        );
+      },
+      async (sql, upgrade) => {
+        expect(await upgrade()).toMatchObject({ ok: true, applied: ["0114_untrusted_counts"] });
+        expect(
+          sql
+            .exec(
+              "SELECT favourites_count, reblogs_count, untrusted_favourites_count, untrusted_reblogs_count FROM statuses",
+            )
+            .toArray(),
+        ).toEqual([
+          {
+            favourites_count: 3,
+            reblogs_count: "many",
+            untrusted_favourites_count: null,
+            untrusted_reblogs_count: null,
+          },
+        ]);
+        expect(() => sql.exec("UPDATE statuses SET untrusted_reblogs_count = -1")).toThrow(
+          /statuses: untrusted_reblogs_count past its stored bound/,
+        );
+      },
+    );
+    await runInDurableObject(restored, async (_instance, state) => {
+      expect(await testKernel(state).upgrade()).toMatchObject({ ok: true });
+    });
+    const { text } = await dumpViaRpc(restored, 64 * 1024);
+    const target = await migratedStore();
+    await copyConfig(restored, target);
+    expect((await importViaRpc(target, text)).report).toMatchObject({ ok: true, problems: [] });
+    expect(withoutState(await tableSnapshot(target)).statuses).toEqual(
+      withoutState(await tableSnapshot(restored)).statuses,
+    );
   }, 120_000);
 
   it("round-trips field verification (0066), an open claim too, and refuses values past their bounds on import", async () => {

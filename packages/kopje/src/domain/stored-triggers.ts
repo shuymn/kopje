@@ -38,6 +38,7 @@ import {
   statusCardPastBoundSql,
   trendLinkPastBoundSql,
   unverifiedLinksPastBoundSql,
+  untrustedCountPastBoundSql,
   verifiedLinksPastBoundSql,
   warningStatusIdsPastBoundSql,
 } from "../platform/stored-bounds";
@@ -460,7 +461,22 @@ END;`,
   ),
   // 0112_delivery_hosts: the hosts deliveries failed to, for every writer and an import (RES-4).
   capTrigger("delivery_hosts", "host", MAX_DELIVERY_HOSTS),
-  // 0114_feature_policies: a remote account's stored canFeature, 0 on a local account.
+  // 0114_untrusted_counts: a remote status's likes and shares totalItems as stored (RES-2).
+  ...boundTriggers(
+    "statuses_untrusted_favourites",
+    "statuses",
+    "untrusted_favourites_count",
+    untrustedCountPastBoundSql("NEW.untrusted_favourites_count"),
+    "statuses: untrusted_favourites_count past its stored bound",
+  ),
+  ...boundTriggers(
+    "statuses_untrusted_reblogs",
+    "statuses",
+    "untrusted_reblogs_count",
+    untrustedCountPastBoundSql("NEW.untrusted_reblogs_count"),
+    "statuses: untrusted_reblogs_count past its stored bound",
+  ),
+  // 0115_feature_policies: a remote account's stored canFeature, 0 on a local account.
   ...boundTriggers(
     "accounts_feature_policy",
     "accounts",

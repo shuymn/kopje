@@ -184,9 +184,18 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   upgrade from `0093_annual_reports` takes 22,046 ms with this file and 22,003 ms without it, medians of three runs).
   `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling back
   past it needs a point-in-time restore.
+- A remote status shows the favourites and boosts counts its server gives as `likes` and `shares` `totalItems`, as
+  Mastodon does, in the API, streaming and the public pages, read on its `Create` and every `Update` (a refetch and a
+  poll's refresh included), clamped to 0 to 100,000,000 and moved with each favourite and boost; without one, the
+  favourites and boosts Kopje stores of it, as before. Trends still rank by those (#1749). A status stored before the
+  upgrade shows its own counts until its server's next `Update` of it or a refetch. An import refuses an untrusted count
+  outside the bound. Migration `0114_untrusted_counts`: two columns and four triggers on `statuses`, no row read or
+  rewritten; the upgrade checks no reference (the migration bench's upgrade from `0093_annual_reports` takes 17,153 ms
+  with this file and 17,086 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store
+  migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
 - Remote accounts can be featured: Kopje reads their `canFeature`, asks with a `FeatureRequest` and shows them once
   they accept; their `Accept`, their `Reject` and their `Delete` of the authorization keep the membership current
-  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections"). Migration `0114_feature_policies`: a
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections"). Migration `0115_feature_policies`: a
   column of `accounts` and its two triggers, reading no row; the upgrade checks no reference. `wrangler.jsonc`:
   unchanged. This adds a Store migration, so the release is at least a minor version, and rolling back past it needs a
   point-in-time restore.
@@ -480,6 +489,21 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   actor's three the same way, `indexable` included, and its check compares them. Accepted risk: an account stored
   earlier keeps the values it was read with until its actor document is stored again (a fetch, an Update, or a status
   fetched once the document is 24 hours old). No Store migration and no `wrangler.jsonc` change.
+- Mastodon API parameters that Mastodon judges with Rails' `blank?` or `presence` are judged as Rails judges them: a
+  value of Unicode white space alone, U+0085 included, is blank, and one holding U+FEFF is not, where JavaScript's white
+  space (U+FEFF, not U+0085) decided. This covers a filter's title, keywords (a nested keyword's id and an all-blank
+  entry included), `status_id` and contexts, each context stripped as Ruby strips it first; a list's title; a
+  collection's name (a remote collection's too) and an item's `account_id`; a marker's `last_read_id`; a report's
+  category and comment (a remote `Flag`'s too); the private note; `/api/v2/search`'s `q` (400) and `type`, and the
+  account search's `q`; the admin accounts' filters and an account action's `type`, `report_id` and `warning_preset_id`;
+  the domain of a user's and an admin's domain block; the peer search's `q`; an app's `client_name`; a post's
+  `in_reply_to_id`, `quoted_status_id` and `quote_approval_policy`; the notifications' `account_id`; an account's
+  statuses' `tagged`; a media `focus`; the `scope` of an authorization and of client credentials; a featured hashtag's
+  `name`; and each `attribution_domains[]` entry. A search query, the admin search's `username`, `by_domain`,
+  `display_name` and `email`, a featured hashtag's name and the account lookup's `acct` are stripped as Ruby strips them
+  (NUL and ASCII white space only), an app's name is stored as sent rather than trimmed, and an admin search attribute
+  that stripping leaves empty (`by_domain=%00`) stays a condition (#1734). No Store migration and no `wrangler.jsonc`
+  change.
 - A remote status's `sensitive` is read as Mastodon casts it to its boolean column, so any value but `false`, `0`, null
   and Rails' false strings (`"0"`, `"f"`, `"F"`, `"false"`, `"FALSE"`, `"off"`, `"OFF"`) marks it, where only `true`
   did (`"true"`, `1` and `[true]` now mark it), and an empty string refuses it where Mastodon's `NOT NULL` column

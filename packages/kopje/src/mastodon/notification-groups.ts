@@ -1,4 +1,5 @@
 import { DEFAULT_UNREAD_LIMIT, MAX_UNREAD_LIMIT } from "../domain/notification-groups";
+import { railsBlank } from "../platform/rails-blank";
 import {
   type ApiHandler,
   authorized,
@@ -108,7 +109,8 @@ export const unreadCount: ApiHandler = withParams(async (c, deps, p) => {
     limit: unreadLimit(p),
     types: types(p, "types"),
     excludeTypes: types(p, "exclude_types"),
-    accountId: accountId === undefined || accountId === "" ? null : accountId,
+    // Notification.browserable: `from_account_id.present?` (railsBlank).
+    accountId: accountId === undefined || railsBlank(accountId) ? null : accountId,
     groupedTypes: null,
     includeFiltered: includeFiltered(p),
   };

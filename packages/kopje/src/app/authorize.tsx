@@ -9,7 +9,7 @@ import { decidesHost, offDomain } from "../platform/instance-host";
 import { railsBlank } from "../platform/rails-blank";
 import { verifyAccessJwt } from "../security/access-jwt";
 import { generateWrappedKey, type KeyGen } from "../security/key-wrap";
-import { parseScopes, withinScopes } from "../security/scopes";
+import { DEFAULT_SCOPES, parseScopes, withinScopes } from "../security/scopes";
 import { PKCE_CHALLENGE, sha256Hex } from "../security/tokens";
 import { onHost } from "../web/components/layout";
 import { MessagePage } from "../web/pages/message";
@@ -99,7 +99,9 @@ function validate(
       text: P.unsupportedResponseMode,
     };
   }
-  const scopes = parseScopes(get("scope"));
+  // Doorkeeper's PreAuthorization: an absent or blank scope (railsBlank) is the default.
+  const scope = get("scope");
+  const scopes = parseScopes(scope === undefined || railsBlank(scope) ? DEFAULT_SCOPES : scope);
   if (scopes === null || !withinScopes(scopes, client.scopes)) {
     return {
       error: "invalid_scope",

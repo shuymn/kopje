@@ -4,6 +4,7 @@ import type { Db } from "../db/sql";
 import { railsBlank } from "../platform/rails-blank";
 import { railsBoolean } from "../platform/rails-boolean";
 import { rubyToI } from "../platform/ruby-to-i";
+import { rubyStrip } from "../platform/strip";
 import { resolveApiId } from "./accounts";
 import { canView, type ViewerContext } from "./audience";
 import { userReadOperation, userWriteOperation } from "./auth";
@@ -151,9 +152,9 @@ function withRules(db: Db, rows: FilterRow[]): Filter[] {
   }));
 }
 
-// Ruby's String#blank?: empty or whitespace only.
+// Rails' blank? of a parameter: absent, or a String railsBlank finds blank.
 function blank(text: string | undefined): boolean {
-  return text === undefined || /^\s*$/u.test(text);
+  return text === undefined || railsBlank(text);
 }
 
 // Ruby counts characters (code points), not UTF-16 units.
@@ -161,10 +162,11 @@ function characters(text: string): number {
   return [...text].length;
 }
 
-// CustomFilter's normalization of context: each stripped, blanks dropped; then, where Mastodon keeps repeats, each
-// once, so the stored list is at most the five contexts (any other value is refused).
+// CustomFilter's normalization of context (`map(&:strip).filter_map(&:presence)`): each stripped as Ruby strips
+// (rubyStrip), blanks (railsBlank) dropped; then, where Mastodon keeps repeats, each once, so the stored list is at most
+// the five contexts (any other value is refused).
 function normalizeContext(context: readonly string[]): string[] {
-  return [...new Set(context.map((c) => c.trim()).filter((c) => c !== ""))];
+  return [...new Set(context.map(rubyStrip).filter((c) => !railsBlank(c)))];
 }
 
 // Expireable#expires_in=: a blank interval (Rails' blank?, U+0085 among its spaces and U+FEFF not) is no expiry;

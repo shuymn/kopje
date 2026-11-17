@@ -1,6 +1,7 @@
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { sameOrigin } from "../platform/http-url";
+import { railsBlank } from "../platform/rails-blank";
 import {
   COLLECTION_DESCRIPTION_LENGTH,
   COLLECTION_ITEM_STATES,
@@ -18,7 +19,6 @@ import { sanitizeRemoteCodePoints } from "../security/html";
 import { localCollectionUri, recordItemRemove } from "./collection-documents";
 import { notifyUpdated, remoteCollectionTag } from "./collections";
 import { allocateLocalId, insertWithFreshId } from "./ids";
-import { blank } from "./lists";
 import { isRetracted } from "./retractions";
 import { TREND_LANGUAGES } from "./trend-languages";
 
@@ -114,8 +114,9 @@ function collectionValues(input: FeaturedCollectionInput): Values | null {
   }
   const name = storedText(cutCodePoints(input.name, COLLECTION_NAME_LENGTH.remote));
   const tag = input.topic === null ? null : remoteCollectionTag(input.topic);
+  // Collection validates the cut name's presence (Rails' blank?: U+0085 is blank, U+FEFF is not).
   if (
-    blank(name) ||
+    railsBlank(name) ||
     input.sensitive === null ||
     input.discoverable === null ||
     (input.topic !== null && tag === null)

@@ -1,4 +1,4 @@
--- Kopje Store schema 0114: remote accounts' feature policies, the FEP-7aa9 canFeature of their actor documents
+-- Kopje Store schema 0115: remote accounts' feature policies, the FEP-7aa9 canFeature of their actor documents
 -- (#1589's D23). Never edit after release (checksummed).
 --
 --   accounts.feature_policy        Mastodon's Account#feature_approval_policy: InteractionPolicy's bitmap of the
