@@ -25,9 +25,6 @@ const ACCESSORS: Readonly<Record<string, string>> = {
   name: "name",
   summary: "summary",
   url: "url",
-  manuallyApprovesFollowers: "manuallyApprovesFollowers",
-  discoverable: "discoverable",
-  indexable: "indexable",
   published: "published",
   successorId: "movedTo",
   aliasIds: "alsoKnownAs",
@@ -277,6 +274,20 @@ describe("the members Fedify is handed (#1709)", () => {
         "a read of url": [
           "function f(actor: Actor) { return actor.url; }",
           `${INBOUND} url: reads url, which FEDIFY_MEMBERS lacks`,
+        ],
+        // #1747: the flags are read from the JSON as Rails casts them (remote-actor.ts remoteActorInput), never from
+        // Fedify's object.
+        "a read of manuallyApprovesFollowers": [
+          "function f(actor: Actor) { return actor.manuallyApprovesFollowers; }",
+          `${INBOUND} manuallyApprovesFollowers: an accessor ACCESSORS does not map`,
+        ],
+        "a read of discoverable": [
+          "function f(actor: Actor) { return actor.discoverable; }",
+          `${INBOUND} discoverable: an accessor ACCESSORS does not map`,
+        ],
+        "a read of indexable": [
+          "function f(actor: Actor) { return actor.indexable; }",
+          `${INBOUND} indexable: an accessor ACCESSORS does not map`,
         ],
         "an alias": [
           "function f(actor: Actor) { const alias = actor; const again = alias; return again.published; }",

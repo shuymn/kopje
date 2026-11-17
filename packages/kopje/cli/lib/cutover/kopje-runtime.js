@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
  *   & typeof import('../../../src/platform/identity-bounds.ts')
  *   & typeof import('../../../src/platform/stored-bounds.ts') & typeof import('../../../src/platform/media-files.ts')
  *   & typeof import('../../../src/platform/dump-catalog.ts') & typeof import('../../../src/platform/dump-literals.ts')
+ *   & typeof import('../../../src/platform/rails-boolean.ts')
  *   & { renderMaintenanceSnapshot?: unknown }} KopjeRuntime
  */
 
@@ -35,6 +36,7 @@ const runtime = fromSources
       ...(await import("../../../src/platform/media-files.ts")),
       ...(await import("../../../src/platform/dump-catalog.ts")),
       ...(await import("../../../src/platform/dump-literals.ts")),
+      ...(await import("../../../src/platform/rails-boolean.ts")),
     }
   : /** @type {KopjeRuntime} */ (await import(new URL("../../../dist/maintenance-render.js", import.meta.url).href));
 
@@ -83,4 +85,5 @@ export const {
   quoteIdentifier,
   readColumn,
   valueLiteral,
+  railsBoolean,
 } = runtime;
