@@ -530,16 +530,24 @@ describe("the policy fragments agree with the model of their rules", () => {
     const index = world.accounts.findIndex((account) => account.local);
     return index < 0 ? null : index;
   };
-  // The collection keys a notification of `type` is read with: none, and for a collection type also each account's
-  // collection by its item and by itself.
-  const collectionKeys = (m: PolicyModel, type: string): (ModelCollectionKey | null)[] =>
-    type === "added_to_collection" || type === "collection_update"
-      ? [
-          null,
-          ...accounts(m.world).map((owner) => ({ kind: "item" as const, owner })),
-          ...accounts(m.world).map((owner) => ({ kind: "collection" as const, owner })),
-        ]
-      : [null];
+  // The collection keys a notification is read with: none, and for a collection type also each account's collection by
+  // its item and by itself. A collection arm decides by the key and the sender alone (R45: the sender's own collection,
+  // by the type's kind), so the keys it refuses so (none, another owner's, the other kind's) come with no status and no
+  // warning, and the one it may accept, the sender's own of the type's kind, with every status and warning: crossing
+  // every key with them as well would repeat the same refusals and multiply the property's time.
+  const COLLECTION_KINDS = { added_to_collection: "item", collection_update: "collection" } as const;
+  function collectionKeys(world: World) {
+    const every = [
+      null,
+      ...(["item", "collection"] as const).flatMap((kind) => accounts(world).map((owner) => ({ kind, owner }))),
+    ];
+    return (type: string, from: number, s: number | null, warned: number | null): (ModelCollectionKey | null)[] => {
+      if (type !== "added_to_collection" && type !== "collection_update") {
+        return [null];
+      }
+      return s === null && warned === null ? every : [{ kind: COLLECTION_KINDS[type], owner: from }];
+    };
+  }
   const adminIdOf = (world: World) => {
     const admin = adminOf(world);
     return admin === null ? null : accountId(admin);
@@ -575,7 +583,10 @@ describe("the policy fragments agree with the model of their rules", () => {
 								UNION ALL SELECT i.id, NULL, 'item', c.account_id FROM collections c
 									JOIN collection_items i ON i.collection_id = c.id AND i.account_id IS NULL
 								UNION ALL SELECT NULL, c.id, 'collection', c.account_id FROM collections c) nk
-							WHERE (nk.kind IS NULL OR nt.value IN ('added_to_collection', 'collection_update'))
+							WHERE CASE WHEN nt.value IN ('added_to_collection', 'collection_update')
+									THEN (ns.id IS NULL AND nw.id IS NULL) OR (nk.owner = nf.id
+										AND nk.kind = CASE nt.value WHEN 'added_to_collection' THEN 'item' ELSE 'collection' END)
+									ELSE nk.kind IS NULL END
 								AND ${fragment("nr0.account_id", "nt.value", "nf.id", "ns.id", "?2", "?3", "nw.id", "nk.item", "nk.coll")}`,
             JSON.stringify(NOTIFICATION_TYPES),
             world.now,
@@ -588,6 +599,7 @@ describe("the policy fragments agree with the model of their rules", () => {
       }),
       ({ world }) => {
         const m = new PolicyModel(world, adminOf(world));
+        const keys = collectionKeys(world);
         return accounts(m.world)
           .filter((r) => m.world.accounts[r]?.local === true)
           .flatMap((r) =>
@@ -595,7 +607,7 @@ describe("the policy fragments agree with the model of their rules", () => {
               accounts(m.world).flatMap((from) =>
                 [null, ...statuses(m.world)].flatMap((s) =>
                   [null, ...accounts(m.world).filter((x) => m.world.accounts[x]?.local === true)].flatMap((warned) =>
-                    collectionKeys(m, type).flatMap((key) =>
+                    keys(type, from, s, warned).flatMap((key) =>
                       m[rule](r, type, from, s, warned, key)
                         ? [
                             `${name(m.world, r)} ${type} ${name(m.world, from)} ${s === null ? "-" : m.status(s).name} ${warned === null ? "-" : name(m.world, warned)} ${key === null ? "-" : `${key.kind}:${name(m.world, key.owner)}`}`,
