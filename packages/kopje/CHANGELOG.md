@@ -332,8 +332,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `/api/v1/notifications` and `/api/v2/notifications`, as Mastodon's do; the other lists paged by `max_id` read it as 1
   (Mastodon answers 500), where one that is not a number read as the default before
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Request parameters"). The settings page's checkboxes
-  now send their hidden `false` first; a settings page loaded before the upgrade saves its ticked boxes as unticked, so
-  reload it first. No Store migration and no `wrangler.jsonc` change.
+  now send their hidden `false` first, so a settings page loaded before the upgrade, or before a rollback across it,
+  saves its ticked boxes as unticked: reload an open settings page after either
+  ([docs/upgrade.md](docs/upgrade.md), Rolling back). No Store migration and no `wrangler.jsonc` change.
 - Search with `resolve=true` finds a local post by its page URL, a local account by its profile URL (one of its tabs
   included) and a stored remote account by its `/@user@domain` URL on this instance, as Mastodon's search does, when
   the viewer may see them. Search reads `limit` and `offset` as Mastodon's does: a negative `limit` or `offset` is
