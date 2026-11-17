@@ -12,6 +12,7 @@ import { NOW } from "./app-helpers";
 import captured from "./fixtures/untrusted-counts.json";
 import { mastodonActor } from "./inbox-helpers";
 import {
+  announce,
   create,
   followed,
   mastodonNote,
@@ -20,8 +21,13 @@ import {
   remove,
   setup,
   type Setup,
+  undo,
   update,
 } from "./inbox-status-helpers";
+import { viaRoute } from "./profile-page-helpers";
+import { act, community, getJson, remoteAccount, seedStatus } from "./status-helpers";
+import { authors, round, trendRows, trendStatuses } from "./trend-helpers";
+import { one, parseHtml, query, text } from "./web-dom";
 
 // A remote status's untrusted counts (#1749, migration 0113_untrusted_counts): its likes and shares totalItems as
 // Mastodon 4.7.5 stores them (platform/untrusted-count.ts) on a Create (create.rb:206-216) and on every Update, explicit
@@ -220,5 +226,176 @@ describe("a remote status's untrusted counts", () => {
         state.storage.sql.exec("SELECT untrusted_favourites_count AS f FROM statuses WHERE uri = ?", other.uri).one(),
       ).toEqual({ f: null });
     });
+  });
+});
+
+// What a status shows of its favourites and boosts (UC3), how a favourite or a boost moves a remote status's untrusted
+// counts (UC4, Mastodon's increment_count! and decrement_count!, status.rb:324-341), and what the trends rank by (UC7).
+describe("a status's shown favourites and boosts counts", () => {
+  type Shown = { favourites_count: number; reblogs_count: number };
+  type Stored = { f: SqlStorageValue; uf: SqlStorageValue; r: SqlStorageValue; ur: SqlStorageValue };
+
+  // alice's status and carol's public reply to it, whose server gave 42 likes and 7 shares.
+  async function world() {
+    const h = await community(["alice", "bob"]);
+    const carol = await remoteAccount(h.store, "carol", "carol.example");
+    const focal = await seedStatus(h.store, { accountId: h.users.alice.id, visibility: "public" });
+    const reply = await seedStatus(h.store, { accountId: carol, visibility: "public", inReplyToId: focal });
+    await sql(
+      h.store,
+      `UPDATE statuses SET in_reply_to_account_id = ?, untrusted_favourites_count = 42, untrusted_reblogs_count = 7
+			WHERE id = ?`,
+      h.users.alice.id,
+      reply,
+    );
+    const shown = async (id: string) => {
+      const { status, body } = await getJson<Shown>(h, `/api/v1/statuses/${id}`, h.users.bob.token);
+      expect(status).toBe(200);
+      return [body.favourites_count, body.reblogs_count];
+    };
+    const stored = async (id: string) =>
+      (
+        await sql<Stored>(
+          h.store,
+          `SELECT favourites_count AS f, untrusted_favourites_count AS uf, reblogs_count AS r,
+					untrusted_reblogs_count AS ur FROM statuses WHERE id = ?`,
+          id,
+        )
+      )[0];
+    return { h, carol, focal, reply, shown, stored };
+  }
+
+  it("are a remote status's untrusted ones in the API and on a public page, else its own", async () => {
+    const { h, focal, reply, shown } = await world();
+    await sql(h.store, "UPDATE statuses SET favourites_count = 1, reblogs_count = 2 WHERE id = ?", reply);
+    // alice's status holds untrusted counts an import gave: a local status shows its own.
+    await sql(
+      h.store,
+      "UPDATE statuses SET untrusted_favourites_count = 500, untrusted_reblogs_count = 600 WHERE id = ?",
+      focal,
+    );
+    expect(await shown(reply)).toEqual([42, 7]);
+    expect(await shown(focal)).toEqual([0, 0]);
+    const main = one(parseHtml(await viaRoute(h)(`/@alice/${focal}`)), "main");
+    const tabs = query(one(main, "nav", "tabs"), "a").map(text);
+    expect(tabs.filter((t) => /boost|favourite/.test(t))).toEqual(["0 boosts", "0 favourites"]);
+    const card = one(one(main, "ul", "feed"), "article");
+    expect(query(one(card, "div", "counts"), "span", "vh").map(text)).toEqual([
+      "0 replies",
+      "7 boosts",
+      "42 favourites",
+    ]);
+    // None stored, its own.
+    await sql(
+      h.store,
+      "UPDATE statuses SET untrusted_favourites_count = NULL, untrusted_reblogs_count = NULL WHERE id = ?",
+      reply,
+    );
+    expect(await shown(reply)).toEqual([1, 2]);
+  });
+
+  // The triggers keep any other value out (UC5); the presentation reads one past them as none all the same.
+  it("read an untrusted count past its bound as none", async () => {
+    const { h, reply, shown } = await world();
+    await sql(h.store, "UPDATE statuses SET favourites_count = 1, reblogs_count = 2 WHERE id = ?", reply);
+    await runInDurableObject(h.store, (_instance, state) => {
+      state.storage.sql.exec("DROP TRIGGER statuses_untrusted_favourites_update");
+      state.storage.sql.exec("DROP TRIGGER statuses_untrusted_reblogs_update");
+    });
+    for (const [favourites, reblogs] of [
+      ["many", 1.5],
+      [MAX_UNTRUSTED_COUNT + 1, -1],
+    ] as const) {
+      await sql(
+        h.store,
+        "UPDATE statuses SET untrusted_favourites_count = ?, untrusted_reblogs_count = ? WHERE id = ?",
+        favourites,
+        reblogs,
+        reply,
+      );
+      expect(await shown(reply)).toEqual([1, 2]);
+    }
+  });
+
+  it("move a remote status's untrusted counts with a local favourite or boost, within their bound", async () => {
+    const { h, reply, stored } = await world();
+    const acted = async (action: string) => {
+      const response = await act(h, h.users.bob, `/api/v1/statuses/${reply}/${action}`);
+      expect([action, response.status]).toEqual([action, 200]);
+      // A boost answers with the boost, which shows its original's counts in reblog.
+      const body = await response.json<Shown & { reblog: Shown | null }>();
+      return (body.reblog ?? body).favourites_count;
+    };
+    const set = (columns: string) => sql(h.store, `UPDATE statuses SET ${columns} WHERE id = ?`, reply);
+    // One more and one fewer, shown at once.
+    expect(await acted("favourite")).toBe(43);
+    expect(await acted("reblog")).toBe(43);
+    expect(await stored(reply)).toEqual({ f: 1, uf: 43, r: 1, ur: 8 });
+    expect(await acted("unfavourite")).toBe(42);
+    await acted("unreblog");
+    expect(await stored(reply)).toEqual({ f: 0, uf: 42, r: 0, ur: 7 });
+    // Floored at 0.
+    await acted("favourite");
+    await acted("reblog");
+    await set("untrusted_favourites_count = 0, untrusted_reblogs_count = 0");
+    await acted("unfavourite");
+    await acted("unreblog");
+    expect(await stored(reply)).toEqual({ f: 0, uf: 0, r: 0, ur: 0 });
+    // Capped at MAX_UNTRUSTED_COUNT.
+    await set(`untrusted_favourites_count = ${MAX_UNTRUSTED_COUNT}, untrusted_reblogs_count = ${MAX_UNTRUSTED_COUNT}`);
+    await acted("favourite");
+    await acted("reblog");
+    expect(await stored(reply)).toEqual({ f: 1, uf: MAX_UNTRUSTED_COUNT, r: 1, ur: MAX_UNTRUSTED_COUNT });
+    // An own count an import stored as text moves it by nothing, as how far it moved is unknown.
+    await acted("unfavourite");
+    await set("favourites_count = 'many', untrusted_favourites_count = 42");
+    await acted("favourite");
+    expect(await stored(reply)).toMatchObject({ f: 1, uf: 42 });
+    // An own count at either end of SQLite's integers moves it within its bound: past the largest integer the sum is a
+    // REAL the cap brings back.
+    await set("favourites_count = -9223372036854775808");
+    await acted("unfavourite");
+    expect(await stored(reply)).toMatchObject({ f: 0, uf: MAX_UNTRUSTED_COUNT });
+    await set("favourites_count = 9223372036854775807");
+    await acted("favourite");
+    expect(await stored(reply)).toMatchObject({ f: 1, uf: 0 });
+    // A stale own count moves it by how far counting corrects it, where Mastodon adds or takes one each time.
+    await set("favourites_count = 5, untrusted_favourites_count = 42");
+    await acted("unfavourite");
+    expect(await stored(reply)).toMatchObject({ f: 0, uf: 37 });
+    // None stays none.
+    await set("untrusted_favourites_count = NULL, untrusted_reblogs_count = NULL");
+    await acted("favourite");
+    await acted("unreblog");
+    expect(await stored(reply)).toEqual({ f: 1, uf: null, r: 0, ur: null });
+  });
+
+  it("move a remote status's untrusted boosts with another server's boost and its Undo", async () => {
+    const { t, note } = await created({ likes: collection(42), shares: collection(7) });
+    const eve = await mastodonActor(t.web, "eve");
+    await followed(t, eve);
+    const boost = announce(eve, note.id);
+    expect(await t.post(eve, boost)).toBe(202);
+    expect(await counts(t, note.id)).toEqual({ f: 42, r: 8 });
+    expect(await t.post(eve, undo(eve, boost))).toBe(202);
+    expect(await counts(t, note.id)).toEqual({ f: 42, r: 7 });
+  });
+
+  // Mastodon's trends rank by the status's own counts (trends/statuses.rb:120), not what its server claims.
+  it("leave the trends ranked by a status's own counts", async () => {
+    const h = await community(["viewer"]);
+    const a = await authors(h.store, 2);
+    const [claimed = "", counted] = await trendStatuses(h.store, [
+      { author: a[0]!, published: NOW - 3_600_000, seq: 0, favourites: 5 },
+      { author: a[1]!, published: NOW - 3_600_000, seq: 1, favourites: 50 },
+    ]);
+    await sql(
+      h.store,
+      "UPDATE statuses SET untrusted_favourites_count = ?1, untrusted_reblogs_count = ?1 WHERE id = ?2",
+      MAX_UNTRUSTED_COUNT,
+      claimed,
+    );
+    await round(h.store, NOW);
+    expect((await trendRows(h.store)).map((row) => row.status_id)).toEqual([counted, claimed]);
   });
 });

@@ -6,6 +6,7 @@ import { iso } from "../platform/iso-time";
 import { railsBlank } from "../platform/rails-blank";
 import {
   isoTimeSql,
+  MAX_UNTRUSTED_COUNT,
   presentedContent,
   presentedSpoiler,
   spoilerReadSql,
@@ -370,19 +371,34 @@ export function recountStatuses(db: Db, accountId: string): void {
   );
 }
 
+// A remote status's untrusted count (migration 0113_untrusted_counts) moved as its own count moves from `own` to
+// `counted`, as Mastodon's increment_count! and decrement_count! move both (status.rb:324-341): floored at 0 and capped
+// at MAX_UNTRUSTED_COUNT (StatusStat's clamp on save). None stays none (min and max of a NULL are NULL), and an own
+// count that is not an integer (an import's) moves it by nothing, since how far it moved is unknown.
+function movedUntrustedSql(untrusted: string, own: string, counted: string): string {
+  return `CASE WHEN typeof(${own}) <> 'integer' THEN ${untrusted}
+		ELSE min(max(${untrusted} + ${counted} - ${own}, 0), ${MAX_UNTRUSTED_COUNT}) END`;
+}
+
 // replies_count counts public and unlisted replies, as Mastodon does; reblogs_count the boosts not withdrawn (a
 // withdrawn one is gone for everyone, as its unboost counted it off: removeReblog), read through statuses_reblog: the
-// withdrawal filter would let stale statistics walk the kept boosts' index whole (RES-7).
+// withdrawal filter would let stale statistics walk the kept boosts' index whole (RES-7). The untrusted counts move with
+// the own ones in the same write (movedUntrustedSql): one assignment of the row, so each COUNT runs once and each SET
+// term reads the row as it was.
 export function recountStatus(db: Db, statusId: string | null): void {
   if (statusId === null) {
     return;
   }
   db.run(
-    `UPDATE statuses SET
-			replies_count = (SELECT COUNT(*) FROM statuses r WHERE r.in_reply_to_id = ?1 AND r.visibility IN ${DISTRIBUTABLE_SQL}),
-			reblogs_count = (SELECT COUNT(*) FROM statuses r INDEXED BY statuses_reblog
-				WHERE r.reblog_of_id = ?1 AND r.reblog_of_id IS NOT NULL AND r.withdrawn = 0),
-			favourites_count = (SELECT COUNT(*) FROM favourites f WHERE f.status_id = ?1)
+    `UPDATE statuses SET (replies_count, reblogs_count, favourites_count, untrusted_reblogs_count,
+				untrusted_favourites_count) = (SELECT c.replies, c.reblogs, c.favourites,
+				${movedUntrustedSql("statuses.untrusted_reblogs_count", "statuses.reblogs_count", "c.reblogs")},
+				${movedUntrustedSql("statuses.untrusted_favourites_count", "statuses.favourites_count", "c.favourites")}
+			FROM (SELECT
+				(SELECT COUNT(*) FROM statuses r WHERE r.in_reply_to_id = ?1 AND r.visibility IN ${DISTRIBUTABLE_SQL}) AS replies,
+				(SELECT COUNT(*) FROM statuses r INDEXED BY statuses_reblog
+					WHERE r.reblog_of_id = ?1 AND r.reblog_of_id IS NOT NULL AND r.withdrawn = 0) AS reblogs,
+				(SELECT COUNT(*) FROM favourites f WHERE f.status_id = ?1) AS favourites) c)
 		WHERE id = ?1`,
     statusId,
   );
@@ -2161,7 +2177,14 @@ function removeReblog(db: Db, accountId: string, reblogId: string, originalId: s
   if (!requiresMention(row.visibility)) {
     db.run("UPDATE accounts SET statuses_count = max(statuses_count - 1, 0) WHERE id = ?", accountId);
   }
-  db.run("UPDATE statuses SET reblogs_count = max(reblogs_count - 1, 0) WHERE id = ?", originalId);
+  // Its untrusted count (migration 0113_untrusted_counts) moves with it, as Mastodon's decrement_count! moves both
+  // (status.rb:324-341); none stays none, as max of a NULL is NULL.
+  db.run(
+    `UPDATE statuses SET reblogs_count = max(reblogs_count - 1, 0),
+			untrusted_reblogs_count = max(untrusted_reblogs_count - 1, 0)
+		WHERE id = ?`,
+    originalId,
+  );
   const notification = db.first<{ id: string }>(REBLOG_NOTIFICATION_SQL, target.account_id, accountId, originalId);
   if (notification !== undefined) {
     db.run("DELETE FROM push_deliveries WHERE notification_id = CAST(? AS INTEGER)", notification.id);

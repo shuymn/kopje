@@ -173,6 +173,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `0093_annual_reports` takes 16,114 ms with this file and 16,184 ms without it). Hosts are counted from the upgrade
   on: stop one already gone with `kopje-admin hosts stop <host>`. `wrangler.jsonc`: unchanged. This adds a Store
   migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+- A remote status shows the favourites and boosts counts its server gives as `likes` and `shares` `totalItems`, as
+  Mastodon does, in the API, streaming and the public pages, read on its `Create` and every `Update` (a refetch and a
+  poll's refresh included), clamped to 0 to 100,000,000 and moved with each favourite and boost; without one, the
+  favourites and boosts Kopje stores of it, as before. Trends still rank by those (#1749). A status stored before the
+  upgrade shows its own counts until its server's next `Update` of it or a refetch. An import refuses an untrusted
+  count outside the bound. Migration `0113_untrusted_counts`: two columns and four triggers on `statuses`, no row read
+  or rewritten; the upgrade checks no reference. `wrangler.jsonc`: unchanged. This adds a Store migration, so the
+  release is at least a minor version, and rolling back past it needs a point-in-time restore.
 
 ### Changed
 

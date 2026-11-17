@@ -26,6 +26,7 @@ import {
   CARD_TYPES,
   CARD_URL_LIMIT,
   isoTimeSql,
+  MAX_UNTRUSTED_COUNT,
   spoilerReadSql,
   statusEditedSql,
   statusPublishedSql,
@@ -50,6 +51,15 @@ import {
 // Imports only leaves, so modules that build SQL from these maps at load (status-presenter.ts, trends.ts) can use
 // them whatever the import order.
 
+// A status's favourites or boosts count as Mastodon's serializer answers it (status_serializer.rb:95-101, Status
+// #untrusted_favourites_count): a remote status's untrusted count (migration 0113_untrusted_counts) when it stores one,
+// read within its bound (storedCountSql, so a value past it reads as none), else its own count; a local status's own
+// count, whatever an import stored in its untrusted column. Over STATUS_FROM's `s` and its author `au`.
+function shownCountSql(untrusted: string, own: string): string {
+  return `CASE WHEN au.domain IS NOT NULL THEN COALESCE(${storedCountSql(untrusted, MAX_UNTRUSTED_COUNT)}, ${own})
+		ELSE ${own} END`;
+}
+
 // in_reply_to_id and in_reply_to_account_id are shown as Mastodon shows them, even when the viewer may not see the
 // parent: they belong to the reply, whose ActivityPub object carries inReplyTo to every recipient anyway, and its
 // author chose to publish them. The parent itself (content, author profile, context entry) stays behind the audience
@@ -73,8 +83,8 @@ export const STATUS_COLUMN_MAP = {
   published_at: statusPublishedSql("s"),
   edited_at: statusEditedSql("s"),
   replies_count: "s.replies_count",
-  reblogs_count: "s.reblogs_count",
-  favourites_count: "s.favourites_count",
+  reblogs_count: shownCountSql("s.untrusted_reblogs_count", "s.reblogs_count"),
+  favourites_count: shownCountSql("s.untrusted_favourites_count", "s.favourites_count"),
   quotes_count: "s.quotes_count",
   quote_policy: "s.quote_policy",
   // A boost shows no emoji of its own (its original's are in `reblog`), whatever its row holds.
