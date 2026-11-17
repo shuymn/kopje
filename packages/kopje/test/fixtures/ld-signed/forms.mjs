@@ -979,6 +979,35 @@ const forms = {
   // names no account.
   "Undo of a block, both typed as absolute IRIs, with its block's object as the public collection beside a null":
     absoluteUndo({ object: { ...BLOCK, type: `${AS}#Block`, object: [null, PUBLIC] } }),
+  // After the patch's stop, at `to: [null]` or `to: [[]]`, the compaction's value stays: the public collection as
+  // as:Public, which names no account, whether given in arrays or as a node's id; an IRI of another scheme as given,
+  // which names none either; and alice's IRI beside a null as that IRI.
+  "Undo of a block, both typed as absolute IRIs, with its block's object as the public collection in an array in an array after a stop":
+    absoluteUndo({ object: { id: BLOCK.id, type: `${AS}#Block`, actor: BOB, to: [null], object: [[PUBLIC]] } }),
+  "Undo of a block, both typed as absolute IRIs, with its block's object as the public collection in an array in an array after an empty array in an array":
+    absoluteUndo({ object: { id: BLOCK.id, type: `${AS}#Block`, actor: BOB, to: [[]], object: [[PUBLIC]] } }),
+  "Undo of a block, both typed as absolute IRIs, with its block's object as a node of the public collection in an array after a stop":
+    absoluteUndo({ object: { id: BLOCK.id, type: `${AS}#Block`, actor: BOB, to: [null], object: [{ id: PUBLIC }] } }),
+  "Undo of a block, both typed as absolute IRIs, with its block's object as an IRI of another scheme in an array in an array after a stop":
+    absoluteUndo({
+      object: { id: BLOCK.id, type: `${AS}#Block`, actor: BOB, to: [null], object: [["tag:kopje.test,2026:alice"]] },
+    }),
+  "Undo of a block, both typed as absolute IRIs, with its block's object in an array beside a null after a stop":
+    absoluteUndo({ object: { id: BLOCK.id, type: `${AS}#Block`, actor: BOB, to: [null], object: [null, ALICE] } }),
+  // A type in an array after the stop: the compaction writes the name full_context gives its IRI.
+  "Undo of a block, both typed as absolute IRIs, with a type in an array after a stop": absoluteUndo({
+    object: { ...BLOCK, type: `${AS}#Block`, to: [null], instrument: { type: [QUOTE_REQUEST] } },
+  }),
+  // An actor under a namespace of full_context's prefixes in an array, as an IRI or a node's id: the compaction writes
+  // it as a compact IRI.
+  "Undo of a block typed as absolute IRIs, with its actor under the toot namespace in an array": absoluteUndo({
+    actor: ["http://joinmastodon.org/ns#bob"],
+  }),
+  "Undo of a block typed as absolute IRIs, with its actor as a node under the toot namespace in an array": absoluteUndo(
+    {
+      actor: [{ id: "http://joinmastodon.org/ns#bob" }],
+    },
+  ),
 };
 
 // The same bodies without a signature: read as received by both.

@@ -880,7 +880,7 @@ describe("D1: forms whose readings differ, each named by its class", () => {
         }
       }
       expect(names).toBeGreaterThanOrEqual(150);
-      expect(renamed.length).toBe(93);
+      expect(renamed.length).toBe(101);
       // Bodies Mastodon compacts outside the shape Kopje shows it compacts (an inline context, an array in an array,
       // a proof, a number where an IRI is expected, an id it writes otherwise or jsonld.js does, a language map of
       // another shape): their types are read as given, so such an activity applies less than Mastodon's.
@@ -1304,7 +1304,7 @@ describe("D1 through the inbox: what the received form stores", () => {
   });
 
   // #1717, form 4: the replay reads a retraction of a further shape as the inbox does, and one past Mastodon's limits
-  // once compacted as received.
+  // once compacted, or holding after the patch's stop a value the compaction writes as as:Public, as received.
   it("on replay too, an Undo of a block typed as IRIs in a body of form 4 lifts it", async () => {
     const { t, bob, status } = await world();
     const id = await blockedStatus(t, bob);
@@ -1321,6 +1321,13 @@ describe("D1 through the inbox: what the received form stores", () => {
       );
     };
     await replay(body("Undo of a block, both typed as absolute IRIs, past the value limit once compacted", status));
+    expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(404);
+    await replay(
+      body(
+        "Undo of a block, both typed as absolute IRIs, with its block's object as the public collection in an array in an array after a stop",
+        status,
+      ),
+    );
     expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(404);
     await replay(body("Undo of a block, both typed as absolute IRIs, with a blank node as an id", status));
     expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(200);
@@ -2763,6 +2770,32 @@ describe("#1717: LD-signed retractions in the forms Mastodon compacts", () => {
     }
     expect(bodies.length).toBeGreaterThan(500);
     expect(changed).toEqual(CHANGED);
+  });
+
+  // A value the compaction writes otherwise than as given is left as received where Kopje reads the compaction's
+  // values (forms.json): a type after the patch's stop, which it writes as the name full_context gives its IRI, and an
+  // actor under a namespace of full_context's prefixes, which it writes as a compact IRI. Each body is read as the
+  // compaction writes it otherwise (its types named, its stop at `to` read).
+  it("leaves as received a value the compaction writes otherwise, after a stop and as an actor", async () => {
+    const typed = form("Undo of a block, both typed as absolute IRIs, with a type in an array after a stop");
+    const block = (body: Json) => body.object as Json;
+    const instrument = (body: Json) => block(body).instrument as Json;
+    expect(instrument(typed.mastodon!).type).toBe("QuoteRequest");
+    const read = (await ldSignedReading(typed.received))!;
+    expect(read.readType(block(read.body).type as string)).toBe("Block");
+    expect(block(read.body).to).toEqual([]);
+    expect(instrument(read.body).type).toEqual(instrument(typed.received).type);
+
+    for (const name of [
+      "Undo of a block typed as absolute IRIs, with its actor under the toot namespace in an array",
+      "Undo of a block typed as absolute IRIs, with its actor as a node under the toot namespace in an array",
+    ]) {
+      const actor = form(name);
+      expect(actor.mastodon!.actor, name).toEqual(["toot:bob"]);
+      const ours = (await ldSignedReading(actor.received))!;
+      expect(ours.readType(ours.body.type as string), name).toBe("Undo");
+      expect(ours.body.actor, name).toEqual(actor.received.actor);
+    }
   });
 
   describe("through the inbox", () => {
