@@ -20,14 +20,15 @@ uses public routing, a host in the instance's own zone included (NET-1 in the
 redirects or refuses; with it off, the next deploy removes that address. Attach the instance domain before you turn it
 off on an instance that has none yet.
 
-The template sets `"limits": { "cpu_ms": 60000 }` as well: a request, a Queue batch and a Store invocation may each
-use up to 60 seconds of CPU, where the platform's default is 30. The Store applies and verifies a version's migrations
-in one invocation (below), and they can need more than 30 seconds; a release's are held to 40 seconds on a large
-benchmark Store ([RELEASING.md](../RELEASING.md)). Without the line, such an upgrade is stopped part way and the
-instance stays readonly until a later attempt finishes. Each attempt resumes after the migrations already recorded and
-checks foreign keys over the whole Store, which on a large Store is most of an upgrade's time, so the attempts can
-keep failing. Add the line and deploy; the upgrade then resumes. Setting the limit costs nothing by itself; the CPU
-time used is billed as before.
+The template sets `"limits": { "cpu_ms": 60000 }` as well: a request, a Queue batch and a Store invocation may each use
+up to 60 seconds of CPU, where the platform's default is 30. The Store applies and verifies a version's migrations in
+one invocation (below), and they can need more than 30 seconds; a release's are held to 40 seconds on a large benchmark
+Store ([RELEASING.md](../RELEASING.md)). Without the line, such an upgrade is stopped part way, and until a later
+attempt finishes the Store refuses every request, reads and sign-ins included, while migrations remain unapplied
+(`schema-pending`), and stays readonly once they are applied but not yet verified. Each attempt resumes after the
+migrations already recorded and checks foreign keys over the whole Store, which on a large Store is most of an upgrade's
+time, so the attempts can keep failing. Add the line and deploy; the upgrade then resumes. Setting the limit costs
+nothing by itself; the CPU time used is billed as before.
 
 ## How an update arrives
 

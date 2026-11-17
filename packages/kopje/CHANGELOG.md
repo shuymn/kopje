@@ -164,13 +164,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 ### Changed
 
 - `wrangler.jsonc`: add `"limits": { "cpu_ms": 60000 }` to the instance's config, as the template now has it
-  ([docs/upgrade.md](docs/upgrade.md)). A request, a Queue batch and a Store invocation may then use up to 60 seconds of
-  CPU instead of the platform's default 30. The Store applies and verifies a release's migrations in one invocation,
-  and on the migration bench's store this release's together take more than two thirds of 30 seconds, the margin the
-  bench keeps. Without the line, an upgrade that needs more than 30 seconds stops part way and the instance stays
-  readonly until an attempt finishes, each attempt checking every reference of the Store again. The migration bench's
-  budget is now 40 seconds, two thirds of the new limit (RELEASING.md). Setting the limit costs nothing by itself. No
-  Store migration.
+  ([docs/upgrade.md](docs/upgrade.md)). A request, a Queue batch and a Store invocation may then use up to 60 seconds
+  of CPU instead of the platform's default 30. The Store applies and verifies a release's migrations in one
+  invocation, and on the migration bench's store this release's together take more than two thirds of 30 seconds, the
+  margin the bench keeps. Without the line, an upgrade that needs more than 30 seconds stops part way, and until an
+  attempt finishes the Store refuses every request, reads and sign-ins included, while migrations remain unapplied,
+  and stays readonly once they are applied but not yet verified, each attempt checking every reference of the Store
+  again. The migration bench's budget is now 40 seconds, two thirds of the new limit (RELEASING.md). Setting the limit
+  costs nothing by itself. No Store migration.
 - A remote actor's members are read only by their literal spelling, as Mastodon reads them: a name or bio given only
   as a language map (`nameMap`, `summaryMap`) is no longer read, so such an account shows an empty display name and
   bio, and a `movedTo` or `alsoKnownAs` spelled as a compact or full IRI no longer names a move. No Store migration and
