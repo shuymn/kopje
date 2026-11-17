@@ -154,13 +154,12 @@ export function holdableCollection(owner: Owner, input: FeaturedCollectionInput)
   return ownedCollection(owner, input) && collectionValues(input) !== null;
 }
 
-type StoredCollection = { id: string; account_id: string } & Pick<Values, "name" | "description" | "sensitive" | "tag">;
+type StoredCollection = { id: string; account_id: string };
 
 // The collection stored under `uri` (collections_uri), any owner.
 function collectionByUri(db: Db, uri: string): StoredCollection | undefined {
   return db.first<StoredCollection>(
-    `SELECT id, account_id, name, description, sensitive, tag FROM collections INDEXED BY collections_uri
-		WHERE uri = ?`,
+    "SELECT id, account_id FROM collections INDEXED BY collections_uri WHERE uri = ?",
     uri,
   );
 }
@@ -277,7 +276,7 @@ type Planned = {
   existing: string | undefined;
 };
 
-type StoredItem = { id: string; collection_id: string };
+type StoredItem = { id: string; collection_id: string; position: number };
 
 // An item of `input` the collection may hold, or null: its id on the collection's origin, its featuredObject a remote
 // URI (a local member's item is #1589's PR 6), its featureAuthorization on the featuredObject's origin
@@ -314,7 +313,7 @@ function itemOf(
 // The item stored under `uri` (collection_items_uri), any collection.
 function itemByUri(db: Db, uri: string): StoredItem | undefined {
   return db.first<StoredItem>(
-    "SELECT id, collection_id FROM collection_items INDEXED BY collection_items_uri WHERE uri = ?",
+    "SELECT id, collection_id, position FROM collection_items INDEXED BY collection_items_uri WHERE uri = ?",
     uri,
   );
 }
@@ -410,7 +409,7 @@ export function applyFeaturedItem(
   if (stored !== undefined) {
     return full && counts?.retired === 1
       ? null
-      : reviseItem(db, { ...item, position: positionOf(db, stored.id), existing: stored.id }, now);
+      : reviseItem(db, { ...item, position: stored.position, existing: stored.id }, now);
   }
   if (full) {
     return null;
@@ -425,15 +424,6 @@ export function applyFeaturedItem(
   }
   const position = Math.min((counts?.last ?? 0) + 1, 2_147_483_647);
   return insertItem(db, collection.id, { ...item, position }, now);
-}
-
-function positionOf(db: Db, item: string): number {
-  return (
-    db.first<{ position: number }>(
-      `SELECT position FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id = ?`,
-      item,
-    )?.position ?? 1
-  );
 }
 
 // The revision of an item as stored and as listed, compared in SQL (an imported URI may not survive a round trip
