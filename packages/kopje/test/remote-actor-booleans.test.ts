@@ -48,6 +48,18 @@ function withFlags(document: Json, text: string | null): string {
   return `${rest.slice(0, -1)}${members}}`;
 }
 
+// `document` as JSON text with locked's and indexable's members sent as an empty string and discoverable as "true":
+// each NOT NULL column then keeps its own stored value (MIXED: the two differ, so a column that kept the other's value
+// would show).
+function withEmptyLockedAndIndexable(document: Json): string {
+  const rest = JSON.stringify(Object.fromEntries(Object.entries(document).filter(([key]) => !MEMBERS.includes(key))));
+  return `${rest.slice(0, -1)},"manuallyApprovesFollowers":"","discoverable":"true","indexable":""}`;
+}
+const MIXED: Flags[] = [
+  { locked: 1, discoverable: 0, indexable: 0 },
+  { locked: 0, discoverable: 0, indexable: 1 },
+];
+
 // What Kopje stores for `row` over `stored` (null: a new account): Rails' cast (Kopje's own where it is listed: a float
 // zero), as 0 or 1; where the cast is nil (""), NULL in a column Mastodon's schema leaves nullable (discoverable), and
 // in a NOT NULL one (locked, indexable), whose save Mastodon refuses, the stored value, or 0 for a new account
@@ -155,6 +167,13 @@ describe("a remote actor's flags, as Mastodon 4.7.5 casts them (#1747)", () => {
       await setFlags(t, bob.uri, ALL);
       expect(await t.post(bob, updateText(bob, withFlags({ ...bob.document, name: "false" }, "false")))).toBe(202);
       await expectFlags(t, bob.uri, "false", none, "an explicit false");
+      // Each column keeps its own stored value, not another's.
+      for (const [n, stored] of MIXED.entries()) {
+        await setFlags(t, bob.uri, stored);
+        const object = withEmptyLockedAndIndexable({ ...bob.document, name: `mixed ${n}` });
+        expect(await t.post(bob, updateText(bob, object))).toBe(202);
+        await expectFlags(t, bob.uri, `mixed ${n}`, { ...stored, discoverable: 1 }, `mixed ${n}`);
+      }
     },
   );
 
@@ -170,6 +189,18 @@ describe("a remote actor's flags, as Mastodon 4.7.5 casts them (#1747)", () => {
       expect([row.json, await t.post(bob, announce(bob, note.id))]).toEqual([row.json, 202]);
       expect(t.web.fetched).toContain(erin.uri);
       await expectFlags(t, erin.uri, `refreshed ${n}`, expected(row, ALL), row.json ?? "absent");
+    }
+    // Each column keeps its own stored value, not another's.
+    for (const [n, stored] of MIXED.entries()) {
+      await setFlags(t, erin.uri, stored);
+      await ageAccount(t, erin.uri, new Date(NOW - ACCOUNT_STALE_MS).toISOString());
+      t.web.serveRaw(erin.uri, withEmptyLockedAndIndexable({ ...erin.document, name: `mixed ${n}` }));
+      const note = mastodonNote(erin);
+      t.web.serve(note.id, { "@context": AS, ...note });
+      t.web.fetched.length = 0;
+      expect(await t.post(bob, announce(bob, note.id))).toBe(202);
+      expect(t.web.fetched).toContain(erin.uri);
+      await expectFlags(t, erin.uri, `mixed ${n}`, { ...stored, discoverable: 1 }, `refreshed mixed ${n}`);
     }
   });
 
