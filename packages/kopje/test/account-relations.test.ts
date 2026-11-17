@@ -119,6 +119,26 @@ describe("private notes", () => {
     const app = await h.request(`/api/v1/accounts/${bob.id}/note`, bearer(await writeAppToken(h), json({})));
     expect(app.status).toBe(422);
   });
+
+  // account_notes' CHECK counts as SQLite's length() does, up to the first U+0000, so the writer refuses a comment that
+  // starts with one before the write; Mastodon answers 500 to any U+0000 (docs/mastodon-deviations.md).
+  it("refuses a comment that starts with a NUL with 422, and keeps one with a NUL after its start as sent", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const path = `/api/v1/accounts/${bob.id}/note`;
+    await relationship(h, alice, path, { comment: "kept" });
+    const refused = { status: 422, body: { error: "Validation failed: Comment can't start with a NUL character" } };
+    for (const comment of ["\u0000", "\u0000text", "\u0000 "]) {
+      expect(await relationship(h, alice, path, { comment }), JSON.stringify(comment)).toEqual(refused);
+    }
+    const sent = await h.request(path, bearer(alice.token, form([["comment", "\u0000"]])));
+    expect({ status: sent.status, body: await sent.json() }).toEqual(refused);
+    expect(await sql(h.store, "SELECT comment FROM account_notes")).toEqual([{ comment: "kept" }]);
+    for (const comment of ["a\u0000b", " \u0000", "a\u0000"]) {
+      expect((await relationship(h, alice, path, { comment })).body.note, JSON.stringify(comment)).toBe(comment);
+    }
+    expect(await sql(h.store, "SELECT comment FROM account_notes")).toEqual([{ comment: "a\u0000" }]);
+  });
 });
 
 describe("endorsements", () => {

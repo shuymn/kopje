@@ -488,6 +488,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- An account note or a marker's `last_read_id` that starts with a NUL answers 422, refused before it is written; it
+  failed the Store's length check with a 500 (#1767; [docs/mastodon-deviations.md](docs/mastodon-deviations.md),
+  "Request parameters"). No Store migration and no `wrangler.jsonc` change.
 - An `Add` or `Remove` without an `id`, as Mastodon sends those of featured hashtags and pinned posts, is applied as
   one with an `id` is, under the same rules (its target, and the caps on a remote account's pins and featured hashtags:
   [docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Remote collections"); it was refused. No Store

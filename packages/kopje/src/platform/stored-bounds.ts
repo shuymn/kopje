@@ -175,6 +175,14 @@ export function storedText(text: string): string {
   return wellFormed.includes("\u0000") ? wellFormed.replaceAll("\u0000", "") : wellFormed;
 }
 
+// SQLite's length() of `text` as stored: the code points before its first U+0000, so a CHECK on length() reads a text
+// that starts with U+0000 as empty. A writer that keeps text as sent under such a CHECK refuses that text itself,
+// before the write.
+export function sqliteLength(text: string): number {
+  const nul = text.indexOf("\u0000");
+  return [...(nul === -1 ? text : text.slice(0, nul))].length;
+}
+
 // The first `limit` code points of `text`. A string has at least as many code units as code points.
 export function cutCodePoints(text: string, limit: number): string {
   if (text.length <= limit) {
