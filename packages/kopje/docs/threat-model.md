@@ -3480,7 +3480,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   ("takes a JSON number’s integer part, a negative as 0, and keeps the count past MAX_ACCOUNT_COUNT or for a
   non-number", "stores only counts storedCount keeps, and only on the remote account the round claimed")). The maxima
   count each at 2^53−1, 16 JSON bytes (`test/status-bounds.test.ts`); a dump or converted row holding another value
-  presents 0. _Enforced (main)_ for featured hashtags' counts: `featured_tags.statuses_count`'s CHECK (`>= 0`) admits a
+  presents 0. _Enforced (main)_ for untrusted status counts: `statuses.untrusted_favourites_count` and
+  `untrusted_reblogs_count` hold NULL or an integer from 0 to 100,000,000 (`MAX_UNTRUSTED_COUNT`, Mastodon's clamp); the
+  triggers `statuses_untrusted_favourites_insert`, `statuses_untrusted_favourites_update`,
+  `statuses_untrusted_reblogs_insert` and `statuses_untrusted_reblogs_update` of migration `0113_untrusted_counts`
+  refuse any other stored value, imports included (`untrustedCountPastBoundSql` in `src/platform/stored-bounds.ts`;
+  numeric text or an integral REAL is already the integer under INTEGER affinity) (`test/migrations.test.ts`
+  ("0113_untrusted_counts"), `test/dump-import.test.ts` ("round-trips untrusted counts (0113) at their bounds")).
+  _Enforced (main)_ for featured hashtags' counts: `featured_tags.statuses_count`'s CHECK (`>= 0`) admits a
   TEXT or REAL of any size under INTEGER affinity, and `last_status_at` has no bound. Every read of a featured hashtag
   takes the count through `presentedCountSql`, the rule of account counts: a count that is not an integer from 0 to
   2^53−1 is presented as 0, by the API (`statuses_count` `"0"`) as by the Featured tab, and `GET /api/v1/featured_tags`

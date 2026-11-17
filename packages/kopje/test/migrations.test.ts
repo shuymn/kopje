@@ -64,6 +64,7 @@ import {
   VERIFIED_LINKS_BYTES,
   UNVERIFIED_LINKS_BYTES,
   FILTER_TEXT_UNITS_MAX,
+  MAX_UNTRUSTED_COUNT,
   CARD_MAX_ATTEMPTS,
   CARD_OPTIONAL_URL_LIMIT,
   CARD_TEXTS,
@@ -422,9 +423,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(90);
+      expect(STORED_TRIGGERS.size).toBe(94);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        90 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        94 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -15141,6 +15142,174 @@ describe("0112_delivery_hosts", () => {
       for (const lane of ["'https://victim.example'", "'https://h.example.evil.test'", "'https://H.example'", "42"]) {
         refused(draining, `0, 0, ${lane}, 0`, "delivery_hosts_drain_cursor");
       }
+    });
+  });
+});
+
+describe("0113_untrusted_counts", () => {
+  const NAME = "0113_untrusted_counts";
+  const at = NAMES.indexOf(NAME);
+  const TRIGGERS = [
+    "statuses_untrusted_favourites_insert",
+    "statuses_untrusted_favourites_update",
+    "statuses_untrusted_reblogs_insert",
+    "statuses_untrusted_reblogs_update",
+  ];
+  const COLUMNS = ["untrusted_favourites_count", "untrusted_reblogs_count"] as const;
+  const LOCAL = "100000000000000001";
+  const REMOTE = "100000000000000002";
+  // The file's statements, comments left out, each alone: the column lines, then the triggers a blank line apart.
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .trim()
+      .split("\n\n")
+      .flatMap((block) => (block.startsWith("ALTER TABLE") ? block.split("\n") : [block]));
+
+  // A Store before the file with a local and a remote account and `count` statuses, half local and half remote, every
+  // tenth holding its own counts as text (an import's legacy value), then `run` with the file's statements to apply.
+  async function before<T>(count: number, run: (sql: SqlStorage, state: DurableObjectState) => T): Promise<T> {
+    return runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec(
+        `INSERT INTO accounts (id, uri, username, domain) VALUES
+					(?1, 'https://kopje.test/ap/users/a', 'a', NULL), (?2, 'https://r.example/users/b', 'b', 'r.example')`,
+        LOCAL,
+        REMOTE,
+      );
+      sql.exec(
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?3)
+				INSERT INTO statuses (id, uri, account_id, visibility, content, published_at, favourites_count, reblogs_count)
+				SELECT CAST(200000000000000000 + i AS TEXT), 'https://kopje.test/ap/o/' || i, CASE i % 2 WHEN 0 THEN ?1 ELSE ?2 END,
+					'public', '<p>a</p>', '2026-11-17T00:00:00.000Z', CASE WHEN i % 10 = 0 THEN 'many' ELSE i END, i % 7
+				FROM n WHERE i <= ?3`,
+        LOCAL,
+        REMOTE,
+        count,
+      );
+      return run(sql, state);
+    });
+  }
+
+  it("follows 0112_delivery_hosts, declared foreignKeys: 'unchanged', and writes two columns and the registry's triggers", () => {
+    expect(NAMES[at - 1]).toBe("0112_delivery_hosts");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    expect(MAX_UNTRUSTED_COUNT).toBe(100_000_000);
+    expect(statements(MIGRATIONS[at]?.sql ?? "")).toEqual(
+      statements(
+        `${COLUMNS.map((column) => `ALTER TABLE statuses ADD COLUMN ${column} INTEGER;`).join("\n")}\n\n${emitTriggers(TRIGGERS)}`,
+      ),
+    );
+    expect(statements(MIGRATIONS[at]?.sql ?? "")).toHaveLength(6);
+  });
+
+  // UC-M1: adding the columns and triggers reads and writes the schema only, never a status row, so a Store of 10,000
+  // statuses costs what an empty one does; every row it carries holds NULL in both.
+  it("reads and writes as many rows over 10,000 statuses as over none, and carries every row with NULL counts", async () => {
+    const measure = (count: number) =>
+      before(count, (sql) => {
+        const rows = () => sql.exec("SELECT * FROM statuses ORDER BY id").toArray();
+        const kept = rows();
+        let read = 0;
+        let written = 0;
+        for (const statement of statements(MIGRATIONS[at]?.sql ?? "")) {
+          const cursor = sql.exec(statement);
+          cursor.toArray();
+          read += cursor.rowsRead;
+          written += cursor.rowsWritten;
+        }
+        expect(sql.exec("SELECT count(*) AS n FROM statuses").one().n).toBe(count);
+        expect(
+          sql
+            .exec(
+              "SELECT count(*) AS n FROM statuses WHERE untrusted_favourites_count IS NOT NULL OR untrusted_reblogs_count IS NOT NULL",
+            )
+            .one().n,
+        ).toBe(0);
+        // Every other column as it was, the legacy text counts included.
+        expect(rows().map(({ untrusted_favourites_count: _f, untrusted_reblogs_count: _r, ...row }) => row)).toEqual(
+          kept,
+        );
+        return { read, written };
+      });
+    const empty = await measure(0);
+    const large = await measure(10_000);
+    // The statements ran (they read and write the schema), and the statuses changed neither figure.
+    expect(empty.read).toBeGreaterThan(0);
+    expect(empty.written).toBe(6);
+    expect(large).toEqual(empty);
+  }, 60_000);
+
+  // UC5: the bound is on the stored type and value. INTEGER affinity stores numeric text and an integral REAL as the
+  // integer before the trigger sees it, so those pass as integers; any other text, a BLOB, a fraction and every value
+  // past either end is refused, on insert and on update of each column. Each value is an SQL literal, so its type is the
+  // one written.
+  it("refuses each value past the bound on insert and update, and keeps numeric text as the integer it stores", async () => {
+    await before(1, async (sql, state) => {
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      const OWN = "200000000000000001";
+      let n = 10;
+      const insert = (column: string, literal: string) =>
+        sql.exec(
+          `INSERT INTO statuses (id, uri, account_id, visibility, published_at, ${column})
+					VALUES (?1, 'https://r.example/o/' || ?1, ?2, 'public', '2026-11-17T00:00:00.000Z', ${literal})`,
+          `3000000000000000${String(n++).padStart(2, "0")}`,
+          REMOTE,
+        );
+      const update = (column: string, literal: string) =>
+        sql.exec(`UPDATE statuses SET ${column} = ${literal} WHERE id = ?`, OWN);
+      const stored = (column: string) =>
+        sql.exec(`SELECT ${column} AS v, typeof(${column}) AS t FROM statuses WHERE id = ?`, OWN).one();
+      const refused = [
+        "-1",
+        "-9223372036854775808",
+        String(MAX_UNTRUSTED_COUNT + 1),
+        `'${MAX_UNTRUSTED_COUNT + 1}'`,
+        "9223372036854775807",
+        "1e30",
+        "1.5",
+        "-0.5",
+        "'abc'",
+        "''",
+        "'0x10'",
+        "' '",
+        "X'35'",
+      ];
+      const accepted: [string, number | null][] = [
+        ["0", 0],
+        [String(MAX_UNTRUSTED_COUNT), MAX_UNTRUSTED_COUNT],
+        ["NULL", null],
+        ["'5'", 5],
+        ["' 5'", 5],
+        ["'5.0'", 5],
+        ["'1e3'", 1000],
+        ["5.0", 5],
+        [`'${MAX_UNTRUSTED_COUNT}'`, MAX_UNTRUSTED_COUNT],
+      ];
+      for (const column of COLUMNS) {
+        const message = new RegExp(`statuses: ${column} past its stored bound`);
+        update(column, "7");
+        for (const literal of refused) {
+          expect(() => insert(column, literal), `${column} = ${literal}`).toThrow(message);
+          expect(() => update(column, literal), `${column} = ${literal}`).toThrow(message);
+          // The refused update left the stored value: the trigger ran on the branch it guards.
+          expect(stored(column)).toEqual({ v: 7, t: "integer" });
+        }
+        for (const [literal, value] of accepted) {
+          insert(column, literal);
+          update(column, literal);
+          expect(stored(column), `${column} = ${literal}`).toEqual({
+            v: value,
+            t: value === null ? "null" : "integer",
+          });
+        }
+      }
+      // An update of another column passes on a row whatever its counts.
+      update("untrusted_favourites_count", String(MAX_UNTRUSTED_COUNT));
+      sql.exec("UPDATE statuses SET favourites_count = 'many', reblogs_count = -5 WHERE id = ?", OWN);
     });
   });
 });

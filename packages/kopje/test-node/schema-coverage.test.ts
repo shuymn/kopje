@@ -236,6 +236,10 @@ const NOT_CONVERTED: Record<string, string> = {
   "statuses.quote_policy":
     "legacy has no quote policies: a carried status stays unquotable, as 0037_quote_policy leaves it",
   "statuses.thread": "written by the trigger statuses_thread and given again by backfillConversations (DERIVED)",
+  "statuses.untrusted_favourites_count":
+    "legacy kept no remote likes count: NULL, the status's own count shown until its server's next Update gives one",
+  "statuses.untrusted_reblogs_count":
+    "legacy kept no remote shares count: NULL, the status's own count shown until its server's next Update gives one",
   "statuses.withdrawn":
     "marks a retraction Kopje recorded (a local boost's Undo, a remote status's Delete); legacy has none",
 };
@@ -344,6 +348,8 @@ const NOT_VERIFIED: Record<string, string> = {
   "statuses.remote_version": "remote: published_at, or edited_at when edited; local: NULL",
   "statuses.replies_count": COUNTER,
   "statuses.search_text": SEARCH,
+  "statuses.untrusted_favourites_count": DEFAULT,
+  "statuses.untrusted_reblogs_count": DEFAULT,
   "statuses.withdrawn": DEFAULT,
 };
 
