@@ -1,5 +1,5 @@
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { beforeEach, describe, expect, inject, it } from "vitest";
+import { beforeEach, describe, expect, inject, it, vi } from "vitest";
 
 import { run } from "../cli/lib/main.js";
 import { drainJournal } from "../src/app/cutover";
@@ -798,6 +798,47 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
     await r.consume();
     expect((await r.drain()).body).toMatchObject({ sent: 0, unverified: 3 });
     expect(r.legacy.pending).toEqual([]);
+  });
+
+  // #1718: a body or a key document holding an unpaired surrogate is JSON that does not parse, as on the inbox.
+  it("keeps an activity holding an unpaired surrogate as invalid JSON, and hands on its well-formed copy", async () => {
+    const store = await importedStore();
+    const r = await rollback(store);
+    const warn = vi.spyOn(console, "warn");
+    try {
+      await r.spool("/ap/users/alice/inbox", { ...follow(r.carol.uri, 1), junk: "\ud800" });
+      await r.spool("/ap/users/alice/inbox", { ...follow(r.carol.uri, 2), junk: "\ud83d\ude00" });
+      await r.consume();
+      expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 1 });
+      expect(r.legacy.pending.map((m) => (m.body as LegacyInboxMessage).activity.id)).toEqual([
+        `${r.carol.uri}#follows/2`,
+      ]);
+      expect(warn).toHaveBeenCalledWith({ event: "kopje.cutover.drain.unverified", reason: "invalid-json" });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("keeps an activity whose key document holds an unpaired surrogate, refused for good", async () => {
+    const store = await importedStore();
+    const r = await rollback(store);
+    r.web.serve(r.carol.uri, { ...r.carol.document, junk: "\udc00" });
+    r.web.serve(r.dave.uri, { ...r.dave.document, junk: "\ud83d\ude00" });
+    const warn = vi.spyOn(console, "warn");
+    try {
+      await r.spool("/ap/users/alice/inbox", follow(r.carol.uri, 1));
+      await r.spool("/ap/users/alice/inbox", follow(r.dave.uri, 1), r.dave);
+      await r.consume();
+      expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 1, stopped: null });
+      expect(r.legacy.pending.map((m) => (m.body as LegacyInboxMessage).activity.id)).toEqual([
+        `${r.dave.uri}#follows/1`,
+      ]);
+      // A key fetch that failed for good (not transient): the drain goes on.
+      expect(warn).toHaveBeenCalledWith({ event: "kopje.cutover.drain.unverified", reason: "key-unavailable" });
+      expect(r.web.fetched).toContain(r.carol.uri);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("does not hand on an LD-signed activity Kopje's inbox ignores (ID-1, ldSignedBodyReadable)", async () => {

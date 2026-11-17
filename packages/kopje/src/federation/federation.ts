@@ -43,7 +43,7 @@ import type { SnapshotSource } from "../domain/snapshot";
 import { renderFieldValue } from "../domain/status-text";
 import { INTERACTION_PATH } from "../domain/web-session";
 import { httpUrl } from "../platform/http-url";
-import { withinJsonBounds } from "../platform/json-bounds";
+import { jsonRefusal } from "../platform/json-bounds";
 import { PACKAGE_VERSION, SOFTWARE_REPOSITORY } from "../platform/package-version";
 import { railsBlank } from "../platform/rails-blank";
 import { callStore, type StoreStub } from "../platform/store-client";
@@ -63,6 +63,7 @@ import {
   type ResolveAnswer,
   type Signing,
   requireObjectRoot,
+  UnusableDocumentError,
 } from "./loader";
 
 // The Fedify Federation of one request: dispatchers for actors, key pairs, WebFinger, NodeInfo, the followers,
@@ -294,9 +295,14 @@ export function afterRevisionRead(loaders: RemoteLoaders): RemoteLoaders {
   return { ...loaders, document: loaders.capped({}) };
 }
 
-// RES-2: a document or JSON-LD context past the JSON bounds is refused before anything reads it.
-function withinBounds(remote: RemoteDocument): RemoteDocument {
-  if (!withinJsonBounds(remote.document)) {
+// RES-2: a document or JSON-LD context past the JSON bounds is refused before anything reads it; one holding an
+// unpaired surrogate is a body that is not JSON (jsonRefusal), as Mastodon's body_to_json reads it (nil).
+export function withinBounds(remote: RemoteDocument): RemoteDocument {
+  const refusal = jsonRefusal(remote.document);
+  if (refusal === "malformed") {
+    throw new UnusableDocumentError(new URL(remote.documentUrl), "Document is not valid JSON");
+  }
+  if (refusal === "too-complex") {
     throw new RefusedFetchError(new URL(remote.documentUrl), "Document exceeds the JSON bounds");
   }
   return remote;

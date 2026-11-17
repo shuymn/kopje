@@ -184,6 +184,19 @@ describe("link details: the Mastodon spec", () => {
     ).toMatchObject(STRUCTURED);
   });
 
+  // #1718: a script holding an unpaired surrogate escape does not parse, as Mastodon's JSON.parse raises on a high one
+  // (link_details_extractor.rb:272, the script skipped); Kopje skips one holding a lone low one too. Only the title is
+  // compared: a failure that printed the lone surrogate would be lost to the test runner's WebSocket (invalid UTF-8).
+  it.each([
+    ["a lone high surrogate", String.raw`\ud800`, STRUCTURED.title],
+    ["a lone low surrogate", String.raw`\udc00`, STRUCTURED.title],
+    ["a surrogate pair", String.raw`\ud83d\ude00`, "first"],
+  ])("reads the next script when the first holds %s escape", async (_name, escape, title) => {
+    const first = `{"@type":"NewsArticle","headline":"first","description":"x${escape}"}`;
+    const page = `<script type="application/ld+json">${first}</script><script type="application/ld+json">${LD_JSON}</script>`;
+    expect((await details(body(page))).title).toBe(title);
+  });
+
   it("reads structured data after an unsupported object in the same block", async () => {
     const block = `[{"@context": "https://schema.org", "@type": "ItemList", "name": "Man bites cat"}, ${LD_JSON}]`;
     expect(await details(body(`<script type="application/ld+json">${block}</script>`))).toMatchObject(STRUCTURED);

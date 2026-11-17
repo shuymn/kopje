@@ -660,9 +660,18 @@ describe("web page sink: the JSON mode", () => {
     ["invalid JSON", '{"a":'],
     ["invalid UTF-8", new Uint8Array([0x22, 0xc3, 0x28, 0x22])],
     ["a lone surrogate written raw", new Uint8Array([0x22, 0xed, 0xa0, 0x80, 0x22])],
+    // #1718, as Mastodon's JSON.parse (fetch_oembed_service.rb:96) raises on a high one; a lone low one too.
+    ["a lone high surrogate escape", String.raw`{"html":"\ud800"}`],
+    ["a lone low surrogate escape", String.raw`["\udc00"]`],
+    ["a key holding a high surrogate escape", String.raw`{"\ud800x":1}`],
   ])("fails %s as unparsable json", async (_name, text) => {
     const { deps } = fakeDeps({ [ENDPOINT]: body(text) });
     expect(failure(await fetchWebJson(ENDPOINT, deps))).toMatchObject({ kind: "unparsable", reason: "json" });
+  });
+
+  it("reads a surrogate pair escape", async () => {
+    const { deps } = fakeDeps({ [ENDPOINT]: body(String.raw`{"html":"\ud83d\ude00"}`) });
+    expect(json(await fetchWebJson(ENDPOINT, deps)).value).toEqual({ html: "\ud83d\ude00" });
   });
 
   it("fails a document past MAX_JSON_NODES or MAX_JSON_DEPTH as unparsable json-bounds, and keeps one at them", async () => {

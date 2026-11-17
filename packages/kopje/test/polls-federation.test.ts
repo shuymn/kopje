@@ -332,28 +332,30 @@ describe("a remote Question", () => {
   });
 
   // RES-2: choices are stored well-formed and cut without splitting a pair, and an edit's snapshot holds P of them as
-  // SQLite projects them (recordEdit), never a value read into the Worker and bound again.
-  it("snapshots choices of lone surrogates or a split pair as fixed points of their projection", async () => {
+  // SQLite projects them (recordEdit), never a value read into the Worker and bound again. A choice holding a lone
+  // surrogate makes the Question JSON that does not parse (#1718); one stored by an earlier version is projected.
+  it("snapshots a split pair, and a stored choice of lone surrogates, as fixed points of their projection", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");
     await followed(t, bob);
     const lone = "\ud800".repeat(MAX_REMOTE_OPTION_LENGTH);
     const split = `${"a".repeat(MAX_REMOTE_OPTION_LENGTH - 1)}\u{1F600}`;
-    const choices = [lone, split].map((name) => ({
-      type: "Note",
-      name,
-      replies: { type: "Collection", totalItems: 0 },
-    }));
+    const choicesOf = (names: string[]) =>
+      names.map((name) => ({ type: "Note", name, replies: { type: "Collection", totalItems: 0 } }));
+    const refused = question(bob, { oneOf: choicesOf([lone, split]) });
+    expect(await t.post(bob, create(bob, refused))).toBe(202);
+    expect(await sql(t.store, "SELECT id FROM statuses WHERE uri = ?", refused.id)).toEqual([]);
+    const choices = choicesOf(["b", split]);
     const object = question(bob, { oneOf: choices });
     const id = await remotePoll(t, bob, object);
     const edited = question(bob, { id: object.id, content: "<p>which, now?</p>", oneOf: choices });
     expect(await t.post(bob, update(bob, edited, "2026-10-11T12:30:00Z"))).toBe(202);
-    const expected = ["\ufffd".repeat(MAX_REMOTE_OPTION_LENGTH), "a".repeat(MAX_REMOTE_OPTION_LENGTH - 1)];
+    const expected = ["b", "a".repeat(MAX_REMOTE_OPTION_LENGTH - 1)];
     const [poll] = await sql<{ options: string; cut_options: string }>(
       t.store,
       "SELECT options, cut_options FROM polls",
     );
-    expect([JSON.parse(poll!.options), JSON.parse(poll!.cut_options)]).toEqual([expected, [0, 1]]);
+    expect([JSON.parse(poll!.options), JSON.parse(poll!.cut_options)]).toEqual([expected, [1]]);
     const snapshots = await sql<{ options: string; fixed: number }>(
       t.store,
       `SELECT poll_options AS options, (${pollOptionsSql("poll_options")}) IS poll_options AS fixed FROM status_edits`,

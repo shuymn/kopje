@@ -26,7 +26,7 @@ import type { ActorState, RemoteActorInput, RemoteProfileInput } from "../domain
 import { flagObjects, MAX_FLAG_OBJECTS, reportComment } from "../domain/reports";
 import { fetchableHref, sameOrigin } from "../platform/http-url";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
-import { withinJsonBounds } from "../platform/json-bounds";
+import { jsonRefusal } from "../platform/json-bounds";
 import { isActivityPubMediaType, parseMediaType } from "../platform/media-type";
 import { callStore } from "../platform/store-client";
 import { type GoneSettled, goneSettler, type SettleGone } from "./actor-gone";
@@ -37,6 +37,7 @@ import {
   type FederationDeps,
   type FederationState,
   type RemoteLoaders,
+  withinBounds,
 } from "./federation";
 import { typeIs } from "./json-shapes";
 import { MAX_PUBLIC_KEYS } from "./key-entries";
@@ -267,11 +268,16 @@ export async function parseActivity(body: Uint8Array, rules: Rules = {}): Promis
   } catch {
     return { ok: false, reason: "invalid-json" };
   }
+  // RES-2: the work of reading an activity is bounded before anything reads it, an LD-signed body's reading included;
+  // a string or key with an unpaired surrogate is JSON that does not parse (json-bounds.ts).
+  const refusal = jsonRefusal(json);
+  if (refusal === "malformed") {
+    return { ok: false, reason: "invalid-json" };
+  }
   if (!isObject(json)) {
     return { ok: false, reason: "not-an-object" };
   }
-  // RES-2: the work of reading an activity is bounded before anything reads it.
-  if (!withinJsonBounds(json)) {
+  if (refusal !== null) {
     return { ok: false, reason: "too-complex" };
   }
   const object = idOf(json.object);
@@ -1403,7 +1409,11 @@ export async function verifySpooledRequest(
   } catch {
     return { ok: false, transient: false, reason: "invalid-json" };
   }
-  if (!isObject(json) || !withinJsonBounds(json)) {
+  const refusal = jsonRefusal(json);
+  if (refusal === "malformed") {
+    return { ok: false, transient: false, reason: "invalid-json" };
+  }
+  if (!isObject(json) || refusal !== null) {
     return { ok: false, transient: false, reason: "not-an-object" };
   }
   // What Kopje's inbox would ignore is not handed to the legacy instance either.
@@ -1421,13 +1431,8 @@ export async function verifySpooledRequest(
   const deps = { ...loader, budget: requestBudget(Date.now()) };
   const bounded =
     (base: DocumentLoader): DocumentLoader =>
-    async (url, options) => {
-      const remote = await base(url, options);
-      if (!withinJsonBounds(remote.document)) {
-        throw new RefusedFetchError(new URL(remote.documentUrl), "Document exceeds the JSON bounds");
-      }
-      return remote;
-    };
+    async (url, options) =>
+      withinBounds(await base(url, options));
   const documentLoader = requireObjectRoot(bounded(createSafeLoader(deps)));
   const contextLoader = bounded(createContextLoader(deps));
   const signed = new Request(request.url, { method: request.method, headers, body: request.body });
