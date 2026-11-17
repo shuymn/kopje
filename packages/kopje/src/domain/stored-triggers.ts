@@ -39,6 +39,7 @@ import {
   verifiedLinksPastBoundSql,
   warningStatusIdsPastBoundSql,
 } from "../platform/stored-bounds";
+import { heldFullSql } from "./scheduled-statuses";
 import { pinsFullSql } from "./status-actions";
 
 // The triggers in force that hold a stored bound or a cap of stored-bounds.ts (RES-2, RES-4), each as the last
@@ -54,6 +55,18 @@ function boundTriggers(prefix: string, table: string, watched: string, when: str
   return [
     `CREATE TRIGGER ${prefix}_insert BEFORE INSERT ON ${table}\nWHEN ${when}\n${body}`,
     `CREATE TRIGGER ${prefix}_update BEFORE UPDATE OF ${watched} ON ${table}\nWHEN ${when}\n${body}`,
+  ];
+}
+
+// The BEFORE INSERT and BEFORE UPDATE OF `owner` triggers `<prefix>_insert` and `<prefix>_update` on `table` that abort
+// with `message` when `full` holds of the NEW row, the update's only when `owner` changes: a cap per owner, which a row
+// passes by an insert or by moving to another owner (0089, 0109).
+function ownerCapTriggers(prefix: string, table: string, owner: string, full: string, message: string): string[] {
+  const body = `BEGIN\n  SELECT RAISE(ABORT, '${message}');\nEND;`;
+  const moved = `NEW.${owner} IS NOT OLD.${owner}`;
+  return [
+    `CREATE TRIGGER ${prefix}_insert BEFORE INSERT ON ${table}\nWHEN ${full}\n${body}`,
+    `CREATE TRIGGER ${prefix}_update BEFORE UPDATE OF ${owner} ON ${table}\nWHEN ${moved} AND ${full}\n${body}`,
   ];
 }
 
@@ -121,6 +134,7 @@ function reviewTriggers(table: string, key: "url" | "domain"): string[] {
 }
 
 const PIN_CAP_REFUSED = "status_pins: more pins than the account may keep";
+const HELD_CAP_REFUSED = "media_attachments: more media than a scheduled status may hold";
 
 // A count trigger of 0103_collections: `<name>` refuses an insert, and `<name>_move` an update of `key` that moves a
 // row to another parent, when the parent holds `max` rows already (rows other than the moved one). The count reads at
@@ -345,16 +359,13 @@ BEGIN
   SELECT RAISE(ABORT, 'account_invitations: an invitation is added or removed, never changed');
 END;`,
   // 0089_pin_cap: a pin past its account's limit, inserted or moved to another account.
-  `CREATE TRIGGER status_pins_cap_insert BEFORE INSERT ON status_pins
-WHEN ${pinsFullSql("NEW.account_id", "NEW.status_id")}
-BEGIN
-  SELECT RAISE(ABORT, '${PIN_CAP_REFUSED}');
-END;`,
-  `CREATE TRIGGER status_pins_cap_update BEFORE UPDATE OF account_id ON status_pins
-WHEN NEW.account_id IS NOT OLD.account_id AND ${pinsFullSql("NEW.account_id", "NEW.status_id")}
-BEGIN
-  SELECT RAISE(ABORT, '${PIN_CAP_REFUSED}');
-END;`,
+  ...ownerCapTriggers(
+    "status_pins_cap",
+    "status_pins",
+    "account_id",
+    pinsFullSql("NEW.account_id", "NEW.status_id"),
+    PIN_CAP_REFUSED,
+  ),
   // 0093_annual_reports
   ...boundTriggers(
     "instance_settings_wrapstodon",
@@ -428,6 +439,14 @@ END;`,
     "type, collection_item_id, collection_id",
     notificationCollectionKeysPastBoundSql("NEW.type", "NEW.collection_item_id", "NEW.collection_id"),
     "notifications: collection keys past their stored bound",
+  ),
+  // 0109_scheduled_media_cap: an upload held past what its scheduled status may hold, inserted or moved to it.
+  ...ownerCapTriggers(
+    "media_attachments_scheduled_cap",
+    "media_attachments",
+    "scheduled_status_id",
+    heldFullSql("NEW.scheduled_status_id", "NEW.id"),
+    HELD_CAP_REFUSED,
   ),
 ];
 

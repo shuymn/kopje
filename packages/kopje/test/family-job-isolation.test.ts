@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DOMAIN_BLOCK_BATCHES_PER_RUN, DOMAIN_BLOCK_WINDOW, runDomainBlockCleanups } from "../src/domain/blocks";
+import { runCollectionJobs } from "../src/domain/collection-jobs";
 import { handshakeReplayStep } from "../src/domain/handshake-replays";
 import { runInboundJobs } from "../src/domain/inbox";
 import {
+  COLLECTION_JOBS,
   DOMAIN_BLOCK_CLEANUPS,
   HANDSHAKE_REPLAYS,
   type JobTable,
@@ -184,6 +186,36 @@ const FAMILIES: Record<string, Family> = {
     state: async (store, key) => ({
       row: await rowState(MODERATION_JOBS)(store, key),
       staged: await sql(store, "SELECT inbox FROM moderation_reach WHERE job_id = ? ORDER BY inbox", ...key),
+    }),
+  },
+  collection_removals: {
+    t: COLLECTION_JOBS,
+    run: (store, now) => store.runCollectionJobs(BUILD, { now }),
+    // Jobs of alice's in their drop phase, each with STAGED inboxes: a round drops them and ends the job.
+    seed: async (w, n) => {
+      const keys: Key[] = [];
+      for (let i = 0; i < n; i++) {
+        const [row] = await sql<{ id: number }>(
+          w.store,
+          "INSERT INTO collection_jobs (account_id, follow_bound, phase) VALUES (?, 0, 'drop') RETURNING id",
+          w.users.alice.id,
+        );
+        for (let j = 0; j < STAGED; j++) {
+          await sql(
+            w.store,
+            "INSERT INTO collection_reach (job_id, inbox) VALUES (?, ?)",
+            row!.id,
+            `https://r${j}.example/inbox`,
+          );
+        }
+        keys.push([row!.id]);
+      }
+      return keys;
+    },
+    finished: gone(COLLECTION_JOBS),
+    state: async (store, key) => ({
+      row: await rowState(COLLECTION_JOBS)(store, key),
+      staged: await sql(store, "SELECT inbox FROM collection_reach WHERE job_id = ? ORDER BY inbox", ...key),
     }),
   },
   remote_moderation: {
@@ -789,8 +821,9 @@ describe("retry-all over every job table (RES-5)", () => {
       PER,
       PER,
       PER,
+      PER,
     ]);
-    expect(await w.store.retryParkedJobs(BUILD, {})).toEqual({ reset: 10 * PER - RETRY_JOBS_LIMIT, more: false });
+    expect(await w.store.retryParkedJobs(BUILD, {})).toEqual({ reset: 11 * PER - RETRY_JOBS_LIMIT, more: false });
     expect(Object.values(await counts())).toEqual(tables.map(() => 0));
     expect(await w.store.retryParkedJobs(BUILD, {})).toEqual({ reset: 0, more: false });
     // Nothing but the retry state changed.
@@ -848,6 +881,10 @@ describe("the seeks under stale statistics (RES-7)", () => {
       `${N} INSERT INTO remote_moderation_jobs (kind, subject, mode, follow_bound, phase, attempts, due_at)
 			SELECT 'account', 'p' || i, 'account', 0, 'follows', ${PARKED}, ${DUE} FROM n WHERE ?2 = ?2`,
     ],
+    collection_removals: [
+      `${N} INSERT INTO collection_jobs (account_id, follow_bound, phase, attempts, due_at)
+			SELECT ?2, 0, 'drop', ${PARKED}, ${DUE} FROM n`,
+    ],
     handshake_replays: [
       `${N} INSERT INTO accounts (id, uri, username, domain)
 			SELECT printf('7%017d', i), 'https://q.example/u/' || i, 'q' || i, 'q.example' FROM n WHERE ?2 = ?2 AND ?3 = ?3`,
@@ -888,6 +925,7 @@ describe("the seeks under stale statistics (RES-7)", () => {
     notification_dismissals: runNotificationRequestJobs,
     local_moderation: runModerationJobs,
     remote_moderation: runModerationJobs,
+    collection_removals: runCollectionJobs,
     handshake_replays: handshakeRound,
     reject_replays: handshakeRound,
   };

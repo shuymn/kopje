@@ -144,6 +144,18 @@ export const REMOTE_MODERATION_JOBS: JobTable = {
   integerKey: true,
 };
 
+// The Removes a block takes out of local collections (migration 0108_collection_jobs, collection-jobs.ts), each job
+// staging its owner's followers: run in id order, as the moderation jobs.
+export const COLLECTION_JOBS: JobTable = {
+  table: "collection_jobs",
+  family: "collection_removals",
+  key: ["id"],
+  fresh: "attempts",
+  order: "id",
+  rowid: true,
+  integerKey: true,
+};
+
 // The held handshakes (migration 0088_handshake_replays, handshake-replays.ts): a hold runs at its check_at, equal
 // times in follow id order; its key is the follow's id.
 export const HANDSHAKE_REPLAYS: JobTable = {
@@ -178,6 +190,7 @@ export const JOB_TABLES: readonly JobTable[] = [
   NOTIFICATION_DISMISSALS,
   MODERATION_JOBS,
   REMOTE_MODERATION_JOBS,
+  COLLECTION_JOBS,
   HANDSHAKE_REPLAYS,
   REJECT_REPLAYS,
 ];

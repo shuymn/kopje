@@ -115,6 +115,11 @@ describe("a local collection's page", () => {
     expect(text(query(doc, "h2").find((h2) => text(h2) === "Accounts")!)).toBe("Accounts");
     expect(query(doc, "details")).toEqual([]);
     expect(query(doc, "script")).toEqual([]);
+    // Its FeaturedCollection, as Mastodon's page links it (PR 3).
+    const alternates = query(doc, "link")
+      .filter((link) => attr(link, "rel") === "alternate")
+      .map((link) => [attr(link, "type"), attr(link, "href")]);
+    expect(alternates).toEqual([["application/activity+json", `https://kopje.test/ap/users/alice/collections/${id}`]]);
   });
 
   // W-T2. Fails if the item arm's state test is dropped (the pending member shown), or its availability test (the
@@ -229,6 +234,186 @@ describe("a local collection's page", () => {
         .filter((m) => attr(m, "name") === "robots")
         .map((m) => attr(m, "content"));
       expect([fields, status, robots]).toEqual([fields, 200, ["noindex, noarchive"]]);
+    }
+  });
+
+  // W-T8 (PR 3). Fails if the page route serves HTML to an ActivityPub client, or the document route the JSON to a
+  // browser.
+  it("serves the FeaturedCollection to an ActivityPub client, and moves a browser from the document to the page", async () => {
+    const { h, alice, bob, carol } = await world();
+    const id = await seedCollection(h, alice, 1);
+    await seedItem(h, id, 1, bob, 1);
+    const document = `/ap/users/alice/collections/${id}`;
+    const ap = { headers: { accept: "application/activity+json" } };
+    const direct = await h.request(document, ap);
+    const negotiated = await h.request(`/collections/${id}`, ap);
+    expect([negotiated.status, negotiated.headers.get("content-type"), negotiated.headers.get("vary")]).toEqual([
+      200,
+      "application/activity+json",
+      "Accept",
+    ]);
+    const body = await negotiated.text();
+    expect(body).toBe(await direct.text());
+    expect(JSON.parse(body)).toMatchObject({ type: "FeaturedCollection", id: `https://kopje.test${document}` });
+    // A browser asking for the document moves to the page; an unknown, remote or hidden one is not found either way.
+    const html = await h.request(document, { headers: { accept: "text/html,application/xhtml+xml" } });
+    expect([html.status, html.headers.get("location")]).toEqual([302, `/collections/${id}`]);
+    const remote = await seedCollection(
+      h,
+      await seedAccount(h.store, { username: "erin", domain: "remote.example" }),
+      2,
+    );
+    const hidden = await seedCollection(h, carol, 3);
+    await suspend(h, carol);
+    for (const path of [`/collections/${collectionId(99)}`, `/collections/${remote}`, `/collections/${hidden}`]) {
+      const answer = await h.request(path, ap);
+      expect([path, answer.status, await answer.text()]).toEqual([path, 404, "Not Found"]);
+    }
+    const unknown = await h.request(`/ap/users/alice/collections/${collectionId(99)}`, {
+      headers: { accept: "text/html" },
+    });
+    expect(unknown.status).toBe(404);
+  });
+
+  // Each form is what Mastodon 4.7.5's Rails (8.1.3.1, Ruby 4.0) makes of it at CollectionsController: 302 where it
+  // redirects or renders the page, 200 where it serves the document, 406 where it serves neither. Each fails if its
+  // rule is dropped: q before order, order between equal q, no Accept read as HTML, a list naming */* read as a
+  // browser's, */* taken as HTML, `text/*` and `application/*` led by HTML, a type Rails cannot read refusing the
+  // request, types looked up by their exact case, the text/xml shuffle, and String#to_f's q truncated to hundredths.
+  // The forms Mastodon 4.7.5 (Rails 8.1.3.1 behind Puma) tells apart, and their answers there.
+  it("reads a collection document's Accept as Mastodon's Rails does", async () => {
+    const { h, alice } = await world();
+    const id = await seedCollection(h, alice, 1);
+    const document = `/ap/users/alice/collections/${id}`;
+    const XHR = { "x-requested-with": "XMLHttpRequest" };
+    const forms: [Record<string, string>, number][] = [
+      [{ accept: "application/json, text/html;q=0.1" }, 200],
+      [{ accept: "text/html;q=0.1, application/json" }, 200],
+      [{ accept: "text/html;q=0.5, application/json;q=0.5" }, 302],
+      [{ accept: "application/json;q=0.5, text/html;q=0.5" }, 200],
+      [{ accept: 'application/ld+json; profile="https://www.w3.org/ns/activitystreams"' }, 200],
+      [{}, 302],
+      [{ accept: "application/activity+json, */*;q=0.1" }, 302],
+      [{ accept: "*/*" }, 302],
+      [{ accept: "*/*;q=0.5, application/json" }, 200],
+      [{ accept: "application/*" }, 302],
+      [{ accept: "image/png" }, 406],
+      [{ accept: "foo, application/json" }, 406],
+      [{ accept: "TEXT/HTML, application/json" }, 200],
+      [{ accept: "text/xml, application/json, application/xhtml+xml" }, 302],
+      [{ accept: "text/html;q=.3, application/json;q=0.2" }, 302],
+      [{ accept: "text/html;q=1.e-1, application/json;q=0.2" }, 200],
+      [{ accept: "application/json;q=0.285, text/html;q=0.29" }, 200],
+      // An XHR's Accept is read even when it names */* among others; without one, its Content-Type's type, else
+      // Mime[:js], which neither representation is.
+      [{ accept: "application/json, */*;q=0.1", ...XHR }, 200],
+      [{ accept: "application/json, */*;q=0.1", "x-requested-with": "xmlhttprequest, fetch" }, 200],
+      [{ accept: "*/*", ...XHR }, 302],
+      [XHR, 406],
+      [{ ...XHR, "content-type": "Application/JSON; charset=utf-8" }, 200],
+      [{ ...XHR, "content-type": "text/html" }, 302],
+      [{ ...XHR, "content-type": "" }, 406],
+      [{ "content-type": "application/json" }, 302],
+      // Puma passes the header as bytes, so an NBSP (UTF-8 or a single byte) is not blank: InvalidType there.
+      [{ accept: "\u00c2\u00a0" }, 406],
+      [{ accept: "\u00a0" }, 406],
+    ];
+    for (const [headers, status] of forms) {
+      const answer = await h.request(document, { headers });
+      const location = status === 302 ? `/collections/${id}` : null;
+      expect([headers, answer.status, answer.headers.get("location")]).toEqual([headers, status, location]);
+    }
+  });
+
+  // Mastodon's route is `/ap/users/:account_id/collections/:id(.:format)`, and Rails reads parameters[:format] before
+  // the Accept: the extension (percent-decoded, exact case) over the query's `format` (the last plain one; nil without
+  // `=`, so the Accept decides). Rack (in a middleware) and then Rails (in the controller) parse the query first: a bad
+  // `%`, a key nested as two kinds, a key or value that is not UTF-8, is 400 (a Rack limit is Mastodon's 500, 400
+  // here), and these and an Accept Rails cannot read answer before the collection is found. Each form's answer is
+  // Mastodon 4.7.5's for an existing collection, then for a missing one.
+  it("reads a collection document's format parameter as Mastodon's route does", async () => {
+    const { h, alice } = await world();
+    const id = await seedCollection(h, alice, 1);
+    const missing = collectionId(99);
+    const deep = (n: number) => `format=json&a${"[b]".repeat(n)}=1`;
+    const fields = (n: number) => `format=json&${Array.from({ length: n }, (_, i) => `k${i}=1`).join("&")}`;
+    const forms: [string, Record<string, string>, number, number][] = [
+      [".json", {}, 200, 404],
+      [".html", { accept: "application/json" }, 302, 404],
+      [".xhtml", {}, 302, 404],
+      [".xml", {}, 406, 404],
+      [".JSON", {}, 406, 404],
+      [".j%73on", {}, 200, 404],
+      [".%2E", {}, 406, 404],
+      [".", {}, 404, 404],
+      [".%FF", {}, 400, 400],
+      ["?format=json", { accept: "text/html" }, 200, 404],
+      ["?format=html", { accept: "application/json" }, 302, 404],
+      [".json?format=html", {}, 200, 404],
+      ["?format", { accept: "application/json" }, 200, 404],
+      ["?format=", { accept: "application/json" }, 406, 404],
+      ["?format[]=json", { accept: "application/json" }, 406, 404],
+      ["?format=json&format=html", { accept: "application/json" }, 302, 404],
+      ["?%66ormat=json", {}, 200, 404],
+      ["?format=json;format=html", { accept: "application/json" }, 406, 404],
+      ["?format=json&a=2&a[b]=1", {}, 400, 400],
+      ["?format=json&a=1&a[]=2", {}, 400, 400],
+      ["?format=json&a=%FF", {}, 400, 400],
+      ["?format=json&a=%ZZ", {}, 400, 400],
+      ["?a[b]=1&a=2", { accept: "foo bar" }, 406, 406],
+      ["?format=json&a[][b]=1&a[]&a[][b][c]=2", {}, 400, 400],
+      [`?${deep(31)}`, {}, 200, 404],
+      [`?${deep(32)}`, {}, 400, 400],
+      [`?${fields(4095)}`, {}, 200, 404],
+      [`?${fields(4096)}`, {}, 400, 400],
+      ["", { accept: "foo bar" }, 406, 406],
+    ];
+    for (const [suffix, headers, found, gone] of forms) {
+      const answers = [];
+      for (const target of [id, missing]) {
+        const answer = await h.request(`/ap/users/alice/collections/${target}${suffix}`, { headers });
+        answers.push([answer.status, answer.headers.get("location")]);
+      }
+      const location = found === 302 ? `/collections/${id}` : null;
+      expect([suffix.slice(0, 60), answers]).toEqual([
+        suffix.slice(0, 60),
+        [
+          [found, location],
+          [gone, null],
+        ],
+      ]);
+    }
+  });
+
+  // Every Mastodon controller runs ParamsWrapper#_wrapper_enabled? before its callbacks and action, and it reads the
+  // Content-Type, a GET's with no body included: one Rails cannot read is 406, whatever the extension, format or
+  // Accept, and before the collection is found. Only Rack's refusals and the router's come before it; Rails' own reading
+  // of the query comes after it. Each form's answer is Mastodon 4.7.5's for an existing collection, then a missing one.
+  it("refuses a Content-Type Rails cannot read before the format and the collection, as Mastodon does", async () => {
+    const { h, alice } = await world();
+    const id = await seedCollection(h, alice, 1);
+    const missing = collectionId(99);
+    const broken = { accept: "application/json", "content-type": "broken" };
+    const forms: [string, Record<string, string>, number, number][] = [
+      [".json", broken, 406, 406],
+      [".html", broken, 406, 406],
+      ["?format=json", broken, 406, 406],
+      ["", broken, 406, 406],
+      ["", { accept: "application/json", "content-type": "" }, 406, 406],
+      ["", { accept: "application/json", "content-type": " Text/HTML , x" }, 200, 404],
+      ["?a=%ZZ", broken, 400, 400],
+      ["?%FF=2&%FF[b]=1", broken, 400, 400],
+      [".%FF", broken, 400, 400],
+      ["?a=%FF", broken, 406, 406],
+      ["?%FF=1", broken, 406, 406],
+      ["?a=%FF", { accept: "application/json", "content-type": "application/json" }, 400, 400],
+    ];
+    for (const [suffix, headers, found, gone] of forms) {
+      const answers = [];
+      for (const target of [id, missing]) {
+        answers.push((await h.request(`/ap/users/alice/collections/${target}${suffix}`, { headers })).status);
+      }
+      expect([suffix, headers["content-type"], answers]).toEqual([suffix, headers["content-type"], [found, gone]]);
     }
   });
 

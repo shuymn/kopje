@@ -16,6 +16,8 @@ import {
   Group,
   Hashtag,
   Image,
+  InteractionPolicy,
+  InteractionRule,
   Note,
   type Object as ApObject,
   Organization,
@@ -36,6 +38,7 @@ import {
   type NodeInfoUsage,
   type StoredKey,
 } from "../domain/actors";
+import { actorCollectionTerms } from "../domain/collection-documents";
 import type { FollowerSigner } from "../domain/follower-signer";
 import type { PolicyTicket } from "../domain/instance-domain-blocks";
 import type { FeaturedItem } from "../domain/local-notes";
@@ -638,6 +641,9 @@ async function localActorObject(ctx: RequestContext<FederationState>, actor: Loc
         // The profile's local emoji (ActivityPub::ActorSerializer#virtual_tags, none while suspended: :143).
         tags: actor.emojis.map(emojiObject),
       };
+  // Its collections and who may feature it (collection-documents.ts actorCollectionTerms, D19), a suspended account's
+  // too, in Fedify's terms (FEP-7aa9's featuredCollections, GoToSocial's interactionPolicy).
+  const collections = actorCollectionTerms(id.href, actor);
   const object = new cls({
     id,
     preferredUsername: actor.username,
@@ -656,6 +662,12 @@ async function localActorObject(ctx: RequestContext<FederationState>, actor: Loc
       publicKey: await importPublicKeyPem(actor.pubkey),
     }),
     published: Temporal.Instant.from(actor.createdAt),
+    featuredCollections: new URL(collections.featuredCollections),
+    interactionPolicy: new InteractionPolicy({
+      canFeature: new InteractionRule({
+        automaticApprovals: collections.interactionPolicy.canFeature.automaticApproval.map((uri) => new URL(uri)),
+      }),
+    }),
     ...profile,
   });
   return withMastodonTerms(object, {

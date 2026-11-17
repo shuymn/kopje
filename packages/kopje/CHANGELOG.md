@@ -152,6 +152,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `0093_annual_reports` takes 15,501 ms with this file and 11,720 ms without it, medians of three runs).
   `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling back
   past it needs a point-in-time restore.
+- Collections federate as FEP-7aa9 `FeaturedCollection`s: the actor's `featuredCollections` and `canFeature`, each
+  local collection's documents (also served at its `url` to an ActivityPub client), and `Add`, `Remove` and `Update`
+  to followers and members ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections"); the `Remove`s
+  a block records reach the owner's followers through a job after the block, as Mastodon's do. Migration
+  `0108_collection_jobs`: three new tables, reading no row; as it creates tables, the upgrade checks every reference
+  of the Store (the migration bench's upgrade from `0093_annual_reports` takes 15,542 ms with this file and 15,304 ms
+  without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at
+  least a minor version, and rolling back past it needs a point-in-time restore.
 
 ### Changed
 
@@ -351,6 +359,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   The cutover converts such an actor's domain the same way, and `verify-conversion` expects it. Actor ids, inboxes and
   stored handles keep their spelling: a Store converted before keeps the domains it holds until a refresh confirms
   each account ([docs/cutover.md](docs/cutover.md), Verification). No Store migration and no `wrangler.jsonc` change.
+- A scheduled status holds at most four media, imports included: an import refuses a fifth, and the upgrade detaches
+  any past the first four (attachable again for a day; only a restored row holds more). Migration
+  `0109_scheduled_media_cap`: the detach and two triggers on `media_attachments`; the upgrade checks no reference (the
+  migration bench's upgrade from `0093_annual_reports` takes 16,422 ms with this file and 15,572 ms without it,
+  medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor
+  version, and rolling back past it needs a point-in-time restore.
 
 ### Fixed
 

@@ -31,6 +31,15 @@ import {
 } from "./audience";
 import { COLLECTION_LIMIT, optionalUserReadOperation, userReadOperation, userWriteOperation } from "./auth";
 import {
+  recordCollectionAdd,
+  recordCollectionRemove,
+  recordCollectionUpdate,
+  recordItemAdd,
+  recordItemRemove,
+  stageItemRemove,
+} from "./collection-documents";
+import { beginCollectionJobs } from "./collection-jobs";
+import {
   type Collection,
   COLLECTION_COLUMNS,
   type CollectionItem,
@@ -400,7 +409,8 @@ function ownView(db: Db, id: string, owner: string, origin: string): Collection 
 // unavailable account is not found), tag_name (the Tag's errors), consent per account in the order given (403), then
 // the collection's validations with the counts (422). Past COLLECTION_MAX_ITEMS distinct ids the request is refused
 // before any is read (docs/mastodon-deviations.md, "Collections"). Every item of a local account is accepted, at
-// position 1 (CollectionItem#set_position reads no collection yet).
+// position 1 (CollectionItem#set_position reads no collection yet). The collection's Add is recorded with them
+// (collection-documents.ts recordCollectionAdd).
 export const createCollection = userWriteOperation<
   CollectionFields & { accountIds: readonly string[]; now: number; present: PresentInput },
   CollectionResult
@@ -466,6 +476,7 @@ export const createCollection = userWriteOperation<
   for (const member of members) {
     notifyAdded(db, owner, member, insertItem(db, id, member, 1, input.now), input.now);
   }
+  recordCollectionAdd(db, id, input.now);
   return { status: "ok", collection: ownView(db, id, owner, input.present.origin) };
 });
 
@@ -512,7 +523,8 @@ function ownCollection(db: Db, id: string, viewer: string): CollectionRow | "not
 }
 
 // PATCH and PUT /api/v1/collections/:id (UpdateCollectionService): what is sent changes, the rest stays; tag_name's
-// errors before the collection's validations; updated_at moves only when a value changes.
+// errors before the collection's validations; updated_at moves only when a value changes, and only then is the
+// collection's Update recorded: every value is one its FeaturedCollection carries (UPDATEABLE_PARAMS).
 export const updateCollection = userWriteOperation<
   CollectionFields & { id: string; now: number; present: PresentInput },
   CollectionResult
@@ -553,6 +565,7 @@ export const updateCollection = userWriteOperation<
       new Date(input.now).toISOString(),
       row.id,
     );
+    recordCollectionUpdate(db, row.id, input.now);
   }
   if (NOTIFIED_CHANGES.some(differs)) {
     notifyUpdated(db, row.id, viewer, input.now);
@@ -587,13 +600,15 @@ function notifyUpdated(db: Db, id: string, owner: string, now: number): void {
 }
 
 // DELETE /api/v1/collections/:id (DeleteCollectionService): the collection and, by the foreign keys, its items, their
-// notifications, its collection_update notifications and their pushes (at most MAX_PUSH_BACKLOG in all).
-export const deleteCollection = userWriteOperation<{ id: string }, "ok" | "not_found" | "forbidden">(
+// notifications, its collection_update notifications and their pushes (at most MAX_PUSH_BACKLOG in all), after
+// recording its Remove, which reads its members.
+export const deleteCollection = userWriteOperation<{ id: string; now: number }, "ok" | "not_found" | "forbidden">(
   (db, input, { accountId: viewer }) => {
     const row = ownCollection(db, input.id, viewer);
     if (typeof row === "string") {
       return row;
     }
+    recordCollectionRemove(db, row.id, input.now);
     db.run(`DELETE FROM collections INDEXED BY ${COLLECTIONS_ID_INDEX} WHERE id = ?`, row.id);
     return "ok";
   },
@@ -610,7 +625,7 @@ export type ItemResult =
 // collection (404), a blank account_id (422), the account (404, unavailable included), the owner (403), consent (403),
 // then the item's uniqueness in any state and the live bound (422). At MAX_STORED_ITEMS stored rows the oldest retired
 // row of the collection is deleted first, with its notification and that notification's pushes (by the foreign keys).
-// The new item is accepted, after every other (CollectionItem#set_position).
+// The new item is accepted, after every other (CollectionItem#set_position), and its Add recorded.
 export const addCollectionItem = userWriteOperation<{ collection: string; account: string; now: number }, ItemResult>(
   (db, input, { accountId: viewer }) => {
     const row = foundCollection(db, input.collection);
@@ -651,6 +666,7 @@ export const addCollectionItem = userWriteOperation<{ collection: string; accoun
     const position = Math.min((counts?.last ?? 0) + 1, COLLECTION_POSITION_MAX);
     const id = insertItem(db, row.id, member, position, input.now);
     notifyAdded(db, viewer, member, id, input.now);
+    recordItemAdd(db, { id, collection: row.id }, input.now);
     const item = { collection_id: row.id, id, state: COLLECTION_ITEM_STATES.accepted, account_id: member };
     return { status: "ok", item: presentItem({ ...item, created_at: new Date(input.now).toISOString() }) };
   },
@@ -676,9 +692,9 @@ function collectionItem(
 }
 
 // DELETE /api/v1/collections/:collection_id/items/:id (DeleteCollectionItemService): the owner deletes any item, and
-// by the foreign keys its notification and that notification's pushes.
+// by the foreign keys its notification and that notification's pushes, after recording its Remove.
 export const removeCollectionItem = userWriteOperation<
-  { collection: string; item: string },
+  { collection: string; item: string; now: number },
   "ok" | "not_found" | "forbidden"
 >((db, input, { accountId: viewer }) => {
   const found = collectionItem(db, input.collection, input.item);
@@ -688,12 +704,14 @@ export const removeCollectionItem = userWriteOperation<
   if (found.row.account_id !== viewer) {
     return "forbidden";
   }
+  recordItemRemove(db, { id: found.item.id, collection: found.row.id, account: found.item.account_id }, input.now);
   db.run(`DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id = ?`, found.item.id);
   return "ok";
 });
 
 // POST /api/v1/collections/:collection_id/items/:id/revoke (RevokeCollectionItemService): the item's own account
-// revokes it, in any state (CollectionItemPolicy#revoke?); the row stays, revoked, for RETIRED_ITEM_TTL_MS.
+// revokes it, in any state (CollectionItemPolicy#revoke?); the row stays, revoked, for RETIRED_ITEM_TTL_MS. In a local
+// collection its owner's Remove of the item is recorded, once.
 export const revokeCollectionItem = userWriteOperation<
   { collection: string; item: string; now: number },
   "ok" | "not_found" | "forbidden"
@@ -705,7 +723,7 @@ export const revokeCollectionItem = userWriteOperation<
   if (found.item.account_id !== viewer) {
     return "forbidden";
   }
-  db.run(
+  const revoked = db.run(
     `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
 			SET state = ?, retracted_approval_uri = NULL, updated_at = ?
 		WHERE id = ? AND state <> ?`,
@@ -714,31 +732,54 @@ export const revokeCollectionItem = userWriteOperation<
     found.item.id,
     COLLECTION_ITEM_STATES.revoked,
   );
+  if (revoked > 0) {
+    recordItemRemove(db, { id: found.item.id, collection: found.row.id, account: viewer }, input.now);
+  }
   return "ok";
 });
 
 // BlockService#handle_collections, in the block's transaction: the blocker's items in the target's collections are
 // revoked, and the target's items in the blocker's collections deleted, with their notifications and those
-// notifications' pushes (by the foreign keys). Each reads one account's collections (at most MAX_STORED_COLLECTIONS)
-// and one item of each by its member key, so at most that many items each.
-export function severCollections(db: Db, blocker: string, target: string, now: number): void {
-  db.run(
+// notifications' pushes (by the foreign keys), each item's Remove as its revoke or removal sends it (a local
+// collection's only), recorded with its members' targets and its owner's followers left to a collection job
+// (collection-jobs.ts), as Mastodon's CollectionRawDistributionWorker reaches them after the block. Each reads one
+// account's collections (at most MAX_STORED_COLLECTIONS) and one item of each by its member key, so at most that many
+// rows and Removes each, and each Remove reads its collection's items (at most MAX_STORED_ITEMS) and no follower.
+// Returns whether it left a job.
+export function severCollections(db: Db, blocker: string, target: string, now: number): boolean {
+  const revoked = db.all<{ id: string; collection_id: string }>(
     `UPDATE collection_items INDEXED BY collection_items_member
 			SET state = ?3, retracted_approval_uri = NULL, updated_at = ?4
 		WHERE collection_id IN (SELECT id FROM collections INDEXED BY collections_account WHERE account_id = ?2)
-			AND account_id = ?1 AND state <> ?3`,
+			AND account_id = ?1 AND state <> ?3
+		RETURNING id, collection_id`,
     blocker,
     target,
     COLLECTION_ITEM_STATES.revoked,
     new Date(now).toISOString(),
   );
-  db.run(
+  const removes: { owner: string; intent: string }[] = [];
+  const stage = (item: { id: string; collection_id: string }, account: string) => {
+    const staged = stageItemRemove(db, { id: item.id, collection: item.collection_id, account }, now);
+    if (staged !== null) {
+      removes.push(staged);
+    }
+  };
+  for (const item of revoked) {
+    stage(item, blocker);
+  }
+  const deleted = db.all<{ id: string; collection_id: string }>(
     `DELETE FROM collection_items INDEXED BY collection_items_member
 		WHERE collection_id IN (SELECT id FROM collections INDEXED BY collections_account WHERE account_id = ?1)
-			AND account_id = ?2`,
+			AND account_id = ?2
+		RETURNING id, collection_id`,
     blocker,
     target,
   );
+  for (const item of deleted) {
+    stage(item, target);
+  }
+  return beginCollectionJobs(db, removes);
 }
 
 // The retired items unchanged since ?1, oldest first, at most ?2 (the rows a round has left): one bounded range of
@@ -854,6 +895,17 @@ export function flaggedCollections(
 }
 
 // ---- The public page of a local collection (web-pages/collection.ts).
+
+// The path of the local collection `id`'s FeaturedCollection (collection-documents.ts), by key; null for any other.
+export function localCollectionPath(db: Db, id: string): string | null {
+  const row = db.first<{ username: string }>(
+    `SELECT a.username FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
+			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
+		WHERE c.id = ? AND c.local = 1`,
+    id,
+  );
+  return row === undefined ? null : `/ap/users/${encodeURIComponent(row.username)}/collections/${id}`;
+}
 
 type PageOwner = { id: string; account: Account } | { status: "not_found" } | { status: "suspended" };
 
