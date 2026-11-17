@@ -22,6 +22,7 @@ import {
 } from "../src/domain/delivery-hosts";
 import { type PostDeps, type PostTarget, postActivity } from "../src/federation/delivery";
 import type { HostResolution, RequestSigner } from "../src/federation/loader";
+import { handleQueue } from "../src/jobs/queue";
 import type { StoreStub } from "../src/platform/store-client";
 import {
   deliveryHostSql,
@@ -32,7 +33,7 @@ import {
 } from "../src/platform/stored-bounds";
 import { adminClaims, adminHarness, adminTeam, type AccessTeam, setTeamAccess } from "./access-helpers";
 import { seedAccount, sql } from "./api-helpers";
-import { NOW } from "./app-helpers";
+import { harness, inboxDeps, NOW } from "./app-helpers";
 import {
   DAY,
   HOST,
@@ -47,8 +48,11 @@ import {
   run,
   sender,
   states,
+  tally,
 } from "./delivery-host-helpers";
+import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount } from "./federation-helpers";
 import { BUILD, completeSetup, deferred, migratedStore, testKernel } from "./helpers";
+import { mastodonActor, RemoteWeb, signedInit } from "./inbox-helpers";
 import { copyConfig, dumpViaRpc, importViaRpc, setAccess } from "./ops-helpers";
 
 // Hosts that keep failing deliveries become unavailable (domain/delivery-hosts.ts; docs/mastodon-deviations.md,
@@ -682,6 +686,82 @@ describe("clears (C14)", () => {
     expect(bob).toBeTruthy();
     expect(events()).toEqual(["kopje.delivery.host_restored", "kopje.delivery.host_restored"]);
   });
+
+  // Mastodon 4.7.5 does the same: its InboxesController resets the verified signer's inbox host
+  // (DeliveryFailureTracker.reset!, which destroys an UnavailableDomain, an operator's stop included), and it stores an
+  // actor's inbox on any host (ProcessAccountService#valid_collection_uri). The accepted gap of docs/threat-model.md
+  // RES-5: a signer can clear a host it does not control, which Kopje then tries again.
+  it.each(["live", "replayed"] as const)(
+    "a %s signed activity of an actor whose inbox is on another host clears that host, its stop and drain included",
+    async (path) => {
+      const store = await migratedStore();
+      await completeSetup(store);
+      const alice = "100000000000000001";
+      // Locked, so the Follow sends nothing back.
+      await seedLocalAccount(store, "kopje.test", {
+        id: alice,
+        username: "alice",
+        key: LEGACY_EMPTY_KEK,
+        locked: true,
+      });
+      const victim = "victim.example";
+      const create = await outbound(store, alice);
+      const ids = await lane(store, {
+        activity: create,
+        account: alice,
+        lane: `https://${victim}`,
+        inbox: `https://${victim}/inbox`,
+        count: 150,
+      });
+      expect(await run(store, stopDeliveryHost, { host: victim, now: NOW })).toEqual({
+        ok: true,
+        drained: 100,
+        draining: true,
+      });
+      const web = new RemoteWeb();
+      const mallory = await mastodonActor(web, "mallory", {
+        origin: "https://attacker.example",
+        extra: { inbox: `https://${victim}/arbitrary-inbox` },
+      });
+      const follow = {
+        "@context": "https://www.w3.org/ns/activitystreams",
+        id: "https://attacker.example/follows/1",
+        type: "Follow",
+        actor: mallory.uri,
+        object: "https://kopje.test/ap/users/alice",
+      };
+      const init = await signedInit(mallory, "/inbox", follow);
+      const federation = { keygen: fixtureKeyGen, loader: web.loader };
+      if (path === "live") {
+        expect((await harness(store, {}, BUILD, federation).request("/inbox", init)).status).toBe(202);
+      } else {
+        const spool = harness(store, { MAINTENANCE: "readonly" }, BUILD, federation);
+        expect((await spool.request("/inbox", init)).status).toBe(202);
+        expect(await hostRows(store)).toMatchObject([{ host: victim, drain_lane: `https://${victim}` }]);
+        const env = { ...spool.env, MAINTENANCE: "off" } as Env;
+        await spool.queue.deliver((batch) =>
+          handleQueue(
+            batch,
+            env,
+            inboxDeps(() => store, web.loader),
+          ),
+        );
+      }
+      expect(await sql(store, "SELECT inbox_url FROM accounts WHERE uri = ?", mallory.uri)).toEqual([
+        { inbox_url: `https://${victim}/arbitrary-inbox` },
+      ]);
+      expect(await hostRows(store)).toEqual([]);
+      expect(warn.mock.calls.map((call): unknown => call[0])).toContainEqual({
+        event: "kopje.delivery.host_restored",
+        cause: "received",
+      });
+      // Nothing reached the victim; the rows the stop gave up stay so, and the rest are sent again.
+      expect(web.fetched.filter((url) => new URL(url).hostname === victim)).toEqual([]);
+      expect(await tally(store, ids)).toEqual({ "gave_up: host unavailable": 100, pending: 1, queued: 49 });
+      expect((await claim(store, NOW + 1)).deliveries.map((c) => c.id)).toEqual([ids[100]]);
+    },
+    60_000,
+  );
 });
 
 describe("cap and sweep (C15)", () => {

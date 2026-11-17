@@ -3811,7 +3811,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (accepted):_ failures count by host, so an actor whose stored inbox is on another origin whose path answers a
   retryable failure counts against that host and can mark it unavailable for every account on it, as Mastodon's tracker
   counts by host too; the stage keeps Kopje's own failures out but cannot tell such an inbox from the host's own, and
-  the operator restarts the host.
+  the operator restarts the host. The clear on receipt is keyed the same way: the signer's stored inbox may name any
+  host, so any activity the Store receives from an actor whose document names an inbox on a host it does not control
+  makes that host available, an operator's stop and its drain included, as Mastodon 4.7.5's inbox resets the verified
+  signer's inbox host (`DeliveryFailureTracker.reset!`, which destroys the domain's `UnavailableDomain`) and stores an
+  actor's inbox on any host. The host is then as it was before its mark: Kopje tries it again with each failure counted
+  anew, the rows already given up stay so, and the operator stops it again (`test/delivery-hosts.test.ts` ("a %s signed
+  activity of an actor whose inbox is on another host …")).
   _Enforced (main):_ `src/domain/deliveries.ts`, `src/domain/delivery-hosts.ts`, `src/jobs/deliver.ts`;
   `test/deliveries.test.ts` ("retries after min(30 s·2^n, 12 h)"), `test/delivery-post.test.ts` ("RES-5: claims nothing
   and counts no attempt in maintenance"), `test/cli.test.ts`, `test/delivery-hosts.test.ts`,

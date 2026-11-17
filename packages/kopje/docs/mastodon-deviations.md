@@ -1670,8 +1670,12 @@ Unavailable delivery hosts (Mastodon's `DeliveryFailureTracker` and `Unavailable
   cut and no exhausted budget. A permanent answer (4xx but 401, 408 and 429, and 501) neither counts nor clears, as in
   Mastodon. A host is the inbox's host in lowercase punycode without its trailing dots.
 - A delivery that succeeds, an activity the Store receives from an actor whose stored inbox is on the host, and the
-  operator's restart clear it. Mastodon also clears it for any verified POST to its inbox from that host, an activity
-  it then ignores included.
+  operator's restart clear it, an operator's stop included. Mastodon 4.7.5 resets the host of the verified signer's
+  inbox for every POST to its inbox, an activity it then ignores included (`inboxes_controller.rb:77`,
+  `delivery_failure_tracker.rb:21-24` and `:48`, destroying the domain's `UnavailableDomain`), and stores an actor's
+  inbox on any host (`process_account_service.rb:235-245`). Kopje keeps both, so in either an actor whose document
+  names an inbox on a host it does not control clears that host, a stop included, with any activity it sends; the
+  host is then tried again (RES-5's accepted gap). Accepted, 2026-11-17.
 - While a host is unavailable, its deliveries but `Follow`s (Mastodon's `bypass_availability`) are written and kept
   given up `host unavailable`, where Mastodon skips the work and writes nothing: a new target is written given up and
   not counted toward the backlog, a due row is given up at its claim, a failed attempt is given up instead of retried

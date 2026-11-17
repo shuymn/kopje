@@ -160,7 +160,8 @@ export function clearHost(db: Db, host: string | null, cause: HostClear): boolea
 const RECEIVED_INBOX_BYTES = 2048;
 
 // Clears the host of the stored inbox of the account that sent an activity the Store receives (inbox.ts receive), as
-// Mastodon's inbox resets its signer's inbox host. Reads the account by its key.
+// Mastodon's inbox resets its signer's inbox host. The inbox may name any host, as Mastodon stores it, so a signer can
+// clear a host it does not control (docs/threat-model.md RES-5, an accepted gap). Reads the account by its key.
 export function clearSenderHost(db: Db, accountId: string): void {
   const inbox = db.first<{ inbox: string | null }>(
     `SELECT CASE WHEN typeof(inbox_url) = 'text' AND length(CAST(inbox_url AS BLOB)) <= ${RECEIVED_INBOX_BYTES}
