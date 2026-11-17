@@ -505,20 +505,21 @@ against their own instance. TLS is assumed between all parties.
   member and the authorization its owner lists: an unchanged revision changes nothing, whatever the item's state; a new
   item or a changed revision is pending, with no verified authorization, claim or attempt, and queued for a check. A
   check accepts it only when the fetch under its claim found the authorization served for the collection and the member
-  and no other item of the member holds that authorization verified (only the member's server can have said so); a 404
-  or 410 rejects it, a transient failure retries, and any other outcome leaves it pending and unqueued. A completion
-  applies only to a pending item under the token its claim set, which a revision change, a revocation and a later claim
-  replace or clear, so another owner's item listing the same authorization never prevents the acceptance and a late
-  completion changes nothing. A rejected or revoked item is deleted 24 hours after its last change; a later listing of
-  it is a new item (`src/domain/remote-featured-collections.ts`, `src/domain/collection-checks.ts`);
-  `test/inbox-collections.test.ts`, `test/collection-sync.test.ts` ("refuses a collection of another host or another
-  owner, and cuts a long name and description"), `test/remote-featured-collections.test.ts` ("leaves pending, without an
-  error, a match whose authorization the member holds in another row"), `test/feature-lifecycle.test.ts` ("agrees with
-  the policy after every step, and accepts a served candidate once settled", "accepts O's item whose authorization X's
-  item lists first", "changes nothing at a delayed Delete of A after O's change to B", against `FeaturePolicy` in
-  `test/feature-model.ts`), `test/remote-collections-api.test.ts` ("stores nothing for a collection whose owner Kopje
-  does not store, or that its owner does not attribute"). A change to these rules changes `test/feature-model.ts` with
-  it.
+  and no other item of the member holds that authorization verified (only the member's server can have said so); a 4xx
+  other than 401, 408 and 429 rejects it (`test/remote-featured-collections.test.ts` ("rejects on a 4xx other than 401,
+  408 and 429, and retries those and a 5xx")), a transient failure retries, and any other outcome leaves it pending and
+  unqueued. A completion applies only to a pending item under the token its claim set, which a revision change, a
+  revocation and a later claim replace or clear, so another owner's item listing the same authorization never prevents
+  the acceptance and a late completion changes nothing. A rejected or revoked item is deleted 24 hours after its last
+  change; a later listing of it is a new item (`src/domain/remote-featured-collections.ts`,
+  `src/domain/collection-checks.ts`); `test/inbox-collections.test.ts`, `test/collection-sync.test.ts` ("refuses a
+  collection of another host or another owner, and cuts a long name and description"),
+  `test/remote-featured-collections.test.ts` ("leaves pending, without an error, a match whose authorization the member
+  holds in another row"), `test/feature-lifecycle.test.ts` ("agrees with the policy after every step, and accepts a
+  served candidate once settled", "accepts O's item whose authorization X's item lists first", "changes nothing at a
+  delayed Delete of A after O's change to B", against `FeaturePolicy` in `test/feature-model.ts`),
+  `test/remote-collections-api.test.ts` ("stores nothing for a collection whose owner Kopje does not store, or that its
+  owner does not attribute"). A change to these rules changes `test/feature-model.ts` with it.
 - **ID-7: replay changes nothing twice.** A repeated activity creates no second relationship, counter change,
   notification, push or outbound intent (natural keys). A valid `Delete` or `Undo` that arrives before its target is
   recorded for 30 days and prevents the target from appearing later; so is a collection owner's `Remove` of an item

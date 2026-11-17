@@ -21,9 +21,10 @@ import { writeOperation } from "./operation";
 //   - completeItemChecks applies a round's outcomes, each only while its item is pending and holds the token its claim
 //     set (a revision change, a revocation and a later claim each replace or clear it): a match accepts the item with
 //     the candidate as its verified authorization, unless another row of the same member holds that authorization
-//     (only the member's server can have said so), which ends the check as a mismatch; a 404, 410 or a document that is
-//     no object rejects it; a mismatch or an unsupported document (a redirect, past ITEM_CHECK_CAPS) ends the check;
-//     a transient failure backs off, CHECK_BACKOFF_MS × 4^(attempts − 1). Every outcome clears the token.
+//     (only the member's server can have said so), which ends the check as a mismatch; a final refusal (a 4xx other
+//     than 401, 408 and 429) or a document that is no object rejects it; a mismatch or an unsupported document (a
+//     redirect, past ITEM_CHECK_CAPS) ends the check; a transient failure backs off, CHECK_BACKOFF_MS ×
+//     4^(attempts − 1). Every outcome clears the token.
 // A claim is charged when it is made, so a round that dies spends its claims and its attempts, and its items come due
 // when their leases end. Whatever an owner does (removing and re-adding an item, changing its authorization after each
 // failure), its collections cost at most OWNER_CHECKS_PER_DAY claims a UTC day.
@@ -43,8 +44,9 @@ export const DAY_MS = 86_400_000;
 // name: the collection's id and the member's.
 export type ItemCheck = { item: string; token: string; authorization: string; collection: string; member: string };
 
-// A check's outcome (federation/collection-checks.ts): the authorization matched; it is gone (404, 410, or no object);
-// it does not match, or cannot be read as Kopje reads it (a redirect, past the caps); or the fetch may pass later.
+// A check's outcome (federation/collection-checks.ts): the authorization matched; it is gone (a 4xx other than 401,
+// 408 and 429, or no object); it does not match, or cannot be read as Kopje reads it (a redirect, past the caps); or
+// the fetch may pass later.
 export type ItemCheckOutcome = "match" | "gone" | "mismatch" | "transient";
 
 type Candidate = {

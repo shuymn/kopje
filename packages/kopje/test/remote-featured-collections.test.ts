@@ -129,6 +129,30 @@ describe("the check of an item", () => {
     expect(sent).not.toContain(moved);
   });
 
+  it("rejects on a 4xx other than 401, 408 and 429, and retries those and a 5xx", async () => {
+    const t = await setup();
+    const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
+    const final = [400, 403, 422];
+    const passing = [401, 408, 429, 501];
+    const statuses = [...final, ...passing];
+    const entries = (await seededMembers(t, statuses.length)).map((member) => item(owner, member));
+    const listed = collection(owner, entries);
+    serveCollections(t.web, owner, [[listed]]);
+    entries.forEach((entry, n) => t.web.fail(entry.featureAuthorization, statuses[n]!));
+    await storedOwner(t, owner);
+    await syncAll(t);
+    await checkRound(t, NOW);
+    await checkRound(t, NOW);
+    const rows = byUri(await items(t));
+    entries.forEach((entry, n) => {
+      expect(rows.get(entry.id), String(statuses[n])).toMatchObject(
+        final.includes(statuses[n]!)
+          ? { state: REJECTED, check_due_at: null, check_token: null, check_attempts: 1 }
+          : { state: PENDING, check_due_at: NOW + CHECK_BACKOFF_MS, check_token: null, check_attempts: 1 },
+      );
+    });
+  });
+
   it("leaves pending, without an error, a match whose authorization the member holds in another row", async () => {
     const t = await setup();
     const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);

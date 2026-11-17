@@ -853,11 +853,12 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   time it can read. Accepted, 2026-11-17.
 - A member's authorization is checked once for each value the owner gives it, in background rounds, four a round, at
   most five attempts, and at most 250 checks begun in a UTC day for one owner's collections (the rest wait for the next
-  day); Mastodon verifies it again on every processing of the collection. An authorization larger than 64 KiB or
-  served through a redirect is not accepted; a member whose check failed this way, did not match, or gave up after
-  five attempts stays unshown until the owner changes or re-adds it. Kopje learns that a member withdrew only from the
-  owner's `Remove` or the member's own `Delete`: while the owner keeps listing a member that withdrew and Kopje
-  receives neither, Kopje keeps showing the member. Accepted, 2026-11-17.
+  day); Mastodon verifies it again on every processing of the collection. An authorization larger than 64 KiB or served
+  through a redirect is not accepted; a member whose check failed this way, did not match, or gave up after five
+  attempts stays unshown until the owner changes or re-adds it. An authorization answered 501 is retried as any 5xx,
+  where Mastodon takes it as final and rejects the member (as both do for any other 4xx than 401, 408 and 429). Kopje
+  learns that a member withdrew only from the owner's `Remove` or the member's own `Delete`: while the owner keeps
+  listing a member that withdrew and Kopje receives neither, Kopje keeps showing the member. Accepted, 2026-11-17.
 - A member's `Delete` of its feature authorization revokes its membership of a remote collection too, when it names
   the membership's current authorization (verified, or the one the owner lists while unchecked), including the copy
   the collection's owner relays with the member's signature; Mastodon applies it to local collections only. Accepted,

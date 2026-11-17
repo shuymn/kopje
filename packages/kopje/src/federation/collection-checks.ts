@@ -35,8 +35,10 @@ import { idOf } from "./remote-status";
 // fetches and bytes whatever the documents are (checked as the module loads), and none waits for a later round.
 // The document matches when it is what it was fetched as (its id the URL asked for), in the ActivityStreams context,
 // typed FeatureAuthorization, its interactionTarget the item's member and on the authorization's own origin, and its
-// interactingObject the collection. A redirect or a body past the caps is not read (a mismatch: the check ends); a
-// 404, a 410 or a body that is no object is gone; a failure that may pass is transient.
+// interactingObject the collection. A redirect or a body past the caps is not read (a mismatch: the check ends); an
+// answer Mastodon's fetch_resource takes as final, a 4xx other than 401, 408 and 429 (response_error_unsalvageable?),
+// or a body that is no object is gone; a 401, a 408, a 429, a 5xx (a 501 included, which Mastodon takes as final) or a
+// failure to reach the server is transient.
 const ITEM_CHECK_CAPS = { documentBytes: 64 * 1024, maxRedirects: 0 } as const satisfies DocumentCaps;
 if (
   ITEM_CHECKS_PER_ROUND * 2 > REQUEST_MAX_FETCHES ||
@@ -70,11 +72,11 @@ async function checkOutcome(check: ItemCheck, loader: DocumentLoader): Promise<I
   try {
     document = (await loader(check.authorization)).document;
   } catch (error) {
-    if (isTransientLoadError(error)) {
+    const status = loadFailureOf(error)?.response?.status;
+    if (status === 401 || isTransientLoadError(error)) {
       return "transient";
     }
-    const status = loadFailureOf(error)?.response?.status;
-    if (status === 404 || status === 410 || error instanceof UnusableDocumentError) {
+    if ((status !== undefined && status >= 400 && status < 500) || error instanceof UnusableDocumentError) {
       return "gone";
     }
     return "mismatch";
