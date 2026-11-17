@@ -122,7 +122,8 @@ const TURN_HEADER = "x-kopje-turn";
 // highest conversation change sent or skipped on `direct` (raised, and written, before a conversation is sent); rate:
 // the minute its message count started; subs: its subscriptions' keys (a stream's name, `list:<id>`, or
 // `hashtag[:local]:<tag>`), in order; tags: each hashtag key's `tag` as the client sent it (its messages echo it);
-// out: the output handed to it over its life, [the sum of frame() over its frames, their number] (stream-output.ts).
+// out: the output handed to it over its life, [the sum of frame() over its frames, their number] (stream-output.ts);
+// closed: the code the hub closed it with, written as it closes it (#shut).
 type Attachment = {
   v: 2;
   tokenHash: string;
@@ -134,6 +135,7 @@ type Attachment = {
   subs: string[];
   tags: Record<string, string>;
   out: [charged: number, frames: number];
+  closed?: number;
 };
 
 type Socket = { ws: WebSocket; at: Attachment };
@@ -188,6 +190,8 @@ export class StreamHub {
   #charged: number | null = null;
   #unknown = 0;
   #nearArmed = true;
+  // The sockets this instance has read or written a close mark on (#shut).
+  readonly #marked = new WeakSet<WebSocket>();
 
   constructor(ctx: DurableObjectState, kernel: StoreKernel, turnRequest: (headers: HeadersInit) => Promise<Response>) {
     this.#ctx = ctx;
@@ -245,7 +249,7 @@ export class StreamHub {
   // Closes every socket, for a Store that can no longer serve them (an import begins, maintenance refuses a turn).
   closeAll(code: number, reason: string): void {
     for (const ws of this.#ctx.getWebSockets()) {
-      close(ws, code, reason);
+      this.#shut(ws, code, reason);
     }
     this.#reconciled = false;
   }
@@ -276,8 +280,10 @@ export class StreamHub {
   }
 
   async closed(ws: WebSocket, code: number): Promise<void> {
-    close(ws, code === 1005 || code === 1006 ? 1000 : code, "");
-    const at = peek(ws);
+    const { at, closed } = this.#read(ws);
+    if (closed === null) {
+      close(ws, code === 1005 || code === 1006 ? 1000 : code, "");
+    }
     if (at !== null) {
       await this.#sync(at.accountId, ws);
     }
@@ -413,12 +419,13 @@ export class StreamHub {
     for (const sub of next.subs) {
       keys.set(sub, (keys.get(sub) ?? 0) + 1);
     }
-    // The attachment's clone must fit the runtime's limit with any `out` (cloneBound counts each number as 16 bytes).
+    // The attachment's clone must fit the runtime's limit with any `out` and a close mark (cloneBound counts each
+    // number as 16 bytes).
     if (
       next.subs.length > STREAM_LIMITS.subscriptionsPerSocket ||
       keys.size > STREAM_LIMITS.keysPerAccount ||
       exceeds(JSON.stringify(next), STREAM_LIMITS.attachmentBytes) ||
-      cloneBound(next) > ATTACHMENT_MAX
+      cloneBound({ ...next, closed: 1000 }) > ATTACHMENT_MAX
     ) {
       return this.#reply(ws, { error: "Too many subscriptions", status: 429 });
     }
@@ -481,7 +488,7 @@ export class StreamHub {
   // Rewrites a socket's attachment from its current one (an await may have let another handler or a turn write it),
   // keeping its `out`.
   #update(ws: WebSocket, change: (at: Attachment) => Attachment): void {
-    const current = peek(ws);
+    const current = readAttachment(ws).at;
     if (current !== null) {
       serialize(ws, { ...change(current), out: current.out });
     }
@@ -502,7 +509,7 @@ export class StreamHub {
       }
     } catch (error) {
       console.warn({ event: "kopje.stream.send-failed", ...errorFields(error) });
-      close(ws, 1011, "send failed");
+      this.#shut(ws, 1011, "send failed");
     }
     await this.#syncAccounts(refused);
   }
@@ -516,10 +523,10 @@ export class StreamHub {
     let unknown = 0;
     let closing = 0;
     for (const ws of listed) {
-      if (ws.readyState !== WebSocket.OPEN) {
+      const { at, closed } = this.#read(ws);
+      if (closed !== null || ws.readyState !== WebSocket.OPEN) {
         closing++;
       }
-      const at = peek(ws);
       if (at === null) {
         unknown++;
         this.#restore(ws);
@@ -549,7 +556,7 @@ export class StreamHub {
     this.#charged = charge;
     if (before <= 0.75 * STREAM_OUTPUT.instanceBytes && charge > 0.75 * STREAM_OUTPUT.instanceBytes) {
       const listed = this.#ctx.getWebSockets();
-      this.#near(charge, listed.length, listed.filter((ws) => ws.readyState !== WebSocket.OPEN).length);
+      this.#near(charge, listed.length, listed.filter((ws) => !this.#isOpen(ws)).length);
     }
   }
 
@@ -575,7 +582,7 @@ export class StreamHub {
   // sockets past instanceBytes, it is closed (1013, `refused` gets its account) and handed nothing. A write that throws
   // closes it (1011) with its `out` as it was.
   #admit(ws: WebSocket, sizes: readonly number[], convSeq: string | null, refused: string[]): boolean {
-    if (ws.readyState !== WebSocket.OPEN) {
+    if (!this.#isOpen(ws)) {
       return false;
     }
     if (STREAM_FAULTS.failAdmission?.(ws) === true) {
@@ -611,7 +618,7 @@ export class StreamHub {
       } else {
         console.warn({ event: "kopje.stream.output_closed", ...fields });
       }
-      close(ws, 1013, "output allowance");
+      this.#shut(ws, 1013, "output allowance", { at, closed: null });
       refused.push(at.accountId);
       return false;
     }
@@ -628,7 +635,7 @@ export class StreamHub {
         charge: charge + need,
         cap: STREAM_OUTPUT.socketBytes,
         listed: listed.length,
-        closing: listed.filter((socket) => socket.readyState !== WebSocket.OPEN).length,
+        closing: listed.filter((socket) => !this.#isOpen(socket)).length,
         unknown: this.#unknown,
       });
     }
@@ -644,7 +651,7 @@ export class StreamHub {
       return true;
     } catch (error) {
       console.warn({ event: "kopje.stream.send-failed", ...errorFields(error) });
-      close(ws, 1011, "invalid state");
+      this.#shut(ws, 1011, "invalid state");
       return false;
     }
   }
@@ -656,7 +663,7 @@ export class StreamHub {
   }
 
   async #drop(ws: WebSocket, at: Attachment, code: number, reason: string): Promise<void> {
-    close(ws, code, reason);
+    this.#shut(ws, code, reason);
     await this.#sync(at.accountId, ws);
   }
 
@@ -685,7 +692,7 @@ export class StreamHub {
   // The open sockets (of a tag) with valid attachments; an invalid one is closed (1011).
   #open(tag?: string): Socket[] {
     return this.#ctx.getWebSockets(tag).flatMap((ws) => {
-      if (ws.readyState !== WebSocket.OPEN) {
+      if (!this.#isOpen(ws)) {
         return [];
       }
       const at = this.#restore(ws);
@@ -696,11 +703,13 @@ export class StreamHub {
   // A socket's attachment, or null after closing it (1011) for one that does not validate: its account is unknown, so
   // the next turn rebuilds the registry, and so is its charge, so nothing is admitted until a recomputation lists none.
   // Its close is logged once, as it leaves the open state (`output_closed`, scope `unknown`, its own numbers null: a
-  // previous release's socket at the transition, or an attachment that does not read).
+  // previous release's socket at the transition, or an attachment that does not read). Null too for a socket the hub
+  // closed (its mark), which gets nothing more.
   #restore(ws: WebSocket): Attachment | null {
-    const at = peek(ws);
+    const read = this.#read(ws);
+    const { at, closed } = read;
     if (at === null) {
-      if (ws.readyState === WebSocket.OPEN) {
+      if (closed === null && ws.readyState === WebSocket.OPEN) {
         console.warn({
           event: "kopje.stream.output_closed",
           scope: "unknown",
@@ -711,11 +720,47 @@ export class StreamHub {
           listed: this.#ctx.getWebSockets().length,
         });
       }
-      close(ws, 1011, "invalid state");
+      this.#shut(ws, 1011, "invalid state", read);
       this.#reconciled = false;
       this.#unknown = Math.max(this.#unknown, 1);
+      return null;
     }
-    return at;
+    return closed === null ? at : null;
+  }
+
+  // A socket's attachment and its close mark, read once; a mark is remembered for the sockets this instance lists.
+  #read(ws: WebSocket): { at: Attachment | null; closed: number | null } {
+    const read = readAttachment(ws);
+    if (read.closed !== null) {
+      this.#marked.add(ws);
+    }
+    return read;
+  }
+
+  // Whether a socket is open: the runtime's readyState, unless the hub has closed it (its mark, read or written by
+  // this instance).
+  #isOpen(ws: WebSocket): boolean {
+    return ws.readyState === WebSocket.OPEN && !this.#marked.has(ws);
+  }
+
+  // Closes a socket the hub ends, marking its attachment with the code first (`closed`; an attachment that does not
+  // read is replaced by the mark alone). The runtime may list a hibernated socket whose client never answered the Close
+  // as open again after a wake (seen on Cloudflare; workerd keeps it closing), and the mark keeps it closed: no second
+  // close or log, no frame, counted as closing, and charged until it leaves getWebSockets(). One already marked is left
+  // as it is. #subscribe leaves the mark room within the runtime's limit. `read` is the socket's attachment as read in
+  // the same synchronous step, if it was.
+  #shut(ws: WebSocket, code: number, reason: string, read = this.#read(ws)): void {
+    const { at, closed } = read;
+    if (closed !== null) {
+      return;
+    }
+    try {
+      ws.serializeAttachment(at === null ? { closed: code } : { ...at, closed: code });
+    } catch {
+      // Not expected within the bound; the close still happens, and a wake may list the socket open again.
+    }
+    this.#marked.add(ws);
+    close(ws, code, reason);
   }
 
   #run<I, O>(operation: StoreOperation<I, O>, input: I): Promise<O> {
@@ -1096,7 +1141,7 @@ export class StreamHub {
       console.warn({ event: "kopje.stream.send-failed", ...errorFields(error) });
       for (const [ws, left] of owed) {
         if (left > 0) {
-          close(ws, 1011, "send failed");
+          this.#shut(ws, 1011, "send failed");
         }
       }
     }
@@ -1107,7 +1152,7 @@ export class StreamHub {
 
   async #revoke(sockets: Socket[]): Promise<void> {
     for (const { ws } of sockets) {
-      close(ws, 1008, "token revoked");
+      this.#shut(ws, 1008, "token revoked");
     }
     for (const accountId of new Set(sockets.map(({ at }) => at.accountId))) {
       await this.#sync(accountId);
@@ -1161,17 +1206,28 @@ function keysOf(keys: Map<string, number>): StreamKeys {
   return [...keys].map(([key, sockets]) => ({ key, sockets }));
 }
 
-// The attachment of a socket, validated: version, field types and sizes. Null for anything else.
-function peek(ws: WebSocket): Attachment | null {
+// A socket's attachment, validated (version, field types and sizes; null for anything else), and the close code the
+// hub marked it with (#shut), also on an attachment that does not otherwise read (the mark alone, written on one of an
+// earlier release).
+function readAttachment(ws: WebSocket): { at: Attachment | null; closed: number | null } {
   let value: unknown;
   try {
     value = ws.deserializeAttachment();
   } catch {
-    return null;
+    return { at: null, closed: null };
   }
   if (typeof value !== "object" || value === null) {
-    return null;
+    return { at: null, closed: null };
   }
+  const marked = (value as { closed?: unknown }).closed;
+  return { at: validAttachment(value), closed: isCloseCode(marked) ? marked : null };
+}
+
+function isCloseCode(code: unknown): code is number {
+  return Number.isInteger(code) && (code as number) >= 1000 && (code as number) <= 4999;
+}
+
+function validAttachment(value: object): Attachment | null {
   const at = value as Partial<Record<keyof Attachment, unknown>>;
   const grant = at.grant as Partial<Record<keyof StreamGrant, unknown>> | null | undefined;
   const rate = at.rate as Partial<Record<"window" | "count", unknown>> | null | undefined;
@@ -1180,6 +1236,7 @@ function peek(ws: WebSocket): Attachment | null {
   const valid =
     at.v === 2 &&
     validOut(at.out) &&
+    (at.closed === undefined || isCloseCode(at.closed)) &&
     typeof at.tokenHash === "string" &&
     TOKEN_HASH.test(at.tokenHash) &&
     typeof at.accountId === "string" &&

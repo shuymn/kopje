@@ -4479,9 +4479,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   output, the tables, the baseline and any request fit the isolate together. `socketBytes` is the largest multiple of 1
   MiB within a third of it, so the instance serves on while two sockets hold their caps, and it takes any unit on a
   fresh socket (16 frames of `MESSAGE_MAX`, which `payloadBytes` keeps, with its NUL, within 256 KiB). The charges live
-  in each socket's attachment, so they survive hibernation and leave with the socket. While a listed socket's charge is
+  in each socket's attachment, so they survive hibernation and leave with the socket. So does the hub's close: it
+  marks the attachment with the code (`closed`) before it closes the socket, because the runtime can list a hibernated
+  socket whose client never answered the Close as open again after a wake (seen on a deployed instance), and a marked
+  socket stays closed whatever the runtime reports: closed and logged once, sent nothing, its messages unhandled,
+  counted as closing, and charged until it leaves; a subscription leaves the mark room within the runtime's 16 KiB
+  (`test/streaming/output.test.ts` ("keeps a socket it closed closed when a wake lists it open")). While a listed
+  socket's charge is
   unknown (a socket of an earlier release, an unreadable attachment), no frame is sent and upgrades answer 503 until it
-  is gone, and its own close (1011) logs `output_closed` with scope `unknown` and its numbers null; what such a socket
+  is gone, and its own close (1011) logs `output_closed` with scope `unknown` and its numbers null, its attachment
+  replaced by the mark alone; what such a socket
   holds is outside the bound while it stays listed, and the tag-table capacity such sockets
   grew until the runtime discards the object's hibernation manager, which their ending, an eviction that hibernates and
   a code update do not do; Kopje has no signal of it. `src/stream-output.ts`, `src/stream-hub.ts`;

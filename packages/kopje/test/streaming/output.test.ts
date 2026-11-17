@@ -48,14 +48,14 @@ afterEach(() => {
 });
 
 type Out = [charged: number, frames: number];
-type Server = { accountId: string; subs: string[]; out: Out; readyState: number };
+type Server = { accountId: string; subs: string[]; out: Out; readyState: number; closed: number | undefined };
 
 // The listed sockets as the Store holds them, in the order it lists them (of one account when given).
 function servers(h: { store: DurableObjectStub }, accountId?: string): Promise<Server[]> {
   return runInDurableObject(h.store as never, (_instance, state: DurableObjectState) =>
     state.getWebSockets(accountId === undefined ? undefined : `a:${accountId}`).map((ws) => {
-      const at = ws.deserializeAttachment() as { accountId: string; subs: string[]; out: Out };
-      return { accountId: at.accountId, subs: at.subs, out: at.out, readyState: ws.readyState };
+      const at = ws.deserializeAttachment() as { accountId: string; subs: string[]; out: Out; closed?: number };
+      return { accountId: at.accountId, subs: at.subs, out: at.out, readyState: ws.readyState, closed: at.closed };
     }),
   );
 }
@@ -102,6 +102,27 @@ async function stalled(h: Parameters<typeof upgrade>[0], user: User, stream: str
       return inbox;
     },
   };
+}
+
+// A socket whose client reads but never answers the Close (half-open), so it stays listed once the hub closes it.
+async function halfOpen(h: Parameters<typeof upgrade>[0], user: User, stream: string): Promise<Inbox> {
+  const response = await upgrade(h, user.token, { query: `stream=${stream}` });
+  expect(response.status).toBe(101);
+  const inbox = new Inbox(response.webSocket!);
+  response.webSocket!.accept({ allowHalfOpen: true });
+  return inbox;
+}
+
+// Rewrites the attachment of the listed socket of `tag`, for a case that gives it a state the hub leaves.
+async function attach(
+  h: { store: DurableObjectStub },
+  tag: string,
+  attachment: (at: Record<string, unknown>) => unknown,
+): Promise<void> {
+  await runInDurableObject(h.store as never, (_instance, state: DurableObjectState) => {
+    const ws = state.getWebSockets(tag)[0]!;
+    ws.serializeAttachment(attachment(ws.deserializeAttachment() as Record<string, unknown>));
+  });
 }
 
 // The output log entries written so far, by event.
@@ -333,7 +354,7 @@ describe("the instance's cap (RES-6)", () => {
     const quiet = await stalled(h, bob, "public:local");
     await status(h, alice);
     await drain(h);
-    expect((await servers(h, bob.id)).map((s) => s.readyState)).toEqual([WebSocket.CLOSING]);
+    expect(await servers(h, bob.id)).toMatchObject([{ readyState: WebSocket.CLOSING, closed: 1013 }]);
     const refused = await upgrade(h, carol.token);
     expect([refused.status, refused.headers.get("x-error-message")]).toEqual([503, "Too many connections"]);
     expect(outputLogs(logs.log, logs.warn)["kopje.stream.output_refused"]).toEqual([
@@ -473,6 +494,86 @@ describe("charges across hibernation (RES-6)", () => {
     await status(h, alice);
     expect((await inbox.closed()).code).toBe(1013);
     expect(updates(inbox)).toHaveLength(1);
+  });
+
+  // bob's client reads the Close (1013, at his cap) and never answers it, so the socket stays listed. The Store is
+  // evicted, its sockets hibernated, and the next unit's turn neither closes nor logs it again: one output_closed, its
+  // attachment marked 1013, still listed as closing.
+  it("closes a socket once across a wake", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    STREAM_OUTPUT.socketBytes = FRESH + FRAME_1K - 1;
+    const logs = spyLogs();
+    const quiet = await halfOpen(h, bob, "public:local");
+    await status(h, alice);
+    expect((await quiet.closed()).code).toBe(1013);
+    await evictDurableObject(h.store);
+    await status(h, alice);
+    await drain(h);
+    expect(outputLogs(logs.log, logs.warn)["kopje.stream.output_closed"]).toMatchObject([{ scope: "socket" }]);
+    expect(await servers(h, bob.id)).toMatchObject([{ readyState: WebSocket.CLOSING, closed: 1013, out: [0, 0] }]);
+  });
+
+  // On Cloudflare, a socket the hub closed whose client never answered the Close can be listed open again after a wake
+  // (a deployed instance showed it; workerd keeps it closing, as above). bob and carol on `public:local`, one status
+  // each (78,176 + 4,144 + capacity(2) (928) = 83,248). bob's open socket is given the state the hub leaves at such a
+  // close, its attachment marked 1013, and the Store woken, at a cap of 224,000 (three quarters: 168,000): the next
+  // turn's recompute finds 166,496, sends bob nothing and neither closes nor logs him again, and carol's frame (4,144)
+  // crosses three quarters with bob counted closing; his charge stays, so dave's upgrade is refused.
+  it("keeps a socket it closed closed when a wake lists it open", async () => {
+    const h = await community(["alice", "bob", "carol", "dave"]);
+    const { alice, bob, carol, dave } = h.users;
+    const logs = spyLogs();
+    const b = await opened(h, bob, ["public:local"]);
+    const c = await opened(h, carol, ["public:local"]);
+    await status(h, alice);
+    await b.next((m) => m.event === "update");
+    await c.next((m) => m.event === "update");
+    await attach(h, `a:${bob.id}`, (at) => ({ ...at, closed: 1013 }));
+    await evictDurableObject(h.store);
+    STREAM_OUTPUT.instanceBytes = 224_000;
+    await status(h, alice);
+    await c.next((m) => m.event === "update");
+    await drain(h);
+    expect(updates(b)).toHaveLength(1);
+    // A message bob's client sends now is not handled: his subscriptions stay as they were, and no reply is sent.
+    await runInDurableObject(
+      h.store,
+      async (instance: { webSocketMessage: (ws: WebSocket, m: string) => Promise<void> }, state) => {
+        await instance.webSocketMessage(
+          state.getWebSockets(`a:${bob.id}`)[0]!,
+          JSON.stringify({ type: "subscribe", stream: "public" }),
+        );
+      },
+    );
+    expect(await servers(h, bob.id)).toMatchObject([{ subs: ["public:local"], closed: 1013 }]);
+    expect((await upgrade(h, dave.token)).status).toBe(503);
+    expect(b.messages).toHaveLength(1);
+    expect(b.isClosed).toBe(false);
+    const logged = outputLogs(logs.log, logs.warn);
+    expect(logged["kopje.stream.output_closed"]).toBeUndefined();
+    expect(logged["kopje.stream.output_near"]).toMatchObject([
+      { scope: "instance", charge: 170_640, listed: 2, closing: 1 },
+    ]);
+    expect(logged["kopje.stream.output_refused"]).toMatchObject([
+      { scope: "instance", charge: 170_640, need: FRESH, listed: 2, unknown: 0 },
+    ]);
+  });
+
+  // The same for a socket the transition closed (1011, an attachment of an earlier release), whose attachment holds the
+  // mark alone: listed open after a wake, it is neither closed nor logged again, and upgrades answer 503 while it is
+  // listed, its charge unknown.
+  it("keeps an unknown socket it closed closed when a wake lists it open", async () => {
+    const h = await community(["bob", "carol"]);
+    const logs = spyLogs();
+    const inbox = await opened(h, h.users.bob, ["public:local"]);
+    await attach(h, `a:${h.users.bob.id}`, () => ({ closed: 1011 }));
+    await evictDurableObject(h.store);
+    expect((await upgrade(h, h.users.carol.token)).status).toBe(503);
+    expect(inbox.isClosed).toBe(false);
+    const logged = outputLogs(logs.log, logs.warn);
+    expect(logged["kopje.stream.output_closed"]).toBeUndefined();
+    expect(logged["kopje.stream.output_refused"]).toMatchObject([{ scope: "unknown", listed: 1, unknown: 1 }]);
   });
 
   // After the Store is evicted, nothing has recomputed the instance's charge (79,104, bob's socket) when bob asks to
@@ -743,6 +844,13 @@ describe("unknown charges (RES-6)", () => {
       { scope: "unknown", frames: 0, charged: 0, need: REPLY },
     ]);
     expect(logged["kopje.stream.output_refused"]).toMatchObject([{ scope: "unknown", unknown: 1 }]);
+    // The transition's close marks the attachment, which held nothing readable, with its code alone.
+    expect(
+      await runInDurableObject(
+        h.store,
+        (_instance, state) => state.getWebSockets(`a:${bob.id}`)[0]!.deserializeAttachment() as unknown,
+      ),
+    ).toEqual({ closed: 1011 });
     expect((await quiet.read().closed()).code).toBe(1011);
     await until(h, (listed) => listed.length === 0);
     const inbox = await opened(h, carol, ["public:local"]);
@@ -838,9 +946,9 @@ describe("output_near (RES-6, DATA-5)", () => {
 });
 
 describe("the attachment's bound (RES-6)", () => {
-  // A subscription is refused when the attachment's clone could pass the runtime's 16 KiB with any `out`
-  // (stream-hub.ts #subscribe). The largest attachments that bound admits, filled with a tag of one-byte characters or
-  // of two-byte ones and with `out` at its largest numbers, are written for real.
+  // A subscription is refused when the attachment's clone could pass the runtime's 16 KiB with any `out` and a close
+  // mark (stream-hub.ts #subscribe). The largest attachments that bound admits, filled with a tag of one-byte characters
+  // or of two-byte ones, with `out` at its largest numbers and the mark, are written for real.
   it.each([
     ["one-byte", "a", 1],
     ["two-byte", "\u0100", 2],
@@ -850,7 +958,12 @@ describe("the attachment's bound (RES-6)", () => {
     const written = await runInDurableObject(h.store, (_instance, state) => {
       const ws = state.getWebSockets()[0]!;
       const at = ws.deserializeAttachment() as Record<string, unknown>;
-      const base = { ...at, tags: { "hashtag:x": "" }, out: [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER] };
+      const base = {
+        ...at,
+        tags: { "hashtag:x": "" },
+        out: [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER],
+        closed: 1013,
+      };
       const fill = char.repeat(Math.floor((ATTACHMENT_MAX - cloneBound(base)) / width));
       const largest = { ...base, tags: { "hashtag:x": fill } };
       ws.serializeAttachment(largest);
@@ -866,6 +979,33 @@ describe("the attachment's bound (RES-6)", () => {
 });
 
 describe("the attachment's clone (RES-6)", () => {
+  // A subscription that would leave its attachment no room for the close mark (`closed` and its code, 38 bytes of the
+  // clone's bound) is refused, so the hub's close can always write it. With the JSON and tag bounds raised out of the
+  // way (STREAM_LIMITS), bob, on `public:local` and `public`, asks for a hashtag whose tag takes the clone to within 3
+  // bytes of the runtime's 16 KiB (each character one byte of the tag, of its key in subs and of its key in tags).
+  it("refuses a subscription that leaves no room for the close mark", async () => {
+    const h = await community(["bob"]);
+    Object.assign(STREAM_LIMITS, { attachmentBytes: 1024 * 1024, tagBytes: 64 * 1024, messageBytes: 64 * 1024 });
+    const inbox = await opened(h, h.users.bob, ["public:local", "public"]);
+    const base = await runInDurableObject(
+      h.store,
+      (_instance, state) =>
+        state.getWebSockets()[0]!.deserializeAttachment() as { subs: string[]; tags: Record<string, string> },
+    );
+    const next = (tag: string) => ({
+      ...base,
+      subs: [...base.subs, `hashtag:${tag}`],
+      tags: { ...base.tags, [`hashtag:${tag}`]: tag },
+    });
+    const tag = "a".repeat(Math.floor((ATTACHMENT_MAX - cloneBound(next(""))) / 3));
+    expect(cloneBound(next(tag))).toBeLessThanOrEqual(ATTACHMENT_MAX);
+    expect(cloneBound(next(tag))).toBeGreaterThan(ATTACHMENT_MAX - 38);
+    inbox.send({ type: "subscribe", stream: "hashtag", tag });
+    await settled(h, inbox);
+    expect(inbox.rest().map((m) => m.error)).toEqual(["Too many subscriptions"]);
+    expect((await servers(h))[0]!.subs).toEqual(["public:local", "public"]);
+  });
+
   // With the JSON bound and the counts raised out of the way (STREAM_LIMITS), hashtag subscriptions of 256-byte tags
   // grow the attachment until its clone could pass the runtime's 16 KiB: that subscription is refused (429) before the
   // registry is written, the socket stays open with the subscriptions it had, and its attachment's clone is within the
