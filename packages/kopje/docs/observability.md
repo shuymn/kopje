@@ -83,8 +83,9 @@ so a change made only in the dashboard does not last.
 | `kopje.stream.output_refused`     | A streaming upgrade was refused (503): the instance's allowance is full or a charge is unknown                       | [threat-model.md](threat-model.md), RES-6          |
 
 `kopje.stream.output_near` with `scope` `instance` (warn) means held stream output passed three quarters of
-`instanceBytes`: at the allowance, connections are closed and upgrades refused. Its `closing` counts closed sockets
-whose clients still hold them, as a client that keeps connections without reading does. `kopje.stream.output_closed` or
+`instanceBytes`: at the allowance, connections are closed and upgrades refused. It is logged once per crossing, and
+again when the Store restarts above three quarters. Its `closing` counts closed sockets whose clients still hold them,
+as a client that keeps connections without reading does. `kopje.stream.output_closed` or
 `kopje.stream.output_refused` with `scope` `unknown` follows an upgrade: streaming stays stopped until the previous
 release's connections end. With `scope` `socket` (log level), both `output_near` and `output_closed` are one
 connection's allowance, a reading client's normal end, and need no action.
