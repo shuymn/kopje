@@ -1,5 +1,6 @@
 import type { FeatureResult } from "../domain/featured-tags";
 import type { TagResult } from "../domain/tags";
+import { railsBlank } from "../platform/rails-blank";
 import {
   type ApiContext,
   type ApiHandler,
@@ -82,8 +83,9 @@ export const featuredTagSuggestions: ApiHandler = async (c, deps) => {
 
 // POST /api/v1/featured_tags: `name` is required (params.require(:name)), after the token and its user are checked.
 export const createFeaturedTag: ApiHandler = withParams(async (c, deps, p) => {
-  const name = p.get("name") ?? "";
-  if (name === "") {
+  // params.require(:name): absent or blank (railsBlank) is 400.
+  const name = p.get("name");
+  if (name === undefined || railsBlank(name)) {
     const value = credential(c, deps);
     const viewer = authorized(await storeCall(c, deps, (s, b) => s.checkCredential(b, value)));
     if (viewer.accountId === null) {

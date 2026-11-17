@@ -1,4 +1,5 @@
 import { fallbackTypes } from "../domain/notification-fallback";
+import { railsBlank } from "../platform/rails-blank";
 import { type ApiHandler, authorized, present, storeCall, userCredential, withParams } from "./context";
 import { recordNotFound } from "./errors";
 import { feedPageQuery, pageResponse } from "./pagination";
@@ -21,7 +22,8 @@ export const listNotifications: ApiHandler = withParams(async (c, deps, p) => {
         page,
         types: p.list("types") ?? [],
         excludeTypes: p.list("exclude_types") ?? [],
-        accountId: accountId === undefined || accountId === "" ? null : accountId,
+        // Notification.browserable: `from_account_id.present?` (railsBlank).
+        accountId: accountId === undefined || railsBlank(accountId) ? null : accountId,
         includeFiltered: parseBoolean(p.get("include_filtered")) === true,
         fallbackTypes: supportedTypes(p),
         present: present(c),

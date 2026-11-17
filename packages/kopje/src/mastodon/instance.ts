@@ -2,7 +2,9 @@ import { MAX_DISPLAY_NAME, MAX_FIELD_NAME, MAX_FIELD_VALUE, MAX_FIELDS, MAX_NOTE
 import { PIN_LIMIT } from "../domain/activities";
 import { MAX_FEATURED_TAGS } from "../domain/featured-tags";
 import { DEFAULT_THUMBNAIL, DEFAULT_THUMBNAIL_DESCRIPTION, INSTANCE_ICONS } from "../platform/brand-assets";
+import { railsBlank } from "../platform/rails-blank";
 import { MAX_MEDIA_DESCRIPTION_LENGTH, PROFILE_DESCRIPTION_LIMIT } from "../platform/stored-bounds";
+import { rubyStrip } from "../platform/strip";
 import {
   type ApiContext,
   type ApiHandler,
@@ -174,15 +176,16 @@ export const rules: ApiHandler = async (c, deps) => c.json(await storeCall(c, de
 export const peers: ApiHandler = async (c, deps) => c.json(await storeCall(c, deps, (s, b) => s.instancePeers(b)));
 
 // GET /api/v1/peers/search, as Mastodon's Api::V1::Peers::SearchController#index with the peers API on (its default):
-// null for a blank q (@domains is never set), else the peers whose domain starts with q as TagManager#normalize_domain
-// reads it (a host, lowercased and IDNA-encoded), and [] for a q that is no host (Addressable::URI::InvalidURIError).
+// null for a blank q (railsBlank; @domains is never set), else the peers whose domain starts with q as
+// TagManager#normalize_domain reads it (stripped as Ruby strips, a host, lowercased and IDNA-encoded), and [] for a q
+// that is no host (Addressable::URI::InvalidURIError).
 export const searchPeers: ApiHandler = async (c, deps) => {
   // Rails' params[:q]: the last value the query gives.
-  const q = (c.req.queries("q")?.at(-1) ?? "").trim();
-  if (q === "") {
+  const q = c.req.queries("q")?.at(-1);
+  if (q === undefined || railsBlank(q)) {
     return c.json(null);
   }
-  const prefix = normalizeDomain(q);
+  const prefix = normalizeDomain(rubyStrip(q));
   return c.json(prefix === null ? [] : await storeCall(c, deps, (s, b) => s.searchPeers(b, { prefix })));
 };
 

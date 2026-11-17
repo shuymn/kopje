@@ -438,6 +438,20 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- Mastodon API parameters that Mastodon judges with Rails' `blank?` or `presence` are judged as Rails judges them: a
+  value of Unicode white space alone, U+0085 included, is blank, and one holding U+FEFF is not, where JavaScript's white
+  space (U+FEFF, not U+0085) decided. This covers a filter's title, keywords (a nested keyword's id and an all-blank
+  entry included), `status_id` and contexts, each context stripped as Ruby strips it first; a list's title; a
+  collection's name and an item's `account_id`; a marker's `last_read_id`; a report's category and comment (a remote
+  `Flag`'s too); the private note; `/api/v2/search`'s `q` (400) and `type`, and the account search's `q`; the admin
+  accounts' filters and an account action's `type`, `report_id` and `warning_preset_id`; the domain of a user's and an
+  admin's domain block; the peer search's `q`; an app's `client_name`; a post's `in_reply_to_id`, `quoted_status_id` and
+  `quote_approval_policy`; the notifications' `account_id`; an account's statuses' `tagged`; a media `focus`; the
+  `scope` of an authorization and of client credentials; a featured hashtag's `name`; and each `attribution_domains[]`
+  entry. A search query, the admin search's `username`, `by_domain`, `display_name` and `email`, a featured hashtag's
+  name and the account lookup's `acct` are stripped as Ruby strips them (NUL and ASCII white space only), an app's name
+  is stored as sent rather than trimmed, and an admin search attribute that stripping leaves empty (`by_domain=%00`)
+  stays a condition (#1734). No Store migration and no `wrangler.jsonc` change.
 - A remote status's `sensitive` is read as Mastodon casts it to its boolean column, so any value but `false`, `0`, null
   and Rails' false strings (`"0"`, `"f"`, `"F"`, `"false"`, `"FALSE"`, `"off"`, `"OFF"`) marks it, where only `true`
   did (`"true"`, `1` and `[true]` now mark it), and an empty string refuses it where Mastodon's `NOT NULL` column

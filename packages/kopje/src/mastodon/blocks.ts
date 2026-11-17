@@ -1,4 +1,5 @@
 import { blockedDomain } from "../platform/domain-name";
+import { railsBlank } from "../platform/rails-blank";
 import { rubyToI } from "../platform/ruby-to-i";
 import { relationshipResponse } from "./accounts";
 import {
@@ -85,10 +86,12 @@ export const domainBlocks: ApiHandler = withParams(async (c, deps, p) => {
   return pageResponse(c, result, page.limit);
 });
 
-// The `domain` parameter as a domain block stores it (`blockedDomain`); null when absent or not a domain name.
+// The `domain` parameter as a domain block stores it (`blockedDomain`); null when absent, blank as sent (railsBlank:
+// AccountDomainBlock's presence) or not a domain name.
 function domainParam(p: Params): { domain: string | null; blank: boolean } {
-  const raw = (p.get("domain") ?? "").trim();
-  return { domain: raw === "" ? null : blockedDomain(raw), blank: raw === "" };
+  const raw = p.get("domain");
+  const blank = raw === undefined || railsBlank(raw);
+  return { domain: blank ? null : blockedDomain(raw), blank };
 }
 
 export const blockDomain: ApiHandler = withParams(async (c, deps, p) => {

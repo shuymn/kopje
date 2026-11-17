@@ -6,7 +6,9 @@ import {
   STATUSES_ID_INDEX,
 } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { railsBlank } from "../platform/rails-blank";
 import { byteCut, presentedCountSql, statusPublishedSql } from "../platform/stored-bounds";
+import { rubyStrip } from "../platform/strip";
 import { acctOf, routeAccountId } from "./accounts";
 import { recordOutbound } from "./activities";
 import { announceFeatured } from "./actor-update";
@@ -256,9 +258,10 @@ export function writeFeatured(db: Db, accountId: string, display: string, now: n
   return row;
 }
 
-// FeaturedTag's normalization of a name: surrounding whitespace and one leading # dropped.
+// FeaturedTag's normalization of a name (`name.strip.delete_prefix('#')`): stripped as Ruby strips (rubyStrip), then
+// one leading # dropped.
 export function displayName(name: string): string {
-  return name.trim().replace(/^#/, "");
+  return rubyStrip(name).replace(/^#/, "");
 }
 
 // POST /api/v1/featured_tags (CreateFeaturedTagService with a name): the featured hashtag of that name if the account
@@ -272,15 +275,17 @@ export const createFeaturedTag = userWriteOperation<
   const display = displayName(input.name);
   const name = normalizeTag(display);
   // Refused before an existing row is looked at, so an imported row past the bound answers the same.
-  if (display !== "" && !featurableName(display)) {
+  // FeaturedTag's presence of the name and its format's allow_blank, both Rails' blank? (railsBlank).
+  const blank = railsBlank(display);
+  if (!blank && !featurableName(display)) {
     return { status: "invalid", errors: [TAG_NAME_TOO_LONG] };
   }
-  const existing = display === "" ? undefined : featuredTagNamed(db, accountId, name);
+  const existing = blank ? undefined : featuredTagNamed(db, accountId, name);
   if (existing !== undefined && existing.display_name === display) {
     return { status: "ok", value: presentFeatured(existing, input.present.origin) };
   }
   const errors: string[] = [];
-  if (display === "") {
+  if (blank) {
     errors.push("Name can't be blank");
   } else if (!isHashtagName(display) || name === "") {
     errors.push("Name is invalid");

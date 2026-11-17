@@ -70,9 +70,8 @@ export const DEFAULT_SCOPES = "read";
 
 // Splits a scope string (space separated; `+` arrives already decoded to a space from forms and queries).
 // Returns null if any scope is unknown or none is given.
-export function parseScopes(text: string | undefined, fallback = DEFAULT_SCOPES): string[] | null {
-  const source = text === undefined || text.trim() === "" ? fallback : text;
-  const scopes = [...new Set(source.split(/[\s+]+/).filter((s) => s !== ""))];
+export function parseScopes(text: string): string[] | null {
+  const scopes = [...new Set(text.split(/[\s+]+/).filter((s) => s !== ""))];
   return scopes.length > 0 && scopes.every((s) => KNOWN.has(s)) ? scopes : null;
 }
 
