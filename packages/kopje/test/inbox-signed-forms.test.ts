@@ -896,7 +896,7 @@ describe("D1: forms whose readings differ, each named by its class", () => {
     // full_context defines (as the captured `cc` and type ones), a number under a language map name and a map whose
     // key is no language tag are outside it; a blank node, an http(s) IRI whose scheme is upper-case or not followed by
     // `//`, a boolean where an IRI is expected, and a tag given an array of strings are inside a retraction's
-    // (form 4), but a `//` elsewhere than right after a scheme.
+    // (form 4), but a `//` elsewhere than right after a scheme that is no name of full_context.
     it.each([
       { added: { instrument: { name: "client" } }, read: "Undo" },
       { added: { cc: [null] }, read: "Undo" },
@@ -906,6 +906,7 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       { added: { instrument: { id: "https:mastodon.example/client" } }, read: "Undo" },
       { added: { instrument: { id: "clients//1" } }, read: "as:Undo" },
       { added: { instrument: { id: "HTTPS://mastodon.example//client" } }, read: "as:Undo" },
+      { added: { instrument: { id: "Hashtag://mastodon.example/client" } }, read: "as:Undo" },
       { added: { cc: true }, read: "Undo" },
       { added: { summaryMap: 5 }, read: "as:Undo" },
       { added: { summaryMap: { en: ["blocked"] } }, read: "Undo" },

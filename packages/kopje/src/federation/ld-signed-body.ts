@@ -471,18 +471,21 @@ type ContextRead = NonNullable<ReturnType<typeof readContext>>;
 // full_context defines (and the body's contexts do not; one they do is an http(s) IRI), which raises
 // IRIConfusedWithPrefix; nor one jsonld.js, resolving it against an empty base, writes otherwise: empty, a network-path
 // reference, or one holding whitespace; nor one with a `.` or `..` segment anywhere (jsonld.js removes them from a
-// relative reference's path), or `//` anywhere but right after a scheme (an authority): the shapes captured
-// (forms.json), a scheme spelled as a name of full_context and an authority among them.
+// relative reference's path), or `//` anywhere but right after a scheme that is no name of full_context (an
+// authority): the shapes captured (forms.json), a scheme spelled as a name of full_context and an authority among them,
+// but not the two together.
 function writtenAsGiven(value: string): boolean {
   const colon = value.indexOf(":");
-  const authority = colon > 0 && SCHEME.test(value.slice(0, colon)) && value.startsWith("//", colon + 1);
+  const scheme = value.slice(0, colon);
+  const authority =
+    colon > 0 && SCHEME.test(scheme) && !FULL_CONTEXT_MEANINGS.has(scheme) && value.startsWith("//", colon + 1);
   return !(
     value === "" ||
     /\s/.test(value) ||
     value.startsWith("@") ||
     (authority ? value.slice(colon + 3) : value).includes("//") ||
     (value.startsWith("_:") && (value.length === 2 || value.includes("_:", 2))) ||
-    (colon > 0 && FULL_CONTEXT_PREFIXES.has(value.slice(0, colon))) ||
+    (colon > 0 && FULL_CONTEXT_PREFIXES.has(scheme)) ||
     value.split("/").some((segment) => segment === "." || segment === "..")
   );
 }
