@@ -212,6 +212,24 @@ describe("Params: a JSON null's mark", () => {
   });
 });
 
+// sentUnder: a name sent in any shape, which get() reads only as a string (the account search tells an absent q from
+// one sent as an array or a hash with it).
+describe("Params: sentUnder", () => {
+  it("is true of a value or anything nested under the name, and of nothing else", async () => {
+    for (const query of ["q=a", "q=", "q", "q[]", "q[]=a", "q[a]=b", "q[][a]=b", "q[][]=a", "q[a][b]=c"]) {
+      const p = await read(post("", "application/x-www-form-urlencoded", `?${query}`));
+      expect([query, p.sentUnder("q")]).toEqual([query, true]);
+    }
+    for (const body of ['{"q":{}}', '{"q":[]}', '{"q":null}', '{"q":{"a":{}}}']) {
+      expect([body, (await read(post(body, "application/json"))).sentUnder("q")]).toEqual([body, true]);
+    }
+    for (const query of ["", "qq=a", "x[q]=a", "a=q"]) {
+      const p = await read(post('{"r":{}}', "application/json", `?${query}`));
+      expect([query, p.sentUnder("q")]).toEqual([query, false]);
+    }
+  });
+});
+
 // Rails' request.parameters is request_parameters.merge(query_parameters): a shallow Hash#merge, so a top-level key the
 // query sends replaces the body's whole value under it.
 describe("readParams: the query over the body, by top-level key", () => {

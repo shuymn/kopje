@@ -16,7 +16,7 @@ import {
   withParams,
 } from "./context";
 import { LANGUAGES } from "./languages";
-import { limitParam, offsetParam, type Params } from "./params";
+import { limitParam, linkCarriesLimit, offsetParam, type Params } from "./params";
 
 // Trends (Mastodon 4.5's Api::V1::Trends::TagsController, StatusesController and LinksController; domain/trends.ts):
 // the allowed trending hashtags, statuses and links, paged by offset.
@@ -44,12 +44,12 @@ export function preferredLanguage(header: string | undefined): string {
 }
 
 // The Link header of an offset page (Api::V1::Trends::*Controller#next_path, #prev_path; pagination_params keeps
-// `limit` only when sent): next at `next` when given, prev at offset - limit when offset is past limit, both at the
-// canonical route.
+// `limit` only when sent and not nil, linkCarriesLimit): next at `next` when given, prev at offset - limit when offset
+// is past limit, both at the canonical route.
 function offsetLink(c: ApiContext, p: Params, route: string, offset: number, limit: number, next: number | null) {
   const url = (at: number) => {
     const target = new URL(route, c.req.url);
-    if (p.get("limit") !== undefined) {
+    if (linkCarriesLimit(p)) {
       target.searchParams.set("limit", String(limit));
     }
     target.searchParams.set("offset", String(at));

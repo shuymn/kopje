@@ -486,19 +486,37 @@ export class PolicyModel {
 
   // R45 (feature_approval.current_user): the answer to `viewer` for featuring `x`. Mastodon's policy in its order (no
   // viewer: denied; a local account: denied unless discoverable, then denied while locked unless the viewer follows it
-  // or is it, else automatic; a remote one: missing, no policy being stored), then denied when either blocks the other
-  // or `x` is unavailable.
+  // or is it, else automatic; a remote one by its stored canFeature bitmap, `policy`: missing while it is 0, then
+  // automatic when the automatic half (the high 16 bits) allows public, or followers and the viewer follows x
+  // (accepted), or following and x follows the viewer, manual when the manual half allows the same, unknown when either
+  // half sets unsupported_policy, else denied), then denied when either blocks the other or `x` is unavailable.
   featureApproval(
     x: number,
     viewer: Viewer,
     discoverable: (x: number) => boolean,
     locked: (x: number) => boolean,
-  ): "automatic" | "missing" | "denied" {
+    policy: (x: number) => number,
+  ): "automatic" | "manual" | "unknown" | "missing" | "denied" {
     if (viewer === null || !this.available(x) || this.blocks(x, viewer) || this.blocks(viewer, x)) {
       return "denied";
     }
     if (!this.account(x).local) {
-      return "missing";
+      const bitmap = policy(x);
+      const halves = { automatic: bitmap >>> 16, manual: bitmap & 0xffff };
+      const allows = (half: number) =>
+        (half & 2) !== 0 ||
+        ((half & 4) !== 0 && this.follows(viewer, x)) ||
+        ((half & 8) !== 0 && this.follows(x, viewer));
+      if (bitmap === 0) {
+        return "missing";
+      }
+      if (allows(halves.automatic)) {
+        return "automatic";
+      }
+      if (allows(halves.manual)) {
+        return "manual";
+      }
+      return ((halves.automatic | halves.manual) & 1) !== 0 ? "unknown" : "denied";
     }
     if (!discoverable(x)) {
       return "denied";
@@ -512,8 +530,9 @@ export class PolicyModel {
     member: number,
     discoverable: (x: number) => boolean,
     locked: (x: number) => boolean,
+    policy: (x: number) => number,
   ): boolean {
-    return ["automatic", "manual"].includes(this.featureApproval(member, owner, discoverable, locked));
+    return ["automatic", "manual"].includes(this.featureApproval(member, owner, discoverable, locked, policy));
   }
 
   // R45: an item lists its collection among those featuring the viewer when it is the viewer's, in any state, and the

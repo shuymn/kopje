@@ -53,7 +53,7 @@ import {
 } from "./context";
 import { mastodonError, moderatingError, recordNotFound as notFound } from "./errors";
 import { pageQuery } from "./pagination";
-import { type Params, parseBoolean } from "./params";
+import { linkCarriesLimit, type Params, parseBoolean } from "./params";
 import { reportResponse } from "./reports";
 import * as trends from "./trends";
 
@@ -122,11 +122,15 @@ function arrayParam(p: Params, name: string): string[] | undefined {
   return values.length === 0 ? undefined : values;
 }
 
-// A list's Link URL: `names` as the request sent them (an array parameter's values each as `name[]`) and the cursor.
+// A list's Link URL: `names` as the request sent them (an array parameter's values each as `name[]`; `limit` only as
+// linkCarriesLimit keeps it) and the cursor.
 function listUrl(c: ApiContext, path: string, names: readonly string[], p: Params, cursor: Record<string, string>) {
   const url = new URL(path, c.req.url);
   const entries: [string, string][] = [
     ...names.flatMap((name): [string, string][] => {
+      if (name === "limit" && !linkCarriesLimit(p)) {
+        return [];
+      }
       if (ARRAY_PARAMS.has(name)) {
         return (arrayParam(p, name) ?? []).map((value) => [`${name}[]`, value]);
       }

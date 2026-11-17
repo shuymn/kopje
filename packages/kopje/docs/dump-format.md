@@ -481,6 +481,14 @@ of that actor's document issues another (threat-model ID-1), the maximum include
 such column: it restores into a Store at its own migrations, which then upgrades, and every row reads 0. A file built
 from legacy data leaves it at 0.
 
+Feature policies (migration `0115_feature_policies`): `accounts.feature_policy` is a remote account's FEP-7aa9
+`canFeature` as Mastodon stores it, an integer from 0 to 2^32 - 1 (INTEGER affinity stores numeric text and an integral
+REAL as one), and 0 on a local account; anything else, NULL included, fails with `accounts: feature_policy past its
+stored bound`. A restored row keeps its value until the Store stores that actor's next document. A dump taken before
+0115 has no such column: it restores into a Store at its own migrations, which then upgrades, and every row reads 0
+(Mastodon's `missing`: no local account may feature the account until its document is stored again). A file built
+from legacy data leaves it at 0.
+
 Account invitations (migration `0081_account_invitations`): an `account_invitations` row holds an `email` (text of 3 to
 254 UTF-8 bytes with no NUL, no ASCII control, space or DEL, and one `@` neither first nor last), a `username` (1 to 30
 ASCII letters, digits or underscores), both unique ignoring ASCII case, and a 24-byte ISO `created_at`; at most 10 rows.

@@ -35,6 +35,7 @@ import {
   recordCollectionAdd,
   recordCollectionRemove,
   recordCollectionUpdate,
+  recordFeatureRequest,
   recordItemAdd,
   recordItemRemove,
   stageItemRemove,
@@ -418,9 +419,10 @@ function ownView(db: Db, id: string, owner: string, origin: string): Collection 
 // POST /api/v1/collections (CreateCollectionService), in its order: account_ids[] (duplicates dropped; an unknown or
 // unavailable account is not found), tag_name (the Tag's errors), consent per account in the order given (403), then
 // the collection's validations with the counts (422). Past COLLECTION_MAX_ITEMS distinct ids the request is refused
-// before any is read (docs/mastodon-deviations.md, "Collections"). Every item of a local account is accepted, at
-// position 1 (CollectionItem#set_position reads no collection yet). The collection's Add is recorded with them
-// (collection-documents.ts recordCollectionAdd).
+// before any is read (docs/mastodon-deviations.md, "Collections"). Every item is at position 1
+// (CollectionItem#set_position reads no collection yet): a local member's accepted and notified, a remote member's
+// pending (insertItem). The collection's Add is recorded with them (collection-documents.ts recordCollectionAdd), then
+// each remote member's FeatureRequest (recordFeatureRequest), in Mastodon's order.
 export const createCollection = userWriteOperation<
   CollectionFields & { accountIds: readonly string[]; now: number; present: PresentInput },
   CollectionResult
@@ -483,10 +485,19 @@ export const createCollection = userWriteOperation<
       return fresh;
     },
   );
+  const asked: string[] = [];
   for (const member of members) {
-    notifyAdded(db, owner, member, insertItem(db, id, member, 1, input.now), input.now);
+    const item = insertItem(db, id, member, 1, input.now);
+    if (item.pending) {
+      asked.push(item.id);
+    } else {
+      notifyAdded(db, owner, member, item.id, input.now);
+    }
   }
   recordCollectionAdd(db, id, input.now);
+  for (const item of asked) {
+    recordFeatureRequest(db, item, input.now);
+  }
   return { status: "ok", collection: ownView(db, id, owner, input.present.origin) };
 });
 
@@ -503,27 +514,57 @@ function notifyAdded(db: Db, owner: string, member: string, item: string, now: n
   });
 }
 
-function insertItem(db: Db, collection: string, member: string, position: number, now: number): string {
+// A new item of `member` in the local collection `collection` (CreateCollectionService#build_items,
+// AddAccountToCollectionService#create_collection_item): a local member's accepted; a remote member's pending, its
+// activity_uri the id of the FeatureRequest that asks the member (CollectionItem#set_activity_uri: the owner's uri,
+// /feature_requests/ and a UUID), which the member's Accept or Reject names (feature-requests.ts).
+function insertItem(
+  db: Db,
+  collection: string,
+  member: string,
+  position: number,
+  now: number,
+): { id: string; pending: boolean } {
   const at = new Date(now).toISOString();
-  return insertWithFreshId(
+  const owner = db.first<{ uri: string }>(
+    `SELECT o.uri FROM accounts m INDEXED BY ${ACCOUNTS_ID_INDEX}
+			CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = ?2
+			CROSS JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id
+		WHERE m.id = ?1 AND m.domain IS NOT NULL`,
+    member,
+    collection,
+  );
+  const request = owner === undefined ? null : `${owner.uri}/feature_requests/${crypto.randomUUID()}`;
+  const id = insertWithFreshId(
     "collection_items",
     () => allocateLocalId(db, now),
     (fresh) => {
       db.run(
-        `INSERT INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO collection_items (id, collection_id, account_id, state, position, activity_uri, created_at,
+					updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         fresh,
         collection,
         member,
-        COLLECTION_ITEM_STATES.accepted,
+        request === null ? COLLECTION_ITEM_STATES.accepted : COLLECTION_ITEM_STATES.pending,
         position,
+        request,
         at,
         at,
       );
       return fresh;
     },
   );
+  return { id, pending: request !== null };
 }
+
+// Whether the item `i` was announced to its collection's reach (D17, D23): a local member's by its Add when it was
+// added, a remote member's only once accepted, which set its approval_uri (its Accept, or a check's match) and keeps
+// it after a Reject or a revocation. A removal sends its Remove only then: no Add named a pending remote member's item,
+// so no Remove can name it on the member's server (the state model's F2).
+const ANNOUNCED_SQL = `(i.state = ${COLLECTION_ITEM_STATES.accepted} OR i.approval_uri IS NOT NULL
+	OR NOT EXISTS (SELECT 1 FROM accounts am INDEXED BY ${ACCOUNTS_ID_INDEX}
+		WHERE am.id = i.account_id AND am.domain IS NOT NULL))`;
 
 // The collection `id` the viewer owns: not found unless R45 finds it, forbidden unless it is the viewer's
 // (CollectionPolicy#update?, #destroy?).
@@ -636,7 +677,8 @@ export type ItemResult =
 // collection (404), a blank account_id (422), the account (404, unavailable included), the owner (403), consent (403),
 // then the item's uniqueness in any state and the live bound (422). At MAX_STORED_ITEMS stored rows the oldest retired
 // row of the collection is deleted first, with its notification and that notification's pushes (by the foreign keys).
-// The new item is accepted, after every other (CollectionItem#set_position), and its Add recorded.
+// The new item comes after every other (CollectionItem#set_position): a local member's accepted, notified and its Add
+// recorded; a remote member's pending and its FeatureRequest recorded (insertItem).
 export const addCollectionItem = userWriteOperation<{ collection: string; account: string; now: number }, ItemResult>(
   (db, input, { accountId: viewer }) => {
     const row = foundCollection(db, input.collection);
@@ -675,10 +717,15 @@ export const addCollectionItem = userWriteOperation<{ collection: string; accoun
       );
     }
     const position = Math.min((counts?.last ?? 0) + 1, COLLECTION_POSITION_MAX);
-    const id = insertItem(db, row.id, member, position, input.now);
-    notifyAdded(db, viewer, member, id, input.now);
-    recordItemAdd(db, { id, collection: row.id }, input.now);
-    const item = { collection_id: row.id, id, state: COLLECTION_ITEM_STATES.accepted, account_id: member };
+    const { id, pending } = insertItem(db, row.id, member, position, input.now);
+    if (pending) {
+      recordFeatureRequest(db, id, input.now);
+    } else {
+      notifyAdded(db, viewer, member, id, input.now);
+      recordItemAdd(db, { id, collection: row.id }, input.now);
+    }
+    const state = pending ? COLLECTION_ITEM_STATES.pending : COLLECTION_ITEM_STATES.accepted;
+    const item = { collection_id: row.id, id, state, account_id: member };
     return { status: "ok", item: presentItem({ ...item, created_at: new Date(input.now).toISOString() }) };
   },
 );
@@ -688,14 +735,15 @@ function collectionItem(
   db: Db,
   collection: string,
   item: string,
-): { row: CollectionRow; item: { id: string; account_id: string | null; state: number } } | null {
+): { row: CollectionRow; item: { id: string; account_id: string | null; state: number; announced: number } } | null {
   const row = foundCollection(db, collection);
   if (row === undefined) {
     return null;
   }
-  const found = db.first<{ id: string; account_id: string | null; state: number }>(
-    `SELECT id, account_id, state FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
-		WHERE id = ? AND collection_id = ?`,
+  const found = db.first<{ id: string; account_id: string | null; state: number; announced: number }>(
+    `SELECT i.id, i.account_id, i.state, ${ANNOUNCED_SQL} AS announced
+		FROM collection_items i INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
+		WHERE i.id = ? AND i.collection_id = ?`,
     item,
     row.id,
   );
@@ -703,7 +751,8 @@ function collectionItem(
 }
 
 // DELETE /api/v1/collections/:collection_id/items/:id (DeleteCollectionItemService): the owner deletes any item, and
-// by the foreign keys its notification and that notification's pushes, after recording its Remove.
+// by the foreign keys its notification and that notification's pushes, after recording its Remove when it was
+// announced (ANNOUNCED_SQL): a pending remote member's item goes silently (D23).
 export const removeCollectionItem = userWriteOperation<
   { collection: string; item: string; now: number },
   "ok" | "not_found" | "forbidden"
@@ -715,7 +764,9 @@ export const removeCollectionItem = userWriteOperation<
   if (found.row.account_id !== viewer) {
     return "forbidden";
   }
-  recordItemRemove(db, { id: found.item.id, collection: found.row.id, account: found.item.account_id }, input.now);
+  if (found.item.announced === 1) {
+    recordItemRemove(db, { id: found.item.id, collection: found.row.id, account: found.item.account_id }, input.now);
+  }
   db.run(`DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id = ?`, found.item.id);
   return "ok";
 });
@@ -752,7 +803,8 @@ export const revokeCollectionItem = userWriteOperation<
 // BlockService#handle_collections, in the block's transaction: the blocker's items in the target's collections are
 // revoked, and the target's items in the blocker's collections deleted, with their notifications and those
 // notifications' pushes (by the foreign keys), each item's Remove as its revoke or removal sends it (a local
-// collection's only), recorded with its members' targets and its owner's followers left to a collection job
+// collection's only, and of a remote target's item only once announced, ANNOUNCED_SQL), recorded with its members'
+// targets and its owner's followers left to a collection job
 // (collection-jobs.ts), as Mastodon's CollectionRawDistributionWorker reaches them after the block. Each reads one
 // account's collections (at most MAX_STORED_COLLECTIONS) and one item of each by its member key, so at most that many
 // rows and Removes each, and each Remove reads its collection's items (at most MAX_STORED_ITEMS) and no follower.
@@ -779,16 +831,24 @@ export function severCollections(db: Db, blocker: string, target: string, now: n
   for (const item of revoked) {
     stage(item, blocker);
   }
-  const deleted = db.all<{ id: string; collection_id: string }>(
+  const remote =
+    db.first<{ remote: number }>(
+      `SELECT domain IS NOT NULL AS remote FROM accounts INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE id = ?`,
+      target,
+    )?.remote === 1;
+  const deleted = db.all<{ id: string; collection_id: string; state: number; approval_uri: string | null }>(
     `DELETE FROM collection_items INDEXED BY collection_items_member
 		WHERE collection_id IN (SELECT id FROM collections INDEXED BY collections_account WHERE account_id = ?1)
 			AND account_id = ?2
-		RETURNING id, collection_id`,
+		RETURNING id, collection_id, state, approval_uri`,
     blocker,
     target,
   );
+  // ANNOUNCED_SQL for the target's items: a local target's always, a remote one's once accepted.
   for (const item of deleted) {
-    stage(item, target);
+    if (!remote || item.state === COLLECTION_ITEM_STATES.accepted || item.approval_uri !== null) {
+      stage(item, target);
+    }
   }
   return beginCollectionJobs(db, removes);
 }

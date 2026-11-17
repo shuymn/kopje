@@ -112,6 +112,7 @@ import m0111 from "../../migrations/0111_account_urls.sql";
 import m0112 from "../../migrations/0112_delivery_hosts.sql";
 import m0113 from "../../migrations/0113_featured_collection_syncs.sql";
 import m0114 from "../../migrations/0114_untrusted_counts.sql";
+import m0115 from "../../migrations/0115_feature_policies.sql";
 
 // Store migrations in apply order. Append only: an applied file is recorded by name and checksum and must
 // never change. Each file runs in its own transaction, must finish well under 30 seconds, and must be pure SQL with no
@@ -232,4 +233,5 @@ export const MIGRATIONS: readonly { name: string; sql: string; foreignKeys?: "un
   { name: "0112_delivery_hosts", sql: m0112 },
   { name: "0113_featured_collection_syncs", sql: m0113 },
   { name: "0114_untrusted_counts", sql: m0114, foreignKeys: "unchanged" },
+  { name: "0115_feature_policies", sql: m0115, foreignKeys: "unchanged" },
 ];

@@ -152,7 +152,8 @@ export class Params {
     return this.files.get(name);
   }
 
-  // Whether the value get(name) reads (blank) is a JSON null: Rails assigns nil, where a blank string stays a string.
+  // Whether the value get(name) reads (blank) is nil: a JSON null, or a query or form name sent without `=`, which Rack
+  // reads as nil, where a blank string stays a string.
   sentNull(name: string): boolean {
     return selected(this.entries, name)?.[2] === null;
   }
@@ -172,6 +173,13 @@ export class Params {
   // Rails reads as a sent, empty hash.
   sentObject(name: string): boolean {
     return this.objectPrefixes.has(name) || this.hasObject(name);
+  }
+
+  // Whether `name` was sent in any shape: a value, anything nested under it (`name[]`, `name[a]`, `name[][]`), or a JSON
+  // empty array or object.
+  sentUnder(name: string): boolean {
+    const under = (key: string) => topKey(key) === name;
+    return this.entries.some(([key]) => under(key)) || [...this.objectPrefixes, ...this.emptyLists].some(under);
   }
 
   // The first of `names` sent more than once as a plain name (query and body together, as sent: also where a later
@@ -602,11 +610,19 @@ export function offsetParam(p: Params): number {
   return Math.max(rubyToI(p.integer("offset") ?? "0"), 0);
 }
 
-// `limit` as Api::BaseController#limit_param reads it: `fallback` when absent, else the absolute value of its to_i, at
-// most `max`.
-export function limitParam(p: Params, fallback: number, max: number): number {
+// `limit` as Api::BaseController#limit_param reads it: `fallback` when absent or nil (`?limit` without `=`, a JSON
+// null), else the absolute value of its to_i, at least `minimum` and at most `max`.
+export function limitParam(p: Params, fallback: number, max: number, minimum = 0): number {
   const limit = p.integer("limit");
-  return limit === undefined ? fallback : Math.min(Math.abs(rubyToI(limit)), max);
+  return limit === undefined || p.sentNull("limit")
+    ? fallback
+    : Math.min(Math.max(Math.abs(rubyToI(limit)), minimum), max);
+}
+
+// Whether a Link URL carries `limit`: when it was sent and is not nil, which Rails' url_for drops
+// (ActionDispatch::Http::URL.add_params), so the page it links to reads the default as this one did.
+export function linkCarriesLimit(p: Params): boolean {
+  return p.get("limit") !== undefined && !p.sentNull("limit");
 }
 
 // A sent parameter as Rails casts it to a boolean (railsBoolean): blank is absent.

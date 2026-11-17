@@ -691,6 +691,11 @@ describe("collections: paging", () => {
     expect((await page("?limit=-5")).ids).toHaveLength(5);
     expect((await page("?limit=500")).ids).toHaveLength(12);
     expect(await page("")).toEqual({ ids: [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0], link: null });
+    // A limit sent without a value (nil) is the default, and the links carry none.
+    expect(await page("?limit&offset=5")).toEqual({
+      ids: [6, 5, 4, 3, 2, 1, 0],
+      link: `<${at("offset=0")}>; rel="prev"`,
+    });
     for (const limit of ["0", "", "abc"]) {
       expect(await page(`?limit=${limit}`)).toEqual({ ids: [], link: null });
     }
@@ -733,6 +738,11 @@ describe("collections: paging", () => {
     expect(first).toEqual({
       ids: [],
       next: `https://kopje.test/api/v1/accounts/${carol.id}/in_collections?limit=40&max_id=${itemId(80)}`,
+    });
+    // A limit sent without a value (nil) is the default, 40, and the link carries none.
+    expect(await read(`/api/v1/accounts/${carol.id}/in_collections?limit`)).toEqual({
+      ids: [],
+      next: `https://kopje.test/api/v1/accounts/${carol.id}/in_collections?max_id=${itemId(80)}`,
     });
     const seen: string[] = [];
     let next: string | null = first.next;
@@ -825,6 +835,7 @@ describe("collections: R45", () => {
     const hiding = await seedAccount(h.store, { username: "hiding" });
     const remote = await remoteAccount(h.store, "far");
     await discoverable(h, locked, remote);
+    // A remote account whose actor states no canFeature (missing) is refused.
     for (const id of [locked, hiding, remote]) {
       await refused(id);
     }
@@ -844,6 +855,11 @@ describe("collections: R45", () => {
     expect((await add(locked)).status).toBe(200);
     // The owner itself, while discoverable.
     expect((await add(alice.id)).status).toBe(200);
+    // A remote account whose canFeature approves the public automatically: added pending, to be asked
+    // (test/federation-feature-requests.test.ts).
+    await sql(h.store, "UPDATE accounts SET feature_policy = ? WHERE id = ?", 2 << 16, remote);
+    const asked = await add(remote);
+    expect([asked.status, asked.body.collection_item.state]).toEqual([200, "pending"]);
     await sql(h.store, "UPDATE accounts SET discoverable = 0 WHERE id = ?", alice.id);
     expect((await create(h, alice, { account_ids: [alice.id] })).status).toBe(403);
   });

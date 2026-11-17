@@ -134,8 +134,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   back past it needs a point-in-time restore.
 - Collections: an account can feature up to 25 accounts in up to 10 collections (`/api/v1/collections`,
   `/api/v1/accounts/:id/collections`, `/api/v1/accounts/:id/in_collections`, also under `/api/v1_alpha` with a
-  `Deprecation` header), with the `read:collections` and `write:collections` scopes, as Mastodon 4.6 serves them; only
-  local accounts can be featured yet ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections").
+  `Deprecation` header), with the `read:collections` and `write:collections` scopes, as Mastodon 4.6 serves them
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections").
   Reports take `collection_ids[]` (forwarded in the `Flag` after the statuses, and read from an inbound one), roles
   present `collection_limit`, search with `resolve=true` finds a local collection by its URL, and each local collection
   has a public page at its `url`. Migration `0103_collections`: two new tables and a column of `reports`, reading no
@@ -193,6 +193,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   rewritten; the upgrade checks no reference (the migration bench's upgrade from `0093_annual_reports` takes 17,153 ms
   with this file and 17,086 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store
   migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+- Remote accounts can be featured: Kopje reads their `canFeature`, asks with a `FeatureRequest` and shows them once
+  they accept; their `Accept`, their `Reject` and their `Delete` of the authorization keep the membership current
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections"). Migration `0115_feature_policies`: a
+  column of `accounts` and its two triggers, reading no row; the upgrade checks no reference. `wrangler.jsonc`:
+  unchanged. This adds a Store migration, so the release is at least a minor version, and rolling back past it needs a
+  point-in-time restore.
 
 ### Changed
 
@@ -475,8 +481,17 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Delivery recipients"). No Store migration and no
   `wrangler.jsonc` change.
 
+- [docs/mastodon-deviations.md](docs/mastodon-deviations.md) lists the remaining differences from Mastodon 4.7.5 in
+  cursors and other request parameter edge cases, Web Push subscriptions and titles, the `next` link of v1
+  notifications and the timelines, a remote status's `url` and a media `focus` (#1734, #1759, #1766). No Store
+  migration and no `wrangler.jsonc` change.
+
 ### Fixed
 
+- An `Add` or `Remove` without an `id`, as Mastodon sends those of featured hashtags and pinned posts, is applied as
+  one with an `id` is, under the same rules (its target, and the caps on a remote account's pins and featured hashtags:
+  [docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Remote collections"); it was refused. No Store
+  migration and no `wrangler.jsonc` change.
 - An LD-signed Undo read as Mastodon's compaction whose undone activity's type is given as an array of types is
   ignored, as Mastodon applies none, where Kopje ended what that activity's id named (#1717;
   [docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Reading inbound activities"). No Store migration and no
@@ -507,6 +522,18 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   (NUL and ASCII white space only), an app's name is stored as sent rather than trimmed, and an admin search attribute
   that stripping leaves empty (`by_domain=%00`) stays a condition (#1734). No Store migration and no `wrangler.jsonc`
   change.
+- A `limit` sent without a value (`?limit`, or a JSON null) takes the list's default, as Rails reads it as nil, and
+  the page's `Link` carries no `limit`, as Mastodon's drops a nil one, so the next page takes the default too; an empty
+  one (`?limit=`) keeps its answer (#1759). No Store migration and no `wrangler.jsonc` change.
+- `GET /api/v1/accounts/search` without `q` answers `[]`, as Mastodon's nil query does, where it answered 400; a `q`
+  sent as an array or a hash still answers 400, and `/api/v2/search` keeps its 400 (#1766). No Store migration and no
+  `wrangler.jsonc` change.
+- A Web Push subscription whose `endpoint`, `keys[p256dh]` or `keys[auth]` is blank to Rails (U+0085) answers 422
+  `Validation failed: … can't be blank` (for the endpoint, `Endpoint can't be blank, Endpoint is invalid`), as
+  Mastodon's validations do, where it answered `… is invalid`; an empty or absent one keeps its 400 (#1766). No Store
+  migration and no `wrangler.jsonc` change.
+- `GET`, `PUT` and `PATCH /api/v1/push/subscription` for a token with no subscription answer 404 `Not Found`, as
+  Mastodon's do, where they answered `Record not found` (#1575). No Store migration and no `wrangler.jsonc` change.
 - A remote status's `sensitive` is read as Mastodon casts it to its boolean column, so any value but `false`, `0`, null
   and Rails' false strings (`"0"`, `"f"`, `"F"`, `"false"`, `"FALSE"`, `"off"`, `"OFF"`) marks it, where only `true`
   did (`"true"`, `1` and `[true]` now mark it), and an empty string refuses it where Mastodon's `NOT NULL` column

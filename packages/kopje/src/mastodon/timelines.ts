@@ -12,7 +12,7 @@ import {
 } from "./context";
 import { recordNotFound } from "./errors";
 import { feedPageQuery, pageQuery, pageResponse } from "./pagination";
-import { type Params, parseBoolean } from "./params";
+import { linkCarriesLimit, type Params, parseBoolean } from "./params";
 
 // Timelines: home, a list's, public, hashtag, link, an account's statuses, bookmarks and favourites. Status
 // lists default to 20 and allow up to 40, as Mastodon's; a limit of 0 answers the first five (Timelines::*Controller)
@@ -104,12 +104,12 @@ export const linkTimeline: ApiHandler = withParams(async (c, deps, p) => {
 
 // The Link header of a link timeline page (Api::V1::Timelines::BaseController#insert_pagination_headers): next at
 // max_id its oldest status and prev at min_id its newest, on every page that shows a status, keeping only `url` and
-// `limit` as sent (PERMITTED_PARAMS). A page cut at its window or its bytes links on from where it stopped, whatever
-// it shows (Page.cut); an empty page that was not cut has neither end.
+// `limit` as sent (PERMITTED_PARAMS; a nil `limit` dropped, linkCarriesLimit). A page cut at its window or its bytes
+// links on from where it stopped, whatever it shows (Page.cut); an empty page that was not cut has neither end.
 function linkTimelineLinks(c: ApiContext, p: Params, page: Page<unknown>): void {
   const at = (name: "max_id" | "min_id", id: string) => {
     const target = new URL("/api/v1/timelines/link", c.req.url);
-    for (const key of ["url", "limit"]) {
+    for (const key of ["url", ...(linkCarriesLimit(p) ? ["limit"] : [])]) {
       const value = p.get(key);
       if (value !== undefined) {
         target.searchParams.set(key, value);

@@ -11,7 +11,7 @@ import {
 } from "./context";
 import { fullMessage, mastodonError, recordNotFound, validationDetails, validationFailed } from "./errors";
 import { linkHeader, pageQuery } from "./pagination";
-import { limitParam, offsetParam, type Params, parseBoolean } from "./params";
+import { limitParam, linkCarriesLimit, offsetParam, type Params, parseBoolean } from "./params";
 
 // Collections (Mastodon 4.7.5's Api::V1::CollectionsController, CollectionItemsController and InCollectionsController,
 // served under /api/v1 and /api/v1_alpha alike); the Store does the work (domain/collections.ts).
@@ -74,14 +74,15 @@ function emptyResponse(result: "ok" | "not_found" | "forbidden"): Response {
 
 // The Link header of an account's collections (CollectionsController#next_path, #prev_path), at the /api/v1 route
 // whatever the prefix: next while the page is full, prev to max(offset - limit, 0) past the first page; `limit` only
-// when sent. Kopje steps by the page's limit (docs/mastodon-deviations.md, "Collections").
+// when sent and not nil (linkCarriesLimit). Kopje steps by the page's limit (docs/mastodon-deviations.md,
+// "Collections").
 function offsetLinks(c: ApiContext, p: Params, route: string, offset: number, limit: number, full: boolean): void {
   if (limit === 0) {
     return;
   }
   const url = (at: number) => {
     const target = new URL(route, c.req.url);
-    if (p.get("limit") !== undefined) {
+    if (linkCarriesLimit(p)) {
       target.searchParams.set("limit", String(limit));
     }
     target.searchParams.set("offset", String(at));
@@ -118,7 +119,7 @@ export const accountCollections: ApiHandler = withParams(async (c, deps, p) => {
 
 // GET /api/v1/accounts/:account_id/in_collections: the viewer's own memberships (a token is optional, a user is not:
 // 422 without one, after the token is judged), paged by item id from a candidate window (domain/collections.ts); the
-// Link headers carry max_id and min_id at the /api/v1 route, `limit` only when sent.
+// Link headers carry max_id and min_id at the /api/v1 route, `limit` only when sent and not nil (linkCarriesLimit).
 export const inCollections: ApiHandler = withParams(async (c, deps, p) => {
   const limit = limitParam(p, COLLECTIONS_LIMIT, IN_COLLECTIONS_MAX_LIMIT);
   const input = {
@@ -140,7 +141,7 @@ export const inCollections: ApiHandler = withParams(async (c, deps, p) => {
     case "ok": {
       const { page } = result;
       const route = new URL(`/api/v1/accounts/${input.account}/in_collections`, c.req.url);
-      if (p.get("limit") !== undefined) {
+      if (linkCarriesLimit(p)) {
         route.searchParams.set("limit", String(limit));
       }
       const count = page.cut === true ? limit : page.items.length;

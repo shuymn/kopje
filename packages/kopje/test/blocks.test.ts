@@ -446,10 +446,10 @@ describe("blocks", () => {
       state.storage.transactionSync(() => severCollections(new Db(counting), alice.id, bob.id, NOW));
       return read();
     });
-    // The two statements' 14 rows (with what they return), and the two Removes' with their jobs' 21, each Remove
-    // reading its collection with its owner, its members, an id and its addressed accounts, and no follower (the jobs
-    // read them, collection-jobs.ts). None is carol's.
-    expect(read).toBe(35);
+    // The two statements' 14 rows (with what they return), the target's own row (whether its items were announced),
+    // and the two Removes' with their jobs' 21, each Remove reading its collection with its owner, its members, an id
+    // and its addressed accounts, and no follower (the jobs read them, collection-jobs.ts). None is carol's.
+    expect(read).toBe(36);
   });
 
   // `count` remote followers of `accountId`, each on a host of its own with its own inbox, ids from `base`.

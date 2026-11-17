@@ -64,10 +64,18 @@ describe("push subscription endpoints", () => {
     expect((await call(h, alice, "GET")).body).toEqual(patched.body);
 
     expect(await call(h, alice, "DELETE")).toEqual({ status: 200, body: {} });
-    expect(await call(h, alice, "GET")).toEqual({ status: 404, body: { error: "Record not found" } });
-    expect(await call(h, alice, "PUT", { data: { policy: "all" } })).toEqual({
-      status: 404,
-      body: { error: "Record not found" },
+    // check_push_subscription's not_found (respond_with_error(404)), for a read and an update (PUT or PATCH) alike.
+    expect(await call(h, alice, "GET")).toEqual({ status: 404, body: { error: "Not Found" } });
+    for (const method of ["PUT", "PATCH"] as const) {
+      expect([method, await call(h, alice, method, { data: { policy: "all" } })]).toEqual([
+        method,
+        { status: 404, body: { error: "Not Found" } },
+      ]);
+    }
+    // The data is read first: an invalid policy answers its 422 with no subscription too (Mastodon: 404).
+    expect(await call(h, alice, "PATCH", { data: { policy: "nobody" } })).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Policy is not included in the list" },
     });
     // Deleting nothing still answers {}.
     expect(await call(h, alice, "DELETE")).toEqual({ status: 200, body: {} });

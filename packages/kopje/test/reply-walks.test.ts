@@ -770,12 +770,12 @@ describe("a completion's transaction (RES-4)", () => {
       expect(fresh.out.changes - stale.out.changes).toBeGreaterThan(0);
       expect(fresh.out.changes - stale.out.changes).toBeLessThanOrEqual(4 * 7);
       // The rest, the same in both: the walk's rows above and what the two statuses' and erin's stores write for any
-      // fetched status (rows, mentions, the quote, the account, and the triggers' counters; erin's last status moves to
-      // W only, Q's id being lower).
+      // fetched status (rows, mentions, the quote, the account and its feature policy, and the triggers' counters;
+      // erin's last status moves to W only, Q's id being lower).
       const walkRows = Object.entries(stale.out.walk)
         .filter(([write]) => write !== "DELETE FROM reply_walk_debts")
         .reduce((a, [, n]) => a + n, 0);
-      expect(stale.out.changes - walkRows).toBe(19);
+      expect(stale.out.changes - walkRows).toBe(20);
     },
   );
 });

@@ -18,7 +18,7 @@ export const ROW_ALLOWANCES: Readonly<Record<string, { readonly rows: number; re
 // statements in order.
 export const ADDED_STATEMENTS: Readonly<Record<string, { readonly reason: string }>> = {
   // featureApprovalReads (src/domain/audience.ts).
-  b67cdfa213ad6a9c: {
+  "4dc5aeca990f6cc8": {
     reason: "#1589 D16: feature_approval.current_user, one read per chunk of the accounts presented to a viewer",
   },
 };
