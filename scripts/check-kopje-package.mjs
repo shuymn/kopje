@@ -8,7 +8,8 @@
 //      unpacking it into node_modules/kopje), dry-runs the template's `wrangler deploy`, and compares it with the
 //      in-repo build: under 1.5 MiB gzipped, within 1% of each other, the same assets by content, and the same runtime
 //      settings and bindings as packages/kopje/wrangler.jsonc; neither bundle imports or carries a wasm module (the
-//      Worker decodes no image: packages/kopje/docs/threat-model.md NET-3);
+//      Worker decodes no image: packages/kopje/docs/threat-model.md NET-3), and neither holds a character above U+00FF
+//      (checkLatin1);
 //   4. runs the template in workerd (wrangler's test harness): the Store starts and applies its migrations, a fetch,
 //      an asset, the scheduled and queue handlers, and the packaged version as the Store reports it;
 //   5. installs the tarball with npm into an empty project: `kopje-admin --help` runs from the installed bin, and the
@@ -48,6 +49,7 @@ import { withManifestVersion } from "./kopje-release-lib.mjs";
 const LIMIT_KIB = 1536;
 const TOLERANCE = 0.01;
 const UNVERSIONED = "0.0.0";
+const BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const CHECK_VERSION = "0.0.1-check";
 
 const repo = fileURLToPath(new URL("..", import.meta.url));
@@ -116,6 +118,7 @@ try {
   }
   checkSourceMap(join(templateDist, "index.js"), "the template bundle");
   checkNoWasm(templateDist, "index.js", "the template bundle");
+  checkLatin1(join(templateDist, "index.js"), "the template bundle");
   const assets = hashes(join(app, "public"));
   const shipped = hashes(join(pkg, "public"));
   if (JSON.stringify(assets) !== JSON.stringify(shipped)) {
@@ -241,6 +244,7 @@ function checkPackage(dir) {
   }
   checkSourceMap(join(dir, "dist", "worker.js"), "the packed bundle");
   checkNoWasm(join(dir, "dist"), "worker.js", "the packed bundle");
+  checkLatin1(join(dir, "dist", "worker.js"), "the packed bundle");
 }
 
 // The template's package-lock.json pins what its package.json does: `npm ci`, which the template's deploy workflow and
@@ -281,6 +285,106 @@ function checkNoWasm(dir, script, what) {
   if (modules.length > 0 || imported.length > 0) {
     fail(`${what} must carry no wasm module: files ${modules.join(",")}, imports ${imported.join(",")}`);
   }
+}
+
+// V8 holds a script's source one byte a character only while every character is Latin1; one above U+00FF makes it
+// keep the whole source two bytes a character, in every isolate that loads the Worker (the Store's included). esbuild
+// escapes such characters in strings but writes regular expression literals as the source has them, so a pattern
+// names one by its \u escape. Each character found is reported with the source it comes from, read from the map.
+/**
+ * @param {string} script
+ * @param {string} what
+ */
+function checkLatin1(script, what) {
+  const text = readFileSync(script, "utf8");
+  /** @type {{ code: number, line: number, column: number }[]} */
+  const found = [];
+  let line = 0;
+  let lineStart = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = /** @type {number} */ (text.codePointAt(i));
+    if (code === 0x0a) {
+      line++;
+      lineStart = i + 1;
+    } else if (code > 0xff) {
+      found.push({ code, line, column: i - lineStart });
+      if (code > 0xffff) {
+        i++;
+      }
+    }
+  }
+  if (found.length === 0) {
+    return;
+  }
+  const shown = found.slice(0, 20);
+  const origins = originsOf(JSON.parse(readFileSync(`${script}.map`, "utf8")), shown);
+  const listed = shown
+    .map(({ code, line, column }, i) => {
+      const name = `U+${code.toString(16).toUpperCase().padStart(4, "0")}`;
+      return `${name} at ${line + 1}:${column + 1} from ${origins[i]}`;
+    })
+    .join("; ");
+  fail(
+    `${what} holds characters above U+00FF (${found.length}), which make V8 keep its source two bytes a character; ` +
+      `write each as a \\u escape: ${listed}${found.length > shown.length ? "; ..." : ""}`,
+  );
+}
+
+// The source position each bundle position maps to (Source Map v3: per generated line, segments of base64 VLQ
+// deltas, the generated column reset on each line and the source fields carried across lines).
+/**
+ * @param {{ sources: string[], mappings: string }} map
+ * @param {{ line: number, column: number }[]} positions
+ * @returns {string[]}
+ */
+function originsOf(map, positions) {
+  const origins = positions.map(() => "no mapped source");
+  let source = 0;
+  let sourceLine = 0;
+  let sourceColumn = 0;
+  map.mappings.split(";").forEach((segments, line) => {
+    const wanted = positions.flatMap((position, i) => (position.line === line ? [{ at: position.column, i }] : []));
+    let column = 0;
+    for (const segment of segments.split(",")) {
+      const [columnDelta, sourceDelta, lineDelta = 0, sourceColumnDelta = 0] = vlq(segment);
+      if (columnDelta === undefined) {
+        continue;
+      }
+      column += columnDelta;
+      if (sourceDelta === undefined) {
+        continue;
+      }
+      source += sourceDelta;
+      sourceLine += lineDelta;
+      sourceColumn += sourceColumnDelta;
+      // Segments run in column order, so the last one at or before a position is the one that covers it.
+      for (const { at, i } of wanted) {
+        if (column <= at) {
+          origins[i] = `${map.sources[source]}:${sourceLine + 1}:${sourceColumn + 1}`;
+        }
+      }
+    }
+  });
+  return origins;
+}
+
+/** @param {string} segment */
+function vlq(segment) {
+  const values = [];
+  let value = 0;
+  let shift = 0;
+  for (const char of segment) {
+    const digit = BASE64.indexOf(char);
+    value += (digit & 31) << shift;
+    if (digit & 32) {
+      shift += 5;
+    } else {
+      values.push(value & 1 ? -(value >>> 1) : value >>> 1);
+      value = 0;
+      shift = 0;
+    }
+  }
+  return values;
 }
 
 // The bundle links its map, and the map carries the original sources, so stack traces in Workers Logs point at them.

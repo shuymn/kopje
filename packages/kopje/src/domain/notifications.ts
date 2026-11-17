@@ -511,6 +511,10 @@ export function shownWindow(
 export const listNotifications = userReadOperation<ListNotificationsInput, Page<Notification>>(
   (db, input, _viewer, viewer) => {
     const { page } = input;
+    // A limit of 0 reads none, as Mastodon's to_a_paginated_by_id (LIMIT 0).
+    if (page.limit === 0) {
+      return { items: [], newest: null, oldest: null };
+    }
     const ascending = page.minId !== undefined;
     const size = readWindow(page.limit);
     const { rows, candidates } = shownWindow(

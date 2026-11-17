@@ -117,3 +117,10 @@ export const Layout: FC<{
     </Html>
   );
 };
+
+// A page's robots meta, as Mastodon 4.7.5 answers the same URL (docs/web-pages.md, "Robots"): `noindex` where it serves
+// its web app's shell there (`shell`: home#index marks every path but `/` noindex, home/index.html.haml:1-3); otherwise
+// none on a first page, as its own page for an account that does not ask for noindex, and `noindex, follow` on a page
+// with a cursor, which it does not serve.
+export const Robots: FC<{ shell: boolean; paged: boolean }> = ({ shell, paged }) =>
+  shell ? <meta name="robots" content="noindex" /> : paged ? <meta name="robots" content="noindex, follow" /> : null;

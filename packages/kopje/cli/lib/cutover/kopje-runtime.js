@@ -55,6 +55,7 @@ export const {
   REMOTE_HTML_RAW_LIMIT,
   sniffImageType,
   blockedDomain,
+  hostDomain,
   backfillConversations,
   requestHandleRefreshes,
   ACTOR_URI_LIMIT,

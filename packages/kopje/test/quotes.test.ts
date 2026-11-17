@@ -1554,20 +1554,6 @@ describe("relayed revocations (ID-1’s exception)", () => {
           MASTODON_47_FORWARDED_CONTEXT,
         ),
     ],
-    [
-      "the 4.7 context with a stamp term redefined",
-      async (carol: TestActor, _dan: TestActor, pair: Pair) => {
-        const context = [
-          ...MASTODON_47_FORWARDED_CONTEXT.slice(0, -1),
-          {
-            ...(MASTODON_47_FORWARDED_CONTEXT.at(-1) as Json),
-            interactingObject: { "@id": "as:object", "@type": "@id" },
-          },
-        ];
-        // Signed under that context, so that its signature verifies.
-        return mastodonSigned({ ...stampDelete(carol, pair), "@context": context }, carol);
-      },
-    ],
   ])(
     "drops a forwarded stamp Delete whose proof does not hold, the quote kept though its stamp is gone: %s",
     async (_name, build) => {
@@ -1587,6 +1573,28 @@ describe("relayed revocations (ID-1’s exception)", () => {
       expect(t.web.fetched.slice(from)).not.toContain(stamp);
     },
   );
+
+  // ldSignedBodyReadable drops it before its proof is read: a stamp term redefined is not Mastodon's vocabulary.
+  it("drops a forwarded stamp Delete whose 4.7 context redefines a stamp term, the quote kept though its stamp is gone", async () => {
+    const { t, carol, dan, stamp, quote, target } = await relayWorld();
+    t.web.fail(stamp, 404);
+    const context = [
+      ...MASTODON_47_FORWARDED_CONTEXT.slice(0, -1),
+      { ...(MASTODON_47_FORWARDED_CONTEXT.at(-1) as Json), interactingObject: { "@id": "as:object", "@type": "@id" } },
+    ];
+    // Signed under that context, so that its signature verifies.
+    const body = await mastodonSigned({ ...stampDelete(carol, { stamp, quote, target }), "@context": context }, carol);
+    const from = t.web.fetched.length;
+    expect(await loggedRefusals(() => t.post(dan, body))).toEqual({
+      status: 202,
+      refused: [[{ event: "kopje.inbox.refused", status: 202, reason: "ld-context" }]],
+    });
+    await settle(t.store);
+    expect(await quoteOf(t, quote.id)).toMatchObject({ state: "accepted" });
+    expect(await revocations(t)).toEqual([]);
+    expect(await retractions(t, carol)).toEqual([]);
+    expect(t.web.fetched.slice(from)).not.toContain(stamp);
+  });
 
   // OPS-1: carol's stamp Delete as Mastodon 4.7.5 forwards it, her signature expiring at NOW + 1 h, spooled by dan at
   // `at` and replayed at NOW + 3 h.

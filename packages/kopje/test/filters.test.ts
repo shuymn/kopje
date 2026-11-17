@@ -13,7 +13,7 @@ import {
 import { deleteStatusBatch, PURGE_BATCH } from "../src/domain/inbox";
 import { sanitizeRemoteContent } from "../src/security/html";
 import { sha256Hex } from "../src/security/tokens";
-import { type ApiHarness, bearer, json, settle, sql } from "./api-helpers";
+import { type ApiHarness, bearer, form, json, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { plannedRun, staleStatistics } from "./read-helpers";
 import {
@@ -69,6 +69,101 @@ async function timeline(h: ApiHarness, path: string, token: string): Promise<Sta
 }
 
 describe("filters API", () => {
+  // expires_in as Rails' params hold it: the last value, the query's over the body's (a shallow merge by top-level
+  // key); then Expireable#expires_in= (blank is no expiry, else Ruby's to_i).
+  it("reads expires_in as Rails' last value on v2 and v1, created and updated", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const expiry = async (
+      method: string,
+      path: string,
+      query: string,
+      values: string[],
+      fields: [string, string][],
+    ) => {
+      const body = [...fields, ...values.map((value): [string, string] => ["expires_in", value])];
+      const response = await h.request(`${path}${query}`, bearer(alice.token, form(body, { method })));
+      expect(response.status, await response.clone().text()).toBe(200);
+      return response.json<{ id: string; expires_at: string | null }>();
+    };
+    const after = (seconds: number) => new Date(NOW + seconds * 1000).toISOString();
+    const routes: [string, [string, string][]][] = [
+      [
+        "/api/v2/filters",
+        [
+          ["title", "t"],
+          ["context[]", "home"],
+        ],
+      ],
+      [
+        "/api/v1/filters",
+        [
+          ["phrase", "p"],
+          ["context[]", "home"],
+        ],
+      ],
+    ];
+    for (const [path, fields] of routes) {
+      const created = await expiry("POST", path, "", ["60", "3600"], fields);
+      expect([path, created.expires_at]).toEqual([path, after(3600)]);
+      for (const [query, expected] of [
+        ["?expires_in=7200", after(7200)],
+        // A query array or hash replaces the body's value, and strong parameters drop it.
+        ["?expires_in[]=7200", null],
+        ["?expires_in[a]=7200", null],
+      ] as const) {
+        expect([path, query, (await expiry("POST", path, query, ["3600"], fields)).expires_at]).toEqual([
+          path,
+          query,
+          expected,
+        ]);
+      }
+      const update = `${path}/${created.id}`;
+      for (const [query, values, expected] of [
+        ["", ["60", "0d3600"], after(3600)],
+        ["?expires_in=7200", ["3600"], after(7200)],
+        // Not sent, so the expiry stays.
+        ["?expires_in[]=60", ["3600"], after(7200)],
+        ["", ["60", ""], null],
+      ] as const) {
+        expect([update, query, values, (await expiry("PUT", update, query, [...values], [])).expires_at]).toEqual([
+          update,
+          query,
+          values,
+          expected,
+        ]);
+      }
+    }
+  });
+
+  // Expireable#expires_in= reads a blank interval (Rails' blank?: U+0085 is a space, U+FEFF is not) as no expiry.
+  it("reads expires_in blank as Rails' blank? reads it", async () => {
+    const h = await community(["alice"]);
+    for (const [expires_in, expected] of [
+      ["\u0085", null],
+      ["\ufeff", new Date(NOW).toISOString()],
+    ] as const) {
+      const created = await createFilter(h, h.users.alice, { title: "t", context: ["home"], expires_in });
+      expect([expires_in, created.expires_at]).toEqual([expires_in, expected]);
+    }
+  });
+
+  // Rails' JSON params keep a number as a Float, which Expireable#expires_in= reads by Ruby's to_i; the same text sent
+  // as a string is read by String#to_i.
+  it("reads a JSON number expires_in by Ruby's to_i of the number", async () => {
+    const h = await community(["alice"]);
+    const after = (seconds: number) => new Date(NOW + seconds * 1000).toISOString();
+    for (const [expires_in, expected] of [
+      [1e-7, after(0)],
+      ["1e-7", after(1)],
+      [1.5e3, after(1500)],
+      ["1.5e3", after(1)],
+    ] as const) {
+      const created = await createFilter(h, h.users.alice, { title: "t", context: ["home"], expires_in });
+      expect([expires_in, created.expires_at]).toEqual([expires_in, expected]);
+    }
+  });
+
   it("creates, shows, updates and deletes a filter with its keywords, as REST::FilterSerializer shows it", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;

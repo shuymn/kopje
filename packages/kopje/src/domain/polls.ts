@@ -3,6 +3,8 @@ import { ACCOUNTS_ID_INDEX, POLL_VOTES_KEY_INDEX, POLLS_STATUS_INDEX, STATUSES_I
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
 import { railsBlank } from "../platform/rails-blank";
+import { rubyInteger } from "../platform/ruby-integer";
+import { rubyToI } from "../platform/ruby-to-i";
 import { nextDocumentRevisionSql, pollTimeReadSql, yieldsMoreThan } from "../platform/stored-bounds";
 import { rubyStrip } from "../platform/strip";
 import { type PresentInput, resolveApiId } from "./accounts";
@@ -75,18 +77,6 @@ function longerThan(value: string, max: number): boolean {
   return yieldsMoreThan(graphemes.segment(value), max);
 }
 
-// Ruby's String#to_i: optional leading whitespace and sign, then digits (underscores between them); anything else
-// reads 0. A value past what a duration can be reads as that far.
-function rubyInteger(value: string): number {
-  const match = /^\s*([+-]?)(\d+(?:_\d+)*)/.exec(value);
-  if (match === null) {
-    return 0;
-  }
-  const digits = (match[2] ?? "0").replaceAll("_", "");
-  const magnitude = digits.replace(/^0+(?=\d)/, "").length > 15 ? Number.MAX_SAFE_INTEGER : Number(digits);
-  return match[1] === "-" ? -magnitude : magnitude;
-}
-
 // The poll of a post as Mastodon's Poll validates it, with its messages in its order (Choices and Deadline are its
 // names for options and expires_at): the choices stripped and the blank ones dropped, then present, more than one, at
 // most MAX_OPTIONS, each at most MAX_OPTION_CHARS grapheme clusters, no two alike; the duration present (expires_in,
@@ -99,7 +89,7 @@ export function checkPoll(request: PollRequest): PollInput | { error: string } {
     errors.push("Choices can't be blank");
   }
   const expiresIn =
-    request.expiresIn === undefined || railsBlank(request.expiresIn) ? null : rubyInteger(request.expiresIn);
+    request.expiresIn === undefined || railsBlank(request.expiresIn) ? null : rubyToI(request.expiresIn);
   if (expiresIn === null) {
     errors.push("Deadline can't be blank");
   }
@@ -441,11 +431,6 @@ type VotedPoll = {
   cut_options: number[];
 };
 
-// A choice as Ruby's Integer() reads a decimal one; anything else is no choice of the poll.
-function choiceOf(value: string): number {
-  return /^[+-]?\d{1,9}$/.test(value.trim()) ? Number(value.trim()) : -1;
-}
-
 // VoteValidator's errors for one more vote in `choice`, given the voter's votes so far: the poll ended, a choice it does
 // not have, the author's own poll, or a vote again (any in a single-choice poll, the same choice in a multiple one).
 function voteErrors(poll: VotedPoll, voterId: string, choice: number, votes: number[], now: string): string[] {
@@ -578,7 +563,8 @@ export const vote = userWriteOperation<
   const votes = [...before];
   const choices: number[] = [];
   for (const raw of input.choices) {
-    const choice = choiceOf(raw);
+    // VoteService's Integer(choice); one it raises on is no choice of the poll (Mastodon answers 500).
+    const choice = rubyInteger(raw) ?? -1;
     const errors = voteErrors(poll, accountId, choice, votes, now);
     if (errors.length > 0) {
       return { status: "invalid", error: `Validation failed: ${errors.join(", ")}` };

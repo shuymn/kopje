@@ -1,5 +1,6 @@
 import { readBoundedBody } from "../platform/body";
 import { utf8Length } from "../platform/dump-format";
+import { rubyNumberToI, rubyToI } from "../platform/ruby-to-i";
 
 // Request parameters as Mastodon reads them: the query string merged with a JSON, urlencoded or multipart body
 // (clients send all three). JSON is flattened to form names, so `{"source":{"privacy":"public"}}` reads as
@@ -40,13 +41,24 @@ export const SENT_FILE = "(file)";
 // "absent"`: a field a JSON body sent as null is read as not sent, where other reads take it as blank.
 export type ObjectOptions = { files?: readonly string[]; nulls?: "absent" };
 
+// A parameter's name and text, and the number a JSON body sent as it: `text` is the number as JSON writes it, and
+// integer parameters read `number` (integerText).
+export type ParamEntry = readonly [name: string, text: string, number?: number];
+
+// An entry's text as integer parameters read it: a JSON number as the decimal of its Ruby to_i (Float#to_i and
+// Integer() of a Float both truncate), so `1e21` reads as 10^21 (capped as rubyToI caps), where the string "1e21" is
+// read by the parameter's own reader.
+function integerText([, text, number]: ParamEntry): string {
+  return number === undefined ? text : String(rubyNumberToI(number));
+}
+
 // A file part's value while objects() groups the parts; no text value equals it.
 const FILE_VALUE: unique symbol = Symbol("file part");
 type Value = string | typeof FILE_VALUE;
 
 export class Params {
   constructor(
-    readonly entries: readonly (readonly [string, string])[],
+    readonly entries: readonly ParamEntry[],
     readonly files: ReadonlyMap<string, File> = new Map(),
     // The JSON object prefixes the body sent, empty objects included (sentObject).
     readonly objectPrefixes: ReadonlySet<string> = new Set(),
@@ -57,25 +69,51 @@ export class Params {
     // The names a JSON body sent as null, which read as blank (sentNull tells them apart; objects' `nulls` option reads
     // them as absent).
     private readonly nulls: ReadonlySet<string> = new Set(),
+    // The body's entries the query replaced (withQuery), which repeated() still counts.
+    private readonly replaced: readonly ParamEntry[] = [],
   ) {}
 
-  // These body parameters with the query's merged in: the body wins for a declared name, whose effective value is
-  // otherwise the query's last; other query entries follow the body's.
-  withQuery(query: readonly (readonly [string, string])[], declared: readonly string[]): Params {
+  // These body parameters with the query's merged in, as Rails' `request_parameters.merge(query_parameters)`, a
+  // shallow Hash#merge: each top-level key the query sends replaces the body's whole value under it, so a query
+  // `poll[expires_in]` leaves none of a body's `poll`, its options included, and a query `expires_in[]` replaces a body
+  // `expires_in`. A declared name is the exception: the body wins, and the query's last value is read only when the
+  // body has none (docs/mastodon-deviations.md). The query's entries follow the body's.
+  withQuery(query: readonly ParamEntry[], declared: readonly string[]): Params {
     const names = new Set(declared);
+    const keys = new Set(query.map(([key]) => topKey(key)).filter((key) => !names.has(key)));
+    const kept = (name: string) => !keys.has(topKey(name));
     // The maps are read directly: the parameter conformance check counts accessor calls as the handler's reads.
     const sent = (name: string) => this.files.has(name) || this.entries.some(([key]) => key === name);
     const declaredQuery = [...names].flatMap((name): [string, string][] => {
       const value = sent(name) ? undefined : query.findLast(([key]) => key === name)?.[1];
       return value === undefined ? [] : [[name, value]];
     });
-    const entries = [...this.entries, ...query.filter(([key]) => !names.has(key)), ...declaredQuery];
-    return new Params(entries, this.files, this.objectPrefixes, this.emptyLists, this.fileParts, this.nulls);
+    // A file part's place counts the body's entries kept before it.
+    const keptBefore = [0];
+    for (const [key] of this.entries) {
+      keptBefore.push((keptBefore.at(-1) ?? 0) + (kept(key) ? 1 : 0));
+    }
+    return new Params(
+      [...this.entries.filter(([key]) => kept(key)), ...query.filter(([key]) => !names.has(key)), ...declaredQuery],
+      this.files,
+      new Set([...this.objectPrefixes].filter(kept)),
+      new Set([...this.emptyLists].filter(kept)),
+      this.fileParts.filter(([name]) => kept(name)).map(([name, at]) => [name, keptBefore[at] ?? 0]),
+      new Set([...this.nulls].filter(kept)),
+      [...this.replaced, ...this.entries.filter(([key]) => !kept(key))],
+    );
   }
 
-  // The body's value wins over the query's.
+  // The first value: the query's, for a top-level key the query sent, else the body's (withQuery).
   get(name: string): string | undefined {
     return this.entries.find(([key]) => key === name)?.[1];
+  }
+
+  // Rails' `params[name]` as an integer parameter reads it (integerText): the last value (Rack assigns a repeated plain
+  // name, so the last wins), the query's for a top-level key the query sent, else the body's (withQuery).
+  last(name: string): string | undefined {
+    const entry = this.entries.findLast(([key]) => key === name);
+    return entry === undefined ? undefined : integerText(entry);
   }
 
   // A declared file parameter whose effective value is a file (readParams' typed selection): then get(name) is
@@ -107,10 +145,12 @@ export class Params {
     return this.objectPrefixes.has(name) || this.hasObject(name);
   }
 
-  // The first of `names` sent more than once (query and body together), for parameters that must be single
-  // (RFC 6749 §3.1, §3.2). Array parameters (`name[]`) are not scalars and are never named here.
+  // The first of `names` sent more than once (query and body together, a body value the query replaced included), for
+  // parameters that must be single (RFC 6749 §3.1, §3.2). Array parameters (`name[]`) are not scalars and are never
+  // named here.
   repeated(names: readonly string[]): string | undefined {
-    return names.find((name) => this.entries.filter(([key]) => key === name).length > 1);
+    const all = [...this.entries, ...this.replaced];
+    return names.find((name) => all.filter(([key]) => key === name).length > 1);
   }
 
   // The objects of an array parameter: JSON sends `name[0][field]` (indexed), forms send `name[][field]`, where a field
@@ -185,6 +225,18 @@ export class Params {
   getAll(name: string): string[] {
     return this.entries.filter(([key]) => key === name || key === `${name}[]`).map(([, value]) => value);
   }
+
+  // getAll, each value as integer parameters read it (integerText).
+  getAllIntegers(name: string): string[] {
+    return this.entries.filter(([key]) => key === name || key === `${name}[]`).map(integerText);
+  }
+}
+
+// Rack's top-level key of a parameter name: what comes before the first `[` after its first character
+// (`poll[options][]` is under `poll`, `[a]` is its own key).
+function topKey(name: string): string {
+  const at = name.indexOf("[", 1);
+  return at === -1 ? name : name.slice(0, at);
 }
 
 export type ParamsResult = { ok: true; params: Params } | { ok: false; status: 400 | 413 };
@@ -267,7 +319,7 @@ async function parseCounted(
     return { params: new Params([]), formText: type === "application/json" ? null : 0 };
   }
   if (type === "application/json") {
-    const entries: [string, string][] = [];
+    const entries: ParamEntry[] = [];
     const objects = new Set<string>();
     const empty = new Set<string>();
     const nulls = new Set<string>();
@@ -310,7 +362,7 @@ async function parseCounted(
 
 // JSON and form text for a declared name keeps only its last value, so get(name) reads what Rails would assign.
 function selectDeclared(
-  entries: [string, string][],
+  entries: ParamEntry[],
   files: Map<string, File>,
   objects: Set<string>,
   empty: Set<string>,
@@ -330,7 +382,7 @@ function selectDeclared(
 }
 
 type Flattening = {
-  entries: [string, string][];
+  entries: ParamEntry[];
   objects: Set<string>;
   empty: Set<string>;
   nulls: Set<string>;
@@ -376,24 +428,29 @@ function flatten(value: unknown, state: Flattening, prefix = "", depth = 0): voi
       flatten(item, state, prefix === "" ? key : `${prefix}[${key}]`, depth + 1);
     }
   } else if (prefix !== "") {
-    // Scalars only here: strings as they are, numbers and booleans as JSON writes them, null as blank (and noted).
+    // Scalars only here: strings as they are, numbers (kept as well) and booleans as JSON writes them, null as blank
+    // (and noted).
     if (value === null) {
       state.nulls.add(prefix);
     }
-    state.entries.push([prefix, typeof value === "string" ? value : value === null ? "" : JSON.stringify(value)]);
+    if (typeof value === "number") {
+      state.entries.push([prefix, JSON.stringify(value), value]);
+    } else {
+      state.entries.push([prefix, typeof value === "string" ? value : value === null ? "" : JSON.stringify(value)]);
+    }
   }
 }
 
-// `offset` as Mastodon's offset endpoints read it (params[:offset].to_i): a negative or unreadable one is 0.
+// `offset` as Mastodon's offset endpoints read it (params[:offset].to_i): a negative one is 0.
 export function offsetParam(p: Params): number {
-  return Math.max(Number.parseInt(p.get("offset") ?? "0", 10) || 0, 0);
+  return Math.max(rubyToI(p.last("offset") ?? "0"), 0);
 }
 
-// `limit` as Api::BaseController#limit_param reads it: `fallback` when absent, else the absolute value, at most `max`
-// (an unreadable one is 0).
+// `limit` as Api::BaseController#limit_param reads it: `fallback` when absent, else the absolute value of its to_i, at
+// most `max`.
 export function limitParam(p: Params, fallback: number, max: number): number {
-  const limit = p.get("limit");
-  return limit === undefined ? fallback : Math.min(Math.abs(Number.parseInt(limit, 10) || 0), max);
+  const limit = p.last("limit");
+  return limit === undefined ? fallback : Math.min(Math.abs(rubyToI(limit)), max);
 }
 
 // ActiveModel::Type::Boolean#cast's false values, each in its own case only ('False' casts to true), with blank.

@@ -94,10 +94,19 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   collection documents (Mastodon: 1,000 and 500), from 5 minutes after the status was published and at most every 15
   minutes, and at most 16 run at once ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Replies
   collections"). The replies it fetches notify as other fetched statuses do, only when published within the last 6
-  hours. Migration `0099_reply_walks`: two empty tables and their indexes, kept out of dumps; as it creates a table, the
-  upgrade checks every reference of the Store (the migration bench's upgrade from `0093_annual_reports` takes 10,877 ms
-  with this file and 10,633 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store
-  migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+  hours. A refresh applies the edits of the statuses it fetches that Kopje already holds, the refreshed one included,
+  and removes a public or unlisted reply whose address answers 404 (not the refreshed status itself), as Mastodon does.
+  It also fetches the stored public replies of remote authors that a status's collection does not list, examining 200
+  a status a refresh and going on there at the next; what a refresh had no room for (stored replies, the rest of a
+  collection) is fetched first at the thread's next refreshes, oldest first, and a refresh reaches replies at most 199
+  levels below the status whose context it reads. Migration `0099_reply_walks`: two empty tables and their indexes,
+  kept out of dumps; as it creates a table, the upgrade checks every reference of the Store (the migration bench's
+  upgrade from `0093_annual_reports` takes 10,877 ms with this file and 10,633 ms without it, medians of three runs).
+  Migration `0106_reply_walk_debts`: two more empty tables and their indexes, kept out of dumps, and columns of the
+  walk tables with their defaults; as it creates a table, the upgrade checks every reference of the Store (the
+  migration bench's upgrade from `0093_annual_reports` takes 12,048 ms with this file and 12,260 ms without it, medians
+  of three runs). `wrangler.jsonc`: unchanged. This adds Store migrations, so the release is at least a minor version,
+  and rolling back past them needs a point-in-time restore.
 - The local actor publishes its image descriptions as the icon's and image's `summary`, and its display settings as
   `showFeatured`, `showMedia` and `showRepliesInMedia` with their context terms, a suspended actor's settings too, as
   Mastodon 4.6 does; a description changed while its image exists sends an `Update` of the actor. No Store migration
@@ -109,10 +118,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   Mastodon 4.7 reads them ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Profile credentials); an
   account stored earlier shows them once its actor is stored again. No Store migration and no `wrangler.jsonc` change.
 - A public or unlisted remote status Kopje stores from a delivery or a user's request has the replies on its own server
-  that its replies collection's first page lists fetched too, as Mastodon 4.7.5 does on `Create`: at most 5 a status and
-  20 a thread, reading at most 10 collection documents. Statuses Kopje stores while fetching replies, quotes or pinned
-  statuses start no such fetch ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Replies collections"). No
-  Store migration and no `wrangler.jsonc` change.
+  that its replies collection's first page lists fetched too, those Kopje already holds included (their edits applied
+  and a 404 removing them, as a refresh does), as Mastodon 4.7.5 does on `Create`: at most 5 a status and 20 a thread,
+  reading at most 10 collection documents. Statuses Kopje stores while fetching replies, quotes or pinned statuses start
+  no such fetch ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Replies collections"). No Store migration
+  and no `wrangler.jsonc` change.
 - Changing a post's quote policy, through `PUT /api/v1/statuses/:id` or `/interaction_policy`, sends `status.update`
   to the streaming clients that show it, as Mastodon does: through `/interaction_policy`, not to an account that only
   a mention of it shows it to. No Store migration and no `wrangler.jsonc` change.
@@ -144,6 +154,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
+- A remote actor's members are read only by their literal spelling, as Mastodon reads them: a name or bio given only
+  as a language map (`nameMap`, `summaryMap`) is no longer read, so such an account shows an empty display name and
+  bio, and a `movedTo` or `alsoKnownAs` spelled as a compact or full IRI no longer names a move. No Store migration and
+  no `wrangler.jsonc` change.
 - Breaking: a remote account's handle is taken only once WebFinger confirms it, as Mastodon 4.7 does: the handle an
   actor claims is its `webfinger` (FEP-2c59), else its `preferredUsername` at its host, and WebFinger at that address
   must name the actor, following one other subject at most. A new actor whose handle cannot be confirmed is not stored
@@ -159,13 +173,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   with one remote account in ten sharing the address of another). `wrangler.jsonc`: unchanged. This adds a Store
   migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
 - A sync of a remote account's pinned posts fetches every listed post Kopje already holds too, as Mastodon does,
-  applying the account's own edits and removing a public or unlisted post whose address answers 404 (no retraction is
-  kept, so the post is stored again if it arrives later) ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
-  "Retractions and edits of remote statuses"). A sync still fetches at most 20 posts and makes at most 552 requests.
-  Migration `0101_pin_refresh` adds a column of `collection_pins_pending` with its default, reading every row for its
-  CHECK; the upgrade checks no reference (the migration bench's upgrade from `0093_annual_reports` takes 11,333 ms
-  with this file and 11,149 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store
-  migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+  applying the account's own edits and removing a public or unlisted post whose address answers 404 (it leaves its
+  parent's reply count at once, and no retraction is kept, so the post is stored again if it arrives later)
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Retractions and edits of remote statuses"). A sync still
+  fetches at most 20 posts and makes at most 552 requests. Migration `0101_pin_refresh` adds a column of
+  `collection_pins_pending` with its default, reading every row for its CHECK; the upgrade checks no reference (the
+  migration bench's upgrade from `0093_annual_reports` takes 11,333 ms with this file and 11,149 ms without it, medians
+  of three runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version,
+  and rolling back past it needs a point-in-time restore.
 - Kopje follows the client API of Mastodon v4.7.5, its reference release, where it followed v4.5.11
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). The differences from v4.7.5 are listed there or tracked
   by issues. `/api/v1/instance` and `/api/v2/instance` still advertise `version` 4.5.0 and `api_versions.mastodon` 7,
@@ -288,9 +303,90 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   checks no reference (the migration bench's upgrade from `0093_annual_reports` takes 12,204 ms with this file and
   12,545 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the
   release is at least a minor version, and rolling back past it needs a point-in-time restore.
+- The hashtag page and the followers and following pages always carry `noindex`, as Mastodon's do, and so do the
+  handoff pages and every page, 404 and 410 at a URL where Mastodon serves its web app: a post's Boosts, Favourites and
+  Quotes tabs, the `/@username@domain` spelling and the pages under a stored username with a dot
+  ([docs/web-pages.md](docs/web-pages.md), "Robots"). No Store migration and no `wrangler.jsonc` change.
+- The Store isolate's memory at rest drops by about 6 MB: the Worker bundle holds no character above U+00FF, so V8
+  keeps its source one byte a character instead of two. No Store migration and no `wrangler.jsonc` change.
+- An inbound activity that carries a Linked Data signature is ignored (answered 202) unless its JSON-LD contexts keep
+  the meanings Mastodon reads it by (no redefined ActivityStreams or Mastodon property, no alias of one or of a keyword,
+  no `@base`, `@vocab` or other keyword, only preloaded contexts that keep them) and its properties are plain names (no
+  `@id`, `@type`, `@value`, nested `@context`, or IRI as a key)
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Reading inbound activities), and logged once as
+  `kopje.inbox.refused` with reason `ld-context`. It is ignored too where it holds anything Mastodon (3.5 to 4.7.5) and
+  Fedify 2.4.5 do not write: a key with a control character or a line break, a key that starts with `@` but is no
+  JSON-LD keyword, a context URL named twice, an inline context definition neither writes for that name (Misskey's
+  LD-signed relay deliveries among them), a type other than a plain term (ASCII letters, digits, `_` and `-`) or an
+  absolute IRI (`as:Follow` among them), or a proof other than an object, or an array of at most four, of a context and
+  names given strings; such a `Reject`, `Undo`, `Block` or `Delete` leaves what Mastodon's ends, as the deviations page
+  lists. Mastodon's and Fedify's bodies, Kopje's own and older Mastodon's `Update(Person)` with its olm extension among
+  them, pass. The type of one that passes, and its embedded object's, given as an absolute IRI are read as the name
+  Mastodon's compaction gives them only in a body of a closed shape whose compaction Kopje can show succeeds, and as
+  given in any other (Mastodon reads a body its JSON-LD limits or processing refuse as received; one it compacts outside
+  that shape applies less, as the deviations page lists): such a `Reject`, `Undo`, `Block` or `Delete` now ends the
+  follow or the status Mastodon's ends, and such a `Like` favourites, where Kopje refused them or read them as naming
+  nothing. A name, as a member or as a type, is read only where Mastodon's compaction writes it so (where the body's
+  contexts give it the meaning `full_context` does, or neither defines it, a typed node's members as its type's own
+  context makes them mean), and of its values only those the compaction writes under it: a `QuoteRequest`, a hashtag, an
+  emoji, a profile field, `sensitive`, a quote and the other extension names a body's context leaves undefined or
+  defines otherwise are no longer read, as Mastodon reads none of them, so such a `QuoteRequest` no longer approves a
+  quote; a `quote` given as `true` no longer makes a Note's other quote a non-legacy one, nor does a poll's `closed`
+  given as an object close it; a `sensitive` the context defines otherwise (another type, or a list) marks the status
+  wherever Mastodon may, given an empty array or a `0` too. A body Mastodon reads as received (past its JSON-LD limits,
+  or with a data-integrity proof that keeps something once JSON-LD expands it, which Kopje tells by expanding the proof
+  with jsonld.js and the preloaded contexts, within Mastodon's 1,000 values and 32 contexts, types and keys whose
+  definition carries a context, counted in every node and for each value, and only where each key of the proof that
+  starts with `@` is one a node holds and none has a line shaped like a keyword) is read as received, so a proof that
+  expands to nothing (a null value, or a `@language` beside a null member or beside a keyword of contexts such as
+  `@version`) no longer has such a `QuoteRequest` read as received. An
+  LD-signed activity with a node whose `type` and `@type` together give two types or more one of which is not a string
+  or is shaped like a keyword on a line, or a type beside `@set`, on which Mastodon's job raises and applies nothing, is
+  ignored. No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 
+- The cutover stores a remote account's domain without the port or trailing dot of its actor id's host, as Kopje
+  stores one, and `verify-conversion` compares the domain. A Store converted before keeps such domains until a refresh
+  confirms each account; the query in [docs/cutover.md](docs/cutover.md) (Verification) lists them (#1725). A remote
+  actor id that is not an http or https URL, which the Worker never stores, now stops the conversion
+  (`remote-actor-uri-not-http`). No Store migration and no `wrangler.jsonc` change.
+- A remote actor whose member Kopje does not read from Fedify (an `icon`, `image` or collection spelled as a compact or
+  full IRI, an unreadable `updated`, an odd `tag`, an invalid language map) is stored instead of refused, as Mastodon
+  stores it, and so is one with an unreadable `published`, which Mastodon fails (#1709, #1710;
+  [docs/mastodon-deviations.md](docs/mastodon-deviations.md) lists the members that still refuse one). Its `published`
+  is read as Mastodon's Rails casts it: a date alone is read, a day past the month's end rolls over, and a value it
+  cannot read creates the account now. No Store migration and no `wrangler.jsonc` change.
+- Integer parameters are read as Rails reads them: the last of repeated values, the query's before the body's, as Ruby's
+  `String#to_i` reads it (underscores, a `0d` prefix, ASCII whitespace only), a JSON number by Ruby's `to_i` of the
+  number (`1e21` is 10^21 and `1e-7` is 0, where the string `"1e21"` is 1), a blank oEmbed `maxheight` or filter
+  `expires_in` as Rails' `blank?` reads it (U+0085 is a space, U+FEFF is not), and a negative `limit` as its absolute
+  value (#1729). A vote's choices are read by Ruby's `Integer()`, as Mastodon reads them: `0x1`, `0b1`, `0d1` and `0_1`
+  are 1, a leading 0 is octal (`010` is 8), and a JSON number is truncated (`1.9` is 1), where only decimal digits were
+  read before. A top-level key the query sends replaces the body's whole value under it, as Rails merges them: a query
+  `poll[expires_in]` leaves none of a body's `poll`, its choices included, and a query `expires_in[]` drops a body's
+  `expires_in`; a body's file parameter still wins over the query's. A `limit` of 0, or one that is not a number,
+  answers no statuses and no `Link` on the home, list, public and hashtag timelines and no notifications on
+  `/api/v1/notifications` and `/api/v2/notifications`, as Mastodon's do; the other lists paged by `max_id` read it as 1
+  (Mastodon answers 500), where one that is not a number read as the default before
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Request parameters"). No Store migration and no
+  `wrangler.jsonc` change.
+- Search with `resolve=true` finds a local post by its page URL, a local account by its profile URL (one of its tabs
+  included) and a stored remote account by its `/@user@domain` URL on this instance, as Mastodon's search does, when
+  the viewer may see them. Search reads `limit` and `offset` as Mastodon's does: a negative `limit` or `offset` is
+  refused with 400, `limit=0` answers nothing, and `offset` counts only with a `type`. A URL looked up with
+  `resolve=true` is no longer also searched as text, and an address is resolved only when accounts are searched
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Search). No Store migration and no `wrangler.jsonc`
+  change.
+- A remote actor whose `endpoints` has an unexpected type or value is no longer refused, and its shared inbox is read
+  as Mastodon reads it, and kept only when Kopje would send to the same URL as Mastodon
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Accounts). A delivery queued to a shared inbox that
+  answers 404, 405 or 410 moves to the recipient's personal inbox even when the actor no longer names that shared
+  inbox, when the delivery recorded its recipients; one queued before they were recorded moves as before, and gives up
+  when its recipient names another shared inbox since, as before. A queued forward without recorded recipients does
+  not move, as before. A delivery's recorded recipients are read only within the bound Kopje writes them in (an
+  imported value past it is read as none, as for a delivery queued before they were recorded). No Store migration and
+  no `wrangler.jsonc` change.
 - A fetched ActivityPub document, WebFinger answer or JSON-LD context is taken only from a 200 answer, as Mastodon takes
   them; another 2xx answer is a failed fetch. No Store migration and no `wrangler.jsonc` change.
 - Boolean parameters of the Mastodon API are read as Rails casts them in every endpoint: only `0`, `f`, `F`, `false`,
@@ -448,6 +544,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   and the author proofs of its `Delete`s were refused. Avatars and headers are read as Mastodon 4.7 reads them, and an
   actor's `followers` and `following` as Mastodon stores them (an object's `id`, an array's first value, a URI as
   Mastodon's parser writes it back), for the visibility of its posts, quote policies and the follower sync. No Store
+  migration and no `wrangler.jsonc` change.
+- An `Accept` or `Reject` that names a local account's follow by its id applies to that follow whatever its embedded
+  object gives, as Mastodon's do, before it is read as the answer to a quote request: one typed otherwise than
+  `Follow` (`as:Follow` or `QuoteRequest`, say) was ignored, so a rejected follow stayed and kept its access to the
+  rejecting account's followers-only posts. The id still names only a follow of the answering actor. No Store
   migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14

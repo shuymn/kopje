@@ -395,6 +395,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "statusPublishedSql",
   // A counter or time as read, within its range, or NULL (platform/stored-bounds.ts), a number.
   "storedCountSql",
+  // Whether a status's removal has begun: a predicate (domain/audience.ts).
+  "removalBegunSql",
   // Whether a value is no remote field link list or link back: predicates (platform/stored-bounds.ts).
   "remoteFieldLinksPastBoundSql",
   "remoteLinkBackPastBoundSql",
@@ -422,6 +424,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "REQUIRES_MENTION_SQL",
   // The heap of one row of a column map, a number.
   "rowHeapSql",
+  // A delivery row's provenance within its written bound (domain/deliveries.ts), a JSON array of account ids or NULL.
+  "rowProvenanceSql",
   // A column map's select list: its values are checked where the map names them (`column <alias.column>`).
   "selectSql",
   // A content warning cut to its read bytes (platform/stored-bounds.ts), no bounded column.
@@ -693,8 +697,9 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/blocks.ts accounts.uri": { count: 2, reason: IDENTITY },
   // The fourth: a staged retraction compares a uri past TARGET_CHUNK_BYTES with the activity's named ones in SQL; the
   // fifth and sixth: a held Reject's prefix, the local actor's uri compared with its id by bytes (HELD_REJECT); the
-  // seventh: a signed Delete's staged addressing compared with the signer's followers collection (stagedAddressing).
-  "src/domain/deliveries.ts accounts.uri": { count: 7, reason: IDENTITY },
+  // seventh: a signed Delete's staged addressing compared with the signer's followers collection (stagedAddressing);
+  // the eighth: a shared-inbox fallback's candidate by its row's provenance, whose host is compared (personalFallback).
+  "src/domain/deliveries.ts accounts.uri": { count: 8, reason: IDENTITY },
   "src/domain/featured-tags.ts accounts.uri": { count: 1, reason: IDENTITY },
   // The last two: a held Reject's actor uris, read as bytes and decoded strictly (replayReject).
   "src/domain/handshake-replays.ts accounts.uri": { count: 4, reason: IDENTITY },
@@ -708,11 +713,18 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/polls.ts accounts.uri": { count: 3, reason: IDENTITY },
   "src/domain/quotes.ts statuses.uri": { count: 7, reason: IDENTITY },
   "src/domain/quotes.ts accounts.uri": { count: 7, reason: IDENTITY },
-  "src/domain/remote-collections.ts accounts.uri": { count: 4, reason: IDENTITY },
+  "src/domain/remote-collections.ts accounts.uri": { count: 3, reason: IDENTITY },
   "src/domain/remote-collections.ts statuses.uri": { count: 1, reason: IDENTITY },
+  // A 404 removal's job names the status's author (removeGone).
+  "src/domain/remote-removal.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/remote-statuses.ts accounts.uri": { count: 2, reason: IDENTITY },
   "src/domain/reply-walk-reads.ts statuses.uri": { count: 1, reason: IDENTITY },
-  "src/domain/reply-walks.ts statuses.uri": { count: 1, reason: IDENTITY },
+  // A node's parent (storedPlace) and the root a Store-only step names (storeStep).
+  "src/domain/reply-walks.ts statuses.uri": { count: 2, reason: IDENTITY },
+  // A scanned reply recorded or owed by its URI, and a debt's path compared with the walk's nodes (#1607 D12).
+  "src/domain/reply-walk-debts.ts statuses.uri": { count: 2, reason: IDENTITY },
+  // A stored node's author, compared with its fetched document's (storedPlace).
+  "src/domain/reply-walks.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/reports.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/status-actions.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/status-actions.ts statuses.uri": { count: 1, reason: IDENTITY },

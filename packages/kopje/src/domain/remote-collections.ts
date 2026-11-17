@@ -1,8 +1,7 @@
-import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { sameOrigin } from "../platform/http-url";
 import { storedCount } from "../platform/stored-bounds";
-import { availableSql, isDistributable, requiresMention, type Visibility } from "./audience";
+import { availableSql, requiresMention, type Visibility } from "./audience";
 import { actorCollections, type ActorCollections } from "./collection-requests";
 import {
   displayName,
@@ -23,7 +22,7 @@ import {
   type RemoteActorInput,
   upsertRemoteActor,
 } from "./remote-actors";
-import { startRemoval } from "./remote-removal";
+import { removeGone } from "./remote-removal";
 import { type RemoteStatusInput, statusByUri } from "./remote-status-reads";
 import { storeFetchedStatus } from "./remote-statuses";
 import { isHashtagName } from "./status-text";
@@ -539,41 +538,6 @@ export const completePinFetches = writeOperation.atStoreTime("storeNow")<
   }
   return { pending: endRound(db, account.id, input.generation, done > 0, input.now), jobsPending: removed };
 });
-
-// Mastodon's FetchRemoteStatusService#fetch_status (v4.7.5 fetch_remote_status_service.rb:86-98): a 404 at a listed
-// status's own URI removes the status stored under that URI when the fetch completes, by whichever author (its origin
-// is the URI's, ID-2), when it is a remote original (never a local status, ID-3), public or unlisted
-// (isDistributable), and not withdrawn (its removal not begun). The removal starts as a Delete's does
-// (remote-removal.ts startRemoval: the job, the streamed delete, the hide, the quote's end), with no retraction
-// recorded and nothing forwarded, as Mastodon's RemoveStatusService keeps no tombstone: a later Create of the uri
-// stores it again once the removal ended. Its batches run in the inbound job rounds. Whether a removal started.
-function removeGone(db: Db, uri: string, now: number): boolean {
-  const status = db.first<{
-    id: string;
-    reblog_of_id: string | null;
-    visibility: Visibility;
-    withdrawn: number;
-    author_uri: string;
-    local: number;
-  }>(
-    `SELECT s.id, s.reblog_of_id, s.visibility, s.withdrawn,
-			(SELECT a.uri FROM accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE a.id = s.account_id) AS author_uri,
-			EXISTS (SELECT 1 FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} WHERE l.account_id = s.account_id)
-				AS local
-		FROM statuses s WHERE s.uri = ?`,
-    uri,
-  );
-  if (
-    status === undefined ||
-    status.local === 1 ||
-    status.reblog_of_id !== null ||
-    !isDistributable(status.visibility) ||
-    status.withdrawn !== 0
-  ) {
-    return false;
-  }
-  return startRemoval(db, status.id, status.author_uri, now);
-}
 
 // What the document part fetched of the account (federation/collections.ts): its document with its claim confirmed or
 // refused (RemoteActorInput: confirmed set or null), 'gone' (404 or 410), null when it is unusable, or 'transient' when

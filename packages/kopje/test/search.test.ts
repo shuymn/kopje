@@ -236,7 +236,84 @@ describe("GET /api/v2/search", () => {
     expect(await ids("&offset=1")).toEqual([id]);
     expect(await ids("&offset=1&type=")).toEqual([id]);
     expect(await ids("&offset=1&type=collections")).toEqual([]);
-    expect(await ids("&limit=-1&type=collections")).toEqual([id]);
+    // A negative limit is refused (Api::V2::SearchController#require_valid_pagination_options!).
+    const refused = await h.request(
+      `/api/v2/search?q=${encodeURIComponent(url)}&resolve=true&limit=-1&type=collections`,
+      bearer(h.users.alice.token),
+    );
+    expect(refused.status).toBe(400);
+  });
+
+  // SearchService#call (search_service.rb:11, :17) with limit_param (api/base_controller.rb:33-37): a limit of 0
+  // answers nothing, and the offset counts only with a type. The answer with a URL and resolve=true:
+  // test/search-resolution-store-calls.test.ts.
+  it("reads the limit and the offset as SearchService#call does", async () => {
+    const { h, search, statusIds } = await fixture();
+    const older = await post(h, h.users.alice, { status: "paged older #pagedtag" });
+    const newer = await post(h, h.users.alice, { status: "paged newer" });
+    const both = [newer.id, older.id];
+    const statuses = async (extra: string) => (await search("paged", extra)).statuses.map((s) => s.id);
+    // The guarded branches: the same queries find both statuses without the parameter.
+    expect(await statuses("")).toEqual(both);
+    expect(await search("paged", "&limit=0")).toEqual({ accounts: [], statuses: [], hashtags: [], collections: [] });
+    expect(await statusIds("paged", "&limit=0")).toEqual([]);
+    for (const offset of ["1", "20000"]) {
+      expect(await statuses(`&offset=${offset}`)).toEqual(both);
+      expect(await statuses(`&offset=${offset}&type=`)).toEqual(both);
+    }
+    expect(await statusIds("paged", "&offset=1")).toEqual([older.id]);
+    expect(await statusIds("paged", "&offset=20000")).toEqual([]);
+    // A plain query's type=hashtags searches hashtags, with resolve=true too: only a URL lookup is answered by nothing.
+    expect((await search("#pagedtag", "&type=hashtags&resolve=true")).hashtags.map((t) => t.name)).toEqual([
+      "pagedtag",
+    ]);
+  });
+
+  // Api::V2::SearchController (Mastodon 4.7.5): params.require(:q) first, then require_valid_pagination_options!
+  // (api/pagination.rb: a limit or offset whose to_i is negative), after the token is judged. The account search has no
+  // such check: its limit_param reads a negative limit as its absolute value.
+  it("refuses a negative limit or offset with 400, after a missing q and an invalid token", async () => {
+    const { h } = await fixture();
+    const token = h.users.alice.token;
+    await post(h, h.users.alice, { status: "refused" });
+    const answer = async (query: string, sent = token) => {
+      const response = await h.request(`/api/v2/search?${query}`, bearer(sent));
+      return [query, response.status, await response.json()];
+    };
+    const PAGINATION = { error: "Pagination values for `offset` and `limit` must be positive" };
+    for (const query of [
+      "q=refused&limit=-2",
+      "q=refused&offset=-1",
+      "q=refused&limit=-2abc",
+      "q=refused&limit=%20-1",
+      "q=refused&offset=-0d5&type=statuses",
+      "q=refused&limit=5&offset=-1",
+      "q=refused&limit=-1&resolve=true",
+      // Rails' last value of each.
+      "q=refused&limit=5&limit=-1",
+      "q=refused&offset=0&offset=-1&type=statuses",
+    ]) {
+      expect(await answer(query)).toEqual([query, 400, PAGINATION]);
+    }
+    // Not negative as Ruby reads them: searched.
+    for (const query of [
+      "q=refused&limit=-0",
+      "q=refused&limit=-_1",
+      "q=refused&limit=--1",
+      "q=refused&offset=-0&type=statuses",
+      "q=refused&limit=-1&limit=5",
+      "q=refused&offset=-1&offset=0&type=statuses",
+    ]) {
+      expect((await answer(query))[1]).toBe(200);
+    }
+    expect(await answer("limit=-2")).toEqual(["limit=-2", 400, { error: "Missing parameter q" }]);
+    expect(await answer("q=%20&offset=-1")).toEqual(["q=%20&offset=-1", 400, { error: "Missing parameter q" }]);
+    expect((await answer("q=refused&limit=-2", "not-a-token"))[1]).toBe(401);
+    // Before the query's own bound (RES-1), which Mastodon does not have.
+    const long = `q=${"a".repeat(501)}&limit=-1`;
+    expect(await answer(long)).toEqual([long, 400, PAGINATION]);
+    const accounts = await h.request("/api/v1/accounts/search?q=alice&limit=-1", bearer(token));
+    expect([accounts.status, (await accounts.json<unknown[]>()).length]).toEqual([200, 1]);
   });
 
   it("answers resolve=true from local data when the query is neither a URL nor an address", async () => {

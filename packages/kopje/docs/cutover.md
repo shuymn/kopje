@@ -126,11 +126,12 @@ kopje-admin verify-conversion <export> <dump file> [--accept-deletions] [--accep
 
 **Kopje's own functions.** Where a value is one Kopje derives itself, such as sanitized HTML (bios, status content and
 earlier versions), the search text of accounts and statuses, hashtag names, an object's language, the domain of a domain
-block, every status's thread and the conversations of the direct statuses, the converter derives it with Kopje's code,
-through `cli/lib/cutover/kopje-runtime.js`, so a converted row is the row Kopje would have written; the image export
-checks an image's signature the same way. A new derived value follows the same rule: its module joins `kopje-runtime.js`
-and its function is exported from `src/maintenance-render.ts` (for the npm package, which ships no sources), rather than
-a second version being written in the converter. `verify-conversion` derives the values it compares by its own code,
+block, a remote account's domain (its actor id's host without a port or a trailing dot, `hostDomain`), every status's
+thread and the conversations of the direct statuses, the converter derives it with Kopje's code, through
+`cli/lib/cutover/kopje-runtime.js`, so a converted row is the row Kopje would have written; the image export checks an
+image's signature the same way. A new derived value follows the same rule: its module joins `kopje-runtime.js` and its
+function is exported from `src/maintenance-render.ts` (for the npm package, which ships no sources), rather than a
+second version being written in the converter. `verify-conversion` derives the values it compares by its own code,
 sharing only the HTML sanitizer (see Verification); it does not compare search text.
 
 **Ids.** Accounts, statuses, media and lists get 18-digit TEXT ids. A legacy API id that already has 18 digits stays
@@ -318,12 +319,12 @@ recorded after the cutover, once the Access admin reviews them.
 
 **Stops.** The converter writes no dump when it finds rows it cannot carry over (`conversion.problems`: rows in tables
 the legacy code never wrote, unknown object types, statuses whose author is not local where it must be, duplicate URIs,
-a remote actor id longer than 2,048 bytes, a status or boost URI longer than 4,096 bytes (in UTF-8) or a remote username
-outside Mastodon's remote format, which the Worker never stores and which are identities that cannot be cut, a local
-account whose username is the instance domain in any case (`accounts:local-username-is-domain`, which would hold the
-instance actor's WebFinger handle; rename it in legacy first), lists without 18-digit ids, and the like), when rows
-reference accounts or statuses that do not exist and `--accept-deletions` is not given (`conversion.dropped`), or when
-no single KEK candidate unwraps every key.
+a remote actor id that is not an http or https URL or is longer than 2,048 bytes, a status or boost URI longer than
+4,096 bytes (in UTF-8) or a remote username outside Mastodon's remote format, which the Worker never stores and which
+are identities that cannot be cut, a local account whose username is the instance domain in any case
+(`accounts:local-username-is-domain`, which would hold the instance actor's WebFinger handle; rename it in legacy
+first), lists without 18-digit ids, and the like), when rows reference accounts or statuses that do not exist and
+`--accept-deletions` is not given (`conversion.dropped`), or when no single KEK candidate unwraps every key.
 
 **What `--accept-deletions` drops.** Besides the rows bridge migrations remove (Steps), `conversion.dropped` counts rows
 the conversion leaves out because legacy never showed them, or showed them only through what is also left out:
@@ -347,7 +348,7 @@ keyed by AP URIs, never by assigned ids, and compared as exact values:
 
 | Category                                                                                                                                                           | Record                                                                                                                                                                                                          |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `accounts`                                                                                                                                                         | locality, local username, display name, bio, avatar, header, lock, actor type, discoverability                                                                                                                  |
+| `accounts`                                                                                                                                                         | locality, local username, display name, bio, avatar, header, lock, actor type, discoverability, remote domain                                                                                                   |
 | `profile_updates`                                                                                                                                                  | with `--images`: the local accounts whose avatar or header changed, which publication announces; a repeated one fails                                                                                           |
 | `keys`                                                                                                                                                             | per local account: email, wrapped key bytes, salt bytes, public key, aliases (`alsoKnownAs`), posting visibility, sensitivity and language                                                                      |
 | `raw`                                                                                                                                                              | the legacy JSON of every remote account and status                                                                                                                                                              |
@@ -371,6 +372,19 @@ conversion's base time, at which a status whose `published` and `cdate` are both
 or outside years 0 to 9999) is stored: it reads it from a converted dump's `createdAt`, and a dump of the Store, which
 records its own time there, needs `--base-time` with the manifest's `baseTime` (without it the check stops with
 `base-time-required`).
+
+**Remote domains with a port or a trailing dot.** The converter stores a remote account's domain as the Worker does,
+without the port or trailing dot of its actor id's host. A Store converted before it did, or restored from such a
+Store's dump, may keep such domains, which address lookup, the one-account-per-address rule and the filters by domain
+read apart from the account's handle. Nothing stored tells a converted row from an imported one, so they are not
+rewritten; this read-only query lists the first 100 by id:
+
+```sh
+kopje-admin sql "SELECT id, uri, domain FROM accounts WHERE domain IS NOT NULL AND (instr(domain, ':') > 0 OR substr(domain, -1) = '.') ORDER BY id LIMIT 100"
+```
+
+Each such row heals when a refresh that WebFinger confirms rewrites its domain, which resolving the actor's id in search
+(`resolve=true`) starts.
 
 With `--images`, the expected avatars, headers, attachments, old image URLs and `media_files` come from `images.json`
 and the instance origin alone, by code that does not share the converter's mapping: a URL, a token, a served type or a

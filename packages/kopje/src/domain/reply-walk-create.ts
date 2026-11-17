@@ -1,4 +1,3 @@
-import { STATUSES_URI_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { sameOrigin } from "../platform/http-url";
 import { STATUS_URI_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
@@ -50,14 +49,12 @@ export function walkUri(value: string): boolean {
 
 // The items a create walk records of a node's first page: of its entries, the first CREATE_WALK_ITEMS ids a walk may
 // record on the node's origin (FetchRepliesService#filter_replies: any other origin, this instance's included, is
-// passed), less the statuses Kopje stores (one key read each). Each once, in order.
-export function createItems(db: Db, entries: readonly (string | null)[], nodeUri: string): string[] {
+// passed), stored or not, as FetchReplyWorker fetches each and updates a stored one. Each once, in order.
+export function createItems(entries: readonly (string | null)[], nodeUri: string): string[] {
   const taken = entries
     .filter((uri): uri is string => uri !== null && walkUri(uri) && sameOrigin(uri, nodeUri))
     .slice(0, CREATE_WALK_ITEMS);
-  return [...new Set(taken)].filter(
-    (uri) => db.first(`SELECT 1 AS x FROM statuses INDEXED BY ${STATUSES_URI_INDEX} WHERE uri = ?`, uri) === undefined,
-  );
+  return [...new Set(taken)];
 }
 
 // The create walk of a remote status a store just created, recorded in its transaction when there is work: a public or
@@ -75,7 +72,7 @@ export function recordCreateWalk(
   if (replies === null || replies === undefined || !isDistributable(status.visibility)) {
     return;
   }
-  const items = "items" in replies ? createItems(db, replies.items, status.uri) : [];
+  const items = "items" in replies ? createItems(replies.items, status.uri) : [];
   if ("items" in replies ? items.length === 0 : !walkUri(replies.uri) || !sameOrigin(replies.uri, status.uri)) {
     return;
   }

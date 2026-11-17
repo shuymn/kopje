@@ -1,4 +1,5 @@
 import { blockedDomain } from "../platform/domain-name";
+import { rubyToI } from "../platform/ruby-to-i";
 import { relationshipResponse } from "./accounts";
 import {
   type ApiHandler,
@@ -32,11 +33,11 @@ export const unmute = relation("unmute");
 // The latest expiry a mute can have: ISO 8601 times compare as text only up to year 9999.
 const MAX_EXPIRY = Date.UTC(9999, 11, 31, 23, 59, 59, 999);
 
-// When a mute of `duration` seconds expires, as Mastodon reads the parameter (`to_i`: an integer prefix, anything else
-// 0): null for 0 (never); a negative duration has already expired, and a very long one ends at MAX_EXPIRY.
+// When a mute of `duration` seconds expires, as Mastodon reads the parameter (`params[:duration].to_i`): null for 0
+// (never); a negative duration has already expired, and a very long one ends at MAX_EXPIRY.
 function muteExpiry(duration: string | undefined, now: number): string | null {
-  const seconds = Number.parseInt(duration ?? "", 10);
-  if (Number.isNaN(seconds) || seconds === 0) {
+  const seconds = rubyToI(duration ?? "");
+  if (seconds === 0) {
     return null;
   }
   return new Date(Math.min(Math.max(now + seconds * 1000, now), MAX_EXPIRY)).toISOString();
@@ -49,7 +50,7 @@ export const mute: ApiHandler = withParams(async (c, deps, p) => {
     credential: userCredential(c, deps),
     target: c.req.param("id") ?? "",
     notifications: parseBoolean(p.get("notifications")) ?? true,
-    expiresAt: muteExpiry(p.get("duration"), now),
+    expiresAt: muteExpiry(p.last("duration"), now),
     now,
   };
   return relationshipResponse(c, authorized(await storeCall(c, deps, (s, b) => s.mute(b, input))));

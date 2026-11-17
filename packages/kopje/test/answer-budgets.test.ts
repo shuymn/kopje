@@ -508,7 +508,7 @@ describe("composite answers within ANSWER_BYTES (RES-3)", () => {
     for (let offset = 0, page = 0; page < 10; page++) {
       const read = await answer<{ accounts: unknown[]; statuses: { id: string }[]; hashtags: unknown[] }>(
         h,
-        `/api/v2/search?q=needle&limit=40&offset=${offset}`,
+        `/api/v2/search?q=needle&type=statuses&limit=40&offset=${offset}`,
         alice.token,
       );
       expect(read.bytes).toBeLessThanOrEqual(ANSWER_BYTES);

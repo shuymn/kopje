@@ -48,6 +48,12 @@ import {
 
 const FEED = `s.visibility IN ${REACHES_FOLLOWERS_SQL}`;
 
+// The answer of the home, list, public, hashtag and link timelines to a limit of 0, after their lookups, as
+// Mastodon's feeds read none (Feed#get's Redis LIMIT 0 0, Paginable's LIMIT 0).
+function emptyPage(): Page<Status> {
+  return { items: [], newest: null, oldest: null };
+}
+
 type Cursor = { max: string | null; min: string | null; ascending: boolean; limit: number };
 
 function statusPage(page: PageQuery): Cursor {
@@ -290,6 +296,9 @@ function followedAuthorSql(author: string): string {
 // The followed hashtags are capped (MAX_FOLLOWED_TAGS in tags.ts).
 export const homeTimeline = userReadOperation<{ page: PageQuery; present: PresentInput }, Page<Status>>(
   (db, { page, present }, _viewer, viewer) => {
+    if (page.limit === 0) {
+      return emptyPage();
+    }
     const cursor = statusPage(page);
     const and = streamBitsSql(followOptionsSql(FOLLOWED_REPLIES_SQL));
     return windowStatuses(db, viewer, "homeFilter", homeWindow(db, viewer, cursor), cursor, present, and);
@@ -446,6 +455,9 @@ export const listTimeline = userReadOperation<
   if (list === undefined) {
     return null;
   }
+  if (page.limit === 0) {
+    return emptyPage();
+  }
   const cursor = statusPage(page);
   const and = followOptionsSql(repliesPolicySql(list.replies_policy, "?4"));
   const window = listWindow(db, viewer, list.id, cursor);
@@ -575,6 +587,9 @@ function publicRequestTerms(local: boolean, remote: boolean, onlyMedia: boolean,
 // A page reads a window of readWindow(limit) candidates from the cursor (publicConditions and audienceSql, without the
 // rest of the rule), then applies the list rule to them.
 export const publicTimeline = optionalUserReadOperation<PublicTimelineInput, Page<Status>>((db, input, viewer) => {
+  if (input.page.limit === 0) {
+    return emptyPage();
+  }
   const cursor = statusPage(input.page);
   const size = readWindow(cursor.limit);
   // The local timeline keeps its join to the author, which real statistics enter from the few local accounts
@@ -649,8 +664,8 @@ const MAX_TAG_TIMELINE_NAMES = 5;
 // tag's unlisted, private, direct or limited statuses. A page merges the names' streams into one window (tagWindow), as
 // home does, testing the request's conditions on the candidates by key when it has any, and applies the list rule to
 // it.
-export const tagTimeline = optionalUserReadOperation<TagTimelineInput, Page<Status>>(
-  (db, input, viewer) => tagTimelineWithin(db, input, viewer, answerAdmission).page,
+export const tagTimeline = optionalUserReadOperation<TagTimelineInput, Page<Status>>((db, input, viewer) =>
+  input.page.limit === 0 ? emptyPage() : tagTimelineWithin(db, input, viewer, answerAdmission).page,
 );
 
 // tagTimeline's read, its statuses admitted by `admission`: the API's answer, or a web page's list.
@@ -813,7 +828,7 @@ export const linkTimeline = optionalUserReadOperation<LinkTimelineInput, Page<St
   }
   const cursor = statusPage(input.page);
   if (cursor.limit === 0) {
-    return { items: [], newest: null, oldest: null };
+    return emptyPage();
   }
   const size = readWindow(cursor.limit);
   const window = singleWindow(

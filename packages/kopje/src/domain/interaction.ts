@@ -27,7 +27,8 @@ import { statusTarget, targetStatus } from "./web-pages/status";
 //     instance actor was answered with because of its own access (a followers-only status is stored, and not shown).
 //     The resolver fetches nothing for this instance's own addresses and URLs, and storeResolved finds a stored object
 //     by its exact uri only; so an address on this domain, a profile URL (/@user) and a status permalink
-//     (/@user/:id, the embed's forms) are mapped to the stored identities here (localTarget). Search keeps its rule.
+//     (/@user/:id, the embed's forms) are mapped to the stored identities here (localTarget). Search maps its own
+//     forms under the viewer's visibility (remote-statuses.ts localSearchTarget).
 //     A remote URL that resolves nothing shows no stored status, as Mastodon's ResolveURLService without
 //     on_behalf_of (authorize_interactions_controller.rb:33): storeResolved without a viewer.
 //   - webFollow follows through the follow service (followAccount), as the follow API does, and tells its outcomes
