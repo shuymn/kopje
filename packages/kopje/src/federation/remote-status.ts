@@ -36,6 +36,7 @@ import {
   storedMediaLink,
   storedText,
 } from "../platform/stored-bounds";
+import { untrustedCount } from "../platform/untrusted-count";
 import {
   cutCodeUnits,
   cutJsonString,
@@ -567,6 +568,8 @@ export function parseRemoteStatus(
     cardLink: cardLinkOf(object),
     cardCandidates,
     replies: createRepliesOf(object.replies, new URL(uri).origin),
+    untrustedFavourites: untrustedCount(object.likes),
+    untrustedReblogs: untrustedCount(object.shares),
     raw: JSON.stringify(object),
   };
 }

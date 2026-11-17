@@ -2277,6 +2277,15 @@ export function untrustedCountPastBoundSql(column: string): string {
 	ELSE 0 END`;
 }
 
+// untrustedCountPastBoundSql's acceptance of a value the Store is handed to write: null, or a safe integer within
+// 0..MAX_UNTRUSTED_COUNT.
+export function withinUntrustedCount(value: unknown): value is number | null {
+  return (
+    value === null ||
+    (Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= MAX_UNTRUSTED_COUNT)
+  );
+}
+
 // ---- Remote media: migration 0077_remote_media
 
 // The cache of remote media in the media bucket under remote/ (domain/remote-media.ts, the only writer of the three

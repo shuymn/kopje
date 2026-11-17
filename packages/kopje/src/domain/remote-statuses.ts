@@ -10,7 +10,7 @@ import type { Db } from "../db/sql";
 import { normalizeDomain, parseAddress } from "../platform/domain-name";
 import { httpUrl, sameOrigin } from "../platform/http-url";
 import { iso } from "../platform/iso-time";
-import { STATUS_EMOJIS_BYTES, storedMediaMeta, storedTime } from "../platform/stored-bounds";
+import { STATUS_EMOJIS_BYTES, storedMediaMeta, storedTime, withinUntrustedCount } from "../platform/stored-bounds";
 import { type Account, accountIdByAddress, presentAccountById, presentFor, type PresentInput } from "./accounts";
 import { instanceDomainOf } from "./actors";
 import {
@@ -338,6 +338,22 @@ function otherAtomUri(input: RemoteStatusInput): string | null {
   return input.atomUri === undefined || input.atomUri === input.uri ? null : input.atomUri;
 }
 
+// The SET terms of the untrusted counts (migration 0113_untrusted_counts) as Mastodon's update_counts! and
+// Create#attach_counts assign them: each only when the input gives it, NULL included (process_status_update_service.rb
+// :393-405), with untrustedCounts' four parameters. A flag apart from the value, never COALESCE: a NULL given clears
+// the count, and one not given keeps it.
+const UNTRUSTED_COUNTS_SET = `untrusted_favourites_count = CASE WHEN ? THEN ? ELSE untrusted_favourites_count END,
+			untrusted_reblogs_count = CASE WHEN ? THEN ? ELSE untrusted_reblogs_count END`;
+
+// The flag and value of each untrusted count `input` gives, favourites first: a count is given when the input holds one
+// the column's trigger accepts (withinUntrustedCount, null included); one from an earlier build (undefined) or of
+// another shape is not, and leaves the stored count.
+function untrustedCounts(input: RemoteStatusInput): [number, number | null, number, number | null] {
+  const given = (value: unknown): [number, number | null] =>
+    value !== undefined && withinUntrustedCount(value) ? [1, value] : [0, null];
+  return [...given(input.untrustedFavourites), ...given(input.untrustedReblogs)];
+}
+
 // ID-7: whether `uri`, or the atomUri naming the status it may be, was retracted by the author or deleted.
 function isDeletedUnder(db: Db, authorUri: string, uri: string, atomUri: string | null, now: number): boolean {
   return isDeleted(db, authorUri, uri, now) || (atomUri !== null && isDeleted(db, authorUri, atomUri, now));
@@ -437,6 +453,7 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
       : parent.account_id === author.id && parent.in_reply_to_uri !== null
         ? parent.in_reply_to_account_id
         : parent.account_id;
+  const [, favourites, , reblogs] = untrustedCounts(input);
   // Its thread (statuses.thread): the parent's when the parent is stored, else the conversation the sender names
   // (ActivityPub::Activity::Create#conversation_from_uri), else what the trigger of migration 0009 gives.
   const id = insertWithFreshId(
@@ -446,9 +463,9 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
       db.run(
         `INSERT INTO statuses (id, uri, url, account_id, in_reply_to_uri, in_reply_to_id, in_reply_to_account_id,
 					visibility, spoiler_text, content, sensitive, language, published_at, edited_at, remote_version, raw,
-					search_text, created_at, thread, quote_policy, emojis)
+					search_text, created_at, thread, quote_policy, emojis, untrusted_favourites_count, untrusted_reblogs_count)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-					COALESCE((SELECT p.thread FROM statuses p WHERE p.id = ?6), ?), ?, ?)`,
+					COALESCE((SELECT p.thread FROM statuses p WHERE p.id = ?6), ?), ?, ?, ?, ?)`,
         candidate,
         input.uri,
         input.url,
@@ -470,6 +487,9 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
         input.conversation ?? null,
         quotePolicy,
         statusEmojis(input),
+        // Create#attach_counts: a count not given is none, as is a NULL given.
+        favourites,
+        reblogs,
       );
       return candidate;
     },
@@ -750,6 +770,12 @@ export function updateRemoteStatus(
     if (poll !== undefined) {
       markPollFetched(db, existing.id, poll, ctx.storeNow);
     }
+    // update_counts! (:79), whatever the Update's sensitive, which this update assigns none of; a change of the counts
+    // alone broadcasts nothing and keeps the outcome (:82).
+    const counts = untrustedCounts(input);
+    if (counts[0] === 1 || counts[2] === 1) {
+      db.run(`UPDATE statuses SET ${UNTRUSTED_COUNTS_SET} WHERE id = ?`, ...counts, existing.id);
+    }
     const pollUpdated = poll === "written";
     // It broadcasts the update when it moved the quote's state (:82 in v4.7.5): the reset of an accepted quote, at
     // once; a move its verification makes notifies at that work's decision (quotes.ts finish). Not a legacy form
@@ -792,10 +818,11 @@ export function updateRemoteStatus(
     recordEdit(db, existing.id, existing.published_at);
   }
   markPollFetched(db, existing.id, storeRemotePoll(db, existing.id, input.poll ?? null, true, ctx.now), ctx.storeNow);
+  // update_counts! within handle_explicit_update!'s transaction (:56), in the same write.
   db.run(
     `UPDATE statuses SET content = ?, spoiler_text = ?, sensitive = ?, language = ?, raw = ?, search_text = ?,
 			remote_version = ?, edited_at = CASE WHEN ? THEN ? ELSE edited_at END, quote_policy = ?, emojis = ?,
-			filter_text_units = NULL
+			filter_text_units = NULL, ${UNTRUSTED_COUNTS_SET}
 		WHERE id = ?`,
     input.content,
     input.spoilerText,
@@ -808,6 +835,7 @@ export function updateRemoteStatus(
     editedAt,
     remoteQuotePolicy(db, author, input.quotePolicy),
     statusEmojis(input),
+    ...untrustedCounts(input),
     existing.id,
   );
   // update_mentions! makes every tagged account an active mention (process_status_update_service.rb:299 in v4.7.5),
