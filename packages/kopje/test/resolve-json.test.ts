@@ -55,3 +55,26 @@ describe("a WebFinger answer with an unpaired surrogate (#1718)", () => {
     },
   );
 });
+
+// Bytes that are not UTF-8 in a WebFinger answer are read as U+FFFD, where Mastodon keeps the bytes; both resolve an
+// address whose answer holds them in `aliases`, which neither reads (docs/mastodon-deviations.md).
+describe("a WebFinger answer with bytes that are not UTF-8", () => {
+  it("resolves an address whose answer holds them in a member it does not read", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const resource = "acct:bob@mastodon.example";
+    const webfinger = `${MASTODON}/.well-known/webfinger?resource=${encodeURIComponent(resource)}`;
+    const [before, after] = JSON.stringify({
+      subject: resource,
+      links: [{ rel: "self", type: AP, href: bob.uri }],
+      aliases: ["MARK"],
+    }).split("MARK");
+    const encoder = new TextEncoder();
+    const raw = new Uint8Array([...encoder.encode(before), 0xed, 0xb0, 0x80, ...encoder.encode(after)]);
+    t.web.serveRaw(webfinger, raw, "application/jrd+json");
+    expect((await resolve(t, "bob@mastodon.example")).body.accounts.map((a) => a.acct)).toEqual([
+      "bob@mastodon.example",
+    ]);
+    expect(t.web.fetched).toContain(webfinger);
+  });
+});

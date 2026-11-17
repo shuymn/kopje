@@ -658,6 +658,8 @@ describe("web page sink: the JSON mode", () => {
   it.each([
     ["an empty body", ""],
     ["invalid JSON", '{"a":'],
+    // Bytes that are not UTF-8: Mastodon reads them (fetch_oembed_service.rb:96 keeps them), so OpenGraph is the card
+    // where Mastodon makes it from the endpoint's answer (docs/mastodon-deviations.md).
     ["invalid UTF-8", new Uint8Array([0x22, 0xc3, 0x28, 0x22])],
     ["a lone surrogate written raw", new Uint8Array([0x22, 0xed, 0xa0, 0x80, 0x22])],
     // #1718: Mastodon's JSON.parse (fetch_oembed_service.rb:96) raises on a high one; Kopje refuses a lone low one

@@ -124,6 +124,31 @@ describe("a fetched document with an unpaired surrogate (#1718)", () => {
     expect((loaded.document as { publicKey: unknown[] }).publicKey).toHaveLength(good);
   });
 
+  // Bytes that are not UTF-8 (a surrogate's): a JSON-LD context holding them does not parse, as Mastodon's JSON-LD
+  // loader refuses it; a document reads each as U+FFFD, where Mastodon keeps the bytes (docs/mastodon-deviations.md).
+  it("refuses a JSON-LD context holding bytes that are not UTF-8, and reads a document's as U+FFFD", async () => {
+    const { web, l } = await loaders();
+    const encoder = new TextEncoder();
+    const raw = (json: unknown) => {
+      const [before, after] = JSON.stringify(json).split("MARK");
+      return new Uint8Array([...encoder.encode(before), 0xed, 0xb0, 0x80, ...encoder.encode(after)]);
+    };
+    const context = `${REMOTE}/contexts/bytes`;
+    web.serveRaw(
+      context,
+      raw({ "@context": { name: "https://remote.example/ns#name" }, junk: "MARK" }),
+      "application/ld+json",
+    );
+    const error = await failure(l.context(context));
+    expect(error).toBeInstanceOf(UnusableDocumentError);
+    expect(isTransientLoadError(error)).toBe(false);
+    await failure(l.context(context));
+    expect(web.fetched.filter((url) => url === context)).toHaveLength(2);
+    const note = `${REMOTE}/notes/bytes`;
+    web.serveRaw(note, raw({ id: note, type: "Note", content: "ok", junk: "xMARK" }));
+    expect(((await l.document(note)).document as { junk: string }).junk).toBe("x\uFFFD\uFFFD\uFFFD");
+  });
+
   it("loads one holding a surrogate pair, and refuses one past the bounds as before", async () => {
     const { web, l } = await loaders();
     const pair = `${REMOTE}/notes/pair`;

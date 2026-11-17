@@ -22,7 +22,26 @@ import { AS, like, localStatus, type Setup, setup, undo } from "./inbox-status-h
 type Json = Record<string, unknown>;
 
 // A body given as text is sent as it is.
-const bytes = (json: unknown) => new TextEncoder().encode(typeof json === "string" ? json : JSON.stringify(json));
+const bytes = (json: unknown) =>
+  json instanceof Uint8Array ? json : new TextEncoder().encode(typeof json === "string" ? json : JSON.stringify(json));
+
+// Byte sequences that are not UTF-8, as a remote may send them; a two-byte character is the control.
+const NOT_UTF8: [string, number[]][] = [
+  ["a surrogate's bytes", [0xed, 0xb0, 0x80]],
+  ["an overlong form", [0xc0, 0xaf]],
+  ["a lone continuation byte", [0x80]],
+  ["a truncated sequence", [0xe2, 0x82]],
+];
+const UTF8_CONTROL = [0xc3, 0xa9];
+
+// The body's bytes with `sequence` in the string of a member "junk", or in its key.
+const withBytes = (body: Json, sequence: number[], where: "value" | "key" = "value"): Uint8Array => {
+  const [before, after] = JSON.stringify(where === "value" ? { ...body, junk: "MARK" } : { ...body, MARK: 1 }).split(
+    "MARK",
+  );
+  const encoder = new TextEncoder();
+  return new Uint8Array([...encoder.encode(before), ...sequence, ...encoder.encode(after)]);
+};
 
 // The body's text with a member "junk" holding `escape`, which a later "junk":"ok" replaces: JSON.parse keeps "ok", so
 // the parsed value holds no unpaired surrogate, where Mastodon's parser refuses the text
@@ -154,12 +173,13 @@ describe("an inbound activity with an unpaired surrogate (#1718)", () => {
       keygen: fixtureKeyGen,
       loader: t.web.loader,
     });
-    const spool = async (body: Json | string) =>
+    const spool = async (body: Json | string | Uint8Array) =>
       (await maintenance.request("/inbox", await signedInit(bob, "/inbox", body, { at: NOW }))).status;
     const broken = like(bob, status.uri, { junk: "\ud800" });
     const control = like(bob, status.uri, { junk: "😀" });
     expect(await spool(broken)).toBe(202);
     expect(await spool(hidden(like(bob, status.uri), String.raw`\ud800`))).toBe(202);
+    expect(await spool(withBytes(like(bob, status.uri), NOT_UTF8[0]![1]))).toBe(202);
     expect(await spool(control)).toBe(202);
     const deps = { ...inboxDeps(() => t.store, t.web.loader), now: () => NOW };
     await maintenance.queue.deliver((batch) =>
@@ -169,12 +189,44 @@ describe("an inbound activity with an unpaired surrogate (#1718)", () => {
   });
 });
 
+// RES-2: bytes that are not UTF-8 make a body that does not parse (inbound.ts parseActivity, decoded strictly), as
+// Mastodon 4.7.5's inbox answers 400 to each such sequence in a value and 500 to one only in a key (Rails reads the
+// body as request parameters first; docs/mastodon-deviations.md, "Reading inbound activities"): answered 202 once the
+// signature, verified over the bytes as received, is checked, and nothing applied.
+describe("an inbound activity with bytes that are not UTF-8", () => {
+  it.each(NOT_UTF8)("refuses %s as invalid JSON, in a value or a key", async (_, sequence) => {
+    expect(await outcome(withBytes(remoteLike(), UTF8_CONTROL))).toBe("ok Like");
+    expect(await outcome(withBytes(remoteLike(), UTF8_CONTROL, "key"))).toBe("ok Like");
+    expect(await outcome(withBytes(remoteLike(), sequence))).toBe("invalid-json");
+    expect(await outcome(withBytes(remoteLike(), sequence, "key"))).toBe("invalid-json");
+  });
+
+  it.each(NOT_UTF8)("answers a signed Undo holding %s 202 and applies nothing", async (_, sequence) => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const status = await localStatus(t, { status: "liked", visibility: "public" });
+    const liked = like(bob, status.uri);
+    expect(await t.post(bob, liked)).toBe(202);
+
+    const broken = withBytes(undo(bob, liked.id), sequence);
+    expect(await t.post(bob, broken)).toBe(202);
+    expect(await favourites(t)).toBe(1);
+    // The signature is verified over the bytes as received: signed over their decoding (U+FFFD), they fail it.
+    const signed = await signedInit(bob, "/inbox", new TextDecoder().decode(broken), { at: NOW });
+    expect((await t.request("/inbox", { ...signed, body: broken })).status).toBe(401);
+
+    expect(await t.post(bob, withBytes(undo(bob, liked.id), UTF8_CONTROL))).toBe(202);
+    expect(await favourites(t)).toBe(0);
+  });
+});
+
 // C5, RES-2: the inbox reads the body before any signature is verified, so the check's added work (one pass over the
 // text, then one over each string and key of the parsed value) is timed through the real gate, unsigned, on a body at
 // INBOX_BODY_LIMIT bytes and MAX_JSON_NODES values. Each string is a run of surrogate pair escapes after ASCII fill:
 // the text pass reads every code unit and decodes each escape, the most work per byte it has, and the parsed strings
 // are held as UTF-16 and checked to their end. The broken body ends its last string, the last token the text pass
-// reads, with a lone high surrogate escape in place of the pair's last 6 bytes.
+// reads, with a lone high surrogate escape in place of the pair's last 6 bytes; another ends it with a surrogate's
+// bytes, which the strict UTF-8 decoding meets last.
 describe("the unpaired surrogate check at the body bounds", () => {
   const GENEROUS_MS = 1_000;
   const PAIR = String.raw`\ud83d\ude00`;
@@ -191,9 +243,17 @@ describe("the unpaired surrogate check at the body bounds", () => {
   const text = (all: string[]) => `${head}${all.map((c) => `"${c}"`).join(",")}]}`;
   const filled = text(strings);
   const broken = text([...strings.slice(0, -1), `${strings.at(-1)!.slice(0, -PAIR.length)}aaaaaa\\ud83d`]);
+  // MARK (4 bytes) becomes the surrogate's 3 bytes, so 9 + 3 bytes replace the pair's 12.
+  const marked = text([...strings.slice(0, -1), `${strings.at(-1)!.slice(0, -PAIR.length)}${"a".repeat(9)}MARK`]);
+  const at = marked.indexOf("MARK");
+  const encoded = new TextEncoder().encode(marked);
+  const notUtf8 = new Uint8Array(encoded.byteLength - 1);
+  notUtf8.set(encoded.subarray(0, at));
+  notUtf8.set([0xed, 0xb0, 0x80], at);
+  notUtf8.set(encoded.subarray(at + 4), at + 3);
 
-  it("holds both bodies at the bounds, and refuses only the broken one", async () => {
-    for (const body of [filled, broken]) {
+  it("holds the bodies at the bounds, and refuses only the broken ones", async () => {
+    for (const body of [filled, broken, notUtf8]) {
       expect(bytes(body).byteLength).toBe(INBOX_BODY_LIMIT);
     }
     expect(jsonTextMalformed(filled)).toBe(false);
@@ -203,11 +263,13 @@ describe("the unpaired surrogate check at the body bounds", () => {
     expect(jsonTextMalformed(`${broken.slice(0, -9)}"]}`)).toBe(false);
     expect(await outcome(filled)).toBe("ok Like");
     expect(await outcome(broken)).toBe("invalid-json");
+    expect(await outcome(notUtf8)).toBe("invalid-json");
   });
 
   it.each([
     ["a well-formed body", filled],
     ["a body broken in the last string token", broken],
+    ["a body whose last string token ends with bytes that are not UTF-8", notUtf8],
   ])("answers %s within a generous time", async (_, body) => {
     const t = await setup();
     const started = performance.now();

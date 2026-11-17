@@ -220,8 +220,11 @@ async function rollback(store: StoreStub, overrides: Record<string, unknown> = {
     );
     expect(response.status).toBe(expected);
   };
-  const spool = async (path: string, activity: Record<string, unknown> | string, signer: TestActor = carol) =>
-    post(path, await signedInit(signer, path, activity));
+  const spool = async (
+    path: string,
+    activity: Record<string, unknown> | string | Uint8Array,
+    signer: TestActor = carol,
+  ) => post(path, await signedInit(signer, path, activity));
   // Kopje's consumer, journaling or (journal: false) holding requests as in maintenance.
   const consume = (journal = true, ready = false) =>
     kopje.deliver(
@@ -801,7 +804,7 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
   });
 
   // #1718: a body or a key document holding an unpaired surrogate is JSON that does not parse, as on the inbox.
-  it("keeps an activity holding an unpaired surrogate as invalid JSON, and hands on its well-formed copy", async () => {
+  it("keeps an activity holding an unpaired surrogate or bytes not UTF-8 as invalid JSON", async () => {
     const store = await importedStore();
     const r = await rollback(store);
     const warn = vi.spyOn(console, "warn");
@@ -810,11 +813,18 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
       // One whose unpaired surrogate a later duplicate key hides from JSON.parse, which Mastodon's parser refuses.
       const hidden = JSON.stringify({ ...follow(r.carol.uri, 2), junk: "ok" });
       await r.spool("/ap/users/alice/inbox", hidden.replace(`"junk":"ok"`, String.raw`"junk":"\ud800","junk":"ok"`));
-      await r.spool("/ap/users/alice/inbox", { ...follow(r.carol.uri, 3), junk: "\ud83d\ude00" });
+      // One holding bytes that are not UTF-8 (a surrogate's), which Mastodon's inbox refuses.
+      const [before, after] = JSON.stringify({ ...follow(r.carol.uri, 3), junk: "MARK" }).split("MARK");
+      const encoder = new TextEncoder();
+      await r.spool(
+        "/ap/users/alice/inbox",
+        new Uint8Array([...encoder.encode(before), 0xed, 0xb0, 0x80, ...encoder.encode(after)]),
+      );
+      await r.spool("/ap/users/alice/inbox", { ...follow(r.carol.uri, 4), junk: "\ud83d\ude00" });
       await r.consume();
-      expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 2 });
+      expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 3 });
       expect(r.legacy.pending.map((m) => (m.body as LegacyInboxMessage).activity.id)).toEqual([
-        `${r.carol.uri}#follows/3`,
+        `${r.carol.uri}#follows/4`,
       ]);
       expect(warn).toHaveBeenCalledWith({ event: "kopje.cutover.drain.unverified", reason: "invalid-json" });
     } finally {

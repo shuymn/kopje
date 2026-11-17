@@ -51,6 +51,10 @@ type Kind = {
   objectRoot: boolean;
   // Whether its key entries are read as Mastodon 4.7 reads them (readableKeys): ActivityPub documents only.
   keyEntries: boolean;
+  // Whether bytes that are not UTF-8 make a body that does not parse (RES-2): a JSON-LD context's, as Mastodon's
+  // JSON-LD loader refuses them; a document or a WebFinger answer reads each as U+FFFD, where Mastodon keeps the bytes
+  // (docs/mastodon-deviations.md, "Reading inbound activities").
+  strictUtf8: boolean;
 };
 
 const DOCUMENT: Kind = {
@@ -59,6 +63,7 @@ const DOCUMENT: Kind = {
   refusal: "Not an ActivityPub document",
   objectRoot: true,
   keyEntries: true,
+  strictUtf8: false,
 };
 
 // Search resolution's first request and an alternate's (federation/resolve.ts): Mastodon's
@@ -74,6 +79,7 @@ const CONTEXT: Kind = {
   refusal: "Not a JSON-LD context",
   objectRoot: false,
   keyEntries: false,
+  strictUtf8: true,
 };
 
 // WebFinger answers (RFC 7033): JRD, as servers serve it. Never trusted as an ActivityPub object; only the actor link
@@ -85,6 +91,7 @@ const WEBFINGER: Kind = {
   refusal: "Not a WebFinger document",
   objectRoot: true,
   keyEntries: false,
+  strictUtf8: false,
 };
 
 // A document refused by policy (scheme, host, redirect, type, size, id, root) or unusable as served. Fetching
@@ -513,9 +520,16 @@ async function readDocument(
     throw error instanceof FetchError ? error : new UnusableDocumentError(final, "Document is not valid JSON");
   }
   // RES-2: a string token holding an unpaired surrogate (a key or a value, one a later duplicate key replaced included)
-  // makes the body JSON that does not parse (json-bounds.ts; docs/mastodon-deviations.md). Judged on the text, before
-  // anything reads the document, trims or imports its keys (readableKeys) or hands it on.
-  if (jsonTextMalformed(new TextDecoder().decode(body))) {
+  // makes the body JSON that does not parse (json-bounds.ts; docs/mastodon-deviations.md), and so do bytes that are not
+  // UTF-8 where the kind says so (strictUtf8). Judged on the bytes and the text, before anything reads the document,
+  // trims or imports its keys (readableKeys) or hands it on.
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: kind.strictUtf8, ignoreBOM: false }).decode(body);
+  } catch {
+    throw new UnusableDocumentError(final, "Document is not valid JSON");
+  }
+  if (jsonTextMalformed(text)) {
     throw new UnusableDocumentError(final, "Document is not valid JSON");
   }
   // A cheap pre-filter only: it sees the literal id and @id, not a JSON-LD alias of @id. The identity that counts is

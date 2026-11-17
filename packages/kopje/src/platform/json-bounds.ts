@@ -7,8 +7,8 @@
 // Mastodon's parser (json 2.21.2, json_string_unescape) raises on a high surrogate not followed by a low one, wherever
 // the token sits, a member a later duplicate key replaces included; Kopje refuses a lone low surrogate too, which that
 // parser keeps as invalid UTF-8 (docs/mastodon-deviations.md, "Reading inbound activities"). It is judged on the text,
-// since JSON.parse keeps only the last of duplicate keys. After UTF-8 decoding (TextDecoder replaces what is not
-// UTF-8) only a \u escape gives one; a raw one in a text from elsewhere is read too.
+// since JSON.parse keeps only the last of duplicate keys. After UTF-8 decoding (strict for an activity or a context,
+// U+FFFD for what is not UTF-8 elsewhere) only a \u escape gives one; a raw one in a text from elsewhere is read too.
 
 // Values (objects, arrays and scalars) in one document. A Mastodon actor or note has a few hundred.
 export const MAX_JSON_NODES = 10_000;

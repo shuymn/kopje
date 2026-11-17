@@ -200,6 +200,26 @@ describe("link details: the Mastodon spec", () => {
     expect((await details(body(page))).title).toBe(title);
   });
 
+  // Bytes that are not UTF-8 in a page are read as U+FFFD, one for each maximal sequence that is not UTF-8 (WHATWG
+  // decoding), as Mastodon's HTML5 parser reads them (link_details_extractor.rb:300): its script is read with them, the
+  // title carrying as many U+FFFD as Mastodon's (docs/mastodon-deviations.md).
+  it.each([
+    ["a surrogate's bytes", [0xed, 0xb0, 0x80], 3],
+    ["an overlong form", [0xc0, 0xaf], 2],
+    ["a lone continuation byte", [0x80], 1],
+    ["a truncated sequence", [0xe2, 0x82], 1],
+  ])("reads a script holding %s with U+FFFD in their place", async (_name, sequence, replaced) => {
+    const page = body(`<script type="application/ld+json">{"@type":"NewsArticle","headline":"newsMARK"}</script>`);
+    const [before, after] = page.split("MARK");
+    const encoder = new TextEncoder();
+    const html = new Uint8Array([...encoder.encode(before), ...sequence, ...encoder.encode(after)]);
+    const scan = await scanHtml(html, { label: "utf-8", bomLength: 0 }, CARD_SCAN);
+    if ("failed" in scan) {
+      throw new Error(`scan failed: ${scan.failed}`);
+    }
+    expect(linkDetails(scan, ORIGINAL).title).toBe(`news${"\uFFFD".repeat(replaced)}`);
+  });
+
   it("reads structured data after an unsupported object in the same block", async () => {
     const block = `[{"@context": "https://schema.org", "@type": "ItemList", "name": "Man bites cat"}, ${LD_JSON}]`;
     expect(await details(body(`<script type="application/ld+json">${block}</script>`))).toMatchObject(STRUCTURED);

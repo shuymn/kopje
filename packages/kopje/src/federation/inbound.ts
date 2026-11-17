@@ -262,9 +262,12 @@ async function activityEnvelope(
 
 // `rules` is for tests of the reading's second layer (ldSignedReading); every caller reads under all of them.
 export async function parseActivity(body: Uint8Array, rules: Rules = {}): Promise<Parsed> {
-  const text = new TextDecoder().decode(body);
+  let text: string;
   let json: unknown;
   try {
+    // RES-2: bytes that are not UTF-8 make a body that does not parse, as Mastodon's inbox refuses them (its request
+    // parameters, docs/mastodon-deviations.md); the signature is verified over the bytes as received.
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body);
     json = JSON.parse(text);
   } catch {
     return { ok: false, reason: "invalid-json" };
@@ -1405,9 +1408,11 @@ export async function verifySpooledRequest(
   if (media === null || !isActivityPubMediaType(media)) {
     return { ok: false, transient: false, reason: "not-activitystreams" };
   }
-  const text = new TextDecoder().decode(request.body);
+  let text: string;
   let json: unknown;
   try {
+    // As parseActivity reads it: bytes that are not UTF-8 make a body that does not parse.
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(request.body);
     json = JSON.parse(text);
   } catch {
     return { ok: false, transient: false, reason: "invalid-json" };

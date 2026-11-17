@@ -1624,7 +1624,9 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   - A page's JSON-LD script (`link_details_extractor.rb:108`): Mastodon takes its title from one holding it in a member
     it does not read, and makes no card from one holding it in the headline (`link_details_extractor.rb:164` raises);
     Kopje reads the next script or the page's other data in both.
-    Neither fetches a remote NodeInfo document. Accepted, 2026-11-17.
+
+  Neither fetches a remote NodeInfo document. Accepted, 2026-11-17.
+
 - An inbox body that does not parse as JSON (`JSON.parse` refuses it, or a string token holds an unpaired surrogate) is
   answered 202 once its signature is checked (401 without a valid one), and nothing is applied (`parseActivity`,
   `invalid-json`). Mastodon reads an ActivityStreams body as request parameters before the action runs
@@ -1635,6 +1637,26 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   `request.rb:438`), or 500 when the invalid UTF-8 sits only in a key (the parameter filter raises on it,
   `parameter_filter.rb:140`, from `params_wrapper.rb:302`). A Mastodon sender drops a delivery answered 400 as one
   answered 202 (`json_ld_helper.rb:380-382`, unsalvageable) and retries one answered 500. Accepted, 2026-11-17.
+- Bytes that are not UTF-8 in a JSON text from a remote server (a surrogate's bytes, an overlong form, a lone
+  continuation byte, a truncated sequence) make an inbound activity and a JSON-LD context JSON that does not parse,
+  decoded strictly (on spool replay and in the cutover rollback's drain too; the signature is verified over the bytes as
+  received), where Mastodon refuses them; elsewhere Kopje decodes as Mastodon reads them or as before:
+  - An inbox body: Mastodon answers 400 to one holding them in a value and 500 to one holding them only in a key, as for
+    a lone low surrogate escape (the previous entry); Kopje answers 202 and applies nothing.
+  - A JSON-LD context: Mastodon's loader refuses one served without a charset wherever they sit (`truncated_body`,
+    `request.rb:270-291`, keeps such a body binary, and MultiJson's `json_gem` adapter, `json_gem.rb:42-45`, refuses
+    binary input that is not UTF-8) and one served as UTF-8 holding them in a term definition (json-ld 3.3.2,
+    `context.rb:666`), but reads one served as UTF-8 holding them outside `@context`, which Kopje refuses.
+  - A fetched document or WebFinger answer: Kopje reads each such sequence as U+FFFD. Mastodon keeps the bytes
+    (`body_to_json` and `webfinger.rb:15` parse them as they are), so it stores an actor or a status holding them only
+    in a member it does not store and nothing where PostgreSQL would store them (a name, a summary, a status's content),
+    which Kopje stores with U+FFFD, and both resolve an address whose answer holds them in `aliases`.
+  - An oEmbed document: Kopje refuses it (the card falls back to the page's OpenGraph), where Mastodon reads it
+    (`fetch_oembed_service.rb:96`) and makes its card unless a member it stores holds them.
+  - A page's JSON-LD script: both read each such sequence as U+FFFD, one for each maximal sequence (WHATWG decoding:
+    Mastodon's HTML5 parser, `link_details_extractor.rb:300`; Kopje's HTML rewriter).
+
+  Accepted, 2026-11-17.
 
 Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NET-1 in `docs/threat-model.md`):
 
