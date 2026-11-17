@@ -3645,13 +3645,11 @@ function removeFeatured(
   return retract(db, actor.uri, uri, now) ? applied("item-retracted") : retryLater("retraction-cap");
 }
 
-// Update#update_collection: a stored remote collection of the actor's, by its id, applied again from the embedded
-// document (remote-featured-collections.ts); one Kopje does not hold is not stored by an Update, and no sync is asked.
-// It is a change of the actor's collections that a sync's read under way does not hold (markCollectionsChanged).
+// Update#update_collection: the actor's collection, by its id, stored or updated from the embedded document as an Add
+// stores one (ProcessFeaturedCollectionService's find_or_initialize_by; remote-featured-collections.ts applies every
+// rule, the owner and MAX_REMOTE_COLLECTIONS included); no sync is asked. It is a change of the actor's collections
+// that a sync's read under way does not hold (markCollectionsChanged).
 const updateCollection: Handler<"UpdateCollection"> = (db, actor, activity, input) => {
-  if (ownCollectionByUri(db, actor.id, activity.object.id) === undefined) {
-    return ignored("not-held");
-  }
   markCollectionsChanged(db, actor.id);
   const { collection } = applyFeaturedCollection(db, actor, activity.object, input.origin, input.now);
   return collection === null ? ignored("not-applied") : applied("collection-updated");

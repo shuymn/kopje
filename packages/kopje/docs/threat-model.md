@@ -494,9 +494,9 @@ against their own instance. TLS is assumed between all parties.
   the actor's origin with `attributedTo` the actor, an item's id on its collection's origin and its authorization on
   its member's; such an `Add` or `Remove` may have no id (Mastodon 4.7.5 sends them so; their effects are keyed by the
   collection's and the item's uri), one to the actor's `featured` or `featuredTags` collection may not; an `Update`
-  changes only a collection Kopje stores of the actor's; a `Delete` of a `FeatureAuthorization` is the member's alone
-  and revokes the member's item only while it names the item's current authorization (verified, or the candidate of
-  one not verified), never after a revision replaced it. A search with `resolve=true` stores a fetched
+  stores or changes a collection of the actor's as an `Add` does; a `Delete` of a `FeatureAuthorization` is the member's
+  alone and revokes the member's item only while it names the item's current authorization (verified, or the candidate
+  of one not verified), never after a revision replaced it. A search with `resolve=true` stores a fetched
   `FeaturedCollection` only for the stored account it is attributed to, by the same rules, and answers one Kopje stores
   as stored. A sync's read applies its listing only when none of these changes of the account's collections committed
   after the claim of its round (`collections_changed`, set by each and cleared by each claim), so an older listing never

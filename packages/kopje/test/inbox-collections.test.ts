@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { MAX_REMOTE_COLLECTIONS } from "../src/domain/remote-featured-collections";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { mastodon47Signed, mastodonFeatureDelete } from "./author-proof-helpers";
@@ -127,7 +128,7 @@ describe("an owner's Add and Remove without an id (D20)", () => {
 });
 
 describe("an owner's Update of a collection", () => {
-  it("updates its own stored collection and queues only the items whose revision changed, asking no sync", async () => {
+  it("updates its own collection and queues only the items whose revision changed, asking no sync", async () => {
     const t = await setup();
     const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
     const other = await featuredOwner(t.web, "other", COLLECTIONS_ONLY);
@@ -154,10 +155,41 @@ describe("an owner's Update of a collection", () => {
         check_due_at: NOW,
       },
     ]);
-    // A collection it does not hold is not stored by an Update.
-    expect(await t.post(owner, update(owner, collection(owner, [])))).toBe(202);
-    expect(await collectionRows(t)).toHaveLength(1);
     expect(await syncs(t)).toEqual([]);
+  });
+
+  it("stores a collection Kopje does not hold, as an Add would, up to MAX_REMOTE_COLLECTIONS", async () => {
+    const t = await setup();
+    const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
+    const other = await featuredOwner(t.web, "other", COLLECTIONS_ONLY);
+    await storedOwner(t, other);
+    const member = await storedMember(t, "member", OTHER);
+    const { listed } = await synced(t, owner, []);
+    const uris = async () => (await collectionRows(t)).map((row) => row.uri);
+
+    // Another actor's Update of a collection attributed to the owner stores nothing.
+    const forged = collection(owner, []);
+    expect(await t.post(other, update(other, forged))).toBe(202);
+    expect(await uris()).toEqual([listed.id]);
+
+    // The owner's: stored with its items, queued for their checks (ProcessFeaturedCollectionService's
+    // find_or_initialize_by), and no sync asked.
+    const entry = item(owner, member);
+    const fresh = collection(owner, [entry]);
+    expect(await t.post(owner, update(owner, fresh))).toBe(202);
+    expect(await uris()).toEqual([listed.id, fresh.id].toSorted());
+    expect(await items(t, fresh.id)).toMatchObject([{ uri: entry.id, state: PENDING, check_due_at: NOW }]);
+    expect(await syncs(t)).toEqual([]);
+
+    const more = Array.from({ length: MAX_REMOTE_COLLECTIONS - 2 }, () => collection(owner, []));
+    for (const entry of more) {
+      expect(await t.post(owner, update(owner, entry))).toBe(202);
+    }
+    expect(await uris()).toHaveLength(MAX_REMOTE_COLLECTIONS);
+    const past = collection(owner, []);
+    expect(await t.post(owner, update(owner, past))).toBe(202);
+    expect(await uris()).not.toContain(past.id);
+    expect(await uris()).toHaveLength(MAX_REMOTE_COLLECTIONS);
   });
 
   it("fetches nothing again for settled items an Update lists unchanged ten times", async () => {
