@@ -364,6 +364,12 @@ constraint is). A dump taken before 0089 restores into a Store at its own migrat
 keeps each account's newest pins in pin order (`created_at` descending, then `status_id` descending) and deletes the
 rest.
 
+Scheduled statuses' uploads (migration `0109_scheduled_media_cap`): at most 4 `media_attachments` rows name one
+`scheduled_status_id`; a chunk that holds a fifth for one fails with `media_attachments: more media than a scheduled
+status may hold`, refused as `chunk-failed`. A dump taken before 0109 restores into a Store at its own migrations,
+whose upgrade keeps each scheduled status's first four by `position`, then `id`, and detaches the rest (no scheduled
+status, `position` 0, `gc_at` a day after the upgrade).
+
 Status cards (migration `0067_status_cards`): a `status_cards` row names its status (`status_id`, 18 ASCII digits, a
 `statuses` row it goes with) and is pending (`due_at` set, `fetched_at` NULL) or attached (`fetched_at` set, `due_at`
 NULL, a non-empty `title`; CHECKs `status_card_pending_or_attached` and `status_card_attached_title`). `url` is

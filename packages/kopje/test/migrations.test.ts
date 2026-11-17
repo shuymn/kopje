@@ -23,6 +23,7 @@ import {
   REJECT_REPLAYS,
   SAFE_MS,
 } from "../src/domain/job-attempts";
+import { DETACHED_GRACE_MS } from "../src/domain/media";
 import { MODERATION_LOG_KEEP } from "../src/domain/moderation-log";
 import { runNotificationRequestJobs } from "../src/domain/notification-requests";
 import { readOperation, sessionOperation, writeOperation } from "../src/domain/operation";
@@ -31,8 +32,9 @@ import { MAX_REMOTE_PINS } from "../src/domain/remote-collections";
 import { storeRemoteStatus } from "../src/domain/remote-statuses";
 import { NODE_ATTEMPTS, REPLY_READ_ENTRIES, WALK_PAGES, WALK_STATUSES } from "../src/domain/reply-walks";
 import { actOnReport, fileRemoteReports, getAdminReport } from "../src/domain/reports";
+import { heldFullSql } from "../src/domain/scheduled-statuses";
 import { accountSearchText } from "../src/domain/search-text";
-import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
+import { MAX_STATUS_MEDIA, MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
 import { MAX_RAW_LENGTH } from "../src/domain/status-text";
 import { emitTriggers, STORED_TRIGGERS } from "../src/domain/stored-triggers";
 import { EDIT_LISTENED_SQL, JOURNAL_SPAN } from "../src/domain/stream-journal";
@@ -416,9 +418,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(85);
+      expect(STORED_TRIGGERS.size).toBe(87);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        85 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        87 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -14599,4 +14601,268 @@ describe("0108_collection_jobs", () => {
       expect(() => sql.exec("DELETE FROM collection_jobs")).toThrow(/FOREIGN KEY/);
     });
   });
+});
+
+describe("0109_scheduled_media_cap", () => {
+  const NAME = "0109_scheduled_media_cap";
+  const at = NAMES.indexOf(NAME);
+  const REFUSED = /media_attachments: more media than a scheduled status may hold/;
+  const OWNER = "100000000000000001";
+  const TRIGGERS = ["media_attachments_scheduled_cap_insert", "media_attachments_scheduled_cap_update"];
+  // The detach as removeScheduled writes it (src/domain/scheduled-statuses.ts), for the uploads past each scheduled
+  // status's first MAX_STATUS_MEDIA by (position, id), attachable again after DETACHED_GRACE_MS.
+  const DETACH = `UPDATE media_attachments SET scheduled_status_id = NULL, position = 0,
+  gc_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+${DETACHED_GRACE_MS / 86_400_000} day')
+WHERE id IN (
+  SELECT h.id FROM (
+    SELECT m.id, row_number() OVER (PARTITION BY m.scheduled_status_id ORDER BY m.position, m.id) AS n
+    FROM media_attachments m
+    WHERE m.scheduled_status_id IS NOT NULL
+  ) h WHERE h.n > ${MAX_STATUS_MEDIA});`;
+  // The file's statements, comments left out.
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .trim();
+  const scheduled = (n: number) => String(300000000000000000n + BigInt(n));
+  const upload = (n: number) => String(800000000000000000n + BigInt(n));
+
+  // OWNER, a local account, and its scheduled statuses `ids`.
+  function seedOwner(sql: SqlStorage, ids: readonly string[]) {
+    sql.exec(
+      "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/owner', 'owner', NULL)",
+      OWNER,
+    );
+    sql.exec(
+      "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, 'o@x.test', X'00', X'00', 'k')",
+      OWNER,
+    );
+    for (const [i, id] of ids.entries()) {
+      sql.exec(
+        "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, ?, '{}')",
+        id,
+        OWNER,
+        new Date(Date.UTC(2026, 11, 1) + i * 60_000).toISOString(),
+      );
+    }
+  }
+
+  // An upload of OWNER's, held by `held` at `position`, or unattached (attachable until a day after NOW).
+  function seedUpload(sql: SqlStorage, n: number, held: string | null, position = 0) {
+    sql.exec(
+      `INSERT INTO media_attachments (id, account_id, scheduled_status_id, position, type, url, gc_at)
+			VALUES (?, ?, ?, ?, 'image', 'https://kopje.test/files/x/full', ?)`,
+      upload(n),
+      OWNER,
+      held,
+      position,
+      held === null ? new Date(NOW + 86_400_000).toISOString() : null,
+    );
+  }
+
+  it("follows 0108_collection_jobs, declared foreignKeys: 'unchanged', and writes the detach and the registry's triggers", () => {
+    expect(NAMES[at - 1]).toBe("0108_collection_jobs");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    // The detach's grace and cap are the writers' constants: the file's day and its four.
+    expect([DETACHED_GRACE_MS, MAX_STATUS_MEDIA]).toEqual([86_400_000, 4]);
+    expect(statements(MIGRATIONS[at]?.sql ?? "")).toBe(statements(`${DETACH}\n\n${emitTriggers(TRIGGERS)}`));
+  });
+
+  it("keeps each scheduled status's first four uploads by (position, id) and detaches the rest for a day", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      // Scheduled statuses holding 4, 40 and 400 uploads, one holding 6 whose positions tie (as an import may write
+      // them), and one holding none; beside them, an unattached upload.
+      const [four, forty, many, tied, none] = [1, 2, 3, 4, 5].map(scheduled) as [
+        string,
+        string,
+        string,
+        string,
+        string,
+      ];
+      seedOwner(sql, [four, forty, many, tied, none]);
+      let n = 0;
+      // Inserted with positions counting down, so the first by position are the last inserted.
+      for (const [id, held] of [
+        [four, 4],
+        [forty, 40],
+        [many, 400],
+      ] as const) {
+        for (let i = 0; i < held; i++) {
+          seedUpload(sql, ++n, id, held - 1 - i);
+        }
+      }
+      const tiedFrom = n + 1;
+      for (const position of [1, 0, 1, 0, 2, 0]) {
+        seedUpload(sql, ++n, tied, position);
+      }
+      seedUpload(sql, ++n, null);
+      const before = sql
+        .exec<{ id: string; scheduled_status_id: string | null; position: number }>(
+          "SELECT id, scheduled_status_id, position FROM media_attachments ORDER BY id",
+        )
+        .toArray();
+      expect(before.filter((row) => row.scheduled_status_id !== null)).toHaveLength(4 + 40 + 400 + 6);
+
+      const started = Date.now();
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      const held = (id: string) =>
+        sql
+          .exec<{ id: string }>(
+            "SELECT id FROM media_attachments WHERE scheduled_status_id = ? ORDER BY position, id",
+            id,
+          )
+          .toArray()
+          .map((row) => row.id);
+      const expected = (id: string) =>
+        before
+          .filter((row) => row.scheduled_status_id === id)
+          .toSorted((a, b) => a.position - b.position || (a.id < b.id ? -1 : 1))
+          .slice(0, MAX_STATUS_MEDIA)
+          .map((row) => row.id);
+      for (const id of [four, forty, many, tied]) {
+        expect(held(id), id).toEqual(expected(id));
+      }
+      // The ties keep their order by id: positions 0, 0, 0, 1 of the six.
+      expect(held(tied)).toEqual([2, 4, 6, 1].map((i) => upload(tiedFrom - 1 + i)));
+      expect(held(none)).toEqual([]);
+      // Each upload past four is detached as removeScheduled detaches one: no scheduled status, position 0, and
+      // attachable for DETACHED_GRACE_MS from the upgrade; the unattached upload keeps its own time.
+      const detached = sql
+        .exec<{ id: string; position: number; gc_at: string }>(
+          `SELECT id, position, gc_at FROM media_attachments WHERE scheduled_status_id IS NULL AND id <> ? ORDER BY id`,
+          upload(n),
+        )
+        .toArray();
+      const kept = new Set([four, forty, many, tied].flatMap(expected));
+      expect(detached.map((row) => row.id)).toEqual(
+        before.filter((row) => row.scheduled_status_id !== null && !kept.has(row.id)).map((row) => row.id),
+      );
+      expect(detached).toHaveLength(36 + 396 + 2);
+      for (const row of detached) {
+        expect(row.position).toBe(0);
+        expect(Date.parse(row.gc_at) - started - DETACHED_GRACE_MS).toBeGreaterThanOrEqual(-1_000);
+        expect(Date.parse(row.gc_at) - Date.now() - DETACHED_GRACE_MS).toBeLessThanOrEqual(1_000);
+      }
+      expect(sql.exec("SELECT gc_at FROM media_attachments WHERE id = ?", upload(n)).one()).toEqual({
+        gc_at: new Date(NOW + 86_400_000).toISOString(),
+      });
+      // Only fixed points are left: every scheduled status holds at most four.
+      expect(
+        sql
+          .exec(
+            `SELECT max(c) AS most FROM (SELECT count(*) AS c FROM media_attachments
+							WHERE scheduled_status_id IS NOT NULL GROUP BY scheduled_status_id)`,
+          )
+          .one(),
+      ).toEqual({ most: MAX_STATUS_MEDIA });
+    });
+  });
+
+  it("refuses a fifth held upload, inserted or moved, and passes a write that keeps the four", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade();
+      const [full, three, other] = [1, 2, 3].map(scheduled) as [string, string, string];
+      seedOwner(sql, [full, three, other]);
+      // Below the cap, uploads are held up to it: the fourth of `full` is held, by insert and by a move.
+      for (let i = 1; i <= 3; i++) {
+        seedUpload(sql, i, full, i);
+      }
+      seedUpload(sql, 4, null);
+      sql.exec("UPDATE media_attachments SET scheduled_status_id = ?, gc_at = NULL WHERE id = ?", full, upload(4));
+      for (let i = 5; i <= 7; i++) {
+        seedUpload(sql, i, three, i);
+      }
+      seedUpload(sql, 8, other);
+      seedUpload(sql, 9, null);
+      // At the cap: a fifth is refused, inserted held or moved from another scheduled status or from none.
+      expect(() => seedUpload(sql, 10, full)).toThrow(REFUSED);
+      expect(() =>
+        sql.exec("UPDATE media_attachments SET scheduled_status_id = ? WHERE id = ?", full, upload(8)),
+      ).toThrow(REFUSED);
+      expect(() =>
+        sql.exec("UPDATE media_attachments SET scheduled_status_id = ?, gc_at = NULL WHERE id = ?", full, upload(9)),
+      ).toThrow(REFUSED);
+      // A write that keeps each upload's scheduled status passes, a reorder of all four included, and so does a move
+      // out of the full one into one holding three.
+      sql.exec(
+        "UPDATE media_attachments SET scheduled_status_id = scheduled_status_id, position = 10 - position WHERE scheduled_status_id = ?",
+        full,
+      );
+      sql.exec("UPDATE media_attachments SET scheduled_status_id = ? WHERE id = ?", three, upload(1));
+      sql.exec("UPDATE media_attachments SET scheduled_status_id = ? WHERE id = ?", full, upload(8));
+      const counts = sql
+        .exec<{ scheduled_status_id: string; n: number }>(
+          `SELECT scheduled_status_id, count(*) AS n FROM media_attachments WHERE scheduled_status_id IS NOT NULL
+						GROUP BY scheduled_status_id ORDER BY scheduled_status_id`,
+        )
+        .toArray();
+      expect(counts).toEqual([
+        { scheduled_status_id: full, n: 4 },
+        { scheduled_status_id: three, n: 4 },
+      ]);
+      // Detaching passes whatever is held.
+      sql.exec("UPDATE media_attachments SET scheduled_status_id = NULL WHERE scheduled_status_id = ?", full);
+    });
+  });
+
+  it("reads as many rows for a held upload's insert or move, however many uploads others hold", async () => {
+    // The WHEN's count, planned with the trigger's NEW values bound.
+    const counted = `SELECT (${heldFullSql("?1", "?2")}) AS full`;
+    const subject = scheduled(500_000);
+    const reads: number[][] = [];
+    for (const others of [1, 10, 100]) {
+      await runInDurableObject(freshStore(), async (_instance, state) => {
+        const sql = state.storage.sql;
+        await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade();
+        // Other scheduled statuses holding four each, as many on each side of the subject's id.
+        const neighbours = Array.from({ length: others }, (_, i) => [scheduled(i), scheduled(900_000 + i)]).flat();
+        seedOwner(sql, [subject, ...neighbours]);
+        let n = 0;
+        for (const id of neighbours) {
+          for (let k = 0; k < MAX_STATUS_MEDIA; k++) {
+            seedUpload(sql, ++n, id, k);
+          }
+        }
+        expect(
+          sql
+            .exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${counted}`, subject, upload(0))
+            .toArray()
+            .map((row) => row.detail),
+        ).toContain("SEARCH media_attachments USING INDEX media_attachments_scheduled (scheduled_status_id=?)");
+        // The subject holds three; its fourth is held by an insert, then moved out and back by updates, each passing
+        // its trigger's WHEN, which reads the subject's held rows.
+        for (let k = 0; k < 3; k++) {
+          seedUpload(sql, 10_000 + k, subject, k);
+        }
+        const insert = sql.exec(
+          `INSERT INTO media_attachments (id, account_id, scheduled_status_id, position, type, url)
+					VALUES (?, ?, ?, 3, 'image', 'https://kopje.test/files/x/full')`,
+          upload(10_003),
+          OWNER,
+          subject,
+        );
+        insert.toArray();
+        sql.exec("UPDATE media_attachments SET scheduled_status_id = NULL WHERE id = ?", upload(10_003));
+        const move = sql.exec(
+          "UPDATE media_attachments SET scheduled_status_id = ? WHERE id = ?",
+          subject,
+          upload(10_003),
+        );
+        move.toArray();
+        // The subject is full now: its WHEN would refuse a fifth.
+        expect(sql.exec(counted, subject, upload(99_999)).one()).toEqual({ full: 1 });
+        expect(
+          sql.exec("SELECT count(*) AS n FROM media_attachments WHERE scheduled_status_id IS NOT NULL").one(),
+        ).toEqual({ n: (2 * others + 1) * MAX_STATUS_MEDIA });
+        reads.push([insert.rowsRead, move.rowsRead]);
+      });
+    }
+    expect(reads[0]?.every((rows) => rows > 0)).toBe(true);
+    expect(reads).toEqual([reads[0], reads[0], reads[0]]);
+  }, 60_000);
 });
