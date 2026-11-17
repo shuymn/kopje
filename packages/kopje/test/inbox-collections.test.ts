@@ -35,8 +35,8 @@ type Owner = TestActor & { featuredCollections: string };
 type Listed = ReturnType<typeof collection>;
 
 // Mastodon's Add and Remove of a collection or an item: no id (AddFeaturedCollectionSerializer and the others).
-function addOrRemove(type: "Add" | "Remove", owner: Owner, target: string, object: unknown, id: string | null = null) {
-  return { "@context": AS, ...(id === null ? {} : { id }), type, actor: owner.uri, target, object };
+function addOrRemove(type: "Add" | "Remove", owner: Owner, target: string, object: unknown) {
+  return { "@context": AS, type, actor: owner.uri, target, object };
 }
 
 function update(owner: Owner, object: Listed) {
@@ -56,7 +56,7 @@ async function synced(t: Setup, owner: Owner, entries: Item[]): Promise<{ ownerI
 const syncs = (t: Setup) => sql(t.store, "SELECT account_id FROM collection_syncs");
 
 describe("an owner's Add and Remove without an id (D20)", () => {
-  it("applies a collection's and an item's once each, and refuses one to the featured collections", async () => {
+  it("applies a collection's and an item's once each, and a hashtag's to the featured collections", async () => {
     const t = await setup();
     const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
     const member = await storedMember(t, "member", OTHER);
@@ -78,7 +78,7 @@ describe("an owner's Add and Remove without an id (D20)", () => {
     expect(await t.post(owner, addOrRemove("Remove", owner, owner.featuredCollections, added.id))).toBe(202);
     expect((await collectionRows(t)).map((row) => row.uri)).toEqual([listed.id]);
 
-    // An id-less Add of a Hashtag to an owner's featured or featuredTags collection is incomplete; with an id, featured.
+    // An id-less Add of a Hashtag to the owner's featured or featuredTags collection features it too (ID-6, #1693).
     const tagger = await featuredOwner(t.web, "tagger", {
       followers: undefined,
       following: undefined,
@@ -95,13 +95,13 @@ describe("an owner's Add and Remove without an id (D20)", () => {
       href: `https://mastodon.example/tags/${name}`,
       name: `#${name}`,
     });
-    for (const target of targets) {
-      expect(await t.post(tagger, addOrRemove("Add", tagger, target, hashtag("idless")))).toBe(202);
+    for (const [n, target] of targets.entries()) {
+      expect(await t.post(tagger, addOrRemove("Add", tagger, target, hashtag(`idless${n}`)))).toBe(202);
     }
-    expect(await sql(t.store, "SELECT name FROM featured_tags")).toEqual([]);
-    const id = `${tagger.uri}#adds/${nextId()}`;
-    expect(await t.post(tagger, addOrRemove("Add", tagger, targets[1]!, hashtag("named"), id))).toBe(202);
-    expect(await sql(t.store, "SELECT name FROM featured_tags")).toEqual([{ name: "named" }]);
+    expect(await sql(t.store, "SELECT name FROM featured_tags ORDER BY name")).toEqual([
+      { name: "idless0" },
+      { name: "idless1" },
+    ]);
     expect(await syncs(t)).toEqual([]);
   });
 
