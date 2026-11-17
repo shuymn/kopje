@@ -137,9 +137,10 @@ function boundedCandidate(value: unknown): CardCandidate | null {
 }
 
 // The most accounts sharing one stored url that the mention test probes for a link, in accounts_url's order (url, then
-// rowid). A stored url is on its actor id's host (federation/remote-actor.ts profileUrl; an earlier release's is
-// replaced at its actor's next store), so only one host's own actors share it: past this many, a mention of that
-// host's account by that url is taken as a link (docs/mastodon-deviations.md, "Link previews").
+// rowid). A url stored now is on its actor id's host (federation/remote-actor.ts profileUrl), but one an earlier
+// release stored or a dump imported may name another host until its actor is stored again, and those rows count too:
+// past this many, a mention of an account by that url is taken as a link (docs/mastodon-deviations.md, "Link
+// previews").
 export const MENTION_URL_ACCOUNTS = 200;
 
 // The index of remote accounts by their stored url (migration 0111_account_urls).

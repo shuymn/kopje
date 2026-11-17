@@ -399,8 +399,9 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
   account by its username, a remote one by its actor id or by its stored url, compared in its stored spelling as
   Mastodon compares it. Of the remote accounts that store one url, it reads the first 200 in the order of their rows,
   so an anchor naming the url of a mentioned account past them is an ordinary link, where Mastodon skips it. A url is
-  stored only on its actor's host, so only a host that gives more than 200 of its own actors one url meets this.
-  Accepted, 2026-11-17.
+  now stored only on its actor's host, so a host would have to give more than 200 of its own actors one url; until
+  each account is stored again, though, a url an earlier release stored or a dump imported may name another host, and
+  such rows count toward the 200 too. Accepted, 2026-11-17.
 - Fetched by a round of the 5-minute cron, at most 6 a round (3 at a time), not within a minute as Mastodon queues
   them; a link still unfetched a day after its post is dropped. A claim the round could not run (its budget, its
   deadline, a policy read that failed) is tried again; one that never finished is retried once, then dropped.

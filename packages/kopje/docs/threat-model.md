@@ -3615,8 +3615,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   defers its URL"), `test/cascade-guard.test.ts` ("trend and card rows within a batch"),
   `test/link-cards.test.ts` ("deletes the card with the hide when %i rows are left")). The index the mention test
   seeks (`accounts_url`, migration `0111_account_urls`) holds one entry per remote account that stores a url: that
-  url, at most 2,048 bytes as stored, and its rowid, so it is never larger than the column it indexes
-  (`test/migrations.test.ts` ("0111_account_urls")). Card images
+  url, at most 2,048 bytes as stored, and its rowid, with SQLite's record and B-tree page overhead on top, so it grows
+  with the remote accounts that store a url, as the column does (`test/migrations.test.ts` ("0111_account_urls")). Card
+  images
   (`card_images`, migration `0070_card_images`): one row per image URL a card names, at most one written by a record;
   a pending row is dropped a day after it was enqueued (at most 500 a claim), when no card names it, or after 2 claims
   never finished; a stored row no card names is collected by the claim's GC, at most 64 a claim from a cursor, each
