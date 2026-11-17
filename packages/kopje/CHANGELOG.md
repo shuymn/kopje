@@ -374,6 +374,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   migration bench's upgrade from `0093_annual_reports` takes 16,422 ms with this file and 15,572 ms without it,
   medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor
   version, and rolling back past it needs a point-in-time restore.
+- An import refuses scheduled-status parameters that hold a NUL or are not text. Migration `0110_scheduled_params`:
+  two triggers on `scheduled_statuses`, no row read or rewritten; the upgrade checks no reference (the migration
+  bench's upgrade from `0093_annual_reports` takes 16,590 ms with this file and 16,878 ms without it, medians of three
+  runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and
+  rolling back past it needs a point-in-time restore.
 
 ### Fixed
 
@@ -455,6 +460,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   back past it needs a point-in-time restore.
 - An `Update` of a remote post that names no edit time no longer resets the poll counts, quote policy or quote
   approval of a post that was edited, as Mastodon ignores it. No Store migration and no `wrangler.jsonc` change.
+- A scheduled status whose stored parameters cannot be read (only a restored row) no longer breaks the list; it is left
+  out, and dropped when due.
 - The public pages show a remote post or bio whose sanitized HTML is longer than 50,000 UTF-16 code units whole,
   and describe it by its text. They sanitized it again cut at that length, which shortened it or, with the cut inside
   an attribute, left it and the page's description empty. No Store migration and no `wrangler.jsonc` change.

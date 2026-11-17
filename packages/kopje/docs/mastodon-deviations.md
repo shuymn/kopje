@@ -1411,10 +1411,14 @@ Posting (`POST` and `PUT /api/v1/statuses`):
 - Media a scheduled status holds cannot be attached by another post (422, not found); Mastodon attaches it, and the
   scheduled post is then lost when it is published.
 - `GET /api/v1/scheduled_statuses` answers within 8 MiB: a page cut there holds fewer scheduled statuses and its
-  `Link` continues after the last one shown. A scheduled status shows at most 4 of the media it holds (Mastodon holds no
-  more).
-- An imported scheduled status whose `scheduled_at` is not a time shows `scheduled_at: null`; Mastodon cannot store such
-  a row.
+  `Link` continues after the last one shown. A page that leaves out scheduled statuses whose parameters cannot be read
+  (below) holds fewer, or none, and its `Link` is that of the scheduled statuses it read, those included: `next` from
+  the oldest whenever it read its `limit`, so a walk reaches every other one. A scheduled status shows at most 4 of the
+  media it holds (Mastodon holds no more).
+- An imported scheduled status whose `scheduled_at` is not a time shows `scheduled_at: null`. One whose parameters
+  JSON cannot read (a NUL in them, or bytes stored as a BLOB), which only a restore made before imports refused them
+  holds, is left out of the list, not found when shown or updated, deleted as any other, and dropped when due with no
+  failure recorded. Mastodon cannot store such rows.
 - An upload is processed before its answer, so no media id is ever still processing: an unfinished upload reads as
   not found (no `not_ready`).
 - Text length (a blank text's length after its warning becomes the text, in the Store; on an edit after the media ids,
@@ -1433,7 +1437,8 @@ Posting (`POST` and `PUT /api/v1/statuses`):
 - An `Idempotency-Key` lasts one hour after the status or scheduled status it made; a scheduled post published within
   that hour keeps it until one hour after its publication. A repeated key answers the scheduled status it made
   (Mastodon answers 404 for an immediate repeat), and a key whose status was deleted posts anew (Mastodon answers 404
-  within the hour).
+  within the hour), as does one whose scheduled status's parameters cannot be read (above), which gives the key up to
+  the new post.
 - Every local status shows the app it was posted through, as Mastodon does at its default `show_application`; Kopje
   has no such setting. The app is shown within Kopje's presentation bounds (threat-model.md RES-3, the presented
   status), judged on the stored value as decoded: a name past them shows `application: null`, and a website past
