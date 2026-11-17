@@ -1242,28 +1242,40 @@ const arrayIndex = (key: string) => ARRAY_INDEX.test(key) && Number(key) < 2 ** 
 // does not write under the same name, patches an object into an object and an array element by element, and stops at
 // the first array whose length the compaction changed, leaving every member after it in that object as the compaction
 // wrote it, and the objects in them unpatched; a stop in an object it patched stops only that object. Kopje reads a
-// stop only where it is certain: an array holding a null under a name both contexts type @id with no container, its
-// other values http(s) IRIs (JSON-LD drops the null and keeps each IRI). After it, a one-element array of a string or
-// an object under a name with no container in full_context is read as its element, as the compaction writes it, and so
-// in every object in the members after it. Any other array, and every member of an object holding a key shaped like an
-// array index, is left as received: where Mastodon stops elsewhere, Kopje reads less (an `object` given as an array is
-// refused). `named` is `json` as namedAsCompacted names it, member for member.
+// stop only where it is certain: an array under a name both contexts type @id with no container, whose values, the
+// arrays in it flattened, are nulls and http(s) IRIs, and fewer or more than its elements (JSON-LD's expansion
+// flattens an array in another, an empty one leaving nothing, drops a null and keeps each IRI). That member is read as
+// the compaction writes it, which the patch leaves: its IRIs, one as itself, but where one is under a namespace of
+// full_context's prefixes (written as a compact IRI, `as:Public`), where it is left as received. After it, an array
+// of strings and objects, the arrays in it flattened, under a name with no container in full_context is read as the
+// compaction writes it, one value as itself, and so in every object in the members after it. Any other array, and
+// every member of an object holding a key shaped like an array index, is left as received: where Mastodon stops
+// elsewhere, Kopje reads less (an `object` given as an array is refused). `named` is `json` as namedAsCompacted names
+// it, member for member.
 function patchedAsMastodon(json: Json, named: Json, meanings: ReadonlyMap<string, Meaning>): Json {
   const stops = (value: unknown[], meaning: Meaning | undefined, compacted: Meaning | undefined) => {
-    const values = value.filter((item) => item !== null);
+    const values = leaves(value).filter((item) => item !== null);
     return (
-      values.length < value.length &&
+      values.length !== value.length &&
       meaning?.coercion === "@id" &&
       !meaning.contained &&
       compacted?.contained === false &&
       values.every((item) => typeof item === "string" && HTTP_IRI.test(item))
     );
   };
+  // The member a stop is at, as the compaction writes it: its IRIs (stops), one as itself.
+  const atStop = (value: unknown[], member: unknown): unknown => {
+    const iris = leaves(value).filter((item): item is string => typeof item === "string");
+    if (iris.some((iri) => FULL_CONTEXT_NAMESPACES.some((namespace) => iri.startsWith(namespace)))) {
+      return member;
+    }
+    return iris.length === 1 ? iris[0] : iris;
+  };
   // A member as the compaction writes it, read as namedAsCompacted names it (a renamed one left as it is).
   const compacted = (member: unknown, meaning: Meaning | undefined): unknown => {
-    const [only, ...rest] = Array.isArray(member) ? (member as unknown[]) : [];
-    const single = rest.length === 0 && (typeof only === "string" || isObject(only)) && !meaning?.contained;
-    const written = single ? only : member;
+    const values = Array.isArray(member) && !meaning?.contained ? leaves(member) : undefined;
+    const flat = values?.every((item) => typeof item === "string" || isObject(item)) === true ? values : undefined;
+    const written = flat === undefined ? member : flat.length === 1 ? flat[0] : flat;
     return Array.isArray(written) ? written.map(unpatched) : unpatched(written);
   };
   const unpatched = (value: unknown): unknown => {
@@ -1307,7 +1319,7 @@ function patchedAsMastodon(json: Json, named: Json, meanings: ReadonlyMap<string
         const values = value as unknown[];
         if (stops(values, own.get(key) ?? meanings.get(key), compactedMeaning)) {
           stopped = true;
-          return [name, member];
+          return [name, atStop(values, member)];
         }
         const elements = Array.isArray(member) && member.length === values.length ? (member as unknown[]) : undefined;
         return [
@@ -1389,7 +1401,7 @@ export async function ldSignedReading(
 // (ActiveSupport's present?), unknown_affected_account? reads the object as received by value_or_id
 // (json_ld_helper.rb:83-85), which raises on an array, and no rescue_from takes the TypeError; so nothing is applied,
 // however the compaction reads the body (retractions.json `inbox`). Checked for a Delete read as the compaction, whose
-// array object patchedAsMastodon may read as an IRI (after the patch's stop): its array is left as received,
+// array object patchedAsMastodon may read as an IRI (at the patch's stop or after it): its array is left as received,
 // which the Delete handler refuses. A Delete typed as an IRI is not checked and is applied, as both do. Left out of
 // the check: an Update, which is no retraction; a blank actor, which the envelope refuses whatever the object (it
 // requires the signer); and an object of another value value_or_id raises on, a number or a boolean, which Kopje reads
@@ -1399,10 +1411,11 @@ function inboxRaises(json: Json): boolean {
 }
 
 // Whether an Undo of a Follow, a Block or a Like gives the undone activity's `object` as an array where Mastodon's
-// reading does too (patchedAsMastodon: the patch puts back each array the compaction did not shorten, one in another
-// flattened): undo.rb seeks what to end by it (target_uri, value_or_id), which raises on an array, so Mastodon applies
-// nothing, where Kopje's handler would end the activity by its id. Refused; Kopje reads less where the patch stops
-// before it at a member Kopje does not read the stop at.
+// reading does too (patchedAsMastodon: the patch puts back each array whose length the compaction kept, an array in it
+// as the compaction's value, and leaves the compaction's IRI where it stops at the member or before it): undo.rb seeks
+// what to end by it (target_uri, value_or_id), which raises on an array, so Mastodon applies nothing, where Kopje's
+// handler would end the activity by its id. Refused; Kopje reads less where the patch stops at the member or before it
+// at one Kopje does not read the stop at.
 const UNDONE_BY_TARGET: ReadonlySet<string> = new Set(["Follow", "Block", "Like"]);
 function undoesByArray(read: Json, readType: TypeReader): boolean {
   const undone = read.object;

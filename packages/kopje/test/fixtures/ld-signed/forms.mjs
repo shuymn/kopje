@@ -952,6 +952,33 @@ const forms = {
   }),
   "Undo of a block, both typed as absolute IRIs, with a relative reference of a double-dot segment before a query":
     absoluteUndo({ instrument: { id: "clients/..?1" } }),
+  // The block's object in an array the expansion shortens, by an empty array in it or a null: the patch stops there
+  // and leaves the compaction's IRI.
+  "Undo of a block, both typed as absolute IRIs, with its block's object in an array after an empty one": absoluteUndo({
+    object: { ...BLOCK, type: `${AS}#Block`, object: [[], ALICE] },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with its block's object in an array before an empty one": absoluteUndo(
+    { object: { ...BLOCK, type: `${AS}#Block`, object: [[ALICE], []] } },
+  ),
+  "Undo of a block, both typed as absolute IRIs, with its block's object in an array beside a null": absoluteUndo({
+    object: { ...BLOCK, type: `${AS}#Block`, object: [null, ALICE] },
+  }),
+  // The block's object as an array in an array after the patch's stop, which leaves the compaction's IRI.
+  "Undo of a block, both typed as absolute IRIs, with its block's object as an array in an array after a stop":
+    absoluteUndo({ object: { id: BLOCK.id, type: `${AS}#Block`, actor: BOB, to: [null], object: [[ALICE]] } }),
+  // The actor in an array beside a null: the patch stops there and leaves the compaction's IRI.
+  "Undo of a block, both typed as absolute IRIs, with its actor in an array beside a null": absoluteUndo({
+    actor: [null, BOB],
+  }),
+  // A stop at an array the expansion lengthens, two IRIs in an array: the compaction writes both, and the block's
+  // object, a one-element array after it, as its IRI.
+  "Undo of a block, both typed as absolute IRIs, with its block's object after two IRIs in an array": absoluteUndo({
+    object: { id: BLOCK.id, type: `${AS}#Block`, actor: BOB, to: [[FOLLOWERS, `${BOB}/following`]], object: [ALICE] },
+  }),
+  // The public collection in an array beside a null: the patch stops there and leaves the compaction's as:Public, which
+  // names no account.
+  "Undo of a block, both typed as absolute IRIs, with its block's object as the public collection beside a null":
+    absoluteUndo({ object: { ...BLOCK, type: `${AS}#Block`, object: [null, PUBLIC] } }),
 };
 
 // The same bodies without a signature: read as received by both.
