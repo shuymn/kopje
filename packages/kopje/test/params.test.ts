@@ -5,7 +5,10 @@ import {
   bodyLimit,
   MAX_PARAM_DEPTH,
   MAX_PARAM_PATHS,
+  MULTIPART_FILES,
+  MULTIPART_PARTS,
   PARAM_PATH_BUDGET,
+  limitParam,
   Params,
   parseBoolean,
   type ReadOptions,
@@ -168,7 +171,7 @@ describe("Params#get and Params#integer", () => {
   });
 
   it("reads each value of a list as integer parameters read it", async () => {
-    const p = await read(post('{"c":[1.9,"0x1",1e21,"1e21"]}', "application/json", "?d[]=1.9&d=2"));
+    const p = await read(post('{"c":[1.9,"0x1",1e21,"1e21"]}', "application/json", "?d[]=1.9&d[]=2"));
     expect([p.getAllIntegers("c"), p.getAll("c"), p.getAllIntegers("d")]).toEqual([
       ["1", "0x1", "9007199254740991", "1e21"],
       ["1.9", "0x1", "1e+21", "1e21"],
@@ -347,24 +350,29 @@ describe("readParams: declared files (Rails last-part rule)", () => {
 describe("Params#objects with file fields", () => {
   const THUMBNAIL = { files: ["thumbnail"] };
 
-  it("places a listed file part among the text as Rack groups it, sequential and indexed", async () => {
-    const p = await read(
+  it("places a listed file part among the text as Rack groups it, sequential or indexed in the order sent", async () => {
+    const sequential = await read(
       multipart([
         ["media_attributes[][thumbnail]", png()],
         ["media_attributes[][id]", "a"],
         ["media_attributes[][id]", "b"],
         ["media_attributes[][thumbnail]", png()],
         ["media_attributes[][thumbnail]", ""],
-        ["media_attributes[1][thumbnail]", png()],
-        ["media_attributes[1][id]", "d"],
       ]),
     );
-    expect(p.objects("media_attributes", THUMBNAIL)).toEqual([
-      { id: "d", thumbnail: SENT_FILE },
+    expect(sequential.objects("media_attributes", THUMBNAIL)).toEqual([
       { thumbnail: SENT_FILE, id: "a" },
       { id: "b", thumbnail: SENT_FILE },
       { thumbnail: "" },
     ]);
+    const indexed = await read(
+      multipart([
+        ["media_attributes[1][thumbnail]", png()],
+        ["media_attributes[1][id]", "d"],
+        ["media_attributes[0][id]", "c"],
+      ]),
+    );
+    expect(indexed.objects("media_attributes", THUMBNAIL)).toEqual([{ thumbnail: SENT_FILE, id: "d" }, { id: "c" }]);
   });
 
   it("lets the last of repeated indexed parts win, file or text", async () => {
@@ -384,7 +392,7 @@ describe("Params#objects with file fields", () => {
     ]);
   });
 
-  it("reads no file part by default, and groups on unlisted file parts before reading them as absent", async () => {
+  it("reads no file part by default and an unlisted one as absent, keeping the objects Rack groups", async () => {
     const p = await read(
       multipart([
         ["media_attributes[][id]", png()],
@@ -393,7 +401,7 @@ describe("Params#objects with file fields", () => {
         ["media_attributes[][id]", "a"],
       ]),
     );
-    expect(p.objects("media_attributes")).toEqual([{ id: "a" }]);
+    expect(p.objects("media_attributes")).toEqual([{}, { id: "a" }]);
     expect(p.objects("media_attributes", THUMBNAIL)).toEqual([{ thumbnail: SENT_FILE }, { id: "a" }]);
     // A repeated file-valued `id` starts the next object as a text one does.
     const repeated = await read(
@@ -415,7 +423,8 @@ describe("Params#objects with file fields", () => {
       ]),
     );
     expect(p.objects("media_attributes", THUMBNAIL)).toEqual([{ thumbnail: SENT_FILE }]);
-    expect(p.objects("media_attributes")).toEqual([{ id: "a" }]);
+    // The replaced text is gone: without file fields, the object holds nothing to read.
+    expect(p.objects("media_attributes")).toEqual([{}]);
   });
 
   it("keeps the parts through the query merge of other keys, and a JSON or urlencoded body has none", async () => {
@@ -629,5 +638,296 @@ describe("parseBoolean", () => {
   it("reads blank as absent", () => {
     expect(parseBoolean("")).toBeUndefined();
     expect(parseBoolean(undefined)).toBeUndefined();
+  });
+});
+
+// One request per source for the same raw pairs: a GET's query, the query of a JSON request, a urlencoded body, and a
+// multipart body when every pair has a value and no `%`.
+function sources(raw: string): [string, Request][] {
+  const list: [string, Request][] = [
+    ["a GET's query", new Request(`https://kopje.test/x?${raw}`)],
+    ["a JSON request's query", post("{}", "application/json", `?${raw}`)],
+    ["a urlencoded body", post(raw, "application/x-www-form-urlencoded")],
+  ];
+  const parts = raw.split("&");
+  if (!raw.includes("%") && parts.every((part) => part.includes("="))) {
+    const pairs = parts.map((part): [string, string] => [
+      part.slice(0, part.indexOf("=")),
+      part.slice(part.indexOf("=") + 1),
+    ]);
+    list.push(["a multipart body", multipart(pairs)]);
+  }
+  return list;
+}
+
+// PT1. Rack (in a middleware) and then Rails (in the controller) nest each source's pairs in order
+// (platform/rails-params.ts): a name nested as two kinds, by any key the route reads or not, refuses the request; a
+// later plain name replaces what an earlier one built under it, and no accessor reads what it replaced.
+describe("readParams: the shapes of one source, in Rack's order", () => {
+  const refused = [
+    "limit=1&limit[]=2",
+    "a=1&a[b]=2",
+    "a[]=1&a[b]=2",
+    "a[b]=1&a[]=2",
+    "unread=1&unread[x]=2",
+    "a[b]=1&a[b][c]=2",
+    "a[b][]=1&a[b][c]=2",
+    "a[][b]=1&a[][b][c]=2",
+    `a${"[b]".repeat(32)}=1`,
+  ];
+  it.each(refused)("refuses %j from every source", async (raw) => {
+    for (const [source, request] of sources(raw)) {
+      expect([source, await readParams(request)]).toEqual([source, { ok: false, status: 400 }]);
+    }
+  });
+
+  // Rack keeps the nil `a[]` pushes, so its last item is no Hash and `[b][c]` starts a new one; Rails drops it and
+  // refuses `[b][c]` under the kept `b`. A bad `%`, and a key or a value that is not UTF-8 (nested values too: Rails
+  // checks each pair's value), refuse as well.
+  it.each(["a[][b]=1&a[]&a[][b][c]=2", "a=%ZZ", "a[%2]=1", "a=%FF", "%FF=1", "a[b]=%FF", "a[%FF]=1"])(
+    "refuses %j from a query or a urlencoded body",
+    async (raw) => {
+      for (const [source, request] of sources(raw)) {
+        expect([source, await readParams(request)]).toEqual([source, { ok: false, status: 400 }]);
+      }
+    },
+  );
+
+  it("reads what the last plain name assigned, and nothing it replaced", async () => {
+    for (const [source, request] of sources("limit[]=2&limit[]=3&limit=1")) {
+      const p = await read(request);
+      expect([source, p.get("limit"), p.integer("limit"), p.list("limit"), p.getAll("limit")]).toEqual([
+        source,
+        "1",
+        "1",
+        undefined,
+        ["1"],
+      ]);
+      expect([p.getAllIntegers("limit"), p.has("limit"), p.entries]).toEqual([["1"], true, [["limit", "1"]]]);
+    }
+    for (const [source, request] of sources("a[b]=1&a[c][]=2&a=3&p[o][]=1&p[o]=x")) {
+      const p = await read(request);
+      expect([source, p.get("a"), p.get("a[b]"), p.list("a[c]"), p.hasObject("a"), p.sentObject("a")]).toEqual([
+        source,
+        "3",
+        undefined,
+        undefined,
+        false,
+        false,
+      ]);
+      expect([p.get("p[o]"), p.list("p[o]"), p.hasObject("p"), p.objects("a")]).toEqual(["x", undefined, true, []]);
+    }
+  });
+
+  it("reuses an array's last Hash for a field it lacks, as Rack does", async () => {
+    for (const [source, request] of sources("o[][a]=1&o[][b]=2&o[][a]=3&o[][c]=4")) {
+      const p = await read(request);
+      expect([source, p.objects("o")]).toEqual([
+        source,
+        [
+          { a: "1", b: "2" },
+          { a: "3", c: "4" },
+        ],
+      ]);
+    }
+  });
+
+  // As Rails' strong parameters permit them: an object's field holding a Hash or an Array is not read, but it still
+  // took its place in the object, so a later `y` starts the next one; a field may be named as any property of a
+  // JavaScript object.
+  it("reads an array's objects with the boundaries of its tree", async () => {
+    const raw =
+      "a[][x]=1&a[][x]=2&a[][y][z]=3&a[][y]=4&a[][constructor]=c&a[][constructor]=d&a[][__proto__]=p&a[][x]]=m";
+    for (const [source, request] of sources(raw)) {
+      const p = await read(request);
+      expect([source, p.objects("a").map((object) => Object.entries(object))]).toEqual([
+        source,
+        [
+          [["x", "1"]],
+          [["x", "2"]],
+          [
+            ["y", "4"],
+            ["constructor", "c"],
+          ],
+          [
+            ["constructor", "d"],
+            ["__proto__", "p"],
+          ],
+        ],
+      ]);
+    }
+  });
+
+  it("reads each source's last value of a repeated name, and counts the repeat", async () => {
+    for (const [source, request] of sources("a=1&a=2&n[x]=1&n[x]=2")) {
+      const p = await read(request);
+      expect([source, p.get("a"), p.get("n[x]"), p.repeated(["a"]), p.entries]).toEqual([
+        source,
+        "2",
+        "2",
+        "a",
+        [
+          ["a", "2"],
+          ["n[x]", "2"],
+        ],
+      ]);
+    }
+  });
+
+  it(`reads a nesting ${MAX_PARAM_DEPTH - 1} deep`, async () => {
+    const name = `a${"[b]".repeat(MAX_PARAM_DEPTH - 1)}`;
+    for (const [source, request] of sources(`${name}=1`)) {
+      expect([source, (await read(request)).get(name)]).toEqual([source, "1"]);
+    }
+  });
+
+  // Without `=`, a value is nil: read as blank and marked as a JSON null is; `name[]` alone is an empty list, as deep
+  // munge drops the nil it pushes.
+  it("reads nil and empty values as Rails holds them", async () => {
+    for (const [source, request] of sources("a&b=&c[]&d[]=&e[x]&f[]&f[]=1&g[][b]=1&g[]&g[][c]=2")) {
+      const p = await read(request);
+      expect([source, p.get("a"), p.sentNull("a"), p.get("b"), p.sentNull("b")]).toEqual([source, "", true, "", false]);
+      expect([p.list("c"), p.list("d"), p.get("e[x]"), p.sentNull("e[x]"), p.sentObject("e")]).toEqual([
+        [],
+        [""],
+        "",
+        true,
+        true,
+      ]);
+      expect([p.list("f"), p.objects("g")]).toEqual([["1"], [{ b: "1", c: "2" }]]);
+    }
+  });
+
+  // Rack parts a form body's fields at an `&` and the spaces after it, and drops one NUL that ends it.
+  it("reads a urlencoded body's fields as Rack parts them", async () => {
+    const p = await read(post("a=1&  b=2&c=3\0", "application/x-www-form-urlencoded"));
+    expect([p.get("b"), p.get(" b"), p.get("c")]).toEqual(["2", undefined, "3"]);
+  });
+});
+
+// Rack's limits on a multipart body's parts, and the form it reads a POST body without a media type as.
+describe("readParams: Rack's multipart limits and untyped forms", () => {
+  it("reads 4,095 parts and 127 file parts, and refuses one more of either", async () => {
+    const parts = (count: number, files: number) =>
+      Array.from({ length: count }, (_, i): [string, string | File] => [`p${i}`, i < files ? png() : "x"]);
+    const answers = [];
+    for (const [count, files] of [
+      [MULTIPART_PARTS - 1, 0],
+      [MULTIPART_PARTS, 0],
+      [MULTIPART_FILES - 1, MULTIPART_FILES - 1],
+      [MULTIPART_FILES, MULTIPART_FILES],
+    ] as const) {
+      const result = await readParams(multipart(parts(count, files)));
+      answers.push(result.ok || result.status);
+    }
+    expect(answers).toEqual([true, 400, true, 400]);
+  });
+
+  // Request#form_data?: a POST whose media type is missing or empty; a body sent as bytes has no Content-Type.
+  it("reads a POST body without a media type as a urlencoded form, and no other method's", async () => {
+    const untyped = (method: string, body: string) =>
+      new Request("https://kopje.test/x", { method, body: new TextEncoder().encode(body) });
+    const p = await read(untyped("POST", "a=1&b[]=2"));
+    expect([p.get("a"), p.list("b")]).toEqual(["1", ["2"]]);
+    expect(await readParams(untyped("POST", "a=1&a[]=2"))).toEqual({ ok: false, status: 400 });
+    expect((await read(untyped("PUT", "a=1"))).get("a")).toBeUndefined();
+  });
+});
+
+// PT2. Rails merges the query over the body by top-level key (Params#withQuery): of a name both send, every encoding
+// keeps the query's whole value, whatever kind each source's is, and none of what the body noted under it.
+describe("readParams: one source's value of a top-level key, after the merge", () => {
+  const bodies = (fields: [string, string][], json: unknown, query: string): [string, Request][] => [
+    ["urlencoded", post(new URLSearchParams(fields).toString(), "application/x-www-form-urlencoded", query)],
+    ["multipart", multipart(fields, query)],
+    ["JSON", post(JSON.stringify(json), "application/json", query)],
+  ];
+
+  it("keeps the query's array over the body's, of any encoding", async () => {
+    const body = bodies(
+      [
+        ["ids[]", "b1"],
+        ["ids[]", "b2"],
+      ],
+      { ids: ["b1", "b2"] },
+      "?ids[]=q",
+    );
+    for (const [encoding, request] of body) {
+      const p = await read(request);
+      expect([encoding, p.list("ids"), p.getAll("ids")]).toEqual([encoding, ["q"], ["q"]]);
+    }
+  });
+
+  it("keeps a query value of another kind than the body's", async () => {
+    for (const [encoding, request] of bodies([["ids[]", "1"]], { ids: ["1"] }, "?ids=x")) {
+      const p = await read(request);
+      expect([encoding, p.get("ids"), p.list("ids")]).toEqual([encoding, "x", undefined]);
+    }
+    for (const [encoding, request] of bodies([["ids", "x"]], { ids: "x" }, "?ids[]=1")) {
+      const p = await read(request);
+      expect([encoding, p.get("ids"), p.list("ids")]).toEqual([encoding, undefined, ["1"]]);
+    }
+    for (const [encoding, request] of bodies([["note", "x"]], { note: "x" }, "?note")) {
+      const p = await read(request);
+      expect([encoding, p.get("note"), p.sentNull("note")]).toEqual([encoding, "", true]);
+    }
+  });
+
+  it("reads a JSON number by its to_i beside a query, and a query's text over it", async () => {
+    const positive = await read(post('{"limit":1.9}', "application/json", "?x=1"));
+    const negative = await read(post('{"limit":-1.9}', "application/json", "?x=1"));
+    const replaced = await read(post('{"limit":5}', "application/json", "?limit=1.9"));
+    expect([positive.integer("limit"), negative.integer("limit"), replaced.integer("limit")]).toEqual([
+      "1",
+      "-1",
+      "1.9",
+    ]);
+    expect([limitParam(positive, 20, 40), limitParam(negative, 20, 40), limitParam(replaced, 20, 40)]).toEqual([
+      1, 1, 1,
+    ]);
+  });
+});
+
+// PT3. The OAuth reads: a value a later one of the same source replaced still counts as a repeat (RFC 6749 §3.1,
+// §3.2), and a bodyOnly read takes no value from the query, whose shape is still checked.
+describe("readParams: repeats and bodyOnly", () => {
+  it("counts a repeat within a form body or the query", async () => {
+    const requests: [string, Request][] = [
+      ["urlencoded", post("code=a&code=b", "application/x-www-form-urlencoded")],
+      [
+        "multipart",
+        multipart([
+          ["code", "a"],
+          ["code", "b"],
+        ]),
+      ],
+      ["query", post("grant_type=x", "application/x-www-form-urlencoded", "?code=a&code=b")],
+    ];
+    for (const [source, request] of requests) {
+      const p = await read(request);
+      expect([source, p.get("code"), p.repeated(["grant_type", "code"])]).toEqual([source, "b", "code"]);
+    }
+    const single = await read(post("code=a&grant_type=x", "application/x-www-form-urlencoded"));
+    expect(single.repeated(["grant_type", "code"])).toBeUndefined();
+    // Each time a plain name is sent counts, also where a pair nested under it came between and the later one replaced
+    // what it built.
+    for (const [source, request] of sources("code&code[x]=v&code=last&grant_type&grant_type[x]=v&grant_type=g")) {
+      const p = await read(request);
+      expect([source, p.get("code"), p.repeated(["code"]), p.repeated(["grant_type"])]).toEqual([
+        source,
+        "last",
+        "code",
+        "grant_type",
+      ]);
+    }
+  });
+
+  it("reads no query value with bodyOnly, and refuses a query Rack refuses", async () => {
+    const p = await read(post("client_id=c", "application/x-www-form-urlencoded", "?token=t&client_id=q"), {
+      bodyOnly: true,
+    });
+    expect([p.get("token"), p.get("client_id"), p.repeated(["client_id"])]).toEqual([undefined, "c", undefined]);
+    const malformed = post("client_id=c", "application/x-www-form-urlencoded", "?token=t&token[]=u");
+    expect(await readParams(malformed, { bodyOnly: true })).toEqual({ ok: false, status: 400 });
   });
 });

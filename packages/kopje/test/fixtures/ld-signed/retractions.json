@@ -1,0 +1,495 @@
+{
+  "reference": "mastodon-4.7.5",
+  "readings": [
+    {
+      "name": "Undo(Follow), actor as a one-element array",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/follows/14",
+        "object_type": "Follow",
+        "object_actor": "https://mastodon.example/users/bob",
+        "object_object": "https://kopje.test/ap/users/alice"
+      }
+    },
+    {
+      "name": "Reject(Follow), actor as a one-element array",
+      "reading": {
+        "type": "Reject",
+        "object": "https://kopje.test/ap/follows/1",
+        "object_type": "Follow",
+        "object_actor": "https://kopje.test/ap/users/alice",
+        "object_object": "https://mastodon.example/users/bob"
+      }
+    },
+    {
+      "name": "Undo(Like), actor as a one-element array",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/likes/1",
+        "object_type": "Like",
+        "object_actor": "https://mastodon.example/users/bob",
+        "object_object": "https://kopje.test/ap/o/local-1"
+      }
+    },
+    {
+      "name": "Undo(Announce), actor as a one-element array",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/statuses/boost/activity",
+        "object_type": "Announce",
+        "object_actor": "https://mastodon.example/users/bob",
+        "object_object": "https://kopje.test/ap/o/local-1"
+      }
+    },
+    {
+      "name": "Block, actor as a one-element array",
+      "reading": {
+        "type": "Block",
+        "object": "https://kopje.test/ap/users/alice"
+      }
+    },
+    {
+      "name": "Undo(Block), actor as a one-element array",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/blocks/1",
+        "object_type": "Block",
+        "object_actor": "https://mastodon.example/users/bob",
+        "object_object": "https://kopje.test/ap/users/alice"
+      }
+    },
+    {
+      "name": "Delete(status), actor as a one-element array",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted",
+        "object_type": "Tombstone",
+        "object_actor": null,
+        "object_object": null
+      }
+    },
+    {
+      "name": "Delete(actor), actor as a one-element array",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob"
+      }
+    },
+    {
+      "name": "Undo(Follow), object as {\"@id\": its id}",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/follows/14"
+      }
+    },
+    {
+      "name": "Reject(Follow), object as {\"@id\": its id}",
+      "reading": {
+        "type": "Reject",
+        "object": "https://kopje.test/ap/follows/1"
+      }
+    },
+    {
+      "name": "Undo(Like), object as {\"@id\": its id}",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/likes/1"
+      }
+    },
+    {
+      "name": "Undo(Announce), object as {\"@id\": its id}",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/statuses/boost/activity"
+      }
+    },
+    {
+      "name": "Block, object as {\"@id\": its id}",
+      "reading": {
+        "type": "Block",
+        "object": "https://kopje.test/ap/users/alice"
+      }
+    },
+    {
+      "name": "Undo(Block), object as {\"@id\": its id}",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/blocks/1"
+      }
+    },
+    {
+      "name": "Delete(status), object as {\"@id\": its id}",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted"
+      }
+    },
+    {
+      "name": "Delete(actor), object as {\"@id\": its id}",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob"
+      }
+    },
+    {
+      "name": "Undo(Follow), object as a one-element array after to: [null]",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/follows/14",
+        "object_type": "Follow",
+        "object_actor": "https://mastodon.example/users/bob",
+        "object_object": "https://kopje.test/ap/users/alice"
+      }
+    },
+    {
+      "name": "Reject(Follow), object as a one-element array after to: [null]",
+      "reading": {
+        "type": "Reject",
+        "object": "https://kopje.test/ap/follows/1",
+        "object_type": "Follow",
+        "object_actor": "https://kopje.test/ap/users/alice",
+        "object_object": "https://mastodon.example/users/bob"
+      }
+    },
+    {
+      "name": "Undo(Like), object as a one-element array after to: [null]",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/likes/1",
+        "object_type": "Like",
+        "object_actor": "https://mastodon.example/users/bob",
+        "object_object": "https://kopje.test/ap/o/local-1"
+      }
+    },
+    {
+      "name": "Undo(Announce), object as a one-element array after to: [null]",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/statuses/boost/activity",
+        "object_type": "Announce",
+        "object_actor": "https://mastodon.example/users/bob",
+        "object_object": "https://kopje.test/ap/o/local-1"
+      }
+    },
+    {
+      "name": "Block, object as a one-element array after to: [null]",
+      "reading": {
+        "type": "Block",
+        "object": "https://kopje.test/ap/users/alice"
+      }
+    },
+    {
+      "name": "Undo(Block), object as a one-element array after to: [null]",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/blocks/1",
+        "object_type": "Block",
+        "object_actor": "https://mastodon.example/users/bob",
+        "object_object": "https://kopje.test/ap/users/alice"
+      }
+    },
+    {
+      "name": "Delete(status), object as a one-element array after to: [null]",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted",
+        "object_type": "Tombstone",
+        "object_actor": null,
+        "object_object": null
+      }
+    },
+    {
+      "name": "Delete(actor), object as a one-element array after to: [null]",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob"
+      }
+    },
+    {
+      "name": "Delete(status), actor as an array of bob and carol",
+      "error": "TypeError: no implicit conversion of String into Integer"
+    },
+    {
+      "name": "Delete(status), actor as an array of carol",
+      "relayed": true
+    },
+    {
+      "name": "Delete(status), actor as an array of null",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted",
+        "object_type": "Tombstone",
+        "object_actor": null,
+        "object_object": null
+      }
+    },
+    {
+      "name": "Delete(status), actor as an array of bob's node",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted",
+        "object_type": "Tombstone",
+        "object_actor": null,
+        "object_object": null
+      }
+    },
+    {
+      "name": "Delete(status), actor as a one-element array, with a target whose id is null",
+      "error": "TypeError: no implicit conversion of String into Integer"
+    },
+    {
+      "name": "Delete(status), object as {\"@id\": its id}, with a target whose id is null",
+      "reading": {
+        "type": "Delete",
+        "object": null,
+        "object_type": null,
+        "object_actor": null,
+        "object_object": null
+      }
+    },
+    {
+      "name": "Delete(status), object as a one-element array after to: [null], with a target whose id is null",
+      "error": "TypeError: no implicit conversion of String into Integer"
+    },
+    {
+      "name": "Delete(status), object as a string, with a target whose id is null",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted"
+      }
+    },
+    {
+      "name": "Delete(status), object as an array of {\"@id\": its id}",
+      "error": "TypeError: no implicit conversion of String into Integer"
+    },
+    {
+      "name": "Undo(Follow), object as {\"@id\": its id} with its type",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/follows/14",
+        "object_type": "Follow",
+        "object_actor": null,
+        "object_object": null
+      }
+    },
+    {
+      "name": "Delete(status), object as {\"@id\": its id}, content as {\"@id\": an IRI}",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted"
+      }
+    },
+    {
+      "name": "Delete(status), object as {\"@id\": its id}, to as [{\"@id\": the public collection}]",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted"
+      }
+    },
+    {
+      "name": "Delete(status), object as {\"@id\": its id}, under a context that leaves object untyped",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted"
+      }
+    },
+    {
+      "name": "Delete(status), object as {\"@id\": its id}, unsigned",
+      "reading": {
+        "type": "Delete",
+        "object": null,
+        "object_type": null,
+        "object_actor": null,
+        "object_object": null
+      }
+    },
+    {
+      "name": "Delete(status), object and 10 IRIs in cc as {\"@id\": …}",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted"
+      }
+    },
+    {
+      "name": "Delete(status), object and 493 IRIs in cc as {\"@id\": …}",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted"
+      }
+    },
+    {
+      "name": "Delete(status), object and 494 IRIs in cc as {\"@id\": …}",
+      "reading": {
+        "type": "Delete",
+        "object": null,
+        "object_type": null,
+        "object_actor": null,
+        "object_object": null
+      }
+    },
+    {
+      "name": "Undo(Follow) typed as absolute IRIs, actor as a one-element array",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/follows/14",
+        "object_type": "Follow",
+        "object_actor": "https://mastodon.example/users/bob",
+        "object_object": "https://kopje.test/ap/users/alice"
+      }
+    },
+    {
+      "name": "Create, actor as a one-element array",
+      "reading": {
+        "type": "Create",
+        "object": "https://mastodon.example/users/bob/statuses/created",
+        "object_type": "Note",
+        "object_actor": null,
+        "object_object": null
+      }
+    },
+    {
+      "name": "Delete(status), object as a one-element array before to: [null]",
+      "error": "TypeError: no implicit conversion of String into Integer"
+    },
+    {
+      "name": "Delete(status), object as a one-element array after to of carol twice",
+      "error": "TypeError: no implicit conversion of String into Integer"
+    },
+    {
+      "name": "Delete(status), object as a one-element array after to of carol twice and null",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted",
+        "object_type": "Tombstone",
+        "object_actor": null,
+        "object_object": null
+      }
+    },
+    {
+      "name": "Delete(status), object as a one-element array after published: [null]",
+      "error": "TypeError: no implicit conversion of String into Integer"
+    },
+    {
+      "name": "Delete(status), object as a one-element array after a target that holds to: [null]",
+      "error": "TypeError: no implicit conversion of String into Integer"
+    },
+    {
+      "name": "Undo(Follow), object as a one-element array after to: [null], beside a key \"0\"",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/follows/14",
+        "object_type": "Follow",
+        "object_actor": "https://mastodon.example/users/bob",
+        "object_object": "https://kopje.test/ap/users/alice"
+      }
+    },
+    {
+      "name": "Undo(Follow), its Follow's actor and object as one-element arrays after to: [null]",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/follows/14",
+        "object_type": "Follow",
+        "object_actor": "https://mastodon.example/users/bob",
+        "object_object": "https://kopje.test/ap/users/alice"
+      }
+    },
+    {
+      "name": "Create, object as {\"@id\": its id}",
+      "reading": {
+        "type": "Create",
+        "object": "https://mastodon.example/users/bob/statuses/created"
+      }
+    },
+    {
+      "name": "Undo(Follow), its Follow typed by @type",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/follows/14",
+        "object_type": "Follow",
+        "object_actor": "https://mastodon.example/users/bob",
+        "object_object": "https://kopje.test/ap/users/alice"
+      }
+    },
+    {
+      "name": "Undo(Follow) typed as a compact IRI",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/follows/14",
+        "object_type": "Follow",
+        "object_actor": "https://mastodon.example/users/bob",
+        "object_object": "https://kopje.test/ap/users/alice"
+      }
+    },
+    {
+      "name": "Undo(Follow) under a definition no sender writes",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/follows/14",
+        "object_type": "Follow",
+        "object_actor": "https://mastodon.example/users/bob",
+        "object_object": "https://kopje.test/ap/users/alice"
+      }
+    },
+    {
+      "name": "Undo(Follow), its Follow's object as {\"@id\": its id}",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/follows/14",
+        "object_type": "Follow",
+        "object_actor": "https://mastodon.example/users/bob",
+        "object_object": "https://kopje.test/ap/users/alice"
+      }
+    },
+    {
+      "name": "Delete(status), object as {\"@id\": its id}, source holding url as {\"@id\": …}",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted"
+      }
+    },
+    {
+      "name": "Delete(status), object as {\"@id\": its id}, contentMap holding to as {\"@id\": …}",
+      "reading": {
+        "type": "Delete",
+        "object": null,
+        "object_type": null,
+        "object_actor": null,
+        "object_object": null
+      }
+    },
+    {
+      "name": "Delete(status), object as {\"@id\": its id}, nameMap holding to as {\"@id\": …}",
+      "reading": {
+        "type": "Delete",
+        "object": null,
+        "object_type": null,
+        "object_actor": null,
+        "object_object": null
+      }
+    },
+    {
+      "name": "Delete(status), object as {\"@id\": its id}, summaryMap holding to as {\"@id\": …}",
+      "reading": {
+        "type": "Delete",
+        "object": null,
+        "object_type": null,
+        "object_actor": null,
+        "object_object": null
+      }
+    },
+    {
+      "name": "Delete(status), object as a two-element array after to: [null]",
+      "error": "TypeError: no implicit conversion of String into Integer"
+    },
+    {
+      "name": "Delete(status), object as {\"@id\": its id} with its type",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted",
+        "object_type": "Tombstone",
+        "object_actor": null,
+        "object_object": null
+      }
+    }
+  ]
+}

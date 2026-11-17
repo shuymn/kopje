@@ -51,6 +51,7 @@ import {
   withinIdentityBound,
   storedText,
   storedTime,
+  railsBoolean,
 } from "./kopje-runtime.js";
 import { digestOf } from "./sql-script.js";
 import { fit, FULL_EDGE, SMALL_EDGE } from "./upload-rules.js";
@@ -548,10 +549,17 @@ export function convertLegacy(
       legacyOwner.set(original, String(actor.id));
     }
   }
+  // A remote actor's flag as the Worker reads it from the document (src/federation/remote-actor.ts remoteActorInput):
+  // Rails' boolean cast of `value || false`, null for "" (no discoverable; a new account's locked and indexable false).
+  /** @param {unknown} value */
+  const remoteFlag = (value) => {
+    const cast = railsBoolean(value ?? false);
+    return cast === null ? null : cast ? 1 : 0;
+  };
   const accountInsert = insert(
     `INSERT INTO accounts (id, uri, username, domain, actor_type, display_name, note, url, avatar_url, header_url, locked,
-			discoverable, inbox_url, shared_inbox_url, raw, fetched_at, search_text, legacy_id, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			discoverable, indexable, inbox_url, shared_inbox_url, raw, fetched_at, search_text, legacy_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const pendingAccounts = [];
   // The remote handles written so far, as `<host> <lowercased username>` (migration 0096_remote_handles: one remote
@@ -650,6 +658,15 @@ export function convertLegacy(
       typeof properties.endpoints === "object" && properties.endpoints !== null
         ? /** @type {Json} */ (properties.endpoints)
         : {};
+    // locked, discoverable and indexable. Unset: legacy showed and published a local actor as not discoverable, and
+    // had no indexable.
+    const flags = local
+      ? [properties.manuallyApprovesFollowers === true ? 1 : 0, properties.discoverable === true ? 1 : 0, null]
+      : [
+          remoteFlag(properties.manuallyApprovesFollowers) ?? 0,
+          remoteFlag(properties.discoverable),
+          remoteFlag(properties.indexable) ?? 0,
+        ];
     accountInsert.run(
       id,
       uri,
@@ -661,10 +678,7 @@ export function convertLegacy(
       local ? null : stored("accounts.url", linkOf(properties.url), storedProfileUrl),
       profileImage(properties.icon, "avatar"),
       profileImage(properties.image, "header"),
-      properties.manuallyApprovesFollowers === true ? 1 : 0,
-      // Unset: legacy showed and published a local actor as not discoverable; Kopje stores a remote actor that omits it
-      // as unknown (NULL).
-      typeof properties.discoverable === "boolean" ? (properties.discoverable ? 1 : 0) : local ? 0 : null,
+      ...flags,
       local ? null : typeof properties.inbox === "string" ? properties.inbox : null,
       local ? null : typeof endpoints.sharedInbox === "string" ? endpoints.sharedInbox : null,
       local ? null : String(actor.properties),

@@ -146,6 +146,18 @@ describe("GET /authorize_interaction (WEB-4)", () => {
     expect(t.jobs).not.toHaveBeenCalled();
   });
 
+  // Its query is read as Rack and Rails read it (readQuery): the last of a repeated name, and a name nested as two
+  // kinds is 400.
+  it("reads the last of a repeated uri, and refuses one nested as two kinds", async () => {
+    const t = await world();
+    const last = await t.request("/authorize_interaction?uri=x&uri=%40bob%40mastodon.example");
+    const refused = await t.request("/authorize_interaction?uri=%40bob%40mastodon.example&uri[]=x");
+    expect([formOf(await last.text(), "/authorize_interaction").get("uri"), refused.status]).toEqual([
+      "@bob@mastodon.example",
+      400,
+    ]);
+  });
+
   it("prefills only a bounded http(s) URL or address", async () => {
     const t = await world();
     const prefill = async (uri: string) =>

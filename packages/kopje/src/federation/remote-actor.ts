@@ -8,6 +8,7 @@ import { hostDomain, normalizeDomain } from "../platform/domain-name";
 import { boundedHref, httpUrl } from "../platform/http-url";
 import { DOMAIN_BYTES, isRemoteUsername, isStorableActorId, REMOTE_USERNAME_LIMIT } from "../platform/identity-bounds";
 import { railsBlank } from "../platform/rails-blank";
+import { railsBoolean } from "../platform/rails-boolean";
 import { storedDisplayName, storedProfileDescription, storedProfileUrl, storedText } from "../platform/stored-bounds";
 import { sanitizeRemoteBio } from "../security/html";
 import { isObject, railsTime } from "./json-shapes";
@@ -81,8 +82,8 @@ export async function loadActor(
 // and fails the whole actor on one it cannot decode (an `icon` that is not an Image, an unreadable `updated`, an
 // invalid language map), where Mastodon 4.7 reads every member by its literal spelling (`@json[...]`) and stores the
 // account. Every member outside this inventory, in any spelling, is read from the document's JSON by spelling
-// (profileUrl, profileImage, collection-requests.ts collectionUri, sharedInboxUri, claimedHandle, emojiCandidates) or
-// not at all.
+// (profileUrl, profileImage, collection-requests.ts collectionUri, sharedInboxUri, claimedHandle, emojiCandidates,
+// remoteActorInput's flags) or not at all.
 const FEDIFY_MEMBERS: Readonly<Record<string, string>> = {
   "@context": "JSON-LD expansion",
   id: "lookupObject's id check (ID-2), readActor",
@@ -91,9 +92,6 @@ const FEDIFY_MEMBERS: Readonly<Record<string, string>> = {
   inbox: "remoteActorInput",
   name: "remoteActorInput",
   summary: "remoteActorInput",
-  manuallyApprovesFollowers: "remoteActorInput",
-  discoverable: "remoteActorInput",
-  indexable: "remoteActorInput",
   movedTo: "storableActorId",
   alsoKnownAs: "inbound.ts Move",
   publicKey: "ownKeys; the HTTP signature's and the LD signature's key (ID-1)",
@@ -450,9 +448,12 @@ export async function remoteActorInput(actor: Actor, document: unknown): Promise
     showFeatured: displaySetting(json, "showFeatured"),
     showMedia: displaySetting(json, "showMedia"),
     showRepliesInMedia: displaySetting(json, "showRepliesInMedia"),
-    locked: actor.manuallyApprovesFollowers === true,
-    discoverable: actor.discoverable,
-    indexable: actor.indexable === true,
+    // Read by spelling, as Mastodon casts `@json[name] || false` for a boolean column
+    // (process_account_service.rb:252-256, rails-boolean.ts): null for "", which the Store reads as RemoteActorInput
+    // says.
+    locked: railsBoolean(json.manuallyApprovesFollowers ?? false),
+    discoverable: railsBoolean(json.discoverable ?? false),
+    indexable: railsBoolean(json.indexable ?? false),
     inboxUrl,
     sharedInboxUrl: sharedInboxUri(json),
     keys: await ownKeys(actor, uri),

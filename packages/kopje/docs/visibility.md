@@ -462,18 +462,19 @@ their Relationship with the account; no other path reads it (the architecture te
 
 The profile directory (`src/domain/directory.ts`, `GET /api/v1/directory`, Mastodon's `Api::V1::DirectoriesController`)
 lists the discoverable accounts that R12 lists to the viewer: `accounts.discoverable` is 1, a local account's setting
-(`update_credentials` or the profile update) or what a remote actor published (an actor that published nothing is not
-listed), and `listedForSql` leaves out an unavailable account (R1) and, for a signed-in viewer, one they block or mute
-(while the mute applies), one on a domain they block, and one that blocks them: Mastodon's `Account.discoverable` with
-`not_excluded_by_account` and `not_domain_blocked_by_account` (Kopje has no silenced accounts and does not record that
-an account moved). A local account is never on a blocked domain, so `local=true` changes nothing there, as in Mastodon.
-`order=active` orders by the account's newest public, unlisted or private status (`accounts.last_status_id`, which the
-triggers of migration `0021_directory` keep as statuses are stored, deleted or hidden), accounts without one last, then
-by id; `order=new` by id. A page reads the partial index of its order (discoverable accounts only, all or local) from
-the start, a window of `DIRECTORY_WINDOW` (2) times offset plus limit entries, judges each by key, and answers those R12
-lists from the offset: so it never reads an account that is not discoverable nor one below the window, and when more
-than half the window is hidden from the viewer the page comes back short (a slice of the full directory, since the
-window is a prefix of it). An offset above `MAX_DIRECTORY_OFFSET` (400) answers no accounts.
+(`update_credentials` or the profile update) or what a remote actor published, read through Rails' boolean cast (an
+actor that published nothing is not listed), and `listedForSql` leaves out an unavailable account (R1) and, for a
+signed-in viewer, one they block or mute (while the mute applies), one on a domain they block, and one that blocks them:
+Mastodon's `Account.discoverable` with `not_excluded_by_account` and `not_domain_blocked_by_account` (Kopje has no
+silenced accounts and does not record that an account moved). A local account is never on a blocked domain, so
+`local=true` changes nothing there, as in Mastodon. `order=active` orders by the account's newest public, unlisted or
+private status (`accounts.last_status_id`, which the triggers of migration `0021_directory` keep as statuses are stored,
+deleted or hidden), accounts without one last, then by id; `order=new` by id. A page reads the partial index of its
+order (discoverable accounts only, all or local) from the start, a window of `DIRECTORY_WINDOW` (2) times offset plus
+limit entries, judges each by key, and answers those R12 lists from the offset: so it never reads an account that is not
+discoverable nor one below the window, and when more than half the window is hidden from the viewer the page comes back
+short (a slice of the full directory, since the window is a prefix of it). An offset above `MAX_DIRECTORY_OFFSET` (400)
+answers no accounts.
 
 A scheduled status (`src/domain/scheduled-statuses.ts`, migration `0011_scheduled_statuses`) is not a status: it is
 a row of `scheduled_statuses` with the post's parameters, and its owner's alone (R26, `scheduledOwnSql`). No read,

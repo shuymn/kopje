@@ -168,7 +168,6 @@ const DEFAULT = "left at its default by the converter (NOT_CONVERTED)";
 const NOT_CONVERTED: Record<string, string> = {
   "accounts.confirmed_username": "unused since 0096_remote_handles (the stored handle is the confirmed one): NULL",
   "accounts.emojis": "legacy has no custom emoji",
-  "accounts.indexable": "legacy has no indexable setting: NULL, presented as false",
   "accounts.moved_to_account_id": "legacy keeps no account move: NULL, no pointer",
   "accounts.avatar_static_url": "legacy keeps no still image: NULL, the static is the avatar",
   "accounts.header_static_url": "legacy keeps no still image: NULL, the static is the header",
@@ -261,7 +260,6 @@ const NOT_VERIFIED: Record<string, string> = {
   "accounts.handle_refreshed_at": DEFAULT,
   "accounts.header_description": DEFAULT,
   "accounts.hide_collections": DEFAULT,
-  "accounts.indexable": DEFAULT,
   "accounts.moved_to_account_id": DEFAULT,
   "accounts.avatar_static_url": DEFAULT,
   "accounts.header_static_url": DEFAULT,

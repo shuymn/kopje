@@ -55,10 +55,13 @@ export type RemoteActorInput = {
   showFeatured: boolean | null;
   showMedia: boolean | null;
   showRepliesInMedia: boolean | null;
-  locked: boolean;
+  // The actor's manuallyApprovesFollowers, discoverable and indexable as Rails' boolean cast reads them
+  // (federation/remote-actor.ts remoteActorInput); null for an empty string, where Mastodon assigns nil: discoverable
+  // stores it, and locked and indexable keep the stored value (a new account's is false), as Mastodon's NOT NULL
+  // columns refuse it (docs/mastodon-deviations.md).
+  locked: boolean | null;
   discoverable: boolean | null;
-  // The actor's toot:indexable, true only when the document says so (ProcessAccountService: `@json['indexable']`).
-  indexable: boolean;
+  indexable: boolean | null;
   inboxUrl: string | null;
   sharedInboxUrl: string | null;
   published: string | null;
@@ -389,6 +392,7 @@ function storeActor(
     [actor.displayName, actor.note, ...fields.flatMap((field) => [field.name, field.value])],
     ACCOUNT_EMOJIS_BYTES,
   );
+  const flag = (value: boolean | null) => (value === null ? null : value ? 1 : 0);
   const values = [
     actor.uri,
     username,
@@ -399,9 +403,9 @@ function storeActor(
     actor.url,
     actor.avatarUrl,
     actor.headerUrl,
-    actor.locked ? 1 : 0,
-    actor.discoverable === null ? null : actor.discoverable ? 1 : 0,
-    actor.indexable ? 1 : 0,
+    flag(actor.locked),
+    flag(actor.discoverable),
+    flag(actor.indexable),
     protocol?.inboxUrl ?? null,
     protocol?.sharedInboxUrl ?? null,
     actor.raw,
@@ -412,8 +416,8 @@ function storeActor(
     actor.avatarDescription,
     actor.headerDescription,
   ];
-  // The display settings, ?23 to ?25: a new account takes true for one the document leaves out, a stored one keeps it.
-  const setting = (value: boolean | null) => (value === null ? null : value ? 1 : 0);
+  // locked (?11) and indexable (?13) given null: a new account takes false, a stored one keeps its own. The display
+  // settings, ?23 to ?25, the same, a new account taking true.
   insertWithFreshId(
     "accounts",
     () => remoteId(actor.published ?? "", now),
@@ -423,13 +427,14 @@ function storeActor(
 					locked, discoverable, indexable, inbox_url, shared_inbox_url, raw, fetched_at, search_text, created_at,
 					emojis, avatar_description, header_description, show_featured, show_media, show_media_replies,
 					document_revision)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?23, 1), COALESCE(?24, 1),
-					COALESCE(?25, 1), ${nextDocumentRevisionSql(null)})
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?11, 0), ?, COALESCE(?13, 0), ?, ?, ?, ?, ?, ?, ?, ?, ?,
+					COALESCE(?23, 1), COALESCE(?24, 1), COALESCE(?25, 1), ${nextDocumentRevisionSql(null)})
 				ON CONFLICT (uri) DO UPDATE SET username = CASE WHEN ?26 THEN accounts.username ELSE excluded.username END,
 					document_revision = ${nextDocumentRevisionSql("accounts.document_revision")}, actor_type = excluded.actor_type,
 					display_name = excluded.display_name, note = excluded.note, url = excluded.url,
-					avatar_url = excluded.avatar_url, header_url = excluded.header_url, locked = excluded.locked,
-					discoverable = excluded.discoverable, indexable = excluded.indexable,
+					avatar_url = excluded.avatar_url, header_url = excluded.header_url,
+					locked = COALESCE(?11, accounts.locked), discoverable = excluded.discoverable,
+					indexable = COALESCE(?13, accounts.indexable),
 					inbox_url = CASE WHEN ?27 THEN accounts.inbox_url ELSE excluded.inbox_url END,
 					shared_inbox_url = CASE WHEN ?27 THEN accounts.shared_inbox_url ELSE excluded.shared_inbox_url END,
 					raw = excluded.raw, fetched_at = excluded.fetched_at,
@@ -444,9 +449,9 @@ function storeActor(
 				WHERE accounts.domain IS NOT NULL`,
         id,
         ...values,
-        setting(actor.showFeatured),
-        setting(actor.showMedia),
-        setting(actor.showRepliesInMedia),
+        flag(actor.showFeatured),
+        flag(actor.showMedia),
+        flag(actor.showRepliesInMedia),
         keep ? 1 : 0,
         protocol === null ? 1 : 0,
       ),
