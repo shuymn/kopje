@@ -703,6 +703,16 @@ Mastodon's `JsonLdHelper#collection_items`; RES-6 in [threat-model.md](threat-mo
   bound), so each entry's flags are within Mastodon's, and no one may quote or ask where Mastodon refuses them.
   Accepted, 2026-11-16.
 
+- An `Add` or `Remove` of a `Hashtag` aimed at the actor's `featuredTags` collection features or unfeatures it, as
+  one aimed at its `featured` collection does. Mastodon 4.7.5 reads a hashtag only from one aimed at the `featured`
+  collection (`activity/add.rb:8`, `:18`; `activity/remove.rb` the same) and looks any other target up among the
+  actor's stored collections, so it ignores this one. Both targets name the actor's own featured hashtags. Accepted,
+  2026-11-18.
+
+- A remote account keeps at most 20 pins and 10 featured hashtags: an `Add` past either is ignored, with or without
+  an `id`. Mastodon 4.7.5 limits only a local account's (`status_pin_validator.rb:10`, `featured_tag.rb:77`) and
+  stores every pin and featured hashtag a remote account's `Add` brings. Accepted, 2026-11-18.
+
 Followers synchronisation (Mastodon's `Collection-Synchronization` header and
 `/users/:username/followers_synchronization`):
 
