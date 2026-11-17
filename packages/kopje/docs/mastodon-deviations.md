@@ -1323,13 +1323,16 @@ Web Push (`/api/v1/push/subscription` and the pushes sent; PUSH-1 and PUSH-2 in 
   `moderation_warning`'s and a `quoted_update`'s is the account's name alone; Mastodon's are `You have received a
   moderation warning` and `<name> edited a post you have quoted` (`notification_mailer` in `config/locales/en.yml`).
 - A subscription whose `endpoint`, `keys[p256dh]` or `keys[auth]` is absent or empty answers 400 `param is missing or
-  the value is empty or invalid: subscription`; Mastodon answers that only without a `subscription`, and 422 `… can't
-  be blank` otherwise, as Kopje does for a value blank to Rails (U+0085). Kopje answers the first failing check, in
-  Mastodon's order (the endpoint's presence and URL, each key's presence, the keys), where Mastodon lists every error;
-  keys that do not decode answer `Key p256dh is invalid` or `Key auth is invalid`, where Mastodon's error is `is not a
-  valid Ed25519 or Curve25519 key`, and an endpoint that is not a public https URL (PUSH-2) answers `Endpoint is
-  invalid`, where Mastodon's URL validator takes any http(s) URL with a host. `test/param-blank.test.ts` ("refuses an
-  endpoint or key blank to Rails as blank, before the keys are read"). Accepted, 2026-11-18.
+  the value is empty or invalid: subscription`. Mastodon answers that only to a `subscription` absent or holding none
+  of its fields; it answers 500 to one without `keys` (an `endpoint` alone: `subscriptions_controller.rb:54` reads
+  `auth` of the missing `keys`), and 422 `… can't be blank` to one with `keys` that lacks a value, as Kopje does for a
+  value blank to Rails (U+0085). Kopje answers the first failing check, in Mastodon's order (the endpoint's presence
+  and URL, each key's presence, the keys), where Mastodon lists every error; a blank endpoint fails both of its own
+  and answers both, `Endpoint can't be blank, Endpoint is invalid`, as Mastodon does beside valid keys. Keys that do
+  not decode answer `Key p256dh is invalid` or `Key auth is invalid`, where Mastodon's error is `is not a valid Ed25519
+  or Curve25519 key`, and an endpoint that is not a public https URL (PUSH-2) answers `Endpoint is invalid`, where
+  Mastodon's URL validator takes any http(s) URL with a host. `test/param-blank.test.ts` ("refuses an endpoint or key
+  blank to Rails as blank, before the keys are read"). Accepted, 2026-11-18.
 - An empty `data[policy]` is `all`, and a policy other than `all`, `followed`, `follower` and `none` answers 422
   `Validation failed: Policy is not included in the list`. Mastodon validates no policy: it stores the value as sent,
   shows it, and lets no push through for an empty or unknown one (`Web::PushSubscription#policy_allows_notification?`).

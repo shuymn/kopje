@@ -67,8 +67,9 @@ function dataParams(p: Params): PushData | Response {
 type Keys = { endpoint: string; p256dh: string; auth: string };
 
 // The endpoint and keys in Web::PushSubscription's order, the first error answered: the endpoint's presence and URL, each
-// key's presence, then the keys themselves. A value blank to Rails (railsBlank) fails its presence (`can't be blank`);
-// an empty or absent one answers 400 before any (docs/mastodon-deviations.md, "Web Push").
+// key's presence, then the keys themselves. A value blank to Rails (railsBlank) fails its presence (`can't be blank`),
+// and a blank endpoint its URL too, both errors Mastodon lists; an empty or absent one answers 400 before any
+// (docs/mastodon-deviations.md, "Web Push").
 async function subscriptionParams(p: Params): Promise<Keys | Response> {
   const endpoint = p.get("subscription[endpoint]") ?? "";
   const p256dh = p.get("subscription[keys][p256dh]") ?? "";
@@ -77,7 +78,7 @@ async function subscriptionParams(p: Params): Promise<Keys | Response> {
     return MISSING();
   }
   if (railsBlank(endpoint)) {
-    return invalid("Endpoint can't be blank");
+    return invalid("Endpoint can't be blank, Endpoint is invalid");
   }
   const url = endpoint.length > MAX_ENDPOINT_LENGTH ? null : URL.parse(endpoint);
   if (url === null || publicShapeRefusal(url) !== null) {

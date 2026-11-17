@@ -657,8 +657,8 @@ describe("media (PB10)", () => {
   });
 
   // Web::PushSubscription validates the endpoint's and each key's presence (Rails' blank?) before the keys themselves,
-  // and Kopje answers the first error. An empty endpoint or key stays missing (400; docs/mastodon-deviations.md, "Web
-  // Push").
+  // and Kopje answers the first error; a blank endpoint fails its URL validation too, and Mastodon lists both. An empty
+  // endpoint or key stays missing (400; docs/mastodon-deviations.md, "Web Push").
   it("refuses an endpoint or key blank to Rails as blank, before the keys are read", async () => {
     const h = await community(["alice"], "read write follow push", {}, { VAPID_JWK: VAPID.env });
     const client = await newClient();
@@ -670,7 +670,7 @@ describe("media (PB10)", () => {
       );
     const endpoint = "https://push.example/send/abc";
     const failed = (error: string) => ({ status: 422, body: { error: `Validation failed: ${error}` } });
-    expect(await subscribe(NEL, {})).toEqual(failed("Endpoint can't be blank"));
+    expect(await subscribe(NEL, {})).toEqual(failed("Endpoint can't be blank, Endpoint is invalid"));
     expect(await subscribe(endpoint, { p256dh: NEL })).toEqual(failed("Key p256dh can't be blank"));
     expect(await subscribe(endpoint, { auth: NEL })).toEqual(failed("Key auth can't be blank"));
     expect(await subscribe(endpoint, { p256dh: "!!!", auth: NEL })).toEqual(failed("Key auth can't be blank"));
