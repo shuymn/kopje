@@ -13,6 +13,7 @@ import captured from "./fixtures/untrusted-counts.json";
 import { mastodonActor } from "./inbox-helpers";
 import {
   announce,
+  AS,
   create,
   followed,
   mastodonNote,
@@ -152,6 +153,26 @@ describe("a remote status's untrusted counts", () => {
     // The same explicit Update with a sensitive of its own applies.
     expect(await t.post(bob, update(bob, { ...edit, sensitive: false }, "2026-10-11T13:00:00Z"))).toBe(202);
     expect(await counts(t, note.id)).toEqual({ f: 9, r: 10 });
+  });
+
+  // A status Kopje fetches again (a search with resolve, /authorize_interaction, a pin sync, a replies walk) is applied
+  // as its author's Update (storeFetchedStatus, fetch_remote_status_service.rb:48), its counts with it.
+  it("are assigned by a refetch of a stored status", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const note = mastodonNote(bob, { likes: collection(42), shares: collection(7) });
+    const search = async () => {
+      t.web.serve(note.id, { "@context": AS, ...note });
+      const found = await t.api<{ statuses: { favourites_count: number; reblogs_count: number }[] }>(
+        `/api/v2/search?resolve=true&type=statuses&q=${encodeURIComponent(note.id)}`,
+      );
+      return found.body.statuses.map((s) => [s.favourites_count, s.reblogs_count]);
+    };
+    expect(await search()).toEqual([[42, 7]]);
+    note.likes = collection(9);
+    note.shares = collection("");
+    expect(await search()).toEqual([[9, 0]]);
+    expect(await counts(t, note.id)).toEqual({ f: 9, r: null });
   });
 
   it("are left by an older, a future, a retracted or another author's Update", async () => {
