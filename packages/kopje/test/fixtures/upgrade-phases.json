@@ -1,0 +1,124 @@
+[
+  {
+    "id": "pending",
+    "label": "Migrations pending, none applied yet",
+    "waits": false,
+    "refusals": {
+      "read": "schema-pending",
+      "session": "schema-pending",
+      "write": "schema-pending",
+      "media-delete": "schema-pending",
+      "media-rebuild": "schema-pending"
+    },
+    "health": { "schema": "pending", "readonly": true, "upgrading": false, "hold": null }
+  },
+  {
+    "id": "applying",
+    "label": "Applying and verifying",
+    "waits": true
+  },
+  {
+    "id": "stopped-applying",
+    "label": "Stopped while applying, until the next attempt",
+    "waits": false,
+    "refusals": {
+      "read": "schema-pending",
+      "session": "schema-pending",
+      "write": "schema-pending",
+      "media-delete": "schema-pending",
+      "media-rebuild": "schema-pending"
+    },
+    "health": { "schema": "pending", "readonly": true, "upgrading": true, "hold": null }
+  },
+  {
+    "id": "stopped-verifying",
+    "label": "Stopped before verifying, until the next attempt",
+    "waits": false,
+    "refusals": {
+      "read": null,
+      "session": null,
+      "write": "upgrade-in-progress",
+      "media-delete": "upgrade-in-progress",
+      "media-rebuild": "upgrade-in-progress"
+    },
+    "health": { "schema": "current", "readonly": true, "upgrading": true, "hold": null }
+  },
+  {
+    "id": "bookmark-failed",
+    "label": "Held: `bookmark-failed`",
+    "waits": false,
+    "refusals": {
+      "read": "schema-pending",
+      "session": "schema-pending",
+      "write": "schema-pending",
+      "media-delete": "schema-pending",
+      "media-rebuild": "schema-pending"
+    },
+    "health": { "schema": "pending", "readonly": true, "upgrading": false, "hold": "bookmark-failed" }
+  },
+  {
+    "id": "upgrade-failed-unapplied",
+    "label": "Held: `upgrade-failed`, a migration unapplied",
+    "waits": false,
+    "refusals": {
+      "read": "schema-pending",
+      "session": "schema-pending",
+      "write": "schema-pending",
+      "media-delete": "schema-pending",
+      "media-rebuild": "schema-pending"
+    },
+    "health": { "schema": "pending", "readonly": true, "upgrading": true, "hold": "upgrade-failed" }
+  },
+  {
+    "id": "upgrade-failed-applied",
+    "label": "Held: `upgrade-failed`, every migration applied",
+    "waits": false,
+    "refusals": {
+      "read": null,
+      "session": null,
+      "write": "upgrade-failed",
+      "media-delete": "upgrade-failed",
+      "media-rebuild": "upgrade-failed"
+    },
+    "health": { "schema": "current", "readonly": true, "upgrading": true, "hold": "upgrade-failed" }
+  },
+  {
+    "id": "verify-failed",
+    "label": "Held: `verify-failed`",
+    "waits": false,
+    "refusals": {
+      "read": null,
+      "session": null,
+      "write": "verify-failed",
+      "media-delete": "verify-failed",
+      "media-rebuild": "verify-failed"
+    },
+    "health": { "schema": "current", "readonly": true, "upgrading": true, "hold": "verify-failed" }
+  },
+  {
+    "id": "diverged",
+    "label": "Schema diverged",
+    "waits": false,
+    "refusals": {
+      "read": "schema-diverged",
+      "session": "schema-diverged",
+      "write": "schema-diverged",
+      "media-delete": "schema-diverged",
+      "media-rebuild": "schema-diverged"
+    },
+    "health": { "schema": "diverged", "readonly": true, "upgrading": false, "hold": null }
+  },
+  {
+    "id": "upgraded",
+    "label": "Upgraded",
+    "waits": false,
+    "refusals": {
+      "read": null,
+      "session": null,
+      "write": null,
+      "media-delete": null,
+      "media-rebuild": null
+    },
+    "health": { "schema": "current", "readonly": false, "upgrading": false, "hold": null }
+  }
+]
