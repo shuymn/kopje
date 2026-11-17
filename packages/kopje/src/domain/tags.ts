@@ -2,7 +2,7 @@ import { STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { fromHex } from "../platform/dump-literals";
 import { statusPublishedSql } from "../platform/stored-bounds";
-import type { Page, PageQuery, Present } from "./accounts";
+import type { Page, PageQuery, PresentInput } from "./accounts";
 import { visibleSql } from "./audience";
 import { optionalUserReadOperation, userReadOperation, userWriteOperation } from "./auth";
 import { featureTag, unfeatureTag } from "./featured-tags";
@@ -157,7 +157,7 @@ export function presentTags(
   db: Db,
   names: readonly (string | TagKey)[],
   viewerId: string | null,
-  present: Present,
+  present: PresentInput,
   now: number,
   rows: HistoryRows,
 ): Tag[] {
@@ -174,7 +174,7 @@ export function presentTags(
   }));
 }
 
-function presentTag(db: Db, name: string, viewerId: string | null, present: Present, now: number): Tag {
+function presentTag(db: Db, name: string, viewerId: string | null, present: PresentInput, now: number): Tag {
   const [tag] = presentTags(db, [name], viewerId, present, now, "full");
   if (tag === undefined) {
     throw new Error("a tag was not presented");
@@ -183,7 +183,7 @@ function presentTag(db: Db, name: string, viewerId: string | null, present: Pres
 }
 
 // GET /api/v1/tags/:id. Null for a name that is not a hashtag.
-export const getTag = optionalUserReadOperation<{ name: string; now: number; present: Present }, Tag | null>(
+export const getTag = optionalUserReadOperation<{ name: string; now: number; present: PresentInput }, Tag | null>(
   (db, { name, now, present }, { accountId: viewerId }) => {
     const tag = tagName(name);
     return tag === null ? null : presentTag(db, tag, viewerId, present, now);
@@ -197,7 +197,7 @@ export function tagName(name: string): string | null {
   return tag === "" ? null : tag;
 }
 
-export type TagInput = { name: string; now: number; present: Present };
+export type TagInput = { name: string; now: number; present: PresentInput };
 
 export type TagResult =
   | { status: "ok"; value: Tag }
@@ -265,7 +265,7 @@ export const unfeatureTagOperation = tagWrite((db, accountId, { tag, now }) => {
 
 // GET /api/v1/followed_tags (Api::V1::FollowedTagsController): the viewer's followed hashtags, newest follow first,
 // paged by the follow's id through tag_follows_account.
-export const followedTags = userReadOperation<{ page: PageQuery; present: Present }, Page<Tag>>(
+export const followedTags = userReadOperation<{ page: PageQuery; present: PresentInput }, Page<Tag>>(
   (db, { page, present }, { accountId, now }) => {
     const ascending = page.minId !== undefined;
     // A name the list bound refuses (an import's: tag_follows bounds no name) is left out; the page still reads
@@ -327,7 +327,7 @@ export function suggestionsSince(now: number): string {
 // statuses_account, which the id bound cannot draw the planner off, and the filters stay outside its LIMIT: a deleted
 // status whose job has not run (withdrawn) and a legacy boost row take a place and count no hashtag
 // (docs/mastodon-deviations.md, "Hashtags"). Every hashtag row of a status in the window is read (RES-7's gap).
-export const featuredTagSuggestions = userReadOperation<{ present: Present }, Tag[]>(
+export const featuredTagSuggestions = userReadOperation<{ present: PresentInput }, Tag[]>(
   (db, { present }, { accountId, now }) => {
     const rows = db.all<{ key: string }>(
       `SELECT ${listedTagNameSql("t.name")} AS key FROM (

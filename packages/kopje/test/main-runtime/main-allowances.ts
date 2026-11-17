@@ -13,8 +13,22 @@ export const ROW_ALLOWANCES: Readonly<Record<string, { readonly rows: number; re
   },
 };
 
+// The statements the current flows run that main's never ran, by the current statement's id, each with its reason: no
+// rewrite of one of main's, so the witnesses run it as it is on both sides, as often as recorded, and pair the other
+// statements in order.
+export const ADDED_STATEMENTS: Readonly<Record<string, { readonly reason: string }>> = {
+  // featureApprovalReads (src/domain/audience.ts).
+  b67cdfa213ad6a9c: {
+    reason: "#1589 D16: feature_approval.current_user, one read per chunk of the accounts presented to a viewer",
+  },
+};
+
 // The leading parameters main's statement takes where the rewrite binds more: main's text runs with those alone.
 export const MAIN_PARAMETERS: Readonly<Record<string, { readonly count: number; readonly reason: string }>> = {
   // notificationPolicySql (src/domain/audience.ts).
   ba1325440a987793: { count: 5, reason: "#1582 D5: the limited flag ?6" },
+  // notify's delete of the row it replaces (src/domain/notifications.ts).
+  caea065fa6952c2a: { count: 6, reason: "#1589: the collection keys ?7 and ?8 (migration 0107)" },
+  // notify's insert (src/domain/notifications.ts).
+  b32922276dba79b0: { count: 10, reason: "#1589: the collection keys ?11 and ?12 (migration 0107)" },
 };

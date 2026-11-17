@@ -57,7 +57,7 @@ describe("profile display settings", () => {
       runInDurableObject(
         h.store,
         (_instance, state) =>
-          presentAccountsWithin(new Db(state.storage.sql), [remote], { origin: ORIGIN }, Infinity, true)
+          presentAccountsWithin(new Db(state.storage.sql), [remote], { origin: ORIGIN, viewerId: null }, Infinity, true)
             .items[0] as Settings,
       );
     for (const set of ["suspended_at = '2026-01-01', suspension_source = 'account'", "deleted_at = '2026-01-01'"]) {

@@ -267,6 +267,9 @@ describe("GET /api/v1/timelines/link", () => {
     expect(ids(await page(""))).toEqual(all.slice(0, 20));
     expect(ids(await page("&limit=41"))).toEqual(all.slice(0, 40));
     expect(ids(await page("&limit=-3"))).toEqual(all.slice(0, 3));
+    // Rails' last value, read by Ruby's to_i, and carried as sent (PERMITTED_PARAMS).
+    const repeated = await page("&limit=1&limit=0d2");
+    expect([ids(repeated), repeated.next]).toEqual([all.slice(0, 2), link("max_id", all[1]!, "0d2")]);
     for (const limit of ["0", "abc"]) {
       const none = await page(`&limit=${limit}`);
       expect([limit, none.status, none.body, none.link]).toEqual([limit, 200, [], null]);

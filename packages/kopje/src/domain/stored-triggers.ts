@@ -20,6 +20,7 @@ import {
   MAX_TREND_REVIEWS,
   movedToPastBoundSql,
   nextDocumentRevisionSql,
+  notificationCollectionKeysPastBoundSql,
   oembedEndpointPastBoundSql,
   POLL_REVISION_COLUMNS,
   pollRevisionPastBoundSql,
@@ -430,6 +431,14 @@ END;`,
     "collection_ids",
     reportCollectionIdsPastBoundSql("NEW.collection_ids"),
     "reports: collection_ids past its stored bound",
+  ),
+  // 0107_collection_notifications: a notification's collection keys, by its type.
+  ...boundTriggers(
+    "notifications_collection",
+    "notifications",
+    "type, collection_item_id, collection_id",
+    notificationCollectionKeysPastBoundSql("NEW.type", "NEW.collection_item_id", "NEW.collection_id"),
+    "notifications: collection keys past their stored bound",
   ),
   // 0109_scheduled_media_cap: an upload held past what its scheduled status may hold, inserted or moved to it.
   ...ownerCapTriggers(

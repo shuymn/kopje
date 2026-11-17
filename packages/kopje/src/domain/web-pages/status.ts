@@ -1,7 +1,7 @@
 import { ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX, STATUSES_URI_INDEX } from "../../db/indexes";
 import type { Db } from "../../db/sql";
 import { httpUrl } from "../../platform/http-url";
-import type { Account, Present } from "../accounts";
+import type { Account, PresentInput } from "../accounts";
 import { statusReads } from "../audience";
 import { contextOf } from "../auth";
 import { readOperation } from "../operation";
@@ -264,7 +264,7 @@ export type EmbeddedStatus = { status: "ok"; value: Status; domain: string } | {
 // Mastodon embeds a status unless it is hidden? (private, direct or limited). The URL forms are the status page's,
 // /@username/:id (an API id or a legacy id), and the object URI, /ap/o/<uuid> (Mastodon's StatusFinder takes its
 // /users/:username/statuses/:id); anything else is not found.
-export const embeddedStatus = readOperation<{ url: string; present: Present; now: number }, EmbeddedStatus>(
+export const embeddedStatus = readOperation<{ url: string; present: PresentInput; now: number }, EmbeddedStatus>(
   (db, { url, present, now }) => {
     const domain = db.first<{ value: string }>("SELECT value FROM instance_settings WHERE name = 'domain'")?.value;
     const target = domain === undefined ? null : statusTarget(url, domain);

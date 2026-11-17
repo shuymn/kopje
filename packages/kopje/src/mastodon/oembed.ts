@@ -1,5 +1,7 @@
 import { escapeHtml } from "../domain/plain-text";
 import type { Status } from "../domain/status-presenter";
+import { railsBlank } from "../platform/rails-blank";
+import { rubyToI } from "../platform/ruby-to-i";
 import { type ApiHandler, present, storeCall } from "./context";
 import { recordNotFound } from "./errors";
 
@@ -25,8 +27,9 @@ const STYLES = {
 };
 
 // GET /api/oembed: `url` names the status; `maxwidth` and `maxheight` become `width` and `height`.
+// Each is Rails' params[name]: the last value the query gives.
 export const oembed: ApiHandler = async (c, deps) => {
-  const url = c.req.query("url") ?? "";
+  const url = c.req.queries("url")?.at(-1) ?? "";
   const found = await storeCall(c, deps, (s, b) => s.embeddedStatus(b, { url, present: present(c), now: deps.now() }));
   // Api::OEmbedController#require_public_status!, and StatusFinder's RecordNotFound.
   if (found.status !== "ok") {
@@ -34,7 +37,7 @@ export const oembed: ApiHandler = async (c, deps) => {
   }
   const status = found.value;
   const { domain } = found;
-  const maxheight = c.req.query("maxheight");
+  const maxheight = c.req.queries("maxheight")?.at(-1);
   return c.json({
     type: "rich",
     version: "1.0",
@@ -44,9 +47,10 @@ export const oembed: ApiHandler = async (c, deps) => {
     provider_url: `https://${domain}/`,
     cache_age: CACHE_AGE,
     html: embedHtml(status, domain),
-    // OEmbedSerializer#width and #height: Ruby's to_i of the parameter; an empty maxheight is no height.
-    width: rubyToI(c.req.query("maxwidth") ?? String(DEFAULT_WIDTH)),
-    height: maxheight === undefined || maxheight.trim() === "" ? null : rubyToI(maxheight),
+    // OEmbedSerializer#width and #height: Ruby's to_i of the parameter; a blank maxheight (Rails' blank?, U+0085 among
+    // its spaces and U+FEFF not) is no height.
+    width: rubyToI(c.req.queries("maxwidth")?.at(-1) ?? String(DEFAULT_WIDTH)),
+    height: maxheight === undefined || railsBlank(maxheight) ? null : rubyToI(maxheight),
   });
 };
 
@@ -64,10 +68,4 @@ export function embedHtml(status: Status, domain: string): string {
     "</blockquote>",
     `<script data-allowed-prefixes="${escapeHtml(root)}" async src="${escapeHtml(`${root}assets/embed.js`)}"></script>`,
   ].join(" ");
-}
-
-// Ruby's String#to_i: the leading integer (after whitespace, with a sign and underscores between digits), else 0.
-function rubyToI(text: string): number {
-  const match = /^\s*([+-]?\d+(?:_\d+)*)/.exec(text);
-  return match === null ? 0 : Number.parseInt((match[1] ?? "0").replaceAll("_", ""), 10);
 }

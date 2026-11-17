@@ -9,19 +9,20 @@ import {
   storedText,
 } from "../platform/stored-bounds";
 import {
+  credentialAccount,
   type CredentialAccount,
-  type Visibility,
   type FieldSource,
+  fieldSources,
+  followLimit,
+  presentFor,
+  type PresentInput,
+  presentProfile,
+  type Profile,
   type RelationshipResult,
+  relationshipResult,
   resolveAccountId,
   routeAccountId,
-  relationshipResult,
-  followLimit,
-  type Present,
-  fieldSources,
-  credentialAccount,
-  type Profile,
-  presentProfile,
+  type Visibility,
 } from "./accounts";
 import { followActivity, followAnswerActivity, followUri, recordOutbound } from "./activities";
 import { actorSnapshot, recordActorUpdate } from "./actor-update";
@@ -211,7 +212,7 @@ function applyAccountChanges(
   return { status: "ok", accepting: unlockChanged(db, accountId, current.locked === 1, changes.locked) };
 }
 
-export type AccountUpdate = { changes: CredentialChanges; images?: ProfileImages; present: Present; now: number };
+export type AccountUpdate = { changes: CredentialChanges; images?: ProfileImages; present: PresentInput; now: number };
 
 // applyAccountChanges, then the account as `presented` shows it.
 function updated<A>(
@@ -231,7 +232,8 @@ function updated<A>(
 // update_credentials and the profile update (Api::V1::ProfilesController#update), answered with the CredentialAccount
 // and the Profile. Media-delete operations: replacing an image dooms the upload behind it (MEDIA-2).
 export const updateCredentials = userMediaDeleteOperation<AccountUpdate, CredentialsUpdated>(
-  (db, input, { accountId }) => updated(db, accountId, input, () => credentialAccount(db, accountId, input.present)),
+  (db, input, { accountId }) =>
+    updated(db, accountId, input, () => credentialAccount(db, accountId, presentFor(input.present, accountId))),
 );
 
 export const updateProfile = userMediaDeleteOperation<AccountUpdate, CredentialsUpdated<Profile>>(
@@ -240,12 +242,12 @@ export const updateProfile = userMediaDeleteOperation<AccountUpdate, Credentials
 
 // The Profile with the account's first MAX_FEATURED_TAGS featured hashtags in id order (ACCOUNT_FEATURED_SQL, at most
 // that many rows read): Mastodon's association has no order, and creation order is the closest stable one.
-function profileOf(db: Db, accountId: string, present: Present): Profile | null {
+function profileOf(db: Db, accountId: string, present: PresentInput): Profile | null {
   return presentProfile(db, accountId, accountFeaturedTagsOf(db, accountId, present.origin, MAX_FEATURED_TAGS));
 }
 
 // GET /api/v1/profile.
-export const profile = userReadOperation<{ present: Present }, Profile | null>((db, { present }, { accountId }) =>
+export const profile = userReadOperation<{ present: PresentInput }, Profile | null>((db, { present }, { accountId }) =>
   profileOf(db, accountId, present),
 );
 

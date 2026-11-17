@@ -37,7 +37,8 @@ async function cache(w: MediaWorld, id: string, kind: "avatar" | "header", url: 
   return token;
 }
 
-const present = (w: MediaWorld, id: string) => w.db((d) => presentAccountById(d, id, { origin: ORIGIN }));
+const present = (w: MediaWorld, id: string) =>
+  w.db((d) => presentAccountById(d, id, { origin: ORIGIN, viewerId: null }));
 
 describe("the account presenters", () => {
   it("show the cached files of the current URLs, the still as the static, and the remote URLs otherwise", async () => {

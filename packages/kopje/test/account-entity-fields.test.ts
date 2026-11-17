@@ -118,7 +118,7 @@ describe("the Owner role within one operation", () => {
     const { alice } = h.users;
     const result = await runInDurableObject(h.store, (_instance, state) => {
       const { sql: recording, reads } = recordingSql(state.storage.sql);
-      const account = credentialAccount(new Db(recording), alice.id, { origin: ORIGIN })!;
+      const account = credentialAccount(new Db(recording), alice.id, { origin: ORIGIN, viewerId: null })!;
       return {
         role: account.role.name,
         roles: account.roles,
@@ -135,7 +135,7 @@ describe("the Owner role within one operation", () => {
       state.storage.transactionSync(() => {
         const db = new Db(state.storage.sql);
         const metered = db.metered(new RowMeter(Infinity));
-        const roles = (from: Db) => presentAccountById(from, alice.id, { origin: ORIGIN })!.roles;
+        const roles = (from: Db) => presentAccountById(from, alice.id, { origin: ORIGIN, viewerId: null })!.roles;
         // Warmed through a metered view: the root's memo serves the operation.
         const before = roles(metered);
         const warm = adminAccountIdOnce(db);

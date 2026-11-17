@@ -104,6 +104,12 @@ would: a release without the signed `Delete` of a public or unlisted status (VIS
 server's shared one. The body goes unchanged to each (it is immutable, which those releases honor), names nobody, and
 reaches no inbox the audience does not hold: more POSTs, never a wider reach.
 
+A page a browser loaded from one version and submits to the other is read by the other's rules. Since the release that
+reads a repeated parameter's last value, as Rails does (#1729), the settings page writes each checkbox's hidden
+`false` before the box; a settings page loaded before that upgrade, or loaded after it and saved after a rollback across
+it, saves its ticked boxes as unticked. Reload any open settings page after an upgrade or a rollback across that
+release.
+
 ### A version that changed the schema
 
 The older code cannot use the newer schema, so the data must go back too. The restore returns the Store to the moment

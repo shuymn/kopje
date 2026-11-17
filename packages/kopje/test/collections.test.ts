@@ -2,10 +2,9 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { ANSWER_BYTES, jsonBytes } from "../src/domain/answer-budget";
+import type { Collection, CollectionItem } from "../src/domain/collection-presenter";
 import {
-  type Collection,
   COLLECTION_JSON_MAX,
-  type CollectionItem,
   pruneCollectionItems,
   RETIRED_ROWS_PER_ROUND,
   showCollection,
@@ -407,6 +406,39 @@ describe("collections: validation", () => {
     // description: JSON null is nil, "" stays ""; language: null is nil.
     expect((await created(h, alice, { description: null, language: null })).description).toBeNull();
     expect((await created(h, alice, { description: "" })).description).toBe("");
+  });
+
+  // Rails' params[name]: the query's value replaces the body's null, so a blank one is "" (not nil) and validated so.
+  it("reads a field the query sends over the body's JSON null, as Rails merges them", async () => {
+    const { h, alice } = await world();
+    const withQuery = (query: string, body: Record<string, unknown>) =>
+      call(h, "POST", `/api/v1/collections?${query}`, alice.token, { ...VALID, ...body });
+    const blankLanguage = await withQuery("language=", { language: null });
+    expect([blankLanguage.status, blankLanguage.text]).toEqual([
+      422,
+      nested([["language", "ERR_INVALID", "is invalid"]]),
+    ]);
+    const blankTag = await withQuery("tag_name=", { tag_name: null });
+    expect([blankTag.status, blankTag.body.error.details]).toEqual([
+      422,
+      {
+        name: [
+          { error: "ERR_BLANK", description: "can't be blank" },
+          { error: "ERR_INVALID", description: "is invalid" },
+        ],
+        display_name: [{ error: "ERR_INVALID", description: "is invalid" }],
+      },
+    ]);
+    const blankName = await withQuery("name=", { name: null });
+    expect([blankName.status, blankName.text]).toEqual([422, nested([["name", "ERR_BLANK", "can't be blank"]])]);
+    const blankDescription = await withQuery("description=", { description: null });
+    expect([blankDescription.status, blankDescription.body.collection.description]).toEqual([200, ""]);
+    expect((await withQuery("language=xx", { language: null })).text).toBe(
+      nested([["language", "ERR_INVALID", "is invalid"]]),
+    );
+    // Without the query, each null is nil: accepted.
+    const nulls = await withQuery("", { description: null, language: null, tag_name: null });
+    expect([nulls.status, nulls.body.collection.description, nulls.body.collection.tag]).toEqual([200, null, null]);
   });
 
   it("changes on update only what is sent, a JSON null tag clearing it and a blank one refused", async () => {

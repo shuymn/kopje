@@ -238,10 +238,22 @@ export function refuseSuspended(db: Db, credential: Credential | null): Suspende
   return credential !== null && authorize(db, credential).status === "suspended" ? { status: "suspended" } : null;
 }
 
-// An anonymous route's read in its operation: the suspended owner's refusal, else what `read` reads, run after the
-// judgment in the same transaction.
-export function unlessSuspended<O>(db: Db, credential: Credential | null, read: () => O): Judged<O> {
-  return refuseSuspended(db, credential) ?? { status: "ok", value: read() };
+// An anonymous route's read in its operation: the suspended owner's refusal, else what `read` reads for the account of
+// the token sent (null: none, an app token, or one authorize does not accept), run after the judgment in the same
+// transaction.
+export function unlessSuspended<O>(
+  db: Db,
+  credential: Credential | null,
+  read: (viewerId: string | null) => O,
+): Judged<O> {
+  if (credential === null) {
+    return { status: "ok", value: read(null) };
+  }
+  const auth = authorize(db, credential);
+  if (auth.status === "suspended") {
+    return { status: "suspended" };
+  }
+  return { status: "ok", value: read(auth.status === "ok" ? auth.viewer.accountId : null) };
 }
 
 // The judgment of an anonymous route's answer that no operation judged (the access middleware's after-check).

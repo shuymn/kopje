@@ -1,0 +1,563 @@
+{
+  "ruby": "4.0.9",
+  "strings": [
+    {
+      "value": "0d1",
+      "integer": "1"
+    },
+    {
+      "value": "0b1",
+      "integer": "1"
+    },
+    {
+      "value": "0x1",
+      "integer": "1"
+    },
+    {
+      "value": "0_1",
+      "integer": "1"
+    },
+    {
+      "value": " 1",
+      "integer": "1"
+    },
+    {
+      "value": "1 ",
+      "integer": "1"
+    },
+    {
+      "value": " \t1\n ",
+      "integer": "1"
+    },
+    {
+      "value": "\u000b1\f",
+      "integer": "1"
+    },
+    {
+      "value": "\r1",
+      "integer": "1"
+    },
+    {
+      "value": " 1",
+      "integer": null
+    },
+    {
+      "value": "1 ",
+      "integer": null
+    },
+    {
+      "value": "　1",
+      "integer": null
+    },
+    {
+      "value": "1\u0000",
+      "integer": null
+    },
+    {
+      "value": "\u00001",
+      "integer": null
+    },
+    {
+      "value": "1 2",
+      "integer": null
+    },
+    {
+      "value": "1\n2",
+      "integer": null
+    },
+    {
+      "value": "+1",
+      "integer": "1"
+    },
+    {
+      "value": "-1",
+      "integer": "-1"
+    },
+    {
+      "value": "+-1",
+      "integer": null
+    },
+    {
+      "value": "--1",
+      "integer": null
+    },
+    {
+      "value": "+",
+      "integer": null
+    },
+    {
+      "value": "-",
+      "integer": null
+    },
+    {
+      "value": "- 1",
+      "integer": null
+    },
+    {
+      "value": "+ 1",
+      "integer": null
+    },
+    {
+      "value": " -1",
+      "integer": "-1"
+    },
+    {
+      "value": "-1 ",
+      "integer": "-1"
+    },
+    {
+      "value": "-+1",
+      "integer": null
+    },
+    {
+      "value": "0",
+      "integer": "0"
+    },
+    {
+      "value": "00",
+      "integer": "0"
+    },
+    {
+      "value": "-0",
+      "integer": "0"
+    },
+    {
+      "value": "+0",
+      "integer": "0"
+    },
+    {
+      "value": "000",
+      "integer": "0"
+    },
+    {
+      "value": "0_0",
+      "integer": "0"
+    },
+    {
+      "value": "0_",
+      "integer": null
+    },
+    {
+      "value": "0__0",
+      "integer": null
+    },
+    {
+      "value": "-0_",
+      "integer": null
+    },
+    {
+      "value": "0 ",
+      "integer": "0"
+    },
+    {
+      "value": " 0",
+      "integer": "0"
+    },
+    {
+      "value": "_0",
+      "integer": null
+    },
+    {
+      "value": "1",
+      "integer": "1"
+    },
+    {
+      "value": "9",
+      "integer": "9"
+    },
+    {
+      "value": "10",
+      "integer": "10"
+    },
+    {
+      "value": "1_000",
+      "integer": "1000"
+    },
+    {
+      "value": "1_0",
+      "integer": "10"
+    },
+    {
+      "value": "1__0",
+      "integer": null
+    },
+    {
+      "value": "_1",
+      "integer": null
+    },
+    {
+      "value": "1_",
+      "integer": null
+    },
+    {
+      "value": "12abc",
+      "integer": null
+    },
+    {
+      "value": "1.5",
+      "integer": null
+    },
+    {
+      "value": "1e3",
+      "integer": null
+    },
+    {
+      "value": "1,000",
+      "integer": null
+    },
+    {
+      "value": "١",
+      "integer": null
+    },
+    {
+      "value": "１",
+      "integer": null
+    },
+    {
+      "value": "",
+      "integer": null
+    },
+    {
+      "value": "01",
+      "integer": "1"
+    },
+    {
+      "value": "07",
+      "integer": "7"
+    },
+    {
+      "value": "08",
+      "integer": null
+    },
+    {
+      "value": "010",
+      "integer": "8"
+    },
+    {
+      "value": "0_1",
+      "integer": "1"
+    },
+    {
+      "value": "00_1",
+      "integer": "1"
+    },
+    {
+      "value": "0_0_1",
+      "integer": "1"
+    },
+    {
+      "value": "0__1",
+      "integer": null
+    },
+    {
+      "value": "0_8",
+      "integer": null
+    },
+    {
+      "value": "-010",
+      "integer": "-8"
+    },
+    {
+      "value": "0o17",
+      "integer": "15"
+    },
+    {
+      "value": "0O17",
+      "integer": "15"
+    },
+    {
+      "value": "0o8",
+      "integer": null
+    },
+    {
+      "value": "0o",
+      "integer": null
+    },
+    {
+      "value": "0o_1",
+      "integer": null
+    },
+    {
+      "value": "0o1_7",
+      "integer": "15"
+    },
+    {
+      "value": "0o1__7",
+      "integer": null
+    },
+    {
+      "value": "0o01",
+      "integer": "1"
+    },
+    {
+      "value": "0x1A",
+      "integer": "26"
+    },
+    {
+      "value": "0X1",
+      "integer": "1"
+    },
+    {
+      "value": "0x1a",
+      "integer": "26"
+    },
+    {
+      "value": "0xG",
+      "integer": null
+    },
+    {
+      "value": "0x",
+      "integer": null
+    },
+    {
+      "value": "0x_1",
+      "integer": null
+    },
+    {
+      "value": "0x1_f",
+      "integer": "31"
+    },
+    {
+      "value": "0x1__f",
+      "integer": null
+    },
+    {
+      "value": "-0x1A",
+      "integer": "-26"
+    },
+    {
+      "value": "+0x1",
+      "integer": "1"
+    },
+    {
+      "value": "0x 1",
+      "integer": null
+    },
+    {
+      "value": "0x1 ",
+      "integer": "1"
+    },
+    {
+      "value": " 0x1",
+      "integer": "1"
+    },
+    {
+      "value": "0x0_1",
+      "integer": "1"
+    },
+    {
+      "value": "0x0_",
+      "integer": null
+    },
+    {
+      "value": "0xff_",
+      "integer": null
+    },
+    {
+      "value": "0B1",
+      "integer": "1"
+    },
+    {
+      "value": "0b101",
+      "integer": "5"
+    },
+    {
+      "value": "0b2",
+      "integer": null
+    },
+    {
+      "value": "0b",
+      "integer": null
+    },
+    {
+      "value": "0b_1",
+      "integer": null
+    },
+    {
+      "value": "0b1_0",
+      "integer": "2"
+    },
+    {
+      "value": "-0b1",
+      "integer": "-1"
+    },
+    {
+      "value": "0b01",
+      "integer": "1"
+    },
+    {
+      "value": "0D1",
+      "integer": "1"
+    },
+    {
+      "value": "0d09",
+      "integer": "9"
+    },
+    {
+      "value": "0d",
+      "integer": null
+    },
+    {
+      "value": "0d_1",
+      "integer": null
+    },
+    {
+      "value": "0d1_0",
+      "integer": "10"
+    },
+    {
+      "value": "0da",
+      "integer": null
+    },
+    {
+      "value": "-0d5",
+      "integer": "-5"
+    },
+    {
+      "value": "0d0d5",
+      "integer": null
+    },
+    {
+      "value": "0d0_1",
+      "integer": "1"
+    },
+    {
+      "value": "0x0x1",
+      "integer": null
+    },
+    {
+      "value": "00x1",
+      "integer": null
+    },
+    {
+      "value": "0b0x1",
+      "integer": null
+    },
+    {
+      "value": "0x-1",
+      "integer": null
+    },
+    {
+      "value": "0-1",
+      "integer": null
+    },
+    {
+      "value": "9007199254740991",
+      "integer": "9007199254740991"
+    },
+    {
+      "value": "9007199254740992",
+      "integer": "9007199254740992"
+    },
+    {
+      "value": "-9007199254740993",
+      "integer": "-9007199254740993"
+    },
+    {
+      "value": "999999999999999999999999999999",
+      "integer": "999999999999999999999999999999"
+    },
+    {
+      "value": "-999999999999999999999999999999",
+      "integer": "-999999999999999999999999999999"
+    },
+    {
+      "value": "0xffffffffffffffffffff",
+      "integer": "1208925819614629174706175"
+    },
+    {
+      "value": "0b111111111111111111111111111111111111111111111111111111111111",
+      "integer": "1152921504606846975"
+    },
+    {
+      "value": "00000000000000000000000000000000000000005",
+      "integer": "5"
+    },
+    {
+      "value": "0d00000000000000000000000000000000000000005",
+      "integer": "5"
+    }
+  ],
+  "numbers": [
+    {
+      "json": "0",
+      "integer": "0"
+    },
+    {
+      "json": "1",
+      "integer": "1"
+    },
+    {
+      "json": "-1",
+      "integer": "-1"
+    },
+    {
+      "json": "3.9",
+      "integer": "3"
+    },
+    {
+      "json": "-3.9",
+      "integer": "-3"
+    },
+    {
+      "json": "0.5",
+      "integer": "0"
+    },
+    {
+      "json": "-0.5",
+      "integer": "0"
+    },
+    {
+      "json": "-0.0",
+      "integer": "0"
+    },
+    {
+      "json": "1.0",
+      "integer": "1"
+    },
+    {
+      "json": "1e-7",
+      "integer": "0"
+    },
+    {
+      "json": "-1e-7",
+      "integer": "0"
+    },
+    {
+      "json": "1e21",
+      "integer": "1000000000000000000000"
+    },
+    {
+      "json": "-1e21",
+      "integer": "-1000000000000000000000"
+    },
+    {
+      "json": "1E3",
+      "integer": "1000"
+    },
+    {
+      "json": "1.5e2",
+      "integer": "150"
+    },
+    {
+      "json": "2.5e-1",
+      "integer": "0"
+    },
+    {
+      "json": "12345678901234567890123",
+      "integer": "12345678901234567890123"
+    },
+    {
+      "json": "-12345678901234567890123",
+      "integer": "-12345678901234567890123"
+    },
+    {
+      "json": "9007199254740993",
+      "integer": "9007199254740993"
+    },
+    {
+      "json": "1e400",
+      "integer": null
+    }
+  ]
+}

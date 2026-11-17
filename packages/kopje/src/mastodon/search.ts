@@ -3,6 +3,7 @@ import { isUrlQuery } from "../domain/remote-statuses";
 import type { SearchType } from "../domain/search";
 import { envInMaintenance } from "../platform/config";
 import { parseAddress } from "../platform/domain-name";
+import { rubyToI } from "../platform/ruby-to-i";
 import { StoreUnavailableError, WRITE_REFUSALS } from "../platform/store-errors";
 import {
   type ApiHandler,
@@ -15,7 +16,7 @@ import {
 } from "./context";
 import { mastodonError } from "./errors";
 import { pageQuery } from "./pagination";
-import { limitParam, offsetParam, type Params, parseBoolean, rubyNegative } from "./params";
+import { limitParam, offsetParam, type Params, parseBoolean } from "./params";
 
 // GET /api/v2/search: accounts, statuses and hashtags from local data (domain/search.ts). Hashtags are recent
 // autocomplete over the viewer's library and the newest public statuses, not a catalogue of every tag. Collections
@@ -72,7 +73,7 @@ export const search: ApiHandler = withParams(async (c, deps, p) => {
   if (q === undefined || q.trim() === "") {
     return refuseAfterAuth(c, deps, mastodonError(400, "Missing parameter q"));
   }
-  if ([p.get("limit"), p.get("offset")].some((value) => value !== undefined && rubyNegative(value))) {
+  if ([p.integer("limit"), p.integer("offset")].some((value) => value !== undefined && rubyToI(value) < 0)) {
     return refuseAfterAuth(c, deps, mastodonError(400, "Pagination values for `offset` and `limit` must be positive"));
   }
   const parsed = searchParams(p);
