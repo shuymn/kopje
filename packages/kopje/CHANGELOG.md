@@ -176,6 +176,28 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
+- `wrangler.jsonc`: add `"limits": { "cpu_ms": 60000 }` to the instance's config, as the template now has it
+  ([docs/upgrade.md](docs/upgrade.md)). A request, a Queue batch and a Store invocation may then use up to 60 seconds
+  of CPU instead of the platform's default 30. The Store applies and verifies a release's migrations in one
+  invocation, and on the migration bench's store this release's together take more than two thirds of 30 seconds, the
+  margin the bench keeps. Without the line, an upgrade that needs more than 30 seconds stops part way, and until an
+  attempt finishes the Store refuses every request, reads and sign-ins included, while migrations remain unapplied,
+  and stays readonly once they are applied but not yet verified, each attempt checking every reference of the Store
+  again. The migration bench's budget is now 40 seconds, two thirds of the new limit (RELEASING.md). Setting the limit
+  costs nothing by itself. No Store migration.
+- A remote account's profile URL is chosen from its actor's `url` as Mastodon 4.7.5 chooses it, before its host is
+  checked: one candidate (a string, an array's first string, or the first `Link` whose `mimeType` is blank or
+  `text/html`), kept only when it is on the actor id's host, whatever its scheme and port, and no later one once it is
+  refused; an actor whose `url` Fedify could not parse is no longer refused (#1734). A remote account without a
+  profile URL now shows its actor id as its `url`, in accounts, mentions, announcements and notification fallbacks,
+  where Kopje showed `/@username` on the actor's origin, as Mastodon does; a stored URL is replaced at the actor's
+  next update. A remote post's link card skips a link to the profile of any account the post mentions, however many
+  mentions a converted or imported post keeps, as Mastodon does
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Link previews"). Migration `0111_account_urls`: a
+  partial index of remote accounts by their stored url, rewriting no row (the migration bench's upgrade from
+  `0093_annual_reports` takes 16,681 ms with this file and 16,582 ms without it, medians of three runs).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
+  back past it needs a point-in-time restore.
 - A remote actor's members are read only by their literal spelling, as Mastodon reads them: a name or bio given only
   as a language map (`nameMap`, `summaryMap`) is no longer read, so such an account shows an empty display name and
   bio, and a `movedTo` or `alsoKnownAs` spelled as a compact or full IRI no longer names a move. No Store migration and
@@ -372,9 +394,36 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   The cutover converts such an actor's domain the same way, and `verify-conversion` expects it. Actor ids, inboxes and
   stored handles keep their spelling: a Store converted before keeps the domains it holds until a refresh confirms
   each account ([docs/cutover.md](docs/cutover.md), Verification). No Store migration and no `wrangler.jsonc` change.
+- A scheduled status holds at most four media, imports included: an import refuses a fifth, and the upgrade detaches
+  any past the first four (attachable again for a day; only a restored row holds more). Migration
+  `0109_scheduled_media_cap`: the detach and two triggers on `media_attachments`; the upgrade checks no reference (the
+  migration bench's upgrade from `0093_annual_reports` takes 16,422 ms with this file and 15,572 ms without it,
+  medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor
+  version, and rolling back past it needs a point-in-time restore.
+- An import refuses scheduled-status parameters that hold a NUL or are not text. Migration `0110_scheduled_params`:
+  two triggers on `scheduled_statuses`, no row read or rewritten; the upgrade checks no reference (the migration
+  bench's upgrade from `0093_annual_reports` takes 16,590 ms with this file and 16,878 ms without it, medians of three
+  runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and
+  rolling back past it needs a point-in-time restore.
+- A follower's or poll voter's inbox is read for a delivery, a retraction staged in steps included, only when it is
+  text of 1 to 4,096 UTF-8 bytes without NUL, judged in the Store before the Worker reads it, as a block's collection
+  `Remove`s read followers; the recipients behind each shared inbox are recorded as before (#1733). An inbox outside
+  it, which only an import or a restored dump holds, gets no new activity for followers or voters
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Delivery recipients"). No Store migration and no
+  `wrangler.jsonc` change.
 
 ### Fixed
 
+- A remote status's `sensitive` is read as Mastodon casts it to its boolean column, so any value but `false`, `0`, null
+  and Rails' false strings (`"0"`, `"f"`, `"F"`, `"false"`, `"FALSE"`, `"off"`, `"OFF"`) marks it, where only `true`
+  did (`"true"`, `1` and `[true]` now mark it), and an empty string refuses it where Mastodon's `NOT NULL` column
+  does: a `Create` stores nothing and an `Update` with a newer `updated` changes nothing, while one that names no newer
+  version still updates the status's poll and quote (#1730). An unsigned `0.0` is read as `0`
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Reading inbound activities"). Statuses already stored
+  keep their mark until their next update. A filter keyword's `whole_word`, a nested keyword's `_destroy` and v1's
+  `irreversible` are read by the same cast, each false spelling in its own case only, so `"False"` and `"Off"` are true
+  (a keyword sent `_destroy: "False"` is deleted), where any case of them was false. No Store migration and no
+  `wrangler.jsonc` change.
 - The cutover stores a remote account's domain without the port or trailing dots of its actor id's host, as Kopje
   stores one, and `verify-conversion` compares the domain. A Store converted before keeps such domains until a refresh
   confirms each account; the query in [docs/cutover.md](docs/cutover.md) (Verification) lists them (#1725). A remote
@@ -443,6 +492,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   back past it needs a point-in-time restore.
 - An `Update` of a remote post that names no edit time no longer resets the poll counts, quote policy or quote
   approval of a post that was edited, as Mastodon ignores it. No Store migration and no `wrangler.jsonc` change.
+- A scheduled status whose stored parameters cannot be read (only a restored row) no longer breaks the list; it is left
+  out, and dropped when due.
 - The public pages show a remote post or bio whose sanitized HTML is longer than 50,000 UTF-16 code units whole,
   and describe it by its text. They sanitized it again cut at that length, which shortened it or, with the cut inside
   an attribute, left it and the page's description empty. No Store migration and no `wrangler.jsonc` change.
@@ -584,6 +635,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `Follow` (`as:Follow` or `QuoteRequest`, say) was ignored, so a rejected follow stayed and kept its access to the
   rejecting account's followers-only posts. The id still names only a follow of the answering actor. No Store
   migration and no `wrangler.jsonc` change.
+- A moderation round reads no stored inbox past 4,096 bytes (#1724): a local account's suspension and unsuspension
+  `Update` reach each account by the rule its followers' inboxes are read by, and a staged row outside it, which only
+  an import or an earlier release's staging holds, is deleted unsent; each round deletes exactly the staged rows it
+  read, so a row that is not UTF-8 is no longer read twice or deleted unread
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Delivery recipients"). No Store migration and no
+  `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

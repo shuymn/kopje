@@ -27,7 +27,6 @@ const INVENTORY = [
   "inbox",
   "name",
   "summary",
-  "url",
   "manuallyApprovesFollowers",
   "discoverable",
   "indexable",
@@ -127,6 +126,10 @@ describe("members Kopje does not read from Fedify refuse no actor (#1709, ID-1)"
       ["duration", { duration: "garbage" }],
       ["tag", { tag: { type: "Mention", href: 5 } }],
       ["nameMap", { nameMap: { en: 5 } }],
+      // #1734: the url, read from the JSON (remote-actor.ts profileUrl): a Link whose href is a number, or whose
+      // nameMap holds one, refused the actor whole while Fedify read it.
+      ["urlHref", { url: { type: "Link", href: 5 } }],
+      ["urlNameMap", { url: { type: "Link", href: `${MASTODON}/@x`, nameMap: { en: 5 } } }],
     ];
     for (const [name, extra] of cases) {
       const actor = await mastodonActor(t.web, name.toLowerCase());
@@ -189,7 +192,6 @@ describe("what Fedify is handed (#1709, ID-1, ID-2)", () => {
   it("still refuses an actor whose kept member Fedify cannot parse", async () => {
     const t = await setup();
     const cases: [string, (document: Json) => Json][] = [
-      ["url a Link whose href is a number", () => ({ url: { type: "Link", href: 5 } })],
       ["publicKey typed Document", (d) => ({ publicKey: { ...(d.publicKey as Json), type: "Document" } })],
       ["name mapped to icon's IRI", (d) => ({ "@context": withTerms(d, { name: "as:icon" }), name: DOCUMENT })],
     ];

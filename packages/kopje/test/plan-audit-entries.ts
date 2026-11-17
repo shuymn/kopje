@@ -306,15 +306,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "statusReads' hoisted row hp (src/domain/audience.ts) holds availableSql's coverage of the status's author and its original's once each, and SQLite's flattening repeats each at every use in the branches, so the plan prints SUSPEND_BLOCKS_SQL's one-entry read of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks) more often than the text holds it and the fragment allowance (test/plan-audit-allowances.ts) does not stand for it; ps is ruledSql's recursive CTE over the author's domain suffixes (each key walked only within DNS_NAME_UTF8_BYTES (1,012) bytes; test/domain-suffix-walk.test.ts), which the classifier cannot bind where the flattened column is used, the fragment's `accounts ps` sharing its name; the copies keep pk and ps co-routines (NOT MATERIALIZED), as each of main's occurrences ran them",
   },
   {
-    id: "faf0592983e05942",
-    scans: ["accounts: SCAN a"],
-    site: "src/domain/audience.ts#reachFollowers < src/domain/suspension.ts#reachRound < src/domain/suspension.ts#<anonymous> in moderationRound < src/domain/job-attempts.ts#<anonymous> in isolated",
-    disposition: "background",
-    reason:
-      'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
-  },
-  {
-    id: "1f340ace00431562",
+    id: "d674e9521f137b3a",
     scans: ["accounts: SCAN a"],
     site: "src/domain/audience.ts#reachFollowing < src/domain/suspension.ts#reachRound < src/domain/suspension.ts#<anonymous> in moderationRound < src/domain/job-attempts.ts#<anonymous> in isolated",
     disposition: "background",
@@ -322,7 +314,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "bbbe8114cc0f87b3",
+    id: "793624e56387561b",
     scans: ["accounts: SCAN a"],
     site: "src/domain/audience.ts#reachMentioned < src/domain/suspension.ts#mentionsRound < src/domain/suspension.ts#reachRound < src/domain/suspension.ts#<anonymous> in moderationRound < src/domain/job-attempts.ts#<anonymous> in isolated",
     disposition: "background",
@@ -337,7 +329,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "f51569b711149874",
+    id: "88529641f8f15928",
     scans: ["?: SCAN ps"],
     site: "src/domain/audience.ts#recipientsFor < src/domain/deliveries.ts#targetsOf < src/domain/deliveries.ts#enqueueActivity < src/domain/activities.ts#recordOutbound < src/domain/statuses.ts#writePost",
     disposition: "deliberate",
@@ -401,7 +393,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "a shape only the reader's own contract test writes (test/audience.test.ts:333-409: conditions around the rule, a WITH table, a union); no src caller passes it, and each src reader is audited under its own identity",
   },
   {
-    id: "5b649a02c2ddf9a6",
+    id: "f4ae4252b0508b80",
     scans: ["?: SCAN ps"],
     site: "src/domain/audience.ts#recipientsFor < src/domain/deliveries.ts#targetsOf < src/domain/deliveries.ts#enqueueActivity < src/domain/activities.ts#recordOutbound < src/domain/polls.ts#recordPollUpdate",
     disposition: "deliberate",

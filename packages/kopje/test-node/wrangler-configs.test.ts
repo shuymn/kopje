@@ -14,7 +14,7 @@ const MAINTENANCE = "../maintenance.wrangler.jsonc";
 // The reader wrangler deploys with (as scripts/check-kopje-package.mjs). Its declared types live in a package this one
 // does not depend on, so the part read here is typed locally.
 const readRawConfig = experimental_readRawConfig as unknown as (args: { config: string }) => {
-  rawConfig: { compatibility_flags?: string[]; observability?: unknown; workers_dev?: boolean };
+  rawConfig: { compatibility_flags?: string[]; limits?: unknown; observability?: unknown; workers_dev?: boolean };
 };
 
 function read(path: string) {
@@ -46,9 +46,17 @@ const EXPECTED_OBSERVABILITY = {
   traces: { enabled: false, head_sampling_rate: 1 },
 };
 
+// The Store applies and verifies a release's migrations in one invocation (docs/upgrade.md); the migration bench's
+// UPGRADE_BUDGET_MS (test/bench/migration-cost.ts) is two thirds of this CPU limit.
+const EXPECTED_LIMITS = { cpu_ms: 60_000 };
+
 describe("shipped Kopje Worker configs", () => {
   it.each(SHIPPED)("%s sets the required compatibility flags", (path) => {
     expect(read(path).compatibility_flags).toEqual(expect.arrayContaining(REQUIRED_FLAGS));
+  });
+
+  it.each(SHIPPED)("%s raises the CPU limit to 60 s", (path) => {
+    expect(read(path).limits).toEqual(EXPECTED_LIMITS);
   });
 
   it.each(SHIPPED)("%s pins the observability block", (path) => {

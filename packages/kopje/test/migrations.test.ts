@@ -23,6 +23,7 @@ import {
   REJECT_REPLAYS,
   SAFE_MS,
 } from "../src/domain/job-attempts";
+import { DETACHED_GRACE_MS } from "../src/domain/media";
 import { MODERATION_LOG_KEEP } from "../src/domain/moderation-log";
 import { runNotificationRequestJobs } from "../src/domain/notification-requests";
 import { readOperation, sessionOperation, writeOperation } from "../src/domain/operation";
@@ -31,8 +32,9 @@ import { MAX_REMOTE_PINS } from "../src/domain/remote-collections";
 import { storeRemoteStatus } from "../src/domain/remote-statuses";
 import { NODE_ATTEMPTS, REPLY_READ_ENTRIES, WALK_PAGES, WALK_STATUSES } from "../src/domain/reply-walks";
 import { actOnReport, fileRemoteReports, getAdminReport } from "../src/domain/reports";
+import { heldFullSql } from "../src/domain/scheduled-statuses";
 import { accountSearchText } from "../src/domain/search-text";
-import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
+import { MAX_STATUS_MEDIA, MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
 import { MAX_RAW_LENGTH } from "../src/domain/status-text";
 import { emitTriggers, STORED_TRIGGERS } from "../src/domain/stored-triggers";
 import { EDIT_LISTENED_SQL, JOURNAL_SPAN } from "../src/domain/stream-journal";
@@ -420,9 +422,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(86);
+      expect(STORED_TRIGGERS.size).toBe(90);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        86 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        90 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -14607,6 +14609,405 @@ describe("0108_collection_jobs", () => {
       sql.exec("INSERT OR IGNORE INTO collection_reach (job_id, inbox) VALUES (1, 'https://a.example/inbox')");
       expect(sql.exec("SELECT count(*) AS n FROM collection_reach").one().n).toBe(1);
       expect(() => sql.exec("DELETE FROM collection_jobs")).toThrow(/FOREIGN KEY/);
+    });
+  });
+});
+
+describe("0109_scheduled_media_cap", () => {
+  const NAME = "0109_scheduled_media_cap";
+  const at = NAMES.indexOf(NAME);
+  const REFUSED = /media_attachments: more media than a scheduled status may hold/;
+  const OWNER = "100000000000000001";
+  const TRIGGERS = ["media_attachments_scheduled_cap_insert", "media_attachments_scheduled_cap_update"];
+  // The detach as removeScheduled writes it (src/domain/scheduled-statuses.ts), for the uploads past each scheduled
+  // status's first MAX_STATUS_MEDIA by (position, id), attachable again after DETACHED_GRACE_MS.
+  const DETACH = `UPDATE media_attachments SET scheduled_status_id = NULL, position = 0,
+  gc_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+${DETACHED_GRACE_MS / 86_400_000} day')
+WHERE id IN (
+  SELECT h.id FROM (
+    SELECT m.id, row_number() OVER (PARTITION BY m.scheduled_status_id ORDER BY m.position, m.id) AS n
+    FROM media_attachments m
+    WHERE m.scheduled_status_id IS NOT NULL
+  ) h WHERE h.n > ${MAX_STATUS_MEDIA});`;
+  // The file's statements, comments left out.
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .trim();
+  const scheduled = (n: number) => String(300000000000000000n + BigInt(n));
+  const upload = (n: number) => String(800000000000000000n + BigInt(n));
+
+  // OWNER, a local account, and its scheduled statuses `ids`.
+  function seedOwner(sql: SqlStorage, ids: readonly string[]) {
+    sql.exec(
+      "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/owner', 'owner', NULL)",
+      OWNER,
+    );
+    sql.exec(
+      "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, 'o@x.test', X'00', X'00', 'k')",
+      OWNER,
+    );
+    for (const [i, id] of ids.entries()) {
+      sql.exec(
+        "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, ?, '{}')",
+        id,
+        OWNER,
+        new Date(Date.UTC(2026, 11, 1) + i * 60_000).toISOString(),
+      );
+    }
+  }
+
+  // An upload of OWNER's, held by `held` at `position`, or unattached (attachable until a day after NOW).
+  function seedUpload(sql: SqlStorage, n: number, held: string | null, position = 0) {
+    sql.exec(
+      `INSERT INTO media_attachments (id, account_id, scheduled_status_id, position, type, url, gc_at)
+			VALUES (?, ?, ?, ?, 'image', 'https://kopje.test/files/x/full', ?)`,
+      upload(n),
+      OWNER,
+      held,
+      position,
+      held === null ? new Date(NOW + 86_400_000).toISOString() : null,
+    );
+  }
+
+  it("follows 0108_collection_jobs, declared foreignKeys: 'unchanged', and writes the detach and the registry's triggers", () => {
+    expect(NAMES[at - 1]).toBe("0108_collection_jobs");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    // The detach's grace and cap are the writers' constants: the file's day and its four.
+    expect([DETACHED_GRACE_MS, MAX_STATUS_MEDIA]).toEqual([86_400_000, 4]);
+    expect(statements(MIGRATIONS[at]?.sql ?? "")).toBe(statements(`${DETACH}\n\n${emitTriggers(TRIGGERS)}`));
+  });
+
+  it("keeps each scheduled status's first four uploads by (position, id) and detaches the rest for a day", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      // Scheduled statuses holding 4, 40 and 400 uploads, one holding 6 whose positions tie (as an import may write
+      // them), and one holding none; beside them, an unattached upload.
+      const [four, forty, many, tied, none] = [1, 2, 3, 4, 5].map(scheduled) as [
+        string,
+        string,
+        string,
+        string,
+        string,
+      ];
+      seedOwner(sql, [four, forty, many, tied, none]);
+      let n = 0;
+      // Inserted with positions counting down, so the first by position are the last inserted.
+      for (const [id, held] of [
+        [four, 4],
+        [forty, 40],
+        [many, 400],
+      ] as const) {
+        for (let i = 0; i < held; i++) {
+          seedUpload(sql, ++n, id, held - 1 - i);
+        }
+      }
+      const tiedFrom = n + 1;
+      for (const position of [1, 0, 1, 0, 2, 0]) {
+        seedUpload(sql, ++n, tied, position);
+      }
+      seedUpload(sql, ++n, null);
+      const before = sql
+        .exec<{ id: string; scheduled_status_id: string | null; position: number }>(
+          "SELECT id, scheduled_status_id, position FROM media_attachments ORDER BY id",
+        )
+        .toArray();
+      expect(before.filter((row) => row.scheduled_status_id !== null)).toHaveLength(4 + 40 + 400 + 6);
+
+      const started = Date.now();
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      const held = (id: string) =>
+        sql
+          .exec<{ id: string }>(
+            "SELECT id FROM media_attachments WHERE scheduled_status_id = ? ORDER BY position, id",
+            id,
+          )
+          .toArray()
+          .map((row) => row.id);
+      const expected = (id: string) =>
+        before
+          .filter((row) => row.scheduled_status_id === id)
+          .toSorted((a, b) => a.position - b.position || (a.id < b.id ? -1 : 1))
+          .slice(0, MAX_STATUS_MEDIA)
+          .map((row) => row.id);
+      for (const id of [four, forty, many, tied]) {
+        expect(held(id), id).toEqual(expected(id));
+      }
+      // The ties keep their order by id: positions 0, 0, 0, 1 of the six.
+      expect(held(tied)).toEqual([2, 4, 6, 1].map((i) => upload(tiedFrom - 1 + i)));
+      expect(held(none)).toEqual([]);
+      // Each upload past four is detached as removeScheduled detaches one: no scheduled status, position 0, and
+      // attachable for DETACHED_GRACE_MS from the upgrade; the unattached upload keeps its own time.
+      const detached = sql
+        .exec<{ id: string; position: number; gc_at: string }>(
+          `SELECT id, position, gc_at FROM media_attachments WHERE scheduled_status_id IS NULL AND id <> ? ORDER BY id`,
+          upload(n),
+        )
+        .toArray();
+      const kept = new Set([four, forty, many, tied].flatMap(expected));
+      expect(detached.map((row) => row.id)).toEqual(
+        before.filter((row) => row.scheduled_status_id !== null && !kept.has(row.id)).map((row) => row.id),
+      );
+      expect(detached).toHaveLength(36 + 396 + 2);
+      for (const row of detached) {
+        expect(row.position).toBe(0);
+        expect(Date.parse(row.gc_at) - started - DETACHED_GRACE_MS).toBeGreaterThanOrEqual(-1_000);
+        expect(Date.parse(row.gc_at) - Date.now() - DETACHED_GRACE_MS).toBeLessThanOrEqual(1_000);
+      }
+      expect(sql.exec("SELECT gc_at FROM media_attachments WHERE id = ?", upload(n)).one()).toEqual({
+        gc_at: new Date(NOW + 86_400_000).toISOString(),
+      });
+      // Only fixed points are left: every scheduled status holds at most four.
+      expect(
+        sql
+          .exec(
+            `SELECT max(c) AS most FROM (SELECT count(*) AS c FROM media_attachments
+							WHERE scheduled_status_id IS NOT NULL GROUP BY scheduled_status_id)`,
+          )
+          .one(),
+      ).toEqual({ most: MAX_STATUS_MEDIA });
+    });
+  });
+
+  it("refuses a fifth held upload, inserted or moved, and passes a write that keeps the four", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade();
+      const [full, three, other] = [1, 2, 3].map(scheduled) as [string, string, string];
+      seedOwner(sql, [full, three, other]);
+      // Below the cap, uploads are held up to it: the fourth of `full` is held, by insert and by a move.
+      for (let i = 1; i <= 3; i++) {
+        seedUpload(sql, i, full, i);
+      }
+      seedUpload(sql, 4, null);
+      sql.exec("UPDATE media_attachments SET scheduled_status_id = ?, gc_at = NULL WHERE id = ?", full, upload(4));
+      for (let i = 5; i <= 7; i++) {
+        seedUpload(sql, i, three, i);
+      }
+      seedUpload(sql, 8, other);
+      seedUpload(sql, 9, null);
+      // At the cap: a fifth is refused, inserted held or moved from another scheduled status or from none.
+      expect(() => seedUpload(sql, 10, full)).toThrow(REFUSED);
+      expect(() =>
+        sql.exec("UPDATE media_attachments SET scheduled_status_id = ? WHERE id = ?", full, upload(8)),
+      ).toThrow(REFUSED);
+      expect(() =>
+        sql.exec("UPDATE media_attachments SET scheduled_status_id = ?, gc_at = NULL WHERE id = ?", full, upload(9)),
+      ).toThrow(REFUSED);
+      // A write that keeps each upload's scheduled status passes, a reorder of all four included, and so does a move
+      // out of the full one into one holding three.
+      sql.exec(
+        "UPDATE media_attachments SET scheduled_status_id = scheduled_status_id, position = 10 - position WHERE scheduled_status_id = ?",
+        full,
+      );
+      sql.exec("UPDATE media_attachments SET scheduled_status_id = ? WHERE id = ?", three, upload(1));
+      sql.exec("UPDATE media_attachments SET scheduled_status_id = ? WHERE id = ?", full, upload(8));
+      const counts = sql
+        .exec<{ scheduled_status_id: string; n: number }>(
+          `SELECT scheduled_status_id, count(*) AS n FROM media_attachments WHERE scheduled_status_id IS NOT NULL
+						GROUP BY scheduled_status_id ORDER BY scheduled_status_id`,
+        )
+        .toArray();
+      expect(counts).toEqual([
+        { scheduled_status_id: full, n: 4 },
+        { scheduled_status_id: three, n: 4 },
+      ]);
+      // Detaching passes whatever is held.
+      sql.exec("UPDATE media_attachments SET scheduled_status_id = NULL WHERE scheduled_status_id = ?", full);
+    });
+  });
+
+  it("reads as many rows for a held upload's insert or move, however many uploads others hold", async () => {
+    // The WHEN's count, planned with the trigger's NEW values bound.
+    const counted = `SELECT (${heldFullSql("?1", "?2")}) AS full`;
+    const subject = scheduled(500_000);
+    const reads: number[][] = [];
+    for (const others of [1, 10, 100]) {
+      await runInDurableObject(freshStore(), async (_instance, state) => {
+        const sql = state.storage.sql;
+        await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade();
+        // Other scheduled statuses holding four each, as many on each side of the subject's id.
+        const neighbours = Array.from({ length: others }, (_, i) => [scheduled(i), scheduled(900_000 + i)]).flat();
+        seedOwner(sql, [subject, ...neighbours]);
+        let n = 0;
+        for (const id of neighbours) {
+          for (let k = 0; k < MAX_STATUS_MEDIA; k++) {
+            seedUpload(sql, ++n, id, k);
+          }
+        }
+        expect(
+          sql
+            .exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${counted}`, subject, upload(0))
+            .toArray()
+            .map((row) => row.detail),
+        ).toContain("SEARCH media_attachments USING INDEX media_attachments_scheduled (scheduled_status_id=?)");
+        // The subject holds three; its fourth is held by an insert, then moved out and back by updates, each passing
+        // its trigger's WHEN, which reads the subject's held rows.
+        for (let k = 0; k < 3; k++) {
+          seedUpload(sql, 10_000 + k, subject, k);
+        }
+        const insert = sql.exec(
+          `INSERT INTO media_attachments (id, account_id, scheduled_status_id, position, type, url)
+					VALUES (?, ?, ?, 3, 'image', 'https://kopje.test/files/x/full')`,
+          upload(10_003),
+          OWNER,
+          subject,
+        );
+        insert.toArray();
+        sql.exec("UPDATE media_attachments SET scheduled_status_id = NULL WHERE id = ?", upload(10_003));
+        const move = sql.exec(
+          "UPDATE media_attachments SET scheduled_status_id = ? WHERE id = ?",
+          subject,
+          upload(10_003),
+        );
+        move.toArray();
+        // The subject is full now: its WHEN would refuse a fifth.
+        expect(sql.exec(counted, subject, upload(99_999)).one()).toEqual({ full: 1 });
+        expect(
+          sql.exec("SELECT count(*) AS n FROM media_attachments WHERE scheduled_status_id IS NOT NULL").one(),
+        ).toEqual({ n: (2 * others + 1) * MAX_STATUS_MEDIA });
+        reads.push([insert.rowsRead, move.rowsRead]);
+      });
+    }
+    expect(reads[0]?.every((rows) => rows > 0)).toBe(true);
+    expect(reads).toEqual([reads[0], reads[0], reads[0]]);
+  }, 60_000);
+});
+
+describe("0110_scheduled_params", () => {
+  const NAME = "0110_scheduled_params";
+  const at = NAMES.indexOf(NAME);
+  const REFUSED = /scheduled_statuses: a value past its stored bound/;
+  const OWNER = "100000000000000001";
+  const TRIGGERS = ["scheduled_statuses_params_insert", "scheduled_statuses_params_update"];
+  // The file's statements, comments left out.
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .trim();
+  const insert = (sql: SqlStorage, id: string, params: SqlStorageValue) =>
+    sql.exec(
+      "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, '2026-12-01T00:00:00.000Z', ?)",
+      id,
+      OWNER,
+      params,
+    );
+  // A JSON object of exactly `bytes` bytes.
+  const sized = (bytes: number) => `{"a":"${"x".repeat(bytes - 8)}"}`;
+
+  it("follows 0109_scheduled_media_cap, declared foreignKeys: 'unchanged', and writes the registry's triggers", () => {
+    expect(NAMES[at - 1]).toBe("0109_scheduled_media_cap");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    expect(statements(MIGRATIONS[at]?.sql ?? "")).toBe(statements(emitTriggers(TRIGGERS)));
+  });
+
+  it("keeps the rows a Store before it holds, then refuses params that are not text or hold a NUL", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/owner', 'owner', NULL)",
+        OWNER,
+      );
+      sql.exec(
+        "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, 'o@x.test', X'00', X'00', 'k')",
+        OWNER,
+      );
+      // Before it, the CHECK of 0011 passes a NUL past the object and a BLOB of one: the witness reaches the trigger.
+      const [nul, binary, plain] = ["300000000000000001", "300000000000000002", "300000000000000003"];
+      insert(sql, nul, "{}\0x");
+      insert(sql, binary, blob("{}"));
+      insert(sql, plain, "{}");
+      const stored = () =>
+        sql
+          .exec<{ id: string; hex: string; type: string }>(
+            "SELECT id, hex(params) AS hex, typeof(params) AS type FROM scheduled_statuses ORDER BY id",
+          )
+          .toArray();
+      const before = stored();
+      expect(before).toEqual([
+        { id: nul, hex: "7B7D0078", type: "text" },
+        { id: binary, hex: "7B7D", type: "blob" },
+        { id: plain, hex: "7B7D", type: "text" },
+      ]);
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      // No row is rewritten: the read judges them (paramsReadSql).
+      expect(stored()).toEqual(before);
+      for (const [label, value] of [
+        ["a NUL past the object", "{}\0x"],
+        ["a NUL inside a string", '{"a":"\0"}'],
+        ["a BLOB", blob("{}")],
+      ] as const) {
+        expect(() => insert(sql, "300000000000000009", value), label).toThrow(REFUSED);
+        expect(() => sql.exec("UPDATE scheduled_statuses SET params = ? WHERE id = ?", value, plain), label).toThrow(
+          REFUSED,
+        );
+      }
+      // An object passes, at the CHECK's 128 KiB too, inserted or written over a stored one; another column's update
+      // passes on a row the trigger would refuse.
+      insert(sql, "300000000000000004", sized(131_072));
+      sql.exec("UPDATE scheduled_statuses SET params = ? WHERE id = ?", sized(131_072), nul);
+      sql.exec(
+        "UPDATE scheduled_statuses SET attempts = 1, next_attempt_at = '2026-12-01T00:00:00.000Z' WHERE id = ?",
+        binary,
+      );
+      expect(() => insert(sql, "300000000000000005", sized(131_073))).toThrow(/CHECK constraint failed/);
+      expect(stored().map((row) => [row.id, row.hex.length / 2, row.type])).toEqual([
+        [nul, 131_072, "text"],
+        [binary, 2, "blob"],
+        [plain, 2, "text"],
+        ["300000000000000004", 131_072, "text"],
+      ]);
+    });
+  });
+});
+
+describe("0111_account_urls", () => {
+  const NAME = "0111_account_urls";
+  const at = NAMES.indexOf(NAME);
+
+  it("indexes remote accounts by their stored url, built over the existing rows, which it leaves as they were", async () => {
+    const store = freshStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec(
+        `INSERT INTO accounts (id, uri, username, domain, url) VALUES
+					('100000000000000001', 'https://r.example/users/a', 'a', 'r.example', 'https://r.example/@shared'),
+					('100000000000000002', 'https://r.example/users/b', 'b', 'r.example', 'https://r.example/@shared'),
+					('100000000000000003', 'https://r.example/users/c', 'c', 'r.example', NULL),
+					('100000000000000004', 'https://kopje.test/users/d', 'd', NULL, 'https://r.example/@shared')`,
+      );
+      const rows = () => sql.exec("SELECT * FROM accounts ORDER BY id").toArray();
+      const before = rows();
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      expect(rows()).toEqual(before);
+      expect(
+        sql.exec("SELECT \"unique\", partial FROM pragma_index_list('accounts') WHERE name = 'accounts_url'").toArray(),
+      ).toEqual([{ unique: 0, partial: 1 }]);
+      // Only the remote accounts that store a url, local ones and those without one left out.
+      expect(
+        sql
+          .exec(
+            "SELECT count(*) AS n FROM accounts INDEXED BY accounts_url WHERE domain IS NOT NULL AND url IS NOT NULL",
+          )
+          .one().n,
+      ).toBe(2);
+      const query = `SELECT id FROM accounts INDEXED BY accounts_url WHERE domain IS NOT NULL AND url = ?1 LIMIT 200`;
+      expect(sql.exec(query, "https://r.example/@shared").toArray()).toEqual([
+        { id: "100000000000000001" },
+        { id: "100000000000000002" },
+      ]);
+      const plan = sql
+        .exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, "https://r.example/@shared")
+        .toArray()
+        .map((row) => row.detail);
+      expect(plan).toEqual(["SEARCH accounts USING INDEX accounts_url (url=?)"]);
     });
   });
 });

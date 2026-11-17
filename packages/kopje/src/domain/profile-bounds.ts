@@ -1,5 +1,6 @@
+import { boundedHref } from "../platform/http-url";
 import { ACTOR_URI_LIMIT, REMOTE_USERNAME_LIMIT } from "../platform/identity-bounds";
-import { cutSql } from "../platform/stored-bounds";
+import { cutSql, PROFILE_URL_LIMIT } from "../platform/stored-bounds";
 
 // RES-2: read projections of the username and actor id (test-node/bounded-columns.test.ts). Stored profile bounds and
 // read exceptions: STORED_COLUMNS in platform/stored-bounds.ts. Imports only leaves, so modules that build SQL at load
@@ -27,8 +28,21 @@ export function usernameSql(column: string): string {
 // A stored actor id as a presenter reads it: '' past ACTOR_URI_LIMIT, or past a lower `limit` (UTF-8 bytes) where the
 // presenter shows less (a moved-to account, account-columns.ts MOVED_URL_LIMIT). Only a converted row can hold one
 // longer than ACTOR_URI_LIMIT, and the cutover refuses it (docs/cutover.md); it is an identity, so it is never cut into
-// another actor's id. A presenter derives only a profile URL's origin from it (accountUrl), which for '' falls back to
-// this instance's /@acct page. Lookups, deliveries and ActivityPub documents compare or send the whole stored id.
+// another actor's id. A presenter shows it as a remote account's profile URL (remoteAccountUrl) or derives a URL from
+// its origin (accounts.ts accountUrl), which for '' falls back to this instance's /@acct page. Lookups, deliveries and
+// ActivityPub documents compare or send the whole stored id.
 export function actorUriSql(column: string, limit = ACTOR_URI_LIMIT): string {
   return `CASE WHEN length(CAST(${column} AS BLOB)) <= ${limit} THEN ${column} ELSE '' END`;
+}
+
+// A remote account's profile URL as Kopje shows it wherever Mastodon's TagManager#url_for gives one (accounts.ts
+// accountUrl, a notification fallback, the link-card mention test): its stored url when it is usable, else its actor
+// id, as Mastodon stores `url || @uri` (process_account_service.rb:228); null when neither is. Usable: `href` gives it,
+// by default an http(s) URL within PROFILE_URL_LIMIT once serialized (HTML-3, RES-2). Mastodon's url_for gives nil for
+// a stored url that is not http(s), which only an import holds (docs/mastodon-deviations.md).
+export function remoteAccountUrl(
+  row: { url: string | null; uri: string },
+  href: (value: string | null) => string | null = (value) => boundedHref(value, PROFILE_URL_LIMIT),
+): string | null {
+  return href(row.url) ?? href(row.uri);
 }

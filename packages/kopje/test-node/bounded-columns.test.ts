@@ -339,6 +339,10 @@ type Finding = { path: string; line: number; read: string; key?: string };
 const SAFE_INTERPOLATIONS = new Set([
   // The inbox an activity without `to` goes to: an inbox column, none bounded here (domain/audience.ts).
   "addressedInboxSql",
+  // A follower's or voter's inbox, an inbox column within its own byte bound (domain/audience.ts).
+  "reachInboxSql",
+  // Whether a staged inbox is within that bound: a predicate (domain/audience.ts).
+  "reachInboxWithinSql",
   // Attribution domains within their read bound, or '[]' (platform/stored-bounds.ts): no bounded column.
   "attributionDomainsSql",
   "availableJoinedSql",
@@ -411,6 +415,9 @@ const SAFE_INTERPOLATIONS = new Set([
   // Whether a value is no cached oEmbed template: a predicate (platform/stored-bounds.ts).
   "oembedTemplatePastSql",
   "participantsSql",
+  // A scheduled status's params as read, or NULL past their stored bound (domain/scheduled-statuses.ts): no bounded
+  // column.
+  "paramsReadSql",
   "pendingAppsSql",
   // An account count as an integer from 0 to MAX_ACCOUNT_COUNT, else 0 (platform/stored-bounds.ts), a number.
   "presentedCountSql",
@@ -641,11 +648,10 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/audience.ts status_tags.name": { count: 1, reason: PREDICATE },
   "src/domain/audience.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/audience.ts statuses.uri": { count: 1, reason: IDENTITY },
-  // A staged retraction's sources (stagedAccounts and the other paged readers): each account's uri and inboxes, or a
-  // reached inbox, cut at TARGET_CHUNK_BYTES (projectedSql), and whether it is left out (leavesOutSql, a predicate).
+  // A staged retraction's sources (stagedAccounts and the other paged readers): each account's uri and inboxes, cut at
+  // TARGET_CHUNK_BYTES (projectedSql), and whether it is left out (leavesOutSql, a predicate).
   "src/domain/audience.ts interpolation stagedAccountSql(kind, '?3', '?2')": { count: 2, reason: STAGED },
   "src/domain/audience.ts interpolation stagedAccountSql(kind, '?5', '?4')": { count: 3, reason: STAGED },
-  "src/domain/audience.ts interpolation projectedSql(REACH_INBOX, 'inbox', '?5')": { count: 2, reason: STAGED },
   "src/domain/audience.ts interpolation leavesOutSql(kind, 'addressed', '?2', 'a.id')": { count: 1, reason: PREDICATE },
   "src/domain/audience.ts interpolation leavesOutSql(kind, 'follower', '?1', 'a.id')": { count: 1, reason: PREDICATE },
   "src/domain/deliveries.ts interpolation projectedSql('inbox_url', 'inbox', '?4')": { count: 1, reason: STAGED },

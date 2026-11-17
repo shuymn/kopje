@@ -233,7 +233,7 @@ async function world() {
       const name = `v${n++}`;
       const id = await remote(h, name);
       await endorse(h, alice.id, id);
-      visible.push({ id, href: `https://remote.example/@${name}` });
+      visible.push({ id, href: `https://remote.example/users/${name}` });
     }
   };
   const hiddenRun = async (count: number) => {
@@ -263,7 +263,7 @@ async function world() {
   const moved = await remote(h, "movedaway");
   await movedAtCaps(h.store, [moved], 760_000_000_000_000_000n);
   await endorse(h, alice.id, moved);
-  visible.push({ id: moved, href: "https://remote.example/@movedaway" });
+  visible.push({ id: moved, href: "https://remote.example/users/movedaway" });
   await hiddenRun(130);
   await shownRun(30);
   const expected = visible.toSorted((a, b) => (BigInt(a.id) < BigInt(b.id) ? 1 : -1));
@@ -326,7 +326,7 @@ describe("the Featured tab’s endorsed accounts (R28)", () => {
         id,
       );
       await endorse(h, h.users.alice.id, id);
-      expected.unshift(`https://remote.example/@${name}`);
+      expected.unshift(`https://remote.example/users/${name}`);
     }
     await feature(h, h.users.alice.id, 1, { name: "cats", display: "Cats", count: 3 });
     const first = await readWithin(h, "/@alice/featured", ANSWER_BYTES);

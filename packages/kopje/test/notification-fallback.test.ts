@@ -330,24 +330,27 @@ describe("notification fallbacks: the texts (config/locales/en.yml, notification
     expect(report1!.fallback!.summary).toBe(SUMMARY);
   });
 
-  it("links an account as Mastodon's url_for does: a remote one's stored http(s) url, a local one's short URL", async () => {
+  it("links an account as Mastodon's url_for does: a remote one's usable url, else its actor id; a local one's short URL", async () => {
     const { h, owner, alice, bob } = await world();
     const reported: Record<string, string> = {};
-    // A local target, then remote targets by their stored url.
+    // A local target, then remote targets by their stored url when it is usable, else by their actor id, as the
+    // account's url shows (#1734: Mastodon stores `url || @uri`; its url_for gives nil for a stored url that is not
+    // http(s), which only an import holds, docs/mastodon-deviations.md).
     reported[await report(h, alice, bob.id)] = "https://kopje.test/@bob";
     const urls: [string | null, string][] = [
       ["https://remote.example/users/alice", "https://remote.example/users/alice"],
-      [null, ""],
-      ["", ""],
-      ["ftp://remote.example/alice", ""],
-      ["javascript:alert(1)", ""],
+      [null, "the actor id"],
+      ["", "the actor id"],
+      ["ftp://remote.example/alice", "the actor id"],
+      ["javascript:alert(1)", "the actor id"],
       // Within the stored bound, past PROFILE_URL_LIMIT once serialized (each quote as %22).
-      [`https://remote.example/${'"'.repeat(1_000)}`, ""],
+      [`https://remote.example/${'"'.repeat(1_000)}`, "the actor id"],
     ];
     for (const [i, [url, href]] of urls.entries()) {
       const target = await remoteAccount(h.store, `target${i}`);
       await sql(h.store, "UPDATE accounts SET url = ? WHERE id = ?", url, target);
-      reported[await report(h, alice, target)] = href;
+      const { uri } = (await sql<{ uri: string }>(h.store, "SELECT uri FROM accounts WHERE id = ?", target))[0]!;
+      reported[await report(h, alice, target)] = href === "the actor id" ? uri : href;
     }
     // The target's link, the last of its title; no url derived from the actor (https://remote.example/@target<i>).
     const hrefs = (shown: Record<string, string | undefined>) =>

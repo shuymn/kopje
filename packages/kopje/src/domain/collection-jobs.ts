@@ -1,5 +1,5 @@
 import type { Db } from "../db/sql";
-import { reachFollowerInboxes } from "./audience";
+import { REACH_INBOX_BYTES, reachFollowerInboxes } from "./audience";
 import { endStaging, isDeliverableInbox, stageTargets } from "./deliveries";
 import { COLLECTION_JOBS, nextJob, runJobItem } from "./job-attempts";
 import { writeOperation } from "./operation";
@@ -26,8 +26,9 @@ export const COLLECTION_REACH_ROUND = 500;
 // The rounds one call runs at most, the jobs taking turns (as MODERATION_ROUNDS).
 export const COLLECTION_ROUNDS = 4;
 // A staged inbox's bound in UTF-8 bytes: the CHECK collection_reach_inbox, whose rule a followers round judges in SQL
-// before it reads an inbox, so a round reads at most COLLECTION_REACH_ROUND × 4,096 bytes of them.
-export const COLLECTION_REACH_INBOX_BYTES = 4096;
+// before it reads an inbox (audience.ts reachInboxSql, the rule every follower's and voter's inbox is read by), so a
+// round reads at most COLLECTION_REACH_ROUND × 4,096 bytes of them.
+export const COLLECTION_REACH_INBOX_BYTES = REACH_INBOX_BYTES;
 // Below every follow id but SQLite's least INTEGER.
 const BEFORE_FOLLOWS = "-9223372036854775808";
 

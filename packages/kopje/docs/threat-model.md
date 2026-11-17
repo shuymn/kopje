@@ -39,6 +39,11 @@ Planned topics: the KV sweep (expired signed-fetch cache rows: NET-4, RES-4) and
   RES-6).
 - One Worker does HTTP, Access and signature verification, fetching, sanitizing, delivery and the Queue. One SQLite
   Durable Object, the Store, holds all state; each operation runs in `transactionSync` with no external I/O.
+- A request, a Queue batch and a Store invocation (a call or an alarm) may each use up to 60 s of CPU: the shipped
+  configs set `limits.cpu_ms` to 60,000, twice the platform's default, so that the Store's upgrade fits in its one
+  alarm (`test-node/wrangler-configs.test.ts`). Cloudflare lists the cron's CPU limit apart, at 30 s, and the backup is
+  sized to that (OPS-5). The bounds below are stated in rows, bytes, calls and turns and do not grow with the limit;
+  what it sets is how long one Store call within them may hold the Store before the platform stops it (A11).
 - Access protects only `/oauth/authorize` and `/admin/*`, each with its own application; the Worker verifies the JWT.
 - Media originals live in R2 and are re-encoded by Images; cached remote files live in R2 under `remote/`, verified
   but not re-encoded (MEDIA-6, MEDIA-7). Backups are age-encrypted to an offline key.
@@ -193,7 +198,9 @@ against their own instance. TLS is assumed between all parties.
   (`test/remote-actor-images.test.ts`, "verifies a signature by an actor whose icon is not an Image", "verifies a key
   Fedify fetches itself, by an actor whose icon is not an Image", "verifies a signature by an actor whose … is
   unreadable, its key at the actor's URL", "verifies a key document served at the key's URL";
-  `test/remote-actor-view.test.ts`, "hands Fedify only the inventory"). A key id the Store does not hold fresh, or whose
+  `test/remote-actor-view.test.ts`, "hands Fedify only the inventory"; `test/remote-actor-url.test.ts`, "verifies such
+  an actor's signature by its key alone, and applies only its own document").
+  A key id the Store does not hold fresh, or whose
   stored key fails, is resolved from the document at that id, as Kopje reads an actor's keys, and its owner judged as
   for any fetched key (`storedKeys`, `verify`). An RFC 9421 signature verifies with an RSA or Ed25519 key, the algorithm
   its own; a draft-cavage signature only with an RSA key, and one that names any other key is answered as a signature
@@ -2288,9 +2295,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the flag in `wrangler.jsonc` and `/deploy/wrangler.jsonc`; `test-node/wrangler-configs.test.ts` ("shipped Kopje
   Worker configs"). A running Worker without the flag fails the health report's `runtime` check (`src/app/health.ts`);
   `test/health-runtime.test.ts` ("runtime check in healthReport").
-- **NET-2: deliveries reach only the audience's inboxes.** Inboxes come from the stored audience and are deduplicated by
-  shared inbox; an activity without `to` (a Like, Follow, Accept, Reject, Block or their Undo, each naming its recipient
-  through its object) goes to the recipient's shared inbox when it has one (R38's severing `Reject` alone goes to its
+- **NET-2: deliveries reach only the audience's inboxes.** Inboxes come from the stored audience and are deduplicated
+  by shared inbox; a follower's or poll voter's inbox (its shared inbox, else its personal one, chosen before it is
+  judged, so a shared inbox outside the rule never sends the activity to the personal one) is read only when it is
+  text of 1 to 4,096 UTF-8 bytes without NUL (`reachInboxSql` in `src/domain/audience.ts`), for targets read at once,
+  a retraction staged in steps, a collection's reach and a moderation reach alike, as is every account's inbox a
+  moderation reach stages (an addressed account still reads it whole), while targets already recorded and a
+  retraction's already staged keep their inboxes (`test/reach-inboxes.test.ts`); a moderation job's staged rows are
+  read by the same rule again (`test/admin-suspension.test.ts`); an activity without `to` (a Like, Follow, Accept,
+  Reject, Block or their Undo, each naming its recipient through its object) goes to the recipient's shared inbox
+  when it has one (R38's severing `Reject` alone goes to its
   personal inbox, as Mastodon's `reject_remote_follows!` sends it). A row to a host marked unavailable, a retraction's
   included, is given up unsent but a `Follow` (RES-5). A remote actor's shared inbox is the one Mastodon
   4.7.5 reads, kept only when Kopje POSTs to the URL Mastodon POSTs to for its spelling, else none, so the personal
@@ -2742,9 +2756,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   2,048 bytes and 4,098 JSON bytes (`snapshotMedia` in `src/domain/statuses.ts`; `test/status-bounds.test.ts`
   ("judges a media URL as decoded, then as normalized", "judges an imported snapshot's URLs and blurhash as live
   media")). _Enforced (main)_ for remote actors at ingest (profile URL, avatar, header, inboxes) and links in remote
-  HTML: `src/federation/remote-actor.ts` (the avatar and header read from the document's JSON by `profileImage`),
-  `src/security/html.ts`; `test/inbox.test.ts` ("stores the remote actor"), `test/remote-actor-images.test.ts` ("keeps
-  only an absolute http(s) URL within its bound"), `test/html.test.ts`. _Enforced (main)_ for field links and remote
+  HTML: `src/federation/remote-actor.ts` (the profile URL, avatar and header read from the document's JSON by
+  `profileUrl` and `profileImage`), `src/security/html.ts`; `test/inbox.test.ts` ("stores the remote actor"),
+  `test/remote-actor-images.test.ts` ("keeps only an absolute http(s) URL within its bound"),
+  `test/remote-actor-url.test.ts` ("keeps Mastodon's URL for each form, or the listed difference"),
+  `test/html.test.ts`. _Enforced (main)_ for field links and remote
   statuses at ingest (the status url and attachment and preview URLs, which are dropped unless http(s));
   `src/federation/remote-status.ts`;
   `test/inbox-statuses.test.ts` ("keeps only http(s) media (HTML-1, HTML-3)", "http(s) links only").
@@ -3151,6 +3167,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `scheduled_at` is read only up to 64 characters, and a scheduled status's params are a JSON object of a fixed shape
   built from checked fields (the status text's raw bound, at most four media ids), refused over 128 KiB in the Store and
   by the schema (migration `0011_scheduled_statuses`); `test/migrations.test.ts`, `test/scheduled-statuses.test.ts`.
+  Params that are not text or hold a NUL anywhere, which that CHECK passes (a BLOB, and `json_valid` stops at the NUL)
+  and `JSON.parse` refuses, are refused by the triggers of migration `0110_scheduled_params`, imports included
+  (`paramsPastBoundSql` in `src/domain/scheduled-statuses.ts`); a row restored before it reads as unreadable
+  (`paramsReadSql`, then `storedParams`, which decides as `JSON.parse` does): left out of the list, not found when shown
+  or updated, deleted, dropped as `params` when due with no failure recorded, and passed over by a repeat of its
+  Idempotency-Key, which schedules anew; `test/scheduled-statuses.test.ts` ("a scheduled status whose params cannot be
+  read"), `test/migrations.test.ts` ("0110_scheduled_params"), `test/dump-import.test.ts` ("round-trips scheduled
+  statuses' params").
   `scheduled_at` must name a date and time the calendar has (Ruby's `DateTime.parse`: no February 29 outside leap years,
   no 31st of a 30-day month, minutes and hours in range), checked before its offset applies. Other query strings: _Gap._
   _Enforced (main)_ for a search resolution's non-ActivityPub answer (NET-4): its `Link` header is read only within
@@ -3332,6 +3356,20 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (`verifiedLinksPastBoundSql`, `unverifiedLinksPastBoundSql`) refuses of the exact value written, never failing;
   `test/migrations.test.ts` ("0066_field_verification", "0076_field_link_checks"), `test/field-links.test.ts`
   ("records a value beside imported entries escaped up to the bound").
+  _Enforced (main)_ for followers' and voters' inboxes: `accounts.inbox_url` and `shared_inbox_url` keep no stored
+  bound (Kopje stores at most 2,048 characters of an actor document's), so an import or an older release may hold any
+  value. The readers of a follower's or poll voter's inbox for an activity's targets (`recipientsFor`, a staged
+  retraction's `stagedFollowers` and `stagedVoters`, and a block's collection `Remove`s' `reachFollowerInboxes`), and
+  of every account a moderation `Update`'s audience reaches (its followers by `reachFollowerInboxes`, `reachFollowing`,
+  `reachMentioned`, and the reporters by `reachAccount`), choose its shared inbox, else its personal one, and read that
+  value only when it is text of 1 to `REACH_INBOX_BYTES` (4,096) UTF-8 bytes without NUL, else none, in SQL
+  (`reachInboxSql` in `src/domain/audience.ts`; the CHECK `collection_reach_inbox` holds the same bound). An admitted
+  value is at most 4,096 UTF-16 code units in the Worker, 12,288 bytes re-encoded as UTF-8 (a malformed byte decodes
+  to U+FFFD) and 24,578 bytes as JSON (a control character escapes as six); `test/reach-inboxes.test.ts` ("returns no
+  inbox outside the rule, the bound's own whole"), `test/reach-inbox-plans.test.ts` ("is at most the bound's raw bytes,
+  its UTF-16 units, three times as UTF-8 and six times as JSON"). `moderation_reach.inbox` keeps no stored bound either
+  (migration `0034_admin_suspension`), so a moderation job's write and end rounds read each staged row by the same rule
+  (`reachInboxWithinSql`); `test/admin-suspension.test.ts` ("reads no inbox past REACH_INBOX_BYTES in any phase").
   _Enforced (main)_ for attribution domains: `local_accounts.attribution_domains` keeps only its shape CHECK (migration
   `0024_attribution_domains`), so a stored value may be any JSON array: an import, or a list an earlier writer accepted
   with domains padded by characters IDNA ignores (100 of them pass `ATTRIBUTION_DOMAINS_BYTES`). Every reader
@@ -3493,8 +3531,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   take the same reads and presenters wherever its document is rendered (`ACTOR_ROW_COLUMN_MAP` in
   `src/domain/actor-row.ts`, `localActorOf`, `documentOf`: the endpoint, every Update and the maintenance snapshot;
   `test/actor-update.test.ts`). Mentions
-  read the username through the same projection (`src/domain/profile-bounds.ts`) and derive `acct` and a fallback url
-  from the cut username; the admin account search reads candidates' ids and flags only and tests their text in SQL. The
+  read the username through the same projection (`src/domain/profile-bounds.ts`) and derive `acct` from the cut
+  username and a url from the actor id (`remoteAccountUrl`), else from the cut username; the link card's mention test
+  reads no list of a status's mentions, only the accounts a link could name (RES-6, "Status cards"); the admin account
+  search reads candidates' ids and flags only and tests their text in SQL. The
   actor URI is bounded as stored (`ACTOR_URI_LIMIT`), read through `actorUriSql`, and
   refused at the cutover; the account's `uri` shows it only while its JSON is within `ACTOR_URI_LIMIT` bytes too
   (`withinIdentityBound`), and '' otherwise. An account that moved shows the account it moved to one level deep, read
@@ -3566,8 +3606,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   4 attachments rebuilt through the attachment bounds and '[]' over 308 KiB (four entries at their caps, at the worst
   escaping, `EDIT_MEDIA_BYTES`); a conversation presents its first 12 participants in stored order, cut in SQL. Every
   presented URL stays within its bound as serialized, derived or stored: a profile URL, avatar or header within 2,048 (a
-  profile URL falls back from the stored one to the actor's origin and to this instance's `/@acct` page, and to '' when
-  none fits), each of an attachment's four URLs within 2,048 (4,098 JSON bytes; a remote attachment's `remote_url` and
+  profile URL falls back from the stored one to a remote account's actor id, to the actor's origin and to this
+  instance's `/@acct` page, and to '' when none fits), each of an attachment's four URLs within 2,048 (4,098 JSON
+  bytes; a remote attachment's `remote_url` and
   `preview_remote_url` are its `url` and its icon, read with whether its account is remote by key through
   `sqlite_autoindex_accounts_1`), live or in an edit's snapshot. A local status's `application` reads its app's name and
   website as stored, within 240 and 2,000 bytes and only as text (`appNameSql` and `appWebsiteSql` in
@@ -3603,9 +3644,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/trends-maxima.test.ts`, `test/trends.test.ts` ("reaches every status once"). _Enforced (main)_ for scheduled
   statuses: a page reads the ids of at most 40 and admits whole scheduled statuses within `ARRAY_ANSWER_BYTES`, each
   read by key when admission reaches it, the first always, a cut page continuing from its last (`listScheduled` in
-  `src/domain/scheduled-statuses.ts`); each shows at most `MAX_STATUS_MEDIA` held media (the media read's `LIMIT`), so
-  it is at most its derived maximum in "Maxima of presented units"; `test/scheduled-statuses.test.ts` ("a scheduled
-  status at its caps", "the scheduled statuses list within ANSWER_BYTES").
+  `src/domain/scheduled-statuses.ts`); each shows at most `MAX_STATUS_MEDIA` held media (the media read's `LIMIT`, and
+  what a scheduled status may hold, RES-6), so it is at most its derived maximum in "Maxima of presented units";
+  `test/scheduled-statuses.test.ts` ("a scheduled status at its caps", "the scheduled statuses list within
+  ANSWER_BYTES").
 - **RES-4: stored derived data is bounded.** Snapshots, the KV cache, the spool and deliveries each have a size cap, a
   count cap or an expiry with a sweeper. _Enforced (main)_ for remote statuses: one
   status stores at most 4 attachments (Mastodon's limit) with 10,000 code points of description each, 100 hashtags
@@ -3651,7 +3693,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   and a claim that never finished is given up after 2 (`src/domain/link-cards.ts`; `test/link-card-rounds.test.ts`
   ("expires at most CARD_EXPIRE_BATCH rows a claim", "keeps an open hold past the expiry, so a later round still
   defers its URL"), `test/cascade-guard.test.ts` ("trend and card rows within a batch"),
-  `test/link-cards.test.ts` ("deletes the card with the hide when %i rows are left")). Card images
+  `test/link-cards.test.ts` ("deletes the card with the hide when %i rows are left")). The index the mention test
+  seeks (`accounts_url`, migration `0111_account_urls`) holds one entry per remote account that stores a url: that
+  url, at most 2,048 bytes as stored, and its rowid, with SQLite's record and B-tree page overhead on top, so it grows
+  with the remote accounts that store a url, as the column does (`test/migrations.test.ts` ("0111_account_urls")). Card
+  images
   (`card_images`, migration `0070_card_images`): one row per image URL a card names, at most one written by a record;
   a pending row is dropped a day after it was enqueued (at most 500 a claim), when no card names it, or after 2 claims
   never finished; a stored row no card names is collected by the claim's GC, at most 64 a claim from a cursor, each
@@ -3768,7 +3814,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   into `collection_reach` up to the follow bound its first followers round takes and keeps, writes them to each `Remove`
   and deletes them, a round reading at most 500 rows of its phase's kind (`COLLECTION_REACH_ROUND`) and no inbox past
   the staged bound of 4,096 UTF-8 bytes (`accounts`' inbox columns have none, so `reachFollowerInboxes` judges each in
-  SQL before reading it), at most 4 rounds a run, as a job family of its own (RES-5; `src/domain/collection-jobs.ts`). A
+  SQL before reading it, by `reachInboxSql`, the rule every follower's and voter's inbox is read by), at most 4 rounds a
+  run, as a job family of its own (RES-5; `src/domain/collection-jobs.ts`). A
   collection's deletion writes the collection, its at most 50 items, their notifications, its `collection_update`
   notifications (one per local recipient, held unique by `notifications_collection`) and their pushes (at most
   `MAX_PUSH_BACKLOG`), by the foreign keys; an item's removal or eviction the item, its notification and that
@@ -3997,10 +4044,19 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (`total_changes()`, its own row and its retry state's row included). The suspension job resolves at most 100 reports a
   round, then stages the `Update`'s audience (its followers, its reporters, the accounts it mentioned and followed) into
   `moderation_reach` from indexed ranges, 500 rows a round, each source capped as Mastodon's `AccountReachFinder` caps
-  it, then writes the inboxes as the `Update`'s targets and deletes their staging rows, 500 a round; every round writes
-  at most 600 rows, its retry state's row included (a severing round reserves it from its budget), and each cursor is
-  persisted, so every round makes progress (`src/domain/suspension.ts`; `test/admin-suspension.test.ts`: a history of
-  600 tokens, 250 subscriptions and 650 pushes, and 10,000 followers, each round within its budget, also as a due retry;
+  it, then writes the inboxes as the `Update`'s targets and deletes their staging rows, 500 a round. No round reads an
+  inbox past 4,096 UTF-8 bytes (`REACH_INBOX_BYTES`), so a round reads at most 2,048,000 bytes of them: each source
+  judges an account's inbox in SQL before reading it (`reachInboxSql`, RES-2), and a write or end round reads its
+  staged rows (an import or an earlier release's staging may hold any value) by the same rule in the stored inbox's
+  order, `moderation_reach`'s key, and deletes exactly the rows it read by a boundary compared in SQL (DATA-6), so every
+  staged inbox within the rule is written once and every staged row is deleted; `test/admin-suspension.test.ts` ("reads
+  no inbox past REACH_INBOX_BYTES in any phase": each source at its cap, every inbox at the bound, one past it and one
+  with a NUL in each, and an import's staged rows past it, with a NUL, a BLOB and not UTF-8),
+  `test/moderation-plans.test.ts` (the followers round beside main's statement, and the staged rows' seek with stale
+  statistics). Every round writes at most 600 rows, its retry state's row included (a severing round reserves it from
+  its budget), and each cursor is persisted, so every round makes progress (`src/domain/suspension.ts`;
+  `test/admin-suspension.test.ts`: a history of 600 tokens, 250 subscriptions and 650 pushes, and 10,000 followers,
+  each round within its budget, also as a due retry;
   `test/remote-suspension.test.ts` ("stays within the budget as a due retry", "stays within the budget when a round
   fails after its writes")). App registration: _Enforced (main):_ `POST /api/v1/apps` is limited to 5 per minute per
   client IP by the Workers Rate Limiting binding before its body is read (429), and the Store keeps at most 500
@@ -4086,7 +4142,18 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   indexes and keys, after ANALYZE and growth"), `test/remote-field-links.test.ts` ("stores at most two actors’ rows in a
   Move, with at most two statements each")). At most 288 claims a day, shared with local accounts.
   Status cards: _Enforced (main):_ a write only enqueues its status's link (`status_cards`, in its own transaction);
-  the cron runs one round per tick. Its claim expires at most 500 pending rows, then walks at most 64 due rows by
+  the cron runs one round per tick. A remote status's `Create` or `Update` picks that link from at most 16 anchors
+  (`CARD_CANDIDATES`), and each anchor's mention test (`mentionLink`, Mastodon's `mention_link?`) reads by the anchor,
+  not the status's mention rows, which a converted or imported status keeps in any number: at most three statements,
+  a seek of the local username and one of the actor id (each at most 3 rows: the index entry, the account and its
+  mention by key) and at most `MENTION_URL_ACCOUNTS` (200) entries of `accounts_url` with their accounts, then each
+  one's mention by key to the first (at most 201 rows). That is at most 207 rows an anchor and 3,312 a write, as the
+  cursor counts them, whatever the status holds; the one row it brings into the Worker is an actor's url and id, at
+  most 4,096 bytes, one at a time, and nothing else is kept between anchors (`test/link-cards.test.ts` ("reads the
+  mention test's candidates by index under stale statistics, flat past MENTION_URL_ACCOUNTS", "skips a mention's
+  profile link past MAX_STATUS_MENTION_ROWS silent rows with smaller account ids", "skips a current mention's profile
+  link at an Update after an import grew the status past its mention rows")). Its claim expires at most 500 pending
+  rows, then walks at most 64 due rows by
   `(due_at, status_id)` in order and stops at 6 claims, leaving the rest untouched; each row walked is deleted, attached
   from another status's fresh copy (an existence-gated update by key: no donor writes nothing), deferred to another
   row's open hold on its URL, or claimed for 5 minutes (twice the round); with at most 100 cached oEmbed endpoints
@@ -4185,6 +4252,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   published while the Store is in maintenance or readonly; what is due waits. `publishScheduled` in `src/store.ts`,
   `src/domain/scheduled-statuses.ts`, `src/jobs/scheduled.ts`; `test/scheduled-statuses.test.ts` ("publishes a due
   status once", "publishes at most … a run", "backs off what keeps failing", "waits while the Store is readonly").
+  A scheduled status holds at most `MAX_STATUS_MEDIA` (4) uploads, imports included: the triggers
+  `media_attachments_scheduled_cap_insert` and `media_attachments_scheduled_cap_update` of migration
+  `0109_scheduled_media_cap` refuse a fifth, inserted held or moved to it, each reading at most 5 rows through
+  `media_attachments_scheduled` (`heldFullSql` in `src/domain/scheduled-statuses.ts`), and the migration detached each
+  scheduled status's uploads past its first four by (position, id), attachable again for a day. Kopje's writer holds
+  at most four, so it is never refused. So removing a scheduled status (a delete, a publication, a terminal failure)
+  detaches at most four uploads through that index before it deletes the row, whatever other scheduled statuses hold;
+  `test/scheduled-statuses.test.ts` ("detaches at most four uploads on a delete, a publication and a terminal
+  failure", "holds four through the API, and refuses a fifth"), `test/migrations.test.ts` ("0109_scheduled_media_cap"),
+  `test/dump-import.test.ts` ("round-trips a scheduled status's four held uploads").
   _Enforced (main)_ for media: before the body is read or Images is called, the Store
   counts upload attempts (deleted and failed ones included) to at most 30 per 30 minutes per account (Mastodon's
   limit) and checks the monthly budgets; right before Images is called it revalidates the reservation with fresh time
@@ -4236,7 +4313,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/delivery-chunks.test.ts` (the chunk boundary, lane order across intents, an Update replacing a partly expanded
   intent, a claim failing at a chunk transition, a dump and import of a partly expanded intent, an oversized target).
   _Gap: computing an activity's targets reads all of the signer's remote followers in one transaction (a read, then one
-  row per chunk)._
+  row per chunk)._ Each follower's and poll voter's inbox is judged in SQL before the Worker reads it (`reachInboxSql`,
+  at most `REACH_INBOX_BYTES` raw bytes), and each source returns at most 34 rows per distinct inbox (VIS-30's
+  representatives), so the inbox values a source returns are at most 34 × 4,096 raw bytes per distinct inbox. The
+  number of distinct inboxes, the window's sort over every follower or voter, the host strings derived from imported
+  actor ids, and the addressed accounts' ids and inboxes (read whole) are not bounded by it; making the whole audience
+  a bounded series of rounds remains open.
   _Enforced (main)_ for relationship activities: one request's fetches share a budget of 8 fetches
   (documents, JSON-LD contexts, each redirect hop and each RFC 9421 retry), 2 MiB and 15 seconds (`requestBudget` in
   `src/federation/loader.ts`; cached contexts cost nothing; icons are taken only when embedded; `test/loader.test.ts`
@@ -4418,7 +4500,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   lists, two stored bytes an element at least (a forward's three), counted apart from the table rows it reads. The
   sources are read from cursors kept on the staging's row, each in its own index order: the audience's accounts, the
   status's mentions, its parent's author, boosters and quoters, the poll's voters (its current generation compared in
-  SQL), the followers up to the highest follow id when the staging began, then the earlier activities' targets not yet
+  SQL), the followers up to the highest follow id when the staging began (a follower's or voter's inbox by
+  `reachInboxSql`, as the targets read at once, so both reach the same inboxes), then the earlier activities' targets
+  not yet
   expanded, their delivery rows and the receipts, in that order, since evidence only moves from a target to a row to a
   receipt; whether an earlier activity retracts is read by its key before its rows or targets are, and a retraction's
   are not read. A forward's references are resolved as the staging reaches each, its shares then its receiptShares, one
@@ -4440,7 +4524,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   first", "keeps its intent while every chunk it has written is delivered", "resolves its references as it reaches
   them"), `test/admin-suspension.test.ts` ("sends the restoration to a non-follower even when the profile is edited
   before it is staged"), `test/forward-delete.test.ts` ("advances a forward whose every share resolves", "regenerates
-  its targets when restarted after a partial emit")). _Gap (accepted):_ a source row removed before its cursor reads it
+  its targets when restarted after a partial emit"), `test/reach-inboxes.test.ts` ("writes the rows staged before it and
+  ends": the rows an older release staged keep their inboxes and are written out)). _Gap (accepted):_ a source row
+  removed before its cursor reads it
   is missed unless other evidence names its inbox; a follow made after the staging began is not reached; a delivery row
   moved in place to a personal inbox (`moveToPersonal`) after the rows' walk passed it is missed when its receipt sorts
   behind the receipts' cursor, or when it stays pending or gives up without a receipt; writing out starts only once
@@ -4624,14 +4710,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Streaming (VIS-26): _Enforced (main):_ at most 16 sockets per account (429) and 256 per
   instance (503); 16 subscriptions per socket, 16 stream keys per account and a socket's attachment at most 12 KiB (`Too
   many subscriptions`, 429); incoming messages text only (1003), at most 4 KiB and 120 a minute (1008). The fan-out runs
-  in turns, one at a time, each an incoming request to the Store's own stub, which restores the CPU allowance: a turn
+  in turns, one at a time, each an incoming request to the Store's own stub, which restores the CPU allowance (60 s,
+  Deployment assumptions): a turn
   spends at most 512 checks, 64 presentations and 4,096 sends, runs a unit only while what is left covers a unit's
   worst case (35 checks: 16 tokens, home, the mention, one for each of 16 keys (lists and feeds) and the feeds' mention
   filter; one presentation, 512 KiB of payload, 256 sends) and leaves the rest to the next turn. A payload is counted
   in UTF-8 bytes as encoded, measured from the presented object before anything is encoded (`encodedTwiceBytes`): the
   measure of the 512 KiB past which it is skipped and logged with no string made. A unit within it is encoded once and
   sent one stream's envelope at a time, so a unit's isolate peak is its rows, its presented object and four frames of
-  the largest at most, 47,887,864.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
+  the largest at most, 47,898,184.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
   whole payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit:
   a turn presents at most 17,984,052 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
   JSON again at most doubles it), S = 7,157,017 being the most JSON a streamed subject presents, the quote
@@ -4779,9 +4866,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   "Suggestions" and "Read bounds"; `test/suggestions-bounds.test.ts`); `test/instance-reads.test.ts`,
   `test/tags.test.ts`, `test/account-reads.test.ts` (rows read stay flat as accounts per domain, accounts known,
   statuses outside the window, and the account's other followers grow). _Enforced (main)_ for scheduled statuses: a page
-  reads ids from the account's own index by id and each scheduled status it admits by key, with at most
-  `MAX_STATUS_MEDIA` of its held media through `media_attachments_scheduled` however many it holds
-  (`test/scheduled-statuses.test.ts` ("shows the first 4 held media by position")), and a publication round reads the
+  reads ids from the account's own index by id and each scheduled status it admits by key, with its held media, at most
+  `MAX_STATUS_MEDIA` (RES-6), through `media_attachments_scheduled` (`test/scheduled-statuses.test.ts` ("shows the
+  first 4 held media by position")), and a publication round reads the
   due ones through the index by time, so neither
   grows with the accounts that schedule or their scheduled statuses (`test/policy-bounds.test.ts` ("however many
   accounts schedule")). _Enforced (main)_ for grouped notifications: a page of groups walks the viewer's notifications
@@ -4930,7 +5017,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   counts, tag history, login, outbound reach (the status, its parent, quoters and followers), the send-time check, the
   personal-inbox fallback, receipts, inbound Flag objects and follow-answer discovery (`test/context-work.test.ts`,
   `test/conversations.test.ts`, `test/featured-tags.test.ts`, `test/tags.test.ts`, `test/oauth.test.ts`,
-  `test/delivery-send-check.test.ts`, `test/inbox-flag.test.ts`, `test/follow-answers.test.ts`). The presented
+  `test/delivery-send-check.test.ts`, `test/inbox-flag.test.ts`, `test/follow-answers.test.ts`). The followers' and
+  poll voters' readers, whole and staged, judge each inbox in their projection alone (`reachInboxSql`): beside main's
+  statements they return main's targets by main's plans, reading no more rows than main's (the staged pages as many),
+  linear in the signer's own followers or voters as main's are and flat as other accounts' grow, under singleton
+  statistics and after `ANALYZE` (`test/reach-inbox-plans.test.ts`). The presented
   accounts' witnesses grow accounts, local_accounts and follows (the profile tabs' also statuses and the condition
   walk's tables) and check the access paths to those three: `a` and `l` by key, a follow by its rowid, no scan of any;
   not the status, field and cache tables the presenter also reads. The `a INDEXED BY` of the owned lists' window
@@ -5001,7 +5092,7 @@ triggers and the schema's CHECKs) allows, and each column that no CHECK bounds a
 account's three counts at 2^53−1, `presentedCountSql`, every account of the fills, nested ones included).
 `test/status-bounds.test.ts` ("the table of maxima") builds every part at its bound and measures what one read takes out
 of SQLite and what it presents, four ways: the escaped-text fill, using characters JSON escapes to six bytes; the same
-with mentioned accounts that have no stored url, so their url is derived; filled with what reads the most bytes for each
+with mentioned accounts that have no stored url, so it is their actor id; filled with what reads the most bytes for each
 bound (ASCII where the bound is in bytes, four-byte characters where it is in characters: a 10,000 character description
 reads 40,000 bytes); and the escaped fill with each poll's choices referencing the status's emoji in the fewest
 characters (37), so each poll shows all of them. Emoji arrays are at their presented bounds (12,288 and 6,144 JSON
@@ -5078,7 +5169,7 @@ logs (5.77 MB escaped, 4.66 MB raw, the fill of the largest SQLite read) are mea
 | Conversation: 12 participants presented, its last status a quote | 8,530,165         | 7,101,024       | 7,157,017         | 2,030     | 8,035 | 85.3%          |
 | Notification group: 8 sample accounts, its status a quote        | 7,906,448         | 6,531,047       | 6,572,780         | 2,014     | 7,192 | 78.4%          |
 | Report: its first status a quote past the 2 MiB allowance        | 7,216,692         | 5,994,590       | 6,015,173         | 1,957     | 6,485 | 71.7%          |
-| An admin.report notification of that report                      | 2,370,097         | 411,542         | 444,352           | 1,074     | 596   | 5.3%           |
+| An admin.report notification of that report                      | 2,374,193         | 411,542         | 444,352           | 1,074     | 596   | 5.3%           |
 | A moderation_warning notification, its local account at bounds   | 134,426           | 294,570         | 364,965           | 8         | 694   | 4.4%           |
 | Its notification group                                           | 134,426           | 294,759         | 365,154           | 8         | 701   | 4.4%           |
 | A filtered favourite of the quote, as include_filtered lists it  | 6,966,503         | 5,532,493       | 5,549,271         | 1,958     | 5,672 | 66.2%          |
@@ -5175,10 +5266,10 @@ time for an imported scheduled_at"); its params, a JSON object of at most `MAX_P
 CHECK of migration `0011_scheduled_statuses`) parsed and presented again, which grow only through numbers, at most
 22/5 of the stored bytes (a four-character number such as `1e20` prints as 21 characters, each with its separator; a
 longer one prints at most 25), so 576,716 bytes; and at most `MAX_STATUS_MEDIA` held attachments (the media read's
-`LIMIT`), each with an 18-digit id, the longest type, its four URLs at 4,098 JSON bytes, every number of its meta and
-focus at the longest a double prints (24 characters, 25 with a sign), a description of 10,000 control characters and a
-54-byte blurhash. The witness, a restored row at those caps (params of `1e20`s, four attachments of a remote account
-with URLs of backslashes), presents 884,345 bytes from 5 rows.
+`LIMIT`, and the cap of `0109_scheduled_media_cap`), each with an 18-digit id, the longest type, its four URLs at 4,098
+JSON bytes, every number of its meta and focus at the longest a double prints (24 characters, 25 with a sign), a
+description of 10,000 control characters and a 54-byte blurhash. The witness, a restored row at those caps (params of
+`1e20`s, four attachments of a remote account with URLs of backslashes), presents 884,345 bytes from 5 rows.
 
 An announcement's maxima are derived from caps, not from fills: each part's conservative JSON is computed by
 `test/announcement-bounds.test.ts` (`derivedAnnouncementMaxima` in `test/announcement-helpers.ts`) from the stored and
@@ -5197,8 +5288,8 @@ rows at their widest columns); past the cap an announcement is shown escaped wit
 derived answer at three times its JSON and one rendering at a time (the budget, the one segment built past it, at
 most 310,064 bytes, and the fallback), the list's heap is at most about 20.1 MB.
 
-Mentions whose url is derived read and present less (the derived fill of `test/presented-maxima.ts`): a derived url
-within the bound is at most the stored bound, and a longer one presents as ''.
+Mentions without a stored url (the derived fill of `test/presented-maxima.ts`) read and present no more than the escaped
+fill: their url is the actor id, else a url derived from it, each within the stored bound, and '' past it.
 
 A Note shows what the Status entity shows: its hashtags and mentions are read through the same projections, its text
 and attachments as stored, and its card as a `Link` where the API shows the card (`statusFacts` in
@@ -5401,7 +5492,7 @@ within half of the Store isolate's 128 MB, and pins them (`STREAM_UNIT_PEAKS` an
 | ------------------------------------------------------ | ----------------------- | ----------------- | ------------------- | -------- |
 | Status (`update`, `status.update`: a boost of a quote) | 19.34 MB                | 17.46 MB          | 2.12 MB             | 38.92 MB |
 | Conversation (its last status a quote)                 | 23.02 MB                | 21.47 MB          | 2.12 MB             | 46.62 MB |
-| Notification (its status, report and warning together) | 25.88 MB                | 19.89 MB          | 2.12 MB             | 47.89 MB |
+| Notification (its status, report and warning together) | 25.89 MB                | 19.89 MB          | 2.12 MB             | 47.90 MB |
 | Announcement                                           | 7.28 MB                 | 0.75 MB           | 2.97 MB             | 11.01 MB |
 
 ### Data and keys (DATA)

@@ -3021,7 +3021,7 @@ describe("the table of maxima (RES-3)", () => {
 
   it.each<[string, Fill]>([
     ["the escaped worst case: the most JSON", "escaped"],
-    ["mentions whose url is derived", "derived"],
+    ["mentions without a stored url, shown by their actor id", "derived"],
     ["the raw worst case: the most bytes read from SQLite", "raw"],
     ["short emoji references in every poll: the most poll emojis", "emoji-poll"],
     ["the most cached emoji: every remote snapshot at its most entries, each cached", "emoji-cache"],

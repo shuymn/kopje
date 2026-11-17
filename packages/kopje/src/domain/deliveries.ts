@@ -1704,13 +1704,13 @@ function step(g: Gathering, c: Cursor): boolean {
     case "voters":
       return stepInboxes(
         g,
-        (limit) => stagedVoters(g.db, kind, signerId, g.plan.pollVoters ?? null, c.afterKey ?? "", limit, BOUND),
+        (limit) => stagedVoters(g.db, kind, signerId, g.plan.pollVoters ?? null, c.afterKey ?? "", limit),
         (row) => (c.afterKey = row.key),
       );
     case "followers":
       return stepInboxes(
         g,
-        (limit) => stagedFollowers(g.db, kind, signerId, c.afterId, g.staging.followBound, limit, BOUND),
+        (limit) => stagedFollowers(g.db, kind, signerId, c.afterId, g.staging.followBound, limit),
         (row) => (c.afterId = row.key),
       );
     case "unexpanded":
