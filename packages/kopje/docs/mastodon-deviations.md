@@ -844,6 +844,11 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   listed by a complete read is deleted (Mastodon keeps it until a `Remove`); a member Kopje does not know is not
   fetched and stays unshown until Kopje learns of the account. A member that is a local account is left out yet;
   tracked by #1589. Accepted, 2026-11-17.
+- A remote collection whose `totalItems` is not a whole number from 0 to 2^31 − 1 (a negative or fractional number,
+  or a string) is not stored; Mastodon 4.7.5 refuses only one that is not a number, and stores the others (a fraction
+  cut to its whole part, a numeric string read as its number). Its language, the first key of its `summaryMap`, is
+  stored only when it is a language code Kopje stores (the ISO 639-1 codes of `collections.language`), and otherwise
+  as none; Mastodon stores any key. Accepted, 2026-11-17.
 - A member's authorization is checked once for each value the owner gives it, in background rounds, four a round, at
   most five attempts, and at most 250 checks begun in a UTC day for one owner's collections (the rest wait for the next
   day); Mastodon verifies it again on every processing of the collection. An authorization larger than 64 KiB or

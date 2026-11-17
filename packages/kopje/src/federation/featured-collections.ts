@@ -28,9 +28,10 @@ function firstEntry(value: unknown): [string, unknown] | undefined {
   return isObject(value) ? Object.entries(value)[0] : undefined;
 }
 
-// original_number_of_items: totalItems, 0 when absent (`|| 0`), null when it is not an integer the column holds.
+// original_number_of_items: totalItems, 0 when absent, null or false (`|| 0`), null when it is not an integer the
+// column holds, which refuses the collection (Collection's numericality validation refuses one that is no number).
 function totalItemsOf(value: unknown): number | null {
-  if (value === undefined || value === null) {
+  if (value === undefined || value === null || value === false) {
     return 0;
   }
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= COLLECTION_TOTAL_ITEMS_MAX

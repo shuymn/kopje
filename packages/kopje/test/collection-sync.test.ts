@@ -172,6 +172,38 @@ describe("the collections part of a sync", () => {
     expect(description.startsWith("a&amp;a&amp;")).toBe(true);
   });
 
+  it("refuses a collection whose totalItems is no count it stores, and keeps an unknown language as none", async () => {
+    const t = await setup();
+    const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
+    const refused = [-1, 1.5, "5", true, 2 ** 31].map((totalItems) => collection(owner, [], { totalItems }));
+    // Absent and false are 0, as Mastodon's `totalItems || 0`.
+    const absent = collection(owner, [], { totalItems: undefined });
+    const falsy = collection(owner, [], { totalItems: false });
+    const largest = collection(owner, [], { totalItems: 2 ** 31 - 1 });
+    const unknown = collection(owner, [], { summaryMap: { zz: "a summary" } });
+    const known = collection(owner, [], { summaryMap: { ja: "a summary" } });
+    serveCollections(t.web, owner, [
+      [...refused, absent, falsy],
+      [largest, unknown, known],
+    ]);
+    await storedOwner(t, owner);
+    await syncAll(t);
+    const rows = await sql<{ uri: string; total_items: number | null; language: string | null }>(
+      t.store,
+      "SELECT uri, total_items, language FROM collections WHERE local = 0 ORDER BY uri",
+    );
+    const expected = [
+      [absent.id, 0, null],
+      [falsy.id, 0, null],
+      [largest.id, 2 ** 31 - 1, null],
+      [unknown.id, 0, null],
+      [known.id, 0, "ja"],
+    ];
+    expect(rows.map((row) => [row.uri, row.total_items, row.language])).toEqual(
+      expected.toSorted(([a], [b]) => (String(a) < String(b) ? -1 : 1)),
+    );
+  });
+
   it("never fetches a member it does not store, and queues its item at the read after the account is stored", async () => {
     const t = await setup();
     const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);

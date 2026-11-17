@@ -34,7 +34,8 @@ import { TREND_LANGUAGES } from "./trend-languages";
 //     description of sanitized HTML within COLLECTION_DESCRIPTION_LENGTH.remote (both cut as Mastodon cuts them; a NUL
 //     refuses the collection, as PostgreSQL refuses it), sensitive and discoverable by Rails' boolean cast (absent:
 //     refused, as Collection's inclusion validations refuse it), the language a supported locale or none, the topic a
-//     hashtag Tag would take (else refused), url and uri within the stored bounds.
+//     hashtag Tag would take (else refused), totalItems a count the column holds (else refused), url and uri within
+//     the stored bounds.
 //   - An item (#1589's D22): its id on its collection's origin, its featuredObject a remote account (an item naming a
 //     local account is #1589's PR 6 and is not stored), its featureAuthorization on the featuredObject's origin; at
 //     most COLLECTION_MAX_ITEMS live in a collection and one item a member. Its revision is its member (account_id, or
@@ -55,8 +56,8 @@ export type FeaturedItemInput = { id: string; object: string; authorization: str
 // An embedded FeaturedCollection as the Worker read it, each value as ProcessFeaturedCollectionService reads it:
 // attributedTo, name and the topic's name when strings, the summary (summaryMap's first value, else summary, else ''),
 // the language (summaryMap's first key), sensitive and discoverable by Rails' boolean cast (null for nil), totalItems
-// (0 when absent, null when not an integer the column holds), url (url_to_href's), and its first MAX_REMOTE_ITEMS
-// orderedItems, null where one is given only as a URI or cannot be read.
+// (0 when absent, null when not an integer the column holds, which refuses the collection), url (url_to_href's), and
+// its first MAX_REMOTE_ITEMS orderedItems, null where one is given only as a URI or cannot be read.
 export type FeaturedCollectionInput = {
   id: string;
   attributedTo: string | null;
@@ -94,9 +95,19 @@ type Values = {
   total_items: number | null;
 };
 
-// The columns `input` gives its collection, or null when Mastodon would not store it.
+// The columns `input` gives its collection, or null when Mastodon would not store it, or Kopje cannot store its
+// totalItems (docs/mastodon-deviations.md, "Collections"). Its language is kept only when it is one the column holds.
 function collectionValues(input: FeaturedCollectionInput): Values | null {
-  if (input.name === null || input.name.includes("\0") || input.summary.includes("\0")) {
+  const total = input.totalItems;
+  if (
+    input.name === null ||
+    input.name.includes("\0") ||
+    input.summary.includes("\0") ||
+    total === null ||
+    !Number.isInteger(total) ||
+    total < 0 ||
+    total > COLLECTION_TOTAL_ITEMS_MAX
+  ) {
     return null;
   }
   const name = storedText(cutCodePoints(input.name, COLLECTION_NAME_LENGTH.remote));
@@ -115,7 +126,6 @@ function collectionValues(input: FeaturedCollectionInput): Values | null {
       COLLECTION_DESCRIPTION_LENGTH.remote,
     ),
   );
-  const total = input.totalItems;
   return {
     name,
     description,
@@ -124,8 +134,7 @@ function collectionValues(input: FeaturedCollectionInput): Values | null {
     discoverable: input.discoverable ? 1 : 0,
     tag,
     url: storableUrl(input.url, COLLECTION_URL_BYTES) ? input.url : null,
-    total_items:
-      total !== null && Number.isInteger(total) && total >= 0 && total <= COLLECTION_TOTAL_ITEMS_MAX ? total : null,
+    total_items: total,
   };
 }
 
