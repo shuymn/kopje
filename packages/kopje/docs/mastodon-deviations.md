@@ -996,16 +996,17 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/peers/search
 
 OAuth (`/oauth/authorize`, `/oauth/token`, `/oauth/revoke`, `/oauth/token/info`, `/oauth/introspect`):
 
-- A scalar parameter of `/oauth/token`, `/oauth/revoke` or `/oauth/introspect` sent more than once, query and body
-  together (`code=a&code=b`), answers 400 `invalid_request` (RFC 6749 §3.2; AUTH-3 in
-  [threat-model.md](threat-model.md)); Mastodon's Doorkeeper reads the last of them, as Rack assigns a repeated name,
-  and goes on with it. Accepted, 2026-11-18.
+- A scalar parameter of `/oauth/token` or `/oauth/revoke` sent more than once, in the query, in the body or in both
+  (`code=a&code=b`), answers 400 `invalid_request` (RFC 6749 §3.2; AUTH-3 in [threat-model.md](threat-model.md)), and
+  so does one sent more than once in the body of `/oauth/introspect`; Mastodon's Doorkeeper reads one of them (the
+  last of a source, the query's over the body's) and goes on with it. Introspection reads no query (below), so a query
+  value beside a body one (`?token=a` with `token=b`) is no repeat there and the body's is read, where Mastodon reads
+  the query's. Accepted, 2026-11-18.
 - A scope string (a registration's `scopes`, an authorization's or a token request's `scope`) is split at
   JavaScript's white space and at a literal `+` (`%2B`), and a registration's `redirect_uris` at JavaScript's white
   space, so U+00A0, U+3000 or U+FEFF between two values separates them; Doorkeeper splits each at ASCII white space
   only (Ruby's `String#split`: `OAuth::Scopes.from_string`, its redirect URI validator), where such a string names an
   unknown scope or an invalid URI. Accepted, 2026-11-18.
-
 - `response_mode` `query`, `fragment` and `form_post` are accepted and every answer goes in the query, as Mastodon's
   rendered consent form answers them: the form carries no mode. A decision posted directly with `fragment` or
   `form_post` is also answered in the query, where Doorkeeper would honour the mode, as Mastodon does when it skips the
@@ -1386,7 +1387,8 @@ Request parameters:
   (`CURSOR` in `src/mastodon/pagination.ts`); any other value is ignored, as if absent, and a 19-digit value past a
   signed 64-bit integer is a cursor like any other, with no range refusal of its own. Mastodon casts it on each path:
   a list it reads from its database by ActiveModel's integer type (`Paginable`, so `5abc` reads as 5), the home and
-  list timelines by `String#to_i` (`Feed#get`, so `abc` reads as 0, an empty page, and any length is read whole).
+  list timelines by `String#to_i` (`Feed#get`, so `max_id=abc` reads as 0, an empty page, and any length is read
+  whole).
   `test/pagination-params.test.ts` ("cursors"). Accepted, 2026-11-18.
 - The body of a `GET` (or `HEAD`) request is not read; Mastodon reads a `GET`'s JSON body as its parameters too, so
   `{"limit":1}` sent with a `GET` of a list limits its page there. Accepted, 2026-11-18.
@@ -1398,9 +1400,10 @@ Request parameters:
   surrogate no low one follows, and Rails a lone low one's invalid UTF-8) and 500 for a lone low surrogate only in a
   key, as for an inbox body ("Reading inbound activities", below). Accepted, 2026-11-18.
 - Text holding a NUL is stored as sent: a list's title, a filter's title, a keyword, a v1 filter's phrase, a report's
-  comment and an account note. A collection's name, whose NULs are dropped before its presence is judged, of NULs
-  alone answers 422 `Validation failed: Name can't be blank`. Mastodon answers 500 to each, as PostgreSQL refuses a
-  string with a null byte. Accepted, 2026-11-18.
+  comment and an account note, but for an account note that starts with a NUL (`{"comment":"\u0000"}`), which fails
+  the Store's length check, as SQLite's `length()` stops at the first NUL, and answers 500 (#1767). A collection's
+  name, whose NULs are dropped before its presence is judged, of NULs alone answers 422 `Validation failed: Name can't
+  be blank`. Mastodon answers 500 to each, as PostgreSQL refuses a string with a null byte. Accepted, 2026-11-18.
 - A report's `category` that is not blank and names no category (U+FEFF, an emoji, a NUL) answers 422 `Validation
   failed: Category is not included in the list`; Mastodon answers 500, as assigning a value its `category` enum does
   not hold raises `ArgumentError`. Accepted, 2026-11-18.
@@ -1506,7 +1509,9 @@ Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; th
 
 - `instance_media_attachments` is always 0 bytes (`human_value` `0 Bytes`): Kopje does not count its cache of remote
   attachments' files, which `kopje.remote_media.usage` reports for the whole cache.
-- An absent or empty `domain` counts 0; Mastodon's total then counts the local accounts. A `domain` is trimmed of
+- An absent, null or empty `domain` counts 0. Mastodon's totals (`Account.where(domain: params[:domain])`) count the
+  local accounts, and their follows, statuses, reports and media, for an absent or null one, and nothing for an empty
+  one (`domain = ''`). A `domain` is trimmed of
   JavaScript's white space and normalized as a domain block's (lowercase, punycode); Mastodon reads it as sent
   (`Account.where(domain: params[:domain])`), so a domain written in capitals or in Unicode counts no account there.
 - `include_subdomains` is read as Rails casts a boolean: empty, `0`, `f`, `F`, `false`, `FALSE`, `off` and `OFF` are
