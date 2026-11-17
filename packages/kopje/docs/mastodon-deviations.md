@@ -13,20 +13,19 @@ Other documents point here rather than repeat the release.
   test), the request parameters each route reads (`test/mastodon-params.test.ts`), and the fields of the main entities
   (`test-node/mastodon-entities.test.ts`). Their fixtures carry the release in their names and their `mastodon` field,
   and `test-node/mastodon-reference.test.ts` checks that they name the release this page does.
-- **What clients are told.** `/api/v2/instance` advertises `version` 4.5.0 and `api_versions.mastodon` 9, and
+- **What clients are told.** `/api/v2/instance` advertises `version` 4.6.1 and `api_versions.mastodon` 11, and
   `/api/v1/instance` the same `version` (`src/mastodon/instance.ts`). Clients switch features on by these values, so
   they name the API level whose features Kopje serves, not the reference patch, Kopje's own release or its federation.
-  They rise only when every feature a client switches on at the higher value is served. `version` stays 4.5.0, the
-  release of `api_versions.mastodon` 7: no Mastodon release advertised 8 or 9 (4.6.0 advertised 10), and a 4.6
-  `version` would claim collections. Mastodon v4.7.5 advertises `api_versions.mastodon` 11. Each step signals a
-  feature:
-  - 8, `exclude_direct` (`mastodon#37763`), served with the departures under "Paged status lists with request
-    conditions"; from 8 the official Android and iOS apps also edit the profile through `/api/v1/profile`, served;
-  - 9, the image descriptions of `/api/v1/profile` (`mastodon#38221`), served;
-  - 10, collections under `/api/v1` (`mastodon#39210`), not yet served for remote accounts: Kopje stores only local
-    collections, so a client shows a remote account as having none (#1589);
-  - 11, the image descriptions of `update_credentials` (`mastodon#39574`), served, but raised together with 10, since
-    clients switch collections on at 10 or above; `version` then becomes 4.6.1, the first release to advertise 11.
+  They rise only when every feature a client switches on at the higher value is served. Mastodon v4.7.5 advertises
+  `api_versions.mastodon` 11 too; `version` is 4.6.1, the first release to advertise 11 (4.6.0 advertised 10), and no
+  client switches on by it a 4.6 or 4.7 feature Kopje does not serve. Each step past 7 signals a feature, all served:
+  - 8, `exclude_direct` (`mastodon#37763`), with the departures under "Paged status lists with request conditions";
+    from 8 the official Android and iOS apps also edit the profile through `/api/v1/profile`;
+  - 9, the image descriptions of `/api/v1/profile` (`mastodon#38221`);
+  - 10, collections under `/api/v1` (`mastodon#39210`), a remote account's read from its server, with the departures
+    and gaps under "Collections": clients list any account's collections, open them and let a member revoke its item;
+  - 11, the image descriptions of `update_credentials` (`mastodon#39574`); from 11 Tuba also edits the profile's
+    display settings through `/api/v1/profile`.
 - **Streaming.** Kopje serves the streaming API of the reference release over WebSocket only (MD-8), with bounds on
   the subscriptions a socket and an account hold, past which a subscription is refused (`src/mastodon/streaming.ts`,
   `src/stream-hub.ts`; threat model DATA-5, VIS-26, RES-6, RES-7). An event whose payload, encoded as the streaming
@@ -814,8 +813,16 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
 - Creating an 11th collection answers Mastodon's 422 with the message "Collections are too many, no more than 10 are
   allowed", where Mastodon's message is a missing-translation text (it has no English text for that error). Accepted,
   2026-11-16.
-- Only local accounts can be featured yet: a remote account answers 403, as one that refuses, and its
-  `feature_approval` is `[]`, `[]` and `missing`. Tracked by #1589.
+- Only local accounts can be featured in a local collection yet: adding a remote account answers 403, as one that
+  refuses, and its `feature_approval` is `[]`, `[]` and `missing`, Mastodon's answer for a remote account whose
+  `canFeature` it has not read. Clients offer no add action for `current_user: missing` (Phanpy hides it), so a remote
+  account looks like one that cannot be featured. Tracked by #1589.
+- A local account is not featured in a remote collection yet: Kopje refuses the `FeatureRequest` a Mastodon owner sends
+  (it carries no `actor`) and answers none, so that owner's server keeps the item pending, which only the owner sees.
+  The account's `GET /api/v1/accounts/:id/in_collections` lists no remote collection, it gets no `added_to_collection`
+  from one, and a client has no item of it there to revoke. Tracked by #1589.
+- Statuses have no `tagged_collections` (Mastodon: the collections a post links). Clients read the field as optional,
+  so a post shows no linked collection. Tracked by #1589.
 - An account's `feature_approval.current_user` is `denied` when either account blocks the other or the account is
   unavailable, where Mastodon may answer `automatic` (or `manual`) and then refuse the add; every other answer is
   Mastodon's. The instance's contact account answers `denied` (no viewer), where Mastodon's cached instance answer
