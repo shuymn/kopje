@@ -1167,12 +1167,13 @@ function retraction(type: unknown, prefixes: Prefixes): boolean {
   return name !== undefined && RETRACTIONS.has(name);
 }
 
-// A retraction's actor as a one-element array of a string or a node with an id, read as its element: Mastodon tells a
-// relay by the actor of the compaction, which writes the array as its element (process_activity_service.rb
-// different_actor?), and applies the activity as its signer's (Activity.factory with the signer), whatever the patch
-// puts back. Two elements, or a null, are left as they are, so the envelope finds no actor.
+// A retraction's actor as an array of one string or one node with an id, in arrays in it or not, read as that element:
+// JSON-LD's expansion flattens an array in another (an empty one leaves nothing), Mastodon tells a relay by the actor
+// of the compaction, which writes the array as its element (process_activity_service.rb different_actor?), and applies
+// the activity as its signer's (Activity.factory with the signer), whatever the patch puts back. Two elements, or a
+// null, are left as they are, so the envelope finds no actor.
 function actorAsCompacted(json: Json): Json {
-  const [actor, ...rest] = Array.isArray(json.actor) ? (json.actor as unknown[]) : [];
+  const [actor, ...rest] = Array.isArray(json.actor) ? (json.actor as unknown[]).flat(Infinity) : [];
   const single = rest.length === 0 && (typeof actor === "string" || (isObject(actor) && typeof actor.id === "string"));
   return single ? { ...json, actor } : json;
 }

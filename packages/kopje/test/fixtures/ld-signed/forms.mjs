@@ -931,6 +931,10 @@ const forms = {
   "Undo of a block, both typed as absolute IRIs, with its block's object as a one-element array": absoluteUndo({
     object: { ...BLOCK, type: `${AS}#Block`, object: [ALICE] },
   }),
+  // The actor as an array in an array, which the compaction writes as its IRI.
+  "Undo of a block, both typed as absolute IRIs, with its actor as an array in an array": absoluteUndo({
+    actor: [[BOB]],
+  }),
 };
 
 // The same bodies without a signature: read as received by both.
