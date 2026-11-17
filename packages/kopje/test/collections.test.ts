@@ -825,8 +825,7 @@ describe("collections: R45", () => {
     const hiding = await seedAccount(h.store, { username: "hiding" });
     const remote = await remoteAccount(h.store, "far");
     await discoverable(h, locked, remote);
-    // A remote account whose canFeature approves the public automatically: refused while Kopje sends no FeatureRequest.
-    await sql(h.store, "UPDATE accounts SET feature_policy = ? WHERE id = ?", 2 << 16, remote);
+    // A remote account whose actor states no canFeature (missing) is refused.
     for (const id of [locked, hiding, remote]) {
       await refused(id);
     }
@@ -846,6 +845,11 @@ describe("collections: R45", () => {
     expect((await add(locked)).status).toBe(200);
     // The owner itself, while discoverable.
     expect((await add(alice.id)).status).toBe(200);
+    // A remote account whose canFeature approves the public automatically: added pending, to be asked
+    // (test/federation-feature-requests.test.ts).
+    await sql(h.store, "UPDATE accounts SET feature_policy = ? WHERE id = ?", 2 << 16, remote);
+    const asked = await add(remote);
+    expect([asked.status, asked.body.collection_item.state]).toEqual([200, "pending"]);
     await sql(h.store, "UPDATE accounts SET discoverable = 0 WHERE id = ?", alice.id);
     expect((await create(h, alice, { account_ids: [alice.id] })).status).toBe(403);
   });

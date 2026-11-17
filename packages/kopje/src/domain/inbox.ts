@@ -60,6 +60,7 @@ import {
   supersedeEarlier,
 } from "./deliveries";
 import { clearSenderHost } from "./delivery-hosts";
+import { acceptFeatureRequest, ourFeatureRequest, rejectFeatureRequest } from "./feature-requests";
 import { recountFeatured } from "./featured-tags";
 import { type FetchPreparation, fetchPreparation } from "./fetch-preparation";
 import { type FollowerSigner, localFollower } from "./follower-signer";
@@ -856,6 +857,12 @@ const accept: Handler<"Accept"> = (db, actor, activity, { now }) => {
       ? applied("quote-accepted")
       : ignored("quote-unchanged");
   }
+  // Then our FeatureRequest by its id, before an embedded Follow (accept.rb:4-13, feature-requests.ts).
+  const requested = named === undefined ? ourFeatureRequest(db, actor, activity.object.id) : undefined;
+  if (requested !== undefined) {
+    const outcome = acceptFeatureRequest(db, actor, requested, activity.result ?? null, now);
+    return outcome === null ? ignored("feature-unchanged") : applied(`feature-${outcome}`);
+  }
   const edge = named ?? ourFollowByPair(db, actor, activity.object);
   if (edge === null || edge === "not-target") {
     return ignored(edge ?? "unknown-follow");
@@ -873,6 +880,11 @@ const reject: Handler<"Reject"> = (db, actor, activity, { now }) => {
   const named = ourFollowById(db, actor, activity.object);
   if (named === undefined && isQuoteAnswer(activity.object)) {
     return rejectOurQuote(db, actor, activity.object.id, now) ? applied("quote-rejected") : ignored("quote-unchanged");
+  }
+  // Then our FeatureRequest by its id, before an embedded Follow (reject.rb:4-14, feature-requests.ts).
+  const requested = named === undefined ? ourFeatureRequest(db, actor, activity.object.id) : undefined;
+  if (requested !== undefined) {
+    return rejectFeatureRequest(db, requested, now) ? applied("feature-rejected") : ignored("feature-unchanged");
   }
   const edge = named ?? ourFollowByPair(db, actor, activity.object, true);
   if (edge === null || edge === "not-target") {
@@ -2388,9 +2400,11 @@ const deleteObject: Handler<"Delete"> = (db, actor, activity, { now }) => {
   if (!sameOrigin(activity.object, actor.uri)) {
     return ignored("foreign-object");
   }
-  // A member's Delete of its feature authorization revokes its item (#1589, remote-featured-collections.ts).
-  if (revokeFeatureAuthorization(db, actor, activity.object, activity.feature ?? null, now)) {
-    return applied("feature-revoked");
+  // A member's Delete of its feature authorization revokes its item, or is recorded for its coming answer (#1589,
+  // remote-featured-collections.ts).
+  const feature = revokeFeatureAuthorization(db, actor, activity.object, activity.feature ?? null, now);
+  if (feature !== null) {
+    return applied(`feature-${feature}`);
   }
   const named = namedStatus(db, actor, activity.object, activity.atomUri, false);
   if (named !== undefined && named.status.account_id !== actor.id) {
@@ -2665,8 +2679,9 @@ const relayedDelete: Handler<"RelayedDelete"> = (db, actor, activity, input) => 
   // RevokeCollectionItemService distributes it so): applied as the member's own, read from the proven body only.
   if (activity.proven && activity.body !== undefined) {
     const feature = provenFeature(activity.body);
-    if (feature !== null && revokeFeatureAuthorization(db, actor, activity.object, feature, now)) {
-      return applied("feature-revoked");
+    const outcome = feature === null ? null : revokeFeatureAuthorization(db, actor, activity.object, feature, now);
+    if (outcome !== null) {
+      return applied(`feature-${outcome}`);
     }
   }
   const status = namedStatus(db, actor, activity.object, activity.atomUri, false)?.status;

@@ -1,12 +1,16 @@
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { COLLECTION_CHECK_ATTEMPTS, COLLECTION_ITEM_STATES } from "../platform/stored-bounds";
+import { localCollectionUri, recordItemAdd } from "./collection-documents";
 import { writeOperation } from "./operation";
 
 // Checks of remote members' feature authorizations (#1589's D22, Mastodon 4.7.5's ActivityPub::VerifyFeaturedItemService):
 // an item of a remote collection is accepted only once its member's server serves an authorization naming the
 // collection and the member. Kopje checks an item once per revision (remote-featured-collections.ts queues it when the
-// owner first lists it or changes it), where Mastodon verifies it again on every processing of the collection.
+// owner first lists it or changes it), where Mastodon verifies it again on every processing of the collection. A local
+// collection's item is checked the same way when its member's Accept followed a deletion of another of its
+// authorizations (D23, feature-requests.ts), against the collection's own id: a match also sends the item's Add to the
+// collection's reach, and an authorization gone revokes it (the member answered, then withdrew).
 //
 // The queue is durable in the item's row (check_due_at, check_attempts, check_token, migration 0103_collections) and
 // run by the Worker's job rounds (jobs/queue.ts, federation/collection-checks.ts) apart from the collection syncs, so no
@@ -19,7 +23,7 @@ import { writeOperation } from "./operation";
 //     migration 0113_featured_collection_syncs). The walk stops at the round's last claim, so each round reads at most
 //     ITEM_CHECK_CANDIDATES rows and every row it reads moves forward.
 //   - completeItemChecks applies a round's outcomes, each only while its item is pending and holds the token its claim
-//     set (a revision change, a revocation and a later claim each replace or clear it): a match accepts the item with
+//     set (a revision change, a revocation, a Reject and a later claim each replace or clear it): a match accepts the item with
 //     the candidate as its verified authorization, unless another row of the same member holds that authorization
 //     (only the member's server can have said so), which ends the check as a mismatch; a final refusal (a 4xx other
 //     than 401, 408 and 429) or a document that is no object rejects it; a mismatch or an unsupported document (a
@@ -55,7 +59,9 @@ type Candidate = {
   candidate: string | null;
   owner: string | null;
   local: number | null;
+  collection_id: string;
   collection: string | null;
+  owner_uri: string | null;
   member: string | null;
   member_local: number | null;
 };
@@ -63,13 +69,23 @@ type Candidate = {
 // The due items, oldest due first, with what a claim reads of each by key: its collection and that collection's owner,
 // and its member. ?1 now, ?2 the most read.
 const DUE = `SELECT i.id, i.check_attempts AS attempts, i.candidate_approval_uri AS candidate, c.account_id AS owner,
-		c.local, c.uri AS collection, a.uri AS member, a.domain IS NULL AS member_local
+		c.local, i.collection_id, c.uri AS collection, o.uri AS owner_uri, a.uri AS member, a.domain IS NULL AS member_local
 	FROM (SELECT id FROM collection_items INDEXED BY collection_items_check
 		WHERE check_due_at >= 0 AND check_due_at <= ?1 ORDER BY check_due_at, id LIMIT ?2) w
 	CROSS JOIN collection_items i INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} ON i.id = w.id
 	LEFT JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = i.collection_id
+	LEFT JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id
 	LEFT JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = i.account_id
 	ORDER BY i.check_due_at, i.id`;
+
+// The id of the collection a candidate's authorization must name: a remote collection's uri, a local one's as Kopje
+// writes it; null for neither.
+function checkedCollection(row: Candidate): string | null {
+  if (row.local === 1) {
+    return row.owner_uri === null ? null : localCollectionUri(row.owner_uri, row.collection_id);
+  }
+  return row.local === 0 ? row.collection : null;
+}
 
 // Whether an item is due at `now` (one seek of collection_items_check).
 function checksDue(db: Db, now: number): boolean {
@@ -97,8 +113,8 @@ function endCheck(db: Db, id: string): void {
 }
 
 // The claims of a round (see the module's header): at most ITEM_CHECKS_PER_ROUND, and whether another item is due now.
-// A queued item this release does not check (a local collection's, #1589's PR 4; a local member's, PR 6; one without
-// its member's account or its candidate, which only an import writes) ends its check without a fetch.
+// A queued item this release does not check (a local member's, #1589's PR 6; one without its collection, its member's
+// account or its candidate, which only an import writes) ends its check without a fetch.
 export const claimItemChecks = writeOperation<{ now: number }, { checks: ItemCheck[]; pending: boolean }>(
   (db, { now }) => {
     const today = dayOf(now);
@@ -107,10 +123,10 @@ export const claimItemChecks = writeOperation<{ now: number }, { checks: ItemChe
       if (checks.length >= ITEM_CHECKS_PER_ROUND) {
         break;
       }
+      const collection = checkedCollection(row);
       if (
         row.owner === null ||
-        row.local !== 0 ||
-        row.collection === null ||
+        collection === null ||
         row.member === null ||
         row.member_local !== 0 ||
         row.candidate === null ||
@@ -156,7 +172,7 @@ export const claimItemChecks = writeOperation<{ now: number }, { checks: ItemChe
         item: row.id,
         token,
         authorization: row.candidate,
-        collection: row.collection,
+        collection,
         member: row.member,
       });
     }
@@ -170,14 +186,22 @@ export type ItemCheckResult = { item: string; token: string; outcome: ItemCheckO
 // The item of a completion while its claim holds it: pending, with the claim's token. ?1 the item, ?2 the token.
 const CLAIMED = `WHERE id = ?1 AND check_token = ?2 AND state = ${COLLECTION_ITEM_STATES.pending}`;
 
-// A round's outcomes (see the module's header), each applied only under its claim's token to a pending item. Returns
-// whether an item is due now.
+// A round's outcomes (see the module's header), each applied only under its claim's token to a pending item; a local
+// collection's item that matches has its Add sent, and one whose authorization is gone is revoked. Returns whether an
+// item is due now.
 export const completeItemChecks = writeOperation<{ now: number; results: ItemCheckResult[] }, boolean>(
   (db, { now, results }) => {
     const at = new Date(now).toISOString();
     for (const { item, token, outcome } of results) {
-      const row = db.first<{ account_id: string | null; candidate: string | null; attempts: number }>(
-        `SELECT account_id, candidate_approval_uri AS candidate, check_attempts AS attempts
+      const row = db.first<{
+        account_id: string | null;
+        candidate: string | null;
+        attempts: number;
+        collection: string;
+        local: number | null;
+      }>(
+        `SELECT account_id, candidate_approval_uri AS candidate, check_attempts AS attempts, collection_id AS collection,
+					(SELECT local FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX} WHERE c.id = collection_id) AS local
 				FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} ${CLAIMED}`,
         item,
         token,
@@ -185,6 +209,7 @@ export const completeItemChecks = writeOperation<{ now: number; results: ItemChe
       if (row === undefined) {
         continue;
       }
+      const local = row.local === 1;
       if (outcome === "transient") {
         db.run(
           `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} SET check_token = NULL, check_due_at = ?3
@@ -196,11 +221,12 @@ export const completeItemChecks = writeOperation<{ now: number; results: ItemChe
       } else if (outcome === "gone") {
         db.run(
           `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
-						SET state = ${COLLECTION_ITEM_STATES.rejected}, check_token = NULL, check_due_at = NULL, updated_at = ?3
+						SET state = ?4, check_token = NULL, check_due_at = NULL, updated_at = ?3
 					${CLAIMED}`,
           item,
           token,
           at,
+          local ? COLLECTION_ITEM_STATES.revoked : COLLECTION_ITEM_STATES.rejected,
         );
       } else if (
         outcome === "match" &&
@@ -223,6 +249,9 @@ export const completeItemChecks = writeOperation<{ now: number; results: ItemChe
           token,
           at,
         );
+        if (local) {
+          recordItemAdd(db, { id: item, collection: row.collection }, now);
+        }
       } else {
         db.run(
           `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} SET check_token = NULL, check_due_at = NULL

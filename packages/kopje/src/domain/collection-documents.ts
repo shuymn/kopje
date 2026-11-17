@@ -50,6 +50,8 @@ const FEATURED_COLLECTION_CONTEXT = [
 
 // The context of a document or activity holding a FeaturedItem (FeaturedItemSerializer's featured_collections).
 const FEATURED_ITEM_CONTEXT = [AS_CONTEXT, FEATURED_COLLECTIONS_TERMS] as const;
+// context_helper.rb's feature_requests extension, which ActivityPub::FeatureRequestSerializer names.
+const FEATURE_REQUEST_CONTEXT = [AS_CONTEXT, { FeatureRequest: `${FEP_7AA9}FeatureRequest` }] as const;
 
 // FeatureAuthorizationSerializer's feature_authorizations extension.
 const FEATURE_AUTHORIZATION_CONTEXT = [
@@ -123,7 +125,7 @@ function featuredCollectionsUri(actorUri: string): string {
   return `${actorUri}/featured_collections`;
 }
 
-function localCollectionUri(ownerUri: string, collectionId: string): string {
+export function localCollectionUri(ownerUri: string, collectionId: string): string {
   return `${ownerUri}/collections/${collectionId}`;
 }
 
@@ -581,6 +583,52 @@ export function recordItemAdd(db: Db, item: { id: string; collection: string }, 
   if (reach !== null && object !== null) {
     deliver(db, reach, now, { type: "Add", context: FEATURED_ITEM_CONTEXT, target: reach.uri, object });
   }
+}
+
+// AddAccountToCollectionService#distribute_feature_request_activity, CreateCollectionService's for each remote member
+// (ActivityPub::FeatureRequestWorker, FeatureRequestSerializer): the request for the remote member's consent to its
+// pending item `item` of a local collection, its id the item's activity_uri, which the member's Accept or Reject names
+// (feature-requests.ts). Signed by the owner and sent to the member's personal inbox alone (inbox_url). Mastodon's
+// carries no actor; Kopje's names the owner, its signer, which Mastodon's receiver takes as it is
+// (process_activity_service.rb:83-84). Nothing for any other item.
+export function recordFeatureRequest(db: Db, item: string, now: number): void {
+  const row = db.first<{
+    request: string;
+    collection: string;
+    owner: string;
+    owner_uri: string;
+    member: string;
+    member_uri: string;
+  }>(
+    `SELECT i.activity_uri AS request, i.collection_id AS collection, c.account_id AS owner, o.uri AS owner_uri,
+				i.account_id AS member, m.uri AS member_uri
+			FROM collection_items i INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
+			CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = i.collection_id
+			CROSS JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id
+			CROSS JOIN accounts m INDEXED BY ${ACCOUNTS_ID_INDEX} ON m.id = i.account_id
+		WHERE i.id = ? AND i.state = 0 AND i.activity_uri IS NOT NULL AND c.local = 1 AND m.domain IS NOT NULL`,
+    item,
+  );
+  if (row === undefined) {
+    return;
+  }
+  recordOutbound(
+    db,
+    row.owner,
+    {
+      activity: {
+        "@context": FEATURE_REQUEST_CONTEXT,
+        id: row.request,
+        type: "FeatureRequest",
+        actor: row.owner_uri,
+        object: row.member_uri,
+        instrument: localCollectionUri(row.owner_uri, row.collection),
+      },
+      audience: { followers: false, accounts: [row.member] },
+    },
+    now,
+    { personalInbox: true },
+  );
 }
 
 // DeleteCollectionItemService: the item `id` of a local collection removed by its id, whatever its state, which the

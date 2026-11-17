@@ -813,9 +813,13 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
 - Creating an 11th collection answers Mastodon's 422 with the message "Collections are too many, no more than 10 are
   allowed", where Mastodon's message is a missing-translation text (it has no English text for that error). Accepted,
   2026-11-16.
-- Only local accounts can be featured in a local collection yet: adding a remote account answers 403, as one that
-  refuses, though its `feature_approval` presents the `canFeature` its actor document states, as Mastodon's does, so
-  a client may offer to add it. Tracked by #1589.
+- An `Accept` of a feature request changes only a pending membership; a late one after a removal, rejection or
+  revocation is ignored, where Mastodon marks the item accepted whatever its state. A member's `Delete` of its
+  authorization that arrives before the `Accept` naming it is kept, and that `Accept` then ends the membership as
+  revoked, where Mastodon ignores the `Delete` and accepts; an `Accept` that follows a deletion of another
+  authorization waits for a check of its own against the member's server before the membership is shown. Kopje's
+  `FeatureRequest` names the owner as its `actor`, where Mastodon's carries none, and the removal of a remote member
+  still pending sends no `Remove`, where Mastodon sends one that no server holds an item for. Accepted, 2026-11-18.
 - A local account is not featured in a remote collection yet: Kopje refuses the `FeatureRequest` a Mastodon owner sends
   (it carries no `actor`) and answers none, so that owner's server keeps the item pending, which only the owner sees.
   The account's `GET /api/v1/accounts/:id/in_collections` lists no remote collection, it gets no `added_to_collection`

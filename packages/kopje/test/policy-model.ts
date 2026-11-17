@@ -524,8 +524,7 @@ export class PolicyModel {
     return locked(x) && x !== viewer && !this.follows(viewer, x) ? "denied" : "automatic";
   }
 
-  // R45: the owner may feature the member when the member's answer to it is automatic or manual, and the member is
-  // local (no FeatureRequest is sent yet).
+  // R45: the owner may feature the member when the member's answer to it is automatic or manual.
   mayFeature(
     owner: number,
     member: number,
@@ -533,10 +532,7 @@ export class PolicyModel {
     locked: (x: number) => boolean,
     policy: (x: number) => number,
   ): boolean {
-    return (
-      this.account(member).local &&
-      ["automatic", "manual"].includes(this.featureApproval(member, owner, discoverable, locked, policy))
-    );
+    return ["automatic", "manual"].includes(this.featureApproval(member, owner, discoverable, locked, policy));
   }
 
   // R45: an item lists its collection among those featuring the viewer when it is the viewer's, in any state, and the

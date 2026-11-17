@@ -1394,11 +1394,12 @@ export function featureApprovalReads(
 }
 
 // R45 (AccountPolicy#feature?, Account#featureable_by?): whether `owner` may feature the account `member`: the answer
-// to the owner is 'automatic' or 'manual' (featureApprovalSql). A remote member is refused, as Kopje sends no
-// FeatureRequest yet (docs/mastodon-deviations.md, "Collections").
+// to the owner is 'automatic' or 'manual' (featureApprovalSql). A remote member whose stored policy is 0 ('missing') or
+// names no one the owner is ('unknown', 'denied') is refused; one that consents is asked by a FeatureRequest
+// (collections.ts insertItem).
 export function mayFeatureSql(owner: string, member: string): string {
   return `coalesce((SELECT ${featureApprovalSql("pfm", owner)} FROM main.accounts pfm INDEXED BY ${ACCOUNTS_ID_INDEX}
-		WHERE pfm.id = ${member} AND pfm.domain IS NULL) IN ('automatic', 'manual'), 0)`;
+		WHERE pfm.id = ${member}) IN ('automatic', 'manual'), 0)`;
 }
 
 // R45 (Account#featured_in_collections, AccountPolicy#index_featured_in_collections?): whether the item `i` of the
