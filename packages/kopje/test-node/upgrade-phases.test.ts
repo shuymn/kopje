@@ -4,71 +4,82 @@ import { describe, expect, it } from "vitest";
 
 import fixture from "../test/fixtures/upgrade-phases.json" with { type: "json" };
 
-// docs/upgrade.md, "What the Store serves in each phase", states test/fixtures/upgrade-phases.json, which
-// test/upgrade-phases.test.ts holds the Store's kernel to: its headings in order, a row per phase in the fixture's
-// order under the phase's label, a cell under each heading, and each cell as the phase's admissions and health give it;
-// and no two phases report the same health, so health tells the row. The passages on `limits.cpu_ms` (docs/upgrade.md, docs/setup.md and the template's wrangler.jsonc) describe the
-// fixture's two stopped phases in the same words.
+// docs/upgrade.md, "What the Store serves in each state", states test/fixtures/upgrade-phases.json, which
+// test/upgrade-phases.test.ts holds the Store's kernel to over every state its health can report. Its table of rules
+// has the fixture's rules in order, and its table of examples the fixture's examples in order: the headings, a cell
+// under each, and each cell as the fixture gives it. The passages on `limits.cpu_ms` (docs/upgrade.md, docs/setup.md
+// and the template's wrangler.jsonc) describe the two stopped examples in the words of the rules they match.
 
 const KINDS = ["read", "session", "write", "media-delete", "media-rebuild"] as const;
 type Kind = (typeof KINDS)[number];
-type Health = { schema: string; readonly: boolean; upgrading: boolean; hold: string | null };
-type Durable = { id: string; label: string; waits: false; refusals: Record<Kind, string | null>; health: Health };
-type Phase = Durable | { id: string; label: string; waits: true };
+type Rule = {
+  schema: string;
+  hold: "any" | "set" | null;
+  upgrading: "any" | boolean;
+  refusals: Record<Kind, string | null>;
+  readonly: boolean;
+};
+type Example = { id: string; label: string; schema: string; hold: string | null; upgrading: boolean };
 
-const PHASES = fixture as unknown as readonly Phase[];
-
-function durable(id: string): Durable {
-  const found = PHASES.find((p) => p.id === id);
-  if (found === undefined || found.waits) {
-    throw new Error(`no durable phase ${id} in the fixture`);
-  }
-  return found;
-}
+const { rules: RULES, examples: EXAMPLES } = fixture as unknown as {
+  rules: readonly Rule[];
+  examples: readonly Example[];
+};
 
 const read = (path: string) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
-const HEADER = [
-  "Phase",
+const RULE_HEADER = [
+  "`schema.status`",
+  "`hold`",
+  "`upgrading`",
   "Reads",
   "Sign-in",
   "Writes",
   "Refused as",
   "Inbox",
   "Actor, WebFinger, NodeInfo",
-  "`schema.status`",
   "`readonly`",
-  "`upgrading`",
-  "`hold`",
 ];
+const EXAMPLE_HEADER = ["How the Store gets there", "`schema.status`", "`hold`", "`upgrading`"];
 
 const code = (value: string | boolean | null) => `\`${String(value)}\``;
 
-// The reasons a phase refuses with, each once.
-const reasons = (p: Durable) => [...new Set(KINDS.flatMap((kind) => p.refusals[kind] ?? []))];
+// The reasons a rule refuses with, each once ("hold": the hold's own).
+const reasons = (r: Rule) => [...new Set(KINDS.flatMap((kind) => r.refusals[kind] ?? []))];
 
-// A phase's cells after its label, as the document writes them. One "Writes" cell stands for every kind that writes,
-// and one "Refused as" cell for every refused kind; the fixture test below holds each phase to that.
-function cells(p: Phase): string[] {
-  if (p.waits) {
-    return ["wait", "wait", "wait", "—", "wait", "wait", "wait", "wait", "wait", "wait"];
-  }
-  const answer = (kind: Kind) => (p.refusals[kind] === null ? "served" : "503");
-  const refused = reasons(p);
+// A rule's cells, as the document writes them. One "Writes" cell stands for every kind that writes, and one "Refused
+// as" cell for every refused kind; the first test below holds each rule to that.
+function ruleCells(r: Rule): string[] {
+  const answer = (kind: Kind) => (r.refusals[kind] === null ? "served" : "503");
+  const refused = reasons(r);
   return [
+    code(r.schema),
+    r.hold === "any" ? "any" : r.hold === "set" ? "a reason" : code(r.hold),
+    r.upgrading === "any" ? "any" : code(r.upgrading),
     answer("read"),
     answer("session"),
     answer("write"),
-    refused.length === 0 ? "—" : code(refused[0]!),
+    refused.length === 0 ? "—" : refused[0] === "hold" ? "the `hold`" : code(refused[0]!),
     // The inbox processes an activity only when it may write (federation/inbox.ts), and spools it otherwise.
-    p.refusals.write === null ? "processed" : "spooled",
+    r.refusals.write === null ? "processed" : "spooled",
     // A refused read of these answers from the snapshot (app.ts, federation/snapshot.ts).
-    p.refusals.read === null ? "served" : "snapshot",
-    code(p.health.schema),
-    code(p.health.readonly),
-    code(p.health.upgrading),
-    code(p.health.hold),
+    r.refusals.read === null ? "served" : "snapshot",
+    code(r.readonly),
   ];
+}
+
+const exampleCells = (e: Example) => [e.label, code(e.schema), code(e.hold), code(e.upgrading)];
+
+// The one rule an example's state matches.
+function ruleOf(e: Example): Rule {
+  const matched = RULES.filter(
+    (r) =>
+      r.schema === e.schema &&
+      (r.hold === "any" || (r.hold === "set" ? e.hold !== null : e.hold === null)) &&
+      (r.upgrading === "any" || r.upgrading === e.upgrading),
+  );
+  expect(matched, `the rules for ${e.id}`).toHaveLength(1);
+  return matched[0]!;
 }
 
 const cellsOf = (line: string) =>
@@ -77,8 +88,9 @@ const cellsOf = (line: string) =>
     .split("|")
     .map((cell) => cell.trim());
 
-/** The rows of the table under `heading`, after checking its headings and each row's cell count. */
-function table(text: string, heading: string): { label: string; cells: string[] }[] {
+/** The rows of the one table under `heading` (up to the next heading), after checking its headings and each row's
+ * cell count. */
+function table(text: string, heading: string, header: readonly string[]): string[][] {
   const lines = text.split("\n");
   const at = lines.indexOf(heading);
   expect(at, `the heading "${heading}"`).toBeGreaterThan(-1);
@@ -87,77 +99,79 @@ function table(text: string, heading: string): { label: string; cells: string[] 
   const starts = section.flatMap((line, i) => (line.startsWith("|") && !section[i - 1]?.startsWith("|") ? [i] : []));
   expect(starts, `one table under "${heading}"`).toHaveLength(1);
   const start = starts[0]!;
-  expect(cellsOf(section[start]!), "the headings").toEqual(HEADER);
+  expect(cellsOf(section[start]!), "the headings").toEqual(header);
   expect(cellsOf(section[start + 1]!).every((cell) => /^:?-+:?$/.test(cell))).toBe(true);
   const rows = [];
   for (const line of section.slice(start + 2)) {
     if (!line.startsWith("|")) {
       break;
     }
-    const [label = "", ...rest] = cellsOf(line);
-    expect(rest, `the cells of "${label}"`).toHaveLength(HEADER.length - 1);
-    rows.push({ label, cells: rest });
+    const row = cellsOf(line);
+    expect(row, `the cells of "${row[0]}"`).toHaveLength(header.length);
+    rows.push(row);
   }
   return rows;
 }
 
-describe("the upgrade phases in docs/upgrade.md", () => {
-  it("are the fixture's, each as one row the document's cells can state", () => {
-    expect(PHASES.filter((p) => p.waits).map((p) => p.id)).toEqual(["applying"]);
-    for (const p of PHASES) {
-      if (p.waits) {
-        continue;
-      }
-      expect(Object.keys(p.refusals), p.id).toEqual([...KINDS]);
+/** Compares the document's rows with the expected ones, printing each expected row on a mismatch. */
+function compare(rows: readonly string[][], expected: readonly string[][]): void {
+  const lines = expected.map((row) => `| ${row.join(" | ")} |`).join("\n");
+  expect(rows, `expected rows (before oxfmt pads them):\n${lines}\n`).toEqual(expected);
+}
+
+describe("the states of an upgrade in docs/upgrade.md", () => {
+  it("are the fixture's rules, each one row the document's cells can state", () => {
+    for (const r of RULES) {
+      const name = JSON.stringify([r.schema, r.hold, r.upgrading]);
+      expect(Object.keys(r.refusals), name).toEqual([...KINDS]);
       // The "Writes" cell: the kinds that delete media or rebuild it are refused as writes are.
-      expect([p.refusals["media-delete"], p.refusals["media-rebuild"]], p.id).toEqual([
-        p.refusals.write,
-        p.refusals.write,
+      expect([r.refusals["media-delete"], r.refusals["media-rebuild"]], name).toEqual([
+        r.refusals.write,
+        r.refusals.write,
       ]);
-      // The "Refused as" cell: one reason for every refused kind.
-      expect(reasons(p).length, p.id).toBeLessThanOrEqual(1);
+      // The "Refused as" cell: one reason for every refused kind, the hold's own only where a hold is set.
+      expect(reasons(r).length, name).toBeLessThanOrEqual(1);
+      expect(reasons(r).includes("hold") && r.hold !== "set", name).toBe(false);
       // The notes under the table: `readonly: true` means that writes are refused, and a schema that is not current
       // refuses reads and sign-ins too.
-      expect(p.health.readonly, p.id).toBe(p.refusals.write !== null);
-      if (p.health.schema !== "current") {
-        expect([p.refusals.read, p.refusals.session], p.id).not.toContain(null);
+      expect(r.readonly, name).toBe(r.refusals.write !== null);
+      if (r.schema !== "current") {
+        expect([r.refusals.read, r.refusals.session], name).not.toContain(null);
       }
     }
   });
 
-  it("are stated by its table, in order", () => {
-    const rows = table(read("docs/upgrade.md"), "### What the Store serves in each phase");
-    expect(rows.map((row) => row.label)).toEqual(PHASES.map((p) => p.label));
-    for (const p of PHASES) {
-      const row = rows.find((r) => r.label === p.label);
-      const line = `| ${[p.label, ...cells(p)].join(" | ")} |`;
-      expect(row?.cells, `expected row (before oxfmt pads it):\n${line}\n`).toEqual(cells(p));
-    }
+  it("are stated by its table of rules", () => {
+    const rows = table(read("docs/upgrade.md"), "### What the Store serves in each state", RULE_HEADER);
+    compare(rows, RULES.map(ruleCells));
   });
 
-  // A hold is reported before or after the transaction that records or clears the upgrade's marker commits, and a
-  // rollback keeps the marker of an upgrade that did not finish, so phases that share a hold differ by `upgrading`.
-  it("are each told apart by what health reports, as the notes under the table say", () => {
-    const told = PHASES.flatMap((p) =>
-      p.waits ? [] : [`${p.health.schema} upgrading=${p.health.upgrading} hold=${p.health.hold}`],
-    );
-    expect(new Set(told).size, told.join("\n")).toBe(told.length);
-    const notes = read("docs/upgrade.md").replace(/\s+/g, " ");
-    expect(notes).toContain(
-      "Each row has its own `schema.status`, `upgrading` and `hold`, so `kopje-admin health` tells which row the Store is in.",
-    );
+  it("are reached as its table of examples says, each example in one rule", () => {
+    const rows = table(read("docs/upgrade.md"), "#### How a Store reaches each state", EXAMPLE_HEADER);
+    compare(rows, EXAMPLES.map(exampleCells));
+    for (const e of EXAMPLES) {
+      ruleOf(e);
+    }
   });
 });
 
-// The words for a stopped phase: "refuses every request" when it admits nothing, "readonly" when it admits reads and
-// sessions only.
-function words(p: Durable): string {
-  const admitted = KINDS.filter((kind) => p.refusals[kind] === null);
+// The words for a stopped example: "refuses every request" when its rule admits nothing, "readonly" when it admits
+// reads and sessions only.
+function words(e: Example): string {
+  const admitted = KINDS.filter((kind) => ruleOf(e).refusals[kind] === null);
   if (admitted.length === 0) {
     return "refuses every request";
   }
-  expect(admitted, `${p.id}: the words for what it admits`).toEqual(["read", "session"]);
+  expect(admitted, `${e.id}: the words for what it admits`).toEqual(["read", "session"]);
   return "readonly";
+}
+
+function example(id: string): Example {
+  const found = EXAMPLES.find((e) => e.id === id);
+  if (found === undefined) {
+    throw new Error(`no example ${id} in the fixture`);
+  }
+  return found;
 }
 
 // The paragraph or comment that mentions `marker`, its lines joined, without comment markers.
@@ -183,17 +197,17 @@ function passage(text: string, marker: string, comment: boolean): string {
 }
 
 describe("the documents on limits.cpu_ms", () => {
-  const stoppedApplying = durable("stopped-applying");
-  const stoppedVerifying = durable("stopped-verifying");
+  const stoppedApplying = example("stopped-applying");
+  const stoppedVerifying = example("stopped-verifying");
 
   it.each([
     ["docs/upgrade.md", '`"limits": { "cpu_ms": 60000 }`', false],
     ["docs/setup.md", "`limits.cpu_ms`", false],
     ["../../deploy/wrangler.jsonc", '"limits": { "cpu_ms": 60000 }', true],
-  ] as const)("%s describes the two stopped phases as the fixture does", (path, marker, comment) => {
+  ] as const)("%s describes the two stopped examples as the fixture does", (path, marker, comment) => {
     // Stopped while applying: the schema is pending. Stopped before verifying: current, and still upgrading.
-    expect(stoppedApplying.health).toMatchObject({ schema: "pending", hold: null });
-    expect(stoppedVerifying.health).toMatchObject({ schema: "current", upgrading: true, hold: null });
+    expect(stoppedApplying).toMatchObject({ schema: "pending", hold: null });
+    expect(stoppedVerifying).toMatchObject({ schema: "current", upgrading: true, hold: null });
     const text = passage(read(path), marker, comment);
     const said = new RegExp(
       `the Store ${words(stoppedApplying)}\\b[^.]* while migrations remain unapplied\\b[^.]*\\bstays ${words(stoppedVerifying)} (?:once they are applied but not yet verified|until they are verified)`,

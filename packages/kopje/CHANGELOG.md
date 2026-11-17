@@ -668,10 +668,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   read, so a row that is not UTF-8 is no longer read twice or deleted unread
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Delivery recipients"). No Store migration and no
   `wrangler.jsonc` change.
-- [docs/upgrade.md](docs/upgrade.md) says what the Store serves in each upgrade phase: it refuses every request, reads
-  and sign-ins included, until the new migrations are applied, and is readonly until they are verified, also when an
-  upgrade fails and holds (#1753). It said that the Store stayed readonly throughout. No Store migration and no
-  `wrangler.jsonc` change.
+- [docs/upgrade.md](docs/upgrade.md) says what the Store serves in each state `kopje-admin health` can report during
+  an upgrade: it refuses every request, reads and sign-ins included, while the new migrations are not all applied,
+  and is readonly until they are verified, also when an upgrade fails and holds (#1753). It said that the Store stayed
+  readonly throughout. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

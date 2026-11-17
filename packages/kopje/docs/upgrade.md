@@ -70,17 +70,17 @@ it with its own (both are the same script, so after the deploy both run the new 
   upgrade waits for a backup dump or an import that is running, and starts when it ends.
 
 - **If a phase fails**, the Store holds (`bookmark-failed`, `upgrade-failed` or `verify-failed`) and logs the reason
-  (`kopje.store.upgrade.failed`; [observability.md](observability.md) says where to find it). While a migration
-  remains unapplied (`bookmark-failed`, and `upgrade-failed` when a migration failed), it refuses every request
-  (`schema-pending`); once all are applied (`verify-failed`, and `upgrade-failed` when the error came after the last
-  one was recorded), it is readonly: reads and sign-ins work, and writes answer 503. `schema.status` in
-  `kopje-admin health` tells which. The hold stays until the next deployment, or until you run
+  (`kopje.store.upgrade.failed`; [observability.md](observability.md) says where to find it). A held Store refuses
+  every request while `schema.status` in `kopje-admin health` is not `current` (usually because a migration remains
+  unapplied), and is readonly once it is: reads and sign-ins work, and writes answer 503. The hold stays until the
+  next deployment, or until you run
   `kopje-admin upgrade retry`. Nothing is lost while it holds: the inbox keeps spooling. Fix the cause (or roll back,
   below), then retry or deploy.
 - **If the Store's schema has migrations the code does not know** (`schema-diverged`), for example after a rollback
   across a schema change, the Store refuses every request until the code and the schema match again.
 
-[What the Store serves in each phase](#what-the-store-serves-in-each-phase), below, puts these together.
+[What the Store serves in each state](#what-the-store-serves-in-each-state), below, says what the Store answers for
+each state `kopje-admin health` can report.
 
 Check the result with the admin CLI. [setup.md](setup.md#running-the-admin-cli) says how to run it: in the instance's
 repository, `kopje-admin <command>` below is `npm run admin -- <command>`.
@@ -99,25 +99,18 @@ Some migrations rewrite stored values and keep no copy, such as `0048_stored_bou
 release notes ([CHANGELOG.md](../CHANGELOG.md)) say which values each rewrites. A restore to this bookmark is how to
 recover such a value.
 
-### What the Store serves in each phase
+### What the Store serves in each state
 
-The phases of an upgrade in order, with what the instance answers in each and what `kopje-admin health` shows then.
+What the instance answers follows from three values that `kopje-admin health` reports: `schema.status`, `hold` and
+`upgrading`. Every combination of them matches exactly one row: "any" matches every value, and "a reason" every hold.
 
-| Phase                                                   | Reads  | Sign-in | Writes | Refused as            | Inbox     | Actor, WebFinger, NodeInfo | `schema.status` | `readonly` | `upgrading` | `hold`            |
-| ------------------------------------------------------- | ------ | ------- | ------ | --------------------- | --------- | -------------------------- | --------------- | ---------- | ----------- | ----------------- |
-| Migrations pending, none applied yet                    | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `pending`       | `true`     | `false`     | `null`            |
-| Applying and verifying                                  | wait   | wait    | wait   | —                     | wait      | wait                       | wait            | wait       | wait        | wait              |
-| Stopped while applying, until the next attempt          | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `pending`       | `true`     | `true`      | `null`            |
-| Stopped before verifying, until the next attempt        | served | served  | 503    | `upgrade-in-progress` | spooled   | served                     | `current`       | `true`     | `true`      | `null`            |
-| Held: `bookmark-failed`, before the upgrade is recorded | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `pending`       | `true`     | `false`     | `bookmark-failed` |
-| Held: `bookmark-failed`, once the upgrade is recorded   | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `pending`       | `true`     | `true`      | `bookmark-failed` |
-| Held: `upgrade-failed`, a migration unapplied           | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `pending`       | `true`     | `true`      | `upgrade-failed`  |
-| Held: `upgrade-failed`, every migration applied         | served | served  | 503    | `upgrade-failed`      | spooled   | served                     | `current`       | `true`     | `true`      | `upgrade-failed`  |
-| Held: `verify-failed`, before verification is recorded  | served | served  | 503    | `verify-failed`       | spooled   | served                     | `current`       | `true`     | `true`      | `verify-failed`   |
-| Held: `verify-failed`, once verification is recorded    | served | served  | 503    | `verify-failed`       | spooled   | served                     | `current`       | `true`     | `false`     | `verify-failed`   |
-| Schema diverged                                         | 503    | 503     | 503    | `schema-diverged`     | spooled   | snapshot                   | `diverged`      | `true`     | `false`     | `null`            |
-| Schema diverged, an upgrade left unfinished             | 503    | 503     | 503    | `schema-diverged`     | spooled   | snapshot                   | `diverged`      | `true`     | `true`      | `null`            |
-| Upgraded                                                | served | served  | served | —                     | processed | served                     | `current`       | `false`    | `false`     | `null`            |
+| `schema.status` | `hold`   | `upgrading` | Reads  | Sign-in | Writes | Refused as            | Inbox     | Actor, WebFinger, NodeInfo | `readonly` |
+| --------------- | -------- | ----------- | ------ | ------- | ------ | --------------------- | --------- | -------------------------- | ---------- |
+| `pending`       | any      | any         | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `true`     |
+| `diverged`      | any      | any         | 503    | 503     | 503    | `schema-diverged`     | spooled   | snapshot                   | `true`     |
+| `current`       | a reason | any         | served | served  | 503    | the `hold`            | spooled   | served                     | `true`     |
+| `current`       | `null`   | `true`      | served | served  | 503    | `upgrade-in-progress` | spooled   | served                     | `true`     |
+| `current`       | `null`   | `false`     | served | served  | served | —                     | processed | served                     | `false`    |
 
 - **503** is the answer of the Mastodon API and the web pages. Writes include deleting media, and the media rebuild
   is refused wherever writes are.
@@ -125,20 +118,43 @@ The phases of an upgrade in order, with what the instance answers in each and wh
 - **Spooled**: the inbox keeps the activity and replays it once the Store processes again, so none is lost.
 - **Snapshot**: actor documents, WebFinger and NodeInfo answer from the last good answer saved for the same request,
   and 503 where none was saved.
-- **Wait**: the Store applies and verifies in one invocation, and a request that arrives meanwhile waits for it to
-  end, `kopje-admin health` included, and is then answered as the row the Store ends in says.
-- **Recorded**: the upgrade records itself, with its bookmark, before it applies the first migration, and removes the
-  record in the transaction that verifies the result; `upgrading` is `true` while the record is kept. A storage
-  error can be reported after the transaction it ends has committed (a timeout), so a hold comes with or without the
-  record. A rollback of the code across an upgrade that did not finish leaves the record, and `upgrading` stays
-  `true` until the code and the schema match again.
 - **`readonly: true`** means that the Store refuses writes. While `schema.status` is not `current`, it refuses reads
   and sign-ins too.
-- Each row has its own `schema.status`, `upgrading` and `hold`, so `kopje-admin health` tells which row the Store is
-  in.
+- While the Store applies and verifies, which it does in one invocation, a request waits for it to end,
+  `kopje-admin health` included, and is then answered by the row of the state the Store ends in.
 
 The table is the Store's own state. Maintenance the operator turns on (`MAINTENANCE`), a backup dump and an import
 refuse more on top of it ([backup.md](backup.md)).
+
+#### How a Store reaches each state
+
+Examples, not a complete list: the table above says what the Store serves in whatever state it reports.
+
+| How the Store gets there                                                        | `schema.status` | `hold`            | `upgrading` |
+| ------------------------------------------------------------------------------- | --------------- | ----------------- | ----------- |
+| Migrations pending, none applied yet                                            | `pending`       | `null`            | `false`     |
+| Stopped while applying, until the next attempt                                  | `pending`       | `null`            | `true`      |
+| Stopped before verifying, until the next attempt                                | `current`       | `null`            | `true`      |
+| Held: `bookmark-failed`, before the upgrade is recorded                         | `pending`       | `bookmark-failed` | `false`     |
+| Held: `bookmark-failed`, once the upgrade is recorded                           | `pending`       | `bookmark-failed` | `true`      |
+| Held: `bookmark-failed` by an attempt that overlapped one that finished         | `current`       | `bookmark-failed` | `false`     |
+| Held: `bookmark-failed` by an attempt that overlapped one that failed to verify | `current`       | `bookmark-failed` | `true`      |
+| Held: `upgrade-failed`, a migration unapplied                                   | `pending`       | `upgrade-failed`  | `true`      |
+| Held: `upgrade-failed`, every migration applied                                 | `current`       | `upgrade-failed`  | `true`      |
+| Held: `upgrade-failed`, its state not read back, in the isolate that failed     | `pending`       | `upgrade-failed`  | `false`     |
+| Held: `verify-failed`, before verification is recorded                          | `current`       | `verify-failed`   | `true`      |
+| Held: `verify-failed`, once verification is recorded                            | `current`       | `verify-failed`   | `false`     |
+| Schema diverged                                                                 | `diverged`      | `null`            | `false`     |
+| Schema diverged, an upgrade left unfinished                                     | `diverged`      | `null`            | `true`      |
+| Upgraded                                                                        | `current`       | `null`            | `false`     |
+
+The upgrade records itself, with its bookmark, before it applies the first migration, and removes the record in the
+transaction that verifies the result; `upgrading` is `true` while the record is kept. A storage error can be reported
+after the transaction it ends has committed (a timeout), so a hold comes with or without the record. Two attempts can
+overlap (the alarm and `kopje-admin upgrade retry`), and a hold the later one records lands on the schema the earlier
+one left. A rollback of the code across an upgrade that did not finish leaves the record, and `upgrading` stays
+`true` until the code and the schema match again. If the state cannot be read back after a hold is recorded, the
+isolate that failed takes every migration as pending until it ends; a new isolate reports the stored state.
 
 ## Rolling back
 

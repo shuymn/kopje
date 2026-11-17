@@ -48,7 +48,7 @@ export type OperationKind = "read" | "session" | "write" | "media-delete" | "med
 
 // What a held or upgrading Store whose schema is current admits: reads and sessions, and no write, the media rebuild
 // included. A schema that is not current admits nothing (refusalOf; docs/upgrade.md, "What the Store serves in each
-// phase").
+// state").
 const READONLY_ADMITS: Record<OperationKind, boolean> = {
   read: true,
   session: true,

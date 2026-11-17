@@ -11,11 +11,12 @@ import {
   writeOperation,
 } from "../src/domain/operation";
 import type { StoreStub } from "../src/platform/store-client";
-import { type MaintenanceReason, toStoreUnavailable } from "../src/platform/store-errors";
+import { MAINTENANCE_REASONS, type MaintenanceReason, toStoreUnavailable } from "../src/platform/store-errors";
 import type {
   KernelOptions,
   Migration,
   OperationKind,
+  SchemaState,
   StoreKernel,
   StoreOperation,
   UpgradePhase,
@@ -23,33 +24,59 @@ import type {
 import fixture from "./fixtures/upgrade-phases.json";
 import { BUILD, deferred, migratedStore, testKernel as kernel } from "./helpers";
 
-// What the Store admits in each phase of an upgrade. test/fixtures/upgrade-phases.json lists the phases in order, and
-// for each the reason every kind of operation is refused (null: admitted) and what health reports;
-// test-node/upgrade-phases.test.ts holds docs/upgrade.md's table to the same file. Each phase a Store can be found in
-// is built here by the upgrade itself, with a failure, a stop or a timeout after a commit injected where the phase
-// begins, and read by the kernel of a new isolate (and, for a hold, by the kernel that failed; for a rollback, by the
-// older build's kernel after its alarm). A failure can be reported after the transaction that records or clears the
-// upgrade's marker commits, so a phase is named by the marker as well as by its hold. The Store applies and verifies in
-// one invocation, so a request that arrives meanwhile waits for it to end ("applying").
+// What the Store admits in each state its health reports. test/fixtures/upgrade-phases.json holds docs/upgrade.md's
+// two tables (test-node/upgrade-phases.test.ts compares them): the rules, one row for each combination of
+// `schema.status`, `hold` and `upgrading` ("any" matching every value, "set" every reason), with the reason each kind of
+// operation is refused (null: admitted; "hold": the hold's own reason) and `readonly`; and examples of how a Store
+// reaches a state. The first suite seeds every combination the kernel's types allow and holds the kernel's own
+// decision to the one rule it matches, so a state no row covers fails. The second builds each example through the
+// upgrade itself (a failure, a stop or a timeout after a commit injected where it begins, overlapping attempts, a
+// rollback) and reads it from the kernel that failed or a new isolate's. The Store applies and verifies in one
+// invocation, so a request that arrives meanwhile waits for it to end (the third suite).
 
-type Health = {
-  schema: "current" | "pending" | "diverged";
+type Status = SchemaState["status"];
+type Key = { schema: Status; hold: MaintenanceReason | null; upgrading: boolean };
+type Refusals = Record<OperationKind, MaintenanceReason | null>;
+type Rule = {
+  schema: Status;
+  hold: "any" | "set" | null;
+  upgrading: "any" | boolean;
+  refusals: Record<OperationKind, MaintenanceReason | "hold" | null>;
   readonly: boolean;
-  upgrading: boolean;
-  hold: MaintenanceReason | null;
 };
-type Admissions = { refusals: Record<OperationKind, MaintenanceReason | null>; health: Health };
-type Phase = { id: string; label: string } & ({ waits: true } | ({ waits: false } & Admissions));
+type Example = Key & { id: string; label: string };
 
-const PHASES = fixture as unknown as readonly Phase[];
-const DURABLE = PHASES.filter((p): p is Phase & { waits: false } => !p.waits);
+const { rules: RULES, examples: EXAMPLES } = fixture as unknown as {
+  rules: readonly Rule[];
+  examples: readonly Example[];
+};
 
-function phase(id: string): Phase {
-  const found = PHASES.find((p) => p.id === id);
+function example(id: string): Example {
+  const found = EXAMPLES.find((e) => e.id === id);
   if (found === undefined) {
-    throw new Error(`no phase ${id} in the fixture`);
+    throw new Error(`no example ${id} in the fixture`);
   }
   return found;
+}
+
+const keyOf = ({ schema, hold, upgrading }: Key): Key => ({ schema, hold, upgrading });
+
+// What the one rule a state matches says the Store admits in it.
+function ruled(key: Key): { refusals: Refusals; readonly: boolean } {
+  const matched = RULES.filter(
+    (r) =>
+      r.schema === key.schema &&
+      (r.hold === "any" || (r.hold === "set" ? key.hold !== null : key.hold === null)) &&
+      (r.upgrading === "any" || r.upgrading === key.upgrading),
+  );
+  expect(matched, `the rows for ${JSON.stringify(key)}`).toHaveLength(1);
+  const rule = matched[0]!;
+  const refusals = {} as Refusals;
+  for (const kind of KINDS) {
+    const refused = rule.refusals[kind];
+    refusals[kind] = refused === "hold" ? key.hold : refused;
+  }
+  return { refusals, readonly: rule.readonly };
 }
 
 let written = 0;
@@ -88,19 +115,34 @@ async function admission(k: StoreKernel, sql: SqlStorage, kind: OperationKind): 
   }
 }
 
-async function observe(k: StoreKernel, sql: SqlStorage): Promise<Admissions> {
+// What a kernel reports in health, and what it admits.
+async function observe(
+  k: StoreKernel,
+  sql: SqlStorage,
+): Promise<{ key: Key; admits: { refusals: Refusals; readonly: boolean } }> {
   const reported = await k.health(k.build);
-  const health = {
-    schema: reported.schema.status,
-    readonly: reported.readonly,
-    upgrading: reported.upgrading,
-    hold: reported.hold,
-  };
-  const refusals = {} as Admissions["refusals"];
+  const refusals = {} as Refusals;
   for (const kind of KINDS) {
     refusals[kind] = await admission(k, sql, kind);
   }
-  return { refusals, health };
+  return {
+    key: { schema: reported.schema.status, hold: reported.hold, upgrading: reported.upgrading },
+    admits: { refusals, readonly: reported.readonly },
+  };
+}
+
+// A stand-in for the Store's state whose storage has the members `overrides` gives, and the platform's otherwise.
+function overriding(state: DurableObjectState, overrides: Record<string, unknown>): DurableObjectState {
+  const storage = new Proxy(state.storage, {
+    get: (target, key) => (typeof key === "string" && key in overrides ? overrides[key] : member(target, key)),
+  });
+  return new Proxy(state, { get: (target, key) => (key === "storage" ? storage : member(target, key)) });
+}
+
+// The member `key` of `target`, a method bound to it, so that a proxy can stand in for a platform object.
+function member(target: object, key: string | symbol): unknown {
+  const value: unknown = Reflect.get(target, key, target);
+  return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
 }
 
 // Two files after the shipped ones, so that a phase can begin between them.
@@ -161,7 +203,7 @@ async function upgradeFailing(
   return k;
 }
 
-// Each durable phase, in the fixture's order: the kernels that read it once built.
+// Each example, in the fixture's order: the kernels that read it once built.
 const BUILDERS: Record<string, (state: DurableObjectState) => StoreKernel[] | Promise<StoreKernel[]>> = {
   // A new deployment's first call: the new files are pending, and the upgrade has not recorded its bookmark.
   pending: (state) => {
@@ -191,6 +233,10 @@ const BUILDERS: Record<string, (state: DurableObjectState) => StoreKernel[] | Pr
     expect(marked(state.storage.sql)).toBe(true);
     return [k, kernel(state, NEXT)];
   },
+  // An attempt that overlaps one that finishes (the alarm and `kopje-admin upgrade retry`; nothing serializes them).
+  "bookmark-failed-overlapping": (state) => overlapping(state, {}, { ok: true }),
+  "bookmark-failed-overlapping-verify-failed": (state) =>
+    overlapping(state, { inject: failAt("verify", 1, false) }, { ok: false, reason: "verify-failed" }),
   "upgrade-failed-unapplied": async (state) => {
     const failed = { ok: false, reason: "upgrade-failed" };
     return [
@@ -203,6 +249,33 @@ const BUILDERS: Record<string, (state: DurableObjectState) => StoreKernel[] | Pr
     const transaction = timesOutAfter(state, (sql) => newFiles(sql).includes(SECOND.name));
     const failed = { ok: false, reason: "upgrade-failed" };
     return [await upgradeFailing(state, { transaction }, failed, [FIRST.name, SECOND.name]), kernel(state, NEXT)];
+  },
+  // The hold is written, then reading the state back fails once: the isolate keeps its conservative fallback (every
+  // file pending, no marker) until it ends, while a new isolate reads what is stored.
+  "upgrade-failed-unread": async (state) => {
+    let armed = false;
+    const sql = new Proxy(state.storage.sql, {
+      get: (target, key) =>
+        key !== "exec"
+          ? member(target, key)
+          : (query: string, ...bindings: SqlStorageValue[]) => {
+              if (armed && query.startsWith("SELECT value FROM kopje_state")) {
+                armed = false;
+                throw new Error("storage unavailable");
+              }
+              return target.exec(query, ...bindings);
+            },
+    });
+    const inject = (at: UpgradePhase | "hold") => {
+      armed ||= at === "hold";
+      failAt("apply", 1, false)(at);
+    };
+    const failed = { ok: false, reason: "upgrade-failed" };
+    const k = await upgradeFailing(overriding(state, { sql }), { inject }, failed, []);
+    expect(armed).toBe(false);
+    const stored = await observe(kernel(state, NEXT), state.storage.sql);
+    expect(stored.key).toEqual(keyOf(example("upgrade-failed-unapplied")));
+    return [k];
   },
   "verify-failed": async (state) => {
     const failed = { ok: false, reason: "verify-failed" };
@@ -235,6 +308,38 @@ const BUILDERS: Record<string, (state: DurableObjectState) => StoreKernel[] | Pr
   ],
 };
 
+// Two attempts on one kernel: the first runs to its end (with `first`'s options, giving `result`) while the second awaits
+// its bookmark, which then fails, so the second's hold lands on the schema the first left.
+async function overlapping(
+  state: DurableObjectState,
+  first: Partial<KernelOptions>,
+  result: object,
+): Promise<StoreKernel[]> {
+  const asked = [deferred(), deferred()];
+  const release = deferred();
+  const refuse = deferred<string>();
+  let calls = 0;
+  const getCurrentBookmark = async () => {
+    const n = calls++;
+    asked[n]!.resolve();
+    if (n > 0) {
+      return refuse.promise;
+    }
+    await release.promise;
+    return state.storage.getCurrentBookmark();
+  };
+  const k = kernel(overriding(state, { getCurrentBookmark }), NEXT, first);
+  const earlier = k.upgrade();
+  await asked[0]!.promise;
+  const later = k.upgrade();
+  await asked[1]!.promise;
+  release.resolve();
+  expect(await earlier).toMatchObject(result);
+  refuse.reject(new Error("bookmark unavailable"));
+  expect(await later).toMatchObject({ ok: false, reason: "bookmark-failed" });
+  return [k, kernel(state, NEXT)];
+}
+
 // The older build's kernel once its alarm ran the upgrade, which changes nothing while the schema has files the build
 // does not ship, and a fresh one.
 async function rolledBack(state: DurableObjectState): Promise<StoreKernel[]> {
@@ -258,31 +363,61 @@ afterEach(async () => {
   }
 });
 
-describe("what the Store admits in each phase of an upgrade", () => {
-  it("builds every phase of the fixture that a Store can be found in, and only the upgrade's own invocation waits", () => {
-    expect(Object.keys(BUILDERS)).toEqual(DURABLE.map((p) => p.id));
-    expect(PHASES.filter((p) => p.waits).map((p) => p.id)).toEqual(["applying"]);
-  });
+// Each schema status, by the migrations a kernel of a migrated Store expects.
+const EXPECTING: Record<Status, readonly Migration[]> = {
+  current: MIGRATIONS,
+  pending: NEXT,
+  diverged: MIGRATIONS.slice(0, -1),
+};
 
-  it.each(DURABLE.map((p) => [p.id, p] as const))("%s", async (id, expected) => {
+describe("what the Store admits in every state its health can report", () => {
+  it("matches each combination of schema status, hold and marker to one rule, and admits what it says", async () => {
     const store = await phaseStore();
     await runInDurableObject(store, async (_instance, state) => {
-      const views = await BUILDERS[id]!(state);
-      for (const view of views) {
-        expect(await observe(view, state.storage.sql)).toEqual({
-          refusals: expected.refusals,
-          health: expected.health,
-        });
+      const sql = state.storage.sql;
+      const seen: Key[] = [];
+      for (const schema of Object.keys(EXPECTING) as Status[]) {
+        for (const hold of [null, ...MAINTENANCE_REASONS]) {
+          for (const upgrading of [false, true]) {
+            sql.exec("DELETE FROM kopje_state WHERE name IN ('hold', 'upgrade')");
+            if (hold !== null) {
+              const value = JSON.stringify({ reason: hold, build: BUILD, detail: "seeded", at: 0 });
+              sql.exec("INSERT INTO kopje_state (name, value) VALUES ('hold', ?)", value);
+            }
+            if (upgrading) {
+              const value = JSON.stringify({ build: BUILD, bookmark: "seeded", at: 0 });
+              sql.exec("INSERT INTO kopje_state (name, value) VALUES ('upgrade', ?)", value);
+            }
+            const key = { schema, hold, upgrading };
+            const observed = await observe(kernel(state, EXPECTING[schema]), sql);
+            expect(observed.key).toEqual(key);
+            expect(observed.admits, JSON.stringify(key)).toEqual(ruled(key));
+            seen.push(key);
+          }
+        }
       }
+      expect(seen).toHaveLength(3 * (MAINTENANCE_REASONS.length + 1) * 2);
     });
   });
 });
 
-// The member `key` of `target`, a method bound to it, so that a proxy can stand in for a platform object.
-function member(target: object, key: string | symbol): unknown {
-  const value: unknown = Reflect.get(target, key, target);
-  return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
-}
+describe("how a Store reaches each example", () => {
+  it("builds every example of the fixture", () => {
+    expect(Object.keys(BUILDERS)).toEqual(EXAMPLES.map((e) => e.id));
+  });
+
+  it.each(EXAMPLES.map((e) => [e.id, e] as const))("%s", async (id, expected) => {
+    const store = await phaseStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      const views = await BUILDERS[id]!(state);
+      for (const view of views) {
+        const observed = await observe(view, state.storage.sql);
+        expect(observed.key).toEqual(keyOf(expected));
+        expect(observed.admits).toEqual(ruled(observed.key));
+      }
+    });
+  });
+});
 
 describe("the upgrade's own invocation", () => {
   // What a request sees of the schema: how many files are recorded, and which of the new files' tables exist.
@@ -296,32 +431,17 @@ describe("the upgrade's own invocation", () => {
   }));
 
   it("refuses while the bookmark is awaited, and a request that arrives as it applies or verifies waits for the end", async () => {
-    const pending = phase("pending");
-    expect(pending.waits).toBe(false);
-    expect(phase("applying").waits).toBe(true);
+    const pending = example("pending");
     const store = await phaseStore();
     await runInDurableObject(store, async (_instance, state) => {
       // The kernel's storage, whose bookmark is held until released.
       const requested = deferred();
       const release = deferred();
-      const storage = new Proxy(state.storage, {
-        get(target, key) {
-          if (key === "getCurrentBookmark") {
-            return async () => {
-              requested.resolve();
-              await release.promise;
-              return target.getCurrentBookmark();
-            };
-          }
-          return member(target, key);
-        },
-      });
-      const held = new Proxy(state, {
-        get(target, key) {
-          if (key === "storage") {
-            return storage;
-          }
-          return member(target, key);
+      const held = overriding(state, {
+        getCurrentBookmark: async () => {
+          requested.resolve();
+          await release.promise;
+          return state.storage.getCurrentBookmark();
         },
       });
 
@@ -337,10 +457,10 @@ describe("the upgrade's own invocation", () => {
       });
       const upgrading = k.upgrade();
       await requested.promise;
-      // The upgrade yields while it awaits the bookmark: a request meets the pending phase.
-      if (!pending.waits) {
-        expect(await observe(k, state.storage.sql)).toEqual({ refusals: pending.refusals, health: pending.health });
-      }
+      // The upgrade yields while it awaits the bookmark: a request meets the pending example's state.
+      const observed = await observe(k, state.storage.sql);
+      expect(observed.key).toEqual(keyOf(pending));
+      expect(observed.admits).toEqual(ruled(observed.key));
 
       release.resolve();
       expect(await upgrading).toMatchObject({ ok: true, applied: [FIRST.name, SECOND.name] });
