@@ -292,7 +292,7 @@ export async function parseActivity(body: Uint8Array, rules: Rules = {}): Promis
     return { ok: false, reason: envelope.reason, deleteOfSelf };
   }
   const { actor, id, type, readType, read } = envelope;
-  const activity = activityOf(type, id, actor, read, idOf(read.object), readType);
+  const activity = activityOf(type, id, actor, read, readType);
   if (activity === null) {
     return { ok: false, reason: "unsupported", deleteOfSelf, actor };
   }
@@ -313,14 +313,8 @@ function statusActivity(kind: "Create" | "UpdateStatus", id: string, json: Json)
   return object === null ? null : { type: kind, id, object };
 }
 
-function activityOf(
-  type: string,
-  id: string,
-  actor: string,
-  json: Json,
-  object: string | null,
-  readType: TypeReader,
-): ParsedActivity | null {
+function activityOf(type: string, id: string, actor: string, json: Json, readType: TypeReader): ParsedActivity | null {
+  const object = idOf(json.object);
   if (LIKE_TYPES.has(type)) {
     return object === null ? null : { type: "Like", id, object };
   }

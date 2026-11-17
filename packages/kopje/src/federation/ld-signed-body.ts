@@ -1129,8 +1129,7 @@ function patchedAsMastodon(json: Json, named: Json, meanings: ReadonlyMap<string
   // A member as the compaction writes it, read as namedAsCompacted names it (a renamed one left as it is).
   const compacted = (member: unknown, meaning: Meaning | undefined): unknown => {
     const [only, ...rest] = Array.isArray(member) ? (member as unknown[]) : [];
-    const single =
-      Array.isArray(member) && rest.length === 0 && (typeof only === "string" || isObject(only)) && !meaning?.contained;
+    const single = rest.length === 0 && (typeof only === "string" || isObject(only)) && !meaning?.contained;
     const written = single ? only : member;
     return Array.isArray(written) ? written.map(unpatched) : unpatched(written);
   };
