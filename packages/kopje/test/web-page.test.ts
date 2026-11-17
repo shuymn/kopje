@@ -660,7 +660,8 @@ describe("web page sink: the JSON mode", () => {
     ["invalid JSON", '{"a":'],
     ["invalid UTF-8", new Uint8Array([0x22, 0xc3, 0x28, 0x22])],
     ["a lone surrogate written raw", new Uint8Array([0x22, 0xed, 0xa0, 0x80, 0x22])],
-    // #1718, as Mastodon's JSON.parse (fetch_oembed_service.rb:96) raises on a high one; a lone low one too.
+    // #1718: Mastodon's JSON.parse (fetch_oembed_service.rb:96) raises on a high one; Kopje refuses a lone low one
+    // too, which Mastodon reads (docs/mastodon-deviations.md, "Reading inbound activities").
     ["a lone high surrogate escape", String.raw`{"html":"\ud800"}`],
     ["a lone low surrogate escape", String.raw`["\udc00"]`],
     ["a key holding a high surrogate escape", String.raw`{"\ud800x":1}`],

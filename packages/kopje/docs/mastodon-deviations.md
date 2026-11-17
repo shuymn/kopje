@@ -1598,15 +1598,43 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   every body Mastodon 4.6.11 and 4.7.5 and Fedify 2.4.5 send in the captures passes, and so does each release's actor
   context from 3.5.0 to 4.3.23 (`test/fixtures/ld-signed/context-maps.json`). Accepted, 2026-11-17.
 - A JSON text from a remote server whose string token, a key or a value, holds an unpaired surrogate escape is refused
-  as JSON that does not parse, wherever the token sits, a member a later duplicate key replaces included: an inbound
-  activity (as a body `JSON.parse` refuses: nothing is applied, on spool replay and in the cutover rollback's drain
-  too), a fetched document, WebFinger answer or JSON-LD context (a body that is not JSON, before its key entries are
-  read), an oEmbed document (none), and a page's JSON-LD script (skipped, the next one read). Mastodon 4.7.5 parses each
-  with `JSON.parse` (json 2.21.2), which raises on a high surrogate escape no low one follows (`incomplete surrogate
-  pair`, `invalid surrogate pair`) in any string token, so it refuses those too; it keeps a lone low surrogate escape
-  (`\udc00`) as invalid UTF-8, which fails only where PostgreSQL stores it, so it applies an activity holding one in a
-  member it does not store. Kopje refuses a lone low surrogate escape as well (`jsonTextMalformed` in
-  `src/platform/json-bounds.ts`; the parser's verdicts are in `test/fixtures/json-surrogates/`). Accepted, 2026-11-17.
+  as JSON that does not parse, wherever the token sits, a member a later duplicate key replaces included
+  (`jsonTextMalformed` in `src/platform/json-bounds.ts`): an inbound activity (nothing is applied, on spool replay and
+  in the cutover rollback's drain too), a fetched document, WebFinger answer or JSON-LD context (a body that is not
+  JSON, before its key entries are read), an oEmbed document (the card falls back to the page's OpenGraph) and a page's
+  JSON-LD script (skipped, the next one read). Mastodon 4.7.5's parser (json 2.21.2) raises on a high surrogate escape
+  no low one follows, so every path refuses that alike; it keeps a lone low surrogate escape (`\udc00`) as invalid
+  UTF-8, and what follows depends on the path (`test/fixtures/json-surrogates/` holds the parser's verdicts):
+  - An inbox body: Rails reads an ActivityStreams body as request parameters before the action runs, and answers 400 to
+    one holding a lone low surrogate in a value and 500 to one holding it only in a key (the next entry), so it applies
+    nothing either. Only a lone low surrogate in a member a later duplicate key replaces passes (its parameters and
+    `ProcessActivityService`, `process_activity_service.rb:9`, both keep the later value), and Mastodon applies that
+    activity where Kopje applies nothing.
+  - A fetched document (`body_to_json`, `json_ld_helper.rb:366-374`): Mastodon reads it and fails where it stores the
+    value, as PostgreSQL refuses invalid UTF-8 (an actor's name or summary, a key's PEM at
+    `process_account_service.rb:265`, a status's content: no account or status is stored); an actor or a status holding
+    one only in a member Mastodon does not store is stored, where Kopje refuses the document.
+  - A JSON-LD context: Mastodon's JSON-LD library (json-ld 3.3.2) fails on one in a term definition (`context.rb:666`),
+    as Kopje does, and reads one outside `@context`, which Kopje refuses.
+  - A WebFinger answer (`webfinger.rb:15`): Mastodon resolves an address whose answer holds one in a member it does not
+    read (`aliases`), which Kopje does not resolve.
+  - An oEmbed document (`fetch_oembed_service.rb:96`): Mastodon makes its card from one holding it in a member it does
+    not store, and makes no card from one holding it in a member it stores (the card's save fails in PostgreSQL, which
+    `fetch_link_card_service.rb:32` does not rescue); Kopje makes the card from the page's OpenGraph in both.
+  - A page's JSON-LD script (`link_details_extractor.rb:108`): Mastodon takes its title from one holding it in a member
+    it does not read, and makes no card from one holding it in the headline (`link_details_extractor.rb:164` raises);
+    Kopje reads the next script or the page's other data in both.
+    Neither fetches a remote NodeInfo document. Accepted, 2026-11-17.
+- An inbox body that does not parse as JSON (`JSON.parse` refuses it, or a string token holds an unpaired surrogate) is
+  answered 202 once its signature is checked (401 without a valid one), and nothing is applied (`parseActivity`,
+  `invalid-json`). Mastodon reads an ActivityStreams body as request parameters before the action runs
+  (`config/initializers/mime_types.rb:3` makes `application/activity+json` and `application/ld+json` JSON; actionpack
+  8.1.3.1 reads them in `ParamsWrapper#_wrapper_enabled?`, `params_wrapper.rb:294`, then in `verify_authenticity_token`)
+  and answers such a body before any signature is checked: 400 (`ActionDispatch::Http::Parameters::ParseError`,
+  `parameters.rb:98`, or, for invalid UTF-8 in a value, `ActionController::BadRequest`, `request/utils.rb:41` and
+  `request.rb:438`), or 500 when the invalid UTF-8 sits only in a key (the parameter filter raises on it,
+  `parameter_filter.rb:140`, from `params_wrapper.rb:302`). A Mastodon sender drops a delivery answered 400 as one
+  answered 202 (`json_ld_helper.rb:380-382`, unsalvageable) and retries one answered 500. Accepted, 2026-11-17.
 
 Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NET-1 in `docs/threat-model.md`):
 

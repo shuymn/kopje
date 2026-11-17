@@ -339,12 +339,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
-- Remote JSON holding an unpaired high surrogate escape in any string token, a key or a value, one a later duplicate
-  key replaces included (an inbound activity, a fetched document, a WebFinger answer, a JSON-LD context, an oEmbed
-  document or a page's JSON-LD script), is refused as JSON that does not parse, as Mastodon's parser refuses it; Kopje
-  also refuses a lone low surrogate escape, which Mastodon's parser accepts (#1718;
-  [docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Reading inbound activities"). No Store migration and no
-  `wrangler.jsonc` change.
+- Remote JSON holding an unpaired surrogate escape in any string token, a key or a value, one a later duplicate key
+  replaces included (an inbound activity, a fetched document, a WebFinger answer, a JSON-LD context, an oEmbed document
+  or a page's JSON-LD script), is refused as JSON that does not parse. Mastodon refuses a lone high one on every path
+  and a lone low one at the inbox (400, or 500 in a key), but reads a lone low one in a fetched document, WebFinger
+  answer, oEmbed document or JSON-LD script, and applies an activity whose lone low one a later duplicate key replaces
+  (#1718; [docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Reading inbound activities", which also lists the
+  inbox's 202 for a body that does not parse, where Mastodon answers 400). No Store migration and no `wrangler.jsonc`
+  change.
 - The cutover stores a remote account's domain without the port or trailing dot of its actor id's host, as Kopje
   stores one, and `verify-conversion` compares the domain. A Store converted before keeps such domains until a refresh
   confirms each account; the query in [docs/cutover.md](docs/cutover.md) (Verification) lists them (#1725). A remote

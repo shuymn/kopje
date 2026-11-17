@@ -189,8 +189,8 @@ function firstObject(value: unknown): Json | null {
 }
 
 // The supported object of one script's text, or null (StructuredData#json and #valid?). A text holding an unpaired
-// surrogate escape in any string token does not parse (jsonTextMalformed), as Mastodon's JSON::ParserError skips the
-// script.
+// surrogate escape in any string token does not parse (jsonTextMalformed): Mastodon's JSON::ParserError skips a script
+// holding a lone high one, and Kopje one holding a lone low one too (docs/mastodon-deviations.md).
 function structuredObject(raw: string): Json | null {
   const source = removeCdataJunk(raw);
   if (railsBlank(source)) {

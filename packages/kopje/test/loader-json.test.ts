@@ -18,9 +18,10 @@ import { like, setup } from "./inbox-status-helpers";
 
 // #1718: a fetched document, a WebFinger answer or a JSON-LD context whose text holds a string token, a key or a value,
 // with an unpaired surrogate is a body that does not parse (loader.ts readDocument, json-bounds.ts jsonTextMalformed;
-// a cached context, federation.ts withinBounds), as Mastodon's body_to_json reads one (json_ld_helper.rb:366-374, nil):
-// UnusableDocumentError, never transient, which search resolution reads as Mastodon's nil answer. A document past the
-// JSON bounds stays a refusal (RES-2).
+// a cached context, federation.ts withinBounds): UnusableDocumentError, never transient, which search resolution reads
+// as Mastodon's nil answer. Mastodon's body_to_json (json_ld_helper.rb:366-374) is nil for a lone high surrogate and
+// keeps a lone low one, failing only where it stores the value; Kopje refuses both (docs/mastodon-deviations.md,
+// "Reading inbound activities"). A document past the JSON bounds stays a refusal (RES-2).
 
 const DOMAIN = "social.example";
 const REMOTE = "https://remote.example";

@@ -296,7 +296,8 @@ export function afterRevisionRead(loaders: RemoteLoaders): RemoteLoaders {
 }
 
 // RES-2: a document or JSON-LD context past the JSON bounds is refused before anything reads it; one holding an
-// unpaired surrogate is a body that is not JSON (jsonRefusal), as Mastodon's body_to_json reads it (nil).
+// unpaired surrogate is a body that is not JSON (jsonRefusal: a cached context, which has no text; loader.ts judges a
+// fetched one's text).
 export function withinBounds(remote: RemoteDocument): RemoteDocument {
   const refusal = jsonRefusal(remote.document);
   if (refusal === "malformed") {

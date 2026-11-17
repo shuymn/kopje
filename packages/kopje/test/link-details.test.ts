@@ -185,8 +185,9 @@ describe("link details: the Mastodon spec", () => {
   });
 
   // #1718: a script holding an unpaired surrogate escape does not parse, as Mastodon's JSON.parse raises on a high one
-  // (link_details_extractor.rb:272, the script skipped); Kopje skips one holding a lone low one too. Only the title is
-  // compared: a failure that printed the lone surrogate would be lost to the test runner's WebSocket (invalid UTF-8).
+  // (link_details_extractor.rb:272, the script skipped); Kopje skips one holding a lone low one too, which Mastodon
+  // reads (docs/mastodon-deviations.md, "Reading inbound activities"). Only the title is compared: a failure that
+  // printed the lone surrogate would be lost to the test runner's WebSocket (invalid UTF-8).
   it.each([
     ["a lone high surrogate", String.raw`\ud800`, STRUCTURED.title],
     ["a lone low surrogate", String.raw`\udc00`, STRUCTURED.title],

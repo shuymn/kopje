@@ -513,7 +513,7 @@ async function readDocument(
     throw error instanceof FetchError ? error : new UnusableDocumentError(final, "Document is not valid JSON");
   }
   // RES-2: a string token holding an unpaired surrogate (a key or a value, one a later duplicate key replaced included)
-  // makes the body JSON that does not parse, as Mastodon's parser reads it (json-bounds.ts). Judged on the text, before
+  // makes the body JSON that does not parse (json-bounds.ts; docs/mastodon-deviations.md). Judged on the text, before
   // anything reads the document, trims or imports its keys (readableKeys) or hands it on.
   if (jsonTextMalformed(new TextDecoder().decode(body))) {
     throw new UnusableDocumentError(final, "Document is not valid JSON");

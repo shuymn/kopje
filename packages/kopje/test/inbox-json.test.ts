@@ -13,9 +13,11 @@ import { AS, like, localStatus, type Setup, setup, undo } from "./inbox-status-h
 
 // #1718: an inbound activity whose JSON text holds a string token, a key or a value, with an unpaired surrogate is JSON
 // that does not parse (src/platform/json-bounds.ts; docs/mastodon-deviations.md, "Reading inbound activities"; RES-2),
-// one a later duplicate key replaces included. Mastodon 4.7.5's JSON.parse (json 2.21.2) raises on a high surrogate
-// escape not followed by a low one; Kopje also refuses a lone low one, which that parser keeps as invalid UTF-8.
-// JSON.stringify writes a lone surrogate as its \u escape, so every body here carries the escape on the wire.
+// one a later duplicate key replaces included: answered 202, nothing applied. Mastodon 4.7.5 reads the body as Rails
+// request parameters first and answers 400 to a lone high surrogate anywhere or a lone low one in a value, 500 to a
+// lone low one only in a key, and applies an activity whose lone low one a later duplicate key replaces, which Kopje
+// refuses (the listed deviation). JSON.stringify writes a lone surrogate as its \u escape, so every body here carries
+// the escape on the wire.
 
 type Json = Record<string, unknown>;
 

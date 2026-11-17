@@ -3,7 +3,9 @@
 # Whether Mastodon's JSON parser (json 2.21.2, JSON.parse as Mastodon 4.7.5 calls it on remote JSON) parses each text,
 # for verdicts.json (test-node/json-bounds.test.ts, "jsonTextMalformed"): unpaired surrogate escapes in keys and values,
 # where a later duplicate key replaces them, after an escaped backslash, and well-formed controls. Every text is
-# UTF-8, as a body decoded from bytes is. Capture with the release's image, without network:
+# UTF-8, as a body decoded from bytes is. This is the parser alone: Mastodon's inbox reads a body as Rails request
+# parameters first, which refuses invalid UTF-8 in a value (docs/mastodon-deviations.md, "Reading inbound activities").
+# Capture with the release's image, without network:
 #
 #   docker run --rm -i --network none --entrypoint ruby ghcr.io/mastodon/mastodon:v4.7.5 - < capture.rb > verdicts.json
 
