@@ -176,7 +176,7 @@ A scheduled status shows at most `MAX_STATUS_MEDIA` held media; its maximum is i
 | `listNotificationRequests`                      | Budget: whole requests with their sender and last status       | Id cursor          |
 | `getNotificationRequest`                        | Unit (one request)                                             |                    |
 | `claimPushes`, `confirmPush`                    | Count: 16 pushes, each one notification's title, body and icon |                    |
-| Streaming events and catch-up (`stream-hub.ts`) | Unit per event; an event over 512 KiB is skipped whole         |                    |
+| Streaming events and catch-up (`stream-hub.ts`) | Unit per event; an event over 254 KiB is skipped whole         |                    |
 
 Grouped notifications admit whole groups in discovery order; for the cut page's range and cursors, readmission (at
 most four passes), the work budget its passes share (RES-7) and `partial_avatars` (partial accounts read from their own

@@ -210,6 +210,22 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `0093_annual_reports` takes 16,681 ms with this file and 16,582 ms without it, medians of three runs).
   `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
   back past it needs a point-in-time restore.
+- The streaming API closes a connection with 1013 before an event or an error reply would take it past its output
+  allowance over the connection's life (`socketBytes`, 5 MiB, each frame counted with the runtime's overhead), or take
+  all connections together past the instance's (`instanceBytes`, 16 MiB); while the instance's is full, new connections
+  are refused (503), so it holds 212 fresh connections, fewer as output is held, and the limit of 256 connections is
+  reached only if the allowance allows. Mastodon's clients reconnect; the web client waits longer after each close while
+  the page stays open and shows edits and deletions made while it was away only after a reload
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Streaming output). After this upgrade, while a
+  connection of the previous release remains, nothing is streamed and new connections are refused (503); those
+  connections are closed (1011). No Store migration and no `wrangler.jsonc` change.
+- The streaming API skips an event whose encoded payload passes 254 KiB (was 512 KiB), so that its largest frame and
+  the frame's terminating byte fit a 256 KiB block. Now skipped beside text, a poll and profiles at their limits: a
+  post and its quote with eight descriptions of 10,000 emoji, a post with four of U+0001, and the boost of a post with
+  four of emoji; also a moderation warning whose account's fields and texts are at their limits, and an announcement
+  near its largest. A skipped event is logged with its kind and shows on the next REST read (timelines,
+  notifications, conversations, announcements) ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
+  Streaming). No Store migration and no `wrangler.jsonc` change.
 - A remote actor's members are read only by their literal spelling, as Mastodon reads them: a name or bio given only
   as a language map (`nameMap`, `summaryMap`) is no longer read, so such an account shows an empty display name and
   bio, and a `movedTo` or `alsoKnownAs` spelled as a compact or full IRI no longer names a move. No Store migration and
@@ -306,9 +322,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   characters up to the server's limits. No Store migration and no `wrangler.jsonc` change.
 - A media description may have 10,000 characters on upload, media update and status edit, and
   `configuration.media_attachments.description_limit` is 10000, as in Mastodon 4.6 (`mastodon#39306`); the limit was
-  1,500. A post and its quote with long descriptions can pass the streaming API's 512 KiB event limit, together with
-  formatted text that expands as it is sent (links, profile fields, poll choices) or with descriptions of control
-  characters such as U+0001; such an event is not streamed and shows on the next refresh
+  1,500. A post and its quote with long descriptions of emoji or of control characters such as U+0001 pass the
+  streaming API's 254 KiB event limit, and other long descriptions do beside formatted text that expands as it is
+  sent (links, profile fields, poll choices); such an event is not streamed and shows on the next refresh
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change.
 - Featured-hashtag suggestions (`GET /api/v1/featured_tags/suggestions`) count the posts of the last year only,
   leave deleted posts and boosts out and suggest a hashtag used more than once, as Mastodon 4.7.5 does. No Store
@@ -568,7 +584,7 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change.
 - `GET /api/v1/scheduled_statuses` answers within 8 MiB, a page cut there continuing in its `Link`, and shows at most 4
   media of a scheduled status. No Store migration and no `wrangler.jsonc` change.
-- The streaming API's turns count each event in UTF-8 bytes, as its 512 KiB limit does; an event of characters past
+- The streaming API's turns count each event in UTF-8 bytes, as its 254 KiB limit does; an event of characters past
   U+007F was counted at a half to a third of its size, so a turn could send up to three times its budget. No Store
   migration and no `wrangler.jsonc` change.
 - The pinned statuses Kopje reads from a remote account's featured collection no longer have their quotes verified

@@ -25,19 +25,42 @@ Other documents point here rather than repeat the release.
 - **Streaming.** Kopje serves the streaming API of the reference release over WebSocket only (MD-8), with bounds on
   the subscriptions a socket and an account hold, past which a subscription is refused (`src/mastodon/streaming.ts`,
   `src/stream-hub.ts`; threat model DATA-5, VIS-26, RES-6, RES-7). An event whose payload, encoded as the streaming
-  API sends it, passes 512 KiB (`STREAM_LIMITS.payloadBytes`) is not sent and is logged: the `update`,
-  `status.update`, `notification` or `conversation` frame is missing, and the status or notification is there on the
-  next REST read. Mastodon sends every event. The payload is the event's media descriptions and everything else it
-  shows, both as encoded: a description's character takes 1 byte (ASCII) to 4 (characters past U+FFFF, such as most
-  emoji, and `"` and `\`), and at most 7, for the control characters written as `\u00XX`, such as U+0001 (a tab,
-  newline, carriage return, backspace or form feed takes 3); the rest expands with formatted text (a link is written
-  twice, in its address and its shown text, with `&` as `&amp;`; profile fields and poll choices likewise). An event
-  whose rest takes R bytes is sent while its descriptions take at most 524,288 − R. A post and its quote with eight
-  descriptions of 10,000 characters (320,000 bytes of emoji, 560,000 of U+0001) are sent beside plain text, a poll and
-  profiles (R about 141,000), and skipped beside three long links in each post (R about 281,000) or with descriptions of
-  U+0001; a post without a quote is sent with four such descriptions beside any of these. Events whose statuses are
-  near their stored bounds (remote statuses, or content filled by mentions) are skipped too. The figures are pinned by
-  `test/streaming/public.test.ts`. Accepted, 2026-11-15.
+  API sends it, passes 254 KiB (`STREAM_LIMITS.payloadBytes`) is not sent and is logged
+  (`kopje.stream.payload-skipped`, with its kind): the `update`, `status.update`, `notification`, `conversation` or
+  `announcement` frame is missing, and the status, notification, conversation or announcement is there on the next
+  REST read (its timeline, the notifications list, `GET /api/v1/conversations`, `GET /api/v1/announcements`). Mastodon
+  sends every event. The payload is the event's media descriptions and everything else it shows, both as encoded: a
+  description's character takes 1 byte (ASCII) to 4 (characters past U+FFFF, such as most emoji, and `"` and `\`), and
+  at most 7, for the control characters written as `\u00XX`, such as U+0001 (a tab, newline, carriage return,
+  backspace or form feed takes 3); the rest expands with formatted text (a link is written twice, in its address and
+  its shown text, with `&` as `&amp;`; profile fields and poll choices likewise). An event whose rest takes R bytes is
+  sent while its descriptions take at most 260,096 − R. Beside plain text, a poll and profiles at their limits, a post
+  and its quote with eight descriptions of 10,000 ASCII characters (80,000 bytes) are sent (R about 141,000, and
+  179,000 for their boost), and skipped with eight descriptions of emoji (320,000) or beside three long links in each
+  post (R about 281,000); a post without a quote is sent with four descriptions of emoji (160,000, R about 70,000) while
+  its boost is not (R about 108,000), and skipped with four of U+0001 (280,000). A moderation warning whose account has
+  its fields and texts at their limits (about 336,000 bytes) and an announcement near its derived maximum (497,996)
+  are skipped too, as are events whose statuses are near their stored bounds (remote statuses, or content filled by
+  mentions). The figures are pinned by `test/streaming/public.test.ts` and `test/status-bounds.test.ts`, the skips of a
+  notification and an announcement with their REST reads by `test/streaming/public.test.ts` and
+  `test/streaming/announcements.test.ts`. Accepted, 2026-11-15, and at 254 KiB, 2026-11-17.
+- **Streaming output.** Kopje cannot see whether a client reads what it is sent (the runtime gives no signal of unsent
+  output and cannot ping), so it charges each connection everything it hands it, with the runtime's overhead per frame,
+  until the connection ends. Before an event or an error reply would take a connection past `STREAM_OUTPUT.socketBytes`
+  (5 MiB), or all connections together past `instanceBytes` (16 MiB), it closes that connection with 1013, after every
+  frame sent before; while the instance's allowance is full it refuses new connections (503): at the shipped caps it
+  holds 212 fresh connections, fewer as output is held, so the limit of 256 connections is reached only if it allows.
+  After an upgrade it
+  streams nothing and refuses new connections until the previous release's connections have ended. A connection that
+  reads is closed after 491 to 800 frames of 4 to 2 KB (figures from the shipped caps). masto.js 7.12 reconnects after
+  1 s (it clears its backoff when an open socket closes). Mastodon's web client (`@gamestdio/websocket` 0.3.2) waits
+  `floor(random × 2^n × 100)` ms after the nth close in the page's life, a count no successful open resets (a median of
+  13.65 minutes at the 14th), meanwhile polling home and notifications every 20 to 40 s; on reconnect it fetches the
+  statuses newer than the newest it holds in home, local, federated and lists, so it keeps showing a status edited or
+  deleted while it was away, or in the event that closed it, until the page is reloaded, and hashtag and direct columns
+  miss what passed until reloaded. Mastodon closes no connection for its volume: it ends one that does not answer its
+  pings within a minute. `src/stream-hub.ts`, `src/stream-output.ts`; `test/streaming/output.test.ts`,
+  `test-node/stream-output.test.ts`. Accepted, 2026-11-17.
 - **Federation.** Kopje federates with every Mastodon series upstream still supports (its `SECURITY.md`), so it names
   no single release here. A behaviour takes as its reference the release its code and the threat model name:
   remote-status ingestion and handle confirmation follow Mastodon v4.7.5, with Kopje's failure handling under NET-4, and

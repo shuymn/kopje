@@ -1,5 +1,5 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { Db } from "../../src/db/sql";
 import { addToConversation } from "../../src/domain/conversations";
@@ -16,7 +16,7 @@ import { deleteSignature } from "../delete-job-helpers";
 import { BUILD } from "../helpers";
 import { community, type User } from "../status-helpers";
 import { described, describedMedia, FILLS, fillProfile, writeFilled } from "./payload-fills";
-import { connect, drained, echo, type Inbox, type StreamMessage, takeAll } from "./stream-helpers";
+import { connect, drained, echo, type Inbox, liftInstanceCap, type StreamMessage, takeAll } from "./stream-helpers";
 
 // Every event kind the hub serves, split across turns by the turn budget (RES-6). Each kind's fixture has more units
 // than one turn's budget allows, read from the budget's constants: listeners on distinct tokens (a status or an edit is
@@ -626,10 +626,15 @@ const KINDS: Kind[] = [
 describe.each(KINDS)("$name split across turns", (kind) => {
   let f: Fixture;
   let dropped = 0;
+  let restoreCap = () => {};
 
   beforeAll(async () => {
+    // Rounds over the fixture's sockets, not the output cap (RES-6): what they hold across the cases passes it.
+    restoreCap = liftInstanceCap();
     f = await kind.fixture();
   }, 60_000);
+
+  afterAll(() => restoreCap());
 
   afterEach(async ({ task }) => {
     STREAM_FAULTS.dropContinuation = null;
@@ -792,16 +797,12 @@ describe("the turn's payload budget", () => {
     return units;
   }
 
-  // alice with the plain fill's profile, her S1 with four ordinary descriptions at their length, sent to whoever
-  // listens; and the media of more such statuses, described, so that later writes start no turn.
+  // alice with the plain fill's profile, her S1 with four ASCII descriptions at their length, sent to whoever listens;
+  // and the media of more such statuses, described, so that later writes start no turn.
   async function author(h: ApiHarness & { users: Record<"alice", User> }, statuses: number) {
     const { alice } = h.users;
     await fillProfile(h, alice, FILLS.plain);
-    const media = await describedMedia(
-      h,
-      alice,
-      Array.from({ length: statuses + 1 }, () => described("\u{1F600}")).flat(),
-    );
+    const media = await describedMedia(h, alice, Array.from({ length: statuses + 1 }, () => described("a")).flat());
     const quoted = await writeFilled(h, alice, FILLS.plain, media.slice(0, MAX_STATUS_MEDIA));
     const more = Array.from({ length: statuses }, (_, i) =>
       media.slice((i + 1) * MAX_STATUS_MEDIA, (i + 2) * MAX_STATUS_MEDIA),
@@ -854,16 +855,16 @@ describe("the turn's payload budget", () => {
   // A turn nearly spent by plain events still starts a unit while UNIT_WORST.bytes is left; the event whose payload
   // passes STREAM_LIMITS.payloadBytes (a quote whose eight descriptions are control characters) is presented, charged
   // whole and skipped, which ends the turn; a small status written after it waits for the next turn. The turn's charge
-  // stays within its hard bound (17,984,052 bytes: test/status-bounds.test.ts, "the most a turn presents").
+  // stays within its hard bound (18,248,244 bytes: test/status-bounds.test.ts, "the most a turn presents").
   it("charges a skipped unit whole and starts no unit after it, within the turn's hard bound", async () => {
     const h = await community(["alice"]);
     const [viewer] = await accounts(h, 1, "4");
     const inbox = await socket(h, viewer!, [{ stream: "public:local" }]);
     const { alice } = h.users;
     await fillProfile(h, alice, FILLS.plain);
-    // The statuses quoted, and one of each shape to measure: a quote and a single status of ordinary descriptions, and
-    // a small status (its text one word, the profile the most of it).
-    const ordinary = await describedMedia(h, alice, Array.from({ length: 3 }, () => described("\u{1F600}")).flat());
+    // The statuses quoted, and one of each shape to measure: a quote and a single status of ASCII descriptions, and a
+    // small status (its text one word, the profile the most of it).
+    const ordinary = await describedMedia(h, alice, Array.from({ length: 3 }, () => described("a")).flat());
     const controlled = await describedMedia(h, alice, described("\u0001"));
     const quoted = await writeFilled(h, alice, FILLS.plain, ordinary.slice(0, MAX_STATUS_MEDIA));
     const quotedControls = await writeFilled(h, alice, FILLS.plain, controlled);
@@ -878,8 +879,8 @@ describe("the turn's payload budget", () => {
     const quotePayload = await presented(quoting);
     const singlePayload = await presented(single);
     const smallPayload = await presented(plain);
-    // The oversized event: a quote whose eight descriptions take 7 bytes a character, not 4.
-    const oversized = quotePayload + 2 * MAX_STATUS_MEDIA * (7 - 4) * MAX_MEDIA_DESCRIPTION_LENGTH;
+    // The oversized event: a quote whose eight descriptions take 7 bytes a character, not 1.
+    const oversized = quotePayload + 2 * MAX_STATUS_MEDIA * (7 - 1) * MAX_MEDIA_DESCRIPTION_LENGTH;
     expect(oversized).toBeGreaterThan(STREAM_LIMITS.payloadBytes);
     // Quotes, then single statuses, then small ones, until what is left covers UNIT_WORST.bytes and not the oversized
     // payload: a small status is narrower than that window, so the last shape always lands in it. The counts the writes
@@ -904,7 +905,7 @@ describe("the turn's payload budget", () => {
     const media = await describedMedia(
       h,
       alice,
-      plan.flatMap((shape) => (shape === "small" ? [] : described("\u{1F600}"))),
+      plan.flatMap((shape) => (shape === "small" ? [] : described("a"))),
     );
     const controls = await describedMedia(h, alice, described("\u0001"));
     await drained(h, inbox);
@@ -942,7 +943,7 @@ describe("the turn's payload budget", () => {
       expect(leftAfterSent).toBeLessThan(skippedPayload);
       const charged = TURN_BUDGET.bytes - leftAfterSent + skippedPayload;
       expect(charged).toBeGreaterThan(TURN_BUDGET.bytes);
-      expect(charged).toBeLessThanOrEqual(17_984_052);
+      expect(charged).toBeLessThanOrEqual(18_248_244);
       await takeAll(inbox);
       await turn(h);
       await echo(inbox);
