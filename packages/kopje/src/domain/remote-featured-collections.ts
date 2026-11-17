@@ -138,6 +138,12 @@ function ownedCollection(owner: Owner, input: Pick<FeaturedCollectionInput, "id"
   );
 }
 
+// Whether applyFeaturedCollection keeps `input` as the owner's collection when it holds it already: one of the owner's
+// with values Mastodon would store.
+export function holdableCollection(owner: Owner, input: FeaturedCollectionInput): boolean {
+  return ownedCollection(owner, input) && collectionValues(input) !== null;
+}
+
 type StoredCollection = { id: string; account_id: string } & Pick<Values, "name" | "description" | "sensitive" | "tag">;
 
 // The collection stored under `uri` (collections_uri), any owner.
@@ -489,15 +495,16 @@ function insertItem(db: Db, collection: string, item: Omit<Planned, "existing">,
   return item.member !== null;
 }
 
-// A complete read of the owner's collections (every page seen, none unreadable): its stored collections the read did
-// not apply are deleted, each with its items, their notifications, its collection_update notifications and those
-// notifications' pushes by the foreign keys (at most MAX_STORED_COLLECTIONS rows, read through collections_account).
-// Mastodon keeps them until a Remove (docs/mastodon-deviations.md, "Collections").
+// A complete read of the owner's collections (every page seen, none unreadable): its stored collections whose uri is
+// not among `kept` (the uris the read lists as collections the owner may hold) are deleted, each with its items, their
+// notifications, its collection_update notifications and those notifications' pushes by the foreign keys (at most
+// MAX_STORED_COLLECTIONS rows, read through collections_account). Mastodon keeps them until a Remove
+// (docs/mastodon-deviations.md, "Collections").
 export function deleteUnlisted(db: Db, owner: string, kept: readonly string[]): void {
   db.run(
     `DELETE FROM collections INDEXED BY ${COLLECTIONS_ID_INDEX} WHERE id IN
 			(SELECT id FROM collections INDEXED BY collections_account WHERE account_id = ?1
-				AND id NOT IN (SELECT value FROM json_each(?2)))`,
+				AND uri NOT IN (SELECT value FROM json_each(?2)))`,
     owner,
     JSON.stringify(kept),
   );

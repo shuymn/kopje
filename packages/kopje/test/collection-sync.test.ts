@@ -113,6 +113,39 @@ describe("the collections part of a sync", () => {
     expect((await collectionRows(t)).map((row) => row.uri)).toEqual([first.id, third.id].toSorted());
   });
 
+  it("replaces a collection at MAX_REMOTE_COLLECTIONS on a complete read, and on no other", async () => {
+    const t = await setup();
+    const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
+    const held = Array.from({ length: MAX_REMOTE_COLLECTIONS }, () => collection(owner, []));
+    serveCollections(t.web, owner, [held.slice(0, 5), held.slice(5)]);
+    const ownerId = await storedOwner(t, owner);
+    await syncAll(t);
+    const uris = async () => (await collectionRows(t)).map((row) => row.uri);
+    expect(await uris()).toEqual(held.map((entry) => entry.id).toSorted());
+
+    // A read whose second page cannot be read lists a new one in place of the last: the new one finds no slot.
+    const replacement = collection(owner, []);
+    const listed = [...held.slice(0, 5), ...held.slice(5, -1), replacement];
+    serveCollections(t.web, owner, [listed.slice(0, 5), listed.slice(5)]);
+    t.web.fail(`${owner.featuredCollections}?page=2`, 404);
+    await requestSync(t, ownerId);
+    await syncAll(t);
+    expect(await uris()).toEqual(held.map((entry) => entry.id).toSorted());
+
+    // The same listing read through: the last goes, and the new one takes its slot. The first, listed with a value
+    // Mastodon would not store, goes too.
+    const unstorable = { ...listed[0]!, sensitive: undefined };
+    serveCollections(t.web, owner, [[unstorable, ...listed.slice(1, 5)], listed.slice(5)]);
+    await requestSync(t, ownerId);
+    await syncAll(t);
+    expect(await uris()).toEqual(
+      listed
+        .slice(1)
+        .map((entry) => entry.id)
+        .toSorted(),
+    );
+  });
+
   it("refuses a collection of another host or another owner, and cuts a long name and description", async () => {
     const t = await setup();
     const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);

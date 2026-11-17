@@ -26,6 +26,7 @@ import {
   applyFeaturedCollection,
   deleteUnlisted,
   type FeaturedCollectionInput,
+  holdableCollection,
   MAX_REMOTE_COLLECTIONS,
 } from "./remote-featured-collections";
 import { removeGone } from "./remote-removal";
@@ -665,7 +666,9 @@ function replacePins(db: Db, account: { id: string; uri: string }, uris: readonl
 }
 
 // The account's collections become those the read listed (ProcessFeaturedCollectionService for each), the first
-// MAX_REMOTE_COLLECTIONS of them; a complete read deletes the stored ones it did not apply (deleteUnlisted).
+// MAX_REMOTE_COLLECTIONS of them. A complete read first deletes the stored ones it does not list as collections the
+// account may hold (deleteUnlisted), so the slots they held under MAX_REMOTE_COLLECTIONS are free for the new ones it
+// lists.
 function replaceCollections(
   db: Db,
   account: { id: string; uri: string },
@@ -673,15 +676,16 @@ function replaceCollections(
   origin: string,
   now: number,
 ): void {
-  const kept: string[] = [];
-  for (const listed of read.listed.slice(0, MAX_REMOTE_COLLECTIONS)) {
-    const applied = applyFeaturedCollection(db, account, listed, origin, now);
-    if (applied.collection !== null) {
-      kept.push(applied.collection);
-    }
-  }
+  const listed = read.listed.slice(0, MAX_REMOTE_COLLECTIONS);
   if (read.complete) {
-    deleteUnlisted(db, account.id, kept);
+    deleteUnlisted(
+      db,
+      account.id,
+      listed.filter((input) => holdableCollection(account, input)).map((input) => input.id),
+    );
+  }
+  for (const input of listed) {
+    applyFeaturedCollection(db, account, input, origin, now);
   }
 }
 
