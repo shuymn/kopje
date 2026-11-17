@@ -48,11 +48,11 @@ import { remoteDescription } from "./lang-string";
 import { isTransientLoadError } from "./loader";
 import { emojiCandidates } from "./remote-emoji";
 
-// Remote statuses as Mastodon 4.5.11 reads them (ActivityPub::Parser::StatusParser and MediaAttachmentParser):
-// compacted JSON with the ActivityStreams context, values as strings, objects with an id, or arrays of either. Note and
-// Question are statuses; Article, Page, Image, Audio, Video and Event are converted as Mastodon converts them (the name
-// as a heading, the summary, and a link to the url, with no content warning). Everything is bounded (RES-2, RES-4) and
-// sanitized (HTML-1); URLs are http(s) only (HTML-3). Quotes are read from quote, _misskey_quote, quoteUrl and quoteUri
+// Remote statuses as Mastodon 4.7.5 reads them (ActivityPub::Parser::StatusParser and MediaAttachmentParser), from the
+// JSON as received: values as strings, objects with an id, or arrays of either. Note and Question are statuses;
+// Article, Page, Image, Audio, Video and Event are converted as Mastodon converts them (the name as a heading, the
+// summary, and a link to the url, with no content warning). Everything is bounded (RES-2, RES-4) and sanitized
+// (HTML-1); URLs are http(s) only (HTML-3). Quotes are read from quote, _misskey_quote, quoteUrl and quoteUri
 // (quoteOf); Misskey's other extensions (_misskey_content, _misskey_summary) and everything else not read here stay in
 // raw.
 
@@ -121,7 +121,7 @@ function audience(object: Json, key: "to" | "cc", activity: Json | null): string
 
 // Tag names Mastodon would accept (Tag::HASHTAG_NAME_RE): letters, marks, digits, _ and the separators it allows,
 // with at least one non-digit.
-const TAG_NAME = /^[\p{L}\p{M}\p{Nd}_·・‌]+$/u;
+const TAG_NAME = /^[\p{L}\p{M}\p{Nd}_\u00B7\u30FB\u200C]+$/u;
 
 function hashtag(name: unknown): string | null {
   if (typeof name !== "string") {

@@ -29,9 +29,9 @@ catalog:
 
   # Cloudflare Workers: the bundler and dev server, the runtime types and the workerd test pool. deploy/package.json
   # pins the same wrangler.
-  "@cloudflare/vitest-plugin": 1.8.1
+  "@cloudflare/vitest-plugin": 1.8.2
   "@cloudflare/workers-types": 5.20261113.1
-  wrangler: 4.161.0
+  wrangler: 4.162.0
   # The workerd test pool on SQLite 3.53.4 (workerd 1.20261023.1), for the kopje-main-runtime project
   # (vitest.main-runtime.config.ts): main's statements prepare there, so the rewritten policy statements are compared
   # with them. .github/renovate.json holds it.
@@ -42,7 +42,7 @@ catalog:
   # (jsonld: the copy @fedify/fedify resolves).
   "@axe-core/playwright": 4.14.0
   "@jsquash/webp": 1.5.0
-  "@playwright/test": 1.65.0
+  "@playwright/test": 1.65.1
   "@vitest/coverage-v8": 5.1.0
   css-tree: 3.2.1
   fast-check: 4.10.2

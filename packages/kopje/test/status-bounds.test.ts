@@ -25,8 +25,9 @@ import {
   MAX_FIELDS,
   VERIFIED_AT_JSON_BYTES,
 } from "../src/domain/accounts";
-import { createActivity, noteOf, PIN_LIMIT, statusFacts } from "../src/domain/activities";
-import { ANSWER_BYTES } from "../src/domain/answer-budget";
+import { createActivity, getLegacyObject, noteOf, PIN_LIMIT, statusFacts } from "../src/domain/activities";
+import { ANNOUNCEMENT_CONTENT_BYTES, ANNOUNCEMENT_ROW_CAPS } from "../src/domain/announcements";
+import { ANSWER_BYTES, encodedTwiceBytes } from "../src/domain/answer-budget";
 import { type VisibleStatusId } from "../src/domain/audience";
 import { OWNER_ROLE } from "../src/domain/auth";
 import { listConversations, MAX_PRESENTED_PARTICIPANTS } from "../src/domain/conversations";
@@ -60,11 +61,12 @@ import {
   presentation,
   presentedMediaUrl,
   presentStatusesWithin,
+  storedSearchableText,
 } from "../src/domain/status-presenter";
 import { STATUS_COLUMN_MAP, STATUS_FROM, statusRowBoundSql } from "../src/domain/status-rows";
 import { renderFieldValue } from "../src/domain/status-text";
-import { getStatus, getStatuses, statusHistory } from "../src/domain/statuses";
-import { streamUnit } from "../src/domain/streaming";
+import { getStatus, getStatuses, recordEdit, statusHistory } from "../src/domain/statuses";
+import { STREAM_EVENT_NAMES, streamUnit } from "../src/domain/streaming";
 import {
   LINK_ACCT_JSON_BYTES,
   LINK_URL_JSON_BYTES,
@@ -91,6 +93,7 @@ import {
   CARD_OPTIONAL_URL_LIMIT,
   CARD_TEXTS,
   CARD_URL_LIMIT,
+  MEDIA_DESCRIPTION_BYTES,
   MEDIA_META_BYTES,
   mediaCategorySql,
   ACCOUNT_EMOJIS_BYTES,
@@ -147,11 +150,13 @@ import {
   FILL_SHAPES,
   FILLS,
   HEAP_PEAKS,
+  MESSAGE_MAX,
   MOVED_ACCOUNT_MAXIMA,
   NOTE_MAXIMA,
   type Peaks,
   type Shape,
   SHAPE_CEILING_PERCENT,
+  STREAM_UNIT_PEAKS,
 } from "./presented-maxima";
 import { ESCAPED_STATIC_WITNESS, fullestFields, MAX_BIO, MOVED_ROW_SQLITE_MAX } from "./profile-fixtures";
 import { pinStatuses, profileFrameBytes, tagFrameBytes, walkProfile } from "./profile-page-helpers";
@@ -244,11 +249,19 @@ const RAW_BIO = `<p>${"x".repeat(REMOTE_BIO_BYTES - 9)}</p>`;
 // JSON bytes), or of four bytes (raw: 600 bytes read, PROFILE_DESCRIPTION_BYTES).
 const profileDescription = (fill: Fill) => (fill === "raw" ? W : C).repeat(PROFILE_DESCRIPTION_LIMIT);
 
+// The longest feature_approval an account presents (accounts.ts): each half at every key Mastodon's
+// InteractionPolicy::SubPolicy#as_keys gives, which a remote account's stored policy may hold (#1589 PR 4), and the
+// longest answer.
+const FEATURE_POLICY_KEYS = ["unsupported_policy", "public", "followers", "following", "disabled"];
+const FEATURE_APPROVAL_MAX = { automatic: FEATURE_POLICY_KEYS, manual: FEATURE_POLICY_KEYS, current_user: "automatic" };
+const FEATURE_APPROVAL_JSON_MAX = utf8Length(JSON.stringify(FEATURE_APPROVAL_MAX));
+
 // The most JSON a nested moved-to account presents (accounts.ts presentMovedAccount), from its decoded limits at worst
 // escaping: characters of six JSON bytes at each text limit, URLs and uri at MOVED_URL_LIMIT (JSON-measured), counts
 // of 20 characters (any int64; presentedCountSql shows at most MAX_ACCOUNT_COUNT, 16), emojis of MOVED_EMOJIS_BYTES
 // (a string of that many JSON bytes stands for them), and every key at once, a local account's (noindex, roles) and
-// an unavailable one's (suspended) included; its image descriptions '' (not read) and its display settings false.
+// an unavailable one's (suspended) included, and the longest feature_approval; its image descriptions '' (not read)
+// and its display settings false.
 const MOVED_ACCOUNT_JSON_MAX = utf8Length(
   JSON.stringify({
     id: "9".repeat(18),
@@ -283,6 +296,7 @@ const MOVED_ACCOUNT_JSON_MAX = utf8Length(
     noindex: false,
     roles: [{ id: OWNER_ROLE.id, name: OWNER_ROLE.name, color: OWNER_ROLE.color }],
     suspended: true,
+    feature_approval: FEATURE_APPROVAL_MAX,
   }),
 );
 // What a moved-to account's row reads at most: SQLite bytes (profile-fixtures.ts MOVED_ROW_SQLITE_MAX) and heap.
@@ -1487,6 +1501,9 @@ type FillMeasure = {
   // The fallbacks each shape shows (its notifications read with every fallback type): how many, and what their JSON
   // lacks of FALLBACK_JSON_MAX.
   fallbacks: Record<string, { count: number; deficit: number }>;
+  // The accounts each shape shows but the nested moved-to ones: how many, and what their feature_approval lacks of
+  // FEATURE_APPROVAL_JSON_MAX.
+  approvals: Record<string, { count: number; deficit: number }>;
   // The JSON of the fields of the account occurrence (a remote account's, at REMOTE_FIELDS_BYTES).
   accountFields: number;
   // The moderation_warning notification as a stream payload: its JSON, which carries no fallback, encoded again as a
@@ -1876,8 +1893,17 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
       conversationPayload: utf8Length(JSON.stringify(JSON.stringify(talkOfQuote))),
       notification: jsonBytes(notified),
     };
+    expect([encodedTwiceBytes(talkOfQuote), encodedTwiceBytes(notified)]).toEqual([
+      streamed.conversationPayload,
+      utf8Length(JSON.stringify(JSON.stringify(notified))),
+    ]);
   }
   const { fallback: _streamed, ...streamedWarning } = warningNotification as { fallback?: unknown };
+  // RES-6: the hub's measure of a stream payload (encodedTwiceBytes) is the twice-encoded JSON's UTF-8 bytes on every
+  // maximal shape of the fill, a streamed one or not.
+  for (const [name, answer] of Object.entries({ ...answers, streamedWarning })) {
+    expect(encodedTwiceBytes(answer), `${fill} ${name}`).toBe(utf8Length(JSON.stringify(JSON.stringify(answer))));
+  }
   return {
     streamed,
     warningPayload: utf8Length(JSON.stringify(JSON.stringify(streamedWarning))),
@@ -1938,6 +1964,19 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
         return [name, { count: shown.length, deficit }];
       }),
     ),
+    approvals: Object.fromEntries(
+      Object.entries(answers).map(([name, answer]) => {
+        const shown = presentedApprovals(answer);
+        for (const approval of shown) {
+          expect(jsonBytes(approval)).toBeLessThanOrEqual(FEATURE_APPROVAL_JSON_MAX);
+        }
+        const deficit = shown.reduce(
+          (sum: number, approval) => sum + FEATURE_APPROVAL_JSON_MAX - jsonBytes(approval),
+          0,
+        );
+        return [name, { count: shown.length, deficit }];
+      }),
+    ),
     fallbacks: Object.fromEntries(
       Object.entries(answers).map(([name, answer]) => {
         const shown = presentedFallbacks(answer);
@@ -1978,8 +2017,11 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
       status: one.heaps,
       quote: two.heaps,
       boostOfQuote: pair.heaps,
+      conversation: listed.heaps,
       group: grouped.heaps,
       report: reported.heaps,
+      reportNotification: notified.heaps,
+      warningNotification: warned.heaps,
     },
   };
 }
@@ -2070,6 +2112,20 @@ function verifiedFields(value: unknown): { value: string; verified_at: string }[
 }
 
 // The fallbacks a shape presents (notification-fallback.ts).
+// The feature_approval of every account a value shows but the nested moved-to ones (counted at
+// MOVED_ACCOUNT_JSON_MAX).
+function presentedApprovals(value: unknown): unknown[] {
+  if (Array.isArray(value)) {
+    return value.flatMap(presentedApprovals);
+  }
+  if (typeof value !== "object" || value === null) {
+    return [];
+  }
+  return Object.entries(value).flatMap(([key, item]: [string, unknown]) =>
+    key === "moved" ? [] : key === "feature_approval" ? [item] : presentedApprovals(item),
+  );
+}
+
 function presentedFallbacks(value: unknown): unknown[] {
   if (Array.isArray(value)) {
     return value.flatMap(presentedFallbacks);
@@ -2162,9 +2218,10 @@ const LOCAL_ACCOUNT_KEYS_JSON =
 // MEDIA_URL_JSON_BYTES and its blurhash at BLURHASH_JSON_MAX, and each verified local field's value at
 // LOCAL_FIELD_VALUE_JSON_MAX. Every remote account shown but the account occurrence counts its fields at
 // REMOTE_FIELDS_JSON_MAX (verified remote fields); the account occurrence keeps the larger of the local and remote
-// fields' maxima. Each notification's or group's fallback counts at FALLBACK_JSON_MAX.
+// fields' maxima. Each notification's or group's fallback counts at FALLBACK_JSON_MAX, and each account's
+// feature_approval at FEATURE_APPROVAL_JSON_MAX.
 async function conservativeJson(): Promise<Record<string, number>> {
-  const { shapes, moved, applications, cards, media, localFields, remoteFields, fallbacks, accountFields } =
+  const { shapes, moved, applications, cards, media, localFields, remoteFields, fallbacks, approvals, accountFields } =
     await measureFill("escaped");
   return Object.fromEntries(
     Object.entries(shapes).map(([name, shape]) => [
@@ -2180,9 +2237,26 @@ async function conservativeJson(): Promise<Record<string, number>> {
         cards[name]!.deficit +
         media[name]!.deficit +
         localFields[name]!.deficit +
-        fallbacks[name]!.deficit,
+        fallbacks[name]!.deficit +
+        approvals[name]!.deficit,
     ]),
   );
+}
+
+// The most JSON each streamed kind presents (stream-hub.ts, RES-6): `update` and `status.update` a status, at most a
+// boost of a quote; `conversation` its participants and a last status, at most a quote (conversationStream shows no
+// boost); `notification` its account, its status and a report and a warning together (their conservative figures
+// count a fallback each, which a streamed notification does not carry); an announcement, at its derived maximum
+// (test/announcement-bounds.test.ts).
+const ANNOUNCEMENT_JSON = 248_997;
+async function streamedKinds(): Promise<Record<"status" | "conversation" | "notification" | "announcement", number>> {
+  const c = await conservativeJson();
+  return {
+    status: c.boostOfQuote!,
+    conversation: c.conversation!,
+    notification: c.boostOfQuote! + c.reportNotification! + c.warningNotification!,
+    announcement: ANNOUNCEMENT_JSON,
+  };
 }
 
 // The peaks of "Heap at 8 MiB per answer" (docs/threat-model.md, its model and terms) for answers whose largest item
@@ -2768,6 +2842,173 @@ describe("a status of malformed imported text (RES-3)", () => {
   }, 300_000);
 });
 
+// A status of alice's whose four attachments hold imported descriptions of malformed UTF-8 at 0105's stored bound:
+// 0xFF and continuation bytes to MEDIA_DESCRIPTION_BYTES, one character to SQLite, which decode to 40,000 U+FFFD.
+// Every presenter shows MAX_MEDIA_DESCRIPTION_LENGTH of them (presentedMediaDescription), within the escaped fill's
+// description (that many code points of six JSON bytes): REST, the stream unit of its edit, the edit history (a
+// snapshot an edit recorded, and an imported one past the byte bound), the Note's attachment names, the legacy
+// Image's name and the filter text; and the rows its read takes stay within R.
+// 0xFF and continuation bytes to `bytes` in all, then `tail`: one character to SQLite's length and substr.
+function malformedRun(bytes: number, tail = ""): ArrayBuffer {
+  const run = new Uint8Array(bytes).fill(0x80);
+  run[0] = 0xff;
+  return new Uint8Array([...run, ...new TextEncoder().encode(tail)]).buffer;
+}
+
+// A status of alice's (content "<p>described</p>") whose MAX_STATUS_MEDIA attachments hold descriptions of malformed
+// UTF-8 at their stored bound, MEDIA_DESCRIPTION_BYTES, as only an import stores them.
+async function malformedAttachments(t: Setup): Promise<string> {
+  const id = await storedStatus(t, ALICE, {
+    content: "<p>described</p>",
+    spoiler: "",
+    media: Array.from({ length: MAX_STATUS_MEDIA }, (_, i) => ({
+      url: `https://m.example/${i}.png`,
+      preview: null,
+      description: "",
+      meta: null,
+    })),
+    mentions: [],
+    tags: [],
+    poll: null,
+  });
+  await sql(
+    t.store,
+    "UPDATE media_attachments SET description = CAST(? AS TEXT) WHERE status_id = ?",
+    malformedRun(MEDIA_DESCRIPTION_BYTES),
+    id,
+  );
+  return id;
+}
+
+describe("an attachment of malformed imported text (RES-3)", () => {
+  const SHOWN = "�".repeat(MAX_MEDIA_DESCRIPTION_LENGTH);
+  const DESCRIPTION_JSON_MAX = jsonBytes(C.repeat(MAX_MEDIA_DESCRIPTION_LENGTH));
+
+  it("presents each description within MAX_MEDIA_DESCRIPTION_LENGTH code points everywhere", async () => {
+    const t = await setup();
+    const id = await malformedAttachments(t);
+    const at = new Date(NOW).toISOString();
+    await runInDurableObject(t.store, (_instance, state) => {
+      const sql = state.storage.sql;
+      sql.exec(
+        `UPDATE media_attachments SET legacy_ap_o = 'legacy-image'
+				WHERE id = (SELECT min(id) FROM media_attachments WHERE status_id = ?)`,
+        id,
+      );
+      // An edit records the status as it is now (statuses.ts recordEdit), and an imported snapshot holds one past the
+      // byte bound, within EDIT_MEDIA_BYTES.
+      recordEdit(new Db(sql), id, at);
+      sql.exec(
+        `INSERT INTO status_edits (status_id, content, spoiler_text, media_json, created_at)
+				VALUES (?1, '<p>imported</p>', '', CAST(?2 AS TEXT), ?3)`,
+        id,
+        new Uint8Array([
+          ...new TextEncoder().encode('[{"id":"m","type":"image","description":"'),
+          ...new Uint8Array(malformedRun(100_000)),
+          ...new TextEncoder().encode('"}]'),
+        ]).buffer,
+        at,
+      );
+      sql.exec("UPDATE statuses SET edited_at = ? WHERE id = ?", at, id);
+      // Stored: MEDIA_DESCRIPTION_BYTES each, one character to SQLite.
+      expect(
+        sql
+          .exec(
+            "SELECT length(CAST(description AS BLOB)) AS bytes, length(description) AS characters FROM media_attachments WHERE status_id = ?",
+            id,
+          )
+          .toArray(),
+      ).toEqual(Array.from({ length: MAX_STATUS_MEDIA }, () => ({ bytes: MEDIA_DESCRIPTION_BYTES, characters: 1 })));
+    });
+    const described = (media: readonly { description?: unknown; name?: unknown }[], key: "description" | "name") => {
+      expect(media).toHaveLength(MAX_STATUS_MEDIA);
+      for (const m of media) {
+        expect(m[key]).toBe(SHOWN);
+        expect(jsonBytes(m[key])).toBeLessThanOrEqual(DESCRIPTION_JSON_MAX);
+      }
+    };
+    // REST.
+    const rest = (await read(t, getStatus, id)).answer as Presented;
+    described(rest.media_attachments, "description");
+    // The stream unit of an edit, as the hub presents it.
+    const tokenHashes = [await sha256Hex(t.tokens.alice)];
+    const unit = await runInDurableObject(t.store, (_instance, state) =>
+      streamUnit.run(state.storage.sql, { kind: "edit", subject: id, accountId: ALICE, tokenHashes, now: NOW }),
+    );
+    expect(unit.event).toBe("status.update");
+    described((unit.payload as Presented).media_attachments, "description");
+    // The edit history: the current version, the snapshot the edit recorded and the imported one, whose description
+    // editMediaSql cuts to MEDIA_DESCRIPTION_BYTES (40,000 U+FFFD decoded).
+    const history = (await read(t, statusHistory, id)).answer as {
+      content: string;
+      media_attachments: Presented["media_attachments"];
+    }[];
+    const versions = Object.fromEntries(history.map((v) => [v.content, v.media_attachments]));
+    described(versions["<p>described</p>"]!.slice(0, MAX_STATUS_MEDIA), "description");
+    expect(versions["<p>imported</p>"]!.map((m) => m.description)).toEqual([SHOWN]);
+    // The Note's attachments, and the legacy Image.
+    const { note, image, filterText } = await runInDurableObject(t.store, (_instance, state) => {
+      const db = new Db(state.storage.sql);
+      const facts = statusFacts(db, id, noteQuote, { reached: false })!;
+      const legacy = getLegacyObject.run(state.storage.sql, { uuid: "legacy-image", origin: ORIGIN });
+      return {
+        note: noteOf(facts),
+        image: JSON.parse(legacy.image ?? "null") as { name?: string },
+        filterText: storedSearchableText(db, id, at),
+      };
+    });
+    described(
+      (note.attachment as { name?: unknown }[]).filter((a) => "name" in a),
+      "name",
+    );
+    expect(image.name).toBe(SHOWN);
+    // The filter text holds the descriptions as shown.
+    expect(filterText).toBe(
+      ["", "described", Array.from({ length: MAX_STATUS_MEDIA }, () => SHOWN).join("\n\n")].join("\n\n"),
+    );
+    // The rows the read takes stay within R.
+    const rows = await runInDurableObject(t.store, (_instance, state) => {
+      const real = state.storage.sql;
+      const visible = [id as VisibleStatusId];
+      const shared = presentation(new Db(real), visible, { origin: ORIGIN, viewer: { accountId: ALICE, now: at } });
+      let bytes = 0;
+      const counting = observedSql(real, (read) => {
+        bytes += heap(read);
+      });
+      presentStatusesWithin(new Db(counting), shared, visible, Infinity, true, 1);
+      const [bound] = real
+        .exec<{ bytes: number }>(statusRowBoundSql(), JSON.stringify(visible), ALICE, MAX_FILTERS)
+        .toArray();
+      return { bytes, bound: bound!.bytes };
+    });
+    expect(rows.bytes).toBeLessThanOrEqual(rows.bound);
+  }, 120_000);
+
+  // A keyword past the 10,000th code point of a description as decoded is not in the filter text, as it is not shown.
+  it("leaves a description's text past MAX_MEDIA_DESCRIPTION_LENGTH code points out of the filter text", async () => {
+    const t = await setup();
+    const id = await storedStatus(t, ALICE, {
+      content: "<p>x</p>",
+      spoiler: "",
+      media: [{ url: "https://m.example/0.png", preview: null, description: "", meta: null }],
+      mentions: [],
+      tags: [],
+      poll: null,
+    });
+    const text = await runInDurableObject(t.store, (_instance, state) => {
+      // 10,001 bytes of a malformed run, then the keyword: seven characters to SQLite, within both bounds.
+      state.storage.sql.exec(
+        "UPDATE media_attachments SET description = CAST(? AS TEXT) WHERE status_id = ?",
+        malformedRun(MAX_MEDIA_DESCRIPTION_LENGTH + 1, "secret"),
+        id,
+      );
+      return storedSearchableText(new Db(state.storage.sql), id, new Date(NOW).toISOString());
+    });
+    expect(text).toBe(`\n\nx\n\n${SHOWN}`);
+    expect(text).not.toContain("secret");
+  });
+});
+
 // The least spare the timeline heap and the conversation's JSON keep (#1142).
 const SPARE_FLOOR = 4096;
 
@@ -2860,7 +3101,7 @@ describe("the table of maxima (RES-3)", () => {
     // The conversation's spare under the ceiling (one card in that shape): at least SPARE_FLOOR (#1142), and
     // SHAPE_CEILING_PERCENT is the least whole percent that keeps it.
     const spare = LIMIT - conservative.conversation!;
-    expect(spare).toBe(62_869);
+    expect(spare).toBe(57_185);
     expect(spare).toBeGreaterThanOrEqual(SPARE_FLOOR);
     expect(ceiling(SHAPE_CEILING_PERCENT - 1) - conservative.conversation!).toBeLessThan(SPARE_FLOOR);
     expect(conservative).toEqual(CONSERVATIVE_JSON);
@@ -2878,8 +3119,8 @@ describe("the table of maxima (RES-3)", () => {
     const payload =
       escaped.warningPayload + 2 * (conservative.warningNotification! - escaped.shapes.warningNotification!.json);
     expect({ measured: Math.max(...payloads), conservative: payload }).toEqual({
-      measured: 337_412,
-      conservative: 476_110,
+      measured: 337_576,
+      conservative: 476_798,
     });
     expect(payload).toBeLessThan(STREAM_LIMITS.payloadBytes);
     // The derived bounds of a local field value and of a local account's fields, and the fill's linked value.
@@ -2914,32 +3155,23 @@ describe("the table of maxima (RES-3)", () => {
 
   // The most a stream turn presents (stream-hub.ts, RES-6): a turn starts a unit while UNIT_WORST is left of
   // TURN_BUDGET, and charges it whole once presented, so the unit that crosses it presents at most 2S + 2 bytes
-  // (encoding the JSON again at most doubles a byte, plus two quotes), S the most JSON a streamed subject presents:
-  // `update` and `status.update` a status, at most a boost of a quote; `conversation` its participants and a last
-  // status, counted as a boost of a quote, which it no longer shows (conversationStream shows at most a quote), so S is
-  // conservative until it is re-derived from the quote conversation (#1610); `notification` its account, its status
-  // and a report and a warning (their conservative figures count a fallback each, which a streamed notification does
-  // not carry); an announcement, at its derived maximum (test/announcement-bounds.test.ts).
+  // (encoding the JSON again at most doubles a byte, plus two quotes), S the most JSON a streamed subject presents
+  // (streamedKinds): the quote conversation's, since a conversation shows no boost as its last status. The streamed
+  // witnesses, a conversation whose last status is the quote and a notification whose status is the boost of the
+  // quote, present within their kinds.
   it("bounds what a stream turn presents by the most a streamed subject presents", async () => {
-    const c = await conservativeJson();
-    const ANNOUNCEMENT = 248_997;
-    const kinds = {
-      status: c.boostOfQuote!,
-      conversation: c.conversation! - c.quote! + c.boostOfQuote!,
-      notification: c.boostOfQuote! + c.reportNotification! + c.warningNotification!,
-      announcement: ANNOUNCEMENT,
-    };
+    const kinds = await streamedKinds();
     const most = Math.max(...Object.values(kinds));
     expect({ ...kinds, most }).toEqual({
-      status: 5_818_830,
-      conversation: 7_568_003,
-      notification: 6_626_929,
-      announcement: ANNOUNCEMENT,
-      most: 7_568_003,
+      status: 5_820_048,
+      conversation: 7_157_017,
+      notification: 6_629_365,
+      announcement: ANNOUNCEMENT_JSON,
+      most: 7_157_017,
     });
-    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(18_806_024);
+    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(17_984_052);
     const { streamed } = await measureFill("escaped");
-    expect(streamed).toEqual({ conversation: 7_074_778, conversationPayload: 7_836_062, notification: 5_918_803 });
+    expect(streamed).toEqual({ conversation: 7_076_822, conversationPayload: 7_838_386, notification: 5_919_387 });
     expect(streamed!.conversation).toBeLessThanOrEqual(kinds.conversation);
     expect(streamed!.conversationPayload).toBeLessThanOrEqual(2 * most + 2);
     expect(streamed!.notification).toBeLessThanOrEqual(kinds.notification);
@@ -2954,7 +3186,7 @@ describe("the table of maxima (RES-3)", () => {
     expect({
       chunk: 50 * (shapes.account!.sqlite + 2 * STATIC_URL_LIMIT + REMOTE_VERIFIED_JSON_BYTES + MOVED_ROW_SQLITE_MAX),
       page: 80 * conservative.account!,
-    }).toEqual({ chunk: 6_905_000, page: 12_001_760 });
+    }).toEqual({ chunk: 6_905_000, page: 12_034_240 });
   }, 600_000);
 
   // Half of the Store isolate's 128 MB. A timeline's largest item is a status, a quote or a boost of a quote; groups
@@ -2978,6 +3210,99 @@ describe("the table of maxima (RES-3)", () => {
     expect(HALF - (timelines.backstop + 1.25 * CAP_STEP)).toBeLessThan(SPARE_FLOOR);
     for (const p of [groups, reports]) {
       expect(p.backstop).toBeLessThanOrEqual(2 * HALF);
+    }
+  }, 900_000);
+
+  // A stream unit's isolate peak (stream-hub.ts, RES-6): a unit presents one subject for one viewer, measures its
+  // payload from the presented object (encodedTwiceBytes) and, within payloadBytes, encodes it and sends one stream's
+  // envelope at a time. Under the heap model ("Heap at 8 MiB per answer"), each streamed kind takes its rows with 25%
+  // headroom at their per-column maxima (a status the largest timeline item's; a conversation its read's; a
+  // notification its status's, a report notification's and a warning's together; an announcement its list's and one
+  // presentation's, ANNOUNCEMENT_ROW_CAPS), three times its conservative JSON (the presented object), four times
+  // MESSAGE_MAX (the payload encoded once and twice, then the twice-encoded payload and one envelope, at two bytes a
+  // code unit), and its presentation's scratch (a moved-to account's emoji; an announcement's rendering:
+  // test/announcement-bounds.test.ts). MESSAGE_MAX is the largest frame: payloadBytes, the envelope's keys, the
+  // longest event and the longest stream, `["hashtag:local", tag]` with a tag of tagBytes bytes escaped to six each.
+  // Imported text of malformed UTF-8 stays within the fills ("an account of malformed imported text", "a status of
+  // malformed imported text"), an attachment's too: its description values read within the fills' largest, at its
+  // stored bound, and each description it presents within the escaped fill's.
+  it("bounds a stream unit's isolate peak by the most a subject presents", async () => {
+    const envelopeKeys = jsonBytes({ stream: 0, event: 0, payload: 0 }) - 3;
+    const longestEvent = Math.max(...STREAM_EVENT_NAMES.map((name) => jsonBytes(name)));
+    const longestStream = jsonBytes(["hashtag:local", C.repeat(STREAM_LIMITS.tagBytes)]);
+    const messageMax = STREAM_LIMITS.payloadBytes + envelopeKeys + longestEvent + longestStream;
+    expect({ envelopeKeys, longestEvent, longestStream, messageMax }).toEqual({
+      envelopeKeys: 31,
+      longestEvent: 23,
+      longestStream: 1556,
+      messageMax: MESSAGE_MAX,
+    });
+    const measures = await Promise.all(FILLS.map(measureFill));
+    const rows = (item: string) => perColumn(measures.map((m) => m.heaps[item]!)).heap;
+    const kinds = await streamedKinds();
+    const unit = (rowHeap: number, json: number, scratch: number) => {
+      const peak = { rows: 1.25 * rowHeap, objects: 3 * json, transient: 4 * messageMax + scratch };
+      return { ...peak, peak: peak.rows + peak.objects + peak.transient };
+    };
+    const peaks = {
+      status: unit(Math.max(rows("status"), rows("quote"), rows("boostOfQuote")), kinds.status, MOVED_EMOJI_SCRATCH),
+      conversation: unit(rows("conversation"), kinds.conversation, MOVED_EMOJI_SCRATCH),
+      notification: unit(
+        rows("boostOfQuote") + rows("reportNotification") + rows("warningNotification"),
+        kinds.notification,
+        MOVED_EMOJI_SCRATCH,
+      ),
+      announcement: unit(
+        ANNOUNCEMENT_ROW_CAPS.list + ANNOUNCEMENT_ROW_CAPS.presentation,
+        kinds.announcement,
+        2 * (ANNOUNCEMENT_CONTENT_BYTES + 310_064 + 60_009),
+      ),
+    };
+    expect(peaks).toEqual(STREAM_UNIT_PEAKS);
+    for (const peak of Object.values(peaks)) {
+      expect(peak.peak).toBeLessThanOrEqual(HALF);
+    }
+    // The attachment witness: four descriptions of malformed UTF-8 at MEDIA_DESCRIPTION_BYTES, each decoded to 40,000
+    // U+FFFD. As for the account witness, RowMeter's count of a value (two bytes a code unit) is the model's of its
+    // stored bytes (two a byte), the raw fill's largest description; the status's rows stay within the fills', and
+    // each description is presented within the escaped fill's.
+    const t = await setup();
+    const id = await malformedAttachments(t);
+    const input = { credential: await credential(t), now: NOW, id, present: { origin: ORIGIN } };
+    const witness = await runInDurableObject(t.store, (_instance, state) => {
+      let rowHeap = 0;
+      let description = 0;
+      const counting = observedSql(state.storage.sql, (read) => {
+        rowHeap += heap(read);
+        for (const row of read) {
+          if (typeof row.description === "string") {
+            description = Math.max(description, VALUE_BYTES + 2 * row.description.length);
+          }
+        }
+      });
+      let answer = getStatus.run(counting, input as never) as Record<string, unknown>;
+      while (answer.status === "ok" && "value" in answer) {
+        answer = answer.value as Record<string, unknown>;
+      }
+      const { stored } = state.storage.sql
+        .exec<{ stored: number }>(
+          "SELECT max(octet_length(description)) AS stored FROM media_attachments WHERE status_id = ?",
+          id,
+        )
+        .one();
+      return { rowHeap, description, stored, answer: answer as unknown as Presented };
+    });
+    const fillsDescription = Math.max(
+      ...measures.flatMap((m) => [...m.heaps.status!.values()].map((h) => h.columns.get("description")?.largest ?? 0)),
+    );
+    expect(witness.stored).toBe(MEDIA_DESCRIPTION_BYTES);
+    expect(witness.description).toBe(VALUE_BYTES + 2 * witness.stored);
+    expect(witness.description).toBeLessThanOrEqual(fillsDescription);
+    expect(witness.rowHeap).toBeLessThanOrEqual(rows("status"));
+    const shown = witness.answer.media_attachments.map((m) => jsonBytes(m.description));
+    expect(shown).toHaveLength(MAX_STATUS_MEDIA);
+    for (const bytes of shown) {
+      expect(bytes).toBeLessThanOrEqual(jsonBytes(C.repeat(MAX_MEDIA_DESCRIPTION_LENGTH)));
     }
   }, 900_000);
 

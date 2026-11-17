@@ -57,7 +57,13 @@ export const NOTIFICATION_TYPES = [
   "quoted_update",
   "admin.report",
   "moderation_warning",
+  "added_to_collection",
+  "collection_update",
 ] as const satisfies readonly NotificationType[];
+
+// The collection a collection notification is about (an added_to_collection's item's, a collection_update's own), by
+// its owner; null for none.
+export type ModelCollectionKey = { kind: "item" | "collection"; owner: number };
 const EVERY_TYPE: Exclude<NotificationType, (typeof NOTIFICATION_TYPES)[number]> extends never ? true : false = true;
 void EVERY_TYPE;
 
@@ -143,7 +149,7 @@ export class PolicyModel {
     return this.accountFound(x) && (withSuspended || this.available(x));
   }
 
-  // R38: an instance domain block covers `domain` (lowercase, no trailing dot) when the block that rules it is a
+  // R38: an instance domain block covers `domain` (lowercase, no trailing dots) when the block that rules it is a
   // suspend: the block of the domain itself or of its nearest parent, the longest match (Mastodon's
   // DomainBlock.rule_for). A child noop exempts its subdomains from a parent's suspend.
   covered(domain: string): boolean {
@@ -157,8 +163,8 @@ export class PolicyModel {
   // covers.
   domainCovered(x: number): boolean {
     const account = this.account(x);
-    const host = new URL(account.uri).hostname.replace(/\.$/, "");
-    return !account.local && (this.covered((account.domain ?? "").replace(/\.$/, "")) || this.covered(host));
+    const host = new URL(account.uri).hostname.replace(/\.+$/, "");
+    return !account.local && (this.covered((account.domain ?? "").replace(/\.+$/, "")) || this.covered(host));
   }
 
   // VIS-30, the public block list (docs/visibility.md, "Instance domain blocks"): a suspended local viewer's token is
@@ -188,8 +194,8 @@ export class PolicyModel {
   // a domain block can name.
   inDomain(x: number, domain: string): boolean {
     const account = this.account(x);
-    // The host of the actor id, lowercased, without a port or a trailing dot.
-    const host = new URL(account.uri).hostname.replace(/\.$/, "");
+    // The host of the actor id, lowercased, without a port or its trailing dots.
+    const host = new URL(account.uri).hostname.replace(/\.+$/, "");
     return !account.local && (account.domain === domain || host === domain);
   }
 
@@ -478,22 +484,36 @@ export class PolicyModel {
     );
   }
 
-  // R45: the owner may feature the member when the member is available, neither blocks the other, and the member is
-  // local, discoverable, and unlocked, followed (accepted) by the owner, or the owner itself. A remote member is refused.
+  // R45 (feature_approval.current_user): the answer to `viewer` for featuring `x`. Mastodon's policy in its order (no
+  // viewer: denied; a local account: denied unless discoverable, then denied while locked unless the viewer follows it
+  // or is it, else automatic; a remote one: missing, no policy being stored), then denied when either blocks the other
+  // or `x` is unavailable.
+  featureApproval(
+    x: number,
+    viewer: Viewer,
+    discoverable: (x: number) => boolean,
+    locked: (x: number) => boolean,
+  ): "automatic" | "missing" | "denied" {
+    if (viewer === null || !this.available(x) || this.blocks(x, viewer) || this.blocks(viewer, x)) {
+      return "denied";
+    }
+    if (!this.account(x).local) {
+      return "missing";
+    }
+    if (!discoverable(x)) {
+      return "denied";
+    }
+    return locked(x) && x !== viewer && !this.follows(viewer, x) ? "denied" : "automatic";
+  }
+
+  // R45: the owner may feature the member when the member's answer to it is automatic or manual.
   mayFeature(
     owner: number,
     member: number,
     discoverable: (x: number) => boolean,
     locked: (x: number) => boolean,
   ): boolean {
-    return (
-      this.available(member) &&
-      !this.blocks(owner, member) &&
-      !this.blocks(member, owner) &&
-      this.account(member).local &&
-      discoverable(member) &&
-      (member === owner || !locked(member) || this.follows(owner, member))
-    );
+    return ["automatic", "manual"].includes(this.featureApproval(member, owner, discoverable, locked));
   }
 
   // R45: an item lists its collection among those featuring the viewer when it is the viewer's, in any state, and the
@@ -885,8 +905,15 @@ export class PolicyModel {
   }
 
   // R15 as notify writes a notification: shown, and its status (if any) not in a conversation the recipient mutes.
-  notified(r: number, type: NotificationType, from: number, s: number | null, warned: number | null = null): boolean {
-    return (s === null || !this.conversationMuted(r, s)) && this.shown(r, type, from, s, warned);
+  notified(
+    r: number,
+    type: NotificationType,
+    from: number,
+    s: number | null,
+    warned: number | null = null,
+    collection: ModelCollectionKey | null = null,
+  ): boolean {
+    return (s === null || !this.conversationMuted(r, s)) && this.shown(r, type, from, s, warned, collection);
   }
 
   // R15's policy part (NotifyService::FilterCondition) for a recipient with Mastodon's default policy and no
@@ -963,8 +990,17 @@ export class PolicyModel {
   // in the author's own conversation (a known partner that is the author), and that home's filter passes. A
   // quoted_update is shown while its status's quote is accepted and the recipient may see the quoted status. An
   // admin.report is shown to the OAuth admin alone (R37). A moderation_warning is shown only from the recipient itself,
-  // naming a warning of the recipient (`warned`: the target of the warning it names, null for none; R42).
-  shown(r: number, type: NotificationType, from: number, s: number | null, warned: number | null = null): boolean {
+  // naming a warning of the recipient (`warned`: the target of the warning it names, null for none; R42). An
+  // added_to_collection names an item and a collection_update a collection (`collection`), shown while it is the
+  // sender's and R45 shows it to the recipient.
+  shown(
+    r: number,
+    type: NotificationType,
+    from: number,
+    s: number | null,
+    warned: number | null = null,
+    collection: ModelCollectionKey | null = null,
+  ): boolean {
     if (
       (from === r && type !== "poll" && type !== "moderation_warning") ||
       !this.available(from) ||
@@ -1006,6 +1042,14 @@ export class PolicyModel {
         return r === this.admin;
       case "moderation_warning":
         return from === r && warned === r;
+      case "added_to_collection":
+      case "collection_update":
+        return (
+          collection !== null &&
+          collection.kind === (type === "added_to_collection" ? "item" : "collection") &&
+          collection.owner === from &&
+          this.collectionShown(collection.owner, r)
+        );
       default:
         return true;
     }
@@ -1015,7 +1059,13 @@ export class PolicyModel {
   // is shown (R15), and not filtered, to a local, available recipient, the subscription's token is still valid, its alert for the type
   // is on, and its policy lets the sender through (followed: the recipient follows the sender; follower: the sender
   // follows the recipient; none: nobody).
-  pushed(sub: ModelSubscription, type: NotificationType, from: number, s: number | null): boolean {
+  pushed(
+    sub: ModelSubscription,
+    type: NotificationType,
+    from: number,
+    s: number | null,
+    collection: ModelCollectionKey | null = null,
+  ): boolean {
     const r = sub.recipient;
     const policy =
       sub.policy === "all" ||
@@ -1024,7 +1074,7 @@ export class PolicyModel {
     return (
       this.account(r).local &&
       this.available(r) &&
-      this.shown(r, type, from, s) &&
+      this.shown(r, type, from, s, null, collection) &&
       !this.filtered(r, type, from, s) &&
       (sub.tokenExpiresAt === null || sub.tokenExpiresAt > this.world.now) &&
       sub.alerts.includes(type) &&
@@ -1095,7 +1145,7 @@ export class PolicyModel {
     }
     if (
       hosts !== null &&
-      (this.covered(new URL(hosts.inbox).hostname.replace(/\.$/, "")) ||
+      (this.covered(new URL(hosts.inbox).hostname.replace(/\.+$/, "")) ||
         (hosts.domains !== null && hosts.domains.length > 0 && hosts.domains.every((d) => this.covered(d))))
     ) {
       return false;

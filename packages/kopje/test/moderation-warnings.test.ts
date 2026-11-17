@@ -378,7 +378,7 @@ describe("moderation_warning: plans (RES-7)", () => {
           });
           return written;
         });
-        const account = presentAccountById(db, bob.id, PRESENT)!;
+        const account = presentAccountById(db, bob.id, { ...PRESENT, viewerId: null })!;
         expect(presentAccountWarning(db, id, account)).toMatchObject({ id, text: phase });
         return plans.map(({ query, plan }) => ({ query, plan }));
       });
@@ -416,7 +416,7 @@ describe("moderation_warning: plans (RES-7)", () => {
     }
     const [deleted] = of(/^DELETE FROM notifications INDEXED BY notifications_natural\s+WHERE account_id = \?1/);
     expect(deleted?.plan.join("\n")).toMatch(
-      /SEARCH notifications USING INDEX notifications_natural \(account_id=\? AND type=\? AND from_account_id=\? AND <expr>=\? AND <expr>=\? AND <expr>=\?\)/,
+      /SEARCH notifications USING INDEX notifications_natural \(account_id=\? AND type=\? AND from_account_id=\? AND <expr>=\? AND <expr>=\? AND <expr>=\? AND <expr>=\? AND <expr>=\?\)/,
     );
     const [presented] = of(/FROM account_warnings/);
     expect(presented?.plan).toEqual(["SEARCH account_warnings USING INTEGER PRIMARY KEY (rowid=?)"]);

@@ -2,6 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { VALUE_BYTES } from "../../src/db/sql";
+import { FEATURE_APPROVAL_COLUMNS } from "../../src/domain/audience";
 import { statusRowBoundSql } from "../../src/domain/status-rows";
 import { boundedWindow, type MergedRow, type Window } from "../../src/domain/windows";
 import { migratedStore } from "../helpers";
@@ -9,7 +10,7 @@ import { statementId } from "../plan-audit";
 import { type Baseline, type Count, expectBeside, PlanWitness, STATISTICS } from "../plan-witness";
 import type { SqlRow } from "../read-helpers";
 import { normalized } from "../sql-text";
-import { MAIN_PARAMETERS, ROW_ALLOWANCES } from "./main-allowances";
+import { ADDED_STATEMENTS, MAIN_PARAMETERS, ROW_ALLOWANCES } from "./main-allowances";
 import RECORDED from "./recorded.json";
 import { buildWorld, FLOWS, POPULATIONS, WORLDS, worldName } from "./witness-world";
 
@@ -17,7 +18,8 @@ import { buildWorld, FLOWS, POPULATIONS, WORLDS, worldName } from "./witness-wor
 // "Queries"), cost no more than main's: on the runtime whose SQLite (3.53.4) prepares main's statements, each changed
 // statement returns main's rows (a window: main's Window, through each side's own post-processing), writes as many and changes
 // the same rows, and reads no more rows than main's, after ANALYZE and under the plan audit's singleton statistics, in
-// every world of witness-world.ts; and each flow runs as many statements as main's, each unchanged one as often.
+// every world of witness-world.ts; and each flow runs as many statements as main's, each unchanged one as often, besides
+// the statements main's flows never ran (main-allowances.ts ADDED_STATEMENTS), each as often as recorded.
 // main's statements are main's literal text, recorded from main's sources at the commit recorded.json names, with the
 // flows' other statements (test-node/witness-recording.test.ts checks both sides against the sources): at the
 // position where main's sequence and the rewrite's differ, main's statement is the baseline and the rewrite's its
@@ -73,34 +75,42 @@ function withoutAdded(columns: readonly string[]): NonNullable<Baseline["result"
 
 // R (statusRowBoundSql) counts the author account row of each status row an item reads by
 // rowHeapSql(ACCOUNT_COLUMN_MAP), and so the added columns, which main's text does not count: VALUE_BYTES and twice
-// its value's UTF-8 bytes for each, ADDED_ROW_BYTES for an account that holds their defaults. R's rows as main's
-// statement counts them: each item's bytes less ADDED_ROW_BYTES for each of those account rows, counted in the world
-// (authorRows), with every other value, the items and their order still main's.
+// its value's UTF-8 bytes for each, ADDED_ROW_BYTES for an account that holds their defaults. For a viewer it also
+// counts, for each status row of its x, the viewer's feature_approval answers for the author and its moved-to account
+// (#1589 D16, FEATURE_APPROVAL_COLUMNS twice), FEATURE_ROW_BYTES. R's rows as main's statement counts them: each
+// item's bytes less ADDED_ROW_BYTES for each of those account rows and, for a viewer, FEATURE_ROW_BYTES for each of
+// those status rows, counted in the world (itemRows), with every other value, the items and their order still main's.
 const ADDED_ROW_BYTES = Object.values(ADDED_DEFAULTS).reduce(
   (sum, value) => sum + VALUE_BYTES + 2 * new TextEncoder().encode(String(value)).length,
   0,
 );
+const FEATURE_ROW_BYTES = 2 * FEATURE_APPROVAL_COLUMNS.rowHeap;
 const R_TEXT = normalized(statusRowBoundSql());
 const counts = (text: string, column: string) => text.includes(`octet_length(a.${column})`);
-function rWithoutAdded(authorRows: (ids: readonly string[]) => readonly number[]): NonNullable<Baseline["result"]> {
+type ItemRows = { authors: number; statuses: number };
+function rWithoutAdded(itemRows: (ids: readonly string[]) => readonly ItemRows[]): NonNullable<Baseline["result"]> {
   return {
     main: (rows: SqlRow[]) => rows,
     mine: (rows: SqlRow[], params: readonly SqlStorageValue[]) => {
-      const accounts = authorRows(JSON.parse(params[0] as string) as string[]);
+      const items = itemRows(JSON.parse(params[0] as string) as string[]);
+      const viewer = params[1] !== null;
       return (rows as { k: number; bytes: number }[]).map((row) => {
-        const n = accounts[row.k];
+        const n = items[row.k];
         if (n === undefined) {
           throw new Error(`R: no item at ${row.k}`);
         }
-        return { ...row, bytes: row.bytes - n * ADDED_ROW_BYTES };
+        return {
+          ...row,
+          bytes: row.bytes - n.authors * ADDED_ROW_BYTES - (viewer ? n.statuses * FEATURE_ROW_BYTES : 0),
+        };
       });
     },
   };
 }
 
-// The author account rows R reads for each item of `ids` in the world `sql`: those of the status, its boosted
-// original and the quoted status of the status or of its original (the status rows of statusRowBoundSql's x), each
-// that is stored. Each holds the added columns' defaults and has not moved (its moved-to account's added flags would
+// The status rows of statusRowBoundSql's x for each item of `ids` in the world `sql` (the status, and for a stored one
+// its boosted original and the quoted status of the status or of its original), and the author account rows R reads
+// for it: those of each of them that is stored. Each holds the added columns' defaults and has not moved (its moved-to account's added flags would
 // count too), so that ADDED_ROW_BYTES is the whole of its difference. Each read takes one row by its primary key,
 // which SQLite plans without the statistics: the hook runs under the case's, and under singleton statistics a join of
 // these tables scans them for each item.
@@ -110,7 +120,7 @@ const OTHER_THAN_DEFAULTS = [
   ),
   "a.moved_to_account_id IS NOT NULL",
 ].join(" OR ");
-function authorRowsIn(sql: SqlStorage, ids: readonly string[]): number[] {
+function itemRowsIn(sql: SqlStorage, ids: readonly string[]): ItemRows[] {
   const status = (id: string | null) =>
     id === null
       ? undefined
@@ -131,29 +141,31 @@ function authorRowsIn(sql: SqlStorage, ids: readonly string[]): number[] {
   return ids.map((id) => {
     const item = status(id);
     if (item === undefined) {
-      return 0;
+      return { authors: 0, statuses: 1 };
     }
-    const accounts = [item, status(item.reblog), status(quoted(item.reblog ?? id))]
+    const quotedId = quoted(item.reblog ?? id);
+    const accounts = [item, status(item.reblog), status(quotedId)]
       .map((row) => (row === undefined ? undefined : other(row.account)))
       .filter((flag) => flag !== undefined);
     if (accounts.some((flag) => flag !== 0)) {
       throw new Error(`R: an author account of ${id} holds other than the added columns' defaults, or has moved`);
     }
-    return accounts.length;
+    return { authors: accounts.length, statuses: 1 + (item.reblog === null ? 0 : 1) + (quotedId === null ? 0 : 1) };
   });
 }
 
 // The world the case runs in, for R's hook.
 let caseWorld: SqlStorage | undefined;
-const authorRows = (ids: readonly string[]) => {
+const itemRows = (ids: readonly string[]) => {
   if (caseWorld === undefined) {
     throw new Error("R: no world");
   }
-  return authorRowsIn(caseWorld, ids);
+  return itemRowsIn(caseWorld, ids);
 };
 
 // How a pair's rows compare: a window's through each side's post-processing; R's and the account read's without what
-// the added columns add. Any other statement that counts an added column fails.
+// the added columns add, and R's without the feature_approval answers. Any other statement that counts an added
+// column fails.
 function resultOf(key: string, main: string, mine: string): Baseline["result"] {
   if (main.includes("f(bound) AS")) {
     return windowResult(main, mine);
@@ -163,7 +175,7 @@ function resultOf(key: string, main: string, mine: string): Baseline["result"] {
     if (mine !== R_TEXT || counted.length !== ADDED_COLUMNS.length) {
       throw new Error(`${key}: a statement other than R counts ${counted.join(", ")} beside main's`);
     }
-    return rWithoutAdded(authorRows);
+    return rWithoutAdded(itemRows);
   }
   const added = addedSinceBase(main, mine);
   return added.length > 0 ? withoutAdded(added) : undefined;
@@ -178,13 +190,23 @@ async function planOf(key: string, writes: string | undefined): Promise<Plan> {
   if (recorded === undefined) {
     throw new Error(`no recording of ${key}`);
   }
-  expect(recorded.mine.length, `${key}: as many statements as main's`).toBe(recorded.main.length);
   const baselines: Record<string, Baseline> = {};
   const allowed: Record<string, Count> = {};
   const expected: string[] = [];
+  // A statement main's flows never ran (ADDED_STATEMENTS) is allowed as often as recorded and pairs with none.
+  const paired: string[] = [];
+  for (const n of recorded.mine) {
+    const mine = statements[n]!;
+    if (ADDED_STATEMENTS[await statementId(mine)] === undefined) {
+      paired.push(mine);
+    } else {
+      allowed[mine] = ((allowed[mine] as number | undefined) ?? 0) + 1;
+    }
+  }
+  expect(paired.length, `${key}: as many statements as main's, besides the added ones`).toBe(recorded.main.length);
   for (const [i, n] of recorded.main.entries()) {
     const main = statements[n]!;
-    const mine = statements[recorded.mine[i]!]!;
+    const mine = paired[i]!;
     if (main === mine) {
       allowed[main] = ((allowed[main] as number | undefined) ?? 0) + 1;
       continue;
@@ -228,7 +250,10 @@ describe("the rewritten statements beside main's", () => {
   });
 
   it("compare R's items with exactly ADDED_ROW_BYTES more for each author account row of each", () => {
-    const { main: of, mine: shown } = rWithoutAdded(() => [2, 1]);
+    const { main: of, mine: shown } = rWithoutAdded(() => [
+      { authors: 2, statuses: 3 },
+      { authors: 1, statuses: 1 },
+    ]);
     const params = [JSON.stringify(["1", "2"]), null, 0];
     const main = [
       { k: 0, bytes: 7_442 },
@@ -243,7 +268,24 @@ describe("the rewritten statements beside main's", () => {
     expect(() => shown([{ k: 2, bytes: 0 }], params)).toThrow("no item at 2");
   });
 
-  it("count R's author account rows in the world, each holding the added columns' defaults", async () => {
+  it("compare R's items for a viewer with FEATURE_ROW_BYTES more for each status row of each besides", () => {
+    const { main: of, mine: shown } = rWithoutAdded(() => [
+      { authors: 2, statuses: 3 },
+      { authors: 1, statuses: 1 },
+    ]);
+    const params = [JSON.stringify(["1", "2"]), "9", 0];
+    const main = [
+      { k: 0, bytes: 7_442 },
+      { k: 1, bytes: 3_696 },
+    ];
+    const plus = (statusRow: number, rows: readonly number[]) =>
+      main.map(({ k, bytes }) => ({ k, bytes: bytes + [2, 1][k]! * ADDED_ROW_BYTES + statusRow * rows[k]! }));
+    expect(shown(plus(FEATURE_ROW_BYTES, [3, 1]), params)).toEqual(of(main, params));
+    expect(shown(plus(FEATURE_ROW_BYTES, [2, 1]), params)).not.toEqual(of(main, params));
+    expect(shown(plus(FEATURE_ROW_BYTES - 1, [3, 1]), params)).not.toEqual(of(main, params));
+  });
+
+  it("count R's status and author account rows in the world, each author holding the added columns' defaults", async () => {
     const store = await migratedStore();
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
@@ -254,9 +296,12 @@ describe("the rewritten statements beside main's", () => {
 						WHERE reblog_of_id IS NULL AND id NOT IN (SELECT status_id FROM quotes) ORDER BY id LIMIT 1`,
         )
         .one();
-      expect(authorRowsIn(sql, [id, "0"])).toEqual([1, 0]);
+      expect(itemRowsIn(sql, [id, "0"])).toEqual([
+        { authors: 1, statuses: 1 },
+        { authors: 0, statuses: 1 },
+      ]);
       sql.exec("UPDATE accounts SET avatar_description = 'A cat' WHERE id = ?", account);
-      expect(() => authorRowsIn(sql, [id])).toThrow("holds other than the added columns' defaults");
+      expect(() => itemRowsIn(sql, [id])).toThrow("holds other than the added columns' defaults");
     });
   });
 

@@ -512,9 +512,10 @@ export const register: ApiHandler = async (c, deps) => {
   return mastodonError(403, "Forbidden");
 };
 
-// acct is "user" or "user@domain"; the instance's own host means a local account.
+// acct (Rails' params[:acct], the last value the query gives) is "user" or "user@domain"; the instance's own host means
+// a local account.
 export const lookupAccount: ApiHandler = async (c, deps) => {
-  const acct = (c.req.query("acct") ?? "").trim().replace(/^@/, "");
+  const acct = (c.req.queries("acct")?.at(-1) ?? "").trim().replace(/^@/, "");
   const at = acct.indexOf("@");
   const username = at === -1 ? acct : acct.slice(0, at);
   const host = at === -1 ? null : acct.slice(at + 1).toLowerCase();

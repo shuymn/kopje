@@ -56,6 +56,7 @@ export default async function setup(project: TestProject): Promise<void> {
     });
 
     project.provide("cutoverImages", await convertedWithImages(dir));
+    project.provide("cutoverHosts", await convertedWithHostSpellings(dir));
 
     await rm(MAINTENANCE_CACHE, { recursive: true, force: true });
     const bundleDir = join(MAINTENANCE_CACHE, "bundle");
@@ -125,9 +126,43 @@ async function convertedWithImages(dir: string): Promise<{ dump: string; origina
   return { dump: await readFile(join(outDir, "kopje.dump"), "utf8"), originals };
 }
 
+// The same export with remote actors whose ids spell their host with a port, capitals, Unicode or trailing dots
+// (hostSpellings), for test/cutover-import.test.ts: the dump and the independently computed expectations.
+async function convertedWithHostSpellings(
+  dir: string,
+): Promise<{ dump: string; expected: Record<string, Record<string, string>> }> {
+  const fixture = await buildLegacyFixture({ level: 39, notificationSequence: 12n, hostSpellings: true });
+  const exportPath = join(dir, "export-hosts");
+  await mkdir(exportPath);
+  for (const [table, text] of fixture.texts) {
+    await writeFile(join(exportPath, `${table}.sql`), text);
+  }
+  const outDir = join(dir, "out-hosts");
+  const { ok, manifest } = await convertExport({
+    exportPath,
+    outDir,
+    acceptDeletions: false,
+    baseTime: Date.parse("2026-10-20T00:00:00.000Z"),
+    env: {},
+    version: "test",
+  });
+  if (!ok) {
+    throw new Error(`fixture conversion with host spellings stopped: ${JSON.stringify(manifest.stop)}`);
+  }
+  const loaded = loadLegacyExport({ texts: fixture.texts.values() });
+  const { records: expected } = expectedFromLegacy(loaded.db, {
+    originalActorIds: loaded.originalActorIds,
+    source: loaded.source,
+    notificationSequence: loaded.report.notificationSequence,
+  });
+  loaded.db.close();
+  return { dump: await readFile(join(outDir, "kopje.dump"), "utf8"), expected };
+}
+
 declare module "vitest" {
   export interface ProvidedContext {
     cutover: { dump: string; expected: Record<string, Record<string, string>> };
+    cutoverHosts: { dump: string; expected: Record<string, Record<string, string>> };
     cutoverImages: { dump: string; originals: Record<string, string> };
     maintenance: { source: string; workerPath: string };
   }

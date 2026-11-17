@@ -7,6 +7,8 @@ import {
   type PageQuery,
   type Present,
   presentAccountsWithin,
+  presentFor,
+  type PresentInput,
   resolveAccountId,
   routeAccountId,
   windowAccountIds,
@@ -228,9 +230,9 @@ export function ownedAccountsWindow(
 // `from`, up to MAX_LIST_MEMBERS_ANSWERED and within ANSWER_BYTES (ownedAccountsPage). A pending member is
 // listed too. Null when the list is not the viewer's.
 export const listAccounts = userReadOperation<
-  { id: string; page: PageQuery | null; from?: string | undefined; present: Present },
+  { id: string; page: PageQuery | null; from?: string | undefined; present: PresentInput },
   Page<Account> | null
->((db, { id, ...query }, { accountId }) => {
+>((db, { id, present, ...query }, { accountId }) => {
   if (ownList(db, accountId, id) === undefined) {
     return null;
   }
@@ -240,7 +242,7 @@ export const listAccounts = userReadOperation<
     (order) => `SELECT la.account_id AS id FROM list_accounts la
 			WHERE la.list_id = ?1 AND la.account_id < ?2 AND la.account_id > ?3 ORDER BY la.account_id ${order} LIMIT ?4`,
     availableSql("a.id"),
-    query,
+    { ...query, present: presentFor(present, accountId) },
     MAX_LIST_MEMBERS_ANSWERED,
   );
 });

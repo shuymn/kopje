@@ -491,14 +491,16 @@ describe("the Featured tab as a page", () => {
     const h = await community(["alice", "bob"]);
     await remote(h, "carol");
     const missing = await (await h.request("/@nobody")).text();
-    for (const path of [
-      "/@nobody/featured",
-      "/@carol@remote.example/featured",
-      "/@alice@other.example/featured",
-      "/@/featured",
-    ]) {
+    // Where Mastodon serves its web app's shell, the same 404 with `noindex` (test/web-robots.test.ts).
+    const missingShell = await (await h.request("/@nobody@kopje.test")).text();
+    for (const [path, bytes] of [
+      ["/@nobody/featured", missing],
+      ["/@carol@remote.example/featured", missingShell],
+      ["/@alice@other.example/featured", missingShell],
+      ["/@/featured", missing],
+    ] as const) {
       const response = await h.request(path);
-      expect([path, response.status, await response.text()]).toEqual([path, 404, missing]);
+      expect([path, response.status, await response.text()]).toEqual([path, 404, bytes]);
     }
     // The guarded branch: the same shapes of a served account answer.
     expect((await h.request("/@alice@kopje.test/featured")).status).toBe(200);

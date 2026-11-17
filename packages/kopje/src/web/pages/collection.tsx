@@ -1,7 +1,7 @@
 import type { FC } from "hono/jsx";
 
 import type { Account } from "../../domain/accounts";
-import type { Collection } from "../../domain/collections";
+import type { Collection } from "../../domain/collection-presenter";
 import type { Site } from "../../domain/web-pages/site";
 import { AccountFeed } from "../components/accounts";
 import { Layout } from "../components/layout";

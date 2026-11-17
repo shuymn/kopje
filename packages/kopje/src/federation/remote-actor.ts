@@ -1,15 +1,16 @@
 import { type DocumentLoader, exportSpki, FetchError, type RemoteDocument } from "@fedify/fedify";
 import { type Actor, getActorTypeName, isActor, Link, lookupObject, Multikey } from "@fedify/vocab";
 
+import { collectionValue } from "../domain/collection-requests";
 import { ACTOR_URI_LIMIT } from "../domain/profile-bounds";
 import type { Handle, RemoteActorInput } from "../domain/remote-actors";
 import { hostDomain, normalizeDomain } from "../platform/domain-name";
-import { httpUrl } from "../platform/http-url";
+import { boundedHref, httpUrl } from "../platform/http-url";
 import { DOMAIN_BYTES, isRemoteUsername, isStorableActorId, REMOTE_USERNAME_LIMIT } from "../platform/identity-bounds";
 import { railsBlank } from "../platform/rails-blank";
 import { storedDisplayName, storedProfileDescription, storedProfileUrl, storedText } from "../platform/stored-bounds";
 import { sanitizeRemoteBio } from "../security/html";
-import { isObject } from "./json-shapes";
+import { isObject, railsTime } from "./json-shapes";
 import { MAX_PUBLIC_KEYS, readableKeys } from "./key-entries";
 import { remoteDescription } from "./lang-string";
 import { isTransientLoadError, loadFailureOf } from "./loader";
@@ -74,25 +75,51 @@ export async function loadActor(
   return readActor(uri, remote, contextLoader);
 }
 
-// The members of an actor document Kopje reads by spelling, as Mastodon 4.7 does (profileImage, collection-requests.ts
-// collectionUri), and Fedify would parse by type: Fedify 2.4.5 fails the whole actor on an `icon` or `image` that is
-// not an Image or a Link, or a `followers` or `following` that is not a collection, where Mastodon stores the account.
-const SPELLED_MEMBERS: readonly string[] = ["icon", "image", "followers", "following"];
+// The members of an actor document Fedify is handed, by their literal spelling, each with what reads it from Fedify's
+// object (test-node/actor-members.test.ts holds every Actor property remote-actor.ts and inbound.ts read to an entry).
+// Fedify 2.4.5 expands the document before it reads a member, so it reads a member by its IRI whatever the spelling,
+// and fails the whole actor on one it cannot decode (an `icon` that is not an Image, an unreadable `updated`, an
+// invalid language map), where Mastodon 4.7 reads every member by its literal spelling (`@json[...]`) and stores the
+// account. Every member outside this inventory, in any spelling, is read from the document's JSON by spelling
+// (profileImage, collection-requests.ts collectionUri, sharedInboxUri, claimedHandle, emojiCandidates) or not at all.
+const FEDIFY_MEMBERS: Readonly<Record<string, string>> = {
+  "@context": "JSON-LD expansion",
+  id: "lookupObject's id check (ID-2), readActor",
+  type: "Fedify's dispatch to an Actor class, getActorTypeName",
+  preferredUsername: "claimedHandle",
+  inbox: "remoteActorInput",
+  name: "remoteActorInput",
+  summary: "remoteActorInput",
+  url: "remoteActorInput",
+  manuallyApprovesFollowers: "remoteActorInput",
+  discoverable: "remoteActorInput",
+  indexable: "remoteActorInput",
+  movedTo: "storableActorId",
+  alsoKnownAs: "inbound.ts Move",
+  publicKey: "ownKeys; the HTTP signature's and the LD signature's key (ID-1)",
+  assertionMethod: "ownKeys; the author proof's key (ID-1)",
+  owner: "a key document at the key's URL (actorViewLoader): its owner",
+  controller: "a Multikey document at the key's URL: its controller",
+  publicKeyPem: "a key document at the key's URL: the key",
+  publicKeyMultibase: "a Multikey document at the key's URL: the key",
+};
 
 // The only form of an actor document Fedify is handed (readActor, actorViewLoader, author-proof.ts verifyAuthorProof):
-// a shallow copy without SPELLED_MEMBERS, so none of them can refuse the actor. Removing a member never grants
-// anything: the id Fedify checks (ID-2) and the keys it finds (ID-1) are the document's own, or none. Anything that is
-// not an object is returned as it is.
+// a shallow copy holding the members of FEDIFY_MEMBERS the document has, by their literal spelling, and nothing else
+// (no `@id`, `@type` or other keyword spelling: Mastodon reads `id` and `type`). Leaving a member out never grants
+// anything: the id Fedify checks (ID-2) and the keys it finds (ID-1) are the document's own, or none. A kept member
+// Fedify cannot decode still refuses the actor (docs/mastodon-deviations.md). Anything that is not an object is
+// returned as it is.
 export function fedifyActorView(document: unknown): unknown {
   if (!isObject(document)) {
     return document;
   }
-  return Object.fromEntries(Object.entries(document).filter(([key]) => !SPELLED_MEMBERS.includes(key)));
+  return Object.fromEntries(Object.entries(document).filter(([key]) => Object.hasOwn(FEDIFY_MEMBERS, key)));
 }
 
 // `loader` answering each document as fedifyActorView gives it: the loader Fedify is handed where it loads documents
-// itself (inbound.ts verifyHttpSignature: a key it fetches, at the key's URL or as its owner's document). A document
-// that is not an actor's loses nothing it reads.
+// itself (inbound.ts verifyHttpSignature: a key it fetches, at the key's URL or as its owner's document). A key
+// document keeps what Fedify reads of it (FEDIFY_MEMBERS: its id, type, owner or controller and key).
 export function actorViewLoader(loader: DocumentLoader): DocumentLoader {
   return async (url, options) => {
     const remote = await loader(url, options);
@@ -284,6 +311,66 @@ function blankInbox(document: unknown): boolean {
   );
 }
 
+// The actor's shared inbox as Mastodon 4.7.5 reads it (process_account_service.rb:225): `endpoints.sharedInbox` when
+// `endpoints` is an object (not an array, not null), else the document's own `sharedInbox`, unwrapped as
+// valid_collection_uri unwraps it (collection-requests.ts collectionValue). It is kept only when Kopje POSTs where
+// Mastodon POSTs (sharedInboxSpelling), as the URL parser writes it, within INBOX_URL_LIMIT; else it is none and the
+// personal inbox is used, never a guessed one (docs/mastodon-deviations.md).
+function sharedInboxUri(document: Record<string, unknown>): string | null {
+  const member = isObject(document.endpoints) ? document.endpoints.sharedInbox : document.sharedInbox;
+  const value = collectionValue(member);
+  return value !== null && sharedInboxSpelling(value) ? boundedHref(value, INBOX_URL_LIMIT) : null;
+}
+
+// RFC 3986's pchar literals: unreserved, sub-delims, ":" and "@".
+const PCHAR = /^[A-Za-z0-9\-._~!$&'()*+,;=:@]$/;
+// A scheme, an authority of host and port, and a path; nothing else (no userinfo, query or fragment). Each part's
+// pattern is anchored by the next part's first character, so it matches in linear time.
+const SPELLING = /^https?:\/\/([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*)(?::([0-9]*))?((?:\/[^/]*)*)$/;
+
+// Whether `value` is a spelling on which Mastodon's delivery URL (Request#initialize, request.rb:97: Addressable
+// 2.9.2's `parse(url).normalize`, :212-214, a query aside) and the URL parser's href are the same URL. Each rule
+// removes a class of spellings on which they differ or are not shown alike (test/fixtures/shared-inbox/spellings.json,
+// captured by its capture.rb): the scheme lower-case with `//`; the host of ASCII letters, digits and hyphens in
+// labels, none empty (a trailing dot), the last beginning with a letter (no IP address, nothing the URL parser reads as
+// one); no userinfo; a port of digits whose value is 1 to 65535 (empty and leading zeros are written alike); a path of
+// pchar literals and `%HH` escapes, no segment `.` or `..`, each escape upper-case, below %80 and not of a pchar literal
+// (neither side decodes, re-cases or re-encodes it); no query or fragment.
+function sharedInboxSpelling(value: string): boolean {
+  const parts = SPELLING.exec(value);
+  if (parts === null) {
+    return false;
+  }
+  const [, host = "", port = "", path = ""] = parts;
+  if (!/^[A-Za-z]/.test(host.slice(host.lastIndexOf(".") + 1))) {
+    return false;
+  }
+  if (port !== "" && !(Number(port) >= 1 && Number(port) <= 65535)) {
+    return false;
+  }
+  return path
+    .split("/")
+    .slice(1)
+    .every((segment) => segment !== "." && segment !== ".." && pcharSegment(segment));
+}
+
+function pcharSegment(segment: string): boolean {
+  for (let i = 0; i < segment.length; i++) {
+    if (segment[i] !== "%") {
+      if (!PCHAR.test(segment[i]!)) {
+        return false;
+      }
+      continue;
+    }
+    const escape = segment.slice(i + 1, i + 3);
+    if (!/^[0-7][0-9A-F]$/.test(escape) || PCHAR.test(String.fromCharCode(Number.parseInt(escape, 16)))) {
+      return false;
+    }
+    i += 2;
+  }
+  return true;
+}
+
 // The columns of a remote account (null if the document cannot be one). Display names are plain text; the bio is
 // sanitized HTML (HTML-1); URLs are http(s) or null (HTML-3). Misskey's extensions (_misskey_summary, isCat, ...) are
 // not interpreted; they stay in raw with the rest of the document. confirmed is left null: the Worker's path that
@@ -299,12 +386,11 @@ export async function remoteActorInput(actor: Actor, document: unknown): Promise
     return null;
   }
   const inboxUrl = httpUrl(actor.inboxId?.href ?? null)?.href ?? null;
-  // By Kopje's policy, an over-long inbox makes the actor unusable (nothing could be delivered to it), and an
-  // over-long shared inbox is ignored, so its personal inbox is used.
+  // By Kopje's policy, an over-long inbox makes the actor unusable (nothing could be delivered to it); an over-long
+  // shared inbox is none (sharedInboxUri), so its personal inbox is used.
   if (inboxUrl !== null && inboxUrl.length > INBOX_URL_LIMIT) {
     return null;
   }
-  const sharedInboxUrl = httpUrl(actor.endpoints?.sharedInbox?.href ?? null)?.href ?? null;
   const json = isObject(document) ? document : {};
   const avatar = profileImage(json.icon);
   const header = profileImage(json.image);
@@ -327,10 +413,11 @@ export async function remoteActorInput(actor: Actor, document: unknown): Promise
     discoverable: actor.discoverable,
     indexable: actor.indexable === true,
     inboxUrl,
-    sharedInboxUrl: sharedInboxUrl !== null && sharedInboxUrl.length <= INBOX_URL_LIMIT ? sharedInboxUrl : null,
-    // A Temporal.Instant, whose type the polyfill's globals leave unresolved for the linter.
+    sharedInboxUrl: sharedInboxUri(json),
     keys: await ownKeys(actor, uri),
-    published: (actor.published as { toString(): string } | null)?.toString() ?? null,
+    // Read by spelling, as Mastodon casts it (json-shapes.ts railsTime); the Store creates the account now when it is
+    // none (remote-actors.ts).
+    published: railsTime(json.published),
     // The document's own tag, as ProcessAccountService#process_tags reads @json['tag'].
     emojiTags: emojiCandidates(
       typeof document === "object" && document !== null ? (document as { tag?: unknown }).tag : null,

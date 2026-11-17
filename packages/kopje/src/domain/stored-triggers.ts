@@ -20,6 +20,7 @@ import {
   MAX_TREND_REVIEWS,
   movedToPastBoundSql,
   nextDocumentRevisionSql,
+  notificationCollectionKeysPastBoundSql,
   oembedEndpointPastBoundSql,
   POLL_REVISION_COLUMNS,
   pollRevisionPastBoundSql,
@@ -139,7 +140,8 @@ const LIVE_REFUSED = "collection_items: past the live bound";
 
 // Each trigger's statement, by the migration that last defines it.
 const STATEMENTS: readonly string[] = [
-  // 0048_stored_bounds: a write where P(NEW.x) IS NOT NEW.x.
+  // 0048_stored_bounds: a write where P(NEW.x) IS NOT NEW.x. media_attachments' pair is as
+  // 0105_media_description_bytes made it again, over its description's P.
   ...Object.entries(STORED_COLUMNS).flatMap(([table, columns]) =>
     boundTriggers(
       `${table}_bounds`,
@@ -418,6 +420,14 @@ END;`,
     "collection_ids",
     reportCollectionIdsPastBoundSql("NEW.collection_ids"),
     "reports: collection_ids past its stored bound",
+  ),
+  // 0107_collection_notifications: a notification's collection keys, by its type.
+  ...boundTriggers(
+    "notifications_collection",
+    "notifications",
+    "type, collection_item_id, collection_id",
+    notificationCollectionKeysPastBoundSql("NEW.type", "NEW.collection_item_id", "NEW.collection_id"),
+    "notifications: collection keys past their stored bound",
   ),
 ];
 

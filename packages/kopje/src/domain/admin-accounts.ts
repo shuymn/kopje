@@ -4,7 +4,7 @@ import { loginEmailMatchSql, sqliteLower } from "../platform/login-email";
 import type { ImportAuthority } from "../platform/store-admin";
 import { storedWarningText, WARNING_TEXT_BYTES } from "../platform/stored-bounds";
 import { writeAccountWarning } from "./account-warnings";
-import type { Page, PageQuery, Present } from "./accounts";
+import type { Page, PageQuery, PresentInput } from "./accounts";
 import { type AdminAccount, adminAccountStream } from "./admin-account-presenter";
 import { accessAdminRefusal, forgetAdminAccountId } from "./admin-authority";
 import { admit, ARRAY_ANSWER_BYTES } from "./answer-budget";
@@ -28,7 +28,7 @@ import { suspendLocal, unsuspendLocal } from "./suspension";
 // account by id and the actions that change nothing; and the Access admin's repair of the OAuth admin's match.
 
 // One admin entity, a unit (RES-2); undefined for an id with no account.
-function presentAdminAccount(db: Db, id: string, adminId: string, present: Present): AdminAccount | undefined {
+function presentAdminAccount(db: Db, id: string, adminId: string, present: PresentInput): AdminAccount | undefined {
   return adminAccountStream(db, [id], adminId, present, 1).next().value;
 }
 
@@ -422,41 +422,41 @@ export function adminAccountOperations(read: AdminDeclare, write: AdminDeclare) 
   // (Paginable#to_a_paginated_by_id). Each page is read through a plan whose range is in id order or from a set that is
   // operator-sized or capped (ADMIN_ACCOUNT_CANDIDATES), so a successful page is empty only at the true end, and
   // `more` says whether there is an older match (an ascending min_id page offers the next whenever it has accounts).
-  const listAdminAccounts = read<{ filter: AdminAccountFilter; page: PageQuery; present: Present }, AdminAccountList>(
-    ADMIN_PERMISSION.manageUsers,
-    (db, { filter, page, present }, admin) => {
-      if (matchesNothing(filter)) {
-        return { status: "ok", items: [], newest: null, oldest: null, more: false };
-      }
-      const bounds = boundsOf(page);
-      const found = readMatches(db, filter, admin.accountId, bounds, page.limit);
-      if (found === "too_broad" || found === "moderating") {
-        return { status: found };
-      }
-      // The page's accounts in its order, within ANSWER_BYTES (RES-3): cut there, the page ends at its last admitted
-      // account, and `more` offers the next.
-      const read = found.slice(0, page.limit).map((row) => row.id);
-      const admitted = admit(adminAccountStream(db, read, admin.accountId, present), ARRAY_ANSWER_BYTES, true);
-      const ids = read.slice(0, admitted.consumed);
-      const more = bounds.ascending
-        ? ids.length > 0
-        : admitted.cut || found.length > page.limit || (bounds.min !== null && ids.length > 0);
-      if (bounds.ascending) {
-        ids.reverse();
-        admitted.items.reverse();
-      }
-      return {
-        status: "ok",
-        items: admitted.items,
-        newest: ids[0] ?? null,
-        oldest: ids.at(-1) ?? null,
-        more,
-      };
-    },
-  );
+  const listAdminAccounts = read<
+    { filter: AdminAccountFilter; page: PageQuery; present: PresentInput },
+    AdminAccountList
+  >(ADMIN_PERMISSION.manageUsers, (db, { filter, page, present }, admin) => {
+    if (matchesNothing(filter)) {
+      return { status: "ok", items: [], newest: null, oldest: null, more: false };
+    }
+    const bounds = boundsOf(page);
+    const found = readMatches(db, filter, admin.accountId, bounds, page.limit);
+    if (found === "too_broad" || found === "moderating") {
+      return { status: found };
+    }
+    // The page's accounts in its order, within ANSWER_BYTES (RES-3): cut there, the page ends at its last admitted
+    // account, and `more` offers the next.
+    const read = found.slice(0, page.limit).map((row) => row.id);
+    const admitted = admit(adminAccountStream(db, read, admin.accountId, present), ARRAY_ANSWER_BYTES, true);
+    const ids = read.slice(0, admitted.consumed);
+    const more = bounds.ascending
+      ? ids.length > 0
+      : admitted.cut || found.length > page.limit || (bounds.min !== null && ids.length > 0);
+    if (bounds.ascending) {
+      ids.reverse();
+      admitted.items.reverse();
+    }
+    return {
+      status: "ok",
+      items: admitted.items,
+      newest: ids[0] ?? null,
+      oldest: ids.at(-1) ?? null,
+      more,
+    };
+  });
 
   // GET /api/v1/admin/accounts/:id (Account.find: 404 for an id that is no account's).
-  const getAdminAccount = read<{ id: string; present: Present }, AdminAccountResult>(
+  const getAdminAccount = read<{ id: string; present: PresentInput }, AdminAccountResult>(
     ADMIN_PERMISSION.manageUsers,
     (db, { id, present }, admin) => {
       const account = presentAdminAccount(db, id, admin.accountId, present);
@@ -465,20 +465,20 @@ export function adminAccountOperations(read: AdminDeclare, write: AdminDeclare) 
   );
 
   // POST /api/v1/admin/accounts/:id/{enable,unsilence,unsensitive,approve,reject}.
-  const actOnAdminAccount = write<{ id: string; action: AdminAccountAction; present: Present }, AdminAccountResult>(
-    ADMIN_PERMISSION.manageUsers,
-    (db, { id, action, present }, admin) => {
-      const account = presentAdminAccount(db, id, admin.accountId, present);
-      if (account === undefined) {
-        return { status: "not_found" };
-      }
-      if (action === "approve" || action === "reject" || (action === "enable" && account.domain !== null)) {
-        return { status: "not_allowed" };
-      }
-      logAction(db, admin, action, { type: "Account", id }, {}, admin.now);
-      return { status: "ok", account };
-    },
-  );
+  const actOnAdminAccount = write<
+    { id: string; action: AdminAccountAction; present: PresentInput },
+    AdminAccountResult
+  >(ADMIN_PERMISSION.manageUsers, (db, { id, action, present }, admin) => {
+    const account = presentAdminAccount(db, id, admin.accountId, present);
+    if (account === undefined) {
+      return { status: "not_found" };
+    }
+    if (action === "approve" || action === "reject" || (action === "enable" && account.domain !== null)) {
+      return { status: "not_allowed" };
+    }
+    logAction(db, admin, action, { type: "Account", id }, {}, admin.now);
+    return { status: "ok", account };
+  });
 
   // POST /api/v1/admin/accounts/:account_id/action (Admin::AccountAction#save!), in its order: the account (404), the
   // type (422), the text (422: Kopje's bound, WARNING_TEXT_BYTES), the policy (403: no action targets the OAuth
@@ -561,7 +561,7 @@ export function adminAccountOperations(read: AdminDeclare, write: AdminDeclare) 
   // account that is not suspended, or a remote one unavailable for another reason (its deletion has started), is
   // refused (403). A remote account is not fetched again, as Mastodon's UnsuspendAccountService does. The OAuth admin
   // is never suspended (it is no admin then).
-  const unsuspendAdminAccount = write<{ id: string; present: Present }, AdminAccountResult>(
+  const unsuspendAdminAccount = write<{ id: string; present: PresentInput }, AdminAccountResult>(
     ADMIN_PERMISSION.manageUsers,
     (db, { id, present }, admin) => {
       const found = db.first<{ domain: string | null }>("SELECT domain FROM accounts WHERE id = ?", id);

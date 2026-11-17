@@ -1,4 +1,4 @@
-import { type Account, admitAccounts, type Present } from "./accounts";
+import { type Account, admitAccounts, presentFor, type PresentInput } from "./accounts";
 import { ARRAY_ANSWER_BYTES } from "./answer-budget";
 import { listedForSql } from "./audience";
 import { optionalUserReadOperation } from "./auth";
@@ -34,7 +34,13 @@ export const DIRECTORY_WINDOW = 2;
 
 type DirectoryOrder = "active" | "new";
 
-export type DirectoryInput = { order: DirectoryOrder; local: boolean; offset: number; limit: number; present: Present };
+export type DirectoryInput = {
+  order: DirectoryOrder;
+  local: boolean;
+  offset: number;
+  limit: number;
+  present: PresentInput;
+};
 
 // Each order's partial indexes (all discoverable accounts, the local ones) and its terms over the window `w`.
 const ORDERS: Record<DirectoryOrder, { all: string; local: string; by: (w: string) => string }> = {
@@ -65,6 +71,6 @@ export const directory = optionalUserReadOperation<DirectoryInput, Account[]>(
       offset,
     );
     const ids = rows.map((row) => row.id);
-    return admitAccounts(db, ids, present, ARRAY_ANSWER_BYTES, true).items;
+    return admitAccounts(db, ids, presentFor(present, viewerId), ARRAY_ANSWER_BYTES, true).items;
   },
 );

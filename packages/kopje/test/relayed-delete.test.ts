@@ -398,7 +398,7 @@ describe("a relayed status Delete that does not meet every condition changes not
     delete unsigned.type;
     const signed = await ldSigned(unsigned, bob);
     const relayed = { ...signed, "@context": [...(signed["@context"] as unknown[]), { type: null }], type: "Delete" };
-    await dropped(t, bob, dan, relayed, status.uri, "proof-invalid");
+    await dropped(t, bob, dan, relayed, status.uri, "ld-context");
   });
 
   it("drops a body naming a remote context, which the request's loaders never fetch", async () => {
@@ -414,7 +414,7 @@ describe("a relayed status Delete that does not meet every condition changes not
         url === remote ? Promise.resolve({ document, documentUrl: url, contextUrl: null }) : contexts(url),
     });
     const { "@context": _context, ...signature } = signed.signature;
-    await dropped(t, bob, dan, { ...signed, signature }, status.uri, "proof-invalid");
+    await dropped(t, bob, dan, { ...signed, signature }, status.uri, "ld-context");
     expect(t.web.fetched).not.toContain(remote);
   });
 

@@ -111,6 +111,10 @@ import {
   ANNUAL_REPORT_ARCHETYPES,
   annualReportsMigrationSql,
   WRAPSTODON_SETTING_BOUNDS,
+  MAX_MEDIA_DESCRIPTION_LENGTH,
+  MEDIA_DESCRIPTION_BYTES,
+  mediaDescriptionBytesMigrationSql,
+  mediaDescriptionSql,
   cardAttributionMigrationSql,
   collectionsMigrationSql,
   PROFILE_DESCRIPTION_BYTES,
@@ -128,6 +132,7 @@ import { byText } from "./sort";
 import {
   blurhashOf,
   BOUNDED,
+  COLUMNS_0048,
   columnsSql,
   inserter,
   JSON_BOUNDED,
@@ -411,9 +416,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(83);
+      expect(STORED_TRIGGERS.size).toBe(85);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        83 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        85 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -5469,15 +5474,17 @@ describe("0048_stored_bounds", () => {
       await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
       seedBounded(sql);
       const tables = TABLES;
-      const expected = tables.map((table) => sql.exec(storedSql(table)).toArray());
+      const expected = tables.map((table) => sql.exec(storedSql(table, COLUMNS_0048)).toArray());
       for (const table of tables) {
-        expect(sql.exec<{ n: number }>(movedCountSql(table)).one().n, table).toBeGreaterThanOrEqual(2);
+        expect(sql.exec<{ n: number }>(movedCountSql(table, COLUMNS_0048)).one().n, table).toBeGreaterThanOrEqual(2);
       }
 
       expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
-      // Each stored value is, byte for byte (hex), P of the value before, row by row.
+      // Each stored value is, byte for byte (hex), P of the value before, row by row, by 0048's projections.
       expect(tables.map((table) => sql.exec(columnsSql(table)).toArray())).toEqual(expected);
-      expect(tables.map((table) => sql.exec<{ n: number }>(movedCountSql(table)).one().n)).toEqual([0, 0, 0, 0]);
+      expect(tables.map((table) => sql.exec<{ n: number }>(movedCountSql(table, COLUMNS_0048)).one().n)).toEqual([
+        0, 0, 0, 0,
+      ]);
       // The rows at their bounds are unchanged; the JSON-bounded values of 400,000 U+0001 are past their bounds.
       for (const table of tables) {
         const rows = sql.exec(textSql(table)).toArray();
@@ -13936,6 +13943,550 @@ describe("0104_quote_broadcast", () => {
   });
 });
 
+describe("0105_media_description_bytes", () => {
+  const NAME = "0105_media_description_bytes";
+  const at = NAMES.indexOf(NAME);
+  const REFUSED = /media_attachments: a value past its stored bound/;
+  const ACCOUNT = "100000000000000001";
+  // 0xFF and `continuation` continuation bytes: one character to SQLite's length and substr, `continuation + 1`
+  // U+FFFD once decoded; only an import stores such text.
+  const malformedRun = (continuation: number) => {
+    const bytes = new Uint8Array(continuation + 1).fill(0x80);
+    bytes[0] = 0xff;
+    return bytes.buffer;
+  };
+  const hex = (buffer: ArrayBufferLike) =>
+    Array.from(new Uint8Array(buffer), (b) => b.toString(16).toUpperCase().padStart(2, "0")).join("");
+  const P = mediaDescriptionSql("description");
+  // Each row's description as bytes and its storage class, and P's, by id.
+  const read = (sql: SqlStorage) =>
+    sql
+      .exec<{ id: string; kind: string; bytes: string; p_kind: string; p_bytes: string }>(
+        `SELECT id, typeof(description) AS kind, hex(CAST(description AS BLOB)) AS bytes, typeof(${P}) AS p_kind,
+					hex(CAST((${P}) AS BLOB)) AS p_bytes FROM media_attachments ORDER BY id`,
+      )
+      .toArray();
+  const moved = (sql: SqlStorage) =>
+    sql.exec<{ n: number }>(`SELECT count(*) AS n FROM media_attachments WHERE (${P}) IS NOT description`).one().n;
+  // Inserts an unattached media row of ACCOUNT with `description`, bound as given (an ArrayBuffer as text with
+  // `text`, else as a BLOB).
+  const insert = (sql: SqlStorage, n: number, description: string | ArrayBuffer, text = true) =>
+    sql.exec(
+      `INSERT INTO media_attachments (id, account_id, type, url, description)
+			VALUES (?, ?, 'image', 'https://r.test/m.png', ${text ? "CAST(? AS TEXT)" : "?"})`,
+      `3${String(n).padStart(17, "0")}`,
+      ACCOUNT,
+      description,
+    );
+  const account = (sql: SqlStorage) =>
+    sql.exec("INSERT INTO accounts (id, uri, username, domain) VALUES (?, 'https://r.test/u', 'u', 'r.test')", ACCOUNT);
+
+  it("follows 0104, declared foreignKeys: 'unchanged', and writes the generator's statements and the triggers", () => {
+    expect(NAMES[at - 1]).toBe("0104_quote_broadcast");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    // The byte bound is four bytes a code point of MAX_MEDIA_DESCRIPTION_LENGTH (the header states both).
+    expect([MAX_MEDIA_DESCRIPTION_LENGTH, MEDIA_DESCRIPTION_BYTES]).toEqual([10_000, 40_000]);
+    expectGenerated(
+      at,
+      `${mediaDescriptionBytesMigrationSql()}\n${emitTriggers(["media_attachments_bounds_insert", "media_attachments_bounds_update"])}`,
+    );
+  });
+
+  it("rewrites imported descriptions to P, keeps those at the bounds byte for byte, and leaves only fixed points", async () => {
+    const store = freshStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      account(sql);
+      const astral = "\u{1F600}";
+      const kept: (string | ArrayBuffer)[] = [
+        "",
+        "a".repeat(MAX_MEDIA_DESCRIPTION_LENGTH),
+        astral.repeat(MAX_MEDIA_DESCRIPTION_LENGTH),
+        `a\u0000${"b".repeat(100)}`,
+        // Lone surrogates as their three-byte encodings, 30,000 bytes: within both bounds, so kept.
+        new Uint8Array(3 * MAX_MEDIA_DESCRIPTION_LENGTH).map((_, i) => [0xed, 0xa0, 0x80][i % 3] ?? 0).buffer,
+      ];
+      const imported = [malformedRun(50_000), malformedRun(999_999)];
+      for (const [i, value] of [...kept, ...imported].entries()) {
+        insert(sql, i + 1, value);
+      }
+      // A BLOB within 10,000 bytes, which 0048's projection keeps as it is.
+      insert(sql, 8, malformedRun(9_999), false);
+      // The seed reached the table past 0048's triggers, byte for byte.
+      const before = read(sql);
+      expect(before.map((row) => [row.kind, row.bytes])).toEqual([
+        ...[...kept, ...imported].map((value) => [
+          "text",
+          typeof value === "string" ? hex(new TextEncoder().encode(value).buffer) : hex(value),
+        ]),
+        ["blob", hex(malformedRun(9_999))],
+      ]);
+      expect(moved(sql)).toBe(3);
+
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      // Each value is P of the value before, row by row, as bytes: the values at the bounds unchanged, the malformed
+      // runs cut to MEDIA_DESCRIPTION_BYTES and the BLOB made text.
+      const after = read(sql);
+      expect(after.map((row) => [row.kind, row.bytes])).toEqual(before.map((row) => [row.p_kind, row.p_bytes]));
+      expect(after.slice(0, kept.length)).toEqual(before.slice(0, kept.length));
+      expect(after.slice(kept.length).map((row) => [row.kind, row.bytes.length / 2])).toEqual([
+        ["text", MEDIA_DESCRIPTION_BYTES],
+        ["text", MEDIA_DESCRIPTION_BYTES],
+        ["text", 10_000],
+      ]);
+      expect(moved(sql)).toBe(0);
+    });
+  }, 120_000);
+
+  it("refuses a description one byte past MEDIA_DESCRIPTION_BYTES that 0048 accepted, and a BLOB, and accepts one at it", async () => {
+    const store = freshStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      const sql = state.storage.sql;
+      const past = malformedRun(MEDIA_DESCRIPTION_BYTES);
+      const at40k = malformedRun(MEDIA_DESCRIPTION_BYTES - 1);
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      account(sql);
+      // 0048's triggers take the value past the byte bound: one character to its cut.
+      insert(sql, 1, past);
+      expect(sql.exec("SELECT length(CAST(description AS BLOB)) AS n FROM media_attachments").one().n).toBe(
+        MEDIA_DESCRIPTION_BYTES + 1,
+      );
+      sql.exec("DELETE FROM media_attachments");
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      // P moves it (the triggers refuse what P moves).
+      expect(
+        sql.exec(`SELECT (${mediaDescriptionSql("CAST(?1 AS TEXT)")}) IS NOT CAST(?1 AS TEXT) AS moved`, past).one()
+          .moved,
+      ).toBe(1);
+      expect(() => insert(sql, 1, past)).toThrow(REFUSED);
+      expect(() => insert(sql, 1, blob("alt"), false)).toThrow(REFUSED);
+      insert(sql, 1, at40k);
+      const id = "300000000000000001";
+      expect(() =>
+        sql.exec("UPDATE media_attachments SET description = CAST(? AS TEXT) WHERE id = ?", past, id),
+      ).toThrow(REFUSED);
+      expect(() => sql.exec("UPDATE media_attachments SET description = ? WHERE id = ?", blob("alt"), id)).toThrow(
+        REFUSED,
+      );
+      // A writer's update that keeps the stored description (media.ts, statuses.ts: COALESCE) passes.
+      sql.exec(
+        "UPDATE media_attachments SET description = COALESCE(NULL, description), focus_x = 0.5 WHERE id = ?",
+        id,
+      );
+      expect(
+        sql.exec("SELECT hex(CAST(description AS BLOB)) AS h, focus_x FROM media_attachments WHERE id = ?", id).one(),
+      ).toEqual({ h: hex(at40k), focus_x: 0.5 });
+    });
+  });
+});
+
+describe("0106_reply_walk_debts", () => {
+  const NAME = "0106_reply_walk_debts";
+  const at = NAMES.indexOf(NAME);
+  const ACCOUNT = "100000000000000001";
+  const [ROOT, S1, S2] = ["100000000000000002", "100000000000000003", "100000000000000004"];
+  const HEX = "0123456789abcdef0123456789abcdef";
+  const refused = /constraint failed/;
+
+  // Three stored statuses, and a context walk of ROOT with a node, as 0099 left them.
+  const seed = (sql: SqlStorage) => {
+    sql.exec(
+      "INSERT INTO accounts (id, uri, username, domain) VALUES (?, 'https://remote.test/users/a', 'a', 'remote.test')",
+      ACCOUNT,
+    );
+    for (const id of [ROOT, S1, S2]) {
+      sql.exec(
+        `INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+				VALUES (?1, 'https://remote.test/s/' || ?1, ?2, 'public', 'x', '2026-11-16T00:00:00.000Z')`,
+        id,
+        ACCOUNT,
+      );
+    }
+    sql.exec(
+      "INSERT INTO reply_walks (status_id, kind, refresh_id, queued_at, due_at) VALUES (?, 0, ?, 0, 0)",
+      ROOT,
+      HEX,
+    );
+    sql.exec("INSERT INTO reply_walk_nodes (status_id, uri, seq) VALUES (?, 'https://r.example/s/1', 0)", ROOT);
+  };
+
+  it("follows 0105, creates two tables and four indexes, adds two partial indexes, no trigger, and keeps existing nodes and walks", async () => {
+    expect(NAMES[at - 1]).toBe("0105_media_description_bytes");
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      seed(sql);
+      const schema = () =>
+        sql
+          .exec<{ type: string; name: string }>(
+            "SELECT type, name FROM sqlite_master WHERE name LIKE 'reply_walk%' ORDER BY type, name",
+          )
+          .toArray();
+      const before = schema();
+      const triggers = sql.exec("SELECT count(*) AS n FROM sqlite_master WHERE type = 'trigger'").one().n;
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      expect(schema().filter((row) => !before.some((b) => b.name === row.name))).toEqual([
+        { type: "index", name: "reply_walk_debts_depth" },
+        { type: "index", name: "reply_walk_debts_order" },
+        { type: "index", name: "reply_walk_nodes_owed" },
+        { type: "index", name: "reply_walk_nodes_scan" },
+        { type: "table", name: "reply_walk_cursors" },
+        { type: "table", name: "reply_walk_debts" },
+      ]);
+      expect(sql.exec("SELECT count(*) AS n FROM sqlite_master WHERE type = 'trigger'").one().n).toBe(triggers);
+      // The existing node and walk: ordinary, not scan-due, at depth 0 with no resume page; the walk owes nothing.
+      expect(sql.exec("SELECT lane, scan_due, depth, resume_page FROM reply_walk_nodes").toArray()).toEqual([
+        { lane: 0, scan_due: 0, depth: 0, resume_page: null },
+      ]);
+      expect(
+        sql
+          .exec("SELECT debt_walk, debt_after_walk, debt_after_seq, debt_after_pos, debts_seen FROM reply_walks")
+          .toArray(),
+      ).toEqual([
+        { debt_walk: null, debt_after_walk: null, debt_after_seq: null, debt_after_pos: null, debts_seen: 0 },
+      ]);
+    });
+  });
+
+  it.each([
+    ["lane", ["1", "2", "0"], ["3", "-1", "0.5", "X'00'", "NULL"]],
+    ["scan_due", ["1", "0"], ["2", "-1", "0.5", "NULL"]],
+    ["depth", ["199", "0"], ["200", "-1", "1.5", "NULL"]],
+    [
+      "resume_page",
+      ["'https://r.example/p'", `'https://r.example/' || substr(hex(zeroblob(2040)), 1, 4078)`, "NULL"],
+      ["''", "'https://r.example/' || char(0)", `'https://r.example/' || hex(zeroblob(2040))`, "X'41'"],
+    ],
+  ])("holds reply_walk_nodes.%s to its domain at each end", async (column, admitted, others) => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade();
+      seed(sql);
+      for (const value of admitted) {
+        sql.exec(`UPDATE reply_walk_nodes SET ${column} = ${value}`);
+      }
+      for (const value of others) {
+        expect(() => sql.exec(`UPDATE reply_walk_nodes SET ${column} = ${value}`), value).toThrow(refused);
+      }
+    });
+  });
+
+  it.each([
+    ["debt_walk", ["1", "9007199254740991", "NULL"], ["0", "9007199254740992", "1.5", "X'01'"]],
+    ["debt_after_walk", ["1", "9007199254740991", "NULL"], ["0", "9007199254740992", "1.5"]],
+    ["debt_after_seq", ["0", "2147483647", "NULL"], ["-1", "2147483648", "0.5"]],
+    ["debt_after_pos", ["0", "200", "NULL"], ["-1", "201", "0.5"]],
+    ["debts_seen", ["100000", "0"], ["100001", "-1", "NULL", "0.5"]],
+  ])("holds reply_walks.%s to its domain at each end", async (column, admitted, others) => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade();
+      seed(sql);
+      for (const value of admitted) {
+        sql.exec(`UPDATE reply_walks SET ${column} = ${value}`);
+      }
+      for (const value of others) {
+        expect(() => sql.exec(`UPDATE reply_walks SET ${column} = ${value}`), value).toThrow(refused);
+      }
+    });
+  });
+
+  it("holds a cursor to a stored status and an id, and deletes it with the status", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade();
+      seed(sql);
+      sql.exec("INSERT INTO reply_walk_cursors (status_id, after_id) VALUES (?, ?)", S1, S2);
+      for (const value of ["'10000000000000000x'", "'1000000000000000001'", "10000000000000000", "NULL"]) {
+        expect(() => sql.exec(`UPDATE reply_walk_cursors SET after_id = ${value}`), value).toThrow(refused);
+      }
+      expect(() => sql.exec("INSERT INTO reply_walk_cursors (status_id, after_id) VALUES (?, ?)", S1, S2)).toThrow(
+        /UNIQUE constraint failed/,
+      );
+      sql.exec("PRAGMA foreign_keys = ON");
+      expect(() =>
+        sql.exec("INSERT INTO reply_walk_cursors (status_id, after_id) VALUES ('100000000000000009', ?)", S2),
+      ).toThrow(/FOREIGN KEY constraint failed/);
+      sql.exec("DELETE FROM statuses WHERE id = ?", S1);
+      expect(sql.exec("SELECT count(*) AS n FROM reply_walk_cursors").one().n).toBe(0);
+    });
+  });
+
+  it("holds a debt's kind, place, key and depth together, one a root and status and one a status and depth", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade();
+      seed(sql);
+      const insert = (values: string) =>
+        sql.exec(
+          `INSERT INTO reply_walk_debts (root_id, status_id, kind, page, page_offset, owed_walk, owed_seq, owed_pos, depth)
+					VALUES (${values})`,
+        );
+      // A row debt: no page, offset 0, a place in its scan's window, below the root; a collection debt: owed_pos 0, at
+      // most WALK_STATUSES - 2 deep, the root itself included.
+      insert(`'${ROOT}', '${S1}', 0, NULL, 0, 1, 0, 1, 1`);
+      insert(`'${ROOT}', '${ROOT}', 1, NULL, 0, 1, 0, 0, 0`);
+      sql.exec("DELETE FROM reply_walk_debts");
+      const row = (o: Record<string, string>) => {
+        const v = {
+          root: `'${ROOT}'`,
+          status: `'${S1}'`,
+          kind: "0",
+          page: "NULL",
+          offset: "0",
+          walk: "1",
+          seq: "0",
+          pos: "1",
+          depth: "1",
+          ...o,
+        };
+        return `${v.root}, ${v.status}, ${v.kind}, ${v.page}, ${v.offset}, ${v.walk}, ${v.seq}, ${v.pos}, ${v.depth}`;
+      };
+      const collection = { kind: "1", pos: "0" };
+      const admitted = [
+        row({}),
+        row({ pos: "200", depth: "199" }),
+        row({ walk: "9007199254740991", seq: "2147483647" }),
+        row({ ...collection }),
+        row({ ...collection, page: "'https://r.example/p'", offset: "100000", depth: "198" }),
+        row({ ...collection, depth: "0" }),
+        row({ ...collection, page: `'https://r.example/' || substr(hex(zeroblob(2040)), 1, 4078)` }),
+      ];
+      for (const values of admitted) {
+        insert(values);
+        sql.exec("DELETE FROM reply_walk_debts");
+      }
+      const others = [
+        // A row debt with a page, an offset, owed_pos 0, or at depth 0.
+        row({ page: "'https://r.example/p'" }),
+        row({ offset: "1" }),
+        row({ pos: "0" }),
+        row({ depth: "0" }),
+        // A collection debt with owed_pos above 0, or deeper than WALK_STATUSES - 2.
+        row({ ...collection, pos: "1" }),
+        row({ ...collection, depth: "199" }),
+        // Each column past its domain.
+        row({ kind: "2" }),
+        row({ kind: "0.5" }),
+        row({ root: "'10000000000000000x'" }),
+        row({ status: "'1000000000000000001'" }),
+        row({ ...collection, page: "''" }),
+        row({ ...collection, page: "'https://r.example/' || char(0)" }),
+        row({ ...collection, page: `'https://r.example/' || hex(zeroblob(2040))` }),
+        row({ ...collection, offset: "100001" }),
+        row({ ...collection, offset: "-1" }),
+        row({ walk: "0" }),
+        row({ walk: "9007199254740992" }),
+        row({ seq: "-1" }),
+        row({ seq: "2147483648" }),
+        row({ pos: "201" }),
+        row({ depth: "200" }),
+        row({ depth: "1.5" }),
+      ];
+      for (const values of others) {
+        expect(() => insert(values), values).toThrow(refused);
+      }
+      // One debt a root and status; one a status and depth, of any root; one a root and key.
+      insert(row({}));
+      expect(() => insert(row({ pos: "2", depth: "2" }))).toThrow(/UNIQUE constraint failed/);
+      expect(() => insert(row({ root: `'${S2}'`, pos: "2" }))).toThrow(/UNIQUE constraint failed/);
+      expect(() => insert(row({ status: `'${S2}'` }))).toThrow(/UNIQUE constraint failed/);
+      insert(row({ root: `'${S2}'`, pos: "2", depth: "2" }));
+      // The statuses' deletion takes the debts they hold or are named by.
+      sql.exec("DELETE FROM statuses WHERE id = ?", S1);
+      expect(sql.exec("SELECT count(*) AS n FROM reply_walk_debts").one().n).toBe(0);
+    });
+  });
+});
+
+describe("0107_collection_notifications", () => {
+  const NAME = "0107_collection_notifications";
+  const at = NAMES.indexOf(NAME);
+  const [OWNER, MEMBER, SENDER] = ["100000000000000001", "100000000000000002", "100000000000000003"];
+  const T = "2026-11-16T00:00:00.000Z";
+  const [COLLECTION, OTHER_COLLECTION, ITEM, OTHER_ITEM] = [
+    "200000000000000001",
+    "200000000000000002",
+    "300000000000000001",
+    "300000000000000002",
+  ];
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  const REFUSED = /notifications: collection keys past their stored bound/;
+
+  // A Store before the file with two local accounts, the owner's two collections each holding the member, and a
+  // follow notification of each; the file applied, then `run`.
+  async function upgraded(run: (sql: SqlStorage) => void) {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      for (const [account, name] of [
+        [OWNER, "owner"],
+        [MEMBER, "member"],
+      ] as const) {
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/' || ?2, ?2, NULL)",
+          account,
+          name,
+        );
+        sql.exec(
+          "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, ?2, X'00', X'00', 'k')",
+          account,
+          `${name}@x.test`,
+        );
+      }
+      for (const [collection, item] of [
+        [COLLECTION, ITEM],
+        [OTHER_COLLECTION, OTHER_ITEM],
+      ] as const) {
+        sql.exec(
+          `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, created_at, updated_at)
+					VALUES (?1, ?2, 1, 'c', 0, 1, ?3, ?3)`,
+          collection,
+          OWNER,
+          T,
+        );
+        sql.exec(
+          `INSERT INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
+					VALUES (?1, ?2, ?3, 1, 1, ?4, ?4)`,
+          item,
+          collection,
+          MEMBER,
+          T,
+        );
+      }
+      sql.exec("INSERT INTO notifications (account_id, type, from_account_id) VALUES (?, 'follow', ?)", MEMBER, OWNER);
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      run(sql);
+    });
+  }
+  const notification = (sql: SqlStorage, type: string, item: SqlStorageValue, collection: SqlStorageValue) =>
+    sql.exec(
+      `INSERT INTO notifications (account_id, type, from_account_id, collection_item_id, collection_id)
+			VALUES (?, ?, ?, ?, ?)`,
+      MEMBER,
+      type,
+      OWNER,
+      item,
+      collection,
+    );
+
+  it("follows 0106, checks every reference, and writes the registered triggers", () => {
+    expect(NAMES[at - 1]).toBe("0106_reply_walk_debts");
+    // New foreign keys: the upgrade checks every reference of the Store.
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    const sql = MIGRATIONS[at]?.sql ?? "";
+    expect(statements(sql)).toContain(
+      statements(emitTriggers(["notifications_collection_insert", "notifications_collection_update"])),
+    );
+    for (const [, pattern] of sql.matchAll(/GLOB\s+'([^']*)'/g)) {
+      expect(new TextEncoder().encode(pattern).length).toBeLessThanOrEqual(50);
+    }
+  });
+
+  // 2-T8. Fails if the insert trigger's type arms are dropped (a collection_update without its collection is written),
+  // or the update trigger's (a key changed within its type is refused).
+  it("keeps every row as it was and holds the collection keys to their type", async () => {
+    await upgraded((sql) => {
+      expect(sql.exec("SELECT type, collection_item_id, collection_id FROM notifications").toArray()).toEqual([
+        { type: "follow", collection_item_id: null, collection_id: null },
+      ]);
+      notification(sql, "added_to_collection", ITEM, null);
+      notification(sql, "collection_update", null, COLLECTION);
+      for (const [type, item, collection] of [
+        ["collection_update", null, null],
+        ["collection_update", ITEM, COLLECTION],
+        ["added_to_collection", null, null],
+        ["added_to_collection", OTHER_ITEM, COLLECTION],
+        ["follow", ITEM, null],
+        ["mention", null, COLLECTION],
+        ["added_to_collection", Number(OTHER_ITEM), null],
+        ["added_to_collection", OTHER_ITEM.slice(1), null],
+        ["added_to_collection", `${OTHER_ITEM.slice(1)}\u0000`, null],
+        ["collection_update", null, `${OTHER_COLLECTION.slice(1)}x`],
+      ] as const) {
+        expect(() => notification(sql, type, item, collection), `${type} ${item} ${collection}`).toThrow(REFUSED);
+      }
+      expect(() => sql.exec("UPDATE notifications SET collection_id = ? WHERE type = 'follow'", COLLECTION)).toThrow(
+        REFUSED,
+      );
+      expect(() =>
+        sql.exec("UPDATE notifications SET type = 'collection_update' WHERE type = 'added_to_collection'"),
+      ).toThrow(REFUSED);
+      // A key changed within its type is written, where the update trigger's ELSE arm would refuse any key.
+      sql.exec("UPDATE notifications SET collection_item_id = ? WHERE type = 'added_to_collection'", OTHER_ITEM);
+      sql.exec("UPDATE notifications SET collection_id = ? WHERE type = 'collection_update'", OTHER_COLLECTION);
+      expect(sql.exec("SELECT count(*) AS n FROM notifications").one().n).toBe(3);
+    });
+  });
+
+  it("keys a notification by its item and its collection, each gone with it", async () => {
+    await upgraded((sql) => {
+      notification(sql, "added_to_collection", ITEM, null);
+      notification(sql, "added_to_collection", OTHER_ITEM, null);
+      expect(() => notification(sql, "added_to_collection", ITEM, null)).toThrow(
+        /UNIQUE constraint failed: index 'notifications_natural'/,
+      );
+      notification(sql, "collection_update", null, COLLECTION);
+      notification(sql, "collection_update", null, OTHER_COLLECTION);
+      expect(() => notification(sql, "collection_update", null, COLLECTION)).toThrow(/UNIQUE constraint failed/);
+      // One notification an item, and one collection_update a collection and recipient, whoever sends it: a delete of
+      // an item or a collection finds at most that many.
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?, 'https://remote.test/users/r', 'r', 'remote.test')",
+        SENDER,
+      );
+      const from = (type: string, item: string | null, collection: string | null, account = MEMBER) =>
+        sql.exec(
+          `INSERT INTO notifications (account_id, type, from_account_id, collection_item_id, collection_id)
+					VALUES (?, ?, ?, ?, ?)`,
+          account,
+          type,
+          SENDER,
+          item,
+          collection,
+        );
+      expect(() => from("added_to_collection", ITEM, null)).toThrow(
+        /UNIQUE constraint failed: notifications.collection_item_id\b/,
+      );
+      expect(() => from("collection_update", null, COLLECTION)).toThrow(
+        /UNIQUE constraint failed: notifications.collection_id, notifications.account_id\b/,
+      );
+      from("collection_update", null, COLLECTION, OWNER);
+      sql.exec("DELETE FROM notifications WHERE account_id = ? AND type = 'collection_update'", OWNER);
+      sql.exec("DELETE FROM collection_items WHERE id = ?", ITEM);
+      sql.exec("DELETE FROM collections WHERE id = ?", OTHER_COLLECTION);
+      expect(
+        sql.exec("SELECT type, collection_item_id, collection_id FROM notifications ORDER BY id").toArray(),
+      ).toEqual([
+        { type: "follow", collection_item_id: null, collection_id: null },
+        { type: "collection_update", collection_item_id: null, collection_id: COLLECTION },
+      ]);
+      const plan = (query: string) =>
+        sql
+          .exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`)
+          .toArray()
+          .map((row) => row.detail)
+          .join("\n");
+      expect(plan("SELECT id FROM notifications WHERE collection_item_id = '1'")).toContain(
+        "notifications_collection_item",
+      );
+      expect(plan("SELECT id FROM notifications WHERE collection_id = '1'")).toContain("notifications_collection");
+      expect(
+        plan(`SELECT id FROM notifications WHERE account_id = '1' AND type = 'mention' AND from_account_id = '2'
+					AND IFNULL(status_id, '') = '3'`),
+      ).toContain("notifications_natural");
+    });
+  });
+});
+
 describe("0108_collection_jobs", () => {
   const NAME = "0108_collection_jobs";
   const at = NAMES.indexOf(NAME);
@@ -13964,8 +14515,8 @@ describe("0108_collection_jobs", () => {
     return sql;
   };
 
-  it("follows 0104, creates three tables and the retry indexes as job-attempts.ts writes them, checking every reference", async () => {
-    expect(NAMES[at - 1]).toBe("0104_quote_broadcast");
+  it("follows 0107, creates three tables and the retry indexes as job-attempts.ts writes them, checking every reference", async () => {
+    expect(NAMES[at - 1]).toBe("0107_collection_notifications");
     expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
     const text = MIGRATIONS[at]?.sql ?? "";
     const columns = jobAttemptColumnsSql("collection_jobs")

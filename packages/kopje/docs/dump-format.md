@@ -326,6 +326,12 @@ of 1 to 5 each (its index i in that alphabet: x = i mod 9 + 1, y = floor(i / 9) 
 anything else fails with `media_attachments: blurhash past its stored bound`. A dump taken before 0065 has no such
 column: it restores into a Store at its own migrations, which then upgrades. A file built from legacy data writes NULL.
 
+Media descriptions (migration `0105_media_description_bytes`): `media_attachments.description` is text of at most
+40,000 UTF-8 bytes and 10,000 characters as SQLite counts them (a malformed UTF-8 run counts as one); a longer one, or a
+BLOB, fails with `media_attachments: a value past its stored bound`. Malformed text within the bound is kept byte for
+byte, and presented as its first 10,000 code points once decoded. A dump taken before 0105 may hold a longer one or a
+BLOB: it restores into a Store at its own migrations, whose upgrade then cuts it to the bound, as text.
+
 Field verification (migration `0066_field_verification`): `local_accounts.links_due_at` and `links_hold_until` are NULL
 or non-negative integers (milliseconds), `links_claim` a non-negative integer and `links_attempts` an integer from 0 to
 2 (CHECKs `links_due_at_time`, `links_hold_until_time`, `links_claim_count` and `links_attempts_count`); a restored open
@@ -510,6 +516,12 @@ CHECK's name (`collection_name`, `collection_item_state`, `collection_item_accep
 bound` or `collection_items: past the live bound`. A restored row is presented as it was dumped; the cron deletes a
 rejected or revoked item a day after its `updated_at`. A dump taken before 0103 has no such table: it restores into a
 Store at its own migrations, which then upgrades. A file built from legacy data has no row.
+`notifications.collection_item_id` and `notifications.collection_id` (migration `0107_collection_notifications`) are
+each NULL or 18 ASCII digits naming an item or a collection the dump holds: an `added_to_collection` notification
+names its item alone, a `collection_update` its collection alone, and any other type neither, with at most one
+notification an item and one `collection_update` a collection and recipient; otherwise the chunk fails with
+`notifications: collection keys past their stored bound` or a `FOREIGN KEY` or `UNIQUE` failure. A dump taken
+before 0107 has neither column: every notification restores with both NULL.
 
 A report (migration `0054_remote_reports`) names any account as its reporter (`account_id`), once per `uri` and
 reported account, with `status_ids` of at most 100 ids within 2,101 UTF-8 bytes (compact JSON of 18-digit ids), a
@@ -541,17 +553,17 @@ renames it with the table), hold no other row.
 
 These are excluded because they must not be restored blindly:
 
-| Excluded                                                   | Why                                                                                                                                                    |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `kopje_migrations`                                         | The header carries it. The target's own migration runner recreates it                                                                                  |
-| `kopje_state` except `last_local_id` and `profile_updates` | `hold`, `upgrade` and `upgrade_bookmark` (a bookmark belongs to the source object), `maintenance`, `dump` and `import` describe one object at one time |
-| `media_orphans`                                            | Tombstones of R2 objects to delete; a restored Store must not delete what it restores                                                                  |
-| `card_images`                                              | Card images, re-encoded with no original kept; a restored Store shows its cards without them (`status_cards` keeps the links)                          |
-| `remote_media*`                                            | The cache of remote media and its R2 ledger: a target starts with an empty cache, shows remote URLs, and fetches them again                            |
-| `backup_media`                                             | The scheduled backup's media index for one bucket ([backup.md](backup.md)); a restored Store starts a fresh media baseline                             |
-| `reply_walk*`                                              | Walks of remote replies collections under way (context or Create walks, migration `0099_reply_walks`): job state; a restored Store starts none         |
-| `stream_*`                                                 | The streaming API's registry of subscriptions, journal of events and position: state of the open sockets of one object                                 |
-| `_cf_*`, `sqlite_*` (except `sqlite_sequence`)             | Platform and SQLite internals                                                                                                                          |
+| Excluded                                                   | Why                                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `kopje_migrations`                                         | The header carries it. The target's own migration runner recreates it                                                                                                                                                                                                                                                                                                                           |
+| `kopje_state` except `last_local_id` and `profile_updates` | `hold`, `upgrade` and `upgrade_bookmark` (a bookmark belongs to the source object), `maintenance`, `dump` and `import` describe one object at one time                                                                                                                                                                                                                                          |
+| `media_orphans`                                            | Tombstones of R2 objects to delete; a restored Store must not delete what it restores                                                                                                                                                                                                                                                                                                           |
+| `card_images`                                              | Card images, re-encoded with no original kept; a restored Store shows its cards without them (`status_cards` keeps the links)                                                                                                                                                                                                                                                                   |
+| `remote_media*`                                            | The cache of remote media and its R2 ledger: a target starts with an empty cache, shows remote URLs, and fetches them again                                                                                                                                                                                                                                                                     |
+| `backup_media`                                             | The scheduled backup's media index for one bucket ([backup.md](backup.md)); a restored Store starts a fresh media baseline                                                                                                                                                                                                                                                                      |
+| `reply_walk*`                                              | Walks of remote replies collections under way (context or Create walks, migration `0099_reply_walks`), and where their scans of each status's stored replies stand and the work they owe a thread's next walks (`0106_reply_walk_debts`): job state; a restored Store starts no walk, scans each status from its first reply again, and owes again what the walk that next has no room for cuts |
+| `stream_*`                                                 | The streaming API's registry of subscriptions, journal of events and position: state of the open sockets of one object                                                                                                                                                                                                                                                                          |
+| `_cf_*`, `sqlite_*` (except `sqlite_sequence`)             | Platform and SQLite internals                                                                                                                                                                                                                                                                                                                                                                   |
 
 The importer refuses a `kopje_state` row whose name is not allowlisted. `profile_updates` is written only by
 `convert --images`: a JSON array of the ids of the local accounts whose avatar or header the conversion changed

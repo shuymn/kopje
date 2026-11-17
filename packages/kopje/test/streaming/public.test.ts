@@ -586,7 +586,7 @@ describe("feeds at the caps", () => {
 // past it; REST shows the status whole either way. R is a payload less its descriptions' bytes.
 describe("payloads with descriptions at their length (D8)", () => {
   // R of the plain fill's S2 update and of carol's boost of S2 (pinned by "sends ... beside plain text").
-  const PLAIN_R = { quote: 141_013, boost: 179_143 };
+  const PLAIN_R = { quote: 141_177, boost: 179_389 };
 
   // A world: alice and carol with the fill's profile, bob following carol, on public:local and user; console.warn
   // spied for the hub's skips.
@@ -685,8 +685,8 @@ describe("payloads with descriptions at their length (D8)", () => {
   // each status (links), then also each profile field and poll choice (every). R past 524,288 less the descriptions'
   // 320,000 bytes.
   it.each([
-    ["links", FILLS.links, { quote: 281_183, boost: 319_313 }],
-    ["every", FILLS.every, { quote: 327_221, boost: 388_174 }],
+    ["links", FILLS.links, { quote: 281_347, boost: 319_559 }],
+    ["every", FILLS.every, { quote: 327_385, boost: 388_420 }],
   ] as const)(
     "skips a status and its quote, and its boost, whose %s fill takes the rest past it",
     async (_name, fill, rests) => {
@@ -722,6 +722,39 @@ describe("payloads with descriptions at their length (D8)", () => {
       const shown = measured(json.quote, descriptions);
       expect(shown.descriptions).toEqual(descriptions);
       expect({ quote: shown.rest, boost: measured(json.boost, descriptions).rest }).toEqual(PLAIN_R);
+    } finally {
+      warn.mockRestore();
+    }
+  }, 120_000);
+
+  // RES-6: a unit past the limit is measured from its presented object and skipped with no string made. JSON.stringify
+  // is spied while the turn runs (the Store shares the test's isolate): the hub encodes the presented status it sends
+  // (S1, within the limit) and never the one it skips (S2, its descriptions control characters).
+  it("skips a unit past the limit without encoding its payload", async () => {
+    const w = await world(FILLS.plain);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const descriptions = [...described("\u0001"), ...described("\u0001")];
+      const media = await describedMedia(w.h, w.alice, descriptions);
+      await drained(w.h, w.inbox);
+      const quoted = await writeFilled(w.h, w.alice, FILLS.plain, media.slice(0, MAX_STATUS_MEDIA));
+      const quote = await writeFilled(w.h, w.alice, FILLS.plain, media.slice(MAX_STATUS_MEDIA), quoted);
+      const stringify = vi.spyOn(JSON, "stringify");
+      let encoded: unknown[];
+      try {
+        await w.h.store.streamTick(BUILD);
+        await drained(w.h, w.inbox);
+        encoded = stringify.mock.calls.flatMap(([value]) =>
+          typeof value === "object" && value !== null && "media_attachments" in value ? [(value as Status).id] : [],
+        );
+      } finally {
+        stringify.mockRestore();
+      }
+      expect(encoded).toEqual([quoted]);
+      expect([...frames(w.inbox).keys()]).toEqual([quoted]);
+      expect(skips(warn)).toHaveLength(1);
+      // The quote is the unit skipped: its payload, as REST shows it, passes the limit.
+      expect(payloadBytes(await shownJson(w, quote))).toBeGreaterThan(STREAM_LIMITS.payloadBytes);
     } finally {
       warn.mockRestore();
     }
@@ -800,7 +833,7 @@ describe("payloads with descriptions at their length (D8)", () => {
         expect(shown.rest).toBeLessThanOrEqual(STREAM_LIMITS.payloadBytes - 4 * encodedTwice(descriptions[0]!));
         rests.push(shown.rest);
       }
-      expect(rests).toEqual([163_432, 224_385]);
+      expect(rests).toEqual([163_514, 224_549]);
       expect(skips(warn)).toEqual([]);
     } finally {
       warn.mockRestore();

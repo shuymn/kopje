@@ -233,6 +233,10 @@ describe("list members", () => {
     const all = await h.request(`/api/v1/lists/${list.id}/accounts?limit=0`, bearer(alice.token));
     expect((await all.json<{ id: string }[]>()).map((a) => a.id)).toEqual(newest);
     expect(all.headers.get("link")).toBeNull();
+    // limit as Rails' params hold it, the last value: unlimited when that is "0".
+    const lastZero = await h.request(`/api/v1/lists/${list.id}/accounts?limit=2&limit=0`, bearer(alice.token));
+    expect([lastZero.headers.get("link"), (await lastZero.json<unknown[]>()).length]).toEqual([null, newest.length]);
+    expect(await ids(h, `/api/v1/lists/${list.id}/accounts?limit=0&limit=2`, alice.token)).toEqual(newest.slice(0, 2));
 
     // An unavailable member is not shown (Account.without_suspended), nor are the lists that hold it; one whose
     // deletion has started is not found by the account reads at all (Mastodon 4.7's without_requested_deletion).

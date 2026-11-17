@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { accountsOf, ANSWER_CHUNK } from "../src/domain/accounts";
-import { admit, admittedPage, ANSWER_BYTES, jsonBytes } from "../src/domain/answer-budget";
+import { admit, admittedPage, ANSWER_BYTES, encodedTwiceBytes, jsonBytes } from "../src/domain/answer-budget";
 import { type VisibleStatusId } from "../src/domain/audience";
 import { filterTextLimits, MAX_FILTER_REQUEST_TEXT } from "../src/domain/filters";
 import { CACHED_IMAGE_BYTES, CACHED_IMAGE_KINDS } from "../src/domain/remote-media";
@@ -154,6 +154,51 @@ describe("admission (RES-3)", () => {
     ];
     for (const value of edges) {
       expect(jsonBytes(value)).toBe(stringified(value));
+    }
+  });
+
+  // RES-6: a stream payload's size (stream-hub.ts), without building either string. The strings hold the characters
+  // each encoding treats apart: NUL and U+0001 (\u00XX), short escapes, `"` and `\` (escaped again by the second
+  // encoding), U+2028 (written raw), lone surrogates (\uXXXX), astral pairs and multi-byte characters.
+  it("counts a twice-encoded payload as JSON.stringify(JSON.stringify(v)) writes it, without building it", () => {
+    const encodedTwice = (value: unknown) => utf8Length(JSON.stringify(JSON.stringify(value)));
+    const unit = fc.oneof(
+      fc.constantFrom(
+        "\u0000",
+        "\u0001",
+        '"',
+        "\\",
+        "\u2028",
+        "\ud800",
+        "\udfff",
+        "\u{1F600}",
+        "\b",
+        "\n",
+        "\u007f",
+        "\u0080",
+        "あ",
+        "a",
+      ),
+      fc.string({ unit: "binary", minLength: 1, maxLength: 1 }),
+    );
+    fc.assert(
+      fc.property(fc.jsonValue({ stringUnit: unit, maxDepth: 4 }), (value) => {
+        expect(encodedTwiceBytes(value)).toBe(encodedTwice(value));
+      }),
+      { numRuns: 2_000 },
+    );
+    const edges = [
+      { a: undefined, b: [undefined, () => 1, null], c: new Date(0), d: -0, e: Number.NaN, f: Infinity },
+      { '"\\': ['\ud800x\udc00\u0000\u001f"\\\b\f\n\r\t\u007f\u0080\u07ff\u0800\uffff\ud83d\ude00\u2028'] },
+      '"\\',
+      "",
+      [],
+      {},
+      0,
+      null,
+    ];
+    for (const value of edges) {
+      expect(encodedTwiceBytes(value)).toBe(encodedTwice(value));
     }
   });
 
@@ -463,7 +508,7 @@ describe("composite answers within ANSWER_BYTES (RES-3)", () => {
     for (let offset = 0, page = 0; page < 10; page++) {
       const read = await answer<{ accounts: unknown[]; statuses: { id: string }[]; hashtags: unknown[] }>(
         h,
-        `/api/v2/search?q=needle&limit=40&offset=${offset}`,
+        `/api/v2/search?q=needle&type=statuses&limit=40&offset=${offset}`,
         alice.token,
       );
       expect(read.bytes).toBeLessThanOrEqual(ANSWER_BYTES);
@@ -811,7 +856,7 @@ describe("the cached images of a chunk of accounts (RES-3)", () => {
           }
         }),
       );
-      const presented = [...accountsOf(db, ids, { origin: ORIGIN })];
+      const presented = [...accountsOf(db, ids, { origin: ORIGIN, viewerId: null })];
       return { statements, presented: presented.filter((a) => a?.avatar.includes("/media/r/")).length };
     });
     const bound = 2 * ANSWER_CHUNK * CACHED_IMAGE_KINDS.length * CACHED_IMAGE_BYTES;

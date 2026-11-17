@@ -3,7 +3,7 @@ import { DatabaseSync, type SQLInputValue, type SQLOutputValue } from "node:sqli
 
 import { describe, expect, it } from "vitest";
 
-import { MAIN_PARAMETERS } from "../test/main-runtime/main-allowances.js";
+import { ADDED_STATEMENTS, MAIN_PARAMETERS } from "../test/main-runtime/main-allowances.js";
 import { statementId } from "../test/plan-audit.js";
 import { normalized } from "../test/sql-text.js";
 import { countingInstr } from "./instr-counter.js";
@@ -15,7 +15,7 @@ import { nodeStorage, rolledBack, transaction, type World, witnessDatabase, witn
 // The worlds and flows run on Node's SQLite (3.54.1) (witness-store.ts); main's side runs the same flow with main's
 // literal text in place of each statement the rewrite changed (test/main-runtime/recorded.json, whose provenance
 // witness-recording.test.ts checks), bound to the same parameters, or to the leading ones main's statement takes where
-// main-allowances.ts says so.
+// main-allowances.ts says so; a statement main's flows never ran (ADDED_STATEMENTS there) runs on both sides as it is.
 
 type Recorded = { statements: string[]; runs: Record<string, { main: number[]; mine: number[] }> };
 const { statements, runs } = JSON.parse(
@@ -27,6 +27,14 @@ const { buildWorld, FLOWS, WORLDS, worldName } = await witnessWorld(new URL("../
 // The number of leading parameters each recorded statement of main's takes where it takes fewer than the rewrite's.
 const leading = new Map(
   await Promise.all(statements.map(async (text) => [text, MAIN_PARAMETERS[await statementId(text)]?.count] as const)),
+);
+
+// The statements main's flows never ran (main-allowances.ts ADDED_STATEMENTS): each runs as it is on both sides, its
+// walks counted on both, and pairs with none of main's.
+const added = new Set(
+  (await Promise.all(statements.map(async (text) => [text, ADDED_STATEMENTS[await statementId(text)]] as const)))
+    .filter(([, allowance]) => allowance !== undefined)
+    .map(([text]) => text),
 );
 
 // A statement main's code read through its own post-processing: a candidate window (src/domain/windows.ts), whose
@@ -102,10 +110,15 @@ function walks(world: World): Record<string, { main: number; mine: number }> {
     const recorded = runs[`${worldName(world)} ${flow}`]!;
     const side = (main: boolean): number => {
       let position = 0;
+      let paired = 0;
       const swap = (text: string) => {
         const at = position++;
         expect(text, `${flow}: statement ${at} as recorded`).toBe(statements[recorded.mine[at]!]);
-        return main ? statements[recorded.main[at]!] : undefined;
+        if (added.has(text)) {
+          return undefined;
+        }
+        const of = paired++;
+        return main ? statements[recorded.main[of]!] : undefined;
       };
       counter.reset();
       rolledBack(db, () => run(swapping(db, counter, swap), transact, context));

@@ -738,6 +738,74 @@ async function pinFetch(w: World, uri: string, gone: 404 | 410 = 404): Promise<v
   await check(w, { actual: result.jobsPending, predicted: started });
 }
 
+// A replies walk of s1 with one fetch, through the Store as the Worker's round hands it back (federation/replies.ts):
+// the walk started as a context read starts one, then claimed, handing out s1's own status step (`root`) or a node of
+// s2, s1's reply, stored or not, after s1's (`item`), completed with what R's server serves now: its document, or, for
+// a status it no longer serves, a 404 at its own URI (`gone`, as the Worker reads it with goneAt). R's document is kept
+// fresh, so no step needs its author. A walk whose root is not a walk root is finished at its claim, fetching nothing.
+async function walkFetch(w: World, which: "root" | "item"): Promise<void> {
+  const uri = which === "root" ? S1 : S2;
+  const root = (await sql<{ id: string }>(w.store, "SELECT id FROM statuses WHERE uri = ?", S1))[0]?.id;
+  const walkable = w.policy.walkable(S1);
+  log(w, `a walk of ${S1} fetches ${uri} at +${w.clock - NOW}${walkable ? "" : " (no walk root)"}`);
+  if (root === undefined) {
+    expect(walkable, w.trace.join("\n")).toBe(false);
+    tally(w.stats, "walk without a root");
+    await check(w);
+    return;
+  }
+  await sql(w.store, "UPDATE accounts SET fetched_at = ? WHERE id = ?", iso(w.clock), w.accounts[R]!);
+  await sql(
+    w.store,
+    `INSERT INTO reply_walks (status_id, kind, refresh_id, queued_at, due_at, next_seq, nodes) VALUES (?1, 0, ?2, ?3, ?3, ?4, ?4)
+		ON CONFLICT (status_id) DO UPDATE SET kind = 0, refresh_id = excluded.refresh_id, queued_at = ?3, due_at = ?3,
+			finished_at = NULL, token = NULL, next_seq = ?4, nodes = ?4, pages = 0, result_count = 0, handouts = 0,
+			handout = NULL`,
+    root,
+    "a".repeat(32),
+    w.clock,
+    which === "root" ? 1 : 2,
+  );
+  await sql(w.store, "DELETE FROM reply_walk_nodes WHERE status_id = ?", root);
+  await sql(
+    w.store,
+    "INSERT INTO reply_walk_nodes (status_id, uri, seq, state, valid) VALUES (?, ?, 0, ?, 1)",
+    root,
+    S1,
+    which === "root" ? 0 : 1,
+  );
+  if (which === "item") {
+    await sql(w.store, "INSERT INTO reply_walk_nodes (status_id, uri, seq) VALUES (?, ?, 1)", root, S2);
+  }
+  const claimed = await w.store.claimReplyWalk(BUILD);
+  if (!walkable) {
+    w.trace.push(`  -> ${JSON.stringify(claimed)}`);
+    tally(w.stats, "walk without a root");
+    await check(w, { actual: claimed === null || claimed === "more" ? null : claimed.statusId, predicted: null });
+    return;
+  }
+  if (claimed === null || claimed === "more" || claimed.statusId !== root || claimed.step.uri !== uri) {
+    throw new Error(`no walk step of ${uri} claimed: ${JSON.stringify(claimed)}\n${w.trace.join("\n")}`);
+  }
+  const served = w.peer.serve(uri, w.clock);
+  w.trace.push(
+    `  served ${served === "gone" ? "404" : `${JSON.stringify(served.snapshot)} t=${served.tally} u=${served.updated}`}`,
+  );
+  const answer = await w.store.completeReplyStep(BUILD, {
+    origin: LOCAL,
+    statusId: root,
+    token: claimed.token,
+    step: claimed.step,
+    more: false,
+    fetched: served === "gone" ? { kind: "gone" } : { kind: "status", status: input(served), replies: null },
+  });
+  expect(answer.need, w.trace.join("\n")).toBeNull();
+  const started = w.policy.walkFetch(R, S1, uri, served, w.clock);
+  tally(w.stats, `walk ${which} ${served === "gone" ? (started ? "404 removed" : "404 kept") : "served"}`);
+  w.trace.push(`  -> ${JSON.stringify(answer)}`);
+  await check(w, { actual: answer.jobsPending, predicted: started });
+}
+
 // What R's server renders for `uri` now (its cache aside).
 function current(w: World, uri: string): Obj {
   const status = w.peer.statuses.get(uri)!;
@@ -1019,6 +1087,7 @@ type Action =
   | { k: "delete"; s: number; proven: boolean }
   | { k: "vote" | "search" | "race" | "read"; s: number }
   | { k: "pinFetch"; s: number; gone?: 404 | 410 }
+  | { k: "walk"; which: "root" | "item" }
   | { k: "deliver" | "redeliver" | "confirm" | "complete" | "refresh"; i: number }
   | { k: LocalKind }
   | { k: "jobs" | "claim" | "send" | "pinRead" }
@@ -1060,6 +1129,10 @@ const actionArb: fc.Arbitrary<Action> = fc.oneof(
     weight: 4,
   },
   simple("pinRead", 1),
+  {
+    arbitrary: fc.record({ k: fc.constant("walk" as const), which: fc.constantFrom("root" as const, "item" as const) }),
+    weight: 3,
+  },
   indexed("deliver", 10),
   indexed("redeliver", 2),
   simple("favourite", 2),
@@ -1120,6 +1193,9 @@ async function act(w: World, a: Action): Promise<void> {
       return;
     case "pinFetch":
       await pinFetch(w, POOL[a.s]!, a.gone);
+      return;
+    case "walk":
+      await walkFetch(w, a.which);
       return;
     case "deliver":
       if (peer.outbox.length > 0) {
@@ -1842,6 +1918,75 @@ describe("status deletes: the author's orders", () => {
       ["edited", "created"],
       ["status-deleted"],
     ]);
+  });
+
+  // ID-7: a walk of s1 reads R's edit of it before its Update arrives, as its author's Update; once R deleted s1, the
+  // walk's fetch of its root answers 404 and removes nothing (the root's body goes to FetchReplyWorker), and R's Delete
+  // then removes it.
+  it("a walk applies its root's edit, and its root's 404 removes nothing", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "edit", s: 0, snapshot: B },
+      { k: "tick", ms: 6 * MINUTE },
+      { k: "walk", which: "root" },
+      { k: "delete", s: 0, proven: false },
+      { k: "walk", which: "root" },
+    ]);
+    expect(w.stats).toMatchObject({ "walk root served": 1, "walk root 404 kept": 1 });
+    expect(answersOf(w, "Update", S1)).toEqual(["stale"]);
+    expect(answersOf(w, "Delete", S1)).toEqual(["status-deleted"]);
+  });
+
+  // ID-7: s2, s1's reply, is stored; R deletes it, and a walk of s1 fetches it: the 404 removes it with no retraction,
+  // so R's Delete finds no row and is recorded as an unknown object's, and its Create delivered again once the removal
+  // ended stores it again, which the recorded Delete refuses.
+  it("a walk's 404 of a stored reply before its Delete and a Create retry", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "post", s: 1, snapshot: A },
+      deliver(),
+      { k: "delete", s: 1, proven: false },
+      { k: "walk", which: "item" },
+      { k: "jobs" },
+      deliver(),
+      { k: "redeliver", ...at(1) },
+    ]);
+    expect(w.stats["walk item 404 removed"]).toBe(1);
+    expect(answersOf(w, "Delete", S2)).toEqual(["retraction-recorded"]);
+    expect(answersOf(w, "Create", S2)).toEqual(["created", "retracted"]);
+  });
+
+  // ID-7: a walk of s1 fetches s2 before its Create: stored as fetched, linked under s1; the Create then is a
+  // duplicate.
+  it("a walk stores a reply before its Create", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "post", s: 1, snapshot: A },
+      { k: "walk", which: "item" },
+      deliver(),
+    ]);
+    expect(w.stats["walk item served"]).toBe(1);
+    expect(answersOf(w, "Create", S2)).toEqual(["duplicate"]);
+  });
+
+  // ID-7: s2, s1's reply, is stored and linked; R deletes it, and a pin sync's fetch of it answers 404: the hide counts
+  // it off s1's replies at once (Mastodon's RemoveStatusService decrements it), before the removal's batch, whose
+  // recount of s1 sets the same count.
+  it("a pin sync's 404 of a stored reply counts it off its parent at once", async () => {
+    const w = await run([
+      { k: "post", s: 0, snapshot: A },
+      deliver(),
+      { k: "post", s: 1, snapshot: A },
+      deliver(),
+      { k: "delete", s: 1, proven: false },
+      { k: "pinRead" },
+      { k: "pinFetch", s: 1 },
+      { k: "jobs" },
+    ]);
+    expect(w.stats["pin fetch 404 removed"]).toBe(1);
   });
 
   it("a metadata Update, then an older content Update", async () => {

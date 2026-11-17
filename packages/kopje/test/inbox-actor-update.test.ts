@@ -183,6 +183,21 @@ describe("an Update(Person) embedding its actor, signed with a fresh key (ID-1)"
     ]);
   });
 
+  it("applies an Update(Person) whose embedded actor spells icon as as:icon (#1709)", async () => {
+    const { t, bob } = await bobWorld();
+    const update = updateOf(
+      bob,
+      embedded(bob, {
+        name: "embedded name",
+        "as:icon": { type: "Document", mediaType: "image/png", url: avatar("spelled") },
+      }),
+    );
+    expect(await receive(t, bob, update)).toMatchObject({ status: 202, reason: "actor-updated" });
+    expect(t.web.fetched).toEqual([]);
+    // The literal icon is read; the spelled one is not.
+    expect(await row(t, bob.uri)).toMatchObject({ display_name: "embedded name", avatar_url: avatar("bob") });
+  });
+
   it("keeps the stored keys and inboxes whatever the embedded actor lists", async () => {
     const { t, bob } = await bobWorld();
     const before = { row: await row(t, bob.uri), keys: await keys(t, bob.uri) };
@@ -389,13 +404,13 @@ describe("an Update(Person) that embeds no actor", () => {
     const { t, bob } = await bobWorld();
     t.web.serve(bob.uri, { ...bob.document, name: "served" });
     const update = updateOf(bob, object(bob));
-    const parsed = parseActivity(new TextEncoder().encode(JSON.stringify(update)));
+    const parsed = await parseActivity(new TextEncoder().encode(JSON.stringify(update)));
     expect(fetchesFirst(parsed)).toBe(bob.uri);
     expect(await receive(t, bob, update)).toMatchObject({ status: 202, reason: "actor-updated" });
     expect(fetchedActor(t, bob)).toHaveLength(1);
     expect((await row(t, bob.uri)).display_name).toBe("served");
     // One that embeds its actor is hinted no fetch.
-    expect(fetchesFirst(parseActivity(new TextEncoder().encode(JSON.stringify(updateOf(bob)))))).toBeNull();
+    expect(fetchesFirst(await parseActivity(new TextEncoder().encode(JSON.stringify(updateOf(bob)))))).toBeNull();
   });
 });
 

@@ -10,9 +10,11 @@ import {
   CARD_OPTIONAL_URL_LIMIT,
   CARD_TEXTS,
   CARD_TYPES,
+  cutCodePoints,
   embedSrcAttribute,
   isAppWebsite,
   isIsoTime,
+  MAX_MEDIA_DESCRIPTION_LENGTH,
   MAX_REMOTE_OPTIONS,
   presentedAppName,
   presentedCardText,
@@ -24,7 +26,7 @@ import {
   storedBlurhash,
 } from "../platform/stored-bounds";
 import { remotePlainText } from "../security/html";
-import { type Account, accountsOf, accountUrl, acctOf, type Present, shownHandle } from "./accounts";
+import { type Account, accountsOf, accountUrl, acctOf, presentFor, type PresentInput, shownHandle } from "./accounts";
 import { admit, type Admitted, jsonBytes } from "./answer-budget";
 import {
   type ApiQuoteState,
@@ -243,7 +245,7 @@ export type StatusRow = {
 // (Account::Interactions#favourited? and its siblings read status.proper). streamed: as streaming's hydration overrides
 // them (StatusCacheHydrator#hydrate_reblog_payload): favourited, reblogged and filtered its original's, muted and
 // bookmarked false, pinned false on the viewer's own boost. A boost whose original the viewer may not see shows false.
-export type PresentOptions = Present & { viewer: ViewerContext; proper?: true; streamed?: true };
+export type PresentOptions = PresentInput & { viewer: ViewerContext; proper?: true; streamed?: true };
 
 export type PresentOwnOptions = PresentOptions & {
   // DELETE answers with the source text (`text`) in place of `content`, for redrafting, and with the quoted status of
@@ -638,7 +640,7 @@ function searchableText(row: TextRow, poll: Poll | undefined, media: readonly Me
     row.spoiler_text,
     row.author_domain === null ? (row.source_text ?? htmlToPlainText(row.content)) : remotePlainText(row.content),
     ...(poll === undefined ? [] : [poll.options.map((option) => option.title).join("\n\n")]),
-    media.map((m) => m.description).join("\n\n"),
+    media.map((m) => presentedMediaDescription(m.description) ?? "").join("\n\n"),
   ].join("\n\n");
 }
 
@@ -676,7 +678,7 @@ function hydrate(
   ];
   // The authors of the chunk's statuses, their originals and quoted statuses.
   const authors = [...new Set([...byId.values()].map((row) => row.account_id))];
-  const presented = accountsOf(db, authors, options, Math.max(authors.length, 1));
+  const presented = accountsOf(db, authors, presentFor(options, options.viewer.accountId), Math.max(authors.length, 1));
   const accounts = new Map(authors.flatMap(() => presented.next().value ?? []).map((account) => [account.id, account]));
   // At most MAX_STATUS_MEDIA attachments, MAX_STATUS_MENTION_ROWS mentions and MAX_PRESENTED_TAGS hashtags of each
   // status (each status once), cut in SQL: a converted row may hold more. Each cap reads at most that many rows of
@@ -1130,9 +1132,16 @@ export function presentMedia(row: MediaRow, origin: string | null = null): Media
     preview_remote_url: remote ? remotePreview : null,
     text_url: null,
     meta: Object.keys(meta).length === 0 ? null : meta,
-    description: row.description === "" ? null : row.description,
+    description: presentedMediaDescription(row.description),
     blurhash: storedBlurhash(row.blurhash),
   };
+}
+
+// A media description as presented, live, scheduled, federated or from an edit's snapshot (RES-3): its first
+// MAX_MEDIA_DESCRIPTION_LENGTH code points as decoded, so at most that however a stored value within
+// MEDIA_DESCRIPTION_BYTES decodes (a malformed byte to one U+FFFD); null for '' and for a value that is not a string.
+export function presentedMediaDescription(value: unknown): string | null {
+  return typeof value !== "string" || value === "" ? null : cutCodePoints(value, MAX_MEDIA_DESCRIPTION_LENGTH);
 }
 
 const ENCODER = new TextEncoder();

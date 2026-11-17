@@ -13,11 +13,12 @@ import { MAX_URL_LENGTH } from "../src/domain/status-text";
 import { syncCollections } from "../src/federation/collections";
 import { verifySpooledRequest } from "../src/federation/inbound";
 import { processInbox } from "../src/federation/inbox";
-import { fedifyActorView, profileImage, remoteActorInput } from "../src/federation/remote-actor";
+import { fedifyActorView, INBOX_URL_LIMIT, profileImage, remoteActorInput } from "../src/federation/remote-actor";
 import { httpUrl } from "../src/platform/http-url";
 import { PROFILE_URL_LIMIT } from "../src/platform/stored-bounds";
 import { sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
+import spellings from "./fixtures/shared-inbox/spellings.json";
 import { LOCAL, MASTODON, mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
 import {
   type Acct,
@@ -34,8 +35,8 @@ import {
 } from "./inbox-status-helpers";
 
 // #1672: an actor document's icon, image, followers and following are read by spelling, as Mastodon 4.7 reads them
-// (ProcessAccountService#image_url_and_description and #valid_collection_uri), and Fedify parses the document without
-// them (federation/remote-actor.ts fedifyActorView), so none of them can refuse the actor.
+// (ProcessAccountService#image_url_and_description and #valid_collection_uri), and Fedify parses a view of the document
+// without them (federation/remote-actor.ts fedifyActorView), so none of them can refuse the actor.
 
 type Json = Record<string, unknown>;
 
@@ -187,6 +188,80 @@ describe("an actor whose icon or image is not an Image is stored (#1672)", () =>
     }
   });
 
+  // #1709: the paths that hand Fedify an actor document a key is read from, each given a document whose member
+  // outside the view's inventory Fedify cannot parse (remote-actor.ts FEDIFY_MEMBERS).
+  const mention = { cc: [ALICE_URI], tag: [{ type: "Mention", href: ALICE_URI, name: "@alice@kopje.test" }] };
+  const mentioned = async (t: Setup) =>
+    sql(t.store, "SELECT account_id FROM notifications WHERE type = 'mention'").then((rows) => rows.length);
+
+  it("verifies a signature by an actor whose published is unreadable, its key at the actor's URL", async () => {
+    // GoToSocial's key form: no key under the document at the key's URL (D4 answers none), so Fedify fetches the key
+    // itself through actorViewLoader, live, on replay and in the rollback drain's check.
+    const keyed = async (t: Setup) => {
+      const actor = await mastodonActor(t.web, "gts");
+      const keyId = `${actor.uri}/main-key`;
+      const document = {
+        ...actor.document,
+        published: "garbage",
+        publicKey: { id: keyId, owner: actor.uri, publicKeyPem: actor.pem },
+      };
+      t.web.serve(actor.uri, document);
+      t.web.serve(keyId, document);
+      return { actor, keyId };
+    };
+    const live = await setup();
+    const { actor, keyId } = await keyed(live);
+    const init = await signedInit(actor, "/inbox", create(actor, mastodonNote(actor, mention)), { keyId });
+    const spooled = {
+      url: `${LOCAL}/inbox`,
+      method: "POST",
+      headers: [...new Headers(init.headers)],
+      body: new TextEncoder().encode(init.body as string),
+      receivedAt: NOW,
+    };
+    expect(await live.post(actor, create(actor, mastodonNote(actor, mention)), { keyId })).toBe(202);
+    expect(live.web.fetched).toContain(keyId);
+    expect(await mentioned(live)).toBe(1);
+    expect(
+      await verifySpooledRequest({ ...live.web.loader, userAgent: "Kopje/test" }, "kopje.test", spooled),
+    ).toMatchObject({ ok: true, actor: actor.uri });
+    const replay = await setup();
+    await keyed(replay);
+    expect(
+      await processInbox(
+        replay.env,
+        inboxDeps(() => replay.store, replay.web.loader),
+        spooled,
+        "replay",
+      ),
+    ).toMatchObject({ status: 202 });
+    expect(replay.web.fetched).toContain(keyId);
+    expect(await mentioned(replay)).toBe(1);
+  });
+
+  it("verifies a signature by a key under its owner's document whose updated is unreadable (D4)", async () => {
+    const t = await setup();
+    const actor = await mastodonActor(t.web, "updated");
+    t.web.serve(actor.uri, { ...actor.document, updated: "garbage" });
+    expect(await t.post(actor, create(actor, mastodonNote(actor, mention)))).toBe(202);
+    expect(await mentioned(t)).toBe(1);
+    expect(await keys(t, actor.uri)).toEqual([{ key_id: actor.keyId }]);
+  });
+
+  it("verifies a key document served at the key's URL", async () => {
+    // The key's own document keeps what Fedify reads of it (its id, type, owner and key); its owner's document holds
+    // an icon spelled as a compact IRI.
+    const t = await setup();
+    const actor = await mastodonActor(t.web, "keydoc");
+    const keyId = `${MASTODON}/keys/keydoc`;
+    const key = { id: keyId, owner: actor.uri, publicKeyPem: actor.pem };
+    t.web.serve(actor.uri, { ...actor.document, "as:icon": DOCUMENT, publicKey: key });
+    t.web.serve(keyId, { "@context": "https://w3id.org/security/v1", type: "CryptographicKey", ...key });
+    expect(await t.post(actor, create(actor, mastodonNote(actor, mention)), { keyId })).toBe(202);
+    expect(t.web.fetched).toContain(keyId);
+    expect(await mentioned(t)).toBe(1);
+  });
+
   it("a reference is not fetched", async () => {
     const t = await setup();
     const icon = `${MASTODON}/system/avatars/reference.json`;
@@ -272,28 +347,6 @@ describe("avatars and headers are read as Mastodon reads them (#1672, HTML-3, RE
       headerDescription: "header",
       raw: JSON.stringify(document),
     });
-  });
-});
-
-describe("fedifyActorView", () => {
-  it("leaves out icon, image, followers and following alone, and leaves anything else as it is", () => {
-    const document = {
-      "@context": AS,
-      id: `${MASTODON}/users/erin`,
-      type: "Person",
-      icon: DOCUMENT,
-      image: DOCUMENT,
-      followers: { type: "Document" },
-      following: { type: "Document" },
-      endpoints: { sharedInbox: `${MASTODON}/inbox` },
-      publicKey: { id: `${MASTODON}/users/erin#main-key` },
-    };
-    const { icon: _i, image: _m, followers: _f, following: _g, ...rest } = document;
-    expect(fedifyActorView(document)).toEqual(rest);
-    expect(document.icon).toBe(DOCUMENT);
-    for (const value of [null, "x", [document], 1]) {
-      expect(fedifyActorView(value)).toBe(value);
-    }
   });
 });
 
@@ -663,5 +716,137 @@ describe("an actor's followers and following are read as Mastodon reads them (#1
     expect(fetched).not.toContain(F);
     expect(fetched).not.toContain(H);
     expect(followersOf(JSON.stringify({ followers: [[F]] }))).toBe("");
+  });
+});
+
+describe("reads the shared inbox as Mastodon (#1686, NET-2, HTML-3)", () => {
+  const SI = `${MASTODON}/inbox`;
+  const SI2 = `${MASTODON}/inbox2`;
+
+  // The shared inbox stored for `uri`, and whether the actor is stored at all.
+  const sharedInbox = async (t: Setup, uri: string) =>
+    (await sql<{ s: string | null }>(t.store, "SELECT shared_inbox_url AS s FROM accounts WHERE uri = ?", uri))[0]?.s;
+
+  // The shared inbox remoteActorInput reads from `document` (an actor holding it), parsed as readActor parses it.
+  async function read(extra: Json): Promise<string | null | undefined> {
+    const uri = `${MASTODON}/users/si`;
+    const document = {
+      "@context": AS,
+      id: uri,
+      type: "Person",
+      preferredUsername: "si",
+      inbox: `${uri}/inbox`,
+      ...extra,
+    };
+    return (await remoteActorInput(await Person.fromJsonLd(fedifyActorView(document)), document))?.sharedInboxUrl;
+  }
+
+  // §1.2's forms: each actor is stored, with the shared inbox Mastodon 4.7.5 reads (process_account_service.rb:225).
+  // Fedify 2.4.5 refused the actor whole for a Document- or Service-typed `endpoints`, a non-URL `sharedInbox` and a
+  // non-URL `proxyUrl`; it read an array `endpoints`, ignored a top-level `sharedInbox` and resolved a relative one.
+  const FORMS: [string, Json, string | null][] = [
+    ["plain", { endpoints: { sharedInbox: SI } }, SI],
+    ["endpoints", { endpoints: { type: "Endpoints", sharedInbox: SI } }, SI],
+    ["withid", { endpoints: { id: `${MASTODON}/endpoints`, sharedInbox: SI } }, SI],
+    ["oauth", { endpoints: { oauthAuthorizationEndpoint: `${MASTODON}/oauth/authorize`, sharedInbox: SI } }, SI],
+    ["document", { endpoints: { type: "Document", sharedInbox: SI } }, SI],
+    ["service", { endpoints: { type: "Service", sharedInbox: SI } }, SI],
+    ["number", { endpoints: { sharedInbox: 5 } }, null],
+    ["proxy", { endpoints: { proxyUrl: 5, sharedInbox: SI } }, SI],
+    ["object", { endpoints: { sharedInbox: { id: SI } } }, SI],
+    ["list", { endpoints: { sharedInbox: [SI, SI2] } }, SI],
+    ["string", { endpoints: "x" }, null],
+    ["null", { endpoints: null }, null],
+    ["five", { endpoints: 5 }, null],
+    ["empty", { endpoints: {} }, null],
+  ];
+  // EP-T2: the forms Fedify read otherwise. An array or any other non-object `endpoints` gives the top-level
+  // `sharedInbox`; an object gives its own member alone.
+  const OTHER_FORMS: [string, Json, string | null][] = [
+    ["array", { endpoints: [{ sharedInbox: SI }] }, null],
+    ["arraytop", { endpoints: [{ sharedInbox: SI }], sharedInbox: SI2 }, SI2],
+    ["top", { endpoints: undefined, sharedInbox: SI }, SI],
+    ["stringtop", { endpoints: "x", sharedInbox: { id: SI } }, SI],
+    ["emptytop", { endpoints: {}, sharedInbox: SI2 }, null],
+    ["relative", { endpoints: { sharedInbox: "/inbox" } }, null],
+  ];
+
+  it.each([
+    ["each form of endpoints (EP-T1)", FORMS],
+    ["an array, a top-level sharedInbox and a relative one (EP-T2)", OTHER_FORMS],
+  ])("stores the actor with Mastodon's shared inbox: %s", async (_name, forms) => {
+    const t = await setup();
+    for (const [name, extra, shared] of forms) {
+      const actor = await mastodonActor(t.web, `ep${name}`, { extra });
+      const found = await searchAccounts(t, actor.uri);
+      expect(
+        found.body.accounts.map((a) => a.acct),
+        name,
+      ).toEqual([`ep${name}@mastodon.example`]);
+      expect(await sharedInbox(t, actor.uri), name).toBe(shared);
+      expect(await keys(t, actor.uri), name).toEqual([{ key_id: actor.keyId }]);
+    }
+  });
+
+  // EP-T3: Mastodon's destination for each spelling (spellings.json, captured by its capture.rb from Addressable 2.9.2
+  // under Mastodon 4.7.5): Kopje keeps exactly that URL or none, and none for each row marked refused (Q4).
+  it("keeps a spelling only where Kopje POSTs to Mastodon's URL (EP-T3)", async () => {
+    expect(spellings.addressable).toBe("2.9.2");
+    const differences: unknown[] = [];
+    for (const row of spellings.rows) {
+      const mastodon = (row.mastodon as { destination?: string }).destination ?? null;
+      const kopje = await read({ endpoints: { sharedInbox: row.value } });
+      if (kopje !== (row.refused ? null : mastodon) || (kopje !== null && kopje !== mastodon)) {
+        differences.push({ value: row.value, refused: row.refused, kopje, mastodon });
+      }
+    }
+    expect(differences).toEqual([]);
+    // Every row Kopje keeps has a Mastodon destination, and the refused rows cover spellings Mastodon keeps.
+    expect(spellings.rows.filter((row) => !row.refused && row.mastodon.destination === undefined)).toEqual([]);
+    expect(
+      spellings.rows.filter((row) => row.refused && row.mastodon.destination !== undefined).length,
+    ).toBeGreaterThan(40);
+  });
+
+  // EP-T4: a scheme other than lower-case http(s), no host, and a URL past INBOX_URL_LIMIT (UTF-16 code units of an
+  // ASCII href, so bytes) are none; NUL and astral characters are refused by spelling, a NUL's escape kept as spelled.
+  it("keeps none for another scheme, no host, or past INBOX_URL_LIMIT (EP-T4)", async () => {
+    const at = (length: number) => `${MASTODON}/${"x".repeat(length - MASTODON.length - 1)}`;
+    expect(at(INBOX_URL_LIMIT)).toHaveLength(INBOX_URL_LIMIT);
+    for (const [value, shared] of [
+      ["ftp://mastodon.example/inbox", null],
+      ["HTTPS://mastodon.example/inbox", null],
+      ["https:///inbox", null],
+      ["https:/inbox", null],
+      [at(INBOX_URL_LIMIT), at(INBOX_URL_LIMIT)],
+      [at(INBOX_URL_LIMIT + 1), null],
+      [`${MASTODON}:0443/${"x".repeat(INBOX_URL_LIMIT - MASTODON.length - 1)}`, at(INBOX_URL_LIMIT)],
+      [`${MASTODON}/in\0box`, null],
+      [`${MASTODON}/in\u{1F600}box`, null],
+      [`${MASTODON}/in%00box`, `${MASTODON}/in%00box`],
+    ] as const) {
+      expect(await read({ endpoints: { sharedInbox: value } }), value).toBe(shared);
+      expect(await read({ endpoints: undefined, sharedInbox: value }), value).toBe(shared);
+    }
+  });
+
+  // EP-T5: an actor whose endpoints is a Document signs a Create Kopje accepts (ID-1), and its Update(Person) applies.
+  it("verifies a signature by, and applies an Update of, an actor whose endpoints is a Document (EP-T5)", async () => {
+    const t = await setup();
+    const endpoints = { type: "Document", sharedInbox: SI };
+    const erin = await mastodonActor(t.web, "erin", { extra: { endpoints } });
+    const note = mastodonNote(erin, {
+      cc: [ALICE_URI],
+      tag: [{ type: "Mention", href: ALICE_URI, name: "@alice@kopje.test" }],
+    });
+    expect(await t.post(erin, create(erin, note))).toBe(202);
+    expect(await sql(t.store, "SELECT account_id FROM notifications WHERE type = 'mention'")).toEqual([
+      { account_id: ALICE },
+    ]);
+    expect(await sharedInbox(t, erin.uri)).toBe(SI);
+    const renamed = { ...erin.document, name: "erin renamed", endpoints: { type: "Service", proxyUrl: 5 } };
+    const updateOf = { "@context": AS, id: `${erin.uri}#updates/1`, type: "Update", actor: erin.uri, object: renamed };
+    expect(await t.post(erin, updateOf)).toBe(202);
+    expect(await account(t, erin.uri)).toMatchObject({ display_name: "erin renamed" });
   });
 });

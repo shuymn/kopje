@@ -481,7 +481,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (deliveries.ts#<anonymous> in claimDeliveries); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "542bada4bb571d53",
+    id: "a83803de2e21606d",
     scans: ["deliveries: SCAN d", "outbound_activities: SCAN o LEFT-JOIN"],
     site: "src/domain/deliveries.ts#<anonymous> in claimDeliveries",
     disposition: "background",
@@ -596,7 +596,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "the operator's delivery report (deliveriesReport, src/domain/deliveries.ts) counts the activities still expanding: the walk is the report, which only the Access admin reads (GET /admin/deliveries, src/app/admin.ts)",
   },
   {
-    id: "19c057c4ebf7cf4d",
+    id: "77de1c0391c5e5be",
     scans: ["deliveries: SCAN d", "outbound_activities: SCAN o LEFT-JOIN"],
     site: "src/domain/deliveries.ts#<anonymous> in confirmDelivery",
     disposition: "pending",
@@ -1386,7 +1386,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:267 and :537), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:52) sessions besides the Store's own names and the monthly transform counters the setup's Images check charges (src/domain/media.ts:227), one per month it ran",
   },
   {
-    id: "b100293b1058ce77",
+    id: "ab46b31661146f27",
     scans: ["?: SCAN c", "local_accounts: SCAN l"],
     site: "src/domain/status-presenter.ts#statusRowBounds < src/domain/status-presenter.ts#plannedChunks < src/domain/status-presenter.ts#statusStream",
     disposition: "deliberate",
