@@ -177,9 +177,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 ### Changed
 
 - Breaking: the query and a urlencoded or multipart body are each read in Rack order, as Mastodon reads them
-  (#1734): a name sent as two kinds (`limit=1&limit[]=2`) answers 400, a later plain name replaces what an earlier
-  one sent under it (`limit[]=2&limit=1` reads 1), a name without `=` is nil, and the query and a urlencoded body are
-  refused past Rack's limits (4,096 fields, 4 MiB) and, like a JSON body, past 10,000 parameter paths
+  (#1734), also by `/oauth/authorize` and `/authorize_interaction`: a name sent as two kinds (`limit=1&limit[]=2`)
+  answers 400, a later plain name replaces what an earlier one sent under it (`limit[]=2&limit=1` reads 1), a name
+  without `=` is nil, an array's objects keep the boundaries Rails gives them, a POST body without a `Content-Type` is
+  read as a urlencoded form, the query and a urlencoded body are refused past Rack's limits (4,096 fields, 4 MiB) and
+  a multipart body at its 4,096th part or 128th file, and each, like a JSON body, past 10,000 parameter paths
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Request parameters"). No Store migration and no
   `wrangler.jsonc` change.
 - `wrangler.jsonc`: add `"limits": { "cpu_ms": 60000 }` to the instance's config, as the template now has it

@@ -378,20 +378,28 @@ describe("field bounds cover the query string (RES-1)", () => {
     expect(h.codec.calls).toBe(calls);
   });
 
-  // Each field counts as sent, also one a later one of its name replaced (params.ts Params#replaced).
-  it("counts a field a later one of its name replaced", async () => {
+  // Each field counts as sent (params.ts Params#sent), also one a later one of its name replaced, whatever it nested.
+  it("counts a field a later one of its name replaced, plain or nested", async () => {
     const h = await users();
-    const send = (count: number, first: string) => {
+    const send = (fields: [string, string][]) => {
       const form = mediaForm(bytes(PNG_PLAIN), {}, "a.png", "image/png");
-      form.append("f", first);
-      for (let i = 1; i < count; i++) {
-        form.append("f", "x");
+      for (const [name, value] of fields) {
+        form.append(name, value);
       }
       return upload(h, h.users.alice, form);
     };
-    expect((await send(16, "x".repeat(MAX_FIELD_LENGTH))).status).toBe(200);
+    // `count` fields, the first `first`: of one plain name, or nested under it before the plain name replaces them.
+    const plain = (count: number, first: string) =>
+      Array.from({ length: count }, (_, i): [string, string] => ["f", i === 0 ? first : "x"]);
+    const nested = (count: number, first: string) => [
+      ...Array.from({ length: count - 1 }, (_, i): [string, string] => [`f[x${i}]`, i === 0 ? first : "x"]),
+      ["f", "ok"] as [string, string],
+    ];
+    const long = "x".repeat(MAX_FIELD_LENGTH);
+    expect([(await send(plain(16, long))).status, (await send(nested(16, long))).status]).toEqual([200, 200]);
     const calls = h.codec.calls;
-    for (const response of [await send(17, "x"), await send(2, "x".repeat(MAX_FIELD_LENGTH + 1))]) {
+    for (const fields of [plain(17, "x"), plain(2, `${long}x`), nested(18, "x"), nested(2, `${long}x`)]) {
+      const response = await send(fields);
       expect([response.status, await response.json()]).toEqual([422, FIELD_TOO_LONG]);
     }
     expect(h.codec.calls).toBe(calls);

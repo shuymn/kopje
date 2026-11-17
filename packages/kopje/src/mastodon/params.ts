@@ -27,7 +27,8 @@ import { rubyNumberToI, rubyToI } from "../platform/ruby-to-i";
 //   each declared file, so it may be `limit + names.length * (maxBytes + FILE_PART_SLACK)` bytes;
 // - a form body's text: the UTF-8 bytes of every text entry's name and value and of the query, each as sent (also
 //   one a later one replaces), at most `limit`;
-// - the query and a urlencoded body: Rack's limits (4 MiB, 4,096 fields, a nesting 32 deep: 400);
+// - the query and a urlencoded body: Rack's limits (4 MiB, 4,096 fields, a nesting 32 deep: 400); a multipart body:
+//   Rack's part limits (MULTIPART_PARTS parts, MULTIPART_FILES file parts: 400);
 // - paths: for a JSON body, and for each of the query's and a form body's trees as Rack and as Rails build them, at
 //   most MAX_PARAM_PATHS keys (object members, array objects, empty lists, and for a tree each assignment, a
 //   replacing one included; a list's scalar items are not counted), PARAM_PATH_BUDGET UTF-16 code units of every
@@ -40,6 +41,9 @@ export const FILE_PART_SLACK = 16 * 1024;
 // Rack's param_depth_limit (ParamsTooDeepError, answered 400).
 export const MAX_PARAM_DEPTH = 32;
 export const MAX_PARAM_PATHS = 10_000;
+// Rack's multipart_total_part_limit and multipart_file_limit.
+export const MULTIPART_PARTS = 4096;
+export const MULTIPART_FILES = 128;
 export const PARAM_PATH_BUDGET = 2 * API_BODY_LIMIT;
 
 // The file parameters a route reads, and the most bytes one of them may have.
@@ -49,10 +53,11 @@ export type FileRule = { names: readonly string[]; maxBytes: number };
 export type ReadOptions = { limit?: number; files?: FileRule; bodyOnly?: true };
 
 // The tail of an object field key after `name[`: `index][field]` or `][field]`.
-const OBJECT_FIELD = /^(\d*)\]\[([^\]]+)\]$/;
-
-// A file part of a name the route declares no file rule for, and how many text entries the body had before it.
-type FilePart = readonly [name: string, at: number];
+const OBJECT_FIELD = /^(-?\d+|)\]\[([^\]]+)\]$/;
+// The tail of an indexed object's prefix after `name[`: `index]`.
+const OBJECT_INDEX = /^-?\d+\]$/;
+// A key Rails' strong parameters read as an index of nested attributes (Parameters.nested_attribute?).
+const INDEX = /^-?\d+$/;
 
 // The value objects(name, { files }) reads for a listed field sent as a file part: presence only, never the file.
 export const SENT_FILE = "(file)";
@@ -80,9 +85,7 @@ function selected(entries: readonly ParamEntry[], name: string): ParamEntry | un
   return entries.findLast(([key]) => key === name);
 }
 
-// A file part's value while objects() groups the parts; no text value equals it.
-const FILE_VALUE: unique symbol = Symbol("file part");
-type Value = string | typeof FILE_VALUE;
+type Leaf = string | File;
 
 export class Params {
   constructor(
@@ -92,11 +95,12 @@ export class Params {
     readonly objectPrefixes: ReadonlySet<string> = new Set(),
     // The names sent as an empty array (list): JSON `[]`, or a form's `name[]` without `=`, which deep munge empties.
     readonly emptyLists: ReadonlySet<string> = new Set(),
-    // Undeclared file parts of a multipart body in body order; `at` indexes the body's prefix of `entries`.
-    private readonly fileParts: readonly FilePart[] = [],
-    // The plain-named values a later one of the same source replaced, and the body's entries the query replaced
-    // (withQuery), which repeated() still counts.
-    readonly replaced: readonly ParamEntry[] = [],
+    // The top-level values of the query and a form body as Rack and Rails nest them, files included (objects reads
+    // its objects from them); a JSON body has none.
+    readonly trees: ReadonlyMap<string, RailsParam<Leaf>> = new Map(),
+    // Every text pair of each source as sent, in order, also one a later pair or the query replaced: what repeated()
+    // and the upload form's field bounds count. A JSON body's are its entries.
+    readonly sent: readonly ParamEntry[] = entries,
   ) {}
 
   // These body parameters with the query's merged in, as Rails' `request_parameters.merge(query_parameters)`, a
@@ -109,16 +113,11 @@ export class Params {
     const keys = new Set(query.entries.map(([key]) => topKey(key)).filter((key) => !names.has(key)));
     const kept = (name: string) => !keys.has(topKey(name));
     // The maps are read directly: the parameter conformance check counts accessor calls as the handler's reads.
-    const sent = (name: string) => this.files.has(name) || this.entries.some(([key]) => key === name);
+    const inBody = (name: string) => this.files.has(name) || this.entries.some(([key]) => key === name);
     const declaredQuery = [...names].flatMap((name) => {
-      const entry = sent(name) ? undefined : selected(query.entries, name);
+      const entry = inBody(name) ? undefined : selected(query.entries, name);
       return entry === undefined ? [] : [entry];
     });
-    // A file part's place counts the body's entries kept before it.
-    const keptBefore = [0];
-    for (const [key] of this.entries) {
-      keptBefore.push((keptBefore.at(-1) ?? 0) + (kept(key) ? 1 : 0));
-    }
     return new Params(
       [
         ...this.entries.filter(([key]) => kept(key)),
@@ -128,8 +127,11 @@ export class Params {
       this.files,
       new Set([...[...this.objectPrefixes].filter(kept), ...query.objectPrefixes]),
       new Set([...[...this.emptyLists].filter(kept), ...query.emptyLists]),
-      this.fileParts.filter(([name]) => kept(name)).map(([name, at]) => [name, keptBefore[at] ?? 0]),
-      [...this.replaced, ...this.entries.filter(([key]) => !kept(key)), ...query.replaced],
+      new Map([
+        ...[...this.trees].filter(([key]) => kept(key)),
+        ...[...query.trees].filter(([key]) => !names.has(key)),
+      ]),
+      [...this.sent, ...query.sent],
     );
   }
 
@@ -172,68 +174,52 @@ export class Params {
     return this.objectPrefixes.has(name) || this.hasObject(name);
   }
 
-  // The first of `names` sent more than once (query and body together, a value a later one or the query replaced
-  // included), for parameters that must be single (RFC 6749 §3.1, §3.2). Array parameters (`name[]`) are not scalars
-  // and are never named here.
+  // The first of `names` sent more than once as a plain name (query and body together, as sent: also where a later
+  // pair or the query replaced it, or a pair between nested under it), for parameters that must be single (RFC 6749
+  // §3.1, §3.2). Array parameters (`name[]`) are not scalars and are never named here.
   repeated(names: readonly string[]): string | undefined {
-    const all = [...this.entries, ...this.replaced];
-    return names.find((name) => all.filter(([key]) => key === name).length > 1);
+    return names.find((name) => this.sent.filter(([key]) => key === name).length > 1);
   }
 
-  // The objects of an array parameter: JSON sends `name[0][field]` (indexed), forms send `name[][field]`, where a field
-  // that repeats starts the next object (as Rack reads it). Without `files`, file parts are not read. With it, every
-  // file part is grouped at its place in the body, as Rack groups it, and then read as SENT_FILE in a field of
-  // `files` and as absent in any other.
+  // The objects of an array parameter, as Rails' strong parameters permit `name: [fields]` of it: each Hash item of an
+  // Array (a form's `name[][field]`, where a field the last object holds starts the next, as Rack nests it) and each
+  // Hash under an index of a Hash (`name[0][field]`, JSON's arrays), in the order sent (a JSON body's in index order),
+  // with its String fields, nil as blank. A field holding an Array or a Hash is not read; a file, only in a field of
+  // `files`, as SENT_FILE. `nulls: "absent"` reads a nil (or JSON null) field as not sent.
   objects(name: string, options: ObjectOptions = {}): Record<string, string>[] {
+    const tree = this.trees.get(name);
+    return tree === undefined ? this.flatObjects(name, options) : treeObjects(tree, options);
+  }
+
+  // objects() of entries alone (a JSON body, or parameters built by hand): `name[index][field]` grouped by index (an
+  // object prefix of an index with no field is an empty object), and `name[][field]` as a form nests it.
+  private flatObjects(name: string, { nulls }: ObjectOptions): Record<string, string>[] {
     const prefix = `${name}[`;
-    const files = options.files === undefined ? null : new Set(options.files);
-    const absentNulls = options.nulls === "absent";
-    const indexed = new Map<string, Record<string, Value>>();
-    const sequential: Record<string, Value>[] = [];
-    const add = (key: string, value: Value) => {
+    const indexed = new Map<string, Map<string, string>>();
+    const sequential: Map<string, string>[] = [];
+    for (const object of this.objectPrefixes) {
+      if (object.startsWith(prefix) && OBJECT_INDEX.test(object.slice(prefix.length))) {
+        indexed.set(object.slice(prefix.length, -1), new Map());
+      }
+    }
+    for (const [key, value, json] of this.entries) {
       // The name is compared as a string; only the `[index][field]` tail is a pattern.
       const match = key.startsWith(prefix) ? OBJECT_FIELD.exec(key.slice(prefix.length)) : null;
-      if (match === null) {
-        return;
+      if (match === null || (nulls === "absent" && json === null)) {
+        continue;
       }
       const [, index = "", field = ""] = match;
-      if (index !== "") {
-        const object = indexed.get(index) ?? {};
-        object[field] = value;
-        indexed.set(index, object);
-        return;
-      }
       const last = sequential.at(-1);
-      if (last === undefined || field in last) {
-        sequential.push({ [field]: value });
+      if (index !== "") {
+        indexed.set(index, (indexed.get(index) ?? new Map<string, string>()).set(field, value));
+      } else if (last === undefined || last.has(field)) {
+        sequential.push(new Map([[field, value]]));
       } else {
-        last[field] = value;
+        last.set(field, value);
       }
-    };
-    const parts = files === null ? [] : this.fileParts;
-    let next = 0;
-    const partsBefore = (at: number) => {
-      for (let part = parts[next]; part !== undefined && part[1] <= at; part = parts[++next]) {
-        add(part[0], FILE_VALUE);
-      }
-    };
-    this.entries.forEach(([key, value, json], at) => {
-      partsBefore(at);
-      if (!(absentNulls && json === null)) {
-        add(key, value);
-      }
-    });
-    partsBefore(Infinity);
-    const project = (object: Record<string, Value>): Record<string, string> =>
-      Object.fromEntries(
-        Object.entries(object).flatMap(([field, value]): [string, string][] =>
-          value !== FILE_VALUE ? [[field, value]] : files?.has(field) === true ? [[field, SENT_FILE]] : [],
-        ),
-      );
-    return [
-      ...[...indexed].toSorted(([a], [b]) => Number(a) - Number(b)).map(([, object]) => object),
-      ...sequential,
-    ].map(project);
+    }
+    const ordered = [...indexed].toSorted(([a], [b]) => Number(a) - Number(b)).map(([, fields]) => fields);
+    return [...ordered, ...sequential].map((fields) => record(fields));
   }
 
   // Values of `name[]` only, or undefined when none was sent: an array parameter as Rails' strong parameters permit
@@ -266,6 +252,43 @@ function topKey(name: string): string {
   return at === -1 ? name : name.slice(0, at);
 }
 
+// An object as objects() returns it: without a prototype, so a field may be named as any property of one
+// (`constructor`, `__proto__`).
+function record(fields: Iterable<readonly [string, string]>): Record<string, string> {
+  const object = Object.create(null) as Record<string, string>;
+  for (const [field, value] of fields) {
+    object[field] = value;
+  }
+  return object;
+}
+
+// objects() of a tree: the Hash items of an Array, or the Hashes under an index of a Hash.
+function treeObjects(tree: RailsParam<Leaf>, { files, nulls }: ObjectOptions): Record<string, string>[] {
+  const items = Array.isArray(tree)
+    ? tree
+    : tree instanceof ParamHash
+      ? [...tree].filter(([key]) => INDEX.test(key)).map(([, item]) => item)
+      : [];
+  return items.flatMap((item) => {
+    if (!(item instanceof ParamHash)) {
+      return [];
+    }
+    const fields: [string, string][] = [];
+    for (const [field, value] of item) {
+      if (typeof value === "string") {
+        fields.push([field, value]);
+      } else if (value === null) {
+        if (nulls !== "absent") {
+          fields.push([field, ""]);
+        }
+      } else if (value instanceof File && files?.includes(field) === true) {
+        fields.push([field, SENT_FILE]);
+      }
+    }
+    return [record(fields)];
+  });
+}
+
 export type ParamsResult = { ok: true; params: Params } | { ok: false; status: 400 | 413 };
 
 // A refusal while parsing: past a size bound (413), or a parameter Rack or Rails refuses (400).
@@ -293,8 +316,6 @@ function budget(): Charge {
     }
   };
 }
-
-type Leaf = string | File;
 
 // A pair of a query or form body: its key as Rack nests it, and its name and value as Rails reads them (undefined
 // where the bytes are not UTF-8).
@@ -325,7 +346,7 @@ type Source = { params: Params; text: number };
 
 // The parameters of one source's pairs, in order, as Rack and then Rails nest them, each on a budget of its own:
 // refused (400) where either refuses (Rails: a key, or the value of a key with a top-level name, that is not UTF-8),
-// and read back as form names (formParams). A plain name's value a later pair replaces is kept for repeated().
+// and read back as form names (formParams). Each text pair is also kept as sent (Params#sent).
 function formSource(input: { pairs: FormPair[]; text: number }, declared: ReadonlySet<string>): Source {
   return refusing(() => {
     const rack = new ParamHash();
@@ -335,31 +356,31 @@ function formSource(input: { pairs: FormPair[]; text: number }, declared: Readon
     }
     const rails = new ParamHash<Leaf>();
     const railsCharge = budget();
-    const replaced: ParamEntry[] = [];
+    const sent: ParamEntry[] = [];
     for (const { name, value } of input.pairs) {
       if (name === undefined || (value === undefined && name !== "")) {
         throw new Refused();
       }
-      const old = name.indexOf("[", 1) === -1 ? rails.get(name) : undefined;
-      if (typeof old === "string" || old === null) {
-        replaced.push(old === null ? [name, "", null] : [name, old]);
+      if (value === null) {
+        sent.push([name, "", null]);
+      } else if (typeof value !== "object") {
+        sent.push([name, value ?? ""]);
       }
       store(RAILS, rails, name, value === undefined ? "" : value, 0, railsCharge);
     }
-    return { params: formParams(rails, declared, replaced), text: input.text };
+    return { params: formParams(rails, declared, sent), text: input.text };
   });
 }
 
 // A source's tree as form names, in its order: a String as its entry, nil as a blank entry marked as JSON null is, an
 // empty Array as `name[]` marked as an empty list, each item of a non-empty one under `name[]` (a Hash's fields as
-// `name[][field]`, which Params#objects groups as the tree does), and each Hash as an object prefix. A file is the
-// value of a declared top-level name, else a file part at its place.
-function formParams(tree: ParamHash<Leaf>, declared: ReadonlySet<string>, replaced: readonly ParamEntry[]): Params {
+// `name[][field]`), and each Hash as an object prefix. A file is the value of a declared top-level name; any other is
+// read only by objects(), from the tree.
+function formParams(tree: ParamHash<Leaf>, declared: ReadonlySet<string>, sent: readonly ParamEntry[]): Params {
   const entries: ParamEntry[] = [];
   const files = new Map<string, File>();
   const objects = new Set<string>();
   const empty = new Set<string>();
-  const fileParts: FilePart[] = [];
   const add = (name: string, value: RailsParam<Leaf>, top: boolean): void => {
     if (value === null) {
       entries.push([name, "", null]);
@@ -380,14 +401,12 @@ function formParams(tree: ParamHash<Leaf>, declared: ReadonlySet<string>, replac
       }
     } else if (top && declared.has(name)) {
       files.set(name, value);
-    } else {
-      fileParts.push([name, entries.length]);
     }
   };
   for (const [key, value] of tree) {
     add(key, value, true);
   }
-  return new Params(entries, files, objects, empty, fileParts, replaced);
+  return new Params(entries, files, objects, empty, tree, sent);
 }
 
 // The query of `request` as Rack and Rails read it (formSource), with the UTF-8 bytes of its pairs, or the status of
@@ -435,7 +454,9 @@ export async function readParams(request: Request, options: ReadOptions = {}): P
   if (request.method === "GET" || request.method === "HEAD") {
     return { ok: true, params: query.params };
   }
-  const contentType = request.headers.get("content-type") ?? "";
+  const sentType = request.headers.get("content-type") ?? "";
+  // Rack reads a POST body without a media type as a urlencoded form (Request#form_data?).
+  const contentType = sentType === "" && request.method === "POST" ? "application/x-www-form-urlencoded" : sentType;
   const body = await readBoundedBody(request, bodyLimit(contentType, options));
   if (body === "too-large") {
     return { ok: false, status: 413 };
@@ -496,11 +517,18 @@ async function parseCounted(
   if (type === "multipart/form-data") {
     const form = await new Response(body, { headers: { "content-type": contentType } }).formData();
     let text = 0;
+    let files = 0;
     const parts: FormPair[] = [];
     // FormData's entries are typed as strings by the runtime types; a file part is a File.
     for (const [key, value] of form.entries() as Iterable<[string, Leaf]>) {
       text += typeof value === "string" ? utf8Length(key) + utf8Length(value) : 0;
+      files += typeof value === "string" ? 0 : 1;
       parts.push({ rackKey: key, name: key, value });
+    }
+    // Rack refuses the MULTIPART_PARTS-th part and the MULTIPART_FILES-th file part (MultipartTotalPartLimitError,
+    // MultipartPartLimitError), which Mastodon answers 500: 400, as Rack's other limits.
+    if (parts.length >= MULTIPART_PARTS || files >= MULTIPART_FILES) {
+      throw new ParamsRefused(400);
     }
     const source = formSource({ pairs: parts, text }, declared);
     return { params: source.params, formText: source.text };

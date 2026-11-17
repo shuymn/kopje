@@ -1215,17 +1215,26 @@ Notification fallbacks (`supported_types`, Mastodon 4.6's `NotificationFallbackC
 
 Request parameters:
 
-- The query and a urlencoded or multipart body are each read as Rack and Rails nest them, in the order sent: a name
-  nested as two kinds (`limit=1&limit[]=2`) answers 400, as Mastodon's does, and a later plain name replaces what an
-  earlier one built under it (`limit[]=2&limit=1` reads `limit` as 1). Kopje answers that 400 on the routes that read
-  their parameters, after the token where the route checks one; Mastodon answers it on every route, before the token,
-  as Rack::Attack reads every request's parameters in a middleware. The account lookup,
-  oEmbed and the peer search, which read their query on their own, and the routes that read no parameter, do not refuse
-  it. A query or a urlencoded body past one of Rack's limits (more than 4,096 fields, more than 4 MiB) is 400, where
-  Mastodon answers 500. A multipart text part that is not UTF-8 is read with each bad sequence replaced, where Rails
-  answers 400, as Kopje does for the query and a urlencoded body. In a form's array of objects
-  (`media_attributes[][id]`), an object that follows an item that is not an object, and that repeats no field of the
-  object before that item, is read as part of that object, where Mastodon reads two.
+- The query and a urlencoded or multipart body are each read as Rack and Rails nest them, in the order sent (a POST body
+  without a media type as a urlencoded one, as Rack reads it): a name nested as two kinds (`limit=1&limit[]=2`) answers
+  400, as Mastodon's does, and a later plain name replaces what an earlier one built under it (`limit[]=2&limit=1` reads
+  `limit` as 1). Kopje answers that 400 on the routes that read their parameters, after the token where the route checks
+  one; Mastodon answers it on every route, before the token, as Rack::Attack reads every request's parameters in a
+  middleware. The routes that read their query on their own do not refuse it: the account lookup, oEmbed and the peer
+  search, and Kopje's own pages, which read the first of a repeated name (the public pages' `max_id`, `min_id` and
+  `server`, `/login`, `/auth/callback`, `/settings` and the admin pages); nor do the routes that read no parameter. A
+  query or a urlencoded body past one of Rack's limits (more than 4,096 fields, more than 4 MiB), and a multipart body
+  of 4,096 parts or 128 file parts, are 400, where Mastodon answers 500; a part with an empty filename, which Rack
+  counts as a file part, counts as a text part. A multipart text part that is not UTF-8 is read with each bad sequence
+  replaced, where Rails answers 400, as Kopje does for the query and a urlencoded body; a multipart part with an empty
+  name answers 400, where Rack reads it under its filename or its content type and `[]` (`text/plain[]`).
+- An array parameter's objects (`media_attributes`, `keywords_attributes`, `fields_attributes`) are read as Rails'
+  strong parameters permit them, but for two kinds: a Hash with no index holding an object
+  (`keywords_attributes[id]=1&keywords_attributes[keyword]=a`, or its JSON) is read as no object, where Rails permits
+  it as one, whose values Mastodon then reads as the objects (answering 500 for a value that is not one) or, for
+  `keywords_attributes` holding an `id`, as the keyword to update; and a JSON body's objects under indexes
+  (`{"fields_attributes":{"1":{…},"0":{…}}}`) are read in index order, where Mastodon reads them in the order sent, as
+  Kopje does a form's.
 - Of repeated parts of a declared file parameter (`avatar`, `header`, `file`, `thumbnail`), text or file, the last is
   the one read, as Rails assigns them; on `/api/v{1,2}/media` a file followed by a string answers 422 `File can't be
   blank`, where Mastodon answers 400.

@@ -173,14 +173,13 @@ async function readMediaForm(request: Request, ms: number): Promise<MediaForm> {
   if (file.size > IMAGE_SIZE_LIMIT) {
     return { error: TOO_LARGE };
   }
-  // The bounds hold for what is sent: body fields and query parameters together, each as sent (also one a later one or
-  // the query replaced). A thumbnail is only checked for presence and refused, and a description is judged by its own
-  // rule, so neither length is bounded here (the body's is).
+  // The bounds hold for what is sent: body fields and query parameters together, each text pair as sent (Params#sent:
+  // also one a later pair or the query replaced, whatever it nested under). A thumbnail is only checked for presence
+  // and refused, and a description is judged by its own rule, so neither length is bounded here (the body's is).
   const params = form.withQuery(query.params, UPLOAD_FILES);
-  const sent = [...params.entries, ...params.replaced];
   const long = ([key, value]: ParamEntry) =>
     key !== "thumbnail" && key !== "description" && value.length > MAX_FIELD_LENGTH;
-  if (sent.length > MAX_FIELDS || sent.some(long)) {
+  if (params.sent.length > MAX_FIELDS || params.sent.some(long)) {
     return { error: "Validation failed: A form field is too long" };
   }
   return { file: new Uint8Array(await file.arrayBuffer()), params };

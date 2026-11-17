@@ -3144,13 +3144,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `Content-Type` before any byte is read, while its text, each part as sent, stays within the limit in UTF-8 bytes; a
   JSON body is refused past 10,000 generated parameter paths (object members, array objects and empty arrays) or
   2,097,152 UTF-16 code units of all its keys, charged before each key is built, and past 32 levels of nesting; the
-  query, and a urlencoded body, are refused past Rack's limits (4 MiB, 4,096 fields), and the query's and a form body's
-  trees, as Rack and as Rails nest them (`src/platform/rails-params.ts`), each on its own budget, past the same 10,000
-  paths (each key built or assigned, a replacing one included) or 2,097,152 code units of their keys' names, charged
-  before each key, and past a nesting 32 deep; `test/param-shapes.test.ts` ("reads a tree at both caps and the deepest
-  nesting, and refuses one path or one unit more", "refuses a nesting past the deepest Rack reads, and Rack's field and
-  byte limits"); `update_credentials` and the profile
-  update check the token before reading a multipart body (one handler, `credentialsUpdate` in
+  query, and a urlencoded body, are refused past Rack's limits (4 MiB, 4,096 fields), a multipart body at its 4,096th
+  part or 128th file part (Rack's limits; `test/params.test.ts` ("reads 4,095 parts and 127 file parts, and refuses one
+  more of either")), and the query's and a form body's trees, as Rack and as Rails nest them
+  (`src/platform/rails-params.ts`), each on its own budget, past the same 10,000 paths (each key built or assigned, a
+  replacing one included) or 2,097,152 code units of their keys' names, charged before each key, and past a nesting 32
+  deep; `test/param-shapes.test.ts` ("reads a tree at both caps and the deepest nesting, and refuses one path or one
+  unit more", "refuses a nesting past the deepest Rack reads, and Rack's field and byte limits"); `update_credentials`
+  and the profile update check the token before reading a multipart body (one handler, `credentialsUpdate` in
   `src/mastodon/accounts.ts`); `test/params.test.ts`, `test/profile-images.test.ts` ("takes a multipart body up to the
   text limit plus two files and refuses one byte more", "answers an invalid or under-scoped token without reading a
   multipart body"), `test/profile-api.test.ts` ("answers an invalid or under-scoped token without reading a multipart

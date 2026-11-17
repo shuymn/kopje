@@ -5,6 +5,8 @@ import {
   bodyLimit,
   MAX_PARAM_DEPTH,
   MAX_PARAM_PATHS,
+  MULTIPART_FILES,
+  MULTIPART_PARTS,
   PARAM_PATH_BUDGET,
   limitParam,
   Params,
@@ -348,7 +350,7 @@ describe("readParams: declared files (Rails last-part rule)", () => {
 describe("Params#objects with file fields", () => {
   const THUMBNAIL = { files: ["thumbnail"] };
 
-  it("places a listed file part among the text as Rack groups it, sequential or indexed", async () => {
+  it("places a listed file part among the text as Rack groups it, sequential or indexed in the order sent", async () => {
     const sequential = await read(
       multipart([
         ["media_attributes[][thumbnail]", png()],
@@ -370,7 +372,7 @@ describe("Params#objects with file fields", () => {
         ["media_attributes[0][id]", "c"],
       ]),
     );
-    expect(indexed.objects("media_attributes", THUMBNAIL)).toEqual([{ id: "c" }, { thumbnail: SENT_FILE, id: "d" }]);
+    expect(indexed.objects("media_attributes", THUMBNAIL)).toEqual([{ thumbnail: SENT_FILE, id: "d" }, { id: "c" }]);
   });
 
   it("lets the last of repeated indexed parts win, file or text", async () => {
@@ -390,7 +392,7 @@ describe("Params#objects with file fields", () => {
     ]);
   });
 
-  it("reads no file part by default, and groups on unlisted file parts before reading them as absent", async () => {
+  it("reads no file part by default and an unlisted one as absent, keeping the objects Rack groups", async () => {
     const p = await read(
       multipart([
         ["media_attributes[][id]", png()],
@@ -399,7 +401,7 @@ describe("Params#objects with file fields", () => {
         ["media_attributes[][id]", "a"],
       ]),
     );
-    expect(p.objects("media_attributes")).toEqual([{ id: "a" }]);
+    expect(p.objects("media_attributes")).toEqual([{}, { id: "a" }]);
     expect(p.objects("media_attributes", THUMBNAIL)).toEqual([{ thumbnail: SENT_FILE }, { id: "a" }]);
     // A repeated file-valued `id` starts the next object as a text one does.
     const repeated = await read(
@@ -421,8 +423,8 @@ describe("Params#objects with file fields", () => {
       ]),
     );
     expect(p.objects("media_attributes", THUMBNAIL)).toEqual([{ thumbnail: SENT_FILE }]);
-    // The replaced text is gone: without file fields, the object has nothing to read.
-    expect(p.objects("media_attributes")).toEqual([]);
+    // The replaced text is gone: without file fields, the object holds nothing to read.
+    expect(p.objects("media_attributes")).toEqual([{}]);
   });
 
   it("keeps the parts through the query merge of other keys, and a JSON or urlencoded body has none", async () => {
@@ -730,6 +732,32 @@ describe("readParams: the shapes of one source, in Rack's order", () => {
     }
   });
 
+  // As Rails' strong parameters permit them: an object's field holding a Hash or an Array is not read, but it still
+  // took its place in the object, so a later `y` starts the next one; a field may be named as any property of a
+  // JavaScript object.
+  it("reads an array's objects with the boundaries of its tree", async () => {
+    const raw =
+      "a[][x]=1&a[][x]=2&a[][y][z]=3&a[][y]=4&a[][constructor]=c&a[][constructor]=d&a[][__proto__]=p&a[][x]]=m";
+    for (const [source, request] of sources(raw)) {
+      const p = await read(request);
+      expect([source, p.objects("a").map((object) => Object.entries(object))]).toEqual([
+        source,
+        [
+          [["x", "1"]],
+          [["x", "2"]],
+          [
+            ["y", "4"],
+            ["constructor", "c"],
+          ],
+          [
+            ["constructor", "d"],
+            ["__proto__", "p"],
+          ],
+        ],
+      ]);
+    }
+  });
+
   it("reads each source's last value of a repeated name, and counts the repeat", async () => {
     for (const [source, request] of sources("a=1&a=2&n[x]=1&n[x]=2")) {
       const p = await read(request);
@@ -774,6 +802,35 @@ describe("readParams: the shapes of one source, in Rack's order", () => {
   it("reads a urlencoded body's fields as Rack parts them", async () => {
     const p = await read(post("a=1&  b=2&c=3\0", "application/x-www-form-urlencoded"));
     expect([p.get("b"), p.get(" b"), p.get("c")]).toEqual(["2", undefined, "3"]);
+  });
+});
+
+// Rack's limits on a multipart body's parts, and the form it reads a POST body without a media type as.
+describe("readParams: Rack's multipart limits and untyped forms", () => {
+  it("reads 4,095 parts and 127 file parts, and refuses one more of either", async () => {
+    const parts = (count: number, files: number) =>
+      Array.from({ length: count }, (_, i): [string, string | File] => [`p${i}`, i < files ? png() : "x"]);
+    const answers = [];
+    for (const [count, files] of [
+      [MULTIPART_PARTS - 1, 0],
+      [MULTIPART_PARTS, 0],
+      [MULTIPART_FILES - 1, MULTIPART_FILES - 1],
+      [MULTIPART_FILES, MULTIPART_FILES],
+    ] as const) {
+      const result = await readParams(multipart(parts(count, files)));
+      answers.push(result.ok || result.status);
+    }
+    expect(answers).toEqual([true, 400, true, 400]);
+  });
+
+  // Request#form_data?: a POST whose media type is missing or empty; a body sent as bytes has no Content-Type.
+  it("reads a POST body without a media type as a urlencoded form, and no other method's", async () => {
+    const untyped = (method: string, body: string) =>
+      new Request("https://kopje.test/x", { method, body: new TextEncoder().encode(body) });
+    const p = await read(untyped("POST", "a=1&b[]=2"));
+    expect([p.get("a"), p.list("b")]).toEqual(["1", ["2"]]);
+    expect(await readParams(untyped("POST", "a=1&a[]=2"))).toEqual({ ok: false, status: 400 });
+    expect((await read(untyped("PUT", "a=1"))).get("a")).toBeUndefined();
   });
 });
 
@@ -852,6 +909,17 @@ describe("readParams: repeats and bodyOnly", () => {
     }
     const single = await read(post("code=a&grant_type=x", "application/x-www-form-urlencoded"));
     expect(single.repeated(["grant_type", "code"])).toBeUndefined();
+    // Each time a plain name is sent counts, also where a pair nested under it came between and the later one replaced
+    // what it built.
+    for (const [source, request] of sources("code&code[x]=v&code=last&grant_type&grant_type[x]=v&grant_type=g")) {
+      const p = await read(request);
+      expect([source, p.get("code"), p.repeated(["code"]), p.repeated(["grant_type"])]).toEqual([
+        source,
+        "last",
+        "code",
+        "grant_type",
+      ]);
+    }
   });
 
   it("reads no query value with bodyOnly, and refuses a query Rack refuses", async () => {
