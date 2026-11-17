@@ -146,8 +146,9 @@ against their own instance. TLS is assumed between all parties.
   and nothing of the body (DATA-5). No context can then readdress it, alias its type, actor or object, or redefine a
   mention: this keeps meanings, and does not make the two readings equal. Its type and its embedded object's, given as
   an absolute IRI, are read as the name Mastodon's compaction gives them only in a body of a closed shape whose
-  compaction Kopje can show succeeds (`mastodonCompacts`), and as given in any other, which Mastodon may read as
-  received: a body its
+  compaction Kopje can show succeeds (`mastodonCompacts`; wider for a retraction, each of its further forms captured
+  from Mastodon's library and compacted alike by jsonld.js, #1717), and as given in any other, which Mastodon may read
+  as received: a body its
   JSON-LD limits or processing refuse is never one Kopje renames a type in. Kopje reads a name, as a member or as a
   type, only where the compaction writes it so, whatever the body's shape (`namedAsCompacted`): where it means in the
   body's contexts what it means in `full_context` (a type, where the IRI they give it is the one `full_context` names
@@ -237,7 +238,9 @@ against their own instance. TLS is assumed between all parties.
   context rebases its IRIs", "ignores an LD-signed activity that aliases a keyword or a member beside the literal one",
   "a spooled LD-signed activity outside the vocabulary is ignored on replay", "reads an LD-signed activity in a real
   sender's vocabulary", "rule (5): an LD-signed activity outside what real senders write is ignored", "#1717:
-  LD-signed retractions in the forms Mastodon compacts"),
+  LD-signed retractions in the forms Mastodon compacts", "bounds the values of Mastodon's compaction of each captured
+  retraction"), `test/ld-written-values.test.ts` ("are at most the bound mastodonCompacts takes, for any body
+  jsonld.js compacts"),
   `test/ld-signed-vocabulary.test.ts` ("the vocabulary is jsonld.js's processing", "the allowed context URLs are the
   preloaded ones", "FEDIFY_CONTEXT_TERMS is every inline definition @fedify/vocab writes, by name", "every inline
   definition Mastodon 3.5 to 4.3 writes is one rule (5) admits"),

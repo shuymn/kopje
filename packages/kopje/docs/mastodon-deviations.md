@@ -1706,15 +1706,18 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   Mastodon applies for the request's signer, and Kopje refuses); with an `id`, or a value where an IRI is expected, that
   is a blank node, a relative reference or an IRI of another scheme (`urn:…`, `HTTPS://…`), which the compaction,
   having no base, writes as given, but one shaped like a keyword (`@foo`, dropped), a blank node with no label or one
-  holding `_:` (labelled anew), one over a prefix only `full_context` defines (`as://…`, which raises), and one jsonld.js
-  writes otherwise (empty, `//…`, holding whitespace, or with a `.` or `..` segment); an activity's or its undone
-  object's `id` that is not on its actor's origin is then refused all the same (ID-6), where Mastodon's `Undo` of a
-  block reads neither; with a type naming `id` or `type`, which JSON-LD expands to the keyword and the compaction
+  holding `_:` (labelled anew), one over a prefix only `full_context` defines (`as://…`, which raises), and one
+  jsonld.js writes otherwise (empty, `//…`, holding whitespace, or with a `.` or `..` segment); an activity's or its
+  undone object's `id` that is not on its actor's origin is then refused all the same (ID-6), where Mastodon's `Undo`
+  of a block reads neither; with a type naming `id` or `type`, which JSON-LD expands to the keyword and the compaction
   writes as that alias again; with a string or an array of strings under a language map property, which JSON-LD reads
   as values of the property (`content` for `contentMap`), or a map whose lower-case tag holds an array of strings, but
   a number or a node there, an array in such an array (which jsonld.js refuses), or an upper-case tag holding one
-  (which jsonld.js lower-cases). Kopje reads a name, as a member or as a type, only where the compaction writes it so, as Mastodon's readers read it,
-  whatever the body's shape: a member's name where it means in the body's contexts what it means in `full_context`, or
+  (which jsonld.js lower-cases); and with more values than three for each allows, where its compaction stays within
+  1,000 as counted by what it writes under each name (a value under a name that means the same on both sides, with no
+  container, its own count; any other three), at most the values Mastodon's library and jsonld.js write. Kopje reads a
+  name, as a member or as a type, only where the compaction writes it so, as Mastodon's readers read it, whatever the
+  body's shape: a member's name where it means in the body's contexts what it means in `full_context`, or
   neither defines it (in a typed node, as the type's own context makes it mean on each side: the data-integrity
   contexts' `DataIntegrityProof`, the Multikey and CID contexts' `Multikey`); a type's where the IRI the body's contexts
   give it is the one `full_context` names so. A name `full_context` defines that the body's contexts leave undefined

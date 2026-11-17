@@ -404,11 +404,11 @@ function namedThroughout(values: unknown[]): boolean {
 //   - an array directly in another, which JSON-LD's expansion flattens, but under a name either context gives a @list
 //     container (a list of lists);
 //   - a proof whose keys are plain names at any depth (rule 3 does not hold a proof's), which JSON-LD expands as any
-//     other member (its nodes held to the rules above), and the compaction writes as given: the contexts the shape takes
-//     leave `proof` undefined (the ActivityStreams and security contexts, and no sender's inline definition names it),
-//     so that it is no data-integrity proof's @graph container (mastodonReadsAsReceived);
-//   - a number or a boolean as a value of a name typed @id, which JSON-LD expands as a value (no IRI) and the compaction
-//     writes under the name's IRI, but as an `object` or an `actor`, which a retraction's handlers read;
+//     other member (its nodes held to the rules above), and the compaction writes as given: the contexts the shape
+//     takes leave `proof` undefined (the ActivityStreams and security contexts, and no sender's inline definition names
+//     it), so that it is no data-integrity proof's @graph container (mastodonReadsAsReceived);
+//   - a number or a boolean as a value of a name typed @id, which JSON-LD expands as a value (no IRI) and the
+//     compaction writes under the name's IRI, but as an `object` or an `actor`, which a retraction's handlers read;
 //   - an id or a value of a name typed @id of another shape than an http(s) IRI that the compaction writes as given
 //     (writtenAsGiven);
 //   - a type naming `id` or `type`, which JSON-LD expands to the keyword it aliases and the compaction writes as that
@@ -417,6 +417,7 @@ function namedThroughout(values: unknown[]): boolean {
 //     language map only from a map) and the compaction writes under another (`content` for `contentMap`), and a map
 //     whose tag, lower-case, holds an array of strings, which it expands to a value for each (jsonld.js lower-cases a
 //     tag, which Ruby's json-ld keeps); not a number or a node there, nor an array in such an array;
+//   - more values once compacted than three for each allows, within 1,000 as writtenValues counts them.
 const JSONLD_BUDGET = 1_000;
 const UNSUPPORTED_JSONLD_KEYWORDS = new Set(["@graph", "@included", "@reverse"]);
 const SECURITY_V1 = "https://w3id.org/security/v1";
@@ -484,7 +485,8 @@ function writtenAsGiven(value: string): boolean {
 }
 
 // `received` is the values check_jsonld_limits! counts before the compaction, of the body as received, of which a
-// retraction's references read as IRIs (referencesAsIris) leave fewer; `retracts`, whether the body is a retraction's.
+// retraction's references read as IRIs (referencesAsIris) leave fewer; `retracts`, whether the body is a retraction's,
+// whose compaction's values are counted as retractionWritten counts them, and any other's as three for each value.
 function mastodonCompacts(
   json: Json,
   { prefixes, meanings }: ContextRead,
@@ -502,8 +504,10 @@ function mastodonCompacts(
     return false;
   }
   const kept = jsonLdValues(json.signature);
-  const body = received - 1 - jsonLdValues(context) - kept;
-  if (1 + FULL_CONTEXT_VALUES + kept + 3 * body > JSONLD_BUDGET) {
+  const written = retracts
+    ? retractionWritten(json, meanings)
+    : 1 + FULL_CONTEXT_VALUES + kept + 3 * (received - 1 - jsonLdValues(context) - kept);
+  if (written > JSONLD_BUDGET) {
     return false;
   }
   const iri = (value: unknown) =>
@@ -556,6 +560,55 @@ function mastodonCompacts(
     }
   }
   return true;
+}
+
+// An upper bound on the values check_jsonld_limits! counts of a retraction's compaction under full_context, patched
+// (form 4): full_context for its @context, its signature once as received, and its other members as writtenValues
+// counts them. Pinned against Ruby's compaction of each captured body, and jsonld.js's of generated ones.
+function retractionWritten(json: Json, meanings: ReadonlyMap<string, Meaning>): number {
+  const node = Object.fromEntries(Object.entries(json).filter(([key]) => key !== "@context" && key !== "signature"));
+  return FULL_CONTEXT_VALUES + jsonLdValues(json.signature) + writtenValues(node, meanings);
+}
+
+// The bound retractionWritten gives an LD-signed retraction's body, as mastodonCompacts takes it (its references read
+// as IRIs); null for a body readContext refuses or no retraction's. For tests.
+export function retractionWrittenBound(json: Json): number | null {
+  const context = readContext(json["@context"]);
+  if (context === null || !retraction(json.type, context.prefixes)) {
+    return null;
+  }
+  return retractionWritten(referencesAsIris(json, context.meanings), context.meanings);
+}
+
+// An upper bound on the values the compaction under full_context, patched (patch_for_forwarding!), writes of a node of
+// a retraction's body: the node one; a member whose name means the same on both sides, with no container on either
+// side and not one full_context shadows, its own (ownValues), as the compaction writes each of its values under the
+// name, or one the name does not take under the name's IRI as given (a number for a name typed @id, a node for one
+// typed with a datatype), which no other member's value joins; and any other three for each of its values, as the
+// closed shape counts them all (a scalar may become a value object of value and type, or a list; values written under
+// another name may join that name's in an array).
+function writtenValues(object: Json, meanings: ReadonlyMap<string, Meaning>): number {
+  const [own, full] = scopedMeanings(object.type, meanings);
+  let count = 1;
+  for (const [key, value] of Object.entries(object)) {
+    const meaning = own.get(key) ?? meanings.get(key);
+    const compacted = full.get(key) ?? FULL_CONTEXT_MEANINGS.get(key);
+    const asGiven =
+      meaning?.key === compacted?.key &&
+      ![meaning, compacted].some((each) => each?.contained === true) &&
+      !FULL_CONTEXT_SHADOWED.has(key);
+    count += asGiven ? ownValues(value, meanings) : 3 * jsonLdValues(value);
+  }
+  return count;
+}
+
+// The values of a value a name writes as given (writtenValues): a node's as writtenValues counts them, an array one and
+// its items' (the patch puts back one the compaction shortens to its item), any other one.
+function ownValues(value: unknown, meanings: ReadonlyMap<string, Meaning>): number {
+  if (Array.isArray(value)) {
+    return 1 + (value as unknown[]).reduce<number>((sum, item) => sum + ownValues(item, meanings), 0);
+  }
+  return isObject(value) ? writtenValues(value, meanings) : 1;
 }
 
 // What each name full_context defines means, its namespace prefixes, and their namespaces.
@@ -901,9 +954,14 @@ async function proofExpandsToSomething(json: Json): Promise<boolean> {
 // Whether Mastodon reads an LD-signed body as received, as Kopje can show: its JSON-LD limits refuse it before the
 // compaction (more than 1,000 values, or a @graph, @included or @reverse key; check_jsonld_limits!), or after it, for
 // a proof its contexts make a @graph container of which the expansion keeps something (proofExpandsToSomething). A
-// proof elsewhere than at the top is not shown: Kopje then reads the body as named.
-async function mastodonReadsAsReceived(json: Json, meanings: ReadonlyMap<string, Meaning>): Promise<boolean> {
-  if (jsonLdValues(json) > JSONLD_BUDGET) {
+// proof elsewhere than at the top is not shown: Kopje then reads the body as named. `received` is the values of the
+// body as received (readBody counts them once, for mastodonCompacts too).
+async function mastodonReadsAsReceived(
+  json: Json,
+  meanings: ReadonlyMap<string, Meaning>,
+  received: number,
+): Promise<boolean> {
+  if (received > JSONLD_BUDGET) {
     return true;
   }
   const graph = meanings.get("proof")?.containers.includes("@graph") === true;
@@ -1273,9 +1331,10 @@ function readBody(
   if (context === null) {
     return null;
   }
-  const received = jsonLdValues(json);
   const retracts = retractions && retraction(json.type, context.prefixes);
   const references = retracts ? referencesAsIris(json, context.meanings) : json;
+  // The values of the body as received, counted once for both judgements of Mastodon's limits.
+  const received = jsonLdValues(json);
   const body =
     references !== json && keysAndTypesReadable(references) && mastodonCompacts(references, context, received, retracts)
       ? references
@@ -1304,7 +1363,7 @@ export async function ldSignedReading(
     return name !== undefined && shown() ? name : type;
   };
   // The body read is the body as received there (readBody).
-  if (await mastodonReadsAsReceived(json, context.meanings)) {
+  if (await mastodonReadsAsReceived(json, context.meanings, received)) {
     return { readType, body: json };
   }
   const named = namedAsCompacted(body, context.meanings);

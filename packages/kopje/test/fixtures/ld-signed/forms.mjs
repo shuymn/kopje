@@ -5,9 +5,10 @@
 //   node test/fixtures/ld-signed/forms.mjs > forms-in.json
 //
 // compact-offline.rb reads each with no network as compact.rb read it in a running web container, but the nine that
-// name a context Mastodon does not preload (data-integrity/v1, an unknown URL). The signature is a placeholder: Mastodon compacts a body whose signature is an object before it verifies anything.
-// The sender is bob on mastodon.example; alice is local (kopje.test), and LOCAL_STATUS stands for a local status of
-// hers, which the tests replace with one they create.
+// name a context Mastodon does not preload (data-integrity/v1, an unknown URL). The signature is a placeholder:
+// Mastodon compacts a body whose signature is an object before it verifies anything. The sender is bob on
+// mastodon.example; alice is local (kopje.test), and LOCAL_STATUS stands for a local status of hers, which the tests
+// replace with one they create.
 
 const AS = "https://www.w3.org/ns/activitystreams";
 const SEC = "https://w3id.org/security/v1";
@@ -844,8 +845,8 @@ const forms = {
     cc: ["wf:followers"],
   }),
   // Ones the compaction writes otherwise: a keyword-like one it drops, and a blank node with no label, or one holding
-  // `_:`, that Ruby's json-ld labels anew. And ones jsonld.js writes otherwise, resolving them against an empty base: an
-  // empty one, a network-path reference, one holding whitespace, and a relative reference of a dot segment.
+  // `_:`, that Ruby's json-ld labels anew. And ones jsonld.js writes otherwise, resolving them against an empty base:
+  // an empty one, a network-path reference, one holding whitespace, and a relative reference of a dot segment.
   "Undo of a block, both typed as absolute IRIs, with a keyword-like id": absoluteUndo({
     instrument: { id: "@client" },
   }),
@@ -898,6 +899,9 @@ const forms = {
   "Undo of a block, both typed as absolute IRIs, with a language map of an upper-case tag to an array": absoluteUndo({
     nameMap: { EN: ["blocked"] },
   }),
+  // Within the value limit once compacted, where three for each value passes it, and past it.
+  "Undo of a block, both typed as absolute IRIs, within the value limit once compacted": padded(absoluteUndo(), 700),
+  "Undo of a block, both typed as absolute IRIs, past the value limit once compacted": padded(absoluteUndo(), 990),
 };
 
 // The same bodies without a signature: read as received by both.
