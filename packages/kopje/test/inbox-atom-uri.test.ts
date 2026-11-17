@@ -618,11 +618,11 @@ describe("reading atomUri (parseRemoteStatus, the inbound parser): an http(s) UR
     expect(bytes(astralAtLimit)).toBe(STATUS_URI_LIMIT);
   });
 
-  it("keeps an http(s) atomUri within the bound as written, and reads anything else as absent", () => {
+  it("keeps an http(s) atomUri within the bound as written, and reads anything else as absent", async () => {
     for (const [name, value, expected] of cases) {
       expect(parseRemoteStatus(mastodonNote(bob, { atomUri: value }))?.atomUri, name).toBe(expected);
       const parse = (json: Json) => parseActivity(new TextEncoder().encode(JSON.stringify(json)));
-      const deleted = parse({
+      const deleted = await parse({
         "@context": AS,
         id: `${prefix}1#delete`,
         type: "Delete",
@@ -630,7 +630,7 @@ describe("reading atomUri (parseRemoteStatus, the inbound parser): an http(s) UR
         object: { id: `${prefix}1`, type: "Tombstone", atomUri: value },
       });
       expect(deleted.ok && deleted.activity.type === "Delete" && deleted.activity.atomUri, name).toBe(expected);
-      const undone = parse({
+      const undone = await parse({
         "@context": AS,
         id: `${bob.uri}#undo-1`,
         type: "Undo",

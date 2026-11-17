@@ -76,3 +76,26 @@ export const MASTODON_CONTEXT_TERMS: Readonly<Record<string, readonly unknown[]>
   featuredObject: [{ "@id": "https://w3id.org/fep/7aa9#featuredObject", "@type": "@id" }],
   featureAuthorization: [{ "@id": "https://w3id.org/fep/7aa9#featureAuthorization", "@type": "@id" }],
 };
+
+// The olm extension of Mastodon 3.5.0 to 4.2.29 (context_helper.rb's CONTEXT_EXTENSION_MAP, removed in 4.3.0), which
+// the actor serializer always names, so every LD-signed Update(Person) of those releases defines it inline. Every other
+// definition of the map in 3.5.0 to 4.3.23 is one of MASTODON_CONTEXT_TERMS. Not part of full_context as 4.4 and later
+// write it, so only the reading of what senders write (federation/ld-signed-body.ts, rule 5) admits it;
+// test/ld-signed-vocabulary.test.ts holds both to each release's map (fixtures/ld-signed/context-maps.json).
+export const MASTODON_OLM_TERMS: Readonly<Record<string, readonly unknown[]>> = {
+  toot: ["http://joinmastodon.org/ns#"],
+  Device: ["toot:Device"],
+  Ed25519Signature: ["toot:Ed25519Signature"],
+  Ed25519Key: ["toot:Ed25519Key"],
+  Curve25519Key: ["toot:Curve25519Key"],
+  EncryptedMessage: ["toot:EncryptedMessage"],
+  publicKeyBase64: ["toot:publicKeyBase64"],
+  deviceId: ["toot:deviceId"],
+  claim: [{ "@type": "@id", "@id": "toot:claim" }],
+  fingerprintKey: [{ "@type": "@id", "@id": "toot:fingerprintKey" }],
+  identityKey: [{ "@type": "@id", "@id": "toot:identityKey" }],
+  devices: [{ "@type": "@id", "@id": "toot:devices" }],
+  messageFranking: ["toot:messageFranking"],
+  messageType: ["toot:messageType"],
+  cipherText: ["toot:cipherText"],
+};
