@@ -266,7 +266,8 @@ describe("RES-6: no recount of an original being removed", () => {
           exec: (query: string, ...params: SqlStorageValue[]) => {
             const cursor = real.exec(query, ...params);
             return watchedCursor(cursor, () => {
-              if (query.includes("reblogs_count = (SELECT COUNT(*)")) {
+              // recountStatus's statement.
+              if (query.includes("AS favourites) c)")) {
                 read += cursor.rowsRead;
               }
             });

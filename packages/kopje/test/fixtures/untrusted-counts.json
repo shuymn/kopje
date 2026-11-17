@@ -1,0 +1,354 @@
+{
+  "ruby": "4.0.9",
+  "activemodel": "8.1.3.1",
+  "json": "2.21.2",
+  "max": 100000000,
+  "kept": 42,
+  "rows": [
+    {
+      "likes": null,
+      "assigned": false,
+      "stored": 42
+    },
+    {
+      "likes": "null",
+      "assigned": false,
+      "stored": 42
+    },
+    {
+      "likes": "\"https://remote.test/likes\"",
+      "assigned": false,
+      "stored": 42
+    },
+    {
+      "likes": "42",
+      "assigned": false,
+      "stored": 42
+    },
+    {
+      "likes": "true",
+      "assigned": false,
+      "stored": 42
+    },
+    {
+      "likes": "[]",
+      "assigned": false,
+      "stored": 42
+    },
+    {
+      "likes": "[{\"totalItems\":3}]",
+      "assigned": false,
+      "stored": 42
+    },
+    {
+      "likes": "{}",
+      "assigned": false,
+      "stored": 42
+    },
+    {
+      "likes": "{\"type\":\"Collection\"}",
+      "assigned": false,
+      "stored": 42
+    },
+    {
+      "likes": "{\"totalItems\":null}",
+      "assigned": false,
+      "stored": 42
+    },
+    {
+      "likes": "{\"totalItems\":\"\"}",
+      "assigned": true,
+      "stored": null
+    },
+    {
+      "likes": "{\"totalItems\":\" \"}",
+      "assigned": true,
+      "stored": null
+    },
+    {
+      "likes": "{\"totalItems\":\"\\u00a0\"}",
+      "assigned": true,
+      "stored": null
+    },
+    {
+      "likes": "{\"totalItems\":\"\\u3000\"}",
+      "assigned": true,
+      "stored": null
+    },
+    {
+      "likes": "{\"totalItems\":\"\\u0085\"}",
+      "assigned": true,
+      "stored": null
+    },
+    {
+      "likes": "{\"totalItems\":\"\\ufeff\"}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":\"12\"}",
+      "assigned": true,
+      "stored": 12
+    },
+    {
+      "likes": "{\"totalItems\":\" 12\"}",
+      "assigned": true,
+      "stored": 12
+    },
+    {
+      "likes": "{\"totalItems\":\"\\t12\"}",
+      "assigned": true,
+      "stored": 12
+    },
+    {
+      "likes": "{\"totalItems\":\"+5\"}",
+      "assigned": true,
+      "stored": 5
+    },
+    {
+      "likes": "{\"totalItems\":\"-5\"}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":\"12abc\"}",
+      "assigned": true,
+      "stored": 12
+    },
+    {
+      "likes": "{\"totalItems\":\"1e3\"}",
+      "assigned": true,
+      "stored": 1
+    },
+    {
+      "likes": "{\"totalItems\":\"3.9\"}",
+      "assigned": true,
+      "stored": 3
+    },
+    {
+      "likes": "{\"totalItems\":\"0x1A\"}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":\"0d12\"}",
+      "assigned": true,
+      "stored": 12
+    },
+    {
+      "likes": "{\"totalItems\":\"1_000\"}",
+      "assigned": true,
+      "stored": 1000
+    },
+    {
+      "likes": "{\"totalItems\":\"1__0\"}",
+      "assigned": true,
+      "stored": 1
+    },
+    {
+      "likes": "{\"totalItems\":\"\\uff11\\uff12\"}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":\"\\u00a05\"}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":\"abc\"}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":\"\\u0000\"}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":\"1\\u00002\"}",
+      "assigned": true,
+      "stored": 1
+    },
+    {
+      "likes": "{\"totalItems\":\"-0\"}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":\"100000000\"}",
+      "assigned": true,
+      "stored": 100000000
+    },
+    {
+      "likes": "{\"totalItems\":\"100000001\"}",
+      "assigned": true,
+      "stored": 100000000
+    },
+    {
+      "likes": "{\"totalItems\":\"99999999999999999999999\"}",
+      "assigned": true,
+      "stored": 100000000
+    },
+    {
+      "likes": "{\"totalItems\":\"-99999999999999999999999\"}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":0}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":1}",
+      "assigned": true,
+      "stored": 1
+    },
+    {
+      "likes": "{\"totalItems\":42}",
+      "assigned": true,
+      "stored": 42
+    },
+    {
+      "likes": "{\"totalItems\":-1}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":1.9}",
+      "assigned": true,
+      "stored": 1
+    },
+    {
+      "likes": "{\"totalItems\":-1.9}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":0.5}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":-0.0}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":-0}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":1E2}",
+      "assigned": true,
+      "stored": 100
+    },
+    {
+      "likes": "{\"totalItems\":1.5e2}",
+      "assigned": true,
+      "stored": 150
+    },
+    {
+      "likes": "{\"totalItems\":100000000}",
+      "assigned": true,
+      "stored": 100000000
+    },
+    {
+      "likes": "{\"totalItems\":100000000.9}",
+      "assigned": true,
+      "stored": 100000000
+    },
+    {
+      "likes": "{\"totalItems\":100000001}",
+      "assigned": true,
+      "stored": 100000000
+    },
+    {
+      "likes": "{\"totalItems\":99999999.9999999999}",
+      "assigned": true,
+      "stored": 100000000
+    },
+    {
+      "likes": "{\"totalItems\":1e30}",
+      "assigned": true,
+      "stored": 100000000
+    },
+    {
+      "likes": "{\"totalItems\":-1e30}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":1e400}",
+      "assigned": true,
+      "stored": null
+    },
+    {
+      "likes": "{\"totalItems\":-1e400}",
+      "assigned": true,
+      "stored": null
+    },
+    {
+      "likes": "{\"totalItems\":1e-400}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":9007199254740993}",
+      "assigned": true,
+      "stored": 100000000
+    },
+    {
+      "likes": "{\"totalItems\":12345678901234567890}",
+      "assigned": true,
+      "stored": 100000000
+    },
+    {
+      "likes": "{\"totalItems\":-9223372036854775809}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":true}",
+      "assigned": true,
+      "stored": 1
+    },
+    {
+      "likes": "{\"totalItems\":false}",
+      "assigned": true,
+      "stored": 0
+    },
+    {
+      "likes": "{\"totalItems\":[]}",
+      "assigned": true,
+      "stored": null
+    },
+    {
+      "likes": "{\"totalItems\":[3]}",
+      "assigned": true,
+      "stored": null
+    },
+    {
+      "likes": "{\"totalItems\":[\"3\"]}",
+      "assigned": true,
+      "stored": null
+    },
+    {
+      "likes": "{\"totalItems\":{}}",
+      "assigned": true,
+      "stored": null
+    },
+    {
+      "likes": "{\"totalItems\":{\"a\":1}}",
+      "assigned": true,
+      "stored": null
+    },
+    {
+      "likes": "{\"totalItems\":5,\"totalItems\":7}",
+      "assigned": true,
+      "stored": 7
+    }
+  ]
+}

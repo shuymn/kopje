@@ -172,6 +172,32 @@ describe("a signed-in read of a remote poll", () => {
     expect(await stored(w)).toMatchObject({ tallies: "[3,5]", fetched_at: NOW, refresh_at: NOW });
   });
 
+  // The refresh applies the document as its author's implicit Update (fetch_remote_poll_service.rb:11 reaches
+  // ProcessStatusUpdateService), whose update_counts! stores the status's untrusted counts as well.
+  it("stores the status's likes and shares counts the refreshed document gives", async () => {
+    const w = await world({
+      likes: { type: "Collection", totalItems: 1 },
+      shares: { type: "Collection", totalItems: 2 },
+    });
+    const untrusted = () =>
+      sql(
+        w.t.store,
+        "SELECT untrusted_favourites_count AS f, untrusted_reblogs_count AS r FROM statuses WHERE id = ?",
+        w.id,
+      );
+    expect(await untrusted()).toEqual([{ f: 1, r: 2 }]);
+    serve(
+      w.t,
+      counted(w, 3, 5, {
+        likes: { type: "Collection", totalItems: 42 },
+        shares: { type: "Collection", totalItems: "" },
+      }),
+    );
+    expect((await read(w)).body).toMatchObject({ votes_count: 8 });
+    expect(fetches(w)).toBe(1);
+    expect(await untrusted()).toEqual([{ f: 42, r: null }]);
+  });
+
   it("fetches nothing for an anonymous reader or an app token", async () => {
     const w = await world();
     await sql(
