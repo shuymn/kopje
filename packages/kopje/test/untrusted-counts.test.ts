@@ -12,16 +12,19 @@ import { NOW } from "./app-helpers";
 import captured from "./fixtures/untrusted-counts.json";
 import { mastodonActor } from "./inbox-helpers";
 import {
+  accountId,
   announce,
   AS,
   create,
   followed,
   mastodonNote,
   type Note,
+  notifications,
   PUBLIC,
   remove,
   setup,
   type Setup,
+  statusRow,
   undo,
   update,
 } from "./inbox-status-helpers";
@@ -153,6 +156,34 @@ describe("a remote status's untrusted counts", () => {
     // The same explicit Update with a sensitive of its own applies.
     expect(await t.post(bob, update(bob, { ...edit, sensitive: false }, "2026-10-11T13:00:00Z"))).toBe(202);
     expect(await counts(t, note.id)).toEqual({ f: 9, r: 10 });
+  });
+
+  // handle_implicit_update! broadcasts only when the quote's state moved (:82): counts alone notify no booster of an
+  // edit and keep the outcome an implicit Update without them has.
+  it("alone make an implicit Update notify nothing and keep its outcome", async () => {
+    const { t, bob, note } = await created({ likes: collection(42), shares: collection(1) });
+    const id = (await statusRow(t.store, note.id))!.id;
+    const boosted = await t.request(`/api/v1/statuses/${id}/reblog`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${t.tokens.alice}` },
+    });
+    expect(boosted.status).toBe(200);
+    const counted = { ...note, likes: collection(43), shares: collection(2) };
+    expect(await t.post(bob, update(bob, counted, note.published as string))).toBe(202);
+    expect(await counts(t, note.id)).toEqual({ f: 43, r: 2 });
+    expect((await notifications(t.store)).filter((n) => n.type === "update")).toEqual([]);
+    const author = { id: (await accountId(t.store, bob.uri))!, uri: bob.uri };
+    const ctx = { now: NOW, storeNow: NOW, origin: "https://kopje.test", deliveredTo: null, fetched: true };
+    const outcome = await runInDurableObject(t.store, (_instance, state) =>
+      updateRemoteStatus(
+        new Db(state.storage.sql),
+        author,
+        { ...parseRemoteStatus({ ...note, likes: collection(44) })!, updated: note.published as string },
+        ctx,
+      ),
+    );
+    expect(outcome).toMatchObject({ applied: false, reason: "stale" });
+    expect(await counts(t, note.id)).toEqual({ f: 44, r: 1 });
   });
 
   // A status Kopje fetches again (a search with resolve, /authorize_interaction, a pin sync, a replies walk) is applied
