@@ -103,10 +103,35 @@ const FORM_4_AS_GIVEN = [
   // a block's object, so that it seeks no account to unblock.
   "Undo of a block, both typed as absolute IRIs, with a number as its actor",
   "Undo of a block, both typed as absolute IRIs, with a number as its block's object",
+  // An id the compaction drops, or writes under another label; and the ones jsonld.js writes otherwise (FORM_4_PARTED).
+  "Undo of a block, both typed as absolute IRIs, with a keyword-like id",
+  "Undo of a block, both typed as absolute IRIs, with a blank node of no label",
+  "Undo of a block, both typed as absolute IRIs, with a blank node whose label holds _:",
+  "Undo of a block, both typed as absolute IRIs, with an empty id",
+  "Undo of a block, both typed as absolute IRIs, with a network-path reference",
+  "Undo of a block, both typed as absolute IRIs, with an IRI holding whitespace",
+  "Undo of a block, both typed as absolute IRIs, with a relative reference of a dot segment",
+  "Undo of a block, both typed as absolute IRIs, with a relative reference of a double-dot segment",
 ];
-// Of those, the ones jsonld.js reads otherwise than Mastodon's JSON-LD library: a datatype given as a compact IRI over a
-// prefix of the ActivityStreams context, which Mastodon's refuses and jsonld.js takes.
-const FORM_4_PARTED = ["Undo of a block, both typed as absolute IRIs, under an inline definition no sender writes"];
+// Of those Kopje shows Mastodon compacts, the ones whose id ID-6 refuses where Mastodon's undo.rb reads none: the
+// activity's, which is on no origin, and the undone Block's, by which Kopje's Undo finds it, a relative reference.
+const FORM_4_ID_6 = [
+  "Undo of a block, both typed as absolute IRIs, with an id of another scheme",
+  "Undo of a block, both typed as absolute IRIs, with a relative reference as its block's id",
+];
+// Of the first, the ones jsonld.js reads otherwise than Mastodon's JSON-LD library: a datatype given as a compact IRI over a
+// prefix of the ActivityStreams context, which Mastodon's refuses and jsonld.js takes; a blank node Ruby's json-ld labels
+// anew; and an id jsonld.js resolves against an empty base.
+const FORM_4_PARTED = [
+  "Undo of a block, both typed as absolute IRIs, under an inline definition no sender writes",
+  "Undo of a block, both typed as absolute IRIs, with a blank node of no label",
+  "Undo of a block, both typed as absolute IRIs, with a blank node whose label holds _:",
+  "Undo of a block, both typed as absolute IRIs, with an empty id",
+  "Undo of a block, both typed as absolute IRIs, with a network-path reference",
+  "Undo of a block, both typed as absolute IRIs, with an IRI holding whitespace",
+  "Undo of a block, both typed as absolute IRIs, with a relative reference of a dot segment",
+  "Undo of a block, both typed as absolute IRIs, with a relative reference of a double-dot segment",
+];
 
 // What Mastodon 4.7.5 applied from a form with its own readers (effects.rb): what bob's activity left, and the error
 // its job raised, if any.
@@ -867,10 +892,10 @@ describe("D1: forms whose readings differ, each named by its class", () => {
         }
       }
       expect(names).toBeGreaterThanOrEqual(150);
-      expect(renamed.length).toBe(43);
+      expect(renamed.length).toBe(53);
       // Bodies Mastodon compacts outside the shape Kopje shows it compacts (an inline context, an array in an array,
-      // a proof, a number where an IRI is expected, a type naming a keyword alias): their types are read as given, so
-      // such an activity applies less than Mastodon's.
+      // a proof, a number where an IRI is expected, an id it writes otherwise or jsonld.js does, a type naming a
+      // keyword alias): their types are read as given, so such an activity applies less than Mastodon's.
       expect([...kept]).toEqual([
         "Note type as an IRI",
         "Undo of a block, both typed as IRIs, under an inline context",
@@ -879,21 +904,29 @@ describe("D1: forms whose readings differ, each named by its class", () => {
         "Undo of a block, both typed as absolute IRIs, with an array in an array under a list",
         "Undo of a block, both typed as absolute IRIs, with a number as its actor",
         "Undo of a block, both typed as absolute IRIs, with a number as its block's object",
+        "Undo of a block, both typed as absolute IRIs, with a keyword-like id",
+        "Undo of a block, both typed as absolute IRIs, with a blank node of no label",
+        "Undo of a block, both typed as absolute IRIs, with a blank node whose label holds _:",
+        "Undo of a block, both typed as absolute IRIs, with an empty id",
+        "Undo of a block, both typed as absolute IRIs, with a network-path reference",
+        "Undo of a block, both typed as absolute IRIs, with an IRI holding whitespace",
+        "Undo of a block, both typed as absolute IRIs, with a relative reference of a dot segment",
+        "Undo of a block, both typed as absolute IRIs, with a relative reference of a double-dot segment",
       ]);
     });
 
     // The shape's bounds on the same body, where no capture varies them: an object with no id or type is a node like
     // any other, and a null among IRIs is dropped (as in the captured `to: [null]` forms); an id over a prefix only
-    // full_context defines (as the captured `cc` and type ones), a blank node, an http(s) IRI whose scheme is upper-case
-    // or not followed by `//`, and a language map value other than a map of tags to strings are outside it; a boolean
-    // where an IRI is expected is inside the retraction's (form 4).
+    // full_context defines (as the captured `cc` and type ones), and a language map value other than a map of tags to
+    // strings are outside it; a blank node, an http(s) IRI whose scheme is upper-case or not followed by `//`, and a
+    // boolean where an IRI is expected are inside the retraction's (form 4).
     it.each([
       { added: { instrument: { name: "client" } }, read: "Undo" },
       { added: { cc: [null] }, read: "Undo" },
       { added: { instrument: { id: "toot:client" } }, read: "as:Undo" },
-      { added: { instrument: { id: "_:client" } }, read: "as:Undo" },
-      { added: { instrument: { id: "HTTPS://mastodon.example/client" } }, read: "as:Undo" },
-      { added: { instrument: { id: "https:mastodon.example/client" } }, read: "as:Undo" },
+      { added: { instrument: { id: "_:client" } }, read: "Undo" },
+      { added: { instrument: { id: "HTTPS://mastodon.example/client" } }, read: "Undo" },
+      { added: { instrument: { id: "https:mastodon.example/client" } }, read: "Undo" },
       { added: { cc: true }, read: "Undo" },
       { added: { summaryMap: 5 }, read: "as:Undo" },
       { added: { summaryMap: { en: ["blocked"] } }, read: "as:Undo" },
@@ -901,6 +934,32 @@ describe("D1: forms whose readings differ, each named by its class", () => {
     ])("reads the compacted Undo of a block, given $added, as $read", async ({ added, read }) => {
       const body = { ...form("Undo of a block, both typed as IRIs").received, ...added };
       expect((await ldSignedReading(body, SECOND_LAYER))?.readType("as:Undo")).toBe(read);
+    });
+
+    // Form 4 widens the shape for a retraction only: another activity's body of each of its shapes has its types read
+    // as given.
+    it.each([
+      { shape: "nothing beyond the closed shape", added: {}, read: "Like" },
+      {
+        shape: "an inline context",
+        added: {
+          "@context": form("Undo of a block, both typed as absolute IRIs, under Mastodon's inline context").received[
+            "@context"
+          ],
+        },
+        read: "as:Like",
+      },
+      { shape: "an array in an array", added: { cc: [[`${AS}#Public`]] }, read: "as:Like" },
+      {
+        shape: "a proof of plain names",
+        added: { proof: { type: "DataIntegrityProof", proofValue: "z3" } },
+        read: "as:Like",
+      },
+      { shape: "a boolean where an IRI is expected", added: { cc: true }, read: "as:Like" },
+      { shape: "a blank node as an id", added: { instrument: { id: "_:client" } }, read: "as:Like" },
+    ])("reads the compacted Like with $shape as $read", async ({ added, read }) => {
+      const body = { ...form("type as a compact IRI").received, ...added };
+      expect((await ldSignedReading(body, SECOND_LAYER))?.readType("as:Like")).toBe(read);
     });
 
     it("type as a one-element array: neither applies it", async () => {
@@ -1163,7 +1222,7 @@ describe("D1 through the inbox: what the received form stores", () => {
   // of it does (forms.json): an Undo of a Block whose object names alice, whatever its actor, as undo.rb undo_block
   // seeks the account by the Block's object and lifts the request's signer's block of it. It leaves the block where
   // Mastodon reads the body as received, so that its types stay IRIs no handler reads, and where Kopje does not show it
-  // compacts (reads less).
+  // compacts (reads less), or where ID-6 refuses an id Mastodon does not read.
   it.each(FORM_4)("%s: lifts the block where Mastodon's reading lifts it", async (name) => {
     const reading = form(name).fallback === undefined ? form(name).mastodon! : undefined;
     const block = reading?.object as Json | undefined;
@@ -1173,7 +1232,7 @@ describe("D1 through the inbox: what the received form stores", () => {
     const id = await blockedStatus(t, bob);
     expect(await t.post(bob, body(name, status))).toBe(202);
     expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(
-      lifted && !FORM_4_AS_GIVEN.includes(name) ? 200 : 404,
+      lifted && !FORM_4_AS_GIVEN.includes(name) && !FORM_4_ID_6.includes(name) ? 200 : 404,
     );
   });
 

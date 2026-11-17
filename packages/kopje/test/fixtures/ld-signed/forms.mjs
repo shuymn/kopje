@@ -811,6 +811,63 @@ const forms = {
   "Undo of a block, both typed as absolute IRIs, with a number as its block's object": absoluteUndo({
     object: { ...BLOCK, type: `${AS}#Block`, object: 5 },
   }),
+  // A blank node, a relative reference or an IRI of another scheme, which the compaction writes as given (Mastodon's
+  // has no base), but one whose scheme is a prefix only full_context defines, which raises.
+  "Undo of a block, both typed as absolute IRIs, with a blank node as an id": absoluteUndo({
+    instrument: { id: "_:client" },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with a relative reference as an id": absoluteUndo({
+    instrument: { id: "clients/1" },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with IRIs of other schemes": absoluteUndo({
+    cc: [
+      "urn:uuid:9f0c3e1a",
+      "tag:mastodon.example,2026:followers",
+      "HTTPS://mastodon.example/users/bob/followers",
+      "https:mastodon.example/users/bob/following",
+      "mailto:bob@mastodon.example",
+      "_:followers",
+      "followers?page=1#top",
+    ],
+  }),
+  "Undo of a block, both typed as absolute IRIs, with an id of another scheme": {
+    ...absoluteUndo(),
+    id: "urn:uuid:9f0c3e1a",
+  },
+  "Undo of a block, both typed as absolute IRIs, with a relative reference as its block's id": absoluteUndo({
+    object: { ...BLOCK, id: "blocks/1", type: `${AS}#Block` },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with an IRI whose scheme is a prefix of full_context": absoluteUndo({
+    instrument: { id: "as://client" },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with an IRI over the wf prefix": absoluteUndo({
+    cc: ["wf:followers"],
+  }),
+  // Ones the compaction writes otherwise: a keyword-like one it drops, and a blank node with no label, or one holding
+  // `_:`, that Ruby's json-ld labels anew. And ones jsonld.js writes otherwise, resolving them against an empty base: an
+  // empty one, a network-path reference, one holding whitespace, and a relative reference of a dot segment.
+  "Undo of a block, both typed as absolute IRIs, with a keyword-like id": absoluteUndo({
+    instrument: { id: "@client" },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with a blank node of no label": absoluteUndo({
+    instrument: { id: "_:" },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with a blank node whose label holds _:": absoluteUndo({
+    instrument: { id: "_:_:client" },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with an empty id": absoluteUndo({ instrument: { id: "" } }),
+  "Undo of a block, both typed as absolute IRIs, with a network-path reference": absoluteUndo({
+    instrument: { id: "//mastodon.example/client" },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with an IRI holding whitespace": absoluteUndo({
+    instrument: { id: "urn:client 1" },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with a relative reference of a dot segment": absoluteUndo({
+    instrument: { id: "./client" },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with a relative reference of a double-dot segment": absoluteUndo({
+    instrument: { id: "../client" },
+  }),
 };
 
 // The same bodies without a signature: read as received by both.

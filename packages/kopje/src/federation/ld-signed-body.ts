@@ -409,6 +409,8 @@ function namedThroughout(values: unknown[]): boolean {
 //     so that it is no data-integrity proof's @graph container (mastodonReadsAsReceived);
 //   - a number or a boolean as a value of a name typed @id, which JSON-LD expands as a value (no IRI) and the compaction
 //     writes under the name's IRI, but as an `object` or an `actor`, which a retraction's handlers read;
+//   - an id or a value of a name typed @id of another shape than an http(s) IRI that the compaction writes as given
+//     (writtenAsGiven);
 const JSONLD_BUDGET = 1_000;
 const UNSUPPORTED_JSONLD_KEYWORDS = new Set(["@graph", "@included", "@reverse"]);
 const SECURITY_V1 = "https://w3id.org/security/v1";
@@ -454,6 +456,27 @@ const LANGUAGE_MAPS = namesOf(AS, (definition) => isObject(definition) && defini
 
 type ContextRead = NonNullable<ReturnType<typeof readContext>>;
 
+// Whether the compaction writes as given, and jsonld.js alike, a string given as an id or a value of a name typed @id
+// that is no http(s) IRI (form 4): a blank node, an IRI of another scheme and a relative reference, which JSON-LD keeps
+// as it is, Mastodon's compaction having no base. Not one shaped like a keyword (`@foo`), which the expansion drops; a
+// blank node with no label or one holding `_:`, which Ruby's json-ld labels anew; one whose scheme is a prefix
+// full_context defines (and the body's contexts do not; one they do is an http(s) IRI), which raises
+// IRIConfusedWithPrefix; nor one jsonld.js, resolving it against an empty base, writes otherwise: empty, a network-path
+// reference, or one holding whitespace; nor one with a `.` or `..` segment anywhere (jsonld.js removes them from a
+// relative reference's path).
+function writtenAsGiven(value: string): boolean {
+  const colon = value.indexOf(":");
+  return !(
+    value === "" ||
+    /\s/.test(value) ||
+    value.startsWith("@") ||
+    value.startsWith("//") ||
+    (value.startsWith("_:") && (value.length === 2 || value.includes("_:", 2))) ||
+    (colon > 0 && FULL_CONTEXT_PREFIXES.has(value.slice(0, colon))) ||
+    value.split("/").some((segment) => segment === "." || segment === "..")
+  );
+}
+
 // `received` is the values check_jsonld_limits! counts before the compaction, of the body as received, of which a
 // retraction's references read as IRIs (referencesAsIris) leave fewer; `retracts`, whether the body is a retraction's.
 function mastodonCompacts(
@@ -479,6 +502,7 @@ function mastodonCompacts(
   }
   const iri = (value: unknown) =>
     typeof value === "string" && HTTP_IRI.test(expand(value, (prefix) => prefixes.get(prefix)) ?? "");
+  const reference = (value: unknown) => iri(value) || (retracts && typeof value === "string" && writtenAsGiven(value));
   const typeName = (value: unknown) =>
     iri(value) || (typeof value === "string" && isName(value) && value !== "id" && value !== "type");
   const iriValued = (key: string) => IRI_VALUED.has(key) || (retracts && meanings.get(key)?.coercion === "@id");
@@ -508,22 +532,23 @@ function mastodonCompacts(
       }
     } else if (isObject(value)) {
       if (
-        (Object.hasOwn(value, "id") && !iri(value.id)) ||
+        (Object.hasOwn(value, "id") && !reference(value.id)) ||
         (Object.hasOwn(value, "type") && !(Array.isArray(value.type) ? value.type : [value.type]).every(typeName))
       ) {
         return false;
       }
       pending.push(...Object.entries(value).filter(([member]) => member !== "id" && member !== "type"));
-    } else if (iriValued(key) && value !== null && !iri(value) && !(retracts && scalar(key, value))) {
+    } else if (iriValued(key) && value !== null && !reference(value) && !(retracts && scalar(key, value))) {
       return false;
     }
   }
   return true;
 }
 
-// What each name full_context defines means, and the namespaces of its prefixes.
+// What each name full_context defines means, its namespace prefixes, and their namespaces.
 const FULL_CONTEXT_MEANINGS = readContext(FULL_CONTEXT)!.meanings;
-const FULL_CONTEXT_NAMESPACES = [...readContext(FULL_CONTEXT)!.prefixes.values()];
+const FULL_CONTEXT_PREFIXES = readContext(FULL_CONTEXT)!.prefixes;
+const FULL_CONTEXT_NAMESPACES = [...FULL_CONTEXT_PREFIXES.values()];
 
 // The name the compaction under full_context writes for a type's IRI, of every name it defines (TYPE_NAMES is the
 // vocabulary's). No two such names share an IRI (JSON-LD would rank them by length and order);

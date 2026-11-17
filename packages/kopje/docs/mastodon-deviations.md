@@ -1703,7 +1703,13 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   a proof whose keys are plain names, which the ActivityStreams and security contexts leave undefined (its nodes held to
   the rules above, not a data-integrity proof's `@graph`); with a number or a boolean where an IRI is expected
   (`cc: true`), which the compaction writes under the property's IRI, but as its `object` or `actor` (an `actor: 5`
-  Mastodon applies for the request's signer, and Kopje refuses). Kopje
+  Mastodon applies for the request's signer, and Kopje refuses); with an `id`, or a value where an IRI is expected, that
+  is a blank node, a relative reference or an IRI of another scheme (`urn:…`, `HTTPS://…`), which the compaction,
+  having no base, writes as given, but one shaped like a keyword (`@foo`, dropped), a blank node with no label or one
+  holding `_:` (labelled anew), one over a prefix only `full_context` defines (`as://…`, which raises), and one jsonld.js
+  writes otherwise (empty, `//…`, holding whitespace, or with a `.` or `..` segment); an activity's or its undone
+  object's `id` that is not on its actor's origin is then refused all the same (ID-6), where Mastodon's `Undo` of a
+  block reads neither. Kopje
   reads a name, as a member or as a type, only where the compaction writes it so, as Mastodon's readers read it,
   whatever the body's shape: a member's name where it means in the body's contexts what it means in `full_context`, or
   neither defines it (in a typed node, as the type's own context makes it mean on each side: the data-integrity
