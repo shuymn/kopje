@@ -302,6 +302,40 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   ([docs/web-pages.md](docs/web-pages.md), "Robots"). No Store migration and no `wrangler.jsonc` change.
 - The Store isolate's memory at rest drops by about 6 MB: the Worker bundle holds no character above U+00FF, so V8
   keeps its source one byte a character instead of two. No Store migration and no `wrangler.jsonc` change.
+- An inbound activity that carries a Linked Data signature is ignored (answered 202) unless its JSON-LD contexts keep
+  the meanings Mastodon reads it by (no redefined ActivityStreams or Mastodon property, no alias of one or of a keyword,
+  no `@base`, `@vocab` or other keyword, only preloaded contexts that keep them) and its properties are plain names (no
+  `@id`, `@type`, `@value`, nested `@context`, or IRI as a key)
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Reading inbound activities), and logged once as
+  `kopje.inbox.refused` with reason `ld-context`. It is ignored too where it holds anything Mastodon (3.5 to 4.7.5) and
+  Fedify 2.4.5 do not write: a key with a control character or a line break, a key that starts with `@` but is no
+  JSON-LD keyword, a context URL named twice, an inline context definition neither writes for that name (Misskey's
+  LD-signed relay deliveries among them), a type other than a plain term (ASCII letters, digits, `_` and `-`) or an
+  absolute IRI (`as:Follow` among them), or a proof other than an object, or an array of at most four, of a context and
+  names given strings; such a `Reject`, `Undo`, `Block` or `Delete` leaves what Mastodon's ends, as the deviations page
+  lists. Mastodon's and Fedify's bodies, Kopje's own and older Mastodon's `Update(Person)` with its olm extension among
+  them, pass. The type of one that passes, and its embedded object's, given as an absolute IRI are read as the name
+  Mastodon's compaction gives them only in a body of a closed shape whose compaction Kopje can show succeeds, and as
+  given in any other (Mastodon reads a body its JSON-LD limits or processing refuse as received; one it compacts outside
+  that shape applies less, as the deviations page lists): such a `Reject`, `Undo`, `Block` or `Delete` now ends the
+  follow or the status Mastodon's ends, and such a `Like` favourites, where Kopje refused them or read them as naming
+  nothing. A name, as a member or as a type, is read only where Mastodon's compaction writes it so (where the body's
+  contexts give it the meaning `full_context` does, or neither defines it, a typed node's members as its type's own
+  context makes them mean), and of its values only those the compaction writes under it: a `QuoteRequest`, a hashtag, an
+  emoji, a profile field, `sensitive`, a quote and the other extension names a body's context leaves undefined or
+  defines otherwise are no longer read, as Mastodon reads none of them, so such a `QuoteRequest` no longer approves a
+  quote; a `quote` given as `true` no longer makes a Note's other quote a non-legacy one, nor does a poll's `closed`
+  given as an object close it; a `sensitive` the context defines otherwise (another type, or a list) marks the status
+  wherever Mastodon may, given an empty array or a `0` too. A body Mastodon reads as received (past its JSON-LD limits,
+  or with a data-integrity proof that keeps something once JSON-LD expands it, which Kopje tells by expanding the proof
+  with jsonld.js and the preloaded contexts, within Mastodon's 1,000 values and 32 contexts, types and keys whose
+  definition carries a context, counted in every node and for each value, and only where each key of the proof that
+  starts with `@` is one a node holds and none has a line shaped like a keyword) is read as received, so a proof that
+  expands to nothing (a null value, or a `@language` beside a null member or beside a keyword of contexts such as
+  `@version`) no longer has such a `QuoteRequest` read as received. An
+  LD-signed activity with a node whose `type` and `@type` together give two types or more one of which is not a string
+  or is shaped like a keyword on a line, or a type beside `@set`, on which Mastodon's job raises and applies nothing, is
+  ignored. No Store migration and no `wrangler.jsonc` change.
 
 ### Fixed
 
@@ -503,6 +537,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   and the author proofs of its `Delete`s were refused. Avatars and headers are read as Mastodon 4.7 reads them, and an
   actor's `followers` and `following` as Mastodon stores them (an object's `id`, an array's first value, a URI as
   Mastodon's parser writes it back), for the visibility of its posts, quote policies and the follower sync. No Store
+  migration and no `wrangler.jsonc` change.
+- An `Accept` or `Reject` that names a local account's follow by its id applies to that follow whatever its embedded
+  object gives, as Mastodon's do, before it is read as the answer to a quote request: one typed otherwise than
+  `Follow` (`as:Follow` or `QuoteRequest`, say) was ignored, so a rejected follow stayed and kept its access to the
+  rejecting account's followers-only posts. The id still names only a follow of the answering actor. No Store
   migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
