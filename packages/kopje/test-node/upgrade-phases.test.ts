@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import fixture from "../test/fixtures/upgrade-phases.json" with { type: "json" };
+import { type MarkdownNode, parseMarkdown, visit } from "./markdown.js";
 
 // docs/upgrade.md, "What the Store serves in each state", states test/fixtures/upgrade-phases.json, which
 // test/upgrade-phases.test.ts holds the Store's kernel to over every state its health can report. Its table of rules
@@ -82,33 +83,32 @@ function ruleOf(e: Example): Rule {
   return matched[0]!;
 }
 
-const cellsOf = (line: string) =>
-  line
-    .slice(1, -1)
-    .split("|")
-    .map((cell) => cell.trim());
-
-/** The rows of the one table under `heading` (up to the next heading), after checking its headings and each row's
- * cell count. */
-function table(text: string, heading: string, header: readonly string[]): string[][] {
-  const lines = text.split("\n");
-  const at = lines.indexOf(heading);
-  expect(at, `the heading "${heading}"`).toBeGreaterThan(-1);
-  const end = lines.findIndex((line, i) => i > at && line.startsWith("#"));
-  const section = lines.slice(at + 1, end === -1 ? undefined : end);
-  const starts = section.flatMap((line, i) => (line.startsWith("|") && !section[i - 1]?.startsWith("|") ? [i] : []));
-  expect(starts, `one table under "${heading}"`).toHaveLength(1);
-  const start = starts[0]!;
-  expect(cellsOf(section[start]!), "the headings").toEqual(header);
-  expect(cellsOf(section[start + 1]!).every((cell) => /^:?-+:?$/.test(cell))).toBe(true);
-  const rows = [];
-  for (const line of section.slice(start + 2)) {
-    if (!line.startsWith("|")) {
-      break;
+// A node's text as the document writes it: its text, its inline code in backticks, any run of white space as one space.
+function textOf(node: MarkdownNode): string {
+  const parts: string[] = [];
+  visit(node, (n) => {
+    if (n.type === "text") {
+      parts.push(n.value ?? "");
+    } else if (n.type === "inlineCode") {
+      parts.push(`\`${n.value ?? ""}\``);
     }
-    const row = cellsOf(line);
+  });
+  return parts.join("").replace(/\s+/g, " ").trim();
+}
+
+/** The rows of the one table among the blocks under the heading `title` of `depth` (up to the next heading), after
+ * checking its headings and each row's cell count. Read as Markdown: a table quoted in a code block is not one. */
+function table(text: string, depth: number, title: string, header: readonly string[]): string[][] {
+  const blocks = parseMarkdown(text).children ?? [];
+  const at = blocks.findIndex((b) => b.type === "heading" && b.depth === depth && textOf(b) === title);
+  expect(at, `the heading "${title}"`).toBeGreaterThan(-1);
+  const end = blocks.findIndex((b, i) => i > at && b.type === "heading");
+  const tables = blocks.slice(at + 1, end === -1 ? undefined : end).filter((b) => b.type === "table");
+  expect(tables, `one table under "${title}"`).toHaveLength(1);
+  const [head, ...rows] = (tables[0]!.children ?? []).map((row) => (row.children ?? []).map(textOf));
+  expect(head, "the headings").toEqual(header);
+  for (const row of rows) {
     expect(row, `the cells of "${row[0]}"`).toHaveLength(header.length);
-    rows.push(row);
   }
   return rows;
 }
@@ -142,12 +142,12 @@ describe("the states of an upgrade in docs/upgrade.md", () => {
   });
 
   it("are stated by its table of rules", () => {
-    const rows = table(read("docs/upgrade.md"), "### What the Store serves in each state", RULE_HEADER);
+    const rows = table(read("docs/upgrade.md"), 3, "What the Store serves in each state", RULE_HEADER);
     compare(rows, RULES.map(ruleCells));
   });
 
   it("are reached as its table of examples says, each example in one rule", () => {
-    const rows = table(read("docs/upgrade.md"), "#### How a Store reaches each state", EXAMPLE_HEADER);
+    const rows = table(read("docs/upgrade.md"), 4, "How a Store reaches each state", EXAMPLE_HEADER);
     compare(rows, EXAMPLES.map(exampleCells));
     for (const e of EXAMPLES) {
       ruleOf(e);
@@ -174,24 +174,30 @@ function example(id: string): Example {
   return found;
 }
 
-// The paragraph or comment that mentions `marker`, its lines joined, without comment markers.
-function passage(text: string, marker: string, comment: boolean): string {
+// The one Markdown paragraph whose text holds `marker`.
+function paragraph(text: string, marker: string): string {
+  const found: string[] = [];
+  visit(parseMarkdown(text), (node) => {
+    if (node.type === "paragraph" && textOf(node).includes(marker)) {
+      found.push(textOf(node));
+    }
+  });
+  expect(found, `one paragraph with ${marker}`).toHaveLength(1);
+  return found[0]!;
+}
+
+// The run of `//` comment lines right above the line that holds `marker`, joined, without comment markers.
+function commentAbove(text: string, marker: string): string {
   const lines = text.split("\n");
   const at = lines.findIndex((line) => line.includes(marker));
-  expect(at, `a line with ${marker}`).toBeGreaterThan(-1);
-  const within = comment
-    ? (line: string) => line.trimStart().startsWith("//")
-    : (line: string) => line.trim() !== "" && !line.startsWith("#");
-  let start = comment ? at - 1 : at;
-  while (start > 0 && within(lines[start - 1]!)) {
+  expect(at, `a line with ${marker}`).toBeGreaterThan(0);
+  let start = at;
+  while (start > 0 && lines[start - 1]!.trimStart().startsWith("//")) {
     start -= 1;
   }
-  let end = comment ? at : at + 1;
-  while (!comment && end < lines.length && within(lines[end]!)) {
-    end += 1;
-  }
+  expect(start, `a comment above ${marker}`).toBeLessThan(at);
   return lines
-    .slice(start, end)
+    .slice(start, at)
     .map((line) => line.replace(/^\s*\/\/\s?/, "").trim())
     .join(" ");
 }
@@ -201,14 +207,14 @@ describe("the documents on limits.cpu_ms", () => {
   const stoppedVerifying = example("stopped-verifying");
 
   it.each([
-    ["docs/upgrade.md", '`"limits": { "cpu_ms": 60000 }`', false],
-    ["docs/setup.md", "`limits.cpu_ms`", false],
-    ["../../deploy/wrangler.jsonc", '"limits": { "cpu_ms": 60000 }', true],
-  ] as const)("%s describes the two stopped examples as the fixture does", (path, marker, comment) => {
+    ["docs/upgrade.md", '`"limits": { "cpu_ms": 60000 }`', paragraph],
+    ["docs/setup.md", "`limits.cpu_ms`", paragraph],
+    ["../../deploy/wrangler.jsonc", '"limits": { "cpu_ms": 60000 }', commentAbove],
+  ] as const)("%s describes the two stopped examples as the fixture does", (path, marker, passage) => {
     // Stopped while applying: the schema is pending. Stopped before verifying: current, and still upgrading.
     expect(stoppedApplying).toMatchObject({ schema: "pending", hold: null });
     expect(stoppedVerifying).toMatchObject({ schema: "current", upgrading: true, hold: null });
-    const text = passage(read(path), marker, comment);
+    const text = passage(read(path), marker);
     const said = new RegExp(
       `the Store ${words(stoppedApplying)}\\b[^.]* while migrations remain unapplied\\b[^.]*\\bstays ${words(stoppedVerifying)} (?:once they are applied but not yet verified|until they are verified)`,
     );
