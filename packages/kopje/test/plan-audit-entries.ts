@@ -856,6 +856,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (job-attempts.ts#<anonymous> in retryParkedJobs); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
+    id: "3e7bea011a161e3f",
+    scans: ["collection_jobs: SCAN collection_jobs USING INDEX collection_jobs_failing"],
+    site: "src/domain/job-attempts.ts#<anonymous> in retryParkedJobs < src/domain/job-attempts.ts#<anonymous> in retryParkedJobs",
+    disposition: "background",
+    reason:
+      'a job or round traversal (job-attempts.ts#<anonymous> in retryParkedJobs); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
+  },
+  {
     id: "18b85820c661527e",
     scans: ["notification_request_jobs: SCAN notification_request_jobs USING INDEX notification_request_jobs_failing"],
     site: "src/domain/job-attempts.ts#<anonymous> in retryParkedJobs < src/domain/job-attempts.ts#<anonymous> in retryParkedJobs",
@@ -1026,6 +1034,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   {
     id: "a457ca4e80a4c3eb",
     scans: ["moderation_jobs: SCAN moderation_jobs USING INDEX moderation_jobs_failing"],
+    site: "src/domain/job-attempts.ts#retryRowids < src/domain/job-attempts.ts#<anonymous> in retryParkedJobs",
+    disposition: "background",
+    reason:
+      'a job or round traversal (job-attempts.ts#<anonymous> in retryParkedJobs); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
+  },
+  {
+    id: "e47650457264521c",
+    scans: ["collection_jobs: SCAN collection_jobs USING INDEX collection_jobs_failing"],
     site: "src/domain/job-attempts.ts#retryRowids < src/domain/job-attempts.ts#<anonymous> in retryParkedJobs",
     disposition: "background",
     reason:
@@ -1351,13 +1367,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   {
     id: "883afee3d9b87bd9",
     scans: [
+      "?: SCAN collection_jobs",
       "?: SCAN quotes",
       "announcement_reactions: SCAN announcement_reactions USING COVERING INDEX announcement_reactions_name",
     ],
     site: "src/domain/setup.ts#insertLocalAccount < src/domain/setup.ts#<anonymous> in bootstrapInstance",
     disposition: "deliberate",
     reason:
-      "the child-key lookups SQLite plans for a new parent row run only while a deferred foreign-key violation is outstanding (OP_FkIfZero); the Store's keys are immediate, so a new local account reads no quotes nor announcement_reactions",
+      "the child-key lookups SQLite plans for a new parent row run only while a deferred foreign-key violation is outstanding (OP_FkIfZero); the Store's keys are immediate, so a new local account reads no collection_jobs, quotes nor announcement_reactions",
     witness: "test/other-request-plans.test.ts",
   },
   {

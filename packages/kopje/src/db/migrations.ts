@@ -105,6 +105,7 @@ import m0104 from "../../migrations/0104_quote_broadcast.sql";
 import m0105 from "../../migrations/0105_media_description_bytes.sql";
 import m0106 from "../../migrations/0106_reply_walk_debts.sql";
 import m0107 from "../../migrations/0107_collection_notifications.sql";
+import m0108 from "../../migrations/0108_collection_jobs.sql";
 
 // Store migrations in apply order. Append only: an applied file is recorded by name and checksum and must
 // never change. Each file runs in its own transaction, must finish well under 30 seconds, and must be pure SQL with no
@@ -218,4 +219,5 @@ export const MIGRATIONS: readonly { name: string; sql: string; foreignKeys?: "un
   { name: "0105_media_description_bytes", sql: m0105, foreignKeys: "unchanged" },
   { name: "0106_reply_walk_debts", sql: m0106 },
   { name: "0107_collection_notifications", sql: m0107 },
+  { name: "0108_collection_jobs", sql: m0108 },
 ];

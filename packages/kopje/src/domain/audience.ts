@@ -1861,15 +1861,16 @@ export function audienceOf(visibility: Visibility, recipients: readonly Recipien
 // ---------------------------------------------------------------------------------------------------------------
 
 // What an outbound activity does, which decides whom it may reach:
-//   - content carries a status, or a boost of one, to its audience: Create, an Update of a status, Announce. It goes
-//     to no unavailable account (R1) and to no one the signer blocks or whose domain it blocks (VIS-13, VIS-15): an
-//     addressed account the signer blocks or domain-blocks is neither named nor sent to, and a follower on a domain it
-//     blocks (one the domain block's cleanup has not removed yet) is not sent to.
+//   - content carries a status, or a boost of one, to its audience: Create, an Update of a status (or of anything
+//     else but the actor: a collection's, collection-documents.ts), Announce. It goes to no unavailable account (R1)
+//     and to no one the signer blocks or whose domain it blocks (VIS-13, VIS-15): an addressed account the signer
+//     blocks or domain-blocks is neither named nor sent to, and a follower on a domain it blocks (one the domain
+//     block's cleanup has not removed yet) is not sent to.
 //   - a retraction withdraws what was sent: a Delete, an Undo of anything, a Reject that ends a follow we had accepted
 //     (withdraws). It is named to and reaches its whole audience, the blocked included, and every inbox that received
 //     what it withdraws (deliveries.ts).
-//   - everything else (an Update of the actor, Like, Follow, Accept, a Reject of a request, Block) goes to its whole
-//     audience. Mastodon 4.5 filters none of these by block or domain block: FavouriteService, FollowService,
+//   - everything else (an Update of the actor, Like, Follow, Accept, a Reject of a request, Block, Add, Remove) goes to
+//     its whole audience. Mastodon 4.5 filters none of these by block or domain block: FavouriteService, FollowService,
 //     BlockService and RejectFollowService send to the account's inbox, and ActivityPub::UpdateDistributionWorker to
 //     followers.inboxes (AccountReachFinder); a domain block ends the follows with the domain instead
 //     (AfterBlockDomainFromAccountService), as its cleanup does here.
@@ -2207,6 +2208,33 @@ export function reachFollowers(
     after,
     bound,
     limit,
+  );
+}
+
+// reachFollowers' range, each follow's id with its follower's REACH_INBOX only where the follower is remote and the
+// inbox is TEXT of 1 to `bytes` UTF-8 bytes without NUL, judged in SQL before it is read (accounts' inbox columns have
+// no stored bound); else null.
+export function reachFollowerInboxes(
+  db: Db,
+  accountId: string,
+  after: string,
+  bound: string,
+  limit: number,
+  bytes: number,
+): { id: string; inbox: string | null }[] {
+  return db.all<{ id: string; inbox: string | null }>(
+    `SELECT CAST(w.id AS TEXT) AS id, CASE WHEN a.domain IS NOT NULL AND typeof(${REACH_INBOX}) = 'text'
+				AND length(CAST(${REACH_INBOX} AS BLOB)) BETWEEN 1 AND ?5 AND instr(CAST(${REACH_INBOX} AS BLOB), x'00') = 0
+			THEN ${REACH_INBOX} END AS inbox
+		FROM (SELECT f.id, f.account_id FROM main.follows f INDEXED BY follows_target
+			WHERE f.target_account_id = ?1 AND f.state = 'accepted' AND f.id > CAST(?2 AS INTEGER)
+				AND f.id <= CAST(?3 AS INTEGER) ORDER BY f.id LIMIT ?4) w
+		LEFT JOIN main.accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = w.account_id ORDER BY w.id`,
+    accountId,
+    after,
+    bound,
+    limit,
+    bytes,
   );
 }
 

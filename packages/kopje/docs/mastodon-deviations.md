@@ -40,8 +40,9 @@ Other documents point here rather than repeat the release.
   `test/streaming/public.test.ts`. Accepted, 2026-11-15.
 - **Federation.** Kopje federates with every Mastodon series upstream still supports (its `SECURITY.md`), so it names
   no single release here. A behaviour takes as its reference the release its code and the threat model name:
-  remote-status ingestion and handle confirmation follow Mastodon v4.7.5, with Kopje's failure handling under NET-4. A
-  supported series whose activities Kopje refuses or misreads is a gap.
+  remote-status ingestion and handle confirmation follow Mastodon v4.7.5, with Kopje's failure handling under NET-4, and
+  local collections are published as its FEP-7aa9 documents. A supported series whose activities Kopje refuses or
+  misreads is a gap.
 
 ## Following a Mastodon release
 
@@ -764,6 +765,29 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   the member's earlier `collection_update` as it was, as an edit's `update` is kept, where Mastodon's
   `LocalNotificationWorker` deletes the earlier one before `NotifyService` judges the new one: after an unmute the
   earlier one shows again. Accepted, 2026-11-16.
+- A collection's ActivityPub documents (its `FeaturedCollection`, as served, on the pages of the owner's
+  `featured_collections` and in its `Add` and `Update`) leave out a member that is suspended or otherwise unavailable,
+  and that member's `FeaturedItem` answers 404, where Mastodon lists every accepted item; a suspension sends no
+  `Update`. Accepted, 2026-11-16.
+- `featured_collections` reads `page` as Mastodon does but where Mastodon fails: a number whose offset passes
+  PostgreSQL's bigint (from 1844674407370955163) is the empty page past the last, a `page[]` or `page[key]` is no page
+  (the root), and a value that is not UTF-8 is read with each bad sequence replaced, where Mastodon answers 500, 500
+  and 400. Accepted, 2026-11-16.
+- A collection's ActivityPub path reads its format as Rails does for Mastodon's `CollectionsController` at
+  `/ap/users/:account_id/collections/:id(.:format)`: the extension, else the query's `format`, else `Accept`,
+  `X-Requested-With` and, for an XHR without an `Accept`, `Content-Type`; and it answers 400 to a query Rack or Rails
+  refuses and 406 to any `Content-Type` Rails cannot read, in Mastodon's order. Where Mastodon serves the page's HTML at
+  that path, a request whose first type Rails reads is neither HTML nor JSON (as `*/*` alone) while it takes HTML before
+  JSON, Kopje moves it to the page, as it does a request Rails reads as HTML; and a `q` Ruby reads as infinite sorts
+  first, where Mastodon answers 500. Accepted, 2026-11-16. A query past one of Rack's limits (nested 32 deep, more than
+  4,096 fields, more than 4 MiB) is 400, where Mastodon answers 500; a `format` in a GET's form or JSON body, which
+  Rails also reads, is not read; and the path with a trailing or doubled `/`, which Rails also routes, or with an
+  extension Rails routes nowhere (a bare `.`, or a second `.`), where Mastodon answers 400 to a query Rack refuses and
+  406 to an `Accept` or `Content-Type` Rails cannot read, is 404. Accepted, 2026-11-17.
+- A deleted collection's `Remove` reaches its members as well as the owner's followers, where Mastodon's per-member
+  delivery does not reach them. Kopje's collection `Add` and `Remove` carry an `id` and `to`. A member's revocation of
+  its item in a local collection, by its route or by blocking the owner, is sent as the owner's `Remove` of the item,
+  where Mastodon sends the member's `Delete` of its `FeatureAuthorization`. Accepted, 2026-11-16.
 - A collection's page (`/collections/:id`) is served for a local collection only (a remote collection's `url` is its
   own server's), and the profile pages do not list an account's collections, where Mastodon's web client does.
   Accepted, 2026-11-16.

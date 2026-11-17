@@ -7,11 +7,13 @@ import { MIGRATIONS } from "../src/db/migrations";
 import { Db } from "../src/db/sql";
 import { followAnswerActivity, PIN_LIMIT, recordOutbound } from "../src/domain/activities";
 import { DISTRIBUTABLE_SQL, REACHES_FOLLOWERS_SQL, REQUIRES_MENTION_SQL } from "../src/domain/audience";
+import { COLLECTION_REACH_INBOX_BYTES } from "../src/domain/collection-jobs";
 import { CONVERSATIONS_BACKFILL } from "../src/domain/conversation-rows";
 import { claimDeliveries, HELD_REJECTS_PER_ACCOUNT, heldFollowUriSql } from "../src/domain/deliveries";
 import { HANDLE_REFRESH_REQUESTS } from "../src/domain/handle-refreshes";
 import { instanceInfo } from "../src/domain/instance";
 import {
+  COLLECTION_JOBS,
   HANDSHAKE_REPLAYS,
   INBOUND_JOBS,
   JOB_TABLES,
@@ -10263,8 +10265,11 @@ describe("0081_account_invitations", () => {
 describe("0084_family_job_attempts", () => {
   const NAME = "0084_family_job_attempts";
   const at = NAMES.indexOf(NAME);
-  // Every job table but inbound_jobs (0080), handshake_replays (0088) and reject_replays (0092), in JOB_TABLES order.
-  const TABLES = JOB_TABLES.filter((t) => t !== INBOUND_JOBS && t !== HANDSHAKE_REPLAYS && t !== REJECT_REPLAYS);
+  // Every job table but inbound_jobs (0080), handshake_replays (0088), reject_replays (0092) and collection_jobs
+  // (0108), in JOB_TABLES order.
+  const TABLES = JOB_TABLES.filter(
+    (t) => t !== INBOUND_JOBS && t !== HANDSHAKE_REPLAYS && t !== REJECT_REPLAYS && t !== COLLECTION_JOBS,
+  );
 
   it("holds jobAttemptColumnsSql's and jobAttemptIndexesSql's output for each other job table, declared foreignKeys: 'unchanged'", () => {
     expect(NAMES[at - 1]).toBe("0083_kept_boosts");
@@ -14478,6 +14483,120 @@ describe("0107_collection_notifications", () => {
         plan(`SELECT id FROM notifications WHERE account_id = '1' AND type = 'mention' AND from_account_id = '2'
 					AND IFNULL(status_id, '') = '3'`),
       ).toContain("notifications_natural");
+    });
+  });
+});
+
+describe("0108_collection_jobs", () => {
+  const NAME = "0108_collection_jobs";
+  const at = NAMES.indexOf(NAME);
+  const ALICE = "100000000000000001";
+  const refused = /constraint failed/;
+  const objects = (sql: SqlStorage) =>
+    sql
+      .exec<{ type: string; name: string }>(
+        `SELECT type, name FROM sqlite_master WHERE name LIKE 'collection_job%' OR name LIKE 'collection_reach%'
+				ORDER BY type, name`,
+      )
+      .toArray();
+  // A local account and its job 1, at the migration.
+  const migrated = async (state: DurableObjectState) => {
+    expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+    const sql = state.storage.sql;
+    sql.exec(
+      "INSERT INTO accounts (id, uri, username, domain) VALUES (?, 'https://kopje.test/ap/users/alice', 'alice', NULL)",
+      ALICE,
+    );
+    sql.exec(
+      "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?, 'a@example.com', X'00', X'00', 'k')",
+      ALICE,
+    );
+    sql.exec("INSERT INTO collection_jobs (id, account_id, follow_bound, phase) VALUES (1, ?, 0, 'followers')", ALICE);
+    return sql;
+  };
+
+  it("follows 0107, creates three tables and the retry indexes as job-attempts.ts writes them, checking every reference", async () => {
+    expect(NAMES[at - 1]).toBe("0107_collection_notifications");
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    const text = MIGRATIONS[at]?.sql ?? "";
+    const columns = jobAttemptColumnsSql("collection_jobs")
+      .split(";\n")
+      .filter((s) => s.trim() !== "")
+      .map((s) => s.replace("ALTER TABLE collection_jobs ADD COLUMN ", ""));
+    expect(columns).toHaveLength(2);
+    for (const column of columns) {
+      expect(text).toContain(column);
+    }
+    expect(text).toContain(jobAttemptIndexesSql(COLLECTION_JOBS));
+    expect(text).toContain(`BETWEEN 1 AND ${COLLECTION_REACH_INBOX_BYTES}`);
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      expect(objects(sql)).toEqual([]);
+      const triggers = sql.exec("SELECT count(*) AS n FROM sqlite_master WHERE type = 'trigger'").one().n;
+      await migrated(state);
+      expect(objects(sql)).toEqual([
+        { type: "index", name: "collection_jobs_failing" },
+        { type: "index", name: "collection_jobs_fresh" },
+        { type: "table", name: "collection_job_intents" },
+        { type: "table", name: "collection_jobs" },
+        { type: "table", name: "collection_reach" },
+      ]);
+      expect(sql.exec("SELECT count(*) AS n FROM sqlite_master WHERE type = 'trigger'").one().n).toBe(triggers);
+    });
+  });
+
+  const MAX = "9223372036854775807";
+  const MIN = "-9223372036854775808";
+  const inbox = (bytes: number) => `'https://${"h".repeat(bytes - 8)}'`;
+  it.each([
+    ["collection_jobs", "follow_bound", [MIN, MAX, "NULL"], ["1.5", "'x'", "X'01'"]],
+    ["collection_jobs", "phase", ["'write'", "'drop'"], ["'end'", "''", "NULL"]],
+    ["collection_jobs", "follow_cursor", [MIN, MAX, "NULL"], ["1.5", "'x'", "X'01'"]],
+    [
+      "collection_jobs",
+      "inbox_cursor",
+      ["'h'", inbox(COLLECTION_REACH_INBOX_BYTES), "NULL"],
+      ["''", inbox(COLLECTION_REACH_INBOX_BYTES + 1), "'a' || char(0) || 'b'", "X'68'"],
+    ],
+    ["collection_job_intents", "intent_id", [MIN, MAX], ["1.5", "'x'", "X'01'", "NULL"]],
+    [
+      "collection_reach",
+      "inbox",
+      ["'h'", inbox(COLLECTION_REACH_INBOX_BYTES)],
+      ["''", inbox(COLLECTION_REACH_INBOX_BYTES + 1), "'a' || char(0) || 'b'", "X'68'", "NULL"],
+    ],
+  ])("holds %s.%s to its domain at each end", async (table, column, admitted, others) => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = await migrated(state);
+      const write = (value: string) =>
+        table === "collection_jobs"
+          ? sql.exec(`UPDATE collection_jobs SET ${column} = ${value}`)
+          : sql.exec(`INSERT OR REPLACE INTO ${table} (job_id, ${column}) VALUES (1, ${value})`);
+      for (const value of admitted) {
+        write(value);
+      }
+      const kept = sql.exec(`SELECT count(*) AS n FROM ${table}`).one().n;
+      for (const value of others) {
+        expect(() => write(value), value).toThrow(refused);
+      }
+      expect(sql.exec(`SELECT count(*) AS n FROM ${table}`).one().n).toBe(kept);
+    });
+  });
+
+  it("names an existing job from each staged row, and keeps the job while one does", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = await migrated(state);
+      expect(() =>
+        sql.exec("INSERT INTO collection_reach (job_id, inbox) VALUES (2, 'https://a.example/inbox')"),
+      ).toThrow(/FOREIGN KEY/);
+      expect(() => sql.exec("INSERT INTO collection_job_intents (job_id, intent_id) VALUES (2, 1)")).toThrow(
+        /FOREIGN KEY/,
+      );
+      sql.exec("INSERT INTO collection_reach (job_id, inbox) VALUES (1, 'https://a.example/inbox')");
+      sql.exec("INSERT OR IGNORE INTO collection_reach (job_id, inbox) VALUES (1, 'https://a.example/inbox')");
+      expect(sql.exec("SELECT count(*) AS n FROM collection_reach").one().n).toBe(1);
+      expect(() => sql.exec("DELETE FROM collection_jobs")).toThrow(/FOREIGN KEY/);
     });
   });
 });
