@@ -1980,6 +1980,11 @@ ID-7 in `docs/threat-model.md`):
   integer too large for a double (past about 1.8e308) is read as no count, clearing a stored one, where Mastodon reads
   the exact integer and clamps it to 100,000,000, or 0 when negative: `JSON.parse` gives an infinity, which Kopje reads
   as it reads a number with an exponent past that range (`1e400`), no count in both. Accepted, 2026-11-17.
+- The answer to `POST /api/v1/statuses/:id/unfavourite` and `/unreblog` of a remote status with an untrusted count
+  shows its `favourites_count` and `reblogs_count` after the change, as a read afterwards does. Mastodon's answer shows
+  the untrusted count before it: its serializer prefers that count over the one the controller hands it
+  (`status_serializer.rb:95-101`), and the count moves only in the later `UnfavouriteWorker` or `RemovalWorker`.
+  Accepted, 2026-11-18.
 - A status Kopje fetches again that it stores (search, `/authorize_interaction`, a pin sync, a replies walk, its root
   included) is applied as its author's `Update`, as `FetchRemoteStatusService` turns a stored status's `Create` into an
   `Update` (`fetch_remote_status_service.rb:48`). A pin sync fetches every status its account lists on its origin and

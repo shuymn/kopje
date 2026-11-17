@@ -405,15 +405,17 @@ describe("a status's shown favourites and boosts counts", () => {
       expect([action, response.status]).toEqual([action, 200]);
       // A boost answers with the boost, which shows its original's counts in reblog.
       const body = await response.json<Shown & { reblog: Shown | null }>();
-      return (body.reblog ?? body).favourites_count;
+      const shown = body.reblog ?? body;
+      return [shown.favourites_count, shown.reblogs_count];
     };
     const set = (columns: string) => sql(h.store, `UPDATE statuses SET ${columns} WHERE id = ?`, reply);
-    // One more and one fewer, shown at once.
-    expect(await acted("favourite")).toBe(43);
-    expect(await acted("reblog")).toBe(43);
+    // One more and one fewer, shown at once: the answer holds the counts after the change, where Mastodon's answer to
+    // an unfavourite or unreblog shows them before it (docs/mastodon-deviations.md).
+    expect(await acted("favourite")).toEqual([43, 7]);
+    expect(await acted("reblog")).toEqual([43, 8]);
     expect(await stored(reply)).toEqual({ f: 1, uf: 43, r: 1, ur: 8 });
-    expect(await acted("unfavourite")).toBe(42);
-    await acted("unreblog");
+    expect(await acted("unfavourite")).toEqual([42, 8]);
+    expect(await acted("unreblog")).toEqual([42, 7]);
     expect(await stored(reply)).toEqual({ f: 0, uf: 42, r: 0, ur: 7 });
     // Floored at 0.
     await acted("favourite");
