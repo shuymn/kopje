@@ -436,6 +436,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   only where Kopje shows Mastodon's compaction of it succeeds, and none is applied when another server relays it
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Reading inbound activities"). No Store migration and no
   `wrangler.jsonc` change.
+- Apply LD-signed retractions typed with IRIs in more of the bodies Mastodon compacts (#1717). Each further form is one
+  Mastodon's JSON-LD library and jsonld.js compact alike ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
+  "Reading inbound activities"). No Store migration and no `wrangler.jsonc` change.
 - Every domain check reads a host without any of its trailing dots, in the Worker as in SQL: an instance domain block
   of `example.com` covers a fetch, an inbox, an actor and a delivery on `example.com..`, and an actor whose id is there
   claims its handle at `example.com`, where Mastodon drops a single trailing dot
