@@ -3,6 +3,7 @@ import { base64url } from "jose";
 import { ALERT_TYPES, POLICIES, type PushData, type PushPolicy, type StoredSubscription } from "../domain/push";
 import { webPushKeys } from "../platform/config";
 import { publicShapeRefusal } from "../platform/http-url";
+import { railsBlank } from "../platform/rails-blank";
 import { AUTH_SECRET_LENGTH, importClientKey, sealPushToken } from "../security/web-push";
 import { bearerToken } from "./access";
 import {
@@ -65,6 +66,9 @@ function dataParams(p: Params): PushData | Response {
 
 type Keys = { endpoint: string; p256dh: string; auth: string };
 
+// The endpoint and keys in Web::PushSubscription's order, the first error answered: the endpoint's presence and URL, each
+// key's presence, then the keys themselves. A value blank to Rails (railsBlank) fails its presence (`can't be blank`);
+// an empty or absent one answers 400 before any (docs/mastodon-deviations.md, "Web Push").
 async function subscriptionParams(p: Params): Promise<Keys | Response> {
   const endpoint = p.get("subscription[endpoint]") ?? "";
   const p256dh = p.get("subscription[keys][p256dh]") ?? "";
@@ -72,9 +76,18 @@ async function subscriptionParams(p: Params): Promise<Keys | Response> {
   if (endpoint === "" || p256dh === "" || auth === "") {
     return MISSING();
   }
+  if (railsBlank(endpoint)) {
+    return invalid("Endpoint can't be blank");
+  }
   const url = endpoint.length > MAX_ENDPOINT_LENGTH ? null : URL.parse(endpoint);
   if (url === null || publicShapeRefusal(url) !== null) {
     return invalid("Endpoint is invalid");
+  }
+  if (railsBlank(p256dh)) {
+    return invalid("Key p256dh can't be blank");
+  }
+  if (railsBlank(auth)) {
+    return invalid("Key auth can't be blank");
   }
   const key = decodeKey(p256dh);
   if (key === null || (await importClientKey(key)) === null) {

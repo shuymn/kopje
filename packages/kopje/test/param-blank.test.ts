@@ -651,10 +651,10 @@ describe("media (PB10)", () => {
     });
   });
 
-  // A push subscription's endpoint and keys are missing (400) only when empty; any other is decoded, so one blank to
-  // Rails is refused as invalid (422). Mastodon's model presence refuses both with 422, an older difference this blank
-  // fix does not move.
-  it("decodes a push key blank to Rails rather than calling it missing", async () => {
+  // Web::PushSubscription validates the endpoint's and each key's presence (Rails' blank?) before the keys themselves,
+  // and Kopje answers the first error. An empty endpoint or key stays missing (400; docs/mastodon-deviations.md, "Web
+  // Push").
+  it("refuses an endpoint or key blank to Rails as blank, before the keys are read", async () => {
     const h = await community(["alice"], "read write follow push", {}, { VAPID_JWK: VAPID.env });
     const client = await newClient();
     const subscribe = async (endpoint: string, keys: { p256dh?: string; auth?: string }) =>
@@ -664,11 +664,17 @@ describe("media (PB10)", () => {
         }),
       );
     const endpoint = "https://push.example/send/abc";
-    const invalid = (what: string) => ({ status: 422, body: { error: `Validation failed: ${what} is invalid` } });
-    expect(await subscribe(NEL, {})).toEqual(invalid("Endpoint"));
-    expect(await subscribe(endpoint, { p256dh: NEL })).toEqual(invalid("Key p256dh"));
-    expect(await subscribe(endpoint, { auth: NEL })).toEqual(invalid("Key auth"));
-    expect((await subscribe(endpoint, { auth: "" })).status).toBe(400);
+    const failed = (error: string) => ({ status: 422, body: { error: `Validation failed: ${error}` } });
+    expect(await subscribe(NEL, {})).toEqual(failed("Endpoint can't be blank"));
+    expect(await subscribe(endpoint, { p256dh: NEL })).toEqual(failed("Key p256dh can't be blank"));
+    expect(await subscribe(endpoint, { auth: NEL })).toEqual(failed("Key auth can't be blank"));
+    expect(await subscribe(endpoint, { p256dh: "!!!", auth: NEL })).toEqual(failed("Key auth can't be blank"));
+    expect(await subscribe(endpoint, { p256dh: BOM })).toEqual(failed("Key p256dh is invalid"));
+    expect(await subscribe(BOM, { auth: NEL })).toEqual(failed("Endpoint is invalid"));
+    expect(await subscribe(endpoint, { auth: "" })).toEqual({
+      status: 400,
+      body: { error: "param is missing or the value is empty or invalid: subscription" },
+    });
     expect((await subscribe(endpoint, {})).status).toBe(200);
   });
 });
