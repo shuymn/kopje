@@ -26,9 +26,11 @@ import { BUILD, deferred, migratedStore, testKernel as kernel } from "./helpers"
 // What the Store admits in each phase of an upgrade. test/fixtures/upgrade-phases.json lists the phases in order, and
 // for each the reason every kind of operation is refused (null: admitted) and what health reports;
 // test-node/upgrade-phases.test.ts holds docs/upgrade.md's table to the same file. Each phase a Store can be found in
-// is built here by the upgrade itself, with a failure or a stop injected where the phase begins, and read by the
-// kernel of a new isolate (and, for a hold, by the kernel that failed). The Store applies and verifies in one
-// invocation, so a request that arrives meanwhile waits for it to end ("applying").
+// is built here by the upgrade itself, with a failure, a stop or a timeout after a commit injected where the phase
+// begins, and read by the kernel of a new isolate (and, for a hold, by the kernel that failed; for a rollback, by the
+// older build's kernel after its alarm). A failure can be reported after the transaction that records or clears the
+// upgrade's marker commits, so a phase is named by the marker as well as by its hold. The Store applies and verifies in
+// one invocation, so a request that arrives meanwhile waits for it to end ("applying").
 
 type Health = {
   schema: "current" | "pending" | "diverged";
@@ -66,13 +68,13 @@ const OPERATIONS: Record<OperationKind, StoreOperation<void, unknown>> = {
 };
 const KINDS = Object.keys(OPERATIONS) as OperationKind[];
 
-// The reason the kernel refuses an operation of this kind, or null once the operation ran: the read answered the
-// count, and a write left its row. A refused operation leaves none.
+// The reason the kernel refuses an operation of this kind from a caller of its own build, or null once the operation
+// ran: the read answered the count, and a write left its row. A refused operation leaves none.
 async function admission(k: StoreKernel, sql: SqlStorage, kind: OperationKind): Promise<MaintenanceReason | null> {
   const before = sql.exec<{ n: number }>("SELECT count(*) AS n FROM instance_settings").one().n;
   const after = () => sql.exec<{ n: number }>("SELECT count(*) AS n FROM instance_settings").one().n;
   try {
-    const output = await k.execute(BUILD, OPERATIONS[kind], undefined);
+    const output = await k.execute(k.build, OPERATIONS[kind], undefined);
     expect(output).toBe(kind === "read" ? before : undefined);
     expect(after()).toBe(kind === "read" ? before : before + 1);
     return null;
@@ -87,7 +89,7 @@ async function admission(k: StoreKernel, sql: SqlStorage, kind: OperationKind): 
 }
 
 async function observe(k: StoreKernel, sql: SqlStorage): Promise<Admissions> {
-  const reported = await k.health(BUILD);
+  const reported = await k.health(k.build);
   const health = {
     schema: reported.schema.status,
     readonly: reported.readonly,
@@ -120,11 +122,30 @@ function failAt(phase: UpgradePhase, nth: number, stop: boolean): NonNullable<Ke
   };
 }
 
+// The build of the code before the upgrade, deployed again by a rollback: it ships none of the new files.
+const OLDER_BUILD = "older-build";
+
 function newFiles(sql: SqlStorage): string[] {
   return sql
     .exec<{ name: string }>("SELECT name FROM kopje_migrations WHERE name >= ? ORDER BY name", FIRST.name)
     .toArray()
     .map((m) => m.name);
+}
+
+const marked = (sql: SqlStorage) =>
+  sql.exec<{ n: number }>("SELECT count(*) AS n FROM kopje_state WHERE name = 'upgrade'").one().n === 1;
+
+// A transaction that commits and then reports a timeout, once: the first time `committed` holds after a commit.
+function timesOutAfter(state: DurableObjectState, committed: (sql: SqlStorage) => boolean) {
+  let thrown = false;
+  return <T>(fn: () => T): T => {
+    const value = state.storage.transactionSync(fn);
+    if (!thrown && committed(state.storage.sql)) {
+      thrown = true;
+      throw new Error("Durable Object storage operation exceeded timeout");
+    }
+    return value;
+  };
 }
 
 // Upgrades through `inject` (or a transaction that fails), expecting `result`, and checks which new files are recorded.
@@ -159,7 +180,16 @@ const BUILDERS: Record<string, (state: DurableObjectState) => StoreKernel[] | Pr
   },
   "bookmark-failed": async (state) => {
     const failed = { ok: false, reason: "bookmark-failed" };
-    return [await upgradeFailing(state, { inject: failAt("bookmark", 1, false) }, failed, []), kernel(state, NEXT)];
+    const k = await upgradeFailing(state, { inject: failAt("bookmark", 1, false) }, failed, []);
+    expect(marked(state.storage.sql)).toBe(false);
+    return [k, kernel(state, NEXT)];
+  },
+  // The transaction that records the upgrade (its marker and bookmark) commits, and then reports a timeout.
+  "bookmark-failed-recorded": async (state) => {
+    const failed = { ok: false, reason: "bookmark-failed" };
+    const k = await upgradeFailing(state, { transaction: timesOutAfter(state, marked) }, failed, []);
+    expect(marked(state.storage.sql)).toBe(true);
+    return [k, kernel(state, NEXT)];
   },
   "upgrade-failed-unapplied": async (state) => {
     const failed = { ok: false, reason: "upgrade-failed" };
@@ -170,35 +200,48 @@ const BUILDERS: Record<string, (state: DurableObjectState) => StoreKernel[] | Pr
   },
   // The last file's transaction is durable, but reports an error (a timeout after the commit).
   "upgrade-failed-applied": async (state) => {
-    let thrown = false;
-    const transaction = <T>(fn: () => T): T => {
-      const value = state.storage.transactionSync(fn);
-      if (!thrown && newFiles(state.storage.sql).includes(SECOND.name)) {
-        thrown = true;
-        throw new Error("Durable Object storage operation exceeded timeout");
-      }
-      return value;
-    };
+    const transaction = timesOutAfter(state, (sql) => newFiles(sql).includes(SECOND.name));
     const failed = { ok: false, reason: "upgrade-failed" };
     return [await upgradeFailing(state, { transaction }, failed, [FIRST.name, SECOND.name]), kernel(state, NEXT)];
   },
   "verify-failed": async (state) => {
     const failed = { ok: false, reason: "verify-failed" };
-    return [
-      await upgradeFailing(state, { inject: failAt("verify", 1, false) }, failed, [FIRST.name, SECOND.name]),
-      kernel(state, NEXT),
-    ];
+    const k = await upgradeFailing(state, { inject: failAt("verify", 1, false) }, failed, [FIRST.name, SECOND.name]);
+    expect(marked(state.storage.sql)).toBe(true);
+    return [k, kernel(state, NEXT)];
   },
-  // The code rolled back across the upgrade: the Store has files this build does not ship.
+  // The transaction that verifies and clears the marker commits, and then reports a timeout.
+  "verify-failed-recorded": async (state) => {
+    const transaction = timesOutAfter(state, (sql) => newFiles(sql).includes(SECOND.name) && !marked(sql));
+    const failed = { ok: false, reason: "verify-failed" };
+    const k = await upgradeFailing(state, { transaction }, failed, [FIRST.name, SECOND.name]);
+    expect(marked(state.storage.sql)).toBe(false);
+    return [k, kernel(state, NEXT)];
+  },
+  // The code rolled back across a finished upgrade: the Store has files the older build does not ship.
   diverged: async (state) => {
     await upgradeFailing(state, {}, { ok: true }, [FIRST.name, SECOND.name]);
-    return [kernel(state, MIGRATIONS)];
+    return rolledBack(state);
+  },
+  // The code rolled back across an upgrade whose invocation ended after the first file committed: the marker stays.
+  "diverged-unfinished": async (state) => {
+    await upgradeFailing(state, { inject: failAt("apply", 2, true) }, { ok: false }, [FIRST.name]);
+    expect(marked(state.storage.sql)).toBe(true);
+    return rolledBack(state);
   },
   upgraded: async (state) => [
     await upgradeFailing(state, {}, { ok: true }, [FIRST.name, SECOND.name]),
     kernel(state, NEXT),
   ],
 };
+
+// The older build's kernel once its alarm ran the upgrade, which changes nothing while the schema has files the build
+// does not ship, and a fresh one.
+async function rolledBack(state: DurableObjectState): Promise<StoreKernel[]> {
+  const older = kernel(state, MIGRATIONS, { build: OLDER_BUILD });
+  expect(await older.upgrade()).toMatchObject({ ok: false, reason: "schema-diverged" });
+  return [older, kernel(state, MIGRATIONS, { build: OLDER_BUILD })];
+}
 
 // A migrated Store whose alarm is set an hour ahead: a kernel that finds the upgrade unfinished schedules one only
 // when none is set, so no alarm upgrades the Store while a test holds it in a phase. Cleared after the test.

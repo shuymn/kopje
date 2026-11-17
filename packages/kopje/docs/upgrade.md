@@ -103,18 +103,21 @@ recover such a value.
 
 The phases of an upgrade in order, with what the instance answers in each and what `kopje-admin health` shows then.
 
-| Phase                                            | Reads  | Sign-in | Writes | Refused as            | Inbox     | Actor, WebFinger, NodeInfo | `schema.status` | `readonly` | `upgrading` | `hold`            |
-| ------------------------------------------------ | ------ | ------- | ------ | --------------------- | --------- | -------------------------- | --------------- | ---------- | ----------- | ----------------- |
-| Migrations pending, none applied yet             | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `pending`       | `true`     | `false`     | `null`            |
-| Applying and verifying                           | wait   | wait    | wait   | —                     | wait      | wait                       | wait            | wait       | wait        | wait              |
-| Stopped while applying, until the next attempt   | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `pending`       | `true`     | `true`      | `null`            |
-| Stopped before verifying, until the next attempt | served | served  | 503    | `upgrade-in-progress` | spooled   | served                     | `current`       | `true`     | `true`      | `null`            |
-| Held: `bookmark-failed`                          | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `pending`       | `true`     | `false`     | `bookmark-failed` |
-| Held: `upgrade-failed`, a migration unapplied    | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `pending`       | `true`     | `true`      | `upgrade-failed`  |
-| Held: `upgrade-failed`, every migration applied  | served | served  | 503    | `upgrade-failed`      | spooled   | served                     | `current`       | `true`     | `true`      | `upgrade-failed`  |
-| Held: `verify-failed`                            | served | served  | 503    | `verify-failed`       | spooled   | served                     | `current`       | `true`     | `true`      | `verify-failed`   |
-| Schema diverged                                  | 503    | 503     | 503    | `schema-diverged`     | spooled   | snapshot                   | `diverged`      | `true`     | `false`     | `null`            |
-| Upgraded                                         | served | served  | served | —                     | processed | served                     | `current`       | `false`    | `false`     | `null`            |
+| Phase                                                   | Reads  | Sign-in | Writes | Refused as            | Inbox     | Actor, WebFinger, NodeInfo | `schema.status` | `readonly` | `upgrading` | `hold`            |
+| ------------------------------------------------------- | ------ | ------- | ------ | --------------------- | --------- | -------------------------- | --------------- | ---------- | ----------- | ----------------- |
+| Migrations pending, none applied yet                    | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `pending`       | `true`     | `false`     | `null`            |
+| Applying and verifying                                  | wait   | wait    | wait   | —                     | wait      | wait                       | wait            | wait       | wait        | wait              |
+| Stopped while applying, until the next attempt          | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `pending`       | `true`     | `true`      | `null`            |
+| Stopped before verifying, until the next attempt        | served | served  | 503    | `upgrade-in-progress` | spooled   | served                     | `current`       | `true`     | `true`      | `null`            |
+| Held: `bookmark-failed`, before the upgrade is recorded | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `pending`       | `true`     | `false`     | `bookmark-failed` |
+| Held: `bookmark-failed`, once the upgrade is recorded   | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `pending`       | `true`     | `true`      | `bookmark-failed` |
+| Held: `upgrade-failed`, a migration unapplied           | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `pending`       | `true`     | `true`      | `upgrade-failed`  |
+| Held: `upgrade-failed`, every migration applied         | served | served  | 503    | `upgrade-failed`      | spooled   | served                     | `current`       | `true`     | `true`      | `upgrade-failed`  |
+| Held: `verify-failed`, before verification is recorded  | served | served  | 503    | `verify-failed`       | spooled   | served                     | `current`       | `true`     | `true`      | `verify-failed`   |
+| Held: `verify-failed`, once verification is recorded    | served | served  | 503    | `verify-failed`       | spooled   | served                     | `current`       | `true`     | `false`     | `verify-failed`   |
+| Schema diverged                                         | 503    | 503     | 503    | `schema-diverged`     | spooled   | snapshot                   | `diverged`      | `true`     | `false`     | `null`            |
+| Schema diverged, an upgrade left unfinished             | 503    | 503     | 503    | `schema-diverged`     | spooled   | snapshot                   | `diverged`      | `true`     | `true`      | `null`            |
+| Upgraded                                                | served | served  | served | —                     | processed | served                     | `current`       | `false`    | `false`     | `null`            |
 
 - **503** is the answer of the Mastodon API and the web pages. Writes include deleting media, and the media rebuild
   is refused wherever writes are.
@@ -124,8 +127,15 @@ The phases of an upgrade in order, with what the instance answers in each and wh
   and 503 where none was saved.
 - **Wait**: the Store applies and verifies in one invocation, and a request that arrives meanwhile waits for it to
   end, `kopje-admin health` included, and is then answered as the row the Store ends in says.
+- **Recorded**: the upgrade records itself, with its bookmark, before it applies the first migration, and removes the
+  record in the transaction that verifies the result; `upgrading` is `true` while the record is kept. A storage
+  error can be reported after the transaction it ends has committed (a timeout), so a hold comes with or without the
+  record. A rollback of the code across an upgrade that did not finish leaves the record, and `upgrading` stays
+  `true` until the code and the schema match again.
 - **`readonly: true`** means that the Store refuses writes. While `schema.status` is not `current`, it refuses reads
   and sign-ins too.
+- Each row has its own `schema.status`, `upgrading` and `hold`, so `kopje-admin health` tells which row the Store is
+  in.
 
 The table is the Store's own state. Maintenance the operator turns on (`MAINTENANCE`), a backup dump and an import
 refuse more on top of it ([backup.md](backup.md)).

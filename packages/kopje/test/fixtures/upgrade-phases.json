@@ -45,7 +45,7 @@
   },
   {
     "id": "bookmark-failed",
-    "label": "Held: `bookmark-failed`",
+    "label": "Held: `bookmark-failed`, before the upgrade is recorded",
     "waits": false,
     "refusals": {
       "read": "schema-pending",
@@ -55,6 +55,19 @@
       "media-rebuild": "schema-pending"
     },
     "health": { "schema": "pending", "readonly": true, "upgrading": false, "hold": "bookmark-failed" }
+  },
+  {
+    "id": "bookmark-failed-recorded",
+    "label": "Held: `bookmark-failed`, once the upgrade is recorded",
+    "waits": false,
+    "refusals": {
+      "read": "schema-pending",
+      "session": "schema-pending",
+      "write": "schema-pending",
+      "media-delete": "schema-pending",
+      "media-rebuild": "schema-pending"
+    },
+    "health": { "schema": "pending", "readonly": true, "upgrading": true, "hold": "bookmark-failed" }
   },
   {
     "id": "upgrade-failed-unapplied",
@@ -84,7 +97,7 @@
   },
   {
     "id": "verify-failed",
-    "label": "Held: `verify-failed`",
+    "label": "Held: `verify-failed`, before verification is recorded",
     "waits": false,
     "refusals": {
       "read": null,
@@ -94,6 +107,19 @@
       "media-rebuild": "verify-failed"
     },
     "health": { "schema": "current", "readonly": true, "upgrading": true, "hold": "verify-failed" }
+  },
+  {
+    "id": "verify-failed-recorded",
+    "label": "Held: `verify-failed`, once verification is recorded",
+    "waits": false,
+    "refusals": {
+      "read": null,
+      "session": null,
+      "write": "verify-failed",
+      "media-delete": "verify-failed",
+      "media-rebuild": "verify-failed"
+    },
+    "health": { "schema": "current", "readonly": true, "upgrading": false, "hold": "verify-failed" }
   },
   {
     "id": "diverged",
@@ -107,6 +133,19 @@
       "media-rebuild": "schema-diverged"
     },
     "health": { "schema": "diverged", "readonly": true, "upgrading": false, "hold": null }
+  },
+  {
+    "id": "diverged-unfinished",
+    "label": "Schema diverged, an upgrade left unfinished",
+    "waits": false,
+    "refusals": {
+      "read": "schema-diverged",
+      "session": "schema-diverged",
+      "write": "schema-diverged",
+      "media-delete": "schema-diverged",
+      "media-rebuild": "schema-diverged"
+    },
+    "health": { "schema": "diverged", "readonly": true, "upgrading": true, "hold": null }
   },
   {
     "id": "upgraded",

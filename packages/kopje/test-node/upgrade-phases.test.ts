@@ -6,8 +6,8 @@ import fixture from "../test/fixtures/upgrade-phases.json" with { type: "json" }
 
 // docs/upgrade.md, "What the Store serves in each phase", states test/fixtures/upgrade-phases.json, which
 // test/upgrade-phases.test.ts holds the Store's kernel to: its headings in order, a row per phase in the fixture's
-// order under the phase's label, a cell under each heading, and each cell as the phase's admissions and health give it.
-// The passages on `limits.cpu_ms` (docs/upgrade.md, docs/setup.md and the template's wrangler.jsonc) describe the
+// order under the phase's label, a cell under each heading, and each cell as the phase's admissions and health give it;
+// and no two phases report the same health, so health tells the row. The passages on `limits.cpu_ms` (docs/upgrade.md, docs/setup.md and the template's wrangler.jsonc) describe the
 // fixture's two stopped phases in the same words.
 
 const KINDS = ["read", "session", "write", "media-delete", "media-rebuild"] as const;
@@ -133,6 +133,19 @@ describe("the upgrade phases in docs/upgrade.md", () => {
       const line = `| ${[p.label, ...cells(p)].join(" | ")} |`;
       expect(row?.cells, `expected row (before oxfmt pads it):\n${line}\n`).toEqual(cells(p));
     }
+  });
+
+  // A hold is reported before or after the transaction that records or clears the upgrade's marker commits, and a
+  // rollback keeps the marker of an upgrade that did not finish, so phases that share a hold differ by `upgrading`.
+  it("are each told apart by what health reports, as the notes under the table say", () => {
+    const told = PHASES.flatMap((p) =>
+      p.waits ? [] : [`${p.health.schema} upgrading=${p.health.upgrading} hold=${p.health.hold}`],
+    );
+    expect(new Set(told).size, told.join("\n")).toBe(told.length);
+    const notes = read("docs/upgrade.md").replace(/\s+/g, " ");
+    expect(notes).toContain(
+      "Each row has its own `schema.status`, `upgrading` and `hold`, so `kopje-admin health` tells which row the Store is in.",
+    );
   });
 });
 
