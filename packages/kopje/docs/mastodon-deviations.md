@@ -1455,11 +1455,11 @@ Filters (a status's `filtered`, Mastodon's `CustomFilter#to_regex` over `Status#
 - A remote status's lines end at every `<br>` element of its sanitized HTML, whatever its spelling or attributes
   (`<br/>`, `<br class="x">`, `<br lang="en">`), where Mastodon's `PlainTextFormatter` breaks only at `<br>`, `<br />`
   and `</p>` as the raw HTML writes them (any case) and matches a keyword across the others.
-- A keyword's `whole_word` sent blank or as JSON null is read as not sent, so a new keyword whole-word and an existing
-  one as stored, by `POST /api/v1/filters`, `PUT /api/v1/filters/:id`, `POST /api/v2/filters` and
+- A keyword's `whole_word` sent as an empty string or as JSON null is read as not sent, so a new keyword whole-word and
+  an existing one as stored, by `POST /api/v1/filters`, `PUT /api/v1/filters/:id`, `POST /api/v2/filters` and
   `PUT /api/v2/filters/:id` (`keywords_attributes`), `POST /api/v2/filters/:filter_id/keywords` and
   `PUT /api/v2/filters/keywords/:id`. Mastodon casts it to nil, which its `NOT NULL` column refuses, and answers 500
-  (`ActiveRecord::NotNullViolation`). Accepted, 2026-11-17.
+  (`ActiveRecord::NotNullViolation`). Whitespace alone is true in both, as the cast reads it. Accepted, 2026-11-17.
 
 Posting (`POST` and `PUT /api/v1/statuses`):
 
