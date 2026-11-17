@@ -131,9 +131,10 @@ against their own instance. TLS is assumed between all parties.
   to the body's one-element arrays and public collection IRI): its contexts give every ActivityStreams term and every
   name of Mastodon's `full_context` that context's meaning, give no other name one of those meanings or a keyword's,
   set no keyword and name only the preloaded contexts that keep them, and every key of its body but the top-level
-  `@context`, `signature` and `proof` is a plain name. Above all, it holds only what real senders write (`senderShaped`,
-  the primary guard, checked before any context is read): no key with a control character or a line break, no key that
-  starts with `@` but a JSON-LD 1.1 keyword, no context URL twice in one `@context`, an inline definition only as
+  `@context`, `signature` and `proof` is a plain name (a retraction's once its references are read, below). Above
+  all, it holds only what real senders write (`senderShaped`, the primary guard, checked before any context is read):
+  no key with a control character or a line break, no key that starts with `@` but a JSON-LD 1.1 keyword, no context
+  URL twice in one `@context`, an inline definition only as
   Mastodon or Fedify 2.4.5 writes it for that name (`MASTODON_CONTEXT_TERMS`, 4.4 to 4.7.5; `MASTODON_OLM_TERMS`, the
   olm extension 3.5.0 to 4.2.29 write in every actor's context; `FEDIFY_CONTEXT_TERMS`; compared exactly), a type only
   as a plain term (ASCII letters, digits, `_` and `-`) or an absolute IRI, and a proof only as Fedify writes one (an
@@ -179,8 +180,10 @@ against their own instance. TLS is assumed between all parties.
   quote's approval); some leave in place one Mastodon's reading would withdraw (a follow its `Reject` ends, a status its
   `Delete` removes, a block an `Undo` of it lifts), and those are listed there too. A retraction (a `Reject`, `Undo`,
   `Block` or `Delete` by the name its type is read as, `RETRACTIONS`) is read as the compaction writes it where Kopje
-  shows the compaction succeeds: its `actor` given as a one-element array, as that element. Its actor is still the
-  signer's or the activity is a relay, and it ends only what its signer did or holds, or lifts its own block; every
+  shows the compaction succeeds: its `actor` given as a one-element array, as that element, and a node reference given
+  as `{"@id": …}` alone under a name both contexts type `@id`, as its IRI where the compaction writes it as given
+  (`referencesAsIris`; the compaction shown of the body so read, its values counted as received). Its actor is still
+  the signer's or the activity is a relay, and it ends only what its signer did or holds, or lifts its own block; every
   other type keeps the reading as received. The owner is the actor whose
   document lists the key, by id and key material, and the key names no other owner. An actor's keys are what its
   document embeds among its first `MAX_PUBLIC_KEYS` (10) entries of `publicKey` and of `assertionMethod` (FEP-521a

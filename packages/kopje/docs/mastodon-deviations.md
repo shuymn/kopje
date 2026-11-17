@@ -1679,18 +1679,24 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   keyword's, and set no keyword (`@base`, `@vocab`, `@language`, …); its context URLs must be ones Kopje preloads and
   that keep those meanings (not `http://schema.org/`, nor `https://w3id.org/identity/v1` after the ActivityStreams
   context); and its properties must be plain names (no `@id`, `@type`, `@value` or nested `@context`, no compact or
-  absolute IRI as a key). Mastodon reads such an activity by its JSON-LD meaning, which the patch does not undo and
-  which can address it to others than its literal `to`, `cc` and mentions, or give its type or object a second value so
-  that Mastodon applies nothing; reading it as written could show it to viewers Mastodon would not, or apply what
-  Mastodon would not. A retraction so ignored (a `Reject`, `Undo` or `Delete` whose `object` is given as `{"@id": …}`)
-  leaves in place the follow, the block or the status Mastodon's ends (#1717). This keeps the meaning of what Kopje
-  reads; it does not make the two readings equal, and the shapes and values above still differ. It is ignored too where
-  a node's `type` and `@type` together give two types or more one of which is not a string or is shaped like a keyword
-  on any line (`[null, "Tombstone"]`, `["Tombstone", "@foo"]`, `"x\n@abc"`), or a type beside `@set`: Mastodon's
-  JSON-LD library sorts such types and raises, or keeps such a node and raises, so that its job applies nothing. Kopje
-  ignores as well an array of such values alone (`[null, null]`), or one under `@nest`, a language map or a `@value`,
-  and a `@set` with a value, which Mastodon's library refuses, and one in a body past Mastodon's JSON-LD limits, each of
-  which Mastodon reads as received, and so reads less there. Accepted, 2026-11-16.
+  absolute IRI as a key), but in a retraction (below). Mastodon reads such an activity by its JSON-LD meaning, which the
+  patch does not undo and which can address it to others than its literal `to`, `cc` and mentions, or give its type or
+  object a second value so that Mastodon applies nothing; reading it as written could show it to viewers Mastodon would
+  not, or apply what Mastodon would not. In a retraction (above), a node reference given as `{"@id": …}` alone, under a
+  name both contexts type `@id` with no container (its `object`, `actor`, `target`, `to`, …), is read as its IRI where
+  Kopje shows the compaction succeeds with it so and writes it so (an http(s) IRI under no namespace of a prefix of
+  `full_context`), as Mastodon's compaction writes it and its handler reads it. Elsewhere such a retraction is ignored
+  and leaves in place the follow, the block or the status Mastodon's ends (#1717): the reference beside another key
+  (its `type`), under a name not typed `@id` (`content`), of an IRI the compaction writes as a compact IRI
+  (`as:Public`), or in a body Kopje does not show Mastodon compacts (the closed shape above, its values counted as
+  received); where Mastodon gives the compaction up, it reads such a reference as no IRI and applies nothing either.
+  This keeps the meaning of what Kopje reads; it does not make the two readings equal, and the shapes and values above
+  still differ. It is ignored too where a node's `type` and `@type` together give two types or more one of which is not
+  a string or is shaped like a keyword on any line (`[null, "Tombstone"]`, `["Tombstone", "@foo"]`, `"x\n@abc"`), or a
+  type beside `@set`: Mastodon's JSON-LD library sorts such types and raises, or keeps such a node and raises, so that
+  its job applies nothing. Kopje ignores as well an array of such values alone (`[null, null]`), or one under `@nest`,
+  a language map or a `@value`, and a `@set` with a value, which Mastodon's library refuses, and one in a body past
+  Mastodon's JSON-LD limits, each of which Mastodon reads as received, and so reads less there. Accepted, 2026-11-16.
 - An LD-signed activity is ignored as well (answered 202) where it holds anything Mastodon (3.5 to 4.7.5) and Fedify
   2.4.5 do not write (Kopje's own LD-signed deletions are Fedify's): a key with a control character or a line break; a
   key that starts with `@` but is no JSON-LD 1.1 keyword; a context URL named twice in one `@context`; an inline

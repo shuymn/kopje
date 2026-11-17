@@ -72,13 +72,36 @@ export function retraction(name, extra = {}) {
   };
 }
 
+/** @param {unknown} value */
+const idOf = (value) => (typeof value === "string" ? value : /** @type {Json} */ (value).id);
+
 // The forms (#1717), each a change of a retraction as bob sends it.
 export const FORMS = {
   /** @param {Json} body */
   "actor as a one-element array": (body) => ({ ...body, actor: [body.actor] }),
+  /** @param {Json} body */
+  'object as {"@id": its id}': (body) => ({ ...body, object: { "@id": idOf(body.object) } }),
 };
 
 /** @typedef {keyof typeof FORMS} Form */
+
+/**
+ * bob's Delete of BOB_STATUS under the ActivityStreams context alone, its object and each of `n` other IRIs in cc given
+ * as {"@id": …}: 13 + 2n values as received, and two fewer for each read as an IRI.
+ * @param {number} n
+ * @returns {Json}
+ */
+export function referencesDelete(n) {
+  return {
+    "@context": AS,
+    id: `${BOB}/activities/retraction-${++sequence}`,
+    type: "Delete",
+    actor: BOB,
+    object: { "@id": BOB_STATUS },
+    cc: Array.from({ length: n }, (_, i) => ({ "@id": `${BOB}/collections/${i}` })),
+    signature: SIGNATURE,
+  };
+}
 
 /** @returns {RetractionEntry[]} */
 export function retractionEntries() {
@@ -89,19 +112,48 @@ export function retractionEntries() {
    * @param {Json} body
    */
   const add = (name, body) => entries.push({ name, signer: BOB, body });
-  const actorArray = FORMS["actor as a one-element array"];
-  for (const name of /** @type {Retraction[]} */ (Object.keys(RETRACTIONS))) {
-    add(`${name}, actor as a one-element array`, actorArray(retraction(name)));
+  for (const [form, change] of Object.entries(FORMS)) {
+    for (const name of /** @type {Retraction[]} */ (Object.keys(RETRACTIONS))) {
+      add(`${name}, ${form}`, change(retraction(name)));
+    }
   }
+  const actorArray = FORMS["actor as a one-element array"];
+  const reference = FORMS['object as {"@id": its id}'];
   const status = () => retraction("Delete(status)");
   add("Delete(status), actor as an array of bob and carol", { ...status(), actor: [BOB, CAROL] });
   add("Delete(status), actor as an array of carol", { ...status(), actor: [CAROL] });
   add("Delete(status), actor as an array of null", { ...status(), actor: [null] });
   add("Delete(status), actor as an array of bob's node", { ...status(), actor: [{ id: BOB, type: "Person" }] });
-  add("Delete(status), actor as a one-element array, with a target whose id is null", {
-    ...actorArray(status()),
+  for (const [form, change] of Object.entries(FORMS)) {
+    add(`Delete(status), ${form}, with a target whose id is null`, { ...change(status()), target: { id: null } });
+  }
+  add("Delete(status), object as a string, with a target whose id is null", {
+    ...status(),
+    object: BOB_STATUS,
     target: { id: null },
   });
+  add('Delete(status), object as an array of {"@id": its id}', { ...status(), object: [{ "@id": BOB_STATUS }] });
+  add('Undo(Follow), object as {"@id": its id} with its type', {
+    ...retraction("Undo(Follow)"),
+    object: { "@id": BOB_FOLLOW, type: "Follow" },
+  });
+  add('Delete(status), object as {"@id": its id}, content as {"@id": an IRI}', {
+    ...reference(status()),
+    content: { "@id": `${BOB}/statuses/deleted/content` },
+  });
+  add('Delete(status), object as {"@id": its id}, to as [{"@id": the public collection}]', {
+    ...reference(status()),
+    to: [{ "@id": `${AS}#Public` }],
+  });
+  add('Delete(status), object as {"@id": its id}, under a context that leaves object untyped', {
+    ...reference(status()),
+    "@context": [AS, SEC, { object: "as:object" }],
+  });
+  const { signature: _, ...unsigned } = reference(status());
+  add('Delete(status), object as {"@id": its id}, unsigned', unsigned);
+  for (const n of [10, 493, 494]) {
+    add(`Delete(status), object and ${n} IRIs in cc as {"@id": …}`, referencesDelete(n));
+  }
   add("Undo(Follow) typed as absolute IRIs, actor as a one-element array", {
     ...actorArray(retraction("Undo(Follow)")),
     type: `${AS}#Undo`,
@@ -112,6 +164,23 @@ export function retractionEntries() {
     type: "Create",
     actor: [BOB],
     object: { id: `${BOB}/statuses/created`, type: "Note", attributedTo: BOB, to: [`${AS}#Public`], content: "new" },
+  });
+  add('Create, object as {"@id": its id}', {
+    ...status(),
+    type: "Create",
+    object: { "@id": `${BOB}/statuses/created` },
+  });
+  // The rules the forms leave as they are (D4): rule (3) refuses a keyword as a key, rule (5) a type as a compact IRI
+  // and an inline definition no sender writes.
+  const follow = RETRACTIONS["Undo(Follow)"].object;
+  add("Undo(Follow), its Follow typed by @type", {
+    ...retraction("Undo(Follow)"),
+    object: { id: follow.id, "@type": follow.type, actor: follow.actor, object: follow.object },
+  });
+  add("Undo(Follow) typed as a compact IRI", { ...retraction("Undo(Follow)"), type: "as:Undo" });
+  add("Undo(Follow) under a definition no sender writes", {
+    ...retraction("Undo(Follow)"),
+    "@context": [AS, SEC, { mood: "https://other.example/ns#mood" }],
   });
   return entries;
 }

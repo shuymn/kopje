@@ -36,6 +36,7 @@ import {
   FORMS,
   OUR_FOLLOW,
   type Form,
+  referencesDelete,
   type Retraction,
   RETRACTIONS,
   retraction,
@@ -1822,7 +1823,6 @@ describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", (
       "@id in inReplyTo",
       "@id in a Mention's href",
       "@id in a Follow's object",
-      "@id in an Undo's object",
       "@id in an Accept's result",
       "a redefined as",
       "a prefix naming the ActivityStreams namespace",
@@ -1835,6 +1835,13 @@ describe("D4: an LD-signed activity outside Mastodon's vocabulary is ignored", (
     ])("ignores %s", async (name) => {
       expect(await kopje(form(name))).toEqual(LD_CONTEXT);
       expect((await mastodon(form(name))).ok).toBe(true);
+    });
+
+    // #1717: a retraction's object given as {"@id": …} is read as its IRI, as Mastodon reads it, where Kopje shows the
+    // compaction succeeds; a Follow's still is not (above).
+    it("reads @id in an Undo's object as Mastodon does", async () => {
+      expect(await kopje(form("@id in an Undo's object"))).toMatchObject({ ok: true, activity: { type: "Undo" } });
+      expect(await kopje(form("@id in an Undo's object"))).toEqual(await mastodon(form("@id in an Undo's object")));
     });
 
     it.each([
@@ -2345,13 +2352,14 @@ describe("#1717: LD-signed retractions in the forms Mastodon compacts", () => {
   const captured = new Map((retractionsFixture.readings as Captured[]).map((entry) => [entry.name, entry]));
 
   // What Mastodon's handler reads of an entry (delete.rb, block.rb, undo.rb, reject.rb), or null where it applies
-  // nothing: its job raised, it took the body as relayed (a placeholder signature verifies nothing), or it handed
-  // nothing on.
+  // nothing: its job raised, it took the body as relayed (a placeholder signature verifies nothing), it handed nothing
+  // on, or the object it handed on has no IRI (value_or_id of {"@id": …} as received), which each handler seeks nothing
+  // by.
   function mastodonHandles(name: string): Handled {
     const entry = captured.get(name);
     expect(entry, name).toBeDefined();
     const reading = entry!.reading;
-    if (reading === undefined) {
+    if (reading === undefined || reading.object === null) {
       return null;
     }
     const { type, object } = reading;
@@ -2389,10 +2397,37 @@ describe("#1717: LD-signed retractions in the forms Mastodon compacts", () => {
       : { type: activity.type, object: typeof activity.object === "string" ? activity.object : null };
   }
 
-  // The controls Mastodon applies and Kopje does not (it reads less): an actor of [null], which Mastodon's compaction
-  // writes as [] (no actor, so not a relay) and applies as the signer's, and a Create, which keeps the reading as
-  // received.
-  const READS_LESS = ["Delete(status), actor as an array of null", "Create, actor as a one-element array"];
+  // The controls Mastodon applies and Kopje does not (it reads less, docs/mastodon-deviations.md): an actor of [null],
+  // which Mastodon's compaction writes as [] (no actor, so not a relay) and applies as the signer's; an object of
+  // {"@id": …} beside another key, and one under a name not typed @id, which rule (3) refuses; one of an IRI the
+  // compaction writes as a compact IRI (as:Public); one in a body of more values than Kopje shows the compaction keeps
+  // within Mastodon's 1,000 (its estimate of three for each); a Create, which keeps the reading as received; and the
+  // bodies rules (3) and (5) refuse whatever the forms read.
+  // What the forms change of the readings of the fixtures' bodies (LR-f): the retractions in them, and the one of
+  // forms.json, each a retraction (carol's actor is a relay's, which applies none; an object array reads nothing).
+  const CHANGED = [
+    "@id in an Undo's object",
+    ...Object.keys(FORMS).flatMap((form) => Object.keys(RETRACTIONS).map((name) => `${name}, ${form}`)),
+    "Delete(status), actor as an array of carol",
+    "Delete(status), actor as an array of bob's node",
+    'Delete(status), object as an array of {"@id": its id}',
+    'Delete(status), object and 10 IRIs in cc as {"@id": …}',
+    "Undo(Follow) typed as absolute IRIs, actor as a one-element array",
+  ];
+
+  const READS_LESS = [
+    "Delete(status), actor as an array of null",
+    'Undo(Follow), object as {"@id": its id} with its type',
+    'Delete(status), object as {"@id": its id}, content as {"@id": an IRI}',
+    'Delete(status), object as {"@id": its id}, to as [{"@id": the public collection}]',
+    'Delete(status), object as {"@id": its id}, under a context that leaves object untyped',
+    'Delete(status), object and 493 IRIs in cc as {"@id": …}',
+    "Create, actor as a one-element array",
+    'Create, object as {"@id": its id}',
+    "Undo(Follow), its Follow typed by @type",
+    "Undo(Follow) typed as a compact IRI",
+    "Undo(Follow) under a definition no sender writes",
+  ];
 
   it("reads each retraction as Mastodon's handler reads it, but where it reads less", async () => {
     const entries = retractionEntries();
@@ -2414,6 +2449,46 @@ describe("#1717: LD-signed retractions in the forms Mastodon compacts", () => {
       }
     }
     expect(less).toEqual(READS_LESS);
+  });
+
+  // LR-f (1): the forms change the reading of no other body (D4). Over every LD-signed body of the fixtures, the
+  // reading with them and without them (the reading before #1717) differ only for the retractions below, the bodies
+  // they were added for; and every other activity's object is the received body's, so that parseActivity, which takes
+  // the object from the body read, takes every other activity's as it took it before.
+  it("change the reading of no other body of the fixtures", async () => {
+    const signed = (body: unknown) => typeof (body as Json).signature === "object" && (body as Json).signature !== null;
+    const bodies = [
+      ...corpus.map((entry) => [entry.name, entry.received] as const),
+      ...[...forms.values()].map((entry) => [entry.name, entry.received] as const),
+      ...edgeShapes().map((shape) => [shape.name, shape.body as Json] as const),
+      ...proofShapes().map((shape) => [JSON.stringify(shape), proofShapeBody(shape) as Json] as const),
+      ...sensitiveShapes().map((shape) => [JSON.stringify(shape), sensitiveShapeBody(shape) as Json] as const),
+      ...retractionEntries().map((entry) => [entry.name, entry.body] as const),
+    ].filter(([, body]) => signed(body));
+    const idOf = (value: unknown) =>
+      typeof value === "string" ? value : typeof value === "object" && value !== null ? (value as Json).id : undefined;
+    const readingOf = async (body: Json, rules: Rules) => {
+      const reading = await ldSignedReading(body, rules);
+      const typeOf = (value: unknown) => (typeof value === "string" ? reading!.readType(value) : value);
+      const object = body.object as Json | undefined;
+      return reading === null
+        ? null
+        : { body: reading.body, type: typeOf(body.type), objectType: typeOf(object?.type) };
+    };
+    const retractions = new Set(["Reject", "Undo", "Block", "Delete"]);
+    const changed: string[] = [];
+    for (const [name, body] of bodies) {
+      const before = await readingOf(body, { retractions: false });
+      const after = await readingOf(body, {});
+      if (JSON.stringify(after) !== JSON.stringify(before)) {
+        changed.push(name);
+      }
+      if (after !== null && !retractions.has(after.type as string)) {
+        expect(idOf(after.body.object), name).toEqual(idOf(body.object));
+      }
+    }
+    expect(bodies.length).toBeGreaterThan(500);
+    expect(changed).toEqual(CHANGED);
   });
 
   describe("through the inbox", () => {
@@ -2696,5 +2771,29 @@ describe("#1717: LD-signed retractions in the forms Mastodon compacts", () => {
         expect(after).toEqual(before);
       },
     );
+
+    // Mastodon's JSON-LD limits count the values of the body as received (check_jsonld_limits!), its references given
+    // as {"@id": …} too: past 1,000 it reads the body as received, its object as no IRI, and ends nothing; Kopje, which
+    // shows the compaction only within them, ends nothing either (retractions.json).
+    it.each([
+      [10, "ends it"],
+      [494, "ends nothing"],
+    ] as const)('Delete(status), its object and %i IRIs in cc as {"@id": …}: %s', async (n, outcome) => {
+      const { before, after, ended } = await delivered("Delete(status)", () => referencesDelete(n));
+      expect(after).toEqual(outcome === "ends it" ? { ...before, ...ended } : before);
+    });
+
+    // D4 under the forms (LR-f): rule (3) refuses a keyword as a key, and rule (5) a type as a compact IRI and an inline
+    // definition no sender writes, where Mastodon ends the follow (retractions.json); the same Undo as Mastodon sends it
+    // ends it (above).
+    it.each([
+      "Undo(Follow), its Follow typed by @type",
+      "Undo(Follow) typed as a compact IRI",
+      "Undo(Follow) under a definition no sender writes",
+    ])("%s: ends nothing", async (name) => {
+      const entry = retractionEntries().find((other) => other.name === name)!;
+      const { before, after } = await delivered("Undo(Follow)", () => entry.body);
+      expect(after).toEqual(before);
+    });
   });
 });
