@@ -1661,18 +1661,25 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   Mastodon's job raises too; a single poll option is a poll in both. The patch cannot put back an array the compaction
   shortened (a `null` it left out): an embedded actor's `inbox: [null]` is read, where Mastodon's `[]` drops the update.
   And it stops there, so the members after it in the same object keep the compaction's single values: an `object` given
-  as a one-element array after `to: [null]` is refused, where Mastodon applies the activity (#1717). A retraction, a
-  `Reject`, `Undo`, `Block` or `Delete` by the name its type is read as, is read in these forms as the compaction writes
-  them, where Kopje shows the compaction succeeds (the closed shape above; `test/fixtures/ld-signed/retractions.json`
-  holds what Mastodon's own service hands its handler from each): its `actor` given as a one-element array of a string
-  or of a node with an `id` is read as that element, as Mastodon tells a relay by it and applies the activity for its
-  signer. Such an `actor` of two elements is refused, as Mastodon's job raises, and one of `null`, which Mastodon's
-  compaction writes as `[]` and so applies for the signer, is refused too (Kopje reads less). Each ends what its signer
-  did or holds, or lifts its own block, so reading it so grants nothing its signer could not send directly; every other
-  type keeps the reading as received. Compacting would add JSON-LD processing to every signed activity before its HTTP
-  signature is verified, and its readers would read a form other than the one the author proof verifies. This is
-  weighed again when a sender is seen writing one of these forms, or when the fixtures re-captured at a new reference
-  release no longer read the same. Accepted, 2026-11-16.
+  as a one-element array after `to: [null]` is refused, where Mastodon applies the activity, but in a retraction. A
+  retraction, a `Reject`, `Undo`, `Block` or `Delete` by the name its type is read as, is read in these forms as the
+  compaction writes them, where Kopje shows the compaction succeeds (the closed shape above;
+  `test/fixtures/ld-signed/retractions.json` holds what Mastodon's own service hands its handler from each): its `actor`
+  given as a one-element array of a string or of a node with an `id` is read as that element, as Mastodon tells a relay
+  by it and applies the activity for its signer; and, in each object the patch stops in, a member after the stop given
+  as a one-element array of a string or an object (its `object`, an embedded activity's `actor` or `object`) is read as
+  that element, as the compaction writes it, and so through the objects in it. Kopje reads a stop only where it is
+  certain, an array holding a `null` beside http(s) IRIs only under a name typed `@id` with no container (`to: [null]`,
+  `cc: [a, a, null]`; an array of equal values is not shortened and stops neither). Where the patch stops at another
+  member (one holding a value the name does not take), or in an object holding a key shaped like an array index, whose
+  order JavaScript does not keep, such a member is refused, where Mastodon applies the activity (#1717). Such an
+  `actor` of two elements is refused, as Mastodon's job raises, and one of `null`, which Mastodon's compaction writes as
+  `[]` and so applies for the signer, is refused too (Kopje reads less). Each ends what its signer did or holds, or
+  lifts its own block, so reading it so grants nothing its signer could not send directly; every other type keeps the
+  reading as received. Compacting would add JSON-LD processing to every signed activity before its HTTP signature is
+  verified, and its readers would read a form other than the one the author proof verifies. This is weighed again when
+  a sender is seen writing one of these forms, or when the fixtures re-captured at a new reference release no longer
+  read the same. Accepted, 2026-11-16.
 - An activity that carries a Linked Data signature is read only where nothing Kopje reads from it has another meaning in
   Mastodon's reading, and is otherwise ignored (answered 202): its contexts must give each ActivityStreams term and each
   property Mastodon's `full_context` defines that context's meaning, give no other property one of those meanings or a

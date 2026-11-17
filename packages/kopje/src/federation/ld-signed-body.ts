@@ -1096,6 +1096,98 @@ function referencesAsIris(json: Json, meanings: ReadonlyMap<string, Meaning>): J
   return read ? body : json;
 }
 
+// JavaScript orders the keys of a parsed object as written but those shaped like array indexes, which it puts first;
+// Ruby keeps them as written. In an object holding one, Kopje cannot tell where Mastodon's patch stops.
+const ARRAY_INDEX = /^(?:0|[1-9]\d*)$/;
+const arrayIndex = (key: string) => ARRAY_INDEX.test(key) && Number(key) < 2 ** 32 - 1;
+
+// A retraction's members where Mastodon's patch stops (form 2; json_ld_helper.rb patch_for_forwarding!): in each object
+// it patches, it walks the members as received (but @context and signature), skips a null one and one the compaction
+// does not write under the same name, patches an object into an object and an array element by element, and stops at
+// the first array whose length the compaction changed, leaving every member after it in that object as the compaction
+// wrote it, and the objects in them unpatched; a stop in an object it patched stops only that object. Kopje reads a
+// stop only where it is certain: an array holding a null under a name both contexts type @id with no container, its
+// other values http(s) IRIs (JSON-LD drops the null and keeps each IRI). After it, a one-element array of a string or
+// an object under a name with no container in full_context is read as its element, as the compaction writes it, and so
+// in every object in the members after it. Any other array, and every member of an object holding a key shaped like an
+// array index, is left as received: where Mastodon stops elsewhere, Kopje reads less (an `object` given as an array is
+// refused). `named` is `json` as namedAsCompacted names it, member for member.
+function patchedAsMastodon(json: Json, named: Json, meanings: ReadonlyMap<string, Meaning>): Json {
+  const stops = (value: unknown[], meaning: Meaning | undefined, compacted: Meaning | undefined) => {
+    const values = value.filter((item) => item !== null);
+    return (
+      values.length < value.length &&
+      meaning?.coercion === "@id" &&
+      !meaning.contained &&
+      compacted?.contained === false &&
+      values.every((item) => typeof item === "string" && HTTP_IRI.test(item))
+    );
+  };
+  // A member as the compaction writes it, read as namedAsCompacted names it (a renamed one left as it is).
+  const compacted = (member: unknown, meaning: Meaning | undefined): unknown => {
+    const [only, ...rest] = Array.isArray(member) ? (member as unknown[]) : [];
+    const single =
+      Array.isArray(member) && rest.length === 0 && (typeof only === "string" || isObject(only)) && !meaning?.contained;
+    const written = single ? only : member;
+    return Array.isArray(written) ? written.map(unpatched) : unpatched(written);
+  };
+  const unpatched = (value: unknown): unknown => {
+    if (!isObject(value)) {
+      return value;
+    }
+    const [, full] = scopedMeanings(value.type, meanings);
+    return Object.fromEntries(
+      Object.entries(value).map(([key, member]) => [
+        key,
+        key.startsWith("_:") ? member : compacted(member, full.get(key) ?? FULL_CONTEXT_MEANINGS.get(key)),
+      ]),
+    );
+  };
+  const patched = (got: Json, read: Json, kept?: ReadonlySet<string>): Json => {
+    const keys = Object.keys(got);
+    const names = Object.keys(read);
+    if (keys.some(arrayIndex) || names.length !== keys.length) {
+      return read;
+    }
+    const [own, full] = scopedMeanings(got.type, meanings);
+    let stopped = false;
+    return Object.fromEntries(
+      keys.map((key, index) => {
+        const name = names[index]!;
+        const value = got[key];
+        const member = read[name];
+        const compactedMeaning = full.get(key) ?? FULL_CONTEXT_MEANINGS.get(key);
+        if (kept?.has(key) || key === "@context" || key === "signature" || name !== key) {
+          return [name, member];
+        }
+        if (stopped) {
+          return [name, compacted(member, compactedMeaning)];
+        }
+        if (isObject(value) && isObject(member)) {
+          return [name, patched(value, member)];
+        }
+        if (!Array.isArray(value)) {
+          return [name, member];
+        }
+        const values = value as unknown[];
+        if (stops(values, own.get(key) ?? meanings.get(key), compactedMeaning)) {
+          stopped = true;
+          return [name, member];
+        }
+        const elements = Array.isArray(member) && member.length === values.length ? (member as unknown[]) : undefined;
+        return [
+          name,
+          elements?.map((item, at) => {
+            const given = values[at];
+            return isObject(given) && isObject(item) ? patched(given, item) : item;
+          }) ?? member,
+        ];
+      }),
+    );
+  };
+  return patched(json, named, AS_RECEIVED);
+}
+
 // The rules (1-5) over an LD-signed body in their order, and the body they read: rule (5) over the body as received,
 // rules (1) and (2) over its context, then a retraction's references read as IRIs (referencesAsIris) where Kopje shows
 // the compaction succeeds so (rules 3 and 4 hold of it, and mastodonCompacts, its values counted as received, which
@@ -1148,8 +1240,11 @@ export async function ldSignedReading(
   if (await mastodonReadsAsReceived(json, context.meanings)) {
     return { readType, body: json };
   }
-  const compacted = retracts && shown() ? actorAsCompacted(body) : body;
-  return { readType, body: namedAsCompacted(compacted, context.meanings) };
+  const named = namedAsCompacted(body, context.meanings);
+  return {
+    readType,
+    body: retracts && shown() ? actorAsCompacted(patchedAsMastodon(body, named, context.meanings)) : named,
+  };
 }
 
 // Whether the rules (1-5) read an LD-signed body at all (ldSignedReading is null for no other).

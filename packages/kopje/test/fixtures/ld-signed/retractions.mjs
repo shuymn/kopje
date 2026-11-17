@@ -75,12 +75,25 @@ export function retraction(name, extra = {}) {
 /** @param {unknown} value */
 const idOf = (value) => (typeof value === "string" ? value : /** @type {Json} */ (value).id);
 
+/**
+ * `body` with the members of `before`, and then its object as a one-element array, after its other members.
+ * @param {Json} body
+ * @param {Json} before
+ * @returns {Json}
+ */
+export function objectAfter(body, before) {
+  const { object, signature, ...rest } = body;
+  return { ...rest, ...before, object: [object], ...(signature === undefined ? {} : { signature }) };
+}
+
 // The forms (#1717), each a change of a retraction as bob sends it.
 export const FORMS = {
   /** @param {Json} body */
   "actor as a one-element array": (body) => ({ ...body, actor: [body.actor] }),
   /** @param {Json} body */
   'object as {"@id": its id}': (body) => ({ ...body, object: { "@id": idOf(body.object) } }),
+  /** @param {Json} body */
+  "object as a one-element array after to: [null]": (body) => objectAfter(body, { to: [null] }),
 };
 
 /** @typedef {keyof typeof FORMS} Form */
@@ -164,6 +177,40 @@ export function retractionEntries() {
     type: "Create",
     actor: [BOB],
     object: { id: `${BOB}/statuses/created`, type: "Note", attributedTo: BOB, to: [`${AS}#Public`], content: "new" },
+  });
+  // Where the patch stops (form 2), and where it does not or Kopje cannot tell.
+  const stopped = FORMS["object as a one-element array after to: [null]"];
+  const { object: tombstone, signature, ...head } = status();
+  add("Delete(status), object as a one-element array before to: [null]", {
+    ...head,
+    object: [tombstone],
+    to: [null],
+    signature,
+  });
+  add(
+    "Delete(status), object as a one-element array after to of carol twice",
+    objectAfter(status(), { to: [CAROL, CAROL] }),
+  );
+  add(
+    "Delete(status), object as a one-element array after to of carol twice and null",
+    objectAfter(status(), { to: [CAROL, CAROL, null] }),
+  );
+  add(
+    "Delete(status), object as a one-element array after published: [null]",
+    objectAfter(status(), { published: [null] }),
+  );
+  add(
+    "Delete(status), object as a one-element array after a target that holds to: [null]",
+    objectAfter(status(), { target: { id: `${BOB}/collections/target`, type: "Collection", to: [null] } }),
+  );
+  add('Delete(status), object as a one-element array after to: [null], beside a key "0"', {
+    0: "zero",
+    ...stopped(status()),
+  });
+  const followed = RETRACTIONS["Undo(Follow)"].object;
+  add("Undo(Follow), its Follow's actor and object as one-element arrays after to: [null]", {
+    ...retraction("Undo(Follow)"),
+    object: { id: followed.id, type: followed.type, to: [null], actor: [followed.actor], object: [followed.object] },
   });
   add('Create, object as {"@id": its id}', {
     ...status(),

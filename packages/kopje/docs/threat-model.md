@@ -180,12 +180,13 @@ against their own instance. TLS is assumed between all parties.
   quote's approval); some leave in place one Mastodon's reading would withdraw (a follow its `Reject` ends, a status its
   `Delete` removes, a block an `Undo` of it lifts), and those are listed there too. A retraction (a `Reject`, `Undo`,
   `Block` or `Delete` by the name its type is read as, `RETRACTIONS`) is read as the compaction writes it where Kopje
-  shows the compaction succeeds: its `actor` given as a one-element array, as that element, and a node reference given
-  as `{"@id": …}` alone under a name both contexts type `@id`, as its IRI where the compaction writes it as given
-  (`referencesAsIris`; the compaction shown of the body so read, its values counted as received). Its actor is still
-  the signer's or the activity is a relay, and it ends only what its signer did or holds, or lifts its own block; every
-  other type keeps the reading as received. The owner is the actor whose
-  document lists the key, by id and key material, and the key names no other owner. An actor's keys are what its
+  shows the compaction succeeds: its `actor` given as a one-element array, as that element; a node reference given as
+  `{"@id": …}` alone under a name both contexts type `@id`, as its IRI where the compaction writes it as given
+  (`referencesAsIris`; the compaction shown of the body so read, its values counted as received); and a member after
+  a certain stop of Mastodon's patch given as a one-element array, as that element (`patchedAsMastodon`). Its actor is
+  still the signer's or the activity is a relay, and it ends only what its signer did or holds, or lifts its own block;
+  every other type keeps the reading as received. The owner is the actor whose document lists the key, by id and key
+  material, and the key names no other owner. An actor's keys are what its
   document embeds among its first `MAX_PUBLIC_KEYS` (10) entries of `publicKey` and of `assertionMethod` (FEP-521a
   `Multikey`), RSA or Ed25519, each with an id on its origin (`ownKeys`); a key listed by reference in `assertionMethod`
   is not fetched, and a key the signature's verification resolved joins them only within the same first ten

@@ -2401,8 +2401,9 @@ describe("#1717: LD-signed retractions in the forms Mastodon compacts", () => {
   // which Mastodon's compaction writes as [] (no actor, so not a relay) and applies as the signer's; an object of
   // {"@id": …} beside another key, and one under a name not typed @id, which rule (3) refuses; one of an IRI the
   // compaction writes as a compact IRI (as:Public); one in a body of more values than Kopje shows the compaction keeps
-  // within Mastodon's 1,000 (its estimate of three for each); a Create, which keeps the reading as received; and the
-  // bodies rules (3) and (5) refuse whatever the forms read.
+  // within Mastodon's 1,000 (its estimate of three for each); an object after the patch's stop in an object holding a
+  // key shaped like an array index, whose order Kopje cannot tell from Ruby's; a Create, which keeps the reading as
+  // received; and the bodies rules (3) and (5) refuse whatever the forms read.
   // What the forms change of the readings of the fixtures' bodies (LR-f): the retractions in them, and the one of
   // forms.json, each a retraction (carol's actor is a relay's, which applies none; an object array reads nothing).
   const CHANGED = [
@@ -2413,6 +2414,8 @@ describe("#1717: LD-signed retractions in the forms Mastodon compacts", () => {
     'Delete(status), object as an array of {"@id": its id}',
     'Delete(status), object and 10 IRIs in cc as {"@id": …}',
     "Undo(Follow) typed as absolute IRIs, actor as a one-element array",
+    "Delete(status), object as a one-element array after to of carol twice and null",
+    "Undo(Follow), its Follow's actor and object as one-element arrays after to: [null]",
   ];
 
   const READS_LESS = [
@@ -2423,6 +2426,7 @@ describe("#1717: LD-signed retractions in the forms Mastodon compacts", () => {
     'Delete(status), object as {"@id": its id}, under a context that leaves object untyped',
     'Delete(status), object and 493 IRIs in cc as {"@id": …}',
     "Create, actor as a one-element array",
+    'Delete(status), object as a one-element array after to: [null], beside a key "0"',
     'Create, object as {"@id": its id}',
     "Undo(Follow), its Follow typed by @type",
     "Undo(Follow) typed as a compact IRI",
