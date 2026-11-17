@@ -473,7 +473,9 @@ describe("a remote member's Reject (D23)", () => {
 
 describe("a remote member's Delete of its feature authorization (D23)", () => {
   // 4-T6. Fails if the item is not found by its approval_uri (the bare URI) or by its collection and member (the
-  // embedded one), or if an accepted item's revocation sends no Remove.
+  // embedded one), or if an accepted item's revocation sends no Remove. The revoking Delete is kept as the member's
+  // retraction (ID-7), so an Accept naming the withdrawn authorization after the owner removed the member and added it
+  // again revokes the new item. Fails if a revoking Delete is not kept (the new item accepted with A, its Add sent).
   it("revokes the item by its current authorization, embedded or bare, and sends its Remove", async () => {
     for (const form of ["embedded", "bare", "relayed"] as const) {
       const w = await world();
@@ -498,7 +500,29 @@ describe("a remote member's Delete of its feature authorization (D23)", () => {
         form,
       ).toEqual(["Add", "Remove"]);
       expect(activities.at(-1)!.activity.object, form).toBe(`${ALICE_URI}/collection_items/${item.id}`);
+      expect(await retractedBy(w), form).toEqual([a]);
+      expect((await call(w.t, "DELETE", `/api/v1/collections/${id}/items/${item.id}`)).status, form).toBe(200);
+      expect((await call(w.t, "POST", `/api/v1/collections/${id}/items`, { account_id: w.memberId })).status).toBe(200);
+      const again = await itemOf(w, id);
+      expect(await w.t.post(w.member, answer(w.member, "Accept", again.activity_uri!, a))).toBe(202);
+      expect(await itemOf(w, id), form).toMatchObject({ state: REVOKED, approval_uri: null });
+      expect(await itemActivities(w.t, again.id), form).toEqual([]);
     }
+  });
+
+  // At MAX_RETRACTIONS_PER_ACTOR a Delete that revokes an item cannot be kept as the member's retraction: the item is
+  // revoked and its Remove sent all the same (threat model, Accepted risks). Fails if the revocation waits on the
+  // retraction (the Remove not sent).
+  it("revokes an accepted item at the member's retraction cap, keeping no retraction", async () => {
+    const w = await world();
+    const { id, uri, item } = await featuring(w);
+    const a = authorizationOf(w.member, 1);
+    await w.t.post(w.member, answer(w.member, "Accept", item.activity_uri!, a));
+    await retractionsAtCap(w.t, w.member);
+    expect(await deleted(w, a, uri)).toBe(202);
+    expect((await itemOf(w, id)).state).toBe(REVOKED);
+    expect(await retractedBy(w)).toEqual([]);
+    expect(await itemActivities(w.t, item.id)).toEqual(["Add", "Remove"]);
   });
 
   // 4-T6, refusals. Fails if the embedded match drops the actor test (the member's Delete naming another target would

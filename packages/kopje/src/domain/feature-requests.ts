@@ -11,9 +11,9 @@ import { isRetracted } from "./retractions";
 // activity_uri; only the item's own account answers it (ID-6). An Accept changes only a pending item whose earlier
 // answer awaits no check (no candidate_approval_uri). Its result R ends the item revoked, with nothing sent, when the
 // member's Delete of R reached Kopje before it: as the item's first deletion (retracted_approval_uri), or as the
-// member's retraction of R (ID-7's tombstone, retractions.ts), where remote-featured-collections.ts
-// revokeFeatureAuthorization keeps every later deletion and a Delete that named no item. Otherwise the first deletion
-// decides it:
+// member's retraction of R (ID-7's tombstone, retractions.ts), where every other Delete is kept: one that revoked an
+// item, a later deletion (remote-featured-collections.ts revokeFeatureAuthorization), and one that named no item.
+// Otherwise the first deletion decides it:
 //   - none: accepted with R as its approval_uri, and the item's Add sent to the collection's reach;
 //   - another one: R becomes the candidate of a check (collection-checks.ts), which accepts it only if the member's
 //     server serves R under the check's claim and the member has not retracted R by then.

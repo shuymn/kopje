@@ -24,9 +24,10 @@ import { writeOperation } from "./operation";
 //     ITEM_CHECK_CANDIDATES rows and every row it reads moves forward.
 //   - completeItemChecks applies a round's outcomes, each only while its item is pending and holds the token its claim
 //     set (a revision change, a revocation, a Reject and a later claim each replace or clear it). An item whose
-//     candidate its member has retracted (ID-7's tombstone: the member's Delete reached Kopje without revoking the
-//     item) is revoked whatever the fetch found, since the member's server may serve a withdrawn authorization from a
-//     cache (Mastodon 4.7.5's FeatureAuthorizationsController, 30 seconds public). Otherwise a match accepts the item with
+//     candidate its member has retracted (ID-7's tombstone: the member's Delete reached Kopje, before the owner listed
+//     the authorization or after, and whether or not it revoked an item then) is revoked whatever the fetch found,
+//     since the member's server may serve a withdrawn authorization from a cache (Mastodon 4.7.5's
+//     FeatureAuthorizationsController, 30 seconds public). Otherwise a match accepts the item with
 //     the candidate as its verified authorization, unless another row of the same member holds that authorization
 //     (only the member's server can have said so), which ends the check as a mismatch; a final refusal (a 4xx other
 //     than 401, 408 and 429) or a document that is no object rejects it; a mismatch or an unsupported document (a
@@ -220,8 +221,9 @@ export const completeItemChecks = writeOperation<{ now: number; results: ItemChe
       const local = row.local === 1;
       if (row.retracted === 1) {
         // The member retracted the candidate (retractions.ts isRetracted, read here by the member's stored uri): its
-        // Delete reached Kopje without revoking this item (a bare URI, or before the owner listed it). Revoked,
-        // whatever the fetch found, since a server may serve a withdrawn authorization from a cache.
+        // Delete reached Kopje without revoking this item (a bare URI, or before the owner listed it), or revoked it
+        // under an earlier revision. Revoked, whatever the fetch found, since a server may serve a withdrawn
+        // authorization from a cache.
         db.run(
           `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
 						SET state = ${COLLECTION_ITEM_STATES.revoked}, check_token = NULL, check_due_at = NULL, updated_at = ?3

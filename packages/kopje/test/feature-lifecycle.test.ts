@@ -520,6 +520,23 @@ describe("remote collections' items: Kopje against its policy (5-T20)", () => {
     expect(w.policy.rows.get("O")).toMatchObject({ state: "accepted", approval: w.b });
   });
 
+  // The Delete that revoked O's item is kept as M's retraction of A, which the check of O's later revision listing A
+  // again reads.
+  it("revokes at the check of A listed again after A's Delete revoked O's item", async () => {
+    const checked: Action[] = [{ k: "claim" }, { k: "fetch", i: 0, transient: false }, { k: "complete", i: 0 }];
+    const w = await run([
+      { k: "list", owner: "O", b: false, path: "read" },
+      ...checked,
+      { k: "withdraw", b: false },
+      { k: "deliver", i: 0, relayed: false },
+      { k: "list", owner: "O", b: true, path: "update" },
+      { k: "list", owner: "O", b: false, path: "update" },
+      ...checked,
+    ]);
+    expect([w.stats["K.Delete:revoked"], w.stats["K.complete:retracted"]]).toEqual([1, 1]);
+    expect(w.policy.rows.get("O")).toMatchObject({ state: "revoked", candidate: w.a, approval: null });
+  });
+
   it("ends a revision's check after five expired leases (check-gave-up)", async () => {
     const lapse: Action[] = [{ k: "claim" }, { k: "advance", day: false }];
     const w = await run([

@@ -888,9 +888,10 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   listing a member that withdrew and Kopje receives neither, Kopje keeps showing the member. Accepted, 2026-11-17.
 - A member's `Delete` of its feature authorization revokes its membership of a remote collection too, when it names
   the membership's current authorization (verified, or the one the owner lists while unchecked), including the copy
-  the collection's owner relays with the member's signature; Mastodon applies it to local collections only. One that
-  arrives before the owner lists the authorization is kept for 30 days, and the membership's check then ends it as
-  revoked, though the member's server may still serve the authorization from its cache. Accepted, 2026-11-17.
+  the collection's owner relays with the member's signature; Mastodon applies it to local collections only. It is kept
+  for 30 days, so the check of a membership the owner lists with that authorization later (for the first time, or
+  again after changing it) ends it as revoked, though the member's server may still serve the authorization from its
+  cache. Accepted, 2026-11-17.
 - An `Add` or `Remove` without an `id` is applied to a collection's or an item's collection only; one to the actor's
   `featured` or `featuredTags` collection is ignored, where Mastodon applies it. Tracked by #1693.
 

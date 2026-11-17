@@ -570,7 +570,10 @@ export function removeFeaturedItem(db: Db, collection: string, uri: string): boo
 // current one:
 //   - its approval_uri, or, with none verified, its candidate: revoked, from any state but revoked, and no later check
 //     completion or Accept accepts it (no token, no queue); a local collection's item that was accepted has its Remove
-//     sent to the collection's reach (a pending one was never announced);
+//     sent to the collection's reach (a pending one was never announced). The authorization is also kept as the
+//     member's retraction (ID-7), so the check of a later revision listing it again, or of a new row listing it, which
+//     the member's server may answer from its cache, revokes; at MAX_RETRACTIONS_PER_ACTOR it is not kept, and the
+//     item is revoked all the same;
 //   - a local collection's pending item whose member has not answered (no approval_uri, no candidate): the first such
 //     authorization is recorded as its retracted_approval_uri; a later, different one as the member's retraction
 //     (ID-7's tombstone, retractions.ts retract), and when the member is at MAX_RETRACTIONS_PER_ACTOR, which keeps it
@@ -579,8 +582,9 @@ export function removeFeaturedItem(db: Db, collection: string, uri: string): boo
 //     accepts the item, even one the member's server still serves from a cache;
 //   - any other: nothing, so a delayed Delete of an authorization since replaced leaves the replacement alone (the
 //     caller records it as the member's retraction, inbox.ts retractUnknown).
-// At most one row is read by each lookup and one written. 'revoked', 'recorded' (on the row) or 'retracted' (as the
-// member's retraction) when the Delete was kept, else null.
+// At most one item is read by each lookup and one written, besides the member's retraction (retractions.ts retract).
+// 'revoked', 'recorded' (on the row) or 'retracted' (as the member's retraction alone) when the Delete was applied, else
+// null.
 export function revokeFeatureAuthorization(
   db: Db,
   member: { id: string; uri: string },
@@ -612,6 +616,7 @@ export function revokeFeatureAuthorization(
     new Date(now).toISOString(),
   );
   if (revoked > 0) {
+    retract(db, member.uri, authorization, now);
     if (row.local === 1 && row.state === COLLECTION_ITEM_STATES.accepted) {
       recordItemRemove(db, { id: row.id, collection: row.collection, account: member.id }, now);
     }

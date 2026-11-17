@@ -96,7 +96,7 @@ export class FeaturePolicy {
   readonly deletes = new Set<string>();
   // ID-7: the item uris an owner's Remove named while Kopje held no such item, with the time it was recorded.
   readonly retracted = new Map<string, number>();
-  // ID-7: the authorizations whose Delete revoked no row, kept as M's retraction, with the time it was recorded.
+  // ID-7: the authorizations whose Delete Kopje processed, kept as M's retraction, with the time it was recorded.
   readonly withdrawals = new Map<string, number>();
   readonly log: Logged[] = [];
   // Violations of the rules' own guarantees (Evidence, Revocations received, Fences), checked as each rule applies.
@@ -161,7 +161,7 @@ export class FeaturePolicy {
   // ID-6: the member's Delete of its authorization `authorization`, direct or relayed with its proof, which names the
   // collection of `named`. Its row is the member's row whose verified authorization it is, else the member's row in
   // that collection; that row is revoked (unqueued, unclaimed) only while the authorization is its current one, its
-  // verified authorization, or its candidate while none is verified. Any other Delete changes no row and is kept as
+  // verified authorization, or its candidate while none is verified. Any other Delete changes no row. Each is kept as
   // M's retraction of the authorization (ID-7), which a check's completion reads.
   deleteReceived(authorization: string, named: Owner, relayed: boolean, now: number): string {
     this.deletes.add(authorization);
@@ -177,9 +177,7 @@ export class FeaturePolicy {
         Object.assign(row, { state: "revoked", due: null, token: null, changed: now });
       }
     }
-    if (result === "nothing") {
-      this.withdrawals.set(authorization, now);
-    }
+    this.withdrawals.set(authorization, now);
     this.record({ k: "delete", authorization, relayed, result });
     return `K.Delete:${result}`;
   }
@@ -408,8 +406,8 @@ export class MemberPolicy {
   readonly blockRetracted = new Set<string>();
   // The authorizations whose Delete Kopje processed.
   readonly deletes = new Set<string>();
-  // ID-7: the authorizations whose Delete neither revoked R's item nor was recorded as its first deletion, kept as R's
-  // retraction, with the time it was recorded.
+  // ID-7: the authorizations whose Delete was not recorded as R's item's first deletion, kept as R's retraction, with
+  // the time it was recorded.
   readonly withdrawals = new Map<string, number>();
   // What Kopje queued for R's inbox, in order.
   readonly queued: ToMember[] = [];
@@ -555,9 +553,10 @@ export class MemberPolicy {
   }
 
   // ID-6: R's Delete of `authorization`, which names C and R. The item is revoked (unqueued, unclaimed; its Remove
-  // queued if it was accepted) only while `authorization` is its current one (its approval_uri, else its candidate);
-  // else a pending item with no authorization or candidate records it as its first deletion, or, holding another,
-  // keeps it as R's retraction (`retracted`); any other Delete changes no row and is kept as R's retraction too.
+  // queued if it was accepted) only while `authorization` is its current one (its approval_uri, else its candidate),
+  // and `authorization` is kept as R's retraction; else a pending item with no authorization or candidate records it
+  // as its first deletion, or, holding another, keeps it as R's retraction (`retracted`); any other Delete changes no
+  // row and is kept as R's retraction too.
   deleted(authorization: string, now: number): string {
     this.deletes.add(authorization);
     const row = this.row;
@@ -584,7 +583,7 @@ export class MemberPolicy {
         outcome = "retracted";
       }
     }
-    if (outcome === "nothing" || outcome === "retracted") {
+    if (outcome !== "recorded") {
       this.withdrawals.set(authorization, now);
     }
     this.record({ k: "K.Delete", authorization, outcome });
