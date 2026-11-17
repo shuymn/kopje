@@ -167,6 +167,7 @@ export function actualFromDump(text) {
           int(row.discoverable),
           t("url"),
           t("domain"),
+          int(row.indexable),
         ]);
         if (row.raw !== "NULL") {
           put("raw", `account ${uri}`, t("raw"));

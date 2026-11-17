@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { threadsOf } from "../cli/lib/cutover/verify-expect.js";
 import { hostDomain } from "../src/platform/domain-name.js";
 import { isStorableActorId, MAX_LOCAL_ADDRESSED } from "../src/platform/identity-bounds.js";
+import booleans from "../test/fixtures/actor-booleans.json" with { type: "json" };
 import {
   convert as convertIn,
   exportOf as exportIn,
@@ -238,10 +239,15 @@ describe("convert and verify-conversion", () => {
       { required: 0, marked: 0, n: expect.any(Number) },
       { required: 1, marked: 1, n: expect.any(Number) },
     ]);
-    // An unset discoverable: false for a local account, as legacy had it; unknown for a remote one.
+    // An unset discoverable: false for a local account, as legacy had it, and for a remote one, as the Worker reads an
+    // actor that omits it (#1747), whose indexable is false too; a local account's indexable is left unset.
     expect(value("SELECT discoverable FROM accounts WHERE uri LIKE '%/users/alice'")).toBe(1);
     expect(value("SELECT discoverable FROM accounts WHERE uri LIKE '%/users/Bob'")).toBe(0);
-    expect(value("SELECT count(*) FROM accounts WHERE domain IS NOT NULL AND discoverable IS NOT NULL")).toBe(0);
+    expect(value("SELECT count(*) FROM accounts WHERE domain IS NOT NULL")).toBeGreaterThan(0);
+    expect(
+      value("SELECT count(*) FROM accounts WHERE domain IS NOT NULL AND (discoverable IS NOT 0 OR indexable IS NOT 0)"),
+    ).toBe(0);
+    expect(value("SELECT count(*) FROM accounts WHERE domain IS NULL AND indexable IS NOT NULL")).toBe(0);
     db.close();
   });
 
@@ -380,10 +386,11 @@ describe("convert and verify-conversion", () => {
         "accounts",
       ],
       [
-        "an unset remote discoverable becomes false",
-        "UPDATE accounts SET discoverable = 0 WHERE domain IS NOT NULL",
+        "an unset remote discoverable becomes unknown",
+        "UPDATE accounts SET discoverable = NULL WHERE domain IS NOT NULL",
         "accounts",
       ],
+      ["a remote account becomes indexable", "UPDATE accounts SET indexable = 1 WHERE domain IS NOT NULL", "accounts"],
       ["an actor type changes", "UPDATE accounts SET actor_type = 'Person' WHERE actor_type = 'Service'", "accounts"],
       // A URL within its stored bound is kept (src/platform/stored-bounds.ts).
       ["a remote profile loses its URL", "UPDATE accounts SET url = NULL WHERE domain IS NOT NULL", "accounts"],
@@ -971,5 +978,78 @@ describe("the expected threads", () => {
     expect(performance.now() - started).toBeLessThan(2000);
     expect([...threads]).toEqual([uri(0)]);
     expect([threadOf(uri(0) + "a"), threadOf(uri(0) + "b")]).toEqual([uri(0) + "b", uri(0) + "a"]);
+  });
+});
+
+// #1747: a remote actor's manuallyApprovesFollowers, discoverable and indexable are converted as the Worker reads them
+// (src/federation/remote-actor.ts remoteActorInput): Rails' boolean cast of `value || false`
+// (test/fixtures/actor-booleans.json), an empty string giving no discoverable and a false locked and indexable, as for
+// a new account. The independent check casts them on its own (cli/lib/cutover/verify-expect.js).
+describe("a remote actor's flags (#1747)", () => {
+  const MEMBERS = {
+    locked: "manuallyApprovesFollowers",
+    discoverable: "discoverable",
+    indexable: "indexable",
+  } as const;
+  // r0 to r3's flags, each member a different value; r4 is locked and r5 states none, as the fixture writes them.
+  const FLAGS: Record<number, Record<string, unknown>> = {
+    0: { manuallyApprovesFollowers: "true", discoverable: "false", indexable: "1" },
+    1: { manuallyApprovesFollowers: "", discoverable: "", indexable: "" },
+    2: { manuallyApprovesFollowers: "off", discoverable: "true", indexable: [] },
+  };
+  // What the Worker stores for a new account from `value`, by Mastodon's cast as captured.
+  const stored = (column: keyof typeof MEMBERS, value: unknown): number | null => {
+    const text = value === undefined ? null : JSON.stringify(value);
+    const row = booleans.rows.find((r) => r.json === text);
+    expect(row, text ?? "absent").toBeDefined();
+    const nullable = booleans.columns.find((c) => c.column === column)!.null;
+    return row!.rails === null ? (nullable ? null : 0) : row!.rails ? 1 : 0;
+  };
+
+  it("converts them as the Worker reads them, and the independent check passes", async () => {
+    const exportPath = await exportOf({ level: 39, remoteProperties: FLAGS });
+    const { ok, dumpPath } = await convert(exportPath);
+    expect(ok).toBe(true);
+    expect((await verify(exportPath, dumpPath)).ok).toBe(true);
+    const db = await opened(dumpPath);
+    const rows = db
+      .prepare(
+        `SELECT uri, locked, discoverable, indexable FROM accounts
+					WHERE uri GLOB 'https://*.example/users/r[0-5]' ORDER BY uri`,
+      )
+      .all();
+    db.close();
+    const expected = [0, 1, 2, 3, 4, 5].map((i) => {
+      const properties: Record<string, unknown> = {
+        ...(i === 4 ? { manuallyApprovesFollowers: true } : {}),
+        ...FLAGS[i],
+      };
+      return {
+        uri: `https://${i < 4 ? "remote" : "other"}.example/users/r${i}`,
+        locked: stored("locked", properties[MEMBERS.locked]),
+        discoverable: stored("discoverable", properties[MEMBERS.discoverable]),
+        indexable: stored("indexable", properties[MEMBERS.indexable]),
+      };
+    });
+    expect(rows).toEqual(expected.toSorted((a, b) => (a.uri < b.uri ? -1 : 1)));
+    // Each member a different value: a "false" discoverable, a "" locked and an "off" locked, a [] indexable.
+    expect(expected.slice(0, 3)).toEqual([
+      { uri: "https://remote.example/users/r0", locked: 1, discoverable: 0, indexable: 1 },
+      { uri: "https://remote.example/users/r1", locked: 0, discoverable: null, indexable: 0 },
+      { uri: "https://remote.example/users/r2", locked: 0, discoverable: 1, indexable: 1 },
+    ]);
+  });
+
+  it.each([
+    ['a "false" discoverable becomes true', "UPDATE accounts SET discoverable = 1 WHERE uri LIKE '%/users/r0'"],
+    ["an empty discoverable becomes false", "UPDATE accounts SET discoverable = 0 WHERE uri LIKE '%/users/r1'"],
+    ['a "1" indexable becomes false', "UPDATE accounts SET indexable = 0 WHERE uri LIKE '%/users/r0'"],
+    ['an "off" locked becomes true', "UPDATE accounts SET locked = 1 WHERE uri LIKE '%/users/r2'"],
+  ])("FAILs when %s", async (_, sql) => {
+    const exportPath = await exportOf({ level: 39, remoteProperties: FLAGS });
+    const { dumpPath } = await convert(exportPath);
+    const { ok, report } = await verify(exportPath, await tampered(dumpPath, sql));
+    expect(ok).toBe(false);
+    expect((report as { categories: Record<string, { changed: number }> }).categories.accounts?.changed).toBe(1);
   });
 });
