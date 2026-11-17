@@ -260,26 +260,42 @@ export const SPOILER_BYTES = 16 * 1024;
 // test/html.test.ts).
 export const STORED_HTML_LIMIT = Math.max(STATUS_CONTENT_BYTES, REMOTE_BIO_BYTES);
 
-// Sanitized remote HTML (HTML-1) within `bytes` as a JSON string: sanitizeRemoteHtml's output when it fits, else the
-// sanitized form of a raw prefix whose output fits, found by halving (sanitizing can shrink as well as grow, so it
-// need not be the longest such prefix); always sanitizer output, so well-formed HTML; '' when none fits. onAnchor sees
-// the anchors of the whole input's pass (its first REMOTE_HTML_RAW_LIMIT code units) only.
-function sanitizeRemoteWithin(html: string, bytes: number, onAnchor?: (anchor: RawAnchor) => void): string {
+// Sanitized remote HTML (HTML-1) that `fits`: sanitizeRemoteHtml's output when it fits, else the sanitized form of a
+// raw prefix whose output fits, found by halving (sanitizing can shrink as well as grow, so it need not be the longest
+// such prefix); always sanitizer output, so well-formed HTML; '' when none fits. onAnchor sees the anchors of the
+// whole input's pass (its first REMOTE_HTML_RAW_LIMIT code units) only.
+function sanitizeRemoteFitting(
+  html: string,
+  fits: (sanitized: string) => boolean,
+  onAnchor?: (anchor: RawAnchor) => void,
+): string {
   const whole = sanitizeRemoteHtml(html, onAnchor);
-  if (jsonStringBytes(whole) <= bytes) {
+  if (fits(whole)) {
     return whole;
   }
-  let [fits, best, over] = [0, "", Math.min(html.length, REMOTE_HTML_RAW_LIMIT)];
-  while (over - fits > 1) {
-    const middle = Math.floor((fits + over) / 2);
+  let [fitting, best, over] = [0, "", Math.min(html.length, REMOTE_HTML_RAW_LIMIT)];
+  while (over - fitting > 1) {
+    const middle = Math.floor((fitting + over) / 2);
     const cut = sanitizeRemoteHtml(cutCodeUnits(html, middle));
-    if (jsonStringBytes(cut) <= bytes) {
-      [fits, best] = [middle, cut];
+    if (fits(cut)) {
+      [fitting, best] = [middle, cut];
     } else {
       over = middle;
     }
   }
   return best;
+}
+
+// Sanitized remote HTML within `bytes` as a JSON string (sanitizeRemoteFitting).
+function sanitizeRemoteWithin(html: string, bytes: number, onAnchor?: (anchor: RawAnchor) => void): string {
+  return sanitizeRemoteFitting(html, (sanitized) => jsonStringBytes(sanitized) <= bytes, onAnchor);
+}
+
+// Sanitized remote HTML within `points` code points (sanitizeRemoteFitting): a remote collection's description,
+// whose raw text Mastodon cuts at the same count before it sanitizes it on presentation
+// (process_featured_collection_service.rb truncated_summary); sanitizing may lengthen it past the cut.
+export function sanitizeRemoteCodePoints(html: string, points: number): string {
+  return sanitizeRemoteFitting(html, (sanitized) => [...sanitized].length <= points);
 }
 
 // RES-2: a remote bio within REMOTE_BIO_BYTES; shared with the cutover's conversion and verification.

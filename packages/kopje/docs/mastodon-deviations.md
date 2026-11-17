@@ -815,6 +815,19 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
 - A collection's page (`/collections/:id`) is served for a local collection only (a remote collection's `url` is its
   own server's), and the profile pages do not list an account's collections, where Mastodon's web client does.
   Accepted, 2026-11-16.
+- A remote account's collections are read from at most 2 pages of at most 512 KiB each, 10 collections of 25 members
+  each (Mastodon: 10 pages, 50 collections, 150 members); a page past that size, or served through a redirect, ends
+  the list; a collection or member given only as a URI, not embedded, is skipped (Mastodon fetches it); one no longer
+  listed by a complete read is deleted (Mastodon keeps it until a `Remove`); a member Kopje does not know is not
+  fetched and stays unshown until Kopje learns of the account. A member that is a local account is left out yet;
+  tracked by #1589. Accepted, 2026-11-17.
+- A member's authorization is checked once for each value the owner gives it, in background rounds, four a round, at
+  most five attempts, and at most 250 checks begun in a UTC day for one owner's collections (the rest wait for the next
+  day); Mastodon verifies it again on every processing of the collection. An authorization larger than 64 KiB or
+  served through a redirect is not accepted; a member whose check failed this way, did not match, or gave up after
+  five attempts stays unshown until the owner changes or re-adds it. Kopje learns that a member withdrew only from the
+  owner's `Remove` or the member's own `Delete`: while the owner keeps listing a member that withdrew and Kopje
+  receives neither, Kopje keeps showing the member. Accepted, 2026-11-17.
 
 Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model WEB-6):
 

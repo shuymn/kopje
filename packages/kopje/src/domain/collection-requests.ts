@@ -17,7 +17,7 @@ export function requestCollectionSync(db: Db, accountId: string, now: number, re
   // due, endRound): rounds that failed for the older one neither drop nor delay it.
   const row = db.first<{ due: number; exact: number }>(
     `INSERT INTO collection_syncs (account_id, due_at, refresh) VALUES (?1, ?2, ?3)
-		ON CONFLICT (account_id) DO UPDATE SET generation = generation + 1, parts_read = 0, attempts = 0,
+		ON CONFLICT (account_id) DO UPDATE SET generation = generation + 1, parts_read = 0, collections_read = 0, attempts = 0,
 			refresh = max(refresh, excluded.refresh),
 			due_at = CASE WHEN token IS NOT NULL AND due_at > ?2 THEN due_at ELSE min(due_at, ?2) END
 		RETURNING due_at <= ?2 AS due, typeof(generation) = 'integer' AS exact`,
@@ -139,9 +139,11 @@ export function collectionSql(raw: string, member: "followers" | "following"): s
 		FROM json_each(${raw}) AS m WHERE m.key = '${member}' ORDER BY m.id DESC LIMIT 1)`;
 }
 
-// The collections a stored actor document names (collectionUri), normalized as fetch targets.
+// The collections a stored actor document names (collectionUri), normalized as fetch targets. featuredCollections is
+// FEP-7aa9's (Mastodon 4.7.5's collections_url, process_account_service.rb:249), a bare key of Mastodon's actor.
 export type ActorCollections = {
   featured: string | null;
+  featuredCollections: string | null;
   featuredTags: string | null;
   followers: string | null;
   following: string | null;
@@ -164,6 +166,7 @@ export function actorCollections(raw: string | null): ActorCollections {
   }
   return {
     featured: idOf(document.featured),
+    featuredCollections: idOf(document.featuredCollections),
     featuredTags: idOf(document.featuredTags),
     followers: idOf(document.followers),
     following: idOf(document.following),

@@ -15144,3 +15144,50 @@ describe("0112_delivery_hosts", () => {
     });
   });
 });
+
+describe("0113_featured_collection_syncs", () => {
+  const NAME = "0113_featured_collection_syncs";
+  const at = NAMES.indexOf(NAME);
+  const ACCOUNT = "100000000000000001";
+
+  it("follows 0112 and checks every reference", () => {
+    expect(NAMES[at - 1]).toBe("0112_delivery_hosts");
+    // New table: the upgrade checks every reference of the Store.
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+  });
+
+  it("adds collections_read at 0 to the waiting syncs, and bounds it and an owner's claims", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://r.example/users/a', 'a', 'r.example')",
+        ACCOUNT,
+      );
+      sql.exec("INSERT INTO collection_syncs (account_id, due_at, parts_read) VALUES (?1, 0, 7)", ACCOUNT);
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      expect(sql.exec("SELECT parts_read, collections_read FROM collection_syncs").toArray()).toEqual([
+        { parts_read: 7, collections_read: 0 },
+      ]);
+      sql.exec("UPDATE collection_syncs SET collections_read = 1");
+      expect(() => sql.exec("UPDATE collection_syncs SET collections_read = 2")).toThrow(/CHECK constraint failed/);
+
+      sql.exec("INSERT INTO collection_check_quotas (account_id, day, used) VALUES (?1, 20738, 250)", ACCOUNT);
+      for (const [set, name] of [
+        ["used = 251", "collection_check_quotas_used"],
+        ["used = -1", "collection_check_quotas_used"],
+        ["used = 1.5", "collection_check_quotas_used"],
+        ["used = 'x'", "collection_check_quotas_used"],
+        ["day = -1", "collection_check_quotas_day"],
+        ["day = 2147483648", "collection_check_quotas_day"],
+        ["day = 1.5", "collection_check_quotas_day"],
+      ]) {
+        expect(() => sql.exec(`UPDATE collection_check_quotas SET ${set}`), set).toThrow(name);
+      }
+      // The account's deletion takes its sync and its claims with it.
+      sql.exec("DELETE FROM accounts WHERE id = ?", ACCOUNT);
+      expect(sql.exec("SELECT count(*) AS n FROM collection_check_quotas").one()).toEqual({ n: 0 });
+      expect(sql.exec("SELECT count(*) AS n FROM collection_syncs").one()).toEqual({ n: 0 });
+    });
+  });
+});

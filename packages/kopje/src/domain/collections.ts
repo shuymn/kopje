@@ -327,6 +327,13 @@ function tagProblems(tagName: string): { display: string; problems: Problem[] } 
   return { display, problems };
 }
 
+// A remote collection's topic as tag_name= takes it (ProcessFeaturedCollectionService's `topic.name`): its display
+// name, or null when the Tag would refuse it, which refuses the collection (its update! raises).
+export function remoteCollectionTag(name: string): string | null {
+  const { display, problems } = tagProblems(name);
+  return problems.length === 0 ? display : null;
+}
+
 // Collection's validations of a local collection, in Mastodon's order (collection.rb:42-61), with Rails' messages.
 // Lengths are in characters (code points).
 function valueProblems(values: CollectionValues): Problem[] {
@@ -579,8 +586,9 @@ const NOTIFIED_CHANGES: readonly (keyof CollectionValues)[] = ["name", "descript
 
 // NotifyOfCollectionUpdateService: each accepted member of the collection `id` is notified collection_update, which
 // replaces its earlier one of the collection (notify); a local one only. At most COLLECTION_MAX_ITEMS live items, read
-// through collection_items_order.
-function notifyUpdated(db: Db, id: string, owner: string, now: number): void {
+// through collection_items_order. A remote collection's change notifies the same way
+// (remote-featured-collections.ts).
+export function notifyUpdated(db: Db, id: string, owner: string, now: number): void {
   const members = db.all<{ account_id: string }>(
     `SELECT account_id FROM collection_items INDEXED BY collection_items_order
 		WHERE collection_id = ? AND state = ? AND account_id IS NOT NULL ORDER BY position, id`,

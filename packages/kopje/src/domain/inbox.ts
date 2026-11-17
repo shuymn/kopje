@@ -1798,6 +1798,14 @@ function purgeRelationships(db: Db, id: string, budget: JobBudget): void {
   purgeCollectionRows(db, budget, id, MEMBER_ITEMS_WINDOW, "collection_item_id");
   purgeCollectionRows(db, budget, id, OWNED_ITEMS_WINDOW, "collection_item_id");
   purgeCollectionRows(db, budget, id, OWNED_COLLECTIONS_WINDOW, "collection_id");
+  // Its collections' item-check quota (domain/collection-checks.ts): one row at most.
+  spend(
+    db,
+    budget,
+    `DELETE FROM collection_check_quotas
+			WHERE account_id IN (SELECT account_id FROM collection_check_quotas WHERE account_id = ? LIMIT ?)`,
+    id,
+  );
   // Its profile link verification (domain/remote-field-links.ts): one row at most.
   spend(
     db,
@@ -2275,6 +2283,7 @@ export const PURGED_ACCOUNT_CHILDREN: readonly { table: string; check: string; f
   { table: "collection_pins_pending", check: "account_id = ?1" },
   { table: "collection_items", check: "account_id = ?1" },
   { table: "collections", check: "account_id = ?1" },
+  { table: "collection_check_quotas", check: "account_id = ?1" },
 ];
 
 // What names a remote account without a foreign key (logical references, which no delete of the account cascades to):

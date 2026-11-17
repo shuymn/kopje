@@ -697,6 +697,7 @@ async function pinRead(w: World): Promise<void> {
     tags: null,
     hideCollections: null,
     counts: { statuses: null, following: null, followers: null },
+    collections: null,
   });
   w.policy.pinRead(POOL);
   await check(w);

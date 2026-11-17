@@ -7,15 +7,18 @@ import {
   type CollectionSync,
   type DocumentRefreshInput,
   MAX_REMOTE_PINS,
+  PART_COLLECTIONS,
   PART_FEATURED,
   PART_NETWORK,
   PART_TAGS,
   type PinFetchesInput,
 } from "../domain/remote-collections";
+import { MAX_REMOTE_COLLECTIONS } from "../domain/remote-featured-collections";
 import { readConfig, userKek } from "../platform/config";
 import { callStore } from "../platform/store-client";
 import { storedCount } from "../platform/stored-bounds";
 import { goneAt, goneSettler, type SettleGone } from "./actor-gone";
+import { featuredCollectionOf } from "./featured-collections";
 import { createRemoteLoaders, type FederationState, type RemoteLoaders } from "./federation";
 import type { InboxDeps } from "./inbox";
 import { itemsOf } from "./json-shapes";
@@ -59,7 +62,13 @@ export const MAX_FEATURED_TAG_PAGES = 3;
 // document are not covered: a server that refuses draft-cavage and redirects every document may leave a part unread
 // until its attempts run out (RES-6). The document part of a refresh (D9) runs alone in its round: the account's
 // document and at most two WebFinger answers confirming its claim (resolve.ts confirmHandle).
-export const PART_DOCUMENTS = { featured: 2, network: 3, tags: 1 + MAX_FEATURED_TAG_PAGES, document: 3 } as const;
+export const PART_DOCUMENTS = {
+  featured: 2,
+  network: 3,
+  tags: 1 + MAX_FEATURED_TAG_PAGES,
+  document: 3,
+  collections: 3,
+} as const;
 
 // Whether each part of `parts` fits one round of `maxFetches`, a redirect or an RFC 9421 retry on each document.
 export function partsFitRound(parts: Readonly<Record<string, number>>, maxFetches: number): boolean {
@@ -82,6 +91,25 @@ if (
 ) {
   throw new Error(
     "the network part must fit one round of REQUEST_MAX_FETCHES and REQUEST_MAX_BYTES under NETWORK_CAPS, a redirect or an RFC 9421 retry each included",
+  );
+}
+
+// The collections part (PART_COLLECTIONS, #1589's D21) reads the featuredCollections collection and its first
+// FEATURED_COLLECTION_PAGES pages (PART_DOCUMENTS.collections documents) under COLLECTIONS_CAPS: no redirect, so the
+// loader sends a document at most twice (the signed request and, answered 400 or 401, its RFC 9421 retry), and 512 KiB
+// of body each; three such documents fit one round's fetches and bytes, checked as the module loads, so the part read
+// first in its round always completes whatever its documents are. A document past the caps or redirected is settled as
+// unreadable, as a refused one: the part completes with the collections read before it. Mastodon's pages hold 5
+// collections of at most 25 items, served without a redirect (FeaturedCollectionsController).
+export const FEATURED_COLLECTION_PAGES = 2;
+export const COLLECTIONS_CAPS = { documentBytes: 512 * 1024, maxRedirects: 0 } as const satisfies DocumentCaps;
+if (
+  PART_DOCUMENTS.collections !== 1 + FEATURED_COLLECTION_PAGES ||
+  PART_DOCUMENTS.collections * 2 > REQUEST_MAX_FETCHES ||
+  PART_DOCUMENTS.collections * COLLECTIONS_CAPS.documentBytes >= REQUEST_MAX_BYTES
+) {
+  throw new Error(
+    "the collections part must fit one round of REQUEST_MAX_FETCHES and REQUEST_MAX_BYTES under COLLECTIONS_CAPS, an RFC 9421 retry each included",
   );
 }
 
@@ -271,10 +299,56 @@ async function readFeaturedTags(
   return names;
 }
 
-type ReadOut = Pick<CollectionReadInput, "parts" | "pins" | "tags" | "hideCollections" | "counts">;
+// FetchFeaturedCollectionsCollectionService (collection_items with max_pages): the embedded collections of the root's
+// pages (`first`, then each `next`), in order, until MAX_REMOTE_COLLECTIONS or FEATURED_COLLECTION_PAGES pages; a
+// collection given only as a URI is skipped (Mastodon fetches it). 'transient' when a document may be read later. A
+// page that cannot be read (refused, gone, past the caps, redirected) ends the list with what was read before it.
+// complete: every page was read and the last had no next, so the stored collections the list does not name are not
+// the owner's any more.
+async function readFeaturedCollections(
+  sync: CollectionSync,
+  origin: string | null,
+  loader: DocumentLoader,
+): Promise<NonNullable<CollectionReadInput["collections"]> | "transient"> {
+  const root = await documentOn(sync.featuredCollections, origin, loader);
+  if (root === "transient") {
+    return root;
+  }
+  const listed: CollectionReadInput["collections"] & {} = { listed: [], complete: false };
+  if (root === null) {
+    return listed;
+  }
+  let page: Json | "transient" | null =
+    root.first === undefined || root.first === null ? root : await documentOn(root.first, origin, loader);
+  for (let read = 1; ; read++) {
+    if (page === "transient") {
+      return page;
+    }
+    if (page === null) {
+      return listed;
+    }
+    for (const item of itemsOf(page) ?? []) {
+      const collection = featuredCollectionOf(item);
+      if (collection !== null && listed.listed.length < MAX_REMOTE_COLLECTIONS) {
+        listed.listed.push(collection);
+      }
+    }
+    if (page.next === undefined || page.next === null) {
+      listed.complete = true;
+      return listed;
+    }
+    if (read >= FEATURED_COLLECTION_PAGES) {
+      return listed;
+    }
+    page = await documentOn(page.next, origin, loader);
+  }
+}
 
-// The loaders of a read: `document` within the loader's own caps, `network` within NETWORK_CAPS.
-type ReadLoaders = { document: DocumentLoader; network: DocumentLoader };
+type ReadOut = Pick<CollectionReadInput, "parts" | "pins" | "tags" | "hideCollections" | "counts" | "collections">;
+
+// The loaders of a read: `document` within the loader's own caps, `network` within NETWORK_CAPS, `collections` within
+// COLLECTIONS_CAPS.
+type ReadLoaders = { document: DocumentLoader; network: DocumentLoader; collections: DocumentLoader };
 
 // Each part's read, which records in `out` what it read through.
 const PART_READS: [
@@ -314,6 +388,18 @@ const PART_READS: [
       }
     },
   ],
+  // The featuredCollections collection; an actor without one has the part read at once, changing nothing.
+  [
+    PART_COLLECTIONS,
+    async (sync, origin, loaders, out) => {
+      const read =
+        sync.featuredCollections === null ? null : await readFeaturedCollections(sync, origin, loaders.collections);
+      if (read !== "transient") {
+        out.parts |= PART_COLLECTIONS;
+        out.collections = read;
+      }
+    },
+  ],
 ];
 
 // Phase 1: what a round reads of one account's collections: the parts not read through yet, in the order featured,
@@ -328,6 +414,7 @@ async function readCollections(sync: CollectionSync, loaders: ReadLoaders): Prom
     tags: null,
     hideCollections: null,
     counts: { statuses: null, following: null, followers: null },
+    collections: null,
   };
   const unread = PART_READS.filter(
     ([part]) => (sync.parts & part) === 0 && !(part === PART_TAGS && sync.featuredTags === null),
@@ -423,6 +510,7 @@ export async function syncCollections(env: Env, deps: InboxDeps): Promise<boolea
       const read = await readCollections(sync, {
         document: loaders.document,
         network: loaders.capped(NETWORK_CAPS),
+        collections: loaders.capped(COLLECTIONS_CAPS),
       });
       if (state.storeError !== null) {
         throw state.storeError;

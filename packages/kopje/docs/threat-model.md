@@ -2390,7 +2390,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   to the next generation).
 - **NET-3: every outbound sink has its own policy.** Any URL derived from remote or user input is fetched only through a
   sink client that applies NET-1's host rules (https, public address, re-checked hops, a hop limit) plus its own budget:
-  documents as NET-1; remote media unsigned, at most 3 redirects to any origin, never the instance's own host, a size
+  documents as NET-1, tighter where a caller caps them (`DocumentCaps`): a collection sync's collections part reads the
+  account's own origin only, without redirects and at most 512 KiB a document (`COLLECTIONS_CAPS`), and the check of a
+  remote collection's item fetches only its candidate authorization, on its known member's own host, without redirects
+  and at most 64 KiB (`ITEM_CHECK_CAPS`), each within its round's budget and the checks within each owner's daily quota
+  (RES-6); remote media unsigned, at most 3 redirects to any origin, never the instance's own host, a size
   cap per kind, positively recognized types and 30 s; web pages unsigned, at most 3 redirects to any origin, a 1 MiB
   prefix and 10 s; Web Push and deliveries no redirects.
   Credentials and signatures never follow a redirect to another origin. Fedify's sending and queueing are not used.
@@ -3350,6 +3354,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   many by key; each goes with what it names (`ON DELETE CASCADE`); `test/migrations.test.ts`
   ("0107_collection_notifications"), `test/collection-notifications.test.ts` ("refuses a restore of … notifications of
   one item, or of one collection and recipient", of 600 and of 6,000).
+  `collection_syncs.collections_read` (0 or 1) and the `collection_check_quotas` rows (a remote collection owner's UTC
+  day number and its claims, 0 to 250), imports included, meet the [stored bounds](dump-format.md#stored-bounds),
+  enforced by migration `0113_featured_collection_syncs`, and a quota row goes with its account (`ON DELETE CASCADE`,
+  and a purge's own step); the claims read the quota with the same bound (`OWNER_CHECKS_PER_DAY`);
+  `test/migrations.test.ts` ("0113_featured_collection_syncs"), `test/inbox-regressions.test.ts` ("purges a remote
+  account's collections and memberships within the batch budget").
   _Enforced (main)_ for remote field verification: `remote_field_links` rows, imports included, meet the
   [stored bounds](dump-format.md#stored-bounds), enforced by migration `0068_remote_field_verification`, whose triggers
   judge in order the storage classes, the raw bytes, a raw NUL, `json_valid` and the canonical form (no padding or
@@ -3886,10 +3896,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   real processing errors"). Jobs rounds: _Enforced (main):_ a jobs message is only a nudge, as the jobs and their
   progress are durable in the Store: it is acked and never retried, and a Queue batch runs at most one jobs round
   however many jobs messages and spool replays with pending jobs it holds, so it sends at most one jobs message for the
-  next round (a live inbox request still sends its own). A round has ten error boundaries: seven Store calls (the
+  next round (a live inbox request still sends its own). A round has eleven error boundaries: seven Store calls (the
   inbound jobs with the stamp revocations, the domain block cleanups, the notification request jobs, the local and
   remote moderation jobs in one, the collection jobs, the held handshakes, the unlock acceptances), then the Worker's
-  collection syncs, quote verifications and replies walks, each its own round of Store calls and fetches. The deliveries
+  collection syncs, checks of remote collections' items, quote verifications and replies walks, each its own round of
+  Store calls and fetches. The deliveries
   the Store calls recorded are rung once, before the Worker's fetches. A family that fails is logged
   (`kopje.jobs.family.failed`), counts as having no work left, and stops no other family (the next resolves a new stub);
   a Store refusal (maintenance, a retryable or reset error) ends the round and counts nothing, and cron runs the next. A
@@ -3899,7 +3910,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   ("failing stops no family outside its Store call", "ends the round at its first Store call while the Store is
   readonly", "runs one round and sends at most one jobs message for 3 jobs messages and 5 such replays", "keeps its own
   nudge, and its job runs in the next round", "runs the quote verifications when every Store family and the collection
-  syncs throw", "walks when every other family throws: ten boundaries, each logged once", "stops no other family when
+  syncs throw", "walks when every other family throws: eleven boundaries, each logged once", "stops no other family when
   it throws", "rings for the Store calls’ deliveries before the collection syncs fetch", "ends the round at a
   retryable refusal after an earlier family reported pending", "gives the family after a failure a newly resolved
   stub"). Inbound jobs: _Enforced (main):_ each batch of a purge, `Move` or status deletion runs in its own savepoint
@@ -4355,7 +4366,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/domain/remote-collections.ts`): each round runs one sync within a budget of its own, at most
   `COLLECTION_SYNCS_PER_ROUND` (2) rounds a call. Each part of a read fits one budget with a redirect, or the RFC 9421
   retry, on each of its documents (featured 2 documents, network 3: the following, followers and outbox collections,
-  featuredTags 4), and the network part's documents are read with at most one redirect and 512 KiB each
+  featuredTags 4, collections 3), and the network part's documents are read with at most one redirect and 512 KiB each
   (`NETWORK_CAPS`): with a redirect or the retry on each document, 6 fetches and 1.5 MiB, so its outbox then never
   starves behind the other two. Accepted: a document that needs both a redirect and the retry takes 3 or 4 fetches, so
   such documents can pass a round's budget before their part is read through (three network documents that each
@@ -4364,7 +4375,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   with every stored actor document (an
   `Update`, a key miss or rotation, an authenticated resolve, any other fetch of the actor), and pending work coalesces
   per actor (one `collection_syncs` row, `requestCollectionSync`); no admission policy limits how often an actor's
-  document is stored. One generation makes at most 552 requests: 9 read claims (3 parts × `MAX_SYNC_ATTEMPTS`) and 60
+  document is stored. One generation makes at most 576 requests: 12 read claims (4 parts × `MAX_SYNC_ATTEMPTS`) and 60
   pin claims (`MAX_REMOTE_PINS` × `MAX_SYNC_ATTEMPTS`), each of 8 fetches. The pin claims fetch every status the
   featured collection lists on the account's origin, stored or not (Mastodon's `FetchFeaturedCollectionService`): a
   read leaves one row for each of the first `MAX_REMOTE_PINS` distinct URIs listed, a pending row for one Kopje does
@@ -4372,10 +4383,30 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   where it fetched only the unstored ones, and updates or removes at most `MAX_REMOTE_PINS` statuses, each a refetch's
   or a `Delete`'s bounded work (`replacePins`, `completePinFetches` in `src/domain/remote-collections.ts`;
   `test/remote-collections.test.ts` ("bounds the pin phase with every listed status stored or not at its worst")). The
-  network part takes at most 6 a round and 54 a generation while no document needs the RFC 9421 retry, a round's whole
-  budget (8 a round, 72 a generation) when each needs a redirect and the retry, and 3 documents when nothing fails
+  network part takes at most 6 a round and 72 a generation while no document needs the RFC 9421 retry, a round's whole
+  budget (8 a round, 96 a generation) when each needs a redirect and the retry, and 3 documents when nothing fails
   (`test/remote-collections.test.ts` ("bounds them before and after the network part reads the outbox", "the network
   part within one round")).
+  The collections part (`PART_COLLECTIONS`, #1589's FEP-7aa9 collections) reads the account's `featuredCollections`
+  root and at most `FEATURED_COLLECTION_PAGES` (2) pages under `COLLECTIONS_CAPS` (512 KiB, no redirect): with the
+  retry on each, 6 fetches and 1.5 MiB of the round's budget; a page past the caps or redirected is unreadable and
+  ends the list, and the part completes with what it read. It keeps at most `MAX_REMOTE_COLLECTIONS` (10) embedded
+  collections of `MAX_REMOTE_ITEMS` (25) embedded items, fetches nothing given only as a URI and no member, and deletes
+  the account's other stored collections only after a complete read (`test/collection-sync.test.ts` ("reads two pages
+  in one round of three documents, keeps ten collections, and fetches no URI-only entry", "its budget")). The checks of
+  those items (`src/domain/collection-checks.ts`, `src/federation/collection-checks.ts`) are a family of the jobs round
+  of their own, apart from the syncs: a claim reads at most `ITEM_CHECK_CANDIDATES` (16) due items by
+  `collection_items_check`, in due order across every owner, and claims at most `ITEM_CHECKS_PER_ROUND` (4), each
+  fetched once, signed by the instance actor, under `ITEM_CHECK_CAPS` (64 KiB, no redirect) within one request budget,
+  so a round makes at most 8 fetches and reads at most 256 KiB. A revision of an item has at most 5 attempts, and an
+  owner's collections at most `OWNER_CHECKS_PER_DAY` (250) claims a UTC day, charged as each claim is made
+  (`collection_check_quotas`), so an owner that re-adds items or changes their authorizations costs at most 250 fetches
+  (500 sends) a day; an owner past it has its items deferred to the next day as a claim reads them
+  (`test/remote-featured-collections.test.ts` ("check 250 items in 63 rounds of at most 8 sends, the owner renaming a
+  collection before every round", "holds an owner's churn to 250 claims a UTC day, re-adding an item or changing its
+  authorization after each check", "charges a claim made at 23:59:59.900 UTC to its day, though its fetch completes
+  after midnight", "defer a spent owner's items to the next UTC day, claiming another owner's behind them")). Accepted:
+  one owner keeps up to 250 fetches a day going to its members' servers, a full account's items.
   A `Follow`, or an `Undo` of one, reads at most 33 unsettled answers of its pair, of them at most 65 delivery rows,
   including exposed rows, and 33 unexpanded chunks, so it admits at most 32, 64 and 32, and cancels at most those
   (NET-2); an `Undo` naming no local target first reads at most 33 answers of each local account's pair, twice
@@ -4592,9 +4623,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   from its attempts: at most `QUOTE_AUTHOR_FETCHES` (6) a work, whose renewal starts the count again, and an author
   stage with none left fetches nothing and ends the work, so a work whose rounds die after the author stage, reclaimed
   once the author is stale again, still applies at most 6 author documents (the column's CHECK holds the same bound).
-  Each author document stored requests one collection sync generation (at most 552 requests, above). So a status
+  Each author document stored requests one collection sync generation (at most 576 requests, above). So a status
   arriving from outside at `QUOTE_HOPS` (2) leads to at most 3 statuses of its quote chain, at most 1 + 2 × 6 = 13
-  author documents and sync generations (at most 7,176 requests) and 13 × `MAX_REMOTE_PINS` = 260 pins, and to nothing
+  author documents and sync generations (at most 7,488 requests) and 13 × `MAX_REMOTE_PINS` = 260 pins, and to nothing
   further but the create walk of its replies (Replies walks, below) (`test/remote-collections.test.ts` ("counts each
   author document a quote applies, interrupted rounds included", "ends a quote's work with no fetch once its author
   fetches are spent", "stores one author an attempt for a quoted status whose author changes at each fetch", "keeps a

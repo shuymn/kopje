@@ -690,6 +690,7 @@ describe("remote collection generations past 2^53", () => {
       tags: null,
       hideCollections: null,
       counts: { statuses: null, following: null, followers: null },
+      collections: null,
     });
     // Read through: nothing is left, so the sync is gone.
     expect(await sql(w.h.store, "SELECT account_id FROM collection_syncs")).toEqual([]);
