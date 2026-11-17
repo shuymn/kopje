@@ -38,17 +38,7 @@ import { utf8Length } from "./platform/dump-format";
 import { errorFields } from "./platform/error-message";
 import { toStoreUnavailable } from "./platform/store-errors";
 import type { StoreKernel, StoreOperation } from "./platform/store-kernel";
-import {
-  ATTACHMENT_MAX,
-  capacity,
-  cloneBound,
-  frame,
-  outputNeed,
-  SOCKET_BYTES,
-  socketCharge,
-  STREAM_OUTPUT,
-  validOut,
-} from "./stream-output";
+import { ATTACHMENT_MAX, cloneBound, frame, outputNeed, socketCharge, STREAM_OUTPUT, validOut } from "./stream-output";
 
 // The streaming API's sockets, in the Store, with WebSocket Hibernation (Mastodon 4.5's streaming server). The Worker
 // (mastodon/streaming.ts) authenticates nothing itself: it forwards the upgrade with the token's sha256 only, and the
@@ -325,7 +315,7 @@ export class StreamHub {
     // RES-6: a socket is charged from the moment it is listed, so the instance's charge, recomputed now, must leave it
     // room, and its attachment is written before it is accepted.
     const instance = this.#recompute();
-    const need = SOCKET_BYTES + capacity(1);
+    const need = socketCharge(0, 0);
     if (instance.unknown > 0 || instance.charge + need > STREAM_OUTPUT.instanceBytes) {
       console.warn({
         event: "kopje.stream.output_refused",
@@ -519,7 +509,7 @@ export class StreamHub {
 
   // The listed sockets' charge, recomputed from their attachments; a socket whose charge is unknown is closed (1011)
   // and counted, and stays listed until its connection ends. Reads at most one attachment per listed socket, and every
-  // socket this release lists counts at least SOCKET_BYTES + capacity(1) within instanceBytes.
+  // socket this release lists counts at least socketCharge(0, 0) within instanceBytes.
   #recompute(): { charge: number; listed: number; unknown: number; closing: number } {
     const listed = this.#ctx.getWebSockets();
     let charge = 0;
