@@ -1422,6 +1422,7 @@ function sharedAnswer(db: Db, lists: readonly (readonly string[])[], present: Pr
 }
 
 export type SearchInput = {
+  // q as the routes pass it: stripped as Ruby strips (rubyStrip, SearchService and AccountSearchService), never blank.
   query: string;
   limit: number;
   offset: number;
@@ -1485,9 +1486,8 @@ const PREFIX_END = "\u{10FFFF}";
 // The ids of the accounts the search finds, in its order.
 function findAccountIds(db: Db, input: SearchInput, viewerId: string): string[] {
   // An address is read with the shared parser, so a Unicode domain finds the account stored under its punycode.
-  const address = parseAddress(input.query.trim());
+  const address = parseAddress(input.query);
   const query = (address === null ? input.query : `${address.username}@${address.domain}`)
-    .trim()
     .replace(/^@/, "")
     .replace(new RegExp(`@${escapeRegExp(input.localDomain)}$`, "i"), "");
   const terms = queryTerms(query);

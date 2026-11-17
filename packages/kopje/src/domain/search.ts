@@ -204,7 +204,7 @@ function searchHashtags(
 ): Hashtag[] {
   // Tag.matches_name: the query normalized as a hashtag name, so spaces and other characters a hashtag cannot hold
   // are dropped from it.
-  const prefix = normalizeTag(input.query.trim().replace(/^#/, ""));
+  const prefix = normalizeTag(input.query.replace(/^#/, ""));
   if (prefix === "") {
     return [];
   }

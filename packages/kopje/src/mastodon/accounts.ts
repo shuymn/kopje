@@ -574,7 +574,7 @@ export const searchAccounts: ApiHandler = withParams(async (c, deps, p) => {
   const accounts = await storeCall(c, deps, (s, b) =>
     s.searchAccounts(b, {
       credential: userCredential(c, deps),
-      query: parsed.query,
+      query,
       limit,
       offset: parsed.offset,
       following,

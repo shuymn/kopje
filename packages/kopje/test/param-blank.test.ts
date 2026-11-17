@@ -318,6 +318,22 @@ describe("search and peers (PB4)", () => {
     expect(await search("q=%20%40alice")).toMatchObject({ status: 200, body: [{ id: alice.id }] });
   });
 
+  // Both services search with q as Ruby's strip leaves it, NUL at either end removed.
+  it("searches accounts with q as Ruby's strip leaves it, on both search APIs", async () => {
+    const h = await community(["alice"], "read write follow");
+    const { alice } = h.users;
+    const v1 = async (q: string) =>
+      (await getJson<{ id: string }[]>(h, `/api/v1/accounts/search?q=${q}`, alice.token)).body.map((a) => a.id);
+    const v2 = async (q: string) =>
+      (
+        await getJson<{ accounts: { id: string }[] }>(h, `/api/v2/search?q=${q}&type=accounts`, alice.token)
+      ).body.accounts.map((a) => a.id);
+    for (const q of ["alice", "%00alice%00"]) {
+      expect(await v1(q), q).toEqual([alice.id]);
+      expect(await v2(q), q).toEqual([alice.id]);
+    }
+  });
+
   // Api::V1::Peers::SearchController: a blank q (Rails' blank?) is null; any other is then stripped as Ruby strips
   // (TagManager#normalize_domain), so U+FEFF stays and is no host.
   it("answers the peer search null for a blank q only", async () => {

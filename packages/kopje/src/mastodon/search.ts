@@ -138,7 +138,7 @@ export const search: ApiHandler = withParams(async (c, deps, p) => {
   const results = await storeCall(c, deps, (s, b) =>
     s.search(b, {
       credential: userCredential(c, deps),
-      query: parsed.query,
+      query,
       types,
       limit,
       offset,
