@@ -17,7 +17,7 @@ import {
   signTime,
 } from "./author-proof-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount, setDomain } from "./federation-helpers";
-import { type Form, FORMS, type Retraction, retraction } from "./fixtures/ld-signed/retractions.mjs";
+import { BOB_BLOCK, type Form, FORMS, type Retraction, retraction } from "./fixtures/ld-signed/retractions.mjs";
 import { BUILD, claimAndSettle, migratedStore } from "./helpers";
 import { loggedRefusals, mastodonActor, serveOwnHandle, signedInit, type TestActor } from "./inbox-helpers";
 import {
@@ -787,4 +787,31 @@ describe("a relayed retraction in the forms #1717 reads applies nothing (ID-1)",
       expect(await sql(t.store, edges)).toEqual(before);
     },
   );
+
+  // #1717, form 4: bob's Undo of his block typed as absolute IRIs, with an array in an array and a blank node as an id,
+  // which his own delivery lifts, is not applied when dan relays it, and the block stays.
+  it("does not apply bob's Undo(Block) typed as absolute IRIs in a body of form 4", async () => {
+    const { t, bob, dan } = await world();
+    const block = { "@context": AS, id: BOB_BLOCK, type: "Block", actor: bob.uri, object: ALICE_URI };
+    expect(await t.post(bob, block)).toBe(202);
+    const undo = retraction("Undo(Block)");
+    const body = {
+      ...undo,
+      type: `${AS}#Undo`,
+      object: { ...(undo.object as Json), type: `${AS}#Block` },
+      cc: [[PUBLIC]],
+      instrument: { id: "_:client" },
+    };
+    const blocks = "SELECT count(*) AS blocks FROM blocks";
+    expect(await sql(t.store, blocks)).toEqual([{ blocks: 1 }]);
+    expect(await loggedRefusals(async () => t.post(dan, body))).toEqual({
+      status: 202,
+      refused: [[{ event: "kopje.inbox.refused", status: 202, reason: "relay-not-applied" }]],
+    });
+    await settle(t.store);
+    expect(await sql(t.store, blocks)).toEqual([{ blocks: 1 }]);
+    expect(await t.post(bob, body)).toBe(202);
+    await settle(t.store);
+    expect(await sql(t.store, blocks)).toEqual([{ blocks: 0 }]);
+  });
 });
