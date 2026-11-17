@@ -544,12 +544,12 @@ A remote account's collection sync and the checks of its collections' items (mig
 the account's `featuredCollections`, and `collections_changed` 0 or 1, whether the account's collections changed since
 the claim of the round holding the sync (a restored 1 is cleared by the next claim); a `collection_check_quotas` row
 names a remote collection's owner (`account_id`, whose delete cascades to it) and holds `day`, the UTC day number of its
-latest item-check claims (an INTEGER from 0 to 2^31 − 1, CHECK `collection_check_quotas_day`), and `used`, the claims
-made that day (an INTEGER from 0 to 250, CHECK `collection_check_quotas_used`). Any other value fails with `CHECK
-constraint failed`. A dump carries them as they are, so a restored Store goes on with the same day's count; a `day`
-after the Store's clock keeps its count until that day has passed. A dump taken before 0113 has neither: it restores
-into a Store at its own migrations, which then upgrades, giving every sync 0 and no quota. A file built from legacy data
-has no row.
+latest item-check claims (an INTEGER from 0 to 104,249,990, the last day whose next day starts within 2^53 − 1 ms, the
+latest due time of an item's check, CHECK `collection_check_quotas_day`), and `used`, the claims made that day (an
+INTEGER from 0 to 250, CHECK `collection_check_quotas_used`). Any other value fails with `CHECK constraint failed`. A
+dump carries them as they are, so a restored Store goes on with the same day's count; a `day` after the Store's clock
+keeps its count until that day has passed. A dump taken before 0113 has neither: it restores into a Store at its own
+migrations, which then upgrades, giving every sync 0 and no quota. A file built from legacy data has no row.
 `notifications.collection_item_id` and `notifications.collection_id` (migration `0107_collection_notifications`) are
 each NULL or 18 ASCII digits naming an item or a collection the dump holds: an `added_to_collection` notification
 names its item alone, a `collection_update` its collection alone, and any other type neither, with at most one

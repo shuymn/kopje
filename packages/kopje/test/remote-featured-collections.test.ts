@@ -325,6 +325,35 @@ describe("the check rounds", () => {
     expect(await items(t)).toSatisfy((all: ItemRow[]) => all.every((row) => row.state === ACCEPTED));
     expect(await quota(t, spentId)).toEqual({ day: dayOf(NOW) + 1, used: 5 });
   });
+
+  it("defer a spent owner's items from the last day a quota row holds to a due time the queue holds", async () => {
+    const t = await setup();
+    const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
+    const [member] = await seededMembers(t, 1);
+    const entry = item(owner, member!);
+    serveCollections(t.web, owner, [[collection(owner, [entry])]]);
+    const ownerId = await storedOwner(t, owner);
+    await syncAll(t);
+    // The latest day collection_check_quotas_day admits (as an import may restore it): a day after it would defer past
+    // what collection_items.check_due_at holds, and is refused as stored.
+    const last = Math.floor(Number.MAX_SAFE_INTEGER / DAY_MS) - 1;
+    expect((last + 2) * DAY_MS).toBeGreaterThan(Number.MAX_SAFE_INTEGER);
+    await sql(
+      t.store,
+      "INSERT INTO collection_check_quotas (account_id, day, used) VALUES (?, ?, ?)",
+      ownerId,
+      last,
+      OWNER_CHECKS_PER_DAY,
+    );
+    await expect(sql(t.store, "UPDATE collection_check_quotas SET day = ?", last + 1)).rejects.toThrow(
+      /collection_check_quotas_day/,
+    );
+    expect(await checkRound(t)).toBe(false);
+    expect(await items(t)).toMatchObject([
+      { state: PENDING, check_due_at: (last + 1) * DAY_MS, check_token: null, check_attempts: 0 },
+    ]);
+    expect(fetchesOf(t.web, entry.featureAuthorization)).toBe(0);
+  });
 });
 
 describe("amplification", () => {

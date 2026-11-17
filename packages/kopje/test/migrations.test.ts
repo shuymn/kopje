@@ -15185,11 +15185,17 @@ describe("0113_featured_collection_syncs", () => {
         ["used = 1.5", "collection_check_quotas_used"],
         ["used = 'x'", "collection_check_quotas_used"],
         ["day = -1", "collection_check_quotas_day"],
-        ["day = 2147483648", "collection_check_quotas_day"],
+        ["day = 104249991", "collection_check_quotas_day"],
         ["day = 1.5", "collection_check_quotas_day"],
       ]) {
         expect(() => sql.exec(`UPDATE collection_check_quotas SET ${set}`), set).toThrow(name);
       }
+      // The last day: the start of the day after it is the latest due time collection_items.check_due_at holds.
+      const DAY_MS = 86_400_000;
+      const last = Math.floor(Number.MAX_SAFE_INTEGER / DAY_MS) - 1;
+      expect(last).toBe(104_249_990);
+      sql.exec("UPDATE collection_check_quotas SET day = ?", last);
+      expect(sql.exec("SELECT day FROM collection_check_quotas").one()).toEqual({ day: last });
       // The account's deletion takes its sync and its claims with it.
       sql.exec("DELETE FROM accounts WHERE id = ?", ACCOUNT);
       expect(sql.exec("SELECT count(*) AS n FROM collection_check_quotas").one()).toEqual({ n: 0 });

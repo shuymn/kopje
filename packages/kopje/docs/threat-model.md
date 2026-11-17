@@ -3393,10 +3393,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   ("0107_collection_notifications"), `test/collection-notifications.test.ts` ("refuses a restore of … notifications of
   one item, or of one collection and recipient", of 600 and of 6,000).
   `collection_syncs.collections_read` and `collections_changed` (each 0 or 1) and the `collection_check_quotas` rows (a
-  remote collection owner's UTC day number and its claims, 0 to 250), imports included, meet the [stored
-  bounds](dump-format.md#stored-bounds), enforced by migration `0113_featured_collection_syncs`, and a quota row goes
-  with its account (`ON DELETE CASCADE`, and a purge's own step); the claims read the quota with the same bound
-  (`OWNER_CHECKS_PER_DAY`); `test/migrations.test.ts` ("0113_featured_collection_syncs"),
+  remote collection owner's UTC day number, 0 to 104,249,990 so that a deferral to the next day stays within an item
+  check's due time, and its claims, 0 to 250), imports included, meet the [stored bounds](dump-format.md#stored-bounds),
+  enforced by migration `0113_featured_collection_syncs`, and a quota row goes with its account (`ON DELETE CASCADE`,
+  and a purge's own step); the claims read the quota with the same bound (`OWNER_CHECKS_PER_DAY`);
+  `test/migrations.test.ts` ("0113_featured_collection_syncs"), `test/remote-featured-collections.test.ts` ("defer a
+  spent owner's items from the last day a quota row holds to a due time the queue holds"),
   `test/inbox-regressions.test.ts` ("purges a remote account's collections and memberships within the batch budget").
   _Enforced (main)_ for remote field verification: `remote_field_links` rows, imports included, meet the
   [stored bounds](dump-format.md#stored-bounds), enforced by migration `0068_remote_field_verification`, whose triggers
