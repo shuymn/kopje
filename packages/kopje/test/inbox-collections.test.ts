@@ -127,6 +127,39 @@ describe("an owner's Add and Remove without an id (D20)", () => {
   });
 });
 
+describe("another account of the owner's server", () => {
+  it("changes none of the owner's collections or items by its own Add, Remove or Update", async () => {
+    const t = await setup();
+    const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
+    const other = await featuredOwner(t.web, "other", COLLECTIONS_ONLY);
+    const member = await storedMember(t, "member", OTHER);
+    const second = await storedMember(t, "second", OTHER);
+    const entry = item(owner, member);
+    const { listed } = await synced(t, owner, [entry]);
+    serveCollections(t.web, other, [[]]);
+    await storedOwner(t, other);
+    await syncAll(t);
+    const before = { collections: await collectionRows(t), items: await items(t) };
+    expect(before.items).toMatchObject([{ uri: entry.id }]);
+
+    // An item added to, or removed from, the owner's collection.
+    const added = item(other, second);
+    expect(await t.post(other, addOrRemove("Add", other, listed.id, added))).toBe(202);
+    expect(await t.post(other, addOrRemove("Remove", other, listed.id, entry.id))).toBe(202);
+    // The owner's collection removed from, added to or updated in the other's featured collections, attributed to it.
+    expect(await t.post(other, addOrRemove("Remove", other, other.featuredCollections, listed.id))).toBe(202);
+    const taken = { ...listed, attributedTo: other.uri, name: "taken", orderedItems: [] };
+    expect(await t.post(other, addOrRemove("Add", other, other.featuredCollections, taken))).toBe(202);
+    expect(await t.post(other, update(other, taken))).toBe(202);
+    expect({ collections: await collectionRows(t), items: await items(t) }).toEqual(before);
+
+    // The owner's own Add of the same member's item applies (the branch the other's reached).
+    const own = item(owner, second);
+    expect(await t.post(owner, addOrRemove("Add", owner, listed.id, own))).toBe(202);
+    expect((await items(t)).map((row) => row.uri)).toEqual([entry.id, own.id]);
+  });
+});
+
 describe("an owner's Update of a collection", () => {
   it("updates its own collection and queues only the items whose revision changed, asking no sync", async () => {
     const t = await setup();
@@ -262,6 +295,22 @@ describe("a member's Delete of its feature authorization", () => {
     expect(await items(t)).toMatchObject([{ state: ACCEPTED }]);
     expect(await t.post(member, deleteOf(member, b.featureAuthorization, listed.id))).toBe(202);
     expect(await items(t)).toMatchObject([{ state: REVOKED }]);
+  });
+
+  it("revokes by the named collection only an authorization naming the Delete's actor as its target", async () => {
+    const t = await setup();
+    const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
+    const member = await storedMember(t, "member", OTHER);
+    const entry = item(owner, member);
+    const { listed } = await synced(t, owner, [entry]);
+    // Unchecked: no verified authorization, so the Delete finds the row by its collection and its target.
+    const body = deleteOf(member, entry.featureAuthorization, listed.id);
+    const named = (body as { object?: object }).object;
+    const elsewhere = { ...body, object: { ...named, interactionTarget: `${OTHER}/users/neighbour` } };
+    expect(await t.post(member, elsewhere)).toBe(202);
+    expect(await items(t)).toMatchObject([{ state: PENDING, check_due_at: NOW }]);
+    expect(await t.post(member, { ...body, id: `${entry.featureAuthorization}#delete-again` })).toBe(202);
+    expect(await items(t)).toMatchObject([{ state: REVOKED, check_due_at: null }]);
   });
 
   it("revokes an unchecked item by its candidate, before its check", async () => {

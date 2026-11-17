@@ -515,11 +515,13 @@ against their own instance. TLS is assumed between all parties.
   `src/domain/collection-checks.ts`); `test/inbox-collections.test.ts`, `test/collection-sync.test.ts` ("refuses a
   collection of another host or another owner, and cuts a long name and description"),
   `test/remote-featured-collections.test.ts` ("leaves pending, without an error, a match whose authorization the member
-  holds in another row"), `test/feature-lifecycle.test.ts` ("agrees with the policy after every step, and accepts a
-  served candidate once settled", "accepts O's item whose authorization X's item lists first", "changes nothing at a
-  delayed Delete of A after O's change to B", against `FeaturePolicy` in `test/feature-model.ts`),
-  `test/remote-collections-api.test.ts` ("stores nothing for a collection whose owner Kopje does not store, or that its
-  owner does not attribute"). A change to these rules changes `test/feature-model.ts` with it.
+  holds in another row", "accepts only an authorization naming the item's member as its target, on that member's
+  server", "claims no restored revoked row back to accepted while its member's server serves the authorization"),
+  `test/feature-lifecycle.test.ts` ("agrees with the policy after every step, and accepts a served candidate once
+  settled", "accepts O's item whose authorization X's item lists first", "changes nothing at a delayed Delete of A after
+  O's change to B", against `FeaturePolicy` in `test/feature-model.ts`), `test/remote-collections-api.test.ts` ("stores
+  nothing for a collection whose owner Kopje does not store, or that its owner does not attribute"). A change to these
+  rules changes `test/feature-model.ts` with it.
 - **ID-7: replay changes nothing twice.** A repeated activity creates no second relationship, counter change,
   notification, push or outbound intent (natural keys). A valid `Delete` or `Undo` that arrives before its target is
   recorded for 30 days and prevents the target from appearing later; so is a collection owner's `Remove` of an item

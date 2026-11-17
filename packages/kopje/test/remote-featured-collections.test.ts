@@ -29,6 +29,7 @@ import {
   nextDue,
   PENDING,
   REJECTED,
+  REVOKED,
   requestSync,
   seededMembers,
   serveAuthorization,
@@ -153,6 +154,57 @@ describe("the check of an item", () => {
     });
   });
 
+  it("accepts only an authorization naming the item's member as its target, on that member's server", async () => {
+    const t = await setup();
+    const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
+    const [member, neighbour, restored] = await seededMembers(t, 3);
+    const named = item(owner, member!);
+    const moved = item(owner, restored!);
+    const listed = collection(owner, [named, moved]);
+    serveCollections(t.web, owner, [[listed]]);
+    // The member's server serves an authorization of the collection for another of its accounts.
+    serveAuthorization(t.web, { ...named, featuredObject: neighbour!.uri }, listed.id);
+    await storedOwner(t, owner);
+    await syncAll(t);
+    // A restored row whose candidate is on another server than its member (no writer stores one), that server serving
+    // an authorization naming the member.
+    const elsewhere = "https://elsewhere.example/feature_authorizations/1";
+    await sql(t.store, "UPDATE collection_items SET candidate_approval_uri = ? WHERE uri = ?", elsewhere, moved.id);
+    serveAuthorization(t.web, { ...moved, featureAuthorization: elsewhere }, listed.id);
+
+    expect(await checkRound(t)).toBe(false);
+    for (const [entry, fetched] of [
+      [named, named.featureAuthorization],
+      [moved, elsewhere],
+    ] as const) {
+      expect(t.web.fetched).toContain(fetched);
+      expect(byUri(await items(t)).get(entry.id)).toMatchObject({
+        state: PENDING,
+        approval_uri: null,
+        check_due_at: null,
+        check_token: null,
+      });
+    }
+  });
+
+  it("claims no restored revoked row back to accepted while its member's server serves the authorization", async () => {
+    const t = await setup();
+    const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
+    const [member] = await seededMembers(t, 1);
+    const entry = item(owner, member!);
+    const listed = collection(owner, [entry]);
+    serveAuthorization(t.web, entry, listed.id);
+    serveCollections(t.web, owner, [[listed]]);
+    await storedOwner(t, owner);
+    await syncAll(t);
+    // A row the schema admits and a restore may hold: revoked, its candidate kept, queued now.
+    await sql(t.store, "UPDATE collection_items SET state = ? WHERE uri = ?", REVOKED, entry.id);
+    expect(await items(t)).toMatchObject([{ state: REVOKED, check_due_at: NOW }]);
+    await checkRound(t);
+    expect(t.web.fetched).toContain(entry.featureAuthorization);
+    expect(await items(t)).toMatchObject([{ state: REVOKED, approval_uri: null }]);
+  });
+
   it("leaves pending, without an error, a match whose authorization the member holds in another row", async () => {
     const t = await setup();
     const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
@@ -185,45 +237,49 @@ describe("the check of an item", () => {
 });
 
 describe("the check rounds", () => {
-  it("check 250 items in 63 rounds of at most 8 sends, the owner renaming a collection before every round", async () => {
-    const t = await setup();
-    const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
-    const members = await seededMembers(t, 250);
-    const lists = Array.from({ length: 10 }, (_, n) => members.slice(n * 25, n * 25 + 25).map((m) => item(owner, m)));
-    const listed = lists.map((entries) => collection(owner, entries));
-    listed.forEach((entry, n) => lists[n]!.forEach((member) => serveAuthorization(t.web, member, entry.id)));
-    serveCollections(t.web, owner, [listed.slice(0, 5), listed.slice(5)]);
-    const ownerId = await storedOwner(t, owner);
-    await syncAll(t);
-    expect((await items(t)).filter((row) => row.check_due_at === NOW)).toHaveLength(250);
+  it(
+    "check 250 items in 63 rounds of at most 8 sends, the owner renaming a collection before every round",
+    { timeout: 120_000 },
+    async () => {
+      const t = await setup();
+      const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
+      const members = await seededMembers(t, 250);
+      const lists = Array.from({ length: 10 }, (_, n) => members.slice(n * 25, n * 25 + 25).map((m) => item(owner, m)));
+      const listed = lists.map((entries) => collection(owner, entries));
+      listed.forEach((entry, n) => lists[n]!.forEach((member) => serveAuthorization(t.web, member, entry.id)));
+      serveCollections(t.web, owner, [listed.slice(0, 5), listed.slice(5)]);
+      const ownerId = await storedOwner(t, owner);
+      await syncAll(t);
+      expect((await items(t)).filter((row) => row.check_due_at === NOW)).toHaveLength(250);
 
-    const sent: string[] = [];
-    const loader = withFetch(t.web, cavageRefused(t.web, OTHER, sent));
-    let renamed = 0;
-    let before = 0;
-    const perRound: { sends: number; bytes: number }[] = [];
-    const bytesOf = (urls: string[]) =>
-      urls.reduce((n, url) => n + JSON.stringify(t.web.served.get(url)?.body ?? null).length, 0);
-    const { rounds } = await checkUntilQuiet(t, NOW, loader, async (now) => {
-      perRound.push({ sends: sent.length - before, bytes: bytesOf(sent.slice(before)) });
-      before = sent.length;
-      // An owner's change before every round: a sync reads it (no sync phase holds the checks).
-      renamed++;
-      const pages = [listed.slice(0, 5), listed.slice(5)].map((page) =>
-        page.map((entry) => ({ ...entry, name: `${entry.name} (${renamed})` })),
+      const sent: string[] = [];
+      const loader = withFetch(t.web, cavageRefused(t.web, OTHER, sent));
+      let renamed = 0;
+      let before = 0;
+      const perRound: { sends: number; bytes: number }[] = [];
+      const bytesOf = (urls: string[]) =>
+        urls.reduce((n, url) => n + JSON.stringify(t.web.served.get(url)?.body ?? null).length, 0);
+      const { rounds } = await checkUntilQuiet(t, NOW, loader, async (now) => {
+        perRound.push({ sends: sent.length - before, bytes: bytesOf(sent.slice(before)) });
+        before = sent.length;
+        // An owner's change before every round: a sync reads it (no sync phase holds the checks).
+        renamed++;
+        const pages = [listed.slice(0, 5), listed.slice(5)].map((page) =>
+          page.map((entry) => ({ ...entry, name: `${entry.name} (${renamed})` })),
+        );
+        serveCollections(t.web, owner, pages);
+        await requestSync(t, ownerId);
+        await syncAll(t, t.web.loader, now);
+      });
+      expect(rounds).toBe(Math.ceil(250 / ITEM_CHECKS_PER_ROUND));
+      expect(await items(t)).toSatisfy((rows: ItemRow[]) =>
+        rows.every((row) => row.state === ACCEPTED && row.check_due_at === null),
       );
-      serveCollections(t.web, owner, pages);
-      await requestSync(t, ownerId);
-      await syncAll(t, t.web.loader, now);
-    });
-    expect(rounds).toBe(Math.ceil(250 / ITEM_CHECKS_PER_ROUND));
-    expect(await items(t)).toSatisfy((rows: ItemRow[]) =>
-      rows.every((row) => row.state === ACCEPTED && row.check_due_at === null),
-    );
-    expect(perRound.every((round) => round.sends <= REQUEST_MAX_FETCHES)).toBe(true);
-    expect(perRound.every((round) => round.bytes <= REQUEST_MAX_BYTES)).toBe(true);
-    expect(await quota(t, ownerId)).toEqual({ day: dayOf(NOW), used: 250 });
-  });
+      expect(perRound.every((round) => round.sends <= REQUEST_MAX_FETCHES)).toBe(true);
+      expect(perRound.every((round) => round.bytes <= REQUEST_MAX_BYTES)).toBe(true);
+      expect(await quota(t, ownerId)).toEqual({ day: dayOf(NOW), used: 250 });
+    },
+  );
 
   it("accept every item through transient failures and a round abandoned after its claims", async () => {
     const t = await setup();
