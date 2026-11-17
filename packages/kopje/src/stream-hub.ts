@@ -747,8 +747,9 @@ export class StreamHub {
   // read is replaced by the mark alone). The runtime may list a hibernated socket whose client never answered the Close
   // as open again after a wake (seen on Cloudflare; workerd keeps it closing), and the mark keeps it closed: no second
   // close or log, no frame, counted as closing, and charged until it leaves getWebSockets(). One already marked is left
-  // as it is. #subscribe leaves the mark room within the runtime's limit. `read` is the socket's attachment as read in
-  // the same synchronous step, if it was.
+  // as it is. #subscribe leaves the mark room within the runtime's limit; should the write still fail, the mark alone
+  // replaces the attachment, so the socket stays closed and its charge is unknown, as for one that does not read.
+  // `read` is the socket's attachment as read in the same synchronous step, if it was.
   #shut(ws: WebSocket, code: number, reason: string, read = this.#read(ws)): void {
     const { at, closed } = read;
     if (closed !== null) {
@@ -757,7 +758,11 @@ export class StreamHub {
     try {
       ws.serializeAttachment(at === null ? { closed: code } : { ...at, closed: code });
     } catch {
-      // Not expected within the bound; the close still happens, and a wake may list the socket open again.
+      try {
+        ws.serializeAttachment({ closed: code });
+      } catch {
+        // Not expected for a mark alone; the close still happens, and a wake may list the socket open again.
+      }
     }
     this.#marked.add(ws);
     close(ws, code, reason);

@@ -576,6 +576,47 @@ describe("charges across hibernation (RES-6)", () => {
     expect(logged["kopje.stream.output_refused"]).toMatchObject([{ scope: "unknown", listed: 1, unknown: 1 }]);
   });
 
+  // bob's client reads the Close (1013, at his cap) and never answers it, and the write of his attachment with the mark
+  // throws once: the mark alone replaces it. Listed open after a wake, his socket is neither closed nor logged again,
+  // and carol's upgrade answers 503 while it is listed, its charge unknown.
+  it("keeps a socket closed when the write of its mark fails", async () => {
+    const h = await community(["alice", "bob", "carol"]);
+    const { alice, bob, carol } = h.users;
+    STREAM_OUTPUT.socketBytes = FRESH + FRAME_1K - 1;
+    const logs = spyLogs();
+    const quiet = await halfOpen(h, bob, "public:local");
+    const write: (this: WebSocket, value: unknown) => void = Reflect.get(WebSocket.prototype, "serializeAttachment");
+    let failed = 0;
+    const spy = vi.spyOn(WebSocket.prototype, "serializeAttachment").mockImplementation(function (
+      this: WebSocket,
+      value,
+    ) {
+      if (failed === 0 && typeof value === "object" && value !== null && "closed" in value && "subs" in value) {
+        failed++;
+        throw new Error("serializeAttachment failed");
+      }
+      write.call(this, value);
+    });
+    await status(h, alice);
+    expect((await quiet.closed()).code).toBe(1013);
+    expect(failed).toBe(1);
+    spy.mockRestore();
+    expect(
+      await runInDurableObject(
+        h.store as never,
+        (_instance, state: DurableObjectState) =>
+          state.getWebSockets(`a:${bob.id}`)[0]!.deserializeAttachment() as unknown,
+      ),
+    ).toEqual({ closed: 1013 });
+    expect((await upgrade(h, carol.token)).status).toBe(503);
+    await evictDurableObject(h.store);
+    await status(h, alice);
+    await drain(h);
+    expect((await upgrade(h, carol.token)).status).toBe(503);
+    expect(updates(quiet)).toEqual([]);
+    expect(outputLogs(logs.log, logs.warn)["kopje.stream.output_closed"]).toMatchObject([{ scope: "socket" }]);
+  });
+
   // After the Store is evicted, nothing has recomputed the instance's charge (79,104, bob's socket) when bob asks to
   // subscribe to an unknown stream: the reply's 2,160 would pass a cap of 79,104 + 2,159, so the socket is closed and
   // sent no reply.
