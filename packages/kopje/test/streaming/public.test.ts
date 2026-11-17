@@ -194,6 +194,26 @@ describe("update on public and hashtag streams", () => {
     ]);
   });
 
+  // A remote status's counts are the untrusted ones its server gave (migration 0114_untrusted_counts), as REST shows
+  // them (status-rows.ts STATUS_COLUMN_MAP).
+  it("sends a remote status with the untrusted counts REST shows", async () => {
+    const h = await community(["alice"]);
+    const erin = await remoteAccount(h.store, "erin");
+    const inbox = await feeds(h, h.users.alice.token);
+    const remote = await remoteStatus(h, erin);
+    await sql(
+      h.store,
+      `UPDATE statuses SET favourites_count = 1, reblogs_count = 2, untrusted_favourites_count = 42,
+				untrusted_reblogs_count = 7 WHERE id = ?`,
+      remote,
+    );
+    await h.store.streamTick(BUILD);
+    await drained(h, inbox);
+    const sent = JSON.parse((await inbox.next()).payload!) as Status;
+    expect([sent.id, sent.favourites_count, sent.reblogs_count]).toEqual([remote, 42, 7]);
+    expect(sent).toEqual((await getJson<Status>(h, `/api/v1/statuses/${remote}`, h.users.alice.token)).body);
+  });
+
   it("leaves out what the timelines leave out: unlisted, private, boosts, and on public replies to others", async () => {
     const h = await community(["alice", "bob", "carol"]);
     const inbox = await feeds(h, h.users.alice.token);
