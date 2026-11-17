@@ -1698,7 +1698,8 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   it in some of these too, each where Mastodon's library compacts it (`test/fixtures/ld-signed/forms.json`) and
   jsonld.js compacts it alike: under an inline context of definitions Mastodon or Fedify write (below), each value of a
   name it types `@id` held to the rule for an IRI-typed property's (one over a prefix only `full_context` defines makes
-  Mastodon's library raise; a datatype given as a compact IRI, `xsd:boolean`, it refuses and jsonld.js takes). Kopje
+  Mastodon's library raise; a datatype given as a compact IRI, `xsd:boolean`, it refuses and jsonld.js takes); with an
+  array directly in another, which JSON-LD flattens, but under a name with a `@list` container (a list of lists). Kopje
   reads a name, as a member or as a type, only where the compaction writes it so, as Mastodon's readers read it,
   whatever the body's shape: a member's name where it means in the body's contexts what it means in `full_context`, or
   neither defines it (in a typed node, as the type's own context makes it mean on each side: the data-integrity

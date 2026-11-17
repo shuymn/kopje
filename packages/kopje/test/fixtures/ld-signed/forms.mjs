@@ -774,6 +774,14 @@ const forms = {
     { sensitive: false },
     [AS, SEC, { sensitive: { "@id": "as:sensitive", "@type": "xsd:boolean" } }],
   ),
+  // An array directly in another, which JSON-LD's expansion flattens (but in a list, where it makes a list of lists).
+  "Undo of a block, both typed as absolute IRIs, with an array in an array": absoluteUndo({ cc: [[PUBLIC]] }),
+  "Undo of a block, both typed as absolute IRIs, with arrays in an array": absoluteUndo({
+    cc: [[PUBLIC, FOLLOWERS], [ALICE]],
+  }),
+  "Undo of a block, both typed as absolute IRIs, with an array in an array under a list": absoluteUndo({
+    instrument: { orderedItems: [[ALICE]] },
+  }),
 };
 
 // The same bodies without a signature: read as received by both.

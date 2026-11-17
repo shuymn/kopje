@@ -404,7 +404,9 @@ function bodyKeysReadable(json: Json): boolean {
 // forms.json, "form 4") and jsonld.js's write without an error and alike (#1717):
 //   - an inline context of definitions real senders write (SENDER_DEFINITIONS, rule 5), which JSON-LD processes as
 //     Mastodon's own and Fedify's bodies are processed: each value of a name it types @id is held to the rule above
-//     too, as the compaction writes it as an IRI (one over a prefix only full_context defines raises).
+//     too, as the compaction writes it as an IRI (one over a prefix only full_context defines raises);
+//   - an array directly in another, which JSON-LD's expansion flattens, but under a name either context gives a @list
+//     container (a list of lists);
 const JSONLD_BUDGET = 1_000;
 const UNSUPPORTED_JSONLD_KEYWORDS = new Set(["@graph", "@included", "@reverse"]);
 const SECURITY_V1 = "https://w3id.org/security/v1";
@@ -478,12 +480,16 @@ function mastodonCompacts(
   const typeName = (value: unknown) =>
     iri(value) || (typeof value === "string" && isName(value) && value !== "id" && value !== "type");
   const iriValued = (key: string) => IRI_VALUED.has(key) || (retracts && meanings.get(key)?.coercion === "@id");
+  const listed = (key: string) =>
+    [meanings.get(key), FULL_CONTEXT_MEANINGS.get(key)].some(
+      (meaning) => meaning?.containers.includes("@list") === true,
+    );
   const node = Object.fromEntries(Object.entries(json).filter(([key]) => key !== "@context" && key !== "signature"));
   const pending: [string, unknown][] = [["", node]];
   while (pending.length > 0) {
     const [key, value] = pending.pop()!;
     if (Array.isArray(value)) {
-      if (LANGUAGE_MAPS.has(key) || value.some(Array.isArray)) {
+      if (LANGUAGE_MAPS.has(key) || (value.some(Array.isArray) && (!retracts || listed(key)))) {
         return false;
       }
       pending.push(...value.map((item): [string, unknown] => [key, item]));

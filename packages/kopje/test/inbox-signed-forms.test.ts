@@ -95,7 +95,10 @@ function form(name: string): Entry {
 // shape beyond the closed one, and beside it one Mastodon reads as received; and of those Mastodon compacts, the ones
 // Kopje does not show it compacts, which it reads less.
 const FORM_4 = [...forms.keys()].filter((name) => name.startsWith("Undo of a block, both typed as absolute IRIs, "));
-const FORM_4_READS_LESS: string[] = [];
+const FORM_4_READS_LESS = [
+  // A list of lists, which Kopje does not show the compaction writes as JSON-LD 1.1 does.
+  "Undo of a block, both typed as absolute IRIs, with an array in an array under a list",
+];
 // Of those, the ones jsonld.js reads otherwise than Mastodon's JSON-LD library: a datatype given as a compact IRI over a
 // prefix of the ActivityStreams context, which Mastodon's refuses and jsonld.js takes.
 const FORM_4_PARTED = ["Undo of a block, both typed as absolute IRIs, under an inline definition no sender writes"];
@@ -338,7 +341,6 @@ describe("D1: forms whose readings differ, each named by its class", () => {
 
   describe("reads less than Mastodon", () => {
     it.each([
-      "with an array in an array",
       "under an inline context",
       "with a proof of plain names",
       "with a number where an IRI is expected",
@@ -669,6 +671,7 @@ describe("D1: forms whose readings differ, each named by its class", () => {
     it.each([
       "Undo of a block, both typed as IRIs",
       "Undo of a block, both typed as IRIs, with a language map tagged id and type",
+      "Undo of a block, both typed as IRIs, with an array in an array",
     ])("%s, in a body Mastodon compacts: both lift the block", async (name) => {
       expect(form(name).fallback).toBeUndefined();
       expect(accepted(await layered(form(name)))).toMatchObject({ type: "Undo", object: { type: "Block" } });
@@ -863,18 +866,18 @@ describe("D1: forms whose readings differ, each named by its class", () => {
         }
       }
       expect(names).toBeGreaterThanOrEqual(150);
-      expect(renamed.length).toBe(23);
+      expect(renamed.length).toBe(29);
       // Bodies Mastodon compacts outside the shape Kopje shows it compacts (an inline context, an array in an array,
       // a proof, a number where an IRI is expected, a type naming a keyword alias): their types are read as given, so
       // such an activity applies less than Mastodon's.
       expect([...kept]).toEqual([
         "Note type as an IRI",
-        "Undo of a block, both typed as IRIs, with an array in an array",
         "Undo of a block, both typed as IRIs, under an inline context",
         "Undo of a block, both typed as IRIs, with a proof of plain names",
         "Undo of a block, both typed as IRIs, with a number where an IRI is expected",
         "Undo of a block, both typed as IRIs, with a type naming id",
         "Undo of a block, both typed as IRIs, with a type naming type",
+        "Undo of a block, both typed as absolute IRIs, with an array in an array under a list",
       ]);
     });
 
