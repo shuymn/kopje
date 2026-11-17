@@ -938,6 +938,10 @@ const forms = {
   // A relative reference whose path ends in a dot segment before its fragment, which jsonld.js removes.
   "Undo of a block, both typed as absolute IRIs, with a relative reference of a double-dot segment before a fragment":
     absoluteUndo({ instrument: { id: "clients/..#1" } }),
+  // Numbers where an IRI is expected, written under the name's IRI as given: 505 values once compacted.
+  "Undo of a block, both typed as absolute IRIs, with 400 numbers where an IRI is expected": absoluteUndo({
+    instrument: Array.from({ length: 400 }, () => 5),
+  }),
 };
 
 // The same bodies without a signature: read as received by both.

@@ -774,6 +774,16 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       expect(compacted).toBeGreaterThanOrEqual(60);
     });
 
+    // At the boundary: a value a name typed @id does not take (a number) is written under the name's IRI as given, its
+    // own count, so that the bound is Ruby's count where three for each would pass 1,000, and the Undo applies.
+    it("bounds 400 numbers where an IRI is expected at the values of Mastodon's compaction", () => {
+      const { received, mastodon } = form(
+        "Undo of a block, both typed as absolute IRIs, with 400 numbers where an IRI is expected",
+      );
+      expect(jsonValues(mastodon)).toBe(505);
+      expect(retractionWrittenBound(received)).toBe(505);
+    });
+
     it.each([
       ["past the value limit as received", /^Mastodon::InvalidJsonLdError: has too many nodes/],
       ["past the value limit once compacted", /^Mastodon::InvalidJsonLdError: has too many nodes/],
@@ -868,7 +878,7 @@ describe("D1: forms whose readings differ, each named by its class", () => {
         }
       }
       expect(names).toBeGreaterThanOrEqual(150);
-      expect(renamed.length).toBe(75);
+      expect(renamed.length).toBe(77);
       // Bodies Mastodon compacts outside the shape Kopje shows it compacts (an inline context, an array in an array,
       // a proof, a number where an IRI is expected, an id it writes otherwise or jsonld.js does, a language map of
       // another shape): their types are read as given, so such an activity applies less than Mastodon's.
