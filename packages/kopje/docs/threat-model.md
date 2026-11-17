@@ -3182,9 +3182,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   read"), `test/migrations.test.ts` ("0110_scheduled_params"), `test/dump-import.test.ts` ("round-trips scheduled
   statuses' params").
   `scheduled_at` must name a date and time the calendar has (Ruby's `DateTime.parse`: no February 29 outside leap years,
-  no 31st of a 30-day month, minutes and hours in range), checked before its offset applies. A query `readParams` reads
-  is bounded with the body (above). A query read only through Hono (`/api/v1/accounts/lookup`, `/api/oembed`,
-  `/api/v1/peers/search`), or not at all: _Gap._
+  no 31st of a 30-day month, minutes and hours in range), checked before its offset applies. A query `readParams` or
+  `readQuery` reads (the API's routes, `/oauth/authorize`, `/authorize_interaction`) is bounded with the body (above).
+  A query a route reads on its own, through Hono (`/api/v1/accounts/lookup`, `/api/oembed`, `/api/v1/peers/search`,
+  the public pages' `max_id`, `min_id` and `server`, `/login`, `/auth/callback`, `/settings`, the admin pages), or not
+  at all: _Gap._
   _Enforced (main)_ for a search resolution's non-ActivityPub answer (NET-4): its `Link` header is read only within
   8,192 characters and 64 links, and not at all past either (`LINK_HEADER_CHARS`, `LINK_HEADER_LINKS` in
   `src/platform/link-header.ts`), in time linear in the value, and its HTML body only within 1 MiB, by

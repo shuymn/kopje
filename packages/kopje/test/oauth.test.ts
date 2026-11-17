@@ -1013,10 +1013,14 @@ describe("duplicate parameters", () => {
       expect(response.status, JSON.stringify(extra)).toBe(302);
       expect(new URL(response.headers.get("location")!).searchParams.get("error")).toBe("invalid_request");
     }
-    for (const extra of [[["client_id", app.client_id]], [["redirect_uri", "https://evil.test/"]]] as [
-      string,
-      string,
-    ][][]) {
+    // A repeated client_id or redirect_uri is not redirected to; a name nested as two kinds is Rack's refusal, before
+    // the request is read.
+    for (const extra of [
+      [["client_id", app.client_id]],
+      [["redirect_uri", "https://evil.test/"]],
+      [["scope[]", "write"]],
+      [["response_type[x]", "y"]],
+    ] as [string, string][][]) {
       const response = await get(extra);
       expect(response.status, JSON.stringify(extra)).toBe(400);
       expect(response.headers.get("location")).toBeNull();
