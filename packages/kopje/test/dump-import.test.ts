@@ -6,6 +6,7 @@ import { PIN_LIMIT } from "../src/domain/activities";
 import { accountFeaturedTags } from "../src/domain/featured-tags";
 import { MAX_PENDING_APPS } from "../src/domain/oauth";
 import { readOperation, sessionOperation, writeOperation } from "../src/domain/operation";
+import { MAX_STATUS_MEDIA } from "../src/domain/status-bounds";
 import { followedTags } from "../src/domain/tags";
 import { MAX_PROFILE_UPDATES } from "../src/platform/dump-catalog";
 import type { DumpTrailer, TableSpec } from "../src/platform/dump-format";
@@ -858,6 +859,69 @@ describe("dump", () => {
       code: "chunk-failed",
       message: expect.stringMatching(/status_pins: more pins than the account may keep/),
     });
+  }, 120_000);
+
+  // RES-2, RES-6: a scheduled status holds at most MAX_STATUS_MEDIA uploads (0109_scheduled_media_cap), so a dump
+  // holding more fails to import, as a value past any stored bound does; one at the cap round-trips.
+  it("round-trips a scheduled status's four held uploads, and refuses a fifth on import (0109)", async () => {
+    const source = await seeded(0);
+    const scheduled = "740000000000000001";
+    const upload = (i: number) => `81000000000000000${i}`;
+    await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      const account = sql
+        .exec<{ account_id: string }>("SELECT account_id FROM local_accounts ORDER BY account_id LIMIT 1")
+        .one().account_id;
+      sql.exec(
+        "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, ?, '{}')",
+        scheduled,
+        account,
+        "2026-12-01T00:00:00.000Z",
+      );
+      // Four held, and a fifth upload unattached.
+      for (let i = 0; i <= MAX_STATUS_MEDIA; i++) {
+        sql.exec(
+          `INSERT INTO media_attachments (id, account_id, scheduled_status_id, position, type, url, gc_at)
+					VALUES (?, ?, ?, ?, 'image', 'https://kopje.test/files/x/full', ?)`,
+          upload(i),
+          account,
+          i < MAX_STATUS_MEDIA ? scheduled : null,
+          i,
+          i < MAX_STATUS_MEDIA ? null : "2026-12-01T00:00:00.000Z",
+        );
+      }
+    });
+    const held = (store: StoreStub) =>
+      runInDurableObject(
+        store,
+        (_instance, state) =>
+          state.storage.sql
+            .exec("SELECT count(*) AS n FROM media_attachments WHERE scheduled_status_id = ?", scheduled)
+            .one().n,
+      );
+    const { text } = await dumpViaRpc(source);
+    const restored = await migratedStore();
+    await copyConfig(source, restored);
+    await importViaRpc(restored, text);
+    expect(await held(restored)).toBe(MAX_STATUS_MEDIA);
+    // The same dump with the fifth held, as a Store before 0109 could hold it.
+    await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      sql.exec("DROP TRIGGER media_attachments_scheduled_cap_insert");
+      sql.exec("DROP TRIGGER media_attachments_scheduled_cap_update");
+      sql.exec(
+        "UPDATE media_attachments SET scheduled_status_id = ?, gc_at = NULL WHERE id = ?",
+        scheduled,
+        upload(MAX_STATUS_MEDIA),
+      );
+    });
+    expect(await held(source)).toBe(MAX_STATUS_MEDIA + 1);
+    const past = await dumpViaRpc(source);
+    const target = await migratedStore();
+    await copyConfig(source, target);
+    expect(String(await rejectionOf(importViaRpc(target, past.text)))).toMatch(
+      /media_attachments: more media than a scheduled status may hold/,
+    );
   }, 120_000);
 
   // statuses.published_at and edited_at have no stored bound (RES-2): reads project them, a dump keeps them as stored.
