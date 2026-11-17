@@ -327,13 +327,6 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       expect(applied(name).effect.statuses).toMatchObject([{ text: expect.stringContaining('<h2>["Title"]</h2>') }]);
     });
 
-    it("sensitive as a one-element array, which Mastodon takes as true", async () => {
-      const name = "sensitive as a one-element array";
-      expect(asReceived(form(name))).toBe(true);
-      expect(statusOf(await layered(form(name))).sensitive).toBe(false);
-      expect(applied(name).effect.statuses).toMatchObject([{ sensitive: true, media: 1 }]);
-    });
-
     it("a mention's type as an IRI", async () => {
       const entry = form("Mention type as an IRI");
       expect(statusOf(await layered(entry)).mentions).toEqual([]);
@@ -359,6 +352,15 @@ describe("D1: forms whose readings differ, each named by its class", () => {
   });
 
   describe("the same effect as Mastodon", () => {
+    // Read as received, its value as each reads it unsigned: Mastodon's boolean column takes an array as true, and so
+    // does Kopje (railsBoolean).
+    it("sensitive as a one-element array: marked", async () => {
+      const name = "sensitive as a one-element array";
+      expect(asReceived(form(name))).toBe(true);
+      expect(statusOf(await layered(form(name))).sensitive).toBe(true);
+      expect(applied(name).effect.statuses).toMatchObject([{ sensitive: true, media: 1 }]);
+    });
+
     // The compaction writes a type given as an IRI as the vocabulary's name, and the patch leaves it so: Kopje reads
     // the activity's type and its embedded object's so (ldSignedReading), and a retraction ends what Mastodon's
     // ends.
