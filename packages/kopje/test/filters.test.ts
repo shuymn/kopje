@@ -434,6 +434,128 @@ describe("filters API", () => {
     expect(await getJson(h, `/api/v2/filters/${filter.id}/statuses`, alice.token)).toEqual({ status: 200, body: [] });
   });
 
+  // A whole_word sent blank or null is read as not sent: a new keyword is whole-word, an existing one keeps its own,
+  // where Mastodon's NOT NULL column refuses the nil it casts (500, docs/mastodon-deviations.md "Filters").
+  it.each([
+    ["POST /api/v1/filters", true],
+    ["PUT /api/v1/filters/:id", false],
+    ["POST /api/v2/filters", true],
+    ["PUT /api/v2/filters/:id", false],
+    ["POST /api/v2/filters/:filter_id/keywords", true],
+    ["PUT /api/v2/filters/keywords/:id", false],
+  ] as const)("%s reads a blank or null whole_word as not sent (%s)", async (route, expected) => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const filter = await createFilter(h, alice, {
+      title: "t",
+      context: ["home"],
+      keywords_attributes: [{ keyword: "kept", whole_word: false }],
+    });
+    const kept = filter.keywords[0]!.id;
+    for (const sent of ["", null]) {
+      const read = async (): Promise<boolean | undefined> => {
+        switch (route) {
+          case "POST /api/v1/filters":
+            return (
+              await (
+                await act(h, alice, "/api/v1/filters", { phrase: "p", context: ["home"], whole_word: sent })
+              ).json<{ whole_word: boolean }>()
+            ).whole_word;
+          case "PUT /api/v1/filters/:id":
+            return (
+              await (
+                await send(h, alice, "PUT", `/api/v1/filters/${kept}`, { whole_word: sent })
+              ).json<{ whole_word: boolean }>()
+            ).whole_word;
+          case "POST /api/v2/filters":
+            return (
+              await createFilter(h, alice, {
+                title: "n",
+                context: ["home"],
+                keywords_attributes: [{ keyword: "n", whole_word: sent }],
+              })
+            ).keywords[0]?.whole_word;
+          case "PUT /api/v2/filters/:id":
+            return (
+              await (
+                await send(h, alice, "PUT", `/api/v2/filters/${filter.id}`, {
+                  keywords_attributes: [{ id: kept, whole_word: sent }],
+                })
+              ).json<Filter>()
+            ).keywords[0]?.whole_word;
+          case "POST /api/v2/filters/:filter_id/keywords":
+            return (
+              await (
+                await act(h, alice, `/api/v2/filters/${filter.id}/keywords`, { keyword: "k", whole_word: sent })
+              ).json<{ whole_word: boolean }>()
+            ).whole_word;
+          case "PUT /api/v2/filters/keywords/:id":
+            return (
+              await (
+                await send(h, alice, "PUT", `/api/v2/filters/keywords/${kept}`, { whole_word: sent })
+              ).json<{ whole_word: boolean }>()
+            ).whole_word;
+        }
+      };
+      expect([sent, await read()]).toEqual([sent, expected]);
+    }
+  });
+
+  // whole_word (a boolean column), a nested keyword's _destroy (NestedAttributes#has_destroy_flag?) and v1's
+  // irreversible (CustomFilter#irreversible=) are each ActiveModel::Type::Boolean's cast: only the listed spellings are
+  // false, so "False" and "Off" are true.
+  it("reads whole_word, _destroy and irreversible as ActiveModel's Boolean casts them, each spelling in its own case", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const created = await createFilter(h, alice, {
+      title: "t",
+      context: ["home"],
+      keywords_attributes: [
+        { keyword: "a", whole_word: "False" },
+        { keyword: "b", whole_word: "FALSE" },
+        { keyword: "c", whole_word: "Off" },
+      ],
+    });
+    expect(created.keywords.map(({ keyword, whole_word }) => [keyword, whole_word])).toEqual([
+      ["a", true],
+      ["b", false],
+      ["c", true],
+    ]);
+    const [a, b] = created.keywords;
+    const updated = await answer(
+      await send(h, alice, "PUT", `/api/v2/filters/${created.id}`, {
+        keywords_attributes: [
+          { id: a!.id, _destroy: "False" },
+          { id: b!.id, _destroy: "FALSE" },
+        ],
+      }),
+    );
+    expect((updated.body as Filter).keywords.map(({ keyword }) => keyword)).toEqual(["b", "c"]);
+    const added = await answer(
+      await act(h, alice, `/api/v2/filters/${created.id}/keywords`, { keyword: "d", whole_word: "False" }),
+    );
+    expect(added.body).toMatchObject({ keyword: "d", whole_word: true });
+    const changed = await answer(
+      await send(h, alice, "PUT", `/api/v2/filters/keywords/${b!.id}`, { whole_word: "fAlSe" }),
+    );
+    expect(changed.body).toMatchObject({ keyword: "b", whole_word: true });
+
+    const v1 = await answer(
+      await act(h, alice, "/api/v1/filters", {
+        phrase: "e",
+        context: ["home"],
+        whole_word: "Off",
+        irreversible: "False",
+      }),
+    );
+    expect(v1.body).toMatchObject({ phrase: "e", whole_word: true, irreversible: true });
+    const v1Id = (v1.body as { id: string }).id;
+    const kept = await answer(
+      await send(h, alice, "PUT", `/api/v1/filters/${v1Id}`, { whole_word: "OFF", irreversible: "OFF" }),
+    );
+    expect(kept.body).toMatchObject({ phrase: "e", whole_word: false, irreversible: false });
+  });
+
   it("maps the v1 API onto the same filters and keywords", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;

@@ -13,9 +13,9 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // The migration cost benchmark (RELEASING.md): pending migration files applied to a
 // large, representative Store in workerd's local Durable Object SQLite, as an upgrade applies them, timed. The whole
 // upgrade (the kernel's bookmark, each file's transaction and the schema verification, which runs once after all
-// pending files) must finish in at most UPGRADE_BUDGET_MS, two thirds of the default 30 seconds of CPU an invocation
-// may use (an alarm's upgrade included; committing each file does not start a new invocation). Local elapsed time
-// stands in for that CPU time.
+// pending files) must finish in at most UPGRADE_BUDGET_MS, two thirds of the 60 seconds of CPU a Store invocation may
+// use under the shipped configs' limits.cpu_ms (wrangler.jsonc, test-node/wrangler-configs.test.ts; an alarm's upgrade
+// included; committing each file does not start a new invocation). Local elapsed time stands in for that CPU time.
 // The verification checks every reference in the Store unless each file is declared foreignKeys: 'unchanged'
 // (src/db/migrations.ts); the output's foreignKeyCheck says which ('store' or 'skipped'). A marker-bearing retry of
 // the same files always checks the whole Store. retryEstimateMs estimates it: for a skipped check, the upgrade plus
@@ -140,7 +140,7 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // bookmark to after the verification: Date.now() in workerd moves only between I/O events, so the clock is read across
 // an await on each side.
 
-export const UPGRADE_BUDGET_MS = 20_000;
+export const UPGRADE_BUDGET_MS = 40_000;
 
 // The share of the local quotes whose quoting status is withdrawn (SHAPE.localQuotes): the slowest of 0, 0.5 and 1
 // measured for 0091_live_local_quotes.

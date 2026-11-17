@@ -2,6 +2,7 @@ import { selectSql } from "../db/columns";
 import { FILTER_STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { railsBlank } from "../platform/rails-blank";
+import { railsBoolean } from "../platform/rails-boolean";
 import { rubyToI } from "../platform/ruby-to-i";
 import { resolveApiId } from "./accounts";
 import { canView, type ViewerContext } from "./audience";
@@ -204,14 +205,6 @@ export type KeywordAttributes = {
   destroy?: string | undefined;
 };
 
-// Rails' boolean casting: blank is nil, "0", "f", "false" and "off" (any case) are false, anything else is true.
-function castBoolean(value: string | undefined): boolean | undefined {
-  if (value === undefined || value === "") {
-    return undefined;
-  }
-  return !["0", "f", "false", "off"].includes(value.toLowerCase());
-}
-
 // The filter's attributes after `changes`, and its own validation errors in the order Mastodon runs them (the action
 // enum, then title and context presence, title length, the contexts). `keywordErrors` are those of the nested
 // keywords, which run between the enum and the presence checks (accepts_nested_attributes_for is declared between).
@@ -305,7 +298,7 @@ function planKeywords(
   // later field wins, and _destroy, once set, stays.
   const merged = new Map<string, { keyword?: string | undefined; wholeWord?: string | undefined; destroy: boolean }>();
   for (const entry of attributes) {
-    const destroy = castBoolean(entry.destroy) === true;
+    const destroy = railsBoolean(entry.destroy) === true;
     if (blank(entry.id)) {
       const allBlank = blank(entry.keyword) && blank(entry.wholeWord);
       if (destroy || allBlank) {
@@ -313,7 +306,7 @@ function planKeywords(
       }
       const keyword = entry.keyword ?? "";
       errors.push(...keywordErrors(keyword, "Keywords keyword"));
-      plan.add.push({ keyword, wholeWord: castBoolean(entry.wholeWord) ?? true });
+      plan.add.push({ keyword, wholeWord: railsBoolean(entry.wholeWord) ?? true });
       continue;
     }
     const row = byId.get(entry.id ?? "");
@@ -335,7 +328,7 @@ function planKeywords(
     }
     const keyword = changes.keyword ?? row.keyword;
     errors.push(...keywordErrors(keyword, "Keywords keyword"));
-    plan.change.push({ id, keyword, wholeWord: castBoolean(changes.wholeWord) ?? row.whole_word === 1 });
+    plan.change.push({ id, keyword, wholeWord: railsBoolean(changes.wholeWord) ?? row.whole_word === 1 });
   }
   const kept = existing.length - plan.remove.length + plan.add.length;
   if (plan.add.length > 0 && kept > MAX_FILTER_KEYWORDS) {
@@ -517,7 +510,7 @@ export const createFilterKeyword = userWriteOperation<
   if (errors.length > 0) {
     return { status: "invalid", errors };
   }
-  const row = insertKeyword(db, filter.id, keyword, castBoolean(input.wholeWord) ?? true, now);
+  const row = insertKeyword(db, filter.id, keyword, railsBoolean(input.wholeWord) ?? true, now);
   return { status: "ok", value: presentKeyword(row) };
 });
 
@@ -539,7 +532,7 @@ export const updateFilterKeyword = userWriteOperation<KeywordChanges & { id: str
     if (errors.length > 0) {
       return { status: "invalid", errors };
     }
-    const wholeWord = castBoolean(input.wholeWord) ?? own.keyword.whole_word === 1;
+    const wholeWord = railsBoolean(input.wholeWord) ?? own.keyword.whole_word === 1;
     updateKeyword(db, own.keyword.id, keyword, wholeWord);
     return { status: "ok", value: { id: own.keyword.id, keyword, whole_word: wholeWord } };
   },
@@ -661,7 +654,7 @@ export type FilterV1Changes = {
 };
 
 function v1FilterChanges(input: FilterV1Changes): FilterChanges {
-  const irreversible = castBoolean(input.irreversible);
+  const irreversible = railsBoolean(input.irreversible);
   return {
     title: input.phrase,
     context: input.context,
@@ -690,7 +683,7 @@ export const createFilterV1 = userWriteOperation<FilterV1Changes, FilterOutcome<
       return { status: "invalid", errors: keywordErrorsFound };
     }
     const filter = insertFilter(db, accountId, next.state, now);
-    const keyword = insertKeyword(db, filter.id, phrase, castBoolean(input.wholeWord) ?? true, now);
+    const keyword = insertKeyword(db, filter.id, phrase, railsBoolean(input.wholeWord) ?? true, now);
     return { status: "ok", value: presentV1(filter, keyword) };
   },
 );
@@ -732,7 +725,7 @@ export const updateFilterV1 = userWriteOperation<FilterV1Changes & { id: string 
     if (errors.length > 0) {
       return { status: "invalid", errors };
     }
-    const wholeWord = castBoolean(input.wholeWord) ?? own.keyword.whole_word === 1;
+    const wholeWord = railsBoolean(input.wholeWord) ?? own.keyword.whole_word === 1;
     updateKeyword(db, own.keyword.id, phrase, wholeWord);
     updateFilterRow(db, own.filter.id, next.state);
     return {

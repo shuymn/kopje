@@ -1398,6 +1398,11 @@ Filters (a status's `filtered`, Mastodon's `CustomFilter#to_regex` over `Status#
 - A remote status's lines end at every `<br>` element of its sanitized HTML, whatever its spelling or attributes
   (`<br/>`, `<br class="x">`, `<br lang="en">`), where Mastodon's `PlainTextFormatter` breaks only at `<br>`, `<br />`
   and `</p>` as the raw HTML writes them (any case) and matches a keyword across the others.
+- A keyword's `whole_word` sent blank or as JSON null is read as not sent, so a new keyword whole-word and an existing
+  one as stored, by `POST /api/v1/filters`, `PUT /api/v1/filters/:id`, `POST /api/v2/filters` and
+  `PUT /api/v2/filters/:id` (`keywords_attributes`), `POST /api/v2/filters/:filter_id/keywords` and
+  `PUT /api/v2/filters/keywords/:id`. Mastodon casts it to nil, which its `NOT NULL` column refuses, and answers 500
+  (`ActiveRecord::NotNullViolation`). Accepted, 2026-11-17.
 
 Posting (`POST` and `PUT /api/v1/statuses`):
 
@@ -1406,10 +1411,14 @@ Posting (`POST` and `PUT /api/v1/statuses`):
 - Media a scheduled status holds cannot be attached by another post (422, not found); Mastodon attaches it, and the
   scheduled post is then lost when it is published.
 - `GET /api/v1/scheduled_statuses` answers within 8 MiB: a page cut there holds fewer scheduled statuses and its
-  `Link` continues after the last one shown. A scheduled status shows at most 4 of the media it holds (Mastodon holds no
-  more).
-- An imported scheduled status whose `scheduled_at` is not a time shows `scheduled_at: null`; Mastodon cannot store such
-  a row.
+  `Link` continues after the last one shown. A page that leaves out scheduled statuses whose parameters cannot be read
+  (below) holds fewer, or none, and its `Link` is that of the scheduled statuses it read, those included: `next` from
+  the oldest whenever it read its `limit`, so a walk reaches every other one. A scheduled status shows at most 4 of the
+  media it holds (Mastodon holds no more).
+- An imported scheduled status whose `scheduled_at` is not a time shows `scheduled_at: null`. One whose parameters
+  JSON cannot read (a NUL in them, or bytes stored as a BLOB), which only a restore made before imports refused them
+  holds, is left out of the list, not found when shown or updated, deleted as any other, and dropped when due with no
+  failure recorded. Mastodon cannot store such rows.
 - An upload is processed before its answer, so no media id is ever still processing: an unfinished upload reads as
   not found (no `not_ready`).
 - Text length (a blank text's length after its warning becomes the text, in the Store; on an edit after the media ids,
@@ -1428,7 +1437,8 @@ Posting (`POST` and `PUT /api/v1/statuses`):
 - An `Idempotency-Key` lasts one hour after the status or scheduled status it made; a scheduled post published within
   that hour keeps it until one hour after its publication. A repeated key answers the scheduled status it made
   (Mastodon answers 404 for an immediate repeat), and a key whose status was deleted posts anew (Mastodon answers 404
-  within the hour).
+  within the hour), as does one whose scheduled status's parameters cannot be read (above), which gives the key up to
+  the new post.
 - Every local status shows the app it was posted through, as Mastodon does at its default `show_application`; Kopje
   has no such setting. The app is shown within Kopje's presentation bounds (threat-model.md RES-3, the presented
   status), judged on the stored value as decoded: a name past them shows `application: null`, and a website past
@@ -1599,8 +1609,7 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   the compaction gives it. A one-element array both read as received, and each reader then reads it as it reads the same
   body unsigned: an `actor` given so is refused, where Mastodon applies the activity for the request's signer (so such a
   `Reject`, `Undo` or `Delete` leaves what Mastodon's ends, #1717); a text given so is read as empty, where Mastodon
-  stores the array's JSON; `sensitive: [true]` is read as false, where Mastodon marks the status (so such media are
-  shown unmarked); an `inReplyTo` given so is read as absent, where Mastodon's job raises and stores nothing; an
+  stores the array's JSON; an `inReplyTo` given so is read as absent, where Mastodon's job raises and stores nothing; an
   `object`, `target` or `instrument` given so is refused, and an `Undo`'s or a `Reject`'s read as absent, where
   Mastodon's job raises too; a single poll option is a poll in both. The patch cannot put back an array the compaction
   shortened (a `null` it left out): an embedded actor's `inbox: [null]` is read, where Mastodon's `[]` drops the update.
@@ -1647,6 +1656,21 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   four proofs. Of the 147 LD-signed forms the captures hold, 50 are so ignored, and Mastodon applies something of 26;
   every body Mastodon 4.6.11 and 4.7.5 and Fedify 2.4.5 send in the captures passes, and so does each release's actor
   context from 3.5.0 to 4.3.23 (`test/fixtures/ld-signed/context-maps.json`). Accepted, 2026-11-17.
+- A remote status's `sensitive` is read as Mastodon assigns `@status_parser.sensitive || false` to its boolean column
+  (`create.rb:115`, `process_status_update_service.rb:184`; ActiveModel's `Boolean` cast): absent, null, `false`, `0`
+  and the strings `"0"`, `"f"`, `"F"`, `"false"`, `"FALSE"`, `"off"` and `"OFF"` leave it unmarked, and any other value
+  marks it (`"False"`, `[]`, `[false]`, an object). `""` casts to nil, which the column's `NOT NULL` refuses where
+  Mastodon assigns it, and Kopje refuses the same: a `Create` of a status not yet stored, or an `Update` that creates
+  one, stores nothing (`Status.create!` raises), and an `Update` with a newer `updated` (Mastodon's explicit update)
+  changes nothing of the status (its transaction rolls back). An `Update` that names no newer version (the implicit
+  update, which assigns no `sensitive`) still applies what Kopje's implicit update applies, its poll's counts, voters
+  and end, its quote and its quote policy (Mastodon's also stores the status's counts, which Kopje does not read), and
+  a `Create` of a status already stored, or of a vote, assigns none and is applied as without it. Which `Update` is
+  newer differs at one boundary, where Mastodon refuses an `Update` with `""` that Kopje applies as implicit (both
+  "Retractions and edits of remote statuses", below). In a
+  body read as received, a JSON number with a fraction or an exponent that equals zero (`0.0`, `0e0`) is read as not
+  sensitive, where Mastodon's Float marks the status: `JSON.parse` does not tell it from `0` (an LD-signed body whose
+  context types `sensitive` `@id` marks any number instead, above). Accepted, 2026-11-17.
 
 Delivery recipients (a local account's followers and poll voters; Mastodon's `Account.inboxes`,
 `app/models/account.rb:490-493`; NET-2 and RES-2 in `docs/threat-model.md`):
@@ -1687,7 +1711,18 @@ ID-7 in `docs/threat-model.md`):
   `updated`, else `edited_at`, else `published`); one whose version is equal, or missing for a status never edited,
   still refreshes the poll and the quote policy, records a changed stamp of the same quote, and verifies the same quote
   again, as Mastodon's `handle_implicit_update!` does; one missing for an edited status changes nothing, as in
-  Mastodon (`process_status_update_service.rb:32-34`).
+  Mastodon (`process_status_update_service.rb:32-34`). Mastodon takes any `Update` naming an `updated` as an explicit
+  edit of a status it holds without `edited_at` (`:30`; a `Create` stores none when `updated` is missing or equals
+  `published`, `create.rb:112`), where Kopje takes one equal to the stored version (that `published`) as the implicit
+  update and changes nothing for an earlier one. So such an equal `Update` with `sensitive: ""` refreshes the poll, the
+  quote and the quote policy here, where Mastodon's `NOT NULL` refuses the whole `Update`; with any other `sensitive`
+  Mastodon applies its content, which Kopje leaves.
+- A remote status's `likes.totalItems` and `shares.totalItems` are not read: its `favourites_count` and
+  `reblogs_count` count the favourites and boosts Kopje stores of it. Mastodon stores each, when the collection is
+  given as an object, as the status's untrusted count (clamped to 0 to 100,000,000, `status_stat.rb:44-47`) on a
+  `Create` (`create.rb:75`, `:206-216`) and on every `Update`, explicit or implicit
+  (`process_status_update_service.rb:393-405`), and its API answers that count in place of its own
+  (`status_serializer.rb:95-101`), moving it with each favourite and boost it receives (`status.rb:324-341`).
   Mastodon moves `edited_at` only on a significant edit (`process_status_update_service.rb`), so after a newer
   metadata-only `Update` it applies an older content `Update`: an author editing A, then B, then A again, whose final A
   arrives before B, ends at B there. Mastodon's behaviour is an ordering bug.
