@@ -72,15 +72,16 @@ import { confirmedInput } from "./resolve";
 //   2. The HTTP signature verifies with Fedify, against the time the request was received (OPS-1: a spooled request
 //      is judged by its spool time), by an RSA or Ed25519 key (a draft-cavage one by an RSA key only), and covers what
 //      Mastodon 4.7 requires (verifyHttpSignature). Unsigned or unverifiable: 401, nothing changes (ID-1).
-//   3. The body is a JSON object with the ActivityStreams context, a type, an id and an actor (a string or array root
-//      is refused, ID-8).
+//   3. The body is a JSON object with the ActivityStreams context, a type, an actor and, for any type but Add and
+//      Remove, an id (a string or array root is refused, ID-8).
 //   4. ID-1: the actor is not local, and it owns the verifying key: its document (fetched, or the stored one while
-//      fresh) lists the key id, and the key names no other owner. The activity id has the actor's origin. One
-//      exception: a Delete another server relayed (a quoted author's revocation of a quote's stamp, forwarded by a
-//      server that holds the quoting status) is signed by its relayer, who must own that key in the same way; it is
-//      applied as the actor's only with the actor's own proof (author-proof.ts), and without one it only has the stamp
-//      verified again. A proof that does not hold drops the relay: 202, nothing applied, logged (dropped). Any other
-//      relay (another type, or an actor's Delete) whose signer owns its key is dropped the same way.
+//      fresh) lists the key id, and the key names no other owner. The activity id, when present, has the actor's
+//      origin. One exception: a Delete another server relayed (a quoted author's revocation of a quote's stamp,
+//      forwarded by a server that holds the quoting status) is signed by its relayer, who must own that key in the
+//      same way; it is applied as the actor's only with the actor's own proof (author-proof.ts), and without one it
+//      only has the stamp verified again. A proof that does not hold drops the relay: 202, nothing applied, logged
+//      (dropped). Any other relay (another type, or an actor's Delete) whose signer owns its key is dropped the same
+//      way.
 //   5. Per type, what the Store cannot fetch itself: a fresh actor document for an Update of the actor that embeds
 //      none (one that embeds its document has it read as a fetched one is and stored without its keys and inboxes,
 //      ID-1), the Move target (ID-4), the object of a Create or Update given by id only.

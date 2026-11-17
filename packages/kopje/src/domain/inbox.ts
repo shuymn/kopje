@@ -198,7 +198,8 @@ import { unfollowRemote } from "./unfollow";
 //                fileRemoteReports; test/inbox-flag.test.ts)
 // The status rows (Create, Update and Delete of statuses, Like, Announce) are applied in domain/remote-statuses.ts and
 // below; test/inbox-statuses.test.ts has one negative test per row.
-// The activity id has the actor's origin (checked by the Worker before anything is written, and again here).
+// The activity id, when present (only an Add or Remove may have none), has the actor's origin (checked by the Worker
+// before anything is written, and again here).
 // ID-3: no inbound activity changes a local account's own row or a local status; local follows change only as the
 // relationship the remote side controls (its follow of us, our pending follow of it).
 //
@@ -3704,7 +3705,7 @@ const SUSPENDED_ADMITS: ReadonlySet<InboundActivity["type"]> = new Set([
 function receive(db: Db, input: StoreReceiveInput): ReceiveResult {
   const { activity, actorUri, now, origin } = input;
   sweep(db, now);
-  // ID-1/ID-3, again where it is written: a remote actor only, and an activity id of its origin.
+  // ID-1/ID-3, again where it is written: a remote actor only, and an activity id, when present, of its origin.
   if (originOf(actorUri) === null || originOf(actorUri) === origin) {
     return ignored("local-actor");
   }
