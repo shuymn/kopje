@@ -461,6 +461,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Delivery recipients"). No Store migration and no
   `wrangler.jsonc` change.
 
+- [docs/mastodon-deviations.md](docs/mastodon-deviations.md) lists the remaining differences from Mastodon 4.7.5 in
+  cursors and other request parameter edge cases, Web Push subscriptions and titles, a remote status's `url` and a
+  media `focus` (#1734, #1759, #1766). No Store migration and no `wrangler.jsonc` change.
+
 ### Fixed
 
 - A remote actor's `manuallyApprovesFollowers`, `discoverable` and `indexable` are read by their literal spelling
