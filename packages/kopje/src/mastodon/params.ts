@@ -90,7 +90,7 @@ export class Params {
     // The maps are read directly: the parameter conformance check counts accessor calls as the handler's reads.
     const sent = (name: string) => this.files.has(name) || this.entries.some(([key]) => key === name);
     const declaredQuery = [...names].flatMap((name): [string, string][] => {
-      const value = sent(name) ? undefined : query.findLast(([key]) => key === name)?.[1];
+      const value = sent(name) ? undefined : selected(query, name)?.[1];
       return value === undefined ? [] : [[name, value]];
     });
     // A file part's place counts the body's entries kept before it.
