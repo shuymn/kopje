@@ -1651,22 +1651,23 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
 Delivery recipients (a local account's followers and poll voters, and the audience a staged `Update` or `Remove`
 reaches; Mastodon's `Account.inboxes`, `app/models/account.rb:490-493`; NET-2 and RES-2 in `docs/threat-model.md`):
 
-- A follower or voter is reached at its shared inbox, else its personal inbox, only when that one value is text of 1 to
-  4,096 UTF-8 bytes without NUL (`reachInboxSql` in `src/domain/audience.ts`, the rule a block's collection `Remove`s
-  stage followers by); a shared inbox outside it is not replaced by the personal inbox. Kopje stores an inbox of at most
-  2,048 bytes from an actor document, so only an import or a restored dump holds one outside the rule, and such a
-  follower or voter gets no new activity that reaches followers or voters. A retraction staged in steps (a local
-  status's `Delete`, a job's `Undo` of a boost, a forward) reads followers and voters by the same rule, so its targets
-  are the ones the same retraction read at once would have; an inbox that received what it withdraws is still reached
-  through its receipt. Mastodon delivers to `preferred_inbox_url` whatever its length (PostgreSQL holds no NUL).
-  Targets recorded or staged before the upgrade keep their inboxes. Accepted, 2026-11-17.
+- A follower or voter is reached at its shared inbox, else its personal inbox, only when that one value is text of 1
+  to 4,096 UTF-8 bytes without NUL (`reachInboxSql` in `src/domain/audience.ts`, the rule a block's collection
+  `Remove`s stage followers by); a shared inbox outside it is not replaced by the personal inbox. Kopje stores an
+  inbox of at most 2,048 bytes from an actor document, so only an import or a restored dump holds one outside the
+  rule, and such a follower or voter gets no new activity Kopje sends to followers or voters at once
+  (`recipientsFor`), in a staged retraction, through a collection's reach or through a moderation reach (below); an
+  addressed account still reads the inbox whole. A retraction staged in steps (a local status's `Delete`, a job's
+  `Undo` of a boost, a forward) reads followers and voters by the same rule, so its targets are the ones the same
+  retraction read at once would have; an inbox that received what it withdraws is still reached through its receipt.
+  Mastodon delivers to `preferred_inbox_url` whatever its length (PostgreSQL holds no NUL). Targets recorded or staged
+  before the upgrade keep their inboxes. Accepted, 2026-11-17.
 - A local account's suspension and unsuspension `Update` (Mastodon's `AccountReachFinder`,
   `app/lib/account_reach_finder.rb`: its followers, reporters and recently mentioned, followed and requested accounts)
-  and a block's collection `Remove`s reach an account only at an inbox within the same rule, judged as their audience
-  is staged; a moderation job's staged rows are read by it too, so rows an import or an earlier release staged outside
-  it are dropped unsent. An account whose inbox is outside the rule, which only an import or a restored dump holds, is
-  sent neither, where Mastodon's reach finder and `Account.inboxes` take its inbox whatever its length. Accepted,
-  2026-11-17.
+  reads each account's inbox by the same rule as its audience is staged, and the job's staged rows by it too, so rows
+  an import or an earlier release staged outside it are dropped unsent. An account whose inbox is outside the rule,
+  which only an import or a restored dump holds, is sent neither that `Update` nor a block's collection `Remove`, where
+  Mastodon's reach finder and `Account.inboxes` take its inbox whatever its length. Accepted, 2026-11-17.
 
 Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NET-1 in `docs/threat-model.md`):
 

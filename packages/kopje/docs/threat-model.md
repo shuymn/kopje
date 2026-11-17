@@ -2286,14 +2286,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the flag in `wrangler.jsonc` and `/deploy/wrangler.jsonc`; `test-node/wrangler-configs.test.ts` ("shipped Kopje
   Worker configs"). A running Worker without the flag fails the health report's `runtime` check (`src/app/health.ts`);
   `test/health-runtime.test.ts` ("runtime check in healthReport").
-- **NET-2: deliveries reach only the audience's inboxes.** Inboxes come from the stored audience and are deduplicated by
-  shared inbox; a follower's or poll voter's inbox (its shared inbox, else its personal one, chosen before it is
-  judged, so a shared inbox outside the rule never sends the activity to the personal one) is read only when it is text
-  of 1 to 4,096 UTF-8 bytes without NUL (`reachInboxSql` in `src/domain/audience.ts`), for targets read at once and a
-  retraction staged in steps alike, while targets already recorded or staged keep their inboxes
-  (`test/reach-inboxes.test.ts`); an activity without `to` (a Like, Follow, Accept, Reject, Block or their Undo, each
-  naming its recipient
-  through its object) goes to the recipient's shared inbox when it has one (R38's severing `Reject` alone goes to its
+- **NET-2: deliveries reach only the audience's inboxes.** Inboxes come from the stored audience and are deduplicated
+  by shared inbox; a follower's or poll voter's inbox (its shared inbox, else its personal one, chosen before it is
+  judged, so a shared inbox outside the rule never sends the activity to the personal one) is read only when it is
+  text of 1 to 4,096 UTF-8 bytes without NUL (`reachInboxSql` in `src/domain/audience.ts`), for targets read at once,
+  a retraction staged in steps, a collection's reach and a moderation reach alike, as is every account's inbox a
+  moderation reach stages (an addressed account still reads it whole), while targets already recorded and a
+  retraction's already staged keep their inboxes (`test/reach-inboxes.test.ts`); a moderation job's staged rows are
+  read by the same rule again (`test/admin-suspension.test.ts`); an activity without `to` (a Like, Follow, Accept,
+  Reject, Block or their Undo, each naming its recipient through its object) goes to the recipient's shared inbox
+  when it has one (R38's severing `Reject` alone goes to its
   personal inbox, as Mastodon's `reject_remote_follows!` sends it). A remote actor's shared inbox is the one Mastodon
   4.7.5 reads, kept only when Kopje POSTs to the URL Mastodon POSTs to for its spelling, else none, so the personal
   inbox is used and nothing goes to a guessed inbox (`sharedInboxUri` in `src/federation/remote-actor.ts`;
