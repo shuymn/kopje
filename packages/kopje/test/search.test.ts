@@ -289,6 +289,9 @@ describe("GET /api/v2/search", () => {
       "q=refused&offset=-0d5&type=statuses",
       "q=refused&limit=5&offset=-1",
       "q=refused&limit=-1&resolve=true",
+      // Rails' last value of each.
+      "q=refused&limit=5&limit=-1",
+      "q=refused&offset=0&offset=-1&type=statuses",
     ]) {
       expect(await answer(query)).toEqual([query, 400, PAGINATION]);
     }
@@ -298,6 +301,8 @@ describe("GET /api/v2/search", () => {
       "q=refused&limit=-_1",
       "q=refused&limit=--1",
       "q=refused&offset=-0&type=statuses",
+      "q=refused&limit=-1&limit=5",
+      "q=refused&offset=-1&offset=0&type=statuses",
     ]) {
       expect((await answer(query))[1]).toBe(200);
     }

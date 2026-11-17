@@ -61,24 +61,37 @@ export function unroutedFailures(
 
 // One read of a request parameter, as the spies of the parameter test record it: an accessor of Params, Hono's
 // c.req.query/queries; `file` is Params#file, a declared file part (mastodon/params.ts).
-export type ReadMethod = "get" | "has" | "getAll" | "list" | "objects" | "hasObject" | "query" | "queries" | "file";
+export type ReadMethod =
+  | "get"
+  | "last"
+  | "has"
+  | "getAll"
+  | "getAllIntegers"
+  | "list"
+  | "objects"
+  | "hasObject"
+  | "query"
+  | "queries"
+  | "file";
 // `fields`: for objects(), the members the returned records carry (a file part is among them only for a field the
 // call lists in `files`).
 export type Read = { method: ReadMethod; name: string; fields?: readonly string[] };
 
-// Whether a read returns `name` (a fixture name in Params form). get/query/queries/file return their name; has and
-// getAll read `n` and `n[]`; list reads `n[]`; objects returns whole records, so it covers `n[][f]` and `n[i][f]` for
-// every member `f` a returned record carries (whether each member is then used is not established: a limit of this
-// check). hasObject records presence only and covers no leaf: `poll[expires_in]` must itself be read.
+// Whether a read returns `name` (a fixture name in Params form). get/last/query/queries/file return their name; has,
+// getAll and getAllIntegers read `n` and `n[]`; list reads `n[]`; objects returns whole records, so it covers `n[][f]`
+// and `n[i][f]` for every member `f` a returned record carries (whether each member is then used is not established: a
+// limit of this check). hasObject records presence only and covers no leaf: `poll[expires_in]` must itself be read.
 export function covers(read: Read, name: string): boolean {
   switch (read.method) {
     case "get":
+    case "last":
     case "query":
     case "queries":
     case "file":
       return name === read.name;
     case "has":
     case "getAll":
+    case "getAllIntegers":
       return name === read.name || name === `${read.name}[]`;
     case "list":
       return name === `${read.name}[]`;

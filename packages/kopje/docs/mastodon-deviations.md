@@ -1145,6 +1145,23 @@ Request parameters:
   the one read, as Rails assigns them; on `/api/v{1,2}/media` a file followed by a string answers 422 `File can't be
   blank`, where Mastodon answers 400.
 - A query value of a declared file parameter is read only when the body has none (Rails lets the query win).
+- An integer parameter (`limit`, `offset`, a mute's `duration`, a filter's `expires_in`, `poll[expires_in]`, oEmbed's
+  `maxwidth` and `maxheight`) whose `to_i` is past 9,007,199,254,740,991 (2^53 − 1) is read as that, where Ruby reads
+  any length: oEmbed's `width` and `height` show 9,007,199,254,740,991 for a larger `maxwidth` or `maxheight`, where
+  Mastodon shows the number sent. A JSON number past a Float's range (`1e400`) is read as that too, where Mastodon
+  answers 500.
+- A vote choice Ruby's `Integer()` cannot read (`08`, `1.5`, `1e0`, text after the number) answers 422 `Validation
+  failed: The chosen vote option does not exist`, and an empty one is dropped (with none left, the choices are missing:
+  400), where Mastodon answers 500 for either. A choice holding a NUL character is refused too, where Ruby reads some
+  (`"0b1_0\u0000junk"` is 2). Accepted, 2026-11-17.
+- A `limit` whose `to_i` is 0 (`0`, `-0`, `abc`) answers `[]` without a `Link` on the timelines and the notifications
+  (v1 and v2), as Mastodon's do, and reads as 1 on the other lists paged by `max_id`, `since_id` and `min_id`: an
+  account's statuses, followers, following and endorsements, bookmarks, favourites, conversations, blocks, mutes,
+  domain blocks, follow requests, endorsements and a list's members (but `limit=0`, which answers every item, as
+  Mastodon's do), a status's favourites, boosts and quotes, scheduled statuses, followed hashtags, notification
+  requests, a notification group's accounts, and the admin reports, accounts and domain blocks. Mastodon 4.7.5 answers
+  500 on those, as `records_continue?` holds for the empty page and its cursor is read
+  (`Api::Pagination#pagination_max_id`).
 - Kopje media are images, so `thumbnail` (on `/api/v{1,2}/media` and `/api/v1/media/:id`) and
   `media_attributes[][thumbnail]` (on a status edit) answer 422 `Validation failed: Thumbnail must be blank`, as
   Mastodon validates an image's thumbnail. Any file part or non-empty text is a thumbnail; empty text or JSON `null`

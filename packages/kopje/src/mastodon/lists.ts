@@ -69,7 +69,7 @@ export const deleteList: ApiHandler = async (c, deps) => {
 // MAX_LIST_MEMBERS_ANSWERED members and ANSWER_BYTES (8 MiB, RES-3); one cut by the bytes links next to the
 // rest, read by limit=0 with max_id, which Mastodon ignores there (unlimitedResponse).
 export const listAccounts: ApiHandler = withParams(async (c, deps, p) => {
-  const unlimited = p.get("limit") === "0";
+  const unlimited = p.last("limit") === "0";
   const query = pageQuery(p);
   const page = unlimited ? null : query;
   const input = {

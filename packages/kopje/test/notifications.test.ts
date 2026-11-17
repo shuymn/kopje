@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import { listNotifications } from "../src/domain/notifications";
+import { sha256Hex } from "../src/security/tokens";
 import { bearer, form, seedAccount, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { measuredStatements } from "./read-helpers";
 import { act, community, follow, getJson, ids, post, type Status } from "./status-helpers";
 
 type Notification = { id: string; type: string; created_at: string; account: { id: string }; status?: Status };
@@ -80,6 +83,29 @@ describe("notifications", () => {
     expect(response.headers.get("link")).toContain(`max_id=${all[1]}>; rel="next"`);
     expect(await ids(h, `/api/v1/notifications?max_id=${all[1]}`, alice.token)).toEqual([all[2]]);
     expect(await ids(h, `/api/v1/notifications?min_id=${all[2]}&limit=1`, alice.token)).toEqual([all[1]]);
+    // A limit of 0 answers none, with no Link, as Mastodon 4.7.5's (LIMIT 0; next_path and prev_path are guarded by
+    // empty?).
+    for (const query of ["limit=0", "limit=abc", "limit=2&limit=0"]) {
+      const none = await h.request(`/api/v1/notifications?${query}`, bearer(alice.token));
+      expect([query, none.status, await none.json(), none.headers.get("link")]).toEqual([query, 200, [], null]);
+    }
+    // It reads no notification, where the window would read readWindow(0) of them.
+    const credential = { tokenHash: await sha256Hex(alice.token), scope: "read" as const, now: NOW };
+    const read = async (limit: number) => {
+      const { output, statements } = await measuredStatements(h, listNotifications, {
+        credential,
+        page: { limit },
+        types: [],
+        excludeTypes: [],
+        accountId: null,
+        includeFiltered: false,
+        present: { origin: "https://kopje.test" },
+      });
+      const items = output.status === "ok" ? output.value.items.length : null;
+      return [limit, items, statements.some(({ query }) => /\bnotifications\b/.test(query))];
+    };
+    expect(await read(1)).toEqual([1, 1, true]);
+    expect(await read(0)).toEqual([0, 0, false]);
   });
 
   it("gets, dismisses and clears only the viewer’s own notifications", async () => {
