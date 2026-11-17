@@ -317,8 +317,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   is read as Mastodon's Rails casts it: a date alone is read, a day past the month's end rolls over, and a value it
   cannot read creates the account now. No Store migration and no `wrangler.jsonc` change.
 - Request parameters are read as Rails' `params[name]` holds them: of repeated values the last, where the first was
-  read before (`visibility=public&visibility=direct` posts a direct status), and the query's before the body's, so a
-  query's blank `language=` beside a JSON body's `null` is a blank value, not none. Integer parameters are read so, as
+  read before (`visibility=public&visibility=direct` posts a direct status, and an app registered with a repeated
+  scalar `redirect_uris` gets only the last, where it got each), and the query's before the body's, so a query's blank
+  `language=` beside a JSON body's `null` is a blank value, not none. Integer parameters are read so, as
   Ruby's `String#to_i` reads them (underscores, a `0d` prefix, ASCII whitespace only), a JSON number by Ruby's `to_i`
   of the number (`1e21` is 10^21 and `1e-7` is 0, where the string `"1e21"` is 1), a blank oEmbed `maxheight` or filter
   `expires_in` as Rails' `blank?` reads it (U+0085 is a space, U+FEFF is not), and a negative `limit` as its absolute
