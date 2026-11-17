@@ -620,13 +620,7 @@ describe("Mastodon's Add and Remove without an id (#1693)", () => {
     expect(held.queue.pending.map((message) => (message.body as SpoolMessage).kind)).toEqual(["spool"]);
     expect(await rows(t, "status_pins")).toEqual([{ n: 0 }]);
     const env = { ...held.env, MAINTENANCE: "off" } as Env;
-    await held.queue.deliver((batch) =>
-      handleQueue(
-        batch,
-        env,
-        inboxDeps(() => t.store, t.web.loader),
-      ),
-    );
+    await held.queue.deliver((batch) => handleQueue(batch, env, deps(t)));
     expect(held.queue.retries).toBe(0);
     expect(await pinned(t, bobId, null)).toEqual([note.id]);
   });
