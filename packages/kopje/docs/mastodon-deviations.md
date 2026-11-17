@@ -1708,10 +1708,10 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   relative reference or an IRI of another scheme (`urn:…`, `HTTPS://…`), which the compaction, having no base, writes as
   given, but one shaped like a keyword (`@foo`, dropped), a blank node with no label or one holding `_:` (labelled
   anew), one over a prefix only `full_context` defines (`as://…`, which raises), and one jsonld.js writes otherwise
-  (empty, holding whitespace, or with a `.` or `..` segment), or with `//` other than right after a scheme that is no
-  name of `full_context` (`//…`, `a//b`, `tag://…`); an activity's or its undone object's `id` that is not on its
-  actor's origin is then refused all the same (ID-6), where Mastodon's `Undo` of a block reads neither; with a type
-  naming `id` or `type`, which JSON-LD expands to the keyword and the compaction
+  (empty, holding whitespace, or with a `.` or `..` segment, one a `?` or a `#` ends too), or with `//` other than right
+  after a scheme that is no name of `full_context` (`//…`, `a//b`, `tag://…`); an activity's or its undone object's `id`
+  that is not on its actor's origin is then refused all the same (ID-6), where Mastodon's `Undo` of a block reads
+  neither; with a type naming `id` or `type`, which JSON-LD expands to the keyword and the compaction
   writes as that alias again; with a string or an array of strings under a language map property, which JSON-LD reads
   as values of the property (`content` for `contentMap`), or a map whose lower-case tag holds an array of strings, but
   a number or a node there, an array in such an array (which jsonld.js refuses), or an upper-case tag holding one

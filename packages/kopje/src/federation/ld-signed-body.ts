@@ -470,8 +470,9 @@ type ContextRead = NonNullable<ReturnType<typeof readContext>>;
 // blank node with no label or one holding `_:`, which Ruby's json-ld labels anew; one whose scheme is a prefix
 // full_context defines (and the body's contexts do not; one they do is an http(s) IRI), which raises
 // IRIConfusedWithPrefix; nor one jsonld.js, resolving it against an empty base, writes otherwise: empty, a network-path
-// reference, or one holding whitespace; nor one with a `.` or `..` segment anywhere (jsonld.js removes them from a
-// relative reference's path), or `//` anywhere but right after a scheme that is no name of full_context (an
+// reference, or one holding whitespace; nor one with a `.` or `..` segment anywhere, a `?` or a `#` ending one too
+// (jsonld.js removes them from a relative reference's path, which ends at either), or `//` anywhere but right after a
+// scheme that is no name of full_context (an
 // authority): the shapes captured (forms.json), a scheme spelled as a name of full_context and an authority among them,
 // but not the two together.
 function writtenAsGiven(value: string): boolean {
@@ -486,7 +487,7 @@ function writtenAsGiven(value: string): boolean {
     (authority ? value.slice(colon + 3) : value).includes("//") ||
     (value.startsWith("_:") && (value.length === 2 || value.includes("_:", 2))) ||
     (colon > 0 && FULL_CONTEXT_PREFIXES.has(scheme)) ||
-    value.split("/").some((segment) => segment === "." || segment === "..")
+    value.split(/[/?#]/).some((segment) => segment === "." || segment === "..")
   );
 }
 

@@ -935,6 +935,9 @@ const forms = {
   "Undo of a block, both typed as absolute IRIs, with its actor as an array in an array": absoluteUndo({
     actor: [[BOB]],
   }),
+  // A relative reference whose path ends in a dot segment before its fragment, which jsonld.js removes.
+  "Undo of a block, both typed as absolute IRIs, with a relative reference of a double-dot segment before a fragment":
+    absoluteUndo({ instrument: { id: "clients/..#1" } }),
 };
 
 // The same bodies without a signature: read as received by both.
