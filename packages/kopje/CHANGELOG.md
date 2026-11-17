@@ -443,6 +443,17 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- A remote actor's `manuallyApprovesFollowers`, `discoverable` and `indexable` are read by their literal spelling
+  through Rails' boolean cast, as Mastodon does (#1747): an actor that writes `"false"`, `"0"` or `"off"` is no longer
+  discoverable, where it was listed in the directory, suggestions, trends and the link timeline; `"true"`, `1` or `[]`
+  lock or index the account, where only `true` did; an absent or null `discoverable` is false, where it was unknown
+  (`null` in the API); and the three are read when the document's context does not define them. An empty string leaves
+  the stored `locked` and `indexable` as they are and stores no `discoverable`, while the rest of the document is
+  stored, where Mastodon's `NOT NULL` columns refuse the account; a float zero (`0.0`) is false
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Profile credentials"). A cutover converts a remote
+  actor's three the same way, `indexable` included, and its check compares them. Accepted risk: an account stored
+  earlier keeps the values it was read with until its actor document is stored again (a fetch, an Update, or a status
+  fetched once the document is 24 hours old). No Store migration and no `wrangler.jsonc` change.
 - A remote status's `sensitive` is read as Mastodon casts it to its boolean column, so any value but `false`, `0`, null
   and Rails' false strings (`"0"`, `"f"`, `"F"`, `"false"`, `"FALSE"`, `"off"`, `"OFF"`) marks it, where only `true`
   did (`"true"`, `1` and `[true]` now mark it), and an empty string refuses it where Mastodon's `NOT NULL` column
