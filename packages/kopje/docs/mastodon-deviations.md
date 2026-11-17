@@ -248,12 +248,22 @@ settings page):
   `@value`) is none, where Mastodon fails the document. Accepted, 2026-11-15.
 - A remote actor document is read as Mastodon 4.7 reads it, each member by its literal spelling, except that Fedify
   parses the members Kopje reads from its object (`FEDIFY_MEMBERS` in `src/federation/remote-actor.ts`: the id, type,
-  username, inbox, name, bio, the locked, discoverable and indexable flags, `movedTo`, `alsoKnownAs` and the keys)
-  after JSON-LD expansion. Every other member, in any spelling, is read by spelling or not at all, so none refuses the
-  actor. Mastodon stores the account in two cases where Kopje refuses the actor, because Fedify cannot decode a member
-  it parses: a `publicKey` typed otherwise than a key, and a member the inventory keeps whose name the document's own
-  context maps to another member's IRI (`name` mapped to `icon` and holding a `Document`). A name or bio given only as
-  `nameMap` or `summaryMap` is not read, as Mastodon reads only `name` and `summary`.
+  username, inbox, name, bio, `movedTo`, `alsoKnownAs` and the keys) after JSON-LD expansion. Every other member, in any
+  spelling, is read by spelling or not at all, so none refuses the actor. Mastodon stores the account in two cases where
+  Kopje refuses the actor, because Fedify cannot decode a member it parses: a `publicKey` typed otherwise than a key,
+  and a member the inventory keeps whose name the document's own context maps to another member's IRI (`name` mapped to
+  `icon` and holding a `Document`). A name or bio given only as `nameMap` or `summaryMap` is not read, as Mastodon reads
+  only `name` and `summary`.
+- A remote actor's `manuallyApprovesFollowers`, `discoverable` and `indexable` are read by spelling as Mastodon 4.7.5
+  assigns them, `@json[name] || false` through ActiveModel's boolean cast (`process_account_service.rb:252-256`;
+  `test/fixtures/actor-booleans.json` holds its cast of each value), with two differences. An empty string, which the
+  cast makes nil, leaves the stored `locked` and `indexable` as they are (false for a new account), stores no
+  `discoverable` and stores the rest of the document, where Mastodon's `NOT NULL` `locked` and `indexable` refuse the
+  account's save and nothing of the document is stored. A float zero (`0.0`, `0e0`) is false, where Mastodon's Float
+  is true, as `JSON.parse` does not tell it from `0`. A remote account stored by an earlier release keeps the flags it
+  was read with until its actor document is stored again: when Kopje fetches it (a search, a mention, a key refresh),
+  when the actor delivers an `Update(Person)`, or when a status is fetched by an account whose document is 24 hours
+  old or more (`ACCOUNT_STALE_MS`). Accepted, 2026-11-17.
 - A remote account's profile URL is chosen from its actor's `url` as Mastodon 4.7.5 chooses it
   (`process_account_service.rb:454-465`, `json_ld_helper.rb:46-61`): one candidate, kept only when it begins with
   `http://` or `https://` and is on the actor id's host, whatever its scheme and port, and no later candidate once it

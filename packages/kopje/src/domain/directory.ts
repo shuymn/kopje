@@ -8,11 +8,12 @@ import { optionalUserReadOperation } from "./auth";
 // newest first (`order=new`), all of them or the local ones (`local`), paged by `offset` and `limit`.
 //
 // An account is listed when it is discoverable (accounts.discoverable = 1: a local account's setting, or what a remote
-// actor published; an actor that published nothing is not) and R12 lists it to the viewer (listedForSql): it is
-// available (R1: not suspended, not being deleted), and the viewer neither blocks nor mutes it nor blocks its domain,
-// nor does it block the viewer. That is Mastodon's Account.discoverable less its silenced and moved terms (Kopje has
-// no silences and does not record a move), with not_excluded_by_account and not_domain_blocked_by_account for a
-// signed-in viewer (a local account is never on a blocked domain, so `local` changes nothing there).
+// actor published, read through Rails' boolean cast; an actor that published nothing is not) and R12 lists it to the
+// viewer (listedForSql): it is available (R1: not suspended, not being deleted), and the viewer neither blocks nor
+// mutes it nor blocks its domain, nor does it block the viewer. That is Mastodon's Account.discoverable less its
+// silenced and moved terms (Kopje has no silences and does not record a move), with not_excluded_by_account and
+// not_domain_blocked_by_account for a signed-in viewer (a local account is never on a blocked domain, so `local`
+// changes nothing there).
 //
 // `order=active` orders by the account's newest public, unlisted or private status (accounts.last_status_id, kept by
 // the triggers of migration 0021_directory: the status whose date the presenter shows as last_status_at), accounts
