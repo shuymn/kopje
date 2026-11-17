@@ -895,6 +895,44 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
     expect(r.legacy.pending.map((m) => (m.body as LegacyInboxMessage).activity.id)).toEqual([`${r.carol.uri}#undo/1`]);
   });
 
+  it("hands on an LD-signed Undo only where the inbox reads what it undoes as Mastodon does (#1717)", async () => {
+    const store = await importedStore();
+    const r = await rollback(store);
+    const signature = { type: "RsaSignature2017", creator: `${r.carol.uri}#main-key`, signatureValue: "placeholder" };
+    // The undone Follow's type as an array the patch puts back, which undo.rb takes as no type, or as an array of one
+    // after the patch's stop with its object before the stop as an array, which the patch puts back and undo.rb raises
+    // on: refused (ld-context), and set aside. Its type so after the stop alone, which the compaction writes as
+    // `Follow`: read so, and handed on.
+    const undo = (n: number, undone: Record<string, unknown>) => ({
+      "@context": ctx,
+      id: `${r.carol.uri}#undo/${n}`,
+      type: "Undo",
+      actor: r.carol.uri,
+      object: { id: `${r.carol.uri}#follows/1`, actor: r.carol.uri, ...undone },
+      signature,
+    });
+    const typed = ["https://www.w3.org/ns/activitystreams#Follow"];
+    for (const body of [
+      undo(1, { type: typed, object: alice }),
+      undo(2, { object: [alice], to: [null], type: typed }),
+    ]) {
+      expect(await parseActivity(new TextEncoder().encode(JSON.stringify(body)))).toMatchObject({
+        ok: false,
+        reason: "ld-context",
+      });
+      await r.spool("/ap/users/alice/inbox", body);
+    }
+    const read = undo(3, { object: alice, to: [null], type: typed });
+    expect(await parseActivity(new TextEncoder().encode(JSON.stringify(read)))).toMatchObject({
+      ok: true,
+      activity: { type: "Undo", object: { type: "Follow" } },
+    });
+    await r.spool("/ap/users/alice/inbox", read);
+    await r.consume();
+    expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 2 });
+    expect(r.legacy.pending.map((m) => (m.body as LegacyInboxMessage).activity.id)).toEqual([`${r.carol.uri}#undo/3`]);
+  });
+
   it("hands on an LD-signed activity whose IRI type Kopje reads as given, as received (ldSignedReading)", async () => {
     const store = await importedStore();
     const r = await rollback(store);

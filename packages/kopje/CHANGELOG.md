@@ -443,9 +443,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Apply LD-signed Reject, Undo, Block and Delete activities whose actor is a one-element array, whose object follows a
   member the compaction shortens, or whose object is given as {"@id": ...}, as Mastodon does (#1717). Each is applied
   only where Kopje shows Mastodon's compaction of it succeeds, and none is applied when another server relays it, nor a
-  Delete typed by its plain name whose object is an array, which Mastodon's inbox refuses
-  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Reading inbound activities"). No Store migration and no
-  `wrangler.jsonc` change.
+  Delete typed by its plain name whose object is an array, which Mastodon's inbox refuses, nor one whose id, type,
+  actor or object, or its embedded activity's, Kopje does not read as Mastodon reads it where the compaction's patch
+  stops ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Reading inbound activities"). No Store migration
+  and no `wrangler.jsonc` change.
 - Apply LD-signed retractions typed with IRIs in more of the bodies Mastodon compacts (#1717). Each further form is one
   Mastodon's JSON-LD library and jsonld.js compact alike ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
   "Reading inbound activities"). No Store migration and no `wrangler.jsonc` change.
@@ -476,6 +477,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- An LD-signed Undo read as Mastodon's compaction whose undone activity's type is given as an array of types is
+  ignored, as Mastodon applies none, where Kopje ended what that activity's id named (#1717;
+  [docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Reading inbound activities"). No Store migration and no
+  `wrangler.jsonc` change.
 - A remote actor's `manuallyApprovesFollowers`, `discoverable` and `indexable` are read by their literal spelling
   through Rails' boolean cast, as Mastodon does (#1747): an actor that writes `"false"`, `"0"` or `"off"` is no longer
   discoverable, where it was listed in the directory, suggestions, trends and the link timeline; `"true"`, `1` or `[]`

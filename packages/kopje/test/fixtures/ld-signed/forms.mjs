@@ -1008,6 +1008,97 @@ const forms = {
       actor: [{ id: "http://joinmastodon.org/ns#bob" }],
     },
   ),
+  // The block's type in an array after the patch's stop, which the compaction writes as the name full_context gives
+  // its IRI, with its object before the stop as an array, which the patch puts back, or as an IRI.
+  "Undo of a block, both typed as absolute IRIs, with its block's object as a one-element array before a stop and its type in an array after it":
+    absoluteUndo({ object: { id: BLOCK.id, actor: BOB, object: [ALICE], to: [null], type: [`${AS}#Block`] } }),
+  "Undo of a block, both typed as absolute IRIs, with its block's type in an array after a stop": absoluteUndo({
+    object: { id: BLOCK.id, actor: BOB, object: ALICE, to: [null], type: [`${AS}#Block`] },
+  }),
+  // The block's type in an array the patch puts back, and its types, or none, in an array after a stop.
+  "Undo of a block, both typed as absolute IRIs, with its block's type in a one-element array": absoluteUndo({
+    object: { id: BLOCK.id, type: [`${AS}#Block`], actor: BOB, object: ALICE },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with its block's types in an array after a stop": absoluteUndo({
+    object: { id: BLOCK.id, actor: BOB, object: ALICE, to: [null], type: [`${AS}#Block`, `${AS}#Ignore`] },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with its block's type as an empty array": absoluteUndo({
+    object: { id: BLOCK.id, type: [], actor: BOB, object: ALICE },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with its block's type as an empty array after a stop": absoluteUndo({
+    object: { id: BLOCK.id, actor: BOB, object: ALICE, to: [null], type: [] },
+  }),
+  // After the patch's stop, members the compaction writes otherwise than as given: the block's object as the public
+  // collection or as an IRI of another scheme, its actor under a namespace of full_context's prefixes, and its id.
+  "Undo of a block, both typed as absolute IRIs, with its block's object as the public collection after a stop":
+    absoluteUndo({ object: { id: BLOCK.id, type: `${AS}#Block`, actor: BOB, to: [null], object: PUBLIC } }),
+  "Undo of a block, both typed as absolute IRIs, with its block's object as an IRI of another scheme after a stop":
+    absoluteUndo({
+      object: { id: BLOCK.id, type: `${AS}#Block`, actor: BOB, to: [null], object: "tag:kopje.test,2026:alice" },
+    }),
+  "Undo of a block, both typed as absolute IRIs, with its block's actor under the toot namespace in an array after a stop":
+    absoluteUndo({
+      object: {
+        id: BLOCK.id,
+        type: `${AS}#Block`,
+        to: [null],
+        actor: ["http://joinmastodon.org/ns#bob"],
+        object: ALICE,
+      },
+    }),
+  "Undo of a block, both typed as absolute IRIs, with its block's id under the ActivityStreams namespace after a stop":
+    absoluteUndo({
+      object: { type: `${AS}#Block`, actor: BOB, object: ALICE, to: [null], id: `${AS}#block` },
+    }),
+  // A stop Kopje does not tell from an array the patch puts back (a number in it, an IRI of another scheme beside a
+  // null, a key shaped like an array index beside it), before the public collection, as the block's object or in it.
+  "Undo of a block, both typed as absolute IRIs, with its block's object as the public collection after a number in an array":
+    absoluteUndo({ object: { id: BLOCK.id, type: `${AS}#Block`, actor: BOB, to: [5, PUBLIC], object: PUBLIC } }),
+  "Undo of a block, both typed as absolute IRIs, with its block of the public collection after an IRI of another scheme beside a null":
+    signed(
+      [AS, SEC],
+      activity(`${AS}#Undo`, {
+        cc: [null, "tag:kopje.test,2026:followers"],
+        object: { id: BLOCK.id, type: `${AS}#Block`, actor: BOB, object: PUBLIC },
+      }),
+    ),
+  'Undo of a block, both typed as absolute IRIs, with its block\'s object as the public collection after a stop, beside a key "0"':
+    absoluteUndo({
+      object: { 0: "zero", id: BLOCK.id, type: `${AS}#Block`, actor: BOB, to: [null], object: PUBLIC },
+    }),
+  // An array of an IRI the compaction keeps as one value, before the block's actor as a one-element array, which the
+  // patch puts back.
+  "Undo of a block, both typed as absolute IRIs, with its block's actor as a one-element array after an array of an IRI":
+    absoluteUndo({ object: { id: BLOCK.id, type: `${AS}#Block`, to: [FOLLOWERS], actor: [BOB], object: ALICE } }),
+  // An actor in an array the compaction writes as given, of a scheme in mixed case or equal to a namespace of
+  // full_context's prefixes.
+  "Undo of a block typed as absolute IRIs, with its actor as an IRI of a mixed-case scheme in an array": absoluteUndo({
+    actor: ["Https://mastodon.example/users/bob"],
+  }),
+  "Undo of a block typed as absolute IRIs, with its actor as the toot namespace in an array": absoluteUndo({
+    actor: ["http://joinmastodon.org/ns#"],
+  }),
+  // The public collection after a stop in a node no reader reads, and the actor as a one-element array after a stop
+  // Kopje does not tell, which the compaction writes as its IRI.
+  "Undo of a block, both typed as absolute IRIs, with an instrument holding the public collection after a stop":
+    absoluteUndo({ instrument: { type: "Service", to: [null], object: PUBLIC } }),
+  "Undo of a block, both typed as absolute IRIs, with its actor as a one-element array after a number in an array":
+    signed([AS, SEC], {
+      id: `${BOB}/activities/${++n}`,
+      type: `${AS}#Undo`,
+      cc: [5, PUBLIC],
+      actor: [BOB],
+      object: { ...BLOCK, type: `${AS}#Block` },
+    }),
+  // After a stop, members read as the compaction writes them, as given: the block's actor as an array of null, which
+  // it writes as [], and its object as a node of a null actor, which it writes as the node's id; and the block's actor
+  // as null after a stop Kopje does not tell, which both leave out.
+  "Undo of a block, both typed as absolute IRIs, with its block's actor as an array of null and its object as a node of a null actor after a stop":
+    absoluteUndo({
+      object: { id: BLOCK.id, type: `${AS}#Block`, to: [null], actor: [null], object: { id: ALICE, actor: null } },
+    }),
+  "Undo of a block, both typed as absolute IRIs, with its block's actor as null after a number in an array":
+    absoluteUndo({ object: { id: BLOCK.id, type: `${AS}#Block`, to: [5, PUBLIC], actor: null, object: ALICE } }),
 };
 
 // The same bodies without a signature: read as received by both.
