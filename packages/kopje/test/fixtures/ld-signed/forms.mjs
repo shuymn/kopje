@@ -4,7 +4,8 @@
 //
 //   node test/fixtures/ld-signed/forms.mjs > forms-in.json
 //
-// The signature is a placeholder: Mastodon compacts a body whose signature is an object before it verifies anything.
+// compact-offline.rb reads each with no network as compact.rb read it in a running web container, but the nine that
+// name a context Mastodon does not preload (data-integrity/v1, an unknown URL). The signature is a placeholder: Mastodon compacts a body whose signature is an object before it verifies anything.
 // The sender is bob on mastodon.example; alice is local (kopje.test), and LOCAL_STATUS stands for a local status of
 // hers, which the tests replace with one they create.
 
@@ -132,6 +133,11 @@ const OUR_FOLLOW = { id: "https://kopje.test/ap/follows/1", type: "Follow", acto
 const BOBS_FOLLOW = { id: `${BOB}/follows/14`, type: "Follow", actor: BOB, object: ALICE };
 // bob's block of alice, as effects.rb seeds it for an entry named for a block, with both types as IRIs.
 const BLOCK = { id: `${BOB}/blocks/1`, type: "as:Block", actor: BOB, object: ALICE };
+// bob's Undo of that block, both typed as absolute IRIs, which rule (5) reads (#1717, form 4: a retraction's body
+// beyond the closed shape, which Mastodon compacts all the same).
+/** @type {(extra?: Json, context?: unknown) => Json} */
+const absoluteUndo = (extra = {}, context = [AS, SEC]) =>
+  signed(context, activity(`${AS}#Undo`, { object: { ...BLOCK, type: `${AS}#Block` }, ...extra }));
 const QUOTE_REQUEST = "https://w3id.org/fep/044f#QuoteRequest";
 // alice's QuoteRequest for her status local-2, quoting bob's pinned status, as effects.rb seeds it for an entry named
 // for our quote request.
@@ -740,6 +746,33 @@ const forms = {
         [AS, { ...STATUS_EXTENSION, sensitive: { "@id": "as:sensitive", "@type": type } }, SEC],
       ),
     ]),
+  ),
+
+  // #1717, form 4: bob's Undo of his block typed as absolute IRIs, in a body of each shape beyond the closed one, and
+  // beside it a body of the same shape Mastodon reads as received (JSON::LD refuses it) or Kopje cannot show it
+  // compacts. An inline context of definitions real senders write.
+  "Undo of a block, both typed as absolute IRIs, under Mastodon's inline context": absoluteUndo({}, STATUS_CONTEXT),
+  "Undo of a block, both typed as absolute IRIs, under Mastodon's inline context, its quote an IRI": absoluteUndo(
+    { quote: `${BOB}/statuses/quoted` },
+    STATUS_CONTEXT,
+  ),
+  "Undo of a block, both typed as absolute IRIs, under Fedify's inline context": absoluteUndo(
+    { featured: `${BOB}/collections/featured`, votersCount: 3 },
+    [
+      AS,
+      SEC,
+      {
+        toot: "http://joinmastodon.org/ns#",
+        featured: { "@id": "toot:featured", "@type": "@id" },
+        votersCount: { "@id": "toot:votersCount", "@type": "http://www.w3.org/2001/XMLSchema#nonNegativeInteger" },
+      },
+    ],
+  ),
+  "Undo of a block, both typed as absolute IRIs, under Mastodon's inline context, its quote over a prefix only full_context defines":
+    absoluteUndo({ quote: "schema:quoted" }, STATUS_CONTEXT),
+  "Undo of a block, both typed as absolute IRIs, under an inline definition no sender writes": absoluteUndo(
+    { sensitive: false },
+    [AS, SEC, { sensitive: { "@id": "as:sensitive", "@type": "xsd:boolean" } }],
   ),
 };
 

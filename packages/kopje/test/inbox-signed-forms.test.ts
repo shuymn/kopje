@@ -1,4 +1,5 @@
 import { preloadedContexts } from "@fedify/fedify";
+import jsonld from "jsonld/dist/jsonld.esm.js";
 import { describe, expect, it } from "vitest";
 
 import { isPublicCollection } from "../src/domain/audience";
@@ -89,6 +90,15 @@ function form(name: string): Entry {
   }
   return entry;
 }
+
+// #1717, form 4 (ld-signed-body.ts mastodonCompacts): bob's Undo of his block typed as absolute IRIs, in a body of each
+// shape beyond the closed one, and beside it one Mastodon reads as received; and of those Mastodon compacts, the ones
+// Kopje does not show it compacts, which it reads less.
+const FORM_4 = [...forms.keys()].filter((name) => name.startsWith("Undo of a block, both typed as absolute IRIs, "));
+const FORM_4_READS_LESS: string[] = [];
+// Of those, the ones jsonld.js reads otherwise than Mastodon's JSON-LD library: a datatype given as a compact IRI over a
+// prefix of the ActivityStreams context, which Mastodon's refuses and jsonld.js takes.
+const FORM_4_PARTED = ["Undo of a block, both typed as absolute IRIs, under an inline definition no sender writes"];
 
 // What Mastodon 4.7.5 applied from a form with its own readers (effects.rb): what bob's activity left, and the error
 // its job raised, if any.
@@ -665,6 +675,100 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       expect(applied(name)).toEqual({ name, effect: {} });
     });
 
+    // #1717, form 4: jsonld.js, with the preloaded contexts, compacts each body under full_context as Mastodon's JSON-LD
+    // library does, patched as patch_for_forwarding! patches it and within check_jsonld_limits! (a JavaScript copy of
+    // each below), and refuses each Mastodon reads as received; where the two part, Kopje reads the body as received.
+    it("jsonld.js compacts each retraction body of form 4 as Mastodon does", async () => {
+      const PUBLIC_IRI = `${AS}#Public`;
+      const fullContext = form("type as an absolute IRI").mastodon!["@context"];
+      const documentLoader = (url: string) =>
+        Object.hasOwn(preloadedContexts, url)
+          ? Promise.resolve({ contextUrl: null, document: preloadedContexts[url], documentUrl: url })
+          : Promise.reject(new Error(`not preloaded: ${url}`));
+      const isMap = (value: unknown): value is Json =>
+        typeof value === "object" && value !== null && !Array.isArray(value);
+      const limited = (value: unknown): boolean => {
+        let values = 0;
+        const pending = [value];
+        while (pending.length > 0) {
+          const next = pending.pop();
+          values++;
+          if (Array.isArray(next)) {
+            pending.push(...(next as unknown[]));
+          } else if (isMap(next)) {
+            if (["@graph", "@included", "@reverse"].some((key) => Object.hasOwn(next, key))) {
+              return false;
+            }
+            pending.push(...Object.values(next));
+          }
+        }
+        return values <= 1_000;
+      };
+      const patch = (received: Json, compacted: Json): void => {
+        for (const [key, value] of Object.entries(received)) {
+          if (key === "@context" || key === "signature" || value === null || !Object.hasOwn(compacted, key)) {
+            continue;
+          }
+          const written = compacted[key];
+          if (isMap(value) && isMap(written)) {
+            patch(value, written);
+          } else if (Array.isArray(value)) {
+            const items: unknown[] = Array.isArray(written) ? (written as unknown[]) : [written];
+            if (items.length !== value.length) {
+              return;
+            }
+            compacted[key] = (value as unknown[]).map((item, at) => {
+              const given = items[at];
+              if (isMap(item) && isMap(given)) {
+                patch(item, given);
+                return given;
+              }
+              return item === PUBLIC_IRI && given === "as:Public" ? item : given;
+            });
+          } else if (value === PUBLIC_IRI && written === "as:Public") {
+            compacted[key] = value;
+          }
+        }
+      };
+      const sorted = (value: unknown): unknown =>
+        Array.isArray(value)
+          ? value.map(sorted)
+          : isMap(value)
+            ? Object.fromEntries(
+                Object.keys(value)
+                  .toSorted()
+                  .map((key) => [key, sorted(value[key])]),
+              )
+            : value;
+      const parted: string[] = [];
+      for (const name of FORM_4) {
+        const { received, mastodon, fallback } = form(name);
+        let reading: Json | undefined;
+        if (limited(received)) {
+          const compacted = await jsonld
+            .compact(without(received, "signature"), fullContext as never, { documentLoader })
+            .catch(() => undefined);
+          if (compacted !== undefined && limited({ ...compacted, signature: received.signature })) {
+            reading = { ...(compacted as Json), signature: received.signature };
+            patch(received, reading);
+          }
+        }
+        const agrees =
+          fallback === undefined ? JSON.stringify(sorted(reading)) === JSON.stringify(sorted(mastodon)) : !reading;
+        if (!agrees) {
+          parted.push(name);
+        }
+      }
+      expect(FORM_4.length).toBeGreaterThanOrEqual(5);
+      expect(parted).toEqual(FORM_4_PARTED);
+      for (const name of FORM_4_PARTED) {
+        expect(form(name).fallback !== undefined || FORM_4_READS_LESS.includes(name), name).toBe(true);
+        expect((await ldSignedReading(form(name).received, SECOND_LAYER))?.readType(`${AS}#Undo`), name).not.toBe(
+          "Undo",
+        );
+      }
+    });
+
     it.each([
       ["past the value limit as received", /^Mastodon::InvalidJsonLdError: has too many nodes/],
       ["past the value limit once compacted", /^Mastodon::InvalidJsonLdError: has too many nodes/],
@@ -759,7 +863,7 @@ describe("D1: forms whose readings differ, each named by its class", () => {
         }
       }
       expect(names).toBeGreaterThanOrEqual(150);
-      expect(renamed.length).toBe(17);
+      expect(renamed.length).toBe(23);
       // Bodies Mastodon compacts outside the shape Kopje shows it compacts (an inline context, an array in an array,
       // a proof, a number where an IRI is expected, a type naming a keyword alias): their types are read as given, so
       // such an activity applies less than Mastodon's.
@@ -1049,6 +1153,21 @@ describe("D1 through the inbox: what the received form stores", () => {
     const id = await blockedStatus(t, bob);
     expect(await t.post(bob, absolute(body("Undo of a block, both typed as IRIs", status)))).toBe(202);
     expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(200);
+  });
+
+  // #1717, form 4: the same Undo in a body of each shape beyond the closed one lifts the block where Mastodon's reading
+  // of it is an Undo of a Block (it compacts the body), and leaves it where Mastodon reads the body as received, so
+  // that its types stay IRIs no handler reads (forms.json), or where Kopje does not show it compacts (reads less).
+  it.each(FORM_4)("%s: lifts the block where Mastodon's reading lifts it", async (name) => {
+    const reading = await mastodon(form(name));
+    const lifted = reading.ok && reading.activity.type === "Undo" && (reading.activity.object as Json).type === "Block";
+    expect(lifted).toBe(form(name).fallback === undefined);
+    const { t, bob, status } = await world();
+    const id = await blockedStatus(t, bob);
+    expect(await t.post(bob, body(name, status))).toBe(202);
+    expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(
+      lifted && !FORM_4_READS_LESS.includes(name) ? 200 : 404,
+    );
   });
 
   it.each([
@@ -1610,6 +1729,7 @@ describe("rule (5): an LD-signed activity outside what real senders write is ign
       "Note, its sensitive typed @id, given an IRI",
       "Note, its sensitive typed @id, given false",
       "Note, its sensitive typed as a boolean, given false",
+      "Undo of a block, both typed as absolute IRIs, under an inline definition no sender writes",
     ],
     "a proof other than Fedify's": [
       "a proof in the data-integrity context",
@@ -2438,6 +2558,7 @@ describe("#1717: LD-signed retractions in the forms Mastodon compacts", () => {
   // forms.json, each a retraction (carol's actor is a relay's, which applies none; an object array reads nothing).
   const CHANGED = [
     "@id in an Undo's object",
+    ...FORM_4.filter((name) => !FORM_4_READS_LESS.includes(name) && form(name).fallback === undefined),
     ...Object.keys(FORMS).flatMap((form) => Object.keys(RETRACTIONS).map((name) => `${name}, ${form}`)),
     "Delete(status), actor as an array of carol",
     "Delete(status), actor as an array of bob's node",

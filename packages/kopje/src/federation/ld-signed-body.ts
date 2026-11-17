@@ -400,6 +400,11 @@ function bodyKeysReadable(json: Json): boolean {
 //   - no array is directly in another.
 // A member of an array is held to its key's rule, as JSON-LD expands it under the same term (its type coercion
 // included); an object is a node under any other key.
+// A retraction's body (RETRACTIONS) may hold more, each of a shape both Mastodon's compaction (test/fixtures/ld-signed/
+// forms.json, "form 4") and jsonld.js's write without an error and alike (#1717):
+//   - an inline context of definitions real senders write (SENDER_DEFINITIONS, rule 5), which JSON-LD processes as
+//     Mastodon's own and Fedify's bodies are processed: each value of a name it types @id is held to the rule above
+//     too, as the compaction writes it as an IRI (one over a prefix only full_context defines raises).
 const JSONLD_BUDGET = 1_000;
 const UNSUPPORTED_JSONLD_KEYWORDS = new Set(["@graph", "@included", "@reverse"]);
 const SECURITY_V1 = "https://w3id.org/security/v1";
@@ -443,14 +448,23 @@ const typedId = (definition: unknown) => isObject(definition) && definition["@ty
 const IRI_VALUED = new Set([...namesOf(AS, typedId), ...namesOf(SECURITY_V1, typedId)]);
 const LANGUAGE_MAPS = namesOf(AS, (definition) => isObject(definition) && definition["@container"] === "@language");
 
+type ContextRead = NonNullable<ReturnType<typeof readContext>>;
+
 // `received` is the values check_jsonld_limits! counts before the compaction, of the body as received, of which a
-// retraction's references read as IRIs (referencesAsIris) leave fewer.
-function mastodonCompacts(json: Json, prefixes: Prefixes, received = jsonLdValues(json)): boolean {
+// retraction's references read as IRIs (referencesAsIris) leave fewer; `retracts`, whether the body is a retraction's.
+function mastodonCompacts(
+  json: Json,
+  { prefixes, meanings }: ContextRead,
+  received: number,
+  retracts: boolean,
+): boolean {
   const context = json["@context"];
   if (
     received > JSONLD_BUDGET ||
     json.proof !== undefined ||
-    !(Array.isArray(context) ? context : [context]).every((entry) => entry === AS || entry === SECURITY_V1)
+    !(Array.isArray(context) ? context : [context]).every(
+      (entry) => entry === AS || entry === SECURITY_V1 || (retracts && definedAsSent(entry)),
+    )
   ) {
     return false;
   }
@@ -463,6 +477,7 @@ function mastodonCompacts(json: Json, prefixes: Prefixes, received = jsonLdValue
     typeof value === "string" && HTTP_IRI.test(expand(value, (prefix) => prefixes.get(prefix)) ?? "");
   const typeName = (value: unknown) =>
     iri(value) || (typeof value === "string" && isName(value) && value !== "id" && value !== "type");
+  const iriValued = (key: string) => IRI_VALUED.has(key) || (retracts && meanings.get(key)?.coercion === "@id");
   const node = Object.fromEntries(Object.entries(json).filter(([key]) => key !== "@context" && key !== "signature"));
   const pending: [string, unknown][] = [["", node]];
   while (pending.length > 0) {
@@ -489,7 +504,7 @@ function mastodonCompacts(json: Json, prefixes: Prefixes, received = jsonLdValue
         return false;
       }
       pending.push(...Object.entries(value).filter(([member]) => member !== "id" && member !== "type"));
-    } else if (IRI_VALUED.has(key) && value !== null && !iri(value)) {
+    } else if (iriValued(key) && value !== null && !iri(value)) {
       return false;
     }
   }
@@ -933,21 +948,23 @@ for (const terms of [MASTODON_CONTEXT_TERMS, MASTODON_OLM_TERMS, FEDIFY_CONTEXT_
   }
 }
 
+// An inline context of definitions only, each one a real sender writes for its name.
+function definedAsSent(entry: unknown): boolean {
+  return (
+    isObject(entry) &&
+    Object.entries(entry).every(([name, definition]) =>
+      (SENDER_DEFINITIONS.get(name) ?? []).some((written) => sameDefinition(written, definition)),
+    )
+  );
+}
+
 // A @context as real senders write one: no URL twice (readContext reads each entry, so a repeated one would multiply its
 // work), and every inline definition one a real sender writes for that name.
 function contextAsSent(context: unknown): boolean {
   const entries = [context].flat();
   const urls = entries.filter((entry) => typeof entry === "string");
   return (
-    new Set(urls).size === urls.length &&
-    entries.every(
-      (entry) =>
-        typeof entry === "string" ||
-        (isObject(entry) &&
-          Object.entries(entry).every(([name, definition]) =>
-            (SENDER_DEFINITIONS.get(name) ?? []).some((written) => sameDefinition(written, definition)),
-          )),
-    )
+    new Set(urls).size === urls.length && entries.every((entry) => typeof entry === "string" || definedAsSent(entry))
   );
 }
 
@@ -1212,7 +1229,7 @@ function readBody(
   const retracts = retractions && retraction(json.type, context.prefixes);
   const references = retracts ? referencesAsIris(json, context.meanings) : json;
   const body =
-    references !== json && keysAndTypesReadable(references) && mastodonCompacts(references, context.prefixes, received)
+    references !== json && keysAndTypesReadable(references) && mastodonCompacts(references, context, received, retracts)
       ? references
       : json;
   return keysAndTypesReadable(body) ? { body, context, received, retracts } : null;
@@ -1232,7 +1249,7 @@ export async function ldSignedReading(
   }
   const { body, context, received, retracts } = read;
   let compacts: boolean | undefined;
-  const shown = () => (compacts ??= mastodonCompacts(body, context.prefixes, received));
+  const shown = () => (compacts ??= mastodonCompacts(body, context, received, retracts));
   const readType: TypeReader = (type) => {
     const iri = expand(type, (prefix) => context.prefixes.get(prefix));
     const name = iri === null ? undefined : TYPE_NAMES.get(iri);

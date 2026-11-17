@@ -1693,7 +1693,12 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   non-http(s) IRI (one whose http(s) scheme is upper-case or not followed by `//` included), a number or a boolean where
   an IRI is expected (`cc: true`), a type naming `id` or `type`, a language map given as an array or of another shape, a
   body whose compaction stays within the limit where the count of three per value passes it), such an activity applies
-  less than Mastodon's: a retraction so typed is missed (an `Undo` of a block leaves the block), as #1717 tracks. Kopje
+  less than Mastodon's: a retraction so typed is missed (an `Undo` of a block leaves the block), as #1717 tracks. A
+  retraction, a `Reject`, `Undo`, `Block` or `Delete` by the name its type is read as, is read as the compaction names
+  it in some of these too, each where Mastodon's library compacts it (`test/fixtures/ld-signed/forms.json`) and
+  jsonld.js compacts it alike: under an inline context of definitions Mastodon or Fedify write (below), each value of a
+  name it types `@id` held to the rule for an IRI-typed property's (one over a prefix only `full_context` defines makes
+  Mastodon's library raise; a datatype given as a compact IRI, `xsd:boolean`, it refuses and jsonld.js takes). Kopje
   reads a name, as a member or as a type, only where the compaction writes it so, as Mastodon's readers read it,
   whatever the body's shape: a member's name where it means in the body's contexts what it means in `full_context`, or
   neither defines it (in a typed node, as the type's own context makes it mean on each side: the data-integrity
