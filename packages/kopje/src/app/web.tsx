@@ -327,6 +327,8 @@ export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
       params.files,
       params.objectPrefixes,
       params.emptyLists,
+      params.trees,
+      params.sent,
     );
   }
 
