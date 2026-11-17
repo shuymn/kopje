@@ -4,6 +4,7 @@ import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import {
   checkRound,
+  checkUntilQuiet,
   collection,
   collectionRows,
   COLLECTIONS_ONLY,
@@ -11,6 +12,7 @@ import {
   item,
   items,
   PENDING,
+  requestSync,
   serveAuthorization,
   serveCollections,
   storedMember,
@@ -78,6 +80,52 @@ describe("remote collections through the API (5-T8)", () => {
     expect(shown.body.collection).toEqual(expect.objectContaining(expected));
     expect(shown.body.accounts.map((a) => a.id).toSorted()).toEqual([ownerId, keptId].toSorted());
     expect(stored!.description).toContain("<b>description</b>");
+  });
+
+  it("presents an item's created_at from its published, else the time Kopje received it, and keeps it on a revision", async () => {
+    const t = await setup();
+    const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
+    const PUBLISHED = {
+      valid: ["2020-05-01T12:00:00Z", "2020-05-01T12:00:00.000Z"],
+      absent: [undefined, new Date(NOW).toISOString()],
+      unparsable: ["yesterday", new Date(NOW).toISOString()],
+      future: ["2999-01-01T00:00:00Z", new Date(NOW).toISOString()],
+      unstorable: ["-000001-01-01T00:00:00Z", new Date(NOW).toISOString()],
+    } as const;
+    const members = await Promise.all(Object.keys(PUBLISHED).map((name) => storedMember(t, name, OTHER)));
+    const entries = Object.values(PUBLISHED).map(([published], n) => ({ ...item(owner, members[n]!), published }));
+    const listed = collection(owner, entries);
+    entries.forEach((entry) => serveAuthorization(t.web, entry, listed.id));
+    serveCollections(t.web, owner, [[listed]]);
+    const ownerId = await storedOwner(t, owner);
+    await syncAll(t);
+    await checkUntilQuiet(t);
+    const memberIds = await Promise.all(
+      members.map(
+        async (member) =>
+          (await sql<{ id: string }>(t.store, "SELECT id FROM accounts WHERE uri = ?", member.uri))[0]!.id,
+      ),
+    );
+    type Shown = { id: string; items: { account_id?: string; created_at: string }[] };
+    const createdAt = async () => {
+      const list = await t.api<{ collections: Shown[] }>(`/api/v1/accounts/${ownerId}/collections`);
+      const shown = await t.api<{ collection: Shown }>(`/api/v1/collections/${list.body.collections[0]!.id}`);
+      return memberIds.map((id) => shown.body.collection.items.find((entry) => entry.account_id === id)?.created_at);
+    };
+    expect(await createdAt()).toEqual(Object.values(PUBLISHED).map(([, shown]) => shown));
+
+    // A revision of the first (another authorization, another published) keeps its created_at.
+    const revised = {
+      ...entries[0]!,
+      featureAuthorization: `${entries[0]!.featureAuthorization}/b`,
+      published: "2021-01-01T00:00:00Z",
+    };
+    serveAuthorization(t.web, revised, listed.id);
+    serveCollections(t.web, owner, [[{ ...listed, orderedItems: [revised, ...entries.slice(1)] }]]);
+    await requestSync(t, ownerId);
+    await syncAll(t);
+    await checkUntilQuiet(t);
+    expect((await createdAt())[0]).toBe(PUBLISHED.valid[1]);
   });
 
   it("leaves a remote collection listing a local account out of its in_collections", async () => {

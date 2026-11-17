@@ -12,6 +12,7 @@ import {
   cutCodePoints,
   MAX_STORED_ITEMS,
   storedText,
+  storedTime,
 } from "../platform/stored-bounds";
 import { sanitizeRemoteCodePoints } from "../security/html";
 import { notifyUpdated, remoteCollectionTag } from "./collections";
@@ -49,9 +50,9 @@ import { TREND_LANGUAGES } from "./trend-languages";
 export const MAX_REMOTE_COLLECTIONS = 10;
 export const MAX_REMOTE_ITEMS = COLLECTION_MAX_ITEMS;
 
-// An embedded FeaturedItem as the Worker read it (federation/featured-collections.ts): its id, and value_or_id of its
-// featuredObject and featureAuthorization.
-export type FeaturedItemInput = { id: string; object: string; authorization: string | null };
+// An embedded FeaturedItem as the Worker read it (federation/featured-collections.ts): its id, value_or_id of its
+// featuredObject and featureAuthorization, and its published as given (a string, else null).
+export type FeaturedItemInput = { id: string; object: string; authorization: string | null; published: string | null };
 
 // An embedded FeaturedCollection as the Worker read it, each value as ProcessFeaturedCollectionService reads it:
 // attributedTo, name and the topic's name when strings, the summary (summaryMap's first value, else summary, else ''),
@@ -272,6 +273,7 @@ type Planned = {
   member: string | null;
   object: string;
   candidate: string;
+  published: string | null;
   existing: string | undefined;
 };
 
@@ -300,7 +302,13 @@ function itemOf(
     "SELECT id FROM accounts WHERE uri = ? AND domain IS NOT NULL",
     input.object,
   )?.id;
-  return { uri: input.id, member: member ?? null, object: input.object, candidate: input.authorization };
+  return {
+    uri: input.id,
+    member: member ?? null,
+    object: input.object,
+    candidate: input.authorization,
+    published: input.published,
+  };
 }
 
 // The item stored under `uri` (collection_items_uri), any collection.
@@ -478,9 +486,18 @@ function reviseItem(db: Db, item: Planned, now: number): boolean {
   return false;
 }
 
+// A new item's created_at (ProcessFeaturedItemService#new_item: its published): the time its published names when
+// Kopje stores that time and it is not after `now`, as a remote status's published is taken (remote-statuses.ts
+// remoteTime); else `now`, the time Kopje received it. A kept item keeps its own.
+function itemCreatedAt(published: string | null, now: number): string {
+  const at = published === null ? Number.NaN : Date.parse(published);
+  return (at <= now ? storedTime(at) : null) ?? new Date(now).toISOString();
+}
+
 // A new item: pending under its revision, queued when its member is known. Whether it was queued.
 function insertItem(db: Db, collection: string, item: Omit<Planned, "existing">, now: number): boolean {
   const at = new Date(now).toISOString();
+  const created = itemCreatedAt(item.published, now);
   insertWithFreshId(
     "collection_items",
     () => allocateLocalId(db, now),
@@ -497,7 +514,7 @@ function insertItem(db: Db, collection: string, item: Omit<Planned, "existing">,
         item.object,
         item.candidate,
         item.member === null ? null : now,
-        at,
+        created,
         at,
       ),
   );

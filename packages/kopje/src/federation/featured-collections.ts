@@ -39,14 +39,22 @@ function totalItemsOf(value: unknown): number | null {
     : null;
 }
 
-// An embedded FeaturedItem: its id and value_or_id of its featuredObject and featureAuthorization; null for an item
-// given only as a URI (ProcessFeaturedItemService would fetch it) or without a string id and object.
+// An embedded FeaturedItem: its id, value_or_id of its featuredObject and featureAuthorization, and its published
+// when a string (the Store decides whether it is a time); null for an item given only as a URI
+// (ProcessFeaturedItemService would fetch it) or without a string id and object.
 export function featuredItemOf(value: unknown): FeaturedItemInput | null {
   if (!isObject(value) || typeof value.id !== "string") {
     return null;
   }
   const object = idOf(value.featuredObject);
-  return object === null ? null : { id: value.id, object, authorization: idOf(value.featureAuthorization) };
+  return object === null
+    ? null
+    : {
+        id: value.id,
+        object,
+        authorization: idOf(value.featureAuthorization),
+        published: typeof value.published === "string" ? value.published : null,
+      };
 }
 
 // An embedded FeaturedCollection, or null when it has no string id (one given only as a URI is not read). Its type is

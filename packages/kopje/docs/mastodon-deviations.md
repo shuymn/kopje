@@ -848,7 +848,9 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   or a string) is not stored; Mastodon 4.7.5 refuses only one that is not a number, and stores the others (a fraction
   cut to its whole part, a numeric string read as its number). Its language, the first key of its `summaryMap`, is
   stored only when it is a language code Kopje stores (the ISO 639-1 codes of `collections.language`), and otherwise
-  as none; Mastodon stores any key. Accepted, 2026-11-17.
+  as none; Mastodon stores any key. A member's `created_at` is its item's `published` when that is a time no later
+  than its arrival with a year from 0 to 9999, and otherwise the time Kopje received the item; Mastodon stores any
+  time it can read. Accepted, 2026-11-17.
 - A member's authorization is checked once for each value the owner gives it, in background rounds, four a round, at
   most five attempts, and at most 250 checks begun in a UTC day for one owner's collections (the rest wait for the next
   day); Mastodon verifies it again on every processing of the collection. An authorization larger than 64 KiB or
