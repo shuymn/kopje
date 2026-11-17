@@ -255,8 +255,8 @@ async function activityEnvelope(
   const actor = idOf(read.actor);
   const id = typeof read.id === "string" ? read.id : null;
   const type = typeof read.type === "string" ? readType(read.type) : null;
-  // ID-6: an Add or Remove may have no id (Mastodon 4.7.5 sends every one so, #1693); a non-string one reads as none,
-  // as Mastodon never reads it. Every other type needs a string id.
+  // ID-6: an Add or Remove may have no id (Mastodon 4.7.5 sends every one so, #1693), and is then read and applied as
+  // one with an id; a non-string one reads as none, as Mastodon never reads it. Every other type needs a string id.
   if (actor === null || originOf(actor) === null || type === null || (id === null && !ID_LESS.has(type))) {
     return { ok: false, reason: "incomplete" };
   }

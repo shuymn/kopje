@@ -262,8 +262,8 @@ describe("D2: real LD-signed payloads read as Mastodon reads them", () => {
     expect(accepted(await kopje(react))).toMatchObject({ type: "Like", object: "https://kopje.test/ap/o/remote-1" });
   });
 
-  // AR-T2 (ID-6, #1693): Mastodon's Add and Remove carry no id, and are read without one (the Store applies them
-  // whatever the target); a FeatureRequest carries no actor.
+  // AR-T2 (ID-6, #1693): Mastodon's Add and Remove carry no id, and are read without one (the Store applies them as
+  // one with an id); a FeatureRequest carries no actor.
   it("reads Mastodon's Add and Remove, and refuses FeatureRequest (no actor), in both forms", async () => {
     const entries = corpus.filter((e) => /^(Add|Remove)\(Hashtag\)$|^FeatureRequest$/.test(e.name));
     expect(entries.length).toBeGreaterThan(0);

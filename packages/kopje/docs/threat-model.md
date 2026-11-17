@@ -461,8 +461,9 @@ against their own instance. TLS is assumed between all parties.
   pages"), `test-node/cutover-safety.test.ts` ("a local username that is the instance domain"),
   `test/dump-import.test.ts` ("a local username that is the instance domain").
 - **ID-6: each activity type has a fixed authorization rule** (Mastodon 4.5.11's table, pinned by one negative test per
-  row). The activity `id`, when it has one, has the actor's origin before any idempotency key is reserved; only `Add`
-  and `Remove` may have none, as Mastodon sends them, and their effects are keyed by nature (ID-7). `Undo` requires the
+  row). The activity `id`, when it has one, has the actor's origin before any idempotency key is reserved; only an
+  `Add` or `Remove` may have none (Mastodon sends them so), and one without is held to the rules of one with an id, its
+  effects keyed by nature (ID-7). `Undo` requires the
   actor of the undone activity; `Accept` and `Reject` require the target of the matching `Follow`; `Update` and `Delete`
   require the object's current author, and an update never changes the author. A same-origin but different actor is
   refused like a cross-origin one. _Enforced (main)_ for the id: `activityEnvelope` (`ID_LESS`) in

@@ -303,7 +303,7 @@ export type InboundActivity =
   // A report of the accounts and statuses `objects` names (reports.ts fileRemoteReports), with its comment.
   | { type: "Flag"; id: string; objects: string[]; content: string }
   // An Add or Remove of a status (by its id), a Hashtag (by its name) or an embedded FEP-7aa9 collection or item to or
-  // from the collection `target`; with or without an id, whatever the target (#1693, ID-6).
+  // from the collection `target`; one without an id is applied as one with an id (#1693, ID-6).
   | { type: "Add"; id: string | null; target: string; object: CollectionItem }
   | { type: "Remove"; id: string | null; target: string; object: CollectionItem }
   // A remote collection updated by its owner (Update#update_collection).
@@ -3494,9 +3494,10 @@ function undoInteraction(db: Db, actor: RemoteRow, ref: ActivityRef & { id: stri
 // the featured collection, Kopje accepts either), on its own origin; anything else is ignored. A status is the actor's
 // own on its origin; one not stored yet is fetched (Add#status_from_object) only for an actor with local followers.
 // The actor's featuredCollections collection and its stored remote collections take FEP-7aa9 collections and items
-// (remote-featured-collections.ts, #1589's D21), embedded only (nothing is fetched for one given by URI). Whatever the
-// target, the activity may have no id, as Mastodon 4.7.5 sends every Add and Remove (#1693): its effect is keyed by
-// nature, the pin by its status, the hashtag by its name, the collection and the item by their uri (ID-7).
+// (remote-featured-collections.ts, #1589's D21), embedded only (nothing is fetched for one given by URI). Whether the
+// activity has an id changes none of these rules or the caps (#1693: Mastodon 4.7.5 sends every Add and Remove
+// without one); the effect is keyed by nature, the pin by its status, the hashtag by its name, the collection and the
+// item by their uri (ID-7).
 const add: Handler<"Add"> = (db, actor, activity, input) => {
   const collection = collectionOf(db, actor.id, activity.target);
   const { object } = activity;
