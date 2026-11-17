@@ -8,8 +8,8 @@ import { limitParam, type Params } from "./params";
 
 const CURSOR = /^\d{1,19}$/;
 
-// `limit` as limit_param reads it (Api::BaseController#limit_param: `defaultLimit` when absent, else the absolute value
-// of its to_i, at most `maxLimit`), and a limit of 0 as 1, where Mastodon answers 500 (docs/mastodon-deviations.md,
+// `limit` as limit_param reads it (Api::BaseController#limit_param: `defaultLimit` when absent or nil, else the absolute
+// value of its to_i, at most `maxLimit`), and a limit of 0 as 1, where Mastodon answers 500 (docs/mastodon-deviations.md,
 // "Request parameters").
 export function pageQuery(params: Params, defaultLimit = 40, maxLimit = 80): PageQuery {
   const limit = params.integer("limit");
@@ -17,7 +17,10 @@ export function pageQuery(params: Params, defaultLimit = 40, maxLimit = 80): Pag
     maxId: cursor(params.get("max_id")),
     sinceId: cursor(params.get("since_id")),
     minId: cursor(params.get("min_id")),
-    limit: limit === undefined ? defaultLimit : Math.min(Math.max(Math.abs(rubyToI(limit)), 1), maxLimit),
+    limit:
+      limit === undefined || params.sentNull("limit")
+        ? defaultLimit
+        : Math.min(Math.max(Math.abs(rubyToI(limit)), 1), maxLimit),
   };
 }
 

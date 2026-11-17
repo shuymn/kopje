@@ -152,7 +152,8 @@ export class Params {
     return this.files.get(name);
   }
 
-  // Whether the value get(name) reads (blank) is a JSON null: Rails assigns nil, where a blank string stays a string.
+  // Whether the value get(name) reads (blank) is nil: a JSON null, or a query or form name sent without `=`, which Rack
+  // reads as nil, where a blank string stays a string.
   sentNull(name: string): boolean {
     return selected(this.entries, name)?.[2] === null;
   }
@@ -602,11 +603,11 @@ export function offsetParam(p: Params): number {
   return Math.max(rubyToI(p.integer("offset") ?? "0"), 0);
 }
 
-// `limit` as Api::BaseController#limit_param reads it: `fallback` when absent, else the absolute value of its to_i, at
-// most `max`.
+// `limit` as Api::BaseController#limit_param reads it: `fallback` when absent or nil (`?limit` without `=`, a JSON
+// null), else the absolute value of its to_i, at most `max`.
 export function limitParam(p: Params, fallback: number, max: number): number {
   const limit = p.integer("limit");
-  return limit === undefined ? fallback : Math.min(Math.abs(rubyToI(limit)), max);
+  return limit === undefined || p.sentNull("limit") ? fallback : Math.min(Math.abs(rubyToI(limit)), max);
 }
 
 // A sent parameter as Rails casts it to a boolean (railsBoolean): blank is absent.

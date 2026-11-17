@@ -489,6 +489,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   (NUL and ASCII white space only), an app's name is stored as sent rather than trimmed, and an admin search attribute
   that stripping leaves empty (`by_domain=%00`) stays a condition (#1734). No Store migration and no `wrangler.jsonc`
   change.
+- A `limit` sent without a value (`?limit`, or a JSON null) takes the list's default, as Rails reads it as nil; an
+  empty one (`?limit=`) keeps its answer (#1759). No Store migration and no `wrangler.jsonc` change.
 - A remote status's `sensitive` is read as Mastodon casts it to its boolean column, so any value but `false`, `0`, null
   and Rails' false strings (`"0"`, `"f"`, `"F"`, `"false"`, `"FALSE"`, `"off"`, `"OFF"`) marks it, where only `true`
   did (`"true"`, `1` and `[true]` now mark it), and an empty string refuses it where Mastodon's `NOT NULL` column
