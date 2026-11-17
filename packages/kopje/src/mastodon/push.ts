@@ -138,6 +138,8 @@ export const getSubscription: ApiHandler = async (c, deps) => {
   return subscription === null ? NO_SUBSCRIPTION() : c.json(present(subscription, c.env));
 };
 
+// The data is read before the subscription is looked up, so an invalid `data[policy]` answers its 422 even for a token
+// with none, where Mastodon, which validates no policy, answers 404 (docs/mastodon-deviations.md, "Web Push").
 export const updateSubscription: ApiHandler = withParams(async (c, deps, p) => {
   if (vapidJwk(c.env) === null) {
     return refuseAfterAuth(c, deps, recordNotFound());

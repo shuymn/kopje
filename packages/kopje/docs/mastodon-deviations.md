@@ -1335,9 +1335,10 @@ Web Push (`/api/v1/push/subscription` and the pushes sent; PUSH-1 and PUSH-2 in 
   Mastodon's URL validator takes any http(s) URL with a host. `test/param-blank.test.ts` ("refuses an endpoint or key
   blank to Rails as blank, before the keys are read"). Accepted, 2026-11-18.
 - An empty `data[policy]` is `all`, and a policy other than `all`, `followed`, `follower` and `none` answers 422
-  `Validation failed: Policy is not included in the list`. Mastodon validates no policy: it stores the value as sent,
-  shows it, and lets no push through for an empty or unknown one (`Web::PushSubscription#policy_allows_notification?`).
-  Accepted, 2026-11-18.
+  `Validation failed: Policy is not included in the list`, on an update before the subscription is looked up, so also
+  for a token with none. Mastodon validates no policy: it stores the value as sent, shows it, and lets no push through
+  for an empty or unknown one (`Web::PushSubscription#policy_allows_notification?`), and answers an update with no
+  subscription 404 `Not Found` whatever its data. Accepted, 2026-11-18.
 
 Request parameters:
 
