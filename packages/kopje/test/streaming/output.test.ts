@@ -654,8 +654,10 @@ describe("failures during a unit (RES-6)", () => {
 
 describe("unknown charges (RES-6)", () => {
   // bob's socket (its client not reading) has an attachment of the previous release's shape: the first turn closes it
-  // (1011); while it is listed nothing is admitted (carol's unit and dave's error reply close their sockets, 1013) and
-  // upgrades answer 503; once it ends, accounting resumes.
+  // (1011) and logs that close once (`output_closed`, scope `unknown`, its own numbers null, as the transition's close
+  // of every socket of the previous release); while it is listed nothing is admitted (carol's unit and dave's error
+  // reply close their sockets, 1013, each logged with its numbers) and upgrades answer 503; once it ends, accounting
+  // resumes.
   it("stops output while a charge is unknown", async () => {
     const h = await community(["alice", "bob", "carol", "dave"]);
     const { alice, bob, carol, dave } = h.users;
@@ -676,7 +678,11 @@ describe("unknown charges (RES-6)", () => {
     expect(replier.messages).toEqual([]);
     expect((await upgrade(h, carol.token)).status).toBe(503);
     const logged = outputLogs(logs.log, logs.warn);
-    expect(logged["kopje.stream.output_closed"]?.map((e) => e.scope)).toEqual(["unknown", "unknown"]);
+    expect(logged["kopje.stream.output_closed"]).toMatchObject([
+      { scope: "unknown", frames: null, charged: null, need: null, listed: 3 },
+      { scope: "unknown", frames: 0, charged: 0, need: FRAME_1K },
+      { scope: "unknown", frames: 0, charged: 0, need: REPLY },
+    ]);
     expect(logged["kopje.stream.output_refused"]).toMatchObject([{ scope: "unknown", unknown: 1 }]);
     expect((await quiet.read().closed()).code).toBe(1011);
     await until(h, (listed) => listed.length === 0);

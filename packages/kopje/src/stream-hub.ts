@@ -705,9 +705,22 @@ export class StreamHub {
 
   // A socket's attachment, or null after closing it (1011) for one that does not validate: its account is unknown, so
   // the next turn rebuilds the registry, and so is its charge, so nothing is admitted until a recomputation lists none.
+  // Its close is logged once, as it leaves the open state (`output_closed`, scope `unknown`, its own numbers null: a
+  // previous release's socket at the transition, or an attachment that does not read).
   #restore(ws: WebSocket): Attachment | null {
     const at = peek(ws);
     if (at === null) {
+      if (ws.readyState === WebSocket.OPEN) {
+        console.warn({
+          event: "kopje.stream.output_closed",
+          scope: "unknown",
+          frames: null,
+          charged: null,
+          need: null,
+          instance: this.#charged,
+          listed: this.#ctx.getWebSockets().length,
+        });
+      }
       close(ws, 1011, "invalid state");
       this.#reconciled = false;
       this.#unknown = Math.max(this.#unknown, 1);

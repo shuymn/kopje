@@ -4474,7 +4474,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   fresh socket (16 frames of `MESSAGE_MAX`, which `payloadBytes` keeps, with its NUL, within 256 KiB). The charges live
   in each socket's attachment, so they survive hibernation and leave with the socket. While a listed socket's charge is
   unknown (a socket of an earlier release, an unreadable attachment), no frame is sent and upgrades answer 503 until it
-  is gone; what such a socket holds is outside the bound while it stays listed, and the tag-table capacity such sockets
+  is gone, and its own close (1011) logs `output_closed` with scope `unknown` and its numbers null; what such a socket
+  holds is outside the bound while it stays listed, and the tag-table capacity such sockets
   grew until the runtime discards the object's hibernation manager, which their ending, an eviction that hibernates and
   a code update do not do; Kopje has no signal of it. `src/stream-output.ts`, `src/stream-hub.ts`;
   `test/streaming/output.test.ts`, `test-node/stream-output.test.ts`. The
