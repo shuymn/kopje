@@ -1420,11 +1420,11 @@ describe("dump", () => {
     });
   }, 120_000);
 
-  // RES-2, UC5: a remote status's untrusted counts (0113) at both ends of their bound and NULL are dumped and restored
+  // RES-2, UC5: a remote status's untrusted counts (0114) at both ends of their bound and NULL are dumped and restored
   // as they are; a dump holding one past either end, a fraction, other text or a BLOB is refused at apply, and numeric
   // text or an integral REAL restores as the integer INTEGER affinity stores. Each probe rewrites the one count PROBE
   // in the dump's text.
-  it("round-trips untrusted counts (0113) at their bounds, and refuses one past them on import", async () => {
+  it("round-trips untrusted counts (0114) at their bounds, and refuses one past them on import", async () => {
     const PROBE = 98_765_431;
     const rows: [string, number | null, number | null][] = [
       ["990000000000000031", 0, MAX_UNTRUSTED_COUNT],
@@ -1499,12 +1499,12 @@ describe("dump", () => {
     }
   }, 300_000);
 
-  // UC6: a dump taken before 0113_untrusted_counts restores into a Store at its own migrations, whose upgrade adds both
+  // UC6: a dump taken before 0114_untrusted_counts restores into a Store at its own migrations, whose upgrade adds both
   // columns NULL to every status it carries and their triggers; that Store's own export restores into a Store at the
   // latest file with the same rows.
-  it("restores a dump taken before 0113_untrusted_counts, which then upgrades through it and exports again", async () => {
+  it("restores a dump taken before 0114_untrusted_counts, which then upgrades through it and exports again", async () => {
     const restored = await restoredBefore(
-      "0113_untrusted_counts",
+      "0114_untrusted_counts",
       (sql) => {
         sql.exec(
           "INSERT INTO accounts (id, uri, username, domain) VALUES ('190000000000000003', 'https://r.test/u', 'u', 'r.test')",
@@ -1516,7 +1516,7 @@ describe("dump", () => {
         );
       },
       async (sql, upgrade) => {
-        expect(await upgrade()).toMatchObject({ ok: true, applied: ["0113_untrusted_counts"] });
+        expect(await upgrade()).toMatchObject({ ok: true, applied: ["0114_untrusted_counts"] });
         expect(
           sql
             .exec(

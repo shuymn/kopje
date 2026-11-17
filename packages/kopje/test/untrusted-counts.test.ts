@@ -33,7 +33,7 @@ import { act, community, getJson, remoteAccount, seedStatus } from "./status-hel
 import { authors, round, trendRows, trendStatuses } from "./trend-helpers";
 import { one, parseHtml, query, text } from "./web-dom";
 
-// A remote status's untrusted counts (#1749, migration 0113_untrusted_counts): its likes and shares totalItems as
+// A remote status's untrusted counts (#1749, migration 0114_untrusted_counts): its likes and shares totalItems as
 // Mastodon 4.7.5 stores them (platform/untrusted-count.ts) on a Create (create.rb:206-216) and on every Update, explicit
 // or implicit (process_status_update_service.rb:44-83, 393-405): a count is assigned only when given, a blank one
 // clears it, and an explicit Update that its sensitive of "" rolls back assigns none. docs/mastodon-deviations.md,

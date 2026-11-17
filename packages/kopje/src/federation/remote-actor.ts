@@ -333,7 +333,7 @@ export function profileUrl(value: unknown, actorId: URL): string | null {
 // exactly `text/html` (mediaType is not read), or a string, which Ruby's String#[] reads as a Link without a mimeType
 // unless it holds the text `mimeType`. undefined when there is none, or at a value before it that is neither, on which
 // Mastodon raises.
-function htmlLink(list: readonly unknown[]): unknown {
+export function htmlLink(list: readonly unknown[]): unknown {
   for (const link of list) {
     if (typeof link === "string") {
       if (!link.includes("mimeType")) {

@@ -194,7 +194,7 @@ describe("update on public and hashtag streams", () => {
     ]);
   });
 
-  // A remote status's counts are the untrusted ones its server gave (migration 0113_untrusted_counts), as REST shows
+  // A remote status's counts are the untrusted ones its server gave (migration 0114_untrusted_counts), as REST shows
   // them (status-rows.ts STATUS_COLUMN_MAP).
   it("sends a remote status with the untrusted counts REST shows", async () => {
     const h = await community(["alice"]);

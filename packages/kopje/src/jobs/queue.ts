@@ -1,3 +1,4 @@
+import { checkCollectionItems } from "../federation/collection-checks";
 import { syncCollections } from "../federation/collections";
 import { isDeliverMessage } from "../federation/delivery";
 import {
@@ -167,6 +168,10 @@ const STORE_FAMILIES: Families = STORE_JOB_FAMILIES.map(({ family, run }) => ({
 // The Worker's families, whose rounds await network work.
 const WORKER_FAMILIES: Families = [
   { family: "collections", run: async (env, deps) => ({ pending: await syncCollections(env, deps), delivers: false }) },
+  {
+    family: "collection_checks",
+    run: async (env, deps) => ({ pending: await checkCollectionItems(env, deps), delivers: false }),
+  },
   { family: "quotes", run: async (env, deps) => ({ pending: await verifyQuotes(env, deps), delivers: false }) },
   { family: "replies", run: async (env, deps) => ({ pending: await walkReplies(env, deps), delivers: false }) },
 ];
@@ -192,8 +197,9 @@ async function runFamilies(families: Families, env: Env, deps: InboxDeps): Promi
 
 // A round of every job family: the seven Store calls (the inbound jobs, domain block cleanups, notification request
 // jobs, moderation jobs, collection jobs, held handshakes and unlock acceptances), then the Worker's syncs of remote
-// accounts' collections (federation/collections.ts), verifications of received quotes (federation/quotes.ts) and walks
-// of remote replies collections (federation/replies.ts), ten error boundaries in all. Their work and progress are
+// accounts' collections (federation/collections.ts), checks of their members' feature authorizations
+// (federation/collection-checks.ts), verifications of received quotes (federation/quotes.ts) and walks of remote
+// replies collections (federation/replies.ts), eleven error boundaries in all. Their work and progress are
 // durable in the Store, so the round is only nudged: one family's failure is logged and stops no other; the Store
 // refusing (maintenance, a retryable or reset error) ends the round with nothing counted (cron resumes it). The
 // deliveries the Store calls recorded are rung before the network work, and one jobs message asks for the next round

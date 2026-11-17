@@ -12,6 +12,7 @@ import { withinJsonBounds } from "../platform/json-bounds";
 import { parseLinkHeader } from "../platform/link-header";
 import { callStore, type StoreResolver } from "../platform/store-client";
 import { goneSettler } from "./actor-gone";
+import { featuredCollectionOf } from "./featured-collections";
 import {
   afterRevisionRead,
   createRemoteLoaders,
@@ -348,12 +349,13 @@ async function recorded<T>(last: LastAnswer, request: Promise<T>): Promise<T> {
   }
 }
 
-// A URL: an actor, or a status with its author (the author has the status's origin, as for inbound objects). A stored
-// remote actor's id is resolved as that actor, under the revision read here before any fetch (ID-1); any other URL is
-// probed (probeUrl). Nothing resolved carries the last answer of the URL's own fetches (`last`), as Mastodon's
-// response_code sees them: the stored actor's fetch, or the probe, the document's id and the alternates. WebFinger, the
-// JSON-LD contexts and a fetched status's author are not: Mastodon reaches them only after a document was taken, after
-// which nothing stored is looked up. storeResolved answers stored data by it (resolve_url_service.rb:38-63).
+// A URL: an actor, a status with its author (the author has the status's origin, as for inbound objects), or a
+// collection. A stored remote actor's id is resolved as that actor, under the revision read here before any fetch
+// (ID-1); any other URL is probed (probeUrl). Nothing resolved carries the last answer of the URL's own fetches
+// (`last`), as Mastodon's response_code sees them: the stored actor's fetch, or the probe, the document's id and the
+// alternates. WebFinger, the JSON-LD contexts and a fetched status's author are not: Mastodon reaches them only after a
+// document was taken, after which nothing stored is looked up. storeResolved answers stored data by it
+// (resolve_url_service.rb:38-63).
 async function resolveUrl(loaders: Resolving, url: string): Promise<Resolved> {
   const last: LastAnswer = { status: null };
   const stored = await loaders.stateOf(url);
@@ -368,7 +370,9 @@ async function resolveUrl(loaders: Resolving, url: string): Promise<Resolved> {
 }
 
 // A URL that names no stored actor, probed: a 200 answer that is not ActivityPub is followed to the document its
-// alternate names (alternateOf), and a document is taken as ownDocument takes it.
+// alternate names (alternateOf), and a document is taken as ownDocument takes it. A FeaturedCollection of the
+// ActivityStreams context is read as an embedded one is (ActivityPub::FetchRemoteFeaturedCollectionService on the
+// probe's body), for the Store to apply when it stores its owner; nothing more is fetched for it.
 async function probeUrl(loaders: Resolving, url: string): Promise<Resolved> {
   let document: unknown;
   try {
@@ -385,6 +389,10 @@ async function probeUrl(loaders: Resolving, url: string): Promise<Resolved> {
   const id = idOf(document);
   if (typeIs(type, ACTOR_TYPES)) {
     return id === null ? NONE : resolveAccount(loaders, id);
+  }
+  if (typeIs(type, ["FeaturedCollection"])) {
+    const collection = takes(document) ? featuredCollectionOf(document) : null;
+    return collection === null ? NONE : { kind: "collection", collection };
   }
   const status = parseRemoteStatus(document);
   if (status === null || status.attributedTo === null) {
@@ -424,7 +432,7 @@ const ALTERNATE_TYPES = [
 const ACTIVITYSTREAMS = "https://www.w3.org/ns/activitystreams";
 
 // The types FetchResourceService#process_response takes (FetchRemoteActorService::SUPPORTED_TYPES, and expected_type?:
-// Create's supported and converted types and FeaturedCollection, which Kopje does not resolve).
+// Create's supported and converted types and FeaturedCollection).
 const TAKEN_TYPES = [...ACTOR_TYPES, ...STATUS_TYPES, ...CONVERTED_TYPES, "FeaturedCollection"];
 
 // The document a 200 answer that is not ActivityPub names, as FetchResourceService#process_response follows it

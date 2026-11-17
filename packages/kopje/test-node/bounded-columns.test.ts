@@ -718,6 +718,8 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
       "an ActivityPub document or activity of a local collection (its owner's and members' ids), not an API answer",
   },
   "src/domain/blocks.ts accounts.uri": { count: 2, reason: IDENTITY },
+  // A check's member, compared with the interactionTarget of the authorization it fetches.
+  "src/domain/collection-checks.ts accounts.uri": { count: 1, reason: IDENTITY },
   // The fourth: a staged retraction compares a uri past TARGET_CHUNK_BYTES with the activity's named ones in SQL; the
   // fifth and sixth: a held Reject's prefix, the local actor's uri compared with its id by bytes (HELD_REJECT); the
   // seventh: a signed Delete's staged addressing compared with the signer's followers collection (stagedAddressing);

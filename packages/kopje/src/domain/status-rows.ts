@@ -52,7 +52,7 @@ import {
 // them whatever the import order.
 
 // A status's favourites or boosts count as Mastodon's serializer answers it (status_serializer.rb:95-101, Status
-// #untrusted_favourites_count): a remote status's untrusted count (migration 0113_untrusted_counts) when it stores one,
+// #untrusted_favourites_count): a remote status's untrusted count (migration 0114_untrusted_counts) when it stores one,
 // read within its bound (storedCountSql, so a value past it reads as none), else its own count; a local status's own
 // count, whatever an import stored in its untrusted column. Over STATUS_FROM's `s` and its author `au`.
 function shownCountSql(untrusted: string, own: string): string {

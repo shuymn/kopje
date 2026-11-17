@@ -460,7 +460,7 @@ END;`,
   ),
   // 0112_delivery_hosts: the hosts deliveries failed to, for every writer and an import (RES-4).
   capTrigger("delivery_hosts", "host", MAX_DELIVERY_HOSTS),
-  // 0113_untrusted_counts: a remote status's likes and shares totalItems as stored (RES-2).
+  // 0114_untrusted_counts: a remote status's likes and shares totalItems as stored (RES-2).
   ...boundTriggers(
     "statuses_untrusted_favourites",
     "statuses",

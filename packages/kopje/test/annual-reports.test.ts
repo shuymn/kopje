@@ -441,7 +441,7 @@ describe("the sources", () => {
   });
 
   // TopStatuses ranks by the status's own boosts (status_stats.reblogs_count), never by the untrusted count an import
-  // may have stored on the owner's status (migration 0113_untrusted_counts).
+  // may have stored on the owner's status (migration 0114_untrusted_counts).
   it("picks the top status by its own boosts, whatever untrusted count it stores", async () => {
     const w = await world();
     await posts(w, [

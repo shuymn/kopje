@@ -2260,7 +2260,7 @@ export function presentedCountSql(column: string): string {
 		ELSE 0 END`;
 }
 
-// ---- Untrusted status counts: migration 0113_untrusted_counts (platform/untrusted-count.ts, domain/status-rows.ts)
+// ---- Untrusted status counts: migration 0114_untrusted_counts (platform/untrusted-count.ts, domain/status-rows.ts)
 
 // statuses.untrusted_favourites_count and untrusted_reblogs_count: NULL (none received), or an integer from 0 to
 // MAX_UNTRUSTED_COUNT, the likes and shares totalItems a remote status gives, clamped as Mastodon 4.7.5 clamps them

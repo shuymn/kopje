@@ -1,4 +1,4 @@
--- Kopje Store schema 0113: untrusted status counts. Never edit after release (checksummed).
+-- Kopje Store schema 0114: untrusted status counts. Never edit after release (checksummed).
 --
 --   statuses.untrusted_favourites_count   NULL, or an integer from 0 to 100,000,000 (MAX_UNTRUSTED_COUNT): the
 --   statuses.untrusted_reblogs_count      totalItems of a remote status's likes and shares, read as Mastodon 4.7.5

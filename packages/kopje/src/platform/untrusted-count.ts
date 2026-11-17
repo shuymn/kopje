@@ -3,7 +3,7 @@ import { rubyToI } from "./ruby-to-i";
 import { MAX_UNTRUSTED_COUNT } from "./stored-bounds";
 
 // A remote status's `likes` or `shares` as Mastodon 4.7.5 stores its count (statuses.untrusted_favourites_count and
-// untrusted_reblogs_count, migration 0113_untrusted_counts): StatusParser#favourites_count and #reblogs_count read the
+// untrusted_reblogs_count, migration 0114_untrusted_counts): StatusParser#favourites_count and #reblogs_count read the
 // collection's totalItems only when the collection is a JSON object (status_parser.rb:118-124), update_counts! and
 // Create#attach_counts assign it only when it is not nil (process_status_update_service.rb:393-405, create.rb:206-216),
 // ActiveModel's BigInteger casts it, and StatusStat#clamp_untrusted_counts clamps it to 0..MAX_UNTRUSTED_COUNT

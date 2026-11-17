@@ -172,12 +172,24 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `0093_annual_reports` takes 16,114 ms with this file and 16,184 ms without it). Hosts are counted from the upgrade
   on: stop one already gone with `kopje-admin hosts stop <host>`. `wrangler.jsonc`: unchanged. This adds a Store
   migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+- Remote accounts' collections are read and shown, with members whose authorization is verified: a remote account's
+  sync reads its FEP-7aa9 `featuredCollections` (at most 2 pages, 10 embedded collections of 25 embedded members), and
+  background rounds check each member's `FeatureAuthorization` on its own server, at most 250 checks a UTC day for one
+  owner's collections; the owner's `Add`, `Remove` and `Update` (with or without an `id`, as Mastodon sends them) keep
+  them current, and a member's `Delete` of its authorization, sent by the member or relayed by the owner with the
+  member's signature, revokes its membership; search with `resolve=true` finds one by its URL, and an inbound report
+  attaches the remote collections it names ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
+  "Collections"). Migration `0113_featured_collection_syncs`: a column of `collection_syncs`, reading only the pending
+  syncs, and a new table; as it creates a table, the upgrade checks every reference of the Store (the migration bench's
+  upgrade from `0093_annual_reports` takes 22,046 ms with this file and 22,003 ms without it, medians of three runs).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling back
+  past it needs a point-in-time restore.
 - A remote status shows the favourites and boosts counts its server gives as `likes` and `shares` `totalItems`, as
   Mastodon does, in the API, streaming and the public pages, read on its `Create` and every `Update` (a refetch and a
   poll's refresh included), clamped to 0 to 100,000,000 and moved with each favourite and boost; without one, the
   favourites and boosts Kopje stores of it, as before. Trends still rank by those (#1749). A status stored before the
   upgrade shows its own counts until its server's next `Update` of it or a refetch. An import refuses an untrusted
-  count outside the bound. Migration `0113_untrusted_counts`: two columns and four triggers on `statuses`, no row read
+  count outside the bound. Migration `0114_untrusted_counts`: two columns and four triggers on `statuses`, no row read
   or rewritten; the upgrade checks no reference. `wrangler.jsonc`: unchanged. This adds a Store migration, so the
   release is at least a minor version, and rolling back past it needs a point-in-time restore.
 
@@ -424,6 +436,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   LD-signed activity with a node whose `type` and `@type` together give two types or more one of which is not a string
   or is shaped like a keyword on a line, or a type beside `@set`, on which Mastodon's job raises and applies nothing, is
   ignored. No Store migration and no `wrangler.jsonc` change.
+- Apply LD-signed Reject, Undo, Block and Delete activities whose actor is a one-element array, whose object follows a
+  member the compaction shortens, or whose object is given as {"@id": ...}, as Mastodon does (#1717). Each is applied
+  only where Kopje shows Mastodon's compaction of it succeeds, and none is applied when another server relays it
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Reading inbound activities"). No Store migration and no
+  `wrangler.jsonc` change.
 - Every domain check reads a host without any of its trailing dots, in the Worker as in SQL: an instance domain block
   of `example.com` covers a fetch, an inbox, an actor and a delivery on `example.com..`, and an actor whose id is there
   claims its handle at `example.com`, where Mastodon drops a single trailing dot
@@ -700,6 +717,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   read, so a row that is not UTF-8 is no longer read twice or deleted unread
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Delivery recipients"). No Store migration and no
   `wrangler.jsonc` change.
+- [docs/upgrade.md](docs/upgrade.md) says what the Store serves in each state `kopje-admin health` can report during
+  an upgrade: it refuses every request, reads and sign-ins included, while the new migrations are not all applied,
+  and is readonly until they are verified, also when an upgrade fails and holds (#1753). It said that the Store stayed
+  readonly throughout. No Store migration and no `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 

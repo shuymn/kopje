@@ -25,6 +25,7 @@ import { webfingerUrl } from "../src/domain/remote-statuses";
 import { suspendRemote } from "../src/domain/remote-suspension";
 import {
   COLLECTION_SYNCS_PER_ROUND,
+  COLLECTIONS_CAPS,
   MAX_FEATURED_TAG_PAGES,
   NETWORK_CAPS,
   PART_DOCUMENTS,
@@ -1277,6 +1278,7 @@ describe("a round’s claim of a sync", () => {
     tags,
     hideCollections: null,
     counts: { statuses: null, following: null, followers: null },
+    collections: null,
   });
   const claim = async (t: Setup, now: number) => {
     const sync = await t.store.claimCollectionSync(BUILD, { now });
@@ -2007,7 +2009,7 @@ describe("a round’s end with counts (completeCollectionRead)", () => {
       throw new Error("no sync claimed");
     }
     const { generation, token } = sync;
-    const read = { parts: ALL_PARTS, pins: null, tags: null, hideCollections: null };
+    const read = { parts: ALL_PARTS, pins: null, tags: null, hideCollections: null, collections: null };
     await t.store.completeCollectionRead(BUILD, {
       now: NOW,
       origin: LOCAL,
@@ -2307,6 +2309,7 @@ describe("the requests of one generation", () => {
       PART_DOCUMENTS.featured * (1 + MAX_REDIRECTS) * sends,
       network.documents * (1 + network.redirects) * sends,
       PART_DOCUMENTS.tags * (1 + MAX_REDIRECTS) * sends,
+      PART_DOCUMENTS.collections * (1 + COLLECTIONS_CAPS.maxRedirects) * sends,
     ];
     const readClaims = parts.length * MAX_SYNC_ATTEMPTS;
     const readRound = Math.min(
@@ -2333,9 +2336,9 @@ describe("the requests of one generation", () => {
       `Requests of one generation: before ${JSON.stringify(before)}, after ${JSON.stringify(after)}, retried ${JSON.stringify(retried)}`,
     );
     expect({ before, after, retried }).toEqual({
-      before: { networkPerRound: 8, networkPerGeneration: 72, networkHealthy: 2, perCall: 16, perGeneration: 552 },
-      after: { networkPerRound: 6, networkPerGeneration: 54, networkHealthy: 3, perCall: 16, perGeneration: 552 },
-      retried: { networkPerRound: 8, networkPerGeneration: 72, networkHealthy: 3, perCall: 16, perGeneration: 552 },
+      before: { networkPerRound: 8, networkPerGeneration: 96, networkHealthy: 2, perCall: 16, perGeneration: 576 },
+      after: { networkPerRound: 6, networkPerGeneration: 72, networkHealthy: 3, perCall: 16, perGeneration: 576 },
+      retried: { networkPerRound: 8, networkPerGeneration: 96, networkHealthy: 3, perCall: 16, perGeneration: 576 },
     });
   });
 
@@ -2378,6 +2381,7 @@ describe("the requests of one generation", () => {
       tags: null,
       hideCollections: null,
       counts: { statuses: null, following: null, followers: null },
+      collections: null,
     });
     expect(
       await sql(

@@ -52,7 +52,7 @@ describe("migration lint", () => {
       "0109_scheduled_media_cap",
       "0110_scheduled_params",
       "0111_account_urls",
-      "0113_untrusted_counts",
+      "0114_untrusted_counts",
     ]);
     for (const m of DECLARED) {
       expect(unchangedProblem(m.sql), m.name).toBeNull();

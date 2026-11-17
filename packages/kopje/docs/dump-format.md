@@ -373,12 +373,12 @@ it, and shorten its own), never pass the allowance (`docs/threat-model.md`, RES-
 reads an upper bound. A dump taken before 0079 has no such column: it restores into a Store at its own migrations,
 which then upgrades. A file built from legacy data writes NULL.
 
-Untrusted counts (migration `0113_untrusted_counts`): `statuses.untrusted_favourites_count` and
+Untrusted counts (migration `0114_untrusted_counts`): `statuses.untrusted_favourites_count` and
 `untrusted_reblogs_count` are each NULL, or an integer from 0 to 100,000,000 (text or a REAL holding such an integer is
 stored as that integer, by the column's affinity); anything else fails with `statuses: untrusted_favourites_count past
 its stored bound` (or `untrusted_reblogs_count`). They are the favourites and boosts count a remote status's server
 gave, which the API shows for that status in place of Kopje's own count; a local status's are never read. A dump taken
-before 0113 has no such columns: it restores into a Store at its own migrations, whose upgrade adds them NULL. A file
+before 0114 has no such columns: it restores into a Store at its own migrations, whose upgrade adds them NULL. A file
 built from legacy data writes NULL.
 
 Pinned statuses (migration `0089_pin_cap`): `status_pins` holds at most 5 rows per local account (`accounts.domain`
@@ -547,6 +547,17 @@ CHECK's name (`collection_name`, `collection_item_state`, `collection_item_accep
 bound` or `collection_items: past the live bound`. A restored row is presented as it was dumped; the cron deletes a
 rejected or revoked item a day after its `updated_at`. A dump taken before 0103 has no such table: it restores into a
 Store at its own migrations, which then upgrades. A file built from legacy data has no row.
+A remote account's collection sync and the checks of its collections' items (migration
+`0113_featured_collection_syncs`): `collection_syncs.collections_read` is 0 or 1, whether the read under way has read
+the account's `featuredCollections`, and `collections_changed` 0 or 1, whether the account's collections changed since
+the claim of the round holding the sync (a restored 1 is cleared by the next claim); a `collection_check_quotas` row
+names a remote collection's owner (`account_id`, whose delete cascades to it) and holds `day`, the UTC day number of its
+latest item-check claims (an INTEGER from 0 to 104,249,990, the last day whose next day starts within 2^53 − 1 ms, the
+latest due time of an item's check, CHECK `collection_check_quotas_day`), and `used`, the claims made that day (an
+INTEGER from 0 to 250, CHECK `collection_check_quotas_used`). Any other value fails with `CHECK constraint failed`. A
+dump carries them as they are, so a restored Store goes on with the same day's count; a `day` after the Store's clock
+keeps its count until that day has passed. A dump taken before 0113 has neither: it restores into a Store at its own
+migrations, which then upgrades, giving every sync 0 and no quota. A file built from legacy data has no row.
 `notifications.collection_item_id` and `notifications.collection_id` (migration `0107_collection_notifications`) are
 each NULL or 18 ASCII digits naming an item or a collection the dump holds: an `added_to_collection` notification
 names its item alone, a `collection_update` its collection alone, and any other type neither, with at most one

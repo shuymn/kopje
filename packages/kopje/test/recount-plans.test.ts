@@ -6,7 +6,7 @@ import { recountStatus } from "../src/domain/statuses";
 import { migratedStore } from "./helpers";
 import { expectBeside, expectGrowth, PlanWitness, type Run, STATISTICS, type Statistics } from "./plan-witness";
 
-// The RES-7 witness of recountStatus (src/domain/statuses.ts), which migration 0113_untrusted_counts made one row-value
+// The RES-7 witness of recountStatus (src/domain/statuses.ts), which migration 0114_untrusted_counts made one row-value
 // assignment, so that it moves a remote status's untrusted counts with its own in the same write: run beside main's
 // statement by test/plan-witness.ts, under the plan audit's singleton statistics and after ANALYZE, it writes the same
 // own counts to the same row and reads no more than main but for the one row its triggers read again (ROW_ALLOWANCES).
@@ -21,7 +21,7 @@ const ABOVE = "800000000000000900";
 
 const WITNESS = new PlanWitness(
   {
-    // recountStatus, origin/main before migration 0113_untrusted_counts.
+    // recountStatus, origin/main before migration 0114_untrusted_counts.
     c5c0b8e647a58f86: {
       sql: `UPDATE statuses SET replies_count = (SELECT COUNT(*) FROM statuses r WHERE r.in_reply_to_id = ?1 AND r.visibility IN ('public', 'unlisted')), reblogs_count = (SELECT COUNT(*) FROM statuses r INDEXED BY statuses_reblog WHERE r.reblog_of_id = ?1 AND r.reblog_of_id IS NOT NULL AND r.withdrawn = 0), favourites_count = (SELECT COUNT(*) FROM favourites f WHERE f.status_id = ?1) WHERE id = ?1`,
       text: `UPDATE statuses SET (replies_count, reblogs_count, favourites_count, untrusted_reblogs_count, untrusted_favourites_count) = (SELECT c.replies, c.reblogs, c.favourites, CASE WHEN typeof(statuses.reblogs_count) <> 'integer' THEN statuses.untrusted_reblogs_count ELSE min(max(statuses.untrusted_reblogs_count + c.reblogs - statuses.reblogs_count, 0), 100000000) END, CASE WHEN typeof(statuses.favourites_count) <> 'integer' THEN statuses.untrusted_favourites_count ELSE min(max(statuses.untrusted_favourites_count + c.favourites - statuses.favourites_count, 0), 100000000) END FROM (SELECT (SELECT COUNT(*) FROM statuses r WHERE r.in_reply_to_id = ?1 AND r.visibility IN ('public', 'unlisted')) AS replies, (SELECT COUNT(*) FROM statuses r INDEXED BY statuses_reblog WHERE r.reblog_of_id = ?1 AND r.reblog_of_id IS NOT NULL AND r.withdrawn = 0) AS reblogs, (SELECT COUNT(*) FROM favourites f WHERE f.status_id = ?1) AS favourites) c) WHERE id = ?1`,
@@ -33,7 +33,7 @@ const WITNESS = new PlanWitness(
   [],
 );
 
-// Assigning the untrusted counts fires their stored bound's BEFORE UPDATE OF triggers (migration 0113_untrusted_counts),
+// Assigning the untrusted counts fires their stored bound's BEFORE UPDATE OF triggers (migration 0114_untrusted_counts),
 // with which SQLite writes the row in two passes: it reads the one row it writes once more than main's statement, which
 // assigns no guarded column (with the triggers dropped, the rewrite reads no more than main). Splitting the statement
 // in two would write those columns all the same and read more.

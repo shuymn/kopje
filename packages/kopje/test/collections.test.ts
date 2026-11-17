@@ -5,6 +5,7 @@ import { ANSWER_BYTES, jsonBytes } from "../src/domain/answer-budget";
 import type { Collection, CollectionItem } from "../src/domain/collection-presenter";
 import {
   COLLECTION_JSON_MAX,
+  LOCAL_COLLECTION_JSON_MAX,
   pruneCollectionItems,
   RETIRED_ROWS_PER_ROUND,
   showCollection,
@@ -15,6 +16,8 @@ import { handleScheduled } from "../src/jobs/scheduled";
 import {
   COLLECTION_DESCRIPTION_LENGTH,
   COLLECTION_NAME_LENGTH,
+  COLLECTION_URI_BYTES,
+  COLLECTION_URL_BYTES,
   LOCAL_USERNAME_BYTES,
 } from "../src/platform/stored-bounds";
 import { type ApiHarness, bearer, seedAccount, sql } from "./api-helpers";
@@ -872,17 +875,55 @@ describe("collections: R45", () => {
 
 describe("collections: maxima", () => {
   const LONG_ORIGIN = `https://${"h".repeat(253 - ".example".length)}.example`;
+  const language = [...TREND_LANGUAGES].reduce((a, b) => (b.length > a.length ? b : a));
+  const escaped = (n: number) => "\u0001".repeat(n);
+  // A four-byte character a hashtag holds as it is (an ideograph: NFKC and lowercase keep it).
+  const tag = "\u{20000}".repeat(MAX_TAG_LENGTH);
 
-  it("derives COLLECTION_JSON_MAX from the bounds, and fits the answers of a full account", async () => {
+  // The collection `id` as GET /api/v1/collections/:id presents it on LONG_ORIGIN, with no viewer.
+  async function shownAtLongOrigin(h: ApiHarness, id: string) {
+    const shown = await runInDurableObject(h.store, (_instance, state) =>
+      showCollection.run(state.storage.sql, { credential: null, now: NOW, id, present: { origin: LONG_ORIGIN } }),
+    );
+    if (shown.status !== "ok" || shown.value.status !== "ok") {
+      throw new Error("not shown");
+    }
+    return shown.value.value;
+  }
+
+  // The bound's skeleton: every string empty, the booleans false, the counts at their longest, its 25 items' strings
+  // empty.
+  const skeleton = (collection: Collection) =>
+    jsonBytes({
+      ...collection,
+      ...Object.fromEntries(
+        Object.entries(collection)
+          .filter(([, v]) => typeof v === "string")
+          .map(([k]) => [k, ""]),
+      ),
+      local: false,
+      sensitive: false,
+      discoverable: false,
+      tag: { name: "", url: "" },
+      items: collection.items.map(() => ({ id: "", state: "accepted", created_at: "", account_id: "" })),
+    });
+  // What both bounds share past the skeleton: the id, language, account_id, timestamps, tag and its URL on
+  // LONG_ORIGIN (each byte of its name encoded in three), and each item's id, created_at and account_id.
+  const shared =
+    18 +
+    language.length +
+    18 +
+    2 * 24 +
+    TAG_NAME_BYTES +
+    (LONG_ORIGIN.length + "/tags/".length + 3 * TAG_NAME_BYTES) +
+    25 * (18 + 24 + 18);
+
+  it("derives a local collection's maximum from the bounds, and fits the answers of a full account", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
     const owner = await seedAccount(h.store, { username: "o".repeat(LOCAL_USERNAME_BYTES) });
     const ids = await members(h, 25);
     const retired = await members(h, 25, "r");
-    const language = [...TREND_LANGUAGES].reduce((a, b) => (b.length > a.length ? b : a));
-    const escaped = (n: number) => "\u0001".repeat(n);
-    // A four-byte character a hashtag holds as it is (an ideograph: NFKC and lowercase keep it).
-    const tag = "\u{20000}".repeat(MAX_TAG_LENGTH);
     expect(new TextEncoder().encode(tag).length).toBe(TAG_NAME_BYTES);
     for (let c = 0; c < 10; c++) {
       const collection = await seedCollection(h, owner, c, {
@@ -900,53 +941,22 @@ describe("collections: maxima", () => {
     for (const [i, member] of retired.entries()) {
       await seedItem(h, collectionId(0), 50 + i, { account_id: member, object_uri: null, state: 3 });
     }
-    const shown = await runInDurableObject(h.store, (_instance, state) =>
-      showCollection.run(state.storage.sql, {
-        credential: null,
-        now: NOW,
-        id: collectionId(0),
-        present: { origin: LONG_ORIGIN },
-      }),
-    );
-    if (shown.status !== "ok" || shown.value.status !== "ok") {
-      throw new Error("not shown");
-    }
-    const { collection, accounts } = shown.value.value;
+    const { collection, accounts } = await shownAtLongOrigin(h, collectionId(0));
     expect(collection.items).toHaveLength(25);
     expect(accounts).toHaveLength(26);
-    // The bound: the skeleton (every string empty, the booleans false, the counts at their longest) and each string at
-    // its most, as JSON (six bytes for each escaped character), the tag's URL encoding each of its bytes in three.
-    const origin = LONG_ORIGIN.length;
-    const skeleton = jsonBytes({
-      ...collection,
-      ...Object.fromEntries(
-        Object.entries(collection)
-          .filter(([, v]) => typeof v === "string")
-          .map(([k]) => [k, ""]),
-      ),
-      local: false,
-      sensitive: false,
-      discoverable: false,
-      tag: { name: "", url: "" },
-      items: collection.items.map(() => ({ id: "", state: "accepted", created_at: "", account_id: "" })),
-    });
+    // The bound: the skeleton and each string at its most, as JSON (six bytes for each escaped character): its uri and
+    // url on LONG_ORIGIN.
     const max =
-      skeleton +
-      18 + // id
-      (origin + "/ap/users/".length + LOCAL_USERNAME_BYTES + "/collections/".length + 18) + // uri
+      skeleton(collection) +
+      shared +
+      (LONG_ORIGIN.length + "/ap/users/".length + LOCAL_USERNAME_BYTES + "/collections/".length + 18) + // uri
       6 * COLLECTION_NAME_LENGTH.local +
       6 * COLLECTION_DESCRIPTION_LENGTH.local +
-      language.length +
-      18 + // account_id
-      (origin + "/collections/".length + 18) + // url
-      2 * 24 + // created_at, updated_at
-      TAG_NAME_BYTES +
-      (origin + "/tags/".length + 3 * TAG_NAME_BYTES) +
-      25 * (18 + 24 + 18); // each item's id, created_at and account_id
-    expect(max).toBe(COLLECTION_JSON_MAX);
-    expect(jsonBytes(collection)).toBeLessThanOrEqual(COLLECTION_JSON_MAX);
+      (LONG_ORIGIN.length + "/collections/".length + 18); // url
+    expect(max).toBe(LOCAL_COLLECTION_JSON_MAX);
+    expect(LOCAL_COLLECTION_JSON_MAX).toBeLessThan(COLLECTION_JSON_MAX);
     // The fill reaches the bound but for local and discoverable, true and one byte shorter than false.
-    expect(COLLECTION_JSON_MAX - jsonBytes(collection)).toBe(2);
+    expect(LOCAL_COLLECTION_JSON_MAX - jsonBytes(collection)).toBe(2);
     // CollectionWithAccounts: the collection and 26 accounts at the account occurrence's conservative bound.
     const frame = jsonBytes({ collection: {}, accounts: [] }) - 2;
     expect(COLLECTION_JSON_MAX + frame + 26 * (CONSERVATIVE_JSON.account + 1)).toBeLessThan(ANSWER_BYTES);
@@ -954,5 +964,42 @@ describe("collections: maxima", () => {
     const listed = await call(h, "GET", `/api/v1/accounts/${owner}/collections?limit=100`, alice.token);
     expect(listed.body.collections).toHaveLength(10);
     expect(jsonBytes(listed.body)).toBeLessThanOrEqual(10 * (COLLECTION_JSON_MAX + 1) + jsonBytes({ collections: [] }));
+  });
+
+  // 5-T8: a remote collection's longer name and description, and its uri and url as stored (https and printable ASCII,
+  // a `"` escaped to two bytes), set COLLECTION_JSON_MAX.
+  it("derives COLLECTION_JSON_MAX from a remote collection's bounds", async () => {
+    const h = await community(["alice"]);
+    const owner = await remoteAccount(h.store, "owner");
+    const quoted = (bytes: number) => `https://${'"'.repeat(bytes - "https://".length)}`;
+    const id = await seedCollection(h, owner, 0, {
+      name: escaped(COLLECTION_NAME_LENGTH.remote),
+      description: escaped(COLLECTION_DESCRIPTION_LENGTH.remote),
+      language,
+      tag,
+      uri: quoted(COLLECTION_URI_BYTES),
+      url: quoted(COLLECTION_URL_BYTES),
+      created_at: T,
+    });
+    for (let i = 0; i < 25; i++) {
+      const member = await remoteAccount(h.store, `m${i}`);
+      await seedItem(h, id, i, { account_id: member, object_uri: null, state: 1 });
+    }
+    const { collection, accounts } = await shownAtLongOrigin(h, id);
+    expect(collection.items).toHaveLength(25);
+    expect(accounts).toHaveLength(26);
+    const max =
+      skeleton(collection) +
+      shared +
+      (2 * COLLECTION_URI_BYTES - "https://".length) + // uri: each byte past the scheme a `"`
+      6 * COLLECTION_NAME_LENGTH.remote +
+      6 * COLLECTION_DESCRIPTION_LENGTH.remote +
+      (2 * COLLECTION_URL_BYTES - "https://".length); // url
+    expect(max).toBe(COLLECTION_JSON_MAX);
+    // The fill reaches the bound but for discoverable, true and one byte shorter than false.
+    expect(COLLECTION_JSON_MAX - jsonBytes(collection)).toBe(1);
+    // CollectionWithAccounts: the collection and 26 accounts at the account occurrence's conservative bound.
+    const frame = jsonBytes({ collection: {}, accounts: [] }) - 2;
+    expect(COLLECTION_JSON_MAX + frame + 26 * (CONSERVATIVE_JSON.account + 1)).toBeLessThan(ANSWER_BYTES);
   });
 });

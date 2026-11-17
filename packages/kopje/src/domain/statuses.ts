@@ -371,7 +371,7 @@ export function recountStatuses(db: Db, accountId: string): void {
   );
 }
 
-// A remote status's untrusted count (migration 0113_untrusted_counts) moved as its own count moves from `own` to
+// A remote status's untrusted count (migration 0114_untrusted_counts) moved as its own count moves from `own` to
 // `counted`, as Mastodon's increment_count! and decrement_count! move both (status.rb:324-341): floored at 0 and capped
 // at MAX_UNTRUSTED_COUNT (StatusStat's clamp on save). None stays none (min and max of a NULL are NULL), and an own
 // count that is not an integer (an import's) moves it by nothing, since how far it moved is unknown.
@@ -2177,7 +2177,7 @@ function removeReblog(db: Db, accountId: string, reblogId: string, originalId: s
   if (!requiresMention(row.visibility)) {
     db.run("UPDATE accounts SET statuses_count = max(statuses_count - 1, 0) WHERE id = ?", accountId);
   }
-  // Its untrusted count (migration 0113_untrusted_counts) moves with it, as Mastodon's decrement_count! moves both
+  // Its untrusted count (migration 0114_untrusted_counts) moves with it, as Mastodon's decrement_count! moves both
   // (status.rb:324-341); none stays none, as max of a NULL is NULL.
   db.run(
     `UPDATE statuses SET reblogs_count = max(reblogs_count - 1, 0),
