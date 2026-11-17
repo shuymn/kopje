@@ -1465,6 +1465,13 @@ conditions themselves follow 4.7.5):
   `'<value>' is not a valid <field>` and changes nothing. Mastodon's enum raises an error no handler rescues, so it
   answers 500. Accepted, 2026-11-15.
 
+Notifications (`GET /api/v1/notifications`):
+
+- A page links `next` only when it is full, as Kopje's other lists paged by `max_id` do (`linkHeader` in
+  `src/mastodon/pagination.ts`). Mastodon's links `next` whenever the page is not empty
+  (`Api::V1::NotificationsController#next_path`), so a client that follows it past a short page reads an empty one
+  there, where Kopje's short page is the end. Accepted, 2026-11-18.
+
 Grouped notifications (`GET /api/v2/notifications`; the bounds and what enforces them are RES-7 in
 [threat-model.md](threat-model.md)):
 
