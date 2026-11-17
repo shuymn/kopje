@@ -468,7 +468,7 @@ describe("amplification", () => {
 
   it(
     "holds an owner's churn to 250 claims a UTC day, re-adding an item or changing its authorization after each check",
-    { timeout: 180_000 },
+    { timeout: 120_000 },
     async () => {
       const t = await setup();
       const readding = await featuredOwner(t.web, "readding", COLLECTIONS_ONLY);
