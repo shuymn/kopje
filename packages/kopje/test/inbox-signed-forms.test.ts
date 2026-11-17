@@ -370,7 +370,7 @@ describe("D1: forms whose readings differ, each named by its class", () => {
   });
 
   describe("reads less than Mastodon", () => {
-    it.each(["under an inline context", "with a type naming id", "with a type naming type"])(
+    it.each(["under an inline context"])(
       "an Undo of a block typed as IRIs %s: Mastodon compacts it and lifts the block; Kopje cannot tell it does",
       async (variant) => {
         const name = `Undo of a block, both typed as IRIs, ${variant}`;
@@ -698,6 +698,8 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       "Undo of a block, both typed as IRIs, with an array in an array",
       "Undo of a block, both typed as IRIs, with a proof of plain names",
       "Undo of a block, both typed as IRIs, with a number where an IRI is expected",
+      "Undo of a block, both typed as IRIs, with a type naming id",
+      "Undo of a block, both typed as IRIs, with a type naming type",
     ])("%s, in a body Mastodon compacts: both lift the block", async (name) => {
       expect(form(name).fallback).toBeUndefined();
       expect(accepted(await layered(form(name)))).toMatchObject({ type: "Undo", object: { type: "Block" } });
@@ -892,15 +894,13 @@ describe("D1: forms whose readings differ, each named by its class", () => {
         }
       }
       expect(names).toBeGreaterThanOrEqual(150);
-      expect(renamed.length).toBe(53);
+      expect(renamed.length).toBe(61);
       // Bodies Mastodon compacts outside the shape Kopje shows it compacts (an inline context, an array in an array,
-      // a proof, a number where an IRI is expected, an id it writes otherwise or jsonld.js does, a type naming a
-      // keyword alias): their types are read as given, so such an activity applies less than Mastodon's.
+      // a proof, a number where an IRI is expected, an id it writes otherwise or jsonld.js does): their types are read
+      // as given, so such an activity applies less than Mastodon's.
       expect([...kept]).toEqual([
         "Note type as an IRI",
         "Undo of a block, both typed as IRIs, under an inline context",
-        "Undo of a block, both typed as IRIs, with a type naming id",
-        "Undo of a block, both typed as IRIs, with a type naming type",
         "Undo of a block, both typed as absolute IRIs, with an array in an array under a list",
         "Undo of a block, both typed as absolute IRIs, with a number as its actor",
         "Undo of a block, both typed as absolute IRIs, with a number as its block's object",
@@ -957,6 +957,7 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       },
       { shape: "a boolean where an IRI is expected", added: { cc: true }, read: "as:Like" },
       { shape: "a blank node as an id", added: { instrument: { id: "_:client" } }, read: "as:Like" },
+      { shape: "a type naming id", added: { tag: [{ type: "id" }] }, read: "as:Like" },
     ])("reads the compacted Like with $shape as $read", async ({ added, read }) => {
       const body = { ...form("type as a compact IRI").received, ...added };
       expect((await ldSignedReading(body, SECOND_LAYER))?.readType("as:Like")).toBe(read);

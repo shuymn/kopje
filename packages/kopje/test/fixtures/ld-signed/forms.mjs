@@ -868,6 +868,9 @@ const forms = {
   "Undo of a block, both typed as absolute IRIs, with a relative reference of a double-dot segment": absoluteUndo({
     instrument: { id: "../client" },
   }),
+  // A type naming a keyword alias, which JSON-LD expands to the keyword and the compaction writes as the alias again.
+  "Undo of a block, both typed as absolute IRIs, with a type naming id": absoluteUndo({ tag: [{ type: "id" }] }),
+  "Undo of a block, both typed as absolute IRIs, with a type naming type": absoluteUndo({ tag: [{ type: "type" }] }),
 };
 
 // The same bodies without a signature: read as received by both.

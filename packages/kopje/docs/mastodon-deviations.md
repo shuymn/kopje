@@ -1709,8 +1709,8 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   holding `_:` (labelled anew), one over a prefix only `full_context` defines (`as://…`, which raises), and one jsonld.js
   writes otherwise (empty, `//…`, holding whitespace, or with a `.` or `..` segment); an activity's or its undone
   object's `id` that is not on its actor's origin is then refused all the same (ID-6), where Mastodon's `Undo` of a
-  block reads neither. Kopje
-  reads a name, as a member or as a type, only where the compaction writes it so, as Mastodon's readers read it,
+  block reads neither; with a type naming `id` or `type`, which JSON-LD expands to the keyword and the compaction
+  writes as that alias again. Kopje reads a name, as a member or as a type, only where the compaction writes it so, as Mastodon's readers read it,
   whatever the body's shape: a member's name where it means in the body's contexts what it means in `full_context`, or
   neither defines it (in a typed node, as the type's own context makes it mean on each side: the data-integrity
   contexts' `DataIntegrityProof`, the Multikey and CID contexts' `Multikey`); a type's where the IRI the body's contexts

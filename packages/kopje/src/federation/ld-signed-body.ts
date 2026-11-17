@@ -411,6 +411,8 @@ function namedThroughout(values: unknown[]): boolean {
 //     writes under the name's IRI, but as an `object` or an `actor`, which a retraction's handlers read;
 //   - an id or a value of a name typed @id of another shape than an http(s) IRI that the compaction writes as given
 //     (writtenAsGiven);
+//   - a type naming `id` or `type`, which JSON-LD expands to the keyword it aliases and the compaction writes as that
+//     alias again, as given;
 const JSONLD_BUDGET = 1_000;
 const UNSUPPORTED_JSONLD_KEYWORDS = new Set(["@graph", "@included", "@reverse"]);
 const SECURITY_V1 = "https://w3id.org/security/v1";
@@ -504,7 +506,7 @@ function mastodonCompacts(
     typeof value === "string" && HTTP_IRI.test(expand(value, (prefix) => prefixes.get(prefix)) ?? "");
   const reference = (value: unknown) => iri(value) || (retracts && typeof value === "string" && writtenAsGiven(value));
   const typeName = (value: unknown) =>
-    iri(value) || (typeof value === "string" && isName(value) && value !== "id" && value !== "type");
+    iri(value) || (typeof value === "string" && isName(value) && (retracts || (value !== "id" && value !== "type")));
   const iriValued = (key: string) => IRI_VALUED.has(key) || (retracts && meanings.get(key)?.coercion === "@id");
   const scalar = (key: string, value: unknown) =>
     (typeof value === "number" || typeof value === "boolean") && key !== "object" && key !== "actor";
