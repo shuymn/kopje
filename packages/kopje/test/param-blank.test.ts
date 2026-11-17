@@ -301,8 +301,8 @@ describe("search and peers (PB4)", () => {
     expect(await accounts(Q.BOM)).toEqual([]);
   });
 
-  // AccountSearchService strips q as Ruby does and drops one leading @; a query then blank finds nothing.
-  it("answers the account search nothing for a q blank once stripped, without searching", async () => {
+  // AccountSearchService strips q as Ruby does and drops one leading @; a query then blank, or none (nil), finds nothing.
+  it("answers the account search nothing for a q absent or blank once stripped, without searching", async () => {
     const recorder = recording();
     const h = await community(["alice"], "read write follow", { wrapStore: recorder.wrapStore });
     const { alice } = h.users;
@@ -310,10 +310,12 @@ describe("search and peers (PB4)", () => {
       recorder.calls.length = 0;
       return answer(await h.request(`/api/v1/accounts/search?${query}`, bearer(alice.token)));
     };
-    for (const q of [Q.NEL, "%20%40", `%00${Q.NEL}`]) {
-      expect(await search(`q=${q}`)).toEqual({ status: 200, body: [] });
+    for (const query of [`q=${Q.NEL}`, "q=%20%40", `q=%00${Q.NEL}`, "", "limit=5"]) {
+      expect(await search(query), query).toEqual({ status: 200, body: [] });
+      expect(recorder.names()).toContain("checkCredential");
       expect(recorder.names()).not.toContain("searchAccounts");
     }
+    expect((await h.request("/api/v1/accounts/search", bearer("not-a-token"))).status).toBe(401);
     expect(await search(`q=${Q.BOM}`)).toEqual({ status: 200, body: [] });
     expect(recorder.names()).toContain("searchAccounts");
     expect(await search("q=%20%40alice")).toMatchObject({ status: 200, body: [{ id: alice.id }] });

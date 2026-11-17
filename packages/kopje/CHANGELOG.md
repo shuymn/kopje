@@ -491,6 +491,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   change.
 - A `limit` sent without a value (`?limit`, or a JSON null) takes the list's default, as Rails reads it as nil; an
   empty one (`?limit=`) keeps its answer (#1759). No Store migration and no `wrangler.jsonc` change.
+- `GET /api/v1/accounts/search` without `q` answers `[]`, as Mastodon's nil query does, where it answered 400;
+  `/api/v2/search` keeps its 400 (#1766). No Store migration and no `wrangler.jsonc` change.
 - A remote status's `sensitive` is read as Mastodon casts it to its boolean column, so any value but `false`, `0`, null
   and Rails' false strings (`"0"`, `"f"`, `"F"`, `"false"`, `"FALSE"`, `"off"`, `"OFF"`) marks it, where only `true`
   did (`"true"`, `1` and `[true]` now mark it), and an empty string refuses it where Mastodon's `NOT NULL` column
