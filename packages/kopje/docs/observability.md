@@ -78,6 +78,16 @@ so a change made only in the dashboard does not last.
 | `kopje.media.no_blurhash`         | An upload was kept without a blurhash: its preview's RGBA output failed or was given up                              | —                                                  |
 | `kopje.remote_media.drift_found`  | The cache's usage row differed from its ledger's sums (the difference); the audit logs it only                       | [threat-model.md](threat-model.md), MEDIA-7        |
 | `kopje.remote_media.type_refused` | A cached remote file's stored type is not the one its path names; it answers 404                                     | [threat-model.md](threat-model.md), MEDIA-4        |
+| `kopje.stream.output_near`        | Held stream output passed three quarters of the instance's allowance (`scope` `instance`)                            | [threat-model.md](threat-model.md), RES-6          |
+| `kopje.stream.output_closed`      | A streaming connection was closed (1013): the instance's allowance is full or a charge is unknown                    | [threat-model.md](threat-model.md), RES-6          |
+| `kopje.stream.output_refused`     | A streaming upgrade was refused (503): the instance's allowance is full or a charge is unknown                       | [threat-model.md](threat-model.md), RES-6          |
+
+`kopje.stream.output_near` with `scope` `instance` (warn) means held stream output passed three quarters of
+`instanceBytes`: at the allowance, connections are closed and upgrades refused. Its `closing` counts closed sockets
+whose clients still hold them, as a client that keeps connections without reading does. `kopje.stream.output_closed` or
+`kopje.stream.output_refused` with `scope` `unknown` follows an upgrade: streaming stays stopped until the previous
+release's connections end. With `scope` `socket` (log level), both `output_near` and `output_closed` are one
+connection's allowance, a reading client's normal end, and need no action.
 
 `kopje.jobs.item.parked` is logged at warn, not error: the attempt that parks the job also logs `kopje.jobs.item.failed`
 at error with `parked: true`, and error is kept for events whose name says they failed. Family `handshake_replays` is a

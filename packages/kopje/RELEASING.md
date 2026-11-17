@@ -102,6 +102,19 @@ A pull request adds its notes under `## [Unreleased]` in `CHANGELOG.md`; a relea
    rests on, or a new signal of unsent output (`bufferedAmount`, `ping`, or a promise from `send`), changes
    `STREAM_LIMITS` or the policy before the release.
 
+   In the same case, measure the idle Store isolate on the pinned workerd (`bench/store-baseline/run.mjs`, #1610). It
+   runs locally, packs the package into a temporary directory, and writes its runs (`runs.jsonl`, with the workerd
+   version) and the largest sum (`summary.json`) to the directory it prints:
+
+   ```sh
+   pnpm --filter kopje bench:store-baseline
+   ```
+
+   Record the largest sum, the workerd version and the date in `STORE_BASELINE` (`src/stream-output.ts`) when the sum is
+   above the recorded one or the workerd differs (`test-node/stream-output.test.ts` fails until the workerd matches).
+   The test derives the output caps from it: set `STREAM_OUTPUT` to what it derives, or, when a rule fails (a fresh
+   socket no longer takes any unit), stop the release for the owner's decision.
+
    Merge it.
 
 2. Tag the merge commit on `main` and push the tag:

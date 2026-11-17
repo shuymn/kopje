@@ -4435,9 +4435,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   alternating reply and quote chain longer than a walk", "claims context walks first, then create walks in the order
   they were queued", "claims create walks in the order the Store recorded them, whatever the Worker's clock or its own
   says", "claims at once the walk of a Create whose Worker clock is ahead of the Store's, as its answer asks")).
-  Streaming (VIS-26): _Enforced (main):_ at most 16 sockets per account (429) and 256 per
-  instance (503); 16 subscriptions per socket, 16 stream keys per account and a socket's attachment at most 12 KiB (`Too
-  many subscriptions`, 429); incoming messages text only (1003), at most 4 KiB and 120 a minute (1008). The fan-out runs
+  Streaming (VIS-26): _Enforced (main):_ at most 16 sockets per account (429) and 256 per instance (503); 16
+  subscriptions per socket, 16 stream keys per account and a socket's attachment at most 12 KiB of JSON with its clone
+  within the runtime's 16 KiB at any output charge (`Too many subscriptions`, 429); incoming messages text only (1003),
+  at most 4 KiB and 120 a minute (1008). The fan-out runs
   in turns, one at a time, each an incoming request to the Store's own stub, which restores the CPU allowance: a turn
   spends at most 512 checks, 64 presentations and 4,096 sends, runs a unit only while what is left covers a unit's
   worst case (35 checks: 16 tokens, home, the mention, one for each of 16 keys (lists and feeds) and the feeds' mention
@@ -4452,7 +4453,31 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   JSON again at most doubles it), S = 7,151,333 being the most JSON a streamed subject presents, the quote
   conversation's (`update` and `status.update` a boost of a quote, `conversation` one whose last status is a quote, as a
   conversation shows no boost as its last status, `notification` its status, report and warning together, an
-  announcement), derived from the maxima table (`test/status-bounds.test.ts`, `test/streaming/split.test.ts`). The
+  announcement), derived from the maxima table (`test/status-bounds.test.ts`, `test/streaming/split.test.ts`). Held
+  output (#1610). Every frame the hub hands a socket (a unit's frames, an error reply, its Close) is charged to the
+  socket from the send until the socket leaves `getWebSockets()`, closing and closed ones included, since only the end
+  of a connection proves its queue drained: the runtime queues a Close behind the pending frames and keeps a closed
+  socket listed until its connection ends. A frame is charged its UTF-8 bytes and a NUL rounded up to a power of two
+  plus 16 bytes (the allocator assumption) and 2,080 bytes for the two promise arenas it keeps alive (the output gate's
+  branch, and the hub of the write it waits on); a socket also its queue's row vector (96 bytes a row) and
+  insertion-order index (8 bytes a link) at the capacities KJ grows them to for every frame it was handed, with the
+  previous arrays, and `SOCKET_BYTES` for its attachment at the runtime's 16 KiB, its Close and its objects (an
+  ownership table, with allowances for coroutine frames, wrappers and promises). A unit that would take a socket past
+  `STREAM_OUTPUT.socketBytes` (7 MiB), or the listed sockets together past `instanceBytes` (21 MiB), closes that socket
+  with 1013 before any of the unit is sent to it (an error reply too, unsent), and an upgrade the instance cannot hold
+  answers 503. `instanceBytes` is the largest multiple of 1 MiB within 128,000,000 less 1.25 times the Store isolate's
+  measured idle baseline (the sum of its V8 heap, external and cppgc memory and the native objects its snapshot
+  reports), the largest peak of one request (RES-3) and fixed reservations for the runtime's tag table and its registry
+  of events in delivery, which keep their largest size after sockets end, at the most sockets the charges admit; so held
+  output, the tables, the baseline and any request fit the isolate together. `socketBytes` is the largest multiple of 1
+  MiB within a third of it, so the instance serves on while two sockets hold their caps, and it takes any unit on a
+  fresh socket (16 frames of `MESSAGE_MAX`, which `payloadBytes` keeps, with its NUL, within 256 KiB). The charges live
+  in each socket's attachment, so they survive hibernation and leave with the socket. While a listed socket's charge is
+  unknown (a socket of an earlier release, an unreadable attachment), no frame is sent and upgrades answer 503 until it
+  is gone; what such a socket holds is outside the bound while it stays listed, and the tag-table capacity such sockets
+  grew until the runtime discards the object's hibernation manager, which their ending, an eviction that hibernates and
+  a code update do not do; Kopje has no signal of it. `src/stream-output.ts`, `src/stream-hub.ts`;
+  `test/streaming/output.test.ts`, `test-node/stream-output.test.ts`. The
   journal records nothing once it spans 4,096 ids,
   and is pruned behind the position, at
   most 500 rows a call: the finished journal rows first, so the span shrinks at once, then a delete's capture rows, in
@@ -4491,7 +4516,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   from one home network against a deployed instance (#1211), four silent sockets started at different times each
   closed at 6,010 s of age with a TCP FIN and no close frame (1006 to the client), and a socket the client pinged every
   20 minutes outlived them, to 6,393 s. Kopje sends no server ping; a client reconnects, as Mastodon's clients do, and
-  REST stays the source of truth.
+  REST stays the source of truth. The held-output bound is conditional on premises no runtime contract enforces: the
+  allocator assumption and the ownership table's allowances, derived from workerd's and KJ's source, the idle
+  measurement as a model of the baseline, and the heap model's premises (one request at a time; freed memory reusable).
+  Production's accounting is not open: `bench:held-output` (2026-11-16) found 64 MiB of held output not counted against
+  the JavaScript headroom and the object reset at about 208 MiB held; stopped clients being sent output ended together
+  at 7,147 s, while clients reading slowly or in bursts were not ended in 4 hours and held output for at least 14,397 s.
+  workerd 1.20261113.1 can count each queued frame against the isolate's memory (behind an autogate), which the bound
+  reserves already, and frees a queue's arrays when its pump ends, which the charges overstate. A reading client is
+  closed after its lifetime allowance, and loses edits and deletions sent while it is away
+  ([mastodon-deviations.md](mastodon-deviations.md), "Streaming output").
   A custom emoji upload charges two transformations to the instance's monthly budget (429 past it). Disabled emoji
   versions are kept: their storage, a backup copy to every new destination and two rebuild transformations each after
   a restore are paid indefinitely ([backup.md](backup.md)).
@@ -5214,6 +5248,10 @@ within half of the Store isolate's 128 MB, and pins them (`STREAM_UNIT_PEAKS` an
 | Notification (its status, report and warning together) | 25.88 MB                | 19.88 MB          | 1.06 MB             | 46.82 MB |
 | Announcement                                           | 7.28 MB                 | 0.75 MB           | 1.92 MB             | 9.95 MB  |
 
+Held stream output (RES-6) is charged within `instanceBytes`, which leaves the measured idle isolate with 25% headroom,
+the largest peak of one request (an answer's, or a turn's with the open sockets' attachments) and the runtime's tag
+table and event registry at their largest, so the Store isolate's 128 MB holds them together.
+
 ### Data and keys (DATA)
 
 - **DATA-1: private keys stay wrapped outside cryptographic use.** Actor and instance keys are stored wrapped with
@@ -5266,7 +5304,10 @@ within half of the Store isolate's 128 MB, and pins them (`STREAM_UNIT_PEAKS` an
   `src/platform/error-message.ts`, used by `app.onError` (`src/app/app.ts`), the admin API's error handler, the queue
   and spool handlers, the snapshot saver and the Store kernel and admin; `test/log-redaction.test.ts`;
   the log-events lint rule (`packages/kopje/lint/log-events.js`, a syntactic check of every log call's shape and
-  fields). Access failures log only jose's error code, and the CLI never prints secrets (`test/cli.test.ts`). A forward
+  fields). Access failures log only jose's error code, and the CLI never prints secrets (`test/cli.test.ts`).
+  `kopje.stream.output_closed`, `kopje.stream.output_near` and `kopje.stream.output_refused` carry the scope and counts
+  only (frames, charges, caps, listed, closing and unknown sockets), never an account, a token or a stream
+  (`test/streaming/output.test.ts` ("logs the scope and counts only")). A forward
   that is not recorded logs `kopje.inbox.forward_skipped` with its reason and size, and one past its owners' or quotes'
   cap `kopje.inbox.forward_capped` with the caps it passed, and a job bound that is no list of forwards
   `kopje.inbox.forward_bound_invalid` with its size (the intents it names are left staging, as RES-6 says), never

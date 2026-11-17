@@ -147,6 +147,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
+- The streaming API closes a connection with 1013 before an event or an error reply would take it past its output
+  allowance over the connection's life (`socketBytes`, 7 MiB, each frame counted with the runtime's overhead), or take
+  all connections together past the instance's (`instanceBytes`, 21 MiB); while the instance's is full, new
+  connections are refused (503). Mastodon's clients reconnect; the web client waits longer after each close while the
+  page stays open and shows edits and deletions made while it was away only after a reload
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), Streaming output). After this upgrade, while a
+  connection of the previous release remains, nothing is streamed and new connections are refused (503); those
+  connections are closed (1011). No Store migration and no `wrangler.jsonc` change.
 - The streaming API skips an event whose encoded payload passes 254 KiB (was 512 KiB), so that its largest frame and
   the frame's terminating byte fit a 256 KiB block. Now skipped beside text, a poll and profiles at their limits: a
   post and its quote with eight descriptions of 10,000 emoji, a post with four of U+0001, and the boost of a post with

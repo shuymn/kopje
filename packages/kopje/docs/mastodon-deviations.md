@@ -44,6 +44,21 @@ Other documents point here rather than repeat the release.
   mentions). The figures are pinned by `test/streaming/public.test.ts` and `test/status-bounds.test.ts`, the skips of a
   notification and an announcement with their REST reads by `test/streaming/public.test.ts` and
   `test/streaming/announcements.test.ts`. Accepted, 2026-11-15, and at 254 KiB, 2026-11-17.
+- **Streaming output.** Kopje cannot see whether a client reads what it is sent (the runtime gives no signal of unsent
+  output and cannot ping), so it charges each connection everything it hands it, with the runtime's overhead per frame,
+  until the connection ends. Before an event or an error reply would take a connection past `STREAM_OUTPUT.socketBytes`
+  (7 MiB), or all connections together past `instanceBytes` (21 MiB), it closes that connection with 1013, after every
+  frame sent before; while the instance's allowance is full it refuses new connections (503), and after an upgrade it
+  streams nothing and refuses new connections until the previous release's connections have ended. A connection that
+  reads is closed after 688 to 1,110 frames of 4 to 2 KB (figures from the shipped caps). masto.js 7.12 reconnects after
+  1 s (it clears its backoff when an open socket closes). Mastodon's web client (`@gamestdio/websocket` 0.3.2) waits
+  `floor(random × 2^n × 100)` ms after the nth close in the page's life, a count no successful open resets (a median of
+  13.65 minutes at the 14th), meanwhile polling home and notifications every 20 to 40 s; on reconnect it fetches the
+  statuses newer than the newest it holds in home, local, federated and lists, so it keeps showing a status edited or
+  deleted while it was away, or in the event that closed it, until the page is reloaded, and hashtag and direct columns
+  miss what passed until reloaded. Mastodon closes no connection for its volume: it ends one that does not answer its
+  pings within a minute. `src/stream-hub.ts`, `src/stream-output.ts`; `test/streaming/output.test.ts`,
+  `test-node/stream-output.test.ts`. Accepted, 2026-11-17.
 - **Federation.** Kopje federates with every Mastodon series upstream still supports (its `SECURITY.md`), so it names
   no single release here. A behaviour takes as its reference the release its code and the threat model name:
   remote-status ingestion and handle confirmation follow Mastodon v4.7.5, with Kopje's failure handling under NET-4. A
