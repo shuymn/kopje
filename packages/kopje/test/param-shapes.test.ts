@@ -50,11 +50,12 @@ function filler(count: number, bytes: number): string[] {
   });
 }
 
-// `count` pairs `length` long, each through an array's last Hash at every other level of the deepest nesting Rack reads
-// (`a[][b][][b]…`), which Rack and Rails reuse, so each pair is walked through every level and adds one new key at the
+// `count` pairs `length` long, each through an array's last Hash at every level but the last of the deepest nesting
+// Rack reads (`a[][b][][b]…[k]`: store takes a key and the `[]` after it in one level, so the bottom key `[k]` is
+// level BRACKETS), which Rack and Rails reuse, so each pair is walked through every level and adds one new key at the
 // bottom, charged alone: the most nesting work per path and code unit charged.
 function reused(count: number, length: number): string[] {
-  const stem = `a${"[][b]".repeat((BRACKETS - 1) / 2)}`;
+  const stem = `a${"[][b]".repeat(BRACKETS - 1)}`;
   return Array.from({ length: count }, (_, i) => `${stem}[${String(i).padStart(length - stem.length - 4, "k")}]=1`);
 }
 
@@ -90,9 +91,13 @@ describe("the parameter trees at their bounds", () => {
     expect(read.ok && read.params.get(at[0]!.slice(0, -2))).toBe("1");
   });
 
+  // The reuse shape of the time witness is at the deepest nesting too: one more `[][b]` refuses it.
   it("refuses a nesting past the deepest Rack reads, and Rack's field and byte limits", async () => {
+    const [deepest = ""] = reused(1, 160);
     const forms = [
       [`a${"[x]".repeat(BRACKETS + 1)}=1`],
+      [deepest],
+      [`a[][b]${deepest.slice(1)}`],
       filler(RACK_FIELDS, RACK_BYTES),
       filler(RACK_FIELDS + 1, RACK_BYTES),
       filler(RACK_FIELDS, RACK_BYTES + 1),
@@ -104,6 +109,8 @@ describe("the parameter trees at their bounds", () => {
     }
     expect(answers).toEqual([
       [1, forms[0]![0]!.length, 400],
+      [1, 160, true],
+      [1, 165, 400],
       [RACK_FIELDS, RACK_BYTES, true],
       [RACK_FIELDS + 1, RACK_BYTES, 400],
       [RACK_FIELDS, RACK_BYTES + 1, 400],
@@ -136,10 +143,10 @@ describe("parameter shapes at the API's routes", () => {
     const tree = capped(MAX_PARAM_PATHS, PARAM_PATH_BUDGET);
     const head = tree.join("&").length + 1;
     const filled = [...tree, ...filler(RACK_FIELDS - tree.length, RACK_BYTES - head)];
-    const shapes = [filled, reused(RACK_FIELDS, 513)];
+    const shapes = [filled, reused(RACK_FIELDS, 512)];
     expect(shapes.map((pairs) => [pairs.length, pairs.join("&").length])).toEqual([
       [RACK_FIELDS, RACK_BYTES],
-      [RACK_FIELDS, RACK_FIELDS * 514 - 1],
+      [RACK_FIELDS, RACK_FIELDS * 513 - 1],
     ]);
     for (const pairs of shapes) {
       const start = performance.now();
@@ -147,10 +154,10 @@ describe("parameter shapes at the API's routes", () => {
       const elapsed = performance.now() - start;
       expect([answer.status, elapsed < GENEROUS_MS]).toEqual([200, true]);
     }
-    // One field more, or two code units more a key, refuses each.
+    // One field more, or one code unit more a key, refuses each.
     const over = [
       await h.request(`/api/v1/timelines/public?${filled.join("&")}&z`),
-      await h.request(`/api/v1/timelines/public?${reused(RACK_FIELDS, 515).join("&")}`),
+      await h.request(`/api/v1/timelines/public?${reused(RACK_FIELDS, 513).join("&")}`),
     ];
     expect(over.map((answer) => answer.status)).toEqual([400, 413]);
   });
