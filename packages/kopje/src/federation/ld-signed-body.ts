@@ -423,6 +423,7 @@ const UNSUPPORTED_JSONLD_KEYWORDS = new Set(["@graph", "@included", "@reverse"])
 const SECURITY_V1 = "https://w3id.org/security/v1";
 const LANGUAGE_TAG = /^[A-Za-z]{1,8}(-[A-Za-z0-9]{1,8})*$/;
 const HTTP_IRI = /^https?:\/\//;
+const SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*$/;
 
 // Values as check_jsonld_limits! counts them (each object, array and scalar), or Infinity for a key it refuses.
 function jsonLdValues(value: unknown): number {
@@ -470,14 +471,16 @@ type ContextRead = NonNullable<ReturnType<typeof readContext>>;
 // full_context defines (and the body's contexts do not; one they do is an http(s) IRI), which raises
 // IRIConfusedWithPrefix; nor one jsonld.js, resolving it against an empty base, writes otherwise: empty, a network-path
 // reference, or one holding whitespace; nor one with a `.` or `..` segment anywhere (jsonld.js removes them from a
-// relative reference's path).
+// relative reference's path), or `//` anywhere but right after a scheme (an authority): the shapes captured
+// (forms.json), a scheme spelled as a name of full_context and an authority among them.
 function writtenAsGiven(value: string): boolean {
   const colon = value.indexOf(":");
+  const authority = colon > 0 && SCHEME.test(value.slice(0, colon)) && value.startsWith("//", colon + 1);
   return !(
     value === "" ||
     /\s/.test(value) ||
     value.startsWith("@") ||
-    value.startsWith("//") ||
+    (authority ? value.slice(colon + 3) : value).includes("//") ||
     (value.startsWith("_:") && (value.length === 2 || value.includes("_:", 2))) ||
     (colon > 0 && FULL_CONTEXT_PREFIXES.has(value.slice(0, colon))) ||
     value.split("/").some((segment) => segment === "." || segment === "..")

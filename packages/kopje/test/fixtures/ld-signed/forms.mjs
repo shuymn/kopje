@@ -902,6 +902,27 @@ const forms = {
   // Within the value limit once compacted, where three for each value passes it, and past it.
   "Undo of a block, both typed as absolute IRIs, within the value limit once compacted": padded(absoluteUndo(), 700),
   "Undo of a block, both typed as absolute IRIs, past the value limit once compacted": padded(absoluteUndo(), 990),
+  // IRIs of the two shapes the IRI rule admits beyond a scheme spelled as no name of full_context and no `//`: a scheme
+  // spelled as one of its names but its prefixes (a term, a type, a keyword alias, a name the ActivityStreams context
+  // leaves undefined), and `//` right after a scheme that is no prefix (an authority, empty too).
+  "Undo of a block, both typed as absolute IRIs, with IRIs whose schemes are names of full_context": absoluteUndo({
+    cc: [
+      "Hashtag:followers",
+      "id:followers",
+      "type:followers",
+      "sensitive:followers",
+      "Public:followers",
+      "featured:followers",
+    ],
+  }),
+  "Undo of a block, both typed as absolute IRIs, with IRIs of an authority": absoluteUndo({
+    cc: [
+      "ftp://mastodon.example/followers",
+      "foo://mastodon.example/followers",
+      "Https://mastodon.example/users/bob/followers",
+      "file:///followers",
+    ],
+  }),
 };
 
 // The same bodies without a signature: read as received by both.
