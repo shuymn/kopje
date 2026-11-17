@@ -5,8 +5,10 @@ import {
   type Page,
   type PageQuery,
   type Present,
-  relationshipResult,
+  presentFor,
+  type PresentInput,
   type RelationshipResult,
+  relationshipResult,
   routeAccountId,
 } from "./accounts";
 import { endorsementListedSql, endorsementsShownSql } from "./audience";
@@ -118,16 +120,18 @@ export function accountEndorsementsWithin(
 
 // GET /api/v1/endorsements: the viewer's own (EndorsementsController).
 export const listEndorsements = userReadOperation<
-  { page: PageQuery | null; from?: string | undefined; present: Present },
+  { page: PageQuery | null; from?: string | undefined; present: PresentInput },
   Page<Account>
->((db, query, { accountId }) => endorsedPage(db, accountId, query));
+>((db, { present, ...query }, { accountId }) =>
+  endorsedPage(db, accountId, { ...query, present: presentFor(present, accountId) }),
+);
 
 // GET /api/v1/accounts/:id/endorsements, to anyone (Accounts::EndorsementsController#index). Null when no account has
 // the id.
 export const accountEndorsements = optionalUserReadOperation<
-  { account: string; page: PageQuery; present: Present },
+  { account: string; page: PageQuery; present: PresentInput },
   Page<Account> | null
->((db, { account, page, present }) => {
+>((db, { account, page, present }, { accountId: viewerId }) => {
   const id = routeAccountId(db, account);
-  return id === null ? null : accountEndorsementsWithin(db, id, { page, present }).page;
+  return id === null ? null : accountEndorsementsWithin(db, id, { page, present: presentFor(present, viewerId) }).page;
 });

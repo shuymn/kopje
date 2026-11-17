@@ -3,7 +3,7 @@ import { parseAddress } from "../platform/domain-name";
 import { httpUrl } from "../platform/http-url";
 import type { StoreOperation } from "../platform/store-kernel";
 import { constantTimeEqual } from "../security/tokens";
-import { type CredentialAccount, credentialAccount, type Present } from "./accounts";
+import { type CredentialAccount, credentialAccount, presentFor, type PresentInput } from "./accounts";
 import {
   authorize,
   type AuthFailure,
@@ -343,10 +343,10 @@ function authorizationsOf(
 export type SettingsData = { account: CredentialAccount; authorizations: Authorizations };
 
 // Everything the settings page shows, in one read: the profile as the owner edits it, and the authorizations.
-export const settingsView = webOperation<{ now: number; present: Present }, SettingsData | null>(
+export const settingsView = webOperation<{ now: number; present: PresentInput }, SettingsData | null>(
   readOperation,
   (db, { credential, now, present }, { accountId }, webClient) => {
-    const account = credentialAccount(db, accountId, present);
+    const account = credentialAccount(db, accountId, presentFor(present, accountId));
     return account === null
       ? null
       : { account, authorizations: authorizationsOf(db, accountId, webClient, credential.tokenHash, now) };

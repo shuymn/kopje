@@ -68,6 +68,7 @@ describe("credentials", () => {
       fields: [],
       noindex: false,
       roles: [],
+      feature_approval: { automatic: [], manual: [], current_user: "denied" },
       source: {
         privacy: "public",
         sensitive: false,

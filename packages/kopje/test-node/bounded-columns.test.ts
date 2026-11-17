@@ -386,6 +386,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "hostCoveredSql",
   // R45, whether an item lists its collection among those featuring the viewer: a predicate (domain/audience.ts).
   "inCollectionsSql",
+  // feature_approval.current_user (domain/audience.ts): one of five words, no bounded column.
+  "featureApprovalSql",
   // A stored time read as its 24-byte ISO form, or NULL (platform/stored-bounds.ts).
   "isoTimeSql",
   // A status's publication and edit times read as 24-byte ISO times (platform/stored-bounds.ts).

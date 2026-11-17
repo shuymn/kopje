@@ -751,7 +751,19 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
 - Creating an 11th collection answers Mastodon's 422 with the message "Collections are too many, no more than 10 are
   allowed", where Mastodon's message is a missing-translation text (it has no English text for that error). Accepted,
   2026-11-16.
-- Only local accounts can be featured yet: a remote account answers 403, as one that refuses. Tracked by #1589.
+- Only local accounts can be featured yet: a remote account answers 403, as one that refuses, and its
+  `feature_approval` is `[]`, `[]` and `missing`. Tracked by #1589.
+- An account's `feature_approval.current_user` is `denied` when either account blocks the other or the account is
+  unavailable, where Mastodon may answer `automatic` (or `manual`) and then refuse the add; every other answer is
+  Mastodon's. The instance's contact account answers `denied` (no viewer), where Mastodon's cached instance answer
+  carries whichever viewer's answer filled the cache. Accepted, 2026-11-16.
+- An `added_to_collection` notification is deleted with its membership (removal, eviction or a block), and a
+  `collection_update` with its collection, where Mastodon keeps an `added_to_collection` whose item is gone, presented
+  without a collection. Accepted, 2026-11-16.
+- A collection update the rule does not notify to a member (the member has muted the owner's notifications since) leaves
+  the member's earlier `collection_update` as it was, as an edit's `update` is kept, where Mastodon's
+  `LocalNotificationWorker` deletes the earlier one before `NotifyService` judges the new one: after an unmute the
+  earlier one shows again. Accepted, 2026-11-16.
 - A collection's page (`/collections/:id`) is served for a local collection only (a remote collection's `url` is its
   own server's), and the profile pages do not list an account's collections, where Mastodon's web client does.
   Accepted, 2026-11-16.
@@ -1128,13 +1140,17 @@ remote account, `/api/v1/admin/domain_blocks`; R38 in [visibility.md](visibility
 
 Notification fallbacks (`supported_types`, Mastodon 4.6's `NotificationFallbackConcern`):
 
-- The summary of an `admin.report` and of a `moderation_warning` is `You're on an app that does not support the most
-  recent version of Mastodon. Visit <domain>.`, the link to the instance's front page. Mastodon's link reads `Sign in
-  to the Mastodon web app` (with `for full functionality` after it in the generic summary), and a
+- The summary of an `admin.report`, a `moderation_warning` and a collection notification is `You're on an app that does
+  not support the most recent version of Mastodon. Visit <domain>.`, the link to the instance's front page. Mastodon's
+  link reads `Sign in to the Mastodon web app` (with `for full functionality` after it in the generic summary), and a
   `moderation_warning`'s goes to the strike's dispute page; Kopje has neither a web app nor disputes. Accepted,
   2026-11-15.
-- Only `admin.report` and `moderation_warning` carry one: Kopje writes no other type outside Mastodon's baseline, and a
-  restored row of another such type has none.
+- Only `admin.report`, `moderation_warning`, `added_to_collection` and `collection_update` carry one: Kopje writes no
+  other type outside Mastodon's baseline, and a restored row of another such type has none.
+- A `collection_update`'s title names the collection's owner by its mention link, as an `added_to_collection`'s does,
+  where Mastodon interpolates the account object (its default text). A Web Push of either collection type is titled
+  with its fallback sentence and the owner's display name, where Mastodon's title is a missing-translation text.
+  Accepted, 2026-11-16.
 - A title names an account within the presented bounds (RES-2): its username as `usernameSql` reads it, within 255
   bytes, a remote reporter's domain within 253, and a remote account's link only when its stored url parses as http(s)
   within `PROFILE_URL_LIMIT` once serialized, else `href=""`; Mastodon writes the stored values whole.
@@ -1238,12 +1254,12 @@ Feed streams (the `public*` and `hashtag*` streams of `/api/v1/streaming`; Masto
 streaming server's per-connection filter; R33 in [visibility.md](visibility.md)):
 
 - A status on `public*` and `hashtag*` is presented as REST presents it to the subscriber: its `favourited`,
-  `reblogged`, `muted`, `bookmarked`, `pinned`, poll `voted` and `own_votes`, quote approval, quote state and card
-  `missing_attribution` are the subscriber's, and `filtered` follows REST's filters (keyword and status filters, every
-  match). Mastodon renders these streams once with no viewer (the flags and votes absent, quote approval `denied`,
-  quotes judged for a signed-out reader) and adds `filtered` from keyword filters alone; Mastodon's web client, which
-  replaces the status on `status.update`, then shows the subscriber's favourite and bookmark as unset (Elk replaces the
-  text and keeps its marks).
+  `reblogged`, `muted`, `bookmarked`, `pinned`, poll `voted` and `own_votes`, quote approval, quote state, card
+  `missing_attribution` and the accounts' `feature_approval.current_user` are the subscriber's, and `filtered` follows
+  REST's filters (keyword and status filters, every match). Mastodon renders these streams once with no viewer (the
+  flags and votes absent, quote approval and feature approval `denied`, quotes judged for a signed-out reader) and adds
+  `filtered` from keyword filters alone; Mastodon's web client, which replaces the status on `status.update`, then shows
+  the subscriber's favourite and bookmark as unset (Elk replaces the text and keeps its marks).
   Kopje's payload is what the subscriber's next read shows (`test/streaming/public.test.ts`). Accepted, 2026-11-16.
 
 Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; the keys not served are MD-2):

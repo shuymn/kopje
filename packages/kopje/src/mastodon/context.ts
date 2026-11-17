@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 
-import type { Present } from "../domain/accounts";
+import type { PresentInput } from "../domain/accounts";
 import type { StoredKey } from "../domain/actors";
 import type { AuthFailure, Authorized, Credential, Suspended, UserCredential } from "../domain/auth";
 import type { ResolutionStart } from "../domain/inbox";
@@ -71,7 +71,7 @@ export function storeCall<F extends (store: StoreStub, build: string) => unknown
   return callStore(() => Promise.resolve(call(deps.store(c.env), deps.build(c.env))) as Promise<Result>);
 }
 
-export function present(c: Context): Present {
+export function present(c: Context): PresentInput {
   return { origin: new URL(c.req.url).origin };
 }
 

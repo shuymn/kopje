@@ -2,10 +2,9 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { ANSWER_BYTES, jsonBytes } from "../src/domain/answer-budget";
+import type { Collection, CollectionItem } from "../src/domain/collection-presenter";
 import {
-  type Collection,
   COLLECTION_JSON_MAX,
-  type CollectionItem,
   pruneCollectionItems,
   RETIRED_ROWS_PER_ROUND,
   showCollection,

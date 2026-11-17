@@ -1,3 +1,4 @@
+import { writeEach } from "../db/by-ids";
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import {
@@ -15,23 +16,37 @@ import {
   type PageQuery,
   type Present,
   presentAccountsWithin,
+  presentFor,
+  type PresentInput,
   routeAccountId,
 } from "./accounts";
 import { ANSWER_BYTES, jsonBytes } from "./answer-budget";
 import {
   availableSql,
   collectionFoundSql,
-  collectionItemShownSql,
   collectionListedSql,
   collectionShownSql,
   inCollectionsSql,
   mayFeatureSql,
 } from "./audience";
 import { COLLECTION_LIMIT, optionalUserReadOperation, userReadOperation, userWriteOperation } from "./auth";
+import {
+  type Collection,
+  COLLECTION_COLUMNS,
+  type CollectionItem,
+  type CollectionRow,
+  collectionUri,
+  presentCollection,
+  presentCollections,
+  presentItem,
+  shownItems,
+} from "./collection-presenter";
 import { allocateLocalId, insertWithFreshId, requestedId, storedIdOf } from "./ids";
 import { blank } from "./lists";
+import { notify } from "./notifications";
 import { writeOperation } from "./operation";
 import { usernameSql } from "./profile-bounds";
+import { RowBudget } from "./row-budget";
 import { isHashtagName } from "./status-text";
 import { TAG_NAME_TOO_LONG, withinTagNameBound } from "./tag-bounds";
 import { normalizeTag, tagDisplayName } from "./tag-name";
@@ -43,7 +58,10 @@ import { ABOVE_EVERY_ID, BELOW_EVERY_ID, readWindow, statusCursor, windowOf, win
 // CollectionWithAccountsSerializer). A local account features up to COLLECTION_MAX_ITEMS accounts in each of up to
 // COLLECTION_LIMIT collections; who sees what is R45 (audience.ts, docs/visibility.md). Only local accounts can be
 // featured yet: a remote one fails the consent rule (mayFeatureSql). The stored bounds are migration 0100's CHECKs and
-// triggers (stored-bounds.ts, stored-triggers.ts).
+// triggers (stored-bounds.ts, stored-triggers.ts). A member added is notified added_to_collection, and the accepted
+// members of a collection whose name, description, sensitivity or tag changes collection_update (notifications.ts:
+// local recipients only, R15); each notification goes with its item or collection (migration
+// 0107_collection_notifications), its pushes with it.
 
 // in_collections honours `offset` as a raw skip of candidates up to this many (ten default pages); past it the page is
 // empty (docs/mastodon-deviations.md, "Collections").
@@ -53,7 +71,7 @@ const IN_COLLECTIONS_MAX_OFFSET = 400;
 // within it is the same uniqueness error and in_collections still lists them.
 const RETIRED_ITEM_TTL_MS = 24 * 60 * 60 * 1000;
 
-// The rows the cleanup deletes per round (RES-4).
+// The rows the cleanup writes per round (RES-4): the retired items and their notifications' pushes and notifications.
 export const RETIRED_ROWS_PER_ROUND = 500;
 
 // Collection#user_does_not_exceed_limit's error (errors.add(:base, :too_many, count: limit)). Mastodon has no English
@@ -66,35 +84,6 @@ const COLLECTION_LIMIT_MESSAGE = `Collections are too many, no more than ${COLLE
 // instance domain of 253 octets and an owner's username at LOCAL_USERNAME_BYTES (test/collections.test.ts derives it
 // from the bounds and measures it).
 export const COLLECTION_JSON_MAX = 9_165;
-
-const STATE_NAMES = ["pending", "accepted", "rejected", "revoked"] as const;
-
-type CollectionItemStateName = (typeof STATE_NAMES)[number];
-
-// REST::ShallowTagSerializer.
-type ShallowTag = { name: string; url: string };
-
-// REST::CollectionItemSerializer: account_id only while pending or accepted.
-export type CollectionItem = { id: string; state: CollectionItemStateName; created_at: string; account_id?: string };
-
-// REST::CollectionSerializer, its keys in its order.
-export type Collection = {
-  id: string;
-  uri: string;
-  name: string;
-  description: string | null;
-  language: string | null;
-  account_id: string;
-  local: boolean;
-  sensitive: boolean;
-  discoverable: boolean;
-  url: string;
-  item_count: number;
-  created_at: string;
-  updated_at: string;
-  tag: ShallowTag | null;
-  items: CollectionItem[];
-};
 
 // REST::CollectionWithAccountsSerializer.
 export type CollectionWithAccounts = { collection: Collection; accounts: Account[] };
@@ -109,121 +98,6 @@ const ITEMS_TOO_MANY: Problem = {
 };
 
 const ACCOUNT_TAKEN: Problem = { attribute: "account_id", type: "taken", description: "has already been taken" };
-
-// A stored collection with its owner's username (the local uri names it).
-type CollectionRow = {
-  id: string;
-  account_id: string;
-  username: string;
-  local: number;
-  name: string;
-  description: string | null;
-  language: string | null;
-  sensitive: number;
-  discoverable: number;
-  tag: string | null;
-  uri: string | null;
-  url: string | null;
-  created_at: string;
-  updated_at: string;
-};
-
-const COLLECTION_COLUMNS = `c.id, c.account_id, ${usernameSql("a.username")} AS username, c.local, c.name, c.description, c.language, c.sensitive,
-	c.discoverable, c.tag, c.uri, c.url, c.created_at, c.updated_at`;
-
-type ItemRow = { collection_id: string; id: string; state: number; account_id: string | null; created_at: string };
-
-// Collection#to_param's page: a local collection's url (collection_url, the page of web-pages/collection.ts).
-function collectionUrl(origin: string, id: string): string {
-  return `${origin}/collections/${id}`;
-}
-
-function stateName(state: number): CollectionItemStateName {
-  const name = STATE_NAMES[state];
-  if (name === undefined) {
-    throw new Error("a collection item's state is past its stored bound");
-  }
-  return name;
-}
-
-function presentItem(row: ItemRow): CollectionItem {
-  const state = stateName(row.state);
-  return {
-    id: row.id,
-    state,
-    created_at: row.created_at,
-    ...((state === "pending" || state === "accepted") && row.account_id !== null ? { account_id: row.account_id } : {}),
-  };
-}
-
-// The tag as ShallowTagSerializer presents it: the hashtag's normalized name (Tag#name) and its page; none when the
-// stored name normalizes to no hashtag.
-function shallowTag(tag: string | null, origin: string): ShallowTag | null {
-  if (tag === null) {
-    return null;
-  }
-  const name = normalizeTag(tag);
-  return name === "" || !withinTagNameBound(name) ? null : { name, url: `${origin}/tags/${encodeURIComponent(name)}` };
-}
-
-// Collection's ActivityPub id (ActivityPub::TagManager#uri_for): a local one's under its owner's actor, a remote one's
-// as stored.
-function collectionUri(row: Pick<CollectionRow, "id" | "local" | "username" | "uri">, origin: string): string {
-  return row.local === 1 ? `${origin}/ap/users/${row.username}/collections/${row.id}` : (row.uri ?? "");
-}
-
-function presentCollection(row: CollectionRow, items: readonly ItemRow[], origin: string): Collection {
-  const presented = items.map(presentItem);
-  const local = row.local === 1;
-  return {
-    id: row.id,
-    uri: collectionUri(row, origin),
-    name: row.name,
-    description: row.description,
-    language: row.language,
-    account_id: row.account_id,
-    local,
-    sensitive: row.sensitive === 1,
-    discoverable: row.discoverable === 1,
-    url: local ? collectionUrl(origin, row.id) : (row.url ?? row.uri ?? ""),
-    item_count: presented.length,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
-    tag: shallowTag(row.tag, origin),
-    items: presented,
-  };
-}
-
-// The items of `collections` R45 shows `viewer`, by collection, each in position order: at most MAX_STORED_ITEMS rows
-// read per collection through collection_items_order.
-function shownItems(db: Db, collections: readonly string[], viewer: string | null): Map<string, ItemRow[]> {
-  const byCollection = new Map<string, ItemRow[]>(collections.map((id) => [id, []]));
-  if (collections.length === 0) {
-    return byCollection;
-  }
-  const rows = db.all<ItemRow>(
-    `SELECT i.collection_id, i.id, i.state, i.account_id, i.created_at
-		FROM json_each(?1) w CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = w.value
-			CROSS JOIN collection_items i INDEXED BY collection_items_order ON i.collection_id = c.id
-		WHERE ${collectionItemShownSql("i", "c", "?2")}
-		ORDER BY w.key, i.position, i.id`,
-    JSON.stringify(collections),
-    viewer,
-  );
-  for (const row of rows) {
-    byCollection.get(row.collection_id)?.push(row);
-  }
-  return byCollection;
-}
-
-function presentCollections(db: Db, rows: readonly CollectionRow[], viewer: string | null, origin: string) {
-  const items = shownItems(
-    db,
-    rows.map((row) => row.id),
-    viewer,
-  );
-  return rows.map((row) => presentCollection(row, items.get(row.id) ?? [], origin));
-}
 
 // The collection `id` (as the route names it) when R45 finds it.
 function foundCollection(db: Db, id: string): CollectionRow | undefined {
@@ -251,7 +125,7 @@ function mayFeature(db: Db, owner: string, member: string): boolean {
 // for an account not found; no collections when R45 refuses its owner. `owner`: the account's id, which the links name;
 // `full`: the page holds `limit` collections, so a next page may follow.
 export const accountCollections = optionalUserReadOperation<
-  { account: string; offset: number; limit: number; present: Present },
+  { account: string; offset: number; limit: number; present: PresentInput },
   { owner: string; collections: Collection[]; full: boolean } | null
 >((db, input, { accountId: viewer }) => {
   const owner = routeAccountId(db, input.account);
@@ -290,7 +164,7 @@ export type InCollectionsResult =
 // the same walk (at most IN_COLLECTIONS_MAX_OFFSET; past it the page is empty), the owner's availability tested on
 // those alone, outside the window's LIMIT. A page cut at its window links on from its last candidate.
 export const inCollections = optionalUserReadOperation<
-  { account: string; page: PageQuery; offset: number; present: Present },
+  { account: string; page: PageQuery; offset: number; present: PresentInput },
   InCollectionsResult
 >((db, input, { accountId: viewer }) => {
   if (viewer === null) {
@@ -383,7 +257,7 @@ function shown(db: Db, id: string, viewer: string | null): boolean {
 }
 
 // GET /api/v1/collections/:id: 404 unless R45 finds it, 403 unless it shows it to the viewer.
-export const showCollection = optionalUserReadOperation<{ id: string; present: Present }, ShowResult>(
+export const showCollection = optionalUserReadOperation<{ id: string; present: PresentInput }, ShowResult>(
   (db, input, { accountId: viewer }) => {
     const row = foundCollection(db, input.id);
     if (row === undefined) {
@@ -392,7 +266,7 @@ export const showCollection = optionalUserReadOperation<{ id: string; present: P
     if (!shown(db, row.id, viewer)) {
       return { status: "forbidden" };
     }
-    return { status: "ok", value: withAccounts(db, row, viewer, input.present) };
+    return { status: "ok", value: withAccounts(db, row, viewer, presentFor(input.present, viewer)) };
   },
 );
 
@@ -528,7 +402,7 @@ function ownView(db: Db, id: string, owner: string, origin: string): Collection 
 // before any is read (docs/mastodon-deviations.md, "Collections"). Every item of a local account is accepted, at
 // position 1 (CollectionItem#set_position reads no collection yet).
 export const createCollection = userWriteOperation<
-  CollectionFields & { accountIds: readonly string[]; now: number; present: Present },
+  CollectionFields & { accountIds: readonly string[]; now: number; present: PresentInput },
   CollectionResult
 >((db, input, { accountId: owner }) => {
   const requested = [...new Set(input.accountIds)];
@@ -590,10 +464,23 @@ export const createCollection = userWriteOperation<
     },
   );
   for (const member of members) {
-    insertItem(db, id, member, 1, input.now);
+    notifyAdded(db, owner, member, insertItem(db, id, member, 1, input.now), input.now);
   }
   return { status: "ok", collection: ownView(db, id, owner, input.present.origin) };
 });
+
+// CreateCollectionService and AddAccountToCollectionService notify a local member of its new item
+// (LocalNotificationWorker, added_to_collection); notify writes it for a local recipient other than the owner (R15).
+function notifyAdded(db: Db, owner: string, member: string, item: string, now: number): void {
+  notify(db, {
+    recipientId: member,
+    type: "added_to_collection",
+    fromId: owner,
+    statusId: null,
+    collectionItemId: item,
+    now,
+  });
+}
 
 function insertItem(db: Db, collection: string, member: string, position: number, now: number): string {
   const at = new Date(now).toISOString();
@@ -627,7 +514,7 @@ function ownCollection(db: Db, id: string, viewer: string): CollectionRow | "not
 // PATCH and PUT /api/v1/collections/:id (UpdateCollectionService): what is sent changes, the rest stays; tag_name's
 // errors before the collection's validations; updated_at moves only when a value changes.
 export const updateCollection = userWriteOperation<
-  CollectionFields & { id: string; now: number; present: Present },
+  CollectionFields & { id: string; now: number; present: PresentInput },
   CollectionResult
 >((db, input, { accountId: viewer }) => {
   const row = ownCollection(db, input.id, viewer);
@@ -650,7 +537,8 @@ export const updateCollection = userWriteOperation<
   if (problems.length > 0) {
     return { status: "invalid", problems };
   }
-  const changed = (Object.keys(base) as (keyof CollectionValues)[]).some((key) => values[key] !== base[key]);
+  const differs = (key: keyof CollectionValues) => values[key] !== base[key];
+  const changed = (Object.keys(base) as (keyof CollectionValues)[]).some(differs);
   if (changed) {
     db.run(
       `UPDATE collections INDEXED BY ${COLLECTIONS_ID_INDEX}
@@ -666,10 +554,40 @@ export const updateCollection = userWriteOperation<
       row.id,
     );
   }
+  if (NOTIFIED_CHANGES.some(differs)) {
+    notifyUpdated(db, row.id, viewer, input.now);
+  }
   return { status: "ok", collection: ownView(db, row.id, viewer, input.present.origin) };
 });
 
-// DELETE /api/v1/collections/:id (DeleteCollectionService): the collection and, by the foreign key, its items.
+// The changes a collection's members are notified of (NotifyOfCollectionUpdateService#significantly_changed?:
+// description, description_html, name, sensitive, tag_id): not its language or discoverability.
+const NOTIFIED_CHANGES: readonly (keyof CollectionValues)[] = ["name", "description", "sensitive", "tag"];
+
+// NotifyOfCollectionUpdateService: each accepted member of the collection `id` is notified collection_update, which
+// replaces its earlier one of the collection (notify); a local one only. At most COLLECTION_MAX_ITEMS live items, read
+// through collection_items_order.
+function notifyUpdated(db: Db, id: string, owner: string, now: number): void {
+  const members = db.all<{ account_id: string }>(
+    `SELECT account_id FROM collection_items INDEXED BY collection_items_order
+		WHERE collection_id = ? AND state = ? AND account_id IS NOT NULL ORDER BY position, id`,
+    id,
+    COLLECTION_ITEM_STATES.accepted,
+  );
+  for (const { account_id } of members) {
+    notify(db, {
+      recipientId: account_id,
+      type: "collection_update",
+      fromId: owner,
+      statusId: null,
+      collectionId: id,
+      now,
+    });
+  }
+}
+
+// DELETE /api/v1/collections/:id (DeleteCollectionService): the collection and, by the foreign keys, its items, their
+// notifications, its collection_update notifications and their pushes (at most MAX_PUSH_BACKLOG in all).
 export const deleteCollection = userWriteOperation<{ id: string }, "ok" | "not_found" | "forbidden">(
   (db, input, { accountId: viewer }) => {
     const row = ownCollection(db, input.id, viewer);
@@ -690,8 +608,9 @@ export type ItemResult =
 
 // POST /api/v1/collections/:collection_id/items (AddAccountToCollectionService), in the controller's order: the
 // collection (404), a blank account_id (422), the account (404, unavailable included), the owner (403), consent (403),
-// then the item's uniqueness in any state and the live bound (422). At MAX_STORED_ITEMS stored rows the oldest retired row of the
-// collection is deleted first. The new item is accepted, after every other (CollectionItem#set_position).
+// then the item's uniqueness in any state and the live bound (422). At MAX_STORED_ITEMS stored rows the oldest retired
+// row of the collection is deleted first, with its notification and that notification's pushes (by the foreign keys).
+// The new item is accepted, after every other (CollectionItem#set_position).
 export const addCollectionItem = userWriteOperation<{ collection: string; account: string; now: number }, ItemResult>(
   (db, input, { accountId: viewer }) => {
     const row = foundCollection(db, input.collection);
@@ -731,6 +650,7 @@ export const addCollectionItem = userWriteOperation<{ collection: string; accoun
     }
     const position = Math.min((counts?.last ?? 0) + 1, COLLECTION_POSITION_MAX);
     const id = insertItem(db, row.id, member, position, input.now);
+    notifyAdded(db, viewer, member, id, input.now);
     const item = { collection_id: row.id, id, state: COLLECTION_ITEM_STATES.accepted, account_id: member };
     return { status: "ok", item: presentItem({ ...item, created_at: new Date(input.now).toISOString() }) };
   },
@@ -755,7 +675,8 @@ function collectionItem(
   return found === undefined ? null : { row, item: found };
 }
 
-// DELETE /api/v1/collections/:collection_id/items/:id (DeleteCollectionItemService): the owner deletes any item.
+// DELETE /api/v1/collections/:collection_id/items/:id (DeleteCollectionItemService): the owner deletes any item, and
+// by the foreign keys its notification and that notification's pushes.
 export const removeCollectionItem = userWriteOperation<
   { collection: string; item: string },
   "ok" | "not_found" | "forbidden"
@@ -797,8 +718,9 @@ export const revokeCollectionItem = userWriteOperation<
 });
 
 // BlockService#handle_collections, in the block's transaction: the blocker's items in the target's collections are
-// revoked, and the target's items in the blocker's collections deleted. Each reads one account's collections (at most
-// MAX_STORED_COLLECTIONS) and one item of each by its member key, so at most that many rows each.
+// revoked, and the target's items in the blocker's collections deleted, with their notifications and those
+// notifications' pushes (by the foreign keys). Each reads one account's collections (at most MAX_STORED_COLLECTIONS)
+// and one item of each by its member key, so at most that many items each.
 export function severCollections(db: Db, blocker: string, target: string, now: number): void {
   db.run(
     `UPDATE collection_items INDEXED BY collection_items_member
@@ -819,18 +741,48 @@ export function severCollections(db: Db, blocker: string, target: string, now: n
   );
 }
 
+// The retired items unchanged since ?1, oldest first, at most ?2 (the rows a round has left): one bounded range of
+// collection_items_retired.
+const RETIRED_WINDOW = `SELECT id FROM collection_items INDEXED BY collection_items_retired
+	WHERE state IN (2, 3) AND updated_at < ?1 ORDER BY updated_at, id LIMIT ?2`;
+
 // The cron's cleanup (CollectionItemCleanupScheduler): rejected and revoked items unchanged for RETIRED_ITEM_TTL_MS,
-// oldest first through collection_items_retired, at most RETIRED_ROWS_PER_ROUND rows a round.
-export const pruneCollectionItems = writeOperation<{ now: number }, { deleted: number }>((db, { now }) => ({
-  deleted: db.all(
-    `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id IN
-			(SELECT id FROM collection_items INDEXED BY collection_items_retired
-				WHERE state IN (2, 3) AND updated_at < ?1 ORDER BY updated_at, id LIMIT ?2)
-		RETURNING id`,
-    new Date(now - RETIRED_ITEM_TTL_MS).toISOString(),
-    RETIRED_ROWS_PER_ROUND,
-  ).length,
-}));
+// oldest first, child-first so that no delete cascades (as inbox.ts purgeReports): within the window of the oldest
+// (RETIRED_WINDOW), the pushes of their notifications (pending or leased: a leased push whose row is gone completes as
+// nothing), then the notifications left without one, then the items left without a notification. Each statement reads
+// only the window and takes what the round has left, so a round writes at most RETIRED_ROWS_PER_ROUND rows, and the
+// next one continues from the oldest left. `deleted`: the rows written.
+export const pruneCollectionItems = writeOperation<{ now: number }, { deleted: number }>((db, { now }) => {
+  const budget = new RowBudget(db, RETIRED_ROWS_PER_ROUND);
+  const cutoff = new Date(now - RETIRED_ITEM_TTL_MS).toISOString();
+  const writes = [
+    {
+      ids: `SELECT CAST(d.id AS TEXT) AS id FROM (${RETIRED_WINDOW}) w
+				CROSS JOIN notifications n INDEXED BY notifications_collection_item ON n.collection_item_id = w.id
+				CROSS JOIN push_deliveries d INDEXED BY push_deliveries_notification ON d.notification_id = n.id LIMIT ?2`,
+      each: "DELETE FROM push_deliveries WHERE id = CAST(?1 AS INTEGER)",
+    },
+    {
+      ids: `SELECT CAST(n.id AS TEXT) AS id FROM (${RETIRED_WINDOW}) w
+				CROSS JOIN notifications n INDEXED BY notifications_collection_item ON n.collection_item_id = w.id
+			WHERE NOT EXISTS (SELECT 1 FROM push_deliveries d INDEXED BY push_deliveries_notification
+				WHERE d.notification_id = n.id) LIMIT ?2`,
+      each: "DELETE FROM notifications WHERE id = CAST(?1 AS INTEGER)",
+    },
+    {
+      ids: `SELECT w.id FROM (${RETIRED_WINDOW}) w
+			WHERE NOT EXISTS (SELECT 1 FROM notifications n INDEXED BY notifications_collection_item
+				WHERE n.collection_item_id = w.id) LIMIT ?2`,
+      each: `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id = ?1`,
+    },
+  ];
+  for (const write of writes) {
+    if (budget.left() > 0) {
+      writeEach(db, write, cutoff, budget.left());
+    }
+  }
+  return { deleted: budget.spent() };
+});
 
 // ---- Collections named by reports and search.
 
@@ -848,7 +800,7 @@ export function localCollectionId(url: string, origin: string): string | null {
 
 // Search with resolve=true of a local collection's URL (ResolveURLService#check_collection): the collection when R45
 // shows it to the viewer, as the viewer sees it; null otherwise.
-export const resolvedCollection = userReadOperation<{ id: string; present: Present }, Collection | null>(
+export const resolvedCollection = userReadOperation<{ id: string; present: PresentInput }, Collection | null>(
   (db, input, { accountId: viewer }) => {
     const row = foundCollection(db, input.id);
     return row === undefined || !shown(db, row.id, viewer)

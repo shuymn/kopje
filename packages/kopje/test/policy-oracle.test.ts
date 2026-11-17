@@ -20,6 +20,7 @@ import {
   domainBlocksSql,
   endorsementListedSql,
   endorsementsShownSql,
+  featureApprovalSql,
   filteredForSql,
   findableBySql,
   followableBySql,
@@ -42,7 +43,7 @@ import {
 import { publicDomainBlocks } from "../src/domain/instance-domain-blocks";
 import type { StoreStub } from "../src/platform/store-client";
 import { migratedStore } from "./helpers";
-import { NOTIFICATION_TYPES, PolicyModel, type Viewer } from "./policy-model";
+import { type ModelCollectionKey, NOTIFICATION_TYPES, PolicyModel, type Viewer } from "./policy-model";
 import {
   accountId,
   BLOCKABLE_DOMAINS,
@@ -439,6 +440,26 @@ describe("the policy fragments agree with the model of their rules", () => {
         ),
     ));
 
+  it("featureApprovalSql (R45)", () =>
+    agree(
+      withCollections((db, world) => {
+        const named = namer(world);
+        return db
+          .all<{ x: string | null; y: string; answer: string }>(
+            `SELECT v.id AS x, a.id AS y, ${featureApprovalSql("a", "v.id")} AS answer FROM ${VIEWERS} v
+							CROSS JOIN accounts a`,
+          )
+          .map((row) => `${named(row.x, row.y)} ${row.answer}`);
+      }),
+      (m) =>
+        viewers(m.world).flatMap((viewer) =>
+          accounts(m.world).map(
+            (x) =>
+              `${name(m.world, viewer)} ${name(m.world, x)} ${m.featureApproval(x, viewer, memberDiscoverable, memberLocked)}`,
+          ),
+        ),
+    ));
+
   it("listableSql (R8)", () => viewerStatusPairs(listableSql, (m, s, viewer) => m.listable(s, viewer), true));
 
   it("homeFilterSql (R9)", () => viewerStatusPairs(homeFilterSql, (m, s, viewer) => m.homeFilter(s, viewer), true));
@@ -500,13 +521,33 @@ describe("the policy fragments agree with the model of their rules", () => {
         ),
     ));
 
-  // Every (recipient, type, sender, status or none, warning or none) a local recipient is shown, at the world's time;
-  // and, as notify writes them, without those about a status of a conversation the recipient mutes. The first local
-  // account is the OAuth admin (R37). Each local account has a warning (R42), named by its target.
+  // Every (recipient, type, sender, status or none, warning or none, collection key or none) a local recipient is
+  // shown, at the world's time; and, as notify writes them, without those about a status of a conversation the
+  // recipient mutes. The first local account is the OAuth admin (R37). Each local account has a warning (R42), named by
+  // its target, and a collection (withCollections), named by its owner: a collection notification names one's item
+  // (its unresolved one) or the collection itself.
   const adminOf = (world: World) => {
     const index = world.accounts.findIndex((account) => account.local);
     return index < 0 ? null : index;
   };
+  // The collection keys a notification is read with: none, and for a collection type also each account's collection by
+  // its item and by itself. A collection arm decides by the key and the sender alone (R45: the sender's own collection,
+  // by the type's kind), so the keys it refuses so (none, another owner's, the other kind's) come with no status and no
+  // warning, and the one it may accept, the sender's own of the type's kind, with every status and warning: crossing
+  // every key with them as well would repeat the same refusals and multiply the property's time.
+  const COLLECTION_KINDS = { added_to_collection: "item", collection_update: "collection" } as const;
+  function collectionKeys(world: World) {
+    const every = [
+      null,
+      ...(["item", "collection"] as const).flatMap((kind) => accounts(world).map((owner) => ({ kind, owner }))),
+    ];
+    return (type: string, from: number, s: number | null, warned: number | null): (ModelCollectionKey | null)[] => {
+      if (type !== "added_to_collection" && type !== "collection_update") {
+        return [null];
+      }
+      return s === null && warned === null ? every : [{ kind: COLLECTION_KINDS[type], owner: from }];
+    };
+  }
   const adminIdOf = (world: World) => {
     const admin = adminOf(world);
     return admin === null ? null : accountId(admin);
@@ -516,7 +557,7 @@ describe("the policy fragments agree with the model of their rules", () => {
     ["notifiedSql (R15, R31)", notifiedSql, "notified"],
   ] as const)("%s", ([, fragment, rule]) =>
     agree(
-      (db, world) => {
+      withCollections((db, world) => {
         const named = namer(world);
         db.run(
           `INSERT INTO account_warnings (target_account_id, action, created_at)
@@ -524,23 +565,41 @@ describe("the policy fragments agree with the model of their rules", () => {
           world.now,
         );
         return db
-          .all<{ r: string; type: string; sender: string; status: string | null; warned: string | null }>(
-            `SELECT nr0.account_id AS r, nt.value AS type, nf.id AS sender, ns.id AS status, nw.target AS warned
+          .all<{
+            r: string;
+            type: string;
+            sender: string;
+            status: string | null;
+            warned: string | null;
+            kind: string | null;
+            owner: string | null;
+          }>(
+            `SELECT nr0.account_id AS r, nt.value AS type, nf.id AS sender, ns.id AS status, nw.target AS warned,
+								nk.kind, nk.owner
 							FROM local_accounts nr0 CROSS JOIN json_each(?1) nt CROSS JOIN accounts nf
 							CROSS JOIN (SELECT id FROM statuses UNION ALL SELECT NULL) ns
 							CROSS JOIN (SELECT id, target_account_id AS target FROM account_warnings UNION ALL SELECT NULL, NULL) nw
-							WHERE ${fragment("nr0.account_id", "nt.value", "nf.id", "ns.id", "?2", "?3", "nw.id")}`,
+							CROSS JOIN (SELECT NULL AS item, NULL AS coll, NULL AS kind, NULL AS owner
+								UNION ALL SELECT i.id, NULL, 'item', c.account_id FROM collections c
+									JOIN collection_items i ON i.collection_id = c.id AND i.account_id IS NULL
+								UNION ALL SELECT NULL, c.id, 'collection', c.account_id FROM collections c) nk
+							WHERE CASE WHEN nt.value IN ('added_to_collection', 'collection_update')
+									THEN (ns.id IS NULL AND nw.id IS NULL) OR (nk.owner = nf.id
+										AND nk.kind = CASE nt.value WHEN 'added_to_collection' THEN 'item' ELSE 'collection' END)
+									ELSE nk.kind IS NULL END
+								AND ${fragment("nr0.account_id", "nt.value", "nf.id", "ns.id", "?2", "?3", "nw.id", "nk.item", "nk.coll")}`,
             JSON.stringify(NOTIFICATION_TYPES),
             world.now,
             adminIdOf(world),
           )
           .map(
             (row) =>
-              `${named(row.r)} ${row.type} ${named(row.sender)} ${row.status === null ? "-" : named(row.status)} ${row.warned === null ? "-" : named(row.warned)}`,
+              `${named(row.r)} ${row.type} ${named(row.sender)} ${row.status === null ? "-" : named(row.status)} ${row.warned === null ? "-" : named(row.warned)} ${row.kind === null || row.owner === null ? "-" : `${row.kind}:${named(row.owner)}`}`,
           );
-      },
+      }),
       ({ world }) => {
         const m = new PolicyModel(world, adminOf(world));
+        const keys = collectionKeys(world);
         return accounts(m.world)
           .filter((r) => m.world.accounts[r]?.local === true)
           .flatMap((r) =>
@@ -548,11 +607,13 @@ describe("the policy fragments agree with the model of their rules", () => {
               accounts(m.world).flatMap((from) =>
                 [null, ...statuses(m.world)].flatMap((s) =>
                   [null, ...accounts(m.world).filter((x) => m.world.accounts[x]?.local === true)].flatMap((warned) =>
-                    m[rule](r, type, from, s, warned)
-                      ? [
-                          `${name(m.world, r)} ${type} ${name(m.world, from)} ${s === null ? "-" : m.status(s).name} ${warned === null ? "-" : name(m.world, warned)}`,
-                        ]
-                      : [],
+                    keys(type, from, s, warned).flatMap((key) =>
+                      m[rule](r, type, from, s, warned, key)
+                        ? [
+                            `${name(m.world, r)} ${type} ${name(m.world, from)} ${s === null ? "-" : m.status(s).name} ${warned === null ? "-" : name(m.world, warned)} ${key === null ? "-" : `${key.kind}:${name(m.world, key.owner)}`}`,
+                          ]
+                        : [],
+                    ),
                   ),
                 ),
               ),

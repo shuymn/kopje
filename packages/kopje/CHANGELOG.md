@@ -56,8 +56,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `moderation_warning` whose type the client does not list carries `fallback`, a title and a summary linking to the
   instance's front page ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no
   `wrangler.jsonc` change.
-- Web Push subscriptions keep the `added_to_collection` and `collection_update` alerts of Mastodon 4.6. Kopje sends no
-  such notification yet. No Store migration and no `wrangler.jsonc` change.
+- Web Push subscriptions keep the `added_to_collection` and `collection_update` alerts of Mastodon 4.6. No Store
+  migration and no `wrangler.jsonc` change.
 - An account whose handle another account has taken shows `invalid_handle: true`, its id as `username` and
   `<id>@handle.invalid` as `acct`, in accounts and mentions, as Mastodon 4.7 does; lookup finds it by that address.
 - A `Create`, `Update`, `Delete` or `Undo` naming a known status by an http(s) `atomUri` under another id is matched to
@@ -144,6 +144,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `0093_annual_reports` takes 16,319 ms with this file and 16,404 ms without it, medians of three runs).
   `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
   back past it needs a point-in-time restore.
+- Accounts present `feature_approval` (who may feature them in a collection, and the answer to the viewer), and members
+  are notified `added_to_collection` and `collection_update`, each with its collection, its fallback and its Web Push
+  title ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections" and "Notification fallbacks").
+  Migration `0107_collection_notifications`: two columns of `notifications` with their partial indexes and triggers,
+  reading no row, and its natural key rebuilt over every notification (the migration bench's upgrade from
+  `0093_annual_reports` takes 15,501 ms with this file and 11,720 ms without it, medians of three runs).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling back
+  past it needs a point-in-time restore.
 
 ### Changed
 

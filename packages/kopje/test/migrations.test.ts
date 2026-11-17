@@ -414,9 +414,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(83);
+      expect(STORED_TRIGGERS.size).toBe(85);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        83 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        85 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -14292,6 +14292,192 @@ describe("0106_reply_walk_debts", () => {
       // The statuses' deletion takes the debts they hold or are named by.
       sql.exec("DELETE FROM statuses WHERE id = ?", S1);
       expect(sql.exec("SELECT count(*) AS n FROM reply_walk_debts").one().n).toBe(0);
+    });
+  });
+});
+
+describe("0107_collection_notifications", () => {
+  const NAME = "0107_collection_notifications";
+  const at = NAMES.indexOf(NAME);
+  const [OWNER, MEMBER, SENDER] = ["100000000000000001", "100000000000000002", "100000000000000003"];
+  const T = "2026-11-16T00:00:00.000Z";
+  const [COLLECTION, OTHER_COLLECTION, ITEM, OTHER_ITEM] = [
+    "200000000000000001",
+    "200000000000000002",
+    "300000000000000001",
+    "300000000000000002",
+  ];
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  const REFUSED = /notifications: collection keys past their stored bound/;
+
+  // A Store before the file with two local accounts, the owner's two collections each holding the member, and a
+  // follow notification of each; the file applied, then `run`.
+  async function upgraded(run: (sql: SqlStorage) => void) {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      for (const [account, name] of [
+        [OWNER, "owner"],
+        [MEMBER, "member"],
+      ] as const) {
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/' || ?2, ?2, NULL)",
+          account,
+          name,
+        );
+        sql.exec(
+          "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, ?2, X'00', X'00', 'k')",
+          account,
+          `${name}@x.test`,
+        );
+      }
+      for (const [collection, item] of [
+        [COLLECTION, ITEM],
+        [OTHER_COLLECTION, OTHER_ITEM],
+      ] as const) {
+        sql.exec(
+          `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, created_at, updated_at)
+					VALUES (?1, ?2, 1, 'c', 0, 1, ?3, ?3)`,
+          collection,
+          OWNER,
+          T,
+        );
+        sql.exec(
+          `INSERT INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
+					VALUES (?1, ?2, ?3, 1, 1, ?4, ?4)`,
+          item,
+          collection,
+          MEMBER,
+          T,
+        );
+      }
+      sql.exec("INSERT INTO notifications (account_id, type, from_account_id) VALUES (?, 'follow', ?)", MEMBER, OWNER);
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      run(sql);
+    });
+  }
+  const notification = (sql: SqlStorage, type: string, item: SqlStorageValue, collection: SqlStorageValue) =>
+    sql.exec(
+      `INSERT INTO notifications (account_id, type, from_account_id, collection_item_id, collection_id)
+			VALUES (?, ?, ?, ?, ?)`,
+      MEMBER,
+      type,
+      OWNER,
+      item,
+      collection,
+    );
+
+  it("follows 0106, checks every reference, and writes the registered triggers", () => {
+    expect(NAMES[at - 1]).toBe("0106_reply_walk_debts");
+    // New foreign keys: the upgrade checks every reference of the Store.
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    const sql = MIGRATIONS[at]?.sql ?? "";
+    expect(statements(sql)).toContain(
+      statements(emitTriggers(["notifications_collection_insert", "notifications_collection_update"])),
+    );
+    for (const [, pattern] of sql.matchAll(/GLOB\s+'([^']*)'/g)) {
+      expect(new TextEncoder().encode(pattern).length).toBeLessThanOrEqual(50);
+    }
+  });
+
+  // 2-T8. Fails if the insert trigger's type arms are dropped (a collection_update without its collection is written),
+  // or the update trigger's (a key changed within its type is refused).
+  it("keeps every row as it was and holds the collection keys to their type", async () => {
+    await upgraded((sql) => {
+      expect(sql.exec("SELECT type, collection_item_id, collection_id FROM notifications").toArray()).toEqual([
+        { type: "follow", collection_item_id: null, collection_id: null },
+      ]);
+      notification(sql, "added_to_collection", ITEM, null);
+      notification(sql, "collection_update", null, COLLECTION);
+      for (const [type, item, collection] of [
+        ["collection_update", null, null],
+        ["collection_update", ITEM, COLLECTION],
+        ["added_to_collection", null, null],
+        ["added_to_collection", OTHER_ITEM, COLLECTION],
+        ["follow", ITEM, null],
+        ["mention", null, COLLECTION],
+        ["added_to_collection", Number(OTHER_ITEM), null],
+        ["added_to_collection", OTHER_ITEM.slice(1), null],
+        ["added_to_collection", `${OTHER_ITEM.slice(1)}\u0000`, null],
+        ["collection_update", null, `${OTHER_COLLECTION.slice(1)}x`],
+      ] as const) {
+        expect(() => notification(sql, type, item, collection), `${type} ${item} ${collection}`).toThrow(REFUSED);
+      }
+      expect(() => sql.exec("UPDATE notifications SET collection_id = ? WHERE type = 'follow'", COLLECTION)).toThrow(
+        REFUSED,
+      );
+      expect(() =>
+        sql.exec("UPDATE notifications SET type = 'collection_update' WHERE type = 'added_to_collection'"),
+      ).toThrow(REFUSED);
+      // A key changed within its type is written, where the update trigger's ELSE arm would refuse any key.
+      sql.exec("UPDATE notifications SET collection_item_id = ? WHERE type = 'added_to_collection'", OTHER_ITEM);
+      sql.exec("UPDATE notifications SET collection_id = ? WHERE type = 'collection_update'", OTHER_COLLECTION);
+      expect(sql.exec("SELECT count(*) AS n FROM notifications").one().n).toBe(3);
+    });
+  });
+
+  it("keys a notification by its item and its collection, each gone with it", async () => {
+    await upgraded((sql) => {
+      notification(sql, "added_to_collection", ITEM, null);
+      notification(sql, "added_to_collection", OTHER_ITEM, null);
+      expect(() => notification(sql, "added_to_collection", ITEM, null)).toThrow(
+        /UNIQUE constraint failed: index 'notifications_natural'/,
+      );
+      notification(sql, "collection_update", null, COLLECTION);
+      notification(sql, "collection_update", null, OTHER_COLLECTION);
+      expect(() => notification(sql, "collection_update", null, COLLECTION)).toThrow(/UNIQUE constraint failed/);
+      // One notification an item, and one collection_update a collection and recipient, whoever sends it: a delete of
+      // an item or a collection finds at most that many.
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?, 'https://remote.test/users/r', 'r', 'remote.test')",
+        SENDER,
+      );
+      const from = (type: string, item: string | null, collection: string | null, account = MEMBER) =>
+        sql.exec(
+          `INSERT INTO notifications (account_id, type, from_account_id, collection_item_id, collection_id)
+					VALUES (?, ?, ?, ?, ?)`,
+          account,
+          type,
+          SENDER,
+          item,
+          collection,
+        );
+      expect(() => from("added_to_collection", ITEM, null)).toThrow(
+        /UNIQUE constraint failed: notifications.collection_item_id\b/,
+      );
+      expect(() => from("collection_update", null, COLLECTION)).toThrow(
+        /UNIQUE constraint failed: notifications.collection_id, notifications.account_id\b/,
+      );
+      from("collection_update", null, COLLECTION, OWNER);
+      sql.exec("DELETE FROM notifications WHERE account_id = ? AND type = 'collection_update'", OWNER);
+      sql.exec("DELETE FROM collection_items WHERE id = ?", ITEM);
+      sql.exec("DELETE FROM collections WHERE id = ?", OTHER_COLLECTION);
+      expect(
+        sql.exec("SELECT type, collection_item_id, collection_id FROM notifications ORDER BY id").toArray(),
+      ).toEqual([
+        { type: "follow", collection_item_id: null, collection_id: null },
+        { type: "collection_update", collection_item_id: null, collection_id: COLLECTION },
+      ]);
+      const plan = (query: string) =>
+        sql
+          .exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`)
+          .toArray()
+          .map((row) => row.detail)
+          .join("\n");
+      expect(plan("SELECT id FROM notifications WHERE collection_item_id = '1'")).toContain(
+        "notifications_collection_item",
+      );
+      expect(plan("SELECT id FROM notifications WHERE collection_id = '1'")).toContain("notifications_collection");
+      expect(
+        plan(`SELECT id FROM notifications WHERE account_id = '1' AND type = 'mention' AND from_account_id = '2'
+					AND IFNULL(status_id, '') = '3'`),
+      ).toContain("notifications_natural");
     });
   });
 });
