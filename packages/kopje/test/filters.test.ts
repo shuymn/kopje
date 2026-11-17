@@ -434,6 +434,61 @@ describe("filters API", () => {
     expect(await getJson(h, `/api/v2/filters/${filter.id}/statuses`, alice.token)).toEqual({ status: 200, body: [] });
   });
 
+  // whole_word (a boolean column), a nested keyword's _destroy (NestedAttributes#has_destroy_flag?) and v1's
+  // irreversible (CustomFilter#irreversible=) are each ActiveModel::Type::Boolean's cast: only the listed spellings are
+  // false, so "False" and "Off" are true.
+  it("reads whole_word, _destroy and irreversible as ActiveModel's Boolean casts them, each spelling in its own case", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const created = await createFilter(h, alice, {
+      title: "t",
+      context: ["home"],
+      keywords_attributes: [
+        { keyword: "a", whole_word: "False" },
+        { keyword: "b", whole_word: "FALSE" },
+        { keyword: "c", whole_word: "Off" },
+      ],
+    });
+    expect(created.keywords.map(({ keyword, whole_word }) => [keyword, whole_word])).toEqual([
+      ["a", true],
+      ["b", false],
+      ["c", true],
+    ]);
+    const [a, b] = created.keywords;
+    const updated = await answer(
+      await send(h, alice, "PUT", `/api/v2/filters/${created.id}`, {
+        keywords_attributes: [
+          { id: a!.id, _destroy: "False" },
+          { id: b!.id, _destroy: "FALSE" },
+        ],
+      }),
+    );
+    expect((updated.body as Filter).keywords.map(({ keyword }) => keyword)).toEqual(["b", "c"]);
+    const added = await answer(
+      await act(h, alice, `/api/v2/filters/${created.id}/keywords`, { keyword: "d", whole_word: "False" }),
+    );
+    expect(added.body).toMatchObject({ keyword: "d", whole_word: true });
+    const changed = await answer(
+      await send(h, alice, "PUT", `/api/v2/filters/keywords/${b!.id}`, { whole_word: "fAlSe" }),
+    );
+    expect(changed.body).toMatchObject({ keyword: "b", whole_word: true });
+
+    const v1 = await answer(
+      await act(h, alice, "/api/v1/filters", {
+        phrase: "e",
+        context: ["home"],
+        whole_word: "Off",
+        irreversible: "False",
+      }),
+    );
+    expect(v1.body).toMatchObject({ phrase: "e", whole_word: true, irreversible: true });
+    const v1Id = (v1.body as { id: string }).id;
+    const kept = await answer(
+      await send(h, alice, "PUT", `/api/v1/filters/${v1Id}`, { whole_word: "OFF", irreversible: "OFF" }),
+    );
+    expect(kept.body).toMatchObject({ phrase: "e", whole_word: false, irreversible: false });
+  });
+
   it("maps the v1 API onto the same filters and keywords", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
