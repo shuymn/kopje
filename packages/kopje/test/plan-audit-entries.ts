@@ -337,7 +337,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "f51569b711149874",
+    id: "88529641f8f15928",
     scans: ["?: SCAN ps"],
     site: "src/domain/audience.ts#recipientsFor < src/domain/deliveries.ts#targetsOf < src/domain/deliveries.ts#enqueueActivity < src/domain/activities.ts#recordOutbound < src/domain/statuses.ts#writePost",
     disposition: "deliberate",
@@ -401,7 +401,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "a shape only the reader's own contract test writes (test/audience.test.ts:333-409: conditions around the rule, a WITH table, a union); no src caller passes it, and each src reader is audited under its own identity",
   },
   {
-    id: "5b649a02c2ddf9a6",
+    id: "f4ae4252b0508b80",
     scans: ["?: SCAN ps"],
     site: "src/domain/audience.ts#recipientsFor < src/domain/deliveries.ts#targetsOf < src/domain/deliveries.ts#enqueueActivity < src/domain/activities.ts#recordOutbound < src/domain/polls.ts#recordPollUpdate",
     disposition: "deliberate",

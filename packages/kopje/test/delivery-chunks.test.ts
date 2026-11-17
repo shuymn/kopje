@@ -206,12 +206,19 @@ describe("RES-6: target chunks", () => {
     }
   });
 
+  // An addressed account's inboxes are read whole (a follower's or voter's is judged in SQL first, audience.ts
+  // reachInboxSql): one past TARGET_CHUNK_BYTES makes a target no chunk can hold.
   it("leaves out a target too large for any chunk, counted and logged without its value", async () => {
     const h = await withFollowers(3);
     const huge = `https://huge.example/inbox/${"x".repeat(TARGET_CHUNK_BYTES)}`;
-    await sql(h.store, "UPDATE accounts SET inbox_url = ? WHERE id = printf('6%017d', 1)", huge);
+    await sql(
+      h.store,
+      `INSERT INTO accounts (id, uri, username, domain, inbox_url)
+			VALUES ('700000000000000001', 'https://huge.example/users/h', 'h', 'huge.example', ?)`,
+      huge,
+    );
     const warn = vi.spyOn(console, "warn");
-    const status = await h.post("hello");
+    const status = await h.post("hello @h@huge.example");
     const largest = (
       await sql<{ n: number | null }>(h.store, "SELECT max(length(targets)) AS n FROM outbound_targets")
     )[0]!.n;
@@ -219,7 +226,7 @@ describe("RES-6: target chunks", () => {
     await drain(h.store);
     const creates = await createsOf(h.store, status.uri);
     expect(creates.map((c) => c.inbox_url)).not.toContain(huge);
-    expect(creates).toHaveLength(2);
+    expect(creates).toHaveLength(3);
     expect(warn).toHaveBeenCalledWith({ event: "kopje.delivery.oversized_target", count: 1 });
     expect(JSON.stringify(warn.mock.calls)).not.toContain("huge.example");
   });

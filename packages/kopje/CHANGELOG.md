@@ -379,6 +379,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   bench's upgrade from `0093_annual_reports` takes 16,590 ms with this file and 16,878 ms without it, medians of three
   runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and
   rolling back past it needs a point-in-time restore.
+- A follower's or poll voter's inbox is read for a delivery, a retraction staged in steps included, only when it is
+  text of 1 to 4,096 UTF-8 bytes without NUL, judged in the Store before the Worker reads it, as a block's collection
+  `Remove`s read followers; the recipients behind each shared inbox are recorded as before (#1733). An inbox outside
+  it, which only an import or a restored dump holds, gets no new activity for followers or voters
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Delivery recipients"). No Store migration and no
+  `wrangler.jsonc` change.
 
 ### Fixed
 
