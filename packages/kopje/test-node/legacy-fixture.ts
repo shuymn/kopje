@@ -82,6 +82,8 @@ export type FixtureOptions = {
   hostSpellings?: boolean;
   // More remote actors with these ids and preferred usernames, each with an inbox and followers under its id.
   extraActors?: { id: string; preferredUsername: string }[];
+  // Members merged into remote actor r<i>'s properties, by i (the flags a cutover casts, #1747).
+  remoteProperties?: Record<number, Record<string, unknown>>;
 };
 
 export type LegacyFixture = {
@@ -208,6 +210,7 @@ export async function buildLegacyFixture(options: FixtureOptions): Promise<Legac
     sharedHandles = false,
     hostSpellings = false,
     extraActors = [],
+    remoteProperties = {},
   } = options;
   const images = imagesAccount === undefined ? IMAGES : `https://imagedelivery.net/${imagesAccount}`;
   if (before0016 !== undefined && level < 16) {
@@ -335,6 +338,7 @@ export async function buildLegacyFixture(options: FixtureOptions): Promise<Legac
         icon: { type: "Image", url: `https://files.${host}/a/${i}.png` },
         published: "2022-01-0" + (i + 1) + "T00:00:00Z",
         manuallyApprovesFollowers: i === 4,
+        ...remoteProperties[i],
       }),
       mastodon_id: i === 1 ? "b1d4f0a8-5c64-4a52-9a52-6f0b1c9e7a01" : snowflake(10 + i, 100 + i),
       username: (i === 2 ? "Remote2" : `r${i}`).toLowerCase(),
