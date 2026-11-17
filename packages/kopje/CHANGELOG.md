@@ -148,9 +148,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   are notified `added_to_collection` and `collection_update`, each with its collection, its fallback and its Web Push
   title ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections" and "Notification fallbacks").
   Migration `0107_collection_notifications`: two columns of `notifications` with their partial indexes and triggers,
-  reading no row, and its natural key rebuilt over every notification (<bench figure>). `wrangler.jsonc`: unchanged.
-  This adds a Store migration, so the release is at least a minor version, and rolling back past it needs a
-  point-in-time restore.
+  reading no row, and its natural key rebuilt over every notification (the migration bench's upgrade from
+  `0093_annual_reports` takes 15,501 ms with this file and 11,720 ms without it, medians of three runs).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling back
+  past it needs a point-in-time restore.
 
 ### Changed
 
