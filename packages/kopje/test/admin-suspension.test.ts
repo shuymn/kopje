@@ -1414,6 +1414,41 @@ describe("the moderation reach's inboxes (#1724, RES-2, DATA-6)", () => {
     expect(await sql(h.store, "SELECT count(*) AS n FROM moderation_reach")).toEqual([{ n: 0 }]);
     expect(await sql(h.store, "SELECT count(*) AS n FROM moderation_jobs")).toEqual([{ n: 0 }]);
   }, 600_000);
+
+  it("counts no inbox outside the rule toward a capped source", async () => {
+    const { h, admin, alice } = await world();
+    // 2,001 recent accepted follows (one past RECENT_LIMIT, the following source's cap), each of its own inbox, the
+    // first by target id one byte past the bound: it takes none of the source's places, so the last follow's inbox is
+    // reached too, as Mastodon, which refuses no inbox, reaches 2,000.
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2001)
+			INSERT INTO accounts (id, uri, username, domain, inbox_url)
+			SELECT '76' || printf('%016d', i), 'https://' || h || '/actor', 'actor', h,
+				CASE WHEN i = 1 THEN ${sizedSql("h", "?1 + 1")} ELSE 'https://' || h || '/inbox' END
+			FROM (SELECT i, 'c' || printf('%04d', i) || '.example' AS h FROM n)`,
+      REACH_INBOX_BYTES,
+    );
+    await sql(
+      h.store,
+      `INSERT INTO follows (account_id, target_account_id, state, created_at)
+			SELECT ?1, id, 'accepted', ?2 FROM accounts WHERE id GLOB '76*'`,
+      alice.id,
+      new Date(NOW - 60_000).toISOString(),
+    );
+    expect(await act(h, admin, alice.id, { type: "suspend" })).toEqual({ status: 200, body: {} });
+    const suspension = await intentOf(h.store, "suspension");
+    await observedRounds(h.store, (round) => round.phase === "write");
+    const inboxes = await sql<{ inbox: string }>(
+      h.store,
+      `SELECT json_extract(t.value, '$.inbox') AS inbox FROM outbound_targets o, json_each(o.targets) t
+			WHERE o.activity_id = CAST(? AS INTEGER)`,
+      suspension,
+    );
+    expect(inboxes.map((row) => row.inbox).toSorted()).toEqual(
+      Array.from({ length: 2_000 }, (_, i) => `https://c${String(i + 2).padStart(4, "0")}.example/inbox`),
+    );
+  }, 300_000);
 });
 
 describe("the sender rule (R1)", () => {

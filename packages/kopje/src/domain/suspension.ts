@@ -328,7 +328,8 @@ function current(db: Db, job: Job): boolean {
 
 // Stages the inboxes the sources read (each a remote account's within reachInboxSql's rule, else null); returns how
 // many were not staged yet. A capped source counts only these, as Mastodon's reach finder caps each source's distinct
-// inboxes (an inbox another source staged first counts for none).
+// inboxes (an inbox another source staged first counts for none), so an inbox outside the rule takes no place and the
+// next account's is reached: Mastodon, which refuses none, reaches as many.
 function stage(db: Db, job: Job, inboxes: readonly (string | null)[]): number {
   let staged = 0;
   for (const inbox of new Set(inboxes)) {

@@ -1668,7 +1668,10 @@ reaches; Mastodon's `Account.inboxes`, `app/models/account.rb:490-493`; NET-2 an
   reads each account's inbox by the same rule as its audience is staged, and the job's staged rows by it too, so rows
   an import or an earlier release staged outside it are dropped unsent. An account whose inbox is outside the rule,
   which only an import or a restored dump holds, is sent neither that `Update` nor a block's collection `Remove`, where
-  Mastodon's reach finder and `Account.inboxes` take its inbox whatever its length. Accepted, 2026-11-17.
+  Mastodon's reach finder and `Account.inboxes` take its inbox whatever its length. Such an inbox takes no place in a
+  capped source (the recently mentioned, followed and requested accounts, 2,000 inboxes each): the next account's
+  inbox is reached instead, so the source still reaches as many inboxes as Mastodon's, which refuses none. Accepted,
+  2026-11-17.
 
 Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NET-1 in `docs/threat-model.md`):
 
