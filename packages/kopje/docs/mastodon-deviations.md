@@ -964,6 +964,8 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/peers/search
 
 - An application's `id` is its `client_id`, Kopje's only stable key of an application; the `client_id` is a public
   identifier (RFC 6749 §2.2).
+- A registration's `scopes` that is empty once trimmed (a space) takes the default, `read`; Mastodon takes the default
+  for an absent one only (`Api::V1::AppsController#app_scopes_or_default`). Accepted, 2026-11-18.
 - `usage.users.active_month` counts the available local accounts with an authenticated API or web request on one of the
   last 29 UTC days, today included. Each account's day is recorded at most once a day, after the response, and a
   request made while a dump holds the Store may go unrecorded. Mastodon 4.5.21 counts logins over the same days,
@@ -1006,8 +1008,19 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/peers/search
   answers a host Addressable refuses. `test/param-blank.test.ts` ("answers the peer search null for a blank q only").
   Accepted, 2026-11-18.
 
-OAuth (`/oauth/authorize`, `/oauth/token/info`, `/oauth/introspect`):
+OAuth (`/oauth/authorize`, `/oauth/token`, `/oauth/revoke`, `/oauth/token/info`, `/oauth/introspect`):
 
+- A scalar parameter of `/oauth/token` or `/oauth/revoke` sent more than once, in the query, in the body or in both
+  (`code=a&code=b`), answers 400 `invalid_request` (RFC 6749 §3.2; AUTH-3 in [threat-model.md](threat-model.md)), and
+  so does one sent more than once in the body of `/oauth/introspect`; Mastodon's Doorkeeper reads one of them (the
+  last of a source, the query's over the body's) and goes on with it. Introspection reads no query (below), so a query
+  value beside a body one (`?token=a` with `token=b`) is no repeat there and the body's is read, where Mastodon reads
+  the query's. Accepted, 2026-11-18.
+- A scope string (a registration's `scopes`, an authorization's or a token request's `scope`) is split at
+  JavaScript's white space and at a literal `+` (`%2B`), and a registration's `redirect_uris` at JavaScript's white
+  space, so U+00A0, U+3000 or U+FEFF between two values separates them; Doorkeeper splits each at ASCII white space
+  only (Ruby's `String#split`: `OAuth::Scopes.from_string`, its redirect URI validator), where such a string names an
+  unknown scope or an invalid URI. Accepted, 2026-11-18.
 - `response_mode` `query`, `fragment` and `form_post` are accepted and every answer goes in the query, as Mastodon's
   rendered consent form answers them: the form carries no mode. A decision posted directly with `fragment` or
   `form_post` is also answered in the query, where Doorkeeper would honour the mode, as Mastodon does when it skips the
@@ -1119,6 +1132,16 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
   start with the normalized term, and an empty term starts every name. A query of characters no hashtag can hold names
   no hashtag. `test/param-blank.test.ts` ("finds no hashtag for a q a hashtag's name normalizes to nothing").
   Accepted, 2026-11-18.
+- `/api/v2/search` refuses an absent or blank `q` with 400 `Missing parameter q`; Mastodon's `params.require(:q)`
+  answers `param is missing or the value is empty or invalid: q`. Accepted, 2026-11-18.
+- A `q` sent as an array or a nested parameter (`q[]=a`, `q[a]=b`) answers 400 `Missing parameter q` on both searches,
+  where an absent one finds no account at `/api/v1/accounts/search`, as in Mastodon. Mastodon 4.7.5 answers 500 to
+  it, as its search services strip it (`AccountSearchService#call`, `SearchService#call`), but for an empty array at
+  `/api/v2/search`, which `params.require(:q)` refuses with 400. `test/param-blank.test.ts` ("answers the account
+  search nothing for a q absent or blank once stripped, without searching"). Accepted, 2026-11-18.
+- `/api/v2/search` reads `account_id=` (empty) as absent. Mastodon with Elasticsearch looks the empty id up
+  (`StatusesSearchService#convert_deprecated_options!`, `Account.find`) and answers 404; without it, it searches no
+  statuses. Accepted, 2026-11-18.
 - A URL that answers with an HTML page or another type is followed to the ActivityPub document its `Link` header or
   `<link rel="alternate">` names, as Mastodon 4.7.5's `FetchResourceService` follows it, with these differences
   (`src/federation/resolve.ts`):
@@ -1252,7 +1275,6 @@ Admin account actions (`POST /api/v1/admin/accounts/:account_id/action`):
 - Mastodon keeps a strike for `suspend`, for a remote target and with the notification off; Kopje keeps none of them.
   Mastodon's API never shows the last two, and a suspension's only when the target is unsuspended before
   `LocalNotificationWorker` runs.
-- The push title of a `moderation_warning` is the account's name; Mastodon's English locale has no subject for it.
 
 Remote suspension and instance domain blocks (`POST /api/v1/admin/accounts/:account_id/action` and `/unsuspend` for a
 remote account, `/api/v1/admin/domain_blocks`; R38 in [visibility.md](visibility.md)):
@@ -1310,6 +1332,28 @@ Notification fallbacks (`supported_types`, Mastodon 4.6's `NotificationFallbackC
   bytes, a remote reporter's domain within 253, and a remote account's link only when its stored url parses as http(s)
   within `PROFILE_URL_LIMIT` once serialized, else `href=""`; Mastodon writes the stored values whole.
 
+Web Push (`/api/v1/push/subscription` and the pushes sent; PUSH-1 and PUSH-2 in [threat-model.md](threat-model.md)):
+
+- A push's title is Mastodon's English subject for its type (`TITLES` in `src/domain/push.ts`), but a
+  `moderation_warning`'s and a `quoted_update`'s is the account's name alone; Mastodon's are `You have received a
+  moderation warning` and `<name> edited a post you have quoted` (`notification_mailer` in `config/locales/en.yml`).
+- A subscription whose `endpoint`, `keys[p256dh]` or `keys[auth]` is absent or empty answers 400 `param is missing or
+  the value is empty or invalid: subscription`. Mastodon answers that only to a `subscription` absent or holding none
+  of its fields; it answers 500 to one without `keys` (an `endpoint` alone: `subscriptions_controller.rb:54` reads
+  `auth` of the missing `keys`), and 422 `… can't be blank` to one with `keys` that lacks a value, as Kopje does for a
+  value blank to Rails (U+0085). Kopje answers the first failing check, in Mastodon's order (the endpoint's presence
+  and URL, each key's presence, the keys), where Mastodon lists every error; a blank endpoint fails both of its own
+  and answers both, `Endpoint can't be blank, Endpoint is invalid`, as Mastodon does beside valid keys. Keys that do
+  not decode answer `Key p256dh is invalid` or `Key auth is invalid`, where Mastodon's error is `is not a valid Ed25519
+  or Curve25519 key`, and an endpoint that is not a public https URL (PUSH-2) answers `Endpoint is invalid`, where
+  Mastodon's URL validator takes any http(s) URL with a host. `test/param-blank.test.ts` ("refuses an endpoint or key
+  blank to Rails as blank, before the keys are read"). Accepted, 2026-11-18.
+- An empty `data[policy]` is `all`, and a policy other than `all`, `followed`, `follower` and `none` answers 422
+  `Validation failed: Policy is not included in the list`, on an update before the subscription is looked up, so also
+  for a token with none. Mastodon validates no policy: it stores the value as sent, shows it, and lets no push through
+  for an empty or unknown one (`Web::PushSubscription#policy_allows_notification?`), and answers an update with no
+  subscription 404 `Not Found` whatever its data. Accepted, 2026-11-18.
+
 Request parameters:
 
 - The query and a urlencoded or multipart body are each read as Rack and Rails nest them, in the order sent (a POST body
@@ -1354,6 +1398,37 @@ Request parameters:
   requests, a notification group's accounts, and the admin reports, accounts and domain blocks. Mastodon 4.7.5 answers
   500 on those, as `records_continue?` holds for the empty page and its cursor is read
   (`Api::Pagination#pagination_max_id`).
+- A cursor (`max_id`, `since_id`, `min_id`, each the last value sent) is read only as 1 to 19 decimal digits
+  (`CURSOR` in `src/mastodon/pagination.ts`); any other value is ignored, as if absent, and a 19-digit value past a
+  signed 64-bit integer is a cursor like any other, with no range refusal of its own. Mastodon casts it on each path:
+  a list it reads from its database by ActiveModel's integer type (`Paginable`, so `5abc` reads as 5), the home and
+  list timelines by `String#to_i` (`Feed#get`, so `max_id=abc` reads as 0, an empty page, and any length is read
+  whole).
+  `test/pagination-params.test.ts` ("cursors"). Accepted, 2026-11-18.
+- The body of a `GET` (or `HEAD`) request is not read; Mastodon reads a `GET`'s JSON body as its parameters too, so
+  `{"limit":1}` sent with a `GET` of a list limits its page there. Accepted, 2026-11-18.
+- An array parameter of a filter sent as one value without `[]` (`context=public` on `POST /api/v1/filters` or
+  `/api/v2/filters`) is read as a list holding it. Mastodon's strong parameters permit `context` only as an array
+  (`context: []`) and drop a single value, so the filter has no context and answers 422. Accepted, 2026-11-18.
+- A JSON body holding an unpaired surrogate escape (`"\ud800"`) is read with that code unit, which the Store keeps as
+  U+FFFD. Mastodon refuses it as Rails reads it: 400 for one in a value (its parser, json 2.21.2, refuses a high
+  surrogate no low one follows, and Rails a lone low one's invalid UTF-8) and 500 for a lone low surrogate only in a
+  key, as for an inbox body ("Reading inbound activities", below). Accepted, 2026-11-18.
+- Text holding a NUL is stored as sent: a list's title, a filter's title, a keyword, a v1 filter's phrase, a report's
+  comment and an account note, but for an account note that starts with a NUL (`{"comment":"\u0000"}`), which fails
+  the Store's length check, as SQLite's `length()` stops at the first NUL, and answers 500 (#1767). A collection's
+  name, whose NULs are dropped before its presence is judged, of NULs alone answers 422 `Validation failed: Name can't
+  be blank`. Mastodon answers 500 to each, as PostgreSQL refuses a string with a null byte. Accepted, 2026-11-18.
+- A report's `category` that is not blank and names no category (U+FEFF, an emoji, a NUL) answers 422 `Validation
+  failed: Category is not included in the list`; Mastodon answers 500, as assigning a value its `category` enum does
+  not hold raises `ArgumentError`. Accepted, 2026-11-18.
+- A domain sent to a domain block (`/api/v1/domain_blocks` and its preview, `/api/v1/admin/domain_blocks`) is
+  trimmed of JavaScript's white space before it is normalized; Mastodon's `TagManager#normalize_domain` (through
+  `DomainNormalizable`) strips it as Ruby strips (NUL and ASCII white space only), so other white space around it
+  (U+00A0, U+3000, U+FEFF) reaches its host encoding and domain validator. Accepted, 2026-11-18.
+- `GET /api/v1/domain_blocks/preview` answers 400 to an absent `domain` or one empty once trimmed (JavaScript's white
+  space, U+FEFF included). Mastodon's preview requires none and counts the accounts whose domain is the one it
+  normalizes, `nil` for an absent one, so it counts the local accounts followed and following. Accepted, 2026-11-18.
 - Kopje media are images, so `thumbnail` (on `/api/v{1,2}/media` and `/api/v1/media/:id`) and
   `media_attributes[][thumbnail]` (on a status edit) answer 422 `Validation failed: Thumbnail must be blank`, as
   Mastodon validates an image's thumbnail. Any file part or non-empty text is a thumbnail; empty text or JSON `null`
@@ -1405,6 +1480,19 @@ conditions themselves follow 4.7.5):
   `'<value>' is not a valid <field>` and changes nothing. Mastodon's enum raises an error no handler rescues, so it
   answers 500. Accepted, 2026-11-15.
 
+Notifications and timelines (`GET /api/v1/notifications`, `/api/v1/timelines/home`, `/list/:id`, `/public` and
+`/tag/:hashtag`):
+
+- A page links `next` when it is full or was cut (`Page.cut`: its read stopped at its byte or candidate bound, so a
+  page short of its `limit`, even an empty one, continues from where the read stopped), and `prev` whenever it has an
+  item. An uncut page short of its `limit` has no `next` and is the end. Every Kopje list paged by `max_id` shares
+  this rule (`linkHeader` and `pageResponse` in `src/mastodon/pagination.ts`), which is Mastodon's on its other lists
+  (`next_path` with `records_continue?`). On these five Mastodon 4.7.5 links `next` whenever the page is not empty:
+  `Api::V1::NotificationsController#next_path` (`notifications_controller.rb:75-76`) and the timelines'
+  `next_path`, which has no condition, behind `Api::V1::Timelines::BaseController`, which skips the `Link` of an empty
+  page alone. A client that follows `next` past an uncut short page there reads an empty page, where Kopje's has no
+  `next` to follow. The link timeline builds its own `Link` with Mastodon's rule. Accepted, 2026-11-18.
+
 Grouped notifications (`GET /api/v2/notifications`; the bounds and what enforces them are RES-7 in
 [threat-model.md](threat-model.md)):
 
@@ -1449,7 +1537,11 @@ Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; th
 
 - `instance_media_attachments` is always 0 bytes (`human_value` `0 Bytes`): Kopje does not count its cache of remote
   attachments' files, which `kopje.remote_media.usage` reports for the whole cache.
-- An absent or empty `domain` counts 0; Mastodon's total then counts the local accounts.
+- An absent, null or empty `domain` counts 0. Mastodon's totals (`Account.where(domain: params[:domain])`) count the
+  local accounts, and their follows, statuses, reports and media, for an absent or null one, and nothing for an empty
+  one (`domain = ''`). A `domain` is trimmed of
+  JavaScript's white space and normalized as a domain block's (lowercase, punycode); Mastodon reads it as sent
+  (`Account.where(domain: params[:domain])`), so a domain written in capitals or in Unicode counts no account there.
 - `include_subdomains` is read as Rails casts a boolean: empty, `0`, `f`, `F`, `false`, `FALSE`, `off` and `OFF` are
   false; Mastodon takes any value sent as true, `"false"` included. The series counts the domain itself only, as
   Mastodon 4.7.5 does.
@@ -1459,6 +1551,10 @@ Admin measures and retention (`POST /api/v1/admin/measures` and `/retention`; th
   supplied` to the OAuth admin, as an unreadable date does. The bound keeps every date of the answer in
   four-digit years. Mastodon's measures read any date `DateTime.parse` reads, and Mastodon 4.5.21's retention any
   date `Date.parse` reads, such as `October 1, 2026`, or `2026-10-01T25:00:00Z` read as its date.
+- A measure's `start_at` or `end_at` of JavaScript's white space alone (U+FEFF included) is absent, and one of U+0085
+  alone is a date that does not parse (422). Mastodon's `String#to_datetime` reads a value blank to Rails (U+0085
+  included) as absent and parses any other, so U+FEFF fails there (422). Retention requires both dates as Rails'
+  `params.require` does (blank to Rails is missing). Accepted, 2026-11-18.
 - The previous window (`previous_total`) can still reach before the Gregorian reform. Kopje counts it in the proleptic
   Gregorian calendar, while Ruby's `Date` is Julian before 1582-10-15, so `previous_total` can differ there: for the
   period 1583-01-01 to 1584-01-01, Kopje's previous window starts on 1581-12-31 and Mastodon 4.5.21's on
@@ -1533,6 +1629,10 @@ Media (the `MediaAttachment` entity):
   copy; Mastodon shows the current attachment's for every version. A version recorded by an earlier release, or
   converted from an earlier installation, shows `remote_url`, `preview_remote_url` and `blurhash` null; the current
   attachments of a converted remote status derive their remote URLs.
+- A `focus` that is not blank is read as two numbers, each by JavaScript's `parseFloat` and clamped to −1 to 1, one
+  missing or unreadable as 0 (`parseFocus` in `src/mastodon/media.ts`), so a value that is no number (U+FEFF, an emoji)
+  is `{x: 0, y: 0}`. Mastodon reads each by Ruby's `to_f`, unclamped, and a missing second as nil
+  (`MediaAttachment#focus=`), so its `y` is then `null`. Accepted, 2026-11-18.
 
 Filters (a status's `filtered`, Mastodon's `CustomFilter#to_regex` over `Status#searchable_text`):
 
@@ -1570,6 +1670,9 @@ Posting (`POST` and `PUT /api/v1/statuses`):
   failure recorded. Mastodon cannot store such rows.
 - An upload is processed before its answer, so no media id is ever still processing: an unfinished upload reads as
   not found (no `not_ready`).
+- A `scheduled_at` of white space alone (a space, U+0085, U+FEFF) answers 422 `Record invalid`, an empty one reads
+  as absent. Mastodon's `String#to_datetime` (`PostStatusService`) reads a value blank to Rails (a space, U+0085) as
+  absent, so the status is posted at once, and refuses U+FEFF. Accepted, 2026-11-18.
 - Text length (a blank text's length after its warning becomes the text, in the Store; on an edit after the media ids,
   as Mastodon), the poll, `scheduled_at` and the visibility are checked before the media ids and `allowed_mentions`;
   Mastodon checks the media first.
@@ -1832,6 +1935,11 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   four proofs. Of the 147 LD-signed forms the captures hold, 50 are so ignored, and Mastodon applies something of 26;
   every body Mastodon 4.6.11 and 4.7.5 and Fedify 2.4.5 send in the captures passes, and so does each release's actor
   context from 3.5.0 to 4.3.23 (`test/fixtures/ld-signed/context-maps.json`). Accepted, 2026-11-17.
+- A remote status's `url` is the first `Link` of its `url` whose `mediaType` is `text/html`, else its first value (a
+  string, or a Link's `href`; `urlOf` in `src/federation/remote-status.ts`). Mastodon's `url_to_href`
+  (`json_ld_helper.rb:46-61`) takes the first value of a list that begins with a string, and otherwise the first Link
+  whose `mimeType` (not `mediaType`) is absent or `text/html`, or none, so it may take another Link, or none, where
+  Kopje takes the first. A remote account's profile URL follows Mastodon's rule (above). Accepted, 2026-11-18.
 - A remote status's `sensitive` is read as Mastodon assigns `@status_parser.sensitive || false` to its boolean column
   (`create.rb:115`, `process_status_update_service.rb:184`; ActiveModel's `Boolean` cast): absent, null, `false`, `0`
   and the strings `"0"`, `"f"`, `"F"`, `"false"`, `"FALSE"`, `"off"` and `"OFF"` leave it unmarked, and any other value

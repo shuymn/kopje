@@ -3,6 +3,7 @@ import { base64url } from "jose";
 import { ALERT_TYPES, POLICIES, type PushData, type PushPolicy, type StoredSubscription } from "../domain/push";
 import { webPushKeys } from "../platform/config";
 import { publicShapeRefusal } from "../platform/http-url";
+import { railsBlank } from "../platform/rails-blank";
 import { AUTH_SECRET_LENGTH, importClientKey, sealPushToken } from "../security/web-push";
 import { bearerToken } from "./access";
 import {
@@ -24,6 +25,8 @@ import { type Params, parseBoolean } from "./params";
 
 const MISSING = () => mastodonError(400, "param is missing or the value is empty or invalid: subscription");
 const invalid = (what: string) => mastodonError(422, `Validation failed: ${what}`);
+// check_push_subscription's not_found when the token has no subscription: Api::BaseController#respond_with_error(404).
+const NO_SUBSCRIPTION = () => mastodonError(404, "Not Found");
 
 const MAX_ENDPOINT_LENGTH = 2048;
 
@@ -65,6 +68,10 @@ function dataParams(p: Params): PushData | Response {
 
 type Keys = { endpoint: string; p256dh: string; auth: string };
 
+// The endpoint and keys in Web::PushSubscription's order, the first error answered: the endpoint's presence and URL, each
+// key's presence, then the keys themselves. A value blank to Rails (railsBlank) fails its presence (`can't be blank`),
+// and a blank endpoint its URL too, both errors Mastodon lists; an empty or absent one answers 400 before any
+// (docs/mastodon-deviations.md, "Web Push").
 async function subscriptionParams(p: Params): Promise<Keys | Response> {
   const endpoint = p.get("subscription[endpoint]") ?? "";
   const p256dh = p.get("subscription[keys][p256dh]") ?? "";
@@ -72,9 +79,18 @@ async function subscriptionParams(p: Params): Promise<Keys | Response> {
   if (endpoint === "" || p256dh === "" || auth === "") {
     return MISSING();
   }
+  if (railsBlank(endpoint)) {
+    return invalid("Endpoint can't be blank, Endpoint is invalid");
+  }
   const url = endpoint.length > MAX_ENDPOINT_LENGTH ? null : URL.parse(endpoint);
   if (url === null || publicShapeRefusal(url) !== null) {
     return invalid("Endpoint is invalid");
+  }
+  if (railsBlank(p256dh)) {
+    return invalid("Key p256dh can't be blank");
+  }
+  if (railsBlank(auth)) {
+    return invalid("Key auth can't be blank");
   }
   const key = decodeKey(p256dh);
   if (key === null || (await importClientKey(key)) === null) {
@@ -119,9 +135,11 @@ export const getSubscription: ApiHandler = async (c, deps) => {
   }
   const credential = userCredential(c, deps);
   const subscription = authorized(await storeCall(c, deps, (s, b) => s.getPushSubscription(b, { credential })));
-  return subscription === null ? recordNotFound() : c.json(present(subscription, c.env));
+  return subscription === null ? NO_SUBSCRIPTION() : c.json(present(subscription, c.env));
 };
 
+// The data is read before the subscription is looked up, so an invalid `data[policy]` answers its 422 even for a token
+// with none, where Mastodon, which validates no policy, answers 404 (docs/mastodon-deviations.md, "Web Push").
 export const updateSubscription: ApiHandler = withParams(async (c, deps, p) => {
   if (vapidJwk(c.env) === null) {
     return refuseAfterAuth(c, deps, recordNotFound());
@@ -134,7 +152,7 @@ export const updateSubscription: ApiHandler = withParams(async (c, deps, p) => {
   const subscription = authorized(
     await storeCall(c, deps, (s, b) => s.updatePushSubscription(b, { credential, ...data })),
   );
-  return subscription === null ? recordNotFound() : c.json(present(subscription, c.env));
+  return subscription === null ? NO_SUBSCRIPTION() : c.json(present(subscription, c.env));
 });
 
 export const deleteSubscription: ApiHandler = async (c, deps) => {

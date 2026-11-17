@@ -86,6 +86,8 @@ describe("GET /api/v1/trends/tags", () => {
     expect(names(first.body)).toHaveLength(10);
     expect(first.next).toBe("/api/v1/trends/tags?offset=10");
     expect(first.prev).toBeNull();
+    // A limit sent without a value (nil) is the default, and the link carries none.
+    expect((await page("/tags?limit")).next).toBe("/api/v1/trends/tags?offset=10");
     const none = await page("/tags?limit=0");
     expect(none.body).toEqual([]);
     expect(none.link).toBeNull();

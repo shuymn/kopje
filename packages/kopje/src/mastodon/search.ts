@@ -58,12 +58,16 @@ const NOTHING = { accounts: [], statuses: [], hashtags: [], collections: [] };
 
 export type SearchParams = { query: string; offset: number } | { error: Response };
 
-// q and offset, shared with /api/v1/accounts/search.
+// q and offset, shared with /api/v1/accounts/search. An absent q is Mastodon's nil query, which each caller answers as
+// a blank one: /api/v2/search refuses it before (params.require), the account search finds nothing. A q sent as an
+// array or a nested parameter (`q[]=a`, `q[a]=b`) answers 400, where Mastodon's search services answer 500 as they
+// strip it (docs/mastodon-deviations.md, "Search").
 export function searchParams(p: Params): SearchParams {
-  const query = p.get("q");
-  if (query === undefined) {
+  const sent = p.get("q");
+  if (sent === undefined && p.sentUnder("q")) {
     return { error: mastodonError(400, "Missing parameter q") };
   }
+  const query = sent ?? "";
   if (query.length > MAX_QUERY_LENGTH) {
     return { error: mastodonError(400, `Search query is too long (maximum is ${MAX_QUERY_LENGTH} characters)`) };
   }

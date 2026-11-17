@@ -251,6 +251,12 @@ describe("GET /api/v1/timelines/link", () => {
       link("max_id", all[1]!),
       link("min_id", all[0]!),
     ]);
+    // A limit sent without a value is nil: the default, and the links carry none (url_for drops a nil parameter).
+    const nil = await page("&limit");
+    expect([ids(nil), nil.next]).toEqual([
+      all.slice(0, 20),
+      `/api/v1/timelines/link?url=${encodeURIComponent(LINK)}&max_id=${all[19]!}`,
+    ]);
     const short = await page(`&limit=2&max_id=${all[39]!}`);
     expect([ids(short), short.next, short.prev]).toEqual([
       [all[40]!],

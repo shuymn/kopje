@@ -23,7 +23,6 @@ const READERS = {
     "src/domain/polls.ts": 2,
     "src/mastodon/blocks.ts": 2,
     "src/mastodon/oembed.ts": 3,
-    "src/mastodon/pagination.ts": 2,
     "src/mastodon/params.ts": 3,
     "src/mastodon/search.ts": 2,
   },

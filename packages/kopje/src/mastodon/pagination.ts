@@ -1,5 +1,5 @@
 import type { Page, PageQuery } from "../domain/accounts";
-import { rubyToI } from "../platform/ruby-to-i";
+import { pairs, text } from "../platform/rails-params";
 import type { ApiContext } from "./context";
 import { limitParam, type Params } from "./params";
 
@@ -8,16 +8,14 @@ import { limitParam, type Params } from "./params";
 
 const CURSOR = /^\d{1,19}$/;
 
-// `limit` as limit_param reads it (Api::BaseController#limit_param: `defaultLimit` when absent, else the absolute value
-// of its to_i, at most `maxLimit`), and a limit of 0 as 1, where Mastodon answers 500 (docs/mastodon-deviations.md,
-// "Request parameters").
+// `limit` as limit_param reads it (limitParam), and a limit of 0 as 1, where Mastodon answers 500
+// (docs/mastodon-deviations.md, "Request parameters").
 export function pageQuery(params: Params, defaultLimit = 40, maxLimit = 80): PageQuery {
-  const limit = params.integer("limit");
   return {
     maxId: cursor(params.get("max_id")),
     sinceId: cursor(params.get("since_id")),
     minId: cursor(params.get("min_id")),
-    limit: limit === undefined ? defaultLimit : Math.min(Math.max(Math.abs(rubyToI(limit)), 1), maxLimit),
+    limit: limitParam(params, defaultLimit, maxLimit, 1),
   };
 }
 
@@ -49,9 +47,13 @@ export function linkHeader(
   return links.length === 0 ? undefined : links.join(", ");
 }
 
+// The request's URL at `name`: its cursors replaced, and its `limit` dropped when nil (the last `limit` sent without
+// `=`), as Rails' url_for drops a nil parameter (ActionDispatch::Http::URL.add_params), so the next page reads the
+// default as this one did; `limit=` stays, as Rails writes it.
 function pageUrl(requestUrl: string, name: "max_id" | "min_id", value: string): string {
   const url = new URL(requestUrl);
-  for (const key of ["max_id", "min_id", "since_id"]) {
+  const nilLimit = pairs(url.search.slice(1)).findLast(({ key }) => text(key) === "limit")?.value === null;
+  for (const key of ["max_id", "min_id", "since_id", ...(nilLimit ? ["limit"] : [])]) {
     url.searchParams.delete(key);
   }
   url.searchParams.set(name, value);
