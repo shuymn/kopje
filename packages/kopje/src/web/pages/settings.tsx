@@ -27,9 +27,9 @@ export type SettingsView = {
   problems: string[];
 };
 
-// A checkbox that posts false when unchecked: the hidden input after it is read only when the box sent nothing (the
-// first value of a name wins). `hint`: a line under the label's text that describes the box; the box is named by the
-// text alone (aria-labelledby) and described by the hint.
+// A checkbox that posts false when unchecked: the hidden input before it is read only when the box sent nothing (the
+// last value of a name wins, as Rails' check_box writes the pair). `hint`: a line under the label's text that describes
+// the box; the box is named by the text alone (aria-labelledby) and described by the hint.
 const Checkbox: FC<{ name: string; checked: boolean; label: string; hint?: string }> = ({
   name,
   checked,
@@ -39,6 +39,7 @@ const Checkbox: FC<{ name: string; checked: boolean; label: string; hint?: strin
   const ids = hint === undefined ? null : { label: `${name}-label`, hint: `${name}-hint` };
   return (
     <label class="check">
+      <input type="hidden" name={name} value="false" />
       <input
         type="checkbox"
         name={name}
@@ -47,7 +48,6 @@ const Checkbox: FC<{ name: string; checked: boolean; label: string; hint?: strin
         aria-labelledby={ids?.label}
         aria-describedby={ids?.hint}
       />
-      <input type="hidden" name={name} value="false" />
       {ids === null ? (
         <span>{label}</span>
       ) : (

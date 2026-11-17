@@ -321,7 +321,9 @@ export function webRoutes(deps: ApiDeps): Hono<WebEnv> {
   const DESCRIPTIONS = new Set(PROFILE_IMAGES.map((kind) => `${kind}_description`));
   function withTextareaDescriptions(params: Params): Params {
     return new Params(
-      params.entries.map(([name, value]) => [name, DESCRIPTIONS.has(name) ? textareaText(value) : value] as const),
+      params.entries.map((entry) =>
+        DESCRIPTIONS.has(entry[0]) ? ([entry[0], textareaText(entry[1])] as const) : entry,
+      ),
       params.files,
       params.objectPrefixes,
       params.emptyLists,

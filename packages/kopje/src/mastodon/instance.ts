@@ -177,7 +177,8 @@ export const peers: ApiHandler = async (c, deps) => c.json(await storeCall(c, de
 // null for a blank q (@domains is never set), else the peers whose domain starts with q as TagManager#normalize_domain
 // reads it (a host, lowercased and IDNA-encoded), and [] for a q that is no host (Addressable::URI::InvalidURIError).
 export const searchPeers: ApiHandler = async (c, deps) => {
-  const q = (c.req.query("q") ?? "").trim();
+  // Rails' params[:q]: the last value the query gives.
+  const q = (c.req.queries("q")?.at(-1) ?? "").trim();
   if (q === "") {
     return c.json(null);
   }

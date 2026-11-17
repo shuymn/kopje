@@ -24,6 +24,7 @@ import {
 } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD, runStoreJobs } from "./helpers";
+import { multipartForm } from "./media-helpers";
 import { appToken, plannedRun, remoteAccounts, scansOf, staleStatistics } from "./read-helpers";
 import { storeWith } from "./setup-helpers";
 import { WEBSITE_REFUSED } from "./status-helpers";
@@ -185,6 +186,56 @@ describe("apps", () => {
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ redirect_uri: "urn:ietf:wg:oauth:2.0:oob\napp://callback" });
+  });
+
+  // Rails' params[:redirect_uris] holds the last of a repeated scalar (AppsController#app_params), in every encoding.
+  it("registers only the last of a repeated scalar redirect_uris, form, multipart or query", async () => {
+    const h = await apiHarness();
+    const pairs = (first: string, last: string): [string, string][] => [
+      ["client_name", "probe"],
+      ["redirect_uris", first],
+      ["redirect_uris", last],
+    ];
+    const register = (init: RequestInit, query = "") => h.request(`/api/v1/apps${query}`, init);
+    const encodings: [string, (first: string, last: string) => Promise<Response>][] = [
+      ["form", (first, last) => register(form(pairs(first, last)))],
+      ["multipart", (first, last) => register({ method: "POST", body: multipartForm(pairs(first, last)) })],
+      [
+        "query",
+        (first, last) =>
+          register(
+            form({ client_name: "probe" }),
+            `?${new URLSearchParams(pairs(first, last).filter(([name]) => name === "redirect_uris")).toString()}`,
+          ),
+      ],
+    ];
+    for (const [encoding, send] of encodings) {
+      const last = await send("https://first.test/cb", "https://last.test/cb");
+      expect([encoding, last.status, (await last.json<{ redirect_uri?: string }>()).redirect_uri]).toEqual([
+        encoding,
+        200,
+        "https://last.test/cb",
+      ]);
+      // A first value that is no URI is not read; a last one is refused.
+      expect([encoding, (await send("not-a-uri", "https://last.test/cb")).status]).toEqual([encoding, 200]);
+      expect([encoding, (await send("https://first.test/cb", "not-a-uri")).status]).toEqual([encoding, 422]);
+    }
+    // The other scalars of app_params read their last value too.
+    const others = await register(
+      form([
+        ["client_name", "first"],
+        ["client_name", "last"],
+        ["redirect_uris", "https://last.test/cb"],
+        ["scopes", "write"],
+        ["scopes", "read"],
+        ["website", "not a website"],
+        ["website", "https://last.test/"],
+      ]),
+    );
+    expect([others.status, await others.json()]).toMatchObject([
+      200,
+      { name: "last", scopes: ["read"], website: "https://last.test/" },
+    ]);
   });
 });
 

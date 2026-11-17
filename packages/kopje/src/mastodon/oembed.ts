@@ -27,8 +27,9 @@ const STYLES = {
 };
 
 // GET /api/oembed: `url` names the status; `maxwidth` and `maxheight` become `width` and `height`.
+// Each is Rails' params[name]: the last value the query gives.
 export const oembed: ApiHandler = async (c, deps) => {
-  const url = c.req.query("url") ?? "";
+  const url = c.req.queries("url")?.at(-1) ?? "";
   const found = await storeCall(c, deps, (s, b) => s.embeddedStatus(b, { url, present: present(c), now: deps.now() }));
   // Api::OEmbedController#require_public_status!, and StatusFinder's RecordNotFound.
   if (found.status !== "ok") {
@@ -36,7 +37,6 @@ export const oembed: ApiHandler = async (c, deps) => {
   }
   const status = found.value;
   const { domain } = found;
-  // Rails' params[name]: the last value the query gives.
   const maxheight = c.req.queries("maxheight")?.at(-1);
   return c.json({
     type: "rich",
