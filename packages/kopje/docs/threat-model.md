@@ -461,10 +461,18 @@ against their own instance. TLS is assumed between all parties.
   pages"), `test-node/cutover-safety.test.ts` ("a local username that is the instance domain"),
   `test/dump-import.test.ts` ("a local username that is the instance domain").
 - **ID-6: each activity type has a fixed authorization rule** (Mastodon 4.5.11's table, pinned by one negative test per
-  row). The activity `id` has the actor's origin before any idempotency key is reserved. `Undo` requires the actor of
-  the undone activity; `Accept` and `Reject` require the target of the matching `Follow`; `Update` and `Delete` require
-  the object's current author, and an update never changes the author. A same-origin but different actor is refused like
-  a cross-origin one. _Enforced (main)_ for Follow, Accept, Reject, Undo, Block, Move and
+  row). The activity `id`, when it has one, has the actor's origin before any idempotency key is reserved; only an
+  `Add` or `Remove` may have none (Mastodon sends them so), and one without is held to the rules of one with an id, its
+  effects keyed by nature (ID-7). `Undo` requires the
+  actor of the undone activity; `Accept` and `Reject` require the target of the matching `Follow`; `Update` and `Delete`
+  require the object's current author, and an update never changes the author. A same-origin but different actor is
+  refused like a cross-origin one. _Enforced (main)_ for the id: `activityEnvelope` (`ID_LESS`) in
+  `src/federation/inbound.ts` reads a missing or non-string id of an `Add` or `Remove` as none and refuses any other
+  type without a string id as `incomplete`; the origin checks of `receiveInbound`, `verifySpooledRequest` and the
+  Store's `receive` skip only an id read as none; `test/remote-collections.test.ts` ("Mastodon's Add and Remove
+  without an id"), `test/inbox-signed-forms.test.ts` ("reads Mastodon's Add and Remove, and refuses FeatureRequest (no
+  actor), in both forms"), `test/cutover-rollback.test.ts` ("hands on an Add without an id, as Mastodon sends it").
+  _Enforced (main)_ for Follow, Accept, Reject, Undo, Block, Move and
   Update and Delete of actors: the table in `src/domain/inbox.ts`; `test/inbox.test.ts` ("ID-6: the authorization
   table"). _Enforced (main)_ for Create, Update and Delete of statuses, Like and
   Announce (the rows of the same table): `Create` needs the actor's origin and no other `attributedTo`; `Update` and
@@ -501,8 +509,7 @@ against their own instance. TLS is assumed between all parties.
   remote collections (#1589, rows of the same table): an `Add` or `Remove` acts only on the actor's own collections, the
   target its `featuredCollections` collection or a remote collection Kopje stores of the actor's, a collection's id on
   the actor's origin with `attributedTo` the actor, an item's id on its collection's origin and its authorization on
-  its member's; such an `Add` or `Remove` may have no id (Mastodon 4.7.5 sends them so; their effects are keyed by the
-  collection's and the item's uri), one to the actor's `featured` or `featuredTags` collection may not; an `Update`
+  its member's; an `Update`
   stores or changes a collection of the actor's as an `Add` does; a `Delete` of a `FeatureAuthorization` is the member's
   alone and revokes the member's item only while it names the item's current authorization (verified, or the candidate
   of one not verified), never after a revision replaced it. A search with `resolve=true` stores a fetched
@@ -538,7 +545,10 @@ against their own instance. TLS is assumed between all parties.
   ("records the Remove of an item it does not hold, refusing the Add processed after it")). Input that fails ID-1 or
   ID-6 reserves no key and
   records no retraction. _Enforced (main):_ natural keys, `retract` and `isRetracted` in
-  `src/domain/retractions.ts`. A `Flag` files one report per Flag id and reported account (`UNIQUE (uri,
+  `src/domain/retractions.ts`. A repeated `Add` or `Remove` of a post or a hashtag, with or without an id, pins,
+  features or removes once (`pinRemote` and `featureRemote` in `src/domain/remote-collections.ts`;
+  `test/remote-collections.test.ts` ("pins and features once at a repeated Add, and changes nothing at a repeated
+  Remove")). A `Flag` files one report per Flag id and reported account (`UNIQUE (uri,
   target_account_id)`, migration `0054_remote_reports`): a redelivery writes nothing, and a Flag id past
   `ACTIVITY_ID_LIMIT` (4,096 JSON-escaped UTF-8 bytes) is ignored by the Worker and by the Store before any write,
   which the column's CHECK holds for dumps too (`test/inbox-flag.test.ts`). Report ids are never reused and remain
@@ -6125,7 +6135,8 @@ so the Store isolate's 128 MB holds them together.
   verified against its spool time without the Store (Kopje's signature and key-ownership rule) and goes to a legacy
   local account from the operator's snapshot, never one the request alone names; one that fails for good, or has no
   legacy recipient, is kept until the operator discards it. The drain hands on only what Kopje's inbox would read (the
-  shared activity envelope: context, id, type, actor), reads the legacy Queue before its dead-letter queue, and runs
+  shared activity envelope: context, id (which an `Add` or `Remove` may lack, ID-6), type, actor), reads the legacy
+  Queue before its dead-letter queue, and runs
   alone under a Store lease; every awaited call of a round (Queue readings, Store calls, key fetches) is given up at the
   round's deadline, after which the round sends nothing, and a send that does not finish in 10 seconds is given up;
   either way the lease is kept until it expires. A record is marked before its send and sent again after a crash. A
@@ -6137,7 +6148,8 @@ so the Store isolate's 128 MB holds them together.
   the next request, the legacy DLQ and unreadable backlogs stopping it, a concurrent drain, a crash while sending, a
   late redelivery, recipients, a flood against the quotas; "Rollback A from the first attempt"; "handoff receipts
   outlive the journal, an import and a reset"; "the drain lane holds under timing faults": a suspended send, a message
-  dead-lettered between the readings, activities without context or id, valid requests over the quota; "a Queue holding
+  dead-lettered between the readings, activities without context or id, an `Add` without an id handed on, valid
+  requests over the quota; "a Queue holding
   only delayed messages is not empty": a reading of 0 messages with bytes holding the barrier and the legacy lane,
   stopping on the legacy DLQ and refusing `cutover close`, a legacy retry with a delay holding the next request, and a
   missing or malformed field failing closed), `test/queue-sim.ts` (a message sent or retried with a delay counted in the

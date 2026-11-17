@@ -72,15 +72,16 @@ import { confirmedInput } from "./resolve";
 //   2. The HTTP signature verifies with Fedify, against the time the request was received (OPS-1: a spooled request
 //      is judged by its spool time), by an RSA or Ed25519 key (a draft-cavage one by an RSA key only), and covers what
 //      Mastodon 4.7 requires (verifyHttpSignature). Unsigned or unverifiable: 401, nothing changes (ID-1).
-//   3. The body is a JSON object with the ActivityStreams context, a type, an id and an actor (a string or array root
-//      is refused, ID-8).
+//   3. The body is a JSON object with the ActivityStreams context, a type, an actor and, for any type but Add and
+//      Remove, an id (a string or array root is refused, ID-8).
 //   4. ID-1: the actor is not local, and it owns the verifying key: its document (fetched, or the stored one while
-//      fresh) lists the key id, and the key names no other owner. The activity id has the actor's origin. One
-//      exception: a Delete another server relayed (a quoted author's revocation of a quote's stamp, forwarded by a
-//      server that holds the quoting status) is signed by its relayer, who must own that key in the same way; it is
-//      applied as the actor's only with the actor's own proof (author-proof.ts), and without one it only has the stamp
-//      verified again. A proof that does not hold drops the relay: 202, nothing applied, logged (dropped). Any other
-//      relay (another type, or an actor's Delete) whose signer owns its key is dropped the same way.
+//      fresh) lists the key id, and the key names no other owner. The activity id, when present, has the actor's
+//      origin. One exception: a Delete another server relayed (a quoted author's revocation of a quote's stamp,
+//      forwarded by a server that holds the quoting status) is signed by its relayer, who must own that key in the
+//      same way; it is applied as the actor's only with the actor's own proof (author-proof.ts), and without one it
+//      only has the stamp verified again. A proof that does not hold drops the relay: 202, nothing applied, logged
+//      (dropped). Any other relay (another type, or an actor's Delete) whose signer owns its key is dropped the same
+//      way.
 //   5. Per type, what the Store cannot fetch itself: a fresh actor document for an Update of the actor that embeds
 //      none (one that embeds its document has it read as a fetched one is and stored without its keys and inboxes,
 //      ID-1), the Move target (ID-4), the object of a Create or Update given by id only.
@@ -255,15 +256,15 @@ async function activityEnvelope(
   const actor = idOf(read.actor);
   const id = typeof read.id === "string" ? read.id : null;
   const type = typeof read.type === "string" ? readType(read.type) : null;
-  // #1589's D20: an Add or Remove may have no id (Mastodon 4.7.5 sends a collection's so); a non-string one reads as
-  // none, as Mastodon never reads it. The Store admits such an activity for a collection target only.
+  // ID-6: an Add or Remove may have no id (Mastodon 4.7.5 sends every one so, #1693), and is then read and applied as
+  // one with an id; a non-string one reads as none, as Mastodon never reads it. Every other type needs a string id.
   if (actor === null || originOf(actor) === null || type === null || (id === null && !ID_LESS.has(type))) {
     return { ok: false, reason: "incomplete" };
   }
   return { ok: true, actor, id, type, readType, read };
 }
 
-// The types an activity may have without an id (#1589's D20).
+// The types an activity may have without an id (ID-6, #1693).
 const ID_LESS: ReadonlySet<string> = new Set(["Add", "Remove"]);
 
 // `rules` is for tests of the reading's second layer (ldSignedReading); every caller reads under all of them.
@@ -319,7 +320,7 @@ function statusActivity(kind: "Create" | "UpdateStatus", id: string, json: Json)
   return object === null ? null : { type: kind, id, object };
 }
 
-// An Add or Remove (#1589's D20: with or without an id). The target is matched against the actor's own collections by
+// An Add or Remove, with or without an id (ID_LESS). The target is matched against the actor's own collections by
 // the Store. A Hashtag is named by its name; an embedded FeaturedCollection or FeaturedItem is read as one (only
 // embedded: one given by URI is never fetched); anything else by its id, as a status (Mastodon's Add and Remove read
 // any other object as one).
