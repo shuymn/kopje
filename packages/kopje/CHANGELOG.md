@@ -156,10 +156,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   local collection's documents (also served at its `url` to an ActivityPub client), and `Add`, `Remove` and `Update`
   to followers and members ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections"); the `Remove`s
   a block records reach the owner's followers through a job after the block, as Mastodon's do. Migration
-  `0108_collection_jobs`: three new tables, reading no row; as it creates tables, the upgrade checks every reference of
-  the Store (the migration bench's upgrade from `0093_annual_reports`: not measured yet). `wrangler.jsonc`: unchanged.
-  This adds a Store migration, so the release is at least a minor version, and rolling back past it needs a
-  point-in-time restore.
+  `0108_collection_jobs`: three new tables, reading no row; as it creates tables, the upgrade checks every reference
+  of the Store (the migration bench's upgrade from `0093_annual_reports` takes 15,542 ms with this file and 15,304 ms
+  without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at
+  least a minor version, and rolling back past it needs a point-in-time restore.
 
 ### Changed
 
