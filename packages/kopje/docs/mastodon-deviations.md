@@ -1658,6 +1658,35 @@ Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NE
   domain policy, fetch budget) before requesting it; retrying the hop that answered keeps every request one that loop
   has checked. Deliveries follow no redirect, so they retry as Mastodon does. Accepted, 2026-11-15.
 
+Unavailable delivery hosts (Mastodon's `DeliveryFailureTracker` and `UnavailableDomain`; RES-5 in
+`docs/threat-model.md`):
+
+- A host is marked unavailable on the 7th distinct UTC day its deliveries failed since its last success, as Mastodon's
+  tracker marks it, but only a failure the host caused counts: an answer that the name has no IP address (an empty
+  answer or one of non-IP rows, `ENOTFOUND`, `ENODATA`) or only non-public ones, a POST's answer neither 2xx nor
+  permanent, a fetch's network error, or a timeout that ran the POST's whole time. Mastodon counts every failure of
+  its job, its own resolver's (`Resolv` reads NXDOMAIN, SERVFAIL and a timeout alike as no address) and signer's
+  included; Kopje counts no other lookup failure, no signing-key or signature failure, no timeout the lease's deadline
+  cut and no exhausted budget. A permanent answer (4xx but 401, 408 and 429, and 501) neither counts nor clears, as in
+  Mastodon. A host is the inbox's host in lowercase punycode without its trailing dots.
+- A delivery that succeeds, an activity the Store receives from an actor whose stored inbox is on the host, and the
+  operator's restart clear it. Mastodon also clears it for any verified POST to its inbox from that host, an activity
+  it then ignores included.
+- While a host is unavailable, its deliveries but `Follow`s (Mastodon's `bypass_availability`) are written and kept
+  given up `host unavailable`, where Mastodon skips the work and writes nothing: a new target is written given up and
+  not counted toward the backlog, a due row is given up at its claim, a failed attempt is given up instead of retried
+  (its shared-inbox fallback not tried), and the host's queued and pending rows are given up 100 a step, each delivery
+  round. The operator may retry them (`kopje-admin deliveries retry`), and they are sent once the host is available.
+  A lease taken before the mark is sent once, as Mastodon's started job, and its failure given up. The drain covers
+  the lanes Kopje writes (an https origin of at most 268 bytes); a row on another lane is given up when its claim
+  comes.
+- A failing host that is not unavailable is forgotten 30 days after its last counted day. At most 10,000 hosts are
+  kept: past it a new host's failures are not counted, and a stop of a new host takes the place of the available host
+  of the oldest counted day, or is refused when every kept host is unavailable. Mastodon keeps any number.
+- The operator lists, stops and restarts hosts with `kopje-admin hosts` (`/admin/hosts`), as Mastodon's admin "stop
+  delivery" and "restart delivery" of an instance. Kopje has no bulk import, so Mastodon's skip of unavailable domains
+  when an import resolves accounts has no counterpart.
+
 Retractions and edits of remote statuses (Mastodon's `ActivityPub::Activity::Delete`, `Create`, `Update` and `Undo`;
 ID-7 in `docs/threat-model.md`):
 
@@ -1758,8 +1787,9 @@ Forwarded deletes (a remote author's `Delete` of a status that local accounts bo
   else personal) and the inboxes that received its boost or quoting status, or may still (receipts, earlier rows in any
   state). Mastodon signs once, for everyone, with the replied-to local account's key when there is one, else the first
   sharer's (reboosters before quoters), sends to the followers of every local booster and quoter and of the replied-to
-  account, less the inbox URLs `DeliveryFailureTracker` marks unavailable and the author's own inbox, and reads no
-  receipts. So a server may get one POST per local booster or quoter, and the deleting author's server may get it back.
+  account, less the author's own inbox, and reads no receipts; both leave out the inboxes of a host marked unavailable
+  (Kopje writes their rows given up, "Unavailable delivery hosts"). So a server may get one POST per local booster or
+  quoter, and the deleting author's server may get it back.
 - A quote in any state forwards, as in Mastodon (`forwarder.rb:30-32` reads every quote), but a direct or limited
   quoting status forwards only to the inboxes it was delivered to (its receipts), never its author's followers, who
   may not see it, nor an inbox whose delivery of it is still in flight or never succeeded; Mastodon sends a direct

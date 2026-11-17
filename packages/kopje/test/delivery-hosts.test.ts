@@ -30,6 +30,7 @@ import {
   MAX_DELIVERY_HOSTS,
   withinDeliveryHostBound,
 } from "../src/platform/stored-bounds";
+import { adminClaims, adminHarness, adminTeam, type AccessTeam, setTeamAccess } from "./access-helpers";
 import { seedAccount, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import {
@@ -52,8 +53,8 @@ import { copyConfig, dumpViaRpc, importViaRpc, setAccess } from "./ops-helpers";
 
 // Hosts that keep failing deliveries become unavailable (domain/delivery-hosts.ts; docs/mastodon-deviations.md,
 // "Unavailable delivery hosts"; RES-4, RES-5): the stored host set, the marks and what counts toward them, the paths by
-// which a row to an unavailable host could be sent, the clears, the cap, the sweep, dumps and maintenance. The drain's
-// bounds are test/delivery-host-drain.test.ts.
+// which a row to an unavailable host could be sent, the clears, the cap, the listing and the operator's routes, the
+// sweep, dumps and maintenance. The drain's bounds are test/delivery-host-drain.test.ts.
 
 const DAY0 = Date.UTC(2026, 9, 1);
 // deliveries.ts SWEEP_BATCH: the rows a sweep deletes at most.
@@ -727,6 +728,148 @@ describe("cap and sweep (C15)", () => {
     expect(await sweep()).toEqual({ swept: 0 });
     expect((await hostRows(store)).map((r) => r.host)).toEqual(["down.example", "young.example"]);
   });
+});
+
+describe("the operator's routes", () => {
+  let team: AccessTeam;
+
+  beforeEach(async () => {
+    team = await adminTeam();
+  });
+
+  async function admin(store?: StoreStub) {
+    const s = store ?? (await sender()).store;
+    await setTeamAccess(s, team);
+    return { store: s, ...adminHarness(s, team, { IMPORT_TOKEN: "import-token-0123456789abcdef0123456789" }) };
+  }
+
+  it("pages the hosts by their stored spelling, a 64-byte label and an IP address too, and restarts one", async () => {
+    const { store, as, post } = await admin();
+    const label = `${"a".repeat(64)}.example`;
+    await sql(
+      store,
+      `INSERT INTO delivery_hosts (host, failure_days, last_failure_day, unavailable_since, drain_lane, drain_id)
+			VALUES ('a.example', 2, ?1, NULL, NULL, NULL), (?2, 7, ?1, ?3, '', 0), ('127.0.0.1', 1, ?1, NULL, NULL, NULL),
+				('b.example', 0, NULL, ?3, NULL, NULL)`,
+      dayOf(DAY0),
+      label,
+      DAY0,
+    );
+    const pages: unknown[] = [];
+    let after: string | null = null;
+    for (let call = 0; call < 6; call++) {
+      const response = await as(
+        adminClaims(),
+        `/admin/hosts?limit=1${after === null ? "" : `&after=${encodeURIComponent(after)}`}`,
+      );
+      expect(response.status).toBe(200);
+      const page = await response.json<{ hosts: unknown[]; next: string | null }>();
+      pages.push(...page.hosts);
+      after = page.next;
+      if (after === null) {
+        break;
+      }
+    }
+    expect(pages).toEqual([
+      { host: "127.0.0.1", failureDays: 1, lastFailureDay: "2026-10-01", unavailableSince: null, draining: false },
+      { host: "a.example", failureDays: 2, lastFailureDay: "2026-10-01", unavailableSince: null, draining: false },
+      {
+        host: label,
+        failureDays: 7,
+        lastFailureDay: "2026-10-01",
+        unavailableSince: "2026-10-01T00:00:00.000Z",
+        draining: true,
+      },
+      {
+        host: "b.example",
+        failureDays: 0,
+        lastFailureDay: null,
+        unavailableSince: "2026-10-01T00:00:00.000Z",
+        draining: false,
+      },
+    ]);
+    const restart = (host: unknown) => post(adminClaims(), "/admin/hosts/restart", { host });
+    expect(await (await restart("127.0.0.1")).json()).toEqual({ host: "127.0.0.1", restarted: true });
+    expect(await (await restart("127.0.0.1")).json()).toEqual({ host: "127.0.0.1", restarted: false });
+    expect(await (await restart(label)).json()).toEqual({ host: label, restarted: true });
+    expect((await hostRows(store)).map((r) => r.host)).toEqual(["a.example", "b.example"]);
+  });
+
+  it("stops a host, its drain's first step run, and rings the doorbell while it goes on", async () => {
+    const { store, alice } = await sender();
+    const create = await outbound(store, alice);
+    await lane(store, { activity: create, account: alice, count: 150 });
+    const { post, doorbell } = await admin(store);
+    const response = await post(adminClaims(), "/admin/hosts/stop", { host: "H.Example" });
+    expect(await response.json()).toEqual({ host: HOST, drained: 100, draining: true });
+    expect(doorbell).toHaveBeenCalledTimes(1);
+    expect(await hostRows(store)).toMatchObject([{ host: HOST, failure_days: 0, drain_lane: LANE }]);
+    const other = await post(adminClaims(), "/admin/hosts/stop", { host: "quiet.example" });
+    expect(await other.json()).toEqual({ host: "quiet.example", drained: 0, draining: false });
+    expect(doorbell).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a malformed host or limit 400 and anyone but the admin 403", async () => {
+    const { as, post, request } = await admin();
+    for (const path of [
+      "/admin/hosts?after=A.example",
+      "/admin/hosts?after=a.example.",
+      "/admin/hosts?limit=0",
+      "/admin/hosts?limit=101",
+      "/admin/hosts?limit=x",
+    ]) {
+      expect((await as(adminClaims(), path)).status, path).toBe(400);
+    }
+    for (const host of ["not a host", "a..b", 42, null]) {
+      expect((await post(adminClaims(), "/admin/hosts/stop", { host })).status, String(host)).toBe(400);
+    }
+    for (const host of ["A.example", "a.example.", 42, null]) {
+      expect((await post(adminClaims(), "/admin/hosts/restart", { host })).status, String(host)).toBe(400);
+    }
+    const outsider = { email: "someone@kopje.test", sub: "user-2" };
+    expect((await as(outsider, "/admin/hosts")).status).toBe(403);
+    expect((await post(outsider, "/admin/hosts/stop", { host: HOST })).status).toBe(403);
+    expect((await post(outsider, "/admin/hosts/restart", { host: HOST })).status).toBe(403);
+    const token = { headers: { "Kopje-Import-Token": "import-token-0123456789abcdef0123456789" } };
+    expect((await request("/admin/hosts", token)).status).toBe(403);
+  });
+
+  it("evicts the available host of the oldest day for a stop of a new host; with none, answers 409 and writes nothing", async () => {
+    const { store } = await sender();
+    await sql(
+      store,
+      `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+			INSERT INTO delivery_hosts (host, failure_days, last_failure_day, unavailable_since)
+			SELECT 'h' || i || '.example', CASE WHEN i IN (5, 7) THEN 1 ELSE 0 END,
+				CASE i WHEN 5 THEN 50 WHEN 7 THEN 40 END, CASE WHEN i NOT IN (5, 7) THEN ?2 END FROM n`,
+      MAX_DELIVERY_HOSTS,
+      DAY0,
+    );
+    const { post } = await admin(store);
+    const stop = async (host: string) => {
+      const response = await post(adminClaims(), "/admin/hosts/stop", { host });
+      return { status: response.status, body: await response.json() };
+    };
+    const present = async (host: string) =>
+      (await sql(store, "SELECT 1 AS yes FROM delivery_hosts WHERE host = ?", host)).length === 1;
+    expect(await stop("new.example")).toMatchObject({ status: 200 });
+    expect([await present("h7.example"), await present("h5.example"), await present("new.example")]).toEqual([
+      false,
+      true,
+      true,
+    ]);
+    expect(await stop("newer.example")).toMatchObject({ status: 200 });
+    expect(await present("h5.example")).toBe(false);
+    expect(await stop("newest.example")).toEqual({
+      status: 409,
+      body: { error: expect.any(String), code: "hosts-full" },
+    });
+    expect(await present("newest.example")).toBe(false);
+    // A stored host is stopped again in place.
+    expect(await stop("h1.example")).toMatchObject({ status: 200 });
+    expect(await sql(store, "SELECT count(*) AS n FROM delivery_hosts")).toEqual([{ n: MAX_DELIVERY_HOSTS }]);
+    expect(warn.mock.calls.map((call): unknown => call[0])).toContainEqual({ event: "kopje.delivery.host_evicted" });
+  }, 60_000);
 });
 
 describe("dumps and maintenance", () => {

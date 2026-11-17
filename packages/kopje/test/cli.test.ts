@@ -315,6 +315,41 @@ describe("kopje-admin", () => {
     expect((await cli(["jobs", "retry", "x"], { fetch })).code).toBe(2);
   });
 
+  it("lists the delivery hosts, and stops and restarts one (RES-5)", async () => {
+    const store = await sourceStore(0);
+    const { fetch } = edge(store);
+    await runInDurableObject(store, (_instance, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO delivery_hosts (host, failure_days, last_failure_day, unavailable_since)
+				VALUES ('a.example', 3, 20000, NULL), ('b.example', 7, 20000, 1728000000000)`,
+      );
+    });
+    const hosts = async (...args: string[]) => JSON.parse((await cli(["hosts", ...args], { fetch })).out) as unknown;
+    expect(await hosts()).toEqual({
+      hosts: [
+        { host: "a.example", failureDays: 3, lastFailureDay: "2024-10-04", unavailableSince: null, draining: false },
+        {
+          host: "b.example",
+          failureDays: 7,
+          lastFailureDay: "2024-10-04",
+          unavailableSince: "2024-10-04T00:00:00.000Z",
+          draining: false,
+        },
+      ],
+      next: null,
+    });
+    expect(await hosts("--after", "a.example")).toMatchObject({ hosts: [{ host: "b.example" }], next: null });
+    expect(await hosts("stop", "C.Example")).toEqual({ host: "c.example", drained: 0, draining: false });
+    expect(await hosts("restart", "b.example")).toEqual({ host: "b.example", restarted: true });
+    expect(await hosts()).toMatchObject({ hosts: [{ host: "a.example" }, { host: "c.example" }] });
+    const refused = await cli(["hosts", "stop", "not a host"], { fetch });
+    expect(refused.code).toBe(1);
+    expect(refused.err).toContain("a domain name");
+    for (const args of [["stop"], ["stop", "a.example", "b.example"], ["restart"], ["list"], ["--after"]]) {
+      expect((await cli(["hosts", ...args], { fetch })).code, args.join(" ")).toBe(2);
+    }
+  });
+
   it("sets the instance's public settings, a document from a file with its other values in one request", async () => {
     const store = await sourceStore(0);
     const { fetch, seen } = edge(store);

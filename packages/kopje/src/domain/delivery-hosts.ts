@@ -1,7 +1,7 @@
 import type { Db } from "../db/sql";
 import { hostDomain, serverDomain } from "../platform/domain-name";
 import { MAX_DELIVERY_HOSTS, withinDeliveryHostBound } from "../platform/stored-bounds";
-import { writeOperation } from "./operation";
+import { readOperation, writeOperation } from "./operation";
 
 // Unavailable delivery hosts (RES-4, RES-5; docs/mastodon-deviations.md, "Unavailable delivery hosts"), as Mastodon's
 // DeliveryFailureTracker and UnavailableDomain keep them. delivery_hosts (migration 0112_delivery_hosts) holds one row
@@ -24,6 +24,7 @@ export const HOST_IDLE_DAYS = 30;
 // The given-up rows' last_error while their host is unavailable.
 export const HOST_UNAVAILABLE = "host unavailable";
 const DAY_MS = 86_400_000;
+const LIST_LIMIT = 100;
 
 // The host deliveries to `inbox` count toward, or null for one Kopje never sends to (an IP literal, a single label,
 // past DNS's lengths, not a URL): such a host is not tracked.
@@ -218,6 +219,54 @@ export function markStopped(db: Db, host: string, now: number): "stopped" | "hos
   );
   return "stopped";
 }
+
+// A host as the operator sees it: lastFailureDay as YYYY-MM-DD, unavailableSince as an ISO time (null past the range a
+// Date shows, which only an import can store).
+export type DeliveryHost = {
+  host: string;
+  failureDays: number;
+  lastFailureDay: string | null;
+  unavailableSince: string | null;
+  draining: boolean;
+};
+
+export type DeliveryHostsPage = { hosts: DeliveryHost[]; next: string | null };
+
+const MAX_DATE_MS = 8_640_000_000_000_000;
+
+function isoOf(ms: number | null): string | null {
+  return ms === null || ms > MAX_DATE_MS ? null : new Date(ms).toISOString();
+}
+
+// The stored hosts in host order after `after` (a stored host, withinDeliveryHostBound; the route refuses anything
+// else), at most `limit` (1 to LIST_LIMIT), and the next `after` when the page is full.
+export const deliveryHostsPage = readOperation<{ after?: string; limit?: number }, DeliveryHostsPage>(
+  (db, { after, limit }) => {
+    const max = Math.max(1, Math.min(limit ?? LIST_LIMIT, LIST_LIMIT));
+    const rows = db.all<{
+      host: string;
+      failure_days: number;
+      last_failure_day: number | null;
+      unavailable_since: number | null;
+      draining: number;
+    }>(
+      `SELECT host, failure_days, last_failure_day, unavailable_since, drain_lane IS NOT NULL AS draining
+			FROM delivery_hosts WHERE host > ?1 ORDER BY host LIMIT ?2`,
+      after ?? "",
+      max,
+    );
+    return {
+      hosts: rows.map((r) => ({
+        host: r.host,
+        failureDays: r.failure_days,
+        lastFailureDay: r.last_failure_day === null ? null : (isoOf(r.last_failure_day * DAY_MS)?.slice(0, 10) ?? null),
+        unavailableSince: isoOf(r.unavailable_since),
+        draining: r.draining === 1,
+      })),
+      next: rows.length === max ? (rows.at(-1)?.host ?? null) : null,
+    };
+  },
+);
 
 // The operator's restart (Mastodon's "restart delivery"): the host's row is deleted, its drain with it; rows not
 // reached yet are sent, and rows given up stay given up until retried. The host is a stored one, read by

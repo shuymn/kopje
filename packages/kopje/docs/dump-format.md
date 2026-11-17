@@ -148,6 +148,17 @@ tables name an existing job. A dump carries them as they are, so a restored Stor
 and cursors. A round writes only to an intent that is a staged `Remove` of
 the job's own owner; any other intent a row names gets no target and leaves the job.
 
+A delivery host (RES-4, RES-5) is, from migration `0112_delivery_hosts` on, a row of `delivery_hosts`: `host` in the
+stored set of `deliveryHostSql` (`src/platform/stored-bounds.ts`: ASCII text of 3 to 253 bytes, lowercase letters,
+digits, dots and hyphens, at least one inner dot, no label empty or starting or ending with a hyphen next to a dot,
+CHECK `delivery_hosts_host`); `failure_days` an INTEGER from 0 to 7 with `last_failure_day` the UTC day number of the
+last (0 to 104,249,991) or NULL for 0; `unavailable_since` NULL or an INTEGER time in ms from 0 to 2^53 − 1; and the
+drain's cursor, `drain_lane` with an INTEGER `drain_id` of 0 or more, both NULL or both set and set only on an
+unavailable host, the lane `''` or one whose host (`laneHostSql`) is the row's own (CHECK
+`delivery_hosts_drain_cursor`). Any other value fails with `CHECK constraint failed`, and at most 10,000 rows are kept
+(`delivery_hosts: more than 10000`, the trigger `delivery_hosts_cap`). A dump carries them as they are, so a restored
+Store keeps its unavailable hosts and resumes a drain from its cursor.
+
 An `outbound_activities.body` is checked as JSON only (`json_valid`). The `Delete` of a public or unlisted status
 (VIS-3 in [threat-model.md](threat-model.md)) is stored signed: `activity` is the body as its author signed it, sent
 byte for byte (`"immutable": true`), and `addressing` holds the `to` and `cc` its unsigned form would have, by which

@@ -160,6 +160,19 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   of the Store (the migration bench's upgrade from `0093_annual_reports` takes 15,542 ms with this file and 15,304 ms
   without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at
   least a minor version, and rolling back past it needs a point-in-time restore.
+- Deliveries to a host that failed on 7 different days are given up until it comes back, as Mastodon marks an
+  unavailable domain; `kopje-admin hosts` lists, stops and restarts hosts (#1728). Only a failure the host caused
+  counts (no address or only non-public ones, a retryable answer, a network error, a timeout of the whole POST), each
+  UTC day once; a delivery that succeeds, an activity received from an actor whose inbox is on the host, or
+  `kopje-admin hosts restart` makes it available again. While a host is unavailable, its deliveries but `Follow`s are
+  given up `host unavailable` (listed by `kopje-admin deliveries`, retried with `kopje-admin deliveries retry`), its
+  queued ones 100 each delivery round; at most 10,000 hosts are kept, and a failing one is forgotten after 30 idle days
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Unavailable delivery hosts"). Migration
+  `0112_delivery_hosts`: an empty table with two indexes and a trigger, and an index of `deliveries` built over its
+  rows; as it creates a table, the upgrade checks every reference of the Store (not measured yet). Hosts are counted
+  from the upgrade on: stop one already gone with `kopje-admin hosts stop <host>`. `wrangler.jsonc`: unchanged. This
+  adds a Store migration, so the release is at least a minor version, and rolling back past it needs a point-in-time
+  restore.
 
 ### Changed
 
