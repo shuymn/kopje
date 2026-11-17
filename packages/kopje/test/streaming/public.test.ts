@@ -598,7 +598,7 @@ describe("feeds at the caps", () => {
 // MAX_MEDIA_DESCRIPTION_LENGTH code points takes 10,000 bytes of ASCII, 40,000 of emoji and 70,000 of U+0001.
 describe("payloads with descriptions at their length (D8)", () => {
   // R of the plain fill's S2 update and of carol's boost of S2 (pinned by "sends ... beside plain text").
-  const PLAIN_R = { quote: 141_013, boost: 179_143 };
+  const PLAIN_R = { quote: 141_177, boost: 179_389 };
 
   // A world: alice and carol with the fill's profile, bob following carol, on public:local and user; console.warn
   // spied for the hub's skips.
@@ -697,8 +697,8 @@ describe("payloads with descriptions at their length (D8)", () => {
   // each status (links), then also each profile field and poll choice (every). R past 260,096 less the descriptions'
   // 80,000 bytes.
   it.each([
-    ["links", FILLS.links, { quote: 281_183, boost: 319_313 }],
-    ["every", FILLS.every, { quote: 327_221, boost: 388_174 }],
+    ["links", FILLS.links, { quote: 281_347, boost: 319_559 }],
+    ["every", FILLS.every, { quote: 327_385, boost: 388_420 }],
   ] as const)(
     "skips a status and its quote, and its boost, whose %s fill takes the rest past it",
     async (_name, fill, rests) => {
@@ -878,7 +878,7 @@ describe("payloads with descriptions at their length (D8)", () => {
         status: [shown.status.rest, shown.status.payload],
         boost: [shown.boost.rest, shown.boost.payload],
         controlled: [shown.controlled.rest, shown.controlled.payload],
-      }).toEqual({ status: [70_328, 230_328], boost: [108_458, 268_458], controlled: [70_328, 350_328] });
+      }).toEqual({ status: [70_410, 230_410], boost: [108_622, 268_622], controlled: [70_410, 350_410] });
     } finally {
       warn.mockRestore();
     }

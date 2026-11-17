@@ -129,32 +129,40 @@ async function read(request: Request, options?: ReadOptions): Promise<Params> {
 
 const png = (name = "a.png") => new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
 
-// Rails' params[name]: the query's last value, else the body's last.
-describe("Params#last", () => {
+// Rails' params[name]: the query's last value, else the body's last; integer() reads it as an integer parameter does.
+describe("Params#get and Params#integer", () => {
   it("reads the last of repeated values, in the query or a form body", async () => {
-    expect((await read(new Request("https://kopje.test/x?a=1&a=2"))).last("a")).toBe("2");
+    const query = await read(new Request("https://kopje.test/x?a=1&a=2"));
+    expect([query.get("a"), query.integer("a")]).toEqual(["2", "2"]);
     const form = await read(post("a=1&a=2", "application/x-www-form-urlencoded"));
-    expect([form.last("a"), form.get("a")]).toEqual(["2", "1"]);
+    expect([form.get("a"), form.integer("a")]).toEqual(["2", "2"]);
     const parts = await read(
       multipart([
         ["a", "1"],
         ["a", "2"],
       ]),
     );
-    expect(parts.last("a")).toBe("2");
+    expect([parts.get("a"), parts.integer("a")]).toEqual(["2", "2"]);
   });
 
   it("reads the query's value over the body's, form or JSON", async () => {
     const form = await read(post("a=1", "application/x-www-form-urlencoded", "?a=3"));
-    expect([form.last("a"), form.get("a")]).toEqual(["3", "3"]);
+    expect([form.get("a"), form.integer("a")]).toEqual(["3", "3"]);
     const json = await read(post(JSON.stringify({ a: 1, b: 2 }), "application/json", "?a=4&a=5"));
-    expect([json.last("a"), json.last("b"), json.get("a")]).toEqual(["5", "2", "4"]);
-    expect((await read(post("b=1", "application/x-www-form-urlencoded"))).last("a")).toBeUndefined();
+    expect([json.get("a"), json.integer("a"), json.get("b")]).toEqual(["5", "5", "2"]);
+    const absent = await read(post("b=1", "application/x-www-form-urlencoded"));
+    expect([absent.get("a"), absent.integer("a")]).toEqual([undefined, undefined]);
   });
 
   it("reads a JSON number by Ruby's to_i of the number, and a string by String#to_i", async () => {
     const p = await read(post('{"a":1e21,"b":"1e21","c":1e-7,"d":-0.5,"e":3.9}', "application/json"));
-    expect(["a", "b", "c", "d", "e"].map((name) => p.last(name))).toEqual(["9007199254740991", "1e21", "0", "0", "3"]);
+    expect(["a", "b", "c", "d", "e"].map((name) => p.integer(name))).toEqual([
+      "9007199254740991",
+      "1e21",
+      "0",
+      "0",
+      "3",
+    ]);
     // Other reads keep the number as JSON writes it.
     expect([p.get("a"), p.get("c")]).toEqual(["1e+21", "1e-7"]);
   });
@@ -170,7 +178,34 @@ describe("Params#last", () => {
 
   it("reads a declared file in the body over a query text, as Rails' last-part rule", async () => {
     const p = await read(multipart([["avatar", png()]], "?avatar=q"), { files: FILES });
-    expect([p.last("avatar"), p.file("avatar")?.name]).toEqual([undefined, "a.png"]);
+    expect([p.get("avatar"), p.integer("avatar"), p.file("avatar")?.name]).toEqual([undefined, undefined, "a.png"]);
+  });
+});
+
+// A JSON null is marked on its entry, so sentNull and objects' `nulls` judge the entry get and objects select.
+describe("Params: a JSON null's mark", () => {
+  it("is read on the selected entry, through the query merge", async () => {
+    const alone = await read(post('{"note":null}', "application/json"));
+    expect([alone.get("note"), alone.sentNull("note")]).toEqual(["", true]);
+    const blank = await read(post('{"note":null}', "application/json", "?note="));
+    expect([blank.get("note"), blank.sentNull("note")]).toEqual(["", false]);
+    const text = await read(post('{"note":null}', "application/json", "?note=x"));
+    expect([text.get("note"), text.sentNull("note")]).toEqual(["x", false]);
+    const string = await read(post('{"note":""}', "application/json"));
+    expect([string.get("note"), string.sentNull("note")]).toEqual(["", false]);
+  });
+
+  it("stays with its entry when a name is flattened twice, as a key spelled with brackets makes it", async () => {
+    const nullLast = await read(post('{"a[b]":"","a":{"b":null}}', "application/json"));
+    const stringLast = await read(post('{"a":{"b":null},"a[b]":""}', "application/json"));
+    expect([nullLast.sentNull("a[b]"), stringLast.sentNull("a[b]")]).toEqual([true, false]);
+    const objects = await read(post('{"o":[{"a":null}],"o[0][a]":"x"}', "application/json"));
+    expect(objects.objects("o", { nulls: "absent" })).toEqual([{ a: "x" }]);
+  });
+
+  it("is kept on the last entry of a declared name", async () => {
+    const p = await read(post('{"avatar":null}', "application/json"), { files: FILES });
+    expect([p.get("avatar"), p.sentNull("avatar")]).toEqual(["", true]);
   });
 });
 
@@ -208,15 +243,15 @@ describe("readParams: the query over the body, by top-level key", () => {
   ];
   it.each(bodies)("leaves none of %s body's poll beside a query poll[expires_in]", async (_, request) => {
     const p = await read(request);
-    expect([p.last("poll[expires_in]"), p.getAll("poll[options]"), p.get("status")]).toEqual(["900", [], "s"]);
+    expect([p.integer("poll[expires_in]"), p.getAll("poll[options]"), p.get("status")]).toEqual(["900", [], "s"]);
   });
 
   it("drops a scalar under a query array or hash of its name", async () => {
     for (const query of ["?expires_in[]=7200", "?expires_in[a]=7200"]) {
       const form = await read(post("expires_in=3600&title=t", "application/x-www-form-urlencoded", query));
-      expect([query, form.last("expires_in"), form.get("title")]).toEqual([query, undefined, "t"]);
+      expect([query, form.integer("expires_in"), form.get("title")]).toEqual([query, undefined, "t"]);
       const json = await read(post(JSON.stringify({ expires_in: 3600 }), "application/json", query));
-      expect([query, json.last("expires_in")]).toEqual([query, undefined]);
+      expect([query, json.integer("expires_in")]).toEqual([query, undefined]);
     }
   });
 
@@ -296,7 +331,7 @@ describe("readParams: declared files (Rails last-part rule)", () => {
     expect([queryOnly.get("avatar"), queryOnly.file("avatar")]).toEqual(["r", undefined]);
   });
 
-  it("ignores undeclared file parts and keeps first-wins text elsewhere", async () => {
+  it("ignores undeclared file parts and keeps last-wins text elsewhere", async () => {
     const p = await read(
       multipart([
         ["thumbnail", png()],
@@ -305,7 +340,7 @@ describe("readParams: declared files (Rails last-part rule)", () => {
       ]),
       { files: FILES },
     );
-    expect([p.file("thumbnail"), p.get("thumbnail"), p.get("note")]).toEqual([undefined, undefined, "a"]);
+    expect([p.file("thumbnail"), p.get("thumbnail"), p.get("note")]).toEqual([undefined, undefined, "b"]);
   });
 });
 

@@ -1,5 +1,5 @@
 import { presentedCountSql } from "../platform/stored-bounds";
-import { type Account, accountsOf, admitAccounts, type Present, resolveAccountId } from "./accounts";
+import { type Account, accountsOf, admitAccounts, presentFor, type PresentInput, resolveAccountId } from "./accounts";
 import { admit, ARRAY_ANSWER_BYTES } from "./answer-budget";
 import { listedForSql, suggestionCandidateSql, suggestionSourceSql } from "./audience";
 import { userReadOperation, userWriteOperation } from "./auth";
@@ -19,7 +19,7 @@ export const SUGGESTIONS_MAX_LIMIT = 80;
 // The v2 entity (REST::SuggestionSerializer): friends_of_friends is shown with the legacy source past_interactions.
 export type Suggestion = { source: "past_interactions"; sources: ["friends_of_friends"]; account: Account };
 
-export type SuggestionsInput = { version: 1 | 2; offset: number; limit: number; present: Present };
+export type SuggestionsInput = { version: 1 | 2; offset: number; limit: number; present: PresentInput };
 
 // The id of the `n`th accepted follow of `owner` from the newest (1 the newest), or 0 when it has fewer: the lower end
 // of its window in follows_following.
@@ -63,9 +63,9 @@ export const suggestions = userReadOperation<SuggestionsInput, Account[] | Sugge
       .slice(offset, offset + limit)
       .map((row) => row.id);
     if (version === 1) {
-      return admitAccounts(db, ids, present, ARRAY_ANSWER_BYTES, true).items;
+      return admitAccounts(db, ids, presentFor(present, viewerId), ARRAY_ANSWER_BYTES, true).items;
     }
-    return admit(suggestionsOf(accountsOf(db, ids, present)), ARRAY_ANSWER_BYTES, true).items;
+    return admit(suggestionsOf(accountsOf(db, ids, presentFor(present, viewerId))), ARRAY_ANSWER_BYTES, true).items;
   },
 );
 

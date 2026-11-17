@@ -16,6 +16,8 @@ import {
   Group,
   Hashtag,
   Image,
+  InteractionPolicy,
+  InteractionRule,
   Note,
   type Object as ApObject,
   Organization,
@@ -36,6 +38,7 @@ import {
   type NodeInfoUsage,
   type StoredKey,
 } from "../domain/actors";
+import { actorCollectionTerms } from "../domain/collection-documents";
 import type { FollowerSigner } from "../domain/follower-signer";
 import type { PolicyTicket } from "../domain/instance-domain-blocks";
 import type { FeaturedItem } from "../domain/local-notes";
@@ -43,7 +46,7 @@ import type { SnapshotSource } from "../domain/snapshot";
 import { renderFieldValue } from "../domain/status-text";
 import { INTERACTION_PATH } from "../domain/web-session";
 import { httpUrl } from "../platform/http-url";
-import { withinJsonBounds } from "../platform/json-bounds";
+import { jsonRefusal } from "../platform/json-bounds";
 import { PACKAGE_VERSION, SOFTWARE_REPOSITORY } from "../platform/package-version";
 import { railsBlank } from "../platform/rails-blank";
 import { callStore, type StoreStub } from "../platform/store-client";
@@ -63,6 +66,7 @@ import {
   type ResolveAnswer,
   type Signing,
   requireObjectRoot,
+  UnusableDocumentError,
 } from "./loader";
 
 // The Fedify Federation of one request: dispatchers for actors, key pairs, WebFinger, NodeInfo, the followers,
@@ -294,9 +298,15 @@ export function afterRevisionRead(loaders: RemoteLoaders): RemoteLoaders {
   return { ...loaders, document: loaders.capped({}) };
 }
 
-// RES-2: a document or JSON-LD context past the JSON bounds is refused before anything reads it.
-function withinBounds(remote: RemoteDocument): RemoteDocument {
-  if (!withinJsonBounds(remote.document)) {
+// RES-2: a document or JSON-LD context past the JSON bounds is refused before anything reads it; one holding an
+// unpaired surrogate is a body that is not JSON (jsonRefusal: a cached context, which has no text; loader.ts judges a
+// fetched one's text).
+export function withinBounds(remote: RemoteDocument): RemoteDocument {
+  const refusal = jsonRefusal(remote.document);
+  if (refusal === "malformed") {
+    throw new UnusableDocumentError(new URL(remote.documentUrl), "Document is not valid JSON");
+  }
+  if (refusal === "too-complex") {
     throw new RefusedFetchError(new URL(remote.documentUrl), "Document exceeds the JSON bounds");
   }
   return remote;
@@ -638,6 +648,9 @@ async function localActorObject(ctx: RequestContext<FederationState>, actor: Loc
         // The profile's local emoji (ActivityPub::ActorSerializer#virtual_tags, none while suspended: :143).
         tags: actor.emojis.map(emojiObject),
       };
+  // Its collections and who may feature it (collection-documents.ts actorCollectionTerms, D19), a suspended account's
+  // too, in Fedify's terms (FEP-7aa9's featuredCollections, GoToSocial's interactionPolicy).
+  const collections = actorCollectionTerms(id.href, actor);
   const object = new cls({
     id,
     preferredUsername: actor.username,
@@ -656,6 +669,12 @@ async function localActorObject(ctx: RequestContext<FederationState>, actor: Loc
       publicKey: await importPublicKeyPem(actor.pubkey),
     }),
     published: Temporal.Instant.from(actor.createdAt),
+    featuredCollections: new URL(collections.featuredCollections),
+    interactionPolicy: new InteractionPolicy({
+      canFeature: new InteractionRule({
+        automaticApprovals: collections.interactionPolicy.canFeature.automaticApproval.map((uri) => new URL(uri)),
+      }),
+    }),
     ...profile,
   });
   return withMastodonTerms(object, {

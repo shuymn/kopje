@@ -1,6 +1,6 @@
 import { STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
-import { type Account, accountsOf, type Page, type PageQuery, type Present } from "./accounts";
+import { type Account, accountsOf, type Page, type PageQuery, presentFor, type PresentInput } from "./accounts";
 import { admit, admittedPage, ARRAY_ANSWER_BYTES, firstUses } from "./answer-budget";
 import { statusReads, type ViewerContext } from "./audience";
 import { userReadOperation, userWriteOperation } from "./auth";
@@ -131,7 +131,7 @@ function* conversationStream(
   db: Db,
   rows: readonly ConversationRow[],
   viewer: ViewerContext & { readonly accountId: string },
-  present: Present,
+  present: PresentInput,
 ): Generator<Conversation, undefined> {
   const visible = statusReads(viewer, { viewer: "?1" }).select(
     db,
@@ -152,7 +152,12 @@ function* conversationStream(
   );
   for (const row of rows) {
     const participants = JSON.parse(row.participants) as string[];
-    const presented = accountsOf(db, [viewer.accountId, ...participants], present, MAX_PRESENTED_PARTICIPANTS + 1);
+    const presented = accountsOf(
+      db,
+      [viewer.accountId, ...participants],
+      presentFor(present, viewer.accountId),
+      MAX_PRESENTED_PARTICIPANTS + 1,
+    );
     const owner = presented.next().value;
     const others = [...presented].flatMap((account) => account ?? []);
     yield {
@@ -167,7 +172,7 @@ function* conversationStream(
 // GET /api/v1/conversations: the viewer's conversations, newest last status first, paged by the last status's id
 // (AccountConversation.to_a_paginated_by_id). The cursor is a plain range (no cursor is ':' or '', above and below every
 // id), so the read starts in the (account, last status) index at the cursor.
-export const listConversations = userReadOperation<{ page: PageQuery; present: Present }, Page<Conversation>>(
+export const listConversations = userReadOperation<{ page: PageQuery; present: PresentInput }, Page<Conversation>>(
   (db, { page, present }, _viewer, viewer) => {
     const ascending = page.minId !== undefined;
     const rows = db.all<ConversationRow>(
@@ -199,7 +204,7 @@ export function streamedConversation(
   db: Db,
   viewer: ViewerContext & { readonly accountId: string },
   id: string,
-  present: Present,
+  present: PresentInput,
 ): Conversation | null {
   if (!isIntegerKey(id)) {
     return null;
@@ -214,7 +219,7 @@ export function streamedConversation(
 
 // POST /api/v1/conversations/:id/read and /unread: the viewer's conversation, marked; null when it is not theirs.
 export const markConversation = userWriteOperation<
-  { id: string; unread: boolean; present: Present },
+  { id: string; unread: boolean; present: PresentInput },
   Conversation | null
 >((db, { id, unread, present }, _viewer, viewer) => {
   if (!isIntegerKey(id)) {

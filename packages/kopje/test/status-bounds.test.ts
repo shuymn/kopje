@@ -249,11 +249,19 @@ const RAW_BIO = `<p>${"x".repeat(REMOTE_BIO_BYTES - 9)}</p>`;
 // JSON bytes), or of four bytes (raw: 600 bytes read, PROFILE_DESCRIPTION_BYTES).
 const profileDescription = (fill: Fill) => (fill === "raw" ? W : C).repeat(PROFILE_DESCRIPTION_LIMIT);
 
+// The longest feature_approval an account presents (accounts.ts): each half at every key Mastodon's
+// InteractionPolicy::SubPolicy#as_keys gives, which a remote account's stored policy may hold (#1589 PR 4), and the
+// longest answer.
+const FEATURE_POLICY_KEYS = ["unsupported_policy", "public", "followers", "following", "disabled"];
+const FEATURE_APPROVAL_MAX = { automatic: FEATURE_POLICY_KEYS, manual: FEATURE_POLICY_KEYS, current_user: "automatic" };
+const FEATURE_APPROVAL_JSON_MAX = utf8Length(JSON.stringify(FEATURE_APPROVAL_MAX));
+
 // The most JSON a nested moved-to account presents (accounts.ts presentMovedAccount), from its decoded limits at worst
 // escaping: characters of six JSON bytes at each text limit, URLs and uri at MOVED_URL_LIMIT (JSON-measured), counts
 // of 20 characters (any int64; presentedCountSql shows at most MAX_ACCOUNT_COUNT, 16), emojis of MOVED_EMOJIS_BYTES
 // (a string of that many JSON bytes stands for them), and every key at once, a local account's (noindex, roles) and
-// an unavailable one's (suspended) included; its image descriptions '' (not read) and its display settings false.
+// an unavailable one's (suspended) included, and the longest feature_approval; its image descriptions '' (not read)
+// and its display settings false.
 const MOVED_ACCOUNT_JSON_MAX = utf8Length(
   JSON.stringify({
     id: "9".repeat(18),
@@ -288,6 +296,7 @@ const MOVED_ACCOUNT_JSON_MAX = utf8Length(
     noindex: false,
     roles: [{ id: OWNER_ROLE.id, name: OWNER_ROLE.name, color: OWNER_ROLE.color }],
     suspended: true,
+    feature_approval: FEATURE_APPROVAL_MAX,
   }),
 );
 // What a moved-to account's row reads at most: SQLite bytes (profile-fixtures.ts MOVED_ROW_SQLITE_MAX) and heap.
@@ -1492,6 +1501,9 @@ type FillMeasure = {
   // The fallbacks each shape shows (its notifications read with every fallback type): how many, and what their JSON
   // lacks of FALLBACK_JSON_MAX.
   fallbacks: Record<string, { count: number; deficit: number }>;
+  // The accounts each shape shows but the nested moved-to ones: how many, and what their feature_approval lacks of
+  // FEATURE_APPROVAL_JSON_MAX.
+  approvals: Record<string, { count: number; deficit: number }>;
   // The JSON of the fields of the account occurrence (a remote account's, at REMOTE_FIELDS_BYTES).
   accountFields: number;
   // The moderation_warning notification as a stream payload: its JSON, which carries no fallback, encoded again as a
@@ -1952,6 +1964,19 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
         return [name, { count: shown.length, deficit }];
       }),
     ),
+    approvals: Object.fromEntries(
+      Object.entries(answers).map(([name, answer]) => {
+        const shown = presentedApprovals(answer);
+        for (const approval of shown) {
+          expect(jsonBytes(approval)).toBeLessThanOrEqual(FEATURE_APPROVAL_JSON_MAX);
+        }
+        const deficit = shown.reduce(
+          (sum: number, approval) => sum + FEATURE_APPROVAL_JSON_MAX - jsonBytes(approval),
+          0,
+        );
+        return [name, { count: shown.length, deficit }];
+      }),
+    ),
     fallbacks: Object.fromEntries(
       Object.entries(answers).map(([name, answer]) => {
         const shown = presentedFallbacks(answer);
@@ -2087,6 +2112,20 @@ function verifiedFields(value: unknown): { value: string; verified_at: string }[
 }
 
 // The fallbacks a shape presents (notification-fallback.ts).
+// The feature_approval of every account a value shows but the nested moved-to ones (counted at
+// MOVED_ACCOUNT_JSON_MAX).
+function presentedApprovals(value: unknown): unknown[] {
+  if (Array.isArray(value)) {
+    return value.flatMap(presentedApprovals);
+  }
+  if (typeof value !== "object" || value === null) {
+    return [];
+  }
+  return Object.entries(value).flatMap(([key, item]: [string, unknown]) =>
+    key === "moved" ? [] : key === "feature_approval" ? [item] : presentedApprovals(item),
+  );
+}
+
 function presentedFallbacks(value: unknown): unknown[] {
   if (Array.isArray(value)) {
     return value.flatMap(presentedFallbacks);
@@ -2179,9 +2218,10 @@ const LOCAL_ACCOUNT_KEYS_JSON =
 // MEDIA_URL_JSON_BYTES and its blurhash at BLURHASH_JSON_MAX, and each verified local field's value at
 // LOCAL_FIELD_VALUE_JSON_MAX. Every remote account shown but the account occurrence counts its fields at
 // REMOTE_FIELDS_JSON_MAX (verified remote fields); the account occurrence keeps the larger of the local and remote
-// fields' maxima. Each notification's or group's fallback counts at FALLBACK_JSON_MAX.
+// fields' maxima. Each notification's or group's fallback counts at FALLBACK_JSON_MAX, and each account's
+// feature_approval at FEATURE_APPROVAL_JSON_MAX.
 async function conservativeJson(): Promise<Record<string, number>> {
-  const { shapes, moved, applications, cards, media, localFields, remoteFields, fallbacks, accountFields } =
+  const { shapes, moved, applications, cards, media, localFields, remoteFields, fallbacks, approvals, accountFields } =
     await measureFill("escaped");
   return Object.fromEntries(
     Object.entries(shapes).map(([name, shape]) => [
@@ -2197,7 +2237,8 @@ async function conservativeJson(): Promise<Record<string, number>> {
         cards[name]!.deficit +
         media[name]!.deficit +
         localFields[name]!.deficit +
-        fallbacks[name]!.deficit,
+        fallbacks[name]!.deficit +
+        approvals[name]!.deficit,
     ]),
   );
 }
@@ -2980,7 +3021,7 @@ describe("the table of maxima (RES-3)", () => {
 
   it.each<[string, Fill]>([
     ["the escaped worst case: the most JSON", "escaped"],
-    ["mentions whose url is derived", "derived"],
+    ["mentions without a stored url, shown by their actor id", "derived"],
     ["the raw worst case: the most bytes read from SQLite", "raw"],
     ["short emoji references in every poll: the most poll emojis", "emoji-poll"],
     ["the most cached emoji: every remote snapshot at its most entries, each cached", "emoji-cache"],
@@ -3060,7 +3101,7 @@ describe("the table of maxima (RES-3)", () => {
     // The conversation's spare under the ceiling (one card in that shape): at least SPARE_FLOOR (#1142), and
     // SHAPE_CEILING_PERCENT is the least whole percent that keeps it.
     const spare = LIMIT - conservative.conversation!;
-    expect(spare).toBe(62_869);
+    expect(spare).toBe(57_185);
     expect(spare).toBeGreaterThanOrEqual(SPARE_FLOOR);
     expect(ceiling(SHAPE_CEILING_PERCENT - 1) - conservative.conversation!).toBeLessThan(SPARE_FLOOR);
     expect(conservative).toEqual(CONSERVATIVE_JSON);
@@ -3081,12 +3122,12 @@ describe("the table of maxima (RES-3)", () => {
     const payload =
       escaped.warningPayload + 2 * (conservative.warningNotification! - escaped.shapes.warningNotification!.json);
     expect({ ...payloads, conservative: payload }).toEqual({
-      escaped: 335_844,
-      derived: 335_844,
-      raw: 238_612,
-      "emoji-poll": 335_844,
-      "emoji-cache": 337_412,
-      conservative: 476_110,
+      escaped: 336_008,
+      derived: 336_008,
+      raw: 238_776,
+      "emoji-poll": 336_008,
+      "emoji-cache": 337_576,
+      conservative: 476_798,
     });
     expect(payloads.raw).toBeLessThanOrEqual(STREAM_LIMITS.payloadBytes);
     expect(payloads.escaped).toBeGreaterThan(STREAM_LIMITS.payloadBytes);
@@ -3130,15 +3171,15 @@ describe("the table of maxima (RES-3)", () => {
     const kinds = await streamedKinds();
     const most = Math.max(...Object.values(kinds));
     expect({ ...kinds, most }).toEqual({
-      status: 5_818_830,
-      conversation: 7_151_333,
-      notification: 6_626_929,
+      status: 5_820_048,
+      conversation: 7_157_017,
+      notification: 6_629_365,
       announcement: ANNOUNCEMENT_JSON,
-      most: 7_151_333,
+      most: 7_157_017,
     });
-    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(18_236_876);
+    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(18_248_244);
     const { streamed } = await measureFill("escaped");
-    expect(streamed).toEqual({ conversation: 7_074_778, conversationPayload: 7_836_062, notification: 5_918_803 });
+    expect(streamed).toEqual({ conversation: 7_076_822, conversationPayload: 7_838_386, notification: 5_919_387 });
     expect(streamed!.conversation).toBeLessThanOrEqual(kinds.conversation);
     expect(streamed!.conversationPayload).toBeLessThanOrEqual(2 * most + 2);
     expect(streamed!.notification).toBeLessThanOrEqual(kinds.notification);
@@ -3153,7 +3194,7 @@ describe("the table of maxima (RES-3)", () => {
     expect({
       chunk: 50 * (shapes.account!.sqlite + 2 * STATIC_URL_LIMIT + REMOTE_VERIFIED_JSON_BYTES + MOVED_ROW_SQLITE_MAX),
       page: 80 * conservative.account!,
-    }).toEqual({ chunk: 6_905_000, page: 12_001_760 });
+    }).toEqual({ chunk: 6_905_000, page: 12_034_240 });
   }, 600_000);
 
   // Half of the Store isolate's 128 MB. A timeline's largest item is a status, a quote or a boost of a quote; groups

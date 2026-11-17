@@ -306,15 +306,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "statusReads' hoisted row hp (src/domain/audience.ts) holds availableSql's coverage of the status's author and its original's once each, and SQLite's flattening repeats each at every use in the branches, so the plan prints SUSPEND_BLOCKS_SQL's one-entry read of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks) more often than the text holds it and the fragment allowance (test/plan-audit-allowances.ts) does not stand for it; ps is ruledSql's recursive CTE over the author's domain suffixes (each key walked only within DNS_NAME_UTF8_BYTES (1,012) bytes; test/domain-suffix-walk.test.ts), which the classifier cannot bind where the flattened column is used, the fragment's `accounts ps` sharing its name; the copies keep pk and ps co-routines (NOT MATERIALIZED), as each of main's occurrences ran them",
   },
   {
-    id: "faf0592983e05942",
-    scans: ["accounts: SCAN a"],
-    site: "src/domain/audience.ts#reachFollowers < src/domain/suspension.ts#reachRound < src/domain/suspension.ts#<anonymous> in moderationRound < src/domain/job-attempts.ts#<anonymous> in isolated",
-    disposition: "background",
-    reason:
-      'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
-  },
-  {
-    id: "1f340ace00431562",
+    id: "d674e9521f137b3a",
     scans: ["accounts: SCAN a"],
     site: "src/domain/audience.ts#reachFollowing < src/domain/suspension.ts#reachRound < src/domain/suspension.ts#<anonymous> in moderationRound < src/domain/job-attempts.ts#<anonymous> in isolated",
     disposition: "background",
@@ -322,7 +314,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "bbbe8114cc0f87b3",
+    id: "793624e56387561b",
     scans: ["accounts: SCAN a"],
     site: "src/domain/audience.ts#reachMentioned < src/domain/suspension.ts#mentionsRound < src/domain/suspension.ts#reachRound < src/domain/suspension.ts#<anonymous> in moderationRound < src/domain/job-attempts.ts#<anonymous> in isolated",
     disposition: "background",
@@ -337,7 +329,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 9",
   },
   {
-    id: "f51569b711149874",
+    id: "88529641f8f15928",
     scans: ["?: SCAN ps"],
     site: "src/domain/audience.ts#recipientsFor < src/domain/deliveries.ts#targetsOf < src/domain/deliveries.ts#enqueueActivity < src/domain/activities.ts#recordOutbound < src/domain/statuses.ts#writePost",
     disposition: "deliberate",
@@ -401,7 +393,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "a shape only the reader's own contract test writes (test/audience.test.ts:333-409: conditions around the rule, a WITH table, a union); no src caller passes it, and each src reader is audited under its own identity",
   },
   {
-    id: "5b649a02c2ddf9a6",
+    id: "f4ae4252b0508b80",
     scans: ["?: SCAN ps"],
     site: "src/domain/audience.ts#recipientsFor < src/domain/deliveries.ts#targetsOf < src/domain/deliveries.ts#enqueueActivity < src/domain/activities.ts#recordOutbound < src/domain/polls.ts#recordPollUpdate",
     disposition: "deliberate",
@@ -856,6 +848,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (job-attempts.ts#<anonymous> in retryParkedJobs); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
+    id: "3e7bea011a161e3f",
+    scans: ["collection_jobs: SCAN collection_jobs USING INDEX collection_jobs_failing"],
+    site: "src/domain/job-attempts.ts#<anonymous> in retryParkedJobs < src/domain/job-attempts.ts#<anonymous> in retryParkedJobs",
+    disposition: "background",
+    reason:
+      'a job or round traversal (job-attempts.ts#<anonymous> in retryParkedJobs); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
+  },
+  {
     id: "18b85820c661527e",
     scans: ["notification_request_jobs: SCAN notification_request_jobs USING INDEX notification_request_jobs_failing"],
     site: "src/domain/job-attempts.ts#<anonymous> in retryParkedJobs < src/domain/job-attempts.ts#<anonymous> in retryParkedJobs",
@@ -1026,6 +1026,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   {
     id: "a457ca4e80a4c3eb",
     scans: ["moderation_jobs: SCAN moderation_jobs USING INDEX moderation_jobs_failing"],
+    site: "src/domain/job-attempts.ts#retryRowids < src/domain/job-attempts.ts#<anonymous> in retryParkedJobs",
+    disposition: "background",
+    reason:
+      'a job or round traversal (job-attempts.ts#<anonymous> in retryParkedJobs); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
+  },
+  {
+    id: "e47650457264521c",
+    scans: ["collection_jobs: SCAN collection_jobs USING INDEX collection_jobs_failing"],
     site: "src/domain/job-attempts.ts#retryRowids < src/domain/job-attempts.ts#<anonymous> in retryParkedJobs",
     disposition: "background",
     reason:
@@ -1351,13 +1359,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
   {
     id: "883afee3d9b87bd9",
     scans: [
+      "?: SCAN collection_jobs",
       "?: SCAN quotes",
       "announcement_reactions: SCAN announcement_reactions USING COVERING INDEX announcement_reactions_name",
     ],
     site: "src/domain/setup.ts#insertLocalAccount < src/domain/setup.ts#<anonymous> in bootstrapInstance",
     disposition: "deliberate",
     reason:
-      "the child-key lookups SQLite plans for a new parent row run only while a deferred foreign-key violation is outstanding (OP_FkIfZero); the Store's keys are immediate, so a new local account reads no quotes nor announcement_reactions",
+      "the child-key lookups SQLite plans for a new parent row run only while a deferred foreign-key violation is outstanding (OP_FkIfZero); the Store's keys are immediate, so a new local account reads no collection_jobs, quotes nor announcement_reactions",
     witness: "test/other-request-plans.test.ts",
   },
   {
@@ -1369,7 +1378,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:267 and :537), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:52) sessions besides the Store's own names and the monthly transform counters the setup's Images check charges (src/domain/media.ts:227), one per month it ran",
   },
   {
-    id: "b100293b1058ce77",
+    id: "ab46b31661146f27",
     scans: ["?: SCAN c", "local_accounts: SCAN l"],
     site: "src/domain/status-presenter.ts#statusRowBounds < src/domain/status-presenter.ts#plannedChunks < src/domain/status-presenter.ts#statusStream",
     disposition: "deliberate",

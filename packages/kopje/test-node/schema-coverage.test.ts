@@ -57,6 +57,9 @@ const NOT_CARRIED: Record<string, string> = {
   card_oembed_endpoints: "oEmbed endpoints Kopje's card round discovers; legacy Wildebeest has none",
   collection_pins_pending: "pinned statuses a sync of Kopje has yet to fetch; legacy has none",
   collection_items: "the members of collections made in Kopje; legacy Wildebeest has no collections",
+  collection_job_intents: "the Removes a block's collection job of Kopje delivers; legacy has no collections",
+  collection_jobs: "pending work of a block of Kopje's collection Removes; legacy has no collections",
+  collection_reach: "the followers a collection job of Kopje stages; legacy has none",
   collections: "collections made in Kopje; legacy Wildebeest has no collections",
   conversation_mutes:
     "legacy never wrote its conversation_mutes table, and a legacy row there stops the conversion (UNUSED_LEGACY_TABLES)",
@@ -215,6 +218,10 @@ const NOT_CONVERTED: Record<string, string> = {
   "notifications.report_id": "legacy never notified of a report: carried ones name none, as stored ones do in 0040",
   "notifications.account_warning_id":
     "legacy never warned an account: carried ones name no warning, as stored ones do in 0062",
+  "notifications.collection_item_id":
+    "legacy kept no collections: carried notifications name no collection item, as stored ones do in 0107",
+  "notifications.collection_id":
+    "legacy kept no collections: carried notifications name no collection, as stored ones do in 0107",
   "oauth_clients.authorized":
     "legacy carries no code or token: 0, marked when a user signs in through the app, as 0086 marks none without one",
   "status_edits.id": ASSIGNED,
@@ -317,6 +324,8 @@ const NOT_VERIFIED: Record<string, string> = {
   "notifications.group_key": DEFAULT,
   "notifications.report_id": DEFAULT,
   "notifications.account_warning_id": DEFAULT,
+  "notifications.collection_item_id": DEFAULT,
+  "notifications.collection_id": DEFAULT,
   "oauth_clients.authorized": DEFAULT,
   "oauth_clients.created_at": TIME,
   "status_edits.created_at": TIME,

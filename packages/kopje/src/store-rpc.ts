@@ -33,6 +33,7 @@ import * as annualReports from "./domain/annual-reports";
 import { checkAdminCredential, checkCredential, checkNotSuspended } from "./domain/auth";
 import * as blocks from "./domain/blocks";
 import * as cardImages from "./domain/card-images";
+import { runCollectionJobs } from "./domain/collection-jobs";
 import * as collections from "./domain/collections";
 import * as conversations from "./domain/conversations";
 import * as deliveries from "./domain/deliveries";
@@ -162,6 +163,10 @@ export const STORE_RPC = {
   // A round of the local and remote moderation jobs (domain/suspension.ts), in one transaction.
   runModerationJobs,
 
+  // A round of the jobs that deliver a block's collection Removes to their owners' followers
+  // (domain/collection-jobs.ts).
+  runCollectionJobs,
+
   // POST /admin/jobs/retry (domain/job-attempts.ts, RES-5): failing jobs made fresh, a bounded number per call.
   retryParkedJobs,
 
@@ -267,6 +272,10 @@ export const STORE_RPC = {
   apNodeInfo: federationReads.apNodeInfo,
   apQuoteAuthorization: federationReads.apQuoteAuthorization,
   apEmoji: federationReads.apEmoji,
+  apFeaturedCollections: federationReads.apFeaturedCollections,
+  apFeaturedCollection: federationReads.apFeaturedCollection,
+  apFeaturedItem: federationReads.apFeaturedItem,
+  apFeatureAuthorization: federationReads.apFeatureAuthorization,
   saveSnapshot,
 
   // OAuth and the account and instance API.

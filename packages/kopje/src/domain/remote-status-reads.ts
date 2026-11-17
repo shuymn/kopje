@@ -33,7 +33,9 @@ export type RemoteStatusInput = {
   content: string;
   text: string;
   spoilerText: string;
-  sensitive: boolean;
+  // As Mastodon's boolean column casts it (federation/remote-status.ts); null for "", which that column's NOT NULL
+  // refuses wherever Mastodon assigns it: a status is neither created nor edited with it (remote-statuses.ts).
+  sensitive: boolean | null;
   language: string | null;
   published: string | null;
   updated: string | null;

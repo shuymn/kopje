@@ -143,7 +143,13 @@ describe("moved", () => {
     );
     const { moved, reads } = await runInDurableObject(h.store, (_instance, state) => {
       const recording = recordingSql(state.storage.sql);
-      const accounts = presentAccountsWithin(new Db(recording.sql), [source], { origin: ORIGIN }, Infinity, true);
+      const accounts = presentAccountsWithin(
+        new Db(recording.sql),
+        [source],
+        { origin: ORIGIN, viewerId: null },
+        Infinity,
+        true,
+      );
       return { moved: accounts.items[0]!.moved, reads: recording.reads };
     });
     expect(moved).toBeNull();
@@ -240,11 +246,16 @@ describe("the nested account at its caps (RES-2)", () => {
     expect(nestedUri.uri).toBe("");
     await move(source, past);
     const nested = (await shown(source)).moved!;
+    // Its URL past the bound, it shows its actor id (#1734: Mastodon stores `url || @uri`).
     expect(nested).toMatchObject({
-      url: `https://remote.example/@u${past}`,
+      url: `https://remote.example/users/u${past}`,
       avatar: `${ORIGIN}/assets/avatar.jpg`,
       header: `${ORIGIN}/assets/header.jpg`,
     });
+    // Its actor id past the bound too (read as ''), this instance's page of the account.
+    const both = await account({ uri: `${fitting.uri}uu`, url: `${fitting.url}u` });
+    await move(source, both);
+    expect((await shown(source)).moved).toMatchObject({ uri: "", url: `${ORIGIN}/@u${both}@remote.example` });
     // The full account shows each, within PROFILE_URL_LIMIT.
     expect(await shown(past)).toMatchObject({ url: `${fitting.url}u`, avatar: `${fitting.avatar_url}u` });
     for (const value of [nested.uri, nested.url, nested.avatar, nested.header, nestedUri.uri]) {
@@ -348,7 +359,7 @@ describe("the nested account at its caps (RES-2)", () => {
           }
         }
       });
-      presentAccountsWithin(new Db(observing), [source], { origin: ORIGIN }, Infinity, true);
+      presentAccountsWithin(new Db(observing), [source], { origin: ORIGIN, viewerId: null }, Infinity, true);
       return rows;
     });
     expect(read).toHaveLength(1);
@@ -411,7 +422,13 @@ describe("the nested account where accounts are presented", () => {
     }
     const { moved, reads } = await runInDurableObject(h.store, (_instance, state) => {
       const recording = recordingSql(state.storage.sql);
-      const shown = presentAccountsWithin(new Db(recording.sql), sources, { origin: ORIGIN }, Infinity, true);
+      const shown = presentAccountsWithin(
+        new Db(recording.sql),
+        sources,
+        { origin: ORIGIN, viewerId: null },
+        Infinity,
+        true,
+      );
       return {
         moved: shown.items.map((item) => item.moved?.id),
         reads: recording.reads.filter((query) => query.includes(selectSql(MOVED_ACCOUNT_COLUMNS.columns))).length,
@@ -444,7 +461,13 @@ describe("a list cut by its budget", () => {
     const run = (budget: number) =>
       runInDurableObject(h.store, (_instance, state) => {
         const recording = recordingSql(state.storage.sql);
-        const answer = presentAccountsWithin(new Db(recording.sql), ids, { origin: ORIGIN }, budget, true);
+        const answer = presentAccountsWithin(
+          new Db(recording.sql),
+          ids,
+          { origin: ORIGIN, viewerId: null },
+          budget,
+          true,
+        );
         return {
           items: answer.items,
           cut: answer.cut,
@@ -494,7 +517,7 @@ describe("query plans of moves (RES-7)", () => {
         const plans: PlannedStatement[] = [];
         const real = state.storage.sql;
         const planned = new Db(plannedSql(real, /moved_to_account_id|accounts_moved_to|m INDEXED BY/, plans));
-        presentAccountsWithin(planned, [source], { origin: ORIGIN }, Infinity, true);
+        presentAccountsWithin(planned, [source], { origin: ORIGIN, viewerId: null }, Infinity, true);
         const mover = `https://remote.example/users/mover-${phase}`;
         receiveActivity.run(
           plannedSql(real, /moved_to_account_id/, plans),

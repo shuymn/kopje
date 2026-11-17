@@ -76,8 +76,9 @@ export type FixtureOptions = {
   sharedHandles?: boolean;
   // Remote actors whose ids spell the host as Kopje never stores a domain: with a port and capitals
   // (https://Example.COM:8443/users/a), in Unicode (https://bücher.example/u/b), with a trailing dot
-  // (https://example.com./u/c), and https://h.example:8443/u/a before https://h.example/u/a, one address once the port
-  // is dropped.
+  // (https://example.com./u/c), https://h.example:8443/u/a before https://h.example/u/a, one address once the port
+  // is dropped, and with two and three trailing dots (https://example.com../u/c, one address with the third once the
+  // dots are dropped, and https://example.com.../u/d).
   hostSpellings?: boolean;
   // More remote actors with these ids and preferred usernames, each with an inbox and followers under its id.
   extraActors?: { id: string; preferredUsername: string }[];
@@ -368,6 +369,8 @@ export async function buildLegacyFixture(options: FixtureOptions): Promise<Legac
     "https://example.com./u/c",
     "https://h.example:8443/u/a",
     "https://h.example/u/a",
+    "https://example.com../u/c",
+    "https://example.com.../u/d",
   ];
   const extra = extraActors.map(({ id, preferredUsername }) => ({ uri: id, name: preferredUsername }));
   const spelledActors = (hostSpellings ? spelled : []).map((uri) => ({

@@ -4,7 +4,15 @@ import { blockedDomain } from "../platform/domain-name";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import type { ImportAuthority } from "../platform/store-admin";
 import { REPORT_COLLECTION_IDS } from "../platform/stored-bounds";
-import { accountUrl, type Page, type PageQuery, type Present, presentAccountById, resolveAccountId } from "./accounts";
+import {
+  accountUrl,
+  type Page,
+  type PageQuery,
+  presentAccountById,
+  presentFor,
+  type PresentInput,
+  resolveAccountId,
+} from "./accounts";
 import { flagActivity, instanceActorUri, recordOutbound } from "./activities";
 import { type AdminAccount, adminAccountStream } from "./admin-account-presenter";
 import { accessAdminRefusal, adminAccountIdOnce } from "./admin-authority";
@@ -81,7 +89,7 @@ export type ReportInput = {
   forward: boolean;
   // The domains sent as forward_to_domains, or null when the parameter was not sent.
   forwardToDomains: string[] | null;
-  present: Present;
+  present: PresentInput;
   now: number;
 };
 
@@ -180,7 +188,10 @@ export const createReport = userWriteOperation<ReportInput, ReportResult>((db, i
       );
     }
   }
-  return { status: "ok", report: userReport(row, presentAccountById(db, target, input.present)!) };
+  return {
+    status: "ok",
+    report: userReport(row, presentAccountById(db, target, presentFor(input.present, viewer.accountId))!),
+  };
 });
 
 // ---- Remote reports: an inbound Flag (Mastodon's ActivityPub::Activity::Flag, app/lib/activitypub/activity/flag.rb;
@@ -374,7 +385,7 @@ function configuredDomain(db: Db): string | undefined {
   return db.first<{ value: string }>("SELECT value FROM instance_settings WHERE name = 'domain'")?.value;
 }
 
-function instanceDomain(db: Db, present: Present): string {
+function instanceDomain(db: Db, present: PresentInput): string {
   return configuredDomain(db) ?? new URL(present.origin).host;
 }
 
@@ -436,7 +447,7 @@ function* adminReportStream(
   db: Db,
   rows: readonly ReportRow[],
   admin: Admin,
-  present: Present,
+  present: PresentInput,
 ): Generator<AdminReport, undefined> {
   const rules = rows.some((row) => row.rule_ids !== null) ? instanceRules(db) : [];
   const shown = rows.map((row) => {
@@ -516,7 +527,7 @@ export type AdminReportPage = Page<AdminReport> & { more: boolean };
 // `more` offers the next page then too, so a short page with `more` false is the end (Mastodon offers it when the
 // page is full).
 export const listAdminReports = adminReadOperation<
-  { filter: AdminReportFilter; page: PageQuery; present: Present },
+  { filter: AdminReportFilter; page: PageQuery; present: PresentInput },
   AdminReportPage
 >(ADMIN_PERMISSION.manageReports, (db, { filter, page, present }, admin) => {
   const ascending = page.minId !== undefined;
@@ -592,12 +603,12 @@ function reportRow(db: Db, id: string): ReportRow | undefined {
 }
 
 // One report, a unit (its statuses within REPORT_STATUS_BYTES).
-function presented(db: Db, row: ReportRow, admin: Admin, present: Present): AdminReportResult {
+function presented(db: Db, row: ReportRow, admin: Admin, present: PresentInput): AdminReportResult {
   return { status: "ok", report: adminReportStream(db, [row], admin, present).next().value! };
 }
 
 // GET /api/v1/admin/reports/:id.
-export const getAdminReport = adminReadOperation<{ id: string; present: Present }, AdminReportResult>(
+export const getAdminReport = adminReadOperation<{ id: string; present: PresentInput }, AdminReportResult>(
   ADMIN_PERMISSION.manageReports,
   (db, { id, present }, admin) => {
     const row = reportRow(db, id);
@@ -648,7 +659,7 @@ function writeReport(
 
 // POST /api/v1/admin/reports/:id/assign_to_self, unassign, resolve and reopen.
 export const actOnReport = adminWriteOperation<
-  { id: string; action: ReportAction; present: Present },
+  { id: string; action: ReportAction; present: PresentInput },
   AdminReportResult
 >(ADMIN_PERMISSION.manageReports, (db, { id, action, present }, admin) => {
   const row = reportRow(db, id);
@@ -667,7 +678,7 @@ export const actOnReport = adminWriteOperation<
 // none does not). A category outside the enum, or blank, answers 422 as a validation would, where Mastodon raises
 // (ArgumentError, or the NOT NULL constraint) and answers 500. The update is logged either way.
 export const updateAdminReport = adminWriteOperation<
-  { id: string; category: string | undefined; ruleIds: string[] | undefined; present: Present },
+  { id: string; category: string | undefined; ruleIds: string[] | undefined; present: PresentInput },
   AdminReportResult
 >(ADMIN_PERMISSION.manageReports, (db, { id, category, ruleIds, present }, admin) => {
   const row = reportRow(db, id);
@@ -715,8 +726,9 @@ export function reportBound(db: Db): string {
 
 // The reporters of the account `target` after the account id `after`, in account id order, at most `limit`, each with
 // its reach (AccountReachFinder#reporters_inboxes, app/lib/account_reach_finder.rb:22-23: every reporter of the
-// account, whatever its reports' state): a seek of reports_pair_state and a read of the account by key per reporter,
-// so a reporter costs two reads however many reports it made. Fewer than `limit` means the walk is done.
+// account, whatever its reports' state; its inbox as audience.ts reachAccount reads it, within REACH_INBOX_BYTES): a
+// seek of reports_pair_state and a read of the account by key per reporter, so a reporter costs two reads however many
+// reports it made. Fewer than `limit` means the walk is done.
 export function reachReporters(
   db: Db,
   target: string,
@@ -736,7 +748,7 @@ export function reachReporters(
       break;
     }
     const account = reachAccount(db, next);
-    reached.push({ account_id: next, domain: account?.domain ?? null, inbox: account?.inbox ?? null });
+    reached.push({ account_id: next, inbox: account?.inbox ?? null });
     cursor = next;
   }
   return reached;

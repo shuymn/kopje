@@ -11,7 +11,7 @@ import { normalizeDomain, parseAddress } from "../platform/domain-name";
 import { httpUrl, sameOrigin } from "../platform/http-url";
 import { iso } from "../platform/iso-time";
 import { STATUS_EMOJIS_BYTES, storedMediaMeta, storedTime } from "../platform/stored-bounds";
-import { type Account, accountIdByAddress, type Present, presentAccountById } from "./accounts";
+import { type Account, accountIdByAddress, presentAccountById, presentFor, type PresentInput } from "./accounts";
 import { instanceDomainOf } from "./actors";
 import {
   availableSql,
@@ -420,6 +420,11 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
   if (!ctx.fetched && !relatedToLocal(db, author, visibility, addressesLocal, parent)) {
     return { applied: false, reason: "unrelated" };
   }
+  // Create#process_status: `Status.create!` raises on a sensitive of nil (NOT NULL), and nothing is stored; a known
+  // status (above) and a vote assign none.
+  if (input.sensitive === null) {
+    return { applied: false, reason: "sensitive-nil" };
+  }
   const published = remoteTime(input.published, ctx.now);
   const updated = input.updated === null ? null : remoteTime(input.updated, ctx.now);
   const quotePolicy = remoteQuotePolicy(db, author, input.quotePolicy);
@@ -758,6 +763,11 @@ export function updateRemoteStatus(
         ? { applied: true, reason: "policy-updated", statusId: existing.id }
         : { applied: false, reason: "stale", statusId: existing.id };
   }
+  // handle_explicit_update! assigns sensitive within its transaction (update_immediate_attributes!), whose NOT NULL
+  // refuses nil: the edit changes nothing, where the implicit update above assigns none and applies.
+  if (input.sensitive === null) {
+    return { applied: false, reason: "sensitive-nil" };
+  }
   // A version before year 0 (one past a watermark it cannot read) is stored as the arrival, as remoteTime stores it.
   const editedAt = storedTime(Math.min(version, ctx.now)) ?? iso(ctx.now);
   const media = input.media.slice(0, MAX_STATUS_MEDIA);
@@ -878,7 +888,7 @@ export type PollRefreshInput = {
   now: number;
   storeNow: number;
   origin: string;
-  present: Present;
+  present: PresentInput;
 };
 
 // poll: the poll as the reader sees it now, null when its status is gone or no longer visible to them (404).
@@ -1035,7 +1045,7 @@ export type ResolveInput = {
   now: number;
   storeNow: number;
   origin: string;
-  present: Present;
+  present: PresentInput;
 };
 
 // quotesDue: the status found has a quote whose verification is due (the Worker asks the Queue for a job round).
@@ -1266,7 +1276,7 @@ export const resolveSearch = userWriteOperation.atStoreTime("storeNow")<ResolveI
   const account = (id: string | undefined): ResolveResult => {
     const findable =
       id !== undefined && db.first(`SELECT 1 AS found WHERE ${findableBySql("?2", "?1")}`, accountId, id) !== undefined;
-    const found = findable ? presentAccountById(db, id, input.present) : undefined;
+    const found = findable ? presentAccountById(db, id, presentFor(input.present, accountId)) : undefined;
     return { accounts: found === undefined ? [] : [found], statuses: [] };
   };
   const status = (id: string | undefined): ResolveResult => {

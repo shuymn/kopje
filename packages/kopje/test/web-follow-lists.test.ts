@@ -145,7 +145,7 @@ async function world() {
     const visible = async (count: number) => {
       for (let i = 0; i < count; i++) {
         const name = `v${direction.slice(0, 5)}${n++}`;
-        await add(direction, await remote(h, name), `https://remote.example/@${name}`);
+        await add(direction, await remote(h, name), `https://remote.example/users/${name}`);
       }
     };
     const hidden = async (count: number) => {
@@ -235,7 +235,7 @@ describe("the follow lists", () => {
       );
       for (const direction of ["followers", "following"] as const) {
         await (direction === "followers" ? follow(h, id, alice.id) : follow(h, alice.id, id));
-        expected[direction].unshift(`https://remote.example/@${name}`);
+        expected[direction].unshift(`https://remote.example/users/${name}`);
       }
     }
     const first = await readWithin(h, "/@alice/followers", ANSWER_BYTES);
@@ -289,7 +289,7 @@ describe("the follow lists", () => {
 });
 
 // An account's settings form as the page renders it, with `changes` applied: every control's value as a browser
-// submits it (a checked box posts its value before its hidden false).
+// submits it (a checked box posts its hidden false, then its value).
 async function settingsForm(h: Harness, browser: Browser, changes: Record<string, boolean>) {
   const page = parseHtml(await (await h.request("/settings", { headers: { cookie: browser.cookie } })).text());
   const form = query(page, "form").find((f) => attr(f, "action") === "/settings/profile")!;
@@ -356,7 +356,7 @@ describe("hide_collections (R13)", () => {
       followers: shown(await (await h.request("/@alice/followers")).text()).items,
       following: shown(await (await h.request("/@alice/following")).text()).items,
     });
-    expect(await lists()).toEqual({ followers: ["/@bob"], following: ["https://remote.example/@carol"] });
+    expect(await lists()).toEqual({ followers: ["/@bob"], following: ["https://remote.example/users/carol"] });
 
     // A forged form (no token) changes nothing.
     const forged = await settingsForm(h, browser, { hide_collections: true });
@@ -398,7 +398,7 @@ describe("hide_collections (R13)", () => {
 
     const show = await settingsForm(h, browser, { hide_collections: false });
     expect((await postForm(h, browser, "/settings/profile", show.fields)).status).toBe(303);
-    expect(await lists()).toEqual({ followers: ["/@bob"], following: ["https://remote.example/@carol"] });
+    expect(await lists()).toEqual({ followers: ["/@bob"], following: ["https://remote.example/users/carol"] });
   });
 });
 

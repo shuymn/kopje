@@ -7,7 +7,7 @@ import { rubyInteger } from "../platform/ruby-integer";
 import { rubyToI } from "../platform/ruby-to-i";
 import { nextDocumentRevisionSql, pollTimeReadSql, yieldsMoreThan } from "../platform/stored-bounds";
 import { rubyStrip } from "../platform/strip";
-import { type Present, resolveApiId } from "./accounts";
+import { type PresentInput, resolveApiId } from "./accounts";
 import { pollUpdateActivity, recordOutbound, statusFacts, voteActivity } from "./activities";
 import { instanceDomainOf } from "./actors";
 import { isDistributable, mayVoteSql, viewableStatusId, type Visibility } from "./audience";
@@ -326,7 +326,7 @@ export type PollRead = { poll: Poll; due: boolean };
 // StatusPolicy#show?); otherwise not found. due: a signed-in user (not an anonymous viewer, not an app token) reads a
 // remote poll that P1 (pollDueSql) holds of at the Store's time, so the Worker reserves a refresh (reservePollRefresh).
 export const getPoll = optionalUserReadOperation.atStoreTime("storeNow")<
-  { id: string; present: Present; storeNow: number },
+  { id: string; present: PresentInput; storeNow: number },
   PollRead | null
 >((db, { id, present, storeNow }, { accountId, now }) => {
   const pollId = viewablePoll(db, accountId, id);
@@ -534,67 +534,68 @@ function mayVote(db: Db, voterId: string, statusId: string): boolean {
 // other, as VoteService creates them in one transaction: the first that fails refuses them all with its errors. A vote
 // in a local poll is counted and its Update falls due; one in a remote poll is counted here too and delivered to the
 // poll's author, a Create of a Note per choice.
-export const vote = userWriteOperation<{ id: string; choices: string[]; now: number; present: Present }, VoteResult>(
-  (db, input, { accountId }) => {
-    const pollId = viewablePoll(db, accountId, input.id);
-    const poll = pollId === null ? undefined : votedPoll(db, pollId);
-    if (pollId === null || poll === undefined) {
-      return { status: "not_found" };
+export const vote = userWriteOperation<
+  { id: string; choices: string[]; now: number; present: PresentInput },
+  VoteResult
+>((db, input, { accountId }) => {
+  const pollId = viewablePoll(db, accountId, input.id);
+  const poll = pollId === null ? undefined : votedPoll(db, pollId);
+  if (pollId === null || poll === undefined) {
+    return { status: "not_found" };
+  }
+  // The poll is found before choices are required (Polls::VotesController's set_poll, then params.require), and
+  // the vote authorized after (VoteService).
+  if (input.choices.length === 0) {
+    return { status: "missing" };
+  }
+  if (!mayVote(db, accountId, pollId)) {
+    return { status: "forbidden" };
+  }
+  const now = iso(input.now);
+  const before = db
+    .all<{ choice: number }>(
+      "SELECT choice FROM poll_votes WHERE poll_id = ? AND generation = CAST(? AS INTEGER) AND account_id = ?",
+      pollId,
+      poll.generation,
+      accountId,
+    )
+    .map((row) => row.choice);
+  const votes = [...before];
+  const choices: number[] = [];
+  for (const raw of input.choices) {
+    // VoteService's Integer(choice); one it raises on is no choice of the poll (Mastodon answers 500).
+    const choice = rubyInteger(raw) ?? -1;
+    const errors = voteErrors(poll, accountId, choice, votes, now);
+    if (errors.length > 0) {
+      return { status: "invalid", error: `Validation failed: ${errors.join(", ")}` };
     }
-    // The poll is found before choices are required (Polls::VotesController's set_poll, then params.require), and
-    // the vote authorized after (VoteService).
-    if (input.choices.length === 0) {
-      return { status: "missing" };
-    }
-    if (!mayVote(db, accountId, pollId)) {
-      return { status: "forbidden" };
-    }
-    const now = iso(input.now);
-    const before = db
-      .all<{ choice: number }>(
-        "SELECT choice FROM poll_votes WHERE poll_id = ? AND generation = CAST(? AS INTEGER) AND account_id = ?",
-        pollId,
-        poll.generation,
+    votes.push(choice);
+    choices.push(choice);
+  }
+  const ids = countVotes(db, pollId, accountId, choices, before.length === 0, null, input.now);
+  if (poll.local === 1) {
+    updateSoon(db, poll, input.now);
+  } else {
+    const actorUri = db.first<{ uri: string }>("SELECT uri FROM accounts WHERE id = ?", accountId)?.uri ?? "";
+    choices.forEach((choice, i) => {
+      recordOutbound(
+        db,
         accountId,
-      )
-      .map((row) => row.choice);
-    const votes = [...before];
-    const choices: number[] = [];
-    for (const raw of input.choices) {
-      // VoteService's Integer(choice); one it raises on is no choice of the poll (Mastodon answers 500).
-      const choice = rubyInteger(raw) ?? -1;
-      const errors = voteErrors(poll, accountId, choice, votes, now);
-      if (errors.length > 0) {
-        return { status: "invalid", error: `Validation failed: ${errors.join(", ")}` };
-      }
-      votes.push(choice);
-      choices.push(choice);
-    }
-    const ids = countVotes(db, pollId, accountId, choices, before.length === 0, null, input.now);
-    if (poll.local === 1) {
-      updateSoon(db, poll, input.now);
-    } else {
-      const actorUri = db.first<{ uri: string }>("SELECT uri FROM accounts WHERE id = ?", accountId)?.uri ?? "";
-      choices.forEach((choice, i) => {
-        recordOutbound(
-          db,
-          accountId,
-          voteActivity({
-            voteUri: `${actorUri}#votes/${ids[i] ?? ""}`,
-            actorUri,
-            name: poll.options[choice] ?? "",
-            statusUri: poll.status_uri,
-            authorUri: poll.author_uri,
-            authorId: poll.author_id,
-          }),
-          input.now,
-        );
-      });
-    }
-    const value = presentPoll(db, pollId, accountId, now, input.present.origin);
-    return value === null ? { status: "not_found" } : { status: "ok", value };
-  },
-);
+        voteActivity({
+          voteUri: `${actorUri}#votes/${ids[i] ?? ""}`,
+          actorUri,
+          name: poll.options[choice] ?? "",
+          statusUri: poll.status_uri,
+          authorUri: poll.author_uri,
+          authorId: poll.author_id,
+        }),
+        input.now,
+      );
+    });
+  }
+  const value = presentPoll(db, pollId, accountId, now, input.present.origin);
+  return value === null ? { status: "not_found" } : { status: "ok", value };
+});
 
 export type RemoteVote = { voterId: string; statusId: string; name: string; uri: string; now: number };
 

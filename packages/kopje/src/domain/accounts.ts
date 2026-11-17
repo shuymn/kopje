@@ -53,6 +53,8 @@ import {
   isBotActorType,
   type QuotePolicyName,
   type ViewerContext,
+  type FeatureApproval,
+  featureApprovalReads,
 } from "./audience";
 import {
   type Credential,
@@ -71,7 +73,14 @@ import type { FeaturedTag } from "./featured-tags";
 import { remoteFieldLink } from "./field-verification";
 import { readOperation } from "./operation";
 import { htmlToPlainText } from "./plain-text";
-import { actorUriSql, DISPLAY_NAME_LIMIT, PROFILE_URL_LIMIT, USERNAME_LIMIT, usernameSql } from "./profile-bounds";
+import {
+  actorUriSql,
+  DISPLAY_NAME_LIMIT,
+  PROFILE_URL_LIMIT,
+  remoteAccountUrl,
+  USERNAME_LIMIT,
+  usernameSql,
+} from "./profile-bounds";
 import { type CachedImages, cachedImagesOf, cachedImageUrls } from "./remote-media";
 import { queryTerms } from "./search-text";
 import { linkHtml, renderFieldValue } from "./status-text";
@@ -81,7 +90,17 @@ import { edgeRangeSql, readWindow, singleWindow, type Window, windowJson, window
 // Every operation takes an account by its API id or by its legacy id (accounts.legacy_id); both resolve to the same
 // row and responses always carry the API id. Ids are TEXT and are never read as numbers.
 
-export type Present = { origin: string };
+// How an account is presented: on the instance origin, for the viewer (null: none signed in), whose answer
+// feature_approval.current_user is. The Worker sends the origin alone (PresentInput); the Store adds the viewer it
+// judged the token to be, so a caller cannot present for another account.
+export type Present = { origin: string; viewerId: string | null };
+
+export type PresentInput = Pick<Present, "origin">;
+
+// The presentation of `input` for `viewerId`.
+export function presentFor(input: PresentInput, viewerId: string | null): Present {
+  return { origin: input.origin, viewerId };
+}
 
 export type Account = {
   id: string;
@@ -125,6 +144,11 @@ export type Account = {
   // A local account's only: its highlighted role, the OAuth admin's Owner while it is available; [] otherwise.
   roles?: AccountRole[];
   suspended?: true;
+  // Who may feature the account in a collection (REST::AccountSerializer#feature_approval): the policy's halves as
+  // keys, from the row as Mastodon reads it also while unavailable (a local account: ["public"], or ["followers"] while
+  // locked, when discoverable, else []; manual []; a remote one [] until Kopje stores its policy), and the answer to
+  // the viewer (featureApprovalSql).
+  feature_approval: { automatic: string[]; manual: string[]; current_user: FeatureApproval };
   // Present, true, only while the account's handle is invalidated (shownHandle).
   invalid_handle?: true;
   // The account it moved to (Account#moved_to_account), one level deep (MOVED_ACCOUNT_COLUMNS), when it has one
@@ -289,14 +313,19 @@ function movedOf(db: Db, rows: readonly AccountRow[]): ReadonlyMap<string, Moved
   );
 }
 
-// What a chunk of accounts shows besides its rows, read once for the chunk: the moved-to accounts (movedOf), and the
-// cached profile images of the accounts and their targets (remote-media.ts cachedImagesOf, one seek a slot, outside
-// the row heap).
-type Related = { moved: ReadonlyMap<string, MovedRow>; cached: CachedImages };
+// What a chunk of accounts shows besides its rows, read once for the chunk: the moved-to accounts (movedOf), and of
+// the accounts and their targets the cached profile images (remote-media.ts cachedImagesOf, one seek a slot, outside
+// the row heap) and the viewer's feature_approval answers (featureApprovalReads, one statement).
+type Related = {
+  moved: ReadonlyMap<string, MovedRow>;
+  cached: CachedImages;
+  approvals: ReadonlyMap<string, FeatureApproval>;
+};
 
-function relatedOf(db: Db, rows: readonly AccountRow[]): Related {
+function relatedOf(db: Db, rows: readonly AccountRow[], viewerId: string | null): Related {
   const moved = movedOf(db, rows);
-  return { moved, cached: cachedImagesOf(db, [...rows.map((row) => row.id), ...moved.keys()]) };
+  const ids = [...rows.map((row) => row.id), ...moved.keys()];
+  return { moved, cached: cachedImagesOf(db, ids), approvals: featureApprovalReads(db, ids, viewerId) };
 }
 
 export { DISPLAY_NAME_LIMIT, PROFILE_URL_LIMIT, USERNAME_LIMIT };
@@ -362,7 +391,7 @@ export function* accountsOf(
     const slice = ids.slice(next, next + chunk);
     const read = accountRowsOf(db, [...new Set(slice)]);
     // The chunk's moved-to accounts and cached images in one read each; a target is presented only with its source.
-    const related = relatedOf(db, read);
+    const related = relatedOf(db, read, present.viewerId);
     const rows = new Map(read.map((row) => [row.id, row]));
     for (const id of slice) {
       const row = rows.get(id);
@@ -391,7 +420,7 @@ type PartialRow = Pick<AccountRow, "id" | "uri" | "username" | "domain" | "actor
 export function* partialAccountsOf(
   db: Db,
   ids: readonly string[],
-  present: Present,
+  present: PresentInput,
   chunk = ANSWER_CHUNK,
 ): Generator<PartialAccount | undefined, undefined> {
   for (let next = 0; next < ids.length; next += chunk) {
@@ -449,24 +478,27 @@ export function admitAccounts(
   return admit(accountsOf(db, ids, present), budget, leading);
 }
 
-// An account's profile URL. A stored url is used only when it is http(s) (HTML-3); otherwise it is derived from the
-// actor URI, which carries the account's origin (a local account's carries the instance origin), or from this
-// instance's origin when the URI is not http(s) either. An invalidated handle (shownHandle) names no page, so such an
-// account's is its stored url, else its actor id, as Mastodon's url_for, else ''. Each is used only within
-// PROFILE_URL_LIMIT as serialized (RES-2): a longer one falls back to the next, and to '' when none fits (a converted
-// row of a long host and name). `href` bounds each: a nested moved-to account's are MOVED_BOUNDS'.
+// An account's profile URL. A stored url is used only when it is http(s) (HTML-3). A remote account's is otherwise its
+// actor id (profile-bounds.ts remoteAccountUrl), as Mastodon stores `url || @uri` (process_account_service.rb:228) and
+// REST::AccountSerializer#url falls back to uri_for. An invalidated handle (shownHandle) names no page, so such an
+// account's is its stored url, else its actor id, as Mastodon's url_for, else ''. Any other is derived from the actor
+// id, which carries the account's origin (a local account's carries the instance origin), or from this instance's
+// origin when the id is not http(s) either.
+// Each is used only within PROFILE_URL_LIMIT as serialized (RES-2): a longer one falls back to the next, and to '' when
+// none fits (a converted row of a long host and name). `href` bounds each: a nested moved-to account's are
+// MOVED_BOUNDS'.
 export function accountUrl(
   row: { id: string; url: string | null; uri: string; username: string; domain: string | null },
   origin: string,
   href = ACCOUNT_BOUNDS.href,
 ): string {
-  const stored = href(row.url);
+  const stored = row.domain === null ? href(row.url) : remoteAccountUrl(row, href);
   if (stored !== null) {
     return stored;
   }
   const handle = shownHandle(row);
   if (handle.invalid) {
-    return href(row.uri) ?? "";
+    return "";
   }
   const actor = httpUrl(row.uri);
   return (actor === null ? null : href(`${actor.origin}/@${row.username}`)) ?? href(`${origin}/@${handle.acct}`) ?? "";
@@ -555,10 +587,11 @@ export function acctOf(row: { id: string; username: string; domain: string | nul
 // and `suspended: true`. The uri, noindex and the display settings are shown as for an available one, as Mastodon shows
 // them. `moved`: the account it moved to, from `moved` (movedOf), absent when it names none Kopje reads, null while it
 // is unavailable.
-function presentAccount(db: Db, row: AccountRow, { origin }: Present, { moved, cached }: Related): Account {
+function presentAccount(db: Db, row: AccountRow, { origin }: Present, related: Related): Account {
+  const { moved } = related;
   const target = row.moved_to_account_id === null ? undefined : moved.get(row.moved_to_account_id);
   return {
-    ...presentIdentity(db, row, origin, ACCOUNT_BOUNDS, cached, () => ({
+    ...presentIdentity(db, row, origin, ACCOUNT_BOUNDS, related, () => ({
       display_name: presentedDisplayName(row.display_name),
       note: presentedNote(row.note),
       avatar_description: presentedProfileDescription(row.avatar_description),
@@ -573,14 +606,14 @@ function presentAccount(db: Db, row: AccountRow, { origin }: Present, { moved, c
         ? { moved: null }
         : target === undefined
           ? {}
-          : { moved: presentMovedAccount(db, target, origin, cached) }),
+          : { moved: presentMovedAccount(db, target, origin, related) }),
   };
 }
 
 // A moved-to account nested in Account#moved (MOVED_ACCOUNT_COLUMNS): every text within its decoded limit, no note,
 // fields or image descriptions, and the emojis its display name references while their JSON fits MOVED_EMOJIS_BYTES. It
 // never shows a `moved` of its own (Mastodon's AccountDecorator#moved? is false).
-function presentMovedAccount(db: Db, row: MovedRow, origin: string, cached: CachedImages): Account {
+function presentMovedAccount(db: Db, row: MovedRow, origin: string, related: Related): Account {
   const displayName = cutCodePoints(row.display_name, MOVED_DISPLAY_NAME_LIMIT);
   const cut = {
     ...row,
@@ -588,7 +621,7 @@ function presentMovedAccount(db: Db, row: MovedRow, origin: string, cached: Cach
     created_at: cutCodePoints(row.created_at, MOVED_CREATED_AT_LIMIT),
     last_status_at: row.last_status_at === null ? null : cutCodePoints(row.last_status_at, MOVED_LAST_STATUS_AT_LIMIT),
   };
-  return presentIdentity(db, cut, origin, MOVED_BOUNDS, cached, () => ({
+  return presentIdentity(db, cut, origin, MOVED_BOUNDS, related, () => ({
     display_name: displayName,
     note: "",
     avatar_description: "",
@@ -610,7 +643,7 @@ function presentIdentity(
   row: MovedRow,
   origin: string,
   bounds: IdentityBounds,
-  cached: CachedImages,
+  { cached, approvals }: Related,
   profile: () => ProfileText,
 ): Account {
   const suspended = row.available === 0;
@@ -670,13 +703,18 @@ function presentIdentity(
       ? { noindex: false, roles: !suspended && adminAccountIdOnce(db) === row.id ? [OWNER_BADGE] : [] }
       : {}),
     ...(suspended ? { suspended: true as const } : {}),
+    feature_approval: {
+      automatic: row.domain === null && row.discoverable === 1 ? [row.locked === 1 ? "followers" : "public"] : [],
+      manual: [],
+      current_user: approvals.get(row.id) ?? "denied",
+    },
     ...(handle.invalid ? { invalid_handle: true as const } : {}),
   };
 }
 
 // One account with its moved-to account, read for it alone.
 function presentOne(db: Db, row: AccountRow, present: Present): Account {
-  return presentAccount(db, row, present, relatedOf(db, [row]));
+  return presentAccount(db, row, present, relatedOf(db, [row], present.viewerId));
 }
 
 // Stored local fields as every path presents them (the Account, source.fields and the actor's attachments), read
@@ -863,7 +901,7 @@ function presentAccountsById(db: Db, ids: readonly string[], present: Present): 
 		WHERE a.id IN (SELECT value FROM json_each(?1)) AND ${foundSql("a")}`,
     JSON.stringify([...new Set(ids)]),
   );
-  const related = relatedOf(db, rows);
+  const related = relatedOf(db, rows, present.viewerId);
   return new Map(rows.map((row) => [row.id, presentAccount(db, row, present, related)]));
 }
 
@@ -880,12 +918,12 @@ function accountRow(db: Db, id: string): AccountRow | undefined {
 // GET /api/v1/accounts/:id, and the API's other reads of one account by id. credential: the token an anonymous route
 // was sent (AUTH-2), whose suspended owner is refused first.
 export const getAccount = readOperation<
-  { id: string; present: Present; credential: Credential | null },
+  { id: string; present: PresentInput; credential: Credential | null },
   Judged<Account | null>
 >((db, { id, present, credential }) =>
-  unlessSuspended(db, credential, () => {
+  unlessSuspended(db, credential, (viewerId) => {
     const resolved = routeAccountId(db, id);
-    return resolved === null ? null : (presentAccountById(db, resolved, present) ?? null);
+    return resolved === null ? null : (presentAccountById(db, resolved, presentFor(present, viewerId)) ?? null);
   }),
 );
 
@@ -896,12 +934,12 @@ export const getAccount = readOperation<
 export const MAX_ACCOUNTS_BY_ID = 40;
 
 export const getAccounts = readOperation<
-  { ids: string[]; present: Present; credential: Credential | null },
+  { ids: string[]; present: PresentInput; credential: Credential | null },
   Judged<Account[]>
 >((db, { ids, present, credential }) =>
-  unlessSuspended(db, credential, () => {
+  unlessSuspended(db, credential, (viewerId) => {
     const resolved = [...new Set(ids.slice(0, MAX_ACCOUNTS_BY_ID).flatMap((id) => resolveAccountId(db, id) ?? []))];
-    const accounts = presentAccountsById(db, resolved, present);
+    const accounts = presentAccountsById(db, resolved, presentFor(present, viewerId));
     return resolved.flatMap((id) => accounts.get(id) ?? []);
   }),
 );
@@ -996,11 +1034,16 @@ export function accountByLookup(db: Db, username: string, domain: string | null,
 // GET /api/v1/accounts/lookup: domain null means a local account. credential: the token an anonymous route was sent
 // (AUTH-2), whose suspended owner is refused first; null for a public page.
 export const lookupAccount = readOperation<
-  { username: string; domain: string | null; present: Present; credential: Credential | null },
+  { username: string; domain: string | null; present: PresentInput; credential: Credential | null },
   Judged<Account | null>
 >((db, { username, domain, present, credential }) =>
-  unlessSuspended(db, credential, () =>
-    accountByLookup(db, username, domain === null ? null : (normalizeDomain(domain) ?? domain.toLowerCase()), present),
+  unlessSuspended(db, credential, (viewerId) =>
+    accountByLookup(
+      db,
+      username,
+      domain === null ? null : (normalizeDomain(domain) ?? domain.toLowerCase()),
+      presentFor(present, viewerId),
+    ),
   ),
 );
 
@@ -1128,8 +1171,8 @@ export function presentProfile(db: Db, accountId: string, featuredTags: Featured
   };
 }
 
-export const verifyCredentials = userReadOperation<{ present: Present }, CredentialAccount | null>(
-  (db, { present }, viewer) => credentialAccount(db, viewer.accountId, present),
+export const verifyCredentials = userReadOperation<{ present: PresentInput }, CredentialAccount | null>(
+  (db, { present }, viewer) => credentialAccount(db, viewer.accountId, presentFor(present, viewer.accountId)),
 );
 
 // GET /oauth/userinfo (Mastodon's OAuthUserinfoSerializer): OpenID Connect claims of the token's own account, with the
@@ -1143,12 +1186,12 @@ export type Userinfo = {
   picture: string;
 };
 
-export const userinfo = userReadOperation<{ present: Present }, Userinfo | null>((db, { present }, viewer) => {
+export const userinfo = userReadOperation<{ present: PresentInput }, Userinfo | null>((db, { present }, viewer) => {
   const row = accountRow(db, viewer.accountId);
   if (row === undefined) {
     return null;
   }
-  const account = presentOne(db, row, present);
+  const account = presentOne(db, row, presentFor(present, viewer.accountId));
   return {
     iss: `${present.origin}/`,
     sub: row.uri,
@@ -1303,7 +1346,7 @@ export const MAX_FAMILIAR_FOLLOWERS = 80;
 
 export type FamiliarFollowers = { id: string; accounts: Account[] };
 
-export const familiarFollowers = userReadOperation<{ ids: string[]; present: Present }, FamiliarFollowers[]>(
+export const familiarFollowers = userReadOperation<{ ids: string[]; present: PresentInput }, FamiliarFollowers[]>(
   (db, { ids, present }, _viewer, { accountId: viewerId, now }) => {
     const resolved = ids
       .slice(0, MAX_FAMILIAR_FOLLOWERS_IDS)
@@ -1342,7 +1385,7 @@ export const familiarFollowers = userReadOperation<{ ids: string[]; present: Pre
     const shown = sharedAnswer(
       db,
       entries.map((entry) => entry.followers),
-      present,
+      presentFor(present, viewerId),
       ANSWER_BYTES - frame,
     );
     return entries.map((entry, i) => ({ id: entry.id, accounts: shown[i] ?? [] }));
@@ -1384,7 +1427,7 @@ export type SearchInput = {
   following: boolean;
   // The instance's own host: "alice@<host>" searches for the local alice.
   localDomain: string;
-  present: Present;
+  present: PresentInput;
   // The account resolve=true found (remote-statuses.ts resolveSearch), shown first, as Mastodon's
   // AccountSearchService puts the exact match first, when the viewer may find it and, with `following`, follows it.
   resolvedAccountId?: string | undefined;
@@ -1396,8 +1439,13 @@ export type SearchInput = {
 // holds fewer accounts and a client advancing by the number received continues after them.
 export const searchAccounts = userReadOperation<SearchInput, Account[]>(
   (db, input, viewer) =>
-    presentAccountsWithin(db, searchAccountIds(db, input, viewer.accountId), input.present, ARRAY_ANSWER_BYTES, true)
-      .items,
+    presentAccountsWithin(
+      db,
+      searchAccountIds(db, input, viewer.accountId),
+      presentFor(input.present, viewer.accountId),
+      ARRAY_ANSWER_BYTES,
+      true,
+    ).items,
 );
 
 // The accounts' ids: the account resolve=true found, when the viewer may find it (findableBySql, R14) and, with
@@ -1575,7 +1623,7 @@ export type ListFollowsInput = {
   account: string;
   direction: "followers" | "following";
   page: PageQuery;
-  present: Present;
+  present: PresentInput;
 };
 
 // The ids of a window of account ids (windows.ts) that `rule` (over `a`, the account row, and `l`, its local_accounts
@@ -1712,7 +1760,7 @@ export function listFollowsWithin(
           windowJson(window),
         );
   const shown = windowPage(window, rows, (row) => row.cursor, page.limit, ascending);
-  const presented = accountPage(db, shown, ascending, (row) => row.cursor, present, admission);
+  const presented = accountPage(db, shown, ascending, (row) => row.cursor, presentFor(present, viewerId), admission);
   return { page: presented, more: shown.more || presented.cut === true, shown: true };
 }
 
@@ -1721,7 +1769,7 @@ export function listFollowsWithin(
 // An unavailable requester (R1) is left out, as Mastodon lists Account.without_suspended, and listed again once it is
 // available. A page reads a window of readWindow(limit) of the viewer's requests from the cursor (follows_target, in
 // id order; windows.ts), then applies the rule to those (docs/visibility.md "Read bounds").
-export const listFollowRequests = userReadOperation<{ page: PageQuery; present: Present }, Page<Account>>(
+export const listFollowRequests = userReadOperation<{ page: PageQuery; present: PresentInput }, Page<Account>>(
   (db, { page, present }, { accountId: viewerId }) => {
     const ascending = page.minId !== undefined;
     const size = readWindow(page.limit);
@@ -1747,6 +1795,6 @@ export const listFollowRequests = userReadOperation<{ page: PageQuery; present: 
             windowJson(window),
           );
     const shown = windowPage(window, rows, (row) => row.cursor, page.limit, ascending);
-    return accountPage(db, shown, ascending, (row) => row.cursor, present);
+    return accountPage(db, shown, ascending, (row) => row.cursor, presentFor(present, viewerId));
   },
 );

@@ -182,17 +182,32 @@ function hrefOf(value: unknown): string | null {
 }
 
 // The activity types a later activity about the same object supersedes (beyond what a retraction supersedes: all):
-// an Update earlier Updates, an Add or Remove earlier Adds and Removes of the same member of the same collection.
-function supersededTypes(type: unknown): string[] {
-  switch (type) {
+// an Update earlier Updates, an Add or Remove earlier Adds and Removes of the same member of the same collection, but
+// for an item of a local collection (FEP-7aa9, collection-documents.ts): its Add and Remove are both sent, in order,
+// since the member's server learns the item's id only from its Add and finds the item by it on the Remove.
+function supersededTypes(activity: Activity): string[] {
+  switch (activity.type) {
     case "Update":
       return ["Update"];
     case "Add":
     case "Remove":
-      return ["Add", "Remove"];
+      return isCollectionItemActivity(activity) ? [] : ["Add", "Remove"];
     default:
       return [];
   }
+}
+
+// A local collection's id (`<actor>/collections/<digits>`); the featured collections (`/collections/featured`,
+// `/collections/tags`) and featured_collections are not.
+const LOCAL_COLLECTION = /\/collections\/\d+$/;
+
+function isCollectionItemActivity(activity: Activity): boolean {
+  return typeof activity.target === "string" && LOCAL_COLLECTION.test(activity.target);
+}
+
+// A FeaturedCollection's Update, which goes as it is: a collection has no Create to pair it with.
+function isCollectionObject(object: unknown): boolean {
+  return typeof object === "object" && object !== null && (object as { type?: unknown }).type === "FeaturedCollection";
 }
 
 function quoteStampOf(activity: Activity): string | null {
@@ -514,7 +529,8 @@ function receiversOf(db: Db, signerId: string, object: string): string[] {
 // version and then the Update, in that order in its lane, which replace any Create or Update of the object still
 // waiting for it there. Whether such a server holds the status is never guessed: Mastodon and Misskey ignore a Create
 // of a status they hold (Create#create_status) and an Update of one they do not, so one of the pair applies either way,
-// and the delivered Create's receipt makes later edits an Update alone.
+// and the delivered Create's receipt makes later edits an Update alone. An Update of a collection (FeaturedCollection)
+// goes alone to every target.
 // options.withdraws: a Reject that ends an accepted follow, a retraction (outboundKind). options.audienceOnly: a
 // retraction sent to its audience alone, not to the earlier receivers of what it withdraws. options.personalInbox: a
 // neutral copy to each addressed account at its personal inbox, never its shared one. R38's severing Reject takes both
@@ -557,7 +573,7 @@ export function enqueueActivity(
     });
   }
   const { object, retracts } = subjectOf(envelope.activity, options.withdraws === true);
-  const types = supersededTypes(envelope.activity.type);
+  const types = supersededTypes(envelope.activity);
   if (object !== null && (retracts || types.length > 0)) {
     supersede(db, signerId, object, retracts, types);
   }
@@ -593,7 +609,7 @@ export function enqueueActivity(
       now,
     );
     inserted = insertIntent(db, signerId, envelope, object, false, targets, now);
-  } else if (object !== null && envelope.activity.type === "Update") {
+  } else if (object !== null && envelope.activity.type === "Update" && !isCollectionObject(envelope.activity.object)) {
     const having = serversWithObject(db, signerId, object);
     const fresh = targets.filter((t) => t.inbox !== "" && !having.has(laneOf(t.inbox)) && !voters.has(t.inbox));
     if (fresh.length > 0) {
@@ -1671,13 +1687,13 @@ function step(g: Gathering, c: Cursor): boolean {
     case "voters":
       return stepInboxes(
         g,
-        (limit) => stagedVoters(g.db, kind, signerId, g.plan.pollVoters ?? null, c.afterKey ?? "", limit, BOUND),
+        (limit) => stagedVoters(g.db, kind, signerId, g.plan.pollVoters ?? null, c.afterKey ?? "", limit),
         (row) => (c.afterKey = row.key),
       );
     case "followers":
       return stepInboxes(
         g,
-        (limit) => stagedFollowers(g.db, kind, signerId, c.afterId, g.staging.followBound, limit, BOUND),
+        (limit) => stagedFollowers(g.db, kind, signerId, c.afterId, g.staging.followBound, limit),
         (row) => (c.afterId = row.key),
       );
     case "unexpanded":
@@ -2019,8 +2035,19 @@ export function stageRetraction(db: Db, signerId: string, object: string, maxRow
 export function beginStagedUpdate(db: Db, signerId: string, envelope: DeliveryEnvelope, now: number): string {
   const { object } = subjectOf(envelope.activity, false);
   if (object !== null) {
-    supersede(db, signerId, object, false, supersededTypes(envelope.activity.type), true);
+    supersede(db, signerId, object, false, supersededTypes(envelope.activity), true);
   }
+  return insertStagedIntent(db, signerId, envelope, object, now);
+}
+
+// A staged intent's row (staged '', before its first stage), as beginStagedUpdate and beginFollowerStaging record it.
+function insertStagedIntent(
+  db: Db,
+  signerId: string,
+  envelope: DeliveryEnvelope,
+  object: string | null,
+  now: number,
+): string {
   return db.first<{ id: string }>(
     `INSERT INTO outbound_activities (account_id, body, object_uri, retracts, staged, created_at)
 		VALUES (?, ?, ?, 0, '', ?) RETURNING CAST(id AS TEXT) AS id`,
@@ -2029,6 +2056,27 @@ export function beginStagedUpdate(db: Db, signerId: string, envelope: DeliveryEn
     object,
     now,
   )!.id;
+}
+
+// An intent whose followers a collection job stages (domain/collection-jobs.ts): a block's Remove of an item from a
+// local collection. beginFollowerStaging records it with the targets of its addressed accounts (the collection's
+// members and the item's, at most its stored items) and no follower, so the block's transaction reads none of them;
+// the job writes the followers' inboxes to it (stageTargets) and releases it (endStaging). Its addressed targets may
+// expand at once. The chunks the job writes come after those of intents recorded meanwhile, and after the item's Add,
+// recorded before it; an item's Remove supersedes nothing (supersededTypes). Returns the intent's id.
+export function beginFollowerStaging(db: Db, signerId: string, envelope: DeliveryEnvelope, now: number): string {
+  const { object } = subjectOf(envelope.activity, false);
+  const { targets } = targetsOf(
+    db,
+    signerId,
+    envelope.activity,
+    { ...envelope.audience, followers: false },
+    false,
+    envelope.reachOf ?? [],
+  );
+  const id = insertStagedIntent(db, signerId, envelope, object, now);
+  insertChunks(db, id, chunked(targets));
+  return id;
 }
 
 // Writes `inboxes` (neutral copies) as chunks of the staged intent `intentId`, and returns how many rows it wrote; none

@@ -27,6 +27,7 @@ import { httpUrl } from "../platform/http-url";
 import { STATUS_URI_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import { withinJsonBounds } from "../platform/json-bounds";
 import { railsBlank } from "../platform/rails-blank";
+import { railsBoolean } from "../platform/rails-boolean";
 import {
   CARD_URL_LIMIT,
   storedBlurhash,
@@ -48,11 +49,11 @@ import { remoteDescription } from "./lang-string";
 import { isTransientLoadError } from "./loader";
 import { emojiCandidates } from "./remote-emoji";
 
-// Remote statuses as Mastodon 4.5.11 reads them (ActivityPub::Parser::StatusParser and MediaAttachmentParser):
-// compacted JSON with the ActivityStreams context, values as strings, objects with an id, or arrays of either. Note and
-// Question are statuses; Article, Page, Image, Audio, Video and Event are converted as Mastodon converts them (the name
-// as a heading, the summary, and a link to the url, with no content warning). Everything is bounded (RES-2, RES-4) and
-// sanitized (HTML-1); URLs are http(s) only (HTML-3). Quotes are read from quote, _misskey_quote, quoteUrl and quoteUri
+// Remote statuses as Mastodon 4.7.5 reads them (ActivityPub::Parser::StatusParser and MediaAttachmentParser), from the
+// JSON as received: values as strings, objects with an id, or arrays of either. Note and Question are statuses;
+// Article, Page, Image, Audio, Video and Event are converted as Mastodon converts them (the name as a heading, the
+// summary, and a link to the url, with no content warning). Everything is bounded (RES-2, RES-4) and sanitized
+// (HTML-1); URLs are http(s) only (HTML-3). Quotes are read from quote, _misskey_quote, quoteUrl and quoteUri
 // (quoteOf); Misskey's other extensions (_misskey_content, _misskey_summary) and everything else not read here stay in
 // raw.
 
@@ -544,7 +545,9 @@ export function parseRemoteStatus(
     spoilerText: converted
       ? ""
       : cutJsonString(cutCodeUnits(storedText(summary ?? ""), MAX_SPOILER_LENGTH), SPOILER_BYTES),
-    sensitive: object.sensitive === true,
+    // `@status_parser.sensitive || false` as Mastodon's boolean column casts it (create.rb:115,
+    // process_status_update_service.rb:184): absent, null and false are false, and "" is nil (RemoteStatusInput).
+    sensitive: railsBoolean(object.sensitive ?? false),
     language: languageOf(object),
     published: timeOf(object.published),
     updated: timeOf(object.updated),

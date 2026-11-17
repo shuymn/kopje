@@ -26,7 +26,7 @@ import type { ActorState, RemoteActorInput, RemoteProfileInput } from "../domain
 import { flagObjects, MAX_FLAG_OBJECTS, reportComment } from "../domain/reports";
 import { fetchableHref, sameOrigin } from "../platform/http-url";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
-import { withinJsonBounds } from "../platform/json-bounds";
+import { jsonRefusal, jsonTextMalformed } from "../platform/json-bounds";
 import { isActivityPubMediaType, parseMediaType } from "../platform/media-type";
 import { callStore } from "../platform/store-client";
 import { type GoneSettled, goneSettler, type SettleGone } from "./actor-gone";
@@ -37,9 +37,11 @@ import {
   type FederationDeps,
   type FederationState,
   type RemoteLoaders,
+  withinBounds,
 } from "./federation";
 import { typeIs } from "./json-shapes";
 import { MAX_PUBLIC_KEYS } from "./key-entries";
+import { ldSignedReading, type Rules, type TypeReader } from "./ld-signed-body";
 import {
   createContextLoader,
   createSafeLoader,
@@ -103,8 +105,9 @@ export type InboundRequest = {
 // 202: done or deliberately ignored (a format or authorization problem, as Mastodon answers); 401: the signature or
 // the signer's identity failed; 415: not an ActivityStreams body; 503: a remote fetch failed in a way that may pass.
 // dropped: a 202 for a relay whose signer is established but which applies nothing (its author proof does not hold, or
-// Kopje applies no relay of its type), logged as a refusal is (federation/inbox.ts processInbox), as Mastodon drops
-// such a relay after answering 202.
+// Kopje applies no relay of its type), or for an LD-signed body outside the vocabulary Mastodon reads it in
+// (ld-context), logged as a refusal is (federation/inbox.ts processInbox), as Mastodon drops such a relay after
+// answering 202.
 export type InboxOutcome = {
   status: 202 | 401 | 415 | 503;
   reason: string;
@@ -188,13 +191,13 @@ function idOf(value: unknown): string | null {
 
 // The types read as a Like: Misskey's reactions (a Like with _misskey_reaction or content), EmojiReact and
 // EmojiReaction (Misskey's isLike, core/activitypub/type.ts). A favourite; the emoji is not kept (as Mastodon).
-const LIKE_TYPES: ReadonlySet<string> = new Set(["Like", "EmojiReact", "EmojiReaction"]);
+export const LIKE_TYPES: ReadonlySet<string> = new Set(["Like", "EmojiReact", "EmojiReaction"]);
 
-function refOf(value: unknown): ActivityRef {
+function refOf(value: unknown, readType: TypeReader): ActivityRef {
   if (!isObject(value)) {
     return { id: idOf(value), type: null, actor: null, object: null, atomUri: null };
   }
-  const type = typeof value.type === "string" ? value.type : null;
+  const type = typeof value.type === "string" ? readType(value.type) : null;
   return {
     id: idOf(value),
     type: type !== null && LIKE_TYPES.has(type) ? "Like" : type,
@@ -221,52 +224,79 @@ export function hasActivityStreamsContext(context: unknown): boolean {
   return context === AS_CONTEXT || (Array.isArray(context) && context.some((c) => c === AS_CONTEXT));
 }
 
-// The activity as Mastodon reads it: compacted JSON with the ActivityStreams context, ids as strings or objects with
-// an id. Other types and objects Kopje does not store are 'unsupported'.
+// An unsigned activity's types, read as given (Mastodon compacts only an LD-signed one).
+const AS_GIVEN: TypeReader = (type) => type;
+
+// The activity as received (Mastodon reads an LD-signed one as its compaction, patched toward the body as received;
+// one whose context or keys could give what Kopje reads another meaning there is ignored, ldSignedReading): ids as
+// strings or objects with an id. Other types and objects Kopje does not store are 'unsupported'.
 // The envelope every activity must have before anything reads it: the ActivityStreams context, a string id and type,
-// and an actor with an http(s) origin. Shared by the inbox and the cutover rollback's drain, so neither hands on an
-// activity the other would ignore.
-function activityEnvelope(
+// and an actor with an http(s) origin; an LD-signed one, only in the vocabulary Mastodon reads it in, its types (the
+// activity's and its embedded object's) as the compaction names them where Kopje shows Mastodon compacts it, as given
+// elsewhere, and its names, as members and types, read only where the compaction writes them so (ID-1,
+// ldSignedReading): `read` is the body Kopje reads, the activity as received is still what is forwarded and proven.
+// Shared by the inbox and the cutover rollback's drain, so neither hands on an activity the other would ignore.
+async function activityEnvelope(
   json: Json,
-): { ok: true; actor: string; id: string; type: string } | { ok: false; reason: "no-context" | "incomplete" } {
+  rules: Rules = {},
+): Promise<
+  | { ok: true; actor: string; id: string; type: string; readType: TypeReader; read: Json }
+  | { ok: false; reason: "no-context" | "ld-context" | "incomplete" }
+> {
   if (!hasActivityStreamsContext(json["@context"])) {
     return { ok: false, reason: "no-context" };
   }
-  const actor = idOf(json.actor);
-  const id = typeof json.id === "string" ? json.id : null;
-  const type = typeof json.type === "string" ? json.type : null;
+  const reading = isObject(json.signature) ? await ldSignedReading(json, rules) : { readType: AS_GIVEN, body: json };
+  if (reading === null) {
+    return { ok: false, reason: "ld-context" };
+  }
+  const { readType, body: read } = reading;
+  const actor = idOf(read.actor);
+  const id = typeof read.id === "string" ? read.id : null;
+  const type = typeof read.type === "string" ? readType(read.type) : null;
   if (actor === null || originOf(actor) === null || id === null || type === null) {
     return { ok: false, reason: "incomplete" };
   }
-  return { ok: true, actor, id, type };
+  return { ok: true, actor, id, type, readType, read };
 }
 
-export function parseActivity(body: Uint8Array): Parsed {
+// `rules` is for tests of the reading's second layer (ldSignedReading); every caller reads under all of them.
+export async function parseActivity(body: Uint8Array, rules: Rules = {}): Promise<Parsed> {
+  let text: string;
   let json: unknown;
   try {
-    json = JSON.parse(new TextDecoder().decode(body));
+    // RES-2: bytes that are not UTF-8 make a body that does not parse, as Mastodon's inbox refuses them (its request
+    // parameters, docs/mastodon-deviations.md); the signature is verified over the bytes as received.
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(body);
+    json = JSON.parse(text);
   } catch {
+    return { ok: false, reason: "invalid-json" };
+  }
+  // RES-2: the work of reading an activity is bounded before anything reads it, an LD-signed body's reading included;
+  // a string token with an unpaired surrogate, one a duplicate key hides included, is JSON that does not parse
+  // (json-bounds.ts).
+  const refusal = jsonTextMalformed(text) ? "malformed" : jsonRefusal(json);
+  if (refusal === "malformed") {
     return { ok: false, reason: "invalid-json" };
   }
   if (!isObject(json)) {
     return { ok: false, reason: "not-an-object" };
   }
-  // RES-2: the work of reading an activity is bounded before anything reads it.
-  if (!withinJsonBounds(json)) {
+  if (refusal !== null) {
     return { ok: false, reason: "too-complex" };
   }
   const object = idOf(json.object);
   const deleteOfSelf = json.type === "Delete" && idOf(json.actor) !== null && object === idOf(json.actor);
-  const envelope = activityEnvelope(json);
+  const envelope = await activityEnvelope(json, rules);
   if (!envelope.ok) {
     return { ok: false, reason: envelope.reason, deleteOfSelf };
   }
-  const { actor, id, type } = envelope;
-  const activity = activityOf(type, id, actor, json, object);
+  const { actor, id, type, readType, read } = envelope;
+  const activity = activityOf(type, id, actor, read, object, readType);
   if (activity === null) {
     return { ok: false, reason: "unsupported", deleteOfSelf, actor };
   }
-  return { ok: true, actor, activity, target: type === "Move" ? idOf(json.target) : null, body: json };
+  return { ok: true, actor, activity, target: type === "Move" ? idOf(read.target) : null, body: json };
 }
 
 function strings(value: unknown): string[] {
@@ -283,7 +313,14 @@ function statusActivity(kind: "Create" | "UpdateStatus", id: string, json: Json)
   return object === null ? null : { type: kind, id, object };
 }
 
-function activityOf(type: string, id: string, actor: string, json: Json, object: string | null): ParsedActivity | null {
+function activityOf(
+  type: string,
+  id: string,
+  actor: string,
+  json: Json,
+  object: string | null,
+  readType: TypeReader,
+): ParsedActivity | null {
   if (LIKE_TYPES.has(type)) {
     return object === null ? null : { type: "Like", id, object };
   }
@@ -294,11 +331,11 @@ function activityOf(type: string, id: string, actor: string, json: Json, object:
     // An Accept of a QuoteRequest names the stamp it grants in result (Accept#accept_quote!: its first value, by id).
     case "Accept": {
       const result: unknown = Array.isArray(json.result) ? json.result[0] : json.result;
-      return { type, id, object: refOf(json.object), result: idOf(result) };
+      return { type, id, object: refOf(json.object, readType), result: idOf(result) };
     }
     case "Reject":
     case "Undo":
-      return { type, id, object: refOf(json.object) };
+      return { type, id, object: refOf(json.object, readType) };
     case "Move":
       // The object of a Move is the actor itself (Mastodon ignores any other).
       return object === actor ? { type, id, target: { local: "" } } : null;
@@ -660,7 +697,8 @@ export async function receiveInbound(
   // An envelope that names no usable actor cannot be judged, and no handler would read it: it is checked with the
   // Store's keys alone, fetching nothing, and answered as ignored. A request without a valid signature stays refused
   // (ID-1), a wrong signature under a stored key included; one signed with a key id the Store does not hold (a cache
-  // miss: no key was served) is ignored as it would be once that key were fetched.
+  // miss: no key was served) is ignored as it would be once that key were fetched. An LD-signed body Kopje ignores
+  // (ld-context) is logged once, its reason alone, so a server whose activities it ignores is seen.
   // The gate read the block for exactly parsed.actor.
   if (!parsed.ok) {
     if (parsed.actor === undefined) {
@@ -668,7 +706,12 @@ export async function receiveInbound(
       const stored = new Map<string, ServedKey>();
       const checked = await verify(deps, request, headers, none, stored, true, storedKey);
       const missed = "status" in checked && checked.reason === "key-refused" && stored.size === 0;
-      return "status" in checked && !missed ? checked : { status: 202, reason: parsed.reason };
+      if ("status" in checked && !missed) {
+        return checked;
+      }
+      return parsed.reason === "ld-context"
+        ? { status: 202, reason: parsed.reason, dropped: true }
+        : { status: 202, reason: parsed.reason };
     }
     if (blocked) {
       return { status: 202, reason: "domain-blocked" };
@@ -1365,17 +1408,24 @@ export async function verifySpooledRequest(
   if (media === null || !isActivityPubMediaType(media)) {
     return { ok: false, transient: false, reason: "not-activitystreams" };
   }
+  let text: string;
   let json: unknown;
   try {
-    json = JSON.parse(new TextDecoder().decode(request.body));
+    // As parseActivity reads it: bytes that are not UTF-8 make a body that does not parse.
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(request.body);
+    json = JSON.parse(text);
   } catch {
     return { ok: false, transient: false, reason: "invalid-json" };
   }
-  if (!isObject(json) || !withinJsonBounds(json)) {
+  const refusal = jsonTextMalformed(text) ? "malformed" : jsonRefusal(json);
+  if (refusal === "malformed") {
+    return { ok: false, transient: false, reason: "invalid-json" };
+  }
+  if (!isObject(json) || refusal !== null) {
     return { ok: false, transient: false, reason: "not-an-object" };
   }
   // What Kopje's inbox would ignore is not handed to the legacy instance either.
-  const envelope = activityEnvelope(json);
+  const envelope = await activityEnvelope(json);
   if (!envelope.ok) {
     return { ok: false, transient: false, reason: envelope.reason };
   }
@@ -1389,13 +1439,8 @@ export async function verifySpooledRequest(
   const deps = { ...loader, budget: requestBudget(Date.now()) };
   const bounded =
     (base: DocumentLoader): DocumentLoader =>
-    async (url, options) => {
-      const remote = await base(url, options);
-      if (!withinJsonBounds(remote.document)) {
-        throw new RefusedFetchError(new URL(remote.documentUrl), "Document exceeds the JSON bounds");
-      }
-      return remote;
-    };
+    async (url, options) =>
+      withinBounds(await base(url, options));
   const documentLoader = requireObjectRoot(bounded(createSafeLoader(deps)));
   const contextLoader = bounded(createContextLoader(deps));
   const signed = new Request(request.url, { method: request.method, headers, body: request.body });

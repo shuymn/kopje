@@ -104,6 +104,11 @@ describe("GET /api/oembed", () => {
       expect((await response.json<{ html: string }>()).html, url).toBe(expected.html);
     }
     expect(String(status.uri)).toMatch(/^https:\/\/kopje\.test\/ap\/o\//);
+    // Rails' params[:url]: the last value the query gives.
+    const other = `${ORIGIN}/@alice/1`;
+    const last = await oembed(h, other, `&url=${encodeURIComponent(String(status.url))}`);
+    expect([last.status, (await last.json<{ html: string }>()).html]).toEqual([200, expected.html]);
+    expect((await oembed(h, String(status.url), `&url=${encodeURIComponent(other)}`)).status).toBe(404);
   });
 
   it("answers 404 for anything the status page would not show, and for any other URL", async () => {

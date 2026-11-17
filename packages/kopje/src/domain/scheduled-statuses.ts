@@ -3,7 +3,7 @@ import { MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
 import { isoTimeSql, storedApplicationId } from "../platform/stored-bounds";
-import type { Page, PageQuery } from "./accounts";
+import { type Page, type PageQuery, presentFor } from "./accounts";
 import { admit, admittedPage, ARRAY_ANSWER_BYTES } from "./answer-budget";
 import {
   type ApiVisibility,
@@ -96,26 +96,68 @@ export type ScheduledStatus = {
   media_attachments: MediaAttachment[];
 };
 
-type ScheduledRow = { id: string; scheduled_at: string | null; params: string };
+// params as read: NULL for a stored value that is unreadable (paramsReadSql).
+type ScheduledRow = { id: string; scheduled_at: string | null; params: string | null };
+
+// Whether the stored params `params` (SQL) are past their stored bound, beside the CHECK of 0011_scheduled_statuses (a
+// JSON object within MAX_PARAMS_BYTES): not text, or a NUL anywhere. The CHECK passes both (a BLOB, and json_valid
+// stops at the NUL), and JSON.parse throws on each as the Worker reads it (an ArrayBuffer, a raw NUL). The WHEN of
+// 0110_scheduled_params's triggers (domain/stored-triggers.ts), and the writer's rule (postStatus).
+export function paramsPastBoundSql(params: string): string {
+  return `typeof(${params}) <> 'text' OR instr(CAST(${params} AS BLOB), x'00') > 0`;
+}
+
+// The stored params `params` (SQL) as read: NULL past paramsPastBoundSql, which a row restored before 0110 may hold.
+// Only a prefilter of what JSON.parse refuses: storedParams decides.
+export function paramsReadSql(params: string): string {
+  return `CASE WHEN NOT (${paramsPastBoundSql(params)}) THEN ${params} END`;
+}
 
 // scheduled_at as read: the stored time when it is one Kopje writes, else NULL (isoTimeSql). The CHECK of
 // 0011_scheduled_statuses passes an imported value strftime cannot read (the CHECK is then NULL), and its length()
 // stops at a NUL, so such a value may hold any bytes; judged by its bytes in SQL, it never reaches JavaScript. A
-// scheduled status shows no time for it (null), and an update that sends no new time refuses it (isTime).
-const COLUMNS = `ss.id, ${isoTimeSql("ss.scheduled_at")} AS scheduled_at, ss.params`;
+// scheduled status shows no time for it (null), and an update that sends no new time refuses it (isTime). params as
+// paramsReadSql reads them.
+const COLUMNS = `ss.id, ${isoTimeSql("ss.scheduled_at")} AS scheduled_at, ${paramsReadSql("ss.params")} AS params`;
 
-// The held media shown are the first MAX_STATUS_MEDIA by position (PostStatusService#validate_media! takes four):
-// Kopje's writers hold at most that many, and a restored row holding more shows its first.
-function presentScheduled(db: Db, row: ScheduledRow): ScheduledStatus {
+// The stored params `text` as JSON.parse reads them, or null when they cannot be read: NULL (paramsReadSql), a parse
+// that throws, or a value that is not an object. A scheduled status whose params are unreadable is left out of the
+// list, not found when shown or updated, and dropped as `params` when due; it is still deleted.
+export function storedParams(text: string | null): Record<string, unknown> | null {
+  if (text === null) {
+    return null;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+// The held media shown, by (position, id): a scheduled status holds at most MAX_STATUS_MEDIA (heldFullSql), the four
+// PostStatusService#validate_media! takes, and the LIMIT keeps the read at them.
+// undefined: params that cannot be read (storedParams). `params`: the row's, when already read.
+function presentScheduled(
+  db: Db,
+  row: ScheduledRow,
+  params: Record<string, unknown> | null = storedParams(row.params),
+): ScheduledStatus | undefined {
+  if (params === null) {
+    return undefined;
+  }
   const media = db.all<MediaRow>(
-    `SELECT ${selectSql(MEDIA_COLUMN_MAP)} FROM media_attachments m WHERE m.scheduled_status_id = ? ORDER BY m.position
-			LIMIT ${MAX_STATUS_MEDIA}`,
+    `SELECT ${selectSql(MEDIA_COLUMN_MAP)} FROM media_attachments m WHERE m.scheduled_status_id = ?
+			ORDER BY m.position, m.id LIMIT ${MAX_STATUS_MEDIA}`,
     row.id,
   );
   return {
     id: row.id,
     scheduled_at: row.scheduled_at,
-    params: JSON.parse(row.params) as ScheduledParams,
+    params: params as ScheduledParams,
     media_attachments: media.map((row) => presentMedia(row)),
   };
 }
@@ -132,8 +174,11 @@ function ownScheduled(db: Db, viewerId: string, id: string): ScheduledRow | unde
 // The params of a stored row, or null when not of the shape this module writes (a restored row has only schema
 // validation). A row without a quote policy has nobody, the policy such rows were scheduled with; one without a quoted
 // status quotes nothing; one without allowed_mentions checks no mention.
-function readParams(text: string): ScheduledParams | null {
-  const p = JSON.parse(text) as Record<string, unknown>;
+function readParams(text: string | null): ScheduledParams | null {
+  const p = storedParams(text);
+  if (p === null) {
+    return null;
+  }
   const optional = (value: unknown, type: string) => value === null || typeof value === type;
   const valid =
     typeof p.text === "string" &&
@@ -295,7 +340,17 @@ function releaseKey(db: Db, accountId: string, key: string): void {
   db.run("UPDATE scheduled_statuses SET client_key = NULL WHERE account_id = ?1 AND client_key = ?2", accountId, key);
 }
 
-// Detaches the uploads a scheduled status holds, attachable again for a day (as a deleted status's), and deletes it.
+// Whether the scheduled status `scheduled` (SQL, NULL for none) holds MAX_STATUS_MEDIA uploads other than `media`: one
+// more would pass what a scheduled status may hold, imports included (RES-6). Reads at most MAX_STATUS_MEDIA + 1 rows
+// through media_attachments_scheduled. The WHEN of 0109_scheduled_media_cap's triggers (domain/stored-triggers.ts).
+export function heldFullSql(scheduled: string, media: string): string {
+  return `${scheduled} IS NOT NULL
+  AND (SELECT count(*) FROM (SELECT 1 FROM media_attachments WHERE scheduled_status_id = ${scheduled} AND id <> ${media}
+    LIMIT ${MAX_STATUS_MEDIA})) >= ${MAX_STATUS_MEDIA}`;
+}
+
+// Detaches the uploads a scheduled status holds, at most MAX_STATUS_MEDIA (heldFullSql), attachable again for a day (as
+// a deleted status's), and deletes it.
 function removeScheduled(db: Db, id: string, now: number): void {
   db.run(
     `UPDATE media_attachments SET scheduled_status_id = NULL, position = 0, gc_at = ?2
@@ -348,8 +403,10 @@ export const postStatus = userWriteOperation<ScheduleInput, ScheduleResult>((db,
       input.idempotencyKey,
       keyCutoff(input.now),
     );
-    if (scheduled !== undefined) {
-      return { status: "scheduled", value: presentScheduled(db, scheduled) };
+    // One whose params cannot be read answers as none.
+    const shown = scheduled === undefined ? undefined : presentScheduled(db, scheduled);
+    if (shown !== undefined) {
+      return { status: "scheduled", value: shown };
     }
     releaseKey(db, accountId, input.idempotencyKey);
   }
@@ -364,7 +421,7 @@ export const postStatus = userWriteOperation<ScheduleInput, ScheduleResult>((db,
   // As PostStatusService#schedule_status!: allowed_mentions is kept in the params and checked at publication.
   const prepared = preparePost(db, accountId, { ...post, allowedMentions: undefined }, null);
   if (!isPrepared(prepared)) {
-    return refusedPost(db, prepared, input.present);
+    return refusedPost(db, prepared, presentFor(input.present, accountId));
   }
   const errors = scheduleErrors(db, accountId, scheduledAt, input.now, null);
   if (errors.length > 0) {
@@ -383,9 +440,10 @@ export const postStatus = userWriteOperation<ScheduleInput, ScheduleResult>((db,
   if (new TextEncoder().encode(params).length > MAX_PARAMS_BYTES) {
     return { status: "invalid", error: "Record invalid" };
   }
+  // Params past the trigger's bound are refused as the schema's are (JSON.stringify writes none).
   const row = db.first<ScheduledRow>(
     `INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params, client_key, created_at)
-		VALUES (?, ?, ?, ?, ?, ?) RETURNING id, scheduled_at, params`,
+		SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE NOT (${paramsPastBoundSql("?4")}) RETURNING id, scheduled_at, params`,
     allocateLocalId(db, input.now),
     accountId,
     scheduledAt,
@@ -394,7 +452,7 @@ export const postStatus = userWriteOperation<ScheduleInput, ScheduleResult>((db,
     iso(input.now),
   );
   if (row === undefined) {
-    throw new Error("the scheduled status was not written");
+    return { status: "invalid", error: "Record invalid" };
   }
   db.run(
     `UPDATE media_attachments INDEXED BY ${MEDIA_ID_INDEX}
@@ -404,7 +462,11 @@ export const postStatus = userWriteOperation<ScheduleInput, ScheduleResult>((db,
     row.id,
     JSON.stringify(prepared.media),
   );
-  return { status: "scheduled", value: presentScheduled(db, row) };
+  const value = presentScheduled(db, row);
+  if (value === undefined) {
+    throw new Error("the scheduled status was written with unreadable params");
+  }
+  return { status: "scheduled", value };
 });
 
 // The default and largest page of GET /api/v1/scheduled_statuses (DEFAULT_STATUSES_LIMIT, and limit_param's cap at
@@ -414,7 +476,9 @@ export const SCHEDULED_PAGE = { limit: 20, max: 40 };
 // GET /api/v1/scheduled_statuses: the viewer's scheduled statuses by id, newest first, paged by id
 // (to_a_paginated_by_id); a page of ids from the account's own index, whoever else has scheduled statuses. Each is read
 // and presented by key as admission reaches it, within ANSWER_BYTES (RES-3): a page cut there continues from its last
-// admitted scheduled status (admittedPage).
+// admitted scheduled status (admittedPage). One whose params cannot be read is left out, so a page reads toward its
+// limit by its ids (Page.cut), as followedTags does: its ends are the ids read, and the Link header passes over the
+// rows left out as Mastodon's passes over absent ones.
 export const listScheduled = userReadOperation<{ page: PageQuery }, Page<ScheduledStatus>>(
   (db, { page }, { accountId }) => {
     const ascending = page.minId !== undefined;
@@ -440,7 +504,7 @@ export const listScheduled = userReadOperation<{ page: PageQuery }, Page<Schedul
       }
     }
     return admittedPage(
-      { rows: ids, newest: ids[0] ?? null, oldest: ids.at(-1) ?? null },
+      { rows: ids, newest: ids[0] ?? null, oldest: ids.at(-1) ?? null, cut: ids.length >= page.limit },
       ascending,
       (id) => id,
       (traversal) => admit(presented(traversal), ARRAY_ANSWER_BYTES, true),
@@ -448,10 +512,10 @@ export const listScheduled = userReadOperation<{ page: PageQuery }, Page<Schedul
   },
 );
 
-// GET /api/v1/scheduled_statuses/:id: null when it is not the viewer's.
+// GET /api/v1/scheduled_statuses/:id: null when it is not the viewer's, or its params cannot be read.
 export const getScheduled = userReadOperation<{ id: string }, ScheduledStatus | null>((db, { id }, { accountId }) => {
   const row = ownScheduled(db, accountId, id);
-  return row === undefined ? null : presentScheduled(db, row);
+  return (row === undefined ? undefined : presentScheduled(db, row)) ?? null;
 });
 
 export type UpdateScheduledResult =
@@ -460,13 +524,15 @@ export type UpdateScheduledResult =
   | { status: "invalid"; error: string };
 
 // PUT and PATCH /api/v1/scheduled_statuses/:id (update!(scheduled_at)): only the time changes, and the validations
-// run again for the new time (or the current one when none is sent). null: a time the Worker could not read.
+// run again for the new time (or the current one when none is sent). null: a time the Worker could not read. One
+// whose params cannot be read is not found, as it is not shown.
 export const updateScheduled = userWriteOperation<
   { id: string; scheduledAt: string | null | undefined; now: number },
   UpdateScheduledResult
 >((db, input, { accountId }) => {
   const row = ownScheduled(db, accountId, input.id);
-  if (row === undefined) {
+  const params = row === undefined ? null : storedParams(row.params);
+  if (row === undefined || params === null) {
     return { status: "not_found" };
   }
   const at = input.scheduledAt === undefined ? row.scheduled_at : input.scheduledAt;
@@ -483,11 +549,12 @@ export const updateScheduled = userWriteOperation<
     at,
     row.id,
   );
-  return { status: "ok", value: presentScheduled(db, { ...row, scheduled_at: at }) };
+  const value = presentScheduled(db, { ...row, scheduled_at: at }, params);
+  return value === undefined ? { status: "not_found" } : { status: "ok", value };
 });
 
 // DELETE /api/v1/scheduled_statuses/:id: its uploads are detached (attachable again for a day), as Mastodon nullifies
-// them. Whether it was the viewer's.
+// them, its params read or not. Whether it was the viewer's.
 export const deleteScheduled = userWriteOperation<{ id: string; now: number }, boolean>((db, input, { accountId }) => {
   const row = ownScheduled(db, accountId, input.id);
   if (row === undefined) {
@@ -576,7 +643,7 @@ export type Publication =
 export const publishScheduled = writeOperation<{ id: string; now: number; objectId: string }, Publication>(
   (db, { id, now, objectId }) => {
     const row = db.first<PublishRow>(
-      `SELECT ss.account_id, ss.params,
+      `SELECT ss.account_id, ${paramsReadSql("ss.params")} AS params,
 				CASE WHEN ${keyFreshSql("ss.created_at", "?3")} THEN ss.client_key END AS client_key,
 				${availableSql("ss.account_id")} AS available
 			FROM scheduled_statuses ss WHERE ss.id = ?1
@@ -594,8 +661,8 @@ export const publishScheduled = writeOperation<{ id: string; now: number; object
   },
 );
 
-// client_key: the key while it has not expired, else null.
-type PublishRow = { account_id: string; params: string; client_key: string | null; available: number };
+// client_key: the key while it has not expired, else null. params as paramsReadSql reads them.
+type PublishRow = { account_id: string; params: string | null; client_key: string | null; available: number };
 
 function publish(db: Db, id: string, row: PublishRow, now: number, objectId: string): Publication {
   if (row.available !== 1) {

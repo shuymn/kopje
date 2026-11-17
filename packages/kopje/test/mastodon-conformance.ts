@@ -63,7 +63,7 @@ export function unroutedFailures(
 // c.req.query/queries; `file` is Params#file, a declared file part (mastodon/params.ts).
 export type ReadMethod =
   | "get"
-  | "last"
+  | "integer"
   | "has"
   | "getAll"
   | "getAllIntegers"
@@ -77,14 +77,14 @@ export type ReadMethod =
 // call lists in `files`).
 export type Read = { method: ReadMethod; name: string; fields?: readonly string[] };
 
-// Whether a read returns `name` (a fixture name in Params form). get/last/query/queries/file return their name; has,
+// Whether a read returns `name` (a fixture name in Params form). get/integer/query/queries/file return their name; has,
 // getAll and getAllIntegers read `n` and `n[]`; list reads `n[]`; objects returns whole records, so it covers `n[][f]`
 // and `n[i][f]` for every member `f` a returned record carries (whether each member is then used is not established: a
 // limit of this check). hasObject records presence only and covers no leaf: `poll[expires_in]` must itself be read.
 export function covers(read: Read, name: string): boolean {
   switch (read.method) {
     case "get":
-    case "last":
+    case "integer":
     case "query":
     case "queries":
     case "file":

@@ -1,5 +1,5 @@
 import { type DocumentLoader, exportSpki, FetchError, type RemoteDocument } from "@fedify/fedify";
-import { type Actor, getActorTypeName, isActor, Link, lookupObject, Multikey } from "@fedify/vocab";
+import { type Actor, getActorTypeName, isActor, lookupObject, Multikey } from "@fedify/vocab";
 
 import { collectionValue } from "../domain/collection-requests";
 import { ACTOR_URI_LIMIT } from "../domain/profile-bounds";
@@ -81,7 +81,8 @@ export async function loadActor(
 // and fails the whole actor on one it cannot decode (an `icon` that is not an Image, an unreadable `updated`, an
 // invalid language map), where Mastodon 4.7 reads every member by its literal spelling (`@json[...]`) and stores the
 // account. Every member outside this inventory, in any spelling, is read from the document's JSON by spelling
-// (profileImage, collection-requests.ts collectionUri, sharedInboxUri, claimedHandle, emojiCandidates) or not at all.
+// (profileUrl, profileImage, collection-requests.ts collectionUri, sharedInboxUri, claimedHandle, emojiCandidates) or
+// not at all.
 const FEDIFY_MEMBERS: Readonly<Record<string, string>> = {
   "@context": "JSON-LD expansion",
   id: "lookupObject's id check (ID-2), readActor",
@@ -90,7 +91,6 @@ const FEDIFY_MEMBERS: Readonly<Record<string, string>> = {
   inbox: "remoteActorInput",
   name: "remoteActorInput",
   summary: "remoteActorInput",
-  url: "remoteActorInput",
   manuallyApprovesFollowers: "remoteActorInput",
   discoverable: "remoteActorInput",
   indexable: "remoteActorInput",
@@ -181,12 +181,6 @@ function text(value: string | { toString(): string } | null | undefined): string
 // A profile URL: http(s) (HTML-3) and within its stored bound, else none, as an invalid one.
 function storedHref(value: string | null): string | null {
   return storedProfileUrl(httpUrl(value)?.href ?? null);
-}
-
-// The actor's url, as Fedify parsed it (a Link gives its href).
-function href(value: URL | Link | null | undefined): string | null {
-  const target = value instanceof Link ? value.href : value;
-  return storedHref(target?.href ?? null);
 }
 
 // Keys are taken only when embedded: a reference would cost another fetch per actor (RES-6).
@@ -295,20 +289,67 @@ export function claimedHandle(document: unknown, uri: string, preferredUsername:
     : null;
 }
 
-// Whether the document's own `inbox` member is blank as Mastodon 4.7 reads it (`json['inbox'].blank?`,
-// ProcessAccountService#call, process_account_service.rb:24): missing, null, false, a string of whitespace alone
-// (railsBlank), an empty array or an empty object. A value that is not blank but no inbox URL is not refused here
-// (Mastodon stores no inbox for it, valid_collection_uri).
-function blankInbox(document: unknown): boolean {
-  const inbox = typeof document === "object" && document !== null ? (document as { inbox?: unknown }).inbox : undefined;
+// Object#blank? of a member's JSON value (ActiveSupport): missing, null, false, a string of whitespace alone
+// (railsBlank), an empty array or an empty object.
+function blank(value: unknown): boolean {
   return (
-    inbox === undefined ||
-    inbox === null ||
-    inbox === false ||
-    (typeof inbox === "string" && railsBlank(inbox)) ||
-    (Array.isArray(inbox) && inbox.length === 0) ||
-    (typeof inbox === "object" && !Array.isArray(inbox) && Object.keys(inbox).length === 0)
+    value === undefined ||
+    value === null ||
+    value === false ||
+    (typeof value === "string" && railsBlank(value)) ||
+    (Array.isArray(value) && value.length === 0) ||
+    (isObject(value) && Object.keys(value).length === 0)
   );
+}
+
+// Whether the document's own `inbox` member is blank as Mastodon 4.7 reads it (`json['inbox'].blank?`,
+// ProcessAccountService#call, process_account_service.rb:24). A value that is not blank but no inbox URL is not
+// refused here (Mastodon stores no inbox for it, valid_collection_uri).
+function blankInbox(document: unknown): boolean {
+  return blank(isObject(document) ? document.inbox : undefined);
+}
+
+// The profile URL an actor document's `url` member offers, as Mastodon 4.7.5 chooses it (ProcessAccountService#url,
+// process_account_service.rb:454-465, through JsonLdHelper#url_to_href(value, 'text/html'), json_ld_helper.rb:46-61):
+// an object is read as an array of it; an array whose first value is a string gives that string alone, any other
+// array the value htmlLink finds; an object gives its href. That one candidate is the URL only when it is a string
+// with a literal `http://` or `https://` prefix (unsupported_uri_scheme?, :95-97) whose host is the actor id's,
+// whatever the scheme and port (mismatching_origin?, process_account_service.rb:475-480), and within storedHref's
+// bound (HTML-3, RES-2); else none, and no later candidate is tried. A blank member (Mastodon's early return) gives
+// none by these rules. A presenter then shows the actor id, as Mastodon stores `url || @uri` (:228). Hosts are compared
+// as the URL parser reads them, where Mastodon compares Addressable's raw host ASCII case-insensitively, and a value on
+// which Mastodon raises (a member neither a string, a Link nor an array of them; a href neither a string nor null) is
+// none (docs/mastodon-deviations.md; test/fixtures/profile-url/urls.json holds Mastodon's answer for each form).
+export function profileUrl(value: unknown, actorId: URL): string | null {
+  const list = isObject(value) ? [value] : value;
+  const chosen = Array.isArray(list) ? (typeof list[0] === "string" ? list[0] : htmlLink(list)) : list;
+  const href = isObject(chosen) ? chosen.href : chosen;
+  if (typeof href !== "string" || !(href.startsWith("http://") || href.startsWith("https://"))) {
+    return null;
+  }
+  const url = httpUrl(href);
+  return url !== null && url.hostname === actorId.hostname ? storedProfileUrl(url.href) : null;
+}
+
+// url_to_href's `find` with 'text/html' preferred: the first value that is an object whose mimeType is blank or
+// exactly `text/html` (mediaType is not read), or a string, which Ruby's String#[] reads as a Link without a mimeType
+// unless it holds the text `mimeType`. undefined when there is none, or at a value before it that is neither, on which
+// Mastodon raises.
+function htmlLink(list: readonly unknown[]): unknown {
+  for (const link of list) {
+    if (typeof link === "string") {
+      if (!link.includes("mimeType")) {
+        return link;
+      }
+    } else if (isObject(link)) {
+      if (blank(link.mimeType) || link.mimeType === "text/html") {
+        return link;
+      }
+    } else {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 // The actor's shared inbox as Mastodon 4.7.5 reads it (process_account_service.rb:225): `endpoints.sharedInbox` when
@@ -401,7 +442,7 @@ export async function remoteActorInput(actor: Actor, document: unknown): Promise
     actorType: getActorTypeName(actor),
     displayName: storedDisplayName(text(actor.name) ?? ""),
     note: sanitizeRemoteBio(storedText(text(actor.summary) ?? "")),
-    url: href(actor.url),
+    url: profileUrl(json.url, uri),
     avatarUrl: avatar.url,
     headerUrl: header.url,
     avatarDescription: avatar.description,

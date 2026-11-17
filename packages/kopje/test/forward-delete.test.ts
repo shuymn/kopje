@@ -1153,8 +1153,9 @@ async function loner(w: World): Promise<string> {
   return "https://loner.example/users/l/inbox";
 }
 
-// Strings JSON escapes or may not: an astral character, NUL, a lone surrogate, U+2028 escaped and raw.
-const ADVERSARIAL = '"\\ud83d\\ude00 \\u0000 \\ud800 \\u2028  "';
+// Strings JSON escapes or may not: an astral character, NUL, U+2028 escaped and raw. (A lone surrogate makes the body
+// JSON that does not parse, #1718: nothing is forwarded, below.)
+const ADVERSARIAL = '"\\ud83d\\ude00 \\u0000 \\u2028  "';
 
 describe("the body from the request to the POST", () => {
   it("POSTs the Store’s serialization of a signed body to shared and personal inboxes, and its proof verifies", async () => {
@@ -1171,6 +1172,11 @@ describe("the body from the request to the POST", () => {
     const raw = JSON.stringify(signed).replace(JSON.stringify(adversarial), ADVERSARIAL);
     expect(raw).toContain(ADVERSARIAL);
     const s = JSON.stringify(JSON.parse(raw));
+    const lone = await ldSigned({ ...unsigned, object: { ...tombstone, atomUri: "\ud800" } }, w.bob);
+    expect(JSON.stringify(lone)).toContain(String.raw`"atomUri":"\ud800"`);
+    expect(await w.post(w.bob, JSON.stringify(lone))).toBe(202);
+    expect(proofRounds(w)).toBe(0);
+    expect(await forwards(w.t.store, o.uri)).toHaveLength(0);
     expect(await w.post(w.bob, raw)).toBe(202);
     expect(proofRounds(w)).toBe(1);
     expect(await forwards(w.t.store, o.uri)).toHaveLength(1);

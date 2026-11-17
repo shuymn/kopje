@@ -512,9 +512,10 @@ export const register: ApiHandler = async (c, deps) => {
   return mastodonError(403, "Forbidden");
 };
 
-// acct is "user" or "user@domain"; the instance's own host means a local account.
+// acct (Rails' params[:acct], the last value the query gives) is "user" or "user@domain"; the instance's own host means
+// a local account.
 export const lookupAccount: ApiHandler = async (c, deps) => {
-  const acct = (c.req.query("acct") ?? "").trim().replace(/^@/, "");
+  const acct = (c.req.queries("acct")?.at(-1) ?? "").trim().replace(/^@/, "");
   const at = acct.indexOf("@");
   const username = at === -1 ? acct : acct.slice(0, at);
   const host = at === -1 ? null : acct.slice(at + 1).toLowerCase();
@@ -651,7 +652,7 @@ export const unendorse: ApiHandler = async (c, deps) => {
 // ANSWER_BYTES (8 MiB, RES-3); one cut by the bytes links next to the rest (unlimitedResponse).
 export const endorsements: ApiHandler = withParams(async (c, deps, p) => {
   const query = pageQuery(p);
-  const page = p.last("limit") === "0" ? null : query;
+  const page = p.get("limit") === "0" ? null : query;
   const input = { credential: userCredential(c, deps), page, from: query.maxId, present: present(c) };
   const result = authorized(await storeCall(c, deps, (s, b) => s.listEndorsements(b, input)));
   return page === null ? unlimitedResponse(c, result) : pageResponse(c, result, page.limit);

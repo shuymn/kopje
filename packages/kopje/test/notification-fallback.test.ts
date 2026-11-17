@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { Db } from "../src/db/sql";
 import { jsonBytes } from "../src/domain/answer-budget";
 import {
+  COLLECTION_TITLES,
   FALLBACK_JSON_MAX,
   FALLBACK_TYPES,
   fallbackSet,
@@ -329,24 +330,27 @@ describe("notification fallbacks: the texts (config/locales/en.yml, notification
     expect(report1!.fallback!.summary).toBe(SUMMARY);
   });
 
-  it("links an account as Mastodon's url_for does: a remote one's stored http(s) url, a local one's short URL", async () => {
+  it("links an account as Mastodon's url_for does: a remote one's usable url, else its actor id; a local one's short URL", async () => {
     const { h, owner, alice, bob } = await world();
     const reported: Record<string, string> = {};
-    // A local target, then remote targets by their stored url.
+    // A local target, then remote targets by their stored url when it is usable, else by their actor id, as the
+    // account's url shows (#1734: Mastodon stores `url || @uri`; its url_for gives nil for a stored url that is not
+    // http(s), which only an import holds, docs/mastodon-deviations.md).
     reported[await report(h, alice, bob.id)] = "https://kopje.test/@bob";
     const urls: [string | null, string][] = [
       ["https://remote.example/users/alice", "https://remote.example/users/alice"],
-      [null, ""],
-      ["", ""],
-      ["ftp://remote.example/alice", ""],
-      ["javascript:alert(1)", ""],
+      [null, "the actor id"],
+      ["", "the actor id"],
+      ["ftp://remote.example/alice", "the actor id"],
+      ["javascript:alert(1)", "the actor id"],
       // Within the stored bound, past PROFILE_URL_LIMIT once serialized (each quote as %22).
-      [`https://remote.example/${'"'.repeat(1_000)}`, ""],
+      [`https://remote.example/${'"'.repeat(1_000)}`, "the actor id"],
     ];
     for (const [i, [url, href]] of urls.entries()) {
       const target = await remoteAccount(h.store, `target${i}`);
       await sql(h.store, "UPDATE accounts SET url = ? WHERE id = ?", url, target);
-      reported[await report(h, alice, target)] = href;
+      const { uri } = (await sql<{ uri: string }>(h.store, "SELECT uri FROM accounts WHERE id = ?", target))[0]!;
+      reported[await report(h, alice, target)] = href === "the actor id" ? uri : href;
     }
     // The target's link, the last of its title; no url derived from the actor (https://remote.example/@target<i>).
     const hrefs = (shown: Record<string, string | undefined>) =>
@@ -404,14 +408,15 @@ describe("notification fallbacks: the texts (config/locales/en.yml, notification
 
 describe("notification fallbacks: the parameter and the bound (RES-3)", () => {
   it("reduces supported_types to the types needing a fallback, at most FALLBACK_TYPES", () => {
+    const all = ["admin.report", "moderation_warning", "added_to_collection", "collection_update"];
     expect(fallbackTypes(undefined)).toEqual([]);
-    expect(fallbackTypes([])).toEqual(["admin.report", "moderation_warning"]);
-    expect(fallbackTypes([""])).toEqual(["admin.report", "moderation_warning"]);
-    expect(fallbackTypes("")).toEqual(["admin.report", "moderation_warning"]);
-    expect(fallbackTypes(["admin.report"])).toEqual(["moderation_warning"]);
-    expect(fallbackTypes("admin.report,moderation_warning")).toEqual([]);
+    expect(fallbackTypes([])).toEqual(all);
+    expect(fallbackTypes([""])).toEqual(all);
+    expect(fallbackTypes("")).toEqual(all);
+    expect(fallbackTypes(["admin.report"])).toEqual(all.slice(1));
+    expect(fallbackTypes("admin.report,moderation_warning,added_to_collection,collection_update")).toEqual([]);
     const many = Array.from({ length: 10_000 }, (_, i) => `type${i}`);
-    expect(fallbackTypes(many)).toEqual(["admin.report", "moderation_warning"]);
+    expect(fallbackTypes(many)).toEqual(all);
     expect(fallbackTypes([...many, ...FALLBACK_TYPES])).toEqual([]);
     // The Store takes FALLBACK_TYPES alone from whatever it is given.
     expect([...fallbackSet(["mention", "admin.report", "admin.report", "x"])]).toEqual(["admin.report"]);
@@ -438,6 +443,15 @@ describe("notification fallbacks: the parameter and the bound (RES-3)", () => {
     const max = fixed + 2 * 6 * PROFILE_URL_LIMIT + 2 * 6 * USERNAME_LIMIT;
     const warning = jsonBytes({ title: WARNING_TITLE, summary: fallbackSummary(LONG_ORIGIN), description: null });
     expect({ fixed, max, warning }).toEqual({ fixed: 885, max: FALLBACK_JSON_MAX, warning: 710 });
+    // A collection notification's title names its owner alone: one href and one username at six bytes each.
+    const collections = Object.values(COLLECTION_TITLES).map(
+      (title) =>
+        jsonBytes({ title: title(linkToMention("", "")), summary: fallbackSummary(LONG_ORIGIN), description: null }) +
+        6 * PROFILE_URL_LIMIT +
+        6 * USERNAME_LIMIT,
+    );
+    expect(collections).toEqual([14_617, 14_623]);
+    expect(Math.max(...collections)).toBeLessThan(FALLBACK_JSON_MAX);
     // Fills: a remote target with a username at its bound of quotes, control characters, ASCII or malformed bytes, and
     // a url at PROFILE_URL_LIMIT of quotes in its host or of letters; reported by a local account with the same
     // username, or by a remote one on a domain of quotes at DOMAIN_BYTES.

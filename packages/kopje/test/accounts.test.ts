@@ -68,6 +68,7 @@ describe("credentials", () => {
       fields: [],
       noindex: false,
       roles: [],
+      feature_approval: { automatic: [], manual: [], current_user: "denied" },
       source: {
         privacy: "public",
         sensitive: false,
@@ -823,14 +824,15 @@ describe("account lookup", () => {
     }
   });
 
-  // HTML-3: whatever is stored (imported or federated), only http(s) URLs leave the presenter.
+  // HTML-3: whatever is stored (imported or federated), only http(s) URLs leave the presenter. A remote account's
+  // profile URL is then its actor id, as Mastodon stores `url || @uri`.
   it.each([
     "javascript:alert(1)",
     "JaVaScRiPt:alert(1)",
     " javascript:alert(1)",
     "data:image/png;base64,AAAA",
     "/a.png",
-  ])("shows the defaults for a stored avatar, header and profile URL of %j", async (bad) => {
+  ])("shows the defaults for a stored avatar and header, and the actor id for a profile URL, of %j", async (bad) => {
     const h = await apiHarness();
     const id = "444444444444444444";
     await sql(
@@ -844,7 +846,7 @@ describe("account lookup", () => {
     );
     const response = await h.request(`/api/v1/accounts/${id}`);
     expect(await response.json()).toMatchObject({
-      url: "https://remote.test/@x",
+      url: "https://remote.test/users/x",
       avatar: "https://kopje.test/assets/avatar.jpg",
       avatar_static: "https://kopje.test/assets/avatar.jpg",
       header: "https://kopje.test/assets/header.jpg",
@@ -886,6 +888,10 @@ describe("account lookup", () => {
       expect(await response.json(), acct).toMatchObject({ id });
     }
     expect((await h.request("/api/v1/accounts/lookup?acct=bob")).status).toBe(404);
+    // Rails' params[:acct]: the last value the query gives.
+    const repeated = await h.request("/api/v1/accounts/lookup?acct=nobody&acct=alice");
+    expect([repeated.status, (await repeated.json<{ id?: string }>()).id]).toEqual([200, local]);
+    expect((await h.request("/api/v1/accounts/lookup?acct=alice&acct=nobody")).status).toBe(404);
     const remoteAccount = await (await h.request(`/api/v1/accounts/${remote}`)).json();
     expect(remoteAccount).toMatchObject({ acct: "bob@remote.test", url: "https://remote.test/@bob" });
   });

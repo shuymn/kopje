@@ -2,19 +2,24 @@ import { runInDurableObject } from "cloudflare:test";
 import fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
 
+import { MIGRATIONS } from "../src/db/migrations";
 import { ANSWER_BYTES, jsonBytes } from "../src/domain/answer-budget";
 import { expiredMedia } from "../src/domain/media";
 import {
   DAILY_LIMIT,
+  deleteScheduled,
   getScheduled,
   listScheduled,
   MAX_ATTEMPTS,
   MAX_PARAMS_BYTES,
+  paramsReadSql,
   PUBLISH_ROUND,
   publishScheduled as publishOne,
+  recordPublishFailure,
   RETRY_DELAYS_MS,
   SCHEDULED_PAGE,
   type ScheduledStatus,
+  storedParams,
   TOTAL_LIMIT,
 } from "../src/domain/scheduled-statuses";
 import {
@@ -1062,6 +1067,469 @@ describe("nothing leaks before publication", () => {
   }, 60_000);
 });
 
+// ---- RES-6: a scheduled status holds at most MAX_STATUS_MEDIA uploads (0109_scheduled_media_cap).
+
+const HELD_REFUSED = /media_attachments: more media than a scheduled status may hold/;
+const CAP_FILE = MIGRATIONS.find((m) => m.name === "0109_scheduled_media_cap")?.sql ?? "";
+
+// Runs `write` as a Store before 0109 could (its triggers dropped), then the file's statements, as its upgrade runs
+// them: the detach of the uploads past each scheduled status's first four, and the triggers made again.
+async function beforeCap(h: ApiHarness, write: (sql: SqlStorage) => void): Promise<void> {
+  await runInDurableObject(h.store, (_instance, state) => {
+    const sql = state.storage.sql;
+    sql.exec("DROP TRIGGER media_attachments_scheduled_cap_insert");
+    sql.exec("DROP TRIGGER media_attachments_scheduled_cap_update");
+    write(sql);
+    state.storage.transactionSync(() => sql.exec(CAP_FILE).toArray());
+  });
+}
+
+// The upload `i` of the restored scheduled status `n`.
+const heldUpload = (n: number, i: number) => String(810000000000000000n + BigInt(n * 1_000 + i));
+
+// A scheduled status `n` of `owner`, due a minute before NOW + HOUR, as a restore before 0109 may hold it: `held`
+// uploads of the owner's at positions held - 1 down to 0, so the first by position are the last written, and params
+// naming the first `named` by position; after `attempts` failed publications, the next due at NOW + HOUR.
+async function restoredHolding(
+  h: ApiHarness,
+  owner: string,
+  n: number,
+  held: number,
+  { named = 0, attempts = 0 }: { named?: number; attempts?: number } = {},
+): Promise<string> {
+  const id = String(740000000000000000n + BigInt(n));
+  const byPosition = Array.from({ length: held }, (_, i) => heldUpload(n, held - 1 - i));
+  await beforeCap(h, (sql) => {
+    sql.exec(
+      `INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params, attempts, next_attempt_at)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+      id,
+      owner,
+      at(NOW + HOUR - MINUTE),
+      JSON.stringify({
+        text: `held ${n}`,
+        spoiler_text: "",
+        sensitive: null,
+        language: null,
+        visibility: null,
+        in_reply_to_id: null,
+        media_ids: named === 0 ? null : byPosition.slice(0, named),
+      }),
+      attempts,
+      attempts === 0 ? null : at(NOW + HOUR),
+    );
+    for (let i = 0; i < held; i++) {
+      sql.exec(
+        `INSERT INTO media_attachments (id, account_id, scheduled_status_id, position, type, url, file_token, processed)
+				VALUES (?, ?, ?, ?, 'image', 'https://kopje.test/files/h/full', ?, 1)`,
+        heldUpload(n, i),
+        owner,
+        id,
+        held - 1 - i,
+        `h${n}-${i}`,
+      );
+    }
+  });
+  return id;
+}
+
+const heldBy = async (h: ApiHarness, id: string) =>
+  (
+    await sql<{ id: string }>(
+      h.store,
+      "SELECT id FROM media_attachments WHERE scheduled_status_id = ? ORDER BY position, id",
+      id,
+    )
+  ).map((row) => row.id);
+
+describe("a scheduled status holds at most four media (RES-6)", () => {
+  // Each caller of removeScheduled, on a scheduled status holding four after the upgrade, whatever it held before it
+  // (4, 40, 400) and whatever the account's other scheduled statuses hold (2, 10 and 100 holding four each): the rows
+  // each reads, the detach's among them, stay the same.
+  it("detaches at most four uploads on a delete, a publication and a terminal failure, however many it or others held", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const credential = { tokenHash: await sha256Hex(alice.token), scope: "write", now: NOW } as const;
+    const detach = /^UPDATE media_attachments SET scheduled_status_id = NULL/;
+    const recount = /^UPDATE accounts SET statuses_count = /;
+    const callers = {
+      delete: (id: string) => measuredStatements(h, deleteScheduled, { credential, id, now: NOW }, true),
+      publication: (id: string) =>
+        measuredStatements(h, publishOne, { id, now: NOW + HOUR, objectId: crypto.randomUUID() }, true),
+      failure: (id: string) => measuredStatements(h, recordPublishFailure, { id, now: NOW + HOUR }, true),
+    };
+    const outcomes = {
+      delete: { status: "ok", value: true },
+      publication: { status: "published" },
+      failure: { status: "dropped" },
+    };
+    const reads: Record<string, number[][]> = { delete: [], publication: [], failure: [] };
+    // The subjects' ids lie between the others', which grow on both sides of them.
+    let n = 500;
+    let others = 0;
+    for (const [held, grown] of [
+      [MAX_STATUS_MEDIA, 1],
+      [40, 5],
+      [400, 50],
+    ] as const) {
+      for (; others < grown; others++) {
+        await restoredHolding(h, alice.id, others, MAX_STATUS_MEDIA);
+        await restoredHolding(h, alice.id, 999 - others, MAX_STATUS_MEDIA);
+      }
+      for (const [name, run] of Object.entries(callers)) {
+        const id = await restoredHolding(h, alice.id, ++n, held, {
+          attempts: name === "failure" ? MAX_ATTEMPTS - 1 : 0,
+        });
+        const kept = await heldBy(h, id);
+        expect(kept, name).toEqual(Array.from({ length: MAX_STATUS_MEDIA }, (_, i) => heldUpload(n, held - 1 - i)));
+        const { output, statements } = await run(id);
+        expect(output, name).toMatchObject(outcomes[name as keyof typeof outcomes]);
+        // The author's statuses count is taken again over its statuses, one more for each publication of the run.
+        const rows = (only?: RegExp) =>
+          statements
+            .filter((s) => (only === undefined ? !recount.test(s.query) : only.test(s.query)))
+            .reduce((sum, s) => sum + s.rows, 0);
+        reads[name]?.push([rows(detach), rows()]);
+        // Its four are detached, attachable for a day from the call.
+        const freed = await sql<{ scheduled_status_id: string | null; gc_at: string }>(
+          h.store,
+          `SELECT scheduled_status_id, gc_at FROM media_attachments WHERE id IN (${kept.map(() => "?").join(", ")})`,
+          ...kept,
+        );
+        expect(freed, name).toEqual(
+          kept.map(() => ({ scheduled_status_id: null, gc_at: at((name === "delete" ? NOW : NOW + HOUR) + DAY) })),
+        );
+      }
+    }
+    expect(await count(h, "scheduled_statuses")).toBe(2 * others);
+    for (const [name, measured] of Object.entries(reads)) {
+      expect(measured[0]?.[0], name).toBeGreaterThan(0);
+      expect(measured, name).toEqual([measured[0], measured[0], measured[0]]);
+    }
+  }, 120_000);
+
+  it("holds four through the API, and refuses a fifth, held directly or moved, but not a reorder", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const media = [];
+    for (let i = 1; i <= MAX_STATUS_MEDIA + 1; i++) {
+      media.push(await upload(h, alice, i));
+    }
+    const four = media.slice(0, MAX_STATUS_MEDIA);
+    const fifth = media[MAX_STATUS_MEDIA]!;
+    const created = await scheduled(h, alice, { status: "four", media_ids: four, scheduled_at: at(NOW + HOUR) });
+    expect(created.media_attachments.map((m) => m.id)).toEqual(four);
+    const other = await scheduled(h, alice, { status: "one", media_ids: [fifth], scheduled_at: at(NOW + HOUR) });
+    // Moved from another scheduled status or from none, or held by a new row, a fifth is refused.
+    const move = (to: string, id: string) =>
+      sql(h.store, "UPDATE media_attachments SET scheduled_status_id = ?, gc_at = NULL WHERE id = ?", to, id);
+    await expect(move(created.id, fifth)).rejects.toThrow(HELD_REFUSED);
+    const sixth = await upload(h, alice, 6);
+    await expect(move(created.id, sixth)).rejects.toThrow(HELD_REFUSED);
+    await expect(
+      sql(
+        h.store,
+        `INSERT INTO media_attachments (id, account_id, scheduled_status_id, type, url, processed)
+				VALUES ('819999999999999999', ?, ?, 'image', 'https://kopje.test/files/n/full', 1)`,
+        alice.id,
+        created.id,
+      ),
+    ).rejects.toThrow(HELD_REFUSED);
+    // A write that keeps each upload's scheduled status passes: a reorder that ties two positions shows them by id.
+    await sql(
+      h.store,
+      `UPDATE media_attachments SET scheduled_status_id = scheduled_status_id, position = 3 - position / 2
+				WHERE scheduled_status_id = ?`,
+      created.id,
+    );
+    const shown = await getJson<Scheduled>(h, `/api/v1/scheduled_statuses/${created.id}`, alice.token);
+    expect(shown.body.media_attachments.map((m) => m.id)).toEqual([four[2], four[3], four[0], four[1]]);
+    expect(await heldBy(h, other.id)).toEqual([fifth]);
+  });
+
+  it("drops a restored row whose media_ids name an upload the upgrade detached, as for media gone", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const past = await restoredHolding(h, alice.id, 1, MAX_STATUS_MEDIA + 1, { named: MAX_STATUS_MEDIA + 1 });
+    const within = await restoredHolding(h, alice.id, 2, MAX_STATUS_MEDIA, { named: MAX_STATUS_MEDIA });
+    // The first by position is the last written: the upgrade detached the first written of the five.
+    expect(await heldBy(h, past)).toEqual(Array.from({ length: MAX_STATUS_MEDIA }, (_, i) => heldUpload(1, 4 - i)));
+    expect(
+      await sql(h.store, "SELECT scheduled_status_id FROM media_attachments WHERE id = ?", heldUpload(1, 0)),
+    ).toEqual([{ scheduled_status_id: null }]);
+    expect(await publishDirectly(h, past, NOW + HOUR)).toEqual({ status: "dropped", reason: "invalid" });
+    expect(await heldBy(h, past)).toEqual([]);
+    const published = await publishDirectly(h, within, NOW + HOUR);
+    expect(published).toMatchObject({ status: "published" });
+    const statusId = (published as { statusId: string }).statusId;
+    const shown = await getJson<Status & { media_attachments: { id: string }[] }>(h, `/api/v1/statuses/${statusId}`);
+    expect(shown.body.media_attachments.map((m) => m.id)).toEqual(
+      Array.from({ length: MAX_STATUS_MEDIA }, (_, i) => heldUpload(2, MAX_STATUS_MEDIA - 1 - i)),
+    );
+  });
+});
+
+// ---- RES-2: params that cannot be read (0110_scheduled_params).
+
+const PARAMS_FILE = MIGRATIONS.find((m) => m.name === "0110_scheduled_params")?.sql ?? "";
+const PAST_BOUND = /scheduled_statuses: a value past its stored bound/;
+
+// `text` as a BLOB of its UTF-8 bytes.
+const blob = (text: string) => new TextEncoder().encode(text).buffer as ArrayBuffer;
+
+// Runs `write` as a Store before 0110 could (its triggers dropped), then the file's statements, as its upgrade runs
+// them.
+async function beforeParamsBound(h: ApiHarness, write: (sql: SqlStorage) => void): Promise<void> {
+  await runInDurableObject(h.store, (_instance, state) => {
+    const sql = state.storage.sql;
+    sql.exec("DROP TRIGGER scheduled_statuses_params_insert");
+    sql.exec("DROP TRIGGER scheduled_statuses_params_update");
+    write(sql);
+    state.storage.transactionSync(() => sql.exec(PARAMS_FILE).toArray());
+  });
+}
+
+describe("a scheduled status whose params cannot be read (RES-2)", () => {
+  // Restored before 0110: params of a JSON object followed by a NUL (json_valid stops at it) and a BLOB of one, beside
+  // a readable scheduled status, each due at NOW + HOUR but the BLOB's, a day later.
+  it("is left out of the list, not found when shown or updated, deleted, and dropped as params when due", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const media = await upload(h, alice, 1);
+    const held = await upload(h, alice, 2);
+    const readable = await scheduled(h, alice, {
+      status: "readable",
+      media_ids: [media],
+      scheduled_at: at(NOW + HOUR),
+    });
+    const [nul, binary] = ["740000000000000001", "740000000000000002"];
+    const params = JSON.stringify({ text: "unreadable", spoiler_text: "", media_ids: [held] });
+    await beforeParamsBound(h, (sql) => {
+      const insert = "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, ?, ?)";
+      sql.exec(insert, nul, alice.id, at(NOW + HOUR - MINUTE), `${params}\0tail`);
+      sql.exec(insert, binary, alice.id, at(NOW + DAY), blob(params));
+      sql.exec("UPDATE media_attachments SET scheduled_status_id = ?, gc_at = NULL WHERE id = ?", nul, held);
+    });
+    // Both are stored as written, past the CHECK of 0011_scheduled_statuses.
+    expect(
+      await sql(
+        h.store,
+        "SELECT id, typeof(params) AS type, length(CAST(params AS BLOB)) AS bytes FROM scheduled_statuses ORDER BY id",
+      ),
+    ).toEqual([
+      { id: readable.id, type: "text", bytes: expect.any(Number) },
+      { id: nul, type: "text", bytes: utf8Length(params) + 5 },
+      { id: binary, type: "blob", bytes: utf8Length(params) },
+    ]);
+    // The list answers the readable one whole, and nothing of the others.
+    const listed = await getJson<Scheduled[]>(h, "/api/v1/scheduled_statuses", alice.token);
+    expect(listed).toEqual({ status: 200, body: [readable] });
+    for (const id of [nul, binary]) {
+      expect((await getJson(h, `/api/v1/scheduled_statuses/${id}`, alice.token)).status, id).toBe(404);
+      const moved = await send(h, alice, "PUT", `/api/v1/scheduled_statuses/${id}`, {
+        scheduled_at: at(NOW + 2 * DAY),
+      });
+      expect(moved.status, id).toBe(404);
+    }
+    expect((await getJson(h, `/api/v1/scheduled_statuses/${readable.id}`, alice.token)).body).toEqual(readable);
+    // The due one is dropped as params in its first run, its upload detached, and no failure is recorded; the readable
+    // one is published.
+    expect(await publishDirectly(h, nul, NOW + HOUR)).toEqual({ status: "dropped", reason: "params" });
+    await round(h, NOW + HOUR);
+    expect(await sql(h.store, "SELECT id, attempts FROM scheduled_statuses")).toEqual([{ id: binary, attempts: 0 }]);
+    expect(await count(h, "statuses")).toBe(1);
+    expect(await sql(h.store, "SELECT scheduled_status_id, gc_at FROM media_attachments WHERE id = ?", held)).toEqual([
+      { scheduled_status_id: null, gc_at: at(NOW + HOUR + DAY) },
+    ]);
+    // The BLOB one is deleted as any other.
+    const deleted = await send(h, alice, "DELETE", `/api/v1/scheduled_statuses/${binary}`);
+    expect([deleted.status, await deleted.json()]).toEqual([200, {}]);
+    expect(await count(h, "scheduled_statuses")).toBe(0);
+  });
+
+  // A repeat of the Idempotency-Key that scheduled it answers as when nothing holds the key: the key is taken from the
+  // unreadable row and the post is scheduled anew.
+  it("answers a repeated Idempotency-Key as if it had made nothing", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const body = { status: "once", scheduled_at: at(NOW + HOUR) };
+    const first = await (await schedule(h, alice, body, { "Idempotency-Key": "k1" })).json<Scheduled>();
+    expect((await (await schedule(h, alice, body, { "Idempotency-Key": "k1" })).json<Scheduled>()).id).toBe(first.id);
+    await beforeParamsBound(h, (sql) => {
+      sql.exec("UPDATE scheduled_statuses SET params = params || char(0) WHERE id = ?", first.id);
+    });
+    const again = await schedule(h, alice, body, { "Idempotency-Key": "k1" });
+    expect(again.status).toBe(200);
+    const made = await again.json<Scheduled>();
+    expect(made.id).not.toBe(first.id);
+    expect(
+      await sql(h.store, "SELECT id, client_key IS NOT NULL AS keyed FROM scheduled_statuses ORDER BY id"),
+    ).toEqual([
+      { id: first.id, keyed: 0 },
+      { id: made.id, keyed: 1 },
+    ]);
+  });
+
+  // Restored before 0110: 42 scheduled statuses of alice (…001 to …042), some with unreadable params. A page reads
+  // toward its limit by the ids it read (Page.cut), so its Link header, from those ids, passes over the rows it leaves
+  // out, and a walk either way reaches every readable row once, as Mastodon's walk over the same rows with the
+  // unreadable ones absent does.
+  it("pages on past the rows it leaves out, by the ids it read", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const id = (n: number) => String(740000000000000000n + BigInt(n));
+    const newestFirst = (from: number, to: number) => Array.from({ length: from - to + 1 }, (_, i) => id(from - i));
+    const restore = (unreadable: (n: number) => boolean) =>
+      beforeParamsBound(h, (sql) => {
+        sql.exec("DELETE FROM scheduled_statuses");
+        for (let n = 1; n <= 42; n++) {
+          sql.exec(
+            "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, ?, ?)",
+            id(n),
+            alice.id,
+            at(NOW + HOUR + n * MINUTE),
+            unreadable(n) ? "{}\0" : "{}",
+          );
+        }
+      });
+    // The pages a walk from `path` reaches by its `rel` link, until one links no further.
+    const follow = async (path: string, rel: "next" | "prev") => {
+      const pages: string[][] = [];
+      let next: string | undefined = path;
+      while (next !== undefined && pages.length < 10) {
+        const response = await h.request(next, bearer(alice.token));
+        pages.push((await response.json<Scheduled[]>()).map((s) => s.id));
+        next = new RegExp(`<https://kopje\\.test([^>]+)>; rel="${rel}"`).exec(response.headers.get("link") ?? "")?.[1];
+      }
+      return pages;
+    };
+    const base = "/api/v1/scheduled_statuses?limit=40";
+    const link = (max: number, min: number) =>
+      `<https://kopje.test${base}&max_id=${id(max)}>; rel="next", <https://kopje.test${base}&min_id=${id(min)}>; rel="prev"`;
+    const cases: { unreadable: (n: number) => boolean; first: string[]; readable: string[] }[] = [
+      // The newest unreadable: the first page shows 39 and links next from …003, the 40th id it read. Mastodon, with
+      // …042 absent, shows …041 to …002 and links next from …002; either walk then reaches …001.
+      { unreadable: (n) => n === 42, first: newestFirst(41, 3), readable: newestFirst(41, 1) },
+      // All but the oldest unreadable: the first page is empty and still links next from …003.
+      { unreadable: (n) => n >= 2, first: [], readable: [id(1)] },
+      // All but the newest unreadable: a min_id page of none still links prev from the newest id it read.
+      { unreadable: (n) => n <= 41, first: [id(42)], readable: [id(42)] },
+    ];
+    for (const { unreadable, first, readable } of cases) {
+      await restore(unreadable);
+      const response = await h.request(base, bearer(alice.token));
+      expect((await response.json<Scheduled[]>()).map((s) => s.id)).toEqual(first);
+      expect(response.headers.get("link")).toBe(link(3, 42));
+      expect((await follow(base, "next")).flat()).toEqual(readable);
+      expect((await follow(`${base}&min_id=0`, "prev")).toReversed().flat()).toEqual(readable);
+    }
+    // The min_id page of …001 to …040, all unreadable: empty, linking prev from …040 and next from …001.
+    const oldest = await h.request(`${base}&min_id=0`, bearer(alice.token));
+    expect(await oldest.json()).toEqual([]);
+    expect(oldest.headers.get("link")).toBe(link(1, 40));
+  });
+
+  // The decision moves from JSON.parse alone to the read's SQL prefilter and storedParams. Over the values on which
+  // json_valid and JSON.parse disagree, and the forms near them: storedParams after paramsReadSql is null exactly where
+  // JSON.parse throws on what workerd returns (or reads no object), for every value the CHECK lets a restore store,
+  // and the trigger refuses only values JSON.parse would not read.
+  it("reads params as JSON.parse reads them, over the values json_valid and JSON.parse disagree on", async () => {
+    const h = await community(["alice"]);
+    const nested = (depth: number) => `${'{"a":'.repeat(depth - 1)}{}${"}".repeat(depth - 1)}`;
+    // [label, the value as SQL, whether the CHECK of 0011 passes it, whether JSON.parse reads an object from it]
+    const cases: [string, string, boolean, boolean][] = [
+      ["an object", `'{"a":1}'`, true, true],
+      ["NUL after the object", `CAST(X'7B7D0078' AS TEXT)`, true, false],
+      ["NUL inside a string", `CAST(X'7B2261223A2200227D' AS TEXT)`, false, false],
+      ["NUL alone after it", `CAST(X'7B7D00' AS TEXT)`, true, false],
+      ["a BLOB object", `X'7B7D'`, true, false],
+      ["depth 1,000", `'${nested(1000)}'`, true, true],
+      ["depth 1,001", `'${nested(1001)}'`, false, true],
+      ["raw U+0001 in a string", `CAST(X'7B2261223A2201227D' AS TEXT)`, false, false],
+      ["malformed UTF-8 in a string", `CAST(X'7B2261223A22FF227D' AS TEXT)`, true, true],
+      ["malformed UTF-8 in a key", `CAST(X'7B22FF223A317D' AS TEXT)`, true, true],
+      ["JSON5: a bare key", `'{a:1}'`, false, false],
+      ["JSON5: a trailing comma", `'{"a":1,}'`, false, false],
+      ["JSON5: a single-quoted string", `'{"a":''x''}'`, false, false],
+      ["JSON5: a hexadecimal number", `'{"a":0x1}'`, false, false],
+      ["form feed before it", `char(12) || '{}'`, false, false],
+      ["NBSP before it", `char(160) || '{}'`, false, false],
+      ["whitespace JSON allows", `char(9, 10, 13, 32) || '{}' || char(32)`, true, true],
+      ["an array", `'[]'`, false, false],
+    ];
+    // Each value as a restore before 0110 stores it (the CHECK alone), read back as the Store reads params; then, with
+    // the triggers made again, whether they refuse it.
+    const decided = await runInDurableObject(h.store, (_instance, state) => {
+      const sql = state.storage.sql;
+      sql.exec("DROP TRIGGER scheduled_statuses_params_insert");
+      sql.exec("DROP TRIGGER scheduled_statuses_params_update");
+      const insert = (id: string, value: string) =>
+        sql.exec(
+          `INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params)
+					VALUES (?, ?, '2026-12-01T00:00:00.000Z', ${value})`,
+          id,
+          h.users.alice.id,
+        );
+      const stored = cases.map(([label, value], i) => {
+        const id = String(760000000000000000n + BigInt(i));
+        const { raw } = sql.exec<{ raw: SqlStorageValue }>(`SELECT ${value} AS raw`).one();
+        let checked = true;
+        try {
+          insert(id, value);
+        } catch {
+          checked = false;
+        }
+        const read = checked
+          ? sql
+              .exec<{ read: string | null }>(
+                `SELECT ${paramsReadSql("ss.params")} AS read FROM scheduled_statuses ss WHERE ss.id = ?`,
+                id,
+              )
+              .one().read
+          : null;
+        let parsed = false;
+        try {
+          const value: unknown = JSON.parse(raw as string);
+          parsed = typeof value === "object" && value !== null && !Array.isArray(value);
+        } catch {
+          parsed = false;
+        }
+        return { label, value, checked, parsed, read: storedParams(read) !== null };
+      });
+      state.storage.transactionSync(() => sql.exec(PARAMS_FILE).toArray());
+      return stored.map((entry, i) => {
+        let refused = false;
+        try {
+          insert(String(770000000000000000n + BigInt(i)), entry.value);
+        } catch (error) {
+          refused = PAST_BOUND.test(String(error));
+        }
+        return { ...entry, refused };
+      });
+    });
+    expect(decided.map(({ label, checked, parsed }) => [label, checked, parsed])).toEqual(
+      cases.map(([label, , checked, parsed]) => [label, checked, parsed]),
+    );
+    for (const { label, checked, parsed, read, refused } of decided) {
+      // Where a restore can store it, the read reads it exactly where JSON.parse does.
+      if (checked) {
+        expect(read, label).toBe(parsed);
+      }
+      // The trigger refuses only what JSON.parse would not read.
+      if (refused) {
+        expect(parsed, label).toBe(false);
+      }
+    }
+    // The trigger refuses exactly what the read's prefilter leaves out.
+    expect(decided.filter((d) => d.refused).map((d) => d.label)).toEqual([
+      "NUL after the object",
+      "NUL inside a string",
+      "NUL alone after it",
+      "a BLOB object",
+    ]);
+  });
+});
+
 // ---- RES-3: a scheduled status's maximum, and the list within ANSWER_BYTES.
 
 const C = "\u0001";
@@ -1126,8 +1594,8 @@ async function maximalScheduled(
 ): Promise<string> {
   const id = String(750000000000000000n + BigInt(n));
   const size = { width: LONGEST_DOUBLE, height: LONGEST_DOUBLE };
-  await runInDurableObject(h.store, (_instance, state) => {
-    state.storage.sql.exec(
+  const write = (sql: SqlStorage) => {
+    sql.exec(
       "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, ?, ?)",
       id,
       owner,
@@ -1135,7 +1603,7 @@ async function maximalScheduled(
       GROWING_PARAMS,
     );
     for (let i = 0; i < held; i++) {
-      state.storage.sql.exec(
+      sql.exec(
         `INSERT INTO media_attachments (id, account_id, scheduled_status_id, position, type, url, preview_url,
 					description, meta, focus_x, focus_y, blurhash)
 				VALUES (?, ?, ?, ?, 'unknown', ?, ?, ?, ?, ?, ?, ?)`,
@@ -1152,7 +1620,13 @@ async function maximalScheduled(
         blurhashOf(5, 5, "~"),
       );
     }
-  });
+  };
+  // Past MAX_STATUS_MEDIA, only a restore from before 0109 holds them, and its upgrade keeps the first four.
+  if (held > MAX_STATUS_MEDIA) {
+    await beforeCap(h, write);
+  } else {
+    await runInDurableObject(h.store, (_instance, state) => write(state.storage.sql));
+  }
   return id;
 }
 
@@ -1284,9 +1758,9 @@ describe("a scheduled status at its caps (RES-3)", () => {
     expect([moved.status, (await moved.json<Scheduled>()).scheduled_at]).toEqual([200, at(NOW + 2 * HOUR)]);
   }, 120_000);
 
-  // The media read takes the first MAX_STATUS_MEDIA by position through media_attachments_scheduled, so a restored row
-  // holding more reads no more.
-  it("shows the first 4 held media by position, reading as many entries however many it holds", async () => {
+  // A restored row that held more keeps its first MAX_STATUS_MEDIA by (position, id) through the upgrade of
+  // 0109_scheduled_media_cap, and the media read takes them through media_attachments_scheduled: it reads no more.
+  it("shows the first 4 held media by position, reading as many entries however many it held", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
     const remote = await remoteAccount(h.store, "far");

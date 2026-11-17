@@ -13,9 +13,12 @@ import {
   creatorUsername,
   domainVariants,
   localCardLink,
+  MENTION_URL_ACCOUNTS,
+  remoteCardLink,
 } from "../src/domain/link-cards";
 import type { RemoteStatusInput } from "../src/domain/remote-status-reads";
 import { MAX_STATUS_MEDIA } from "../src/domain/remote-statuses";
+import { MAX_STATUS_MENTION_ROWS } from "../src/domain/status-bounds";
 import { CARD_JSON_MAX, cardIframe, type CardRow, presentCard } from "../src/domain/status-presenter";
 import { CARD_COLUMN_MAP } from "../src/domain/status-rows";
 import { storedFields } from "../src/federation/link-cards";
@@ -43,7 +46,7 @@ import {
 import { bearer, json, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
-import { appToken } from "./read-helpers";
+import { appToken, type PlannedStatement, plannedSql, scansOf, staleStatistics } from "./read-helpers";
 import { community, outbound, post, remoteAccount, remoteFollows } from "./status-helpers";
 
 // A link of 0 by 0 without an embed, as 0069_card_embeds defaults a row.
@@ -141,6 +144,46 @@ async function world() {
   return { h, carol, send, receive, statusOf, card };
 }
 
+// Account ids below those the harness allocates, so their mention rows sort before its accounts'.
+const SMALL_IDS = 100_000_000_000_000_000n;
+
+// `count` remote accounts of `domain`, ids from `base`, each storing `url` when given.
+async function accountsOf(store: StoreStub, domain: string, count: number, base: bigint, url: string | null = null) {
+  await sql(
+    store,
+    `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+		INSERT INTO accounts (id, uri, username, domain, url)
+		SELECT CAST(?2 + i AS TEXT), 'https://' || ?3 || '/users/a' || (?2 + i), 'a' || (?2 + i), ?3, ?4 FROM n`,
+    count,
+    String(base),
+    domain,
+    url,
+  );
+}
+
+// Mention rows of the status `statusId` for every account of `domain` it lacks, as the cutover conversion writes them.
+async function mentionRows(store: StoreStub, statusId: string, authorId: string, domain: string, silent: 0 | 1) {
+  await sql(
+    store,
+    `INSERT INTO status_mentions (status_id, account_id, silent, requires_mention, author_id)
+		SELECT ?1, id, ?2, 0, ?3 FROM accounts WHERE domain = ?4 ORDER BY id ON CONFLICT DO NOTHING`,
+    statusId,
+    silent,
+    authorId,
+    domain,
+  );
+}
+
+// A seek of one mention row by its whole key.
+const MENTION_SEEK =
+  /^SEARCH m USING (?:PRIMARY KEY \(status_id=\? AND account_id=\?\)|COVERING INDEX status_mentions_account \(account_id=\? AND status_id=\?\))$/;
+
+// An anchor as the Worker's capture keeps it (CardCandidate): its raw href, parsed.
+function anchor(raw: string) {
+  const url = new URL(raw);
+  return { raw, url: { href: url.href, host: url.host } };
+}
+
 describe("link choice", () => {
   it("takes a remote status's first anchor that is not a hashtag's, and refuses an http one without advancing", async () => {
     const { receive, statusOf, card } = await world();
@@ -199,7 +242,215 @@ Ich will mal unter <br> <a href="http://example.com/not-found" rel="noopener nor
     });
     await receive(exact);
     expect(await card(await statusOf(exact.id))).toMatchObject({ url: "https://d.example/" });
+    // An imported url in another spelling than its serialization is compared as stored, as Mastodon compares it.
+    await sql(h.store, "UPDATE accounts SET url = 'HTTPS://other.example/@Dan' WHERE id = ?", dan);
+    const imported = note('<a href="HTTPS://other.example/@Dan">@Dan</a> <a href="https://d.example/">d</a>', {
+      tag: [mention],
+    });
+    await receive(imported);
+    expect(await card(await statusOf(imported.id))).toMatchObject({ url: "https://d.example/" });
   });
+
+  // #1734: a mentioned account without a usable url (none, empty, not http(s), past PROFILE_URL_LIMIT once serialized)
+  // is linked by its actor id, as its account's url shows (Mastodon stores `url || @uri`).
+  it("skips an anchor whose raw href is the actor id of a mentioned account without a usable url", async () => {
+    const { h, receive, statusOf, card } = await world();
+    const erin = await remoteAccount(h.store, "erin", "other.example");
+    const { uri } = (await sql<{ uri: string }>(h.store, "SELECT uri FROM accounts WHERE id = ?", erin))[0]!;
+    const content = `<a href="${uri}">@erin</a> <a href="https://d.example/">d</a>`;
+    const mention = { type: "Mention", href: uri, name: "@erin@other.example" };
+    for (const url of [null, "", "javascript:alert(1)", `https://other.example/${'"'.repeat(1_000)}`]) {
+      await sql(h.store, "UPDATE accounts SET url = ? WHERE id = ?", url, erin);
+      const unset = note(content, { tag: [mention] });
+      await receive(unset);
+      expect(await card(await statusOf(unset.id)), String(url)).toMatchObject({ url: "https://d.example/" });
+    }
+    // With a url stored, the actor id is a link like any other.
+    await sql(h.store, "UPDATE accounts SET url = 'https://other.example/@erin' WHERE id = ?", erin);
+    const stored = note(content, { tag: [mention] });
+    await receive(stored);
+    expect(await card(await statusOf(stored.id))).toMatchObject({ url: uri });
+    // A stored url Kopje does not show is not the mention's: past PROFILE_URL_LIMIT once serialized, a link to it is an
+    // over-long first link (docs/mastodon-deviations.md).
+    const unshown = `https://other.example/${'"'.repeat(1_000)}`;
+    await sql(h.store, "UPDATE accounts SET url = ? WHERE id = ?", unshown, erin);
+    const over = note(`<a href="${unshown.replaceAll('"', "&quot;")}">@erin</a> <a href="https://d.example/">d</a>`, {
+      tag: [mention],
+    });
+    await receive(over);
+    expect(await card(await statusOf(over.id))).toBeUndefined();
+  });
+
+  // mention_link? comes before bad_url? (:79-95): a mentioned local account's short URL is skipped before it is judged,
+  // by its whole username.
+  it("skips a mentioned local account's short URL before judging it, by its exact username", async () => {
+    const { h, receive, statusOf } = await world();
+    const object = note("<p>s</p>");
+    await receive(object);
+    const statusId = (await statusOf(object.id))!;
+    // alice, the personal inbox's owner, is a silent mention.
+    const linkOf = (raw: string) =>
+      runInDurableObject(h.store, (_instance, state) =>
+        remoteCardLink(
+          new Db(state.storage.sql),
+          statusId,
+          [{ raw, url: "invalid" }, anchor("https://card.example/")],
+          new URL(ORIGIN).host,
+          undefined,
+        ),
+      );
+    expect(await linkOf(`${ORIGIN}/@alice`)).toBe("https://card.example/");
+    expect(await linkOf(`${ORIGIN}/@Alice`)).toBeNull();
+    expect(await linkOf(`${ORIGIN}/@bob`)).toBeNull();
+  });
+
+  // Mastodon's mention_link? reads every mention a status stores; a converted or imported status keeps any number of
+  // rows, and an Update keeps the rows past MAX_STATUS_MENTION_ROWS. The test starts from the anchor (mentionLink).
+  it("skips a mention's profile link past MAX_STATUS_MENTION_ROWS silent rows with smaller account ids", async () => {
+    const { h, carol, receive, statusOf } = await world();
+    const current = await remoteAccount(h.store, "current", "other.example");
+    const mention = { type: "Mention", href: "https://other.example/users/current", name: "@current@other.example" };
+    const object = note('<a href="https://other.example/@current">@current</a>', { tag: [mention] });
+    await receive(object);
+    const statusId = (await statusOf(object.id))!;
+    await accountsOf(h.store, "silent.example", MAX_STATUS_MENTION_ROWS, SMALL_IDS);
+    await mentionRows(h.store, statusId, carol, "silent.example", 1);
+    // The silent rows (and the personal inbox's owner) sort before the current mention.
+    const [{ n } = { n: 0 }] = await sql<{ n: number }>(
+      h.store,
+      "SELECT count(*) AS n FROM status_mentions WHERE status_id = ? AND account_id < ?",
+      statusId,
+      current,
+    );
+    expect(n).toBeGreaterThanOrEqual(MAX_STATUS_MENTION_ROWS);
+    const anchors = ["https://other.example/@current", "https://card.example/"].map(anchor);
+    const link = await runInDurableObject(h.store, (_instance, state) =>
+      remoteCardLink(new Db(state.storage.sql), statusId, anchors, new URL(ORIGIN).host, undefined),
+    );
+    expect(link).toBe("https://card.example/");
+  });
+
+  it("skips a current mention's profile link at an Update after an import grew the status past its mention rows", async () => {
+    const { h, carol, receive, statusOf, card } = await world();
+    await remoteAccount(h.store, "current", "other.example");
+    const mention = { type: "Mention", href: "https://other.example/users/current", name: "@current@other.example" };
+    const content = (link: string) => `<a href="https://other.example/@current">@current</a> <a href="${link}">c</a>`;
+    const object = note(content("https://card.example/"), { tag: [mention] });
+    await receive(object);
+    const id = (await statusOf(object.id))!;
+    expect(await card(id)).toMatchObject({ url: "https://card.example/" });
+    // Rows as the cutover conversion writes them (cli/lib/cutover/convert.js), by SQL, with smaller account ids.
+    await accountsOf(h.store, "imported.example", MAX_STATUS_MENTION_ROWS, SMALL_IDS);
+    await mentionRows(h.store, id, carol, "imported.example", 0);
+    const edited = await receive(
+      { ...object, updated: "2026-10-11T13:00:00Z", content: content("https://card2.example/") },
+      "UpdateStatus",
+      NOW + 1,
+    );
+    expect(edited).toMatchObject({ applied: true, reason: "edited" });
+    const [{ n } = { n: 0 }] = await sql<{ n: number }>(
+      h.store,
+      "SELECT count(*) AS n FROM status_mentions WHERE status_id = ?",
+      id,
+    );
+    expect(n).toBeGreaterThan(MAX_STATUS_MENTION_ROWS);
+    expect(await card(id)).toMatchObject({ url: "https://card2.example/" });
+  });
+
+  // docs/mastodon-deviations.md, "Link previews": the test probes at most MENTION_URL_ACCOUNTS accounts sharing a url,
+  // in accounts_url's order (url, then rowid).
+  it("takes a url as a link when the mentioned account is past MENTION_URL_ACCOUNTS accounts sharing it", async () => {
+    const { h, carol, receive, statusOf } = await world();
+    const shared = "https://share.example/@shared";
+    await accountsOf(h.store, "share.example", MENTION_URL_ACCOUNTS + 1, SMALL_IDS, shared);
+    const [first, last] = (
+      await sql<{ id: string }>(
+        h.store,
+        "SELECT id FROM accounts WHERE domain = 'share.example' AND rowid IN ((SELECT min(rowid) FROM accounts WHERE domain = 'share.example'), (SELECT max(rowid) FROM accounts WHERE domain = 'share.example')) ORDER BY rowid",
+      )
+    ).map((row) => row.id);
+    const object = note("<p>s</p>");
+    await receive(object);
+    const statusId = (await statusOf(object.id))!;
+    const anchors = [shared, "https://card.example/"].map(anchor);
+    const linkOf = (mentioned: string) =>
+      runInDurableObject(h.store, (_instance, state) => {
+        state.storage.sql.exec("DELETE FROM status_mentions WHERE status_id = ?", statusId);
+        state.storage.sql.exec(
+          "INSERT INTO status_mentions (status_id, account_id, silent, requires_mention, author_id) VALUES (?, ?, 0, 0, ?)",
+          statusId,
+          mentioned,
+          carol,
+        );
+        return remoteCardLink(new Db(state.storage.sql), statusId, anchors, new URL(ORIGIN).host, undefined);
+      });
+    expect(await linkOf(first!)).toBe("https://card.example/");
+    expect(await linkOf(last!)).toBe(shared);
+  });
+
+  // RES-3, RES-6: the mention test's reads at saturation with stale statistics (ANALYZE before the Store grew): each
+  // anchor's statements seek their indexes and read at most MENTION_URL_ACCOUNTS accounts sharing a url, however many
+  // share it and however many mention rows the status keeps.
+  it("reads the mention test's candidates by index under stale statistics, flat past MENTION_URL_ACCOUNTS", async () => {
+    const { h, carol, receive, statusOf } = await world();
+    await remoteAccount(h.store, "current", "other.example");
+    const mention = { type: "Mention", href: "https://other.example/users/current", name: "@current@other.example" };
+    const object = note('<a href="https://other.example/@current">@current</a>', { tag: [mention] });
+    await receive(object);
+    const statusId = (await statusOf(object.id))!;
+    const shared = "https://share.example/@shared";
+    let base = SMALL_IDS;
+    const grow = async (sharing: number, converted: number) => {
+      await accountsOf(h.store, "share.example", sharing, base, shared);
+      base += BigInt(sharing);
+      await accountsOf(h.store, "converted.example", converted, base);
+      base += BigInt(converted);
+      await mentionRows(h.store, statusId, carol, "converted.example", 0);
+    };
+    await grow(3, 3);
+    // alice's page (the personal inbox's owner, a silent mention), the mentioned account's url and the shared url,
+    // which no mentioned account stores.
+    const anchors = [`${ORIGIN}/@alice`, "https://other.example/@current", shared].map(anchor);
+    const capture = () =>
+      runInDurableObject(h.store, (_instance, state) => {
+        const plans: PlannedStatement[] = [];
+        const planned = new Db(plannedSql(state.storage.sql, /status_mentions m/, plans));
+        const link = remoteCardLink(planned, statusId, anchors, new URL(ORIGIN).host, undefined);
+        return { link, plans };
+      });
+    const { before, after } = await staleStatistics(h, { capture, grow: () => grow(1_000, 10_000) });
+    await grow(1_000, 0);
+    const more = await capture();
+    for (const { link, plans } of [before, after, more]) {
+      expect(link).toBe(shared);
+      // alice's seek, which finds her mention; the mention's url found by its stored url, after its actor id was not;
+      // the shared url's actor id and stored url.
+      expect(plans.map(({ plan }) => plan.find((detail) => detail.startsWith("SEARCH a")))).toEqual([
+        "SEARCH a USING INDEX accounts_local_username (<expr>=?)",
+        "SEARCH a USING INDEX sqlite_autoindex_accounts_2 (uri=?)",
+        "SEARCH accounts USING INDEX accounts_url (url=?)",
+        "SEARCH a USING INDEX sqlite_autoindex_accounts_2 (uri=?)",
+        "SEARCH accounts USING INDEX accounts_url (url=?)",
+      ]);
+      for (const { query, plan } of plans) {
+        expect(scansOf(plan, ["a", "m", "accounts"]), `${query}\n${plan.join("\n")}`).toEqual([]);
+        // The mention by its whole key: the primary key or status_mentions_account (account_id, status_id).
+        expect(
+          plan.some((detail) => MENTION_SEEK.test(detail)),
+          `${query}\n${plan.join("\n")}`,
+        ).toBe(true);
+      }
+    }
+    const rows = (run: typeof after) => run.plans.map((statement) => statement.rows);
+    expect(
+      await sql(h.store, "SELECT count(*) AS n FROM accounts WHERE domain = 'share.example' AND url = ?", shared),
+    ).toEqual([{ n: 2_003 }]);
+    // Rows read: a seek's index entry, its account and its mention; the shared url's candidates, to the cap and no
+    // further, whose mentions (none) read nothing.
+    expect(rows(before)).toEqual([3, 0, 2, 0, 3]);
+    expect(rows(after)).toEqual([3, 0, 2, 0, MENTION_URL_ACCOUNTS]);
+    expect(rows(more)).toEqual(rows(after));
+  }, 60_000);
 
   it("refuses an unparsable or over-long first link, and keeps at most CARD_CANDIDATES anchors", async () => {
     const { receive, statusOf, card } = await world();
