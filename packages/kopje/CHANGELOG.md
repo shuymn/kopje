@@ -403,6 +403,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   LD-signed activity with a node whose `type` and `@type` together give two types or more one of which is not a string
   or is shaped like a keyword on a line, or a type beside `@set`, on which Mastodon's job raises and applies nothing, is
   ignored. No Store migration and no `wrangler.jsonc` change.
+- Apply LD-signed Reject, Undo, Block and Delete activities whose actor is a one-element array, whose object follows a
+  member the compaction shortens, or whose object is given as {"@id": ...}, as Mastodon does (#1717). Each is applied
+  only where Kopje shows Mastodon's compaction of it succeeds, and none is applied when another server relays it
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Reading inbound activities"). No Store migration and no
+  `wrangler.jsonc` change.
 - Every domain check reads a host without any of its trailing dots, in the Worker as in SQL: an instance domain block
   of `example.com` covers a fetch, an inbox, an actor and a delivery on `example.com..`, and an actor whose id is there
   claims its handle at `example.com`, where Mastodon drops a single trailing dot
