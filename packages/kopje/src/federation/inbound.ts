@@ -285,14 +285,14 @@ export async function parseActivity(body: Uint8Array, rules: Rules = {}): Promis
   if (refusal !== null) {
     return { ok: false, reason: "too-complex" };
   }
-  const object = idOf(json.object);
-  const deleteOfSelf = json.type === "Delete" && idOf(json.actor) !== null && object === idOf(json.actor);
+  // Decided before the envelope, of the body as received; the activity's object is the body read's (#1717).
+  const deleteOfSelf = json.type === "Delete" && idOf(json.actor) !== null && idOf(json.object) === idOf(json.actor);
   const envelope = await activityEnvelope(json, rules);
   if (!envelope.ok) {
     return { ok: false, reason: envelope.reason, deleteOfSelf };
   }
   const { actor, id, type, readType, read } = envelope;
-  const activity = activityOf(type, id, actor, read, object, readType);
+  const activity = activityOf(type, id, actor, read, readType);
   if (activity === null) {
     return { ok: false, reason: "unsupported", deleteOfSelf, actor };
   }
@@ -313,14 +313,8 @@ function statusActivity(kind: "Create" | "UpdateStatus", id: string, json: Json)
   return object === null ? null : { type: kind, id, object };
 }
 
-function activityOf(
-  type: string,
-  id: string,
-  actor: string,
-  json: Json,
-  object: string | null,
-  readType: TypeReader,
-): ParsedActivity | null {
+function activityOf(type: string, id: string, actor: string, json: Json, readType: TypeReader): ParsedActivity | null {
+  const object = idOf(json.object);
   if (LIKE_TYPES.has(type)) {
     return object === null ? null : { type: "Like", id, object };
   }

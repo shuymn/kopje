@@ -17,6 +17,7 @@ import {
   signTime,
 } from "./author-proof-helpers";
 import { fixtureKeyGen, LEGACY_EMPTY_KEK, seedLocalAccount, setDomain } from "./federation-helpers";
+import { type Form, FORMS, type Retraction, retraction } from "./fixtures/ld-signed/retractions.mjs";
 import { BUILD, claimAndSettle, migratedStore } from "./helpers";
 import { loggedRefusals, mastodonActor, serveOwnHandle, signedInit, type TestActor } from "./inbox-helpers";
 import {
@@ -741,4 +742,49 @@ describe("a relay of another type is dropped once its signer owns its key (ID-1)
     });
     expect(await snapshot(t)).toEqual(before);
   });
+});
+
+// LR-g (#1717): the forms in which Kopje reads an LD-signed retraction as Mastodon's compaction writes it (ld-signed-body.ts
+// RETRACTIONS) apply nothing more when another server relays it. A relay is decided on the body as received
+// (inbound.ts relayed, author-proof.ts profileOf), which none of the forms is in: a status Delete in one of them is
+// dropped though its author's proof verifies (the id-only one as Kopje signs it applies, above), and any other
+// retraction is not applied.
+describe("a relayed retraction in the forms #1717 reads applies nothing (ID-1)", () => {
+  // bob's Delete of `uri` in Kopje's id-only form (idOnly), changed to `form` and then signed by bob's key.
+  async function signedInForm(bob: TestActor, uri: string, form: Form): Promise<Json> {
+    const body = FORMS[form]({
+      "@context": [AS, SECURITY],
+      id: `${uri}#delete-${nextId()}`,
+      type: "Delete",
+      actor: bob.uri,
+      to: [PUBLIC],
+      object: uri,
+    });
+    return signJsonLd(body, bob.privateKey, new URL(bob.keyId), { contextLoader: contexts });
+  }
+
+  it.each(Object.keys(FORMS) as Form[])(
+    "drops a status Delete of bob's, %s, though its proof verifies",
+    async (form) => {
+      const { t, bob, dan } = await world();
+      const status = await note(t, bob);
+      await dropped(t, bob, dan, await signedInForm(bob, status.uri, form), status.uri, "proof-invalid");
+    },
+  );
+
+  const OTHERS: Retraction[] = ["Undo(Follow)", "Reject(Follow)", "Block", "Undo(Block)"];
+  it.each((Object.keys(FORMS) as Form[]).flatMap((form) => OTHERS.map((name) => [name, form] as const)))(
+    "does not apply bob's %s, %s",
+    async (name, form) => {
+      const { t, dan } = await world();
+      const edges = "SELECT (SELECT count(*) FROM blocks) AS blocks, (SELECT count(*) FROM follows) AS follows";
+      const before = await sql(t.store, edges);
+      expect(await loggedRefusals(async () => t.post(dan, FORMS[form](retraction(name))))).toEqual({
+        status: 202,
+        refused: [[{ event: "kopje.inbox.refused", status: 202, reason: "relay-not-applied" }]],
+      });
+      await settle(t.store);
+      expect(await sql(t.store, edges)).toEqual(before);
+    },
+  );
 });

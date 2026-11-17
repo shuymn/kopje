@@ -131,9 +131,10 @@ against their own instance. TLS is assumed between all parties.
   to the body's one-element arrays and public collection IRI): its contexts give every ActivityStreams term and every
   name of Mastodon's `full_context` that context's meaning, give no other name one of those meanings or a keyword's,
   set no keyword and name only the preloaded contexts that keep them, and every key of its body but the top-level
-  `@context`, `signature` and `proof` is a plain name. Above all, it holds only what real senders write (`senderShaped`,
-  the primary guard, checked before any context is read): no key with a control character or a line break, no key that
-  starts with `@` but a JSON-LD 1.1 keyword, no context URL twice in one `@context`, an inline definition only as
+  `@context`, `signature` and `proof` is a plain name (a retraction's once its references are read, below). Above
+  all, it holds only what real senders write (`senderShaped`, the primary guard, checked before any context is read):
+  no key with a control character or a line break, no key that starts with `@` but a JSON-LD 1.1 keyword, no context
+  URL twice in one `@context`, an inline definition only as
   Mastodon or Fedify 2.4.5 writes it for that name (`MASTODON_CONTEXT_TERMS`, 4.4 to 4.7.5; `MASTODON_OLM_TERMS`, the
   olm extension 3.5.0 to 4.2.29 write in every actor's context; `FEDIFY_CONTEXT_TERMS`; compared exactly), a type only
   as a plain term (ASCII letters, digits, `_` and `-`) or an absolute IRI, and a proof only as Fedify writes one (an
@@ -177,8 +178,15 @@ against their own instance. TLS is assumed between all parties.
   shapes, values and readers, each listed in `docs/mastodon-deviations.md` ("Reading inbound activities"). None of those
   differences lets Kopje grant an access Mastodon's reading would not (a follow, a status's audience, a lifted block, a
   quote's approval); some leave in place one Mastodon's reading would withdraw (a follow its `Reject` ends, a status its
-  `Delete` removes, a block an `Undo` of it lifts), and those are listed there too. The owner is the actor whose
-  document lists the key, by id and key material, and the key names no other owner. An actor's keys are what its
+  `Delete` removes, a block an `Undo` of it lifts), and those are listed there too. A retraction (a `Reject`, `Undo`,
+  `Block` or `Delete` by the name its type is read as, `RETRACTIONS`) is read as the compaction writes it where Kopje
+  shows the compaction succeeds: its `actor` given as a one-element array, as that element; a node reference given as
+  `{"@id": …}` alone under a name both contexts type `@id`, as its IRI where the compaction writes it as given
+  (`referencesAsIris`; the compaction shown of the body so read, its values counted as received); and a member after
+  a certain stop of Mastodon's patch given as a one-element array, as that element (`patchedAsMastodon`). Its actor is
+  still the signer's or the activity is a relay, and it ends only what its signer did or holds, or lifts its own block;
+  every other type keeps the reading as received. The owner is the actor whose document lists the key, by id and key
+  material, and the key names no other owner. An actor's keys are what its
   document embeds among its first `MAX_PUBLIC_KEYS` (10) entries of `publicKey` and of `assertionMethod` (FEP-521a
   `Multikey`), RSA or Ed25519, each with an id on its origin (`ownKeys`); a key listed by reference in `assertionMethod`
   is not fetched, and a key the signature's verification resolved joins them only within the same first ten
@@ -228,7 +236,8 @@ against their own instance. TLS is assumed between all parties.
   an LD-signed activity Kopje's inbox ignores"), `test/inbox-signed-forms.test.ts` ("ignores an LD-signed activity whose
   context rebases its IRIs", "ignores an LD-signed activity that aliases a keyword or a member beside the literal one",
   "a spooled LD-signed activity outside the vocabulary is ignored on replay", "reads an LD-signed activity in a real
-  sender's vocabulary", "rule (5): an LD-signed activity outside what real senders write is ignored"),
+  sender's vocabulary", "rule (5): an LD-signed activity outside what real senders write is ignored", "#1717:
+  LD-signed retractions in the forms Mastodon compacts"),
   `test/ld-signed-vocabulary.test.ts` ("the vocabulary is jsonld.js's processing", "the allowed context URLs are the
   preloaded ones", "FEDIFY_CONTEXT_TERMS is every inline definition @fedify/vocab writes, by name", "every inline
   definition Mastodon 3.5 to 4.3 writes is one rule (5) admits"),
