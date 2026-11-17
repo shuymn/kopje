@@ -1660,8 +1660,9 @@ reaches; Mastodon's `Account.inboxes`, `app/models/account.rb:490-493`; NET-2 an
   addressed account still reads the inbox whole. A retraction staged in steps (a local status's `Delete`, a job's
   `Undo` of a boost, a forward) reads followers and voters by the same rule, so its targets are the ones the same
   retraction read at once would have; an inbox that received what it withdraws is still reached through its receipt.
-  Mastodon delivers to `preferred_inbox_url` whatever its length (PostgreSQL holds no NUL). Targets recorded or staged
-  before the upgrade keep their inboxes. Accepted, 2026-11-17.
+  Mastodon delivers to `preferred_inbox_url` whatever its length (PostgreSQL holds no NUL). Delivery targets recorded
+  and a retraction's targets staged before the upgrade keep their inboxes; a moderation job's staged rows do not
+  (below). Accepted, 2026-11-17.
 - A local account's suspension and unsuspension `Update` (Mastodon's `AccountReachFinder`,
   `app/lib/account_reach_finder.rb`: its followers, reporters and recently mentioned, followed and requested accounts)
   reads each account's inbox by the same rule as its audience is staged, and the job's staged rows by it too, so rows
