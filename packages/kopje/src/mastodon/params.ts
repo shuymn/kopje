@@ -619,6 +619,12 @@ export function limitParam(p: Params, fallback: number, max: number, minimum = 0
     : Math.min(Math.max(Math.abs(rubyToI(limit)), minimum), max);
 }
 
+// Whether a Link URL carries `limit`: when it was sent and is not nil, which Rails' url_for drops
+// (ActionDispatch::Http::URL.add_params), so the page it links to reads the default as this one did.
+export function linkCarriesLimit(p: Params): boolean {
+  return p.get("limit") !== undefined && !p.sentNull("limit");
+}
+
 // A sent parameter as Rails casts it to a boolean (railsBoolean): blank is absent.
 export function parseBoolean(value: string | undefined): boolean | undefined {
   return railsBoolean(value) ?? undefined;

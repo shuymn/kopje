@@ -58,6 +58,53 @@ describe("limit", () => {
   });
 });
 
+describe("Link after a limit sent without a value", () => {
+  // Rails' url_for drops a nil parameter (ActionDispatch::Http::URL.add_params), so the links of a `?limit` page carry
+  // no `limit` and the next page reads the default again; `limit=` and `limit=2` are carried as sent.
+  const next = (link: string | null) => /<https:\/\/kopje\.test([^>]*)>; rel="next"/.exec(link ?? "")?.[1] ?? "";
+
+  it("follows next at the default on a feed", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    for (let i = 0; i < 22; i++) {
+      await post(h, alice, { status: `s${i}` });
+    }
+    // The last `limit` is the one read: nil after `limit=5`, so none is carried.
+    for (const query of ["?limit", "?limit=5&limit"]) {
+      const first = await page(h, alice.token, `/api/v1/timelines/public${query}`);
+      expect([query, first.ids.length, next(first.link)]).toEqual([
+        query,
+        20,
+        `/api/v1/timelines/public?max_id=${first.ids[19]}`,
+      ]);
+      expect(first.link).not.toContain("limit");
+      expect((await page(h, alice.token, next(first.link))).ids).toHaveLength(2);
+    }
+    const two = await page(h, alice.token, "/api/v1/timelines/public?limit=2");
+    expect(next(two.link)).toBe(`/api/v1/timelines/public?limit=2&max_id=${two.ids[1]}`);
+    const empty = await page(h, alice.token, `/api/v1/accounts/${alice.id}/statuses?limit=`);
+    expect(next(empty.link)).toBe(`/api/v1/accounts/${alice.id}/statuses?limit=&max_id=${empty.ids[0]}`);
+  });
+
+  it("follows next at the default on an admin list", async () => {
+    const h = await community(["owner"]);
+    await setSetting(h.store, "admin_email", "owner@example.com");
+    const token = await userToken(h, "owner@example.com", "admin:read");
+    for (let i = 0; i < 102; i++) {
+      await remoteAccount(h.store, `r${i}`);
+    }
+    const first = await page(h, token, "/api/v2/admin/accounts?origin=remote&limit");
+    expect([first.ids.length, next(first.link)]).toEqual([
+      100,
+      `/api/v2/admin/accounts?max_id=${first.ids[99]}&origin=remote`,
+    ]);
+    expect(first.link).not.toContain("limit");
+    expect((await page(h, token, next(first.link))).ids).toHaveLength(2);
+    const two = await page(h, token, "/api/v2/admin/accounts?origin=remote&limit=2");
+    expect(next(two.link)).toBe(`/api/v2/admin/accounts?limit=2&max_id=${two.ids[1]}&origin=remote`);
+  });
+});
+
 describe("cursors", () => {
   // pagination.ts's CURSOR: `max_id`, `since_id` and `min_id` are each the last value sent, read only as 1 to 19
   // decimal digits; anything else is absent, and a 19-digit value past a signed 64-bit integer is a cursor like any.

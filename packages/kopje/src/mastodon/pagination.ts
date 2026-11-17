@@ -1,4 +1,5 @@
 import type { Page, PageQuery } from "../domain/accounts";
+import { pairs, text } from "../platform/rails-params";
 import type { ApiContext } from "./context";
 import { limitParam, type Params } from "./params";
 
@@ -46,9 +47,13 @@ export function linkHeader(
   return links.length === 0 ? undefined : links.join(", ");
 }
 
+// The request's URL at `name`: its cursors replaced, and its `limit` dropped when nil (the last `limit` sent without
+// `=`), as Rails' url_for drops a nil parameter (ActionDispatch::Http::URL.add_params), so the next page reads the
+// default as this one did; `limit=` stays, as Rails writes it.
 function pageUrl(requestUrl: string, name: "max_id" | "min_id", value: string): string {
   const url = new URL(requestUrl);
-  for (const key of ["max_id", "min_id", "since_id"]) {
+  const nilLimit = pairs(url.search.slice(1)).findLast(({ key }) => text(key) === "limit")?.value === null;
+  for (const key of ["max_id", "min_id", "since_id", ...(nilLimit ? ["limit"] : [])]) {
     url.searchParams.delete(key);
   }
   url.searchParams.set(name, value);

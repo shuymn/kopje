@@ -691,6 +691,11 @@ describe("collections: paging", () => {
     expect((await page("?limit=-5")).ids).toHaveLength(5);
     expect((await page("?limit=500")).ids).toHaveLength(12);
     expect(await page("")).toEqual({ ids: [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0], link: null });
+    // A limit sent without a value (nil) is the default, and the links carry none.
+    expect(await page("?limit&offset=5")).toEqual({
+      ids: [6, 5, 4, 3, 2, 1, 0],
+      link: `<${at("offset=0")}>; rel="prev"`,
+    });
     for (const limit of ["0", "", "abc"]) {
       expect(await page(`?limit=${limit}`)).toEqual({ ids: [], link: null });
     }
@@ -733,6 +738,11 @@ describe("collections: paging", () => {
     expect(first).toEqual({
       ids: [],
       next: `https://kopje.test/api/v1/accounts/${carol.id}/in_collections?limit=40&max_id=${itemId(80)}`,
+    });
+    // A limit sent without a value (nil) is the default, 40, and the link carries none.
+    expect(await read(`/api/v1/accounts/${carol.id}/in_collections?limit`)).toEqual({
+      ids: [],
+      next: `https://kopje.test/api/v1/accounts/${carol.id}/in_collections?max_id=${itemId(80)}`,
     });
     const seen: string[] = [];
     let next: string | null = first.next;

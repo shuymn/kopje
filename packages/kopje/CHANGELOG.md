@@ -493,8 +493,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   (NUL and ASCII white space only), an app's name is stored as sent rather than trimmed, and an admin search attribute
   that stripping leaves empty (`by_domain=%00`) stays a condition (#1734). No Store migration and no `wrangler.jsonc`
   change.
-- A `limit` sent without a value (`?limit`, or a JSON null) takes the list's default, as Rails reads it as nil; an
-  empty one (`?limit=`) keeps its answer (#1759). No Store migration and no `wrangler.jsonc` change.
+- A `limit` sent without a value (`?limit`, or a JSON null) takes the list's default, as Rails reads it as nil, and
+  the page's `Link` carries no `limit`, as Mastodon's drops a nil one, so the next page takes the default too; an empty
+  one (`?limit=`) keeps its answer (#1759). No Store migration and no `wrangler.jsonc` change.
 - `GET /api/v1/accounts/search` without `q` answers `[]`, as Mastodon's nil query does, where it answered 400; a `q`
   sent as an array or a hash still answers 400, and `/api/v2/search` keeps its 400 (#1766). No Store migration and no
   `wrangler.jsonc` change.
