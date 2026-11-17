@@ -796,6 +796,21 @@ const forms = {
     absoluteUndo({ proof: { type: "DataIntegrityProof", creator: "toot:key" } }),
   "Undo of a block, both typed as absolute IRIs, with a proof whose @id is over a prefix only full_context defines":
     absoluteUndo({ proof: { "@id": "toot:proof", type: "DataIntegrityProof" } }),
+  // A number or a boolean where an IRI is expected, which the compaction writes under the name's IRI.
+  "Undo of a block, both typed as absolute IRIs, with a number where an IRI is expected": absoluteUndo({
+    instrument: 5,
+  }),
+  "Undo of a block, both typed as absolute IRIs, with a boolean where an IRI is expected": absoluteUndo({ cc: true }),
+  "Undo of a block, both typed as absolute IRIs, with a number among the IRIs of to": absoluteUndo({
+    to: [5, PUBLIC],
+  }),
+  "Undo of a block, both typed as absolute IRIs, with a number as an id": absoluteUndo({ instrument: { id: 5 } }),
+  // Where a retraction's handler reads an IRI: Mastodon reads no actor (the request's signer is its actor) and no
+  // object of the block.
+  "Undo of a block, both typed as absolute IRIs, with a number as its actor": absoluteUndo({ actor: 5 }),
+  "Undo of a block, both typed as absolute IRIs, with a number as its block's object": absoluteUndo({
+    object: { ...BLOCK, type: `${AS}#Block`, object: 5 },
+  }),
 };
 
 // The same bodies without a signature: read as received by both.

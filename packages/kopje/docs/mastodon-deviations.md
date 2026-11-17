@@ -1701,7 +1701,9 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   Mastodon's library raise; a datatype given as a compact IRI, `xsd:boolean`, it refuses and jsonld.js takes); with an
   array directly in another, which JSON-LD flattens, but under a name with a `@list` container (a list of lists); with
   a proof whose keys are plain names, which the ActivityStreams and security contexts leave undefined (its nodes held to
-  the rules above, not a data-integrity proof's `@graph`). Kopje
+  the rules above, not a data-integrity proof's `@graph`); with a number or a boolean where an IRI is expected
+  (`cc: true`), which the compaction writes under the property's IRI, but as its `object` or `actor` (an `actor: 5`
+  Mastodon applies for the request's signer, and Kopje refuses). Kopje
   reads a name, as a member or as a type, only where the compaction writes it so, as Mastodon's readers read it,
   whatever the body's shape: a member's name where it means in the body's contexts what it means in `full_context`, or
   neither defines it (in a typed node, as the type's own context makes it mean on each side: the data-integrity

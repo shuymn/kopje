@@ -407,6 +407,8 @@ function namedThroughout(values: unknown[]): boolean {
 //     other member (its nodes held to the rules above), and the compaction writes as given: the contexts the shape takes
 //     leave `proof` undefined (the ActivityStreams and security contexts, and no sender's inline definition names it),
 //     so that it is no data-integrity proof's @graph container (mastodonReadsAsReceived);
+//   - a number or a boolean as a value of a name typed @id, which JSON-LD expands as a value (no IRI) and the compaction
+//     writes under the name's IRI, but as an `object` or an `actor`, which a retraction's handlers read;
 const JSONLD_BUDGET = 1_000;
 const UNSUPPORTED_JSONLD_KEYWORDS = new Set(["@graph", "@included", "@reverse"]);
 const SECURITY_V1 = "https://w3id.org/security/v1";
@@ -480,6 +482,8 @@ function mastodonCompacts(
   const typeName = (value: unknown) =>
     iri(value) || (typeof value === "string" && isName(value) && value !== "id" && value !== "type");
   const iriValued = (key: string) => IRI_VALUED.has(key) || (retracts && meanings.get(key)?.coercion === "@id");
+  const scalar = (key: string, value: unknown) =>
+    (typeof value === "number" || typeof value === "boolean") && key !== "object" && key !== "actor";
   const listed = (key: string) =>
     [meanings.get(key), FULL_CONTEXT_MEANINGS.get(key)].some(
       (meaning) => meaning?.containers.includes("@list") === true,
@@ -510,7 +514,7 @@ function mastodonCompacts(
         return false;
       }
       pending.push(...Object.entries(value).filter(([member]) => member !== "id" && member !== "type"));
-    } else if (iriValued(key) && value !== null && !iri(value)) {
+    } else if (iriValued(key) && value !== null && !iri(value) && !(retracts && scalar(key, value))) {
       return false;
     }
   }
