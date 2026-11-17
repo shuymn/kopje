@@ -37,7 +37,7 @@ import {
   trendTagNameCheckSql,
 } from "../platform/stored-bounds";
 import { cutCodeUnits, remotePlainText } from "../security/html";
-import { acctOf, type Present } from "./accounts";
+import { acctOf, type PresentInput } from "./accounts";
 import { accessAdmin } from "./admin-authority";
 import { ARRAY_ANSWER_BYTES } from "./answer-budget";
 import { availableSql, statusReads, trendableStatusSql } from "./audience";
@@ -818,7 +818,7 @@ export type TrendPage<T> = { items: T[]; read: number };
 // GET /api/v1/trends/tags (Api::V1::Trends::TagsController): the allowed trending hashtags, the same for everyone,
 // each with its trends history; `read` is the rows the page read toward its limit.
 export const trendingTags = optionalUserReadOperation<
-  { offset: number; limit: number; now: number; present: Present },
+  { offset: number; limit: number; now: number; present: PresentInput },
   TrendPage<Tag>
 >((db, { offset, limit, present, now }, viewer) => {
   const settings = trendSettings(db);
@@ -850,7 +850,7 @@ export type TrendStatusPage = { items: Status[]; read: number; consumed: number;
 // first status always admitted (RES-3). `consumed` is how many of the ids read the answer took, so a page cut by its
 // bytes continues after its last status.
 export const trendingStatuses = optionalUserReadOperation<
-  { offset: number; limit: number; language: string; now: number; present: Present },
+  { offset: number; limit: number; language: string; now: number; present: PresentInput },
   TrendStatusPage
 >((db, { offset, limit, language, present }, viewer) => {
   const settings = trendSettings(db);
@@ -998,7 +998,7 @@ export function linkHistory(db: Db, url: string, now: number): TagHistory[] {
 // its history; `read` is the rows the page read toward its limit, a row without a qualifying copy now among them
 // (skipped).
 export const trendingLinks = optionalUserReadOperation<
-  { offset: number; limit: number; language: string; now: number; present: Present },
+  { offset: number; limit: number; language: string; now: number; present: PresentInput },
   TrendPage<TrendLink>
 >((db, { offset, limit, language, present, now }, viewer) => {
   const settings = trendSettings(db);

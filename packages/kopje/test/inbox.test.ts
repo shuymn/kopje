@@ -419,6 +419,83 @@ describe("Undo, Accept and Reject (Mastodon and Misskey)", () => {
     expect(await t.post(bob, reject)).toBe(202);
     expect((await follows(t.store)).filter((f) => f.target_account_id === bobId)).toEqual([]);
   });
+
+  // Mastodon's Accept and Reject look our follow up by the object's id before its type (accept.rb:5, reject.rb:5-7).
+  it("accepts and removes our follow by its id, whatever type the embedded object gives, as Mastodon does", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const bobId = await ourFollow(t, bob);
+    const uri = `${LOCAL}/ap/follows/77`;
+    await sql(t.store, "UPDATE follows SET uri = ? WHERE target_account_id = ?", uri, bobId);
+    const answer = (type: string, objectType: string) => ({
+      "@context": AS,
+      id: `${bob.uri}#answers/${type}`,
+      type,
+      actor: bob.uri,
+      object: { id: uri, type: objectType },
+    });
+    expect(await t.post(bob, answer("Accept", "as:Follow"))).toBe(202);
+    expect((await follows(t.store)).find((f) => f.target_account_id === bobId)?.state).toBe("accepted");
+    expect(await t.post(bob, answer("Reject", "https://www.w3.org/ns/activitystreams#Follow"))).toBe(202);
+    expect((await follows(t.store)).filter((f) => f.target_account_id === bobId)).toEqual([]);
+  });
+
+  it("by its id, a Reject ends only our follow of its own actor", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const carol = await mastodonActor(t.web, "carol", { key: 2 });
+    const bobId = await ourFollow(t, bob);
+    const uri = `${LOCAL}/ap/follows/78`;
+    await sql(t.store, "UPDATE follows SET uri = ?, state = 'accepted' WHERE target_account_id = ?", uri, bobId);
+    const reject = {
+      "@context": AS,
+      id: `${carol.uri}#rejects/78`,
+      type: "Reject",
+      actor: carol.uri,
+      object: { id: uri, type: "as:Follow" },
+    };
+    expect(await t.post(carol, reject)).toBe(202);
+    expect((await follows(t.store)).find((f) => f.target_account_id === bobId)?.state).toBe("accepted");
+  });
+
+  // Mastodon's Accept and Reject seek our follow by the object's id before reading the object as a quote request's
+  // answer, or by any other member it gives.
+  it("takes an answer naming our follow's id as answering it, whatever the object reads as", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const bobId = await ourFollow(t, bob);
+    const uri = `${LOCAL}/ap/follows/79`;
+    await sql(t.store, "UPDATE follows SET uri = ? WHERE target_account_id = ?", uri, bobId);
+    const answer = (type: string, object: Record<string, unknown>) => ({
+      "@context": AS,
+      id: `${bob.uri}#answers/quote-${type}`,
+      type,
+      actor: bob.uri,
+      object: { id: uri, ...object },
+    });
+    expect(await t.post(bob, answer("Accept", { type: "QuoteRequest" }))).toBe(202);
+    expect((await follows(t.store)).find((f) => f.target_account_id === bobId)?.state).toBe("accepted");
+    expect(await t.post(bob, answer("Reject", { type: "QuoteRequest", object: `${bob.uri}/statuses/1` }))).toBe(202);
+    expect((await follows(t.store)).filter((f) => f.target_account_id === bobId)).toEqual([]);
+  });
+
+  it("by its id, an Accept accepts only our follow of its own actor", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const carol = await mastodonActor(t.web, "carol", { key: 2 });
+    const bobId = await ourFollow(t, bob);
+    const uri = `${LOCAL}/ap/follows/80`;
+    await sql(t.store, "UPDATE follows SET uri = ? WHERE target_account_id = ?", uri, bobId);
+    const accept = {
+      "@context": AS,
+      id: `${carol.uri}#accepts/80`,
+      type: "Accept",
+      actor: carol.uri,
+      object: { id: uri, type: "QuoteRequest" },
+    };
+    expect(await t.post(carol, accept)).toBe(202);
+    expect((await follows(t.store)).find((f) => f.target_account_id === bobId)?.state).toBe("pending");
+  });
 });
 
 describe("Update and Delete of an actor", () => {
@@ -1645,17 +1722,21 @@ describe("account moves", () => {
     expect(await movedTo(t.store, bob.uri)).toBeNull();
     await refresh(t, bob, { ...bob.document, movedTo: bob.uri }, 3);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
-    // Named as an array, an object with an id, or the expanded property: Fedify reads each as the successor.
+    // Named as an array or an object with an id: Fedify reads each as the successor.
     for (const [n, document] of [
       [4, { ...bob.document, movedTo: [carol.uri] }],
       [5, { ...bob.document, movedTo: { id: carol.uri } }],
-      [6, { ...bob.document, "https://www.w3.org/ns/activitystreams#movedTo": { "@id": carol.uri } }],
     ] as const) {
       await refresh(t, bob, { ...bob.document, movedTo: null }, 10 + n);
       expect(await movedTo(t.store, bob.uri)).toBeNull();
       await refresh(t, bob, document, n);
       expect(await movedTo(t.store, bob.uri), String(n)).toBe(carol.uri);
     }
+    // Spelled as the expanded property, it is not read, as Mastodon reads only `movedTo` (#1709: Fedify is handed the
+    // literal members alone, federation/remote-actor.ts fedifyActorView).
+    const { movedTo: _literal, ...unmoved } = bob.document;
+    await refresh(t, bob, { ...unmoved, "https://www.w3.org/ns/activitystreams#movedTo": { "@id": carol.uri } }, 6);
+    expect(await movedTo(t.store, bob.uri)).toBeNull();
     await refresh(t, bob, bob.document, 7);
     expect(await movedTo(t.store, bob.uri)).toBeNull();
     // An account being purged is not named.

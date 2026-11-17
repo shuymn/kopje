@@ -386,6 +386,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "hostCoveredSql",
   // R45, whether an item lists its collection among those featuring the viewer: a predicate (domain/audience.ts).
   "inCollectionsSql",
+  // feature_approval.current_user (domain/audience.ts): one of five words, no bounded column.
+  "featureApprovalSql",
   // A stored time read as its 24-byte ISO form, or NULL (platform/stored-bounds.ts).
   "isoTimeSql",
   // A status's publication and edit times read as 24-byte ISO times (platform/stored-bounds.ts).
@@ -695,6 +697,13 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   // The actor documents' row (ACTOR_ROW_COLUMN_MAP), which actors.ts and actor-update.ts select.
   "src/domain/actor-row.ts column a.uri": { count: 1, reason: ACTIVITYPUB },
   "src/domain/actors.ts accounts.uri": { count: 1, reason: ACTIVITYPUB },
+  // A local collection's FEP-7aa9 documents and activities: its owner's and members' ids, sent whole as the actor
+  // documents send theirs.
+  "src/domain/collection-documents.ts accounts.uri": {
+    count: 12,
+    reason:
+      "an ActivityPub document or activity of a local collection (its owner's and members' ids), not an API answer",
+  },
   "src/domain/blocks.ts accounts.uri": { count: 2, reason: IDENTITY },
   // The fourth: a staged retraction compares a uri past TARGET_CHUNK_BYTES with the activity's named ones in SQL; the
   // fifth and sixth: a held Reject's prefix, the local actor's uri compared with its id by bytes (HELD_REJECT); the
@@ -741,6 +750,10 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/actor-row.ts column a.username": { count: 1, reason: ACTIVITYPUB },
   "src/domain/actors.ts accounts.username": { count: 6, reason: LOCAL },
   "src/domain/admin-accounts.ts accounts.username": { count: 2, reason: LOCAL },
+  "src/domain/collections.ts accounts.username": {
+    count: 1,
+    reason: `the owner of a local collection whose document an ActivityPub client asks for (${LOCAL})`,
+  },
   "src/domain/admin-authority.ts column a.username": { count: 1, reason: LOCAL },
   "src/domain/deliveries.ts accounts.username": {
     count: 1,

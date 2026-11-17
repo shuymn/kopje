@@ -87,6 +87,8 @@ describe("the profile directory", () => {
     expect(await listed(h, "?limit=-2&offset=1")).toEqual(["carol", "erin@two.example"]);
     expect(await listed(h, "?limit=0")).toEqual([]);
     expect(await listed(h, "?offset=-3")).toHaveLength(5);
+    // Rails' last value of each (the query's, else the body's), read by Ruby's to_i.
+    expect(await listed(h, "?limit=1&limit=2&offset=4&offset=2")).toEqual(["erin@two.example", "bob"]);
     // Many more discoverable accounts, without statuses, so newer than the world's.
     await sql(
       h.store,
@@ -98,6 +100,9 @@ describe("the profile directory", () => {
     );
     expect(await listed(h)).toHaveLength(40);
     expect(await listed(h, "?limit=500")).toHaveLength(80);
+    const tenth = await listed(h, "?order=new&offset=10&limit=2");
+    expect(await listed(h, "?order=new&offset=1_0&limit=2")).toEqual(tenth);
+    expect(tenth).not.toEqual(await listed(h, "?order=new&offset=1&limit=2"));
     expect(await listed(h, `?order=new&offset=${MAX_DIRECTORY_OFFSET}&limit=2`)).toEqual([
       "u9@many.example",
       "u8@many.example",

@@ -57,7 +57,8 @@ async function fixture() {
     runInDurableObject(
       h.store,
       (_instance, state) =>
-        presentAccountsWithin(new Db(state.storage.sql), [id], { origin: ORIGIN }, Infinity, true).items[0] as Shown,
+        presentAccountsWithin(new Db(state.storage.sql), [id], { origin: ORIGIN, viewerId: null }, Infinity, true)
+          .items[0] as Shown,
     );
   const partial = (id: string) =>
     runInDurableObject(h.store, (_instance, state) => [

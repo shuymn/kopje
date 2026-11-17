@@ -92,6 +92,7 @@ describe("fetchRemoteFile: URLs and hops", () => {
     ["https://localhost/a", "local-host"],
     ["https://files/a", "local-host"],
     ["https://files.example./a", "trailing-dot"],
+    ["https://files.example.../a", "trailing-dot"],
     [`https://files.example/${"a".repeat(WEB_PAGE_URL_LIMIT)}`, "url-too-long"],
     [`https://${DOMAIN}/media/a.png`, "own-host"],
     ["https://KOPJE.example/media/a.png", "own-host"],

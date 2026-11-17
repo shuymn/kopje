@@ -10,7 +10,7 @@ import { DOMAIN_BYTES, isRemoteUsername, isStorableActorId, REMOTE_USERNAME_LIMI
 import { railsBlank } from "../platform/rails-blank";
 import { storedDisplayName, storedProfileDescription, storedProfileUrl, storedText } from "../platform/stored-bounds";
 import { sanitizeRemoteBio } from "../security/html";
-import { isObject } from "./json-shapes";
+import { isObject, railsTime } from "./json-shapes";
 import { MAX_PUBLIC_KEYS, readableKeys } from "./key-entries";
 import { remoteDescription } from "./lang-string";
 import { isTransientLoadError, loadFailureOf } from "./loader";
@@ -75,27 +75,51 @@ export async function loadActor(
   return readActor(uri, remote, contextLoader);
 }
 
-// The members of an actor document Kopje reads by spelling, as Mastodon 4.7 does (profileImage, collection-requests.ts
-// collectionUri, sharedInboxUri), and Fedify would parse by type: Fedify 2.4.5 fails the whole actor on an `icon` or
-// `image` that is not an Image or a Link, a `followers` or `following` that is not a collection, or an `endpoints`
-// typed other than Endpoints or holding a `sharedInbox` or `proxyUrl` that is not a URL, where Mastodon stores the
-// account.
-const SPELLED_MEMBERS: readonly string[] = ["icon", "image", "followers", "following", "endpoints"];
+// The members of an actor document Fedify is handed, by their literal spelling, each with what reads it from Fedify's
+// object (test-node/actor-members.test.ts holds every Actor property remote-actor.ts and inbound.ts read to an entry).
+// Fedify 2.4.5 expands the document before it reads a member, so it reads a member by its IRI whatever the spelling,
+// and fails the whole actor on one it cannot decode (an `icon` that is not an Image, an unreadable `updated`, an
+// invalid language map), where Mastodon 4.7 reads every member by its literal spelling (`@json[...]`) and stores the
+// account. Every member outside this inventory, in any spelling, is read from the document's JSON by spelling
+// (profileImage, collection-requests.ts collectionUri, sharedInboxUri, claimedHandle, emojiCandidates) or not at all.
+const FEDIFY_MEMBERS: Readonly<Record<string, string>> = {
+  "@context": "JSON-LD expansion",
+  id: "lookupObject's id check (ID-2), readActor",
+  type: "Fedify's dispatch to an Actor class, getActorTypeName",
+  preferredUsername: "claimedHandle",
+  inbox: "remoteActorInput",
+  name: "remoteActorInput",
+  summary: "remoteActorInput",
+  url: "remoteActorInput",
+  manuallyApprovesFollowers: "remoteActorInput",
+  discoverable: "remoteActorInput",
+  indexable: "remoteActorInput",
+  movedTo: "storableActorId",
+  alsoKnownAs: "inbound.ts Move",
+  publicKey: "ownKeys; the HTTP signature's and the LD signature's key (ID-1)",
+  assertionMethod: "ownKeys; the author proof's key (ID-1)",
+  owner: "a key document at the key's URL (actorViewLoader): its owner",
+  controller: "a Multikey document at the key's URL: its controller",
+  publicKeyPem: "a key document at the key's URL: the key",
+  publicKeyMultibase: "a Multikey document at the key's URL: the key",
+};
 
 // The only form of an actor document Fedify is handed (readActor, actorViewLoader, author-proof.ts verifyAuthorProof):
-// a shallow copy without SPELLED_MEMBERS, so none of them can refuse the actor. Removing a member never grants
-// anything: the id Fedify checks (ID-2) and the keys it finds (ID-1) are the document's own, or none. Anything that is
-// not an object is returned as it is.
+// a shallow copy holding the members of FEDIFY_MEMBERS the document has, by their literal spelling, and nothing else
+// (no `@id`, `@type` or other keyword spelling: Mastodon reads `id` and `type`). Leaving a member out never grants
+// anything: the id Fedify checks (ID-2) and the keys it finds (ID-1) are the document's own, or none. A kept member
+// Fedify cannot decode still refuses the actor (docs/mastodon-deviations.md). Anything that is not an object is
+// returned as it is.
 export function fedifyActorView(document: unknown): unknown {
   if (!isObject(document)) {
     return document;
   }
-  return Object.fromEntries(Object.entries(document).filter(([key]) => !SPELLED_MEMBERS.includes(key)));
+  return Object.fromEntries(Object.entries(document).filter(([key]) => Object.hasOwn(FEDIFY_MEMBERS, key)));
 }
 
 // `loader` answering each document as fedifyActorView gives it: the loader Fedify is handed where it loads documents
-// itself (inbound.ts verifyHttpSignature: a key it fetches, at the key's URL or as its owner's document). A document
-// that is not an actor's loses nothing it reads.
+// itself (inbound.ts verifyHttpSignature: a key it fetches, at the key's URL or as its owner's document). A key
+// document keeps what Fedify reads of it (FEDIFY_MEMBERS: its id, type, owner or controller and key).
 export function actorViewLoader(loader: DocumentLoader): DocumentLoader {
   return async (url, options) => {
     const remote = await loader(url, options);
@@ -390,9 +414,10 @@ export async function remoteActorInput(actor: Actor, document: unknown): Promise
     indexable: actor.indexable === true,
     inboxUrl,
     sharedInboxUrl: sharedInboxUri(json),
-    // A Temporal.Instant, whose type the polyfill's globals leave unresolved for the linter.
     keys: await ownKeys(actor, uri),
-    published: (actor.published as { toString(): string } | null)?.toString() ?? null,
+    // Read by spelling, as Mastodon casts it (json-shapes.ts railsTime); the Store creates the account now when it is
+    // none (remote-actors.ts).
+    published: railsTime(json.published),
     // The document's own tag, as ProcessAccountService#process_tags reads @json['tag'].
     emojiTags: emojiCandidates(
       typeof document === "object" && document !== null ? (document as { tag?: unknown }).tag : null,

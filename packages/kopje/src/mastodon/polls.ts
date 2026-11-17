@@ -88,11 +88,11 @@ async function refreshed(
   }
 }
 
-// POST /api/v1/polls/:id/votes: choices[] are the indexes of the choices voted for. None (an absent or empty list) is
-// refused as params.require refuses it.
+// POST /api/v1/polls/:id/votes: choices[] are the indexes of the choices voted for, each read by Ruby's Integer()
+// (a JSON number by its to_i). None (an absent or empty list) is refused as params.require refuses it.
 export const votePoll: ApiHandler = withParams(async (c, deps, p) => {
   const choices = p
-    .getAll("choices")
+    .getAllIntegers("choices")
     .filter((choice) => choice !== "")
     .slice(0, MAX_CHOICES_READ);
   const input = {

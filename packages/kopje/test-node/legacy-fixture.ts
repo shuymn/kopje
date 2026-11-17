@@ -74,6 +74,14 @@ export type FixtureOptions = {
   // Two more remote actors on remote.example whose addresses r0 and r2 hold (in another case): Kopje keeps one remote
   // account per address (migration 0096_remote_handles), so the conversion invalidates these two.
   sharedHandles?: boolean;
+  // Remote actors whose ids spell the host as Kopje never stores a domain: with a port and capitals
+  // (https://Example.COM:8443/users/a), in Unicode (https://bücher.example/u/b), with a trailing dot
+  // (https://example.com./u/c), https://h.example:8443/u/a before https://h.example/u/a, one address once the port
+  // is dropped, and with two and three trailing dots (https://example.com../u/c, one address with the third once the
+  // dots are dropped, and https://example.com.../u/d).
+  hostSpellings?: boolean;
+  // More remote actors with these ids and preferred usernames, each with an inbox and followers under its id.
+  extraActors?: { id: string; preferredUsername: string }[];
 };
 
 export type LegacyFixture = {
@@ -198,6 +206,8 @@ export async function buildLegacyFixture(options: FixtureOptions): Promise<Legac
     directMessages = false,
     addressed = 0,
     sharedHandles = false,
+    hostSpellings = false,
+    extraActors = [],
   } = options;
   const images = imagesAccount === undefined ? IMAGES : `https://imagedelivery.net/${imagesAccount}`;
   if (before0016 !== undefined && level < 16) {
@@ -351,6 +361,39 @@ export async function buildLegacyFixture(options: FixtureOptions): Promise<Legac
       mastodon_id: snowflake(17 + i, 170 + i),
       username: name.toLowerCase(),
       domain: "remote.example",
+    });
+  }
+  const spelled = [
+    "https://Example.COM:8443/users/a",
+    "https://bücher.example/u/b",
+    "https://example.com./u/c",
+    "https://h.example:8443/u/a",
+    "https://h.example/u/a",
+    "https://example.com../u/c",
+    "https://example.com.../u/d",
+  ];
+  const extra = extraActors.map(({ id, preferredUsername }) => ({ uri: id, name: preferredUsername }));
+  const spelledActors = (hostSpellings ? spelled : []).map((uri) => ({
+    uri,
+    name: uri.slice(uri.lastIndexOf("/") + 1),
+  }));
+  for (const [i, { uri, name }] of [...spelledActors, ...extra].entries()) {
+    insert("actors", {
+      id: uri,
+      type: "Person",
+      cdate: cdate(20 + i),
+      properties: JSON.stringify({
+        "@context": ["https://www.w3.org/ns/activitystreams"],
+        id: uri,
+        type: "Person",
+        preferredUsername: name,
+        name: `Spelled ${i}`,
+        inbox: `${uri}/inbox`,
+        followers: `${uri}/followers`,
+      }),
+      mastodon_id: snowflake(20 + i, 200 + i),
+      username: name.toLowerCase(),
+      domain: new URL(uri).host,
     });
   }
   const many = Array.from({ length: addressed }, (_, i) => {

@@ -586,7 +586,7 @@ describe("feeds at the caps", () => {
 // past it; REST shows the status whole either way. R is a payload less its descriptions' bytes.
 describe("payloads with descriptions at their length (D8)", () => {
   // R of the plain fill's S2 update and of carol's boost of S2 (pinned by "sends ... beside plain text").
-  const PLAIN_R = { quote: 141_013, boost: 179_143 };
+  const PLAIN_R = { quote: 141_177, boost: 179_389 };
 
   // A world: alice and carol with the fill's profile, bob following carol, on public:local and user; console.warn
   // spied for the hub's skips.
@@ -685,8 +685,8 @@ describe("payloads with descriptions at their length (D8)", () => {
   // each status (links), then also each profile field and poll choice (every). R past 524,288 less the descriptions'
   // 320,000 bytes.
   it.each([
-    ["links", FILLS.links, { quote: 281_183, boost: 319_313 }],
-    ["every", FILLS.every, { quote: 327_221, boost: 388_174 }],
+    ["links", FILLS.links, { quote: 281_347, boost: 319_559 }],
+    ["every", FILLS.every, { quote: 327_385, boost: 388_420 }],
   ] as const)(
     "skips a status and its quote, and its boost, whose %s fill takes the rest past it",
     async (_name, fill, rests) => {
@@ -833,7 +833,7 @@ describe("payloads with descriptions at their length (D8)", () => {
         expect(shown.rest).toBeLessThanOrEqual(STREAM_LIMITS.payloadBytes - 4 * encodedTwice(descriptions[0]!));
         rests.push(shown.rest);
       }
-      expect(rests).toEqual([163_432, 224_385]);
+      expect(rests).toEqual([163_514, 224_549]);
       expect(skips(warn)).toEqual([]);
     } finally {
       warn.mockRestore();

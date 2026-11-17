@@ -3,7 +3,7 @@ import { MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
 import { isoTimeSql, storedApplicationId } from "../platform/stored-bounds";
-import type { Page, PageQuery } from "./accounts";
+import { type Page, type PageQuery, presentFor } from "./accounts";
 import { admit, admittedPage, ARRAY_ANSWER_BYTES } from "./answer-budget";
 import {
   type ApiVisibility,
@@ -138,8 +138,8 @@ export function storedParams(text: string | null): Record<string, unknown> | nul
     : null;
 }
 
-// The held media shown are the first MAX_STATUS_MEDIA by position (PostStatusService#validate_media! takes four):
-// Kopje's writers hold at most that many, and a restored row holding more shows its first.
+// The held media shown, by (position, id): a scheduled status holds at most MAX_STATUS_MEDIA (heldFullSql), the four
+// PostStatusService#validate_media! takes, and the LIMIT keeps the read at them.
 // undefined: params that cannot be read (storedParams). `params`: the row's, when already read.
 function presentScheduled(
   db: Db,
@@ -150,8 +150,8 @@ function presentScheduled(
     return undefined;
   }
   const media = db.all<MediaRow>(
-    `SELECT ${selectSql(MEDIA_COLUMN_MAP)} FROM media_attachments m WHERE m.scheduled_status_id = ? ORDER BY m.position
-			LIMIT ${MAX_STATUS_MEDIA}`,
+    `SELECT ${selectSql(MEDIA_COLUMN_MAP)} FROM media_attachments m WHERE m.scheduled_status_id = ?
+			ORDER BY m.position, m.id LIMIT ${MAX_STATUS_MEDIA}`,
     row.id,
   );
   return {
@@ -340,7 +340,17 @@ function releaseKey(db: Db, accountId: string, key: string): void {
   db.run("UPDATE scheduled_statuses SET client_key = NULL WHERE account_id = ?1 AND client_key = ?2", accountId, key);
 }
 
-// Detaches the uploads a scheduled status holds, attachable again for a day (as a deleted status's), and deletes it.
+// Whether the scheduled status `scheduled` (SQL, NULL for none) holds MAX_STATUS_MEDIA uploads other than `media`: one
+// more would pass what a scheduled status may hold, imports included (RES-6). Reads at most MAX_STATUS_MEDIA + 1 rows
+// through media_attachments_scheduled. The WHEN of 0109_scheduled_media_cap's triggers (domain/stored-triggers.ts).
+export function heldFullSql(scheduled: string, media: string): string {
+  return `${scheduled} IS NOT NULL
+  AND (SELECT count(*) FROM (SELECT 1 FROM media_attachments WHERE scheduled_status_id = ${scheduled} AND id <> ${media}
+    LIMIT ${MAX_STATUS_MEDIA})) >= ${MAX_STATUS_MEDIA}`;
+}
+
+// Detaches the uploads a scheduled status holds, at most MAX_STATUS_MEDIA (heldFullSql), attachable again for a day (as
+// a deleted status's), and deletes it.
 function removeScheduled(db: Db, id: string, now: number): void {
   db.run(
     `UPDATE media_attachments SET scheduled_status_id = NULL, position = 0, gc_at = ?2
@@ -411,7 +421,7 @@ export const postStatus = userWriteOperation<ScheduleInput, ScheduleResult>((db,
   // As PostStatusService#schedule_status!: allowed_mentions is kept in the params and checked at publication.
   const prepared = preparePost(db, accountId, { ...post, allowedMentions: undefined }, null);
   if (!isPrepared(prepared)) {
-    return refusedPost(db, prepared, input.present);
+    return refusedPost(db, prepared, presentFor(input.present, accountId));
   }
   const errors = scheduleErrors(db, accountId, scheduledAt, input.now, null);
   if (errors.length > 0) {

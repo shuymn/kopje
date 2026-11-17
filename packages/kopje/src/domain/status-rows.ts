@@ -33,7 +33,7 @@ import {
 } from "../platform/stored-bounds";
 import { ACCOUNT_COLUMN_MAP, LOCAL_ROW_JOIN, MOVED_ACCOUNT_COLUMNS } from "./account-columns";
 import { ADMIN_EMAIL_COLUMNS, LOCAL_EMAIL_COLUMNS, OAUTH_ADMIN_HEAP_SQL } from "./admin-authority";
-import { QUOTE_APPROVAL_COLUMNS, QUOTE_READ_COLUMNS, quotedStatusIdSql } from "./audience";
+import { FEATURE_APPROVAL_COLUMNS, QUOTE_APPROVAL_COLUMNS, QUOTE_READ_COLUMNS, quotedStatusIdSql } from "./audience";
 import { actorUriSql, usernameSql } from "./profile-bounds";
 import { CACHED_IMAGE_COLUMNS, CACHED_IMAGE_KINDS } from "./remote-media";
 import {
@@ -246,7 +246,8 @@ export const VIEWER_FLAG_COLUMNS = fixedColumns(
 const VIEWER_FLAGS = 5;
 
 // Every query the presenter runs for a chunk, by the map its result columns come from (test/status-rows.test.ts
-// fails on a query without one, or a column outside it). moved: the authors' moved-to accounts (accounts.ts movedOf).
+// fails on a query without one, or a column outside it). moved: the authors' moved-to accounts (accounts.ts movedOf);
+// featureApprovals: the viewer's feature_approval answer for those accounts and the authors (featureApprovalReads).
 // adminEmail and localEmails: the OAuth admin's lookup for a local author's, or a local moved-to account's, Owner role
 // (oauthAdmin), once per operation.
 export function hydrateQueries(): Readonly<Record<HydrateQuery, ColumnMap>> {
@@ -262,6 +263,7 @@ export function hydrateQueries(): Readonly<Record<HydrateQuery, ColumnMap>> {
     tags: TAG_COLUMN_MAP,
     flags: VIEWER_FLAG_COLUMNS.columns,
     approvals: QUOTE_APPROVAL_COLUMNS.columns,
+    featureApprovals: FEATURE_APPROVAL_COLUMNS.columns,
     polls: POLL_COLUMN_MAP,
     votes: OWN_VOTE_COLUMNS.columns,
     filters: FILTER_MATCH_COLUMNS.columns,
@@ -282,6 +284,7 @@ export type HydrateQuery =
   | "tags"
   | "flags"
   | "approvals"
+  | "featureApprovals"
   | "polls"
   | "votes"
   | "filters"
@@ -340,6 +343,8 @@ function statusRowTerms(viewer: string, filterRows: string): string {
     `CASE WHEN ${viewer} IS NULL THEN 0 ELSE ${balancedSum([
       fixed(VIEWER_FLAG_COLUMNS, String(VIEWER_FLAGS)),
       fixed(QUOTE_APPROVAL_COLUMNS, "1"),
+      // The viewer's feature_approval answers for the author and its moved-to account, counted whether it moved.
+      fixed(FEATURE_APPROVAL_COLUMNS, "2"),
     ])} END`,
   ]);
 }

@@ -91,8 +91,9 @@ export type WorldStatus = {
 };
 
 // How an actor id's host relates to the account's stored domain: the same, a subdomain, with a port, with a trailing
-// dot (alone or with a subdomain and a port), or the other remote domain (a domain confirmed elsewhere).
-const HOSTS = ["same", "subdomain", "port", "dotted", "subdomain-dotted-port", "elsewhere"] as const;
+// dot (alone or with a subdomain and a port), a subdomain with three trailing dots (which only the host's key, without
+// every dot, names), or the other remote domain (a domain confirmed elsewhere).
+const HOSTS = ["same", "subdomain", "port", "dotted", "subdomain-dotted-port", "subdomain-dots", "elsewhere"] as const;
 
 function actorHost(form: (typeof HOSTS)[number], domain: string): string {
   switch (form) {
@@ -106,6 +107,8 @@ function actorHost(form: (typeof HOSTS)[number], domain: string): string {
       return `${domain}.`;
     case "subdomain-dotted-port":
       return `social.${domain}.:8443`;
+    case "subdomain-dots":
+      return `social.${domain}...`;
     case "elsewhere":
       return REMOTE_DOMAINS.find((other) => other !== domain) ?? domain;
   }

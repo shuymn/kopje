@@ -630,6 +630,12 @@ describe("GET /api/v1/admin/reports: ReportFilter", () => {
     expect(since.map((report) => report.id)).toEqual([all[0], all[1]]);
     // limit: 100 by default, at most 200, its absolute value.
     expect(((await call(h, "/api/v1/admin/reports?limit=-2", admin)).body as unknown[]).length).toBe(2);
+    // Rails' last value, read by Ruby's to_i, and carried as sent (pagination_params).
+    const repeated = await call(h, `/api/v1/admin/reports?limit=1&limit=0d2&account_id=${alice.id}`, admin);
+    expect((repeated.body as { id: string }[]).map((report) => report.id)).toEqual(all.slice(0, 2));
+    expect(/<([^>]+)>; rel="next"/.exec(repeated.link ?? "")?.[1]).toBe(
+      `https://kopje.test/api/v1/admin/reports?account_id=${alice.id}&limit=0d2&max_id=${all[1]}`,
+    );
   });
 
   it("stops a page at the status budget after at least one report, and offers the next page", async () => {

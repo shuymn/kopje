@@ -85,7 +85,7 @@ describe("attribution domains as presented", () => {
           }
         }),
       );
-      const credential = credentialAccount(db, alice.id, { origin: ORIGIN });
+      const credential = credentialAccount(db, alice.id, { origin: ORIGIN, viewerId: null });
       const local = localActorOf(db, "alice");
       const document = actorDocument(db, alice.id);
       const update = moderationUpdate(db, alice.id, NOW);

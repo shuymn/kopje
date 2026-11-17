@@ -792,12 +792,57 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
     const { "@context": _context, ...noContext } = base;
     const { id: _id, ...noId } = base;
     for (const activity of [noContext, noId, { ...base, id: 42 }]) {
-      expect(parseActivity(new TextEncoder().encode(JSON.stringify(activity)))).toMatchObject({ ok: false });
+      expect(await parseActivity(new TextEncoder().encode(JSON.stringify(activity)))).toMatchObject({ ok: false });
       await r.spool("/ap/users/alice/inbox", activity);
     }
     await r.consume();
     expect((await r.drain()).body).toMatchObject({ sent: 0, unverified: 3 });
     expect(r.legacy.pending).toEqual([]);
+  });
+
+  it("does not hand on an LD-signed activity Kopje's inbox ignores (ID-1, ldSignedBodyReadable)", async () => {
+    const store = await importedStore();
+    const r = await rollback(store);
+    const signature = { type: "RsaSignature2017", creator: `${r.carol.uri}#main-key`, signatureValue: "placeholder" };
+    // A keyword alias beside the literal type: Mastodon reads two types and applies nothing.
+    const ignored = { ...follow(r.carol.uri, 1), "@context": [ctx, { kind: "@type" }], kind: "Like", signature };
+    expect(await parseActivity(new TextEncoder().encode(JSON.stringify(ignored)))).toMatchObject({
+      ok: false,
+      reason: "ld-context",
+    });
+    await r.spool("/ap/users/alice/inbox", ignored);
+    // The same Follow LD-signed in ActivityStreams' vocabulary is handed on.
+    await r.spool("/ap/users/alice/inbox", { ...follow(r.carol.uri, 2), signature });
+    await r.consume();
+    expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 1 });
+    expect(r.legacy.pending.map((m) => (m.body as LegacyInboxMessage).activity.id)).toEqual([
+      `${r.carol.uri}#follows/2`,
+    ]);
+  });
+
+  it("hands on an LD-signed activity whose IRI type Kopje reads as given, as received (ldSignedReading)", async () => {
+    const store = await importedStore();
+    const r = await rollback(store);
+    const signature = { type: "RsaSignature2017", creator: `${r.carol.uri}#main-key`, signatureValue: "placeholder" };
+    // Kopje renames an absolute IRI type only in a body it can show Mastodon compacts, one without a proof, so it reads
+    // this one's type as given and its inbox applies nothing; the drain checks the same envelope, which passes, and
+    // hands the activity on as received, for the legacy instance to read as it does any type Kopje does not apply.
+    const compacted = { ...follow(r.carol.uri, 1), type: "https://www.w3.org/ns/activitystreams#Follow", signature };
+    const typed = { ...compacted, proof: { type: "DataIntegrityProof", proofValue: "placeholder" } };
+    expect(await parseActivity(new TextEncoder().encode(JSON.stringify(typed)))).toMatchObject({
+      ok: false,
+      reason: "unsupported",
+    });
+    expect(await parseActivity(new TextEncoder().encode(JSON.stringify(compacted)))).toMatchObject({
+      ok: true,
+      activity: { type: "Follow" },
+    });
+    await r.spool("/ap/users/alice/inbox", typed);
+    await r.consume();
+    expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 0, noRecipient: 0 });
+    expect(r.legacy.pending.map((m) => (m.body as LegacyInboxMessage).activity)).toMatchObject([
+      { id: `${r.carol.uri}#follows/1`, type: "https://www.w3.org/ns/activitystreams#Follow" },
+    ]);
   });
 
   it("stops with journal-full when valid requests exceed the quota, and goes on once it is raised", async () => {

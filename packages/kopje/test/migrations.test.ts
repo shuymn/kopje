@@ -7,11 +7,13 @@ import { MIGRATIONS } from "../src/db/migrations";
 import { Db } from "../src/db/sql";
 import { followAnswerActivity, PIN_LIMIT, recordOutbound } from "../src/domain/activities";
 import { DISTRIBUTABLE_SQL, REACHES_FOLLOWERS_SQL, REQUIRES_MENTION_SQL } from "../src/domain/audience";
+import { COLLECTION_REACH_INBOX_BYTES } from "../src/domain/collection-jobs";
 import { CONVERSATIONS_BACKFILL } from "../src/domain/conversation-rows";
 import { claimDeliveries, HELD_REJECTS_PER_ACCOUNT, heldFollowUriSql } from "../src/domain/deliveries";
 import { HANDLE_REFRESH_REQUESTS } from "../src/domain/handle-refreshes";
 import { instanceInfo } from "../src/domain/instance";
 import {
+  COLLECTION_JOBS,
   HANDSHAKE_REPLAYS,
   INBOUND_JOBS,
   JOB_TABLES,
@@ -21,6 +23,7 @@ import {
   REJECT_REPLAYS,
   SAFE_MS,
 } from "../src/domain/job-attempts";
+import { DETACHED_GRACE_MS } from "../src/domain/media";
 import { MODERATION_LOG_KEEP } from "../src/domain/moderation-log";
 import { runNotificationRequestJobs } from "../src/domain/notification-requests";
 import { readOperation, sessionOperation, writeOperation } from "../src/domain/operation";
@@ -29,8 +32,9 @@ import { MAX_REMOTE_PINS } from "../src/domain/remote-collections";
 import { storeRemoteStatus } from "../src/domain/remote-statuses";
 import { NODE_ATTEMPTS, REPLY_READ_ENTRIES, WALK_PAGES, WALK_STATUSES } from "../src/domain/reply-walks";
 import { actOnReport, fileRemoteReports, getAdminReport } from "../src/domain/reports";
+import { heldFullSql } from "../src/domain/scheduled-statuses";
 import { accountSearchText } from "../src/domain/search-text";
-import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
+import { MAX_STATUS_MEDIA, MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
 import { MAX_RAW_LENGTH } from "../src/domain/status-text";
 import { emitTriggers, STORED_TRIGGERS } from "../src/domain/stored-triggers";
 import { EDIT_LISTENED_SQL, JOURNAL_SPAN } from "../src/domain/stream-journal";
@@ -414,9 +418,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(85);
+      expect(STORED_TRIGGERS.size).toBe(89);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        85 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        89 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -10263,8 +10267,11 @@ describe("0081_account_invitations", () => {
 describe("0084_family_job_attempts", () => {
   const NAME = "0084_family_job_attempts";
   const at = NAMES.indexOf(NAME);
-  // Every job table but inbound_jobs (0080), handshake_replays (0088) and reject_replays (0092), in JOB_TABLES order.
-  const TABLES = JOB_TABLES.filter((t) => t !== INBOUND_JOBS && t !== HANDSHAKE_REPLAYS && t !== REJECT_REPLAYS);
+  // Every job table but inbound_jobs (0080), handshake_replays (0088), reject_replays (0092) and collection_jobs
+  // (0108), in JOB_TABLES order.
+  const TABLES = JOB_TABLES.filter(
+    (t) => t !== INBOUND_JOBS && t !== HANDSHAKE_REPLAYS && t !== REJECT_REPLAYS && t !== COLLECTION_JOBS,
+  );
 
   it("holds jobAttemptColumnsSql's and jobAttemptIndexesSql's output for each other job table, declared foreignKeys: 'unchanged'", () => {
     expect(NAMES[at - 1]).toBe("0083_kept_boosts");
@@ -14296,6 +14303,570 @@ describe("0106_reply_walk_debts", () => {
   });
 });
 
+describe("0107_collection_notifications", () => {
+  const NAME = "0107_collection_notifications";
+  const at = NAMES.indexOf(NAME);
+  const [OWNER, MEMBER, SENDER] = ["100000000000000001", "100000000000000002", "100000000000000003"];
+  const T = "2026-11-16T00:00:00.000Z";
+  const [COLLECTION, OTHER_COLLECTION, ITEM, OTHER_ITEM] = [
+    "200000000000000001",
+    "200000000000000002",
+    "300000000000000001",
+    "300000000000000002",
+  ];
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  const REFUSED = /notifications: collection keys past their stored bound/;
+
+  // A Store before the file with two local accounts, the owner's two collections each holding the member, and a
+  // follow notification of each; the file applied, then `run`.
+  async function upgraded(run: (sql: SqlStorage) => void) {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      for (const [account, name] of [
+        [OWNER, "owner"],
+        [MEMBER, "member"],
+      ] as const) {
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/' || ?2, ?2, NULL)",
+          account,
+          name,
+        );
+        sql.exec(
+          "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, ?2, X'00', X'00', 'k')",
+          account,
+          `${name}@x.test`,
+        );
+      }
+      for (const [collection, item] of [
+        [COLLECTION, ITEM],
+        [OTHER_COLLECTION, OTHER_ITEM],
+      ] as const) {
+        sql.exec(
+          `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, created_at, updated_at)
+					VALUES (?1, ?2, 1, 'c', 0, 1, ?3, ?3)`,
+          collection,
+          OWNER,
+          T,
+        );
+        sql.exec(
+          `INSERT INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
+					VALUES (?1, ?2, ?3, 1, 1, ?4, ?4)`,
+          item,
+          collection,
+          MEMBER,
+          T,
+        );
+      }
+      sql.exec("INSERT INTO notifications (account_id, type, from_account_id) VALUES (?, 'follow', ?)", MEMBER, OWNER);
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      run(sql);
+    });
+  }
+  const notification = (sql: SqlStorage, type: string, item: SqlStorageValue, collection: SqlStorageValue) =>
+    sql.exec(
+      `INSERT INTO notifications (account_id, type, from_account_id, collection_item_id, collection_id)
+			VALUES (?, ?, ?, ?, ?)`,
+      MEMBER,
+      type,
+      OWNER,
+      item,
+      collection,
+    );
+
+  it("follows 0106, checks every reference, and writes the registered triggers", () => {
+    expect(NAMES[at - 1]).toBe("0106_reply_walk_debts");
+    // New foreign keys: the upgrade checks every reference of the Store.
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    const sql = MIGRATIONS[at]?.sql ?? "";
+    expect(statements(sql)).toContain(
+      statements(emitTriggers(["notifications_collection_insert", "notifications_collection_update"])),
+    );
+    for (const [, pattern] of sql.matchAll(/GLOB\s+'([^']*)'/g)) {
+      expect(new TextEncoder().encode(pattern).length).toBeLessThanOrEqual(50);
+    }
+  });
+
+  // 2-T8. Fails if the insert trigger's type arms are dropped (a collection_update without its collection is written),
+  // or the update trigger's (a key changed within its type is refused).
+  it("keeps every row as it was and holds the collection keys to their type", async () => {
+    await upgraded((sql) => {
+      expect(sql.exec("SELECT type, collection_item_id, collection_id FROM notifications").toArray()).toEqual([
+        { type: "follow", collection_item_id: null, collection_id: null },
+      ]);
+      notification(sql, "added_to_collection", ITEM, null);
+      notification(sql, "collection_update", null, COLLECTION);
+      for (const [type, item, collection] of [
+        ["collection_update", null, null],
+        ["collection_update", ITEM, COLLECTION],
+        ["added_to_collection", null, null],
+        ["added_to_collection", OTHER_ITEM, COLLECTION],
+        ["follow", ITEM, null],
+        ["mention", null, COLLECTION],
+        ["added_to_collection", Number(OTHER_ITEM), null],
+        ["added_to_collection", OTHER_ITEM.slice(1), null],
+        ["added_to_collection", `${OTHER_ITEM.slice(1)}\u0000`, null],
+        ["collection_update", null, `${OTHER_COLLECTION.slice(1)}x`],
+      ] as const) {
+        expect(() => notification(sql, type, item, collection), `${type} ${item} ${collection}`).toThrow(REFUSED);
+      }
+      expect(() => sql.exec("UPDATE notifications SET collection_id = ? WHERE type = 'follow'", COLLECTION)).toThrow(
+        REFUSED,
+      );
+      expect(() =>
+        sql.exec("UPDATE notifications SET type = 'collection_update' WHERE type = 'added_to_collection'"),
+      ).toThrow(REFUSED);
+      // A key changed within its type is written, where the update trigger's ELSE arm would refuse any key.
+      sql.exec("UPDATE notifications SET collection_item_id = ? WHERE type = 'added_to_collection'", OTHER_ITEM);
+      sql.exec("UPDATE notifications SET collection_id = ? WHERE type = 'collection_update'", OTHER_COLLECTION);
+      expect(sql.exec("SELECT count(*) AS n FROM notifications").one().n).toBe(3);
+    });
+  });
+
+  it("keys a notification by its item and its collection, each gone with it", async () => {
+    await upgraded((sql) => {
+      notification(sql, "added_to_collection", ITEM, null);
+      notification(sql, "added_to_collection", OTHER_ITEM, null);
+      expect(() => notification(sql, "added_to_collection", ITEM, null)).toThrow(
+        /UNIQUE constraint failed: index 'notifications_natural'/,
+      );
+      notification(sql, "collection_update", null, COLLECTION);
+      notification(sql, "collection_update", null, OTHER_COLLECTION);
+      expect(() => notification(sql, "collection_update", null, COLLECTION)).toThrow(/UNIQUE constraint failed/);
+      // One notification an item, and one collection_update a collection and recipient, whoever sends it: a delete of
+      // an item or a collection finds at most that many.
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?, 'https://remote.test/users/r', 'r', 'remote.test')",
+        SENDER,
+      );
+      const from = (type: string, item: string | null, collection: string | null, account = MEMBER) =>
+        sql.exec(
+          `INSERT INTO notifications (account_id, type, from_account_id, collection_item_id, collection_id)
+					VALUES (?, ?, ?, ?, ?)`,
+          account,
+          type,
+          SENDER,
+          item,
+          collection,
+        );
+      expect(() => from("added_to_collection", ITEM, null)).toThrow(
+        /UNIQUE constraint failed: notifications.collection_item_id\b/,
+      );
+      expect(() => from("collection_update", null, COLLECTION)).toThrow(
+        /UNIQUE constraint failed: notifications.collection_id, notifications.account_id\b/,
+      );
+      from("collection_update", null, COLLECTION, OWNER);
+      sql.exec("DELETE FROM notifications WHERE account_id = ? AND type = 'collection_update'", OWNER);
+      sql.exec("DELETE FROM collection_items WHERE id = ?", ITEM);
+      sql.exec("DELETE FROM collections WHERE id = ?", OTHER_COLLECTION);
+      expect(
+        sql.exec("SELECT type, collection_item_id, collection_id FROM notifications ORDER BY id").toArray(),
+      ).toEqual([
+        { type: "follow", collection_item_id: null, collection_id: null },
+        { type: "collection_update", collection_item_id: null, collection_id: COLLECTION },
+      ]);
+      const plan = (query: string) =>
+        sql
+          .exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`)
+          .toArray()
+          .map((row) => row.detail)
+          .join("\n");
+      expect(plan("SELECT id FROM notifications WHERE collection_item_id = '1'")).toContain(
+        "notifications_collection_item",
+      );
+      expect(plan("SELECT id FROM notifications WHERE collection_id = '1'")).toContain("notifications_collection");
+      expect(
+        plan(`SELECT id FROM notifications WHERE account_id = '1' AND type = 'mention' AND from_account_id = '2'
+					AND IFNULL(status_id, '') = '3'`),
+      ).toContain("notifications_natural");
+    });
+  });
+});
+
+describe("0108_collection_jobs", () => {
+  const NAME = "0108_collection_jobs";
+  const at = NAMES.indexOf(NAME);
+  const ALICE = "100000000000000001";
+  const refused = /constraint failed/;
+  const objects = (sql: SqlStorage) =>
+    sql
+      .exec<{ type: string; name: string }>(
+        `SELECT type, name FROM sqlite_master WHERE name LIKE 'collection_job%' OR name LIKE 'collection_reach%'
+				ORDER BY type, name`,
+      )
+      .toArray();
+  // A local account and its job 1, at the migration.
+  const migrated = async (state: DurableObjectState) => {
+    expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+    const sql = state.storage.sql;
+    sql.exec(
+      "INSERT INTO accounts (id, uri, username, domain) VALUES (?, 'https://kopje.test/ap/users/alice', 'alice', NULL)",
+      ALICE,
+    );
+    sql.exec(
+      "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?, 'a@example.com', X'00', X'00', 'k')",
+      ALICE,
+    );
+    sql.exec("INSERT INTO collection_jobs (id, account_id, follow_bound, phase) VALUES (1, ?, 0, 'followers')", ALICE);
+    return sql;
+  };
+
+  it("follows 0107, creates three tables and the retry indexes as job-attempts.ts writes them, checking every reference", async () => {
+    expect(NAMES[at - 1]).toBe("0107_collection_notifications");
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    const text = MIGRATIONS[at]?.sql ?? "";
+    const columns = jobAttemptColumnsSql("collection_jobs")
+      .split(";\n")
+      .filter((s) => s.trim() !== "")
+      .map((s) => s.replace("ALTER TABLE collection_jobs ADD COLUMN ", ""));
+    expect(columns).toHaveLength(2);
+    for (const column of columns) {
+      expect(text).toContain(column);
+    }
+    expect(text).toContain(jobAttemptIndexesSql(COLLECTION_JOBS));
+    expect(text).toContain(`BETWEEN 1 AND ${COLLECTION_REACH_INBOX_BYTES}`);
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      expect(objects(sql)).toEqual([]);
+      const triggers = sql.exec("SELECT count(*) AS n FROM sqlite_master WHERE type = 'trigger'").one().n;
+      await migrated(state);
+      expect(objects(sql)).toEqual([
+        { type: "index", name: "collection_jobs_failing" },
+        { type: "index", name: "collection_jobs_fresh" },
+        { type: "table", name: "collection_job_intents" },
+        { type: "table", name: "collection_jobs" },
+        { type: "table", name: "collection_reach" },
+      ]);
+      expect(sql.exec("SELECT count(*) AS n FROM sqlite_master WHERE type = 'trigger'").one().n).toBe(triggers);
+    });
+  });
+
+  const MAX = "9223372036854775807";
+  const MIN = "-9223372036854775808";
+  const inbox = (bytes: number) => `'https://${"h".repeat(bytes - 8)}'`;
+  it.each([
+    ["collection_jobs", "follow_bound", [MIN, MAX, "NULL"], ["1.5", "'x'", "X'01'"]],
+    ["collection_jobs", "phase", ["'write'", "'drop'"], ["'end'", "''", "NULL"]],
+    ["collection_jobs", "follow_cursor", [MIN, MAX, "NULL"], ["1.5", "'x'", "X'01'"]],
+    [
+      "collection_jobs",
+      "inbox_cursor",
+      ["'h'", inbox(COLLECTION_REACH_INBOX_BYTES), "NULL"],
+      ["''", inbox(COLLECTION_REACH_INBOX_BYTES + 1), "'a' || char(0) || 'b'", "X'68'"],
+    ],
+    ["collection_job_intents", "intent_id", [MIN, MAX], ["1.5", "'x'", "X'01'", "NULL"]],
+    [
+      "collection_reach",
+      "inbox",
+      ["'h'", inbox(COLLECTION_REACH_INBOX_BYTES)],
+      ["''", inbox(COLLECTION_REACH_INBOX_BYTES + 1), "'a' || char(0) || 'b'", "X'68'", "NULL"],
+    ],
+  ])("holds %s.%s to its domain at each end", async (table, column, admitted, others) => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = await migrated(state);
+      const write = (value: string) =>
+        table === "collection_jobs"
+          ? sql.exec(`UPDATE collection_jobs SET ${column} = ${value}`)
+          : sql.exec(`INSERT OR REPLACE INTO ${table} (job_id, ${column}) VALUES (1, ${value})`);
+      for (const value of admitted) {
+        write(value);
+      }
+      const kept = sql.exec(`SELECT count(*) AS n FROM ${table}`).one().n;
+      for (const value of others) {
+        expect(() => write(value), value).toThrow(refused);
+      }
+      expect(sql.exec(`SELECT count(*) AS n FROM ${table}`).one().n).toBe(kept);
+    });
+  });
+
+  it("names an existing job from each staged row, and keeps the job while one does", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = await migrated(state);
+      expect(() =>
+        sql.exec("INSERT INTO collection_reach (job_id, inbox) VALUES (2, 'https://a.example/inbox')"),
+      ).toThrow(/FOREIGN KEY/);
+      expect(() => sql.exec("INSERT INTO collection_job_intents (job_id, intent_id) VALUES (2, 1)")).toThrow(
+        /FOREIGN KEY/,
+      );
+      sql.exec("INSERT INTO collection_reach (job_id, inbox) VALUES (1, 'https://a.example/inbox')");
+      sql.exec("INSERT OR IGNORE INTO collection_reach (job_id, inbox) VALUES (1, 'https://a.example/inbox')");
+      expect(sql.exec("SELECT count(*) AS n FROM collection_reach").one().n).toBe(1);
+      expect(() => sql.exec("DELETE FROM collection_jobs")).toThrow(/FOREIGN KEY/);
+    });
+  });
+});
+
+describe("0109_scheduled_media_cap", () => {
+  const NAME = "0109_scheduled_media_cap";
+  const at = NAMES.indexOf(NAME);
+  const REFUSED = /media_attachments: more media than a scheduled status may hold/;
+  const OWNER = "100000000000000001";
+  const TRIGGERS = ["media_attachments_scheduled_cap_insert", "media_attachments_scheduled_cap_update"];
+  // The detach as removeScheduled writes it (src/domain/scheduled-statuses.ts), for the uploads past each scheduled
+  // status's first MAX_STATUS_MEDIA by (position, id), attachable again after DETACHED_GRACE_MS.
+  const DETACH = `UPDATE media_attachments SET scheduled_status_id = NULL, position = 0,
+  gc_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+${DETACHED_GRACE_MS / 86_400_000} day')
+WHERE id IN (
+  SELECT h.id FROM (
+    SELECT m.id, row_number() OVER (PARTITION BY m.scheduled_status_id ORDER BY m.position, m.id) AS n
+    FROM media_attachments m
+    WHERE m.scheduled_status_id IS NOT NULL
+  ) h WHERE h.n > ${MAX_STATUS_MEDIA});`;
+  // The file's statements, comments left out.
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .trim();
+  const scheduled = (n: number) => String(300000000000000000n + BigInt(n));
+  const upload = (n: number) => String(800000000000000000n + BigInt(n));
+
+  // OWNER, a local account, and its scheduled statuses `ids`.
+  function seedOwner(sql: SqlStorage, ids: readonly string[]) {
+    sql.exec(
+      "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/owner', 'owner', NULL)",
+      OWNER,
+    );
+    sql.exec(
+      "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, 'o@x.test', X'00', X'00', 'k')",
+      OWNER,
+    );
+    for (const [i, id] of ids.entries()) {
+      sql.exec(
+        "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, ?, '{}')",
+        id,
+        OWNER,
+        new Date(Date.UTC(2026, 11, 1) + i * 60_000).toISOString(),
+      );
+    }
+  }
+
+  // An upload of OWNER's, held by `held` at `position`, or unattached (attachable until a day after NOW).
+  function seedUpload(sql: SqlStorage, n: number, held: string | null, position = 0) {
+    sql.exec(
+      `INSERT INTO media_attachments (id, account_id, scheduled_status_id, position, type, url, gc_at)
+			VALUES (?, ?, ?, ?, 'image', 'https://kopje.test/files/x/full', ?)`,
+      upload(n),
+      OWNER,
+      held,
+      position,
+      held === null ? new Date(NOW + 86_400_000).toISOString() : null,
+    );
+  }
+
+  it("follows 0108_collection_jobs, declared foreignKeys: 'unchanged', and writes the detach and the registry's triggers", () => {
+    expect(NAMES[at - 1]).toBe("0108_collection_jobs");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+    // The detach's grace and cap are the writers' constants: the file's day and its four.
+    expect([DETACHED_GRACE_MS, MAX_STATUS_MEDIA]).toEqual([86_400_000, 4]);
+    expect(statements(MIGRATIONS[at]?.sql ?? "")).toBe(statements(`${DETACH}\n\n${emitTriggers(TRIGGERS)}`));
+  });
+
+  it("keeps each scheduled status's first four uploads by (position, id) and detaches the rest for a day", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      // Scheduled statuses holding 4, 40 and 400 uploads, one holding 6 whose positions tie (as an import may write
+      // them), and one holding none; beside them, an unattached upload.
+      const [four, forty, many, tied, none] = [1, 2, 3, 4, 5].map(scheduled) as [
+        string,
+        string,
+        string,
+        string,
+        string,
+      ];
+      seedOwner(sql, [four, forty, many, tied, none]);
+      let n = 0;
+      // Inserted with positions counting down, so the first by position are the last inserted.
+      for (const [id, held] of [
+        [four, 4],
+        [forty, 40],
+        [many, 400],
+      ] as const) {
+        for (let i = 0; i < held; i++) {
+          seedUpload(sql, ++n, id, held - 1 - i);
+        }
+      }
+      const tiedFrom = n + 1;
+      for (const position of [1, 0, 1, 0, 2, 0]) {
+        seedUpload(sql, ++n, tied, position);
+      }
+      seedUpload(sql, ++n, null);
+      const before = sql
+        .exec<{ id: string; scheduled_status_id: string | null; position: number }>(
+          "SELECT id, scheduled_status_id, position FROM media_attachments ORDER BY id",
+        )
+        .toArray();
+      expect(before.filter((row) => row.scheduled_status_id !== null)).toHaveLength(4 + 40 + 400 + 6);
+
+      const started = Date.now();
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      const held = (id: string) =>
+        sql
+          .exec<{ id: string }>(
+            "SELECT id FROM media_attachments WHERE scheduled_status_id = ? ORDER BY position, id",
+            id,
+          )
+          .toArray()
+          .map((row) => row.id);
+      const expected = (id: string) =>
+        before
+          .filter((row) => row.scheduled_status_id === id)
+          .toSorted((a, b) => a.position - b.position || (a.id < b.id ? -1 : 1))
+          .slice(0, MAX_STATUS_MEDIA)
+          .map((row) => row.id);
+      for (const id of [four, forty, many, tied]) {
+        expect(held(id), id).toEqual(expected(id));
+      }
+      // The ties keep their order by id: positions 0, 0, 0, 1 of the six.
+      expect(held(tied)).toEqual([2, 4, 6, 1].map((i) => upload(tiedFrom - 1 + i)));
+      expect(held(none)).toEqual([]);
+      // Each upload past four is detached as removeScheduled detaches one: no scheduled status, position 0, and
+      // attachable for DETACHED_GRACE_MS from the upgrade; the unattached upload keeps its own time.
+      const detached = sql
+        .exec<{ id: string; position: number; gc_at: string }>(
+          `SELECT id, position, gc_at FROM media_attachments WHERE scheduled_status_id IS NULL AND id <> ? ORDER BY id`,
+          upload(n),
+        )
+        .toArray();
+      const kept = new Set([four, forty, many, tied].flatMap(expected));
+      expect(detached.map((row) => row.id)).toEqual(
+        before.filter((row) => row.scheduled_status_id !== null && !kept.has(row.id)).map((row) => row.id),
+      );
+      expect(detached).toHaveLength(36 + 396 + 2);
+      for (const row of detached) {
+        expect(row.position).toBe(0);
+        expect(Date.parse(row.gc_at) - started - DETACHED_GRACE_MS).toBeGreaterThanOrEqual(-1_000);
+        expect(Date.parse(row.gc_at) - Date.now() - DETACHED_GRACE_MS).toBeLessThanOrEqual(1_000);
+      }
+      expect(sql.exec("SELECT gc_at FROM media_attachments WHERE id = ?", upload(n)).one()).toEqual({
+        gc_at: new Date(NOW + 86_400_000).toISOString(),
+      });
+      // Only fixed points are left: every scheduled status holds at most four.
+      expect(
+        sql
+          .exec(
+            `SELECT max(c) AS most FROM (SELECT count(*) AS c FROM media_attachments
+							WHERE scheduled_status_id IS NOT NULL GROUP BY scheduled_status_id)`,
+          )
+          .one(),
+      ).toEqual({ most: MAX_STATUS_MEDIA });
+    });
+  });
+
+  it("refuses a fifth held upload, inserted or moved, and passes a write that keeps the four", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade();
+      const [full, three, other] = [1, 2, 3].map(scheduled) as [string, string, string];
+      seedOwner(sql, [full, three, other]);
+      // Below the cap, uploads are held up to it: the fourth of `full` is held, by insert and by a move.
+      for (let i = 1; i <= 3; i++) {
+        seedUpload(sql, i, full, i);
+      }
+      seedUpload(sql, 4, null);
+      sql.exec("UPDATE media_attachments SET scheduled_status_id = ?, gc_at = NULL WHERE id = ?", full, upload(4));
+      for (let i = 5; i <= 7; i++) {
+        seedUpload(sql, i, three, i);
+      }
+      seedUpload(sql, 8, other);
+      seedUpload(sql, 9, null);
+      // At the cap: a fifth is refused, inserted held or moved from another scheduled status or from none.
+      expect(() => seedUpload(sql, 10, full)).toThrow(REFUSED);
+      expect(() =>
+        sql.exec("UPDATE media_attachments SET scheduled_status_id = ? WHERE id = ?", full, upload(8)),
+      ).toThrow(REFUSED);
+      expect(() =>
+        sql.exec("UPDATE media_attachments SET scheduled_status_id = ?, gc_at = NULL WHERE id = ?", full, upload(9)),
+      ).toThrow(REFUSED);
+      // A write that keeps each upload's scheduled status passes, a reorder of all four included, and so does a move
+      // out of the full one into one holding three.
+      sql.exec(
+        "UPDATE media_attachments SET scheduled_status_id = scheduled_status_id, position = 10 - position WHERE scheduled_status_id = ?",
+        full,
+      );
+      sql.exec("UPDATE media_attachments SET scheduled_status_id = ? WHERE id = ?", three, upload(1));
+      sql.exec("UPDATE media_attachments SET scheduled_status_id = ? WHERE id = ?", full, upload(8));
+      const counts = sql
+        .exec<{ scheduled_status_id: string; n: number }>(
+          `SELECT scheduled_status_id, count(*) AS n FROM media_attachments WHERE scheduled_status_id IS NOT NULL
+						GROUP BY scheduled_status_id ORDER BY scheduled_status_id`,
+        )
+        .toArray();
+      expect(counts).toEqual([
+        { scheduled_status_id: full, n: 4 },
+        { scheduled_status_id: three, n: 4 },
+      ]);
+      // Detaching passes whatever is held.
+      sql.exec("UPDATE media_attachments SET scheduled_status_id = NULL WHERE scheduled_status_id = ?", full);
+    });
+  });
+
+  it("reads as many rows for a held upload's insert or move, however many uploads others hold", async () => {
+    // The WHEN's count, planned with the trigger's NEW values bound.
+    const counted = `SELECT (${heldFullSql("?1", "?2")}) AS full`;
+    const subject = scheduled(500_000);
+    const reads: number[][] = [];
+    for (const others of [1, 10, 100]) {
+      await runInDurableObject(freshStore(), async (_instance, state) => {
+        const sql = state.storage.sql;
+        await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade();
+        // Other scheduled statuses holding four each, as many on each side of the subject's id.
+        const neighbours = Array.from({ length: others }, (_, i) => [scheduled(i), scheduled(900_000 + i)]).flat();
+        seedOwner(sql, [subject, ...neighbours]);
+        let n = 0;
+        for (const id of neighbours) {
+          for (let k = 0; k < MAX_STATUS_MEDIA; k++) {
+            seedUpload(sql, ++n, id, k);
+          }
+        }
+        expect(
+          sql
+            .exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${counted}`, subject, upload(0))
+            .toArray()
+            .map((row) => row.detail),
+        ).toContain("SEARCH media_attachments USING INDEX media_attachments_scheduled (scheduled_status_id=?)");
+        // The subject holds three; its fourth is held by an insert, then moved out and back by updates, each passing
+        // its trigger's WHEN, which reads the subject's held rows.
+        for (let k = 0; k < 3; k++) {
+          seedUpload(sql, 10_000 + k, subject, k);
+        }
+        const insert = sql.exec(
+          `INSERT INTO media_attachments (id, account_id, scheduled_status_id, position, type, url)
+					VALUES (?, ?, ?, 3, 'image', 'https://kopje.test/files/x/full')`,
+          upload(10_003),
+          OWNER,
+          subject,
+        );
+        insert.toArray();
+        sql.exec("UPDATE media_attachments SET scheduled_status_id = NULL WHERE id = ?", upload(10_003));
+        const move = sql.exec(
+          "UPDATE media_attachments SET scheduled_status_id = ? WHERE id = ?",
+          subject,
+          upload(10_003),
+        );
+        move.toArray();
+        // The subject is full now: its WHEN would refuse a fifth.
+        expect(sql.exec(counted, subject, upload(99_999)).one()).toEqual({ full: 1 });
+        expect(
+          sql.exec("SELECT count(*) AS n FROM media_attachments WHERE scheduled_status_id IS NOT NULL").one(),
+        ).toEqual({ n: (2 * others + 1) * MAX_STATUS_MEDIA });
+        reads.push([insert.rowsRead, move.rowsRead]);
+      });
+    }
+    expect(reads[0]?.every((rows) => rows > 0)).toBe(true);
+    expect(reads).toEqual([reads[0], reads[0], reads[0]]);
+  }, 60_000);
+});
+
 describe("0110_scheduled_params", () => {
   const NAME = "0110_scheduled_params";
   const at = NAMES.indexOf(NAME);
@@ -14319,8 +14890,8 @@ describe("0110_scheduled_params", () => {
   // A JSON object of exactly `bytes` bytes.
   const sized = (bytes: number) => `{"a":"${"x".repeat(bytes - 8)}"}`;
 
-  it("follows 0106_reply_walk_debts, declared foreignKeys: 'unchanged', and writes the registry's triggers", () => {
-    expect(NAMES[at - 1]).toBe("0106_reply_walk_debts");
+  it("follows 0109_scheduled_media_cap, declared foreignKeys: 'unchanged', and writes the registry's triggers", () => {
+    expect(NAMES[at - 1]).toBe("0109_scheduled_media_cap");
     expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
     expect(statements(MIGRATIONS[at]?.sql ?? "")).toBe(statements(emitTriggers(TRIGGERS)));
   });

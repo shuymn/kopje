@@ -35,8 +35,8 @@ import {
 } from "./inbox-status-helpers";
 
 // #1672: an actor document's icon, image, followers and following are read by spelling, as Mastodon 4.7 reads them
-// (ProcessAccountService#image_url_and_description and #valid_collection_uri), and Fedify parses the document without
-// them (federation/remote-actor.ts fedifyActorView), so none of them can refuse the actor.
+// (ProcessAccountService#image_url_and_description and #valid_collection_uri), and Fedify parses a view of the document
+// without them (federation/remote-actor.ts fedifyActorView), so none of them can refuse the actor.
 
 type Json = Record<string, unknown>;
 
@@ -188,6 +188,80 @@ describe("an actor whose icon or image is not an Image is stored (#1672)", () =>
     }
   });
 
+  // #1709: the paths that hand Fedify an actor document a key is read from, each given a document whose member
+  // outside the view's inventory Fedify cannot parse (remote-actor.ts FEDIFY_MEMBERS).
+  const mention = { cc: [ALICE_URI], tag: [{ type: "Mention", href: ALICE_URI, name: "@alice@kopje.test" }] };
+  const mentioned = async (t: Setup) =>
+    sql(t.store, "SELECT account_id FROM notifications WHERE type = 'mention'").then((rows) => rows.length);
+
+  it("verifies a signature by an actor whose published is unreadable, its key at the actor's URL", async () => {
+    // GoToSocial's key form: no key under the document at the key's URL (D4 answers none), so Fedify fetches the key
+    // itself through actorViewLoader, live, on replay and in the rollback drain's check.
+    const keyed = async (t: Setup) => {
+      const actor = await mastodonActor(t.web, "gts");
+      const keyId = `${actor.uri}/main-key`;
+      const document = {
+        ...actor.document,
+        published: "garbage",
+        publicKey: { id: keyId, owner: actor.uri, publicKeyPem: actor.pem },
+      };
+      t.web.serve(actor.uri, document);
+      t.web.serve(keyId, document);
+      return { actor, keyId };
+    };
+    const live = await setup();
+    const { actor, keyId } = await keyed(live);
+    const init = await signedInit(actor, "/inbox", create(actor, mastodonNote(actor, mention)), { keyId });
+    const spooled = {
+      url: `${LOCAL}/inbox`,
+      method: "POST",
+      headers: [...new Headers(init.headers)],
+      body: new TextEncoder().encode(init.body as string),
+      receivedAt: NOW,
+    };
+    expect(await live.post(actor, create(actor, mastodonNote(actor, mention)), { keyId })).toBe(202);
+    expect(live.web.fetched).toContain(keyId);
+    expect(await mentioned(live)).toBe(1);
+    expect(
+      await verifySpooledRequest({ ...live.web.loader, userAgent: "Kopje/test" }, "kopje.test", spooled),
+    ).toMatchObject({ ok: true, actor: actor.uri });
+    const replay = await setup();
+    await keyed(replay);
+    expect(
+      await processInbox(
+        replay.env,
+        inboxDeps(() => replay.store, replay.web.loader),
+        spooled,
+        "replay",
+      ),
+    ).toMatchObject({ status: 202 });
+    expect(replay.web.fetched).toContain(keyId);
+    expect(await mentioned(replay)).toBe(1);
+  });
+
+  it("verifies a signature by a key under its owner's document whose updated is unreadable (D4)", async () => {
+    const t = await setup();
+    const actor = await mastodonActor(t.web, "updated");
+    t.web.serve(actor.uri, { ...actor.document, updated: "garbage" });
+    expect(await t.post(actor, create(actor, mastodonNote(actor, mention)))).toBe(202);
+    expect(await mentioned(t)).toBe(1);
+    expect(await keys(t, actor.uri)).toEqual([{ key_id: actor.keyId }]);
+  });
+
+  it("verifies a key document served at the key's URL", async () => {
+    // The key's own document keeps what Fedify reads of it (its id, type, owner and key); its owner's document holds
+    // an icon spelled as a compact IRI.
+    const t = await setup();
+    const actor = await mastodonActor(t.web, "keydoc");
+    const keyId = `${MASTODON}/keys/keydoc`;
+    const key = { id: keyId, owner: actor.uri, publicKeyPem: actor.pem };
+    t.web.serve(actor.uri, { ...actor.document, "as:icon": DOCUMENT, publicKey: key });
+    t.web.serve(keyId, { "@context": "https://w3id.org/security/v1", type: "CryptographicKey", ...key });
+    expect(await t.post(actor, create(actor, mastodonNote(actor, mention)), { keyId })).toBe(202);
+    expect(t.web.fetched).toContain(keyId);
+    expect(await mentioned(t)).toBe(1);
+  });
+
   it("a reference is not fetched", async () => {
     const t = await setup();
     const icon = `${MASTODON}/system/avatars/reference.json`;
@@ -273,29 +347,6 @@ describe("avatars and headers are read as Mastodon reads them (#1672, HTML-3, RE
       headerDescription: "header",
       raw: JSON.stringify(document),
     });
-  });
-});
-
-describe("fedifyActorView", () => {
-  it("leaves out icon, image, followers, following and endpoints alone, and leaves anything else as it is", () => {
-    const document = {
-      "@context": AS,
-      id: `${MASTODON}/users/erin`,
-      type: "Person",
-      icon: DOCUMENT,
-      image: DOCUMENT,
-      followers: { type: "Document" },
-      following: { type: "Document" },
-      endpoints: { sharedInbox: `${MASTODON}/inbox` },
-      sharedInbox: `${MASTODON}/inbox`,
-      publicKey: { id: `${MASTODON}/users/erin#main-key` },
-    };
-    const { icon: _i, image: _m, followers: _f, following: _g, endpoints: _e, ...rest } = document;
-    expect(fedifyActorView(document)).toEqual(rest);
-    expect(document.icon).toBe(DOCUMENT);
-    for (const value of [null, "x", [document], 1]) {
-      expect(fedifyActorView(value)).toBe(value);
-    }
   });
 });
 

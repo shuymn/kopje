@@ -759,55 +759,59 @@ export const UNDONE_ANSWER_SIGNERS_SQL = `SELECT l.account_id AS id,
 			WHERE o.account_id = l.account_id AND o.follow_pair = ?1 ORDER BY o.id LIMIT ?3) a WHERE a.object_uri = ?2) AS named
 	FROM local_accounts l`;
 
-// Our follow of `actor` that an Accept or Reject answers (ID-6: only the followed side answers):
-//   - the Follow's id equals the edge's uri, with the actor as its target; or
-//   - the edge has no uri (it never named an id: local follows made before outbound delivery existed, and migrated
-//     rows), and the embedded Follow names its follower and the actor as its pair.
+// Our follow of `actor` that an Accept or Reject answers (ID-6: only the followed side answers), sought as Mastodon's
+// Accept and Reject seek it (accept.rb:5-13, reject.rb:5-14):
+//   - first by the id: the edge whose uri is the answer's object id, with the actor as its target, whatever else the
+//     object says (its type, its members), before the object is read as an answer to anything else (ourFollowById);
+//   - then, the object not being one of our QuoteRequests (isQuoteAnswer), by the pair: the edge has no uri (it never
+//     named an id: local follows made before outbound delivery existed, and migrated rows), and the embedded Follow
+//     (typed so, or untyped) names its follower and the actor (ourFollowByPair).
 // An id that names another generation of the edge (the edge has a different uri) answers nothing. The one exception is
 // a Reject with Misskey's pair-shaped id (`/follows/<follower>/<followee>`): Misskey rejects a follower it removes with
 // the pair, not with our Follow's id, so for a Reject (pairReject) the pair matches our follow whatever its uri. As
 // with the pair Undo, a redelivered pair Reject cannot be told from a new one, and ends a later generation too.
+type OurFollow = { id: string; follower: string };
+
 // By the id, the local accounts drive, each one's follow of the actor sought by follows_pair (no index holds a follow's
 // uri; local accounts are operator-sized: docs/threat-model.md, "Deployment assumptions"). The uri is not unique (an
-// import may repeat it): the follow of the follower the Follow names is probed first by its pair, and only when it does
+// import may repeat it): the follow of the follower the object names is probed first by its pair, and only when it does
 // not carry the uri does the oldest under the uri answer.
-function ourFollow(
+function ourFollowById(db: Db, actor: RemoteRow, ref: ActivityRef): OurFollow | undefined {
+  if (ref.id === null) {
+    return undefined;
+  }
+  const named = localAccount(db, ref.actor);
+  return (
+    (named === undefined
+      ? undefined
+      : db.first<OurFollow>(
+          `SELECT CAST(id AS TEXT) AS id, account_id AS follower FROM follows INDEXED BY follows_pair
+					WHERE account_id = ? AND target_account_id = ? AND uri = ?`,
+          named.id,
+          actor.id,
+          ref.id,
+        )) ??
+    db.first<OurFollow>(
+      `SELECT CAST(f.id AS TEXT) AS id, f.account_id AS follower FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
+				CROSS JOIN follows f INDEXED BY follows_pair ON f.account_id = l.account_id AND f.target_account_id = ?2
+				WHERE f.uri = ?1
+				ORDER BY f.id LIMIT 1`,
+      ref.id,
+      actor.id,
+    )
+  );
+}
+
+function ourFollowByPair(
   db: Db,
   actor: RemoteRow,
   ref: ActivityRef,
   pairReject = false,
-): { id: string; follower: string } | "not-target" | null {
+): OurFollow | "not-target" | null {
   if (ref.object !== null && ref.object !== actor.uri) {
     return "not-target";
   }
-  if (ref.type !== null && ref.type !== "Follow") {
-    return null;
-  }
-  if (ref.id !== null) {
-    const named = localAccount(db, ref.actor);
-    const byUri =
-      (named === undefined
-        ? undefined
-        : db.first<{ id: string; follower: string }>(
-            `SELECT CAST(id AS TEXT) AS id, account_id AS follower FROM follows INDEXED BY follows_pair
-					WHERE account_id = ? AND target_account_id = ? AND uri = ?`,
-            named.id,
-            actor.id,
-            ref.id,
-          )) ??
-      db.first<{ id: string; follower: string }>(
-        `SELECT CAST(f.id AS TEXT) AS id, f.account_id AS follower FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
-				CROSS JOIN follows f INDEXED BY follows_pair ON f.account_id = l.account_id AND f.target_account_id = ?2
-				WHERE f.uri = ?1
-				ORDER BY f.id LIMIT 1`,
-        ref.id,
-        actor.id,
-      );
-    if (byUri !== undefined) {
-      return byUri;
-    }
-  }
-  if (ref.object === null) {
+  if (ref.object === null || (ref.type !== null && ref.type !== "Follow")) {
     return null;
   }
   const follower = localAccount(db, ref.actor);
@@ -826,12 +830,13 @@ function ourFollow(
 }
 
 const accept: Handler<"Accept"> = (db, actor, activity, { now }) => {
-  if (isQuoteAnswer(activity.object)) {
+  const named = ourFollowById(db, actor, activity.object);
+  if (named === undefined && isQuoteAnswer(activity.object)) {
     return acceptOurQuote(db, actor, activity.object.id, activity.result ?? null, now)
       ? applied("quote-accepted")
       : ignored("quote-unchanged");
   }
-  const edge = ourFollow(db, actor, activity.object);
+  const edge = named ?? ourFollowByPair(db, actor, activity.object);
   if (edge === null || edge === "not-target") {
     return ignored(edge ?? "unknown-follow");
   }
@@ -845,10 +850,11 @@ const accept: Handler<"Accept"> = (db, actor, activity, { now }) => {
 
 // Mastodon's Reject removes our Follow, including an accepted one; quote handling: quotes.ts rejectOurQuote.
 const reject: Handler<"Reject"> = (db, actor, activity, { now }) => {
-  if (isQuoteAnswer(activity.object)) {
+  const named = ourFollowById(db, actor, activity.object);
+  if (named === undefined && isQuoteAnswer(activity.object)) {
     return rejectOurQuote(db, actor, activity.object.id, now) ? applied("quote-rejected") : ignored("quote-unchanged");
   }
-  const edge = ourFollow(db, actor, activity.object, true);
+  const edge = named ?? ourFollowByPair(db, actor, activity.object, true);
   if (edge === null || edge === "not-target") {
     return ignored(edge ?? "unknown-follow");
   }
@@ -858,10 +864,13 @@ const reject: Handler<"Reject"> = (db, actor, activity, { now }) => {
 };
 
 // An answer to our QuoteRequest: an inlined QuoteRequest, or its id (the quoting status's uri with #quote-request,
-// activities.ts quoteRequestUri), which no Follow of ours carries. Either is matched by its id only (quotes.ts
+// activities.ts quoteRequestUri), which no Follow of ours carries, untyped or typed with a name Mastodon reads as a
+// blank node (an LD-signed body whose context leaves QuoteRequest undefined, ld-signed-body.ts namedAsCompacted:
+// Mastodon's Accept and Reject seek the quote by the id whatever the type). Either is matched by its id only (quotes.ts
 // answeredQuote), so an inlined QuoteRequest under another id changes nothing (quote-unchanged).
 function isQuoteAnswer(ref: ActivityRef): boolean {
-  return ref.type === "QuoteRequest" || (ref.type === null && ref.id !== null && ref.id.endsWith("#quote-request"));
+  const untyped = ref.type === null || ref.type.startsWith("_:");
+  return ref.type === "QuoteRequest" || (untyped && ref.id !== null && ref.id.endsWith("#quote-request"));
 }
 
 // Undo of a Follow or a Block. The undone activity is found by its id among the actor's own edges. Without a match,
@@ -1517,6 +1526,74 @@ function purgeReports(db: Db, budget: JobBudget, id: string, window: string): vo
   );
 }
 
+// The first ?2 items of the account ?1 in any collection, one bounded range of collection_items_account.
+const MEMBER_ITEMS_WINDOW =
+  "SELECT id FROM collection_items INDEXED BY collection_items_account WHERE account_id = ?1 LIMIT ?2";
+
+// The first ?2 items of the collections of the account ?1 (MAX_STORED_ITEMS each), by collection.
+const OWNED_ITEMS_WINDOW = `SELECT i.id FROM collections c INDEXED BY collections_account
+	CROSS JOIN collection_items i INDEXED BY collection_items_order ON i.collection_id = c.id
+	WHERE c.account_id = ?1 LIMIT ?2`;
+
+// The first ?2 collections of the account ?1 (MAX_STORED_COLLECTIONS).
+const OWNED_COLLECTIONS_WINDOW =
+  "SELECT id FROM collections INDEXED BY collections_account WHERE account_id = ?1 LIMIT ?2";
+
+// The items or collections of a window of the account ?1 (`key` the notifications column naming them), child-first
+// so no delete cascades, as purgeReports: the pushes of their notifications (up to MAX_PUSH_BACKLOG each), then the
+// notifications left without one (notifications_collection_item, notifications_collection), then the rows of the
+// window: its items, whose one notification each (0107) the step before deleted, as it leaves the budget empty while
+// one remains, or its collections left without an item or a notification. Each statement reads only the window and
+// takes what the budget has left.
+function purgeCollectionRows(
+  db: Db,
+  budget: JobBudget,
+  id: string,
+  window: string,
+  key: "collection_item_id" | "collection_id",
+): void {
+  const index = key === "collection_item_id" ? "notifications_collection_item" : "notifications_collection";
+  spend(
+    db,
+    budget,
+    {
+      ids: `SELECT CAST(d.id AS TEXT) AS id FROM (${window}) w
+				CROSS JOIN notifications n INDEXED BY ${index} ON n.${key} = w.id
+				CROSS JOIN push_deliveries d INDEXED BY push_deliveries_notification ON d.notification_id = n.id LIMIT ?2`,
+      each: "DELETE FROM push_deliveries WHERE id = CAST(?1 AS INTEGER)",
+    },
+    id,
+  );
+  spend(
+    db,
+    budget,
+    {
+      ids: `SELECT CAST(n.id AS TEXT) AS id FROM (${window}) w
+				CROSS JOIN notifications n INDEXED BY ${index} ON n.${key} = w.id
+			WHERE NOT EXISTS (SELECT 1 FROM push_deliveries d WHERE d.notification_id = n.id) LIMIT ?2`,
+      each: "DELETE FROM notifications WHERE id = CAST(?1 AS INTEGER)",
+    },
+    id,
+  );
+  const notified = `EXISTS (SELECT 1 FROM notifications n INDEXED BY ${index} WHERE n.${key} = w.id)`;
+  spend(
+    db,
+    budget,
+    key === "collection_item_id"
+      ? {
+          ids: `SELECT w.id FROM (${window}) w LIMIT ?2`,
+          each: `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id = ?1`,
+        }
+      : {
+          ids: `SELECT w.id FROM (${window}) w
+				WHERE NOT EXISTS (SELECT 1 FROM collection_items i INDEXED BY collection_items_order WHERE i.collection_id = w.id)
+					AND NOT ${notified} LIMIT ?2`,
+          each: `DELETE FROM collections INDEXED BY ${COLLECTIONS_ID_INDEX} WHERE id = ?1`,
+        },
+    id,
+  );
+}
+
 // The first ?2 favourites of the account ?1 by id (favourites_account), so the purge reads one bounded range for
 // their tracked Like ids and for the favourites themselves, however many the account has (purgeRelationships).
 const FAVOURITE_WINDOW = "SELECT id, status_id FROM favourites WHERE account_id = ?1 ORDER BY id LIMIT ?2";
@@ -1714,32 +1791,12 @@ function purgeRelationships(db: Db, id: string, budget: JobBudget): void {
     id,
   );
   // Its items in any collection, then the items of its collections (MAX_STORED_ITEMS each), then each of its
-  // collections (MAX_STORED_COLLECTIONS) left without one, so no delete cascades (migration 0103_collections).
-  spend(
-    db,
-    budget,
-    `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id IN
-			(SELECT id FROM collection_items INDEXED BY collection_items_account WHERE account_id = ?1 LIMIT ?2)`,
-    id,
-  );
-  spend(
-    db,
-    budget,
-    `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id IN
-			(SELECT i.id FROM collections c INDEXED BY collections_account
-				CROSS JOIN collection_items i INDEXED BY collection_items_order ON i.collection_id = c.id
-			WHERE c.account_id = ?1 LIMIT ?2)`,
-    id,
-  );
-  spend(
-    db,
-    budget,
-    `DELETE FROM collections INDEXED BY ${COLLECTIONS_ID_INDEX} WHERE id IN
-			(SELECT c.id FROM collections c INDEXED BY collections_account WHERE c.account_id = ?1
-				AND NOT EXISTS (SELECT 1 FROM collection_items i INDEXED BY collection_items_order WHERE i.collection_id = c.id)
-			LIMIT ?2)`,
-    id,
-  );
+  // collections (MAX_STORED_COLLECTIONS) left without one, so no delete cascades (migration 0103_collections); each
+  // window child-first (purgeCollectionRows): its notifications' pushes, then those notifications (migration
+  // 0107_collection_notifications), then the rows left without one.
+  purgeCollectionRows(db, budget, id, MEMBER_ITEMS_WINDOW, "collection_item_id");
+  purgeCollectionRows(db, budget, id, OWNED_ITEMS_WINDOW, "collection_item_id");
+  purgeCollectionRows(db, budget, id, OWNED_COLLECTIONS_WINDOW, "collection_id");
   // Its profile link verification (domain/remote-field-links.ts): one row at most.
   spend(
     db,
