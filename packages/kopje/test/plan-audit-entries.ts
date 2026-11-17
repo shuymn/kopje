@@ -572,6 +572,22 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "expandPending's oldest chunk (src/domain/deliveries.ts): outbound_targets in rowid order from its start, LIMIT 1 and no filter, so one row; its activity read once by its rowid",
   },
   {
+    id: "e9b47ef4a7e7f393",
+    scans: ["delivery_hosts: SCAN delivery_hosts USING INDEX delivery_hosts_idle"],
+    site: "src/domain/delivery-hosts.ts#markStopped < src/domain/deliveries.ts#<anonymous> in stopDeliveryHost",
+    disposition: "bounded",
+    reason:
+      "the first entry of the partial index delivery_hosts_idle (the available hosts) by last_failure_day, LIMIT 1 and no other term: one entry, read only for a new host when the table is full (src/domain/delivery-hosts.ts markStopped)",
+  },
+  {
+    id: "a240035cb6400d9c",
+    scans: ["delivery_hosts: SCAN delivery_hosts"],
+    site: "src/domain/delivery-hosts.ts#hostCount < src/domain/delivery-hosts.ts#recordHostFailure < src/domain/deliveries.ts#<anonymous> in completeDelivery",
+    disposition: "bounded",
+    reason:
+      "delivery_hosts holds at most MAX_DELIVERY_HOSTS (10,000) keys of at most 253 bytes (the trigger delivery_hosts_cap and the CHECK delivery_hosts_host, migration 0112_delivery_hosts); counted only for a host without a row (src/domain/delivery-hosts.ts recordHostFailure, markStopped)",
+  },
+  {
     id: "16731d8b485e0e6f",
     scans: ["deliveries: SCAN deliveries USING INDEX deliveries_lane"],
     site: "src/domain/deliveries.ts#activeCount < src/domain/deliveries.ts#Admission.admits < src/domain/deliveries.ts#expandPending < src/domain/deliveries.ts#enqueueActivity < src/domain/activities.ts#recordOutbound",

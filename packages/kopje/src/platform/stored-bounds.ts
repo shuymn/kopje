@@ -2772,3 +2772,94 @@ export function notificationCollectionKeysPastBoundSql(type: string, item: strin
 	WHEN ${type} = 'collection_update' THEN ${collection} IS NULL OR ${item} IS NOT NULL
 	ELSE ${item} IS NOT NULL OR ${collection} IS NOT NULL END`;
 }
+
+// ---- Delivery hosts: migration 0112_delivery_hosts (domain/delivery-hosts.ts, RES-4)
+
+// A stored delivery host, in bytes: a DNS name's octets (RFC 1035 §2.3.4; domain-name.ts DNS_NAME_OCTETS, restated
+// here as this module imports nothing, test/delivery-hosts.test.ts holds the two equal).
+export const DELIVERY_HOST_BYTES = 253;
+
+// A lane the host drain reads (deliveries_host_drain), in UTF-8 bytes: `https://`, a host of DELIVERY_HOST_BYTES, one
+// trailing dot, `:` and a five-digit port. A longer lane is outside the drain's index (docs/threat-model.md RES-5).
+export const LANE_BYTES = 8 + DELIVERY_HOST_BYTES + 1 + 1 + 5;
+
+// The delivery hosts a Store keeps at most, for every writer and an import (the trigger delivery_hosts_cap).
+export const MAX_DELIVERY_HOSTS = 10_000;
+
+// True when `column` is a stored delivery host, judged on the raw bytes first, then NUL, then the structure: TEXT of 3
+// to DELIVERY_HOST_BYTES bytes of lowercase ASCII letters, digits, `-` and `.`, with a dot, no empty label, and no
+// label that starts or ends with `-`. GLOB reads a byte past ASCII as a character outside the class (an invalid
+// sequence as U+FFFD), so every stored host is its own ASCII text and compares byte for byte. The CHECK
+// delivery_hosts_host states it; withinDeliveryHostBound is its JavaScript twin.
+export function deliveryHostSql(column: string): string {
+  return `(typeof(${column}) = 'text' AND length(CAST(${column} AS BLOB)) BETWEEN 3 AND ${DELIVERY_HOST_BYTES}
+	AND instr(CAST(${column} AS BLOB), x'00') = 0 AND ${column} NOT GLOB '*[^-.0-9a-z]*' AND ${column} GLOB '?*.?*'
+	AND ${column} NOT GLOB '[.-]*' AND ${column} NOT GLOB '*[.-]' AND instr(${column}, '..') = 0
+	AND instr(${column}, '.-') = 0 AND instr(${column}, '-.') = 0)`;
+}
+
+// deliveryHostSql's accepted set, in JavaScript: a request that names a stored host (the listing's cursor, a restart)
+// is read by it and used as given, so every host the listing answers is accepted back.
+export function withinDeliveryHostBound(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[-.0-9a-z]+$/.test(value) &&
+    value.length >= 3 &&
+    value.length <= DELIVERY_HOST_BYTES &&
+    value.includes(".") &&
+    !/^[.-]|[.-]$/.test(value) &&
+    !value.includes("..") &&
+    !value.includes(".-") &&
+    !value.includes("-.")
+  );
+}
+
+// The host a stored lane (deliveries.lane, an inbox's URL origin as deliveries.ts laneOf writes it) delivers to, as
+// the comparison key domain-name.ts hostDomain gives (every trailing dot dropped): for TEXT of at most LANE_BYTES bytes
+// without NUL, `https://`, then lowercase ASCII letters, digits, `-` and `.`, then optionally `:` and a port of one to
+// five digits without a leading zero, the part before the port without its trailing dots; NULL for anything else (an
+// import's other type, an IP literal in brackets, upper case, a path). Each test runs inside the CASE after the ones
+// before it hold, so the expression reads any stored value. The index deliveries_host_drain is on it, and the drain's
+// reads and the cursor's CHECK use the same text; laneHostOf is its JavaScript twin.
+export function laneHostSql(lane: string): string {
+  const rest = `substr(${lane}, 9)`;
+  const colon = `instr(${rest}, ':')`;
+  const port = `substr(${rest}, ${colon} + 1)`;
+  const host = `CASE WHEN ${colon} = 0 THEN ${rest} ELSE substr(${rest}, 1, ${colon} - 1) END`;
+  return `(CASE WHEN typeof(${lane}) = 'text' AND length(CAST(${lane} AS BLOB)) <= ${LANE_BYTES}
+	AND instr(CAST(${lane} AS BLOB), x'00') = 0 AND substr(${lane}, 1, 8) = 'https://'
+	AND ${rest} NOT GLOB '*[^-.0-9a-z:]*'
+	AND (${colon} = 0
+		OR (${port} GLOB '[1-9]*'
+			AND ${port} NOT GLOB '*[^0-9]*'
+			AND length(${port}) <= 5))
+	THEN rtrim(${host}, '.') END)`;
+}
+
+// laneHostSql in JavaScript, for the corpus that holds the two equal (a lane is at most LANE_BYTES, so the trailing
+// dots' regex reads a bounded run).
+export function laneHostOf(lane: unknown): string | null {
+  if (
+    typeof lane !== "string" ||
+    ENCODER.encode(lane).length > LANE_BYTES ||
+    lane.includes("\u0000") ||
+    !lane.startsWith("https://")
+  ) {
+    return null;
+  }
+  const rest = lane.slice(8);
+  if (!/^[-.0-9a-z:]*$/.test(rest)) {
+    return null;
+  }
+  const colon = rest.indexOf(":");
+  if (colon >= 0 && !/^[1-9][0-9]{0,4}$/.test(rest.slice(colon + 1))) {
+    return null;
+  }
+  return (colon < 0 ? rest : rest.slice(0, colon)).replace(/\.+$/, "");
+}
+
+// True when a host drain's cursor lane `lane` lies on its row's own host `host`: the drain's entry ('') or a lane whose
+// laneHostSql is that host. The CHECK delivery_hosts_drain_cursor states it for every writer and an import.
+export function drainCursorSql(host: string, lane: string): string {
+  return `(${lane} = '' OR coalesce(${laneHostSql(lane)} = ${host}, 0))`;
+}

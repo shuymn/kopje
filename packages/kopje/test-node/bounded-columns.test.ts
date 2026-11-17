@@ -551,6 +551,10 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   },
   // A held Reject's Follow id judged against its stored bound: a predicate (deliveries.ts heldFollowUriSql).
   'src/domain/deliveries.ts interpolation heldFollowUriSql("uri")': { count: 2, reason: PREDICATE },
+  "src/domain/delivery-hosts.ts interpolation FAILURE_DAYS": {
+    count: 1,
+    reason: "a number constant (the failure days that make a host unavailable), naming no column",
+  },
   'src/domain/remote-status-reads.ts interpolation collectionSql("raw", "followers")': {
     count: 1,
     reason: COLLECTION,

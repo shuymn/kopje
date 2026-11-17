@@ -65,6 +65,7 @@ const NOT_CARRIED: Record<string, string> = {
     "legacy never wrote its conversation_mutes table, and a legacy row there stops the conversion (UNUSED_LEGACY_TABLES)",
   custom_emojis: "local custom emoji of Kopje; legacy Wildebeest has none (verify-actual fails on any row)",
   deliveries: "outbound queue; legacy queues are not carried",
+  delivery_hosts: "hosts Kopje's deliveries failed to or the operator stopped; legacy tracks none",
   domain_block_cleanups: "pending work of a domain block made in Kopje",
   favourite_likes:
     "a remote favourite's outstanding Like ids; legacy keeps none for a remote favourite, so a carried one tracks none",

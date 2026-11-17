@@ -34,6 +34,7 @@ import {
   stagedVoters,
 } from "./audience";
 import { EXPANSION_STEP } from "./delivery-bounds";
+import { forgetIdleHosts } from "./delivery-hosts";
 import { hostCovered } from "./instance-domain-blocks";
 import { FRESH_ATTEMPTS_SQL, SAFE_MS } from "./job-attempts";
 import { readOperation, writeOperation } from "./operation";
@@ -3354,8 +3355,12 @@ export const retryDeliveries = writeOperation<{ ids: string[] | "all"; now: numb
 // so its intent stops counting toward its pair's FOLLOW_ANSWER_INTENTS once its other rows settle. Both deletes share
 // SWEEP_BATCH rows a round, the answers first. The answers' read also passes the superseded answers whose rows are
 // still active, at most the delivery backlog (RES-4). The rows left of SWEEP_BATCH then go to the stagings that ended
-// unwritten (sweepStagings).
-export const sweepDeliveries = writeOperation<{ now: number }, { swept: number }>((db, { now }) => {
+// unwritten (sweepStagings). Apart from them, up to SWEEP_BATCH idle failing hosts are forgotten by the Store's day
+// (delivery-hosts.ts forgetIdleHosts), counted in `swept` too.
+export const sweepDeliveries = writeOperation.atStoreTime("storeNow")<
+  { now: number; storeNow: number },
+  { swept: number }
+>((db, { now, storeNow }) => {
   const answers = db.all<{ activity_id: string }>(
     `DELETE FROM deliveries WHERE id IN (SELECT d.id
 			FROM outbound_activities o INDEXED BY outbound_activities_follow_swept
@@ -3374,7 +3379,9 @@ export const sweepDeliveries = writeOperation<{ now: number }, { swept: number }
   for (const activityId of new Set(swept.map((r) => r.activity_id))) {
     dropSettledActivity(db, activityId);
   }
-  return { swept: swept.length + sweepStagings(db, SWEEP_BATCH - swept.length) };
+  return {
+    swept: swept.length + sweepStagings(db, SWEEP_BATCH - swept.length) + forgetIdleHosts(db, storeNow, SWEEP_BATCH),
+  };
 });
 
 // The stagings that ended before their targets were written (outbound_activities_staging_ended: superseded), oldest
