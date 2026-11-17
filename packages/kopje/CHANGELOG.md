@@ -172,6 +172,18 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `0093_annual_reports` takes 16,114 ms with this file and 16,184 ms without it). Hosts are counted from the upgrade
   on: stop one already gone with `kopje-admin hosts stop <host>`. `wrangler.jsonc`: unchanged. This adds a Store
   migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+- Remote accounts' collections are read and shown, with members whose authorization is verified: a remote account's
+  sync reads its FEP-7aa9 `featuredCollections` (at most 2 pages, 10 embedded collections of 25 embedded members), and
+  background rounds check each member's `FeatureAuthorization` on its own server, at most 250 checks a UTC day for one
+  owner's collections; the owner's `Add`, `Remove` and `Update` (with or without an `id`, as Mastodon sends them) keep
+  them current, and a member's `Delete` of its authorization, sent by the member or relayed by the owner with the
+  member's signature, revokes its membership; search with `resolve=true` finds one by its URL, and an inbound report
+  attaches the remote collections it names ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
+  "Collections"). Migration `0113_featured_collection_syncs`: a column of `collection_syncs`, reading only the pending
+  syncs, and a new table; as it creates a table, the upgrade checks every reference of the Store (the migration bench's
+  upgrade from `0093_annual_reports` takes 22,046 ms with this file and 22,003 ms without it, medians of three runs).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling back
+  past it needs a point-in-time restore.
 
 ### Changed
 

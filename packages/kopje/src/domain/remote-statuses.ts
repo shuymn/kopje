@@ -28,7 +28,9 @@ import {
   type Visibility,
 } from "./audience";
 import { userWriteOperation } from "./auth";
-import { collectionRead, collectionSql, UNREADABLE } from "./collection-requests";
+import type { Collection } from "./collection-presenter";
+import { collectionRead, collectionSql, markCollectionsChanged, UNREADABLE } from "./collection-requests";
+import { shownCollection } from "./collections";
 import { emojiSnapshot } from "./custom-emojis";
 import { insertWithFreshId, remoteId } from "./ids";
 import { enqueueCard, remoteCardLink } from "./link-cards";
@@ -44,6 +46,11 @@ import {
   type RemoteRow,
   upsertRemoteActor,
 } from "./remote-actors";
+import {
+  applyFeaturedCollection,
+  type FeaturedCollectionInput,
+  ownCollectionByUri,
+} from "./remote-featured-collections";
 import { dropAttachmentFiles, noteStatusEmoji, syncAttachmentFiles } from "./remote-media";
 import {
   type RemoteQuotePolicyInput,
@@ -997,6 +1004,7 @@ function updateMentions(
 export type Resolved =
   | { kind: "account"; actor: RemoteActorInput; revision: DocumentRevision }
   | { kind: "status"; status: RemoteStatusInput; author: RemoteActorInput; revision: DocumentRevision }
+  | { kind: "collection"; collection: FeaturedCollectionInput }
   | { kind: "local" }
   | { kind: "none"; last: number | null };
 
@@ -1049,13 +1057,14 @@ export type ResolveInput = {
 };
 
 // quotesDue: the status found has a quote whose verification is due (the Worker asks the Queue for a job round).
-export type ResolveResult = { accounts: Account[]; statuses: Status[]; quotesDue?: boolean };
+export type ResolveResult = { accounts: Account[]; statuses: Status[]; collections: Collection[]; quotesDue?: boolean };
 
-// What a resolution stored, by id: the account or status the query names, or nothing. quotesDue: the status has a quote
-// whose verification is due (the Worker asks the Queue for a job round).
+// What a resolution stored, by id: the account, status or remote collection the query names, or nothing. quotesDue: the
+// status has a quote whose verification is due (the Worker asks the Queue for a job round).
 export type StoredResolution =
   | { kind: "account"; id: string | undefined }
   | { kind: "status"; id: string | undefined; quotesDue: boolean }
+  | { kind: "collection"; id: string }
   | { kind: "none" };
 
 // Mastodon 4.7.5's ResolveURLService::USERNAME_STATUS_RE: `/@`, Account::USERNAME_RE (case-insensitive, which Ruby's
@@ -1149,6 +1158,24 @@ export function storeResolved(
         id: stored.statusId,
         quotesDue: stored.statusId !== undefined && quoteDue(db, stored.statusId, now),
       };
+    }
+    case "collection": {
+      // ActivityPub::FetchRemoteFeaturedCollectionService: a collection of an account Kopje stores, the stored one as
+      // it is, else applied as its owner's (remote-featured-collections.ts: its items queued for their checks, no sync
+      // requested, nothing fetched), a change a sync's read under way does not hold (markCollectionsChanged).
+      const { collection } = resolved;
+      const owner = collection.attributedTo === null ? undefined : remoteAccount(db, collection.attributedTo);
+      if (owner === undefined) {
+        return { kind: "none" };
+      }
+      let id = ownCollectionByUri(db, owner.id, collection.id)?.id ?? null;
+      if (id === null) {
+        id = applyFeaturedCollection(db, owner, collection, origin, now).collection;
+        if (id !== null) {
+          markCollectionsChanged(db, owner.id);
+        }
+      }
+      return id === null ? { kind: "none" } : { kind: "collection", id };
     }
     case "local":
       return storedStatus(db, query, null, now) ?? storedAccount(db, query) ?? { kind: "none" };
@@ -1264,8 +1291,9 @@ function localSearchTarget(db: Db, query: string, now: number): StoredResolution
 
 // Stores what was resolved (storeResolved), then answers with it only if the viewer may see it (VIS-1): an account only
 // if account search would find it (findableBySql, R14), a status by the rule of a single status (canView, R3, as
-// Mastodon's ResolveURLService authorizes show?), unless the viewer blocks its author's domain. A private object a
-// server answered the instance actor with is stored with its audience and shown to nobody else.
+// Mastodon's ResolveURLService authorizes show?), unless the viewer blocks its author's domain, and a remote collection
+// when R45 shows it (CollectionPolicy#show?). A private object a server answered the instance actor with is stored with
+// its audience and shown to nobody else.
 export const resolveSearch = userWriteOperation.atStoreTime("storeNow")<ResolveInput, ResolveResult>((
   db,
   input,
@@ -1277,7 +1305,7 @@ export const resolveSearch = userWriteOperation.atStoreTime("storeNow")<ResolveI
     const findable =
       id !== undefined && db.first(`SELECT 1 AS found WHERE ${findableBySql("?2", "?1")}`, accountId, id) !== undefined;
     const found = findable ? presentAccountById(db, id, presentFor(input.present, accountId)) : undefined;
-    return { accounts: found === undefined ? [] : [found], statuses: [] };
+    return { accounts: found === undefined ? [] : [found], statuses: [], collections: [] };
   };
   const status = (id: string | undefined): ResolveResult => {
     const blocked =
@@ -1289,7 +1317,7 @@ export const resolveSearch = userWriteOperation.atStoreTime("storeNow")<ResolveI
       ) !== undefined;
     const visible = blocked ? null : viewableStatusId(db, accountId, id);
     const found = visible === null ? null : presentStatus(db, visible, options);
-    return { accounts: [], statuses: found === null ? [] : [found] };
+    return { accounts: [], statuses: found === null ? [] : [found], collections: [] };
   };
   const fetched = storeResolved(db, input, true);
   const stored =
@@ -1301,7 +1329,11 @@ export const resolveSearch = userWriteOperation.atStoreTime("storeNow")<ResolveI
       return account(stored.id);
     case "status":
       return { ...status(stored.id), quotesDue: stored.quotesDue };
+    case "collection": {
+      const shown = shownCollection(db, stored.id, accountId, input.present.origin);
+      return { accounts: [], statuses: [], collections: shown === null ? [] : [shown] };
+    }
     case "none":
-      return { accounts: [], statuses: [] };
+      return { accounts: [], statuses: [], collections: [] };
   }
 });

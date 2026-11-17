@@ -33,6 +33,7 @@ import * as annualReports from "./domain/annual-reports";
 import { checkAdminCredential, checkCredential, checkNotSuspended } from "./domain/auth";
 import * as blocks from "./domain/blocks";
 import * as cardImages from "./domain/card-images";
+import { claimItemChecks, completeItemChecks } from "./domain/collection-checks";
 import { runCollectionJobs } from "./domain/collection-jobs";
 import * as collections from "./domain/collections";
 import * as conversations from "./domain/conversations";
@@ -177,6 +178,11 @@ export const STORE_RPC = {
   completeCollectionRead: remoteCollections.completeCollectionRead,
   completePinFetches: remoteCollections.completePinFetches,
   completeDocumentRefresh: remoteCollections.completeDocumentRefresh,
+
+  // Checks of remote collections' members' feature authorizations (domain/collection-checks.ts): claimed and applied
+  // by the Worker's job rounds (federation/collection-checks.ts).
+  claimItemChecks,
+  completeItemChecks,
 
   // Verification of received quotes (domain/quotes.ts): the work read, applied and claimed by the Worker's job rounds
   // (federation/quotes.ts).

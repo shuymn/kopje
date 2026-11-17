@@ -88,11 +88,14 @@ export const RETIRED_ROWS_PER_ROUND = 500;
 // (docs/mastodon-deviations.md, "Collections").
 const COLLECTION_LIMIT_MESSAGE = `Collections are too many, no more than ${COLLECTION_LIMIT} are allowed`;
 
-// The most JSON a local Collection presents (RES-3): its name and description at their bounds in characters JSON
-// escapes to six bytes, its tag at the tag-name bound (its URL encoding each byte in three), 25 accepted items, an
-// instance domain of 253 octets and an owner's username at LOCAL_USERNAME_BYTES (test/collections.test.ts derives it
-// from the bounds and measures it).
-export const COLLECTION_JSON_MAX = 9_165;
+// The most JSON a Collection presents (RES-3), each derived from the bounds and measured by test/collections.test.ts: a
+// local one's name and description at their bounds in characters JSON escapes to six bytes, its tag at the tag-name
+// bound (its URL encoding each byte in three), 25 accepted items, an instance domain of 253 octets and an owner's
+// username at LOCAL_USERNAME_BYTES; a remote one's longer name and description likewise, and its stored uri and url at
+// their bounds of printable ASCII, which JSON escapes to two bytes at most. COLLECTION_JSON_MAX is the larger, a remote
+// one's.
+export const LOCAL_COLLECTION_JSON_MAX = 9_165;
+export const COLLECTION_JSON_MAX = 29_701;
 
 // REST::CollectionWithAccountsSerializer.
 export type CollectionWithAccounts = { collection: Collection; accounts: Account[] };
@@ -325,6 +328,13 @@ function tagProblems(tagName: string): { display: string; problems: Problem[] } 
     problems.push({ attribute: "name", type: "too_long", description: TAG_NAME_TOO_LONG.replace(/^Name /, "") });
   }
   return { display, problems };
+}
+
+// A remote collection's topic as tag_name= takes it (ProcessFeaturedCollectionService's `topic.name`): its display
+// name, or null when the Tag would refuse it, which refuses the collection (its update! raises).
+export function remoteCollectionTag(name: string): string | null {
+  const { display, problems } = tagProblems(name);
+  return problems.length === 0 ? display : null;
 }
 
 // Collection's validations of a local collection, in Mastodon's order (collection.rb:42-61), with Rails' messages.
@@ -579,8 +589,9 @@ const NOTIFIED_CHANGES: readonly (keyof CollectionValues)[] = ["name", "descript
 
 // NotifyOfCollectionUpdateService: each accepted member of the collection `id` is notified collection_update, which
 // replaces its earlier one of the collection (notify); a local one only. At most COLLECTION_MAX_ITEMS live items, read
-// through collection_items_order.
-function notifyUpdated(db: Db, id: string, owner: string, now: number): void {
+// through collection_items_order. A remote collection's change notifies the same way
+// (remote-featured-collections.ts).
+export function notifyUpdated(db: Db, id: string, owner: string, now: number): void {
   const members = db.all<{ account_id: string }>(
     `SELECT account_id FROM collection_items INDEXED BY collection_items_order
 		WHERE collection_id = ? AND state = ? AND account_id IS NOT NULL ORDER BY position, id`,
@@ -839,15 +850,17 @@ export function localCollectionId(url: string, origin: string): string | null {
   return id === undefined ? null : storedIdOf(id);
 }
 
-// Search with resolve=true of a local collection's URL (ResolveURLService#check_collection): the collection when R45
-// shows it to the viewer, as the viewer sees it; null otherwise.
+// The collection `id` when R45 shows it to `viewer` (CollectionPolicy#show?), as the viewer sees it; null otherwise.
+export function shownCollection(db: Db, id: string, viewer: string | null, origin: string): Collection | null {
+  const row = foundCollection(db, id);
+  return row === undefined || !shown(db, row.id, viewer)
+    ? null
+    : (presentCollections(db, [row], viewer, origin)[0] ?? null);
+}
+
+// Search with resolve=true of a local collection's URL (ResolveURLService#check_collection): shownCollection.
 export const resolvedCollection = userReadOperation<{ id: string; present: PresentInput }, Collection | null>(
-  (db, input, { accountId: viewer }) => {
-    const row = foundCollection(db, input.id);
-    return row === undefined || !shown(db, row.id, viewer)
-      ? null
-      : (presentCollections(db, [row], viewer, input.present.origin)[0] ?? null);
-  },
+  (db, input, { accountId: viewer }) => shownCollection(db, input.id, viewer, input.present.origin),
 );
 
 // ReportService#reported_collection_ids (`@target_account.collections.find(ids)`): the target's collections the
@@ -879,19 +892,35 @@ export function collectionUris(db: Db, ids: readonly string[], origin: string): 
     .map((row) => collectionUri(row, origin));
 }
 
-// The local collections an inbound Flag names among its objects (ActivityPub::Activity::Flag#perform's
-// collection_from_uri, by route on `origin`), with their owners, each read by key.
+// The collections an inbound Flag names among its objects (ActivityPub::Activity::Flag#perform's collection_from_uri,
+// TagManager#uri_to_resource), with their owners, in the objects' order: a local one by route on `origin`, a remote
+// one by its stored uri, the object's fragment removed. Each read by key.
 export function flaggedCollections(
   db: Db,
   objects: readonly string[],
   origin: string,
 ): { id: string; account_id: string }[] {
-  const ids = [...new Set(objects.flatMap((uri) => localCollectionId(uri, origin) ?? []))];
-  return db.all<{ id: string; account_id: string }>(
-    `SELECT c.id, c.account_id FROM json_each(?1) w CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
-			ON c.id = w.value ORDER BY w.key`,
-    JSON.stringify(ids),
+  const named = objects.map((uri) => {
+    const local = localCollectionId(uri, origin);
+    return local === null ? { uri: uri.split("#")[0]! } : { id: local };
+  });
+  const rows = db.all<{ key: number; id: string; account_id: string }>(
+    `SELECT w.key, c.id, c.account_id FROM json_each(?1) w
+			CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = w.value ->> '$.id'
+		UNION ALL
+		SELECT w.key, c.id, c.account_id FROM json_each(?1) w
+			CROSS JOIN collections c INDEXED BY collections_uri ON c.uri = w.value ->> '$.uri'
+		WHERE c.local = 0
+		ORDER BY 1`,
+    JSON.stringify(named),
   );
+  const owners = new Map<string, string>();
+  for (const row of rows) {
+    if (!owners.has(row.id)) {
+      owners.set(row.id, row.account_id);
+    }
+  }
+  return [...owners].map(([id, account_id]) => ({ id, account_id }));
 }
 
 // ---- The public page of a local collection (web-pages/collection.ts).

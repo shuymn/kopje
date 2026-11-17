@@ -45,7 +45,7 @@ import {
   removalBegunSql,
 } from "./audience";
 import { userReadOperation } from "./auth";
-import { collectionUri } from "./collection-requests";
+import { collectionUri, markCollectionsChanged } from "./collection-requests";
 import {
   beginRetraction,
   cancelFollowAnswers,
@@ -113,6 +113,16 @@ import {
   refreshRouting,
 } from "./remote-actors";
 import { collectionOf, featureRemote, pinRemote, unfeatureRemote, unpinRemote } from "./remote-collections";
+import {
+  applyFeaturedCollection,
+  applyFeaturedItem,
+  type FeaturedCollectionInput,
+  type FeaturedItemInput,
+  ownCollectionByUri,
+  removeFeaturedCollection,
+  removeFeaturedItem,
+  revokeFeatureAuthorization,
+} from "./remote-featured-collections";
 import { retireAccountSlots, retireStatusMediaSlots } from "./remote-media";
 import { HIDE_ROWS, hideRemoteStatus, startRemoval } from "./remote-removal";
 import { followersUri, type RemoteStatusInput, statusByUri, visibilityOf } from "./remote-status-reads";
@@ -263,11 +273,13 @@ export type InboundActivity =
   // verified (federation/author-proof.ts), which the Store forwards for a local quote's stamp (quotes.ts revokeStamp)
   // and through the local boosts and quotes of a status (recordForwards). atomUri: the embedded object's, read as a
   // status's (namedStatus).
+  // feature: the embedded FeatureAuthorization's collection and member, null for any other object.
   | {
       type: "Delete";
       id: string;
       object: string;
       atomUri?: string | null;
+      feature?: { collection: string | null; member: string | null } | null;
       signed?: boolean;
       proven?: Record<string, unknown>;
     }
@@ -290,9 +302,12 @@ export type InboundActivity =
   | { type: "Like"; id: string; object: string }
   // A report of the accounts and statuses `objects` names (reports.ts fileRemoteReports), with its comment.
   | { type: "Flag"; id: string; objects: string[]; content: string }
-  // An Add or Remove of a status (by its id) or of a Hashtag (by its name) to or from the collection `target`.
-  | { type: "Add"; id: string; target: string; object: CollectionItem }
-  | { type: "Remove"; id: string; target: string; object: CollectionItem }
+  // An Add or Remove of a status (by its id), a Hashtag (by its name) or an embedded FEP-7aa9 collection or item to or
+  // from the collection `target`; without an id only for a collection target (#1589's D20).
+  | { type: "Add"; id: string | null; target: string; object: CollectionItem }
+  | { type: "Remove"; id: string | null; target: string; object: CollectionItem }
+  // A remote collection updated by its owner (Update#update_collection).
+  | { type: "UpdateCollection"; id: string; object: FeaturedCollectionInput }
   // embedded: the object as the Announce carried it (used only for the actor's own status, as Mastodon does).
   | {
       type: "Announce";
@@ -306,7 +321,11 @@ export type InboundActivity =
     };
 
 // What an Add or Remove names: a status by its id, or a Hashtag by its name.
-type CollectionItem = { status: string } | { hashtag: string };
+type CollectionItem =
+  | { status: string }
+  | { hashtag: string }
+  | { featuredCollection: FeaturedCollectionInput }
+  | { featuredItem: FeaturedItemInput };
 
 // Documents the Worker fetched because the Store asked for them (ReceiveResult.need), by the uri asked for: a parsed
 // status or actor, or null when it could not be fetched or used; 'gone': the actor's document answered 404 or 410.
@@ -1798,6 +1817,14 @@ function purgeRelationships(db: Db, id: string, budget: JobBudget): void {
   purgeCollectionRows(db, budget, id, MEMBER_ITEMS_WINDOW, "collection_item_id");
   purgeCollectionRows(db, budget, id, OWNED_ITEMS_WINDOW, "collection_item_id");
   purgeCollectionRows(db, budget, id, OWNED_COLLECTIONS_WINDOW, "collection_id");
+  // Its collections' item-check quota (domain/collection-checks.ts): one row at most.
+  spend(
+    db,
+    budget,
+    `DELETE FROM collection_check_quotas
+			WHERE account_id IN (SELECT account_id FROM collection_check_quotas WHERE account_id = ? LIMIT ?)`,
+    id,
+  );
   // Its profile link verification (domain/remote-field-links.ts): one row at most.
   spend(
     db,
@@ -2275,6 +2302,7 @@ export const PURGED_ACCOUNT_CHILDREN: readonly { table: string; check: string; f
   { table: "collection_pins_pending", check: "account_id = ?1" },
   { table: "collection_items", check: "account_id = ?1" },
   { table: "collections", check: "account_id = ?1" },
+  { table: "collection_check_quotas", check: "account_id = ?1" },
 ];
 
 // What names a remote account without a foreign key (logical references, which no delete of the account cascades to):
@@ -2359,6 +2387,10 @@ function namedStatus(
 const deleteObject: Handler<"Delete"> = (db, actor, activity, { now }) => {
   if (!sameOrigin(activity.object, actor.uri)) {
     return ignored("foreign-object");
+  }
+  // A member's Delete of its feature authorization revokes its item (#1589, remote-featured-collections.ts).
+  if (revokeFeatureAuthorization(db, actor, activity.object, activity.feature ?? null, now)) {
+    return applied("feature-revoked");
   }
   const named = namedStatus(db, actor, activity.object, activity.atomUri, false);
   if (named !== undefined && named.status.account_id !== actor.id) {
@@ -2629,6 +2661,14 @@ const relayedDelete: Handler<"RelayedDelete"> = (db, actor, activity, input) => 
   if (!sameOrigin(activity.object, actor.uri)) {
     return ignored("foreign-object");
   }
+  // A member's Delete of its feature authorization that the collection's owner relays (Mastodon's
+  // RevokeCollectionItemService distributes it so): applied as the member's own, read from the proven body only.
+  if (activity.proven && activity.body !== undefined) {
+    const feature = provenFeature(activity.body);
+    if (feature !== null && revokeFeatureAuthorization(db, actor, activity.object, feature, now)) {
+      return applied("feature-revoked");
+    }
+  }
   const status = namedStatus(db, actor, activity.object, activity.atomUri, false)?.status;
   if (status !== undefined) {
     if (!activity.proven || activity.body === undefined) {
@@ -2651,6 +2691,20 @@ const relayedDelete: Handler<"RelayedDelete"> = (db, actor, activity, input) => 
   }
   return retractUnknown(db, actor, activity.object, now, activity.body ?? null);
 };
+
+// The embedded FeatureAuthorization's collection and member in a proven relayed Delete's body (the mastodonFeature
+// profile admits only string values there), or null for any other object.
+function provenFeature(body: Record<string, unknown>): { collection: string | null; member: string | null } | null {
+  const object = body.object;
+  if (typeof object !== "object" || object === null || Array.isArray(object)) {
+    return null;
+  }
+  const fields = object as Record<string, unknown>;
+  const text = (value: unknown) => (typeof value === "string" ? value : null);
+  return fields.type === "FeatureAuthorization"
+    ? { collection: text(fields.interactingObject), member: text(fields.interactionTarget) }
+    : null;
+}
 
 // The actor's Delete of an object Kopje holds no status of: recorded as a retraction (ID-7) and, when it is the stamp
 // of a quote of the actor's status, as a revocation for good whether or not the retraction could be (quote_revocations
@@ -3439,16 +3493,23 @@ function undoInteraction(db: Db, actor: RemoteRow, ref: ActivityRef & { id: stri
 // collection (a status, or a Hashtag) or featuredTags collection (a Hashtag; Mastodon sends a featured hashtag's Add to
 // the featured collection, Kopje accepts either), on its own origin; anything else is ignored. A status is the actor's
 // own on its origin; one not stored yet is fetched (Add#status_from_object) only for an actor with local followers.
+// The actor's featuredCollections collection and its stored remote collections take FEP-7aa9 collections and items
+// (remote-featured-collections.ts, #1589's D21), embedded only (nothing is fetched for one given by URI). Only those
+// collection targets admit an activity without an id (D20): Mastodon 4.7.5 sends theirs so, and their effects are
+// keyed by the collection's and the item's uri; another target's is incomplete.
 const add: Handler<"Add"> = (db, actor, activity, input) => {
   const collection = collectionOf(db, actor.id, activity.target);
   const { object } = activity;
+  if (collection === "featuredCollections" || collection === null) {
+    return addFeatured(db, actor, activity, input);
+  }
+  if (activity.id === null) {
+    return ignored("incomplete");
+  }
   if ("hashtag" in object) {
-    if (collection === null) {
-      return ignored("not-collection");
-    }
     return featureRemote(db, actor.id, object.hashtag, input.now) ? applied("featured") : ignored("not-featured");
   }
-  if (collection !== "featured") {
+  if (collection !== "featured" || !("status" in object)) {
     return ignored("not-collection");
   }
   if (!sameOrigin(object.status, actor.uri)) {
@@ -3493,19 +3554,105 @@ const add: Handler<"Add"> = (db, actor, activity, input) => {
   return applied("pinned");
 };
 
-const remove: Handler<"Remove"> = (db, actor, activity) => {
+// Add#add_collection and #add_collection_item: an embedded collection to the actor's featuredCollections collection,
+// or an embedded item to one of its stored remote collections (remote-featured-collections.ts applies every rule).
+// Either is a change of the actor's collections that a sync's read under way does not hold (markCollectionsChanged).
+function addFeatured(
+  db: Db,
+  actor: { id: string; uri: string },
+  activity: { target: string; object: CollectionItem },
+  input: StoreReceiveInput,
+): ReceiveResult {
+  const { object } = activity;
+  if (collectionOf(db, actor.id, activity.target) === "featuredCollections") {
+    if (!("featuredCollection" in object)) {
+      return ignored("not-embedded");
+    }
+    markCollectionsChanged(db, actor.id);
+    const { collection } = applyFeaturedCollection(db, actor, object.featuredCollection, input.origin, input.now);
+    return collection === null ? ignored("not-applied") : applied("collection-added");
+  }
+  const owned = ownCollectionByUri(db, actor.id, activity.target);
+  if (owned === undefined) {
+    return ignored("not-collection");
+  }
+  if (!("featuredItem" in object)) {
+    return ignored("not-embedded");
+  }
+  markCollectionsChanged(db, actor.id);
+  return applyFeaturedItem(db, actor, owned, object.featuredItem, input.origin, input.now) === null
+    ? ignored("not-applied")
+    : applied("item-added");
+}
+
+const remove: Handler<"Remove"> = (db, actor, activity, { now }) => {
   const collection = collectionOf(db, actor.id, activity.target);
   const { object } = activity;
+  if (collection === "featuredCollections" || collection === null) {
+    return removeFeatured(db, actor, activity, now);
+  }
+  if (activity.id === null) {
+    return ignored("incomplete");
+  }
   if ("hashtag" in object) {
-    if (collection === null) {
-      return ignored("not-collection");
-    }
     return unfeatureRemote(db, actor.id, object.hashtag) ? applied("unfeatured") : ignored("not-featured");
   }
-  if (collection !== "featured") {
+  if (collection !== "featured" || !("status" in object)) {
     return ignored("not-collection");
   }
   return unpinRemote(db, actor.id, object.status) ? applied("unpinned") : ignored("not-pinned");
+};
+
+// Remove#remove_collection and #remove_collection_item: the actor's collection (with its items) from its
+// featuredCollections collection, or an item from one of its stored remote collections, by the object's id. An item
+// the collection does not hold is recorded as the owner's retraction of it (ID-7), so its Add processed after the
+// Remove is refused (Mastodon processes each in a job of its own); at the per-actor cap the Remove is answered 503.
+// Either is a change of the actor's collections that a sync's read under way does not hold, whether Kopje held the
+// object or not (markCollectionsChanged).
+function removeFeatured(
+  db: Db,
+  actor: { id: string; uri: string },
+  activity: { target: string; object: CollectionItem },
+  now: number,
+): ReceiveResult {
+  const { object } = activity;
+  const uri =
+    "status" in object
+      ? object.status
+      : "featuredCollection" in object
+        ? object.featuredCollection.id
+        : "featuredItem" in object
+          ? object.featuredItem.id
+          : null;
+  if (uri === null) {
+    return ignored("not-collection");
+  }
+  if (collectionOf(db, actor.id, activity.target) === "featuredCollections") {
+    markCollectionsChanged(db, actor.id);
+    return removeFeaturedCollection(db, actor.id, uri) ? applied("collection-removed") : ignored("not-held");
+  }
+  const owned = ownCollectionByUri(db, actor.id, activity.target);
+  if (owned === undefined) {
+    return ignored("not-collection");
+  }
+  markCollectionsChanged(db, actor.id);
+  if (removeFeaturedItem(db, owned.id, uri)) {
+    return applied("item-removed");
+  }
+  if (!sameOrigin(uri, actor.uri)) {
+    return ignored("foreign-object");
+  }
+  return retract(db, actor.uri, uri, now) ? applied("item-retracted") : retryLater("retraction-cap");
+}
+
+// Update#update_collection: the actor's collection, by its id, stored or updated from the embedded document as an Add
+// stores one (ProcessFeaturedCollectionService's find_or_initialize_by; remote-featured-collections.ts applies every
+// rule, the owner and MAX_REMOTE_COLLECTIONS included); no sync is asked. It is a change of the actor's collections
+// that a sync's read under way does not hold (markCollectionsChanged).
+const updateCollection: Handler<"UpdateCollection"> = (db, actor, activity, input) => {
+  markCollectionsChanged(db, actor.id);
+  const { collection } = applyFeaturedCollection(db, actor, activity.object, input.origin, input.now);
+  return collection === null ? ignored("not-applied") : applied("collection-updated");
 };
 
 // R34: receive an inbound Flag, as Mastodon's ActivityPub::Activity::Flag (reports.ts fileRemoteReports).
@@ -3533,6 +3680,7 @@ const HANDLERS: { [T in InboundActivity["type"]]: Handler<T> } = {
   Add: add,
   Remove: remove,
   Flag: flag,
+  UpdateCollection: updateCollection,
 };
 
 export const receiveActivity = writeOperation.atStoreTime("storeNow")<StoreReceiveInput, ReceiveAnswer>((db, input) => {
@@ -3565,7 +3713,7 @@ function receive(db: Db, input: StoreReceiveInput): ReceiveResult {
   if (originOf(actorUri) === null || originOf(actorUri) === origin) {
     return ignored("local-actor");
   }
-  if (!sameOrigin(activity.id, actorUri)) {
+  if (activity.id !== null && !sameOrigin(activity.id, actorUri)) {
     return ignored("foreign-id");
   }
   // The embedded actor is the UpdateActor's alone.

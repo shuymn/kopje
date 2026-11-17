@@ -17,13 +17,7 @@ import { PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
 import { FALLBACK_JSON_MAX } from "../src/domain/notification-fallback";
 import { MAX_PUSH_BACKLOG } from "../src/domain/notifications";
 import { completePush, confirmPush } from "../src/domain/push";
-import {
-  COLLECTION_DESCRIPTION_LENGTH,
-  COLLECTION_NAME_LENGTH,
-  COLLECTION_URI_BYTES,
-  MAX_STORED_COLLECTIONS,
-  MAX_STORED_ITEMS,
-} from "../src/platform/stored-bounds";
+import { MAX_STORED_COLLECTIONS, MAX_STORED_ITEMS } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, bearer, seedAccount, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
@@ -298,17 +292,11 @@ describe("presentation, fallback and push titles (2-T7)", () => {
   });
 
   // RES-3: a collection notification adds no shape to "Maxima of presented units" (docs/threat-model.md): its account,
-  // its collection (a remote one's longer name and description and its uri and url, each character at six bytes, over
-  // the local bound) and its fallback at their bounds, with its own keys, stay under a warning notification's
-  // conservative JSON, and as a group under a warning group's.
+  // its collection (COLLECTION_JSON_MAX, a remote one's) and its fallback at their bounds, with its own keys, stay under
+  // a warning notification's conservative JSON, and as a group under a warning group's.
   it("presents within a warning notification's maximum, so it adds no shape", () => {
     const id = "9".repeat(20);
-    const collection =
-      COLLECTION_JSON_MAX +
-      6 * (COLLECTION_NAME_LENGTH.remote - COLLECTION_NAME_LENGTH.local) +
-      6 * (COLLECTION_DESCRIPTION_LENGTH.remote - COLLECTION_DESCRIPTION_LENGTH.local) +
-      2 * 6 * COLLECTION_URI_BYTES;
-    const parts = CONSERVATIVE_JSON.account + collection + FALLBACK_JSON_MAX;
+    const parts = CONSERVATIVE_JSON.account + COLLECTION_JSON_MAX + FALLBACK_JSON_MAX;
     const keys = { type: "collection_update", fallback: 0, collection: 0 };
     const notification =
       jsonBytes({ id, ...keys, created_at: T, group_key: `ungrouped-${id}`, filtered: true, account: 0 }) + parts;
@@ -323,7 +311,7 @@ describe("presentation, fallback and push titles (2-T7)", () => {
         sample_account_ids: [id],
         ...keys,
       }) + parts;
-    expect({ notification, group }).toEqual({ notification: 225_871, group: 226_023 });
+    expect({ notification, group }).toEqual({ notification: 208_847, group: 208_999 });
     expect(notification).toBeLessThan(CONSERVATIVE_JSON.warningNotification);
     expect(group).toBeLessThan(CONSERVATIVE_JSON.warningGroup);
   });

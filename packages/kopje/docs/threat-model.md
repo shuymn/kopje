@@ -317,7 +317,8 @@ against their own instance. TLS is assumed between all parties.
   `full_context` lacks the stamp's terms, forwards Mastodon's stamp `Delete` without its signature
   (`safe_for_forwarding?`): a relay without a proof. In a profile the `@context` is deep-equal to the sender's (or,
   forwarded, in that form), every URL in it preloaded, and every key at every level is one the sender writes (`type` the
-  string `Delete`, the object an IRI or the sender's Tombstone or QuoteAuthorization, the signature or the single proof
+  string `Delete`, the object an IRI or the sender's Tombstone, QuoteAuthorization or FeatureAuthorization, the
+  signature or the single proof
   in the sender's shape, Mastodon's signature with an optional `expires`, a string in the form `sign!` writes, a proof's
   own `@context` the body's), so the body's JSON-LD meaning is its literal JSON:
   no inline term can nest, drop, alias or redefine a key the decision reads, and no context resolves differently
@@ -330,7 +331,10 @@ against their own instance. TLS is assumed between all parties.
   Applied, it reaches one handler, which decides again in the Store's transaction, from what it reads there, what it
   may act on: never an actor; a stored status only with the proof, only a public or unlisted original (never a boost)
   whose author is the actor and whose uri has the actor's origin, and then exactly as the actor's own `Delete` of it
-  (VIS-3, its forward included); anything else of the actor's origin as at most a stamp. A relay without a proof
+  (VIS-3, its forward included); a feature authorization (#1589, the `mastodonFeature` profile: Mastodon relays a
+  member's revocation in a collection on its own server, HTTP-signed by the collection's owner) only with the proof,
+  read from the proven body, and then exactly as the member's own `Delete` of it (ID-6); anything else of the actor's
+  origin as at most a stamp. A relay without a proof
   changes no status and is applied as nothing but a reason to verify the actor's accepted quote naming the stamp
   again; a proof that does not verify, or whose author's document is gone or unusable, is answered 202 and changes
   nothing (no status, no retraction, no stored actor document, never the unproven path), as Mastodon drops a relay
@@ -491,11 +495,48 @@ against their own instance. TLS is assumed between all parties.
   accounts are local ones named by exact actor id, or stored remote ones only with a named status of theirs replying
   to a local account (Mastodon's `flag.rb:15-17`),
   available (R1); a named status is attached only when it is the reported account's original and passes the remote
-  reporter rule (R34, `remoteReportableSql`). Nothing is fetched. `fileRemoteReports` in `src/domain/reports.ts`;
-  `test/inbox.test.ts` ("Flag: the actor is the reporter"), `test/inbox-flag.test.ts`.
+  reporter rule (R34, `remoteReportableSql`), and a named collection only when it is the reported account's (a local
+  one by route, a remote one by its stored uri). Nothing is fetched. `fileRemoteReports` in `src/domain/reports.ts`;
+  `test/inbox.test.ts` ("Flag: the actor is the reporter"), `test/inbox-flag.test.ts`. _Enforced (main)_ for FEP-7aa9
+  remote collections (#1589, rows of the same table): an `Add` or `Remove` acts only on the actor's own collections, the
+  target its `featuredCollections` collection or a remote collection Kopje stores of the actor's, a collection's id on
+  the actor's origin with `attributedTo` the actor, an item's id on its collection's origin and its authorization on
+  its member's; such an `Add` or `Remove` may have no id (Mastodon 4.7.5 sends them so; their effects are keyed by the
+  collection's and the item's uri), one to the actor's `featured` or `featuredTags` collection may not; an `Update`
+  stores or changes a collection of the actor's as an `Add` does; a `Delete` of a `FeatureAuthorization` is the member's
+  alone and revokes the member's item only while it names the item's current authorization (verified, or the candidate
+  of one not verified), never after a revision replaced it. A search with `resolve=true` stores a fetched
+  `FeaturedCollection` only for the stored account it is attributed to, by the same rules, and answers one Kopje stores
+  as stored. A sync's read applies its listing only when none of these changes of the account's collections committed
+  after the claim of its round (`collections_changed`, set by each and cleared by each claim), so an older listing never
+  undoes a later `Add`, `Remove`, `Update` or search (`test/collection-sync.test.ts` ("applies no listing read before …,
+  and reads the collections again", "applies a read claimed after the owner's change")). An item's revision is its
+  member and the authorization its owner lists: an unchanged revision changes nothing, whatever the item's state; a new
+  item or a changed revision is pending, with no verified authorization, claim or attempt, and queued for a check. A
+  check accepts it only when the fetch under its claim found the authorization served for the collection and the member
+  and no other item of the member holds that authorization verified (only the member's server can have said so); a 4xx
+  other than 401, 408 and 429 rejects it (`test/remote-featured-collections.test.ts` ("rejects on a 4xx other than 401,
+  408 and 429, and retries those and a 5xx")), a transient failure retries, and any other outcome leaves it pending and
+  unqueued. A completion applies only to a pending item under the token its claim set, which a revision change, a
+  revocation and a later claim replace or clear, so another owner's item listing the same authorization never prevents
+  the acceptance and a late completion changes nothing. A rejected or revoked item is deleted 24 hours after its last
+  change; a later listing of it is a new item (`src/domain/remote-featured-collections.ts`,
+  `src/domain/collection-checks.ts`); `test/inbox-collections.test.ts`, `test/collection-sync.test.ts` ("refuses a
+  collection of another host or another owner, and cuts a long name and description"),
+  `test/remote-featured-collections.test.ts` ("leaves pending, without an error, a match whose authorization the member
+  holds in another row", "accepts only an authorization naming the item's member as its target, on that member's
+  server", "claims no restored revoked row back to accepted while its member's server serves the authorization"),
+  `test/feature-lifecycle.test.ts` ("agrees with the policy after every step, and accepts a served candidate once
+  settled", "accepts O's item whose authorization X's item lists first", "changes nothing at a delayed Delete of A after
+  O's change to B", against `FeaturePolicy` in `test/feature-model.ts`), `test/remote-collections-api.test.ts` ("stores
+  nothing for a collection whose owner Kopje does not store, or that its owner does not attribute"). A change to these
+  rules changes `test/feature-model.ts` with it.
 - **ID-7: replay changes nothing twice.** A repeated activity creates no second relationship, counter change,
   notification, push or outbound intent (natural keys). A valid `Delete` or `Undo` that arrives before its target is
-  recorded for 30 days and prevents the target from appearing later. Input that fails ID-1 or ID-6 reserves no key and
+  recorded for 30 days and prevents the target from appearing later; so is a collection owner's `Remove` of an item
+  Kopje does not hold, which refuses the item's `Add` processed after it (#1589; `test/inbox-collections.test.ts`
+  ("records the Remove of an item it does not hold, refusing the Add processed after it")). Input that fails ID-1 or
+  ID-6 reserves no key and
   records no retraction. _Enforced (main):_ natural keys, `retract` and `isRetracted` in
   `src/domain/retractions.ts`. A `Flag` files one report per Flag id and reported account (`UNIQUE (uri,
   target_account_id)`, migration `0054_remote_reports`): a redelivery writes nothing, and a Flag id past
@@ -2399,7 +2440,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   to the next generation).
 - **NET-3: every outbound sink has its own policy.** Any URL derived from remote or user input is fetched only through a
   sink client that applies NET-1's host rules (https, public address, re-checked hops, a hop limit) plus its own budget:
-  documents as NET-1; remote media unsigned, at most 3 redirects to any origin, never the instance's own host, a size
+  documents as NET-1, tighter where a caller caps them (`DocumentCaps`): a collection sync's collections part reads the
+  account's own origin only, without redirects and at most 512 KiB a document (`COLLECTIONS_CAPS`), and the check of a
+  remote collection's item fetches only its candidate authorization, on its known member's own host, without redirects
+  and at most 64 KiB (`ITEM_CHECK_CAPS`), each within its round's budget and the checks within each owner's daily quota
+  (RES-6); remote media unsigned, at most 3 redirects to any origin, never the instance's own host, a size
   cap per kind, positively recognized types and 30 s; web pages unsigned, at most 3 redirects to any origin, a 1 MiB
   prefix and 10 s; Web Push and deliveries no redirects.
   Credentials and signatures never follow a redirect to another origin. Fedify's sending and queueing are not used.
@@ -3374,6 +3419,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   many by key; each goes with what it names (`ON DELETE CASCADE`); `test/migrations.test.ts`
   ("0107_collection_notifications"), `test/collection-notifications.test.ts` ("refuses a restore of … notifications of
   one item, or of one collection and recipient", of 600 and of 6,000).
+  `collection_syncs.collections_read` and `collections_changed` (each 0 or 1) and the `collection_check_quotas` rows (a
+  remote collection owner's UTC day number, 0 to 104,249,990 so that a deferral to the next day stays within an item
+  check's due time, and its claims, 0 to 250), imports included, meet the [stored bounds](dump-format.md#stored-bounds),
+  enforced by migration `0113_featured_collection_syncs`, and a quota row goes with its account (`ON DELETE CASCADE`,
+  and a purge's own step); the claims read the quota with the same bound (`OWNER_CHECKS_PER_DAY`);
+  `test/migrations.test.ts` ("0113_featured_collection_syncs"), `test/remote-featured-collections.test.ts` ("defer a
+  spent owner's items from the last day a quota row holds to a due time the queue holds"),
+  `test/inbox-regressions.test.ts` ("purges a remote account's collections and memberships within the batch budget").
   _Enforced (main)_ for remote field verification: `remote_field_links` rows, imports included, meet the
   [stored bounds](dump-format.md#stored-bounds), enforced by migration `0068_remote_field_verification`, whose triggers
   judge in order the storage classes, the raw bytes, a raw NUL, `json_valid` and the canonical form (no padding or
@@ -3912,10 +3965,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   real processing errors"). Jobs rounds: _Enforced (main):_ a jobs message is only a nudge, as the jobs and their
   progress are durable in the Store: it is acked and never retried, and a Queue batch runs at most one jobs round
   however many jobs messages and spool replays with pending jobs it holds, so it sends at most one jobs message for the
-  next round (a live inbox request still sends its own). A round has ten error boundaries: seven Store calls (the
+  next round (a live inbox request still sends its own). A round has eleven error boundaries: seven Store calls (the
   inbound jobs with the stamp revocations, the domain block cleanups, the notification request jobs, the local and
   remote moderation jobs in one, the collection jobs, the held handshakes, the unlock acceptances), then the Worker's
-  collection syncs, quote verifications and replies walks, each its own round of Store calls and fetches. The deliveries
+  collection syncs, checks of remote collections' items, quote verifications and replies walks, each its own round of
+  Store calls and fetches. The deliveries
   the Store calls recorded are rung once, before the Worker's fetches. A family that fails is logged
   (`kopje.jobs.family.failed`), counts as having no work left, and stops no other family (the next resolves a new stub);
   a Store refusal (maintenance, a retryable or reset error) ends the round and counts nothing, and cron runs the next. A
@@ -3925,7 +3979,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   ("failing stops no family outside its Store call", "ends the round at its first Store call while the Store is
   readonly", "runs one round and sends at most one jobs message for 3 jobs messages and 5 such replays", "keeps its own
   nudge, and its job runs in the next round", "runs the quote verifications when every Store family and the collection
-  syncs throw", "walks when every other family throws: ten boundaries, each logged once", "stops no other family when
+  syncs throw", "walks when every other family throws: eleven boundaries, each logged once", "stops no other family when
   it throws", "rings for the Store calls’ deliveries before the collection syncs fetch", "ends the round at a
   retryable refusal after an earlier family reported pending", "gives the family after a failure a newly resolved
   stub"). Inbound jobs: _Enforced (main):_ each batch of a purge, `Move` or status deletion runs in its own savepoint
@@ -4381,7 +4435,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/domain/remote-collections.ts`): each round runs one sync within a budget of its own, at most
   `COLLECTION_SYNCS_PER_ROUND` (2) rounds a call. Each part of a read fits one budget with a redirect, or the RFC 9421
   retry, on each of its documents (featured 2 documents, network 3: the following, followers and outbox collections,
-  featuredTags 4), and the network part's documents are read with at most one redirect and 512 KiB each
+  featuredTags 4, collections 3), and the network part's documents are read with at most one redirect and 512 KiB each
   (`NETWORK_CAPS`): with a redirect or the retry on each document, 6 fetches and 1.5 MiB, so its outbox then never
   starves behind the other two. Accepted: a document that needs both a redirect and the retry takes 3 or 4 fetches, so
   such documents can pass a round's budget before their part is read through (three network documents that each
@@ -4390,7 +4444,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   with every stored actor document (an
   `Update`, a key miss or rotation, an authenticated resolve, any other fetch of the actor), and pending work coalesces
   per actor (one `collection_syncs` row, `requestCollectionSync`); no admission policy limits how often an actor's
-  document is stored. One generation makes at most 552 requests: 9 read claims (3 parts × `MAX_SYNC_ATTEMPTS`) and 60
+  document is stored. One generation makes at most 576 requests: 12 read claims (4 parts × `MAX_SYNC_ATTEMPTS`) and 60
   pin claims (`MAX_REMOTE_PINS` × `MAX_SYNC_ATTEMPTS`), each of 8 fetches. The pin claims fetch every status the
   featured collection lists on the account's origin, stored or not (Mastodon's `FetchFeaturedCollectionService`): a
   read leaves one row for each of the first `MAX_REMOTE_PINS` distinct URIs listed, a pending row for one Kopje does
@@ -4398,10 +4452,33 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   where it fetched only the unstored ones, and updates or removes at most `MAX_REMOTE_PINS` statuses, each a refetch's
   or a `Delete`'s bounded work (`replacePins`, `completePinFetches` in `src/domain/remote-collections.ts`;
   `test/remote-collections.test.ts` ("bounds the pin phase with every listed status stored or not at its worst")). The
-  network part takes at most 6 a round and 54 a generation while no document needs the RFC 9421 retry, a round's whole
-  budget (8 a round, 72 a generation) when each needs a redirect and the retry, and 3 documents when nothing fails
+  network part takes at most 6 a round and 72 a generation while no document needs the RFC 9421 retry, a round's whole
+  budget (8 a round, 96 a generation) when each needs a redirect and the retry, and 3 documents when nothing fails
   (`test/remote-collections.test.ts` ("bounds them before and after the network part reads the outbox", "the network
   part within one round")).
+  The collections part (`PART_COLLECTIONS`, #1589's FEP-7aa9 collections) reads the account's `featuredCollections`
+  root and at most `FEATURED_COLLECTION_PAGES` (2) pages under `COLLECTIONS_CAPS` (512 KiB, no redirect): with the
+  retry on each, 6 fetches and 1.5 MiB of the round's budget; a page past the caps or redirected is unreadable and
+  ends the list, and the part completes with what it read. It keeps at most `MAX_REMOTE_COLLECTIONS` (10) embedded
+  collections of `MAX_REMOTE_ITEMS` (25) embedded items, fetches nothing given only as a URI and no member, and deletes
+  the account's other stored collections only after a complete read (`test/collection-sync.test.ts` ("reads two pages
+  in one round of three documents, keeps ten collections, and fetches no URI-only entry", "its budget")). A read that
+  an inbound change of the collections followed (ID-6) is read again by a later round, each such round counting
+  among the sync's `MAX_SYNC_ATTEMPTS` without progress. The checks of
+  those items (`src/domain/collection-checks.ts`, `src/federation/collection-checks.ts`) are a family of the jobs round
+  of their own, apart from the syncs: a claim reads at most `ITEM_CHECK_CANDIDATES` (16) due items by
+  `collection_items_check`, in due order across every owner, and claims at most `ITEM_CHECKS_PER_ROUND` (4), each
+  fetched once, signed by the instance actor, under `ITEM_CHECK_CAPS` (64 KiB, no redirect) within one request budget,
+  so a round makes at most 8 fetches and reads at most 256 KiB. A claim holds its item for 10 minutes and a transient
+  failure retries after 15 minutes × 4^(attempts − 1); a revision of an item has at most 5 attempts, and an
+  owner's collections at most `OWNER_CHECKS_PER_DAY` (250) claims a UTC day, charged as each claim is made
+  (`collection_check_quotas`), so an owner that re-adds items or changes their authorizations costs at most 250 fetches
+  (500 sends) a day; an owner past it has its items deferred to the next day as a claim reads them
+  (`test/remote-featured-collections.test.ts` ("check 250 items in 63 rounds of at most 8 sends, the owner renaming a
+  collection before every round", "holds an owner's churn to 250 claims a UTC day, re-adding an item or changing its
+  authorization after each check", "charges a claim made at 23:59:59.900 UTC to its day, though its fetch completes
+  after midnight", "defer a spent owner's items to the next UTC day, claiming another owner's behind them")). Accepted:
+  one owner keeps up to 250 fetches a day going to its members' servers, a full account's items.
   A `Follow`, or an `Undo` of one, reads at most 33 unsettled answers of its pair, of them at most 65 delivery rows,
   including exposed rows, and 33 unexpanded chunks, so it admits at most 32, 64 and 32, and cancels at most those
   (NET-2); an `Undo` naming no local target first reads at most 33 answers of each local account's pair, twice
@@ -4618,9 +4695,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   from its attempts: at most `QUOTE_AUTHOR_FETCHES` (6) a work, whose renewal starts the count again, and an author
   stage with none left fetches nothing and ends the work, so a work whose rounds die after the author stage, reclaimed
   once the author is stale again, still applies at most 6 author documents (the column's CHECK holds the same bound).
-  Each author document stored requests one collection sync generation (at most 552 requests, above). So a status
+  Each author document stored requests one collection sync generation (at most 576 requests, above). So a status
   arriving from outside at `QUOTE_HOPS` (2) leads to at most 3 statuses of its quote chain, at most 1 + 2 × 6 = 13
-  author documents and sync generations (at most 7,176 requests) and 13 × `MAX_REMOTE_PINS` = 260 pins, and to nothing
+  author documents and sync generations (at most 7,488 requests) and 13 × `MAX_REMOTE_PINS` = 260 pins, and to nothing
   further but the create walk of its replies (Replies walks, below) (`test/remote-collections.test.ts` ("counts each
   author document a quote applies, interrupted rounds included", "ends a quote's work with no fetch once its author
   fetches are spent", "stores one author an attempt for a quoted status whose author changes at each fetch", "keeps a
@@ -5333,22 +5410,24 @@ past the name bound are refused, and lists leave out stored names past it or not
 `test/tag-names.test.ts`); v2 search shows a malformed name decoded, identified by its stored bytes, at most 12,750
 bytes (a 1,024-byte key of U+FFFD, nine bytes each in the url).
 
-A local collection's maximum is derived from its bounds (`COLLECTION_JSON_MAX`, 9,165 bytes;
-`test/collections.test.ts` ("derives COLLECTION_JSON_MAX from the bounds, and fits the answers of a full account")):
-its name and description at 40 and 100 characters JSON escapes to six bytes each, its language the longest supported,
-its tag at the tag-name bound with the URL encoding each byte in three, 25 accepted items (its 25 retired ones are not
-shown), an owner's username at its bound and an instance domain of 253 octets; the fill measures within 2 bytes of it
-(`local` and `discoverable` true). Its `CollectionWithAccounts` adds at most 26 accounts (the owner and the members) at
-the account occurrence's conservative JSON, within `ANSWER_BYTES`, and the presenter admits accounts within what the
-collection leaves of it. An account's list holds at most its 50 stored collections (10 made through the API, each
-then within `COLLECTION_JSON_MAX`); a remote collection, stored only by an import yet, has larger text bounds (256 and
-2,048 characters, URIs of 2,048 bytes) and the same 25 shown items. A collection notification (`added_to_collection`,
-`collection_update`) presents its owner's account, its collection for its recipient and its fallback: at most 225,871
-bytes, and 226,023 as a group, with a remote collection's longer text at six bytes a character, under a warning
-notification's and a warning group's conservative JSON, so it adds no shape (`test/collection-notifications.test.ts`,
-"presents within a warning notification's maximum, so it adds no shape"). Its collection is read by key, with at most
-`MAX_STORED_ITEMS` (50) item rows (`notifiedCollection` in `src/domain/collection-presenter.ts`), as a report
-notification reads its report.
+A collection's maximum is derived from its bounds. A local one's is 9,165 bytes (`LOCAL_COLLECTION_JSON_MAX`;
+`test/collections.test.ts` ("derives a local collection's maximum from the bounds, and fits the answers of a full
+account")): its name and description at 40 and 100 characters JSON escapes to six bytes each, its language the longest
+supported, its tag at the tag-name bound with the URL encoding each byte in three, 25 accepted items (its 25 retired
+ones are not shown), an owner's username at its bound and an instance domain of 253 octets; the fill measures within 2
+bytes of it (`local` and `discoverable` true). A remote one's, the larger, is `COLLECTION_JSON_MAX`, 29,701 bytes
+(`test/collections.test.ts` ("derives COLLECTION_JSON_MAX from a remote collection's bounds")): its name and
+description at 256 and 2,048 characters at six bytes each, and its stored uri and url at 2,048 bytes of printable ASCII,
+each byte past the scheme at two, with the same language, tag and 25 shown items; the fill measures within 1 byte of it
+(`discoverable` true). Its `CollectionWithAccounts` adds at most 26 accounts (the owner and the members) at the account
+occurrence's conservative JSON, within `ANSWER_BYTES`, and the presenter admits accounts within what the collection
+leaves of it. An account's list holds at most its 50 stored collections (10 made through the API, 10 a remote account's
+read, each within `COLLECTION_JSON_MAX`). A collection notification (`added_to_collection`, `collection_update`)
+presents its owner's account, its collection for its recipient and its fallback: at most 208,847 bytes, and 208,999 as
+a group, under a warning notification's and a warning group's conservative JSON, so it adds no shape
+(`test/collection-notifications.test.ts`, "presents within a warning notification's maximum, so it adds no shape").
+Its collection is read by key, with at most `MAX_STORED_ITEMS` (50) item rows (`notifiedCollection` in
+`src/domain/collection-presenter.ts`), as a report notification reads its report.
 
 A scheduled status's maximum is derived from its caps (`test/scheduled-statuses.test.ts`, "a scheduled status at its
 caps"): an 18-digit id and a 24-character time, or null for a stored value that is not a time Kopje writes (the
@@ -6146,6 +6225,7 @@ OWASP, html5sec and sanitize-html vectors in `test/fixtures/` (`test/html.test.t
 | A delivery whose completion was lost is POSTed again after its lease (at-least-once); a Mastodon server that processes the repeated `Follow` after the `Undo` sent behind it follows again (each body it receives is its own job), while Kopje has ended the follow                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Receivers deduplicate by activity id; exactly-once needs the receiver's cooperation, and Mastodon repeats a delivery whose answer it lost the same way                                                                                                                                                                                                                                                                                                   | a receiver is seen to apply a repeat                                                                                     |
 | A `QuoteRequest` of a local account's quote that reaches a Mastodon server more than once (Kopje sends it again when a POST's result was lost, NET-2) is answered there each time from the state at that time: Mastodon accepts a quote in any state under the same stamp (`quote_request.rb:31-32`, `quote.rb:48-56`) and refuses without changing its own copy (`quote_request.rb:55-65`), while Kopje applies an `Accept` only to a pending quote and a `Reject` to a pending or accepted one. So after a revoke or a policy change between the copies, the quoted server may hold the quote accepted, and serve its stamp, while Kopje shows it revoked or rejected (VIS-28)                                                                                                                                          | Mastodon parity: a Mastodon quoter applies those answers the same way (`accept.rb:49`, `reject.rb:42-47`) and retries the same request (`delivery_worker.rb:11-21`); `test/quote-lifecycle.test.ts` allows exactly this difference (`replayedRequest` in `test/quote-model.ts`, witnesses W10a-c)                                                                                                                                                        | Mastodon answers a request id once, or stops accepting a quote it revoked                                                |
 | A Mastodon author who revokes a local account's quote while it is still pending there sends its stamp's `Delete` (`revoke_quote_service.rb:42`), and its server then accepts the first `QuoteRequest` under that same stamp (`quote_request.rb:31-32`), so it holds the quote accepted and serves its stamp (VIS-28). Kopje ends revoked when the `Accept` arrives first; when the `Delete` does, it refuses the `Accept` while the stamp's retraction lasts (30 days, ID-7), keeping the quote pending, and an `Accept` after that applies                                                                                                                                                                                                                                                                               | `Accept` first: Mastodon parity, a Mastodon quoter applies the `Accept`, then `revoke_quote` (`delete.rb:58-67`). `Delete` first: a departure (docs/mastodon-deviations.md, quote approvals) that keeps a forged or replayed `Accept` naming a retracted stamp from taking effect. `test/quote-lifecycle.test.ts` allows both (`revokedPendingReaccepted`, `revokedPendingAcceptRefused` in `test/quote-model.ts`; W18, W17)                             | Mastodon stops accepting a quote it revoked                                                                              |
+| A remote collection's item whose revision's five check claims each expired or failed transiently stays pending, unqueued and unshown while its member's server serves the authorization, until the owner changes the authorization or lists the item anew (`check-gave-up`, ID-6)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Each revision is checked within bounded fetches (RES-6), where Mastodon verifies the item on every processing of the collection (docs/mastodon-deviations.md, collections); `test/feature-lifecycle.test.ts` allows exactly this difference (`checkGaveUp` in `test/feature-model.ts`; "ends a revision's check after five expired leases (check-gave-up)")                                                                                              | Members' servers are seen unreachable for longer than the 21 hours of a revision's retries                               |
 | Misskey with several silent recipients of one status on one server: only the first copy Misskey processes sets the note's audience, so the other silent recipients there cannot see it. Supported: one silent recipient per Misskey server                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Misskey keeps the first `Create` of a note; a combined copy would name the recipients to each other, and recipient-specific object ids would split the status                                                                                                                                                                                                                                                                                            | Misskey honours a later copy, or a peer needs it                                                                         |
 | A retraction staged over several batches (a job's Undo of a local boost, a local status's `Delete`, a forward) misses a follow made after its staging began, and a delivery row moved in place to a personal inbox after the rows' walk passed it whose receipt sorts behind the receipts' cursor or that gets none                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Each source is read once from its own cursor (RES-6); following later changes of every source would read them again at each call                                                                                                                                                                                                                                                                                                                         | such follows or moves are seen to lose a retraction                                                                      |
 | A boost again after an unboost may reach a server before the earlier boost's `Undo`, whose targets its job writes later: a Mastodon receiver then ignores the new `Announce` (it holds the earlier boost) and removes the earlier boost on the `Undo`, so the new boost is lost there                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Mastodon's own `RemovalWorker` and `DistributionWorker` race the same way; the unreblog asks for the job's round at once, which narrows the window                                                                                                                                                                                                                                                                                                       | a receiver is seen to lose boosts this way in practice                                                                   |

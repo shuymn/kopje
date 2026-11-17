@@ -853,6 +853,33 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
 - A collection's page (`/collections/:id`) is served for a local collection only (a remote collection's `url` is its
   own server's), and the profile pages do not list an account's collections, where Mastodon's web client does.
   Accepted, 2026-11-16.
+- A remote account's collections are read from at most 2 pages of at most 512 KiB each, 10 collections of 25 members
+  each (Mastodon: 10 pages, 50 collections, 150 members); a page past that size, or served through a redirect, ends
+  the list; a collection or member given only as a URI, not embedded, is skipped (Mastodon fetches it); one no longer
+  listed by a complete read is deleted (Mastodon keeps it until a `Remove`); a member Kopje does not know is not
+  fetched and stays unshown until Kopje learns of the account. A member that is a local account is left out yet;
+  tracked by #1589. Accepted, 2026-11-17.
+- A remote collection whose `totalItems` is not a whole number from 0 to 2^31 − 1 (a negative or fractional number,
+  or a string) is not stored; Mastodon 4.7.5 refuses only one that is not a number, and stores the others (a fraction
+  cut to its whole part, a numeric string read as its number). Its language, the first key of its `summaryMap`, is
+  stored only when it is a language code Kopje stores (the ISO 639-1 codes of `collections.language`), and otherwise
+  as none; Mastodon stores any key. A member's `created_at` is its item's `published` when that is a time no later
+  than its arrival with a year from 0 to 9999, and otherwise the time Kopje received the item; Mastodon stores any
+  time it can read. Accepted, 2026-11-17.
+- A member's authorization is checked once for each value the owner gives it, in background rounds, four a round, at
+  most five attempts, and at most 250 checks begun in a UTC day for one owner's collections (the rest wait for the next
+  day); Mastodon verifies it again on every processing of the collection. An authorization larger than 64 KiB or served
+  through a redirect is not accepted; a member whose check failed this way, did not match, or gave up after five
+  attempts stays unshown until the owner changes or re-adds it. An authorization answered 501 is retried as any 5xx,
+  where Mastodon takes it as final and rejects the member (as both do for any other 4xx than 401, 408 and 429). Kopje
+  learns that a member withdrew only from the owner's `Remove` or the member's own `Delete`: while the owner keeps
+  listing a member that withdrew and Kopje receives neither, Kopje keeps showing the member. Accepted, 2026-11-17.
+- A member's `Delete` of its feature authorization revokes its membership of a remote collection too, when it names
+  the membership's current authorization (verified, or the one the owner lists while unchecked), including the copy
+  the collection's owner relays with the member's signature; Mastodon applies it to local collections only. Accepted,
+  2026-11-17.
+- An `Add` or `Remove` without an `id` is applied to a collection's or an item's collection only; one to the actor's
+  `featured` or `featuredTags` collection is ignored, where Mastodon applies it. Tracked by #1693.
 
 Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model WEB-6):
 
@@ -1054,9 +1081,9 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
   it. Mastodon has no such state and resolves whenever it is asked; Kopje could not store what it fetched then, and a
   remote server would see a fetch for nothing.
 - With `resolve=true`, a URL lookup whose answer is empty whatever it finds (a `type` with an `offset` past 0, or a
-  `type` other than `accounts` and `statuses`, `hashtags` included) fetches nothing; Mastodon 4.7.5 fetches and stores
-  the resource first (`search_service.rb:19-20`). A remote server would see a fetch whose result no answer shows.
-  Accepted, 2026-11-16.
+  `type` other than `accounts`, `statuses` and `collections`, `hashtags` included) fetches nothing; Mastodon 4.7.5
+  fetches and stores the resource first (`search_service.rb:19-20`). A remote server would see a fetch whose result no
+  answer shows. Accepted, 2026-11-16.
 - A `limit` or `offset` given as an array or a nested parameter (`limit[]=1`, `offset[a]=-1`) is not read: the search
   answers as without it, or 400 when the other one is negative. Mastodon 4.7.5 answers 500 to both, as its pagination
   check calls `to_i` on the array or hash. Accepted, 2026-11-17.

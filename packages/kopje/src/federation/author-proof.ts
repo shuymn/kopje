@@ -53,6 +53,11 @@ const QUOTE_AUTHORIZATION = {
   keys: ["id", "type", "attributedTo", "interactingObject", "interactionTarget"],
 } as const;
 
+const FEATURE_AUTHORIZATION = {
+  type: "FeatureAuthorization",
+  keys: ["id", "type", "interactingObject", "interactionTarget"],
+} as const;
+
 // The accepted forms, each its sender's @context verbatim and the keys its serializer writes.
 export const PROFILES: Readonly<Record<string, Profile>> = {
   // Mastodon's status Delete: ActivityPub::DeleteSerializer (DeleteNoteSerializer from 4.6, the same body; its
@@ -81,6 +86,24 @@ export const PROFILES: Readonly<Record<string, Profile>> = {
     ],
     extra: ["to"],
     object: QUOTE_AUTHORIZATION,
+  },
+  // Mastodon 4.7.5's feature authorization Delete: ActivityPub::DeleteFeatureAuthorizationSerializer, its object the
+  // FeatureAuthorizationSerializer's (context_helper.rb feature_authorizations), signed as above
+  // (RevokeCollectionItemService), and relayed by the collection's owner to the collection's reach (#1589).
+  mastodonFeature: {
+    form: "mastodon",
+    context: [
+      AS,
+      {
+        gts: "https://gotosocial.org/ns#",
+        FeatureAuthorization: "https://w3id.org/fep/7aa9#FeatureAuthorization",
+        interactingObject: { "@id": "gts:interactingObject", "@type": "@id" },
+        interactionTarget: { "@id": "gts:interactionTarget", "@type": "@id" },
+      },
+      SECURITY,
+    ],
+    extra: ["to"],
+    object: FEATURE_AUTHORIZATION,
   },
   // Kopje's status Delete (domain/activities.ts deleteSigning, SIGNED_DELETE_CONTEXT; federation/ld-sign.ts).
   kopjeStatus: {

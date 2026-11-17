@@ -196,11 +196,11 @@ describe("the limit, offset and type of a resolving search", () => {
   it("fetches nothing for a URL whose answer is empty whatever it finds (Q3)", async () => {
     const { t, note, url } = await typedWorld();
     const c = counted(t);
-    for (const extra of ["&type=statuses&offset=1", "&type=hashtags", "&type=collections", "&type=lists"]) {
+    for (const extra of ["&type=statuses&offset=1", "&type=hashtags", "&type=lists"]) {
       const response = await c.request(`/api/v2/search?resolve=true${extra}&q=${url}`);
       expect([extra, await response.json()]).toEqual([extra, NOTHING]);
     }
-    expect(c.calls()).toEqual(Array.from({ length: 4 }, () => ["instanceDomain", "checkCredential"]).flat());
+    expect(c.calls()).toEqual(Array.from({ length: 3 }, () => ["instanceDomain", "checkCredential"]).flat());
     expect([t.web.fetched, c.dns]).toEqual([[], []]);
     // The guarded branch: at offset 0 with type=statuses, the same URL is fetched and found.
     const found = await c.request(`/api/v2/search?resolve=true&type=statuses&q=${url}`);
