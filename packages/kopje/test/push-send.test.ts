@@ -24,7 +24,7 @@ import { act, community, follow, post, type User } from "./status-helpers";
 
 const ENDPOINT = "https://push.example/send/abc";
 const SCOPES = "read write follow push";
-const publicHost = () => Promise.resolve();
+const publicHost = () => Promise.resolve({ kind: "public" } as const);
 
 type Sent = { url: string; request: Request };
 
@@ -45,7 +45,7 @@ function roundDeps(store: StoreStub, fetch: typeof globalThis.fetch, extra: Part
     store: () => store,
     now: () => NOW,
     fetch,
-    checkHost: publicHost,
+    resolveHost: publicHost,
     leaseToken: () => `lease-${++n}`,
     ...extra,
   };
@@ -113,6 +113,7 @@ function pausedHost() {
   const check = async () => {
     entered();
     await gate;
+    return { kind: "public" } as const;
   };
   return { check, entered: enteredPromise, release };
 }
@@ -467,7 +468,7 @@ describe("PUSH-3: a push reveals no more than the notification", () => {
     const status = await post(h, h.users.bob, { status: "@alice hi" });
     const { fetch, sent } = recordingFetch();
     const host = pausedHost();
-    const running = round(h, fetch, { checkHost: host.check });
+    const running = round(h, fetch, { resolveHost: host.check });
     await host.entered;
     await mutate(h, status);
     host.release();
@@ -481,7 +482,7 @@ describe("PUSH-3: a push reveals no more than the notification", () => {
     await post(h, h.users.bob, { status: "@alice @carol hi" });
     const { fetch, sent } = recordingFetch();
     const host = pausedHost();
-    const running = round(h, fetch, { checkHost: host.check });
+    const running = round(h, fetch, { resolveHost: host.check });
     await host.entered;
     await act(h, h.users.alice, `/api/v1/accounts/${h.users.carol.id}/block`);
     host.release();
@@ -567,7 +568,7 @@ describe("PUSH-3: a push reveals no more than the notification", () => {
     const status = await post(h, h.users.bob, { status: "@alice first" });
     const { fetch, sent } = recordingFetch();
     const host = pausedHost();
-    const running = round(h, fetch, { checkHost: host.check });
+    const running = round(h, fetch, { resolveHost: host.check });
     await host.entered;
     await h.request(
       `/api/v1/statuses/${status.id}`,
@@ -683,9 +684,9 @@ describe("PUSH-2: the endpoint is an outbound sink at every send", () => {
     const { h } = await pushing();
     await post(h, h.users.bob, { status: "@alice hi" });
     const { fetch, sent } = recordingFetch();
-    const checkHost = vi.fn(() => Promise.reject(new Error("private address")));
-    expect(await round(h, fetch, { checkHost })).toMatchObject({ settled: ["retry"] });
-    expect(checkHost).toHaveBeenCalledWith(new URL(ENDPOINT));
+    const resolveHost = vi.fn(() => Promise.resolve({ kind: "private" } as const));
+    expect(await round(h, fetch, { resolveHost })).toMatchObject({ settled: ["retry"] });
+    expect(resolveHost).toHaveBeenCalledWith(new URL(ENDPOINT));
     expect(sent).toEqual([]);
   });
 

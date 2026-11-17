@@ -22,7 +22,7 @@ import { act, community, post, remoteAccount, remoteFollows } from "./status-hel
 
 const OK: DeliveryOutcome = { kind: "delivered", status: 202 };
 const GONE: DeliveryOutcome = { kind: "failed", status: 410, error: "HTTP 410", permanent: true };
-const publicHost = () => Promise.resolve();
+const publicHost = () => Promise.resolve({ kind: "public" } as const);
 
 type Row = {
   id: string;
@@ -360,7 +360,7 @@ describe("the absolute POST deadline (NET-2)", () => {
       return Promise.resolve(sign);
     };
     const result = await postActivity(
-      { fetch, checkHost: publicHost, userAgent: "Kopje/test", timeoutMs: 30_000, now: () => clock },
+      { fetch, resolveHost: publicHost, userAgent: "Kopje/test", timeoutMs: 30_000, now: () => clock },
       { inbox: "https://remote.example/inbox", body: "{}", signer, deadline: NOW + 50_000 },
     );
     expect(result).toMatchObject({ kind: "failed", error: "lease budget exhausted" });
@@ -499,7 +499,7 @@ describe("copies as sent on the wire (VIS-2, VIS-7)", () => {
       store: () => h.store,
       now: () => NOW,
       fetch,
-      checkHost: publicHost,
+      resolveHost: publicHost,
     };
     const testEnv = { ...env, USER_KEK: LEGACY.kek } as unknown as Env;
     await deliveryRound(testEnv, deps);

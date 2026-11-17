@@ -124,6 +124,10 @@ import {
   POLL_REVISION_COLUMNS,
   POLL_REVISION_MAX,
   pollRefreshMigrationSql,
+  deliveryHostSql,
+  drainCursorSql,
+  LANE_BYTES,
+  laneHostSql,
 } from "../src/platform/stored-bounds";
 import { NOW } from "./app-helpers";
 import { ACCOUNT_EMOJIS_FULL, accountAtCap, padded, STATUS_EMOJIS_FULL, statusAtCap } from "./emoji-fixtures";
@@ -418,9 +422,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(89);
+      expect(STORED_TRIGGERS.size).toBe(90);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        89 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        90 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -12304,7 +12308,10 @@ describe("0092_reject_replays", () => {
         "UPDATE accounts SET inbox_url = uri || '/inbox', shared_inbox_url = 'https://r1.example/inbox' WHERE id = ?",
         r,
       );
-      // The previous release's Reject of r's request, queued with its delivery (the builder is unchanged).
+      // The previous release's Reject of r's request, queued with its delivery (the builder is unchanged). The current
+      // expansion reads delivery_hosts (0112_delivery_hosts); an empty stand-in, dropped before the upgrade, answers
+      // that every host is available, as the previous release had none unavailable.
+      sql.exec("CREATE TABLE delivery_hosts (host TEXT PRIMARY KEY, unavailable_since INTEGER)");
       const db = new Db(sql, (fn) => state.storage.transactionSync(fn));
       const recorded = state.storage.transactionSync(() =>
         recordOutbound(
@@ -12321,7 +12328,10 @@ describe("0092_reject_replays", () => {
         ),
       );
       expect(recorded).toBe(true);
+      sql.exec("DROP TABLE delivery_hosts");
       expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      // The current claim reads tables that later migrations add.
+      expect(await kernel(state, MIGRATIONS).upgrade()).toMatchObject({ ok: true });
       sql.exec(
         "UPDATE accounts SET suspended_at = '2026-11-01T00:00:00.000Z', suspension_source = 'account' WHERE id = ?",
         r,
@@ -14998,6 +15008,139 @@ describe("0111_account_urls", () => {
         .toArray()
         .map((row) => row.detail);
       expect(plan).toEqual(["SEARCH accounts USING INDEX accounts_url (url=?)"]);
+    });
+  });
+});
+
+describe("0112_delivery_hosts", () => {
+  const NAME = "0112_delivery_hosts";
+  const at = NAMES.indexOf(NAME);
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  const ACCOUNT = "100000000000000001";
+
+  // A Store before the file holding `lanes` (each an SQL expression and a state) as deliveries of one activity, the
+  // file applied, then `run`.
+  async function upgraded(lanes: readonly [string, string][], run: (sql: SqlStorage) => void) {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, 'https://kopje.test/ap/users/a', 'a', NULL)",
+        ACCOUNT,
+      );
+      sql.exec(
+        "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?1, 'a@x.test', X'00', X'00', 'k')",
+        ACCOUNT,
+      );
+      sql.exec("INSERT INTO outbound_activities (id, account_id, body, created_at) VALUES (1, ?1, '{}', 0)", ACCOUNT);
+      for (const [lane, state] of lanes) {
+        sql.exec(
+          `INSERT INTO deliveries (activity_id, account_id, inbox_url, lane, state, lease_token, next_attempt_at, updated_at)
+					VALUES (1, ?1, 'https://h.example/inbox', ${lane}, ?2, CASE WHEN ?2 = 'leased' THEN 't' END, 0, 0)`,
+          ACCOUNT,
+          state,
+        );
+      }
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      run(sql);
+    });
+  }
+
+  it("checks every reference, and writes the registered trigger and the shared predicates as their helpers do", () => {
+    // New table: the upgrade checks every reference of the Store.
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    const sql = MIGRATIONS[at]?.sql ?? "";
+    expect(statements(sql)).toContain(statements(emitTriggers(["delivery_hosts_cap"])));
+    expect(sql).toContain(`CONSTRAINT delivery_hosts_host CHECK ${deliveryHostSql("host")},`);
+    expect(sql).toContain(`CHECK (drain_lane IS NULL OR ${drainCursorSql("host", "drain_lane")})`);
+    expect(sql).toContain(
+      `ON deliveries (${laneHostSql("lane")}, lane, id)\nWHERE state IN ('queued', 'pending') AND length(CAST(lane AS BLOB)) <= ${LANE_BYTES};`,
+    );
+    for (const [, pattern] of sql.matchAll(/GLOB\s+'([^']*)'/g)) {
+      expect(new TextEncoder().encode(pattern).length).toBeLessThanOrEqual(50);
+    }
+  });
+
+  it("builds deliveries_host_drain over every lane a Store may hold, keying only the lanes laneOf writes", async () => {
+    await upgraded(
+      [
+        ["'https://h.example'", "pending"],
+        ["'https://h.example...:8443'", "queued"],
+        ["'https://h.example'", "gave_up"],
+        ["'https://h.example'", "leased"],
+        ["X'68747470733a2f2f682e6578616d706c65'", "queued"],
+        ["'https://h.example' || char(0)", "queued"],
+        [`'https://h.example' || '${".".repeat(300)}'`, "queued"],
+        ["42", "queued"],
+        ["4.5", "queued"],
+        ["''", "pending"],
+        ["'https://H.example'", "queued"],
+      ],
+      (sql) => {
+        const index = `deliveries INDEXED BY deliveries_host_drain
+					WHERE state IN ('queued', 'pending') AND length(CAST(lane AS BLOB)) <= ${LANE_BYTES}`;
+        expect(sql.exec(`SELECT count(*) AS n FROM ${index}`).one().n).toBe(8);
+        expect(
+          sql
+            .exec(`SELECT lane, state FROM ${index} AND ${laneHostSql("lane")} = 'h.example' ORDER BY lane, id`)
+            .toArray(),
+        ).toEqual([
+          { lane: "https://h.example", state: "pending" },
+          { lane: "https://h.example...:8443", state: "queued" },
+        ]);
+      },
+    );
+  });
+
+  it("holds each column to its domain at both ends, and the state and cursor rules", async () => {
+    await upgraded([], (sql) => {
+      const insert = (columns: string, values: string) =>
+        sql.exec(`INSERT INTO delivery_hosts (host, ${columns}) VALUES ('h.example', ${values})`);
+      const accepted = (columns: string, values: string) => {
+        insert(columns, values);
+        sql.exec("DELETE FROM delivery_hosts");
+      };
+      const refused = (columns: string, values: string, check: string) =>
+        expect(() => insert(columns, values), `${columns} = ${values}`).toThrow(`CHECK constraint failed: ${check}`);
+      const failing = "failure_days, last_failure_day";
+      for (const days of ["-1", "8", "1.5", "'x'"]) {
+        refused(failing, `${days}, 0`, "delivery_hosts_days");
+      }
+      accepted(failing, "7, 0");
+      for (const day of ["-1", "104249992", "'x'", "0.5"]) {
+        refused(failing, `1, ${day}`, "delivery_hosts_day");
+      }
+      accepted(failing, "1, 104249991");
+      const stopped = "failure_days, unavailable_since";
+      for (const since of ["-1", "9007199254740992", "'x'", "0.5"]) {
+        refused(stopped, `0, ${since}`, "delivery_hosts_since");
+      }
+      accepted(stopped, "0, 0");
+      accepted(stopped, "0, 9007199254740991");
+      const draining = "failure_days, unavailable_since, drain_lane, drain_id";
+      for (const id of ["-1", "'x'", "0.5"]) {
+        refused(draining, `0, 0, '', ${id}`, "delivery_hosts_drain_id");
+      }
+      // The state: a count with its day, a row that counts or is unavailable, a cursor of both halves on an unavailable
+      // host.
+      refused(failing, "1, NULL", "delivery_hosts_state");
+      refused(failing, "0, 0", "delivery_hosts_state");
+      refused("failure_days", "0", "delivery_hosts_state");
+      refused(draining, "0, 0, '', NULL", "delivery_hosts_state");
+      refused(draining, "0, 0, NULL, 0", "delivery_hosts_state");
+      refused("failure_days, last_failure_day, drain_lane, drain_id", "1, 0, '', 0", "delivery_hosts_state");
+      // The cursor: its start, or a lane of the row's own host.
+      accepted(draining, "0, 0, '', 0");
+      accepted(draining, "0, 0, 'https://h.example..:8443', 57");
+      for (const lane of ["'https://victim.example'", "'https://h.example.evil.test'", "'https://H.example'", "42"]) {
+        refused(draining, `0, 0, ${lane}, 0`, "delivery_hosts_drain_cursor");
+      }
     });
   });
 });

@@ -12,6 +12,15 @@ Commands
   deliveries [--before <id>]    delivery backlog and the deliveries that gave up, newest first
   deliveries retry <id>...|--all
                                 put given-up deliveries back in their lanes with fresh attempts
+  hosts [--after <host>]        the delivery hosts in host order: each host deliveries failed to by its own doing (the
+                                UTC days counted, 7 make it unavailable) or that was stopped, when it became
+                                unavailable, and whether its queued deliveries are still being given up. A host comes
+                                back when a delivery to it succeeds (a Follow is still sent) or it sends any activity
+  hosts stop <host>             make a host unavailable now: its queued and pending deliveries but Follows are given
+                                up "host unavailable" (retry them with "deliveries retry") and new ones to it too;
+                                prints how many the first step gave up. Refused when all 10,000 kept hosts are
+                                unavailable
+  hosts restart <host>          make a listed host available again; deliveries already given up stay so
   jobs retry                    make every failing job fresh (backing off, or parked after its last attempt), so the
                                 next jobs round runs it; prints how many. Run it after a fix for the jobs it parked
   moderation-log [--before <id>]
@@ -774,6 +783,24 @@ export async function run({
           throw new UsageError("--before takes a delivery id");
         }
         print(await client.get(`/admin/deliveries${before === undefined ? "" : `?before=${before}`}`));
+        return 0;
+      }
+      case "hosts": {
+        if (rest[0] === "stop" || rest[0] === "restart") {
+          if (rest.length !== 2) {
+            throw new UsageError(`hosts ${rest[0]} <host>`);
+          }
+          print(await client.post(`/admin/hosts/${rest[0]}`, { host: rest[1] }));
+          return 0;
+        }
+        if (rest.length > 0) {
+          throw new UsageError("hosts [--after <host>] | hosts stop <host> | hosts restart <host>");
+        }
+        const after = flags.after;
+        if (after !== undefined && typeof after !== "string") {
+          throw new UsageError("--after takes a host");
+        }
+        print(await client.get(`/admin/hosts${after === undefined ? "" : `?after=${encodeURIComponent(after)}`}`));
         return 0;
       }
       case "jobs": {

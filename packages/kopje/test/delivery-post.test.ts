@@ -28,7 +28,7 @@ import { community, post, remoteAccount, remoteFollows } from "./status-helpers"
 
 const ALICE = "https://kopje.test/ap/users/alice";
 const KEY_ID = new URL(`${ALICE}#main-key`);
-const publicHost = () => Promise.resolve();
+const publicHost = () => Promise.resolve({ kind: "public" } as const);
 
 function aliceLoader(pubkey: string): DocumentLoader {
   return (url) =>
@@ -65,6 +65,12 @@ function recordingFetch(answer: (request: Request) => Response | Promise<Respons
   return { fetch: fetch as unknown as typeof globalThis.fetch, sent };
 }
 
+// An answer as postActivity returns it: classifyStatus's outcome, a failure marked as the POST's.
+function answered(status: number): DeliveryOutcome {
+  const outcome = classifyStatus(status);
+  return outcome.kind === "failed" ? { ...outcome, failure: { stage: "post" } } : outcome;
+}
+
 // One POST with a full budget: the clock stands at NOW and the deadline is the round's.
 function send(
   deps: Omit<PostDeps, "now">,
@@ -83,7 +89,7 @@ const BODY = JSON.stringify({ "@context": "https://www.w3.org/ns/activitystreams
 describe("the POST (NET-2, NET-3)", () => {
   it("signs the activity with its author key, as JSON-LD, and Mastodon-compatible (DATA-7)", async () => {
     const { fetch, sent } = recordingFetch(() => new Response(null, { status: 202 }));
-    const deps = { fetch, checkHost: publicHost, userAgent: "Kopje/test" };
+    const deps = { fetch, resolveHost: publicHost, userAgent: "Kopje/test" };
     expect(await send(deps, "https://remote.example/inbox", BODY, await aliceSigner())).toEqual({
       kind: "delivered",
       status: 202,
@@ -110,7 +116,7 @@ describe("the POST (NET-2, NET-3)", () => {
       () => new Response(null, { status: 307, headers: { location: "https://elsewhere.example/collect" } }),
     );
     const result = await send(
-      { fetch, checkHost: publicHost, userAgent: "Kopje/test" },
+      { fetch, resolveHost: publicHost, userAgent: "Kopje/test" },
       "https://remote.example/inbox",
       JSON.stringify({ type: "Create", to: ["https://remote.example/users/bob"], object: { content: "secret" } }),
       await aliceSigner(),
@@ -120,6 +126,7 @@ describe("the POST (NET-2, NET-3)", () => {
       status: 307,
       error: "redirect not followed (HTTP 307)",
       permanent: false,
+      failure: { stage: "post" },
     });
     expect(sent.map((s) => s.url)).toEqual(["https://remote.example/inbox"]);
     for (const status of [301, 302, 303, 308]) {
@@ -148,7 +155,7 @@ describe("the POST (NET-2, NET-3)", () => {
   it("NET-3: refuses inboxes that fail the public-host rules before any request", async () => {
     const { fetch, sent } = recordingFetch(() => new Response(null, { status: 202 }));
     const sign = await aliceSigner();
-    const deps = { fetch, checkHost: publicHost, userAgent: "Kopje/test" };
+    const deps = { fetch, resolveHost: publicHost, userAgent: "Kopje/test" };
     for (const inbox of [
       "http://remote.example/inbox",
       "https://127.0.0.1/inbox",
@@ -161,7 +168,7 @@ describe("the POST (NET-2, NET-3)", () => {
       expect(await send(deps, inbox, BODY, sign)).toMatchObject({ kind: "failed", permanent: true });
     }
     // A name that resolves to a private address is refused by the DNS check, and retried later.
-    const privateDns = { ...deps, checkHost: () => Promise.reject(new Error("private address")) };
+    const privateDns = { ...deps, resolveHost: () => Promise.resolve({ kind: "private" } as const) };
     expect(await send(privateDns, "https://rebound.example/inbox", BODY, sign)).toMatchObject({
       kind: "failed",
       permanent: false,
@@ -173,12 +180,18 @@ describe("the POST (NET-2, NET-3)", () => {
     expect(DELIVERY_TIMEOUT_MS).toBeLessThan(LEASE_MS);
     const fetch = vi.fn(() => new Promise<Response>(() => {})) as unknown as typeof globalThis.fetch;
     const result = await send(
-      { fetch, checkHost: publicHost, userAgent: "Kopje/test", timeoutMs: 20 },
+      { fetch, resolveHost: publicHost, userAgent: "Kopje/test", timeoutMs: 20 },
       "https://slow.example/inbox",
       BODY,
       await aliceSigner(),
     );
-    expect(result).toEqual({ kind: "failed", status: null, error: "timed out after 20 ms", permanent: false });
+    expect(result).toEqual({
+      kind: "failed",
+      status: null,
+      error: "timed out after 20 ms",
+      permanent: false,
+      failure: { stage: "post", timeout: "whole" },
+    });
   });
 
   it("reports a network error by class only (DATA-5)", async () => {
@@ -186,12 +199,18 @@ describe("the POST (NET-2, NET-3)", () => {
       Promise.reject(new TypeError("connect failed to https://remote.example/inbox?token=SECRET")),
     ) as unknown as typeof globalThis.fetch;
     const result = await send(
-      { fetch, checkHost: publicHost, userAgent: "Kopje/test" },
+      { fetch, resolveHost: publicHost, userAgent: "Kopje/test" },
       "https://remote.example/inbox",
       BODY,
       await aliceSigner(),
     );
-    expect(result).toEqual({ kind: "failed", status: null, error: "network error (TypeError)", permanent: false });
+    expect(result).toEqual({
+      kind: "failed",
+      status: null,
+      error: "network error (TypeError)",
+      permanent: false,
+      failure: { stage: "post" },
+    });
   });
 });
 
@@ -218,7 +237,7 @@ function roundDeps(store: StoreStub, fetch: typeof globalThis.fetch, now = () =>
     store: () => store,
     now,
     fetch,
-    checkHost: publicHost,
+    resolveHost: publicHost,
     leaseToken: () => `lease-${++n}`,
   };
 }
@@ -425,7 +444,7 @@ describe("the RFC 9421 retry (NET-2, NET-3, VIS-30)", () => {
     "sends a POST answered %i once more, signed with RFC 9421 by the same key, which Fedify verifies",
     async (status) => {
       const { fetch, sent } = recordingFetch(byForm(status));
-      const deps = { fetch, checkHost: publicHost, userAgent: "Kopje/test" };
+      const deps = { fetch, resolveHost: publicHost, userAgent: "Kopje/test" };
       expect(await knock(deps)).toEqual({ kind: "delivered", status: 202 });
       const [cavage, rfc9421, ...rest] = sent.map((s) => s.request);
       expect(rest).toEqual([]);
@@ -447,8 +466,8 @@ describe("the RFC 9421 retry (NET-2, NET-3, VIS-30)", () => {
     const { fetch, sent } = recordingFetch(
       () => new Response(null, { status, headers: status === 302 ? { location: "https://elsewhere.example/" } : {} }),
     );
-    const outcome = await knock({ fetch, checkHost: publicHost, userAgent: "Kopje/test" });
-    expect(outcome).toEqual(classifyStatus(status));
+    const outcome = await knock({ fetch, resolveHost: publicHost, userAgent: "Kopje/test" });
+    expect(outcome).toEqual(answered(status));
     expect(sent.map((s) => formOf(s.request))).toEqual(["cavage"]);
   });
 
@@ -471,9 +490,10 @@ describe("the RFC 9421 retry (NET-2, NET-3, VIS-30)", () => {
     ],
   ])("settles by the second answer: %s", async (_, cavage, rfc9421, outcome) => {
     const { fetch, sent } = recordingFetch(byForm(cavage, rfc9421));
-    expect(await knock({ fetch, checkHost: publicHost, userAgent: "Kopje/test" })).toEqual({
+    expect(await knock({ fetch, resolveHost: publicHost, userAgent: "Kopje/test" })).toEqual({
       kind: "failed",
       ...outcome,
+      failure: { stage: "post" },
     });
     expect(sent.map((s) => [s.url, formOf(s.request)])).toEqual([
       [INBOX, "cavage"],
@@ -484,15 +504,16 @@ describe("the RFC 9421 retry (NET-2, NET-3, VIS-30)", () => {
   it("runs the host check again before the retry, and sends nothing more once it refuses (NET-3)", async () => {
     const { fetch, sent } = recordingFetch(byForm(401));
     const checked: string[] = [];
-    const checkHost = (url: URL) => {
+    const resolveHost = (url: URL) => {
       checked.push(url.href);
-      return checked.length > 1 ? Promise.reject(new Error("private address")) : Promise.resolve();
+      return Promise.resolve(checked.length > 1 ? ({ kind: "private" } as const) : ({ kind: "public" } as const));
     };
-    expect(await knock({ fetch, checkHost, userAgent: "Kopje/test" })).toEqual({
+    expect(await knock({ fetch, resolveHost, userAgent: "Kopje/test" })).toEqual({
       kind: "failed",
       status: null,
       error: "refused or unresolved host",
       permanent: false,
+      failure: { stage: "resolve", resolution: "private", code: null },
     });
     expect(checked).toEqual([INBOX, INBOX]);
     expect(sent.map((s) => formOf(s.request))).toEqual(["cavage"]);
@@ -507,11 +528,12 @@ describe("the RFC 9421 retry (NET-2, NET-3, VIS-30)", () => {
       return new Response(null, { status: 400 });
     });
     const loads: string[] = [];
-    expect(await knock({ fetch, checkHost: publicHost, userAgent: "Kopje/test" }, () => clock, loads)).toEqual({
+    expect(await knock({ fetch, resolveHost: publicHost, userAgent: "Kopje/test" }, () => clock, loads)).toEqual({
       kind: "failed",
       status: null,
       error: "lease budget exhausted",
       permanent: false,
+      failure: { stage: "budget" },
     });
     expect(sent.map((s) => formOf(s.request))).toEqual(["cavage"]);
     // The retry's signer (a delivery's second confirmation) is not even loaded.
@@ -520,11 +542,12 @@ describe("the RFC 9421 retry (NET-2, NET-3, VIS-30)", () => {
 
   it("holds both POSTs to one timeout", async () => {
     const { fetch, sent } = recordingFetch(byForm(401, () => new Promise<Response>(() => {})));
-    expect(await knock({ fetch, checkHost: publicHost, userAgent: "Kopje/test", timeoutMs: 20 })).toEqual({
+    expect(await knock({ fetch, resolveHost: publicHost, userAgent: "Kopje/test", timeoutMs: 20 })).toEqual({
       kind: "failed",
       status: null,
       error: "timed out after 20 ms",
       permanent: false,
+      failure: { stage: "post", timeout: "whole" },
     });
     expect(sent.map((s) => formOf(s.request))).toEqual(["cavage", "rfc9421"]);
   });
@@ -533,15 +556,15 @@ describe("the RFC 9421 retry (NET-2, NET-3, VIS-30)", () => {
     const { sign } = await aliceSigning();
     const once = (retry?: () => Promise<null>) => {
       const recorded = recordingFetch(() => new Response(null, { status: 401 }));
-      const deps = { fetch: recorded.fetch, checkHost: publicHost, userAgent: "Kopje/test", now: () => NOW };
+      const deps = { fetch: recorded.fetch, resolveHost: publicHost, userAgent: "Kopje/test", now: () => NOW };
       const target = { inbox: INBOX, body: BODY, signer: () => Promise.resolve(sign), retry, deadline: NOW + 50_000 };
       return { sent: recorded.sent, outcome: postActivity(deps, target) };
     };
     const without = once();
-    expect(await without.outcome).toEqual(classifyStatus(401));
+    expect(await without.outcome).toEqual(answered(401));
     expect(without.sent).toHaveLength(1);
     const withheld = once(() => Promise.resolve(null));
-    expect(await withheld.outcome).toEqual(classifyStatus(401));
+    expect(await withheld.outcome).toEqual(answered(401));
     expect(withheld.sent).toHaveLength(1);
   });
 });

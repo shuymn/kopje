@@ -65,7 +65,7 @@ export function inboxDeps(store: () => StoreStub, loader: InboxDeps["loader"] = 
     now: () => NOW,
     keygen: fixtureKeyGen,
     loader,
-    delivery: { now: () => NOW, fetch: loader.fetch, checkHost: () => Promise.resolve() },
+    delivery: { now: () => NOW, fetch: loader.fetch, resolveHost: () => Promise.resolve({ kind: "public" } as const) },
   } satisfies InboxDeps & QueueDeps;
 }
 

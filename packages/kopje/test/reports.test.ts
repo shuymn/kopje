@@ -518,7 +518,7 @@ describe("forwarding a report (R23, DATA-7)", () => {
       store: () => h.store,
       now: () => NOW,
       fetch,
-      checkHost: () => Promise.resolve(),
+      resolveHost: () => Promise.resolve({ kind: "public" } as const),
     });
     expect(result).toMatchObject({ claimed: 1, settled: ["delivered"] });
     const [request] = sent;
@@ -545,7 +545,7 @@ describe("forwarding a report (R23, DATA-7)", () => {
       store: () => h.store,
       now: () => NOW,
       fetch,
-      checkHost: () => Promise.resolve(),
+      resolveHost: () => Promise.resolve({ kind: "public" } as const),
       keygen: fixtureKeyGen,
     });
     expect(result).toMatchObject({ claimed: 1, settled: ["delivered"] });

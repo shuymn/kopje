@@ -72,6 +72,10 @@ so a change made only in the dashboard does not last.
 | `kopje.spool.replay.failed`       | A spooled inbox request failed to replay; the Queue retries it                                                       | [cutover-runbook.md](cutover-runbook.md)           |
 | `kopje.queue.unknown`             | The Queue holds a message this version does not know; it is retried                                                  | [cutover-runbook.md](cutover-runbook.md)           |
 | `kopje.delivery.gave_up`          | Deliveries to remote inboxes were given up after their retries (a count)                                             | `kopje-admin deliveries`                           |
+| `kopje.delivery.host_unavailable` | A host's deliveries failed on a 7th UTC day by its own doing; its deliveries but Follows are given up                | `kopje-admin hosts`                                |
+| `kopje.delivery.host_restored`    | An unavailable host is available again (`cause`: `delivered`, `received` or `restarted`)                             | `kopje-admin hosts`                                |
+| `kopje.delivery.hosts_full`       | A new host's delivery failure was not recorded: 10,000 hosts are kept                                                | `kopje-admin hosts`                                |
+| `kopje.delivery.host_evicted`     | A stop of a new host took the place of the available host with the oldest counted day                                | `kopje-admin hosts`                                |
 | `kopje.backup.failed`             | A backup run failed                                                                                                  | [backup.md](backup.md)                             |
 | `kopje.media.images_quota`        | The month's Images transformations are used up; uploads are refused                                                  | [setup.md](setup.md), "Before you start"           |
 | `kopje.media.transform_failed`    | An uploaded image could not be transformed; the upload answers 500                                                   | [setup.md](setup.md)                               |
@@ -88,7 +92,19 @@ uri, then `kopje-admin jobs retry`. `kopje.delivery.reject_hold_capped` (warn, n
 a request dropped because its local account already holds 100 (docs/visibility.md, "Held handshakes").
 `kopje.delivery.delete_unsigned` (warn) records the `Delete` of a public or unlisted status recorded unsigned because
 an import stored its uri (`reason` `status_uri`) or its author's actor id (`actor_id`) in a spelling that can never be
-signed (VIS-3 in [threat-model.md](threat-model.md)); it carries no identity.
+signed (VIS-3 in [threat-model.md](threat-model.md)); it carries no identity. The four host events
+(`kopje.delivery.host_unavailable`, `host_restored`, `hosts_full` and `host_evicted`) carry no host either: `kopje-admin
+hosts` lists the hosts, and `kopje-admin deliveries` the rows given up `host unavailable`.
+
+`kopje-admin hosts` (`GET /admin/hosts`, `?after=<host>&limit=<1..100>`) lists the delivery hosts in host order, 100 a
+page (`--after <host>` reads the next): each host whose deliveries failed by its own doing since its last success, with
+the UTC days counted (`failureDays`, 7 make it unavailable; `lastFailureDay`), when it became unavailable
+(`unavailableSince`) and whether its queued deliveries are still being given up (`draining`), and each host stopped.
+`kopje-admin hosts stop <host>` (`POST /admin/hosts/stop` with `{"host"}`, Mastodon's "stop delivery") makes a host
+unavailable now and prints how many deliveries the first step gave up; it is refused (409) when all 10,000 kept hosts
+are unavailable. `kopje-admin hosts restart <host>` (`POST /admin/hosts/restart`, "restart delivery") makes a listed
+host available again. A host also comes back by itself when a delivery to it succeeds or it sends an activity the
+instance accepts. Deliveries given up `host unavailable` stay so until `kopje-admin deliveries retry`.
 
 `kopje.delivery.stale_follow_answer` (level warn) records a follow answer (`type`: `Accept`, `Reject`, or `other` for an
 imported answer without either) that a newer `Follow` of its pair, the follower's `Undo` of its generation or a block

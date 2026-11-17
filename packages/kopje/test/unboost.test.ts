@@ -805,6 +805,7 @@ describe("who the Undo reaches (VIS-3)", () => {
           id: done.id,
           leaseToken: "done",
           now: NOW,
+          storeNow: NOW,
           outcome: { kind: "delivered", status: 202 },
         }),
       ),

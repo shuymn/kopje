@@ -473,7 +473,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (deliveries.ts#<anonymous> in claimDeliveries); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "a83803de2e21606d",
+    id: "f9c4114aadc30a0d",
     scans: ["deliveries: SCAN d", "outbound_activities: SCAN o LEFT-JOIN"],
     site: "src/domain/deliveries.ts#<anonymous> in claimDeliveries",
     disposition: "background",
@@ -556,12 +556,44 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     issue: "#1468 group 8",
   },
   {
-    id: "462ca529dc81901c",
+    id: "97f0e3e4cbe4a379",
     scans: ["outbound_targets: SCAN c"],
     site: "src/domain/deliveries.ts#expandPending < src/domain/deliveries.ts#enqueueActivity < src/domain/activities.ts#recordOutbound < src/domain/statuses.ts#writePost < src/domain/statuses.ts#postNow",
     disposition: "deliberate",
     reason:
       "expandPending's oldest chunk (src/domain/deliveries.ts): outbound_targets in rowid order from its start, LIMIT 1 and no filter, so one row; its activity read once by its rowid",
+  },
+  {
+    id: "875002ba041d00af",
+    scans: ["delivery_hosts: SCAN delivery_hosts USING INDEX delivery_hosts_draining"],
+    site: "src/domain/deliveries.ts#drainStep < src/domain/deliveries.ts#<anonymous> in claimDeliveries",
+    disposition: "bounded",
+    reason:
+      "the first entry of the partial index delivery_hosts_draining (the hosts whose drain is under way) in host order, LIMIT 1 and no other term: one entry (src/domain/deliveries.ts drainStep)",
+  },
+  {
+    id: "18547c9a21120dd7",
+    scans: ["delivery_hosts: SCAN delivery_hosts USING INDEX delivery_hosts_draining"],
+    site: "src/domain/deliveries.ts#nextDueAt < src/domain/deliveries.ts#<anonymous> in completeDelivery",
+    disposition: "bounded",
+    reason:
+      "whether the partial index delivery_hosts_draining (the hosts whose drain is under way) has an entry, LIMIT 1 and no other term: one entry (src/domain/deliveries.ts nextDueAt)",
+  },
+  {
+    id: "e9b47ef4a7e7f393",
+    scans: ["delivery_hosts: SCAN delivery_hosts USING INDEX delivery_hosts_idle"],
+    site: "src/domain/delivery-hosts.ts#markStopped < src/domain/deliveries.ts#<anonymous> in stopDeliveryHost",
+    disposition: "bounded",
+    reason:
+      "the first entry of the partial index delivery_hosts_idle (the available hosts) by last_failure_day, LIMIT 1 and no other term: one entry, read only for a new host when the table is full (src/domain/delivery-hosts.ts markStopped)",
+  },
+  {
+    id: "a240035cb6400d9c",
+    scans: ["delivery_hosts: SCAN delivery_hosts"],
+    site: "src/domain/delivery-hosts.ts#hostCount < src/domain/delivery-hosts.ts#recordHostFailure < src/domain/deliveries.ts#<anonymous> in completeDelivery",
+    disposition: "bounded",
+    reason:
+      "delivery_hosts holds at most MAX_DELIVERY_HOSTS (10,000) keys of at most 253 bytes (the trigger delivery_hosts_cap and the CHECK delivery_hosts_host, migration 0112_delivery_hosts); counted only for a host without a row (src/domain/delivery-hosts.ts recordHostFailure, markStopped)",
   },
   {
     id: "16731d8b485e0e6f",
@@ -588,14 +620,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "the operator's delivery report (deliveriesReport, src/domain/deliveries.ts) counts the activities still expanding: the walk is the report, which only the Access admin reads (GET /admin/deliveries, src/app/admin.ts)",
   },
   {
-    id: "77de1c0391c5e5be",
+    id: "fdf81c8176f0cc69",
     scans: ["deliveries: SCAN d", "outbound_activities: SCAN o LEFT-JOIN"],
     site: "src/domain/deliveries.ts#<anonymous> in confirmDelivery",
     disposition: "pending",
     issue: "#1468 group 8",
   },
   {
-    id: "b7eb6c56c31930ea",
+    id: "f2dc1c7cafd52620",
     scans: ["deliveries: SCAN d", "outbound_activities: SCAN o LEFT-JOIN"],
     site: "src/domain/deliveries.ts#<anonymous> in completeDelivery",
     disposition: "pending",

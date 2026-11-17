@@ -75,7 +75,7 @@ export async function pushRound(env: Env, deps: DeliveryDeps): Promise<PushRound
   const origin = claim.origin;
   const post: PostDeps = {
     fetch: deps.fetch,
-    checkHost: deps.checkHost,
+    resolveHost: deps.resolveHost,
     timeoutMs: deps.timeoutMs,
     now: deps.now,
     userAgent: `Kopje/${PACKAGE_VERSION} (+${origin}/)`,

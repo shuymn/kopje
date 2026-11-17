@@ -1,7 +1,12 @@
+import dns from "node:dns/promises";
+import { isIP } from "node:net";
+
 import {
   type DocumentLoader,
   FetchError,
   getRemoteDocument,
+  isValidPublicIPv4Address,
+  isValidPublicIPv6Address,
   preloadedContexts,
   type RemoteDocument,
   validatePublicUrl,
@@ -184,6 +189,60 @@ export type Signing = { sign: RequestSigner; retry?: RequestSigner | undefined }
 export const RETRY_STATUSES: ReadonlySet<number> = new Set([400, 401]);
 
 export const dnsCheckHost = (url: URL): Promise<void> => validatePublicUrl(url.href);
+
+// What a delivery's host check found (resolveDeliveryHost): `public`, at least one IP address and every one public;
+// `private`, a non-public one; `none`, no IP address in the answer; `error`, the lookup failed, with its error's code
+// (null when it has none).
+export type HostResolution =
+  | { kind: "public" }
+  | { kind: "private" }
+  | { kind: "none" }
+  | { kind: "error"; code: string | null };
+
+// The delivery sink's host check (NET-3): the lookup Fedify's validatePublicUrl makes (node:dns/promises lookup with
+// all: true, looked up on each call, as Fedify does, so a test can stub it), keeping its result instead of the UrlError
+// Fedify 2.4.5 throws: its validateLookupAddresses throws the same UrlError (reason "dns", no cause, no code) for an
+// empty answer and a CNAME-only one, and one with the lookup's error as its cause for a lookup that threw, so neither a
+// message nor a missing code tells a confirmed no-address from a resolver failure. Non-IP entries are ignored, as
+// Fedify ignores workerd's CNAME rows (cloudflare/workerd#6886), and every IP address is judged by Fedify's
+// isValidPublicIPv4Address and isValidPublicIPv6Address, so the check stays fail-closed: only `public` lets the POST
+// go, and it is never `public` for a lookup validatePublicUrl refuses (test-node/delivery-host-resolution.test.ts). An
+// IP literal or localhost is judged without a lookup, as Fedify judges them (the sink's assertPublicShape refuses
+// them first).
+export async function resolveDeliveryHost(url: URL): Promise<HostResolution> {
+  const literal = url.hostname.startsWith("[") && url.hostname.endsWith("]");
+  const hostname = literal ? url.hostname.slice(1, -1) : url.hostname;
+  if ((url.protocol !== "https:" && url.protocol !== "http:") || hostname === "localhost") {
+    return { kind: "private" };
+  }
+  const family = isIP(hostname);
+  if (family !== 0) {
+    return publicAddress(hostname, family) ? { kind: "public" } : { kind: "private" };
+  }
+  let addresses: readonly { address: string }[];
+  try {
+    addresses = await dns.lookup(hostname, { all: true });
+  } catch (error) {
+    const code = (error as { code?: unknown } | null)?.code;
+    return { kind: "error", code: typeof code === "string" ? code : null };
+  }
+  let found = 0;
+  for (const { address } of addresses) {
+    const kind = isIP(address);
+    if (kind === 0) {
+      continue;
+    }
+    found++;
+    if (!publicAddress(address, kind)) {
+      return { kind: "private" };
+    }
+  }
+  return found === 0 ? { kind: "none" } : { kind: "public" };
+}
+
+function publicAddress(address: string, family: number): boolean {
+  return family === 4 ? isValidPublicIPv4Address(address) : isValidPublicIPv6Address(address);
+}
 
 // The loader of documents trusted as ActivityPub objects or keys (Fedify's document loaders).
 export function createSafeLoader(deps: LoaderDeps, signing?: Signing): DocumentLoader {

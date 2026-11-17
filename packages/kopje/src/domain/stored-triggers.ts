@@ -15,6 +15,7 @@ import {
   INSTANCE_SETTING_BOUNDS,
   INSTANCE_SETTING_NAMES,
   linkReviewPastBoundSql,
+  MAX_DELIVERY_HOSTS,
   MAX_ACCOUNT_INVITATIONS,
   MAX_TREND_LINKS,
   MAX_TREND_REVIEWS,
@@ -456,6 +457,8 @@ END;`,
     paramsPastBoundSql("NEW.params"),
     "scheduled_statuses: a value past its stored bound",
   ),
+  // 0112_delivery_hosts: the hosts deliveries failed to, for every writer and an import (RES-4).
+  capTrigger("delivery_hosts", "host", MAX_DELIVERY_HOSTS),
 ];
 
 // Each registered trigger's statement by its name.
