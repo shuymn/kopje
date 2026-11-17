@@ -175,6 +175,13 @@ export class Params {
     return this.objectPrefixes.has(name) || this.hasObject(name);
   }
 
+  // Whether `name` was sent in any shape: a value, anything nested under it (`name[]`, `name[a]`, `name[][]`), or a JSON
+  // empty array or object.
+  sentUnder(name: string): boolean {
+    const under = (key: string) => topKey(key) === name;
+    return this.entries.some(([key]) => under(key)) || [...this.objectPrefixes, ...this.emptyLists].some(under);
+  }
+
   // The first of `names` sent more than once as a plain name (query and body together, as sent: also where a later
   // pair or the query replaced it, or a pair between nested under it), for parameters that must be single (RFC 6749
   // §3.1, §3.2). Array parameters (`name[]`) are not scalars and are never named here.

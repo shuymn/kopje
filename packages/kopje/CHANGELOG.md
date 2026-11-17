@@ -495,8 +495,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   change.
 - A `limit` sent without a value (`?limit`, or a JSON null) takes the list's default, as Rails reads it as nil; an
   empty one (`?limit=`) keeps its answer (#1759). No Store migration and no `wrangler.jsonc` change.
-- `GET /api/v1/accounts/search` without `q` answers `[]`, as Mastodon's nil query does, where it answered 400;
-  `/api/v2/search` keeps its 400 (#1766). No Store migration and no `wrangler.jsonc` change.
+- `GET /api/v1/accounts/search` without `q` answers `[]`, as Mastodon's nil query does, where it answered 400; a `q`
+  sent as an array or a hash still answers 400, and `/api/v2/search` keeps its 400 (#1766). No Store migration and no
+  `wrangler.jsonc` change.
 - A Web Push subscription whose `endpoint`, `keys[p256dh]` or `keys[auth]` is blank to Rails (U+0085) answers 422
   `Validation failed: … can't be blank`, as Mastodon's presence validation does, where it answered `… is invalid`; an
   empty or absent one keeps its 400 (#1766). No Store migration and no `wrangler.jsonc` change.

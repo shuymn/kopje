@@ -1119,6 +1119,11 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
   Accepted, 2026-11-18.
 - `/api/v2/search` refuses an absent or blank `q` with 400 `Missing parameter q`; Mastodon's `params.require(:q)`
   answers `param is missing or the value is empty or invalid: q`. Accepted, 2026-11-18.
+- A `q` sent as an array or a nested parameter (`q[]=a`, `q[a]=b`) answers 400 `Missing parameter q` on both searches,
+  where an absent one finds no account at `/api/v1/accounts/search`, as in Mastodon. Mastodon 4.7.5 answers 500 to
+  it, as its search services strip it (`AccountSearchService#call`, `SearchService#call`), but for an empty array at
+  `/api/v2/search`, which `params.require(:q)` refuses with 400. `test/param-blank.test.ts` ("answers the account
+  search nothing for a q absent or blank once stripped, without searching"). Accepted, 2026-11-18.
 - `/api/v2/search` reads `account_id=` (empty) as absent. Mastodon with Elasticsearch looks the empty id up
   (`StatusesSearchService#convert_deprecated_options!`, `Account.find`) and answers 404; without it, it searches no
   statuses. Accepted, 2026-11-18.

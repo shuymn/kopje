@@ -316,6 +316,11 @@ describe("search and peers (PB4)", () => {
       expect(recorder.names()).not.toContain("searchAccounts");
     }
     expect((await h.request("/api/v1/accounts/search", bearer("not-a-token"))).status).toBe(401);
+    // A q sent, but not as a string, is not an absent one (Mastodon answers 500 as it strips it).
+    for (const query of ["q[]=alice", "q[a]=alice", "q[]", "q[][a]=alice", "q[a][b]=alice", "q[][]=alice"]) {
+      expect(await search(query), query).toEqual({ status: 400, body: { error: "Missing parameter q" } });
+      expect(recorder.names()).not.toContain("searchAccounts");
+    }
     expect(await search(`q=${Q.BOM}`)).toEqual({ status: 200, body: [] });
     expect(recorder.names()).toContain("searchAccounts");
     expect(await search("q=%20%40alice")).toMatchObject({ status: 200, body: [{ id: alice.id }] });
