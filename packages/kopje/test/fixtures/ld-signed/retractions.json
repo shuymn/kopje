@@ -196,14 +196,16 @@
         "object_type": "Tombstone",
         "object_actor": null,
         "object_object": null
-      }
+      },
+      "inbox": "TypeError: no implicit conversion of String into Integer"
     },
     {
       "name": "Delete(actor), object as a one-element array after to: [null]",
       "reading": {
         "type": "Delete",
         "object": "https://mastodon.example/users/bob"
-      }
+      },
+      "inbox": "TypeError: no implicit conversion of String into Integer"
     },
     {
       "name": "Delete(status), actor as an array of bob and carol",
@@ -249,7 +251,8 @@
     },
     {
       "name": "Delete(status), object as a one-element array after to: [null], with a target whose id is null",
-      "error": "TypeError: no implicit conversion of String into Integer"
+      "error": "TypeError: no implicit conversion of String into Integer",
+      "inbox": "TypeError: no implicit conversion of String into Integer"
     },
     {
       "name": "Delete(status), object as a string, with a target whose id is null",
@@ -260,7 +263,8 @@
     },
     {
       "name": "Delete(status), object as an array of {\"@id\": its id}",
-      "error": "TypeError: no implicit conversion of String into Integer"
+      "error": "TypeError: no implicit conversion of String into Integer",
+      "inbox": "TypeError: no implicit conversion of String into Integer"
     },
     {
       "name": "Undo(Follow), object as {\"@id\": its id} with its type",
@@ -349,11 +353,13 @@
     },
     {
       "name": "Delete(status), object as a one-element array before to: [null]",
-      "error": "TypeError: no implicit conversion of String into Integer"
+      "error": "TypeError: no implicit conversion of String into Integer",
+      "inbox": "TypeError: no implicit conversion of String into Integer"
     },
     {
       "name": "Delete(status), object as a one-element array after to of carol twice",
-      "error": "TypeError: no implicit conversion of String into Integer"
+      "error": "TypeError: no implicit conversion of String into Integer",
+      "inbox": "TypeError: no implicit conversion of String into Integer"
     },
     {
       "name": "Delete(status), object as a one-element array after to of carol twice and null",
@@ -363,15 +369,18 @@
         "object_type": "Tombstone",
         "object_actor": null,
         "object_object": null
-      }
+      },
+      "inbox": "TypeError: no implicit conversion of String into Integer"
     },
     {
       "name": "Delete(status), object as a one-element array after published: [null]",
-      "error": "TypeError: no implicit conversion of String into Integer"
+      "error": "TypeError: no implicit conversion of String into Integer",
+      "inbox": "TypeError: no implicit conversion of String into Integer"
     },
     {
       "name": "Delete(status), object as a one-element array after a target that holds to: [null]",
-      "error": "TypeError: no implicit conversion of String into Integer"
+      "error": "TypeError: no implicit conversion of String into Integer",
+      "inbox": "TypeError: no implicit conversion of String into Integer"
     },
     {
       "name": "Undo(Follow), object as a one-element array after to: [null], beside a key \"0\"",
@@ -479,7 +488,8 @@
     },
     {
       "name": "Delete(status), object as a two-element array after to: [null]",
-      "error": "TypeError: no implicit conversion of String into Integer"
+      "error": "TypeError: no implicit conversion of String into Integer",
+      "inbox": "TypeError: no implicit conversion of String into Integer"
     },
     {
       "name": "Delete(status), object as {\"@id\": its id} with its type",
@@ -489,6 +499,28 @@
         "object_type": "Tombstone",
         "object_actor": null,
         "object_object": null
+      }
+    },
+    {
+      "name": "Delete(status), object as an IRI in an array beside a null",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted"
+      },
+      "inbox": "TypeError: no implicit conversion of String into Integer"
+    },
+    {
+      "name": "Delete(status) typed as an absolute IRI, object as an IRI in an array beside a null",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted"
+      }
+    },
+    {
+      "name": "Delete(status), object as an IRI in an array beside a null, actor as an empty array",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted"
       }
     }
   ]

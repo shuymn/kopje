@@ -259,5 +259,20 @@ export function retractionEntries() {
     ...status(),
     object: { "@id": BOB_STATUS, type: "Tombstone" },
   });
+  // An object in an array beside a null, which the patch stops at and leaves as the compaction's IRI: Mastodon's inbox
+  // raises on the array of a Delete typed by its plain name whose actor is present, before the service reads it, and
+  // not on one typed as an IRI or of a blank actor.
+  const beside = { ...status(), object: [null, BOB_STATUS] };
+  add("Delete(status), object as an IRI in an array beside a null", beside);
+  add("Delete(status) typed as an absolute IRI, object as an IRI in an array beside a null", {
+    ...beside,
+    id: `${BOB}/activities/retraction-${++sequence}`,
+    type: `${AS}#Delete`,
+  });
+  add("Delete(status), object as an IRI in an array beside a null, actor as an empty array", {
+    ...beside,
+    id: `${BOB}/activities/retraction-${++sequence}`,
+    actor: [],
+  });
   return entries;
 }

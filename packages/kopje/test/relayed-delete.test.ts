@@ -134,14 +134,15 @@ async function effects(t: Setup, uri: string) {
 }
 
 // `body`, relayed by dan while bob's document has changed since it was stored (a new name), is dropped: 202, `reason`
-// logged once, the status as it was, no retraction of it recorded, and bob's stored document unchanged.
-async function dropped(t: Setup, bob: TestActor, dan: TestActor, body: Json, uri: string, reason: string) {
+// logged once (none where the body is ignored before any check), the status as it was, no retraction of it recorded,
+// and bob's stored document unchanged.
+async function dropped(t: Setup, bob: TestActor, dan: TestActor, body: Json, uri: string, reason: string | undefined) {
   const author = "SELECT display_name, raw, fetched_at, document_revision FROM accounts WHERE uri = ?";
   const before = await sql(t.store, author, bob.uri);
   t.web.serve(bob.uri, { ...bob.document, name: "renamed" });
   const { status, refused } = await loggedRefusals(() => t.post(dan, body));
   expect(status).toBe(202);
-  expect(refused).toEqual([[{ event: "kopje.inbox.refused", status: 202, reason }]]);
+  expect(refused).toEqual(reason === undefined ? [] : [[{ event: "kopje.inbox.refused", status: 202, reason }]]);
   expect(await stored(t.store, uri)).toEqual({ visibility: "public", withdrawn: 0 });
   expect(await sql(t.store, "SELECT count(*) AS n FROM inbound_retractions WHERE target_uri = ?", uri)).toEqual([
     { n: 0 },
@@ -747,8 +748,9 @@ describe("a relay of another type is dropped once its signer owns its key (ID-1)
 // LR-g (#1717): the forms in which Kopje reads an LD-signed retraction as Mastodon's compaction writes it (ld-signed-body.ts
 // RETRACTIONS) apply nothing more when another server relays it. A relay is decided on the body as received
 // (inbound.ts relayed, author-proof.ts profileOf), which none of the forms is in: a status Delete in one of them is
-// dropped though its author's proof verifies (the id-only one as Kopje signs it applies, above), and any other
-// retraction is not applied.
+// dropped though its author's proof verifies (the id-only one as Kopje signs it applies, above), one whose object is
+// an array ignored before (Mastodon's inbox raises on it, ld-signed-body.ts inboxRaises), and any other retraction is
+// not applied.
 describe("a relayed retraction in the forms #1717 reads applies nothing (ID-1)", () => {
   // bob's Delete of `uri` in Kopje's id-only form (idOnly), changed to `form` and then signed by bob's key.
   async function signedInForm(bob: TestActor, uri: string, form: Form): Promise<Json> {
@@ -768,7 +770,8 @@ describe("a relayed retraction in the forms #1717 reads applies nothing (ID-1)",
     async (form) => {
       const { t, bob, dan } = await world();
       const status = await note(t, bob);
-      await dropped(t, bob, dan, await signedInForm(bob, status.uri, form), status.uri, "proof-invalid");
+      const body = await signedInForm(bob, status.uri, form);
+      await dropped(t, bob, dan, body, status.uri, Array.isArray(body.object) ? undefined : "proof-invalid");
     },
   );
 

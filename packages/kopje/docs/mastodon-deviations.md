@@ -1786,10 +1786,11 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   `cc: [a, a, null]`; an array of equal values is not shortened and stops neither). Where the patch stops at another
   member (one holding a value the name does not take), or in an object holding a key shaped like an array index, whose
   order JavaScript does not keep, such a member is refused, where Mastodon applies an `Undo` or a `Reject` (#1717). A
-  `Delete` whose `object` is given so after a certain stop is applied, the signer's own status or account deleted,
-  where Mastodon applies nothing: its inbox reads the `object` of a `Delete` or an `Update` before anything else
-  (`inboxes_controller.rb` `unknown_affected_account?`, `value_or_id`), which raises on an array, and answers 500 each
-  time it is sent again; an `Undo` or a `Reject` given so is applied by both. Such an `actor` of two elements is
+  `Delete` typed by its plain name whose `object` is an array is read as received, and its array refused, as Mastodon
+  applies nothing: its inbox reads the `object` of a `Delete` or an `Update` so typed whose actor is present before
+  anything else (`inboxes_controller.rb` `unknown_affected_account?`, `value_or_id`), which raises on an array, and
+  answers 500 each time it is sent again; one typed as an IRI, which that check passes, and an `Undo` or a `Reject`
+  given so are applied by both. Such an `actor` of two elements is
   refused, as Mastodon's job raises, and one of `null`, which Mastodon's compaction writes as `[]` and so applies for
   the signer, is refused too (Kopje reads less). An `Undo` of a `Follow`, a `Block` or a `Like` whose undone activity's
   `object` the patch gives back as an array (given as one, or as an array in another, which the compaction flattens) is

@@ -1377,11 +1377,25 @@ export async function ldSignedReading(
     return { readType, body: json };
   }
   const named = namedAsCompacted(body, context.meanings);
-  if (!(retracts && shown())) {
+  if (!(retracts && shown()) || inboxRaises(json)) {
     return { readType, body: named };
   }
   const patched = actorAsCompacted(patchedAsMastodon(body, named, context.meanings));
   return undoesByArray(patched, readType) ? null : { readType, body: patched };
+}
+
+// Whether Mastodon's inbox answers the request 500 before it queues the job (inboxes_controller.rb:7 and :29-38,
+// skip_unknown_actor_activity): of a body typed by the plain name `Delete` or `Update` whose actor is present
+// (ActiveSupport's present?), unknown_affected_account? reads the object as received by value_or_id
+// (json_ld_helper.rb:83-85), which raises on an array, and no rescue_from takes the TypeError; so nothing is applied,
+// however the compaction reads the body (retractions.json `inbox`). Checked for a Delete read as the compaction, whose
+// array object patchedAsMastodon may read as an IRI (after the patch's stop): its array is left as received,
+// which the Delete handler refuses. A Delete typed as an IRI is not checked and is applied, as both do. Left out of
+// the check: an Update, which is no retraction; a blank actor, which the envelope refuses whatever the object (it
+// requires the signer); and an object of another value value_or_id raises on, a number or a boolean, which Kopje reads
+// as no object.
+function inboxRaises(json: Json): boolean {
+  return json.type === "Delete" && Array.isArray(json.object);
 }
 
 // Whether an Undo of a Follow, a Block or a Like gives the undone activity's `object` as an array where Mastodon's
