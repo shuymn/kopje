@@ -1922,7 +1922,10 @@ ID-7 in `docs/threat-model.md`):
   how far the status's own count moves when it is counted again, where Mastodon adds or takes one for each favourite
   or boost; the two differ only where the own count was stale, which Kopje corrects at that count. An own count an
   import stored as text moves it by nothing. A status stored before migration `0113_untrusted_counts`, or carried over
-  by the cutover, has none until its server's next `Update` of it or a refetch.
+  by the cutover, has none until its server's next `Update` of it or a refetch. A `totalItems` written as a JSON
+  integer too large for a double (past about 1.8e308) is read as no count, clearing a stored one, where Mastodon reads
+  the exact integer and clamps it to 100,000,000, or 0 when negative: `JSON.parse` gives an infinity, which Kopje reads
+  as it reads a number with an exponent past that range (`1e400`), no count in both. Accepted, 2026-11-17.
 - A status Kopje fetches again that it stores (search, `/authorize_interaction`, a pin sync, a replies walk, its root
   included) is applied as its author's `Update`, as `FetchRemoteStatusService` turns a stored status's `Create` into an
   `Update` (`fetch_remote_status_service.rb:48`). A pin sync fetches every status its account lists on its origin and

@@ -79,6 +79,23 @@ describe("untrustedCount", () => {
   });
 });
 
+// A JSON integer too large for a double parses to an infinity, which untrustedCount reads as no count, where Mastodon
+// reads an exact Integer and clamps it to MAX_UNTRUSTED_COUNT or 0 (docs/mastodon-deviations.md, "Retractions and
+// edits of remote statuses"); 1e400, a Float in both, is no count in both (the captured row).
+describe("a totalItems past a double's range", () => {
+  const huge = `1${"0".repeat(400)}`;
+  const read = (literal: string) =>
+    untrustedCount((JSON.parse(`{"likes":{"totalItems":${literal}}}`) as { likes: unknown }).likes);
+
+  it("is no count, as a 401-digit integer of either sign and as 1e400", () => {
+    expect([huge, `-${huge}`, "1e400"].map(read)).toEqual([null, null, null]);
+    expect(captured.rows.find((row) => row.likes === '{"totalItems":1e400}')).toMatchObject({
+      assigned: true,
+      stored: null,
+    });
+  });
+});
+
 describe("a remote status's untrusted counts", () => {
   it("are read from likes and shares when each is an object with totalItems", () => {
     const note = (extra: Record<string, unknown>) =>
