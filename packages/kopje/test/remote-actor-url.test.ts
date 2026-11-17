@@ -284,27 +284,36 @@ describe("each path that stores an actor's document (#1734, ID-1, HTML-3)", () =
 // entity, mentions, link cards and notification fallbacks have their own tests (account-answer-bytes, link-cards,
 // notification-fallback).
 describe("a remote account without a profile URL, wherever its url is shown (#1734)", () => {
-  it("is linked by its actor id in announcements, a report's target page and its tagged page", async () => {
+  // Without a usable url: none, an imported empty or non-http(s) one, or one past PROFILE_URL_LIMIT once serialized.
+  it("is linked by its actor id in the account, announcements, a report's target page and its tagged page", async () => {
     const h = await announcementHarness(["alice"]);
     const carol = await remoteAccount(h.store, "carol");
-    await sql(h.store, "UPDATE accounts SET url = NULL WHERE id = ?", carol);
     const actor = "https://remote.example/users/carol";
     await h.admin.create({ text: "Hi @carol@remote.example" });
-    const listed = await getJson<{ content: string; mentions: { url: string }[] }[]>(
-      h,
-      "/api/v1/announcements",
-      h.users.alice.token,
-    );
-    expect(listed.body[0]!.mentions.map((m) => m.url)).toEqual([actor]);
-    expect(listed.body[0]!.content).toContain(`href="${actor}"`);
     const report = await h.request("/api/v1/reports", bearer(h.users.alice.token, json({ account_id: carol })));
     expect(report.status).toBe(200);
     const { id } = await report.json<{ id: string }>();
-    expect(await h.store.reportTargetPage(BUILD, { authority: h.authority, id, origin: ORIGIN })).toEqual({
-      ok: true,
-      page: actor,
-    });
-    const tagged = await h.request("/@carol@remote.example/tagged/walks", { redirect: "manual" });
-    expect([tagged.status, tagged.headers.get("location")]).toEqual([302, actor]);
+    for (const url of [null, "", "javascript:alert(1)", `https://remote.example/${'"'.repeat(1_000)}`]) {
+      await sql(h.store, "UPDATE accounts SET url = ? WHERE id = ?", url, carol);
+      const label = String(url).slice(0, 40);
+      const account = await getJson<{ url: string }>(h, `/api/v1/accounts/${carol}`, h.users.alice.token);
+      expect(account.body.url, label).toBe(actor);
+      const listed = await getJson<{ content: string; mentions: { url: string }[] }[]>(
+        h,
+        "/api/v1/announcements",
+        h.users.alice.token,
+      );
+      expect(
+        listed.body[0]!.mentions.map((m) => m.url),
+        label,
+      ).toEqual([actor]);
+      expect(listed.body[0]!.content, label).toContain(`href="${actor}"`);
+      expect(await h.store.reportTargetPage(BUILD, { authority: h.authority, id, origin: ORIGIN }), label).toEqual({
+        ok: true,
+        page: actor,
+      });
+      const tagged = await h.request("/@carol@remote.example/tagged/walks", { redirect: "manual" });
+      expect([tagged.status, tagged.headers.get("location")], label).toEqual([302, actor]);
+    }
   });
 });

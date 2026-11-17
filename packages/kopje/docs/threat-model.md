@@ -3452,8 +3452,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   take the same reads and presenters wherever its document is rendered (`ACTOR_ROW_COLUMN_MAP` in
   `src/domain/actor-row.ts`, `localActorOf`, `documentOf`: the endpoint, every Update and the maintenance snapshot;
   `test/actor-update.test.ts`). Mentions
-  read the username through the same projection (`src/domain/profile-bounds.ts`) and derive `acct` and a fallback url
-  from the cut username; the admin account search reads candidates' ids and flags only and tests their text in SQL. The
+  read the username through the same projection (`src/domain/profile-bounds.ts`) and derive `acct` from the cut
+  username and a url from the actor id (`remoteAccountUrl`), else from the cut username; the admin account search
+  reads candidates' ids and flags only and tests their text in SQL. The
   actor URI is bounded as stored (`ACTOR_URI_LIMIT`), read through `actorUriSql`, and
   refused at the cutover; the account's `uri` shows it only while its JSON is within `ACTOR_URI_LIMIT` bytes too
   (`withinIdentityBound`), and '' otherwise. An account that moved shows the account it moved to one level deep, read
@@ -4533,7 +4534,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   in UTF-8 bytes as encoded, measured from the presented object before anything is encoded (`encodedTwiceBytes`): the
   measure of the 512 KiB past which it is skipped and logged with no string made. A unit within it is encoded once and
   sent one stream's envelope at a time, so a unit's isolate peak is its rows, its presented object and four frames of
-  the largest at most, 47,878,111.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
+  the largest at most, 47,888,431.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
   whole payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit:
   a turn presents at most 17,972,684 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
   JSON again at most doubles it), S = 7,151,333 being the most JSON a streamed subject presents, the quote
@@ -4979,7 +4980,7 @@ measurements, not asserted.
 | Conversation: 12 participants presented, its last status a quote | 8,529,438         | 7,098,980       | 7,151,333         | 2,001     | 7,923 | 85.3%          |
 | Notification group: 8 sample accounts, its status a quote        | 7,905,948         | 6,529,587       | 6,568,720         | 1,994     | 7,112 | 78.3%          |
 | Report: its first status a quote past the 2 MiB allowance        | 7,216,465         | 5,993,840       | 6,013,143         | 1,948     | 6,443 | 71.7%          |
-| An admin.report notification of that report                      | 2,369,997         | 411,250         | 443,540           | 1,070     | 580   | 5.3%           |
+| An admin.report notification of that report                      | 2,374,093         | 411,250         | 443,540           | 1,070     | 580   | 5.3%           |
 | A moderation_warning notification, its local account at bounds   | 134,402           | 294,426         | 364,559           | 7         | 686   | 4.3%           |
 | Its notification group                                           | 134,402           | 294,615         | 364,748           | 7         | 693   | 4.3%           |
 | A filtered favourite of the quote, as include_filtered lists it  | 6,966,353         | 5,532,055       | 5,548,053         | 1,952     | 5,648 | 66.1%          |
@@ -5295,7 +5296,7 @@ within half of the Store isolate's 128 MB, and pins them (`STREAM_UNIT_PEAKS` an
 | ------------------------------------------------------ | ----------------------- | ----------------- | ------------------- | -------- |
 | Status (`update`, `status.update`: a boost of a quote) | 19.34 MB                | 17.46 MB          | 2.12 MB             | 38.92 MB |
 | Conversation (its last status a quote)                 | 23.02 MB                | 21.45 MB          | 2.12 MB             | 46.59 MB |
-| Notification (its status, report and warning together) | 25.88 MB                | 19.88 MB          | 2.12 MB             | 47.88 MB |
+| Notification (its status, report and warning together) | 25.89 MB                | 19.88 MB          | 2.12 MB             | 47.89 MB |
 | Announcement                                           | 7.28 MB                 | 0.75 MB           | 2.97 MB             | 11.01 MB |
 
 ### Data and keys (DATA)

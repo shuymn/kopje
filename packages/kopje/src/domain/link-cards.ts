@@ -36,7 +36,6 @@ import {
   oembedHostPastSql,
   oembedTemplatePastSql,
   presentedAttributionDomains,
-  profileUrlSql,
   SAFE_INTEGER_MAX,
   storedCountSql,
   storedText,
@@ -47,7 +46,8 @@ import { cardEligibleSql, cardPublicSql } from "./audience";
 import { linkCardImage } from "./card-images";
 import { NEW_GENERATION } from "./ids";
 import { writeOperation } from "./operation";
-import { actorUriSql } from "./profile-bounds";
+import { actorUriSql, remoteAccountUrl, usernameSql } from "./profile-bounds";
+import { MAX_STATUS_MENTION_ROWS } from "./status-bounds";
 import { parseStatusText } from "./status-text";
 
 // Status cards (Mastodon's FetchLinkCardService and LinkCrawlWorker, app/services/fetch_link_card_service.rb, v4.5.11):
@@ -135,20 +135,27 @@ function boundedCandidate(value: unknown): CardCandidate | null {
   return typeof host === "string" && host.length <= CARD_HOST_LIMIT ? { raw, url: { href, host } } : null;
 }
 
-// Whether `raw` equals, by bytes, the URL of an account the status ?1 mentions, silent mentions included (Mastodon's
-// mention_link?, :97-101, url_for: a remote account's url, its actor id when it stored none, as Mastodon stores
-// `url || @uri`; a local one's https://<domain>/@<username>).
-function mentionLink(db: Db, statusId: string, raw: string, domain: string): boolean {
-  return (
-    db.first(
-      `SELECT 1 AS x FROM status_mentions m CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = m.account_id
-			WHERE m.status_id = ?1 AND CAST(CASE WHEN a.domain IS NULL THEN 'https://' || ?3 || '/@' || a.username
-				WHEN a.url IS NULL THEN ${actorUriSql("a.uri")} ELSE ${profileUrlSql("a.url")} END AS BLOB) = CAST(?2 AS BLOB)
-			LIMIT 1`,
-      statusId,
-      raw,
-      domain,
-    ) !== undefined
+// The URLs of the accounts the status `statusId` mentions, silent mentions included, as Mastodon's mention_link?
+// compares an anchor with them by bytes (:97-101, url_for): a local account's https://<domain>/@<username>, a remote
+// one's as profile-bounds.ts remoteAccountUrl shows it (its usable stored url, else its actor id). Read once per
+// status: the status's own rows, which a remote status's write keeps within MAX_STATUS_MENTION_ROWS
+// (remote-statuses.ts boundedMentions), by key: each local username as usernameSql reads it (a local one is never cut),
+// each url within PROFILE_URL_LIMIT as stored and each actor id within ACTOR_URI_LIMIT.
+function mentionUrls(db: Db, statusId: string, domain: string): Set<string> {
+  const rows = db.all<{ local: 0 | 1; username: string | null; url: string | null; uri: string }>(
+    `SELECT a.domain IS NULL AS local, CASE WHEN a.domain IS NULL THEN ${usernameSql("a.username")} END AS username,
+			CASE WHEN a.domain IS NOT NULL AND typeof(a.url) = 'text' THEN a.url END AS url,
+			CASE WHEN a.domain IS NOT NULL THEN ${actorUriSql("a.uri")} ELSE '' END AS uri
+		FROM status_mentions m CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = m.account_id
+		WHERE m.status_id = ?1 ORDER BY m.account_id LIMIT ${MAX_STATUS_MENTION_ROWS}`,
+    statusId,
+  );
+  return new Set(
+    rows.flatMap((row) => {
+      const url =
+        row.local === 0 ? remoteAccountUrl(row) : row.username === null ? null : `https://${domain}/@${row.username}`;
+      return url === null ? [] : [url];
+    }),
   );
 }
 
@@ -173,12 +180,13 @@ export function remoteCardLink(
     return typeof href === "string" && href.length <= CARD_URL_LIMIT ? href : null;
   }
   const list = Array.isArray(candidates) ? candidates.slice(0, CARD_CANDIDATES) : [];
+  let mentioned: Set<string> | undefined;
   for (const value of list) {
     const candidate = boundedCandidate(value);
     if (candidate === null) {
       return null;
     }
-    if (candidate.raw !== null && mentionLink(db, statusId, candidate.raw, domain)) {
+    if (candidate.raw !== null && (mentioned ??= mentionUrls(db, statusId, domain)).has(candidate.raw)) {
       continue;
     }
     if (candidate.url === "skip") {

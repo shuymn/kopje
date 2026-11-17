@@ -242,9 +242,10 @@ settings page):
   neither a `Link` nor a string before the one it takes, a URL Addressable cannot parse), Kopje stores the account with
   no profile URL, or with the URL parser's reading of the URL (a tab in the host, which it drops).
   `test/fixtures/profile-url/urls.json` holds Mastodon's answer for each form. A stored profile URL that is not
-  http(s), which only an import holds, shows the actor id in mentions and announcements too, where Mastodon shows none
-  there; an actor id that is not http(s), or past 2,048 bytes as JSON writes it, shows a `/@username` page instead, as
-  for a local account, where Mastodon shows the id. Accepted, 2026-11-17.
+  http(s), which only an import holds, gives the actor id wherever Mastodon's `url_for` gives none (mentions,
+  announcements, notification fallbacks and the link-card mention test), as the account shows it; an actor id that is
+  not http(s), or past 2,048 bytes as JSON writes it, shows a `/@username` page instead, as for a local account, where
+  Mastodon shows the id. Accepted, 2026-11-17.
 - A new remote account's `created_at` is its actor's `published` as Mastodon assigns it
   (`process_account_service.rb:231`, ActiveRecord's time-zone-aware cast in UTC) on the forms `railsTime` in
   `src/federation/json-shapes.ts` reads: a date, then optionally a time, its seconds and fraction, and a zone (`Z`,
