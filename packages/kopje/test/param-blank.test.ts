@@ -335,8 +335,24 @@ describe("search and peers (PB4)", () => {
     }
   });
 
+  // A q that is not blank but that a hashtag's name normalizes to nothing names no hashtag, where Mastodon's prefix
+  // match of the empty name finds every one (docs/mastodon-deviations.md, "Search").
+  it("finds no hashtag for a q a hashtag's name normalizes to nothing", async () => {
+    const h = await community(["alice"], "read write follow");
+    const { alice } = h.users;
+    await post(h, alice, { status: "#cats" });
+    const hashtags = async (q: string) =>
+      (
+        await getJson<{ hashtags: { name: string }[] }>(h, `/api/v2/search?q=${q}&type=hashtags`, alice.token)
+      ).body.hashtags.map((tag) => tag.name);
+    expect(await hashtags("ca")).toEqual(["cats"]);
+    expect(await hashtags(Q.BOM)).toEqual([]);
+    expect(await hashtags(encodeURIComponent("\u{1F600}"))).toEqual([]);
+  });
+
   // Api::V1::Peers::SearchController: a blank q (Rails' blank?) is null; any other is then stripped as Ruby strips
-  // (TagManager#normalize_domain), so U+FEFF stays and is no host.
+  // (TagManager#normalize_domain), so U+FEFF stays and is no host, finding no peer where Mastodon answers 500
+  // (docs/mastodon-deviations.md, "Instance and apps").
   it("answers the peer search null for a blank q only", async () => {
     const h = await community(["alice"]);
     await remoteAccount(h.store, "bob", "mastodon.example");
