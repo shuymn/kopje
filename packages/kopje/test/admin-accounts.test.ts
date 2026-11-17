@@ -332,11 +332,13 @@ describe("the admin account list: filters (AccountFilter)", () => {
     expect(await list("?permissions=other")).toEqual(all);
     expect(await list("?role_ids[]=-99")).toEqual(expected(ids, ["alice", "bob", "zed"]));
     expect(await list("?role_ids[]=3&role_ids[]=-99")).toEqual(expected(ids, ["owner", "alice", "bob", "zed"]));
-    // role_ids as a scalar too (Array(value)), alone or with the array form.
+    // role_ids as a scalar too (Array(value)). With the array form before it, the scalar replaces it, as Rack nests
+    // them; after it, Rack refuses the query.
     expect(await list("?role_ids=3")).toEqual(expected(ids, ["owner"]));
     expect(await list("?role_ids=-99")).toEqual(expected(ids, ["alice", "bob", "zed"]));
     expect(await list("?role_ids=1")).toEqual([]);
-    expect(await list("?role_ids=3&role_ids[]=-99")).toEqual(expected(ids, ["owner", "alice", "bob", "zed"]));
+    expect(await list("?role_ids[]=-99&role_ids=3")).toEqual(expected(ids, ["owner"]));
+    expect((await call(h, "/api/v2/admin/accounts?role_ids=3&role_ids[]=-99", admin)).status).toBe(400);
     // A scalar role_ids is a v2 name: the v1 names sent with it are not read (else suspended would give zed alone).
     expect(await list("?role_ids=-99&local=true&suspended=true")).toEqual(expected(ids, ["alice", "bob", "zed"]));
     expect(await list("?role_ids[]=-99&remote=true&suspended=true")).toEqual(expected(ids, ["alice", "bob", "zed"]));
