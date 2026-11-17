@@ -36,6 +36,11 @@
   "durable_objects": {
     "bindings": [{ "name": "STORE", "class_name": "Store" }],
   },
+  // CPU time per invocation (a request, a Queue batch, a Store call); the platform's default is 30 s. The Store
+  // upgrades its schema in one invocation, and a version's migrations can need more than 30 s: without this line such
+  // an upgrade stops part way and the instance stays readonly until an attempt finishes
+  // (packages/kopje/docs/upgrade.md).
+  "limits": { "cpu_ms": 60000 },
   // Never edit or remove this entry: it created the Store, which holds all the instance's data.
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Store"] }],
   "queues": {
