@@ -553,15 +553,26 @@ describe("a remote member's Delete of its feature authorization (D23)", () => {
     expect(await itemActivities(w.t, accepted.item.id)).toEqual(["Add"]);
   });
 
-  // D23: the first deletion before the member's answer is recorded on the item, a later one as the member's retraction
-  // (ID-7). Fails if a later deletion replaces the recorded one.
+  // D23: the first deletion before the member's answer is recorded on the item and as the member's retraction, a later
+  // one as the member's retraction (ID-7). The retraction outlives the row: after the owner removes the item and adds
+  // the member again, an Accept naming the first authorization ends the new item revoked. Fails if a later deletion
+  // replaces the recorded one, or if the first is kept on the row alone (the new item accepted with A, its Add sent).
   it("records the first deletion of a pending item's authorization on the item, and a later one as a retraction", async () => {
     const w = await world();
-    const { id, uri } = await featuring(w);
-    await deleted(w, authorizationOf(w.member, 1), uri);
+    const { id, uri, item } = await featuring(w);
+    const a = authorizationOf(w.member, 1);
+    await deleted(w, a, uri);
     await deleted(w, authorizationOf(w.member, 2), uri);
-    expect((await itemOf(w, id)).retracted_approval_uri).toBe(authorizationOf(w.member, 1));
-    expect(await retractedBy(w)).toEqual([authorizationOf(w.member, 2)]);
+    expect((await itemOf(w, id)).retracted_approval_uri).toBe(a);
+    expect(await retractedBy(w)).toEqual([a, authorizationOf(w.member, 2)]);
+    expect((await call(w.t, "DELETE", `/api/v1/collections/${id}/items/${item.id}`)).status).toBe(200);
+    expect((await call(w.t, "POST", `/api/v1/collections/${id}/items`, { account_id: w.memberId })).status).toBe(200);
+    const again = await itemOf(w, id);
+    serve(w, a, uri);
+    expect(await w.t.post(w.member, answer(w.member, "Accept", again.activity_uri!, a))).toBe(202);
+    await checks(w);
+    expect(await itemOf(w, id)).toMatchObject({ state: REVOKED, approval_uri: null });
+    expect(await itemActivities(w.t, again.id)).toEqual([]);
   });
 
   // A Delete that reaches no item (by its bare URI, which names no accepted authorization) is kept as the member's

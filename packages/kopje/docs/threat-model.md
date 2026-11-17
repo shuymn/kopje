@@ -557,9 +557,10 @@ against their own instance. TLS is assumed between all parties.
   its `interactionTarget` and the collection by the id Kopje writes for it): it revokes the item only while it names the
   item's current authorization (accepted, or the candidate of a check), sending the item's `Remove` when it was
   accepted, and is kept as the member's retraction (at the member's cap, ID-7, the item is revoked all the same); on an
-  item pending with no authorization or candidate it is recorded as the item's first deletion, or, with one recorded,
-  kept as the member's retraction, and when the member's retractions are at their cap it ends that item revoked
-  instead; any other `Delete` is kept as the member's retraction. A pending item is removed without a
+  item pending with no authorization or candidate it is recorded as the item's first deletion and kept as the member's
+  retraction (which a new item for the member, after the owner removes the item and adds it again, reads too), or,
+  with one recorded, kept as the member's retraction, and when the member's retractions are at their cap it ends that
+  item revoked instead; any other `Delete` is kept as the member's retraction. A pending item is removed without a
   `Remove` (`src/domain/feature-requests.ts`, `src/domain/remote-featured-collections.ts` `revokeFeatureAuthorization`,
   `src/domain/collection-checks.ts`); `test/federation-feature-requests.test.ts` ("revokes the item by its current
   authorization, embedded or bare, and sends its Remove", "revokes an accepted item at the member's retraction cap,

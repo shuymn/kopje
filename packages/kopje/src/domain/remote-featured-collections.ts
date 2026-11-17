@@ -575,9 +575,10 @@ export function removeFeaturedItem(db: Db, collection: string, uri: string): boo
 //     the member's server may answer from its cache, revokes; at MAX_RETRACTIONS_PER_ACTOR it is not kept, and the
 //     item is revoked all the same;
 //   - a local collection's pending item whose member has not answered (no approval_uri, no candidate): the first such
-//     authorization is recorded as its retracted_approval_uri; a later, different one as the member's retraction
-//     (ID-7's tombstone, retractions.ts retract), and when the member is at MAX_RETRACTIONS_PER_ACTOR, which keeps it
-//     from being recorded, the item ends revoked instead. The member's Accept (feature-requests.ts) and a check's
+//     authorization is recorded as its retracted_approval_uri and as the member's retraction (ID-7's tombstone,
+//     retractions.ts retract), which a new row for the same member reads too; a later, different one as the member's
+//     retraction alone, and when the member is at MAX_RETRACTIONS_PER_ACTOR, which keeps it from being recorded, the
+//     item ends revoked instead. The member's Accept (feature-requests.ts) and a check's
 //     completion (collection-checks.ts) read both, so no positive answer for an authorization the member withdrew
 //     accepts the item, even one the member's server still serves from a cache;
 //   - any other: nothing, so a delayed Delete of an authorization since replaced leaves the replacement alone (the
@@ -637,6 +638,9 @@ export function revokeFeatureAuthorization(
       row.id,
       authorization,
     );
+    // Also the member's retraction, so an Accept naming it after the owner removes the item and adds the member again
+    // (a new item, without this row's record) is refused too; at MAX_RETRACTIONS_PER_ACTOR the row keeps it alone.
+    retract(db, member.uri, authorization, now);
     return "recorded";
   }
   if (retract(db, member.uri, authorization, now)) {
