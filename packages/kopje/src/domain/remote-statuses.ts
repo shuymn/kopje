@@ -349,8 +349,7 @@ const UNTRUSTED_COUNTS_SET = `untrusted_favourites_count = CASE WHEN ? THEN ? EL
 // the column's trigger accepts (withinUntrustedCount, null included); one from an earlier build (undefined) or of
 // another shape is not, and leaves the stored count.
 function untrustedCounts(input: RemoteStatusInput): [number, number | null, number, number | null] {
-  const given = (value: unknown): [number, number | null] =>
-    value !== undefined && withinUntrustedCount(value) ? [1, value] : [0, null];
+  const given = (value: unknown): [number, number | null] => (withinUntrustedCount(value) ? [1, value] : [0, null]);
   return [...given(input.untrustedFavourites), ...given(input.untrustedReblogs)];
 }
 
