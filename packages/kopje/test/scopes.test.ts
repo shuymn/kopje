@@ -33,8 +33,7 @@ describe("scope hierarchy", () => {
   });
 
   it("parses scope strings", () => {
-    expect(parseScopes(undefined)).toEqual(["read"]);
-    expect(parseScopes("  ")).toEqual(["read"]);
+    expect(parseScopes("  ")).toBeNull();
     expect(parseScopes("read write read")).toEqual(["read", "write"]);
     expect(parseScopes("read+write:media")).toEqual(["read", "write:media"]);
     expect(parseScopes("read everything")).toBeNull();

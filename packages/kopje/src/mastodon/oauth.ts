@@ -73,17 +73,21 @@ export const registerApp: ApiHandler = async (c, deps) => {
     return mastodonError(result.status, "Malformed request body");
   }
   const p = result.params;
-  const name = (p.get("client_name") ?? "").trim();
+  // Doorkeeper's presence of the name (railsBlank); the name is stored as sent.
+  const name = p.get("client_name") ?? "";
   // app_params[:redirect_uris] (`permit(:redirect_uris, redirect_uris: [])`): the array as sent, else the scalar's
   // value, which Rails' params hold as its last; Doorkeeper joins an array with newlines and splits on whitespace.
   const sentUris = p.list("redirect_uris") ?? [p.get("redirect_uris") ?? ""];
   const redirectUris = sentUris.flatMap((value) => value.split(/\s+/).filter((uri) => uri !== ""));
-  const scopes = parseScopes(p.get("scopes"));
+  // A registration's scopes: the default when absent or empty once trimmed, where Mastodon's AppsController defaults
+  // an absent one only.
+  const sentScopes = p.get("scopes");
+  const scopes = parseScopes(sentScopes === undefined || sentScopes.trim() === "" ? DEFAULT_SCOPES : sentScopes);
   const website = (p.get("website") ?? "").trim();
   const problems: string[] = [];
   // Mastodon's APP_NAME_LIMIT in code points (app/lib/application_extension.rb:6, :15, v4.5.11), counted only once
   // the code units allow them (two a code point at most).
-  if (name === "" || name.length > 2 * APP_NAME_LIMIT || [...name].length > APP_NAME_LIMIT) {
+  if (railsBlank(name) || name.length > 2 * APP_NAME_LIMIT || [...name].length > APP_NAME_LIMIT) {
     problems.push(`Application name can't be blank or longer than ${APP_NAME_LIMIT} characters`);
   }
   if (redirectUris.length === 0 || redirectUris.length > MAX_REDIRECT_URIS || !redirectUris.every(validRedirectUri)) {
@@ -289,7 +293,9 @@ export const tokenHandler: ApiHandler = async (c, deps) => {
       s.exchangeCode(b, { ...client, codeHash, redirectUri, verifierChallenge, tokenHash, now }),
     );
   } else if (grantType === "client_credentials") {
-    const scopes = parseScopes(p.get("scope"), DEFAULT_SCOPES);
+    // Doorkeeper's BaseRequest#build_scopes: an absent or blank scope (railsBlank) is the default.
+    const scope = p.get("scope");
+    const scopes = parseScopes(scope === undefined || railsBlank(scope) ? DEFAULT_SCOPES : scope);
     if (scopes === null) {
       return INVALID_SCOPE();
     }

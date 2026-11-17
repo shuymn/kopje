@@ -1,4 +1,5 @@
 import type { Page } from "../domain/accounts";
+import { railsBlank } from "../platform/rails-blank";
 import {
   type ApiContext,
   type ApiHandler,
@@ -142,7 +143,8 @@ export const accountStatuses: ApiHandler = withParams(async (c, deps, p) => {
         excludeReblogs: parseBoolean(p.get("exclude_reblogs")) ?? false,
         excludeDirect: parseBoolean(p.get("exclude_direct")) ?? false,
         pinned: parseBoolean(p.get("pinned")) ?? false,
-        tagged: tagged === undefined || tagged === "" ? null : tagged,
+        // AccountStatusesFilter#tagged?: `params[:tagged].present?` (railsBlank).
+        tagged: tagged === undefined || railsBlank(tagged) ? null : tagged,
         present: present(c),
       }),
     ),

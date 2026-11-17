@@ -3,8 +3,10 @@ import { isUrlQuery } from "../domain/remote-statuses";
 import type { SearchType } from "../domain/search";
 import { envInMaintenance } from "../platform/config";
 import { parseAddress } from "../platform/domain-name";
+import { railsBlank } from "../platform/rails-blank";
 import { rubyToI } from "../platform/ruby-to-i";
 import { StoreUnavailableError, WRITE_REFUSALS } from "../platform/store-errors";
+import { rubyStrip } from "../platform/strip";
 import {
   type ApiHandler,
   authorized,
@@ -69,9 +71,9 @@ export function searchParams(p: Params): SearchParams {
 }
 
 export const search: ApiHandler = withParams(async (c, deps, p) => {
-  // Rails' params.require refuses a blank q here (the account search answers it with an empty list).
+  // Rails' params.require refuses a blank q (railsBlank) here (the account search answers it with an empty list).
   const q = p.get("q");
-  if (q === undefined || q.trim() === "") {
+  if (q === undefined || railsBlank(q)) {
     return refuseAfterAuth(c, deps, mastodonError(400, "Missing parameter q"));
   }
   if ([p.integer("limit"), p.integer("offset")].some((value) => value !== undefined && rubyToI(value) < 0)) {
@@ -85,19 +87,21 @@ export const search: ApiHandler = withParams(async (c, deps, p) => {
   const limit = limitParam(p, 20, 40);
   const { maxId, minId } = pageQuery(p, 20, 40);
   const type = p.get("type");
-  const anyType = type === undefined || type === "";
+  // A blank type (railsBlank) is every type, and then the offset is 0 (search_service.rb:11).
+  const anyType = type === undefined || railsBlank(type);
   const types = anyType ? TYPES : TYPES.filter((t) => t === type);
   const collections = anyType || type === "collections";
   const excludeUnreviewed = parseBoolean(p.get("exclude_unreviewed")) === true;
   const offset = anyType ? 0 : parsed.offset;
-  const query = parsed.query.trim();
+  // SearchService strips q as Ruby does (rubyStrip) and answers nothing for one then blank, before any resolution.
+  const query = rubyStrip(parsed.query);
   const resolve = parseBoolean(p.get("resolve")) ?? false;
   const urlQuery = resolve && isUrlQuery(query);
   const nothing = async () => {
     authorized(await storeCall(c, deps, (s, b) => s.checkCredential(b, userCredential(c, deps))));
     return c.json(NOTHING);
   };
-  if (limit === 0) {
+  if (limit === 0 || railsBlank(query)) {
     return nothing();
   }
   if (urlQuery) {
@@ -136,7 +140,7 @@ export const search: ApiHandler = withParams(async (c, deps, p) => {
   const results = await storeCall(c, deps, (s, b) =>
     s.search(b, {
       credential: userCredential(c, deps),
-      query: parsed.query,
+      query,
       types,
       limit,
       offset,

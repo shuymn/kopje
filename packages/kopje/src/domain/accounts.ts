@@ -5,6 +5,7 @@ import { DEFAULT_AVATAR, DEFAULT_HEADER } from "../platform/brand-assets";
 import { normalizeDomain, parseAddress } from "../platform/domain-name";
 import { boundedHref, httpUrl } from "../platform/http-url";
 import { ACTOR_URI_LIMIT, DOMAIN_BYTES, isRemoteUsername, withinIdentityBound } from "../platform/identity-bounds";
+import { railsBlank } from "../platform/rails-blank";
 import {
   ACCOUNT_EMOJIS_BYTES,
   attributionDomainsSql,
@@ -1421,6 +1422,7 @@ function sharedAnswer(db: Db, lists: readonly (readonly string[])[], present: Pr
 }
 
 export type SearchInput = {
+  // q as the routes pass it: stripped as Ruby strips (rubyStrip, SearchService and AccountSearchService), never blank.
   query: string;
   limit: number;
   offset: number;
@@ -1484,9 +1486,8 @@ const PREFIX_END = "\u{10FFFF}";
 // The ids of the accounts the search finds, in its order.
 function findAccountIds(db: Db, input: SearchInput, viewerId: string): string[] {
   // An address is read with the shared parser, so a Unicode domain finds the account stored under its punycode.
-  const address = parseAddress(input.query.trim());
+  const address = parseAddress(input.query);
   const query = (address === null ? input.query : `${address.username}@${address.domain}`)
-    .trim()
     .replace(/^@/, "")
     .replace(new RegExp(`@${escapeRegExp(input.localDomain)}$`, "i"), "");
   const terms = queryTerms(query);
@@ -1564,9 +1565,9 @@ export function followLimit(counts: { following_count: number; followers_count: 
 }
 
 // POST /api/v1/accounts/:id/note (Accounts::NotesController, AccountNote): the viewer's private note on any stored
-// account, the viewer's own included. A blank comment (absent, empty or whitespace) deletes the note; a longer one than
-// AccountNote::COMMENT_SIZE_LIMIT characters is refused with Rails' message, after the account is found. The note is
-// kept as sent, and only its author is shown it (relationshipsOf).
+// account, the viewer's own included. A blank comment (absent, or blank by railsBlank) deletes the note; a longer one
+// than AccountNote::COMMENT_SIZE_LIMIT characters is refused with Rails' message, after the account is found. The note
+// is kept as sent, and only its author is shown it (relationshipsOf).
 export const MAX_NOTE_COMMENT = 2_000;
 
 export type NoteResult = RelationshipResult | { status: "invalid"; errors: string[] };
@@ -1577,8 +1578,8 @@ export const setNote = userWriteOperation<{ target: string; comment: string | un
     if (id === null) {
       return { status: "not_found" };
     }
-    // Ruby's String#blank?.
-    if (comment === undefined || /^\s*$/u.test(comment)) {
+    // Rails' blank? (Accounts::NotesController#create).
+    if (comment === undefined || railsBlank(comment)) {
       db.run("DELETE FROM account_notes WHERE account_id = ? AND target_account_id = ?", viewerId, id);
     } else if ([...comment].length > MAX_NOTE_COMMENT) {
       return { status: "invalid", errors: [`Comment is too long (maximum is ${MAX_NOTE_COMMENT} characters)`] };

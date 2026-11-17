@@ -127,6 +127,25 @@ describe("an owner's Add and Remove without an id (D20)", () => {
   });
 });
 
+describe("a collection's name", () => {
+  // Collection validates the name's presence (Rails' blank?): U+0085 alone is blank, so no collection is stored; U+FEFF
+  // is not, so the collection is stored under it.
+  it("stores no collection whose name is blank to Rails", async () => {
+    const t = await setup();
+    const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
+    const { listed } = await synced(t, owner, []);
+    const blank = collection(owner, [], { name: "\u0085" });
+    const kept = collection(owner, [], { name: String.fromCodePoint(0xfeff) });
+    for (const added of [blank, kept]) {
+      expect(await t.post(owner, addOrRemove("Add", owner, owner.featuredCollections, added))).toBe(202);
+    }
+    expect(Object.fromEntries((await collectionRows(t)).map((row) => [row.uri, row.name]))).toEqual({
+      [listed.id]: listed.name,
+      [kept.id]: kept.name,
+    });
+  });
+});
+
 describe("another account of the owner's server", () => {
   it("changes none of the owner's collections or items by its own Add, Remove or Update", async () => {
     const t = await setup();

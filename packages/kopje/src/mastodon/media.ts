@@ -8,6 +8,7 @@ import { accountMonthlyTransforms, readConfig } from "../platform/config";
 import { errorFields } from "../platform/error-message";
 import { IMAGE_MATRIX_LIMIT, IMAGE_SIZE_LIMIT, processImage, type ProcessedImage } from "../platform/images";
 import { fileKey, mediaKeys, originalKey } from "../platform/media-files";
+import { railsBlank } from "../platform/rails-blank";
 import { callStore, type StoreResolver } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
 import { MAX_MEDIA_DESCRIPTION_LENGTH, yieldsMoreThan } from "../platform/stored-bounds";
@@ -78,9 +79,10 @@ function mediaId(c: ApiContext): string {
   return c.req.param("id") ?? "";
 }
 
-// Mastodon's focus: "x,y" with each coordinate in [-1, 1]; unparsable parts read as 0, as Ruby's to_f does.
+// Mastodon's focus: "x,y" with each coordinate in [-1, 1]; unparsable parts read as 0, as Ruby's to_f does. A blank
+// one (railsBlank) changes nothing (MediaAttachment#focus=: `return if point.blank?`).
 export function parseFocus(value: string | undefined): { x: number; y: number } | undefined {
-  if (value === undefined || value === "") {
+  if (value === undefined || railsBlank(value)) {
     return undefined;
   }
   // At most two components are split off, however many commas the value has.

@@ -946,7 +946,7 @@ Public pages ([web-pages.md](web-pages.md)):
   send `noindex`. Every other page, 404 and 410 sends what Mastodon's answer at the same URL sends
   ([web-pages.md](web-pages.md), "Robots"). Accepted, 2026-11-16.
 
-Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`):
+Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/peers/search`, `/api/v1/preferences`):
 
 - An application's `id` is its `client_id`, Kopje's only stable key of an application; the `client_id` is a public
   identifier (RFC 6749 §2.2).
@@ -986,6 +986,11 @@ Instance and apps (`/api/v1/apps`, `/api/v{1,2}/instance`, `/api/v1/preferences`
   `REST::ExtendedDescriptionSerializer`, without `safe_links_only`), keeping h1 to h6 and relative links as written.
   `test/instance-reads.test.ts` ("keeps a document’s headings in the API, as the pages show them"), `test/html.test.ts`
   ("keeps headings as h2 to h4, without attributes, under the page’s own h1"). Accepted, 2026-10-28.
+- `GET /api/v1/peers/search` answers `[]` for a `q` that IDNA cannot encode as a host, such as U+FEFF (not blank to
+  Rails). Mastodon 4.7.5 answers 500 to it: `TagManager#normalize_domain` raises `IDN::Idna::IdnaError`, and the
+  controller rescues only `Addressable::URI::InvalidURIError`. Such a `q` names no peer, so Kopje answers it as it
+  answers a host Addressable refuses. `test/param-blank.test.ts` ("answers the peer search null for a blank q only").
+  Accepted, 2026-11-18.
 
 OAuth (`/oauth/authorize`, `/oauth/token/info`, `/oauth/introspect`):
 
@@ -1095,6 +1100,11 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
 - A `limit` or `offset` given as an array or a nested parameter (`limit[]=1`, `offset[a]=-1`) is not read: the search
   answers as without it, or 400 when the other one is negative. Mastodon 4.7.5 answers 500 to both, as its pagination
   check calls `to_i` on the array or hash. Accepted, 2026-11-17.
+- `/api/v2/search` finds no hashtag for a `q` that a hashtag's name normalizes to nothing (U+FEFF, an emoji). Mastodon
+  4.7.5 without Elasticsearch finds every listable hashtag, up to `limit`: `Tag.matches_name` searches the names that
+  start with the normalized term, and an empty term starts every name. A query of characters no hashtag can hold names
+  no hashtag. `test/param-blank.test.ts` ("finds no hashtag for a q a hashtag's name normalizes to nothing").
+  Accepted, 2026-11-18.
 - A URL that answers with an HTML page or another type is followed to the ActivityPub document its `Link` header or
   `<link rel="alternate">` names, as Mastodon 4.7.5's `FetchResourceService` follows it, with these differences
   (`src/federation/resolve.ts`):

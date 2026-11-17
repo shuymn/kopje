@@ -11,6 +11,7 @@ import {
   type Viewed,
 } from "../domain/statuses";
 import { envInMaintenance } from "../platform/config";
+import { railsBlank } from "../platform/rails-blank";
 import { StoreUnavailableError, WRITE_REFUSALS } from "../platform/store-errors";
 import { rubyStrip } from "../platform/strip";
 import { sha256Hex } from "../security/tokens";
@@ -52,6 +53,11 @@ function emptyToUndefined(value: string | undefined): string | undefined {
   return value === "" ? undefined : value;
 }
 
+// A parameter Mastodon reads with `present?`: undefined when absent or blank (railsBlank).
+function presentParam(value: string | undefined): string | undefined {
+  return value === undefined || railsBlank(value) ? undefined : value;
+}
+
 function statusId(c: ApiContext): string {
   return c.req.param("id") ?? "";
 }
@@ -69,11 +75,12 @@ function viewedResponse<T>(c: ApiContext, result: Viewed<T> | Acted<T>): Respons
   }
 }
 
-// quote_approval_policy as Api::InteractionPoliciesConcern reads it: public, followers or nobody; absent or blank is
+// quote_approval_policy as Api::InteractionPoliciesConcern reads it: public, followers or nobody; absent or blank
+// (`presence`) is
 // none (the author's default on posting, the status's own policy on an edit); anything else is null, which Mastodon
 // answers with ActiveRecord::RecordInvalid's "Record invalid".
 function quotePolicyOf(p: Params): QuotePolicyName | null | undefined {
-  const raw = emptyToUndefined(p.get("quote_approval_policy"));
+  const raw = presentParam(p.get("quote_approval_policy"));
   return raw === undefined
     ? undefined
     : QUOTE_POLICY_NAMES.includes(raw as QuotePolicyName)
@@ -198,8 +205,9 @@ export function parseScheduledAt(raw: string): string | null {
 }
 
 export const createStatus: ApiHandler = withParams(async (c, deps, p) => {
-  const inReplyToId = emptyToUndefined(p.get("in_reply_to_id"));
-  const quotedStatusId = emptyToUndefined(p.get("quoted_status_id"));
+  // StatusesController#set_thread and #set_quoted_status look a target up only when its id is `present?`.
+  const inReplyToId = presentParam(p.get("in_reply_to_id"));
+  const quotedStatusId = presentParam(p.get("quoted_status_id"));
   const composed = composition(p);
   const visibility = emptyToUndefined(p.get("visibility"));
   const scheduledRaw = emptyToUndefined(p.get("scheduled_at"));
