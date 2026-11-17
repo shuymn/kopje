@@ -13,7 +13,16 @@ import { BUILD } from "../helpers";
 import { scopedToken } from "../read-helpers";
 import { byText } from "../sort";
 import { act, community, follow, getJson, post, remoteAccount, seedStatus, type User } from "../status-helpers";
-import { connect, drained, echo, type Inbox, liftInstanceCap, type StreamMessage, subscribed } from "./stream-helpers";
+import {
+  connect,
+  drained,
+  echo,
+  type Inbox,
+  keepWriting,
+  liftInstanceCap,
+  type StreamMessage,
+  subscribed,
+} from "./stream-helpers";
 
 // The `direct` stream and `notifications_merged`. `conversation` is sent when a
 // conversation of the viewer changes, as the conversation list presents it (R33: the row of the viewer, R25), by the
@@ -233,6 +242,10 @@ const sentStatus = (status: string) => (m: StreamMessage) =>
   m.event === "conversation" && (JSON.parse(m.payload!) as Conversation).last_status?.id === status;
 
 describe("conversations at the caps", () => {
+  // The busy owner's changes while the others are served (3 in a passing run): a bound, so a failing case stops
+  // writing (keepWriting).
+  const STEADY_WRITES = 100;
+
   // 256 owners, each with a `direct` socket (the instance's cap): a turn's token sweep takes 256 checks of its 512, so
   // one turn sends only some of the owners' conversations; the journal's position carries the rest to the next.
   it("reaches the last of 256 owners, then asks for no further turn", async () => {
@@ -286,20 +299,27 @@ describe("conversations at the caps", () => {
     const [busy, ...others] = await owners(h, 241);
     const busySockets = await directSockets(h, [busy!], 16);
     const inboxes = await directSockets(h, others);
-    let writing = true;
-    const steady = (async () => {
-      while (writing) {
+    const writing = keepWriting(
+      async () => {
         await changed(h, [busy!]);
         await h.store.streamTick(BUILD);
+      },
+      STEADY_WRITES,
+      [...busySockets, ...inboxes],
+    );
+    let writes = 0;
+    try {
+      const statuses = await changed(h, others);
+      await h.store.streamTick(BUILD);
+      for (const [i, inbox] of inboxes.entries()) {
+        await inbox.next(sentStatus(statuses[i]!));
       }
-    })();
-    const statuses = await changed(h, others);
-    await h.store.streamTick(BUILD);
-    for (const [i, inbox] of inboxes.entries()) {
-      await inbox.next(sentStatus(statuses[i]!));
+    } finally {
+      writes = await writing.stop();
     }
-    writing = false;
-    await steady;
+    // The busy owner was still changing when the last of the others was served.
+    expect(writes).toBeLessThan(STEADY_WRITES);
+    expect(busySockets.filter((inbox) => inbox.isClosed)).toEqual([]);
     await drained(h);
     // Each of the busy owner's sockets was sent its changes too, each at most once.
     for (const inbox of busySockets) {
@@ -535,8 +555,9 @@ describe("notifications_merged", () => {
     await drained(h, notified, statusesOnly);
     expect(merged(notified)).toEqual([{ stream: ["user:notification"], event: "notifications_merged", payload: "1" }]);
     expect(merged(statusesOnly)).toEqual([]);
-    // The dismiss job's completion sends nothing more.
-    while (await round(h)) {
+    // The dismiss job's completion sends nothing more (its rounds bounded, so a failing case ends).
+    for (let rounds = 1; await round(h); rounds++) {
+      expect(rounds).toBeLessThan(10);
       await drained(h);
     }
     await drained(h, notified);

@@ -614,9 +614,11 @@ describe("hibernation and turns", () => {
   });
 });
 
-// Retries `check` after each drain of the Store, for what a socket's close makes true once the Store has seen it.
+// Retries `check` after each drain of the Store, for what a socket's close makes true once the Store has seen it: at
+// most 100 times, so a failing case ends.
 async function expectEventually(check: () => Promise<boolean>, inbox: Inbox, h: ApiHarness): Promise<void> {
-  while (!(await check())) {
+  for (let tries = 1; !(await check()); tries++) {
+    expect(tries).toBeLessThan(100);
     await settled(h, inbox);
   }
 }

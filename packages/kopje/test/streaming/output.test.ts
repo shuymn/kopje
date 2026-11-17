@@ -9,7 +9,7 @@ import { bearer, sql } from "../api-helpers";
 import { BUILD } from "../helpers";
 import { community, follow, post, type User } from "../status-helpers";
 import { describedMedia, encodedTwice, FILLS, payloadBytes, writeFilled } from "./payload-fills";
-import { connect, Inbox, settled, type StreamMessage, upgrade } from "./stream-helpers";
+import { connect, Inbox, keepWriting, settled, type StreamMessage, upgrade } from "./stream-helpers";
 
 // Held stream output (RES-6, src/stream-output.ts): every frame the hub hands a socket is charged to it until the socket
 // leaves getWebSockets(), and a unit, an error reply or an upgrade past a cap closes the socket (1013) or answers 503.
@@ -417,6 +417,27 @@ describe("the instance's cap (RES-6)", () => {
     expect(accepted.status).toBe(101);
     accepted.webSocket!.accept();
   }, 120_000);
+
+  // A case whose receiver the cap closes ends, and its producer with it: bob's first unit passes the instance's cap
+  // (1013), his wait for it fails on the close, and alice's statuses stop by themselves at the close, far below their
+  // bound.
+  it("ends a case whose receiver the cap closes", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const inbox = await opened(h, bob, ["public:local"]);
+    STREAM_OUTPUT.instanceBytes = FRESH + FRAME_1K - 1;
+    const writing = keepWriting(
+      async () => {
+        await status(h, alice);
+        await drain(h);
+      },
+      100,
+      [inbox],
+    );
+    await expect(inbox.next((m) => m.event === "update")).rejects.toThrow("the socket closed (1013)");
+    expect(await writing.done).toBeLessThan(100);
+  });
 
   // An upgrade whose attachment write throws answers 500 and lists no socket: the attachment is written before the
   // socket is accepted.
