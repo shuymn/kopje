@@ -2295,10 +2295,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   by shared inbox; a follower's or poll voter's inbox (its shared inbox, else its personal one, chosen before it is
   judged, so a shared inbox outside the rule never sends the activity to the personal one) is read only when it is
   text of 1 to 4,096 UTF-8 bytes without NUL (`reachInboxSql` in `src/domain/audience.ts`), for targets read at once,
-  a retraction staged in steps and a collection's reach alike (a moderation reach and an addressed account still read
-  it whole), while targets already recorded or staged keep their inboxes (`test/reach-inboxes.test.ts`); an activity
-  without `to` (a Like, Follow, Accept, Reject, Block or their Undo, each naming its recipient through its object)
-  goes to the recipient's shared inbox when it has one (R38's severing `Reject` alone goes to its
+  a retraction staged in steps, a collection's reach and a moderation reach alike, as is every account's inbox a
+  moderation reach stages (an addressed account still reads it whole), while targets already recorded and a
+  retraction's already staged keep their inboxes (`test/reach-inboxes.test.ts`); a moderation job's staged rows are
+  read by the same rule again (`test/admin-suspension.test.ts`); an activity without `to` (a Like, Follow, Accept,
+  Reject, Block or their Undo, each naming its recipient through its object) goes to the recipient's shared inbox
+  when it has one (R38's severing `Reject` alone goes to its
   personal inbox, as Mastodon's `reject_remote_follows!` sends it). A remote actor's shared inbox is the one Mastodon
   4.7.5 reads, kept only when Kopje POSTs to the URL Mastodon POSTs to for its spelling, else none, so the personal
   inbox is used and nothing goes to a guessed inbox (`sharedInboxUri` in `src/federation/remote-actor.ts`;
@@ -3348,16 +3350,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   _Enforced (main)_ for followers' and voters' inboxes: `accounts.inbox_url` and `shared_inbox_url` keep no stored
   bound (Kopje stores at most 2,048 characters of an actor document's), so an import or an older release may hold any
   value. The readers of a follower's or poll voter's inbox for an activity's targets (`recipientsFor`, a staged
-  retraction's `stagedFollowers` and `stagedVoters`, and a block's collection `Remove`s' `reachFollowerInboxes`) choose
-  its shared inbox, else its personal one, and read that value only when it is text of 1 to `REACH_INBOX_BYTES` (4,096)
-  UTF-8 bytes without NUL, else none, in SQL (`reachInboxSql` in `src/domain/audience.ts`; the CHECK
-  `collection_reach_inbox` holds the same bound). An admitted value is at most 4,096 UTF-16 code units in the Worker,
-  12,288 bytes re-encoded as UTF-8 (a malformed byte decodes to U+FFFD) and 24,578 bytes as JSON (a control character
-  escapes as six); `test/reach-inboxes.test.ts` ("returns no inbox outside the rule, the bound's own whole"),
-  `test/reach-inbox-plans.test.ts` ("is at most the bound's raw bytes, its UTF-16 units, three times as UTF-8 and six
-  times as JSON"). A moderation `Update`'s audience (`reachFollowers`, `reachFollowing`, `reachMentioned`,
-  `reachAccount`) reads the inbox whole, as each addressed account's is read, and keeps only a deliverable one
-  (`isDeliverableInbox`).
+  retraction's `stagedFollowers` and `stagedVoters`, and a block's collection `Remove`s' `reachFollowerInboxes`), and
+  of every account a moderation `Update`'s audience reaches (its followers by `reachFollowerInboxes`, `reachFollowing`,
+  `reachMentioned`, and the reporters by `reachAccount`), choose its shared inbox, else its personal one, and read that
+  value only when it is text of 1 to `REACH_INBOX_BYTES` (4,096) UTF-8 bytes without NUL, else none, in SQL
+  (`reachInboxSql` in `src/domain/audience.ts`; the CHECK `collection_reach_inbox` holds the same bound). An admitted
+  value is at most 4,096 UTF-16 code units in the Worker, 12,288 bytes re-encoded as UTF-8 (a malformed byte decodes
+  to U+FFFD) and 24,578 bytes as JSON (a control character escapes as six); `test/reach-inboxes.test.ts` ("returns no
+  inbox outside the rule, the bound's own whole"), `test/reach-inbox-plans.test.ts` ("is at most the bound's raw bytes,
+  its UTF-16 units, three times as UTF-8 and six times as JSON"). `moderation_reach.inbox` keeps no stored bound either
+  (migration `0034_admin_suspension`), so a moderation job's write and end rounds read each staged row by the same rule
+  (`reachInboxWithinSql`); `test/admin-suspension.test.ts` ("reads no inbox past REACH_INBOX_BYTES in any phase").
   _Enforced (main)_ for attribution domains: `local_accounts.attribution_domains` keeps only its shape CHECK (migration
   `0024_attribution_domains`), so a stored value may be any JSON array: an import, or a list an earlier writer accepted
   with domains padded by characters IDNA ignores (100 of them pass `ATTRIBUTION_DOMAINS_BYTES`). Every reader
@@ -3993,10 +3996,19 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (`total_changes()`, its own row and its retry state's row included). The suspension job resolves at most 100 reports a
   round, then stages the `Update`'s audience (its followers, its reporters, the accounts it mentioned and followed) into
   `moderation_reach` from indexed ranges, 500 rows a round, each source capped as Mastodon's `AccountReachFinder` caps
-  it, then writes the inboxes as the `Update`'s targets and deletes their staging rows, 500 a round; every round writes
-  at most 600 rows, its retry state's row included (a severing round reserves it from its budget), and each cursor is
-  persisted, so every round makes progress (`src/domain/suspension.ts`; `test/admin-suspension.test.ts`: a history of
-  600 tokens, 250 subscriptions and 650 pushes, and 10,000 followers, each round within its budget, also as a due retry;
+  it, then writes the inboxes as the `Update`'s targets and deletes their staging rows, 500 a round. No round reads an
+  inbox past 4,096 UTF-8 bytes (`REACH_INBOX_BYTES`), so a round reads at most 2,048,000 bytes of them: each source
+  judges an account's inbox in SQL before reading it (`reachInboxSql`, RES-2), and a write or end round reads its
+  staged rows (an import or an earlier release's staging may hold any value) by the same rule in the stored inbox's
+  order, `moderation_reach`'s key, and deletes exactly the rows it read by a boundary compared in SQL (DATA-6), so every
+  staged inbox within the rule is written once and every staged row is deleted; `test/admin-suspension.test.ts` ("reads
+  no inbox past REACH_INBOX_BYTES in any phase": each source at its cap, every inbox at the bound, one past it and one
+  with a NUL in each, and an import's staged rows past it, with a NUL, a BLOB and not UTF-8),
+  `test/moderation-plans.test.ts` (the followers round beside main's statement, and the staged rows' seek with stale
+  statistics). Every round writes at most 600 rows, its retry state's row included (a severing round reserves it from
+  its budget), and each cursor is persisted, so every round makes progress (`src/domain/suspension.ts`;
+  `test/admin-suspension.test.ts`: a history of 600 tokens, 250 subscriptions and 650 pushes, and 10,000 followers,
+  each round within its budget, also as a due retry;
   `test/remote-suspension.test.ts` ("stays within the budget as a due retry", "stays within the budget when a round
   fails after its writes")). App registration: _Enforced (main):_ `POST /api/v1/apps` is limited to 5 per minute per
   client IP by the Workers Rate Limiting binding before its body is read (429), and the Store keeps at most 500

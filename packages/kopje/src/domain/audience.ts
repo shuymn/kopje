@@ -2058,15 +2058,22 @@ const RECIPIENT_COLUMNS = `a.id, ${uriHostSql("a.uri")} AS host`;
 // collection_reach_inbox's bound (migration 0108_collection_jobs).
 export const REACH_INBOX_BYTES = 4096;
 
-// The inbox a follower or voter `a` is reached at (REACH_INBOX: its shared inbox, else its personal one), judged in SQL
+// Whether the stored inbox `value` is one reachInboxSql reads: TEXT of 1 to `bytes` (an SQL expression) UTF-8 bytes
+// without NUL. A moderation job's staged inbox (moderation_reach, which has no CHECK) is read by it too
+// (suspension.ts consumeStaged).
+export function reachInboxWithinSql(value: string, bytes: string): string {
+  return `typeof(${value}) = 'text'
+		AND length(CAST(${value} AS BLOB)) BETWEEN 1 AND ${bytes} AND instr(CAST(${value} AS BLOB), x'00') = 0`;
+}
+
+// The inbox a remote account `a` is reached at (REACH_INBOX: its shared inbox, else its personal one), judged in SQL
 // before it is read, since accounts' inbox columns have no stored bound (RES-2): the value when `a` is remote and the
-// value is TEXT of 1 to `bytes` (an SQL expression) UTF-8 bytes without NUL, else NULL. The value is chosen first and
-// judged after, so a shared inbox past the rule reads as none rather than as the personal inbox; nothing is cut.
+// value is within `bytes` (reachInboxWithinSql), else NULL. The value is chosen first and judged after, so a shared
+// inbox past the rule reads as none rather than as the personal inbox; nothing is cut. A follower's and a voter's inbox
+// are read by it, and every inbox a moderation Update's reach stages (suspension.ts).
 export function reachInboxSql(a: string, bytes: string): string {
   const inbox = `COALESCE(NULLIF(${a}.shared_inbox_url, ''), ${a}.inbox_url)`;
-  return `CASE WHEN ${a}.domain IS NOT NULL AND typeof(${inbox}) = 'text'
-		AND length(CAST(${inbox} AS BLOB)) BETWEEN 1 AND ${bytes} AND instr(CAST(${inbox} AS BLOB), x'00') = 0
-		THEN ${inbox} END`;
+  return `CASE WHEN ${a}.domain IS NOT NULL AND ${reachInboxWithinSql(inbox, bytes)} THEN ${inbox} END`;
 }
 
 // The rows (id, host, inbox) of `query` a target's provenance can use, at most 2 × (PROVENANCE_MAX + 1) per inbox:
@@ -2199,35 +2206,19 @@ export function reachedAccounts(db: Db, statusId: string): string[] {
 }
 
 // R23 for the Update of a local actor that its suspension or unsuspension sends (AccountReachFinder, run by the
-// moderation jobs in suspension.ts): its sources, each an indexed range read a page at a time, with each account's
-// inbox (its shared inbox when it has one) and its domain (null: local, which reads the Store and is sent nothing).
-// The Update is neither content nor a retraction, so no one is left out (as Mastodon's reach finder leaves out no one).
-export type ReachedAccount = { domain: string | null; inbox: string | null };
+// moderation jobs in suspension.ts): its sources, each an indexed range read a page at a time (the followers by
+// reachFollowerInboxes), with each account's inbox as reachInboxSql reads it within REACH_INBOX_BYTES (null: a local
+// account, which reads the Store and is sent nothing, or an inbox that is none or past that rule, which only an import
+// holds). The Update is neither content nor a retraction, so no one else is left out (as Mastodon's reach finder
+// leaves out no one).
+export type ReachedAccount = { inbox: string | null };
 
 const REACH_INBOX = "COALESCE(NULLIF(a.shared_inbox_url, ''), a.inbox_url)";
+const REACHED_INBOX = `${reachInboxSql("a", String(REACH_INBOX_BYTES))} AS inbox`;
 
-// The account's accepted followers with follows.id in (after, bound], in id order (follows_target's range). The ids,
-// `after` and `bound` are decimal TEXT, bound back with CAST (DATA-6: an imported id may pass 2^53).
-export function reachFollowers(
-  db: Db,
-  accountId: string,
-  after: string,
-  bound: string,
-  limit: number,
-): (ReachedAccount & { id: string })[] {
-  return db.all<ReachedAccount & { id: string }>(
-    `SELECT CAST(f.id AS TEXT) AS id, a.domain, ${REACH_INBOX} AS inbox FROM main.follows f INDEXED BY follows_target
-		JOIN main.accounts a ON a.id = f.account_id
-		WHERE f.target_account_id = ?1 AND f.state = 'accepted' AND f.id > CAST(?2 AS INTEGER) AND f.id <= CAST(?3 AS INTEGER)
-		ORDER BY f.id LIMIT ?4`,
-    accountId,
-    after,
-    bound,
-    limit,
-  );
-}
-
-// reachFollowers' range, each follow's id with its follower's inbox as reachInboxSql reads it within `bytes`.
+// The account's accepted followers with follows.id in (after, bound], in id order (follows_target's range, LIMIT on the
+// follows read), each follow's id with its follower's inbox as reachInboxSql reads it within `bytes`. The ids, `after`
+// and `bound` are decimal TEXT, bound back with CAST (DATA-6: an imported id may pass 2^53).
 export function reachFollowerInboxes(
   db: Db,
   accountId: string,
@@ -2260,8 +2251,8 @@ export function reachFollowing(
   limit: number,
 ): (ReachedAccount & { bounded: number; target: string; state: string; created_at: string })[] {
   return db.all<ReachedAccount & { bounded: number; target: string; state: string; created_at: string }>(
-    `SELECT f.id <= CAST(?4 AS INTEGER) AS bounded, f.target_account_id AS target, f.state, f.created_at, a.domain,
-			${REACH_INBOX} AS inbox
+    `SELECT f.id <= CAST(?4 AS INTEGER) AS bounded, f.target_account_id AS target, f.state, f.created_at,
+			${REACHED_INBOX}
 		FROM main.follows f INDEXED BY follows_pair JOIN main.accounts a ON a.id = f.target_account_id
 		WHERE f.account_id = ?1 AND f.target_account_id > ?2 ORDER BY f.target_account_id LIMIT ?3`,
     accountId,
@@ -2279,7 +2270,7 @@ export function reachMentioned(
   limit: number,
 ): (ReachedAccount & { account_id: string })[] {
   return db.all<ReachedAccount & { account_id: string }>(
-    `SELECT m.account_id, a.domain, ${REACH_INBOX} AS inbox FROM main.status_mentions m
+    `SELECT m.account_id, ${REACHED_INBOX} FROM main.status_mentions m
 		JOIN main.accounts a ON a.id = m.account_id
 		WHERE m.status_id = ?1 AND m.account_id > ?2 ORDER BY m.account_id LIMIT ?3`,
     statusId,
@@ -2291,10 +2282,7 @@ export function reachMentioned(
 // One account's reach, by key: a reporter of the account (reports.ts reachReporters, AccountReachFinder
 // #reporters_inboxes).
 export function reachAccount(db: Db, accountId: string): ReachedAccount | undefined {
-  return db.first<ReachedAccount>(
-    `SELECT a.domain, ${REACH_INBOX} AS inbox FROM main.accounts a WHERE a.id = ?1`,
-    accountId,
-  );
+  return db.first<ReachedAccount>(`SELECT ${REACHED_INBOX} FROM main.accounts a WHERE a.id = ?1`, accountId);
 }
 
 // Quoters' reach (StatusReachFinder#quotes_account_ids): the remote authors of the accepted quotes of the
@@ -2528,8 +2516,8 @@ export function stagedVoters(
   );
 }
 
-// The signer's accepted followers with follows.id in (after, bound], in id order (reachFollowers' range); key: the
-// follow's id as TEXT (DATA-6).
+// The signer's accepted followers with follows.id in (after, bound], in id order (reachFollowerInboxes' range); key:
+// the follow's id as TEXT (DATA-6).
 export function stagedFollowers(
   db: Db,
   kind: OutboundKind,
