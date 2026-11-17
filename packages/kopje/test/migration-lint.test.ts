@@ -50,6 +50,7 @@ describe("migration lint", () => {
       "0104_quote_broadcast",
       "0105_media_description_bytes",
       "0109_scheduled_media_cap",
+      "0110_scheduled_params",
     ]);
     for (const m of DECLARED) {
       expect(unchangedProblem(m.sql), m.name).toBeNull();
