@@ -179,11 +179,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   them current, and a member's `Delete` of its authorization, sent by the member or relayed by the owner with the
   member's signature, revokes its membership; search with `resolve=true` finds one by its URL, and an inbound report
   attaches the remote collections it names ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
-  "Collections"). Migration
-  `0113_featured_collection_syncs`: a column of `collection_syncs`, reading only the pending syncs, and a new table; as
-  it creates a table, the upgrade checks every reference of the Store (not measured yet). `wrangler.jsonc`: unchanged.
-  This adds a Store migration, so the release is at least a minor version, and rolling back past it needs a
-  point-in-time restore.
+  "Collections"). Migration `0113_featured_collection_syncs`: a column of `collection_syncs`, reading only the pending
+  syncs, and a new table; as it creates a table, the upgrade checks every reference of the Store (the migration bench's
+  upgrade from `0093_annual_reports` takes 22,046 ms with this file and 22,003 ms without it, medians of three runs).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling back
+  past it needs a point-in-time restore.
 
 ### Changed
 
