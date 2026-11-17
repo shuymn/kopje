@@ -429,6 +429,57 @@
         "object_actor": "https://mastodon.example/users/bob",
         "object_object": "https://kopje.test/ap/users/alice"
       }
+    },
+    {
+      "name": "Undo(Follow), its Follow's object as {\"@id\": its id}",
+      "reading": {
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/follows/14",
+        "object_type": "Follow",
+        "object_actor": "https://mastodon.example/users/bob",
+        "object_object": "https://kopje.test/ap/users/alice"
+      }
+    },
+    {
+      "name": "Delete(status), object as {\"@id\": its id}, source holding url as {\"@id\": …}",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted"
+      }
+    },
+    {
+      "name": "Delete(status), object as {\"@id\": its id}, contentMap holding to as {\"@id\": …}",
+      "reading": {
+        "type": "Delete",
+        "object": null,
+        "object_type": null,
+        "object_actor": null,
+        "object_object": null
+      }
+    },
+    {
+      "name": "Delete(status), object as {\"@id\": its id}, nameMap holding to as {\"@id\": …}",
+      "reading": {
+        "type": "Delete",
+        "object": null,
+        "object_type": null,
+        "object_actor": null,
+        "object_object": null
+      }
+    },
+    {
+      "name": "Delete(status), object as {\"@id\": its id}, summaryMap holding to as {\"@id\": …}",
+      "reading": {
+        "type": "Delete",
+        "object": null,
+        "object_type": null,
+        "object_actor": null,
+        "object_object": null
+      }
+    },
+    {
+      "name": "Delete(status), object as a two-element array after to: [null]",
+      "error": "TypeError: no implicit conversion of String into Integer"
     }
   ]
 }

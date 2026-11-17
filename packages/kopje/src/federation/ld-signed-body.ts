@@ -1053,8 +1053,9 @@ function actorAsCompacted(json: Json): Json {
 // such an object as it expands its IRI given as a string, and the compaction writes the IRI as given where it is an
 // http(s) IRI under no namespace of full_context's prefixes (one under a namespace it writes as a compact IRI,
 // `as:Public`). The patch puts back no object the compaction made a string (it patches only an object into an object),
-// so Mastodon reads the IRI; in an array too, which keeps its shape as the patch makes it an array again. Any other
-// object is left as it is, for rule (3) to refuse; the same body is returned when none is read so.
+// so Mastodon reads the IRI; in an array too, which keeps its shape as the patch makes it an array again, and in every
+// node of the body (an embedded activity's `object` too), but none in a language map. Any other object is left as it
+// is, for rule (3) to refuse; the same body is returned when none is read so.
 function referencesAsIris(json: Json, meanings: ReadonlyMap<string, Meaning>): Json {
   let read = false;
   const reference = (value: unknown): unknown => {
@@ -1074,11 +1075,13 @@ function referencesAsIris(json: Json, meanings: ReadonlyMap<string, Meaning>): J
     const [own, full] = scopedMeanings(object.type, meanings);
     return Object.fromEntries(
       Object.entries(object).map(([key, value]) => {
-        if (kept?.has(key)) {
-          return [key, value];
-        }
         const meaning = own.get(key) ?? meanings.get(key);
         const compacted = full.get(key) ?? FULL_CONTEXT_MEANINGS.get(key);
+        // A language map's keys are language tags, and its values no nodes: it is left as received, for rule (3) to
+        // refuse a reference in it, as JSON-LD refuses the map (Mastodon then reads the body as received).
+        if (kept?.has(key) || [meaning, compacted].some((each) => each?.containers.includes("@language") === true)) {
+          return [key, value];
+        }
         const references =
           meaning !== undefined &&
           meaning.key === compacted?.key &&

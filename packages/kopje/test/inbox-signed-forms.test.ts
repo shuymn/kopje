@@ -34,8 +34,9 @@ import {
   BOB_LIKE,
   BOB_STATUS,
   FORMS,
-  OUR_FOLLOW,
   type Form,
+  LANGUAGE_MAPS,
+  OUR_FOLLOW,
   referencesDelete,
   type Retraction,
   RETRACTIONS,
@@ -2416,6 +2417,8 @@ describe("#1717: LD-signed retractions in the forms Mastodon compacts", () => {
     "Undo(Follow) typed as absolute IRIs, actor as a one-element array",
     "Delete(status), object as a one-element array after to of carol twice and null",
     "Undo(Follow), its Follow's actor and object as one-element arrays after to: [null]",
+    'Undo(Follow), its Follow\'s object as {"@id": its id}',
+    'Delete(status), object as {"@id": its id}, source holding url as {"@id": …}',
   ];
 
   const READS_LESS = [
@@ -2785,6 +2788,26 @@ describe("#1717: LD-signed retractions in the forms Mastodon compacts", () => {
     ] as const)('Delete(status), its object and %i IRIs in cc as {"@id": …}: %s', async (n, outcome) => {
       const { before, after, ended } = await delivered("Delete(status)", () => referencesDelete(n));
       expect(after).toEqual(outcome === "ends it" ? { ...before, ...ended } : before);
+    });
+
+    // A reference in an embedded node, under a name typed @id or not, is read as its IRI, as the compaction writes it;
+    // one in a language map is not, as JSON-LD refuses the map and Mastodon reads the body as received, its object as no
+    // IRI; and a two-element array after the patch's stop stays an array, which Mastodon's handler raises on
+    // (retractions.json).
+    const entry = (name: string) => retractionEntries().find((other) => other.name === name)!.body;
+    it.each([
+      ["Undo(Follow)", 'Undo(Follow), its Follow\'s object as {"@id": its id}'],
+      ["Delete(status)", 'Delete(status), object as {"@id": its id}, source holding url as {"@id": …}'],
+    ] as const)("%s: %s ends what Mastodon's handler ends", async (scenario, name) => {
+      const { before, after, ended } = await delivered(scenario, () => entry(name));
+      expect(after).toEqual({ ...before, ...ended });
+    });
+    it.each([
+      ...LANGUAGE_MAPS.map((map) => `Delete(status), object as {"@id": its id}, ${map} holding to as {"@id": …}`),
+      "Delete(status), object as a two-element array after to: [null]",
+    ])("%s: ends nothing", async (name) => {
+      const { before, after } = await delivered("Delete(status)", () => entry(name));
+      expect(after).toEqual(before);
     });
 
     // D4 under the forms (LR-f): rule (3) refuses a keyword as a key, and rule (5) a type as a compact IRI and an inline

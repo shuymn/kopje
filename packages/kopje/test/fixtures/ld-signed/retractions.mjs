@@ -26,6 +26,8 @@ export const BOB_LIKE = "https://mastodon.example/likes/1";
 export const BOB_BOOST = `${BOB}/statuses/boost/activity`;
 export const BOB_BLOCK = `${BOB}/blocks/1`;
 export const BOB_STATUS = `${BOB}/statuses/deleted`;
+export const BOB_OTHER_STATUS = `${BOB}/statuses/other`;
+export const LANGUAGE_MAPS = ["contentMap", "nameMap", "summaryMap"];
 
 const SIGNATURE = {
   type: "RsaSignature2017",
@@ -228,6 +230,29 @@ export function retractionEntries() {
   add("Undo(Follow) under a definition no sender writes", {
     ...retraction("Undo(Follow)"),
     "@context": [AS, SEC, { mood: "https://other.example/ns#mood" }],
+  });
+  // A reference in an embedded node, under a name typed @id or not, is read as its IRI; one in a language map, whose
+  // keys are language tags, is not (JSON-LD refuses the map, and Mastodon reads the body as received). A two-element
+  // array after the patch's stop stays an array.
+  add('Undo(Follow), its Follow\'s object as {"@id": its id}', {
+    ...retraction("Undo(Follow)"),
+    object: { ...follow, object: { "@id": follow.object } },
+  });
+  add('Delete(status), object as {"@id": its id}, source holding url as {"@id": …}', {
+    ...reference(status()),
+    source: { url: { "@id": `${BOB}/sources/deleted` } },
+  });
+  for (const map of LANGUAGE_MAPS) {
+    add(`Delete(status), object as {"@id": its id}, ${map} holding to as {"@id": …}`, {
+      ...reference(status()),
+      [map]: { to: { "@id": `${BOB}/languages/to` } },
+    });
+  }
+  add("Delete(status), object as a two-element array after to: [null]", {
+    ...head,
+    to: [null],
+    object: [tombstone, { id: BOB_OTHER_STATUS, type: "Tombstone", atomUri: BOB_OTHER_STATUS }],
+    signature,
   });
   return entries;
 }
