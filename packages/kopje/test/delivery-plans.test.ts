@@ -71,6 +71,7 @@ const SECOND_EXPANSION = [
 // measure fails the case.
 const OTHER_STATEMENTS = [
   "DELETE FROM deliveries WHERE id = CAST(? AS INTEGER)",
+  "DELETE FROM delivery_hosts WHERE host = ? RETURNING unavailable_since IS NOT NULL AS unavailable",
   "DELETE FROM outbound_activities WHERE id = CAST(?1 AS INTEGER) AND staged IS NULL AND NOT EXISTS (SELECT 1 FROM outbound_targets WHERE activity_id = CAST(?1 AS INTEGER)) AND NOT EXISTS (SELECT 1 FROM deliveries WHERE activity_id = CAST(?1 AS INTEGER))",
   "DELETE FROM outbound_receipts WHERE account_id = ? AND status_id IN (SELECT id FROM statuses WHERE uri = ?)",
   "DELETE FROM outbound_targets WHERE id = CAST(? AS INTEGER)",
@@ -79,8 +80,9 @@ const OTHER_STATEMENTS = [
   "INSERT INTO outbound_activities (account_id, body, object_uri, retracts, created_at, follow_pair) VALUES (?, ?, ?, ?, ?, ?) RETURNING CAST(id AS TEXT) AS id",
   "INSERT INTO outbound_targets (activity_id, targets) VALUES (CAST(? AS INTEGER), ?)",
   "SELECT 1 AS x FROM deliveries e INDEXED BY deliveries_activity WHERE e.activity_id = CAST(?1 AS INTEGER) AND e.inbox_url = ?2 UNION ALL SELECT 1 FROM outbound_targets c INDEXED BY outbound_targets_activity, json_each(c.targets) t WHERE c.activity_id = CAST(?1 AS INTEGER) AND t.key >= c.next AND json_extract(t.value, '$.inbox') = ?2 LIMIT 1",
+  "SELECT 1 AS yes FROM delivery_hosts WHERE host = ? AND unavailable_since IS NOT NULL",
   "SELECT 1 AS yes FROM outbound_targets LIMIT 1",
-  "SELECT CAST(d.id AS TEXT) AS id, CAST(d.activity_id AS TEXT) AS activity_id, d.account_id, d.lane, d.inbox_url, d.attempts, (o.follow_pair IS NOT NULL AND o.superseded = 1) AS stale_answer, CASE json_extract(o.body, '$.activity.type') WHEN 'Accept' THEN 'Accept' WHEN 'Reject' THEN 'Reject' ELSE 'other' END AS answer_type FROM deliveries d LEFT JOIN outbound_activities o ON o.id = d.activity_id WHERE d.id = CAST(? AS INTEGER) AND d.state = 'leased' AND d.lease_token = ?",
+  "SELECT CAST(d.id AS TEXT) AS id, CAST(d.activity_id AS TEXT) AS activity_id, d.account_id, d.lane, d.inbox_url, d.attempts, (o.follow_pair IS NOT NULL AND o.superseded = 1) AS stale_answer, CASE json_extract(o.body, '$.activity.type') WHEN 'Accept' THEN 'Accept' WHEN 'Reject' THEN 'Reject' ELSE 'other' END AS answer_type, json_extract(o.body, '$.activity.type') IS 'Follow' AS follow FROM deliveries d LEFT JOIN outbound_activities o ON o.id = d.activity_id WHERE d.id = CAST(? AS INTEGER) AND d.state = 'leased' AND d.lease_token = ?",
   "SELECT CAST(id AS TEXT) AS id FROM deliveries WHERE lease_token = ?",
   "SELECT a.id, rtrim(lower(substr(substr(substr(a.uri, instr(a.uri, '://') + 3), 1, instr(substr(a.uri, instr(a.uri, '://') + 3) || '/', '/') - 1), 1, instr(substr(substr(a.uri, instr(a.uri, '://') + 3), 1, instr(substr(a.uri, instr(a.uri, '://') + 3) || '/', '/') - 1) || ':', ':') - 1)), '.') AS host, a.uri, NULLIF(a.inbox_url, '') AS inbox_url, NULLIF(a.shared_inbox_url, '') AS shared_inbox_url FROM main.accounts a WHERE a.id IN (SELECT value FROM json_each(?1)) AND a.domain IS NOT NULL AND NOT (NOT (NOT EXISTS (SELECT 1 FROM main.local_accounts pl WHERE pl.account_id = a.id AND pl.suspended_at IS NOT NULL UNION ALL SELECT 1 FROM main.accounts pa INDEXED BY accounts_deleted WHERE pa.id = a.id AND pa.deleted_at IS NOT NULL UNION ALL SELECT 1 FROM main.accounts ps INDEXED BY accounts_suspended WHERE ps.id = a.id AND (ps.suspended_at IS NOT NULL AND ps.suspension_source = 'account')) AND NOT (CASE WHEN EXISTS (SELECT 1 FROM main.instance_domain_blocks INDEXED BY instance_domain_blocks_suspend WHERE severity = 'suspend') THEN EXISTS (WITH RECURSIVE pk(d) AS (SELECT DISTINCT CASE pv.n WHEN 1 THEN rtrim(pc.domain, '.') ELSE rtrim(lower(substr(substr(substr(pc.uri, instr(pc.uri, '://') + 3), 1, instr(substr(pc.uri, instr(pc.uri, '://') + 3) || '/', '/') - 1), 1, instr(substr(substr(pc.uri, instr(pc.uri, '://') + 3), 1, instr(substr(pc.uri, instr(pc.uri, '://') + 3) || '/', '/') - 1) || ':', ':') - 1)), '.') END FROM main.accounts pc INDEXED BY sqlite_autoindex_accounts_1 CROSS JOIN (SELECT 1 AS n UNION ALL SELECT 2) pv WHERE pc.domain IS NOT NULL AND pc.id = a.id), ps(d, dots) AS (SELECT CASE WHEN length(CAST(d AS BLOB)) <= 1012 THEN d END, CASE WHEN length(CAST(d AS BLOB)) <= 1012 THEN length(d) - length(replace(d, '.', '')) ELSE -1 END FROM pk UNION ALL SELECT substr(d, instr(d, '.') + 1), dots - 1 FROM ps WHERE dots > 1 AND NOT EXISTS (SELECT 1 FROM main.instance_domain_blocks pn INDEXED BY sqlite_autoindex_instance_domain_blocks_1 WHERE ps.dots BETWEEN 1 AND 7 AND pn.domain = ps.d)) SELECT 1 FROM ps LEFT JOIN main.instance_domain_blocks pr INDEXED BY sqlite_autoindex_instance_domain_blocks_1 ON ps.dots BETWEEN 1 AND 7 AND pr.domain = ps.d WHERE ps.dots < 0 OR (pr.domain IS NOT NULL AND pr.severity = 'suspend')) ELSE 0 END)) OR (EXISTS (SELECT 1 FROM main.blocks pb WHERE pb.account_id = ?2 AND pb.target_account_id = a.id) OR EXISTS (SELECT 1 FROM main.accounts pda INDEXED BY sqlite_autoindex_accounts_1 CROSS JOIN main.domain_blocks pdb ON pdb.account_id = ?2 AND (pda.domain IS NOT NULL AND pdb.domain IN (rtrim(pda.domain, '.'), rtrim(lower(substr(substr(substr(pda.uri, instr(pda.uri, '://') + 3), 1, instr(substr(pda.uri, instr(pda.uri, '://') + 3) || '/', '/') - 1), 1, instr(substr(substr(pda.uri, instr(pda.uri, '://') + 3), 1, instr(substr(pda.uri, instr(pda.uri, '://') + 3) || '/', '/') - 1) || ':', ':') - 1)), '.'))) WHERE pda.id = a.id))) ORDER BY a.id",
   "SELECT a.id, rtrim(lower(substr(substr(substr(a.uri, instr(a.uri, '://') + 3), 1, instr(substr(a.uri, instr(a.uri, '://') + 3) || '/', '/') - 1), 1, instr(substr(substr(a.uri, instr(a.uri, '://') + 3), 1, instr(substr(a.uri, instr(a.uri, '://') + 3) || '/', '/') - 1) || ':', ':') - 1)), '.') AS host, a.uri, NULLIF(a.inbox_url, '') AS inbox_url, NULLIF(a.shared_inbox_url, '') AS shared_inbox_url FROM main.accounts a WHERE a.id IN (SELECT value FROM json_each(?1)) AND a.domain IS NOT NULL AND NOT 0 ORDER BY a.id",
@@ -99,10 +101,12 @@ const OTHER_STATEMENTS = [
 // receipts the INSERT leaves, the ids the DELETE removes.
 const WITNESS = new PlanWitness(
   {
-    // expandPending, the oldest chunk
+    // expandPending, the oldest chunk. The rewrite also reads whether its activity is a Follow (which an unavailable
+    // host does not stop), a column main's statement has no counterpart of: the rows compare without it.
     "34a88d39f6885dc4": {
       sql: "SELECT CAST(c.id AS TEXT) AS id, CAST(c.activity_id AS TEXT) AS activity_id, o.account_id, o.retracts, c.next FROM outbound_targets c JOIN outbound_activities o ON o.id = c.activity_id ORDER BY c.id LIMIT 1",
-      text: "SELECT CAST(id AS TEXT) AS id, CAST(activity_id AS TEXT) AS activity_id, o ->> 0 AS account_id, o ->> 1 AS retracts, next FROM (SELECT c.id, c.activity_id, c.next, (SELECT json_array(o.account_id, o.retracts) FROM outbound_activities o WHERE o.id = c.activity_id) AS o FROM outbound_targets c ORDER BY c.id LIMIT 1)",
+      text: "SELECT CAST(id AS TEXT) AS id, CAST(activity_id AS TEXT) AS activity_id, o ->> 0 AS account_id, o ->> 1 AS retracts, o ->> 2 AS follow, next FROM (SELECT c.id, c.activity_id, c.next, (SELECT json_array(o.account_id, o.retracts, json_extract(o.body, '$.activity.type') IS 'Follow') FROM outbound_activities o WHERE o.id = c.activity_id) AS o FROM outbound_targets c ORDER BY c.id LIMIT 1)",
+      result: { main: (rows) => rows, mine: (rows) => rows.map(({ follow: _follow, ...row }) => row) },
     },
     // expandPending, a chunk's targets
     "0d7193e6184aeba1": {
@@ -363,7 +367,7 @@ const completed = (outcome: DeliveryOutcome) => (sql: SqlStorage, transact: <T>(
   const id = sql
     .exec<{ id: string }>("SELECT CAST(id AS TEXT) AS id FROM deliveries WHERE lease_token = ?", LEASE)
     .one().id;
-  return completeDelivery.run(sql, { id, leaseToken: LEASE, now: NOW, outcome }, transact);
+  return completeDelivery.run(sql, { id, leaseToken: LEASE, now: NOW, storeNow: NOW, outcome }, transact);
 };
 const DELIVERED: DeliveryOutcome = { kind: "delivered", status: 202 };
 

@@ -35,6 +35,52 @@ export function deliveryHost(inbox: string): string | null {
   }
 }
 
+// Where a failed delivery stopped (federation/delivery.ts postActivity), which hostCaused judges:
+//   - resolve: resolveDeliveryHost (federation/loader.ts, NET-3) answered no public address: `none` (an empty answer or
+//     only non-IP entries), `private`, or a lookup `error` with its code (null when it has none);
+//   - key: the signer's key or the Store's confirmation; sign: the keyring's signature; budget: the lease budget ran
+//     out before anything was sent;
+//   - post: the POST's answer or its fetch's network error.
+// timeout: the budget's timer ended the stage, `whole` when the budget was the whole timeout, `cut` when the round's
+// deadline shortened it.
+export type FailureStage = {
+  stage: "resolve" | "key" | "sign" | "post" | "budget";
+  resolution?: "private" | "none" | "error";
+  code?: string | null;
+  timeout?: "whole" | "cut";
+};
+
+// The lookup codes that say the name or its records do not exist (Node's dns.lookup and workerd's), which count as the
+// host's; any other code, or none, is the resolver's.
+const NO_SUCH_NAME: ReadonlySet<string> = new Set(["ENOTFOUND", "ENODATA"]);
+
+// Whether a failure is the remote host's doing (docs/mastodon-deviations.md, "Unavailable delivery hosts"): an answer
+// that the name has no IP address or only non-public ones, a POST's answer that is neither 2xx nor permanent, a fetch's
+// network error, or a timeout that ran the whole budget in the POST. Never a resolver failure, the signer's key, its
+// confirmation or signature, an exhausted or shortened budget, nor a permanent answer (Mastodon's unsalvageable one,
+// which neither counts nor clears). Mastodon's other unsalvageable case, a 401 to a sender deleted for good, has no
+// Kopje sender: Kopje never deletes a local account, and a suspended one stands for Mastodon's suspension with its
+// deletion request pending, for which Mastodon counts the 401; a future local deletion adds that case here. A failure
+// without a stage (an outcome Kopje's sink did not make) counts nothing.
+export function hostCaused(failure: FailureStage | undefined, permanent: boolean): boolean {
+  if (failure === undefined || permanent) {
+    return false;
+  }
+  switch (failure.stage) {
+    case "resolve":
+      return (
+        failure.timeout === undefined &&
+        (failure.resolution === "none" ||
+          failure.resolution === "private" ||
+          (failure.resolution === "error" && failure.code != null && NO_SUCH_NAME.has(failure.code)))
+      );
+    case "post":
+      return failure.timeout !== "cut";
+    default:
+      return false;
+  }
+}
+
 // The UTC day of a Store time, as last_failure_day stores it.
 export function dayOf(now: number): number {
   return Math.floor(now / DAY_MS);
@@ -106,6 +152,23 @@ export function clearHost(db: Db, host: string | null, cause: HostClear): boolea
     console.warn({ event: "kopje.delivery.host_restored", cause });
   }
   return gone !== undefined;
+}
+
+// The longest inbox URL the clear on receipt reads (federation/remote-actor.ts INBOX_URL_LIMIT, the ingestion's cap; a
+// longer imported value is not read).
+const RECEIVED_INBOX_BYTES = 2048;
+
+// Clears the host of the stored inbox of the account that sent an activity the Store receives (inbox.ts receive), as
+// Mastodon's inbox resets its signer's inbox host. Reads the account by its key.
+export function clearSenderHost(db: Db, accountId: string): void {
+  const inbox = db.first<{ inbox: string | null }>(
+    `SELECT CASE WHEN typeof(inbox_url) = 'text' AND length(CAST(inbox_url AS BLOB)) <= ${RECEIVED_INBOX_BYTES}
+			THEN inbox_url END AS inbox FROM accounts WHERE id = ?`,
+    accountId,
+  )?.inbox;
+  if (inbox !== null && inbox !== undefined) {
+    clearHost(db, deliveryHost(inbox), "received");
+  }
 }
 
 // Whether the host is unavailable now. One read by its key.

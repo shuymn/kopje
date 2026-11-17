@@ -12306,7 +12306,10 @@ describe("0092_reject_replays", () => {
         "UPDATE accounts SET inbox_url = uri || '/inbox', shared_inbox_url = 'https://r1.example/inbox' WHERE id = ?",
         r,
       );
-      // The previous release's Reject of r's request, queued with its delivery (the builder is unchanged).
+      // The previous release's Reject of r's request, queued with its delivery (the builder is unchanged). The current
+      // expansion reads delivery_hosts (0112_delivery_hosts); an empty stand-in, dropped before the upgrade, answers
+      // that every host is available, as the previous release had none unavailable.
+      sql.exec("CREATE TABLE delivery_hosts (host TEXT PRIMARY KEY, unavailable_since INTEGER)");
       const db = new Db(sql, (fn) => state.storage.transactionSync(fn));
       const recorded = state.storage.transactionSync(() =>
         recordOutbound(
@@ -12323,7 +12326,10 @@ describe("0092_reject_replays", () => {
         ),
       );
       expect(recorded).toBe(true);
+      sql.exec("DROP TABLE delivery_hosts");
       expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      // The current claim reads tables that later migrations add.
+      expect(await kernel(state, MIGRATIONS).upgrade()).toMatchObject({ ok: true });
       sql.exec(
         "UPDATE accounts SET suspended_at = '2026-11-01T00:00:00.000Z', suspension_source = 'account' WHERE id = ?",
         r,

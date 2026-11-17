@@ -8,6 +8,7 @@ import {
 import type { Db } from "../db/sql";
 import { hostDomain } from "../platform/domain-name";
 import { ACTIVITY_ID_LIMIT, ACTOR_URI_LIMIT } from "../platform/identity-bounds";
+import { drainCursorSql, LANE_BYTES, laneHostSql, withinDeliveryHostBound } from "../platform/stored-bounds";
 import {
   type Audience,
   availableLocalSql,
@@ -34,7 +35,17 @@ import {
   stagedVoters,
 } from "./audience";
 import { EXPANSION_STEP } from "./delivery-bounds";
-import { forgetIdleHosts } from "./delivery-hosts";
+import {
+  clearHost,
+  deliveryHost,
+  type FailureStage,
+  forgetIdleHosts,
+  HOST_UNAVAILABLE,
+  hostCaused,
+  hostUnavailable,
+  markStopped,
+  recordHostFailure,
+} from "./delivery-hosts";
 import { hostCovered } from "./instance-domain-blocks";
 import { FRESH_ATTEMPTS_SQL, SAFE_MS } from "./job-attempts";
 import { readOperation, writeOperation } from "./operation";
@@ -91,6 +102,11 @@ import { MAX_STATUS_MENTION_ROWS } from "./status-bounds";
 //     reference (NET-2).
 //   - Forwards: an intent whose audience has shares (Audience.shares) has a subject of its own (FORWARD_SUBJECT), so it
 //     neither supersedes nor is superseded by any other activity, whatever names its object's id (VIS-3).
+//   - Unavailable hosts (RES-5, delivery-hosts.ts): while an inbox's host is unavailable, a row expanded or claimed
+//     after the mark is given up HOST_UNAVAILABLE, unsent, but a Follow (Mastodon's bypass_availability); its failed
+//     completion is given up instead of retried, without the personal fallback. The mark starts the host's drain
+//     (drainStep), which gives up the host's queued and pending rows but Follows in bounded steps. Such rows stay given
+//     up, retryable by the operator, as Mastodon never sends them.
 
 export const LEASE_MS = 60_000;
 export const MAX_ATTEMPTS = 15;
@@ -2283,19 +2299,46 @@ class Admission {
 
 const NO_PERSONAL_INBOX = "no personal inbox";
 
+// 1 when the outbound activity `o` is a Follow, which an unavailable host does not stop (Mastodon's
+// bypass_availability).
+const FOLLOW = `json_extract(o.body, '$.activity.type') IS 'Follow'`;
+
 // Writes up to `budget` targets of the oldest chunks still expanding, oldest first, reading each chunk from its cursor
 // (next). A target over a cap is written as gave_up 'backlog full'; a silent copy without a personal inbox as gave_up
-// 'no personal inbox' (inbox ''). The oldest chunk is the first of outbound_targets in rowid order, its activity read
-// once by its rowid in a correlated lookup (a join by rowid is planned as a scan under statistics taken while the tables
-// were small, RES-7); outbound_targets.activity_id references outbound_activities, so every chunk has one.
+// 'no personal inbox' (inbox ''); a target whose host is unavailable, but a Follow's, as gave_up HOST_UNAVAILABLE
+// before admission counts it (each distinct host of a step read once). The oldest chunk is the first of
+// outbound_targets in rowid order, its activity read once by its rowid in a correlated lookup (a join by rowid is
+// planned as a scan under statistics taken while the tables were small, RES-7); outbound_targets.activity_id
+// references outbound_activities, so every chunk has one.
 export function expandPending(db: Db, now: number, budget: number): void {
   const admission = new Admission(db);
+  const unavailable = new Map<string, boolean>();
+  const hostRefused = (inbox: string): boolean => {
+    const host = deliveryHost(inbox);
+    if (host === null) {
+      return false;
+    }
+    let refused = unavailable.get(host);
+    if (refused === undefined) {
+      refused = hostUnavailable(db, host);
+      unavailable.set(host, refused);
+    }
+    return refused;
+  };
   while (budget > 0) {
-    const chunk = db.first<{ id: string; activity_id: string; account_id: string; retracts: number; next: number }>(
+    const chunk = db.first<{
+      id: string;
+      activity_id: string;
+      account_id: string;
+      retracts: number;
+      follow: number;
+      next: number;
+    }>(
       `SELECT CAST(id AS TEXT) AS id, CAST(activity_id AS TEXT) AS activity_id, o ->> 0 AS account_id,
-				o ->> 1 AS retracts, next
+				o ->> 1 AS retracts, o ->> 2 AS follow, next
 			FROM (SELECT c.id, c.activity_id, c.next,
-					(SELECT json_array(o.account_id, o.retracts) FROM outbound_activities o WHERE o.id = c.activity_id) AS o
+					(SELECT json_array(o.account_id, o.retracts, ${FOLLOW})
+						FROM outbound_activities o WHERE o.id = c.activity_id) AS o
 				FROM outbound_targets c ORDER BY c.id LIMIT 1)`,
     );
     if (chunk === undefined) {
@@ -2323,9 +2366,11 @@ export function expandPending(db: Db, now: number, budget: number): void {
       const refusal =
         target.inbox === ""
           ? NO_PERSONAL_INBOX
-          : admission.admits(intent.account_id, lane, intent.retracts === 1)
-            ? null
-            : BACKLOG_FULL;
+          : chunk.follow !== 1 && hostRefused(target.inbox)
+            ? HOST_UNAVAILABLE
+            : admission.admits(intent.account_id, lane, intent.retracts === 1)
+              ? null
+              : BACKLOG_FULL;
       if (refusal === NO_PERSONAL_INBOX) {
         // DATA-5: no URL or identity in the log; the operator sees the row.
         console.warn({ event: "kopje.delivery.no_personal_inbox" });
@@ -2360,10 +2405,122 @@ export function expandPending(db: Db, now: number, budget: number): void {
   }
 }
 
-// The earliest time any work is due: now while intents are still expanding, else the earliest due or lease deadline.
-// A completion leaves out the rows of its own claim, which the round that holds them reports on itself.
+// The drain of an unavailable host (RES-5, RES-6). A claim reads only due lane heads, one per lane: a head answered 503
+// is due hours later, and a lane of MAX_LANE_BACKLOG rows would take as many claims. So the mark (delivery-hosts.ts
+// recordHostFailure, or the operator's stop) sets the host's cursor (delivery_hosts.drain_lane and drain_id: '' and 0),
+// and each step gives up the host's queued and pending rows but Follows in (lane, id) order through
+// deliveries_host_drain, whose key is laneHostSql(lane) (the lane's host without its trailing dots), lane and id:
+//   - the rest of the cursor's lane (lane = cursor lane AND id > cursor id), then the host's later lanes (lane > cursor
+//     lane), each a seek under the host's key that visits only the rows it returns, up to `budget` in all, a Follow
+//     counted too so the budget bounds the reads; a row-value bound (lane, id) > (...) is not one, as SQLite seeks by
+//     the lane alone and would read the Follows kept behind the cursor again;
+//   - the rows read but Follows given up HOST_UNAVAILABLE, each by its key, each lane touched promoted once
+//     (promoteLane: a kept Follow becomes the head and is sent);
+//   - the cursor moved to the last row read, its lane copied in SQL from that row (DATA-6), or ended (NULL) once the
+//     reads came back short.
+// The host's key drives every read, so whatever cursor a row holds, a step reads and gives up only rows of the host's
+// own lanes; the cursor is read through drainCursorSql (the CHECK delivery_hosts_drain_cursor's rule), and one it
+// refuses (only an import past the CHECK could hold one) restarts the drain. A leased row is not in the index (its
+// completion gives it up), nor a lane past LANE_BYTES (the claim's check gives it up when due). Returns the rows read,
+// the rows given up, and whether the drain goes on. Without `host`, the first draining host in host order.
+type DrainStep = { read: number; gaveUp: number; more: boolean };
+
+const DRAIN_ROW = `CAST(d.id AS TEXT) AS id, d.account_id, d.lane,
+	(SELECT json_extract(o.body, '$.activity.type') FROM outbound_activities o WHERE o.id = d.activity_id) IS 'Follow'
+		AS follow`;
+const DRAIN_FROM = `deliveries d INDEXED BY deliveries_host_drain
+	WHERE ${laneHostSql("d.lane")} = ?1 AND d.state IN ('queued', 'pending')
+		AND length(CAST(d.lane AS BLOB)) <= ${LANE_BYTES}`;
+const DRAIN_CURSOR = `FROM delivery_hosts WHERE host = ?1 AND ${drainCursorSql("host", "drain_lane")}`;
+
+function drainStep(db: Db, now: number, budget: number, host?: string): DrainStep {
+  const target =
+    host ??
+    db.first<{ host: string }>(
+      `SELECT host FROM delivery_hosts INDEXED BY delivery_hosts_draining WHERE drain_lane IS NOT NULL
+				ORDER BY host LIMIT 1`,
+    )?.host;
+  if (target === undefined || budget <= 0) {
+    return { read: 0, gaveUp: 0, more: target !== undefined };
+  }
+  const cursor = db.first<{ valid: number }>(
+    `SELECT ${drainCursorSql("host", "drain_lane")} IS 1 AS valid FROM delivery_hosts
+			WHERE host = ? AND drain_lane IS NOT NULL`,
+    target,
+  );
+  if (cursor === undefined) {
+    return { read: 0, gaveUp: 0, more: false };
+  }
+  if (cursor.valid !== 1) {
+    db.run("UPDATE delivery_hosts SET drain_lane = '', drain_id = 0 WHERE host = ?", target);
+  }
+  type Row = { id: string; account_id: string; lane: string; follow: number };
+  const rows = db.all<Row>(
+    `SELECT ${DRAIN_ROW} FROM ${DRAIN_FROM}
+			AND d.lane = (SELECT drain_lane ${DRAIN_CURSOR}) AND d.id > (SELECT drain_id ${DRAIN_CURSOR})
+			ORDER BY d.lane, d.id LIMIT ?2`,
+    target,
+    budget,
+  );
+  if (rows.length < budget) {
+    rows.push(
+      ...db.all<Row>(
+        `SELECT ${DRAIN_ROW} FROM ${DRAIN_FROM} AND d.lane > (SELECT drain_lane ${DRAIN_CURSOR})
+					ORDER BY d.lane, d.id LIMIT ?2`,
+        target,
+        budget - rows.length,
+      ),
+    );
+  }
+  // Each row by its key: an IN over the ids' JSON is planned as a scan of deliveries under small statistics.
+  let gaveUp = 0;
+  for (const r of rows) {
+    if (
+      r.follow !== 1 &&
+      db.first(
+        `UPDATE deliveries SET state = 'gave_up', last_error = ?2, updated_at = ?3
+					WHERE id = CAST(?1 AS INTEGER) AND state IN ('queued', 'pending') RETURNING 1 AS gone`,
+        r.id,
+        HOST_UNAVAILABLE,
+        now,
+      ) !== undefined
+    ) {
+      gaveUp++;
+    }
+  }
+  // A lane in the index is ASCII (laneHostSql), so its decoded text binds back as the same bytes.
+  const lanes = new Map<string, { account: string; lane: string }>();
+  for (const r of rows) {
+    lanes.set(`${r.account_id}\u0000${r.lane}`, { account: r.account_id, lane: r.lane });
+  }
+  for (const { account, lane } of lanes.values()) {
+    promoteLane(db, account, lane, now);
+  }
+  const more = rows.length === budget;
+  const last = rows.at(-1);
+  if (more && last !== undefined) {
+    db.run(
+      `UPDATE delivery_hosts SET drain_lane = (SELECT lane FROM deliveries WHERE id = CAST(?2 AS INTEGER)),
+				drain_id = CAST(?2 AS INTEGER) WHERE host = ?1`,
+      target,
+      last.id,
+    );
+  } else {
+    db.run("UPDATE delivery_hosts SET drain_lane = NULL, drain_id = NULL WHERE host = ?", target);
+  }
+  return { read: rows.length, gaveUp, more };
+}
+
+// The earliest time any work is due: now while intents are still expanding or a host is draining, else the earliest
+// due or lease deadline. A completion leaves out the rows of its own claim, which the round that holds them reports on
+// itself.
 function nextDueAt(db: Db, now: number, ownLease: string | null = null): number | null {
-  if (db.first("SELECT 1 AS yes FROM outbound_targets LIMIT 1") !== undefined) {
+  if (
+    db.first("SELECT 1 AS yes FROM outbound_targets LIMIT 1") !== undefined ||
+    db.first(
+      "SELECT 1 AS yes FROM delivery_hosts INDEXED BY delivery_hosts_draining WHERE drain_lane IS NOT NULL LIMIT 1",
+    ) !== undefined
+  ) {
     return now;
   }
   return (
@@ -2645,6 +2802,8 @@ type DueRow = LaneRow & {
   boosted: string | null;
   stale_answer: number;
   answer_type: string;
+  // 1 for a Follow, which an unavailable host does not stop (Mastodon's bypass_availability).
+  follow: number;
 };
 
 const DUE_ROW = `CAST(d.id AS TEXT) AS id, CAST(d.activity_id AS TEXT) AS activity_id, d.account_id, d.lane, d.inbox_url,
@@ -2652,7 +2811,7 @@ const DUE_ROW = `CAST(d.id AS TEXT) AS id, CAST(d.activity_id AS TEXT) AS activi
 	o.id IS NOT NULL AS found, o.retracts,
 	${REFUSED_SENDER} AS refused_sender, json_extract(o.body, '$.signedBy') AS signed_by,
 	CASE json_extract(o.body, '$.activity.type') WHEN 'Announce' THEN json_extract(o.body, '$.activity.object') END
-		AS boosted, ${STALE_ANSWER} AS stale_answer, ${ANSWER_TYPE} AS answer_type`;
+		AS boosted, ${STALE_ANSWER} AS stale_answer, ${ANSWER_TYPE} AS answer_type, ${FOLLOW} AS follow`;
 
 const DUE_FROM = "deliveries d LEFT JOIN outbound_activities o ON o.id = d.activity_id";
 
@@ -2827,13 +2986,14 @@ function dropRow(db: Db, row: LaneRow, now: number): void {
   dropSettledActivity(db, row.activity_id);
 }
 
-// Expands one step, then leases up to `limit` due lane heads (RES-6: a claim reads and returns a bounded number of
-// rows). An expired lease is due again; one that has used up its attempts is given up instead of claimed; one the
-// send-time check refuses (sendRefused), and a superseded follow answer (STALE_ANSWER), are dropped. What to send is
-// read by confirmDelivery.
+// Runs one drain step and one expansion step, the two sharing EXPANSION_STEP rows read, the drain first, then leases up
+// to `limit` due lane heads (RES-6: a claim reads and returns a bounded number of rows). An expired lease is due
+// again; one that has used up its attempts is given up instead of claimed; one the send-time check refuses
+// (sendRefused), and a superseded follow answer (STALE_ANSWER), are dropped; one to an unavailable host, but a Follow,
+// is given up HOST_UNAVAILABLE without an attempt. What to send is read by confirmDelivery.
 export const claimDeliveries = writeOperation<{ now: number; leaseToken: string; limit?: number }, Claim>(
   (db, { now, leaseToken, limit }) => {
-    expandPending(db, now, EXPANSION_STEP);
+    expandPending(db, now, EXPANSION_STEP - drainStep(db, now, EXPANSION_STEP).read);
     const max = Math.max(1, Math.min(limit ?? CLAIM_LIMIT, CLAIM_LIMIT));
     const leaseUntil = now + LEASE_MS;
     const due = db.all<DueRow>(
@@ -2853,6 +3013,10 @@ export const claimDeliveries = writeOperation<{ now: number; leaseToken: string;
       if (row.stale_answer === 1) {
         dropRow(db, row, now);
         staleAnswer(row.answer_type, "claim");
+        continue;
+      }
+      if (row.found === 1 && row.follow !== 1 && hostUnavailable(db, deliveryHost(row.inbox_url))) {
+        giveUp(db, row, now, null, HOST_UNAVAILABLE);
         continue;
       }
       if (row.attempts >= MAX_ATTEMPTS) {
@@ -2939,9 +3103,11 @@ export const confirmDelivery = writeOperation<{ id: string; leaseToken: string; 
   },
 );
 
+// failure: where the attempt stopped, which decides whether it counts toward its host (delivery-hosts.ts hostCaused);
+// absent, it counts nothing.
 export type DeliveryOutcome =
   | { kind: "delivered"; status: number }
-  | { kind: "failed"; status: number | null; error: string; permanent: boolean };
+  | { kind: "failed"; status: number | null; error: string; permanent: boolean; failure?: FailureStage };
 
 export type Completion = (
   | { status: "delivered" }
@@ -2955,13 +3121,17 @@ export type Completion = (
 
 const MAX_ERROR_LENGTH = 200;
 
-export const completeDelivery = writeOperation<
-  { id: string; leaseToken: string; now: number; outcome: DeliveryOutcome },
+// Settles a leased row with its POST's outcome. The host's count and its clear (delivery-hosts.ts) take the Store's own
+// time (storeNow): a delivered row clears its inbox's host; a failure the host caused counts its day; while the host is
+// unavailable (marked before or by this failure), a failed row but a Follow is given up HOST_UNAVAILABLE instead of
+// retried, its personal fallback not tried.
+export const completeDelivery = writeOperation.atStoreTime("storeNow")<
+  { id: string; leaseToken: string; now: number; outcome: DeliveryOutcome; storeNow: number },
   Completion
->((db, { id, leaseToken, now, outcome }) => {
-  const row = db.first<LaneRow & { stale_answer: number; answer_type: string }>(
+>((db, { id, leaseToken, now, outcome, storeNow }) => {
+  const row = db.first<LaneRow & { stale_answer: number; answer_type: string; follow: number }>(
     `SELECT CAST(d.id AS TEXT) AS id, CAST(d.activity_id AS TEXT) AS activity_id, d.account_id, d.lane, d.inbox_url,
-			d.attempts, ${STALE_ANSWER} AS stale_answer, ${ANSWER_TYPE} AS answer_type
+			d.attempts, ${STALE_ANSWER} AS stale_answer, ${ANSWER_TYPE} AS answer_type, ${FOLLOW} AS follow
 		FROM ${DUE_FROM} WHERE d.id = CAST(? AS INTEGER) AND d.state = 'leased' AND d.lease_token = ?`,
     id,
     leaseToken,
@@ -2994,6 +3164,7 @@ export const completeDelivery = writeOperation<
     if (row.stale_answer === 1) {
       staleAnswer(row.answer_type, "sent_in_flight");
     }
+    clearHost(db, deliveryHost(row.inbox_url), "delivered");
     return { status: "delivered", nextDueAt: nextDueAt(db, now, leaseToken) };
   }
   // Before every failure exit (the personal inbox, giving up, a retry): a superseded answer gets no further attempt.
@@ -3003,6 +3174,14 @@ export const completeDelivery = writeOperation<
     return { status: "dropped", nextDueAt: nextDueAt(db, now, leaseToken) };
   }
   const error = outcome.error.slice(0, MAX_ERROR_LENGTH);
+  const host = deliveryHost(row.inbox_url);
+  if (host !== null && hostCaused(outcome.failure, outcome.permanent)) {
+    recordHostFailure(db, host, storeNow);
+  }
+  if (row.follow !== 1 && hostUnavailable(db, host)) {
+    giveUp(db, row, now, outcome.status, HOST_UNAVAILABLE);
+    return { status: "gave_up", nextDueAt: nextDueAt(db, now, leaseToken) };
+  }
   if (outcome.permanent && personalFallback(db, row, now, outcome.status, error)) {
     return { status: "retry", retryAt: now, nextDueAt: nextDueAt(db, now, leaseToken) };
   }
@@ -3349,6 +3528,29 @@ export const retryDeliveries = writeOperation<{ ids: string[] | "all"; now: numb
     };
   },
 );
+
+export type StopResult =
+  | { ok: true; drained: number; draining: boolean }
+  | { ok: false; code: "hosts-full" | "invalid-host" };
+
+// The operator's stop (Mastodon's "stop delivery", delivery-hosts.ts markStopped) of a host the route read with
+// serverDomain: the host is unavailable from the Store's `now`, and its drain's first step runs here, with the
+// claim's budget (EXPANSION_STEP rows read); the Worker then rings the doorbell, and each claim runs the next step.
+// `drained`: the rows that step gave up; `draining`: whether the drain goes on. A host outside deliveryHostSql's set
+// (none serverDomain answers) is refused `invalid-host`, unwritten.
+export const stopDeliveryHost = writeOperation.atStoreTime("now")<{ host: string; now: number }, StopResult>((
+  db,
+  { host, now },
+) => {
+  if (!withinDeliveryHostBound(host)) {
+    return { ok: false, code: "invalid-host" };
+  }
+  if (markStopped(db, host, now) === "hosts-full") {
+    return { ok: false, code: "hosts-full" };
+  }
+  const step = drainStep(db, now, EXPANSION_STEP, host);
+  return { ok: true, drained: step.gaveUp, draining: step.more };
+});
 
 // RES-4: given-up rows are kept for GAVE_UP_RETENTION_MS, then deleted with their activity once it has no row left.
 // A superseded follow answer's given-up row goes at once (retryDeliveries refuses it, so nothing can send it again),

@@ -126,11 +126,12 @@ export function quoteReject(actor: TestActor, quoting: string, extra: Record<str
 export function gatedHost() {
   const reached = deferred();
   const release = deferred();
-  const checkHost = async () => {
+  const resolveHost = async () => {
     reached.resolve();
     await release.promise;
+    return { kind: "public" } as const;
   };
-  return { checkHost, reached: reached.promise, release: release.resolve };
+  return { resolveHost, reached: reached.promise, release: release.resolve };
 }
 
 // A fetch that answers every POST 202 and records its URL, in order.
@@ -159,7 +160,7 @@ export function deliveryDeps(
     store,
     now,
     fetch,
-    checkHost: () => Promise.resolve(),
+    resolveHost: () => Promise.resolve({ kind: "public" } as const),
     leaseToken: () => `${prefix}-${++n}`,
   };
 }

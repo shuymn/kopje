@@ -536,7 +536,7 @@ describe("confirmDelivery in the round (VIS-30)", () => {
         fetch,
         () => NOW,
       ),
-      checkHost: gate.checkHost,
+      resolveHost: gate.resolveHost,
     });
     await gate.reached;
     expect((await rows(h.store)).map((r) => r.state)).toEqual(["leased", "queued"]);
@@ -594,7 +594,7 @@ describe("confirmDelivery in the round (VIS-30)", () => {
         () => NOW,
         "late",
       ),
-      checkHost: gate.checkHost,
+      resolveHost: gate.resolveHost,
     });
     await gate.reached;
     // The lease runs out; another claim leases the row again, and holds it.
@@ -734,7 +734,7 @@ describe("confirmDelivery in the round (VIS-30)", () => {
         fetch,
         () => NOW,
       ),
-      checkHost: gate.checkHost,
+      resolveHost: gate.resolveHost,
     });
     await gate.reached;
     const { token } = await login(h, { email: "alice@example.com", scope: "read write" });
@@ -791,6 +791,7 @@ describe("delivery reads with stale statistics (RES-7)", () => {
         id: claimed.result.deliveries[0]!.id,
         leaseToken,
         now: NOW,
+        storeNow: NOW,
         outcome: { kind: "failed", status: 404, error: "HTTP 404", permanent: true },
       });
       // The moved row, sent to drain the lane.
