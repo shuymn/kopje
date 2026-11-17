@@ -20,20 +20,25 @@ import { LANGUAGES } from "./languages";
 //
 // Clients choose APIs by these two numbers, so they are the highest at which every feature a client switches on is
 // one Kopje serves or one whose missing parts the client gets past:
-//   - api_versions.mastodon (v2 only, as in Mastodon) is 7, Mastodon 4.5's. What each step up to it signals, all
-//     served: 2 grouped notifications (/api/v2/notifications); 3 attribution domains (update_credentials), and in the
-//     official Android app OAuth PKCE (S256); 4 delete_media and DELETE /api/v1/media/:id; 5 the blur filter action;
-//     6 featuring hashtags (POST /api/v1/tags/:id/feature); 7 quote posts: quoted_status_id, quote_approval_policy,
-//     interaction_policy, the quotes list and revoke (R35, R36). At 7 Phanpy also hides the quote-inline fallback.
-//   - version is 4.5.0, the release of api_versions 7. Ice Cubes reads it and switches on at 4.3 grouped
-//     notifications, the notification policy and the link timeline, all served; the official apps read only its major
-//     number; Phanpy reads it only when NodeInfo names the software "mastodon", and Kopje's says "kopje". Kopje had no
-//     build suffix and adds none: NodeInfo names it, as it names Pleroma, Akkoma and GoToSocial.
+//   - api_versions.mastodon (v2 only, as in Mastodon) is 9. What each step up to it signals, all served: 2 grouped
+//     notifications (/api/v2/notifications); 3 attribution domains (update_credentials), and in the official Android
+//     app OAuth PKCE (S256); 4 delete_media and DELETE /api/v1/media/:id; 5 the blur filter action; 6 featuring
+//     hashtags (POST /api/v1/tags/:id/feature); 7 quote posts: quoted_status_id, quote_approval_policy,
+//     interaction_policy, the quotes list and revoke (R35, R36), and Phanpy hides the quote-inline fallback;
+//     8 exclude_direct (GET /api/v1/accounts/:id/statuses), and the official Android and iOS apps edit the profile
+//     through /api/v1/profile (show_media, show_media_replies, show_featured, DELETE of the avatar and header); 9 the
+//     avatar and header descriptions of /api/v1/profile, which Phanpy reads and writes from 9. What 10 and 11 wait on
+//     is in docs/mastodon-deviations.md, "What Kopje follows".
+//   - version is 4.5.0, the release of api_versions 7: no Mastodon release advertised 8 or 9 (4.6.0 advertised 10),
+//     so a 4.6 version would claim collections. Ice Cubes reads it and switches on at 4.3 grouped notifications, the
+//     notification policy and the link timeline, all served; the official apps read only its major number; Phanpy
+//     reads it only when NodeInfo names the software "mastodon", and Kopje's says "kopje". Kopje had no build suffix
+//     and adds none: NodeInfo names it, as it names Pleroma, Akkoma and GoToSocial.
 // Streaming and translation are not chosen by either number: clients use configuration.urls.streaming and
 // configuration.translation.enabled (false).
 
 const MASTODON_VERSION = "4.5.0";
-const API_VERSIONS = { mastodon: 7 };
+const API_VERSIONS = { mastodon: 9 };
 
 const SOURCE_URL = "https://github.com/shuymn/kopje";
 

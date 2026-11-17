@@ -67,8 +67,7 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   migration and no `wrangler.jsonc` change.
 - `GET /api/v1/accounts/:id/statuses` takes `exclude_direct`, leaving out direct posts, as Mastodon 4.7.5 does. Its
   `Link` keeps the parameter, where Mastodon's drops it
-  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). `api_versions.mastodon` stays 7. No Store migration and
-  no `wrangler.jsonc` change.
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change.
 - `/api/v2/instance` lists the account limits Kopje enforces (display name, note, featured hashtags, pinned posts,
   profile fields and their name and value lengths) and a description of the default thumbnail, and
   `GET /api/v1/custom_emojis` shows `featured: false` beside each `category`, as Mastodon 4.7.5 does. No Store
@@ -243,9 +242,15 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   and rolling back past it needs a point-in-time restore.
 - Kopje follows the client API of Mastodon v4.7.5, its reference release, where it followed v4.5.11
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). The differences from v4.7.5 are listed there or tracked
-  by issues. `/api/v1/instance` and `/api/v2/instance` still advertise `version` 4.5.0 and `api_versions.mastodon` 7,
-  since clients switch the 4.6 and 4.7 features on by them; they rise once Kopje serves those features. No Store
-  migration and no `wrangler.jsonc` change.
+  by issues. `/api/v1/instance` and `/api/v2/instance` still advertise `version` 4.5.0, and `api_versions.mastodon`
+  rises only to 9 (below), since clients switch the 4.6 and 4.7 features on by them; they rise once Kopje serves those
+  features. No Store migration and no `wrangler.jsonc` change.
+- `/api/v2/instance` advertises `api_versions.mastodon` 9, where it advertised 7, so the official Android and iOS apps
+  edit the profile through `/api/v1/profile` (the display settings, and removing the avatar or header), and Phanpy
+  through `/api/v1/profile` with the avatar and header descriptions. `version` stays 4.5.0, as no Mastodon release
+  advertised 8 or 9; 10 and 11 wait on remote accounts' collections
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "What Kopje follows"). No Store migration and no
+  `wrangler.jsonc` change.
 - `GET /api/v1/annual_reports/:id` takes a token with `read:accounts`, as Mastodon 4.7.5 does; it asked for
   `write:accounts`.
 - A mention that a remote server tags but leaves out of the status's audience (Mastodon 4.6 and later do so for

@@ -13,15 +13,20 @@ Other documents point here rather than repeat the release.
   test), the request parameters each route reads (`test/mastodon-params.test.ts`), and the fields of the main entities
   (`test-node/mastodon-entities.test.ts`). Their fixtures carry the release in their names and their `mastodon` field,
   and `test-node/mastodon-reference.test.ts` checks that they name the release this page does.
-- **What clients are told.** `/api/v2/instance` advertises `version` 4.5.0 and `api_versions.mastodon` 7, and
+- **What clients are told.** `/api/v2/instance` advertises `version` 4.5.0 and `api_versions.mastodon` 9, and
   `/api/v1/instance` the same `version` (`src/mastodon/instance.ts`). Clients switch features on by these values, so
   they name the API level whose features Kopje serves, not the reference patch, Kopje's own release or its federation.
-  They rise only when every feature a client switches on at the higher value is served. Mastodon v4.7.5 advertises
-  `api_versions.mastodon` 11. Each step signals a feature:
-  - 8, `exclude_direct` (`mastodon#37763`);
-  - 9, the image descriptions of `/api/v1/profile` (`mastodon#38221`);
-  - 10, collections under `/api/v1` (`mastodon#39210`);
-  - 11, the image descriptions of `update_credentials` (`mastodon#39574`).
+  They rise only when every feature a client switches on at the higher value is served. `version` stays 4.5.0, the
+  release of `api_versions.mastodon` 7: no Mastodon release advertised 8 or 9 (4.6.0 advertised 10), and a 4.6
+  `version` would claim collections. Mastodon v4.7.5 advertises `api_versions.mastodon` 11. Each step signals a
+  feature:
+  - 8, `exclude_direct` (`mastodon#37763`), served with the departures under "Paged status lists with request
+    conditions"; from 8 the official Android and iOS apps also edit the profile through `/api/v1/profile`, served;
+  - 9, the image descriptions of `/api/v1/profile` (`mastodon#38221`), served;
+  - 10, collections under `/api/v1` (`mastodon#39210`), not yet served for remote accounts: Kopje stores only local
+    collections, so a client shows a remote account as having none (#1589);
+  - 11, the image descriptions of `update_credentials` (`mastodon#39574`), served, but raised together with 10, since
+    clients switch collections on at 10 or above; `version` then becomes 4.6.1, the first release to advertise 11.
 - **Streaming.** Kopje serves the streaming API of the reference release over WebSocket only (MD-8), with bounds on
   the subscriptions a socket and an account hold, past which a subscription is refused (`src/mastodon/streaming.ts`,
   `src/stream-hub.ts`; threat model DATA-5, VIS-26, RES-6, RES-7). An event whose payload, encoded as the streaming

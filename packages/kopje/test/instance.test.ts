@@ -63,7 +63,7 @@ const ACCOUNT_LIMITS = {
   profile_field_value_limit: MAX_FIELD_VALUE,
 };
 
-// Contract: the declared version is 4.5.0 and api_versions.mastodon is 7 (the reasoning is above MASTODON_VERSION in
+// Contract: the declared version is 4.5.0 and api_versions.mastodon is 9 (the reasoning is above MASTODON_VERSION in
 // src/mastodon/instance.ts). Changing these payloads changes what clients do; update this test only together with that
 // decision.
 describe("instance contract", () => {
@@ -149,7 +149,7 @@ describe("instance contract", () => {
         min_age: null,
         url: null,
       },
-      api_versions: { mastodon: 7 },
+      api_versions: { mastodon: 9 },
       wrapstodon: null,
       contact: { email: "admin@kopje.test", account: null },
       rules: RULES,
@@ -182,7 +182,7 @@ describe("instance contract", () => {
     const v2 = await (await h.request("/api/v2/instance")).json<Record<string, unknown>>();
     expect(v1.version).toBe("4.5.0");
     expect(v2.version).toBe(v1.version);
-    expect(v2.api_versions).toEqual({ mastodon: 7 });
+    expect(v2.api_versions).toEqual({ mastodon: 9 });
     expect(v1).not.toHaveProperty("api_versions");
   });
 
