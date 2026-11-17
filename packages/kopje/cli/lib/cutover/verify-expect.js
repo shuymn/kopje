@@ -217,7 +217,7 @@ function accountDomainOf(uri) {
     return null;
   }
   const labels = url.hostname.split(".");
-  while (labels.length > 1 && labels.at(-1) === "") {
+  while (labels.at(-1) === "") {
     labels.pop();
   }
   const host = labels.join(".");
