@@ -820,7 +820,8 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
 - A local account is not featured in a remote collection yet: Kopje refuses the `FeatureRequest` a Mastodon owner sends
   (it carries no `actor`) and answers none, so that owner's server keeps the item pending, which only the owner sees.
   The account's `GET /api/v1/accounts/:id/in_collections` lists no remote collection, it gets no `added_to_collection`
-  from one, and a client has no item of it there to revoke. Tracked by #1589.
+  from one, a remote collection Kopje reads leaves it out of its members, and a client has no item of it there to
+  revoke. Tracked by #1589.
 - Statuses have no `tagged_collections` (Mastodon: the collections a post links). Clients read the field as optional,
   so a post shows no linked collection. Tracked by #1589.
 - An account's `feature_approval.current_user` is `denied` when either account blocks the other or the account is
@@ -864,8 +865,8 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   each (Mastodon: 10 pages, 50 collections, 150 members); a page past that size, or served through a redirect, ends
   the list; a collection or member given only as a URI, not embedded, is skipped (Mastodon fetches it); one no longer
   listed by a complete read is deleted (Mastodon keeps it until a `Remove`); a member Kopje does not know is not
-  fetched and stays unshown until Kopje learns of the account. A member that is a local account is left out yet;
-  tracked by #1589. Accepted, 2026-11-17.
+  fetched and stays unshown until Kopje learns of the account; a member that is a local account is left out (above).
+  Accepted, 2026-11-17.
 - A remote collection whose `totalItems` is not a whole number from 0 to 2^31 − 1 (a negative or fractional number,
   or a string) is not stored; Mastodon 4.7.5 refuses only one that is not a number, and stores the others (a fraction
   cut to its whole part, a numeric string read as its number). Its language, the first key of its `summaryMap`, is
