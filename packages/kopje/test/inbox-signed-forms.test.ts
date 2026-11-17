@@ -1283,6 +1283,29 @@ describe("D1 through the inbox: what the received form stores", () => {
     expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(200);
   });
 
+  // #1717, form 4: the replay reads a retraction of a further shape as the inbox does, and one past Mastodon's limits
+  // once compacted as received.
+  it("on replay too, an Undo of a block typed as IRIs in a body of form 4 lifts it", async () => {
+    const { t, bob, status } = await world();
+    const id = await blockedStatus(t, bob);
+    const maintenance = harness(t.store, { MAINTENANCE: "readonly" }, BUILD, {
+      keygen: fixtureKeyGen,
+      loader: t.web.loader,
+    });
+    const deps = { ...inboxDeps(() => t.store, t.web.loader), now: () => NOW };
+    const replay = async (json: Json) => {
+      const init = await signedInit(bob, "/inbox", json, { at: NOW });
+      expect((await maintenance.request("/inbox", init)).status).toBe(202);
+      await maintenance.queue.deliver((batch) =>
+        handleQueue(batch, { ...maintenance.env, MAINTENANCE: "off" } as Env, deps),
+      );
+    };
+    await replay(body("Undo of a block, both typed as absolute IRIs, past the value limit once compacted", status));
+    expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(404);
+    await replay(body("Undo of a block, both typed as absolute IRIs, with a blank node as an id", status));
+    expect((await t.api(`/api/v1/statuses/${id}`, "alice")).status).toBe(200);
+  });
+
   it.each([
     ["Undo object type as the absolute IRI", []],
     // A type given as a compact IRI, which rule (5) refuses (reads less).
@@ -3013,6 +3036,13 @@ describe("#1717: LD-signed retractions in the forms Mastodon compacts", () => {
     // one in a language map is not, as JSON-LD refuses the map and Mastodon reads the body as received, its object as no
     // IRI; and a two-element array after the patch's stop stays an array, which Mastodon's handler raises on
     // (retractions.json).
+    // The rollback drain hands on what the inbox reads (ldSignedBodyReadable, in the envelope both check): the body with
+    // 493 references, read as its candidate, and not the one with 494, whose references rule (3) then refuses as keys.
+    it("the drain's check reads the Delete with 493 references in cc, and not the one with 494", () => {
+      expect(ldSignedBodyReadable(referencesDelete(493))).toBe(true);
+      expect(ldSignedBodyReadable(referencesDelete(494))).toBe(false);
+    });
+
     const entry = (name: string) => retractionEntries().find((other) => other.name === name)!.body;
     it.each([
       ["Undo(Follow)", 'Undo(Follow), its Follow\'s object as {"@id": its id}'],
