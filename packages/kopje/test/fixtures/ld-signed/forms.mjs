@@ -923,6 +923,14 @@ const forms = {
       "file:///followers",
     ],
   }),
+  // The block's object as an array, in another or not: the compaction writes its IRI, and the patch puts an array back,
+  // which undo.rb's value_or_id raises on.
+  "Undo of a block, both typed as absolute IRIs, with its block's object as an array in an array": absoluteUndo({
+    object: { ...BLOCK, type: `${AS}#Block`, object: [[ALICE]] },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with its block's object as a one-element array": absoluteUndo({
+    object: { ...BLOCK, type: `${AS}#Block`, object: [ALICE] },
+  }),
 };
 
 // The same bodies without a signature: read as received by both.

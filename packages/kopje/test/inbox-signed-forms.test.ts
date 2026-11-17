@@ -1208,9 +1208,10 @@ describe("D1 through the inbox: what the received form stores", () => {
 
   // #1717, form 4: the same Undo in a body of each shape beyond the closed one lifts the block where Mastodon's reading
   // of it does (forms.json): an Undo of a Block whose object names alice, whatever its actor, as undo.rb undo_block
-  // seeks the account by the Block's object and lifts the request's signer's block of it. It leaves the block where
-  // Mastodon reads the body as received, so that its types stay IRIs no handler reads, and where Kopje does not show it
-  // compacts (reads less), or where ID-6 refuses an id Mastodon does not read.
+  // seeks the account by the Block's object and lifts the request's signer's block of it (and raises on an object the
+  // patch makes an array, which Kopje refuses). It leaves the block where Mastodon reads the body as received, so that
+  // its types stay IRIs no handler reads, and where Kopje does not show it compacts (reads less), or where ID-6 refuses
+  // an id Mastodon does not read.
   it.each(FORM_4)("%s: lifts the block where Mastodon's reading lifts it", async (name) => {
     const reading = form(name).fallback === undefined ? form(name).mastodon! : undefined;
     const block = reading?.object as Json | undefined;

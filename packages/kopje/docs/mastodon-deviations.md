@@ -1789,8 +1789,12 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   (`inboxes_controller.rb` `unknown_affected_account?`, `value_or_id`), which raises on an array, and answers 500 each
   time it is sent again; an `Undo` or a `Reject` given so is applied by both. Such an `actor` of two elements is
   refused, as Mastodon's job raises, and one of `null`, which Mastodon's compaction writes as `[]` and so applies for
-  the signer, is refused too (Kopje reads less). Each ends what its signer did or holds, or lifts its own block, so
-  reading it so grants nothing its signer could not send directly; every other type keeps the reading as received.
+  the signer, is refused too (Kopje reads less). An `Undo` of a `Follow`, a `Block` or a `Like` whose undone activity's
+  `object` the patch gives back as an array (given as one, or as an array in another, which the compaction flattens) is
+  refused, as Mastodon's handler raises on it (`undo.rb` `target_uri`); where the patch stops before it at a member
+  Kopje does not read the stop at, Mastodon reads the compaction's single value and applies it, and Kopje reads less.
+  Each ends what its signer did or holds, or lifts its own block, so reading it so grants nothing its signer could not
+  send directly; every other type keeps the reading as received.
   Compacting would add JSON-LD processing to every signed activity before its HTTP signature is verified, and its
   readers would read a form other than the one the author proof verifies. This is weighed again when a sender is seen
   writing one of these forms, or when the fixtures re-captured at a new reference release no longer read the same.

@@ -1373,10 +1373,29 @@ export async function ldSignedReading(
     return { readType, body: json };
   }
   const named = namedAsCompacted(body, context.meanings);
-  return {
-    readType,
-    body: retracts && shown() ? actorAsCompacted(patchedAsMastodon(body, named, context.meanings)) : named,
-  };
+  if (!(retracts && shown())) {
+    return { readType, body: named };
+  }
+  const patched = actorAsCompacted(patchedAsMastodon(body, named, context.meanings));
+  return undoesByArray(patched, readType) ? null : { readType, body: patched };
+}
+
+// Whether an Undo of a Follow, a Block or a Like gives the undone activity's `object` as an array where Mastodon's
+// reading does too (patchedAsMastodon: the patch puts back each array the compaction did not shorten, one in another
+// flattened): undo.rb seeks what to end by it (target_uri, value_or_id), which raises on an array, so Mastodon applies
+// nothing, where Kopje's handler would end the activity by its id. Refused; Kopje reads less where the patch stops
+// before it at a member Kopje does not read the stop at.
+const UNDONE_BY_TARGET: ReadonlySet<string> = new Set(["Follow", "Block", "Like"]);
+function undoesByArray(read: Json, readType: TypeReader): boolean {
+  const undone = read.object;
+  return (
+    typeof read.type === "string" &&
+    readType(read.type) === "Undo" &&
+    isObject(undone) &&
+    typeof undone.type === "string" &&
+    UNDONE_BY_TARGET.has(readType(undone.type)) &&
+    Array.isArray(undone.object)
+  );
 }
 
 // Whether the rules (1-5) read an LD-signed body at all (ldSignedReading is null for no other).
