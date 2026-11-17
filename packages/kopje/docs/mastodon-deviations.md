@@ -1546,16 +1546,15 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   (written `expires`). An `Accept` of our quote request is matched by its id whatever its type, as in Mastodon. Kopje
   reads less than Mastodon where a name its context defines otherwise is given a value the compaction still writes under
   the name (an object with an `id`, or an IRI where the context types the name `@id` and `full_context` does not), but
-  for `sensitive`: where the context defines it otherwise, Kopje reads what the compaction writes under the name as
-  Mastodon's sensitive column casts it (an IRI or a value of a datatype, which the compaction writes as an object, a
-  list, written as a `@list` object, and an array, an empty one too, each true; a lone boolean or number where it is
-  typed `@id`, written as it is). The readings differ in three cases. Where the context types it `@id` and gives it a
-  float `0` (`0.0`), Kopje does not mark the status and Mastodon does, as for a body read as received (below). Kopje
-  marks the status where Mastodon does not where Mastodon's JSON-LD library refuses that definition (a datatype given
-  as a compact IRI over a prefix of the ActivityStreams context, `xsd:boolean`) and Mastodon reads as received a value
-  its sensitive column takes as false (`false`, `0`, `"false"`, `"0"`), and where the context types it `@id` and gives
-  it two equal values (`[false, false]`), which Mastodon's compaction makes one, so that its patch stops and leaves
-  `false`. It reads less too where Mastodon gives up the compaction of a body Kopje
+  for `sensitive`: where the context defines it otherwise, Kopje reads it as true wherever Mastodon may mark the status
+  (an IRI or a value of a datatype, which the compaction writes as an object, a list, written as a `@list` object, an
+  array, an empty one too, and a float `0` (`0.0`), each of which Mastodon takes as true; not a lone `false` where it is
+  typed `@id`), and it marks the status where Mastodon does not in three cases: where the context types it `@id` and
+  gives it an integer `0`, which Kopje's JSON does not tell from a float one; where Mastodon's JSON-LD library refuses
+  that definition (a datatype given as a compact IRI over a prefix of the ActivityStreams context, `xsd:boolean`) and
+  Mastodon reads as received a value its sensitive column takes as false (`false`, `0`, `"false"`, `"0"`), and where the
+  context types it `@id` and gives it two equal values (`[false, false]`), which Mastodon's compaction makes one, so
+  that its patch stops and leaves `false`. It reads less too where Mastodon gives up the compaction of a body Kopje
   cannot show it gives up: it reads as received a body Mastodon's JSON-LD limits refuse as received, and one whose
   top-level proof, a `@graph` in the data-integrity contexts, keeps something once expanded, as jsonld.js expands it
   with the preloaded contexts (a proof of a null value, of `@language` alone or beside members that expand to nothing,

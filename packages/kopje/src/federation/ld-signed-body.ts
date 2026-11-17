@@ -567,9 +567,11 @@ const SENSITIVE_IRI = FULL_CONTEXT_MEANINGS.get("sensitive")?.iri;
 // `sensitive` the body's contexts define otherwise than full_context, which leaves it untyped and so takes any value
 // (takes): the compaction still writes it under the name, an IRI or a typed value as an object, a list as a @list
 // object, an array (an empty one too) as an array, and a lone boolean or number the definition types @id or @vocab as
-// it is, and Mastodon marks the status as its boolean column casts that value. Kopje reads a value written as it is by
-// railsBoolean, as an unsigned body's (remote-status.ts), and any other as true, as Mastodon casts an object or an
-// array; null is written as nothing. A float 0 (0.0), which Mastodon marks, parses as 0 and is read as not sensitive.
+// it is, and Mastodon marks the status as its boolean column casts that value (an object, an array or a float 0 as
+// true). Kopje reads it as true wherever Mastodon may mark the status, so that a status Mastodon marks is never shown
+// unmarked: a lone boolean written as it is by railsBoolean, as an unsigned body's (remote-status.ts), and a lone
+// number as true, 0 included, since its JSON does not tell an integer 0, which Mastodon leaves unmarked, from a float
+// one (0.0), which it marks. null is written as nothing.
 function marksSensitive(meaning: Meaning | undefined, value: unknown): boolean {
   if (meaning === undefined || meaning.iri !== SENSITIVE_IRI || value === null) {
     return false;
@@ -577,7 +579,7 @@ function marksSensitive(meaning: Meaning | undefined, value: unknown): boolean {
   const plain = meaning.coercion === "@id" || meaning.coercion === "@vocab";
   const asIs =
     plain && !meaning.containers.includes("@list") && (typeof value === "boolean" || typeof value === "number");
-  return !asIs || railsBoolean(value) === true;
+  return !asIs || typeof value === "number" || railsBoolean(value) === true;
 }
 
 // An LD-signed body with its names, as members and as types, read only where Mastodon's compaction under full_context
