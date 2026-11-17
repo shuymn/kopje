@@ -498,21 +498,24 @@ against their own instance. TLS is assumed between all parties.
   and revokes the member's item only while it names the item's current authorization (verified, or the candidate of
   one not verified), never after a revision replaced it. A search with `resolve=true` stores a fetched
   `FeaturedCollection` only for the stored account it is attributed to, by the same rules, and answers one Kopje stores
-  as stored. An item's revision is its member and the authorization its
-  owner lists: an unchanged revision changes nothing, whatever the item's state; a new item or a changed revision is
-  pending, with no verified authorization, claim or attempt, and queued for a check. A check accepts it only when the
-  fetch under its claim found the authorization served for the collection and the member and no other item of the
-  member holds that authorization verified (only the member's server can have said so); a 404 or 410 rejects it, a
-  transient failure retries, and any other outcome leaves it pending and unqueued. A completion applies only to a
-  pending item under the token its claim set, which a revision change, a revocation and a later claim replace or clear,
-  so another owner's item listing the same authorization never prevents the acceptance and a late completion changes
-  nothing. A rejected or revoked item is deleted 24 hours after its last change; a later listing of it is a new item
-  (`src/domain/remote-featured-collections.ts`, `src/domain/collection-checks.ts`); `test/inbox-collections.test.ts`,
-  `test/collection-sync.test.ts` ("refuses a collection of another host or another owner, and cuts a long name and
-  description"), `test/remote-featured-collections.test.ts` ("leaves pending, without an error, a match whose
-  authorization the member holds in another row"), `test/feature-lifecycle.test.ts` ("agrees with the policy after
-  every step, and accepts a served candidate once settled", "accepts O's item whose authorization X's item lists
-  first", "changes nothing at a delayed Delete of A after O's change to B", against `FeaturePolicy` in
+  as stored. A sync's read applies its listing only when none of these changes of the account's collections committed
+  after the claim of its round (`collections_changed`, set by each and cleared by each claim), so an older listing never
+  undoes a later `Add`, `Remove`, `Update` or search (`test/collection-sync.test.ts` ("applies no listing read before …,
+  and reads the collections again", "applies a read claimed after the owner's change")). An item's revision is its
+  member and the authorization its owner lists: an unchanged revision changes nothing, whatever the item's state; a new
+  item or a changed revision is pending, with no verified authorization, claim or attempt, and queued for a check. A
+  check accepts it only when the fetch under its claim found the authorization served for the collection and the member
+  and no other item of the member holds that authorization verified (only the member's server can have said so); a 404
+  or 410 rejects it, a transient failure retries, and any other outcome leaves it pending and unqueued. A completion
+  applies only to a pending item under the token its claim set, which a revision change, a revocation and a later claim
+  replace or clear, so another owner's item listing the same authorization never prevents the acceptance and a late
+  completion changes nothing. A rejected or revoked item is deleted 24 hours after its last change; a later listing of
+  it is a new item (`src/domain/remote-featured-collections.ts`, `src/domain/collection-checks.ts`);
+  `test/inbox-collections.test.ts`, `test/collection-sync.test.ts` ("refuses a collection of another host or another
+  owner, and cuts a long name and description"), `test/remote-featured-collections.test.ts` ("leaves pending, without an
+  error, a match whose authorization the member holds in another row"), `test/feature-lifecycle.test.ts` ("agrees with
+  the policy after every step, and accepts a served candidate once settled", "accepts O's item whose authorization X's
+  item lists first", "changes nothing at a delayed Delete of A after O's change to B", against `FeaturePolicy` in
   `test/feature-model.ts`), `test/remote-collections-api.test.ts` ("stores nothing for a collection whose owner Kopje
   does not store, or that its owner does not attribute"). A change to these rules changes `test/feature-model.ts` with
   it.
@@ -3389,12 +3392,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   many by key; each goes with what it names (`ON DELETE CASCADE`); `test/migrations.test.ts`
   ("0107_collection_notifications"), `test/collection-notifications.test.ts` ("refuses a restore of … notifications of
   one item, or of one collection and recipient", of 600 and of 6,000).
-  `collection_syncs.collections_read` (0 or 1) and the `collection_check_quotas` rows (a remote collection owner's UTC
-  day number and its claims, 0 to 250), imports included, meet the [stored bounds](dump-format.md#stored-bounds),
-  enforced by migration `0113_featured_collection_syncs`, and a quota row goes with its account (`ON DELETE CASCADE`,
-  and a purge's own step); the claims read the quota with the same bound (`OWNER_CHECKS_PER_DAY`);
-  `test/migrations.test.ts` ("0113_featured_collection_syncs"), `test/inbox-regressions.test.ts` ("purges a remote
-  account's collections and memberships within the batch budget").
+  `collection_syncs.collections_read` and `collections_changed` (each 0 or 1) and the `collection_check_quotas` rows (a
+  remote collection owner's UTC day number and its claims, 0 to 250), imports included, meet the [stored
+  bounds](dump-format.md#stored-bounds), enforced by migration `0113_featured_collection_syncs`, and a quota row goes
+  with its account (`ON DELETE CASCADE`, and a purge's own step); the claims read the quota with the same bound
+  (`OWNER_CHECKS_PER_DAY`); `test/migrations.test.ts` ("0113_featured_collection_syncs"),
+  `test/inbox-regressions.test.ts` ("purges a remote account's collections and memberships within the batch budget").
   _Enforced (main)_ for remote field verification: `remote_field_links` rows, imports included, meet the
   [stored bounds](dump-format.md#stored-bounds), enforced by migration `0068_remote_field_verification`, whose triggers
   judge in order the storage classes, the raw bytes, a raw NUL, `json_valid` and the canonical form (no padding or
@@ -4430,7 +4433,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   ends the list, and the part completes with what it read. It keeps at most `MAX_REMOTE_COLLECTIONS` (10) embedded
   collections of `MAX_REMOTE_ITEMS` (25) embedded items, fetches nothing given only as a URI and no member, and deletes
   the account's other stored collections only after a complete read (`test/collection-sync.test.ts` ("reads two pages
-  in one round of three documents, keeps ten collections, and fetches no URI-only entry", "its budget")). The checks of
+  in one round of three documents, keeps ten collections, and fetches no URI-only entry", "its budget")). A read that
+  an inbound change of the collections followed (ID-6) is read again by a later round, each such round counting
+  among the sync's `MAX_SYNC_ATTEMPTS` without progress. The checks of
   those items (`src/domain/collection-checks.ts`, `src/federation/collection-checks.ts`) are a family of the jobs round
   of their own, apart from the syncs: a claim reads at most `ITEM_CHECK_CANDIDATES` (16) due items by
   `collection_items_check`, in due order across every owner, and claims at most `ITEM_CHECKS_PER_ROUND` (4), each

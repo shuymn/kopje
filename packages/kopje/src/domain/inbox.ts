@@ -45,7 +45,7 @@ import {
   removalBegunSql,
 } from "./audience";
 import { userReadOperation } from "./auth";
-import { collectionUri } from "./collection-requests";
+import { collectionUri, markCollectionsChanged } from "./collection-requests";
 import {
   beginRetraction,
   cancelFollowAnswers,
@@ -3556,6 +3556,7 @@ const add: Handler<"Add"> = (db, actor, activity, input) => {
 
 // Add#add_collection and #add_collection_item: an embedded collection to the actor's featuredCollections collection,
 // or an embedded item to one of its stored remote collections (remote-featured-collections.ts applies every rule).
+// Either is a change of the actor's collections that a sync's read under way does not hold (markCollectionsChanged).
 function addFeatured(
   db: Db,
   actor: { id: string; uri: string },
@@ -3567,6 +3568,7 @@ function addFeatured(
     if (!("featuredCollection" in object)) {
       return ignored("not-embedded");
     }
+    markCollectionsChanged(db, actor.id);
     const { collection } = applyFeaturedCollection(db, actor, object.featuredCollection, input.origin, input.now);
     return collection === null ? ignored("not-applied") : applied("collection-added");
   }
@@ -3577,6 +3579,7 @@ function addFeatured(
   if (!("featuredItem" in object)) {
     return ignored("not-embedded");
   }
+  markCollectionsChanged(db, actor.id);
   return applyFeaturedItem(db, actor, owned, object.featuredItem, input.origin, input.now) === null
     ? ignored("not-applied")
     : applied("item-added");
@@ -3604,6 +3607,8 @@ const remove: Handler<"Remove"> = (db, actor, activity, { now }) => {
 // featuredCollections collection, or an item from one of its stored remote collections, by the object's id. An item
 // the collection does not hold is recorded as the owner's retraction of it (ID-7), so its Add processed after the
 // Remove is refused (Mastodon processes each in a job of its own); at the per-actor cap the Remove is answered 503.
+// Either is a change of the actor's collections that a sync's read under way does not hold, whether Kopje held the
+// object or not (markCollectionsChanged).
 function removeFeatured(
   db: Db,
   actor: { id: string; uri: string },
@@ -3623,12 +3628,14 @@ function removeFeatured(
     return ignored("not-collection");
   }
   if (collectionOf(db, actor.id, activity.target) === "featuredCollections") {
+    markCollectionsChanged(db, actor.id);
     return removeFeaturedCollection(db, actor.id, uri) ? applied("collection-removed") : ignored("not-held");
   }
   const owned = ownCollectionByUri(db, actor.id, activity.target);
   if (owned === undefined) {
     return ignored("not-collection");
   }
+  markCollectionsChanged(db, actor.id);
   if (removeFeaturedItem(db, owned.id, uri)) {
     return applied("item-removed");
   }
@@ -3640,10 +3647,12 @@ function removeFeatured(
 
 // Update#update_collection: a stored remote collection of the actor's, by its id, applied again from the embedded
 // document (remote-featured-collections.ts); one Kopje does not hold is not stored by an Update, and no sync is asked.
+// It is a change of the actor's collections that a sync's read under way does not hold (markCollectionsChanged).
 const updateCollection: Handler<"UpdateCollection"> = (db, actor, activity, input) => {
   if (ownCollectionByUri(db, actor.id, activity.object.id) === undefined) {
     return ignored("not-held");
   }
+  markCollectionsChanged(db, actor.id);
   const { collection } = applyFeaturedCollection(db, actor, activity.object, input.origin, input.now);
   return collection === null ? ignored("not-applied") : applied("collection-updated");
 };

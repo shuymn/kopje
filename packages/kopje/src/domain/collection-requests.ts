@@ -29,6 +29,14 @@ export function requestCollectionSync(db: Db, accountId: string, now: number, re
   return row?.due === 1;
 }
 
+// An inbound change of the account's collections (inbox.ts: an Add, a Remove or an Update from their owner;
+// remote-statuses.ts: a search storing one): a round that holds the sync now read its listing before the change, so
+// its end does not apply that listing, and a later round reads the collections again (remote-collections.ts
+// completeCollectionRead). Each claim of the sync clears the mark.
+export function markCollectionsChanged(db: Db, accountId: string): void {
+  db.run("UPDATE collection_syncs SET collections_changed = 1 WHERE account_id = ?", accountId);
+}
+
 // A collection an actor document names (followers, following, featured, ...), as Mastodon 4.7.5 stores it
 // (ProcessAccountService#valid_collection_uri, process_account_service.rb:235-245): an array is unwrapped once, to its
 // first value; then an object gives its id; then a string gives the URI Mastodon stores for it (storedCollectionUri),

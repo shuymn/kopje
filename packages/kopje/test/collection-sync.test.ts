@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { PART_COLLECTIONS, PART_FEATURED, PART_NETWORK, PART_TAGS } from "../src/domain/remote-collections";
+import {
+  PART_COLLECTIONS,
+  PART_FEATURED,
+  PART_NETWORK,
+  PART_TAGS,
+  SYNC_RETRY_MS,
+} from "../src/domain/remote-collections";
 import { MAX_REMOTE_COLLECTIONS, MAX_REMOTE_ITEMS } from "../src/domain/remote-featured-collections";
 import { webfingerUrl } from "../src/domain/remote-statuses";
 import { COLLECTIONS_CAPS, FEATURED_COLLECTION_PAGES, syncCollections } from "../src/federation/collections";
@@ -25,8 +31,8 @@ import {
   syncAll,
 } from "./featured-collection-helpers";
 import { BUILD } from "./helpers";
-import { LOCAL, type RemoteWeb } from "./inbox-helpers";
-import { accountId, OTHER, setup } from "./inbox-status-helpers";
+import { LOCAL, type RemoteWeb, type TestActor } from "./inbox-helpers";
+import { accountId, AS, nextId, OTHER, type Setup, setup } from "./inbox-status-helpers";
 
 // The collections part of a remote account's sync (#1589's D21: domain/remote-collections.ts PART_COLLECTIONS,
 // domain/remote-featured-collections.ts, federation/collections.ts): an account's featuredCollections collection and
@@ -252,6 +258,143 @@ describe("the collections part of a sync", () => {
       // Read through, with nothing pending: the sync ends.
       expect(await end(second!, first!)).toEqual([]);
     }
+  });
+
+  describe("and the owner's changes during its read", () => {
+    // The stored collections, their names and their items, by uri.
+    const stored = (t: Setup) =>
+      sql(
+        t.store,
+        `SELECT c.uri, c.name, (SELECT group_concat(i.uri) FROM collection_items i WHERE i.collection_id = c.id) AS items
+				FROM collections c WHERE c.local = 0 ORDER BY c.uri`,
+      );
+    const activity = (type: "Add" | "Remove", owner: TestActor, target: string, object: unknown) => ({
+      "@context": AS,
+      type,
+      actor: owner.uri,
+      target,
+      object,
+    });
+
+    // An owner with two collections stored by a read, `kept` (one item) and `other` (none).
+    async function world() {
+      const t = await setup();
+      const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
+      const member = await storedMember(t, "member", OTHER);
+      const entry = item(owner, member);
+      const kept = collection(owner, [entry]);
+      const other = collection(owner, []);
+      serveCollections(t.web, owner, [[kept], [other]]);
+      const ownerId = await storedOwner(t, owner);
+      await syncAll(t);
+      return { t, owner, member, entry, kept, other, ownerId };
+    }
+    type World = Awaited<ReturnType<typeof world>>;
+
+    // Each change, committed by the owner (or a search) while a read waits for its second page, and the pages its
+    // server serves after it.
+    const CHANGES: [string, (w: World) => Promise<unknown[][]>][] = [
+      [
+        "an Add of a collection",
+        async ({ t, owner, kept, other }) => {
+          const added = collection(owner, []);
+          expect(await t.post(owner, activity("Add", owner, owner.featuredCollections, added))).toBe(202);
+          return [[kept], [other, added]];
+        },
+      ],
+      [
+        "an Update of a collection",
+        async ({ t, owner, kept, other }) => {
+          const renamed = { ...other, name: "renamed" };
+          const id = `${owner.uri}#updates/${nextId()}`;
+          const update = { "@context": AS, id, type: "Update", actor: owner.uri, object: renamed };
+          expect(await t.post(owner, update)).toBe(202);
+          return [[kept], [renamed]];
+        },
+      ],
+      [
+        "a Remove of a collection",
+        async ({ t, owner, kept, other }) => {
+          expect(await t.post(owner, activity("Remove", owner, owner.featuredCollections, other.id))).toBe(202);
+          return [[kept], []];
+        },
+      ],
+      [
+        "an Add of an item",
+        async ({ t, owner, member, kept, other }) => {
+          const added = item(owner, member);
+          expect(await t.post(owner, activity("Add", owner, other.id, added))).toBe(202);
+          return [[kept], [{ ...other, orderedItems: [added] }]];
+        },
+      ],
+      [
+        "a Remove of an item",
+        async ({ t, owner, entry, kept, other }) => {
+          expect(await t.post(owner, activity("Remove", owner, kept.id, entry.id))).toBe(202);
+          return [[{ ...kept, orderedItems: [] }], [other]];
+        },
+      ],
+      [
+        "a search storing a collection",
+        async ({ t, owner, kept, other }) => {
+          const found = collection(owner, []);
+          t.web.serve(found.id, { "@context": AS, ...found });
+          const answer = await t.api<{ collections: { uri: string }[] }>(
+            `/api/v2/search?resolve=true&q=${encodeURIComponent(found.id)}`,
+          );
+          expect(answer.body.collections.map((c) => c.uri)).toEqual([found.id]);
+          return [[kept], [other, found]];
+        },
+      ],
+    ];
+
+    for (const [name, change] of CHANGES) {
+      it(`applies no listing read before ${name}, and reads the collections again`, async () => {
+        const w = await world();
+        const { t, owner, ownerId } = w;
+        const root = owner.featuredCollections;
+        await requestSync(t, ownerId);
+        // The read fetched the root and page 1; page 2 is answered as served when it was asked for.
+        const held = t.web.hold(`${root}?page=2`, { snapshot: true });
+        const round = syncCollections(t.env, { ...inboxDeps(() => t.store, t.web.loader), now: () => NOW });
+        await held.reached;
+        const before = await stored(t);
+        serveCollections(t.web, owner, await change(w));
+        const changed = await stored(t);
+        expect(changed).not.toEqual(before);
+        // The read's end, before any later round reads the root again.
+        const again = t.web.hold(root);
+        held.release();
+        await Promise.race([again.reached, round]);
+        expect(await stored(t)).toEqual(changed);
+        expect(await sql(t.store, "SELECT collections_read FROM collection_syncs")).toEqual([{ collections_read: 0 }]);
+
+        const from = t.web.fetched.length;
+        again.release();
+        await round;
+        await syncAll(t, t.web.loader, NOW + SYNC_RETRY_MS);
+        expect(fetchedUnder(t.web, from, root)).toEqual([root, `${root}?page=1`, `${root}?page=2`]);
+        expect(await stored(t)).toEqual(changed);
+      });
+    }
+
+    it("applies a read claimed after the owner's change", async () => {
+      const { t, owner, kept, other, ownerId } = await world();
+      await requestSync(t, ownerId);
+      // An Add while the sync waits, no round holding it.
+      const added = collection(owner, []);
+      expect(await t.post(owner, activity("Add", owner, owner.featuredCollections, added))).toBe(202);
+      serveCollections(t.web, owner, [[kept], [{ ...other, name: "renamed" }, added]]);
+      await syncAll(t);
+      const expected = [
+        [kept.id, kept.name],
+        [other.id, "renamed"],
+        [added.id, added.name],
+      ];
+      expect((await collectionRows(t)).map((row) => [row.uri, row.name])).toEqual(
+        expected.toSorted(([a], [b]) => (a! < b! ? -1 : 1)),
+      );
+    });
   });
 
   describe("its budget", () => {

@@ -15156,7 +15156,7 @@ describe("0113_featured_collection_syncs", () => {
     expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
   });
 
-  it("adds collections_read at 0 to the waiting syncs, and bounds it and an owner's claims", async () => {
+  it("adds collections_read and collections_changed at 0 to the waiting syncs, and bounds them and an owner's claims", async () => {
     await runInDurableObject(freshStore(), async (_instance, state) => {
       const sql = state.storage.sql;
       await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
@@ -15166,11 +15166,17 @@ describe("0113_featured_collection_syncs", () => {
       );
       sql.exec("INSERT INTO collection_syncs (account_id, due_at, parts_read) VALUES (?1, 0, 7)", ACCOUNT);
       expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
-      expect(sql.exec("SELECT parts_read, collections_read FROM collection_syncs").toArray()).toEqual([
-        { parts_read: 7, collections_read: 0 },
-      ]);
-      sql.exec("UPDATE collection_syncs SET collections_read = 1");
-      expect(() => sql.exec("UPDATE collection_syncs SET collections_read = 2")).toThrow(/CHECK constraint failed/);
+      expect(
+        sql.exec("SELECT parts_read, collections_read, collections_changed FROM collection_syncs").toArray(),
+      ).toEqual([{ parts_read: 7, collections_read: 0, collections_changed: 0 }]);
+      sql.exec("UPDATE collection_syncs SET collections_read = 1, collections_changed = 1");
+      for (const column of ["collections_read", "collections_changed"]) {
+        for (const value of ["2", "-1", "0.5", "'x'"]) {
+          expect(() => sql.exec(`UPDATE collection_syncs SET ${column} = ${value}`), `${column} = ${value}`).toThrow(
+            /CHECK constraint failed/,
+          );
+        }
+      }
 
       sql.exec("INSERT INTO collection_check_quotas (account_id, day, used) VALUES (?1, 20738, 250)", ACCOUNT);
       for (const [set, name] of [

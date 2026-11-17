@@ -29,7 +29,7 @@ import {
 } from "./audience";
 import { userWriteOperation } from "./auth";
 import type { Collection } from "./collection-presenter";
-import { collectionRead, collectionSql, UNREADABLE } from "./collection-requests";
+import { collectionRead, collectionSql, markCollectionsChanged, UNREADABLE } from "./collection-requests";
 import { shownCollection } from "./collections";
 import { emojiSnapshot } from "./custom-emojis";
 import { insertWithFreshId, remoteId } from "./ids";
@@ -1162,14 +1162,19 @@ export function storeResolved(
     case "collection": {
       // ActivityPub::FetchRemoteFeaturedCollectionService: a collection of an account Kopje stores, the stored one as
       // it is, else applied as its owner's (remote-featured-collections.ts: its items queued for their checks, no sync
-      // requested, nothing fetched).
+      // requested, nothing fetched), a change a sync's read under way does not hold (markCollectionsChanged).
       const { collection } = resolved;
       const owner = collection.attributedTo === null ? undefined : remoteAccount(db, collection.attributedTo);
-      const id =
-        owner === undefined
-          ? null
-          : (ownCollectionByUri(db, owner.id, collection.id)?.id ??
-            applyFeaturedCollection(db, owner, collection, origin, now).collection);
+      if (owner === undefined) {
+        return { kind: "none" };
+      }
+      let id = ownCollectionByUri(db, owner.id, collection.id)?.id ?? null;
+      if (id === null) {
+        id = applyFeaturedCollection(db, owner, collection, origin, now).collection;
+        if (id !== null) {
+          markCollectionsChanged(db, owner.id);
+        }
+      }
       return id === null ? { kind: "none" } : { kind: "collection", id };
     }
     case "local":

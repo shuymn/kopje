@@ -342,8 +342,10 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
       continue;
     }
     const token = crypto.randomUUID();
+    // The round reads what the remote serves from now on: no change of the collections is after its read yet.
     db.run(
-      "UPDATE collection_syncs SET due_at = ?, token = ?, attempts = attempts + 1 WHERE account_id = ?",
+      `UPDATE collection_syncs SET due_at = ?, token = ?, attempts = attempts + 1, collections_changed = 0
+			WHERE account_id = ?`,
       now + SYNC_LEASE_MS,
       token,
       row.account_id,
@@ -443,7 +445,9 @@ export type CollectionCounts = { statuses: number | null; following: number | nu
 // hide_collections and the counts are written only while the round's generation is the sync's (`before`): a round
 // that read an older document never overwrites what a newer one learns. The pins and hashtags are applied whatever
 // the generation: a stale round may still write them, and the newer generation's round, due at once (endRound),
-// writes them again.
+// writes them again. The collections are applied whatever the generation too, unless an inbound change of them
+// committed since the round's claim (collections_changed, markCollectionsChanged): the round's listing is then older
+// than the stored collections, so it is not applied and the part is left to a later round, which reads it again.
 export const completeCollectionRead = writeOperation<CollectionReadInput, boolean>((db, input) => {
   const account = roundAccount(db, input);
   if (account === null) {
@@ -455,7 +459,13 @@ export const completeCollectionRead = writeOperation<CollectionReadInput, boolea
   if (input.tags !== null) {
     replaceFeaturedTags(db, account.id, input.tags, input.now);
   }
-  if (input.collections !== null) {
+  const outdated =
+    input.collections !== null &&
+    db.first<{ changed: number }>(
+      "SELECT collections_changed AS changed FROM collection_syncs WHERE account_id = ?",
+      account.id,
+    )?.changed === 1;
+  if (input.collections !== null && !outdated) {
     replaceCollections(db, account, input.collections, input.origin, input.now);
   }
   const before = isIntegerText(input.generation)
@@ -466,7 +476,7 @@ export const completeCollectionRead = writeOperation<CollectionReadInput, boolea
         input.generation,
       )
     : undefined;
-  const parts = (before?.parts_read ?? 0) | (input.parts & ALL_PARTS);
+  const parts = (before?.parts_read ?? 0) | (input.parts & (outdated ? ALL_PARTS & ~PART_COLLECTIONS : ALL_PARTS));
   if (before !== undefined) {
     if (input.hideCollections !== null) {
       db.run("UPDATE accounts SET hide_collections = ? WHERE id = ?", input.hideCollections ? 1 : 0, account.id);

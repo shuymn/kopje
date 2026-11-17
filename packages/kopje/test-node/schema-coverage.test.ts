@@ -277,6 +277,7 @@ const NOT_VERIFIED: Record<string, string> = {
   "accounts.statuses_count": ACCOUNT_COUNTER,
   "blocks.created_at": TIME,
   "collection_syncs.attempts": DEFAULT,
+  "collection_syncs.collections_changed": DEFAULT,
   "collection_syncs.collections_read": DEFAULT,
   "collection_syncs.due_at": "0: due at once (HANDLE_REFRESH_REQUESTS)",
   "collection_syncs.generation": DEFAULT,
