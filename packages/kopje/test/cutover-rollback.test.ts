@@ -874,6 +874,27 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
     ]);
   });
 
+  it("hands on an LD-signed retraction whose actor is a one-element array, as the inbox reads it (#1717)", async () => {
+    const store = await importedStore();
+    const r = await rollback(store);
+    const signature = { type: "RsaSignature2017", creator: `${r.carol.uri}#main-key`, signatureValue: "placeholder" };
+    // Mastodon applies a retraction so given for its signer, and Kopje reads its actor as the element; any other type
+    // keeps the reading as received, which has no actor (incomplete), so the drain sets it aside.
+    const undo = {
+      "@context": ctx,
+      id: `${r.carol.uri}#undo/1`,
+      type: "Undo",
+      actor: [r.carol.uri],
+      object: { id: `${r.carol.uri}#follows/1`, type: "Follow", actor: r.carol.uri, object: alice },
+      signature,
+    };
+    await r.spool("/ap/users/alice/inbox", { ...follow(r.carol.uri, 2), actor: [r.carol.uri], signature });
+    await r.spool("/ap/users/alice/inbox", undo);
+    await r.consume();
+    expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 1 });
+    expect(r.legacy.pending.map((m) => (m.body as LegacyInboxMessage).activity.id)).toEqual([`${r.carol.uri}#undo/1`]);
+  });
+
   it("hands on an LD-signed activity whose IRI type Kopje reads as given, as received (ldSignedReading)", async () => {
     const store = await importedStore();
     const r = await rollback(store);

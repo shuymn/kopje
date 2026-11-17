@@ -57,6 +57,33 @@ export function mastodonStampDelete(actor: TestActor, stamp: { uri: string; quot
   };
 }
 
+// Mastodon 4.7.5's Delete of a feature authorization (ActivityPub::DeleteFeatureAuthorizationSerializer, its object
+// the FeatureAuthorizationSerializer's): the member revoking its membership of `collection`.
+export function mastodonFeatureDelete(member: TestActor, authorization: string, collection: string): Json {
+  return {
+    "@context": [
+      AS,
+      {
+        gts: "https://gotosocial.org/ns#",
+        FeatureAuthorization: "https://w3id.org/fep/7aa9#FeatureAuthorization",
+        interactingObject: { "@id": "gts:interactingObject", "@type": "@id" },
+        interactionTarget: { "@id": "gts:interactionTarget", "@type": "@id" },
+      },
+      SECURITY,
+    ],
+    id: `${authorization}#delete`,
+    type: "Delete",
+    actor: member.uri,
+    to: [PUBLIC],
+    object: {
+      id: authorization,
+      type: "FeatureAuthorization",
+      interactingObject: collection,
+      interactionTarget: member.uri,
+    },
+  };
+}
+
 // The RsaSignature2017 LinkedDataSignature#sign! writes up to 4.6 (type, creator, created, signatureValue: no @context
 // of its own, which Fedify's signJsonLd adds and its verification ignores), by `signer`'s key.
 export async function mastodonSigned(json: Json, signer: TestActor): Promise<Json> {

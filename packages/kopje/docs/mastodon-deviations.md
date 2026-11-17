@@ -860,6 +860,33 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
 - A collection's page (`/collections/:id`) is served for a local collection only (a remote collection's `url` is its
   own server's), and the profile pages do not list an account's collections, where Mastodon's web client does.
   Accepted, 2026-11-16.
+- A remote account's collections are read from at most 2 pages of at most 512 KiB each, 10 collections of 25 members
+  each (Mastodon: 10 pages, 50 collections, 150 members); a page past that size, or served through a redirect, ends
+  the list; a collection or member given only as a URI, not embedded, is skipped (Mastodon fetches it); one no longer
+  listed by a complete read is deleted (Mastodon keeps it until a `Remove`); a member Kopje does not know is not
+  fetched and stays unshown until Kopje learns of the account. A member that is a local account is left out yet;
+  tracked by #1589. Accepted, 2026-11-17.
+- A remote collection whose `totalItems` is not a whole number from 0 to 2^31 − 1 (a negative or fractional number,
+  or a string) is not stored; Mastodon 4.7.5 refuses only one that is not a number, and stores the others (a fraction
+  cut to its whole part, a numeric string read as its number). Its language, the first key of its `summaryMap`, is
+  stored only when it is a language code Kopje stores (the ISO 639-1 codes of `collections.language`), and otherwise
+  as none; Mastodon stores any key. A member's `created_at` is its item's `published` when that is a time no later
+  than its arrival with a year from 0 to 9999, and otherwise the time Kopje received the item; Mastodon stores any
+  time it can read. Accepted, 2026-11-17.
+- A member's authorization is checked once for each value the owner gives it, in background rounds, four a round, at
+  most five attempts, and at most 250 checks begun in a UTC day for one owner's collections (the rest wait for the next
+  day); Mastodon verifies it again on every processing of the collection. An authorization larger than 64 KiB or served
+  through a redirect is not accepted; a member whose check failed this way, did not match, or gave up after five
+  attempts stays unshown until the owner changes or re-adds it. An authorization answered 501 is retried as any 5xx,
+  where Mastodon takes it as final and rejects the member (as both do for any other 4xx than 401, 408 and 429). Kopje
+  learns that a member withdrew only from the owner's `Remove` or the member's own `Delete`: while the owner keeps
+  listing a member that withdrew and Kopje receives neither, Kopje keeps showing the member. Accepted, 2026-11-17.
+- A member's `Delete` of its feature authorization revokes its membership of a remote collection too, when it names
+  the membership's current authorization (verified, or the one the owner lists while unchecked), including the copy
+  the collection's owner relays with the member's signature; Mastodon applies it to local collections only. Accepted,
+  2026-11-17.
+- An `Add` or `Remove` without an `id` is applied to a collection's or an item's collection only; one to the actor's
+  `featured` or `featuredTags` collection is ignored, where Mastodon applies it. Tracked by #1693.
 
 Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model WEB-6):
 
@@ -1061,9 +1088,9 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
   it. Mastodon has no such state and resolves whenever it is asked; Kopje could not store what it fetched then, and a
   remote server would see a fetch for nothing.
 - With `resolve=true`, a URL lookup whose answer is empty whatever it finds (a `type` with an `offset` past 0, or a
-  `type` other than `accounts` and `statuses`, `hashtags` included) fetches nothing; Mastodon 4.7.5 fetches and stores
-  the resource first (`search_service.rb:19-20`). A remote server would see a fetch whose result no answer shows.
-  Accepted, 2026-11-16.
+  `type` other than `accounts`, `statuses` and `collections`, `hashtags` included) fetches nothing; Mastodon 4.7.5
+  fetches and stores the resource first (`search_service.rb:19-20`). A remote server would see a fetch whose result no
+  answer shows. Accepted, 2026-11-16.
 - A `limit` or `offset` given as an array or a nested parameter (`limit[]=1`, `offset[a]=-1`) is not read: the search
   answers as without it, or 400 when the other one is negative. Mastodon 4.7.5 answers 500 to both, as its pagination
   check calls `to_i` on the array or hash. Accepted, 2026-11-17.
@@ -1704,35 +1731,62 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   `type` given as
   an IRI is read as given, so such a status is refused and such a mention read as absent, where Mastodon reads the type
   the compaction gives it. A one-element array both read as received, and each reader then reads it as it reads the same
-  body unsigned: an `actor` given so is refused, where Mastodon applies the activity for the request's signer (so such a
-  `Reject`, `Undo` or `Delete` leaves what Mastodon's ends, #1717); a text given so is read as empty, where Mastodon
+  body unsigned, but in a retraction (below): an `actor` given so is refused, where Mastodon applies the activity for
+  the request's signer; a text given so is read as empty, where Mastodon
   stores the array's JSON; an `inReplyTo` given so is read as absent, where Mastodon's job raises and stores nothing; an
   `object`, `target` or `instrument` given so is refused, and an `Undo`'s or a `Reject`'s read as absent, where
   Mastodon's job raises too; a single poll option is a poll in both. The patch cannot put back an array the compaction
   shortened (a `null` it left out): an embedded actor's `inbox: [null]` is read, where Mastodon's `[]` drops the update.
   And it stops there, so the members after it in the same object keep the compaction's single values: an `object` given
-  as a one-element array after `to: [null]` is refused, where Mastodon applies the activity (#1717). Compacting would
-  add JSON-LD processing to every signed activity before its HTTP signature is verified, and its readers would read a
-  form other than the one the author proof verifies. This is weighed again when a sender is seen writing one of these
-  forms, or when the fixtures re-captured at a new reference release no longer read the same. Accepted, 2026-11-16.
+  as a one-element array after `to: [null]` is refused, where Mastodon applies the activity, but in a retraction. A
+  retraction, a `Reject`, `Undo`, `Block` or `Delete` by the name its type is read as, is read in these forms as the
+  compaction writes them, where Kopje shows the compaction succeeds (the closed shape above;
+  `test/fixtures/ld-signed/retractions.json` holds what Mastodon's own service hands its handler from each): its `actor`
+  given as a one-element array of a string or of a node with an `id` is read as that element, as Mastodon tells a relay
+  by it and applies the activity for its signer; and, in each object the patch stops in, a member after the stop given
+  as a one-element array of a string or an object (its `object`, an embedded activity's `actor` or `object`) is read as
+  that element, as the compaction writes it, and so through the objects in it. Kopje reads a stop only where it is
+  certain, an array holding a `null` beside http(s) IRIs only under a name typed `@id` with no container (`to: [null]`,
+  `cc: [a, a, null]`; an array of equal values is not shortened and stops neither). Where the patch stops at another
+  member (one holding a value the name does not take), or in an object holding a key shaped like an array index, whose
+  order JavaScript does not keep, such a member is refused, where Mastodon applies an `Undo` or a `Reject` (#1717). A
+  `Delete` whose `object` is given so after a certain stop is applied, the signer's own status or account deleted,
+  where Mastodon applies nothing: its inbox reads the `object` of a `Delete` or an `Update` before anything else
+  (`inboxes_controller.rb` `unknown_affected_account?`, `value_or_id`), which raises on an array, and answers 500 each
+  time it is sent again; an `Undo` or a `Reject` given so is applied by both. Such an `actor` of two elements is
+  refused, as Mastodon's job raises, and one of `null`, which Mastodon's compaction writes as `[]` and so applies for
+  the signer, is refused too (Kopje reads less). Each ends what its signer did or holds, or lifts its own block, so
+  reading it so grants nothing its signer could not send directly; every other type keeps the reading as received.
+  Compacting would add JSON-LD processing to every signed activity before its HTTP signature is verified, and its
+  readers would read a form other than the one the author proof verifies. This is weighed again when a sender is seen
+  writing one of these forms, or when the fixtures re-captured at a new reference release no longer read the same.
+  Accepted, 2026-11-16.
 - An activity that carries a Linked Data signature is read only where nothing Kopje reads from it has another meaning in
   Mastodon's reading, and is otherwise ignored (answered 202): its contexts must give each ActivityStreams term and each
   property Mastodon's `full_context` defines that context's meaning, give no other property one of those meanings or a
   keyword's, and set no keyword (`@base`, `@vocab`, `@language`, …); its context URLs must be ones Kopje preloads and
   that keep those meanings (not `http://schema.org/`, nor `https://w3id.org/identity/v1` after the ActivityStreams
   context); and its properties must be plain names (no `@id`, `@type`, `@value` or nested `@context`, no compact or
-  absolute IRI as a key). Mastodon reads such an activity by its JSON-LD meaning, which the patch does not undo and
-  which can address it to others than its literal `to`, `cc` and mentions, or give its type or object a second value so
-  that Mastodon applies nothing; reading it as written could show it to viewers Mastodon would not, or apply what
-  Mastodon would not. A retraction so ignored (a `Reject`, `Undo` or `Delete` whose `object` is given as `{"@id": …}`)
-  leaves in place the follow, the block or the status Mastodon's ends (#1717). This keeps the meaning of what Kopje
-  reads; it does not make the two readings equal, and the shapes and values above still differ. It is ignored too where
-  a node's `type` and `@type` together give two types or more one of which is not a string or is shaped like a keyword
-  on any line (`[null, "Tombstone"]`, `["Tombstone", "@foo"]`, `"x\n@abc"`), or a type beside `@set`: Mastodon's
-  JSON-LD library sorts such types and raises, or keeps such a node and raises, so that its job applies nothing. Kopje
-  ignores as well an array of such values alone (`[null, null]`), or one under `@nest`, a language map or a `@value`,
-  and a `@set` with a value, which Mastodon's library refuses, and one in a body past Mastodon's JSON-LD limits, each of
-  which Mastodon reads as received, and so reads less there. Accepted, 2026-11-16.
+  absolute IRI as a key), but in a retraction (below). Mastodon reads such an activity by its JSON-LD meaning, which the
+  patch does not undo and which can address it to others than its literal `to`, `cc` and mentions, or give its type or
+  object a second value so that Mastodon applies nothing; reading it as written could show it to viewers Mastodon would
+  not, or apply what Mastodon would not. In a retraction (above), a node reference given as `{"@id": …}` alone, under a
+  name both contexts type `@id` with no container (its `object`, `actor`, `target`, `to`, …), is read as its IRI where
+  Kopje shows the compaction succeeds with it so and writes it so (an http(s) IRI under no namespace of a prefix of
+  `full_context`), as Mastodon's compaction writes it and its handler reads it. Elsewhere such a retraction is ignored
+  and leaves in place the follow, the block or the status Mastodon's ends (#1717): the reference beside another key
+  (its `type`: a `Delete`'s status stays; an `Undo` of a `Follow`, a `Block` or a `Like` so given ends nothing in
+  Mastodon either, as its handler seeks what to end by the undone activity's own `object`, which such a reference
+  lacks), under a name not typed `@id` (`content`), of an IRI the compaction writes as a compact IRI (`as:Public`), or
+  in a body Kopje does not show Mastodon compacts (the closed shape above, its values counted as received); where
+  Mastodon gives the compaction up, it reads such a reference as no IRI and applies nothing either.
+  This keeps the meaning of what Kopje reads; it does not make the two readings equal, and the shapes and values above
+  still differ. It is ignored too where a node's `type` and `@type` together give two types or more one of which is not
+  a string or is shaped like a keyword on any line (`[null, "Tombstone"]`, `["Tombstone", "@foo"]`, `"x\n@abc"`), or a
+  type beside `@set`: Mastodon's JSON-LD library sorts such types and raises, or keeps such a node and raises, so that
+  its job applies nothing. Kopje ignores as well an array of such values alone (`[null, null]`), or one under `@nest`,
+  a language map or a `@value`, and a `@set` with a value, which Mastodon's library refuses, and one in a body past
+  Mastodon's JSON-LD limits, each of which Mastodon reads as received, and so reads less there. Accepted, 2026-11-16.
 - An LD-signed activity is ignored as well (answered 202) where it holds anything Mastodon (3.5 to 4.7.5) and Fedify
   2.4.5 do not write (Kopje's own LD-signed deletions are Fedify's): a key with a control character or a line break; a
   key that starts with `@` but is no JSON-LD 1.1 keyword; a context URL named twice in one `@context`; an inline

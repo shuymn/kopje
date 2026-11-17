@@ -22,6 +22,13 @@ import {
   type RemoteActorInput,
   upsertRemoteActor,
 } from "./remote-actors";
+import {
+  applyFeaturedCollection,
+  deleteUnlisted,
+  type FeaturedCollectionInput,
+  holdableCollection,
+  MAX_REMOTE_COLLECTIONS,
+} from "./remote-featured-collections";
 import { removeGone } from "./remote-removal";
 import { type RemoteStatusInput, statusByUri } from "./remote-status-reads";
 import { storeFetchedStatus } from "./remote-statuses";
@@ -59,19 +66,29 @@ export const MAX_SYNC_ATTEMPTS = 3;
 export const SYNC_LEASE_MS = 10 * 60 * 1000;
 export const SYNC_RETRY_MS = 15 * 60 * 1000;
 
-// The parts of a read (phase 1), each read and applied on its own and recorded in collection_syncs.parts_read once it
-// is, so a round that reads one part makes progress whatever the others cost, and a later round reads only the rest:
-// the featured collection (pins), the followers, following and outbox collections (hide_collections and the counts),
-// and the featuredTags collection (featured hashtags; read with the featured collection for an actor without one).
+// The parts of a read (phase 1), each read and applied on its own and recorded once it is, so a round that reads one
+// part makes progress whatever the others cost, and a later round reads only the rest: the featured collection (pins),
+// the followers, following and outbox collections (hide_collections and the counts), the featuredTags collection
+// (featured hashtags; read with the featured collection for an actor without one), and the featuredCollections
+// collection (FEP-7aa9 collections, remote-featured-collections.ts). The first three are recorded in
+// collection_syncs.parts_read, whose CHECK holds them alone (0025_remote_collections), and the fourth in
+// collections_read (0113_featured_collection_syncs); a round reads them as parts_read | (collections_read << 3).
 export const PART_FEATURED = 1;
 export const PART_NETWORK = 2;
 export const PART_TAGS = 4;
-export const ALL_PARTS = PART_FEATURED | PART_NETWORK | PART_TAGS;
+export const PART_COLLECTIONS = 8;
+export const ALL_PARTS = PART_FEATURED | PART_NETWORK | PART_TAGS | PART_COLLECTIONS;
+// The parts parts_read holds.
+const STORED_PARTS = PART_FEATURED | PART_NETWORK | PART_TAGS;
 
 // Which of the actor's own collections `target` is (Add#perform and Remove#perform compare it with the account's
-// featured_collection_url): its featured collection, or its featuredTags collection, on its own origin; null for
-// anything else.
-export function collectionOf(db: Db, accountId: string, target: string): "featured" | "featuredTags" | null {
+// featured_collection_url and collections_url): its featured collection, its featuredTags collection or its
+// featuredCollections collection (FEP-7aa9), on its own origin; null for anything else.
+export function collectionOf(
+  db: Db,
+  accountId: string,
+  target: string,
+): "featured" | "featuredTags" | "featuredCollections" | null {
   const row = db.first<{ uri: string; raw: string | null }>(
     "SELECT uri, raw FROM accounts WHERE id = ? AND domain IS NOT NULL",
     accountId,
@@ -80,7 +97,13 @@ export function collectionOf(db: Db, accountId: string, target: string): "featur
     return null;
   }
   const collections = actorCollections(row.raw);
-  return target === collections.featured ? "featured" : target === collections.featuredTags ? "featuredTags" : null;
+  return target === collections.featured
+    ? "featured"
+    : target === collections.featuredTags
+      ? "featuredTags"
+      : target === collections.featuredCollections
+        ? "featuredCollections"
+        : null;
 }
 
 type Pinnable = { id: string; uri: string; account_id: string; reblog_of_id: string | null; visibility: Visibility };
@@ -192,10 +215,12 @@ export function unfeatureRemote(db: Db, accountId: string, name: string): boolea
 // ---- Syncs
 //
 // A sync has two phases, each run in rounds with their own fetch budgets, and durable state between them:
-//   1. read: three parts (PART_*), the featured collection's first MAX_REMOTE_PINS items (its pins), the followers,
-//      following and outbox collections (hide_collections and the counts) and the featuredTags collection (the
-//      featured hashtags), each applied as soon as a round has read it through and recorded in parts_read, so a later
-//      round reads only the parts left.
+//   1. read: four parts (PART_*), the featured collection's first MAX_REMOTE_PINS items (its pins), the followers,
+//      following and outbox collections (hide_collections and the counts), the featuredTags collection (the featured
+//      hashtags) and the featuredCollections collection's embedded collections (at most MAX_REMOTE_COLLECTIONS, each
+//      with its items, applied as remote-featured-collections.ts applies every embedded collection, their items' checks
+//      queued for collection-checks.ts, which runs apart from the syncs), each applied as soon as a round has read it
+//      through and recorded, so a later round reads only the parts left.
 //      The listed statuses Kopje stores that are pinnable are pinned at once. Every listed status on the account's
 //      origin gets a row in collection_pins_pending: a pending row (refresh 0) for one Kopje does not store, which holds
 //      a pin slot, and a refresh row (refresh 1) for one it stores, which holds none (migration 0101_pin_refresh).
@@ -242,6 +267,7 @@ type SyncRow = {
   generation: string;
   unread: number;
   parts_read: number;
+  collections_read: number;
   refresh: number;
 };
 
@@ -249,7 +275,7 @@ type SyncRow = {
 function claimable(db: Db, now: number): SyncRow | undefined {
   return db.first<SyncRow>(
     `SELECT account_id, attempts, CAST(generation AS TEXT) AS generation, generation > read_through AS unread, parts_read,
-			refresh
+			collections_read, refresh
 		FROM collection_syncs
 		WHERE due_at <= ? ORDER BY due_at LIMIT 1`,
     now,
@@ -304,7 +330,8 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
     // attempts of their own.
     if (read && row.attempts >= MAX_SYNC_ATTEMPTS && pendingUris(db, row.account_id).length > 0) {
       db.run(
-        "UPDATE collection_syncs SET read_through = generation, parts_read = 0, attempts = 0 WHERE account_id = ?",
+        `UPDATE collection_syncs SET read_through = generation, parts_read = 0, collections_read = 0, attempts = 0
+				WHERE account_id = ?`,
         row.account_id,
       );
       read = false;
@@ -316,8 +343,10 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
       continue;
     }
     const token = crypto.randomUUID();
+    // The round reads what the remote serves from now on: no change of the collections is after its read yet.
     db.run(
-      "UPDATE collection_syncs SET due_at = ?, token = ?, attempts = attempts + 1 WHERE account_id = ?",
+      `UPDATE collection_syncs SET due_at = ?, token = ?, attempts = attempts + 1, collections_changed = 0
+			WHERE account_id = ?`,
       now + SYNC_LEASE_MS,
       token,
       row.account_id,
@@ -328,7 +357,7 @@ export const claimCollectionSync = writeOperation<{ now: number }, CollectionSyn
       token,
       phase: refresh ? "document" : read ? "read" : "pins",
       state: refresh ? actorState(db, account.uri) : NO_ACTOR_STATE,
-      parts: row.parts_read,
+      parts: row.parts_read | (row.collections_read << 3),
       attempt: row.attempts + 1,
       uris,
       ...actorCollections(account.raw),
@@ -395,12 +424,16 @@ function roundAccount(db: Db, input: RoundInput): { id: string; uri: string } | 
 //         collection: FetchFeaturedCollectionService with hashtag).
 //   hideCollections: whether its followers or following collection hides its items (no first page).
 //   counts: the totalItems of its outbox, following and followers collections, each null when not learned.
+//   collections: the embedded collections its featuredCollections collection lists, in order, at most
+//                MAX_REMOTE_COLLECTIONS, and whether the read saw every page with none unreadable (complete), which
+//                alone deletes the stored collections it does not list.
 export type CollectionReadInput = RoundInput & {
   parts: number;
   pins: { uris: string[] } | null;
   tags: string[] | null;
   hideCollections: boolean | null;
   counts: CollectionCounts;
+  collections: { listed: FeaturedCollectionInput[]; complete: boolean } | null;
 };
 
 export type CollectionCounts = { statuses: number | null; following: number | null; followers: number | null };
@@ -413,7 +446,9 @@ export type CollectionCounts = { statuses: number | null; following: number | nu
 // hide_collections and the counts are written only while the round's generation is the sync's (`before`): a round
 // that read an older document never overwrites what a newer one learns. The pins and hashtags are applied whatever
 // the generation: a stale round may still write them, and the newer generation's round, due at once (endRound),
-// writes them again.
+// writes them again. The collections are applied whatever the generation too, unless an inbound change of them
+// committed since the round's claim (collections_changed, markCollectionsChanged): the round's listing is then older
+// than the stored collections, so it is not applied and the part is left to a later round, which reads it again.
 export const completeCollectionRead = writeOperation<CollectionReadInput, boolean>((db, input) => {
   const account = roundAccount(db, input);
   if (account === null) {
@@ -425,26 +460,39 @@ export const completeCollectionRead = writeOperation<CollectionReadInput, boolea
   if (input.tags !== null) {
     replaceFeaturedTags(db, account.id, input.tags, input.now);
   }
+  const outdated =
+    input.collections !== null &&
+    db.first<{ changed: number }>(
+      "SELECT collections_changed AS changed FROM collection_syncs WHERE account_id = ?",
+      account.id,
+    )?.changed === 1;
+  if (input.collections !== null && !outdated) {
+    replaceCollections(db, account, input.collections, input.origin, input.now);
+  }
   const before = isIntegerText(input.generation)
     ? db.first<{ parts_read: number }>(
-        "SELECT parts_read FROM collection_syncs WHERE account_id = ? AND generation = CAST(? AS INTEGER)",
+        `SELECT parts_read | (collections_read << 3) AS parts_read FROM collection_syncs
+				WHERE account_id = ? AND generation = CAST(? AS INTEGER)`,
         account.id,
         input.generation,
       )
     : undefined;
-  const parts = (before?.parts_read ?? 0) | (input.parts & ALL_PARTS);
+  const parts = (before?.parts_read ?? 0) | (input.parts & (outdated ? ALL_PARTS & ~PART_COLLECTIONS : ALL_PARTS));
   if (before !== undefined) {
     if (input.hideCollections !== null) {
       db.run("UPDATE accounts SET hide_collections = ? WHERE id = ?", input.hideCollections ? 1 : 0, account.id);
     }
     writeCounts(db, account.id, input.counts);
     db.run(
-      `UPDATE collection_syncs SET parts_read = CASE WHEN ?1 = ?3 THEN 0 ELSE ?1 END,
+      `UPDATE collection_syncs SET parts_read = CASE WHEN ?1 = ?3 THEN 0 ELSE ?1 & ?4 END,
+				collections_read = CASE WHEN ?1 = ?3 THEN 0 ELSE (?1 & ?5) >> 3 END,
 				read_through = CASE WHEN ?1 = ?3 THEN max(read_through, generation) ELSE read_through END
 			WHERE account_id = ?2`,
       parts,
       account.id,
       ALL_PARTS,
+      STORED_PARTS,
+      PART_COLLECTIONS,
     );
   }
   const progressed = before !== undefined && parts !== before.parts_read;
@@ -614,6 +662,30 @@ function replacePins(db: Db, account: { id: string; uri: string }, uris: readonl
       row.at,
       row.refresh,
     );
+  }
+}
+
+// The account's collections become those the read listed (ProcessFeaturedCollectionService for each), the first
+// MAX_REMOTE_COLLECTIONS of them. A complete read first deletes the stored ones it does not list as collections the
+// account may hold (deleteUnlisted), so the slots they held under MAX_REMOTE_COLLECTIONS are free for the new ones it
+// lists.
+function replaceCollections(
+  db: Db,
+  account: { id: string; uri: string },
+  read: NonNullable<CollectionReadInput["collections"]>,
+  origin: string,
+  now: number,
+): void {
+  const listed = read.listed.slice(0, MAX_REMOTE_COLLECTIONS);
+  if (read.complete) {
+    deleteUnlisted(
+      db,
+      account.id,
+      listed.filter((input) => holdableCollection(account, input)).map((input) => input.id),
+    );
+  }
+  for (const input of listed) {
+    applyFeaturedCollection(db, account, input, origin, now);
   }
 }
 

@@ -90,7 +90,9 @@ export const resolveInteraction = userWriteOperation.atStoreTime("storeNow")<Res
     fetched.kind === "none" && input.resolved.kind === "local" ? localTarget(db, input.query, present) : fetched;
   const notFound: InteractionResult = { target: { kind: "not_found" }, quotesDue: false };
   switch (stored.kind) {
+    // A collection is stored as search stores it (storeResolved); there is nothing to interact with.
     case "none":
+    case "collection":
       return notFound;
     case "account": {
       const { id } = stored;

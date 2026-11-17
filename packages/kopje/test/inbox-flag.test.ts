@@ -209,6 +209,53 @@ describe("Flag: what a report links (R34)", () => {
       }),
     ]);
   });
+
+  // 5-T8: TagManager#uri_to_resource finds a remote collection by its stored uri, the fragment removed.
+  it("attaches a remote target's stored collections it names by uri, and no other account's", async () => {
+    const t = await world();
+    const actor = await mastodonInstanceActor(t.web);
+    const carol = await mastodonActor(t.web, "carol", { origin: "https://other.example", key: 3 });
+    await stored(t, actor);
+    await sql(
+      t.store,
+      `INSERT INTO accounts (id, uri, username, domain) VALUES ('333333333333333333', ?, 'carol', 'other.example'),
+				('333333333333333334', 'https://other.example/users/erin', 'erin', 'other.example')`,
+      carol.uri,
+    );
+    const reply = await statusOf(t, "public", "333333333333333333", { uri: `${carol.uri}/statuses/2` });
+    await sql(t.store, "UPDATE statuses SET in_reply_to_account_id = ? WHERE id = ?", ALICE, reply.id);
+    const at = new Date(NOW).toISOString();
+    for (const [id, owner, uri] of [
+      ["710000000000000001", "333333333333333333", `${carol.uri}/collections/1`],
+      ["710000000000000002", "333333333333333333", `${carol.uri}/collections/2`],
+      ["710000000000000003", "333333333333333334", "https://other.example/users/erin/collections/3"],
+    ] as const) {
+      await sql(
+        t.store,
+        `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, uri, created_at, updated_at)
+				VALUES (?, ?, 0, 'c', 0, 1, ?, ?4, ?4)`,
+        id,
+        owner,
+        uri,
+        at,
+      );
+    }
+    const objects = [
+      carol.uri,
+      reply.uri,
+      `${carol.uri}/collections/2#fragment`,
+      `${carol.uri}/collections/1`,
+      "https://other.example/users/erin/collections/3",
+      `${carol.uri}/collections/9`,
+    ];
+    expect(await storeReceive(t.store, actor.uri, flagOf(`${MASTODON}/payloads/collections`, objects))).toMatchObject({
+      applied: true,
+      reason: "reported",
+    });
+    expect(await sql(t.store, "SELECT target_account_id, collection_ids FROM reports")).toEqual([
+      { target_account_id: "333333333333333333", collection_ids: '["710000000000000002","710000000000000001"]' },
+    ]);
+  });
 });
 
 describe("Flag: refusals write nothing", () => {
