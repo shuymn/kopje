@@ -148,6 +148,13 @@ function mapBytes(entries: number, rowBytes: number): number {
 // a pointer or a kj::Rc 16; a kj::String, kj::Array or kj::Vector header 24; a OneOf its tag and largest member; a
 // promise 8, its chain KJ's 1,024-byte arena), its bound under `alloc`, and its basis: layout (members and arenas),
 // assumed (an allowance: a coroutine frame F = alloc(4,096), the compiler's size, and a JavaScript object's).
+//
+// A chain is KJ's promise arena: newAdaptedPromise and a node appended to a promise that is not in an arena (a
+// coroutine's own node) start a new one; then(), attach() and a join appended to an arena-allocated promise share its
+// arena while it has room (K/async-inl.h:296-353, :1755-1762). The WebSocketPair pipe's operations (rows from "the
+// pipe's send or Close in flight" on) are counted at the most of each that can be alive at once for one socket; the
+// transport beyond the pipe (the connection the client end is coupled to, its send copies and its reads) is not KJ's
+// pipe and stays outside, as the message being received does.
 const F = alloc(4096);
 const CHAIN = alloc(1024);
 type Owner = { owner: string; cite: string; members: string; bytes: number; basis: "layout" | "assumed" };
@@ -251,6 +258,42 @@ const OWNERSHIP: Owner[] = [
     bytes: 3 * alloc(37) + CHAIN + alloc(512),
     basis: "assumed",
   },
+  {
+    // The adapter's pump awaits each send and its Close before the next (W/api/web-socket.c++:1442, :1450), and the
+    // pipe refuses a second while one is in progress (K/compat/http.c++:4374-4386, :4656), so one is alive at a time.
+    owner: "the pipe's send or Close in flight",
+    cite: "K/compat/http.c++:4234-4258, :4352-4433, :4655-4677",
+    members:
+      "WebSocketPipeImpl::send or close, a coroutine F; awaiting BlockedSend's adapted promise, or BlockedPumpTo's " +
+      "canceler wrap of the transport's send (one chain) or of its close and then() (two chains)",
+    bytes: F + 2 * CHAIN,
+    basis: "assumed",
+  },
+  {
+    // coupleImpl pumps the client end to the transport for the connection's life (W/api/web-socket.c++:675). A pump
+    // that finds a BlockedSend sends it and continues with a second pumpTo (K/compat/http.c++:4408-4427), which finds
+    // no state (the sender resumes only later) and holds BlockedPumpTo until the Close (:4630-4677): two levels at most.
+    owner: "the client end's pump to the transport",
+    cite: "W/api/web-socket.c++:674-675; K/compat/http.c++:4285-4304, :4408-4433, :4630-4721, :4856-4862",
+    members:
+      "first level: pumpToNoAbort F, its abort watch, its exclusiveJoin with attach, BlockedSend::pumpTo's then() " +
+      "and canceler wrap (four chains); second: pumpToNoAbort F, its abort watch, its exclusiveJoin, " +
+      "BlockedPumpTo's adapted promise (three chains)",
+    bytes: 2 * F + 7 * CHAIN,
+    basis: "assumed",
+  },
+  {
+    // The transport's pump into the client end (W/api/web-socket.c++:674): KJ's default pumpTo takes the pipe's
+    // tryPumpFrom (K/compat/http.c++:4181-4199, :4273-4278, :4590-4603, :4841-4853: adapted promises and wraps, three
+    // chains at most), else loops (:4151-4179), sending each message into the pipe one at a time.
+    owner: "the transport's pump into the client end",
+    cite: "W/api/web-socket.c++:674; K/compat/http.c++:4151-4199, :4234-4250, :4273-4278, :4590-4603, :4841-4853",
+    members:
+      "the loop: pumpWebSocketLoop F, its abort watch and its exclusiveJoin (two chains), and one send into the " +
+      "pipe, a coroutine F awaiting BlockedSend (one chain)",
+    bytes: 2 * F + 3 * CHAIN,
+    basis: "assumed",
+  },
 ];
 
 describe("a socket's charges (RES-6)", () => {
@@ -298,16 +341,19 @@ describe("a socket's charges (RES-6)", () => {
       "handleReadLoop and readLoop",
       "the WebSocketPair pipe",
       "an event in delivery",
+      "the pipe's send or Close in flight",
+      "the client end's pump to the transport",
+      "the transport's pump into the client end",
     ]);
     const total = OWNERSHIP.reduce((sum, row) => sum + row.bytes, 0);
-    expect(total).toBe(26_512);
+    expect(total).toBe(59_552);
     expect(SOCKET_OBJECTS).toBe(total);
     expect(SOCKET_BYTES).toBe(alloc(ATTACHMENT_MAX) + frame(123) + total);
-    expect(SOCKET_BYTES).toBe(45_136);
+    expect(SOCKET_BYTES).toBe(78_176);
   });
 
   it("charges a socket its objects, its frames and its queue with the Close", () => {
-    expect(socketCharge(0, 0)).toBe(46_064);
+    expect(socketCharge(0, 0)).toBe(79_104);
     expect(outputNeed(0, [1_024, 1_024])).toBe(2 * 4_144);
     // A third frame grows the rows from 4 to 8 and the links from 8 to 16 once the Close is counted.
     expect(outputNeed(3, [1_024])).toBe(4_144 + capacity(5) - capacity(4));
@@ -323,11 +369,22 @@ const UNIT_PEAK = Math.max(...Object.values(STREAM_UNIT_PEAKS).map((p) => p.peak
 const P = Math.max(...Object.values(HEAP_PEAKS).map((p) => p.backstop), UNIT_PEAK + ATTACHMENT_WORKING);
 // The most sockets of this release listed at once: each counts at least a fresh socket's charge.
 const N = Math.floor((ISOLATE - P) / socketCharge(0, 0));
-// Reservations that never return: the hibernation manager's tag table (two tags a socket; rows of a kj::String key and
-// a kj::Own, 40 bytes: K/map.h:49-52, W/io/legacy-hibernation-manager.h:251) and the event loop's registry of events in
-// delivery (one a socket at a time; rows of a kj::String and two pointers, 40 bytes: :181-200, .c++:441-447).
+// The most sockets a hibernation manager lists: its ACTIVE_CONNECTION_LIMIT, 1024 * 32
+// (W/io/legacy-hibernation-manager.h:303-305). acceptWebSocket throws once the manager holds that many (allWs,
+// .c++:165-166), and a socket stays in allWs until it is destroyed (.c++:162-163), open or closing. A previous release
+// limited only its open sockets, so nothing smaller bounds the ones its manager held.
+const LISTED_MAX = 32 * 1024;
+// Reservations that never return. The hibernation manager's tag table: two tags a socket, rows of a kj::String key and a
+// kj::Own, 40 bytes (K/map.h:49-52, W/io/legacy-hibernation-manager.h:251), at this release's N; what a previous
+// release's sockets grew is outside until the manager goes (RES-6). The registry of events in delivery: rows of a
+// kj::String and two pointers, 40 bytes (W/io/legacy-hibernation-manager.h:181-200); one event a socket at a time (the
+// read loop's, cancelled before its next receive, and then the termination's: .c++:482-484, :631-634). It is an
+// EventLoopLocal (.c++:16-19) shared by every manager on the loop, and a row is only ever erased (.c++:145-147, :437,
+// :456), so its arrays keep their high-water for the event loop's life, past the sockets and the manager that grew
+// them. A previous release's sockets, which nothing here bounds, may reach the most a manager lists, so it is reserved
+// there; rows of other Workers' objects on the same loop are outside, as those objects' memory is.
 const TAG_TABLE_BYTES = mapBytes(2 * N, 40);
-const EVENT_TABLE_BYTES = mapBytes(N, 40);
+const EVENT_TABLE_BYTES = mapBytes(Math.max(N, LISTED_MAX), 40);
 
 describe("the caps (RES-6)", () => {
   // The tag table's reservation at its largest (no socket's objects: N = 2,545, E = 5,090) and below: for every most
@@ -343,28 +400,53 @@ describe("the caps (RES-6)", () => {
     expect(mapBytes(5_090, 40)).toBe(1_048_640);
   });
 
+  // The registry's arrays after every event is gone: inserts to E, then all erased (as cancelEvent and a manager's
+  // destruction do), hold the high-water. 4,097 events leave 655,392 bytes, past a reservation at this Store's N; the
+  // most a manager lists, reached and emptied, and a walk to it, stay within EVENT_TABLE_BYTES.
+  it("reserves the event registry at the most sockets a manager lists", () => {
+    const filledThenEmptied = (entries: number) =>
+      simulatedMap([...Array<boolean>(entries).fill(true), ...Array<boolean>(entries).fill(false)], 40);
+    expect(filledThenEmptied(4_097).held).toBe(655_392);
+    expect(filledThenEmptied(4_097).held).toBeGreaterThan(mapBytes(N, 40));
+    const most = filledThenEmptied(LISTED_MAX);
+    expect(most.held).toBe(most.lastInsert);
+    expect(most.peak).toBeLessThanOrEqual(EVENT_TABLE_BYTES);
+    expect(simulatedMap(walk(LISTED_MAX, 7), 40).peak).toBeLessThanOrEqual(EVENT_TABLE_BYTES);
+  });
+
   it("derives instanceBytes and socketBytes from the baseline, the largest peak and the tables", () => {
     expect({ ATTACHMENT_WORKING, UNIT_PEAK, P, N, TAG_TABLE_BYTES, EVENT_TABLE_BYTES }).toEqual({
       ATTACHMENT_WORKING: 12_632_096,
       UNIT_PEAK: 46_821_343.5,
       P: HEAP_PEAKS.groups.backstop,
-      N: 1_059,
-      TAG_TABLE_BYTES: 524_352,
-      EVENT_TABLE_BYTES: 262_208,
+      N: 616,
+      TAG_TABLE_BYTES: 262_208,
+      EVENT_TABLE_BYTES: 5_242_944,
     });
     const room = ISOLATE - Math.ceil(1.25 * STORE_BASELINE.bytes) - P - TAG_TABLE_BYTES - EVENT_TABLE_BYTES;
-    expect(room).toBe(22_400_474);
+    expect(room).toBe(17_681_751);
     const instanceBytes = Math.floor(room / MIB) * MIB;
     expect(STREAM_OUTPUT.instanceBytes).toBe(instanceBytes);
     expect(STREAM_OUTPUT.socketBytes).toBe(Math.floor(instanceBytes / 3 / MIB) * MIB);
-    expect([STREAM_OUTPUT.instanceBytes / MIB, STREAM_OUTPUT.socketBytes / MIB]).toEqual([21, 7]);
+    expect([STREAM_OUTPUT.instanceBytes / MIB, STREAM_OUTPUT.socketBytes / MIB]).toEqual([16, 5]);
+  });
+
+  // The fresh sockets instanceBytes holds, fewer than socketsPerInstance: the socket limit is reached only if the output
+  // allowance allows, as docs/threat-model.md (RES-6) and docs/mastodon-deviations.md ("Streaming output") state.
+  it("holds fewer fresh sockets than socketsPerInstance", () => {
+    const fresh = Math.floor(STREAM_OUTPUT.instanceBytes / socketCharge(0, 0));
+    expect(fresh).toBe(212);
+    expect(fresh).toBeLessThan(STREAM_LIMITS.socketsPerInstance);
+    const flat = (doc: string) => readFileSync(new URL(`../docs/${doc}`, import.meta.url), "utf8").replace(/\s+/g, " ");
+    expect(flat("threat-model.md")).toContain(`\`instanceBytes\` holds ${fresh} fresh sockets`);
+    expect(flat("mastodon-deviations.md")).toContain(`it holds ${fresh} fresh connections`);
   });
 
   // A fresh socket subscribed to every stream it may hold takes a unit of the largest frame on each, with its Close.
   it("takes any unit on a fresh socket", () => {
     const need = socketCharge(0, 0) + outputNeed(0, Array(STREAM_LIMITS.subscriptionsPerSocket).fill(MESSAGE_MAX));
     expect(need).toBe(SOCKET_BYTES + 16 * frame(MESSAGE_MAX) + capacity(17));
-    expect(need).toBe(4_279_568);
+    expect(need).toBe(4_312_608);
     expect(need).toBeLessThanOrEqual(STREAM_OUTPUT.socketBytes);
   });
 
@@ -387,10 +469,10 @@ describe("the caps (RES-6)", () => {
       }
       return frames;
     };
-    expect([most(2_048), most(4_096)]).toEqual([1_110, 688]);
+    expect([most(2_048), most(4_096)]).toEqual([800, 491]);
     // docs/mastodon-deviations.md, "Streaming output", states them.
     const deviations = readFileSync(new URL("../docs/mastodon-deviations.md", import.meta.url), "utf8");
-    expect(deviations.replace(/\s+/g, " ")).toContain("closed after 688 to 1,110 frames of 4 to 2 KB");
+    expect(deviations.replace(/\s+/g, " ")).toContain("closed after 491 to 800 frames of 4 to 2 KB");
   });
 
   it("records the baseline on the pinned workerd", () => {

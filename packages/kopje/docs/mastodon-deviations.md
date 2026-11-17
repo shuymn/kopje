@@ -47,10 +47,12 @@ Other documents point here rather than repeat the release.
 - **Streaming output.** Kopje cannot see whether a client reads what it is sent (the runtime gives no signal of unsent
   output and cannot ping), so it charges each connection everything it hands it, with the runtime's overhead per frame,
   until the connection ends. Before an event or an error reply would take a connection past `STREAM_OUTPUT.socketBytes`
-  (7 MiB), or all connections together past `instanceBytes` (21 MiB), it closes that connection with 1013, after every
-  frame sent before; while the instance's allowance is full it refuses new connections (503), and after an upgrade it
+  (5 MiB), or all connections together past `instanceBytes` (16 MiB), it closes that connection with 1013, after every
+  frame sent before; while the instance's allowance is full it refuses new connections (503): at the shipped caps it
+  holds 212 fresh connections, fewer as output is held, so the limit of 256 connections is reached only if it allows.
+  After an upgrade it
   streams nothing and refuses new connections until the previous release's connections have ended. A connection that
-  reads is closed after 688 to 1,110 frames of 4 to 2 KB (figures from the shipped caps). masto.js 7.12 reconnects after
+  reads is closed after 491 to 800 frames of 4 to 2 KB (figures from the shipped caps). masto.js 7.12 reconnects after
   1 s (it clears its backoff when an open socket closes). Mastodon's web client (`@gamestdio/websocket` 0.3.2) waits
   `floor(random × 2^n × 100)` ms after the nth close in the page's life, a count no successful open resets (a median of
   13.65 minutes at the 14th), meanwhile polling home and notifications every 20 to 40 s; on reconnect it fetches the

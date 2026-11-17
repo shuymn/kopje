@@ -4435,7 +4435,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   alternating reply and quote chain longer than a walk", "claims context walks first, then create walks in the order
   they were queued", "claims create walks in the order the Store recorded them, whatever the Worker's clock or its own
   says", "claims at once the walk of a Create whose Worker clock is ahead of the Store's, as its answer asks")).
-  Streaming (VIS-26): _Enforced (main):_ at most 16 sockets per account (429) and 256 per instance (503); 16
+  Streaming (VIS-26): _Enforced (main):_ at most 16 sockets per account (429) and 256 per instance (503), the 256
+  reached only if the output allowance below holds them (212 fresh sockets at its derived figure, fewer as output is
+  held); 16
   subscriptions per socket, 16 stream keys per account and a socket's attachment at most 12 KiB of JSON with its clone
   within the runtime's 16 KiB at any output charge (`Too many subscriptions`, 429); incoming messages text only (1003),
   at most 4 KiB and 120 a minute (1008). The fan-out runs
@@ -4462,13 +4464,18 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   branch, and the hub of the write it waits on); a socket also its queue's row vector (96 bytes a row) and
   insertion-order index (8 bytes a link) at the capacities KJ grows them to for every frame it was handed, with the
   previous arrays, and `SOCKET_BYTES` for its attachment at the runtime's 16 KiB, its Close and its objects (an
-  ownership table, with allowances for coroutine frames, wrappers and promises). A unit that would take a socket past
-  `STREAM_OUTPUT.socketBytes` (7 MiB), or the listed sockets together past `instanceBytes` (21 MiB), closes that socket
+  ownership table, with allowances for coroutine frames, wrappers and promises, the WebSocket pipe's send, Close and
+  pumps included). A unit that would take a socket past `STREAM_OUTPUT.socketBytes` (5 MiB), or the listed sockets
+  together past `instanceBytes` (16 MiB), closes that socket
   with 1013 before any of the unit is sent to it (an error reply too, unsent), and an upgrade the instance cannot hold
-  answers 503. `instanceBytes` is the largest multiple of 1 MiB within 128,000,000 less 1.25 times the Store isolate's
+  answers 503: a fresh socket is charged 79,104 bytes, so `instanceBytes` holds 212 fresh sockets, fewer as output is
+  held, and the limit of 256 sockets is reached only if it allows (`test/streaming/output.test.ts`, the 213th fresh
+  socket). `instanceBytes` is the largest multiple of 1 MiB within 128,000,000 less 1.25 times the Store isolate's
   measured idle baseline (the sum of its V8 heap, external and cppgc memory and the native objects its snapshot
-  reports), the largest peak of one request (RES-3) and fixed reservations for the runtime's tag table and its registry
-  of events in delivery, which keep their largest size after sockets end, at the most sockets the charges admit; so held
+  reports), the largest peak of one request (RES-3) and fixed reservations for the runtime's tables, which keep their
+  largest size after sockets end: the hibernation manager's tag table at the most sockets the charges admit, and the
+  event loop's registry of events in delivery, shared by every manager on the loop and never shrunk, at the most sockets
+  a manager lists (32,768), which a previous release's sockets may reach; so held
   output, the tables, the baseline and any request fit the isolate together. `socketBytes` is the largest multiple of 1
   MiB within a third of it, so the instance serves on while two sockets hold their caps, and it takes any unit on a
   fresh socket (16 frames of `MESSAGE_MAX`, which `payloadBytes` keeps, with its NUL, within 256 KiB). The charges live
@@ -4504,9 +4511,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   on feeds alone; `streamPrune` deletes tombstones after the viewer rows, in the same 500-row calls. A hashtag `tag` is
   at most 256 bytes as sent and normalized (400 `Invalid parameter`). The status and edit triggers also fire for a
   public status that is not a boost while some account listens on a feed, on the same writes as before. Every public
-  status can reach every socket (256 accounts on `public`): it is a unit per account, each within a unit's worst case,
+  status can reach every socket (up to 256 accounts on `public`, as many as the output allowance admits): it is a unit
+  per account, each within a unit's worst case,
   over as many turns as the budget needs, and a turn that resumes an event goes on from the persisted account
-  (`test/streaming/public.test.ts`, 256 sockets on distinct tokens). Every stream event kind must pass
+  (`test/streaming/public.test.ts`, 256 sockets on distinct tokens, the instance's output allowance raised past them, as
+  in the split cases and the conversations at the caps, which test the rounds and not the allowance). Every stream event
+  kind must pass
   `test/streaming/split.test.ts`, which splits one event of the kind (or, for a kind of one unit per event, a batch of
   them) across turns by the budget's own constants and checks that each listener gets it exactly once and the others
   nothing, that it finishes within a bounded number of turns while writes of its kind land between turns, that the
@@ -4683,7 +4693,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   booster checked against the account's follows by key), or past that the account's follows, one key lookup each
   (`test/policy-bounds.test.ts` ("a streamed status reads its item" and "R32: a delete's capture")). A turn reads a
   delete's units eight viewers at a time from the position, each page charged to the turn, never the whole capture.
-  _Gap:_ a status with more than 2,000 boosts costs each listening account its follows (at most 256 accounts, each
+  _Gap:_ a status with more than 2,000 boosts costs each listening account its follows (at most 256 accounts, 212 at the
+  output allowance's derived figure (RES-6), each
   within the follow limit). _Enforced (main):_ a feed's check is the public or the hashtag's
   timeline positioned at the status, read by the status's key (the hashtag's by the status's row of it); the mention
   filter reads the status's mentions by its key, each checked by key; an event's feed listeners are the `public*`
@@ -5251,7 +5262,8 @@ within half of the Store isolate's 128 MB, and pins them (`STREAM_UNIT_PEAKS` an
 
 Held stream output (RES-6) is charged within `instanceBytes`, which leaves the measured idle isolate with 25% headroom,
 the largest peak of one request (an answer's, or a turn's with the open sockets' attachments) and the runtime's tag
-table and event registry at their largest, so the Store isolate's 128 MB holds them together.
+table and event registry at their largest (the registry at the most sockets the runtime lists, since it outlives them),
+so the Store isolate's 128 MB holds them together.
 
 ### Data and keys (DATA)
 

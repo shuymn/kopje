@@ -1,5 +1,5 @@
 import { runInDurableObject } from "cloudflare:test";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { Db } from "../../src/db/sql";
 import { MAX_MEDIA_DESCRIPTION_LENGTH, MAX_STATUS_MEDIA } from "../../src/domain/status-bounds";
@@ -36,7 +36,17 @@ import {
   payloadBytes,
   writeFilled,
 } from "./payload-fills";
-import { connect, drained, echo, type Inbox, settled, type StreamMessage, subscribed, takeAll } from "./stream-helpers";
+import {
+  connect,
+  drained,
+  echo,
+  type Inbox,
+  liftInstanceCap,
+  settled,
+  type StreamMessage,
+  subscribed,
+  takeAll,
+} from "./stream-helpers";
 
 // The `public*` and `hashtag*` streams: `update` and `status.update` when the public
 // or the hashtag's timeline positioned at the status returns it (R33), less a status that mentions an account the
@@ -544,6 +554,7 @@ describe("feeds at the caps", () => {
   // token sweep takes 256 checks of its 512 and each unit at most 64 presentations, so one status takes several turns,
   // each within its budget, each socket sent each message once.
   it("sends a status and its delete to 256 sockets on distinct tokens, once each, over several turns", async () => {
+    onTestFinished(liftInstanceCap()); // rounds at 256 sockets, not the output cap (RES-6)
     const h = await community(["author"]);
     const ids = await viewers(h, 256);
     const inboxes: Inbox[] = [];

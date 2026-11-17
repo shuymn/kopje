@@ -24,10 +24,10 @@ import { connect, Inbox, settled, type StreamMessage, upgrade } from "./stream-h
 //   capacity(1 to 4) = 528 + 272 + 80 + 48 = 928, capacity(5 to 7) = 1,040 + 528 + 80 + 48 = 1,696, capacity(8) =
 //   1,040 + 528 + 144 + 80 = 1,792, capacity(9 to 15) = 2,064 + 1,040 + 144 + 80 = 3,328, capacity(16) = 2,064 + 1,040
 //   + 272 + 144 = 3,520, capacity(17) = 4,112 + 2,064 + 272 + 144 = 6,592;
-// - SOCKET_BYTES = A(16,384) + A(124) + 2,080 + SOCKET_OBJECTS (26,512) = 16,400 + 144 + 2,080 + 26,512 = 45,136, so a
-//   fresh socket is charged 45,136 + capacity(1) = 46,064;
-// - a socket's charge is 45,136 + its frames' charges + capacity(frames + 1).
-const FRESH = 46_064;
+// - SOCKET_BYTES = A(16,384) + A(124) + 2,080 + SOCKET_OBJECTS (59,552) = 16,400 + 144 + 2,080 + 59,552 = 78,176, so a
+//   fresh socket is charged 78,176 + capacity(1) = 79,104;
+// - a socket's charge is 78,176 + its frames' charges + capacity(frames + 1).
+const FRESH = 79_104;
 const FRAME_1K = 4_144;
 const REPLY = 2_160;
 
@@ -148,13 +148,13 @@ async function status(h: Parameters<typeof post>[0], user: User): Promise<string
 
 describe("closing a socket at its output cap (RES-6)", () => {
   // bob on `public` and `public:local`: each of alice's statuses is two frames, every unit its own transaction and
-  // write generation. After three units: 6 frames, 24,864 bytes, a charge of 45,136 + 24,864 + capacity(7) (1,696) =
-  // 71,696. The fourth needs 2 × 4,144 + capacity(9) (3,328) − 1,696 = 9,920. At a cap of 71,696 the third is sent
-  // (the comparison is ≤) and the fourth closes the socket; at 71,696 plus one more frame's need (4,144 + capacity(8) −
-  // capacity(7) = 4,240), 75,936, the fourth still closes it, none of its frames sent (admission is per unit).
+  // write generation. After three units: 6 frames, 24,864 bytes, a charge of 78,176 + 24,864 + capacity(7) (1,696) =
+  // 104,736. The fourth needs 2 × 4,144 + capacity(9) (3,328) − 1,696 = 9,920. At a cap of 104,736 the third is sent
+  // (the comparison is ≤) and the fourth closes the socket; at 104,736 plus one more frame's need (4,144 + capacity(8) −
+  // capacity(7) = 4,240), 108,976, the fourth still closes it, none of its frames sent (admission is per unit).
   it.each([
-    ["at its charge", 71_696],
-    ["one frame's need past it", 75_936],
+    ["at its charge", 104_736],
+    ["one frame's need past it", 108_976],
   ] as const)("closes a socket at its output cap, sending none of the unit, with the cap %s", async (_name, cap) => {
     const h = await community(["alice", "bob"]);
     const { alice, bob } = h.users;
@@ -180,20 +180,20 @@ describe("closing a socket at its output cap (RES-6)", () => {
         frames: 6,
         charged: counted,
         need: 9_920,
-        instance: 71_696,
+        instance: 104_736,
         listed: 1,
       },
     ]);
   });
 
-  // bob on `public:local`, one frame a unit. Three frames leave a charge of 45,136 + 12,432 + capacity(4) (928) =
-  // 58,496; the fourth needs 4,144 + capacity(5) (1,696) − 928 = 4,912, as the queue reserves its Close past the four
-  // frames. At a cap of 62,640, the charge the fourth would leave counted without its Close (45,136 + 16,576 + 928),
+  // bob on `public:local`, one frame a unit. Three frames leave a charge of 78,176 + 12,432 + capacity(4) (928) =
+  // 91,536; the fourth needs 4,144 + capacity(5) (1,696) − 928 = 4,912, as the queue reserves its Close past the four
+  // frames. At a cap of 95,680, the charge the fourth would leave counted without its Close (78,176 + 16,576 + 928),
   // the fourth closes it.
   it("reserves the Close", async () => {
     const h = await community(["alice", "bob"]);
     const { alice, bob } = h.users;
-    STREAM_OUTPUT.socketBytes = 62_640;
+    STREAM_OUTPUT.socketBytes = 95_680;
     const logs = spyLogs();
     const inbox = await opened(h, bob, ["public:local"]);
     for (let i = 0; i < 3; i++) {
@@ -213,7 +213,7 @@ describe("a fresh socket (RES-6)", () => {
   // The shipped caps. bob, following alice, subscribes to 16 streams that all carry her status: user, the four public
   // streams, six `hashtag` and five `hashtag:local` keys, one of them a tag of 256 bytes. The status's payload is
   // within 1 KiB of payloadBytes, so each of its 16 frames is longer than 2^17 bytes and charged 264,240: 4,227,840,
-  // and the socket 45,136 + 4,227,840 + capacity(17) (6,592) = 4,279,568, within socketBytes. Its descriptions start as
+  // and the socket 78,176 + 4,227,840 + capacity(17) (6,592) = 4,312,608, within socketBytes. Its descriptions start as
   // ASCII and are raised to the target with U+0001 (+6 bytes a character), U+1F600 (+3) and U+3042 (+2).
   it("takes any unit on a fresh socket", async () => {
     const h = await community(["alice", "bob"]);
@@ -284,13 +284,26 @@ describe("a fresh socket (RES-6)", () => {
     }
     expect(inbox.isClosed).toBe(false);
     expect((await servers(h, bob.id))[0]!.out).toEqual([16 * 264_240, 16]);
-    expect(outputLogs(logs.log, logs.warn)).toEqual({});
+    // Past three quarters of socketBytes, which logs output_near, and closes nothing.
+    expect(outputLogs(logs.log, logs.warn)).toEqual({
+      "kopje.stream.output_near": [
+        {
+          event: "kopje.stream.output_near",
+          scope: "socket",
+          charge: 4_312_608,
+          cap: STREAM_OUTPUT.socketBytes,
+          listed: 1,
+          closing: 0,
+          unknown: 0,
+        },
+      ],
+    });
   }, 60_000);
 });
 
 describe("the instance's cap (RES-6)", () => {
   // bob on `public` and `public:local` (two frames a status), carol on `public:local` (one). Both fresh: the instance's
-  // charge is 92,128. At a cap of 92,128 + 8,287, bob's unit (8,288) passes it and closes his socket; carol's (4,144)
+  // charge is 158,208. At a cap of 158,208 + 8,287, bob's unit (8,288) passes it and closes his socket; carol's (4,144)
   // fits and arrives.
   it("closes the recipient that would pass the instance's cap", async () => {
     const h = await community(["alice", "bob", "carol"]);
@@ -304,7 +317,7 @@ describe("the instance's cap (RES-6)", () => {
     expect(JSON.parse((await second.next((m) => m.event === "update")).payload!)).toMatchObject({ id });
     expect(updates(first)).toEqual([]);
     expect(outputLogs(logs.log, logs.warn)["kopje.stream.output_closed"]).toMatchObject([
-      { scope: "instance", frames: 0, charged: 0, need: 8_288, instance: 92_128 },
+      { scope: "instance", frames: 0, charged: 0, need: 8_288, instance: 158_208 },
     ]);
   });
 
@@ -343,9 +356,9 @@ describe("the instance's cap (RES-6)", () => {
     accepted.webSocket!.close();
   });
 
-  // bob's and carol's sockets on `public:local`, both fresh (92,128). bob's client closes; the socket leaves, and nothing
-  // recomputes until alice's status starts a turn, which finds carol's alone (46,064): her frame (4,144) fits a cap of
-  // 92,128 + 4,143, which the cached sum would pass.
+  // bob's and carol's sockets on `public:local`, both fresh (158,208). bob's client closes; the socket leaves, and nothing
+  // recomputes until alice's status starts a turn, which finds carol's alone (79,104): her frame (4,144) fits a cap of
+  // 158,208 + 4,143, which the cached sum would pass.
   it("returns a departed socket's credit at the next turn", async () => {
     const h = await community(["alice", "bob", "carol"]);
     const { alice, bob, carol } = h.users;
@@ -360,7 +373,7 @@ describe("the instance's cap (RES-6)", () => {
     expect(staying.isClosed).toBe(false);
   });
 
-  // One fresh socket listed: an upgrade needs 46,064 more. At a cap one byte short it answers 503 and logs why; at the
+  // One fresh socket listed: an upgrade needs 79,104 more. At a cap one byte short it answers 503 and logs why; at the
   // cap, 101.
   it("refuses an upgrade the instance cannot hold", async () => {
     const h = await community(["bob", "carol"]);
@@ -379,6 +392,31 @@ describe("the instance's cap (RES-6)", () => {
     accepted.webSocket!.accept();
     expect(await servers(h)).toHaveLength(2);
   });
+
+  // At the derived caps, unlowered: instanceBytes, 16 MiB (16,777,216), holds 212 fresh sockets (16,770,048), fewer than
+  // socketsPerInstance (256), and the 213th upgrade (16,849,152) answers 503. Once a socket's client closes and the
+  // socket leaves, its charge returns and the next upgrade is accepted.
+  it("admits 212 fresh sockets at the derived caps, and the 213th once one leaves", async () => {
+    expect(STREAM_OUTPUT.instanceBytes).toBe(16_777_216);
+    const names = Array.from({ length: 14 }, (_, i) => `fresh${i}`);
+    const h = await community(names);
+    const owner = (i: number) => h.users[names[Math.floor(i / STREAM_LIMITS.socketsPerAccount)]!]!;
+    const logs = spyLogs();
+    const inboxes: Inbox[] = [];
+    for (let i = 0; i < 212; i++) {
+      inboxes.push(await connect(h, owner(i).token));
+    }
+    const refused = await upgrade(h, owner(212).token);
+    expect([refused.status, refused.headers.get("x-error-message")]).toEqual([503, "Too many connections"]);
+    expect(outputLogs(logs.log, logs.warn)["kopje.stream.output_refused"]).toMatchObject([
+      { scope: "instance", charge: 212 * FRESH, need: FRESH, cap: 16_777_216, listed: 212, unknown: 0 },
+    ]);
+    inboxes[0]!.ws.close();
+    await until(h, (listed) => listed.length === 211);
+    const accepted = await upgrade(h, owner(212).token);
+    expect(accepted.status).toBe(101);
+    accepted.webSocket!.accept();
+  }, 120_000);
 
   // An upgrade whose attachment write throws answers 500 and lists no socket: the attachment is written before the
   // socket is accepted.
@@ -416,8 +454,8 @@ describe("charges across hibernation (RES-6)", () => {
     expect(updates(inbox)).toHaveLength(1);
   });
 
-  // After the Store is evicted, nothing has recomputed the instance's charge (46,064, bob's socket) when bob asks to
-  // subscribe to an unknown stream: the reply's 2,160 would pass a cap of 46,064 + 2,159, so the socket is closed and
+  // After the Store is evicted, nothing has recomputed the instance's charge (79,104, bob's socket) when bob asks to
+  // subscribe to an unknown stream: the reply's 2,160 would pass a cap of 79,104 + 2,159, so the socket is closed and
   // sent no reply.
   it("recomputes before the first frame after a wake", async () => {
     const h = await community(["bob"]);
@@ -479,8 +517,8 @@ describe("admission from the latest attachment (RES-6)", () => {
   }
 
   // A unit waits before its admission while bob's error reply is admitted (1 frame, 2,160). Released, the unit's frame
-  // (4,144) adds to it: `out` is [6,304, 2], the charge 45,136 + 6,304 + capacity(3) (928) = 52,368, and an upgrade at
-  // a cap of 52,368 + 46,064 − 1 is refused.
+  // (4,144) adds to it: `out` is [6,304, 2], the charge 78,176 + 6,304 + capacity(3) (928) = 85,408, and an upgrade at
+  // a cap of 85,408 + 79,104 − 1 is refused.
   it("takes the latest credit", async () => {
     const h = await community(["alice", "bob", "carol"]);
     const { alice, bob, carol } = h.users;
@@ -495,7 +533,7 @@ describe("admission from the latest attachment (RES-6)", () => {
     await posted;
     await inbox.next((m) => m.event === "update");
     expect((await servers(h, bob.id))[0]!.out).toEqual([REPLY + FRAME_1K, 2]);
-    STREAM_OUTPUT.instanceBytes = 52_368 + FRESH - 1;
+    STREAM_OUTPUT.instanceBytes = 85_408 + FRESH - 1;
     expect((await upgrade(h, carol.token)).status).toBe(503);
   });
 
@@ -577,9 +615,9 @@ describe("failures during a unit (RES-6)", () => {
       { out: [0, 0], readyState: WebSocket.CLOSING },
       { out: [2 * FRAME_1K, 2], readyState: WebSocket.OPEN },
     ]);
-    // The first's 46,064 and the second's 45,136 + 8,288 + capacity(3) (928) = 54,352 are listed: a fresh socket does
+    // The first's 79,104 and the second's 78,176 + 8,288 + capacity(3) (928) = 87,392 are listed: a fresh socket does
     // not fit one byte short.
-    STREAM_OUTPUT.instanceBytes = FRESH + 54_352 + FRESH - 1;
+    STREAM_OUTPUT.instanceBytes = FRESH + 87_392 + FRESH - 1;
     expect((await upgrade(h, dave.token)).status).toBe(503);
     const inbox = quiet.read();
     expect((await inbox.closed()).code).toBe(1011);
@@ -715,12 +753,12 @@ describe("unknown charges (RES-6)", () => {
 });
 
 describe("output_near (RES-6, DATA-5)", () => {
-  // bob on `public:local` at a cap of 75,936 (three quarters: 56,952): his charge goes 46,064, 50,208, 54,352, 58,496
-  // (the crossing), 63,408, then, after the Store is evicted, 67,552, 71,696 and 75,936, the cap. One output_near.
+  // bob on `public:local` at a cap of 108,976 (three quarters: 81,732): his charge goes 79,104, 83,248 (the crossing),
+  // 87,392, 91,536, 96,448, then, after the Store is evicted, 100,592, 104,736 and 108,976, the cap. One output_near.
   it("logs output_near once a socket", async () => {
     const h = await community(["alice", "bob"]);
     const { alice, bob } = h.users;
-    STREAM_OUTPUT.socketBytes = 75_936;
+    STREAM_OUTPUT.socketBytes = 108_976;
     const logs = spyLogs();
     const inbox = await opened(h, bob, ["public:local"]);
     for (let i = 0; i < 7; i++) {
@@ -735,8 +773,8 @@ describe("output_near (RES-6, DATA-5)", () => {
       {
         event: "kopje.stream.output_near",
         scope: "socket",
-        charge: 58_496,
-        cap: 75_936,
+        charge: 83_248,
+        cap: 108_976,
         listed: 1,
         closing: 0,
         unknown: 0,
@@ -744,14 +782,14 @@ describe("output_near (RES-6, DATA-5)", () => {
     ]);
   });
 
-  // The instance at a cap of 140,000 (three quarters: 105,000). bob and carol on `public:local`: two statuses take them
-  // to 54,352 each, the crossing (108,704). carol leaves; dave's upgrade recomputes 54,352 (re-armed) and adds 46,064;
-  // a status takes them to 108,704 again, the second crossing. After the Store is evicted, the next turn's recompute
-  // finds the same 108,704, past three quarters with the arming forgotten: the third.
+  // The instance at a cap of 228,000 (three quarters: 171,000). bob and carol on `public:local`: two statuses take them
+  // to 87,392 each, the crossing (174,784). carol leaves; dave's upgrade recomputes 87,392 (re-armed) and adds 79,104;
+  // a status takes them to 174,784 again, the second crossing. After the Store is evicted, the next turn's recompute
+  // finds the same 174,784, past three quarters with the arming forgotten: the third.
   it("re-arms output_near for the instance", async () => {
     const h = await community(["alice", "bob", "carol", "dave"]);
     const { alice, bob, carol, dave } = h.users;
-    STREAM_OUTPUT.instanceBytes = 140_000;
+    STREAM_OUTPUT.instanceBytes = 228_000;
     const logs = spyLogs();
     const b = await opened(h, bob, ["public:local"]);
     const c = await opened(h, carol, ["public:local"]);
@@ -771,9 +809,9 @@ describe("output_near (RES-6, DATA-5)", () => {
     await b.next((m) => m.event === "update");
     const near = outputLogs(logs.log, logs.warn)["kopje.stream.output_near"]!;
     expect(near.map((e) => [e.scope, e.charge])).toEqual([
-      ["instance", 108_704],
-      ["instance", 108_704],
-      ["instance", 108_704],
+      ["instance", 174_784],
+      ["instance", 174_784],
+      ["instance", 174_784],
     ]);
   });
 });
@@ -848,7 +886,7 @@ describe("the output logs (DATA-5)", () => {
     const inbox = await connect(h, bob.token, { query: `stream=hashtag&tag=${marker}` });
     await until(h, (listed) => listed.length === 1 && listed[0]!.subs.length === 1);
     STREAM_OUTPUT.socketBytes = FRESH + 1;
-    // 46,064 is past three quarters of a cap of 46,065: the first reply's admission is refused.
+    // 79,104 is past three quarters of a cap of 79,105: the first reply's admission is refused.
     await post(h, alice, { status: `#${marker}`, visibility: "public" });
     expect((await inbox.closed()).code).toBe(1013);
     await until(h, (listed) => listed.length === 0);

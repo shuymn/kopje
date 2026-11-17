@@ -1,3 +1,5 @@
+import { STREAM_LIMITS } from "../../src/stream-hub";
+import { STREAM_OUTPUT } from "../../src/stream-output";
 import type { ApiHarness } from "../api-helpers";
 import { BUILD } from "../helpers";
 
@@ -139,6 +141,17 @@ export async function drained(h: Pick<ApiHarness, "store">, ...inboxes: Inbox[])
     await echo(inbox);
   }
   return result;
+}
+
+// Raises the instance's output cap past every listed socket at its own (the seam), for cases of the fan-out's rounds
+// at socketsPerInstance: at its derived figure the instance admits fewer fresh sockets than that (RES-6). Returns the
+// restore.
+export function liftInstanceCap(): () => void {
+  const { instanceBytes } = STREAM_OUTPUT;
+  STREAM_OUTPUT.instanceBytes = STREAM_LIMITS.socketsPerInstance * STREAM_OUTPUT.socketBytes;
+  return () => {
+    STREAM_OUTPUT.instanceBytes = instanceBytes;
+  };
 }
 
 // Takes every message left on a socket.

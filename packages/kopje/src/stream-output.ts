@@ -44,8 +44,9 @@ export function capacity(n: number): number {
 export const ATTACHMENT_MAX = 16 * 1024;
 const CLOSE_REASON_MAX = 123;
 
-// The socket's other objects: the total of the ownership table (test-node/stream-output.test.ts).
-export const SOCKET_OBJECTS = 26_512;
+// The socket's other objects: the total of the ownership table (test-node/stream-output.test.ts), the WebSocket pipe's
+// send, Close and pumps included (KJ's coroutine frames and promise arenas live at once, at most, per socket).
+export const SOCKET_OBJECTS = 59_552;
 
 // What every listed socket is charged besides its frames: its attachment at the runtime's limit, its Close and its
 // objects.
@@ -53,12 +54,14 @@ export const SOCKET_BYTES = alloc(ATTACHMENT_MAX) + frame(CLOSE_REASON_MAX) + SO
 
 // The idle Store isolate as `pnpm --filter kopje bench:store-baseline` measured it (the largest of three runs), with
 // the workerd it ran on; RELEASING.md re-measures it before a release.
-export const STORE_BASELINE = { bytes: 20_490_801, workerd: "1.20261113.1", date: "2026-11-17" };
+export const STORE_BASELINE = { bytes: 20_490_906, workerd: "1.20261113.1", date: "2026-11-17" };
 
 // The caps (RES-6): `instanceBytes` leaves the baseline with 25% headroom, the largest peak of one request and the
-// runtime's tables at their largest within the isolate's 128 MB; `socketBytes` is the largest multiple of 1 MiB within
-// a third of it, and takes any unit on a fresh socket. Tests lower them (the seam, as STREAM_LIMITS is).
-export const STREAM_OUTPUT = { socketBytes: 7 * 1024 * 1024, instanceBytes: 21 * 1024 * 1024 };
+// runtime's tables at their largest within the isolate's 128 MB (the hibernation manager's tag table at the sockets
+// these charges admit; the event loop's registry of events in delivery, which never shrinks and outlives the manager,
+// at the most sockets the runtime lists, which a previous release's may reach); `socketBytes` is the largest multiple
+// of 1 MiB within a third of it, and takes any unit on a fresh socket. Tests set them (the seam, as STREAM_LIMITS is).
+export const STREAM_OUTPUT = { socketBytes: 5 * 1024 * 1024, instanceBytes: 16 * 1024 * 1024 };
 
 // A socket's charge: `charged` the sum of `frame` over the frames it was handed, `frames` their number.
 export function socketCharge(charged: number, frames: number): number {

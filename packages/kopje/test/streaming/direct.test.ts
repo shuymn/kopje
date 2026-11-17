@@ -1,5 +1,5 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 
 import { Db } from "../../src/db/sql";
 import { addToConversation } from "../../src/domain/conversations";
@@ -13,7 +13,7 @@ import { BUILD } from "../helpers";
 import { scopedToken } from "../read-helpers";
 import { byText } from "../sort";
 import { act, community, follow, getJson, post, remoteAccount, seedStatus, type User } from "../status-helpers";
-import { connect, drained, echo, type Inbox, type StreamMessage, subscribed } from "./stream-helpers";
+import { connect, drained, echo, type Inbox, liftInstanceCap, type StreamMessage, subscribed } from "./stream-helpers";
 
 // The `direct` stream and `notifications_merged`. `conversation` is sent when a
 // conversation of the viewer changes, as the conversation list presents it (R33: the row of the viewer, R25), by the
@@ -236,6 +236,7 @@ describe("conversations at the caps", () => {
   // 256 owners, each with a `direct` socket (the instance's cap): a turn's token sweep takes 256 checks of its 512, so
   // one turn sends only some of the owners' conversations; the journal's position carries the rest to the next.
   it("reaches the last of 256 owners, then asks for no further turn", async () => {
+    onTestFinished(liftInstanceCap()); // rounds at 256 sockets, not the output cap (RES-6)
     const h = await community(["alice"]);
     const ids = await owners(h, 256);
     const inboxes = await directSockets(h, ids);
@@ -255,6 +256,7 @@ describe("conversations at the caps", () => {
   }, 120_000);
 
   it("sends a change written while a continuation is pending, for an owner the fan-out already passed", async () => {
+    onTestFinished(liftInstanceCap()); // rounds at 256 sockets, not the output cap (RES-6)
     const h = await community(["alice"]);
     const ids = await owners(h, 256);
     const inboxes = await directSockets(h, ids);
@@ -279,6 +281,7 @@ describe("conversations at the caps", () => {
   }, 120_000);
 
   it("serves 240 owners in turn while one owner with 16 sockets keeps changing", async () => {
+    onTestFinished(liftInstanceCap()); // rounds at 256 sockets, not the output cap (RES-6)
     const h = await community(["alice"]);
     const [busy, ...others] = await owners(h, 241);
     const busySockets = await directSockets(h, [busy!], 16);
@@ -311,6 +314,7 @@ describe("conversations at the caps", () => {
   // busy owner writes 20 more changes: they go to its next row, behind the other owners', and the event in progress
   // ends at the ceiling fixed when the fan-out entered it.
   it("ends an owner's event at its ceiling while the owner keeps changing, so the owners after it are served", async () => {
+    onTestFinished(liftInstanceCap()); // rounds at 256 sockets, not the output cap (RES-6)
     const h = await community(["alice"]);
     const ids = await owners(h, 10);
     const [busy, ...others] = ids;
@@ -367,6 +371,7 @@ describe("conversations at the caps", () => {
   }, 120_000);
 
   it("resumes after a failed continuation and hibernation, from the cron, past the owners already sent", async () => {
+    onTestFinished(liftInstanceCap()); // rounds at 256 sockets, not the output cap (RES-6)
     const h = await community(["alice"]);
     const ids = await owners(h, 256);
     const inboxes = await directSockets(h, ids);

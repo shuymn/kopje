@@ -1,5 +1,5 @@
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { Db } from "../../src/db/sql";
 import { addToConversation } from "../../src/domain/conversations";
@@ -16,7 +16,7 @@ import { deleteSignature } from "../delete-job-helpers";
 import { BUILD } from "../helpers";
 import { community, type User } from "../status-helpers";
 import { described, describedMedia, FILLS, fillProfile, writeFilled } from "./payload-fills";
-import { connect, drained, echo, type Inbox, type StreamMessage, takeAll } from "./stream-helpers";
+import { connect, drained, echo, type Inbox, liftInstanceCap, type StreamMessage, takeAll } from "./stream-helpers";
 
 // Every event kind the hub serves, split across turns by the turn budget (RES-6). Each kind's fixture has more units
 // than one turn's budget allows, read from the budget's constants: listeners on distinct tokens (a status or an edit is
@@ -626,10 +626,15 @@ const KINDS: Kind[] = [
 describe.each(KINDS)("$name split across turns", (kind) => {
   let f: Fixture;
   let dropped = 0;
+  let restoreCap = () => {};
 
   beforeAll(async () => {
+    // Rounds over the fixture's sockets, not the output cap (RES-6): what they hold across the cases passes it.
+    restoreCap = liftInstanceCap();
     f = await kind.fixture();
   }, 60_000);
+
+  afterAll(() => restoreCap());
 
   afterEach(async ({ task }) => {
     STREAM_FAULTS.dropContinuation = null;
