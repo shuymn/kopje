@@ -1,0 +1,323 @@
+{
+  "activemodel": "8.1.3.1",
+  "ruby": "4.0.9",
+  "columns": [
+    {
+      "column": "locked",
+      "member": "manuallyApprovesFollowers",
+      "null": false
+    },
+    {
+      "column": "discoverable",
+      "member": "discoverable",
+      "null": true
+    },
+    {
+      "column": "indexable",
+      "member": "indexable",
+      "null": false
+    }
+  ],
+  "rows": [
+    {
+      "json": "true",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"true\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"True\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"TRUE\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"t\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"T\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"1\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "1",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "2",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "-1",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "0.5",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "1.0",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "1e0",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"yes\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"no\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"on\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"On\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"y\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"n\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"False\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"fALSE\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"Off\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"oFF\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\" \"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"\\t\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\" false\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"false \"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"0 \"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\" 0\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"0.0\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"00\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"null\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"nil\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"０\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "\"\\u0000\"",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "[]",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "[false]",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "[true]",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "[0]",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "{}",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "{\"@value\":false}",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "{\"@value\":\"false\"}",
+      "rails": true,
+      "listed": null
+    },
+    {
+      "json": "false",
+      "rails": false,
+      "listed": null
+    },
+    {
+      "json": "\"false\"",
+      "rails": false,
+      "listed": null
+    },
+    {
+      "json": "\"FALSE\"",
+      "rails": false,
+      "listed": null
+    },
+    {
+      "json": "\"0\"",
+      "rails": false,
+      "listed": null
+    },
+    {
+      "json": "0",
+      "rails": false,
+      "listed": null
+    },
+    {
+      "json": "-0",
+      "rails": false,
+      "listed": null
+    },
+    {
+      "json": "\"f\"",
+      "rails": false,
+      "listed": null
+    },
+    {
+      "json": "\"F\"",
+      "rails": false,
+      "listed": null
+    },
+    {
+      "json": "\"off\"",
+      "rails": false,
+      "listed": null
+    },
+    {
+      "json": "\"OFF\"",
+      "rails": false,
+      "listed": null
+    },
+    {
+      "json": "null",
+      "rails": false,
+      "listed": null
+    },
+    {
+      "json": null,
+      "rails": false,
+      "listed": null
+    },
+    {
+      "json": "\"\"",
+      "rails": null,
+      "listed": null
+    },
+    {
+      "json": "0.0",
+      "rails": true,
+      "listed": false
+    },
+    {
+      "json": "-0.0",
+      "rails": true,
+      "listed": false
+    },
+    {
+      "json": "0e0",
+      "rails": true,
+      "listed": false
+    },
+    {
+      "json": "0.00",
+      "rails": true,
+      "listed": false
+    },
+    {
+      "json": "0E+2",
+      "rails": true,
+      "listed": false
+    }
+  ]
+}

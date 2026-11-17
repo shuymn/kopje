@@ -434,8 +434,9 @@ describe("filters API", () => {
     expect(await getJson(h, `/api/v2/filters/${filter.id}/statuses`, alice.token)).toEqual({ status: 200, body: [] });
   });
 
-  // A whole_word sent blank or null is read as not sent: a new keyword is whole-word, an existing one keeps its own,
-  // where Mastodon's NOT NULL column refuses the nil it casts (500, docs/mastodon-deviations.md "Filters").
+  // A whole_word sent as an empty string or null is read as not sent: a new keyword is whole-word, an existing one keeps
+  // its own, where Mastodon's NOT NULL column refuses the nil it casts (500, docs/mastodon-deviations.md "Filters").
+  // Whitespace is not blank to ActiveModel's Boolean cast: it is true, in Mastodon and in Kopje.
   it.each([
     ["POST /api/v1/filters", true],
     ["PUT /api/v1/filters/:id", false],
@@ -443,63 +444,70 @@ describe("filters API", () => {
     ["PUT /api/v2/filters/:id", false],
     ["POST /api/v2/filters/:filter_id/keywords", true],
     ["PUT /api/v2/filters/keywords/:id", false],
-  ] as const)("%s reads a blank or null whole_word as not sent (%s)", async (route, expected) => {
-    const h = await community(["alice"]);
-    const { alice } = h.users;
-    const filter = await createFilter(h, alice, {
-      title: "t",
-      context: ["home"],
-      keywords_attributes: [{ keyword: "kept", whole_word: false }],
-    });
-    const kept = filter.keywords[0]!.id;
-    for (const sent of ["", null]) {
-      const read = async (): Promise<boolean | undefined> => {
-        switch (route) {
-          case "POST /api/v1/filters":
-            return (
-              await (
-                await act(h, alice, "/api/v1/filters", { phrase: "p", context: ["home"], whole_word: sent })
-              ).json<{ whole_word: boolean }>()
-            ).whole_word;
-          case "PUT /api/v1/filters/:id":
-            return (
-              await (
-                await send(h, alice, "PUT", `/api/v1/filters/${kept}`, { whole_word: sent })
-              ).json<{ whole_word: boolean }>()
-            ).whole_word;
-          case "POST /api/v2/filters":
-            return (
-              await createFilter(h, alice, {
-                title: "n",
-                context: ["home"],
-                keywords_attributes: [{ keyword: "n", whole_word: sent }],
-              })
-            ).keywords[0]?.whole_word;
-          case "PUT /api/v2/filters/:id":
-            return (
-              await (
-                await send(h, alice, "PUT", `/api/v2/filters/${filter.id}`, {
-                  keywords_attributes: [{ id: kept, whole_word: sent }],
+  ] as const)(
+    "%s reads an empty or null whole_word as not sent (%s), and whitespace as true",
+    async (route, expected) => {
+      const h = await community(["alice"]);
+      const { alice } = h.users;
+      const filter = await createFilter(h, alice, {
+        title: "t",
+        context: ["home"],
+        keywords_attributes: [{ keyword: "kept", whole_word: false }],
+      });
+      const kept = filter.keywords[0]!.id;
+      for (const [sent, wanted] of [
+        ["", expected],
+        [null, expected],
+        [" ", true],
+      ] as const) {
+        const read = async (): Promise<boolean | undefined> => {
+          switch (route) {
+            case "POST /api/v1/filters":
+              return (
+                await (
+                  await act(h, alice, "/api/v1/filters", { phrase: "p", context: ["home"], whole_word: sent })
+                ).json<{ whole_word: boolean }>()
+              ).whole_word;
+            case "PUT /api/v1/filters/:id":
+              return (
+                await (
+                  await send(h, alice, "PUT", `/api/v1/filters/${kept}`, { whole_word: sent })
+                ).json<{ whole_word: boolean }>()
+              ).whole_word;
+            case "POST /api/v2/filters":
+              return (
+                await createFilter(h, alice, {
+                  title: "n",
+                  context: ["home"],
+                  keywords_attributes: [{ keyword: "n", whole_word: sent }],
                 })
-              ).json<Filter>()
-            ).keywords[0]?.whole_word;
-          case "POST /api/v2/filters/:filter_id/keywords":
-            return (
-              await (
-                await act(h, alice, `/api/v2/filters/${filter.id}/keywords`, { keyword: "k", whole_word: sent })
-              ).json<{ whole_word: boolean }>()
-            ).whole_word;
-          case "PUT /api/v2/filters/keywords/:id":
-            return (
-              await (
-                await send(h, alice, "PUT", `/api/v2/filters/keywords/${kept}`, { whole_word: sent })
-              ).json<{ whole_word: boolean }>()
-            ).whole_word;
-        }
-      };
-      expect([sent, await read()]).toEqual([sent, expected]);
-    }
-  });
+              ).keywords[0]?.whole_word;
+            case "PUT /api/v2/filters/:id":
+              return (
+                await (
+                  await send(h, alice, "PUT", `/api/v2/filters/${filter.id}`, {
+                    keywords_attributes: [{ id: kept, whole_word: sent }],
+                  })
+                ).json<Filter>()
+              ).keywords[0]?.whole_word;
+            case "POST /api/v2/filters/:filter_id/keywords":
+              return (
+                await (
+                  await act(h, alice, `/api/v2/filters/${filter.id}/keywords`, { keyword: "k", whole_word: sent })
+                ).json<{ whole_word: boolean }>()
+              ).whole_word;
+            case "PUT /api/v2/filters/keywords/:id":
+              return (
+                await (
+                  await send(h, alice, "PUT", `/api/v2/filters/keywords/${kept}`, { whole_word: sent })
+                ).json<{ whole_word: boolean }>()
+              ).whole_word;
+          }
+        };
+        expect([sent, await read()]).toEqual([sent, wanted]);
+      }
+    },
+  );
 
   // whole_word (a boolean column), a nested keyword's _destroy (NestedAttributes#has_destroy_flag?) and v1's
   // irreversible (CustomFilter#irreversible=) are each ActiveModel::Type::Boolean's cast: only the listed spellings are
