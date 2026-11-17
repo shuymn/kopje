@@ -1216,7 +1216,8 @@ Notification fallbacks (`supported_types`, Mastodon 4.6's `NotificationFallbackC
 Request parameters:
 
 - The query and a urlencoded or multipart body are each read as Rack and Rails nest them, in the order sent (a POST body
-  without a media type as a urlencoded one, as Rack reads it): a name nested as two kinds (`limit=1&limit[]=2`) answers
+  without a media type as a urlencoded one, as Rack reads it; a `Content-Type` header sent empty is read the same way,
+  where Mastodon answers 406): a name nested as two kinds (`limit=1&limit[]=2`) answers
   400, as Mastodon's does, and a later plain name replaces what an earlier one built under it (`limit[]=2&limit=1` reads
   `limit` as 1). Kopje answers that 400 on the routes that read their parameters, after the token where the route checks
   one; Mastodon answers it on every route, before the token, as Rack::Attack reads every request's parameters in a
