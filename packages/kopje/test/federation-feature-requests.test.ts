@@ -1,5 +1,8 @@
+import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { Db } from "../src/db/sql";
+import { ourFeatureRequest } from "../src/domain/feature-requests";
 import { settleDeliveries, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { mastodon47Signed, mastodonFeatureDelete, signTime } from "./author-proof-helpers";
@@ -7,6 +10,7 @@ import { checkRound, FEATURE_CONTEXT } from "./featured-collection-helpers";
 import { BUILD } from "./helpers";
 import { mastodonActor, type TestActor } from "./inbox-helpers";
 import { ALICE_URI, AS, followed, PUBLIC, setup, type Setup } from "./inbox-status-helpers";
+import { watchedCursor } from "./read-helpers";
 
 // Remote members of local collections (#1589's D23, Mastodon 4.7.5's AddAccountToCollectionService, FeatureRequest,
 // Accept#accept_feature_request!, Reject#reject_feature_request!, Delete#delete_feature_authorization!): a consenting
@@ -147,6 +151,52 @@ const withdraw = (w: World, a: string) => w.t.web.served.delete(a);
 // The member's Delete of `a`, embedding it as Mastodon 4.7.5 writes it (interactingObject the collection
 // `uri`, interactionTarget the member).
 const deleted = (w: World, a: string, uri: string) => w.t.post(w.member, mastodonFeatureDelete(w.member, a, uri));
+
+// The member's request lookup (feature-requests.ts ourFeatureRequest) of `request`: the item it finds, and the rows
+// its statements read.
+async function requestLookup(w: World, request: string): Promise<{ found: string | undefined; rows: number }> {
+  return runInDurableObject(w.t.store, (_instance, state) => {
+    let rows = 0;
+    const real = state.storage.sql;
+    const counting = {
+      exec: (query: string, ...params: SqlStorageValue[]) => {
+        const cursor = real.exec(query, ...params);
+        return watchedCursor(cursor, () => (rows += cursor.rowsRead));
+      },
+    } as unknown as SqlStorage;
+    const found = ourFeatureRequest(new Db(counting), { id: w.memberId }, request)?.id;
+    return { found, rows };
+  });
+}
+
+// `count` items holding the activity_uri `request`, as an import may write them: pending items of members known by
+// their uri alone, 25 to a remote collection of one remote owner.
+async function itemsNaming(w: World, request: string, count: number): Promise<void> {
+  const at = new Date(NOW).toISOString();
+  await sql(
+    w.t.store,
+    `INSERT INTO accounts (id, uri, username, domain, inbox_url) VALUES ('660000000000000001',
+			'https://decoy.example/users/o', 'o', 'decoy.example', 'https://decoy.example/inbox')`,
+  );
+  await sql(
+    w.t.store,
+    `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+		INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, uri, created_at, updated_at)
+		SELECT printf('67%016d', i), '660000000000000001', 0, 'c', 0, 1, 'https://decoy.example/c/' || i, ?2, ?2 FROM n`,
+    Math.ceil(count / 25),
+    at,
+  );
+  await sql(
+    w.t.store,
+    `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+		INSERT INTO collection_items (id, collection_id, state, position, object_uri, activity_uri, created_at, updated_at)
+		SELECT printf('68%016d', i), printf('67%016d', i / 25 + 1), 0, i % 25 + 1, 'https://decoy.example/users/m' || i,
+			?2, ?3, ?3 FROM n`,
+    count,
+    request,
+    at,
+  );
+}
 
 // Check rounds until none is due.
 async function checks(w: World): Promise<void> {
@@ -467,6 +517,31 @@ describe("a remote member's Delete of its feature authorization (D23)", () => {
     await deleted(w, authorizationOf(w.member, 1), uri);
     await deleted(w, authorizationOf(w.member, 2), uri);
     expect((await itemOf(w, id)).retracted_approval_uri).toBe(authorizationOf(w.member, 1));
+  });
+});
+
+describe("the request an answer names (D23)", () => {
+  // collection_items_activity is not unique: an import can give items of any collection the activity_uri of Kopje's
+  // request. The lookup reads at most two rows holding the id however many hold it (a witness growing under the same
+  // key, which the plan audit cannot see: 2 rows read for Kopje's item alone, at most 4 beside 1,000 others), and an id
+  // more than one row holds answers no request. Fails if the lookup reads every row holding the id (2,002 rows), or if
+  // it takes Kopje's item among several (the Accept accepts it).
+  it("reads at most two rows holding a request's id, and answers none that several rows hold", async () => {
+    const w = await world();
+    const { id, item } = await featuring(w);
+    const request = item.activity_uri!;
+    const alone = await requestLookup(w, request);
+    expect(alone.found).toBe(item.id);
+    // Statistics taken before the rows grow (stale at the lookup).
+    await sql(w.t.store, "ANALYZE");
+    await itemsNaming(w, request, 1000);
+    expect(await sql(w.t.store, "SELECT 1 FROM collection_items WHERE activity_uri = ?", request)).toHaveLength(1001);
+    const crowded = await requestLookup(w, request);
+    expect(crowded.found).toBeUndefined();
+    expect(crowded.rows).toBeLessThanOrEqual(2 * alone.rows);
+    expect(await w.t.post(w.member, answer(w.member, "Accept", request, authorizationOf(w.member, 1)))).toBe(202);
+    expect(await itemOf(w, id)).toMatchObject({ state: PENDING, approval_uri: null });
+    expect(await itemActivities(w.t, item.id)).toEqual([]);
   });
 });
 

@@ -533,7 +533,10 @@ against their own instance. TLS is assumed between all parties.
   rules changes `test/feature-model.ts` with it. _Enforced (main)_ for a remote member of a local collection (#1589):
   its item is added pending and its `FeatureRequest` names the item's request (its `activity_uri`). An `Accept` or
   `Reject` of it applies only from the item's own account, and an `Accept`'s `result` only when it is a URL Kopje stores
-  on the member's origin. An `Accept` changes only a pending item awaiting no check, and the first deletion of the
+  on the member's origin; the request is looked up through at most two items holding its id, and an id that more than
+  one item holds (only an import writes one) answers no request (`test/federation-feature-requests.test.ts` ("reads at
+  most two rows holding a request's id, and answers none that several rows hold")). An `Accept` changes only a pending
+  item awaiting no check, and the first deletion of the
   member's authorization Kopje recorded for the item decides it: with none, the item is accepted with the result as its
   authorization and its `Add` is sent; with the result itself, it is revoked; with another, the result is checked, and
   the check accepts the item (sending its `Add`) only when the fetch under its claim found the result served for the

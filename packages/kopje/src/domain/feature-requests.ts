@@ -25,20 +25,24 @@ import { storableUrl } from "./remote-featured-collections";
 type Requested = { id: string; collection: string; state: number; candidate: string | null; retracted: string | null };
 
 // Our FeatureRequest `request` the actor answers (Activity#feature_request_from_object: CollectionItem.local, by
-// activity_uri and the actor as the item's account): one item of a local collection, through collection_items_activity.
+// activity_uri and the actor as the item's account): one item of a local collection. collection_items_activity is not
+// unique (an import may give rows of any collection the same activity_uri), so at most two rows holding the id are
+// read before the actor and the collection are tested: a request Kopje wrote names one item, and an id that two rows
+// hold answers no request.
 export function ourFeatureRequest(db: Db, actor: { id: string }, request: string | null): Requested | undefined {
   if (request === null) {
     return undefined;
   }
-  return db.first<Requested>(
-    `SELECT i.id, i.collection_id AS collection, i.state, i.candidate_approval_uri AS candidate,
-			i.retracted_approval_uri AS retracted
-		FROM collection_items i INDEXED BY collection_items_activity
-			CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = i.collection_id
-		WHERE i.activity_uri = ?1 AND i.account_id = ?2 AND c.local = 1`,
+  const rows = db.all<Requested & { ours: number }>(
+    `SELECT r.id, r.collection, r.state, r.candidate, r.retracted, r.account_id = ?2 AND c.local = 1 AS ours
+		FROM (SELECT id, collection_id AS collection, state, candidate_approval_uri AS candidate,
+				retracted_approval_uri AS retracted, account_id
+			FROM collection_items INDEXED BY collection_items_activity WHERE activity_uri = ?1 LIMIT 2) r
+			CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = r.collection`,
     request,
     actor.id,
   );
+  return rows.length === 1 && rows[0]!.ours === 1 ? rows[0] : undefined;
 }
 
 export type AcceptOutcome = "accepted" | "revoked" | "check";
