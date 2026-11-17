@@ -509,13 +509,6 @@ export function parseRemoteStatus(
   if (uri === null) {
     return null;
   }
-  // `@status_parser.sensitive || false` assigned to Mastodon's boolean column (create.rb:115,
-  // process_status_update_service.rb:184): absent, null and false are false; "" casts to nil, which the column's NOT
-  // NULL refuses, so that a Create stores nothing and an Update leaves the status.
-  const sensitive = railsBoolean(object.sensitive ?? false);
-  if (sensitive === null) {
-    return null;
-  }
   const href = urlOf(object.url, "text/html");
   const url = href !== null && withinIdentityBound(href, STATUS_URI_LIMIT) ? href : null;
   const summary = languageString(object, "summary");
@@ -552,7 +545,9 @@ export function parseRemoteStatus(
     spoilerText: converted
       ? ""
       : cutJsonString(cutCodeUnits(storedText(summary ?? ""), MAX_SPOILER_LENGTH), SPOILER_BYTES),
-    sensitive,
+    // `@status_parser.sensitive || false` as Mastodon's boolean column casts it (create.rb:115,
+    // process_status_update_service.rb:184): absent, null and false are false, and "" is nil (RemoteStatusInput).
+    sensitive: railsBoolean(object.sensitive ?? false),
     language: languageOf(object),
     published: timeOf(object.published),
     updated: timeOf(object.updated),

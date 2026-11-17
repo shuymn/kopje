@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import { parseRemoteStatus } from "../src/federation/remote-status";
 import { railsBoolean } from "../src/platform/rails-boolean";
+import { sql } from "./api-helpers";
 import { mastodonActor } from "./inbox-helpers";
 import {
   announce,
   AS,
   create,
   followed,
+  localStatus,
   mastodonNote,
   setup,
   statusRow,
@@ -85,9 +87,8 @@ describe("a remote status's sensitive", () => {
     expect(parseRemoteStatus(note({ sensitive: value }))?.sensitive).toBe(true);
   });
 
-  it('refuses a status whose sensitive is "", as the NOT NULL column does', () => {
-    expect(parseRemoteStatus(note({ sensitive: "" }))).toBeNull();
-    expect(parseRemoteStatus(note({ sensitive: "x" }))).not.toBeNull();
+  it('reads "" as nil, which the Store refuses wherever Mastodon assigns it', () => {
+    expect(parseRemoteStatus(note({ sensitive: "" }))?.sensitive).toBeNull();
   });
 
   it('stores no status from a Create whose sensitive is "", and stores one of "x" and [false] sensitive', async () => {
@@ -128,6 +129,49 @@ describe("a remote status's sensitive", () => {
     t.web.serve(marked.id, { "@context": AS, ...marked });
     expect(await t.post(bob, announce(bob, marked.id))).toBe(202);
     expect(await statusRow(t.store, marked.id)).toMatchObject({ sensitive: 1 });
+  });
+
+  // Create#create_status counts a vote (poll_vote?) before it assigns anything, so a vote Note with "" counts.
+  it('counts a vote whose sensitive is ""', async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const status = await localStatus(t, { status: "which?", poll: { options: ["cats", "dogs"], expires_in: 3600 } });
+    const vote = { id: `${bob.uri}#votes/1`, type: "Note", name: "dogs", attributedTo: bob.uri, inReplyTo: status.uri };
+    const activity = { "@context": AS, id: `${vote.id}/activity`, type: "Create", actor: bob.uri, to: [] };
+    expect(await t.post(bob, { ...activity, object: { ...vote, to: [], sensitive: "" } })).toBe(202);
+    expect(await sql(t.store, "SELECT tallies FROM polls")).toEqual([{ tallies: "[0,1]" }]);
+  });
+
+  // ProcessStatusUpdateService: an explicit update (a newer `updated`) assigns sensitive in its transaction, which the
+  // NOT NULL refuses whole; an implicit one (no newer version) assigns none and still applies the poll's counts.
+  it('applies the implicit update of a status whose sensitive is "", and refuses its explicit edit', async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const poll = (cats: number, dogs: number) => ({
+      type: "Question",
+      endTime: "2026-10-12T01:00:00Z",
+      votersCount: cats + dogs,
+      oneOf: [
+        { type: "Note", name: "cats", replies: { type: "Collection", totalItems: cats } },
+        { type: "Note", name: "dogs", replies: { type: "Collection", totalItems: dogs } },
+      ],
+    });
+    const question = mastodonNote(bob, poll(2, 1));
+    await t.post(bob, create(bob, question));
+    const stored = (await statusRow(t.store, question.id))!;
+    const tallies = () => sql(t.store, "SELECT tallies, votes_count FROM polls WHERE status_id = ?", stored.id);
+    expect(await tallies()).toEqual([{ tallies: "[2,1]", votes_count: 3 }]);
+
+    const implicit = { ...create(bob, { ...question, ...poll(5, 2), sensitive: "" }), id: `${question.id}#u1` };
+    expect(await t.post(bob, { ...implicit, type: "Update" })).toBe(202);
+    expect(await tallies()).toEqual([{ tallies: "[5,2]", votes_count: 7 }]);
+    expect(await statusRow(t.store, question.id)).toEqual(stored);
+
+    const edit = { ...question, ...poll(9, 9), content: "<p>edited</p>", sensitive: "" };
+    expect(await t.post(bob, update(bob, edit, "2026-10-11T13:00:00Z"))).toBe(202);
+    expect(await tallies()).toEqual([{ tallies: "[5,2]", votes_count: 7 }]);
+    expect(await statusRow(t.store, question.id)).toEqual(stored);
   });
 
   it('leaves the status an Update whose sensitive is "" edits, and applies one of "x"', async () => {

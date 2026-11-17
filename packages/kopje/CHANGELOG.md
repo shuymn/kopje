@@ -356,8 +356,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 - A remote status's `sensitive` is read as Mastodon casts it to its boolean column, so any value but `false`, `0`, null
   and Rails' false strings (`"0"`, `"f"`, `"F"`, `"false"`, `"FALSE"`, `"off"`, `"OFF"`) marks it, where only `true`
-  did (`"true"`, `1` and `[true]` now mark it), and an empty string refuses it, as Mastodon's `NOT NULL` column does: a
-  `Create` stores nothing and an `Update` leaves the status (#1730). A `0.0` is read as `0`
+  did (`"true"`, `1` and `[true]` now mark it), and an empty string refuses it where Mastodon's `NOT NULL` column
+  does: a `Create` stores nothing and an `Update` with a newer `updated` changes nothing, while one that names no newer
+  version still updates the status's poll and quote (#1730). An unsigned `0.0` is read as `0`
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Reading inbound activities"). Statuses already stored
   keep their mark until their next update. A filter keyword's `whole_word`, a nested keyword's `_destroy` and v1's
   `irreversible` are read by the same cast, each false spelling in its own case only, so `"False"` and `"Off"` are true

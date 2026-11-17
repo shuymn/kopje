@@ -1624,11 +1624,16 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   context from 3.5.0 to 4.3.23 (`test/fixtures/ld-signed/context-maps.json`). Accepted, 2026-11-17.
 - A remote status's `sensitive` is read as Mastodon assigns `@status_parser.sensitive || false` to its boolean column
   (`create.rb:115`, `process_status_update_service.rb:184`; ActiveModel's `Boolean` cast): absent, null, `false`, `0`
-  and the strings `"0"`, `"f"`, `"F"`, `"false"`, `"FALSE"`, `"off"` and `"OFF"` leave it unmarked, `""` refuses the
-  status as the column's `NOT NULL` does (a `Create` stores nothing and an `Update` leaves the status), and any other
-  value marks it (`"False"`, `[]`, `[false]`, an object). A JSON number with a fraction or an exponent that equals zero
-  (`0.0`, `0e0`) is read as not sensitive, where Mastodon's Float marks the status: `JSON.parse` does not tell it from
-  `0`. Accepted, 2026-11-17.
+  and the strings `"0"`, `"f"`, `"F"`, `"false"`, `"FALSE"`, `"off"` and `"OFF"` leave it unmarked, and any other value
+  marks it (`"False"`, `[]`, `[false]`, an object). `""` casts to nil, which the column's `NOT NULL` refuses where
+  Mastodon assigns it, and Kopje refuses the same: a `Create` of a status not yet stored, or an `Update` that creates
+  one, stores nothing (`Status.create!` raises), and an `Update` with a newer `updated` (Mastodon's explicit update)
+  changes nothing of the status (its transaction rolls back). An `Update` that names no newer version (the implicit
+  update, which assigns no `sensitive`) still applies its poll's counts, voters and end, its quote and its quote
+  policy, and a `Create` of a status already stored, or of a vote, assigns none and is applied as without it. In a
+  body read as received, a JSON number with a fraction or an exponent that equals zero (`0.0`, `0e0`) is read as not
+  sensitive, where Mastodon's Float marks the status: `JSON.parse` does not tell it from `0` (an LD-signed body whose
+  context types `sensitive` `@id` marks any number instead, above). Accepted, 2026-11-17.
 
 Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NET-1 in `docs/threat-model.md`):
 
