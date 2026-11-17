@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { pageQuery } from "../src/mastodon/pagination";
+import { limitParam, readParams } from "../src/mastodon/params";
 import { bearer, setSetting, userToken } from "./api-helpers";
 import { community, post, remoteAccount } from "./status-helpers";
 
@@ -33,6 +35,26 @@ describe("limit", () => {
     expect(await count("/api/v1/timelines/public?limit")).toBe(3);
     expect(await count("/api/v1/timelines/public?limit=")).toBe(0);
     expect(await count("/api/v1/timelines/public?limit=2")).toBe(2);
+  });
+
+  // A JSON null is nil as well (sentNull), as a JSON body's reader takes it; the lists are GETs, whose body is not read.
+  it("takes the default for a JSON null limit, and keeps an empty one's answer", async () => {
+    const read = async (body: string) => {
+      const request = new Request("https://kopje.test/x", {
+        method: "POST",
+        body,
+        headers: { "content-type": "application/json" },
+      });
+      const result = await readParams(request);
+      if (!result.ok) {
+        throw new Error(`refused ${result.status}`);
+      }
+      return result.params;
+    };
+    const nil = await read('{"limit":null}');
+    expect([limitParam(nil, 20, 40), pageQuery(nil, 20, 40).limit]).toEqual([20, 20]);
+    const empty = await read('{"limit":""}');
+    expect([limitParam(empty, 20, 40), pageQuery(empty, 20, 40).limit]).toEqual([0, 1]);
   });
 });
 
