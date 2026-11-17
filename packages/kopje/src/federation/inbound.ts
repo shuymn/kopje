@@ -26,7 +26,7 @@ import type { ActorState, RemoteActorInput, RemoteProfileInput } from "../domain
 import { flagObjects, MAX_FLAG_OBJECTS, reportComment } from "../domain/reports";
 import { fetchableHref, sameOrigin } from "../platform/http-url";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
-import { jsonRefusal } from "../platform/json-bounds";
+import { jsonRefusal, jsonTextMalformed } from "../platform/json-bounds";
 import { isActivityPubMediaType, parseMediaType } from "../platform/media-type";
 import { callStore } from "../platform/store-client";
 import { type GoneSettled, goneSettler, type SettleGone } from "./actor-gone";
@@ -262,15 +262,17 @@ async function activityEnvelope(
 
 // `rules` is for tests of the reading's second layer (ldSignedReading); every caller reads under all of them.
 export async function parseActivity(body: Uint8Array, rules: Rules = {}): Promise<Parsed> {
+  const text = new TextDecoder().decode(body);
   let json: unknown;
   try {
-    json = JSON.parse(new TextDecoder().decode(body));
+    json = JSON.parse(text);
   } catch {
     return { ok: false, reason: "invalid-json" };
   }
   // RES-2: the work of reading an activity is bounded before anything reads it, an LD-signed body's reading included;
-  // a string or key with an unpaired surrogate is JSON that does not parse (json-bounds.ts).
-  const refusal = jsonRefusal(json);
+  // a string token with an unpaired surrogate, one a duplicate key hides included, is JSON that does not parse
+  // (json-bounds.ts).
+  const refusal = jsonTextMalformed(text) ? "malformed" : jsonRefusal(json);
   if (refusal === "malformed") {
     return { ok: false, reason: "invalid-json" };
   }
@@ -1403,13 +1405,14 @@ export async function verifySpooledRequest(
   if (media === null || !isActivityPubMediaType(media)) {
     return { ok: false, transient: false, reason: "not-activitystreams" };
   }
+  const text = new TextDecoder().decode(request.body);
   let json: unknown;
   try {
-    json = JSON.parse(new TextDecoder().decode(request.body));
+    json = JSON.parse(text);
   } catch {
     return { ok: false, transient: false, reason: "invalid-json" };
   }
-  const refusal = jsonRefusal(json);
+  const refusal = jsonTextMalformed(text) ? "malformed" : jsonRefusal(json);
   if (refusal === "malformed") {
     return { ok: false, transient: false, reason: "invalid-json" };
   }

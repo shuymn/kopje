@@ -4,7 +4,7 @@ import type { CardFields } from "../domain/link-cards";
 import { TREND_LANGUAGES } from "../domain/trend-languages";
 import { outputMaxUnits, type PageMeta, type PageScan, SCAN_LIMITS, type ScanLimits } from "../platform/html-scan";
 import { httpUrl } from "../platform/http-url";
-import { wellFormedJson } from "../platform/json-bounds";
+import { jsonTextMalformed } from "../platform/json-bounds";
 import { railsBlank } from "../platform/rails-blank";
 import { CARD_URL_LIMIT, cardDimension, iframeDimension, presentedEmbedSrc } from "../platform/stored-bounds";
 import { rubyStrip } from "../platform/strip";
@@ -189,19 +189,21 @@ function firstObject(value: unknown): Json | null {
 }
 
 // The supported object of one script's text, or null (StructuredData#json and #valid?). A text holding an unpaired
-// surrogate escape does not parse (wellFormedJson), as Mastodon's JSON::ParserError skips the script.
+// surrogate escape in any string token does not parse (jsonTextMalformed), as Mastodon's JSON::ParserError skips the
+// script.
 function structuredObject(raw: string): Json | null {
   const source = removeCdataJunk(raw);
   if (railsBlank(source)) {
     return null;
   }
+  const text = decodeEntities(source);
   let parsed: unknown;
   try {
-    parsed = JSON.parse(decodeEntities(source));
+    parsed = JSON.parse(text);
   } catch {
     return null;
   }
-  if (!wellFormedJson(parsed)) {
+  if (jsonTextMalformed(text)) {
     return null;
   }
   for (const item of Array.isArray(parsed) ? parsed : [parsed]) {

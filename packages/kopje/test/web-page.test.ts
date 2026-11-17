@@ -664,6 +664,7 @@ describe("web page sink: the JSON mode", () => {
     ["a lone high surrogate escape", String.raw`{"html":"\ud800"}`],
     ["a lone low surrogate escape", String.raw`["\udc00"]`],
     ["a key holding a high surrogate escape", String.raw`{"\ud800x":1}`],
+    ["a high surrogate escape a later duplicate key replaces", String.raw`{"html":"\ud800","html":"ok"}`],
   ])("fails %s as unparsable json", async (_name, text) => {
     const { deps } = fakeDeps({ [ENDPOINT]: body(text) });
     expect(failure(await fetchWebJson(ENDPOINT, deps))).toMatchObject({ kind: "unparsable", reason: "json" });
@@ -672,6 +673,8 @@ describe("web page sink: the JSON mode", () => {
   it("reads a surrogate pair escape", async () => {
     const { deps } = fakeDeps({ [ENDPOINT]: body(String.raw`{"html":"\ud83d\ude00"}`) });
     expect(json(await fetchWebJson(ENDPOINT, deps)).value).toEqual({ html: "\ud83d\ude00" });
+    const { deps: duplicate } = fakeDeps({ [ENDPOINT]: body(String.raw`{"html":"\ud83d\ude00","html":"ok"}`) });
+    expect(json(await fetchWebJson(ENDPOINT, duplicate)).value).toEqual({ html: "ok" });
   });
 
   it("fails a document past MAX_JSON_NODES or MAX_JSON_DEPTH as unparsable json-bounds, and keeps one at them", async () => {

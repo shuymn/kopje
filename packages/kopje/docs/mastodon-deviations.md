@@ -1597,15 +1597,16 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   four proofs. Of the 147 LD-signed forms the captures hold, 50 are so ignored, and Mastodon applies something of 26;
   every body Mastodon 4.6.11 and 4.7.5 and Fedify 2.4.5 send in the captures passes, and so does each release's actor
   context from 3.5.0 to 4.3.23 (`test/fixtures/ld-signed/context-maps.json`). Accepted, 2026-11-17.
-- A JSON text from a remote server that holds a string or a key with an unpaired surrogate escape is refused as JSON
-  that does not parse: an inbound activity (as a body `JSON.parse` refuses: nothing is applied, on spool replay and in
-  the cutover rollback's drain too), a fetched document, WebFinger answer or JSON-LD context (a body that is not JSON),
-  an oEmbed document (none), and a page's JSON-LD script (skipped, the next one read). Mastodon 4.7.5 parses each with
-  `JSON.parse` (json 2.21.2), which raises on a high surrogate escape no low one follows (`incomplete surrogate pair`,
-  `invalid surrogate pair`), so it refuses those too; it keeps a lone low surrogate escape (`\udc00`) as invalid UTF-8,
-  which fails only where PostgreSQL stores it, so it applies an activity holding one in a member it does not store.
-  Kopje refuses a lone low surrogate escape as well (`jsonRefusal` in `src/platform/json-bounds.ts`). Accepted,
-  2026-11-17.
+- A JSON text from a remote server whose string token, a key or a value, holds an unpaired surrogate escape is refused
+  as JSON that does not parse, wherever the token sits, a member a later duplicate key replaces included: an inbound
+  activity (as a body `JSON.parse` refuses: nothing is applied, on spool replay and in the cutover rollback's drain
+  too), a fetched document, WebFinger answer or JSON-LD context (a body that is not JSON, before its key entries are
+  read), an oEmbed document (none), and a page's JSON-LD script (skipped, the next one read). Mastodon 4.7.5 parses each
+  with `JSON.parse` (json 2.21.2), which raises on a high surrogate escape no low one follows (`incomplete surrogate
+  pair`, `invalid surrogate pair`) in any string token, so it refuses those too; it keeps a lone low surrogate escape
+  (`\udc00`) as invalid UTF-8, which fails only where PostgreSQL stores it, so it applies an activity holding one in a
+  member it does not store. Kopje refuses a lone low surrogate escape as well (`jsonTextMalformed` in
+  `src/platform/json-bounds.ts`; the parser's verdicts are in `test/fixtures/json-surrogates/`). Accepted, 2026-11-17.
 
 Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NET-1 in `docs/threat-model.md`):
 

@@ -3,10 +3,12 @@
 // Every inbound activity and every fetched document is checked before it is read or handed to JSON-LD, so one
 // activity's processing is bounded by REQUEST_MAX_FETCHES documents of at most these sizes.
 //
-// The same walk refuses a string or a key holding an unpaired surrogate as JSON that does not parse. After UTF-8
-// decoding (TextDecoder replaces what is not UTF-8) only a \u escape gives one, and Mastodon's parser (json 2.21.2,
-// json_string_unescape) raises on a high surrogate not followed by a low one; Kopje refuses a lone low surrogate too,
-// which that parser keeps as invalid UTF-8 (docs/mastodon-deviations.md, "Reading inbound activities").
+// A JSON text whose string token, a key or a value, holds an unpaired surrogate does not parse (jsonTextMalformed):
+// Mastodon's parser (json 2.21.2, json_string_unescape) raises on a high surrogate not followed by a low one, wherever
+// the token sits, a member a later duplicate key replaces included; Kopje refuses a lone low surrogate too, which that
+// parser keeps as invalid UTF-8 (docs/mastodon-deviations.md, "Reading inbound activities"). It is judged on the text,
+// since JSON.parse keeps only the last of duplicate keys. After UTF-8 decoding (TextDecoder replaces what is not
+// UTF-8) only a \u escape gives one; a raw one in a text from elsewhere is read too.
 
 // Values (objects, arrays and scalars) in one document. A Mastodon actor or note has a few hundred.
 export const MAX_JSON_NODES = 10_000;
@@ -16,15 +18,17 @@ export const MAX_JSON_DEPTH = 32;
 // Why a document is refused: past either bound, or holding an unpaired surrogate.
 export type JsonRefusal = "too-complex" | "malformed";
 
-// The first refusal the walk meets, or null. The walk stops there, so its cost is bounded by the bounds' visits and
-// one pass over each string and key it visits.
-function walk(document: unknown, maxNodes: number, maxDepth: number): JsonRefusal | null {
-  // Counted when a value is reached, so the stack never holds more than maxNodes entries.
+// The first refusal the walk over a parsed document meets, or null: past MAX_JSON_NODES values or MAX_JSON_DEPTH
+// levels, or a string or key holding an unpaired surrogate (a value with no text left to read, such as a cached
+// context; a text is read by jsonTextMalformed first). The walk stops there, so its cost is bounded by the bounds'
+// visits and one native pass over each string and key it visits.
+export function jsonRefusal(document: unknown): JsonRefusal | null {
+  // Counted when a value is reached, so the stack never holds more than MAX_JSON_NODES entries.
   let nodes = 1;
   const stack: [unknown, number][] = [[document, 1]];
   while (stack.length > 0) {
     const [value, depth] = stack.pop() as [unknown, number];
-    if (depth > maxDepth) {
+    if (depth > MAX_JSON_DEPTH) {
       return "too-complex";
     }
     if (typeof value === "string") {
@@ -37,7 +41,7 @@ function walk(document: unknown, maxNodes: number, maxDepth: number): JsonRefusa
       continue;
     }
     for (const key in value) {
-      if (++nodes > maxNodes) {
+      if (++nodes > MAX_JSON_NODES) {
         return "too-complex";
       }
       if (!key.isWellFormed()) {
@@ -49,18 +53,60 @@ function walk(document: unknown, maxNodes: number, maxDepth: number): JsonRefusa
   return null;
 }
 
-// The refusal of a parsed remote document, within MAX_JSON_NODES values and MAX_JSON_DEPTH levels.
-export function jsonRefusal(document: unknown): JsonRefusal | null {
-  return walk(document, MAX_JSON_NODES, MAX_JSON_DEPTH);
-}
-
 // Whether the document stays within the bounds and holds no unpaired surrogate.
 export function withinJsonBounds(document: unknown): boolean {
   return jsonRefusal(document) === null;
 }
 
-// Whether a parsed document holds no unpaired surrogate, for a caller without the structural bounds: the walk is then
-// bounded by the text the document was parsed from.
-export function wellFormedJson(document: unknown): boolean {
-  return walk(document, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY) === null;
+// A surrogate's \u escape, in either case.
+const SURROGATE_ESCAPE = /\\u[dD][89a-fA-F]/;
+
+const QUOTE = 0x22;
+const BACKSLASH = 0x5c;
+const LETTER_U = 0x75;
+const isHigh = (unit: number) => unit >= 0xd800 && unit <= 0xdbff;
+const isLow = (unit: number) => unit >= 0xdc00 && unit <= 0xdfff;
+
+// Whether a JSON text JSON.parse accepted holds a string token, a key or a value, whose code units (each raw one, or
+// the one its escape gives) are not well-formed: a high surrogate not followed by a low one, or a low one not preceded
+// by a high one. One pass over the text, which a native check skips when the text holds neither a lone surrogate nor a
+// surrogate escape.
+export function jsonTextMalformed(text: string): boolean {
+  if (text.isWellFormed() && !SURROGATE_ESCAPE.test(text)) {
+    return false;
+  }
+  let inString = false;
+  let high = false;
+  for (let i = 0; i < text.length; i++) {
+    let unit = text.charCodeAt(i);
+    if (!inString) {
+      inString = unit === QUOTE;
+      continue;
+    }
+    if (unit === QUOTE) {
+      if (high) {
+        return true;
+      }
+      inString = false;
+      continue;
+    }
+    if (unit === BACKSLASH) {
+      unit = text.charCodeAt(++i);
+      if (unit === LETTER_U) {
+        unit = Number.parseInt(text.slice(i + 1, i + 5), 16);
+        i += 4;
+      }
+    }
+    if (high) {
+      if (!isLow(unit)) {
+        return true;
+      }
+      high = false;
+    } else if (isHigh(unit)) {
+      high = true;
+    } else if (isLow(unit)) {
+      return true;
+    }
+  }
+  return high;
 }

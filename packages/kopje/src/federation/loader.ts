@@ -12,6 +12,7 @@ import { hostDomain } from "../platform/domain-name";
 import { errorMessage } from "../platform/error-message";
 import { type HtmlBody, readHtmlBody } from "../platform/html-body";
 import { publicShapeRefusal } from "../platform/http-url";
+import { jsonTextMalformed } from "../platform/json-bounds";
 import { isActivityPubMediaType, type MediaType, parseMediaType } from "../platform/media-type";
 import { readableKeys } from "./key-entries";
 
@@ -510,6 +511,12 @@ async function readDocument(
     );
   } catch (error) {
     throw error instanceof FetchError ? error : new UnusableDocumentError(final, "Document is not valid JSON");
+  }
+  // RES-2: a string token holding an unpaired surrogate (a key or a value, one a later duplicate key replaced included)
+  // makes the body JSON that does not parse, as Mastodon's parser reads it (json-bounds.ts). Judged on the text, before
+  // anything reads the document, trims or imports its keys (readableKeys) or hands it on.
+  if (jsonTextMalformed(new TextDecoder().decode(body))) {
+    throw new UnusableDocumentError(final, "Document is not valid JSON");
   }
   // A cheap pre-filter only: it sees the literal id and @id, not a JSON-LD alias of @id. The identity that counts is
   // the parsed object's id, which Fedify's consumers compare with this documentUrl (fetchKey for signature keys,

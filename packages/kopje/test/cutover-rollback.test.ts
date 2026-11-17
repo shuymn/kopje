@@ -220,7 +220,7 @@ async function rollback(store: StoreStub, overrides: Record<string, unknown> = {
     );
     expect(response.status).toBe(expected);
   };
-  const spool = async (path: string, activity: Record<string, unknown>, signer: TestActor = carol) =>
+  const spool = async (path: string, activity: Record<string, unknown> | string, signer: TestActor = carol) =>
     post(path, await signedInit(signer, path, activity));
   // Kopje's consumer, journaling or (journal: false) holding requests as in maintenance.
   const consume = (journal = true, ready = false) =>
@@ -807,11 +807,14 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
     const warn = vi.spyOn(console, "warn");
     try {
       await r.spool("/ap/users/alice/inbox", { ...follow(r.carol.uri, 1), junk: "\ud800" });
-      await r.spool("/ap/users/alice/inbox", { ...follow(r.carol.uri, 2), junk: "\ud83d\ude00" });
+      // One whose unpaired surrogate a later duplicate key hides from JSON.parse, which Mastodon's parser refuses.
+      const hidden = JSON.stringify({ ...follow(r.carol.uri, 2), junk: "ok" });
+      await r.spool("/ap/users/alice/inbox", hidden.replace(`"junk":"ok"`, String.raw`"junk":"\ud800","junk":"ok"`));
+      await r.spool("/ap/users/alice/inbox", { ...follow(r.carol.uri, 3), junk: "\ud83d\ude00" });
       await r.consume();
-      expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 1 });
+      expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 2 });
       expect(r.legacy.pending.map((m) => (m.body as LegacyInboxMessage).activity.id)).toEqual([
-        `${r.carol.uri}#follows/2`,
+        `${r.carol.uri}#follows/3`,
       ]);
       expect(warn).toHaveBeenCalledWith({ event: "kopje.cutover.drain.unverified", reason: "invalid-json" });
     } finally {

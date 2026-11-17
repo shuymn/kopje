@@ -3169,13 +3169,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   levels of nesting before anything reads it or hands it to JSON-LD (`withinJsonBounds` in
   `src/platform/json-bounds.ts`, applied by `parseActivity` and by the loaders of `createRemoteLoaders`); JSON-LD
   contexts too, before they are cached and again on every cache hit (an entry may predate the check; `boundedContexts`
-  in `src/federation/federation.ts`); the same walk refuses a string or a key holding an unpaired surrogate as JSON that
-  does not parse (`jsonRefusal`; an activity is `invalid-json`, a document `UnusableDocumentError`; an oEmbed document
-  and a card's JSON-LD script likewise, `wellFormedJson` for the script), at one native pass over each string and key it
-  visits, so its work stays within the body caps: `test/inbox-json.test.ts` ("the unpaired surrogate check at the body
-  bounds", through the inbox unsigned, a body at `INBOX_BODY_LIMIT` bytes and `MAX_JSON_NODES` values of two-byte
-  strings); and one request fetches at most 8 documents (the fetch budget), so one activity's
-  JSON-LD work is at most 8 bounded documents and their bounded contexts, besides the activity itself (an
+  in `src/federation/federation.ts`); a JSON text whose string token, a key or a value, holds an unpaired surrogate is
+  JSON that does not parse, wherever the token sits, a member a later duplicate key replaces included
+  (`jsonTextMalformed`, judged on the text: an activity is `invalid-json` before anything reads it; a fetched document,
+  WebFinger answer or context an `UnusableDocumentError` before its key entries are read, trimmed or imported,
+  `readableKeys`; an oEmbed document and a card's JSON-LD script likewise; a cached context, which has no text, by the
+  walk, `jsonRefusal`), at one pass over the text and one native pass over each string and key the walk visits, so its
+  work stays within the body caps: `test/inbox-json.test.ts` ("the unpaired surrogate check at the body bounds", through
+  the inbox unsigned, a body at `INBOX_BODY_LIMIT` bytes and `MAX_JSON_NODES` values, each a string of surrogate pair
+  escapes); and one request fetches at most 8 documents (the fetch budget), so one activity's JSON-LD work is at most 8
+  bounded documents and their bounded contexts, besides the activity itself (an
   `Update(Person)`'s embedded actor is read through JSON-LD within the activity's bounds, its contexts loaded within the
   same budget: `readEmbeddedActor`, `test/inbox-actor-update.test.ts`); the Store asks the Worker for documents at
   most 3 times per activity, and the revision fence (ID-1) adds no fetch beyond that budget (a stale-author refresh may

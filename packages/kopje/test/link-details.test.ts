@@ -191,6 +191,8 @@ describe("link details: the Mastodon spec", () => {
     ["a lone high surrogate", String.raw`\ud800`, STRUCTURED.title],
     ["a lone low surrogate", String.raw`\udc00`, STRUCTURED.title],
     ["a surrogate pair", String.raw`\ud83d\ude00`, "first"],
+    ["a lone high surrogate a later duplicate key replaces", String.raw`\ud800","description":"x`, STRUCTURED.title],
+    ["a surrogate pair a later duplicate key replaces", String.raw`\ud83d\ude00","description":"x`, "first"],
   ])("reads the next script when the first holds %s escape", async (_name, escape, title) => {
     const first = `{"@type":"NewsArticle","headline":"first","description":"x${escape}"}`;
     const page = `<script type="application/ld+json">${first}</script><script type="application/ld+json">${LD_JSON}</script>`;

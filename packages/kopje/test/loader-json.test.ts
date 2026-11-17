@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createRemoteLoaders, type FederationState, instanceActorKey } from "../src/federation/federation";
+import { MAX_PUBLIC_KEYS } from "../src/federation/key-entries";
 import {
   isTransientLoadError,
   RefusedFetchError,
@@ -15,10 +16,11 @@ import { BUILD, migratedStore } from "./helpers";
 import { LOCAL, mastodonActor, RemoteWeb } from "./inbox-helpers";
 import { like, setup } from "./inbox-status-helpers";
 
-// #1718: a fetched document, a WebFinger answer or a JSON-LD context holding a string or a key with an unpaired
-// surrogate is a body that does not parse (federation.ts withinBounds, json-bounds.ts jsonRefusal), as Mastodon's
-// body_to_json reads one (json_ld_helper.rb:366-374, nil): UnusableDocumentError, never transient, which search
-// resolution reads as Mastodon's nil answer. A document past the JSON bounds stays a refusal (RES-2).
+// #1718: a fetched document, a WebFinger answer or a JSON-LD context whose text holds a string token, a key or a value,
+// with an unpaired surrogate is a body that does not parse (loader.ts readDocument, json-bounds.ts jsonTextMalformed;
+// a cached context, federation.ts withinBounds), as Mastodon's body_to_json reads one (json_ld_helper.rb:366-374, nil):
+// UnusableDocumentError, never transient, which search resolution reads as Mastodon's nil answer. A document past the
+// JSON bounds stays a refusal (RES-2).
 
 const DOMAIN = "social.example";
 const REMOTE = "https://remote.example";
@@ -50,6 +52,11 @@ async function failure(load: Promise<unknown>): Promise<unknown> {
   throw new Error("loaded");
 }
 
+// A document's text with a member "junk" holding a lone high surrogate escape, which a later "junk":"ok" replaces:
+// JSON.parse keeps "ok", where Mastodon's parser refuses the text.
+const hidden = (document: Record<string, unknown>) =>
+  JSON.stringify({ ...document, junk: "ok" }).replace(`"junk":"ok"`, String.raw`"junk":"\ud800","junk":"ok"`);
+
 const MALFORMED: [string, Record<string, unknown>][] = [
   ["a lone high surrogate", { content: "\ud800" }],
   ["a lone low surrogate", { content: "\udc00" }],
@@ -69,6 +76,51 @@ describe("a fetched document with an unpaired surrogate (#1718)", () => {
     // As a body JSON.parse refuses.
     web.serveRaw(`${REMOTE}/notes/2`, "{");
     expect(await failure(l.document(`${REMOTE}/notes/2`))).toBeInstanceOf(UnusableDocumentError);
+  });
+
+  it("refuses one whose unpaired surrogate a duplicate key hides: a document, a context, a resolution", async () => {
+    const { web, l } = await loaders();
+    const note = `${REMOTE}/notes/hidden`;
+    web.serveRaw(note, hidden({ id: note, type: "Note", content: "ok" }));
+    expect(JSON.parse(hidden({ id: note })) as unknown).toEqual({ id: note, junk: "ok" });
+    const error = await failure(l.document(note));
+    expect(error).toBeInstanceOf(UnusableDocumentError);
+    expect(isTransientLoadError(error)).toBe(false);
+    expect(await failure(l.resolve(note, true))).toBeInstanceOf(UnusableDocumentError);
+    const context = `${REMOTE}/contexts/hidden`;
+    web.serveRaw(context, hidden({ "@context": { name: "https://remote.example/ns#name" } }), "application/ld+json");
+    expect(await failure(l.context(context))).toBeInstanceOf(UnusableDocumentError);
+    // The same texts with the duplicate holding a valid pair load.
+    const pair = `${REMOTE}/notes/pair`;
+    web.serveRaw(
+      pair,
+      hidden({ id: pair, type: "Note", content: "ok" }).replace(String.raw`\ud800`, String.raw`\ud83d\ude00`),
+    );
+    expect((await l.document(pair)).document).toMatchObject({ id: pair, junk: "ok" });
+  });
+
+  // The refusal runs before the document's key entries are read (key-entries.ts readableKeys), which drop an entry
+  // whose key does not import and every entry past MAX_PUBLIC_KEYS: the document is refused with them, not stored
+  // without.
+  it.each([
+    ["beside a good key", 1],
+    ["past MAX_PUBLIC_KEYS", MAX_PUBLIC_KEYS],
+  ])("refuses an actor with an unpaired surrogate in a key entry %s", async (_, good) => {
+    const { web, l } = await loaders();
+    // `good` copies of the actor's key, then an entry whose key material is `pem`.
+    const actor = async (username: string, pem: string) => {
+      const served = await mastodonActor(web, username);
+      const key = served.document.publicKey as Record<string, unknown>;
+      const keys = [...Array.from({ length: good }, () => key), { ...key, id: `${served.uri}#bad`, publicKeyPem: pem }];
+      web.serve(served.uri, { ...served.document, publicKey: keys });
+      return served.uri;
+    };
+    const error = await failure(l.document(await actor("bob", "\ud800")));
+    expect(error).toBeInstanceOf(UnusableDocumentError);
+    expect(isTransientLoadError(error)).toBe(false);
+    // The same entry with a valid pair is dropped by readableKeys, and the actor loads with its good keys.
+    const loaded = await l.document(await actor("carol", "😀"));
+    expect((loaded.document as { publicKey: unknown[] }).publicKey).toHaveLength(good);
   });
 
   it("loads one holding a surrogate pair, and refuses one past the bounds as before", async () => {
@@ -134,5 +186,16 @@ describe("a fetched document with an unpaired surrogate (#1718)", () => {
     expect(await sql(t.store, "SELECT uri FROM accounts WHERE uri IN (?, ?) ORDER BY uri", bob.uri, carol.uri)).toEqual(
       [{ uri: carol.uri }],
     );
+  });
+
+  it("stores no actor with an unpaired surrogate in a key entry beside its signing key", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const key = bob.document.publicKey as Record<string, unknown>;
+    const bad = { ...key, id: `${bob.uri}#bad`, publicKeyPem: "\ud800" };
+    t.web.serve(bob.uri, { ...bob.document, publicKey: [key, bad] });
+    expect(await t.post(bob, like(bob, `${LOCAL}/ap/o/1`))).toBe(401);
+    expect(t.web.fetched).toContain(bob.uri);
+    expect(await sql(t.store, "SELECT uri FROM accounts WHERE uri = ?", bob.uri)).toEqual([]);
   });
 });
