@@ -14,6 +14,7 @@ import {
 } from "./api-helpers";
 import { PNG_PLAIN } from "./fixtures/images";
 import { bytes, mediaForm, multipartForm, uploaded } from "./media-helpers";
+import { newClient, VAPID } from "./push-helpers";
 import { act, community, getJson, post, remoteAccount, seedStatus, type User } from "./status-helpers";
 
 // Rails' blank and presence decisions on Mastodon API parameters (#1734): each route decides with railsBlank (Rails'
@@ -397,6 +398,20 @@ describe("admin accounts and account actions (PB5)", () => {
     expect(await ids(`/api/v2/admin/accounts?role_ids=${Q.NEL}`)).toEqual(every);
     expect(await ids("/api/v2/admin/accounts?role_ids=3")).toEqual([h.users.owner.id]);
     expect(await ids(`/api/v2/admin/accounts?role_ids=${Q.BOM}`)).toEqual([]);
+    // Each item of role_ids[] is kept as sent, a blank one included: no role has that id.
+    expect(await ids(`/api/v2/admin/accounts?role_ids[]=${Q.NEL}`)).toEqual([]);
+  });
+
+  // params.require(:keys) (Admin::MeasuresController): U+0085 is blank (400); U+FEFF is present, a key no measure has.
+  it("requires measure keys not blank as Rails does", async () => {
+    const { h, token } = await adminWorld();
+    const measure = async (keys: string) =>
+      answer(await h.request("/api/v1/admin/measures", bearer(token, json({ keys, start_at: "2026-10-01" }))));
+    expect(await measure(NEL)).toEqual({
+      status: 400,
+      body: { error: "param is missing or the value is empty or invalid: keys" },
+    });
+    expect(await measure(BOM)).toEqual({ status: 200, body: [] });
   });
 
   // Admin::AccountAction: type, report_id and warning_preset_id are read with present?.
@@ -617,6 +632,27 @@ describe("media (PB10)", () => {
       body: { error: "Validation failed: Thumbnail must be blank" },
     });
   });
+
+  // A push subscription's endpoint and keys are missing (400) only when empty; any other is decoded, so one blank to
+  // Rails is refused as invalid (422). Mastodon's model presence refuses both with 422, an older difference this blank
+  // fix does not move.
+  it("decodes a push key blank to Rails rather than calling it missing", async () => {
+    const h = await community(["alice"], "read write follow push", {}, { VAPID_JWK: VAPID.env });
+    const client = await newClient();
+    const subscribe = async (endpoint: string, keys: { p256dh?: string; auth?: string }) =>
+      answer(
+        await send(h, h.users.alice, "POST", "/api/v1/push/subscription", {
+          subscription: { endpoint, keys: { p256dh: client.p256dh, auth: client.auth, ...keys } },
+        }),
+      );
+    const endpoint = "https://push.example/send/abc";
+    const invalid = (what: string) => ({ status: 422, body: { error: `Validation failed: ${what} is invalid` } });
+    expect(await subscribe(NEL, {})).toEqual(invalid("Endpoint"));
+    expect(await subscribe(endpoint, { p256dh: NEL })).toEqual(invalid("Key p256dh"));
+    expect(await subscribe(endpoint, { auth: NEL })).toEqual(invalid("Key auth"));
+    expect((await subscribe(endpoint, { auth: "" })).status).toBe(400);
+    expect((await subscribe(endpoint, {})).status).toBe(200);
+  });
 });
 
 describe("OAuth scopes (PB12)", () => {
@@ -653,6 +689,26 @@ describe("OAuth scopes (PB12)", () => {
       );
     expect(await register(" ")).toMatchObject({ status: 200, body: { scopes: ["read"] } });
     expect(await register(NEL)).toEqual(await register("nonsense"));
+  });
+
+  // The default a blank scope falls back to is still checked against the app's own scopes.
+  it("refuses a blank scope's default outside a write-only app's scopes", async () => {
+    const h = await community(["alice"]);
+    const app = await registerApp(h, { scopes: "write", redirectUri: "urn:ietf:wg:oauth:2.0:oob" });
+    for (const scope of [NEL, BOM, "nonsense"]) {
+      const page = await consentPage(h, app, { scope });
+      expect(page.status, JSON.stringify(scope)).toBe(400);
+      expect(await page.text()).toContain("invalid_scope");
+      const token = await h.request(
+        "/oauth/token",
+        form({ grant_type: "client_credentials", client_id: app.client_id, client_secret: app.client_secret, scope }),
+      );
+      expect(await answer(token), JSON.stringify(scope)).toMatchObject({
+        status: 400,
+        body: { error: "invalid_scope" },
+      });
+    }
+    expect((await consentPage(h, app, { scope: "write" })).status).toBe(200);
   });
 });
 
@@ -732,5 +788,37 @@ describe("featured hashtags and lookup (PB11)", () => {
       h.users.alice.id,
     );
     expect((await getJson(h, `/api/v1/accounts/lookup?acct=${Q.BOM}alice`)).status).toBe(404);
+  });
+
+  // EmptyProfileFieldNamesValidator: a field whose name is blank (Rails' blank?) and whose value is not is refused.
+  it("refuses a field value whose name is blank to Rails", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const fields = async (name: string) =>
+      answer(
+        await send(h, alice, "PATCH", "/api/v1/accounts/update_credentials", {
+          fields_attributes: [{ name, value: "v" }],
+        }),
+      );
+    expect(await fields(NEL)).toEqual({
+      status: 422,
+      body: expect.objectContaining({ error: "Validation failed: Fields contains values with missing labels" }),
+    });
+    expect(await fields(BOM)).toMatchObject({ status: 200, body: { fields: [{ name: BOM, value: "v" }] } });
+  });
+
+  // Rails' Boolean cast reads only an empty string as none: U+0085 and U+FEFF are both true, not blank.
+  it("reads a boolean parameter blank to Rails as true", async () => {
+    const h = await community(["alice"]);
+    const sensitive = async (value: string) =>
+      (
+        (await answer(await act(h, h.users.alice, "/api/v1/statuses", { status: "s", sensitive: value }))).body as {
+          sensitive: boolean;
+        }
+      ).sensitive;
+    expect(await sensitive(NEL)).toBe(true);
+    expect(await sensitive(BOM)).toBe(true);
+    expect(await sensitive("")).toBe(false);
+    expect(await sensitive("false")).toBe(false);
   });
 });
