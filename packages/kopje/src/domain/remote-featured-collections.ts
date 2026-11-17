@@ -1,4 +1,4 @@
-import { COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
+import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { sameOrigin } from "../platform/http-url";
 import { railsBlank } from "../platform/rails-blank";
@@ -16,9 +16,10 @@ import {
   storedTime,
 } from "../platform/stored-bounds";
 import { sanitizeRemoteCodePoints } from "../security/html";
+import { localCollectionUri, recordItemRemove } from "./collection-documents";
 import { notifyUpdated, remoteCollectionTag } from "./collections";
 import { allocateLocalId, insertWithFreshId } from "./ids";
-import { isRetracted } from "./retractions";
+import { isRetracted, retract } from "./retractions";
 import { TREND_LANGUAGES } from "./trend-languages";
 
 // Remote accounts' collections (FEP-7aa9, Mastodon 4.7.5's ActivityPub::ProcessFeaturedCollectionService and
@@ -79,7 +80,7 @@ const ENCODER = new TextEncoder();
 const LANGUAGES: ReadonlySet<string> = new Set(TREND_LANGUAGES);
 
 // The stored form of a remote URI (stored-bounds.ts httpsUrlWhen): an https URL of printable ASCII within `bytes`.
-function storableUrl(value: string | null, bytes: number): value is string {
+export function storableUrl(value: string | null, bytes: number): value is string {
   return (
     value !== null && /^https:\/\/[!-~]+$/.test(value) && ENCODER.encode(value).length <= bytes && URL.canParse(value)
   );
@@ -562,45 +563,135 @@ export function removeFeaturedItem(db: Db, collection: string, uri: string): boo
 }
 
 // A member's Delete of its feature authorization `authorization` (Delete#delete_feature_authorization!, #1589's
-// revocation rule): its row is the member's row whose approval_uri is it (collection_items_approval), or else the
-// member's row in the stored collection the embedded FeatureAuthorization's interactingObject names, when its
-// interactionTarget is the member. That row is revoked only while the authorization is its current one: its
-// approval_uri, or, with none verified, its candidate; then no later check completion accepts it (no token, no
-// queue). At most one row is read by each lookup and one written. Whether a row was revoked.
+// revocation rule, D22 and D23): its row is the member's row whose approval_uri is it (collection_items_approval), or
+// else the member's row in the collection the embedded FeatureAuthorization's interactingObject names, when its
+// interactionTarget is the member: a stored remote collection by its uri, or a local collection by its id exactly as
+// Kopje writes it (collection-documents.ts localCollectionUri). That row changes only while the authorization is its
+// current one:
+//   - its approval_uri, or, with none verified, its candidate: revoked, from any state but revoked, and no later check
+//     completion or Accept accepts it (no token, no queue); a local collection's item that was accepted has its Remove
+//     sent to the collection's reach (a pending one was never announced). The authorization is also kept as the
+//     member's retraction (ID-7), so the check of a later revision listing it again, or of a new row listing it, which
+//     the member's server may answer from its cache, revokes; at MAX_RETRACTIONS_PER_ACTOR it is not kept, and the
+//     item is revoked all the same;
+//   - a local collection's pending item whose member has not answered (no approval_uri, no candidate): the first such
+//     authorization is recorded as its retracted_approval_uri and as the member's retraction (ID-7's tombstone,
+//     retractions.ts retract), which a new row for the same member reads too; a later, different one as the member's
+//     retraction alone, and when the member is at MAX_RETRACTIONS_PER_ACTOR, which keeps it from being recorded, the
+//     item ends revoked instead. The member's Accept (feature-requests.ts) and a check's
+//     completion (collection-checks.ts) read both, so no positive answer for an authorization the member withdrew
+//     accepts the item, even one the member's server still serves from a cache;
+//   - any other: nothing, so a delayed Delete of an authorization since replaced leaves the replacement alone (the
+//     caller records it as the member's retraction, inbox.ts retractUnknown).
+// At most one item is read by each lookup and one written, besides the member's retraction (retractions.ts retract).
+// 'revoked', 'recorded' (on the row) or 'retracted' (as the member's retraction alone) when the Delete was applied, else
+// null.
 export function revokeFeatureAuthorization(
   db: Db,
   member: { id: string; uri: string },
   authorization: string,
   feature: { collection: string | null; member: string | null } | null,
   now: number,
-): boolean {
+): "revoked" | "recorded" | "retracted" | null {
   const row =
-    db.first<{ id: string }>(
-      "SELECT id FROM collection_items INDEXED BY collection_items_approval WHERE account_id = ?1 AND approval_uri = ?2",
+    db.first<MemberRow>(
+      `SELECT ${MEMBER_ROW} FROM collection_items i INDEXED BY collection_items_approval
+				CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = i.collection_id
+			WHERE i.account_id = ?1 AND i.approval_uri = ?2`,
       member.id,
       authorization,
     ) ??
     (feature !== null && feature.collection !== null && feature.member === member.uri
-      ? db.first<{ id: string }>(
-          `SELECT i.id FROM collections c INDEXED BY collections_uri
-						CROSS JOIN collection_items i INDEXED BY collection_items_member ON i.collection_id = c.id AND i.account_id = ?2
-					WHERE c.uri = ?1`,
-          feature.collection,
-          member.id,
-        )
+      ? memberRowIn(db, feature.collection, member.id)
       : undefined);
   if (row === undefined) {
-    return false;
+    return null;
   }
-  return (
+  const revoked = db.run(
+    `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
+			SET state = ${COLLECTION_ITEM_STATES.revoked}, check_due_at = NULL, check_token = NULL, updated_at = ?3
+		WHERE id = ?1 AND state <> ${COLLECTION_ITEM_STATES.revoked}
+			AND (approval_uri = ?2 OR (approval_uri IS NULL AND candidate_approval_uri = ?2))`,
+    row.id,
+    authorization,
+    new Date(now).toISOString(),
+  );
+  if (revoked > 0) {
+    retract(db, member.uri, authorization, now);
+    if (row.local === 1 && row.state === COLLECTION_ITEM_STATES.accepted) {
+      recordItemRemove(db, { id: row.id, collection: row.collection, account: member.id }, now);
+    }
+    return "revoked";
+  }
+  if (
+    row.local !== 1 ||
+    row.state !== COLLECTION_ITEM_STATES.pending ||
+    row.approval !== null ||
+    row.candidate !== null ||
+    row.retracted === authorization
+  ) {
+    return null;
+  }
+  if (row.retracted === null) {
     db.run(
-      `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
-				SET state = ${COLLECTION_ITEM_STATES.revoked}, check_due_at = NULL, check_token = NULL, updated_at = ?3
-			WHERE id = ?1 AND state <> ${COLLECTION_ITEM_STATES.revoked}
-				AND (approval_uri = ?2 OR (approval_uri IS NULL AND candidate_approval_uri = ?2))`,
+      `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} SET retracted_approval_uri = ?2 WHERE id = ?1`,
       row.id,
       authorization,
-      new Date(now).toISOString(),
-    ) > 0
+    );
+    // Also the member's retraction, so an Accept naming it after the owner removes the item and adds the member again
+    // (a new item, without this row's record) is refused too; at MAX_RETRACTIONS_PER_ACTOR the row keeps it alone.
+    retract(db, member.uri, authorization, now);
+    return "recorded";
+  }
+  if (retract(db, member.uri, authorization, now)) {
+    return "retracted";
+  }
+  db.run(
+    `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
+			SET state = ${COLLECTION_ITEM_STATES.revoked}, retracted_approval_uri = NULL, updated_at = ?2
+		WHERE id = ?1`,
+    row.id,
+    new Date(now).toISOString(),
   );
+  return "revoked";
+}
+
+type MemberRow = {
+  id: string;
+  collection: string;
+  state: number;
+  local: number;
+  approval: string | null;
+  candidate: string | null;
+  retracted: string | null;
+};
+const MEMBER_ROW = `i.id, i.collection_id AS collection, i.state, c.local, i.approval_uri AS approval,
+	i.candidate_approval_uri AS candidate, i.retracted_approval_uri AS retracted`;
+
+// The member's row in the collection `uri`: a stored remote collection's, by collections_uri, else a local
+// collection's, by the id its uri ends with, when the uri is exactly the one Kopje writes for it.
+function memberRowIn(db: Db, uri: string, member: string): MemberRow | undefined {
+  const remote = db.first<MemberRow>(
+    `SELECT ${MEMBER_ROW} FROM collections c INDEXED BY collections_uri
+			CROSS JOIN collection_items i INDEXED BY collection_items_member ON i.collection_id = c.id AND i.account_id = ?2
+		WHERE c.uri = ?1`,
+    uri,
+    member,
+  );
+  if (remote !== undefined) {
+    return remote;
+  }
+  const id = /\/collections\/(\d{18})$/.exec(uri)?.[1];
+  if (id === undefined) {
+    return undefined;
+  }
+  const local = db.first<MemberRow & { owner_uri: string }>(
+    `SELECT ${MEMBER_ROW}, o.uri AS owner_uri FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
+			CROSS JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id
+			CROSS JOIN collection_items i INDEXED BY collection_items_member ON i.collection_id = c.id AND i.account_id = ?2
+		WHERE c.id = ?1 AND c.local = 1`,
+    id,
+    member,
+  );
+  return local !== undefined && localCollectionUri(local.owner_uri, local.collection) === uri ? local : undefined;
 }

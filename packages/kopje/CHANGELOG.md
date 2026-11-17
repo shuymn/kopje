@@ -134,8 +134,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   back past it needs a point-in-time restore.
 - Collections: an account can feature up to 25 accounts in up to 10 collections (`/api/v1/collections`,
   `/api/v1/accounts/:id/collections`, `/api/v1/accounts/:id/in_collections`, also under `/api/v1_alpha` with a
-  `Deprecation` header), with the `read:collections` and `write:collections` scopes, as Mastodon 4.6 serves them; only
-  local accounts can be featured yet ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections").
+  `Deprecation` header), with the `read:collections` and `write:collections` scopes, as Mastodon 4.6 serves them
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections").
   Reports take `collection_ids[]` (forwarded in the `Flag` after the statuses, and read from an inbound one), roles
   present `collection_limit`, search with `resolve=true` finds a local collection by its URL, and each local collection
   has a public page at its `url`. Migration `0103_collections`: two new tables and a column of `reports`, reading no
@@ -193,6 +193,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   rewritten; the upgrade checks no reference (the migration bench's upgrade from `0093_annual_reports` takes 17,153 ms
   with this file and 17,086 ms without it, medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store
   migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
+- Remote accounts can be featured: Kopje reads their `canFeature`, asks with a `FeatureRequest` and shows them once
+  they accept; their `Accept`, their `Reject` and their `Delete` of the authorization keep the membership current
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections"). Migration `0115_feature_policies`: a
+  column of `accounts` and its two triggers, reading no row; the upgrade checks no reference. `wrangler.jsonc`:
+  unchanged. This adds a Store migration, so the release is at least a minor version, and rolling back past it needs a
+  point-in-time restore.
 
 ### Changed
 

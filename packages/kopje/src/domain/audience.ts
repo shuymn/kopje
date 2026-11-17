@@ -1314,20 +1314,55 @@ export function collectionItemShownSql(i: string, c: string, viewer: string): st
 		AND (${viewer} IS NULL OR NOT ${blocksSql(viewer, `${i}.account_id`)}))`;
 }
 
+// InteractionPolicy::POLICY_FLAGS: a remote account's stored feature policy (accounts.feature_policy, migration
+// 0115_feature_policies) holds these flags in each half, the automatic half in the high 16 bits; SubPolicy#as_keys
+// lists a half's flags in this order.
+export const FEATURE_POLICY_FLAGS = {
+  unsupported_policy: 1,
+  public: 2,
+  followers: 4,
+  following: 8,
+  disabled: 16,
+} as const;
+
+export type FeaturePolicyFlag = keyof typeof FEATURE_POLICY_FLAGS;
+
+// The keys of one half of a stored feature policy (SubPolicy#as_keys), in Mastodon's order.
+export function featurePolicyKeys(half: number): FeaturePolicyFlag[] {
+  return (Object.keys(FEATURE_POLICY_FLAGS) as FeaturePolicyFlag[]).filter(
+    (key) => (half & FEATURE_POLICY_FLAGS[key]) !== 0,
+  );
+}
+
 // R45 (Account#feature_policy_for_account, feature_approval.current_user): the answer to `viewer` (NULL: none signed
 // in) of whether it may feature the account row `a`. First Mastodon's policy in its order: 'denied' for no viewer; a
 // local account 'denied' when not discoverable (to itself too), else 'denied' when locked and the viewer neither
-// follows it (accepted) nor is it, else 'automatic'; a remote account 'missing', as Kopje stores no remote policy yet
-// (Mastodon answers 'automatic' to the account itself first, which a local viewer never is). Then only ever to
-// 'denied': when either blocks the other or the account is unavailable (R1), the refusals AccountPolicy#feature? adds
-// (docs/mastodon-deviations.md, "Collections"), so 'missing' stays reachable otherwise.
+// follows it (accepted) nor is it, else 'automatic'; a remote account by its stored policy (accounts.feature_policy):
+// 'missing' while it is 0, then 'automatic' when its automatic half names the public, or its followers and the viewer
+// follows it (accepted), or its following and it follows the viewer (accepted); then 'manual' by the manual half the
+// same way; then 'unknown' when either half holds unsupported_policy; else 'denied'. (Mastodon answers 'automatic' to
+// the remote account itself first, which a local viewer never is.) Then only ever to 'denied': when either blocks the
+// other or the account is unavailable (R1), the refusals AccountPolicy#feature? adds (docs/mastodon-deviations.md,
+// "Collections"), so 'missing' and 'unknown' stay reachable otherwise.
 export function featureApprovalSql(a: string, viewer: string): string {
+  const follows = (follower: string, target: string) => `EXISTS (SELECT 1 FROM main.follows pff
+			WHERE pff.account_id = ${follower} AND pff.target_account_id = ${target} AND pff.state = 'accepted')`;
+  const half = (shift: number) => {
+    const flag = (name: FeaturePolicyFlag) =>
+      `((${a}.feature_policy >> ${shift}) & ${FEATURE_POLICY_FLAGS[name]}) <> 0`;
+    return `(${flag("public")} OR (${flag("followers")} AND ${follows(viewer, `${a}.id`)})
+			OR (${flag("following")} AND ${follows(`${a}.id`, viewer)}))`;
+  };
+  const unsupported = FEATURE_POLICY_FLAGS.unsupported_policy;
   return `CASE WHEN ${viewer} IS NULL OR NOT ${availableSql(`${a}.id`)} OR ${blocksSql(`${a}.id`, viewer)}
 			OR ${blocksSql(viewer, `${a}.id`)} THEN 'denied'
-		WHEN ${a}.domain IS NOT NULL THEN 'missing'
+		WHEN ${a}.domain IS NOT NULL THEN CASE WHEN ${a}.feature_policy = 0 THEN 'missing'
+			WHEN ${half(16)} THEN 'automatic'
+			WHEN ${half(0)} THEN 'manual'
+			WHEN (${a}.feature_policy & ${(unsupported << 16) | unsupported}) <> 0 THEN 'unknown'
+			ELSE 'denied' END
 		WHEN ${a}.discoverable IS NOT 1 THEN 'denied'
-		WHEN ${a}.locked = 1 AND ${a}.id <> ${viewer} AND NOT EXISTS (SELECT 1 FROM main.follows pff
-			WHERE pff.account_id = ${viewer} AND pff.target_account_id = ${a}.id AND pff.state = 'accepted') THEN 'denied'
+		WHEN ${a}.locked = 1 AND ${a}.id <> ${viewer} AND NOT ${follows(viewer, `${a}.id`)} THEN 'denied'
 		ELSE 'automatic' END`;
 }
 
@@ -1359,8 +1394,9 @@ export function featureApprovalReads(
 }
 
 // R45 (AccountPolicy#feature?, Account#featureable_by?): whether `owner` may feature the account `member`: the answer
-// to the owner is 'automatic' or 'manual' (featureApprovalSql). A remote member answers 'missing' until Kopje reads
-// remote policies, so it is refused.
+// to the owner is 'automatic' or 'manual' (featureApprovalSql). A remote member whose stored policy is 0 ('missing') or
+// names no one the owner is ('unknown', 'denied') is refused; one that consents is asked by a FeatureRequest
+// (collections.ts insertItem).
 export function mayFeatureSql(owner: string, member: string): string {
   return `coalesce((SELECT ${featureApprovalSql("pfm", owner)} FROM main.accounts pfm INDEXED BY ${ACCOUNTS_ID_INDEX}
 		WHERE pfm.id = ${member}) IN ('automatic', 'manual'), 0)`;

@@ -2,18 +2,25 @@ import fc from "fast-check";
 import { describe, expect, inject, it } from "vitest";
 
 import type { ItemCheckOutcome } from "../src/domain/collection-checks";
-import { sql } from "./api-helpers";
+import { settleDeliveries, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { mastodon47Signed, mastodonFeatureDelete, signTime } from "./author-proof-helpers";
 import {
   CHECK_LEASE_MS,
   checkGaveUp,
   DAY_MS,
+  type FromMember,
   FeaturePolicy,
   type ItemState,
+  MemberPeer,
+  MemberPolicy,
+  memberQuiescence,
+  type MemberLogged,
+  type MemberRow,
   type Owner,
   type Path,
   type Row,
+  type ToMember,
 } from "./feature-model";
 import {
   collection,
@@ -26,8 +33,8 @@ import {
   syncAll,
 } from "./featured-collection-helpers";
 import { BUILD } from "./helpers";
-import type { TestActor } from "./inbox-helpers";
-import { AS, nextId, OTHER, setup } from "./inbox-status-helpers";
+import { mastodonActor, type TestActor } from "./inbox-helpers";
+import { accountId, ALICE_URI, AS, DAVE_URI, nextId, OTHER, PUBLIC, setup, type Setup } from "./inbox-status-helpers";
 import { runs } from "./policy-world";
 
 // 5-T20: model-based checks of remote collections' items (#1589's D21 and D22; ID-6, ID-7 and RES-6 in
@@ -456,6 +463,7 @@ const REQUIRED = [
   "K.complete:mismatch",
   "K.complete:transient",
   "K.complete:fenced",
+  "K.complete:retracted",
   "via read",
   "via add",
   "via remove",
@@ -512,6 +520,23 @@ describe("remote collections' items: Kopje against its policy (5-T20)", () => {
     expect(w.policy.rows.get("O")).toMatchObject({ state: "accepted", approval: w.b });
   });
 
+  // The Delete that revoked O's item is kept as M's retraction of A, which the check of O's later revision listing A
+  // again reads.
+  it("revokes at the check of A listed again after A's Delete revoked O's item", async () => {
+    const checked: Action[] = [{ k: "claim" }, { k: "fetch", i: 0, transient: false }, { k: "complete", i: 0 }];
+    const w = await run([
+      { k: "list", owner: "O", b: false, path: "read" },
+      ...checked,
+      { k: "withdraw", b: false },
+      { k: "deliver", i: 0, relayed: false },
+      { k: "list", owner: "O", b: true, path: "update" },
+      { k: "list", owner: "O", b: false, path: "update" },
+      ...checked,
+    ]);
+    expect([w.stats["K.Delete:revoked"], w.stats["K.complete:retracted"]]).toEqual([1, 1]);
+    expect(w.policy.rows.get("O")).toMatchObject({ state: "revoked", candidate: w.a, approval: null });
+  });
+
   it("ends a revision's check after five expired leases (check-gave-up)", async () => {
     const lapse: Action[] = [{ k: "claim" }, { k: "advance", day: false }];
     const w = await run([
@@ -523,5 +548,789 @@ describe("remote collections' items: Kopje against its policy (5-T20)", () => {
     // The predicate needs every one of the five claims.
     const first = w.policy.log.findIndex((e) => e.k === "claim" && e.result === "claimed");
     expect(checkGaveUp(w.policy.log.toSpliced(first, 1), "O")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// 4-T9: a remote member R of alice's collection C (#1589's D17, D23 and D25; ID-6 and F1-F5 in
+// docs/threat-model.md). alice (L) adds R, removes its item, adds it again, blocks and unblocks it; Kopje's lane
+// delivers its bodies to R's inbox in order, sending its head twice when a lease ran out; R's server (MemberPeer,
+// Mastodon v4.7.5) processes each delivered copy in a job of its own, in any order, consents or refuses, revokes,
+// changes its policy, blocks and unblocks alice and runs its cleanup, and its deliveries reach Kopje in any order and
+// again; Kopje's check rounds verify an Accept that followed a deletion, at 5 attempts. After every step the Store
+// equals MemberPolicy (test/feature-model.ts), its lane included, and the policy's safety rules hold; at quiescence
+// Kopje equals R outside F1-F5, and a request R accepted that no one ended is accepted on both sides unless its check
+// gave up (F4).
+// ---------------------------------------------------------------------------------------------------------------
+
+const CAN_FEATURE = { interactionPolicy: { canFeature: { automaticApproval: [PUBLIC] } } };
+
+type MemberFlight = { token: string; authorization: string; outcome: ItemCheckOutcome | null };
+
+async function memberWorld() {
+  const clock = { now: NOW };
+  const t = await setup(clock);
+  const r = await mastodonActor(t.web, "r", { extra: CAN_FEATURE });
+  // Stored by its Follow of dave; alice and R follow neither, so alice's block sends R its Block alone.
+  await t.post(r, { "@context": AS, id: `${r.uri}#follows/1`, type: "Follow", actor: r.uri, object: DAVE_URI });
+  const rId = (await accountId(t.store, r.uri))!;
+  const made = await alice(t, "POST", "/api/v1/collections", { name: "c", sensitive: false, discoverable: true });
+  const cId = (made.body.collection as { id: string }).id;
+  const log: MemberLogged[] = [];
+  const peer = new MemberPeer(r.uri, log);
+  // The lane starts after the setup's own deliveries (dave's Accept of R's Follow).
+  await settleDeliveries(t.store, clock.now);
+  const { since } = (
+    await sql<{ since: number }>(t.store, "SELECT coalesce(max(id), 0) AS since FROM outbound_activities")
+  )[0]!;
+  return {
+    since,
+    t,
+    clock,
+    r,
+    rId,
+    cId,
+    cUri: `${ALICE_URI}/collections/${cId}`,
+    peer,
+    policy: new MemberPolicy(log, peer.issued),
+    log,
+    // Kopje's lane to R: the bodies the Store recorded for R's inboxes, in order, and how many were delivered.
+    lane: [] as ToMember[],
+    delivered: 0,
+    // The copies delivered to R's inbox that its server has not processed.
+    jobs: [] as ToMember[],
+    flights: [] as MemberFlight[],
+    stats: {} as Stats,
+    trace: [] as string[],
+  };
+}
+
+type MemberWorld = Awaited<ReturnType<typeof memberWorld>>;
+
+async function alice(t: Setup, method: string, path: string, body?: unknown) {
+  const response = await t.request(path, {
+    method,
+    headers: { authorization: `Bearer ${t.tokens.alice}`, "content-type": "application/json" },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  const text = await response.text();
+  return { status: response.status, body: (text === "" ? {} : JSON.parse(text)) as Record<string, unknown> };
+}
+
+async function memberRow(w: MemberWorld): Promise<MemberRow | undefined> {
+  const [row] = await sql<{
+    id: string;
+    request: string;
+    state: number;
+    approval: string | null;
+    candidate: string | null;
+    retracted: string | null;
+    due: number | null;
+    attempts: number;
+    token: string | null;
+    changed: string;
+  }>(
+    w.t.store,
+    `SELECT id, activity_uri AS request, state, approval_uri AS approval, candidate_approval_uri AS candidate,
+			retracted_approval_uri AS retracted, check_due_at AS due, check_attempts AS attempts, check_token AS token,
+			updated_at AS changed
+		FROM collection_items WHERE collection_id = ? AND account_id = ?`,
+    w.cId,
+    w.rId,
+  );
+  if (row === undefined) {
+    return undefined;
+  }
+  const { id, state, changed, ...rest } = row;
+  return { item: `${ALICE_URI}/collection_items/${id}`, ...rest, state: STATES[state]!, changed: Date.parse(changed) };
+}
+
+function toMember(activity: Record<string, unknown>): ToMember {
+  const object = activity.object as string | Record<string, string>;
+  const id = typeof object === "string" ? object : object.id!;
+  switch (activity.type) {
+    case "FeatureRequest":
+      return { type: "FeatureRequest", request: String(activity.id) };
+    case "Add":
+      return { type: "Add", item: id, authorization: (object as Record<string, string>).featureAuthorization! };
+    case "Remove":
+      return { type: "Remove", item: id };
+    case "Block":
+      return { type: "Block", id: String(activity.id) };
+    case "Undo":
+      return { type: "Undo", id };
+  }
+  throw new Error(`unexpected ${String(activity.type)} for R`);
+}
+
+// The bodies the Store recorded with a delivery to R's inbox or its server's shared inbox, in record order.
+async function laneOf(w: MemberWorld): Promise<ToMember[]> {
+  await settleDeliveries(w.t.store, w.clock.now);
+  const rows = await sql<{ body: string }>(
+    w.t.store,
+    `SELECT a.body FROM outbound_activities a
+		WHERE a.id > ? AND EXISTS (SELECT 1 FROM deliveries d WHERE d.activity_id = a.id AND d.inbox_url IN (?, ?))
+		ORDER BY a.id`,
+    w.since,
+    `${w.r.uri}/inbox`,
+    `${new URL(w.r.uri).origin}/inbox`,
+  );
+  return rows.map((row) => toMember((JSON.parse(row.body) as { activity: Record<string, unknown> }).activity));
+}
+
+async function memberCheck(w: MemberWorld): Promise<void> {
+  const context = w.trace.join("\n");
+  expect(w.policy.problems, context).toEqual([]);
+  expect(await memberRow(w), context).toEqual(w.policy.row);
+  w.lane = await laneOf(w);
+  expect(w.lane, context).toEqual(w.policy.queued);
+}
+
+function memberStep(w: MemberWorld, line: string, ...labels: string[]): void {
+  w.trace.push(`${w.trace.length} @${w.clock.now - NOW} ${line}${labels.length > 0 ? ` -> ${labels.join(", ")}` : ""}`);
+  labels.forEach((label) => tally(w.stats, label));
+}
+
+// ---- alice through the API
+
+async function addMember(w: MemberWorld): Promise<void> {
+  const added = await alice(w.t, "POST", `/api/v1/collections/${w.cId}/items`, { account_id: w.rId });
+  const row = added.status === 200 ? await memberRow(w) : undefined;
+  const label = w.policy.add(row?.item ?? null, row?.request ?? null, w.clock.now);
+  const expected = ({ "L.add:pending": 200, "L.add:refused": 403, "L.add:taken": 422 } as Record<string, number>)[
+    label
+  ];
+  expect(added.status, w.trace.join("\n")).toBe(expected);
+  memberStep(w, "L adds R", label);
+}
+
+async function removeMember(w: MemberWorld): Promise<void> {
+  const row = w.policy.row;
+  if (row === undefined) {
+    return;
+  }
+  const id = row.item.slice(row.item.lastIndexOf("/") + 1);
+  const removed = await alice(w.t, "DELETE", `/api/v1/collections/${w.cId}/items/${id}`);
+  expect(removed.status, w.trace.join("\n")).toBe(200);
+  memberStep(w, "L removes R's item", w.policy.remove());
+}
+
+async function blockUri(w: MemberWorld): Promise<string> {
+  const [block] = await sql<{ uri: string }>(
+    w.t.store,
+    "SELECT uri FROM blocks WHERE account_id = (SELECT id FROM accounts WHERE uri = ?) AND target_account_id = ?",
+    ALICE_URI,
+    w.rId,
+  );
+  return block!.uri;
+}
+
+async function blockMember(w: MemberWorld): Promise<void> {
+  if (w.policy.lBlocks) {
+    return;
+  }
+  expect((await alice(w.t, "POST", `/api/v1/accounts/${w.rId}/block`)).status).toBe(200);
+  // The block's Remove is released once its collection job has reached the owner's followers.
+  for (let round = 0; round < 8 && (await sql(w.t.store, "SELECT 1 FROM collection_jobs")).length > 0; round++) {
+    await w.t.store.runCollectionJobs(BUILD, { now: w.clock.now });
+  }
+  memberStep(w, "L blocks R", ...w.policy.block(await blockUri(w)));
+}
+
+async function unblockMember(w: MemberWorld): Promise<void> {
+  if (!w.policy.lBlocks) {
+    return;
+  }
+  const uri = await blockUri(w);
+  expect((await alice(w.t, "POST", `/api/v1/accounts/${w.rId}/unblock`)).status).toBe(200);
+  memberStep(w, "L unblocks R", w.policy.unblock(uri));
+}
+
+// ---- Kopje's lane and R's server
+
+function deliverToMember(w: MemberWorld, dup: boolean): void {
+  const head = w.lane[w.delivered];
+  if (head === undefined) {
+    return;
+  }
+  w.jobs.push(head);
+  if (!dup) {
+    w.delivered++;
+  }
+  memberStep(w, `${dup ? "a copy of " : ""}${head.type} to R`, dup ? "K.dup" : "K.deliver");
+}
+
+function processAtMember(w: MemberWorld, pick: number | ((m: ToMember) => boolean)): void {
+  const index = typeof pick === "number" ? pick % Math.max(w.jobs.length, 1) : w.jobs.findIndex(pick);
+  if (w.jobs[index] === undefined) {
+    return;
+  }
+  const [job] = w.jobs.splice(index, 1);
+  const now = w.clock.now;
+  const label =
+    job!.type === "FeatureRequest"
+      ? w.peer.featureRequest(job!.request, now)
+      : job!.type === "Add"
+        ? w.peer.add(job!.item, job!.authorization, now)
+        : job!.type === "Remove"
+          ? w.peer.remove(job!.item, now)
+          : job!.type === "Block"
+            ? w.peer.receivedBlock(job!.id)
+            : w.peer.receivedUndo(job!.id);
+  memberStep(w, `R processes ${job!.type}`, label);
+}
+
+function bodyOf(w: MemberWorld, message: FromMember): Record<string, unknown> {
+  const actor = w.r.uri;
+  switch (message.type) {
+    case "Accept":
+      return {
+        "@context": AS,
+        id: message.id,
+        type: "Accept",
+        actor,
+        to: ALICE_URI,
+        object: message.request,
+        result: message.result,
+      };
+    case "Reject":
+      // RejectFeatureRequestSerializer#id of the unsaved item it builds: no id after the path.
+      return {
+        "@context": AS,
+        id: `${actor}#rejects/feature_requests/`,
+        type: "Reject",
+        actor,
+        to: ALICE_URI,
+        object: message.request,
+      };
+    case "Delete":
+      return mastodonFeatureDelete(w.r, message.authorization, w.cUri);
+    case "Block":
+      return { "@context": AS, id: message.id, type: "Block", actor, object: ALICE_URI };
+    case "Undo":
+      return {
+        "@context": AS,
+        id: `${message.id}/undo`,
+        type: "Undo",
+        actor,
+        object: { id: message.id, type: "Block", actor, object: ALICE_URI },
+      };
+  }
+}
+
+// One of R's deliveries reaching Kopje; a retry leaves it in R's outbox.
+async function sendFromMember(w: MemberWorld, pick: number | ((m: FromMember) => boolean), dup: boolean) {
+  const outbox = w.peer.outbox;
+  const index = typeof pick === "number" ? pick % Math.max(outbox.length, 1) : outbox.findIndex(pick);
+  const message = outbox[index];
+  if (message === undefined) {
+    return;
+  }
+  if (!dup) {
+    outbox.splice(index, 1);
+  }
+  expect(await w.t.post(w.r, bodyOf(w, message)), w.trace.join("\n")).toBe(202);
+  const now = w.clock.now;
+  const label =
+    message.type === "Accept"
+      ? w.policy.accept(message.request, message.result, now)
+      : message.type === "Reject"
+        ? w.policy.reject(message.request, now)
+        : message.type === "Delete"
+          ? w.policy.deleted(message.authorization, now)
+          : message.type === "Block"
+            ? w.policy.blocked(message.id)
+            : w.policy.unblocked(message.id);
+  memberStep(w, `${dup ? "a retry of " : ""}R's ${message.type} to Kopje`, label);
+}
+
+// ---- Kopje's check rounds and the clock
+
+async function memberClaim(w: MemberWorld): Promise<void> {
+  const { checks } = await w.t.store.claimItemChecks(BUILD, { now: w.clock.now });
+  for (const c of checks) {
+    w.flights.push({ token: c.token, authorization: c.authorization, outcome: null });
+  }
+  memberStep(w, `claim (${checks.length})`, ...w.policy.claim(w.clock.now, checks[0]?.token ?? null));
+}
+
+// A claimed check's fetch: R's server serves an authorization while its item is accepted, and its cache for a while
+// after (MemberPeer.fetched), so a fetch at the clock's moment of a withdrawal still matches.
+function memberFetch(w: MemberWorld, flight: MemberFlight, transient: boolean): void {
+  flight.outcome = transient ? "transient" : w.peer.fetched(flight.authorization, w.clock.now) ? "match" : "gone";
+  memberStep(w, `fetch ${flight.token.slice(0, 8)}`, w.policy.fetched(flight.token, flight.outcome));
+}
+
+async function memberComplete(w: MemberWorld, flight: MemberFlight): Promise<void> {
+  w.flights.splice(w.flights.indexOf(flight), 1);
+  const row = await memberRow(w);
+  const item = row?.item.slice(row.item.lastIndexOf("/") + 1) ?? "0";
+  const results = [{ item, token: flight.token, outcome: flight.outcome! }];
+  await w.t.store.completeItemChecks(BUILD, { now: w.clock.now, results });
+  memberStep(
+    w,
+    `complete ${flight.token.slice(0, 8)} ${flight.outcome}`,
+    w.policy.complete(flight.token, flight.outcome!, w.clock.now),
+  );
+}
+
+async function memberAdvance(w: MemberWorld, day: boolean): Promise<void> {
+  const due = w.policy.nextDue();
+  w.clock.now = day ? w.clock.now + DAY_MS + 1 : due !== null && due > w.clock.now ? due : w.clock.now + CHECK_LEASE_MS;
+  memberStep(w, `clock ${day ? "a day" : "to the next due"}`);
+  if (day) {
+    await w.t.store.pruneCollectionItems(BUILD, { now: w.clock.now });
+    memberStep(w, "cleanups", ...w.policy.cleanup(w.clock.now), ...w.peer.cleanup(w.clock.now));
+  }
+}
+
+// ---- Actions and runs
+
+type MemberAction =
+  | { k: "add" }
+  | { k: "remove" }
+  | { k: "block" }
+  | { k: "unblock" }
+  | { k: "deliver"; dup: boolean }
+  | { k: "process"; i: number | ((m: ToMember) => boolean) }
+  | { k: "send"; i: number | ((m: FromMember) => boolean); dup: boolean }
+  | { k: "revoke" }
+  | { k: "rblock" }
+  | { k: "runblock" }
+  | { k: "policy"; consent: boolean }
+  | { k: "claim" }
+  | { k: "fetch"; transient: boolean }
+  | { k: "complete" }
+  | { k: "advance"; day: boolean };
+
+const memberActionArb: fc.Arbitrary<MemberAction> = fc.oneof(
+  { arbitrary: fc.constant({ k: "add" as const }), weight: 4 },
+  { arbitrary: fc.constant({ k: "remove" as const }), weight: 1 },
+  { arbitrary: fc.constant({ k: "block" as const }), weight: 1 },
+  { arbitrary: fc.constant({ k: "unblock" as const }), weight: 3 },
+  {
+    arbitrary: fc.record({ k: fc.constant("deliver" as const), dup: fc.constantFrom(false, false, false, true) }),
+    weight: 6,
+  },
+  { arbitrary: fc.record({ k: fc.constant("process" as const), i: fc.nat(3) }), weight: 6 },
+  {
+    arbitrary: fc.record({
+      k: fc.constant("send" as const),
+      i: fc.nat(3),
+      dup: fc.constantFrom(false, false, false, true),
+    }),
+    weight: 6,
+  },
+  { arbitrary: fc.constant({ k: "revoke" as const }), weight: 3 },
+  { arbitrary: fc.constant({ k: "rblock" as const }), weight: 1 },
+  { arbitrary: fc.constant({ k: "runblock" as const }), weight: 3 },
+  {
+    arbitrary: fc.record({ k: fc.constant("policy" as const), consent: fc.constantFrom(true, true, false) }),
+    weight: 1,
+  },
+  { arbitrary: fc.constant({ k: "claim" as const }), weight: 3 },
+  {
+    arbitrary: fc.record({ k: fc.constant("fetch" as const), transient: fc.constantFrom(false, false, true) }),
+    weight: 2,
+  },
+  { arbitrary: fc.constant({ k: "complete" as const }), weight: 2 },
+  { arbitrary: fc.record({ k: fc.constant("advance" as const), day: fc.boolean() }), weight: 3 },
+);
+
+// Runs of single actions, with short steps the single ones reach rarely in order: Kopje's head carried through R's
+// server and R's answer back to Kopje; alice's removal and add again; and the same after R revoked, then a day (R's
+// cleanup frees it to accept), so that R's Delete of an earlier membership's authorization meets the new request.
+const memberRunArb: fc.Arbitrary<MemberAction[]> = fc
+  .array(
+    fc.oneof(
+      { arbitrary: memberActionArb.map((a) => [a]), weight: 8 },
+      {
+        arbitrary: fc.constant<MemberAction[]>([
+          { k: "deliver", dup: false },
+          { k: "process", i: 0 },
+          { k: "send", i: 0, dup: false },
+        ]),
+        weight: 2,
+      },
+      { arbitrary: fc.constant<MemberAction[]>([{ k: "remove" }, { k: "add" }]), weight: 1 },
+      {
+        arbitrary: fc.constant<MemberAction[]>([
+          { k: "revoke" },
+          { k: "remove" },
+          { k: "add" },
+          { k: "advance", day: true },
+        ]),
+        weight: 1,
+      },
+    ),
+    { minLength: 20, maxLength: 40 },
+  )
+  .map((groups) => groups.flat());
+
+async function memberAct(w: MemberWorld, a: MemberAction): Promise<void> {
+  const now = w.clock.now;
+  switch (a.k) {
+    case "add":
+      await addMember(w);
+      break;
+    case "remove":
+      await removeMember(w);
+      break;
+    case "block":
+      await blockMember(w);
+      break;
+    case "unblock":
+      await unblockMember(w);
+      break;
+    case "deliver":
+      deliverToMember(w, a.dup);
+      break;
+    case "process":
+      processAtMember(w, a.i);
+      break;
+    case "send":
+      await sendFromMember(w, a.i, a.dup);
+      break;
+    case "revoke": {
+      const label = w.peer.revoke("revoke", now);
+      if (label !== null) {
+        memberStep(w, "R revokes", label);
+      }
+      break;
+    }
+    case "rblock":
+      memberStep(w, "R blocks L", ...w.peer.block(now));
+      break;
+    case "runblock":
+      memberStep(w, "R unblocks L", ...w.peer.unblock());
+      break;
+    case "policy":
+      memberStep(w, "R's policy", w.peer.setPolicy(a.consent));
+      break;
+    case "claim":
+      await memberClaim(w);
+      break;
+    case "fetch": {
+      const flight = w.flights.find((f) => f.outcome === null);
+      if (flight !== undefined) {
+        memberFetch(w, flight, a.transient);
+      }
+      break;
+    }
+    case "complete": {
+      const flight = w.flights.find((f) => f.outcome !== null);
+      if (flight !== undefined) {
+        await memberComplete(w, flight);
+      }
+      break;
+    }
+    case "advance":
+      await memberAdvance(w, a.day);
+      break;
+  }
+  await memberCheck(w);
+}
+
+// Quiescence: the checks in flight abandoned (their leases run out); then, until nothing moves, Kopje's lane delivered,
+// R's jobs processed, R's deliveries sent, and the due checks claimed, fetched and completed; then the relation.
+async function memberSettle(w: MemberWorld): Promise<string> {
+  w.trace.push("-- settle");
+  w.flights = [];
+  for (let round = 0; round < SETTLE_ROUNDS; round++) {
+    const moving =
+      w.delivered < w.lane.length || w.jobs.length > 0 || w.peer.outbox.length > 0 || w.policy.nextDue() !== null;
+    if (!moving) {
+      break;
+    }
+    while (w.delivered < w.lane.length) {
+      await memberAct(w, { k: "deliver", dup: false });
+    }
+    while (w.jobs.length > 0) {
+      await memberAct(w, { k: "process", i: 0 });
+    }
+    while (w.peer.outbox.length > 0) {
+      await memberAct(w, { k: "send", i: 0, dup: false });
+    }
+    if (w.policy.nextDue() !== null) {
+      w.clock.now = Math.max(w.clock.now, w.policy.nextDue()!);
+      await memberAct(w, { k: "claim" });
+      while (w.flights.length > 0) {
+        await memberAct(w, { k: "fetch", transient: false });
+        await memberAct(w, { k: "complete" });
+      }
+    }
+  }
+  const context = w.trace.join("\n");
+  expect([w.lane.length - w.delivered, w.jobs.length, w.peer.outbox.length, w.policy.nextDue()], context).toEqual([
+    0,
+    0,
+    0,
+    null,
+  ]);
+  const { problems, outcome } = memberQuiescence(w.log, w.policy.row, w.peer.item);
+  expect(problems, context).toEqual([]);
+  tally(w.stats, `quiescent: ${outcome}`);
+  return outcome;
+}
+
+async function memberRun(actions: readonly MemberAction[]): Promise<MemberWorld> {
+  const w = await memberWorld();
+  await memberCheck(w);
+  for (const a of actions) {
+    await memberAct(w, a);
+  }
+  await memberSettle(w);
+  return w;
+}
+
+// Steps of the witnesses: Kopje's head to R (head), R's processing of a delivered body of a type, and R's delivery of a
+// message of a type (an authorization of R's n-th item: A is 1, B is 2).
+const head = (dup = false): MemberAction => ({ k: "deliver", dup });
+const processes = (type: ToMember["type"]): MemberAction => ({ k: "process", i: (m) => m.type === type });
+const auth = (n: number) => (a: string) => a.endsWith(`/feature_authorizations/${n}`);
+const sends = (type: FromMember["type"], n?: number): MemberAction => ({
+  k: "send",
+  i: (m) =>
+    m.type === type &&
+    (n === undefined ||
+      (m.type === "Accept" && auth(n)(m.result)) ||
+      (m.type === "Delete" && auth(n)(m.authorization))),
+  dup: false,
+});
+// A first membership accepted with A and named by its Add, then revoked by R and removed by alice, and R's item gone
+// with its Remove; alice adds R again and R accepts with B: R's Delete(A) and Accept(B) wait in its outbox.
+const REASKED: MemberAction[] = [
+  { k: "add" },
+  head(),
+  processes("FeatureRequest"),
+  sends("Accept", 1),
+  head(),
+  processes("Add"),
+  { k: "revoke" },
+  { k: "remove" },
+  head(),
+  processes("Remove"),
+  { k: "add" },
+  head(),
+  processes("FeatureRequest"),
+];
+const DELETE_A = sends("Delete", 1);
+const ACCEPT_B = sends("Accept", 2);
+const DELETE_B = sends("Delete", 2);
+const accepted = (w: MemberWorld, n: number) =>
+  w.log.some(
+    (e) =>
+      (e.k === "K.Accept" && e.outcome === "accepted" && auth(n)(e.result)) ||
+      (e.k === "K.complete" && e.result === "accepted"),
+  );
+
+// Each transition kind the seed's runs reach (MemberPolicy's and MemberPeer's labels), and the quiescent outcomes; the
+// orders they reach rarely are the witnesses below.
+const MEMBER_REQUIRED = [
+  "L.add:pending",
+  "L.add:taken",
+  "L.add:refused",
+  "L.remove:silent",
+  "L.remove:Remove",
+  "L.block",
+  "L.unblock",
+  "K.deliver",
+  "K.dup",
+  "K.Accept:accepted",
+  "K.Accept:check",
+  "K.Accept:ignored",
+  "K.Reject:rejected",
+  "K.Reject:ignored",
+  "K.Delete:revoked",
+  "K.Delete:candidate-revoked",
+  "K.Delete:recorded",
+  "K.Delete:retracted",
+  "K.Delete:nothing",
+  "K.Block:blocked",
+  "K.Undo:undone",
+  "K.claim",
+  "K.fetch:match",
+  "K.complete:accepted",
+  "K.cleanup",
+  "R.FR:accepted",
+  "R.FR:refused",
+  "R.FR:invalid",
+  "R.Add:named",
+  "R.Add:unowned",
+  "R.Remove:destroyed",
+  "R.Remove:nothing",
+  "R.revoke:revoke",
+  "R.revoke:block",
+  "R.block",
+  "R.unblock",
+  "R.policy:refuses",
+  "R.Block:blocked",
+  "R.Undo:unblocked",
+  "R.cleanup",
+  "quiescent: accepted",
+  "quiescent: exception F2",
+];
+
+describe("a remote member of a local collection: Kopje against its policy and a Mastodon member (4-T9)", () => {
+  it("agrees with the policy after every step, and with the member once settled outside F1-F5", async () => {
+    const stats: Stats = {};
+    await fc.assert(
+      fc.asyncProperty(memberRunArb, async (actions) => {
+        for (const [key, n] of Object.entries((await memberRun(actions)).stats)) {
+          stats[key] = (stats[key] ?? 0) + n;
+        }
+      }),
+      runs(CASES, SEED),
+    );
+    console.log("member lifecycle coverage", JSON.stringify(stats, null, 1));
+    if (inject("fcSeed") === "") {
+      expect(MEMBER_REQUIRED.filter((key) => stats[key] === undefined)).toEqual([]);
+    }
+  }, 600_000);
+
+  it("changes nothing at a delayed Delete of A after a re-add accepted with B", async () => {
+    const w = await memberRun([...REASKED, ACCEPT_B, DELETE_A]);
+    expect(w.stats["K.Delete:nothing"]).toBe(1);
+    expect(w.policy.row).toMatchObject({ state: "accepted" });
+    expect(auth(2)(w.policy.row!.approval!)).toBe(true);
+    expect(w.stats["quiescent: accepted"]).toBe(1);
+  });
+
+  // The six orders of Delete(A), Delete(B) and Accept(B), R having withdrawn B before its Delete: each ends revoked
+  // with no membership; the two where both Deletes come first never accept B, and send no Add of it.
+  const ORDERS: [string, MemberAction[], boolean][] = [
+    ["Accept(B), Delete(A), Delete(B)", [ACCEPT_B, DELETE_A, DELETE_B], true],
+    ["Accept(B), Delete(B), Delete(A)", [ACCEPT_B, DELETE_B, DELETE_A], true],
+    ["Delete(A), Accept(B), Delete(B)", [DELETE_A, ACCEPT_B, DELETE_B], false],
+    ["Delete(B), Accept(B), Delete(A)", [DELETE_B, ACCEPT_B, DELETE_A], false],
+    ["Delete(A), Delete(B), Accept(B)", [DELETE_A, DELETE_B, ACCEPT_B], false],
+    ["Delete(B), Delete(A), Accept(B)", [DELETE_B, DELETE_A, ACCEPT_B], false],
+  ];
+  it.each(ORDERS)("ends a membership revoked in the order %s", async (_name, order, passes) => {
+    const w = await memberRun([...REASKED, { k: "revoke" }, ...order]);
+    expect(w.policy.row?.state).toBe("revoked");
+    expect(w.peer.item?.state).toBe("revoked");
+    expect(accepted(w, 2)).toBe(passes);
+    expect(w.policy.queued.some((m) => m.type === "Add" && auth(2)(m.authorization))).toBe(passes);
+  });
+
+  // R withdrew B, which its cache still serves; Kopje receives the delayed Delete(A), then Delete(B), then Accept(B). B's Delete is kept as R's retraction (A holds the item's first deletion), and the Accept
+  // ends the item revoked without a check, so the cached B never accepts it. Fails if the Accept does not read the
+  // retraction (Kopje queues a check the policy does not).
+  it("never accepts B, served from R's cache, at Delete(A), Delete(B) and then Accept(B)", async () => {
+    const w = await memberRun([...REASKED, { k: "revoke" }, DELETE_A, DELETE_B, ACCEPT_B, { k: "claim" }]);
+    expect(w.stats["K.Delete:recorded"]).toBe(1);
+    expect(w.stats["K.Delete:retracted"]).toBe(1);
+    expect(w.stats["K.Accept:revoked"]).toBe(1);
+    expect(w.stats["K.claim"]).toBeUndefined();
+    // A check of B would have matched: R's cache still serves it.
+    expect(w.peer.served(`${w.r.uri}/feature_authorizations/2`)).toBe(false);
+    expect(w.peer.fetched(`${w.r.uri}/feature_authorizations/2`, w.clock.now)).toBe(true);
+    expect(accepted(w, 2)).toBe(false);
+    expect(w.policy.row).toMatchObject({ state: "revoked", approval: null });
+  });
+
+  it("revokes at R's Delete of B after its Accept of B", async () => {
+    const w = await memberRun([...REASKED, { k: "revoke" }, ACCEPT_B, DELETE_A, DELETE_B]);
+    expect(w.stats["K.Accept:accepted"]).toBe(2);
+    expect(w.stats["K.Delete:revoked"]).toBe(1);
+    expect(w.policy.queued.at(-1)).toMatchObject({ type: "Remove" });
+  });
+
+  // A Reject between a check's claim (B fetched and served) and its completion: rejected, and the completion fenced. R
+  // refused a second copy of the request it had accepted (F3).
+  it("rejects at a Reject between a check's claim and its completion, and excuses R's copy refused (F3)", async () => {
+    const w = await memberRun([
+      ...REASKED.slice(0, -2),
+      head(true),
+      head(),
+      processes("FeatureRequest"),
+      DELETE_A,
+      ACCEPT_B,
+      { k: "claim" },
+      { k: "fetch", transient: false },
+      { k: "policy", consent: false },
+      processes("FeatureRequest"),
+      sends("Reject"),
+      { k: "complete" },
+    ]);
+    expect(w.stats["K.Accept:check"]).toBe(1);
+    expect(w.stats["K.fetch:match"]).toBe(1);
+    expect(w.stats["K.complete:fenced"]).toBe(1);
+    expect(w.policy.row).toMatchObject({ state: "rejected", candidate: null, due: null, token: null });
+    expect(w.stats["quiescent: exception F3"]).toBe(1);
+  });
+
+  // A late Accept: R's retry of its Accept after its Delete, received first, revoked the item changes nothing (an Accept
+  // changes only a pending item).
+  it("ignores a retried Accept after the Delete received before it revoked the item", async () => {
+    const w = await memberRun([
+      { k: "add" },
+      head(),
+      processes("FeatureRequest"),
+      { k: "revoke" },
+      sends("Delete", 1),
+      { k: "send", i: (m) => m.type === "Accept", dup: true },
+      sends("Accept", 1),
+    ]);
+    expect(w.stats["K.Delete:recorded"]).toBe(1);
+    expect(w.stats["K.Accept:revoked"]).toBe(1);
+    expect(w.stats["K.Accept:ignored"]).toBe(1);
+    expect(w.policy.row).toMatchObject({ state: "revoked", approval: null });
+  });
+
+  // F1: R's server processes the item's Remove before its Add, which then names R's item.
+  it("excuses R's item named by an Add that its Remove overtook (F1)", async () => {
+    const w = await memberRun([
+      { k: "add" },
+      head(),
+      processes("FeatureRequest"),
+      sends("Accept", 1),
+      { k: "remove" },
+      head(),
+      head(),
+      processes("Remove"),
+      processes("Add"),
+    ]);
+    expect(w.policy.row).toBeUndefined();
+    expect(w.peer.item).toMatchObject({ state: "accepted" });
+    expect(w.stats["quiescent: exception F1"]).toBe(1);
+  });
+
+  // F5: a late copy of the first membership's Add names R's item of the second, whose Remove of the first then
+  // destroys it.
+  it("excuses R's item named by a late copy of an earlier membership's Add (F5)", async () => {
+    const w = await memberRun([
+      { k: "add" },
+      head(),
+      processes("FeatureRequest"),
+      sends("Accept", 1),
+      head(true),
+      head(),
+      processes("Add"),
+      { k: "revoke" },
+      sends("Delete", 1),
+      { k: "remove" },
+      { k: "add" },
+      head(),
+      head(),
+      head(),
+      processes("Remove"),
+      processes("FeatureRequest"),
+      ACCEPT_B,
+      processes("Add"),
+    ]);
+    expect(w.stats["R.Add:named"]).toBe(2);
+    expect(w.stats["quiescent: exception F5"]).toBe(1);
+  });
+
+  // F4: each of the check's five claims ran out, and the sixth ended it while R serves the candidate.
+  it("excuses a check whose five claims ran out (F4)", async () => {
+    const lapse: MemberAction[] = [{ k: "claim" }, { k: "advance", day: false }];
+    const w = await memberRun([...REASKED, DELETE_A, ACCEPT_B, ...Array.from({ length: 5 }, () => lapse).flat()]);
+    expect(w.stats["K.lease-expiry"]).toBe(5);
+    expect(w.stats["K.claim:gave-up"]).toBe(1);
+    expect(w.policy.row).toMatchObject({ state: "pending", attempts: 5, due: null });
+    expect(w.stats["quiescent: exception F4"]).toBe(1);
   });
 });

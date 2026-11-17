@@ -568,6 +568,14 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
     count: 1,
     reason: "a number constant (the longest stored inbox the clear on receipt reads), naming no column",
   },
+  'src/domain/remote-actors.ts interpolation collectionSql("raw", "followers")': {
+    count: 1,
+    reason: COLLECTION,
+  },
+  'src/domain/remote-actors.ts interpolation collectionSql("raw", "following")': {
+    count: 1,
+    reason: COLLECTION,
+  },
   'src/domain/remote-status-reads.ts interpolation collectionSql("raw", "followers")': {
     count: 1,
     reason: COLLECTION,
@@ -710,16 +718,22 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   // The actor documents' row (ACTOR_ROW_COLUMN_MAP), which actors.ts and actor-update.ts select.
   "src/domain/actor-row.ts column a.uri": { count: 1, reason: ACTIVITYPUB },
   "src/domain/actors.ts accounts.uri": { count: 1, reason: ACTIVITYPUB },
-  // A local collection's FEP-7aa9 documents and activities: its owner's and members' ids, sent whole as the actor
-  // documents send theirs.
+  // A local collection's FEP-7aa9 documents and activities (its FeatureRequest included): its owner's and members' ids,
+  // sent whole as the actor documents send theirs.
   "src/domain/collection-documents.ts accounts.uri": {
-    count: 12,
+    count: 14,
     reason:
       "an ActivityPub document or activity of a local collection (its owner's and members' ids), not an API answer",
   },
   "src/domain/blocks.ts accounts.uri": { count: 2, reason: IDENTITY },
-  // A check's member, compared with the interactionTarget of the authorization it fetches.
-  "src/domain/collection-checks.ts accounts.uri": { count: 1, reason: IDENTITY },
+  // A check's member, compared with the interactionTarget of the authorization it fetches; and a local collection's
+  // owner, whose uri the collection's id it compares with the interactingObject is built from (checkedCollection).
+  "src/domain/collection-checks.ts accounts.uri": { count: 2, reason: IDENTITY },
+  // A local owner's uri, which a remote member's FeatureRequest id is built from and stored as (insertItem).
+  "src/domain/collections.ts accounts.uri": { count: 1, reason: IDENTITY },
+  // A local collection's owner, whose uri the collection's id is built from, compared with a member's Delete's
+  // interactingObject (memberRowIn).
+  "src/domain/remote-featured-collections.ts accounts.uri": { count: 1, reason: IDENTITY },
   // The fourth: a staged retraction compares a uri past TARGET_CHUNK_BYTES with the activity's named ones in SQL; the
   // fifth and sixth: a held Reject's prefix, the local actor's uri compared with its id by bytes (HELD_REJECT); the
   // seventh: a signed Delete's staged addressing compared with the signer's followers collection (stagedAddressing);
@@ -765,6 +779,10 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/actor-row.ts column a.username": { count: 1, reason: ACTIVITYPUB },
   "src/domain/actors.ts accounts.username": { count: 6, reason: LOCAL },
   "src/domain/admin-accounts.ts accounts.username": { count: 2, reason: LOCAL },
+  "src/domain/collections.ts interpolation COLLECTION_ITEM_STATES.accepted": {
+    count: 1,
+    reason: "a number constant (the accepted state, ANNOUNCED_SQL), naming no column",
+  },
   "src/domain/collections.ts accounts.username": {
     count: 1,
     reason: `the owner of a local collection whose document an ActivityPub client asks for (${LOCAL})`,

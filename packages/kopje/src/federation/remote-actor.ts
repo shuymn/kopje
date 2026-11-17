@@ -3,7 +3,7 @@ import { type Actor, getActorTypeName, isActor, lookupObject, Multikey } from "@
 
 import { collectionValue } from "../domain/collection-requests";
 import { ACTOR_URI_LIMIT } from "../domain/profile-bounds";
-import type { Handle, RemoteActorInput } from "../domain/remote-actors";
+import type { Handle, RemoteActorInput, RemoteFeaturePolicyInput } from "../domain/remote-actors";
 import { hostDomain, normalizeDomain } from "../platform/domain-name";
 import { boundedHref, httpUrl } from "../platform/http-url";
 import { DOMAIN_BYTES, isRemoteUsername, isStorableActorId, REMOTE_USERNAME_LIMIT } from "../platform/identity-bounds";
@@ -16,6 +16,7 @@ import { MAX_PUBLIC_KEYS, readableKeys } from "./key-entries";
 import { remoteDescription } from "./lang-string";
 import { isTransientLoadError, loadFailureOf } from "./loader";
 import { emojiCandidates } from "./remote-emoji";
+import { MAX_QUOTE_POLICY_ENTRIES } from "./remote-status";
 
 // Remote actors as Kopje stores them: fetched through the safe loader (NET-1, ID-8), parsed by Fedify's lookupObject,
 // which checks the parsed id against the document's origin (ID-2), and reduced to bounded, safe columns.
@@ -466,7 +467,36 @@ export async function remoteActorInput(actor: Actor, document: unknown): Promise
     ),
     raw: JSON.stringify(document),
     movedTo: storableActorId(actor.successorId),
+    featurePolicy: featurePolicyOf(json),
   };
+}
+
+// ProcessAccountService#feature_approval_policy's input (process_account_service.rb:581-583): the document's
+// interactionPolicy.canFeature as ActivityPub::Parser::InteractionPolicyParser reads each of its halves, Ruby's
+// Array(automaticApproval) and Array(manualApproval): each string as listed, whatever its length, as Mastodon compares
+// it, and null for anything else, which Mastodon reads as unsupported_policy (an object's members are its pairs, each
+// such an entry; an empty object none). At most MAX_QUOTE_POLICY_ENTRIES are read of each half (RES-1). null when
+// canFeature is absent or is no object: Mastodon stores 0 for a blank one (`@json.blank?`, an empty object included,
+// which reads as two empty halves here) and fails the account's processing on a value it cannot dig into; Kopje stores
+// 0 (no one may feature the account). The Store turns the halves into the bitmap with the account's collections
+// (remote-actors.ts remoteFeaturePolicy).
+function featurePolicyOf(json: Record<string, unknown>): RemoteFeaturePolicyInput | null {
+  const policy = isObject(json.interactionPolicy) ? json.interactionPolicy.canFeature : undefined;
+  if (!isObject(policy)) {
+    return null;
+  }
+  const half = (value: unknown): (string | null)[] => {
+    const entries =
+      value === undefined || value === null
+        ? []
+        : Array.isArray(value)
+          ? value
+          : isObject(value)
+            ? Object.keys(value).map(() => null)
+            : [value];
+    return entries.slice(0, MAX_QUOTE_POLICY_ENTRIES).map((entry) => (typeof entry === "string" ? entry : null));
+  };
+  return { automatic: half(policy.automaticApproval), manual: half(policy.manualApproval) };
 }
 
 // An actor id the document names (movedTo), when Kopje stores such an id.

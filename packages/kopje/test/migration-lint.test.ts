@@ -53,6 +53,7 @@ describe("migration lint", () => {
       "0110_scheduled_params",
       "0111_account_urls",
       "0114_untrusted_counts",
+      "0115_feature_policies",
     ]);
     for (const m of DECLARED) {
       expect(unchangedProblem(m.sql), m.name).toBeNull();

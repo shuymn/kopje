@@ -823,10 +823,14 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
 - Creating an 11th collection answers Mastodon's 422 with the message "Collections are too many, no more than 10 are
   allowed", where Mastodon's message is a missing-translation text (it has no English text for that error). Accepted,
   2026-11-16.
-- Only local accounts can be featured in a local collection yet: adding a remote account answers 403, as one that
-  refuses, and its `feature_approval` is `[]`, `[]` and `missing`, Mastodon's answer for a remote account whose
-  `canFeature` it has not read. Clients offer no add action for `current_user: missing` (Phanpy hides it), so a remote
-  account looks like one that cannot be featured. Tracked by #1589.
+- An `Accept` of a feature request changes only a pending membership; a late one after a removal, rejection or
+  revocation is ignored, where Mastodon marks the item accepted whatever its state. A member's `Delete` of its
+  authorization that arrives before the `Accept` naming it is kept for 30 days, as every retraction, and that `Accept`
+  or a check of that authorization then ends the membership as revoked, where Mastodon ignores the `Delete` and
+  accepts; an `Accept` that follows a deletion of another
+  authorization waits for a check of its own against the member's server before the membership is shown. Kopje's
+  `FeatureRequest` names the owner as its `actor`, where Mastodon's carries none, and the removal of a remote member
+  still pending sends no `Remove`, where Mastodon sends one that no server holds an item for. Accepted, 2026-11-18.
 - A local account is not featured in a remote collection yet: Kopje refuses the `FeatureRequest` a Mastodon owner sends
   (it carries no `actor`) and answers none, so that owner's server keeps the item pending, which only the owner sees.
   The account's `GET /api/v1/accounts/:id/in_collections` lists no remote collection, it gets no `added_to_collection`
@@ -894,8 +898,10 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   listing a member that withdrew and Kopje receives neither, Kopje keeps showing the member. Accepted, 2026-11-17.
 - A member's `Delete` of its feature authorization revokes its membership of a remote collection too, when it names
   the membership's current authorization (verified, or the one the owner lists while unchecked), including the copy
-  the collection's owner relays with the member's signature; Mastodon applies it to local collections only. Accepted,
-  2026-11-17.
+  the collection's owner relays with the member's signature; Mastodon applies it to local collections only. It is kept
+  for 30 days, so the check of a membership the owner lists with that authorization later (for the first time, or
+  again after changing it) ends it as revoked, though the member's server may still serve the authorization from its
+  cache. Accepted, 2026-11-17.
 
 Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model WEB-6):
 

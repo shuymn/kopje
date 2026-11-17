@@ -10,6 +10,7 @@ import {
   documentRevisionPastBoundSql,
   EMOJI_COLUMNS,
   emojisPastBoundSql,
+  featurePolicyPastBoundSql,
   filterTextUnitsPastBoundSql,
   indexablePastBoundSql,
   INSTANCE_SETTING_BOUNDS,
@@ -474,6 +475,14 @@ END;`,
     "untrusted_reblogs_count",
     untrustedCountPastBoundSql("NEW.untrusted_reblogs_count"),
     "statuses: untrusted_reblogs_count past its stored bound",
+  ),
+  // 0115_feature_policies: a remote account's stored canFeature, 0 on a local account.
+  ...boundTriggers(
+    "accounts_feature_policy",
+    "accounts",
+    "feature_policy, domain",
+    featurePolicyPastBoundSql("NEW"),
+    "accounts: feature_policy past its stored bound",
   ),
 ];
 

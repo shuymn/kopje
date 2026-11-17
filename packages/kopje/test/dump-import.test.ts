@@ -720,22 +720,22 @@ describe("dump", () => {
       ).toEqual({ a: avatar, h: header, f: 0, m: 1, r: 0 });
     });
     // A dump from elsewhere, as its text could hold it: a description of 151 characters, one of malformed bytes past
-    // the characters, a setting of 2, and NULL for each.
-    const values = `'${avatar}','${header}',0,1,0)`;
+    // the characters, a setting of 2, and NULL for each; and the local account's feature policy (0115, the last
+    // column) not 0.
+    const values = `'${avatar}','${header}',0,1,0,0)`;
     expect(text.split(values)).toHaveLength(2);
-    for (const past of [
-      `'${avatar}','${header}h',0,1,0)`,
-      `'${avatar}',CAST(X'${"4180".repeat(76)}' AS TEXT),0,1,0)`,
-      `'${avatar}','${header}',0,2,0)`,
-      `NULL,'${header}',0,1,0)`,
-      `'${avatar}','${header}',0,1,NULL)`,
-    ]) {
+    for (const [past, refusal] of [
+      [`'${avatar}','${header}h',0,1,0,0)`, /accounts: profile setting past its stored bound/],
+      [`'${avatar}',CAST(X'${"4180".repeat(76)}' AS TEXT),0,1,0,0)`, /accounts: profile setting past its stored bound/],
+      [`'${avatar}','${header}',0,2,0,0)`, /accounts: profile setting past its stored bound/],
+      [`NULL,'${header}',0,1,0,0)`, /accounts: profile setting past its stored bound/],
+      [`'${avatar}','${header}',0,1,NULL,0)`, /accounts: profile setting past its stored bound/],
+      [`'${avatar}','${header}',0,1,0,2)`, /accounts: feature_policy past its stored bound/],
+    ] as const) {
       const dump = text.replace(values, past);
       const target = await migratedStore();
       await copyConfig(source, target);
-      expect(String(await rejectionOf(importViaRpc(target, dump))), past).toMatch(
-        /accounts: profile setting past its stored bound/,
-      );
+      expect(String(await rejectionOf(importViaRpc(target, dump))), past).toMatch(refusal);
     }
   }, 120_000);
 

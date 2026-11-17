@@ -14,6 +14,7 @@ import { checkCollectionItems } from "../src/federation/collection-checks";
 import { REQUEST_MAX_BYTES, REQUEST_MAX_FETCHES } from "../src/federation/loader";
 import { sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
+import { mastodonFeatureDelete } from "./author-proof-helpers";
 import {
   ACCEPTED,
   cavageRefused,
@@ -34,6 +35,7 @@ import {
   seededMembers,
   serveAuthorization,
   serveCollections,
+  storedMember,
   storedOwner,
   syncAll,
 } from "./featured-collection-helpers";
@@ -203,6 +205,88 @@ describe("the check of an item", () => {
     await checkRound(t);
     expect(t.web.fetched).toContain(entry.featureAuthorization);
     expect(await items(t)).toMatchObject([{ state: REVOKED, approval_uri: null }]);
+  });
+
+  // The member's Delete reached Kopje before the owner listed its authorization (the two servers' deliveries are
+  // independent), so it revoked no row and is kept as the member's retraction (ID-7); the check of the listed item
+  // then revokes it, though the member's server still serves the authorization from its cache. Fails if the check's
+  // completion does not read the retraction (the item accepted).
+  // Once the retraction expired (ID-7's 30 days) the check decides alone. Fails if the completion reads an expired
+  // retraction (the second item revoked).
+  it("revokes an item whose authorization its member deleted before the owner listed it, though still served", async () => {
+    for (const expired of [false, true]) {
+      const t = await setup();
+      const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
+      const member = await storedMember(t, "member");
+      const entry = item(owner, member);
+      const listed = collection(owner, [entry]);
+      serveAuthorization(t.web, entry, listed.id);
+      expect(await t.post(member, mastodonFeatureDelete(member, entry.featureAuthorization, listed.id))).toBe(202);
+      expect(await items(t)).toEqual([]);
+      serveCollections(t.web, owner, [[listed]]);
+      await storedOwner(t, owner);
+      await syncAll(t);
+      expect(await items(t)).toMatchObject([{ state: PENDING, candidate_approval_uri: entry.featureAuthorization }]);
+      if (expired) {
+        // Expired, and not yet swept (no inbound activity runs before the check).
+        await sql(t.store, "UPDATE inbound_retractions SET expires_at = ? WHERE actor_uri = ?", NOW, member.uri);
+      }
+      expect(await checkRound(t)).toBe(false);
+      expect(await sql(t.store, "SELECT 1 FROM inbound_retractions WHERE actor_uri = ?", member.uri)).toHaveLength(1);
+      expect(t.web.fetched).toContain(entry.featureAuthorization);
+      expect(await items(t), String(expired)).toMatchObject([
+        expired
+          ? { state: ACCEPTED, approval_uri: entry.featureAuthorization }
+          : { state: REVOKED, approval_uri: null, check_due_at: null, check_token: null },
+      ]);
+    }
+  });
+
+  // The member's Delete of R revokes the item (verified with R, or with R its unchecked candidate), and is kept as the
+  // member's retraction (ID-7). The owner then changes the item's authorization to S and back to R, each change a
+  // revision checked anew, within the 30 seconds the member's server serves the withdrawn R from its cache (Mastodon
+  // 4.7.5's FeatureAuthorizationsController#show, public), so the check's fetch finds R. Fails if a revoking Delete is
+  // not kept as the member's retraction (R accepted again).
+  it("keeps revoked an item whose owner lists its deleted authorization again, though still served", async () => {
+    for (const verified of [true, false]) {
+      const t = await setup();
+      const owner = await featuredOwner(t.web, "owner", COLLECTIONS_ONLY);
+      const member = await storedMember(t, "member");
+      const entry = item(owner, member);
+      const r = entry.featureAuthorization;
+      const listed = collection(owner, [entry]);
+      serveAuthorization(t.web, entry, listed.id);
+      serveCollections(t.web, owner, [[listed]]);
+      const ownerId = await storedOwner(t, owner);
+      await syncAll(t);
+      if (verified) {
+        expect(await checkRound(t)).toBe(false);
+      }
+      expect(await items(t)).toMatchObject([
+        verified
+          ? { state: ACCEPTED, approval_uri: r }
+          : { state: PENDING, approval_uri: null, candidate_approval_uri: r },
+      ]);
+      expect(await t.post(member, mastodonFeatureDelete(member, r, listed.id))).toBe(202);
+      expect(await items(t)).toMatchObject([{ state: REVOKED }]);
+      expect(await sql(t.store, "SELECT target_uri FROM inbound_retractions WHERE actor_uri = ?", member.uri)).toEqual([
+        { target_uri: r },
+      ]);
+      for (const authorization of [`${r}/s`, r]) {
+        serveCollections(t.web, owner, [
+          [{ ...listed, orderedItems: [{ ...entry, featureAuthorization: authorization }] }],
+        ]);
+        await requestSync(t, ownerId);
+        await syncAll(t);
+        expect(await items(t)).toMatchObject([{ state: PENDING, candidate_approval_uri: authorization }]);
+      }
+      const fetched = fetchesOf(t.web, r);
+      expect(await checkRound(t)).toBe(false);
+      expect(fetchesOf(t.web, r), String(verified)).toBe(fetched + 1);
+      expect(await items(t), String(verified)).toMatchObject([
+        { state: REVOKED, approval_uri: null, candidate_approval_uri: r, check_due_at: null, check_token: null },
+      ]);
+    }
   });
 
   it("leaves pending, without an error, a match whose authorization the member holds in another row", async () => {

@@ -5,8 +5,21 @@ import { sameOrigin } from "../platform/http-url";
 import { DOMAIN_BYTES, REMOTE_USERNAME_LIMIT } from "../platform/identity-bounds";
 import { ACCOUNT_EMOJIS_BYTES, cutSql, isoTimeSql, nextDocumentRevisionSql } from "../platform/stored-bounds";
 import { presentedRemoteFields } from "./accounts";
-import { availableSql, deletingSql, domainCoveredSql, individuallySuspendedSql } from "./audience";
-import { actorCollections, requestCollectionSync } from "./collection-requests";
+import {
+  availableSql,
+  deletingSql,
+  domainCoveredSql,
+  FEATURE_POLICY_FLAGS,
+  individuallySuspendedSql,
+  PUBLIC_COLLECTION,
+} from "./audience";
+import {
+  actorCollections,
+  collectionRead,
+  collectionSql,
+  requestCollectionSync,
+  UNREADABLE,
+} from "./collection-requests";
 import { type EmojiCandidate, emojiSnapshot } from "./custom-emojis";
 import { insertWithFreshId, remoteId } from "./ids";
 import { hostCovered } from "./instance-domain-blocks";
@@ -72,7 +85,14 @@ export type RemoteActorInput = {
   raw: string;
   // The actor id the document's movedTo names (Fedify's successorId), when Kopje stores such an id; else null.
   movedTo: string | null;
+  // interactionPolicy.canFeature's halves as the Worker read them (federation/remote-actor.ts featurePolicyOf), or null
+  // when the document states none: the stored policy is 0. Undefined from an earlier build: the stored policy is kept.
+  featurePolicy?: RemoteFeaturePolicyInput | null;
 };
+
+// An actor's canFeature as the Worker read it: the strings each half lists, as listed ("" included, any length), and
+// null for an entry that is not one.
+export type RemoteFeaturePolicyInput = { automatic: (string | null)[]; manual: (string | null)[] };
 
 // What the actor's own Update(Person) gives from the document it embeds (ID-1): everything but its keys and inboxes,
 // which only a fetched document gives, so that no embedded document can pass them.
@@ -475,6 +495,15 @@ function storeActor(
     syncProfileFiles(db, row.id, { avatar: actor.avatarUrl, header: actor.headerUrl }, now);
     // Its custom emoji to cache, from the snapshot just stored (remote-media.ts).
     noteEmojiSnapshot(db, emojis, domain, now);
+    // Its feature policy, set by every store (process_account_service.rb:232), with the collections the document just
+    // stored names; a profile from an earlier build, which read none, keeps the stored one.
+    if (actor.featurePolicy !== undefined) {
+      db.run(
+        "UPDATE accounts SET feature_policy = ?2 WHERE id = ?1 AND domain IS NOT NULL",
+        row.id,
+        actor.featurePolicy === null ? 0 : remoteFeaturePolicy(db, { id: row.id, uri: actor.uri }, actor.featurePolicy),
+      );
+    }
   }
   if (row !== undefined && protocol !== null) {
     // The document lists the actor's current keys; keys it no longer lists are not trusted any more.
@@ -500,6 +529,56 @@ function storeActor(
   const collections = actorCollections(actor.raw);
   const named = Object.values(collections).some((url) => url !== null);
   return { ...row, syncWaiting: named && requestCollectionSync(db, row.id, now), frozen: false };
+}
+
+// ActivityPub::Parser::InteractionPolicyParser#bitmap (interaction_policy_parser.rb:9-40) of the stored remote
+// account's canFeature halves (audience.ts FEATURE_POLICY_FLAGS; the automatic half in the high 16 bits). In each half,
+// the entries once each (uniq!), then removed as Mastodon removes them: the first public spelling listed of as:Public,
+// Public and the full IRI in that order (one only: Mastodon's `||` stops at the first it deletes, so a second spelling
+// is left over), then the account's followers and its following collections as its stored document names them ('' for
+// none, as Mastodon stores it, which a listed "" matches), then the account itself; anything left over adds
+// unsupported_policy, and a half that adds no flag but held the account itself is `disabled`. A collection Kopje cannot
+// read as Mastodon stores it (collection-requests.ts UNREADABLE) makes every entry but a public one and the account
+// itself add nothing, from the first collection it cannot read on: Mastodon may store that collection as the very
+// string, so neither a later flag nor unsupported_policy is known to be Mastodon's, and adding nothing grants no one
+// more than Mastodon does.
+function remoteFeaturePolicy(db: Db, account: { id: string; uri: string }, policy: RemoteFeaturePolicyInput): number {
+  const row = db.first<{ followers: string | null; following: string | null }>(
+    `SELECT ${collectionSql("raw", "followers")} AS followers, ${collectionSql("raw", "following")} AS following
+		FROM accounts WHERE id = ?`,
+    account.id,
+  );
+  const collections = [collectionRead(row?.followers ?? null), collectionRead(row?.following ?? null)] as const;
+  const flags = (entries: readonly (string | null)[]): number => {
+    const left = [...new Set(entries)];
+    const take = (value: string) => {
+      const at = left.indexOf(value);
+      if (at >= 0) {
+        left.splice(at, 1);
+      }
+      return at >= 0;
+    };
+    let half = 0;
+    if (take("as:Public") || take("Public") || take(PUBLIC_COLLECTION)) {
+      half |= FEATURE_POLICY_FLAGS.public;
+    }
+    let readable = true;
+    for (const [n, collection] of collections.entries()) {
+      if (collection === UNREADABLE) {
+        readable = false;
+        break;
+      }
+      if (take(collection)) {
+        half |= n === 0 ? FEATURE_POLICY_FLAGS.followers : FEATURE_POLICY_FLAGS.following;
+      }
+    }
+    const itself = take(account.uri);
+    if (readable && left.length > 0) {
+      half |= FEATURE_POLICY_FLAGS.unsupported_policy;
+    }
+    return half === 0 && itself ? FEATURE_POLICY_FLAGS.disabled : half;
+  };
+  return ((flags(policy.automatic) << 16) | flags(policy.manual)) >>> 0;
 }
 
 // Whether the remote account `id` is fetched again before a status Kopje fetched by it is stored (ACCOUNT_STALE_MS,
