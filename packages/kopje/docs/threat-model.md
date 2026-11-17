@@ -187,10 +187,11 @@ against their own instance. TLS is assumed between all parties.
   after a certain stop of Mastodon's patch, as the compaction writes it where Kopje shows it writes each value as given
   (`patchedAsMastodon`). A member Kopje's readers read (an `id`, `type`, `actor` or `object`) that Kopje does not read
   as Mastodon does there, or after an array whose stop it does not tell, refuses the activity, as does an `Undo` whose
-  undone activity's type is an array, so that none of these ends by its id what Mastodon's reading leaves. Its actor
-  is still the signer's or the activity is a relay, and it ends only what its signer did or holds, or lifts its own
-  block; every other type keeps the reading as received. The owner is the actor whose document lists the key, by id
-  and key material, and the key names no other owner. An actor's keys are what its
+  undone activity's type is an array. An `Undo` that is applied, read so or as received, still ends the follow, block
+  or like its undone activity's id names whatever that activity's `object` is, as an unsigned one does (#1773). Its
+  actor is still the signer's or the activity is a relay, and it ends only what its signer did or holds, or lifts its
+  own block; every other type keeps the reading as received. The owner is the actor whose document lists the key, by
+  id and key material, and the key names no other owner. An actor's keys are what its
   document embeds among its first `MAX_PUBLIC_KEYS` (10) entries of `publicKey` and of `assertionMethod` (FEP-521a
   `Multikey`), RSA or Ed25519, each with an id on its origin (`ownKeys`); a key listed by reference in `assertionMethod`
   is not fetched, and a key the signature's verification resolved joins them only within the same first ten
