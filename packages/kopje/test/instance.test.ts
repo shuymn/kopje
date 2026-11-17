@@ -63,7 +63,7 @@ const ACCOUNT_LIMITS = {
   profile_field_value_limit: MAX_FIELD_VALUE,
 };
 
-// Contract: the declared version is 4.5.0 and api_versions.mastodon is 9 (the reasoning is above MASTODON_VERSION in
+// Contract: the declared version is 4.6.1 and api_versions.mastodon is 11 (the reasoning is above MASTODON_VERSION in
 // src/mastodon/instance.ts). Changing these payloads changes what clients do; update this test only together with that
 // decision.
 describe("instance contract", () => {
@@ -78,7 +78,7 @@ describe("instance contract", () => {
       short_description: "A test instance",
       description: "A test instance",
       email: "admin@kopje.test",
-      version: "4.5.0",
+      version: "4.6.1",
       urls: { streaming_api: "wss://kopje.test" },
       stats: { user_count: 1, status_count: 0, domain_count: 1 },
       thumbnail: "https://kopje.test/assets/thumbnail.jpg",
@@ -105,7 +105,7 @@ describe("instance contract", () => {
     expect(body).toEqual({
       domain: "kopje.test",
       title: "Kopje Test",
-      version: "4.5.0",
+      version: "4.6.1",
       source_url: "https://github.com/shuymn/kopje",
       description: "A test instance",
       usage: { users: { active_month: 0 } },
@@ -149,7 +149,7 @@ describe("instance contract", () => {
         min_age: null,
         url: null,
       },
-      api_versions: { mastodon: 9 },
+      api_versions: { mastodon: 11 },
       wrapstodon: null,
       contact: { email: "admin@kopje.test", account: null },
       rules: RULES,
@@ -180,9 +180,9 @@ describe("instance contract", () => {
     const h = await configured();
     const v1 = await (await h.request("/api/v1/instance")).json<Record<string, unknown>>();
     const v2 = await (await h.request("/api/v2/instance")).json<Record<string, unknown>>();
-    expect(v1.version).toBe("4.5.0");
+    expect(v1.version).toBe("4.6.1");
     expect(v2.version).toBe(v1.version);
-    expect(v2.api_versions).toEqual({ mastodon: 9 });
+    expect(v2.api_versions).toEqual({ mastodon: 11 });
     expect(v1).not.toHaveProperty("api_versions");
   });
 

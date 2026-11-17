@@ -262,15 +262,18 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   and rolling back past it needs a point-in-time restore.
 - Kopje follows the client API of Mastodon v4.7.5, its reference release, where it followed v4.5.11
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). The differences from v4.7.5 are listed there or tracked
-  by issues. `/api/v1/instance` and `/api/v2/instance` still advertise `version` 4.5.0, and `api_versions.mastodon`
-  rises only to 9 (below), since clients switch the 4.6 and 4.7 features on by them; they rise once Kopje serves those
-  features. No Store migration and no `wrangler.jsonc` change.
-- `/api/v2/instance` advertises `api_versions.mastodon` 9, where it advertised 7, so the official Android app reads
-  `/api/v1/profile` and its display settings, the iOS app writes those settings, and Phanpy edits the avatar and
-  header descriptions there. `version` stays 4.5.0, as no Mastodon release
-  advertised 8 or 9; 10 and 11 wait on remote accounts' collections
-  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "What Kopje follows"). No Store migration and no
-  `wrangler.jsonc` change.
+  by issues. What `/api/v1/instance` and `/api/v2/instance` advertise follows the features Kopje serves, since clients
+  switch features on by it (below). No Store migration and no `wrangler.jsonc` change.
+- `/api/v2/instance` advertises `api_versions.mastodon` 11, where it advertised 7, and both instance endpoints
+  `version` 4.6.1, the first release to advertise 11, where they said 4.5.0. From 8 and 9 the official Android app
+  reads `/api/v1/profile` and its display settings, the iOS app writes those settings, and Phanpy edits the avatar and
+  header descriptions there. From 10 clients show collections: the official Android and iOS apps, Ice Cubes and Phanpy
+  list an account's collections, a remote account's included, the Android app and Phanpy open them and let a member
+  revoke its item, Ice Cubes and Phanpy take the two collection notification types, and Phanpy finds a collection by
+  its URL. From 11 Tuba edits the profile's display settings through `/api/v1/profile`. A remote account cannot be
+  featured yet, a local account is not featured in a remote collection, and statuses carry no `tagged_collections`
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "What Kopje follows" and "Collections"). No Store
+  migration and no `wrangler.jsonc` change.
 - `GET /api/v1/annual_reports/:id` takes a token with `read:accounts`, as Mastodon 4.7.5 does; it asked for
   `write:accounts`.
 - A mention that a remote server tags but leaves out of the status's audience (Mastodon 4.6 and later do so for
