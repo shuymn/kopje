@@ -611,10 +611,12 @@ export function offsetParam(p: Params): number {
 }
 
 // `limit` as Api::BaseController#limit_param reads it: `fallback` when absent or nil (`?limit` without `=`, a JSON
-// null), else the absolute value of its to_i, at most `max`.
-export function limitParam(p: Params, fallback: number, max: number): number {
+// null), else the absolute value of its to_i, at least `minimum` and at most `max`.
+export function limitParam(p: Params, fallback: number, max: number, minimum = 0): number {
   const limit = p.integer("limit");
-  return limit === undefined || p.sentNull("limit") ? fallback : Math.min(Math.abs(rubyToI(limit)), max);
+  return limit === undefined || p.sentNull("limit")
+    ? fallback
+    : Math.min(Math.max(Math.abs(rubyToI(limit)), minimum), max);
 }
 
 // A sent parameter as Rails casts it to a boolean (railsBoolean): blank is absent.
