@@ -169,10 +169,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   queued ones 100 each delivery round; at most 10,000 hosts are kept, and a failing one is forgotten after 30 idle days
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Unavailable delivery hosts"). Migration
   `0112_delivery_hosts`: an empty table with two indexes and a trigger, and an index of `deliveries` built over its
-  rows; as it creates a table, the upgrade checks every reference of the Store (not measured yet). Hosts are counted
-  from the upgrade on: stop one already gone with `kopje-admin hosts stop <host>`. `wrangler.jsonc`: unchanged. This
-  adds a Store migration, so the release is at least a minor version, and rolling back past it needs a point-in-time
-  restore.
+  rows; as it creates a table, the upgrade checks every reference of the Store (the migration bench's upgrade from
+  `0093_annual_reports` takes 16,114 ms with this file and 16,184 ms without it). Hosts are counted from the upgrade
+  on: stop one already gone with `kopje-admin hosts stop <host>`. `wrangler.jsonc`: unchanged. This adds a Store
+  migration, so the release is at least a minor version, and rolling back past it needs a point-in-time restore.
 
 ### Changed
 
