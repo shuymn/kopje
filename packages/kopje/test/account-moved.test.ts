@@ -240,11 +240,16 @@ describe("the nested account at its caps (RES-2)", () => {
     expect(nestedUri.uri).toBe("");
     await move(source, past);
     const nested = (await shown(source)).moved!;
+    // Its URL past the bound, it shows its actor id (#1734: Mastodon stores `url || @uri`).
     expect(nested).toMatchObject({
-      url: `https://remote.example/@u${past}`,
+      url: `https://remote.example/users/u${past}`,
       avatar: `${ORIGIN}/assets/avatar.jpg`,
       header: `${ORIGIN}/assets/header.jpg`,
     });
+    // Its actor id past the bound too (read as ''), this instance's page of the account.
+    const both = await account({ uri: `${fitting.uri}uu`, url: `${fitting.url}u` });
+    await move(source, both);
+    expect((await shown(source)).moved).toMatchObject({ uri: "", url: `${ORIGIN}/@u${both}@remote.example` });
     // The full account shows each, within PROFILE_URL_LIMIT.
     expect(await shown(past)).toMatchObject({ url: `${fitting.url}u`, avatar: `${fitting.avatar_url}u` });
     for (const value of [nested.uri, nested.url, nested.avatar, nested.header, nestedUri.uri]) {

@@ -4,7 +4,7 @@ import { boundedHref } from "../platform/http-url";
 import { DOMAIN_BYTES } from "../platform/identity-bounds";
 import { byteCut, PROFILE_URL_LIMIT } from "../platform/stored-bounds";
 import { escapeHtml } from "./plain-text";
-import { USERNAME_LIMIT, usernameSql } from "./profile-bounds";
+import { actorUriSql, USERNAME_LIMIT, usernameSql } from "./profile-bounds";
 
 // A notification's `fallback` for a client that does not support its type (Mastodon 4.6's NotificationFallbackConcern,
 // app/serializers/concerns/notification_fallback_concern.rb): with `supported_types` sent, a notification or group of
@@ -47,19 +47,22 @@ export function fallbackSet(types: readonly string[] | undefined): ReadonlySet<s
 }
 
 // An account as a fallback names it: its stored username and domain within their bounds (the trends pattern), whether
-// it is local, and its stored url as text (within PROFILE_URL_LIMIT as stored, migration 0048_stored_bounds).
+// it is local, and its stored url as text (within PROFILE_URL_LIMIT as stored, migration 0048_stored_bounds), or its
+// actor id within ACTOR_URI_LIMIT when it stores none, as Mastodon stores `url || @uri` (process_account_service.rb:228).
 type AccountRow = { id: string; username: string; domain: string; local: 0 | 1; url: string | null };
 
 // An admin.report's sender (?1) and its report's target account (?2), each by its key.
 const REPORT_ACCOUNTS_SQL = `SELECT a.id, coalesce(${byteCut(usernameSql("a.username"), USERNAME_LIMIT)}, '') AS username,
 	coalesce(${byteCut("a.domain", DOMAIN_BYTES)}, '') AS domain, a.domain IS NULL AS local,
-	CASE WHEN typeof(a.url) = 'text' THEN a.url END AS url
+	CASE WHEN typeof(a.url) = 'text' THEN a.url WHEN a.url IS NULL AND a.domain IS NOT NULL
+		THEN ${actorUriSql("a.uri")} END AS url
 	FROM accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE a.id IN (?1, ?2)`;
 
-// TagManager#url_for of an account: a remote account's stored url when it is http(s) (unsupported_uri_scheme?,
-// app/helpers/json_ld_helper.rb:95-97), a local account's short_account_url; '' for none, as Mastodon's nil. Kopje
-// serializes it within PROFILE_URL_LIMIT (HTML-3, RES-2), so a url that does not parse or is past the bound once
-// serialized is none too, where Mastodon shows it as stored. accountUrl's derived URLs are not Mastodon's here.
+// TagManager#url_for of an account: a remote account's url as AccountRow reads it, when it is http(s)
+// (unsupported_uri_scheme?, app/helpers/json_ld_helper.rb:95-97), a local account's short_account_url; '' for none, as
+// Mastodon's nil. Kopje serializes it within PROFILE_URL_LIMIT (HTML-3, RES-2), so a url that does not parse or is past
+// the bound once serialized is none too, where Mastodon shows it as stored. accountUrl's derived URLs are not
+// Mastodon's here.
 function fallbackHref(account: AccountRow, origin: string): string {
   return boundedHref(account.local === 1 ? `${origin}/@${account.username}` : account.url, PROFILE_URL_LIMIT) ?? "";
 }

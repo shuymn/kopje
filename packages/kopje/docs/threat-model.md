@@ -193,7 +193,9 @@ against their own instance. TLS is assumed between all parties.
   (`test/remote-actor-images.test.ts`, "verifies a signature by an actor whose icon is not an Image", "verifies a key
   Fedify fetches itself, by an actor whose icon is not an Image", "verifies a signature by an actor whose … is
   unreadable, its key at the actor's URL", "verifies a key document served at the key's URL";
-  `test/remote-actor-view.test.ts`, "hands Fedify only the inventory"). A key id the Store does not hold fresh, or whose
+  `test/remote-actor-view.test.ts`, "hands Fedify only the inventory"; `test/remote-actor-url.test.ts`, "verifies such
+  an actor's signature by its key alone, and applies only its own document").
+  A key id the Store does not hold fresh, or whose
   stored key fails, is resolved from the document at that id, as Kopje reads an actor's keys, and its owner judged as
   for any fetched key (`storedKeys`, `verify`). An RFC 9421 signature verifies with an RSA or Ed25519 key, the algorithm
   its own; a draft-cavage signature only with an RSA key, and one that names any other key is answered as a signature
@@ -2709,9 +2711,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   2,048 bytes and 4,098 JSON bytes (`snapshotMedia` in `src/domain/statuses.ts`; `test/status-bounds.test.ts`
   ("judges a media URL as decoded, then as normalized", "judges an imported snapshot's URLs and blurhash as live
   media")). _Enforced (main)_ for remote actors at ingest (profile URL, avatar, header, inboxes) and links in remote
-  HTML: `src/federation/remote-actor.ts` (the avatar and header read from the document's JSON by `profileImage`),
-  `src/security/html.ts`; `test/inbox.test.ts` ("stores the remote actor"), `test/remote-actor-images.test.ts` ("keeps
-  only an absolute http(s) URL within its bound"), `test/html.test.ts`. _Enforced (main)_ for field links and remote
+  HTML: `src/federation/remote-actor.ts` (the profile URL, avatar and header read from the document's JSON by
+  `profileUrl` and `profileImage`), `src/security/html.ts`; `test/inbox.test.ts` ("stores the remote actor"),
+  `test/remote-actor-images.test.ts` ("keeps only an absolute http(s) URL within its bound"),
+  `test/remote-actor-url.test.ts` ("keeps Mastodon's URL for each form, or the listed difference"),
+  `test/html.test.ts`. _Enforced (main)_ for field links and remote
   statuses at ingest (the status url and attachment and preview URLs, which are dropped unless http(s));
   `src/federation/remote-status.ts`;
   `test/inbox-statuses.test.ts` ("keeps only http(s) media (HTML-1, HTML-3)", "http(s) links only").
@@ -3521,8 +3525,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   4 attachments rebuilt through the attachment bounds and '[]' over 308 KiB (four entries at their caps, at the worst
   escaping, `EDIT_MEDIA_BYTES`); a conversation presents its first 12 participants in stored order, cut in SQL. Every
   presented URL stays within its bound as serialized, derived or stored: a profile URL, avatar or header within 2,048 (a
-  profile URL falls back from the stored one to the actor's origin and to this instance's `/@acct` page, and to '' when
-  none fits), each of an attachment's four URLs within 2,048 (4,098 JSON bytes; a remote attachment's `remote_url` and
+  profile URL falls back from the stored one to a remote account's actor id, to the actor's origin and to this
+  instance's `/@acct` page, and to '' when none fits), each of an attachment's four URLs within 2,048 (4,098 JSON
+  bytes; a remote attachment's `remote_url` and
   `preview_remote_url` are its `url` and its icon, read with whether its account is remote by key through
   `sqlite_autoindex_accounts_1`), live or in an edit's snapshot. A local status's `application` reads its app's name and
   website as stored, within 240 and 2,000 bytes and only as text (`appNameSql` and `appWebsiteSql` in
@@ -4898,7 +4903,7 @@ triggers and the schema's CHECKs) allows, and each column that no CHECK bounds a
 account's three counts at 2^53−1, `presentedCountSql`, every account of the fills, nested ones included).
 `test/status-bounds.test.ts` ("the table of maxima") builds every part at its bound and measures what one read takes out
 of SQLite and what it presents, four ways: the escaped-text fill, using characters JSON escapes to six bytes; the same
-with mentioned accounts that have no stored url, so their url is derived; filled with what reads the most bytes for each
+with mentioned accounts that have no stored url, so it is their actor id; filled with what reads the most bytes for each
 bound (ASCII where the bound is in bytes, four-byte characters where it is in characters: a 10,000 character description
 reads 40,000 bytes); and the escaped fill with each poll's choices referencing the status's emoji in the fewest
 characters (37), so each poll shows all of them. Emoji arrays are at their presented bounds (12,288 and 6,144 JSON
@@ -5087,8 +5092,8 @@ rows at their widest columns); past the cap an announcement is shown escaped wit
 derived answer at three times its JSON and one rendering at a time (the budget, the one segment built past it, at
 most 310,064 bytes, and the fallback), the list's heap is at most about 20.1 MB.
 
-Mentions whose url is derived read and present less (the derived fill of `test/presented-maxima.ts`): a derived url
-within the bound is at most the stored bound, and a longer one presents as ''.
+Mentions without a stored url (the derived fill of `test/presented-maxima.ts`) read and present no more than the escaped
+fill: their url is the actor id, else a url derived from it, each within the stored bound, and '' past it.
 
 A Note shows what the Status entity shows: its hashtags and mentions are read through the same projections, its text
 and attachments as stored, and its card as a `Link` where the API shows the card (`statusFacts` in

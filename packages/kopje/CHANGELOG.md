@@ -147,6 +147,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
+- A remote account's profile URL is chosen from its actor's `url` as Mastodon 4.7.5 chooses it, before its host is
+  checked: one candidate (a string, an array's first string, or the first `Link` whose `mimeType` is blank or
+  `text/html`), kept only when it is on the actor id's host, whatever its scheme and port, and no later one once it is
+  refused; an actor whose `url` Fedify could not parse is no longer refused (#1734). A remote account without a profile
+  URL now shows its actor id as its `url`, in accounts, mentions, announcements and notification fallbacks, where Kopje
+  showed `/@username` on the actor's origin, as Mastodon does; a stored URL is replaced at the actor's next update. No
+  Store migration and no `wrangler.jsonc` change.
 - A remote actor's members are read only by their literal spelling, as Mastodon reads them: a name or bio given only
   as a language map (`nameMap`, `summaryMap`) is no longer read, so such an account shows an empty display name and
   bio, and a `movedTo` or `alsoKnownAs` spelled as a compact or full IRI no longer names a move. No Store migration and

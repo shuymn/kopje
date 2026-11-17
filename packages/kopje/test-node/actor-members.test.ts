@@ -273,6 +273,11 @@ describe("the members Fedify is handed (#1709)", () => {
           "function f(actor: Actor) { return actor.published; }",
           `${INBOUND} published: reads published, which FEDIFY_MEMBERS lacks`,
         ],
+        // #1734: url is read from the JSON (remote-actor.ts profileUrl), never from Fedify's object.
+        "a read of url": [
+          "function f(actor: Actor) { return actor.url; }",
+          `${INBOUND} url: reads url, which FEDIFY_MEMBERS lacks`,
+        ],
         "an alias": [
           "function f(actor: Actor) { const alias = actor; const again = alias; return again.published; }",
           `${INBOUND} published: reads published, which FEDIFY_MEMBERS lacks`,

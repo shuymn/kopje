@@ -47,6 +47,7 @@ import { cardEligibleSql, cardPublicSql } from "./audience";
 import { linkCardImage } from "./card-images";
 import { NEW_GENERATION } from "./ids";
 import { writeOperation } from "./operation";
+import { actorUriSql } from "./profile-bounds";
 import { parseStatusText } from "./status-text";
 
 // Status cards (Mastodon's FetchLinkCardService and LinkCrawlWorker, app/services/fetch_link_card_service.rb, v4.5.11):
@@ -135,13 +136,14 @@ function boundedCandidate(value: unknown): CardCandidate | null {
 }
 
 // Whether `raw` equals, by bytes, the URL of an account the status ?1 mentions, silent mentions included (Mastodon's
-// mention_link?, :97-101, url_for: a remote account's url, a local one's https://<domain>/@<username>).
+// mention_link?, :97-101, url_for: a remote account's url, its actor id when it stored none, as Mastodon stores
+// `url || @uri`; a local one's https://<domain>/@<username>).
 function mentionLink(db: Db, statusId: string, raw: string, domain: string): boolean {
   return (
     db.first(
       `SELECT 1 AS x FROM status_mentions m CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = m.account_id
 			WHERE m.status_id = ?1 AND CAST(CASE WHEN a.domain IS NULL THEN 'https://' || ?3 || '/@' || a.username
-				ELSE ${profileUrlSql("a.url")} END AS BLOB) = CAST(?2 AS BLOB)
+				WHEN a.url IS NULL THEN ${actorUriSql("a.uri")} ELSE ${profileUrlSql("a.url")} END AS BLOB) = CAST(?2 AS BLOB)
 			LIMIT 1`,
       statusId,
       raw,

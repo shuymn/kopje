@@ -302,12 +302,13 @@ describe("one account has a known size (RES-2)", () => {
     expect(Math.max(...sizes)).toBeLessThan(REMOTE_BIO_BYTES / 2);
   });
 
-  it("shows a mention with no stored URL by its derived URL, in a status and in a composed one", async () => {
+  // #1734: as Mastodon stores `url || @uri`, an account with no stored URL is linked by its actor id.
+  it("shows a mention with no stored URL by its actor id, in a status and in a composed one", async () => {
     const h = await community(["alice"]);
     const carol = await remoteAccount(h.store, "carol");
     await sql(h.store, "UPDATE accounts SET url = NULL WHERE id = ?", carol);
-    const derived = "https://remote.example/@carol";
-    // Composed: the mention links the derived URL.
+    const derived = "https://remote.example/users/carol";
+    // Composed: the mention links the actor id.
     const status = await post(h, h.users.alice, { status: "@carol@remote.example hi" });
     expect(status.content).toContain(`href="${derived}"`);
     expect(status.mentions).toEqual([{ id: carol, username: "carol", url: derived, acct: "carol@remote.example" }]);
@@ -333,14 +334,14 @@ describe("one account has a known size (RES-2)", () => {
     await sql(h.store, "UPDATE accounts SET username = ?, url = NULL WHERE id = ?", named, dave);
     const credential = (scope: string) =>
       sha256Hex(h.users.alice.token).then((tokenHash) => ({ tokenHash, scope, now: NOW }));
-    // Each mention carries the username cut at USERNAME_LIMIT, and the acct and URL derived from it.
-    const expectMention = (mention: Record<string, unknown>, id: string, username: string) => {
+    // Each mention carries the username cut at USERNAME_LIMIT, the acct derived from it, and its actor id as URL.
+    const expectMention = (mention: Record<string, unknown>, id: string, username: string, uri: string) => {
       const cut = username.slice(0, USERNAME_LIMIT);
       expect(mention).toEqual({
         id,
         username: cut,
         acct: `${cut}@remote.example`,
-        url: `https://remote.example/@${cut}`,
+        url: uri,
       });
       expect(utf8Length(JSON.stringify(mention))).toBeLessThan(1000);
     };
@@ -369,7 +370,12 @@ describe("one account has a known size (RES-2)", () => {
     });
     expect(composed.most).toBeLessThanOrEqual(2048);
     expect(composed.status.mentions).toHaveLength(1);
-    expectMention(composed.status.mentions[0] as Record<string, unknown>, dave, named);
+    expectMention(
+      composed.status.mentions[0] as Record<string, unknown>,
+      dave,
+      named,
+      "https://remote.example/users/dave",
+    );
     // Presented: a stored status mentioning both.
     const stored = await seedStatus(h.store, {
       accountId: h.users.alice.id,
@@ -386,8 +392,8 @@ describe("one account has a known size (RES-2)", () => {
     const body = await response.text();
     const mentions = (JSON.parse(body) as { mentions: Record<string, unknown>[] }).mentions;
     const byId = new Map(mentions.map((mention) => [mention.id, mention]));
-    expectMention(byId.get(carol)!, carol, huge);
-    expectMention(byId.get(dave)!, dave, named);
+    expectMention(byId.get(carol)!, carol, huge, "https://remote.example/users/carol");
+    expectMention(byId.get(dave)!, dave, named, "https://remote.example/users/dave");
   });
 
   it("reads a page of 80 followers at every bound from a window of 240, and answers those within the budget", async () => {

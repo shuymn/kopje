@@ -449,24 +449,26 @@ export function admitAccounts(
   return admit(accountsOf(db, ids, present), budget, leading);
 }
 
-// An account's profile URL. A stored url is used only when it is http(s) (HTML-3); otherwise it is derived from the
-// actor URI, which carries the account's origin (a local account's carries the instance origin), or from this
-// instance's origin when the URI is not http(s) either. An invalidated handle (shownHandle) names no page, so such an
-// account's is its stored url, else its actor id, as Mastodon's url_for, else ''. Each is used only within
-// PROFILE_URL_LIMIT as serialized (RES-2): a longer one falls back to the next, and to '' when none fits (a converted
-// row of a long host and name). `href` bounds each: a nested moved-to account's are MOVED_BOUNDS'.
+// An account's profile URL. A stored url is used only when it is http(s) (HTML-3). A remote account's is otherwise its
+// actor id, as Mastodon stores `url || @uri` (process_account_service.rb:228) and REST::AccountSerializer#url falls
+// back to uri_for. An invalidated handle (shownHandle) names no page, so such an account's is its stored url, else its
+// actor id, as Mastodon's url_for, else ''. Any other is derived from the actor id, which carries the account's origin
+// (a local account's carries the instance origin), or from this instance's origin when the id is not http(s) either.
+// Each is used only within PROFILE_URL_LIMIT as serialized (RES-2): a longer one falls back to the next, and to '' when
+// none fits (a converted row of a long host and name). `href` bounds each: a nested moved-to account's are
+// MOVED_BOUNDS'.
 export function accountUrl(
   row: { id: string; url: string | null; uri: string; username: string; domain: string | null },
   origin: string,
   href = ACCOUNT_BOUNDS.href,
 ): string {
-  const stored = href(row.url);
+  const stored = href(row.url) ?? (row.domain === null ? null : href(row.uri));
   if (stored !== null) {
     return stored;
   }
   const handle = shownHandle(row);
   if (handle.invalid) {
-    return href(row.uri) ?? "";
+    return "";
   }
   const actor = httpUrl(row.uri);
   return (actor === null ? null : href(`${actor.origin}/@${row.username}`)) ?? href(`${origin}/@${handle.acct}`) ?? "";

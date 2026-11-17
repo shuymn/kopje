@@ -181,7 +181,7 @@ async function interactions() {
     const visible = (count: number) => {
       for (let i = 0; i < count; i++) {
         const name = `v${n++}`;
-        add(remoteIn(s, name), `https://remote.example/@${name}`, i % 3 === 1 ? "unlisted" : "public");
+        add(remoteIn(s, name), `https://remote.example/users/${name}`, i % 3 === 1 ? "unlisted" : "public");
       }
     };
     const hidden = (count: number) => {
@@ -200,7 +200,7 @@ async function interactions() {
     add(bob.id, "/@bob", "unlisted");
     add(secretcarol.id, null);
     // A withdrawn boost by an account the tab would otherwise list: its favourite shows, its boost does not.
-    add(remoteIn(s, "withdrawn"), "https://remote.example/@withdrawn", "public", true);
+    add(remoteIn(s, "withdrawn"), "https://remote.example/users/withdrawn", "public", true);
     hidden(400);
     visible(25);
     hidden(130);
@@ -240,8 +240,8 @@ describe("a status page’s Boosts and Favourites tabs", () => {
       }
     }
     // The withdrawn boost's account shows on the Favourites tab only.
-    expect(expected.favourites).toContain("https://remote.example/@withdrawn");
-    expect(expected.reblogs).not.toContain("https://remote.example/@withdrawn");
+    expect(expected.favourites).toContain("https://remote.example/users/withdrawn");
+    expect(expected.reblogs).not.toContain("https://remote.example/users/withdrawn");
     // The guarded branches ran: the boosts no window reads are boosts of the post, and the left-out accounts' boosts
     // are public.
     const [rows] = (await sql<{ hidden: number; unavailable: number }>(
@@ -275,7 +275,7 @@ describe("a status page’s Boosts and Favourites tabs", () => {
       return carol;
     });
     expect(shownAccountTab(await viaRoute(h)(`/@alice/${focal}/reblogs`)).items).toEqual([
-      "https://remote.example/@carol",
+      "https://remote.example/users/carol",
     ]);
     const api = await h.request(`/api/v1/statuses/${focal}/reblogged_by`);
     expect((await api.json<{ id: string }[]>()).map((account) => account.id)).toEqual([kept]);
@@ -598,7 +598,7 @@ describe("a status page’s interaction tabs within the page budget", () => {
         s.exec("UPDATE accounts SET note = ? WHERE id = ?", `<p>${"x".repeat(i % 7 === 3 ? 20_000 : 3_000)}</p>`, id);
         statusIn(s, { account: id, local: false, visibility: "public", reblogOf: focal });
         s.exec("INSERT INTO favourites (account_id, status_id) VALUES (?, ?)", id, focal);
-        accounts.unshift(`https://remote.example/@m${i}`);
+        accounts.unshift(`https://remote.example/users/m${i}`);
       }
       for (let i = 0; i < 30; i++) {
         const chars = i === 12 ? 60_000 : i % 5 === 2 ? 30_000 : 5_000;

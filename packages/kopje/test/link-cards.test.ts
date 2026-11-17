@@ -201,6 +201,24 @@ Ich will mal unter <br> <a href="http://example.com/not-found" rel="noopener nor
     expect(await card(await statusOf(exact.id))).toMatchObject({ url: "https://d.example/" });
   });
 
+  // #1734: a mentioned account that stores no url is linked by its actor id, as Mastodon stores `url || @uri`.
+  it("skips an anchor whose raw href is the actor id of a mentioned account without a url", async () => {
+    const { h, receive, statusOf, card } = await world();
+    const erin = await remoteAccount(h.store, "erin", "other.example");
+    await sql(h.store, "UPDATE accounts SET url = NULL WHERE id = ?", erin);
+    const { uri } = (await sql<{ uri: string }>(h.store, "SELECT uri FROM accounts WHERE id = ?", erin))[0]!;
+    const content = `<a href="${uri}">@erin</a> <a href="https://d.example/">d</a>`;
+    const mention = { type: "Mention", href: uri, name: "@erin@other.example" };
+    const unset = note(content, { tag: [mention] });
+    await receive(unset);
+    expect(await card(await statusOf(unset.id))).toMatchObject({ url: "https://d.example/" });
+    // With a url stored, the actor id is a link like any other.
+    await sql(h.store, "UPDATE accounts SET url = 'https://other.example/@erin' WHERE id = ?", erin);
+    const stored = note(content, { tag: [mention] });
+    await receive(stored);
+    expect(await card(await statusOf(stored.id))).toMatchObject({ url: uri });
+  });
+
   it("refuses an unparsable or over-long first link, and keeps at most CARD_CANDIDATES anchors", async () => {
     const { receive, statusOf, card } = await world();
     const invalid = note('<a href="https://exa mple.com/">x</a> <a href="https://e.example/">e</a>');

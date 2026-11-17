@@ -224,13 +224,27 @@ settings page):
   `@value`) is none, where Mastodon fails the document. Accepted, 2026-11-15.
 - A remote actor document is read as Mastodon 4.7 reads it, each member by its literal spelling, except that Fedify
   parses the members Kopje reads from its object (`FEDIFY_MEMBERS` in `src/federation/remote-actor.ts`: the id, type,
-  username, inbox, name, bio, URL, the locked, discoverable and indexable flags, `movedTo`, `alsoKnownAs` and the keys)
+  username, inbox, name, bio, the locked, discoverable and indexable flags, `movedTo`, `alsoKnownAs` and the keys)
   after JSON-LD expansion. Every other member, in any spelling, is read by spelling or not at all, so none refuses the
-  actor. Mastodon stores the account in three cases where Kopje refuses the actor, because Fedify cannot decode a
-  member it parses: a `url` that is a `Link` whose `href` is not a string, a `publicKey` typed otherwise than a key,
-  and a member the inventory keeps whose name the document's own context maps to another member's IRI (`name` mapped to
-  `icon` and holding a `Document`). A name or bio given only as `nameMap` or `summaryMap` is not read, as Mastodon
-  reads only `name` and `summary`.
+  actor. Mastodon stores the account in two cases where Kopje refuses the actor, because Fedify cannot decode a member
+  it parses: a `publicKey` typed otherwise than a key, and a member the inventory keeps whose name the document's own
+  context maps to another member's IRI (`name` mapped to `icon` and holding a `Document`). A name or bio given only as
+  `nameMap` or `summaryMap` is not read, as Mastodon reads only `name` and `summary`.
+- A remote account's profile URL is chosen from its actor's `url` as Mastodon 4.7.5 chooses it
+  (`process_account_service.rb:454-465`, `json_ld_helper.rb:46-61`): one candidate, kept only when it begins with
+  `http://` or `https://` and is on the actor id's host, whatever its scheme and port, and no later candidate once it
+  is refused; an account without one shows its actor id. Kopje compares hosts as the URL parser reads them, where
+  Mastodon compares Addressable's raw host ASCII case-insensitively, so a host spelled with a percent escape, in
+  Unicode where the id's is in punycode or the reverse, or with non-ASCII capitals is kept where Mastodon keeps none; a
+  URL the URL parser does not read (a port past 65535) or past 2,048 bytes once serialized is none, where Mastodon
+  stores it; a kept URL is stored as the URL parser serializes it. Where Mastodon raises and stores no account (a `url`
+  that is a number or `true`, a `Link` whose `href` is neither a string nor null, an array that reaches a value
+  neither a `Link` nor a string before the one it takes, a URL Addressable cannot parse), Kopje stores the account with
+  no profile URL, or with the URL parser's reading of the URL (a tab in the host, which it drops).
+  `test/fixtures/profile-url/urls.json` holds Mastodon's answer for each form. A stored profile URL that is not
+  http(s), which only an import holds, shows the actor id in mentions and announcements too, where Mastodon shows none
+  there; an actor id that is not http(s), or past 2,048 bytes as JSON writes it, shows a `/@username` page instead, as
+  for a local account, where Mastodon shows the id. Accepted, 2026-11-17.
 - A new remote account's `created_at` is its actor's `published` as Mastodon assigns it
   (`process_account_service.rb:231`, ActiveRecord's time-zone-aware cast in UTC) on the forms `railsTime` in
   `src/federation/json-shapes.ts` reads: a date, then optionally a time, its seconds and fraction, and a zone (`Z`,

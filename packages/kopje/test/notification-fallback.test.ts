@@ -332,11 +332,12 @@ describe("notification fallbacks: the texts (config/locales/en.yml, notification
   it("links an account as Mastodon's url_for does: a remote one's stored http(s) url, a local one's short URL", async () => {
     const { h, owner, alice, bob } = await world();
     const reported: Record<string, string> = {};
-    // A local target, then remote targets by their stored url.
+    // A local target, then remote targets by their stored url, or their actor id when they store none (#1734: Mastodon
+    // stores `url || @uri`).
     reported[await report(h, alice, bob.id)] = "https://kopje.test/@bob";
     const urls: [string | null, string][] = [
       ["https://remote.example/users/alice", "https://remote.example/users/alice"],
-      [null, ""],
+      [null, "the actor id"],
       ["", ""],
       ["ftp://remote.example/alice", ""],
       ["javascript:alert(1)", ""],
@@ -346,7 +347,8 @@ describe("notification fallbacks: the texts (config/locales/en.yml, notification
     for (const [i, [url, href]] of urls.entries()) {
       const target = await remoteAccount(h.store, `target${i}`);
       await sql(h.store, "UPDATE accounts SET url = ? WHERE id = ?", url, target);
-      reported[await report(h, alice, target)] = href;
+      const { uri } = (await sql<{ uri: string }>(h.store, "SELECT uri FROM accounts WHERE id = ?", target))[0]!;
+      reported[await report(h, alice, target)] = href === "the actor id" ? uri : href;
     }
     // The target's link, the last of its title; no url derived from the actor (https://remote.example/@target<i>).
     const hrefs = (shown: Record<string, string | undefined>) =>
