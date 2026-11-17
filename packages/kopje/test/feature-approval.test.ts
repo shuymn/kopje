@@ -190,11 +190,18 @@ describe("a remote account's feature policy", () => {
     ] as const) {
       expect((await stored(t, canFeature)).policy, name).toBe(expected);
     }
-    // A followers collection Kopje cannot read as Mastodon stores it (UNREADABLE): from it on, an entry adds nothing
-    // but public and the account itself, so no unsupported_policy and no following.
+    // A followers collection Kopje cannot read as Mastodon stores it (UNREADABLE): from it on, a string adds nothing
+    // but public and the account itself, so no unsupported_policy and no following. A value that is not a string is
+    // left over whatever Mastodon stores (Mastodon 4.7.5 gives unsupported_policy in both halves for the second
+    // policy), so it still adds unsupported_policy, and the account itself beside it is not `disabled`; fails if a
+    // value that is not a string past the collection adds nothing.
     const unreadable = { followers: "https://mastodon.example/users/u/followers\uFFFD" };
     const policy = { automaticApproval: [AS_PUBLIC, "https://other.example/x", following], manualApproval: ["$self"] };
     expect((await stored(t, policy, "u", unreadable)).policy).toBe(automatic(F.public) | F.disabled);
+    const others = { automaticApproval: [7], manualApproval: ["$self", { id: AS_PUBLIC }] };
+    expect((await stored(t, others, "u2", unreadable)).policy).toBe(
+      automatic(F.unsupported_policy) | F.unsupported_policy,
+    );
   });
 
   // The stored policy is read again by every store of the document (the actor's Update embedding it, here), with the

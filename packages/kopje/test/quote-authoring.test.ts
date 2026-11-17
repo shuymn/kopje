@@ -518,6 +518,35 @@ describe("remote quote policies (StatusParser#quote_policy, row 2)", () => {
       { quote_policy: ((4 | 8) << 16) | 2 | 1 },
     ]);
   });
+
+  // Each row's flags are what Mastodon 4.7.5's StatusParser#quote_policy gave for the same canQuote, with the author's
+  // followers and following collections and its id as stated here (remote-statuses.ts remoteQuotePolicy,
+  // remote-actors.ts subpolicyReader). Each fails with its rule changed: every public spelling taken (the first three
+  // rows lose unsupported_policy), the entries not taken once each (a duplicate would add unsupported_policy), the
+  // author itself not taken (unsupported_policy), or a value that is not a string taken as a match.
+  it("reads each half as Mastodon's quote_subpolicy (#1772)", async () => {
+    const { t, bob } = await world();
+    const automatic = (flags: number) => flags << 16;
+    for (const [name, canQuote, expected] of [
+      ["two spellings", { automaticApproval: ["as:Public", PUBLIC] }, automatic(2 | 1)],
+      ["three spellings", { automaticApproval: [PUBLIC, "Public", "as:Public"] }, automatic(2 | 1)],
+      ["two spellings, manual", { manualApproval: ["Public", PUBLIC] }, 2 | 1],
+      ["a spelling twice", { automaticApproval: ["as:Public", "as:Public"] }, automatic(2)],
+      ["followers twice", { automaticApproval: [`${bob.uri}/followers`, `${bob.uri}/followers`] }, automatic(4)],
+      ["the author", { automaticApproval: [bob.uri], manualApproval: [bob.uri] }, 0],
+      ["the author and Public", { automaticApproval: [bob.uri, PUBLIC] }, automatic(2)],
+      ["not strings", { automaticApproval: [7, null, { id: PUBLIC }] }, automatic(1)],
+      ["an object", { automaticApproval: {} }, automatic(1)],
+      ["a string", { automaticApproval: "as:Public" }, automatic(2)],
+      ["an empty string", { automaticApproval: [""] }, automatic(1)],
+    ] as const) {
+      const note = mastodonNote(bob, { interactionPolicy: { canQuote } });
+      expect(await t.post(bob, create(bob, note)), name).toBe(202);
+      expect(await sql(t.store, "SELECT quote_policy FROM statuses WHERE uri = ?", note.id), name).toEqual([
+        { quote_policy: expected },
+      ]);
+    }
+  });
 });
 
 describe("the Note’s quote properties", () => {

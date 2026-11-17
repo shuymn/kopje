@@ -580,14 +580,6 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
     count: 1,
     reason: COLLECTION,
   },
-  'src/domain/remote-statuses.ts interpolation collectionSql("raw", "followers")': {
-    count: 1,
-    reason: COLLECTION,
-  },
-  'src/domain/remote-statuses.ts interpolation collectionSql("raw", "following")': {
-    count: 1,
-    reason: COLLECTION,
-  },
   // actorState's stored handle, cut to what a claim can be (remote-actors.ts).
   "src/domain/remote-actors.ts interpolation REMOTE_USERNAME_LIMIT": {
     count: 1,

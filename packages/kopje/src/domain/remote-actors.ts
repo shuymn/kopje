@@ -531,25 +531,37 @@ function storeActor(
   return { ...row, syncWaiting: named && requestCollectionSync(db, row.id, now), frozen: false };
 }
 
-// ActivityPub::Parser::InteractionPolicyParser#bitmap (interaction_policy_parser.rb:9-40) of the stored remote
-// account's canFeature halves (audience.ts FEATURE_POLICY_FLAGS; the automatic half in the high 16 bits). In each half,
-// the entries once each (uniq!), then removed as Mastodon removes them: the first public spelling listed of as:Public,
-// Public and the full IRI in that order (one only: Mastodon's `||` stops at the first it deletes, so a second spelling
-// is left over), then the account's followers and its following collections as its stored document names them ('' for
-// none, as Mastodon stores it, which a listed "" matches), then the account itself; anything left over adds
-// unsupported_policy, and a half that adds no flag but held the account itself is `disabled`. A collection Kopje cannot
-// read as Mastodon stores it (collection-requests.ts UNREADABLE) makes every entry but a public one and the account
-// itself add nothing, from the first collection it cannot read on: Mastodon may store that collection as the very
-// string, so neither a later flag nor unsupported_policy is known to be Mastodon's, and adding nothing grants no one
-// more than Mastodon does.
-function remoteFeaturePolicy(db: Db, account: { id: string; uri: string }, policy: RemoteFeaturePolicyInput): number {
+// The flags a half of an interaction policy gives, the same in canQuote's and canFeature's (audience.ts
+// QUOTE_POLICY_FLAGS, FEATURE_POLICY_FLAGS).
+type SubpolicyBits = { unsupported_policy: number; public: number; followers: number; following: number };
+
+// Mastodon's reading of one half of a remote account's interaction policy, the same in StatusParser#quote_subpolicy
+// (status_parser.rb:179-196, canQuote) and InteractionPolicyParser#subpolicy (interaction_policy_parser.rb:22-40,
+// canFeature), with the collections the account's stored document names, read once for both halves. The entries once
+// each (uniq!), then removed as Mastodon removes them, each removal before the next: the first public spelling listed
+// of as:Public, Public and the full IRI in that order (one only: Mastodon's `||` stops at the first it deletes, so a
+// second spelling is left over), then the account's followers and its following collections as its stored document
+// names them ('' for none, as Mastodon stores it, which a listed "" matches), then the account itself (`itself`);
+// anything left over adds unsupported_policy. A value that is not a string (null) is always left over, as Mastodon's
+// Array#delete matches no string with it. A collection Kopje cannot read as Mastodon stores it (collection-requests.ts
+// UNREADABLE) makes every string left at it add nothing, from the first collection it cannot read on: Mastodon may
+// store that collection as the very string, so neither a later collection's flag nor unsupported_policy (which lets
+// anyone ask to quote) is known to be Mastodon's, and adding nothing grants no one more than Mastodon does.
+export function subpolicyReader(
+  db: Db,
+  account: { id: string; uri: string },
+  bits: SubpolicyBits,
+): (entries: readonly (string | null)[]) => { flags: number; itself: boolean } {
   const row = db.first<{ followers: string | null; following: string | null }>(
     `SELECT ${collectionSql("raw", "followers")} AS followers, ${collectionSql("raw", "following")} AS following
 		FROM accounts WHERE id = ?`,
     account.id,
   );
-  const collections = [collectionRead(row?.followers ?? null), collectionRead(row?.following ?? null)] as const;
-  const flags = (entries: readonly (string | null)[]): number => {
+  const collections = [
+    [collectionRead(row?.followers ?? null), bits.followers],
+    [collectionRead(row?.following ?? null), bits.following],
+  ] as const;
+  return (entries) => {
     const left = [...new Set(entries)];
     const take = (value: string) => {
       const at = left.indexOf(value);
@@ -558,27 +570,38 @@ function remoteFeaturePolicy(db: Db, account: { id: string; uri: string }, polic
       }
       return at >= 0;
     };
-    let half = 0;
+    let flags = 0;
     if (take("as:Public") || take("Public") || take(PUBLIC_COLLECTION)) {
-      half |= FEATURE_POLICY_FLAGS.public;
+      flags |= bits.public;
     }
     let readable = true;
-    for (const [n, collection] of collections.entries()) {
+    for (const [collection, flag] of collections) {
       if (collection === UNREADABLE) {
         readable = false;
         break;
       }
       if (take(collection)) {
-        half |= n === 0 ? FEATURE_POLICY_FLAGS.followers : FEATURE_POLICY_FLAGS.following;
+        flags |= flag;
       }
     }
     const itself = take(account.uri);
-    if (readable && left.length > 0) {
-      half |= FEATURE_POLICY_FLAGS.unsupported_policy;
+    if (left.some((entry) => readable || entry === null)) {
+      flags |= bits.unsupported_policy;
     }
-    return half === 0 && itself ? FEATURE_POLICY_FLAGS.disabled : half;
+    return { flags, itself };
   };
-  return ((flags(policy.automatic) << 16) | flags(policy.manual)) >>> 0;
+}
+
+// ActivityPub::Parser::InteractionPolicyParser#bitmap (interaction_policy_parser.rb:9-40) of the stored remote
+// account's canFeature halves (audience.ts FEATURE_POLICY_FLAGS; the automatic half in the high 16 bits), each read by
+// subpolicyReader; a half that adds no flag but held the account itself is `disabled`.
+function remoteFeaturePolicy(db: Db, account: { id: string; uri: string }, policy: RemoteFeaturePolicyInput): number {
+  const read = subpolicyReader(db, account, FEATURE_POLICY_FLAGS);
+  const half = (entries: readonly (string | null)[]): number => {
+    const { flags, itself } = read(entries);
+    return flags === 0 && itself ? FEATURE_POLICY_FLAGS.disabled : flags;
+  };
+  return ((half(policy.automatic) << 16) | half(policy.manual)) >>> 0;
 }
 
 // Whether the remote account `id` is fetched again before a status Kopje fetched by it is stored (ACCOUNT_STALE_MS,
