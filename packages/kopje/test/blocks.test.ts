@@ -646,6 +646,60 @@ describe("blocks", () => {
     expect(await sql(h.store, "SELECT count(*) AS n FROM collection_jobs")).toEqual([{ n: 0 }]);
   });
 
+  // A round's raw page is the follows' range alone (follows_target, its LIMIT before any inbox is judged), so a page of
+  // followers all outside the rule (audience.ts reachInboxSql, #1733) still moves the cursor past them, to the last
+  // follow's id, past 2^53 and read as TEXT (DATA-6). Fails if the window leaves such followers out before its LIMIT:
+  // the first page then holds the follower after them and none of the ids passed.
+  it("moves its cursor past a round of followers all outside the rule, by ids past 2^53 (RES-6)", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const count = COLLECTION_REACH_ROUND + 1;
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO accounts (id, uri, username, domain, inbox_url)
+			SELECT printf('%018d', 740000000000000000 + i), 'https://p' || i || '.example/users/u', 'u', 'p' || i || '.example',
+				'https://p' || i || '.example/' || CASE WHEN i < ?1 THEN replace(hex(zeroblob(2048)), '0', 'a') ELSE 'inbox' END
+			FROM n`,
+      count,
+    );
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO follows (id, account_id, target_account_id, state)
+			SELECT 9007199254740992 + i, printf('%018d', 740000000000000000 + i), ?2, 'accepted' FROM n`,
+      count,
+      alice.id,
+    );
+    const page = (after: string) =>
+      runInDurableObject(h.store, (_instance, state) =>
+        reachFollowerInboxes(
+          new Db(state.storage.sql),
+          alice.id,
+          after,
+          "9223372036854775807",
+          COLLECTION_REACH_ROUND,
+          COLLECTION_REACH_INBOX_BYTES,
+        ),
+      );
+    const first = await page("-9223372036854775808");
+    expect(first).toHaveLength(COLLECTION_REACH_ROUND);
+    expect(first.filter((row) => row.inbox !== null)).toEqual([]);
+    const last = String(2n ** 53n + BigInt(COLLECTION_REACH_ROUND));
+    expect(first.at(-1)!.id).toBe(last);
+    expect(await page(last)).toEqual([
+      { id: String(2n ** 53n + BigInt(count)), inbox: `https://p${count}.example/inbox` },
+    ]);
+    await seedFeaturing(h, alice.id, bob.id, 1, 0);
+    expect((await act(h, alice, `/api/v1/accounts/${bob.id}/block`)).status).toBe(200);
+    let pending = true;
+    for (let call = 0; call < 10 && pending; call++) {
+      pending = await runRemovals(h, NOW);
+    }
+    expect(pending).toBe(false);
+    expect(await removeInboxes(h)).toEqual([[`https://p${count}.example/inbox`]]);
+  });
+
   // The followers a block's Removes reach are the owner's when its job's first followers round runs, as Mastodon's
   // CollectionRawDistributionWorker reads them when it runs: the job takes its follow bound there, keeps it in its row
   // over its later rounds, which so end, and a round that fails takes none (it rolls back with the round, and the retry

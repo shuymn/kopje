@@ -1648,6 +1648,19 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   every body Mastodon 4.6.11 and 4.7.5 and Fedify 2.4.5 send in the captures passes, and so does each release's actor
   context from 3.5.0 to 4.3.23 (`test/fixtures/ld-signed/context-maps.json`). Accepted, 2026-11-17.
 
+Delivery recipients (a local account's followers and poll voters; Mastodon's `Account.inboxes`,
+`app/models/account.rb:490-493`; NET-2 and RES-2 in `docs/threat-model.md`):
+
+- A follower or voter is reached at its shared inbox, else its personal inbox, only when that one value is text of 1 to
+  4,096 UTF-8 bytes without NUL (`reachInboxSql` in `src/domain/audience.ts`, the rule a block's collection `Remove`s
+  stage followers by); a shared inbox outside it is not replaced by the personal inbox. Kopje stores an inbox of at most
+  2,048 bytes from an actor document, so only an import or a restored dump holds one outside the rule, and such a
+  follower or voter gets no new activity that reaches followers or voters. A retraction staged in steps (a local
+  status's `Delete`, a job's `Undo` of a boost, a forward) reads followers and voters by the same rule, so its targets
+  are the ones the same retraction read at once would have; an inbox that received what it withdraws is still reached
+  through its receipt. Mastodon delivers to `preferred_inbox_url` whatever its length (PostgreSQL holds no NUL).
+  Targets recorded or staged before the upgrade keep their inboxes. Accepted, 2026-11-17.
+
 Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NET-1 in `docs/threat-model.md`):
 
 - A signed fetch answered 400 or 401 is sent once more with an RFC 9421 signature hop by hop: the redirect hop so

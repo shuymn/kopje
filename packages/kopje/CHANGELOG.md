@@ -359,6 +359,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   The cutover converts such an actor's domain the same way, and `verify-conversion` expects it. Actor ids, inboxes and
   stored handles keep their spelling: a Store converted before keeps the domains it holds until a refresh confirms
   each account ([docs/cutover.md](docs/cutover.md), Verification). No Store migration and no `wrangler.jsonc` change.
+- A follower's or poll voter's inbox is read for a delivery, a retraction staged in steps included, only when it is
+  text of 1 to 4,096 UTF-8 bytes without NUL, judged in the Store before the Worker reads it, as a block's collection
+  `Remove`s read followers; the recipients behind each shared inbox are recorded as before (#1733). An inbox outside
+  it, which only an import or a restored dump holds, gets no new activity for followers or voters
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Delivery recipients"). No Store migration and no
+  `wrangler.jsonc` change.
 
 ### Fixed
 
