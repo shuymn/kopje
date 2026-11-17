@@ -49,6 +49,7 @@ describe("migration lint", () => {
       "0102_quote_state_stream",
       "0104_quote_broadcast",
       "0105_media_description_bytes",
+      "0111_account_urls",
     ]);
     for (const m of DECLARED) {
       expect(unchangedProblem(m.sql), m.name).toBeNull();

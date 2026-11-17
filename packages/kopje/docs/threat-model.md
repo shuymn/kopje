@@ -3453,8 +3453,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/domain/actor-row.ts`, `localActorOf`, `documentOf`: the endpoint, every Update and the maintenance snapshot;
   `test/actor-update.test.ts`). Mentions
   read the username through the same projection (`src/domain/profile-bounds.ts`) and derive `acct` from the cut
-  username and a url from the actor id (`remoteAccountUrl`), else from the cut username; the admin account search
-  reads candidates' ids and flags only and tests their text in SQL. The
+  username and a url from the actor id (`remoteAccountUrl`), else from the cut username; the link card's mention test
+  reads no list of a status's mentions, only the accounts a link could name (RES-6, "Status cards"); the admin account
+  search reads candidates' ids and flags only and tests their text in SQL. The
   actor URI is bounded as stored (`ACTOR_URI_LIMIT`), read through `actorUriSql`, and
   refused at the cutover; the account's `uri` shows it only while its JSON is within `ACTOR_URI_LIMIT` bytes too
   (`withinIdentityBound`), and '' otherwise. An account that moved shows the account it moved to one level deep, read
@@ -3612,7 +3613,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   and a claim that never finished is given up after 2 (`src/domain/link-cards.ts`; `test/link-card-rounds.test.ts`
   ("expires at most CARD_EXPIRE_BATCH rows a claim", "keeps an open hold past the expiry, so a later round still
   defers its URL"), `test/cascade-guard.test.ts` ("trend and card rows within a batch"),
-  `test/link-cards.test.ts` ("deletes the card with the hide when %i rows are left")). Card images
+  `test/link-cards.test.ts` ("deletes the card with the hide when %i rows are left")). The index the mention test
+  seeks (`accounts_url`, migration `0111_account_urls`) holds one entry per remote account that stores a url: that
+  url, at most 2,048 bytes as stored, and its rowid, so it is never larger than the column it indexes
+  (`test/migrations.test.ts` ("0111_account_urls")). Card images
   (`card_images`, migration `0070_card_images`): one row per image URL a card names, at most one written by a record;
   a pending row is dropped a day after it was enqueued (at most 500 a claim), when no card names it, or after 2 claims
   never finished; a stored row no card names is collected by the claim's GC, at most 64 a claim from a cursor, each
@@ -3998,7 +4002,18 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   indexes and keys, after ANALYZE and growth"), `test/remote-field-links.test.ts` ("stores at most two actors’ rows in a
   Move, with at most two statements each")). At most 288 claims a day, shared with local accounts.
   Status cards: _Enforced (main):_ a write only enqueues its status's link (`status_cards`, in its own transaction);
-  the cron runs one round per tick. Its claim expires at most 500 pending rows, then walks at most 64 due rows by
+  the cron runs one round per tick. A remote status's `Create` or `Update` picks that link from at most 16 anchors
+  (`CARD_CANDIDATES`), and each anchor's mention test (`mentionLink`, Mastodon's `mention_link?`) reads by the anchor,
+  not the status's mention rows, which a converted or imported status keeps in any number: at most three statements,
+  a seek of the local username and one of the actor id (each at most 3 rows: the index entry, the account and its
+  mention by key) and at most `MENTION_URL_ACCOUNTS` (200) entries of `accounts_url` with their accounts, then each
+  one's mention by key to the first (at most 201 rows). That is at most 207 rows an anchor and 3,312 a write, as the
+  cursor counts them, whatever the status holds; the one row it brings into the Worker is an actor's url and id, at
+  most 4,096 bytes, one at a time, and nothing else is kept between anchors (`test/link-cards.test.ts` ("reads the
+  mention test's candidates by index under stale statistics, flat past MENTION_URL_ACCOUNTS", "skips a mention's
+  profile link past MAX_STATUS_MENTION_ROWS silent rows with smaller account ids", "skips a current mention's profile
+  link at an Update after an import grew the status past its mention rows")). Its claim expires at most 500 pending
+  rows, then walks at most 64 due rows by
   `(due_at, status_id)` in order and stops at 6 claims, leaving the rest untouched; each row walked is deleted, attached
   from another status's fresh copy (an existence-gated update by key: no donor writes nothing), deferred to another
   row's open hold on its URL, or claimed for 5 minutes (twice the round); with at most 100 cached oEmbed endpoints

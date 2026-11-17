@@ -152,8 +152,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `text/html`), kept only when it is on the actor id's host, whatever its scheme and port, and no later one once it is
   refused; an actor whose `url` Fedify could not parse is no longer refused (#1734). A remote account without a profile
   URL now shows its actor id as its `url`, in accounts, mentions, announcements and notification fallbacks, where Kopje
-  showed `/@username` on the actor's origin, as Mastodon does; a stored URL is replaced at the actor's next update. No
-  Store migration and no `wrangler.jsonc` change.
+  showed `/@username` on the actor's origin, as Mastodon does; a stored URL is replaced at the actor's next update. A
+  remote post's link card skips a link to the profile of any account the post mentions, however many mentions a
+  converted or imported post keeps, as Mastodon does ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Link
+  previews"). Migration `0111_account_urls`: a partial index of remote accounts by their stored url, rewriting no row
+  (the migration bench's figure: not measured yet). `wrangler.jsonc`: unchanged. This adds a Store migration, so the
+  release is at least a minor version, and rolling back past it needs a point-in-time restore.
 - A remote actor's members are read only by their literal spelling, as Mastodon reads them: a name or bio given only
   as a language map (`nameMap`, `summaryMap`) is no longer read, so such an account shows an empty display name and
   bio, and a `movedTo` or `alsoKnownAs` spelled as a compact or full IRI no longer names a move. No Store migration and

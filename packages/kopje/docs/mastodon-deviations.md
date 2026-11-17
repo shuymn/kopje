@@ -241,11 +241,12 @@ settings page):
   that is a number or `true`, a `Link` whose `href` is neither a string nor null, an array that reaches a value
   neither a `Link` nor a string before the one it takes, a URL Addressable cannot parse), Kopje stores the account with
   no profile URL, or with the URL parser's reading of the URL (a tab in the host, which it drops).
-  `test/fixtures/profile-url/urls.json` holds Mastodon's answer for each form. A stored profile URL that is not
-  http(s), which only an import holds, gives the actor id wherever Mastodon's `url_for` gives none (mentions,
-  announcements, notification fallbacks and the link-card mention test), as the account shows it; an actor id that is
-  not http(s), or past 2,048 bytes as JSON writes it, shows a `/@username` page instead, as for a local account, where
-  Mastodon shows the id. Accepted, 2026-11-17.
+  `test/fixtures/profile-url/urls.json` holds Mastodon's answer for each form. A stored profile URL Kopje does not
+  show, which only an import holds (one that is not http(s), where Mastodon's `url_for` gives none, or one past 2,048
+  bytes once serialized, where it gives the URL), gives the actor id instead in mentions, announcements, notification
+  fallbacks and the link-card mention test, as the account shows it, and a link to that stored URL is an ordinary
+  link; an actor id that is not http(s), or past 2,048 bytes as JSON writes it, shows a `/@username` page instead, as
+  for a local account, where Mastodon shows the id. Accepted, 2026-11-17.
 - A new remote account's `created_at` is its actor's `published` as Mastodon assigns it
   (`process_account_service.rb:231`, ActiveRecord's time-zone-aware cast in UTC) on the forms `railsTime` in
   `src/federation/json-shapes.ts` reads: a date, then optionally a time, its seconds and fraction, and a zone (`Z`,
@@ -394,6 +395,12 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
   `http`, has a port, names an IP literal or a local name, passes 2,048 characters, holds a character outside printable
   ASCII or one of ``"<>\^`{|}``, or does not parse, there is no card (Mastodon fetches `http` links and other ports).
   Hosts the domain policy refuses are never contacted, after any redirect either.
+- The mention test starts from the anchor, so it sees every mention a converted or imported status keeps: a local
+  account by its username, a remote one by its actor id or by its stored url, compared in its stored spelling as
+  Mastodon compares it. Of the remote accounts that store one url, it reads the first 200 in the order of their rows,
+  so an anchor naming the url of a mentioned account past them is an ordinary link, where Mastodon skips it. A url is
+  stored only on its actor's host, so only a host that gives more than 200 of its own actors one url meets this.
+  Accepted, 2026-11-17.
 - Fetched by a round of the 5-minute cron, at most 6 a round (3 at a time), not within a minute as Mastodon queues
   them; a link still unfetched a day after its post is dropped. A claim the round could not run (its budget, its
   deadline, a policy read that failed) is tried again; one that never finished is retried once, then dropped.

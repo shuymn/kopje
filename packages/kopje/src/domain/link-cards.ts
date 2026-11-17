@@ -1,7 +1,8 @@
-import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
+import { ACCOUNTS_URI_INDEX, LOCAL_ACCOUNTS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { DNS_NAME_OCTETS } from "../platform/domain-name";
 import { SCAN_LIMITS } from "../platform/html-scan";
+import { boundedHref } from "../platform/http-url";
 import { sqliteLower } from "../platform/identity-bounds";
 import { railsBlank } from "../platform/rails-blank";
 import {
@@ -36,6 +37,7 @@ import {
   oembedHostPastSql,
   oembedTemplatePastSql,
   presentedAttributionDomains,
+  PROFILE_URL_LIMIT,
   SAFE_INTEGER_MAX,
   storedCountSql,
   storedText,
@@ -46,8 +48,7 @@ import { cardEligibleSql, cardPublicSql } from "./audience";
 import { linkCardImage } from "./card-images";
 import { NEW_GENERATION } from "./ids";
 import { writeOperation } from "./operation";
-import { actorUriSql, remoteAccountUrl, usernameSql } from "./profile-bounds";
-import { MAX_STATUS_MENTION_ROWS } from "./status-bounds";
+import { actorUriSql, remoteAccountUrl } from "./profile-bounds";
 import { parseStatusText } from "./status-text";
 
 // Status cards (Mastodon's FetchLinkCardService and LinkCrawlWorker, app/services/fetch_link_card_service.rb, v4.5.11):
@@ -135,27 +136,60 @@ function boundedCandidate(value: unknown): CardCandidate | null {
   return typeof host === "string" && host.length <= CARD_HOST_LIMIT ? { raw, url: { href, host } } : null;
 }
 
-// The URLs of the accounts the status `statusId` mentions, silent mentions included, as Mastodon's mention_link?
-// compares an anchor with them by bytes (:97-101, url_for): a local account's https://<domain>/@<username>, a remote
-// one's as profile-bounds.ts remoteAccountUrl shows it (its usable stored url, else its actor id). Read once per
-// status: the status's own rows, which a remote status's write keeps within MAX_STATUS_MENTION_ROWS
-// (remote-statuses.ts boundedMentions), by key: each local username as usernameSql reads it (a local one is never cut),
-// each url within PROFILE_URL_LIMIT as stored and each actor id within ACTOR_URI_LIMIT.
-function mentionUrls(db: Db, statusId: string, domain: string): Set<string> {
-  const rows = db.all<{ local: 0 | 1; username: string | null; url: string | null; uri: string }>(
-    `SELECT a.domain IS NULL AS local, CASE WHEN a.domain IS NULL THEN ${usernameSql("a.username")} END AS username,
-			CASE WHEN a.domain IS NOT NULL AND typeof(a.url) = 'text' THEN a.url END AS url,
-			CASE WHEN a.domain IS NOT NULL THEN ${actorUriSql("a.uri")} ELSE '' END AS uri
-		FROM status_mentions m CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = m.account_id
-		WHERE m.status_id = ?1 ORDER BY m.account_id LIMIT ${MAX_STATUS_MENTION_ROWS}`,
-    statusId,
-  );
-  return new Set(
-    rows.flatMap((row) => {
-      const url =
-        row.local === 0 ? remoteAccountUrl(row) : row.username === null ? null : `https://${domain}/@${row.username}`;
-      return url === null ? [] : [url];
-    }),
+// The most accounts sharing one stored url that the mention test probes for a link, in accounts_url's order (url, then
+// rowid). A stored url is on its actor id's host (federation/remote-actor.ts profileUrl; an earlier release's is
+// replaced at its actor's next store), so only one host's own actors share it: past this many, a mention of that
+// host's account by that url is taken as a link (docs/mastodon-deviations.md, "Link previews").
+export const MENTION_URL_ACCOUNTS = 200;
+
+// The index of remote accounts by their stored url (migration 0111_account_urls).
+const ACCOUNTS_URL_INDEX = "accounts_url";
+
+// The mention of a local account whose whole username is ?2: one seek of the unique accounts_local_username, then the
+// mention by its key.
+const LOCAL_MENTION_SQL = `SELECT 1 AS x FROM accounts a INDEXED BY accounts_local_username
+	CROSS JOIN status_mentions m ON m.status_id = ?1 AND m.account_id = a.id
+	WHERE a.domain IS NULL AND lower(a.username) = lower(?2) AND a.username = ?2`;
+
+// The mention of the remote account whose actor id is ?2, its stored url as text (within PROFILE_URL_LIMIT as stored)
+// and its actor id (within ACTOR_URI_LIMIT): one seek of the unique uri index, then the mention by its key.
+const ACTOR_MENTION_SQL = `SELECT CASE WHEN typeof(a.url) = 'text' THEN a.url END AS url, ${actorUriSql("a.uri")} AS uri
+	FROM accounts a INDEXED BY ${ACCOUNTS_URI_INDEX}
+	CROSS JOIN status_mentions m ON m.status_id = ?1 AND m.account_id = a.id
+	WHERE a.uri = ?2 AND a.domain IS NOT NULL`;
+
+// A mention of a remote account whose stored url is ?2: at most MENTION_URL_ACCOUNTS of accounts_url's entries for it
+// (the cap counts the candidates before the mention probe), then each one's mention by its key, to the first.
+const URL_MENTION_SQL = `SELECT 1 AS x FROM (SELECT id FROM accounts INDEXED BY ${ACCOUNTS_URL_INDEX}
+		WHERE domain IS NOT NULL AND url = ?2 LIMIT ${MENTION_URL_ACCOUNTS}) c
+	CROSS JOIN status_mentions m ON m.status_id = ?1 AND m.account_id = c.id
+	LIMIT 1`;
+
+// Mastodon's mention_link? (:97-101): whether `raw` equals, by bytes, TagManager#url_for of an account the status
+// `statusId` mentions, silent mentions included. Mastodon reads every mention; a converted or imported status keeps any
+// number of rows, so this starts from `raw` and finds the accounts that could give it, each by an index, then their
+// mention by its key (status_id, account_id):
+//   - a local account whose short URL https://<domain>/@<username> is `raw`, by its whole username;
+//   - when `raw` is a URL Kopje shows (http(s), within PROFILE_URL_LIMIT once serialized), a remote account that
+//     stores it as its url, compared in its stored spelling as Mastodon compares it (a federated url is stored
+//     serialized, federation/remote-actor.ts profileUrl), and, when `raw` is that serialization, a remote account
+//     whose actor id it is and that shows it (profile-bounds.ts remoteAccountUrl: it has no usable url).
+// At most three statements, whatever the status holds: two unique seeks, at most MENTION_URL_ACCOUNTS index entries
+// and their rows, and at most MENTION_URL_ACCOUNTS + 2 mention probes. The one row read into the Worker is an actor's
+// url and id, at most PROFILE_URL_LIMIT + ACTOR_URI_LIMIT bytes.
+function mentionLink(db: Db, statusId: string, raw: string, domain: string): boolean {
+  const local = `https://${domain}/@`;
+  if (raw.startsWith(local) && db.first(LOCAL_MENTION_SQL, statusId, raw.slice(local.length)) !== undefined) {
+    return true;
+  }
+  const href = boundedHref(raw, PROFILE_URL_LIMIT);
+  if (href === null) {
+    return false;
+  }
+  const actor =
+    href === raw ? db.first<{ url: string | null; uri: string }>(ACTOR_MENTION_SQL, statusId, raw) : undefined;
+  return (
+    (actor !== undefined && remoteAccountUrl(actor) === raw) || db.first(URL_MENTION_SQL, statusId, raw) !== undefined
   );
 }
 
@@ -180,13 +214,12 @@ export function remoteCardLink(
     return typeof href === "string" && href.length <= CARD_URL_LIMIT ? href : null;
   }
   const list = Array.isArray(candidates) ? candidates.slice(0, CARD_CANDIDATES) : [];
-  let mentioned: Set<string> | undefined;
   for (const value of list) {
     const candidate = boundedCandidate(value);
     if (candidate === null) {
       return null;
     }
-    if (candidate.raw !== null && (mentioned ??= mentionUrls(db, statusId, domain)).has(candidate.raw)) {
+    if (candidate.raw !== null && mentionLink(db, statusId, candidate.raw, domain)) {
       continue;
     }
     if (candidate.url === "skip") {
