@@ -486,7 +486,8 @@ against their own instance. TLS is assumed between all parties.
   accounts are local ones named by exact actor id, or stored remote ones only with a named status of theirs replying
   to a local account (Mastodon's `flag.rb:15-17`),
   available (R1); a named status is attached only when it is the reported account's original and passes the remote
-  reporter rule (R34, `remoteReportableSql`). Nothing is fetched. `fileRemoteReports` in `src/domain/reports.ts`;
+  reporter rule (R34, `remoteReportableSql`), and a named collection only when it is the reported account's (a local
+  one by route, a remote one by its stored uri). Nothing is fetched. `fileRemoteReports` in `src/domain/reports.ts`;
   `test/inbox.test.ts` ("Flag: the actor is the reporter"), `test/inbox-flag.test.ts`. _Enforced (main)_ for FEP-7aa9
   remote collections (#1589, rows of the same table): an `Add` or `Remove` acts only on the actor's own collections, the
   target its `featuredCollections` collection or a remote collection Kopje stores of the actor's, a collection's id on
@@ -495,7 +496,9 @@ against their own instance. TLS is assumed between all parties.
   collection's and the item's uri), one to the actor's `featured` or `featuredTags` collection may not; an `Update`
   changes only a collection Kopje stores of the actor's; a `Delete` of a `FeatureAuthorization` is the member's alone
   and revokes the member's item only while it names the item's current authorization (verified, or the candidate of
-  one not verified), never after a revision replaced it. An item's revision is its member and the authorization its
+  one not verified), never after a revision replaced it. A search with `resolve=true` stores a fetched
+  `FeaturedCollection` only for the stored account it is attributed to, by the same rules, and answers one Kopje stores
+  as stored. An item's revision is its member and the authorization its
   owner lists: an unchanged revision changes nothing, whatever the item's state; a new item or a changed revision is
   pending, with no verified authorization, claim or attempt, and queued for a check. A check accepts it only when the
   fetch under its claim found the authorization served for the collection and the member and no other item of the
@@ -510,7 +513,9 @@ against their own instance. TLS is assumed between all parties.
   authorization the member holds in another row"), `test/feature-lifecycle.test.ts` ("agrees with the policy after
   every step, and accepts a served candidate once settled", "accepts O's item whose authorization X's item lists
   first", "changes nothing at a delayed Delete of A after O's change to B", against `FeaturePolicy` in
-  `test/feature-model.ts`). A change to these rules changes `test/feature-model.ts` with it.
+  `test/feature-model.ts`), `test/remote-collections-api.test.ts` ("stores nothing for a collection whose owner Kopje
+  does not store, or that its owner does not attribute"). A change to these rules changes `test/feature-model.ts` with
+  it.
 - **ID-7: replay changes nothing twice.** A repeated activity creates no second relationship, counter change,
   notification, push or outbound intent (natural keys). A valid `Delete` or `Undo` that arrives before its target is
   recorded for 30 days and prevents the target from appearing later; so is a collection owner's `Remove` of an item
@@ -5313,22 +5318,24 @@ past the name bound are refused, and lists leave out stored names past it or not
 `test/tag-names.test.ts`); v2 search shows a malformed name decoded, identified by its stored bytes, at most 12,750
 bytes (a 1,024-byte key of U+FFFD, nine bytes each in the url).
 
-A local collection's maximum is derived from its bounds (`COLLECTION_JSON_MAX`, 9,165 bytes;
-`test/collections.test.ts` ("derives COLLECTION_JSON_MAX from the bounds, and fits the answers of a full account")):
-its name and description at 40 and 100 characters JSON escapes to six bytes each, its language the longest supported,
-its tag at the tag-name bound with the URL encoding each byte in three, 25 accepted items (its 25 retired ones are not
-shown), an owner's username at its bound and an instance domain of 253 octets; the fill measures within 2 bytes of it
-(`local` and `discoverable` true). Its `CollectionWithAccounts` adds at most 26 accounts (the owner and the members) at
-the account occurrence's conservative JSON, within `ANSWER_BYTES`, and the presenter admits accounts within what the
-collection leaves of it. An account's list holds at most its 50 stored collections (10 made through the API, each
-then within `COLLECTION_JSON_MAX`); a remote collection, stored only by an import yet, has larger text bounds (256 and
-2,048 characters, URIs of 2,048 bytes) and the same 25 shown items. A collection notification (`added_to_collection`,
-`collection_update`) presents its owner's account, its collection for its recipient and its fallback: at most 225,871
-bytes, and 226,023 as a group, with a remote collection's longer text at six bytes a character, under a warning
-notification's and a warning group's conservative JSON, so it adds no shape (`test/collection-notifications.test.ts`,
-"presents within a warning notification's maximum, so it adds no shape"). Its collection is read by key, with at most
-`MAX_STORED_ITEMS` (50) item rows (`notifiedCollection` in `src/domain/collection-presenter.ts`), as a report
-notification reads its report.
+A collection's maximum is derived from its bounds. A local one's is 9,165 bytes (`LOCAL_COLLECTION_JSON_MAX`;
+`test/collections.test.ts` ("derives a local collection's maximum from the bounds, and fits the answers of a full
+account")): its name and description at 40 and 100 characters JSON escapes to six bytes each, its language the longest
+supported, its tag at the tag-name bound with the URL encoding each byte in three, 25 accepted items (its 25 retired
+ones are not shown), an owner's username at its bound and an instance domain of 253 octets; the fill measures within 2
+bytes of it (`local` and `discoverable` true). A remote one's, the larger, is `COLLECTION_JSON_MAX`, 29,701 bytes
+(`test/collections.test.ts` ("derives COLLECTION_JSON_MAX from a remote collection's bounds")): its name and
+description at 256 and 2,048 characters at six bytes each, and its stored uri and url at 2,048 bytes of printable ASCII,
+each byte past the scheme at two, with the same language, tag and 25 shown items; the fill measures within 1 byte of it
+(`discoverable` true). Its `CollectionWithAccounts` adds at most 26 accounts (the owner and the members) at the account
+occurrence's conservative JSON, within `ANSWER_BYTES`, and the presenter admits accounts within what the collection
+leaves of it. An account's list holds at most its 50 stored collections (10 made through the API, 10 a remote account's
+read, each within `COLLECTION_JSON_MAX`). A collection notification (`added_to_collection`, `collection_update`)
+presents its owner's account, its collection for its recipient and its fallback: at most 208,847 bytes, and 208,999 as
+a group, under a warning notification's and a warning group's conservative JSON, so it adds no shape
+(`test/collection-notifications.test.ts`, "presents within a warning notification's maximum, so it adds no shape").
+Its collection is read by key, with at most `MAX_STORED_ITEMS` (50) item rows (`notifiedCollection` in
+`src/domain/collection-presenter.ts`), as a report notification reads its report.
 
 A scheduled status's maximum is derived from its caps (`test/scheduled-statuses.test.ts`, "a scheduled status at its
 caps"): an 18-digit id and a 24-character time, or null for a stored value that is not a time Kopje writes (the

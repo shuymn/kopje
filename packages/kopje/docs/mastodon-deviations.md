@@ -1035,9 +1035,9 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
   it. Mastodon has no such state and resolves whenever it is asked; Kopje could not store what it fetched then, and a
   remote server would see a fetch for nothing.
 - With `resolve=true`, a URL lookup whose answer is empty whatever it finds (a `type` with an `offset` past 0, or a
-  `type` other than `accounts` and `statuses`, `hashtags` included) fetches nothing; Mastodon 4.7.5 fetches and stores
-  the resource first (`search_service.rb:19-20`). A remote server would see a fetch whose result no answer shows.
-  Accepted, 2026-11-16.
+  `type` other than `accounts`, `statuses` and `collections`, `hashtags` included) fetches nothing; Mastodon 4.7.5
+  fetches and stores the resource first (`search_service.rb:19-20`). A remote server would see a fetch whose result no
+  answer shows. Accepted, 2026-11-16.
 - A `limit` or `offset` given as an array or a nested parameter (`limit[]=1`, `offset[a]=-1`) is not read: the search
   answers as without it, or 400 when the other one is negative. Mastodon 4.7.5 answers 500 to both, as its pagination
   check calls `to_i` on the array or hash. Accepted, 2026-11-17.
