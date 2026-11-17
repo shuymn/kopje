@@ -472,6 +472,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- An `Add` or `Remove` without an `id`, as Mastodon sends them for featured hashtags and pinned posts, is applied; it
+  was refused. No Store migration and no `wrangler.jsonc` change.
 - A remote actor's `manuallyApprovesFollowers`, `discoverable` and `indexable` are read by their literal spelling
   through Rails' boolean cast, as Mastodon does (#1747): an actor that writes `"false"`, `"0"` or `"off"` is no longer
   discoverable, where it was listed in the directory, suggestions, trends and the link timeline; `"true"`, `1` or `[]`

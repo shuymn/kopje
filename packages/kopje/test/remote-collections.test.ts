@@ -32,6 +32,8 @@ import {
   partsFitRound,
   syncCollections,
 } from "../src/federation/collections";
+import { parseActivity } from "../src/federation/inbound";
+import { processInbox } from "../src/federation/inbox";
 import { DOCUMENT_BODY_LIMIT, MAX_REDIRECTS, REQUEST_MAX_BYTES, REQUEST_MAX_FETCHES } from "../src/federation/loader";
 import { verifyQuotes } from "../src/federation/quotes";
 import type { StoreStub } from "../src/platform/store-client";
@@ -62,6 +64,7 @@ import {
   statusRow,
   update,
 } from "./inbox-status-helpers";
+import { storeReceive } from "./inbox-store-helpers";
 import { quoting, serveFeatured, serveStamp } from "./quote-helpers";
 
 // A remote account's pinned statuses, featured hashtags and hide_collections (Mastodon 4.5's ActivityPub::Activity::Add
@@ -413,6 +416,167 @@ describe("learning a remote account’s collections from Add and Remove", () => 
     }
     expect(await rows(t, "status_pins")).toEqual([{ n: MAX_REMOTE_PINS }]);
     expect((await featuredTags(t, bobId)).length).toBe(MAX_FEATURED_TAGS);
+  });
+});
+
+// Mastodon 4.7.5's Add and Remove carry no id (AddHashtagSerializer, AddNoteSerializer and their Remove pairs list
+// type, actor, target and object): applied as one with an id would be, whatever the target (ID-6, #1693).
+function idless(type: "Add" | "Remove", actor: TestActor, object: unknown) {
+  return { "@context": AS, type, actor: actor.uri, target: featuredOf(actor), object };
+}
+
+// The inbox's outcome for `activity` in `actor`'s name, signed by `actor` or by `signer`, through `store`.
+async function received(
+  t: Setup,
+  actor: TestActor,
+  activity: unknown,
+  by: { signer?: TestActor; store?: StoreStub } = {},
+) {
+  const key = by.signer === undefined ? {} : { keyId: by.signer.keyId, privateKey: by.signer.privateKey };
+  const init = await signedInit(actor, "/inbox", activity, key);
+  const request = {
+    url: `${LOCAL}/inbox`,
+    method: "POST",
+    headers: [...new Headers(init.headers)],
+    body: new TextEncoder().encode(init.body as string),
+    receivedAt: NOW,
+  };
+  const outcome = await processInbox(
+    t.env,
+    inboxDeps(() => by.store ?? t.store, t.web.loader),
+    request,
+    "live",
+  );
+  return { status: outcome.status, reason: outcome.reason };
+}
+
+// An Add of `uri` given to the Store as the Worker hands it on, with `id`.
+function storedAdd(t: Setup, actor: TestActor, uri: string, id: string | null) {
+  return storeReceive(t.store, actor.uri, { type: "Add", id, target: featuredOf(actor), object: { status: uri } });
+}
+
+describe("Mastodon's Add and Remove without an id (#1693)", () => {
+  // AR-T1: Mastodon's own shape; the Worker's origin check of the id skips a null one (inbound.ts receiveInbound).
+  it("features and unfeatures a hashtag, and pins and unpins a post", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const bobId = await followed(t, bob);
+    const note = mastodonNote(bob);
+    await posted(t, bob, note);
+    expect(await received(t, bob, idless("Add", bob, hashtag("Cats")))).toEqual({ status: 202, reason: "featured" });
+    expect(await received(t, bob, idless("Add", bob, note.id))).toEqual({ status: 202, reason: "pinned" });
+    expect((await featuredTags(t, bobId)).map((tag) => tag.name)).toEqual(["Cats"]);
+    expect(await pinned(t, bobId, null)).toEqual([note.id]);
+    expect(await received(t, bob, idless("Remove", bob, hashtag("cats")))).toEqual({
+      status: 202,
+      reason: "unfeatured",
+    });
+    expect(await received(t, bob, idless("Remove", bob, note.id))).toEqual({ status: 202, reason: "unpinned" });
+    expect(await featuredTags(t, bobId)).toEqual([]);
+    expect(await pinned(t, bobId, null)).toEqual([]);
+  });
+
+  // AR-T3 (ID-7): one pin and one hashtag, below MAX_REMOTE_PINS and MAX_FEATURED_TAGS, so no answer is the caps'.
+  it("pins and features once at a repeated Add, and changes nothing at a repeated Remove", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const note = mastodonNote(bob);
+    await posted(t, bob, note);
+    const twice = async (activity: unknown) => [
+      (await received(t, bob, activity)).reason,
+      (await received(t, bob, activity)).reason,
+    ];
+    expect(await twice(idless("Add", bob, note.id))).toEqual(["pinned", "not-pinned"]);
+    expect(await twice(idless("Add", bob, hashtag("Cats")))).toEqual(["featured", "not-featured"]);
+    expect([await rows(t, "status_pins"), await rows(t, "featured_tags")]).toEqual([[{ n: 1 }], [{ n: 1 }]]);
+    expect(await twice(idless("Remove", bob, note.id))).toEqual(["unpinned", "not-pinned"]);
+    expect(await twice(idless("Remove", bob, hashtag("Cats")))).toEqual(["unfeatured", "not-featured"]);
+    expect([await rows(t, "status_pins"), await rows(t, "featured_tags")]).toEqual([[{ n: 0 }], [{ n: 0 }]]);
+  });
+
+  // AR-T4: the exception is Add's and Remove's alone; each activity parses with an id, so the refusal is the id's.
+  it("refuses any other type without an id as incomplete", async () => {
+    const bob = `${MASTODON}/users/bob`;
+    const note = { id: `${bob}/statuses/1`, type: "Note", attributedTo: bob, to: [PUBLIC], content: "<p>hi</p>" };
+    const follow = { id: `${bob}#follows/1`, type: "Follow", actor: bob, object: ALICE_URI };
+    const others = [
+      { type: "Follow", object: ALICE_URI },
+      { type: "Like", object: `${LOCAL}/ap/o/1` },
+      { type: "Announce", object: note.id, to: [PUBLIC] },
+      { type: "Create", object: note },
+      { type: "Update", object: note },
+      { type: "Delete", object: note.id },
+      { type: "Undo", object: follow },
+    ];
+    const parsed = (activity: unknown) => parseActivity(new TextEncoder().encode(JSON.stringify(activity)));
+    for (const other of others) {
+      const activity = { "@context": AS, actor: bob, ...other };
+      expect(await parsed({ ...activity, id: `${bob}#${other.type}/1` }), other.type).toMatchObject({ ok: true });
+      expect(await parsed(activity), other.type).toMatchObject({ ok: false, reason: "incomplete" });
+    }
+  });
+
+  // AR-T5 (ID-6): a string id still needs the actor's origin, at the Worker before any Store call, and at the Store.
+  it("refuses an Add whose id has another origin, at the Worker and at the Store", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const bobId = await followed(t, bob);
+    const note = mastodonNote(bob);
+    await posted(t, bob, note);
+    const foreign = { ...idless("Add", bob, note.id), id: `${OTHER}/adds/1` };
+    const counted = countingStore(t.store);
+    expect(await received(t, bob, foreign, { store: counted.stub })).toEqual({ status: 202, reason: "foreign-id" });
+    expect(counted.calls).toEqual(["inboxGate"]);
+    expect(await storedAdd(t, bob, note.id, `${OTHER}/adds/2`)).toMatchObject({ applied: false, reason: "foreign-id" });
+    expect(await pinned(t, bobId, null)).toEqual([]);
+    // With an id of the actor's origin, the same Add pins.
+    expect(await received(t, bob, { ...foreign, id: `${bob.uri}#adds/1` })).toEqual({ status: 202, reason: "pinned" });
+  });
+
+  // AR-T6: Mastodon never reads the id; one of another origin inside an object is not read either.
+  it("reads an id that is a number or an object as none, and applies the Add", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const bobId = await followed(t, bob);
+    const note = mastodonNote(bob);
+    await posted(t, bob, note);
+    expect(await received(t, bob, { ...idless("Add", bob, note.id), id: 42 })).toEqual({
+      status: 202,
+      reason: "pinned",
+    });
+    expect(await received(t, bob, { ...idless("Add", bob, hashtag("Cats")), id: { id: `${OTHER}/adds/1` } })).toEqual({
+      status: 202,
+      reason: "featured",
+    });
+    expect(await pinned(t, bobId, null)).toEqual([note.id]);
+    expect((await featuredTags(t, bobId)).map((tag) => tag.name)).toEqual(["Cats"]);
+  });
+
+  // AR-T8: the Store's own origin check of the id (inbox.ts receive) skips a null one.
+  it("pins from an Add without an id given to the Store directly", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const bobId = await followed(t, bob);
+    const note = mastodonNote(bob);
+    await posted(t, bob, note);
+    expect(await storedAdd(t, bob, note.id, null)).toMatchObject({ applied: true, reason: "pinned" });
+    expect(await pinned(t, bobId, null)).toEqual([note.id]);
+  });
+
+  // AR-T9 (ID-1, R38): as any Add there. A relay applies a Delete only; a domain block admits cleanups only.
+  it("ignores one relayed by another signer, or from an actor a domain block covers", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    const carol = await mastodonActor(t.web, "carol", { key: 2 });
+    await followed(t, bob);
+    const note = mastodonNote(bob);
+    await posted(t, bob, note);
+    const add = idless("Add", bob, note.id);
+    expect(await received(t, bob, add, { signer: carol })).toEqual({ status: 202, reason: "relay-not-applied" });
+    await blockDomain(t.store, new URL(MASTODON).host);
+    expect(await received(t, bob, add)).toEqual({ status: 202, reason: "domain-blocked" });
+    expect(await rows(t, "status_pins")).toEqual([{ n: 0 }]);
   });
 });
 

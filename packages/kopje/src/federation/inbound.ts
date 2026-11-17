@@ -255,15 +255,15 @@ async function activityEnvelope(
   const actor = idOf(read.actor);
   const id = typeof read.id === "string" ? read.id : null;
   const type = typeof read.type === "string" ? readType(read.type) : null;
-  // #1589's D20: an Add or Remove may have no id (Mastodon 4.7.5 sends a collection's so); a non-string one reads as
-  // none, as Mastodon never reads it. The Store admits such an activity for a collection target only.
+  // ID-6: an Add or Remove may have no id (Mastodon 4.7.5 sends every one so, #1693); a non-string one reads as none,
+  // as Mastodon never reads it. Every other type needs a string id.
   if (actor === null || originOf(actor) === null || type === null || (id === null && !ID_LESS.has(type))) {
     return { ok: false, reason: "incomplete" };
   }
   return { ok: true, actor, id, type, readType, read };
 }
 
-// The types an activity may have without an id (#1589's D20).
+// The types an activity may have without an id (ID-6, #1693).
 const ID_LESS: ReadonlySet<string> = new Set(["Add", "Remove"]);
 
 // `rules` is for tests of the reading's second layer (ldSignedReading); every caller reads under all of them.
@@ -319,7 +319,7 @@ function statusActivity(kind: "Create" | "UpdateStatus", id: string, json: Json)
   return object === null ? null : { type: kind, id, object };
 }
 
-// An Add or Remove (#1589's D20: with or without an id). The target is matched against the actor's own collections by
+// An Add or Remove, with or without an id (ID_LESS). The target is matched against the actor's own collections by
 // the Store. A Hashtag is named by its name; an embedded FeaturedCollection or FeaturedItem is read as one (only
 // embedded: one given by URI is never fetched); anything else by its id, as a status (Mastodon's Add and Remove read
 // any other object as one).

@@ -886,8 +886,6 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   the membership's current authorization (verified, or the one the owner lists while unchecked), including the copy
   the collection's owner relays with the member's signature; Mastodon applies it to local collections only. Accepted,
   2026-11-17.
-- An `Add` or `Remove` without an `id` is applied to a collection's or an item's collection only; one to the actor's
-  `featured` or `featuredTags` collection is ignored, where Mastodon applies it. Tracked by #1693.
 
 Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model WEB-6):
 

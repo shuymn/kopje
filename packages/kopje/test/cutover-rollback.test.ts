@@ -803,6 +803,23 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
     expect(r.legacy.pending).toEqual([]);
   });
 
+  // AR-T7 (ID-6, #1693): the drain's origin check of the id skips a null one, as the inbox's does.
+  it("hands on an Add without an id, as Mastodon sends it", async () => {
+    const store = await importedStore();
+    const r = await rollback(store);
+    const add = {
+      "@context": ctx,
+      type: "Add",
+      actor: r.carol.uri,
+      target: `${r.carol.uri}/collections/featured`,
+      object: { type: "Hashtag", href: `${new URL(r.carol.uri).origin}/tags/cats`, name: "#cats" },
+    };
+    await r.spool("/ap/users/alice/inbox", add);
+    await r.consume();
+    expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 0 });
+    expect(r.legacy.pending.map((m) => (m.body as LegacyInboxMessage).activity)).toEqual([add]);
+  });
+
   // #1718: a body or a key document holding an unpaired surrogate is JSON that does not parse, as on the inbox.
   it("keeps an activity holding an unpaired surrogate or bytes not UTF-8 as invalid JSON", async () => {
     const store = await importedStore();
