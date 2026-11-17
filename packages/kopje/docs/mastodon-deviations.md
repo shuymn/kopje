@@ -397,7 +397,7 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
   64 `<link>` elements. An `http` endpoint is upgraded to `https` as Mastodon does; one of another scheme, with a port,
   an IP literal or a local name is not tried (the page's OpenGraph is the card), where Mastodon tries it.
 - An endpoint's answer is read whole within 64 KiB (Mastodon: 1 MiB; a longer one is no card), as UTF-8 by
-  `JSON.parse` in place of Oj, within 10,000 values and 32 levels (past them, OpenGraph); a `version` of the number `1`
+  JavaScript's `JSON.parse` (Mastodon: Ruby's), within 10,000 values and 32 levels (past them, OpenGraph); a `version` of the number `1`
   passes as `1.0` does (`JSON.parse` cannot tell them apart). The User-Agent is the cards' own, with " Bot".
 - A `type` that is not a string, and a `title`, `author_name` or `provider_name` that is not one, are no card and `''`
   where Rails would cast them; an oEmbed card with a blank title falls back to OpenGraph, where Mastodon saves it. A
