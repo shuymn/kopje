@@ -759,55 +759,59 @@ export const UNDONE_ANSWER_SIGNERS_SQL = `SELECT l.account_id AS id,
 			WHERE o.account_id = l.account_id AND o.follow_pair = ?1 ORDER BY o.id LIMIT ?3) a WHERE a.object_uri = ?2) AS named
 	FROM local_accounts l`;
 
-// Our follow of `actor` that an Accept or Reject answers (ID-6: only the followed side answers):
-//   - the Follow's id equals the edge's uri, with the actor as its target; or
-//   - the edge has no uri (it never named an id: local follows made before outbound delivery existed, and migrated
-//     rows), and the embedded Follow names its follower and the actor as its pair.
+// Our follow of `actor` that an Accept or Reject answers (ID-6: only the followed side answers), sought as Mastodon's
+// Accept and Reject seek it (accept.rb:5-13, reject.rb:5-14):
+//   - first by the id: the edge whose uri is the answer's object id, with the actor as its target, whatever else the
+//     object says (its type, its members), before the object is read as an answer to anything else (ourFollowById);
+//   - then, the object not being one of our QuoteRequests (isQuoteAnswer), by the pair: the edge has no uri (it never
+//     named an id: local follows made before outbound delivery existed, and migrated rows), and the embedded Follow
+//     (typed so, or untyped) names its follower and the actor (ourFollowByPair).
 // An id that names another generation of the edge (the edge has a different uri) answers nothing. The one exception is
 // a Reject with Misskey's pair-shaped id (`/follows/<follower>/<followee>`): Misskey rejects a follower it removes with
 // the pair, not with our Follow's id, so for a Reject (pairReject) the pair matches our follow whatever its uri. As
 // with the pair Undo, a redelivered pair Reject cannot be told from a new one, and ends a later generation too.
+type OurFollow = { id: string; follower: string };
+
 // By the id, the local accounts drive, each one's follow of the actor sought by follows_pair (no index holds a follow's
 // uri; local accounts are operator-sized: docs/threat-model.md, "Deployment assumptions"). The uri is not unique (an
-// import may repeat it): the follow of the follower the Follow names is probed first by its pair, and only when it does
+// import may repeat it): the follow of the follower the object names is probed first by its pair, and only when it does
 // not carry the uri does the oldest under the uri answer.
-function ourFollow(
+function ourFollowById(db: Db, actor: RemoteRow, ref: ActivityRef): OurFollow | undefined {
+  if (ref.id === null) {
+    return undefined;
+  }
+  const named = localAccount(db, ref.actor);
+  return (
+    (named === undefined
+      ? undefined
+      : db.first<OurFollow>(
+          `SELECT CAST(id AS TEXT) AS id, account_id AS follower FROM follows INDEXED BY follows_pair
+					WHERE account_id = ? AND target_account_id = ? AND uri = ?`,
+          named.id,
+          actor.id,
+          ref.id,
+        )) ??
+    db.first<OurFollow>(
+      `SELECT CAST(f.id AS TEXT) AS id, f.account_id AS follower FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
+				CROSS JOIN follows f INDEXED BY follows_pair ON f.account_id = l.account_id AND f.target_account_id = ?2
+				WHERE f.uri = ?1
+				ORDER BY f.id LIMIT 1`,
+      ref.id,
+      actor.id,
+    )
+  );
+}
+
+function ourFollowByPair(
   db: Db,
   actor: RemoteRow,
   ref: ActivityRef,
   pairReject = false,
-): { id: string; follower: string } | "not-target" | null {
+): OurFollow | "not-target" | null {
   if (ref.object !== null && ref.object !== actor.uri) {
     return "not-target";
   }
-  if (ref.type !== null && ref.type !== "Follow") {
-    return null;
-  }
-  if (ref.id !== null) {
-    const named = localAccount(db, ref.actor);
-    const byUri =
-      (named === undefined
-        ? undefined
-        : db.first<{ id: string; follower: string }>(
-            `SELECT CAST(id AS TEXT) AS id, account_id AS follower FROM follows INDEXED BY follows_pair
-					WHERE account_id = ? AND target_account_id = ? AND uri = ?`,
-            named.id,
-            actor.id,
-            ref.id,
-          )) ??
-      db.first<{ id: string; follower: string }>(
-        `SELECT CAST(f.id AS TEXT) AS id, f.account_id AS follower FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX}
-				CROSS JOIN follows f INDEXED BY follows_pair ON f.account_id = l.account_id AND f.target_account_id = ?2
-				WHERE f.uri = ?1
-				ORDER BY f.id LIMIT 1`,
-        ref.id,
-        actor.id,
-      );
-    if (byUri !== undefined) {
-      return byUri;
-    }
-  }
-  if (ref.object === null) {
+  if (ref.object === null || (ref.type !== null && ref.type !== "Follow")) {
     return null;
   }
   const follower = localAccount(db, ref.actor);
@@ -826,12 +830,13 @@ function ourFollow(
 }
 
 const accept: Handler<"Accept"> = (db, actor, activity, { now }) => {
-  if (isQuoteAnswer(activity.object)) {
+  const named = ourFollowById(db, actor, activity.object);
+  if (named === undefined && isQuoteAnswer(activity.object)) {
     return acceptOurQuote(db, actor, activity.object.id, activity.result ?? null, now)
       ? applied("quote-accepted")
       : ignored("quote-unchanged");
   }
-  const edge = ourFollow(db, actor, activity.object);
+  const edge = named ?? ourFollowByPair(db, actor, activity.object);
   if (edge === null || edge === "not-target") {
     return ignored(edge ?? "unknown-follow");
   }
@@ -845,10 +850,11 @@ const accept: Handler<"Accept"> = (db, actor, activity, { now }) => {
 
 // Mastodon's Reject removes our Follow, including an accepted one; quote handling: quotes.ts rejectOurQuote.
 const reject: Handler<"Reject"> = (db, actor, activity, { now }) => {
-  if (isQuoteAnswer(activity.object)) {
+  const named = ourFollowById(db, actor, activity.object);
+  if (named === undefined && isQuoteAnswer(activity.object)) {
     return rejectOurQuote(db, actor, activity.object.id, now) ? applied("quote-rejected") : ignored("quote-unchanged");
   }
-  const edge = ourFollow(db, actor, activity.object, true);
+  const edge = named ?? ourFollowByPair(db, actor, activity.object, true);
   if (edge === null || edge === "not-target") {
     return ignored(edge ?? "unknown-follow");
   }
@@ -858,10 +864,13 @@ const reject: Handler<"Reject"> = (db, actor, activity, { now }) => {
 };
 
 // An answer to our QuoteRequest: an inlined QuoteRequest, or its id (the quoting status's uri with #quote-request,
-// activities.ts quoteRequestUri), which no Follow of ours carries. Either is matched by its id only (quotes.ts
+// activities.ts quoteRequestUri), which no Follow of ours carries, untyped or typed with a name Mastodon reads as a
+// blank node (an LD-signed body whose context leaves QuoteRequest undefined, ld-signed-body.ts namedAsCompacted:
+// Mastodon's Accept and Reject seek the quote by the id whatever the type). Either is matched by its id only (quotes.ts
 // answeredQuote), so an inlined QuoteRequest under another id changes nothing (quote-unchanged).
 function isQuoteAnswer(ref: ActivityRef): boolean {
-  return ref.type === "QuoteRequest" || (ref.type === null && ref.id !== null && ref.id.endsWith("#quote-request"));
+  const untyped = ref.type === null || ref.type.startsWith("_:");
+  return ref.type === "QuoteRequest" || (untyped && ref.id !== null && ref.id.endsWith("#quote-request"));
 }
 
 // Undo of a Follow or a Block. The undone activity is found by its id among the actor's own edges. Without a match,

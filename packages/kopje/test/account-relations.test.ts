@@ -239,6 +239,11 @@ describe("endorsements", () => {
     expect((await all.json<{ id: string }[]>()).map((a) => a.id)).toEqual(others.toReversed());
     const page = await h.request("/api/v1/endorsements?limit=1", bearer(alice.token));
     expect(page.headers.get("link")).toContain(`max_id=${others[2]}`);
+    // limit as Rails' params hold it, the last value: unlimited when that is "0".
+    const lastZero = await h.request("/api/v1/endorsements?limit=1&limit=0", bearer(alice.token));
+    expect([lastZero.headers.get("link"), (await lastZero.json<unknown[]>()).length]).toEqual([null, 3]);
+    const lastOne = await h.request("/api/v1/endorsements?limit=0&limit=1", bearer(alice.token));
+    expect((await lastOne.json<unknown[]>()).length).toBe(1);
     // read:accounts, with a user.
     expect((await h.request("/api/v1/endorsements")).status).toBe(401);
     expect((await h.request("/api/v1/endorsements", bearer(await scopedToken(h, "write")))).status).toBe(403);

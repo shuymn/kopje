@@ -10,11 +10,12 @@ import {
   withParams,
 } from "./context";
 import { recordNotFound } from "./errors";
-import { pageQuery, pageResponse } from "./pagination";
-import { limitParam, type Params, parseBoolean } from "./params";
+import { feedPageQuery, pageQuery, pageResponse } from "./pagination";
+import { type Params, parseBoolean } from "./params";
 
 // Timelines: home, a list's, public, hashtag, link, an account's statuses, bookmarks and favourites. Status
-// lists default to 20 and allow up to 40, as Mastodon's.
+// lists default to 20 and allow up to 40, as Mastodon's; a limit of 0 answers the first five (Timelines::*Controller)
+// with no statuses and no Link (feedPageQuery).
 
 const STATUS_LIMIT = 20;
 const MAX_STATUS_LIMIT = 40;
@@ -22,7 +23,7 @@ const MAX_STATUS_LIMIT = 40;
 const MAX_EXTRA_TAGS = 4;
 
 export const home: ApiHandler = withParams(async (c, deps, p) => {
-  const page = pageQuery(p, STATUS_LIMIT, MAX_STATUS_LIMIT);
+  const page = feedPageQuery(p, STATUS_LIMIT, MAX_STATUS_LIMIT);
   const credential = userCredential(c, deps);
   const result = await storeCall(c, deps, (s, b) => s.homeTimeline(b, { credential, page, present: present(c) }));
   return pageResponse(c, authorized(result), page.limit);
@@ -30,7 +31,7 @@ export const home: ApiHandler = withParams(async (c, deps, p) => {
 
 // A list that is not the viewer's is not found (Timelines::ListController#set_list).
 export const listTimeline: ApiHandler = withParams(async (c, deps, p) => {
-  const page = pageQuery(p, STATUS_LIMIT, MAX_STATUS_LIMIT);
+  const page = feedPageQuery(p, STATUS_LIMIT, MAX_STATUS_LIMIT);
   const input = { credential: userCredential(c, deps), id: c.req.param("id") ?? "", page, present: present(c) };
   const result = authorized(await storeCall(c, deps, (s, b) => s.listTimeline(b, input)));
   if (result === null) {
@@ -40,7 +41,7 @@ export const listTimeline: ApiHandler = withParams(async (c, deps, p) => {
 });
 
 export const publicTimeline: ApiHandler = withParams(async (c, deps, p) => {
-  const page = pageQuery(p, STATUS_LIMIT, MAX_STATUS_LIMIT);
+  const page = feedPageQuery(p, STATUS_LIMIT, MAX_STATUS_LIMIT);
   const credential = optionalCredential(c, deps);
   const result = await storeCall(c, deps, (s, b) =>
     s.publicTimeline(b, {
@@ -57,7 +58,7 @@ export const publicTimeline: ApiHandler = withParams(async (c, deps, p) => {
 });
 
 export const tagTimeline: ApiHandler = withParams(async (c, deps, p) => {
-  const page = pageQuery(p, STATUS_LIMIT, MAX_STATUS_LIMIT);
+  const page = feedPageQuery(p, STATUS_LIMIT, MAX_STATUS_LIMIT);
   const tags = (name: string) =>
     p
       .getAll(name)
@@ -83,12 +84,9 @@ export const tagTimeline: ApiHandler = withParams(async (c, deps, p) => {
 });
 
 // GET /api/v1/timelines/link (Api::V1::Timelines::LinkController): a link that has no timeline now, or trends off, is
-// not found (MD-5). `limit` as limit_param reads it, so 0 answers no statuses and no Link header.
+// not found (MD-5).
 export const linkTimeline: ApiHandler = withParams(async (c, deps, p) => {
-  const page = {
-    ...pageQuery(p, STATUS_LIMIT, MAX_STATUS_LIMIT),
-    limit: limitParam(p, STATUS_LIMIT, MAX_STATUS_LIMIT),
-  };
+  const page = feedPageQuery(p, STATUS_LIMIT, MAX_STATUS_LIMIT);
   const credential = optionalCredential(c, deps);
   const url = p.get("url") ?? null;
   const result = authorized(
@@ -111,7 +109,8 @@ function linkTimelineLinks(c: ApiContext, p: Params, page: Page<unknown>): void 
   const at = (name: "max_id" | "min_id", id: string) => {
     const target = new URL("/api/v1/timelines/link", c.req.url);
     for (const key of ["url", "limit"]) {
-      const value = p.get(key);
+      // `limit` as the page reads it (limitParam).
+      const value = key === "limit" ? p.last(key) : p.get(key);
       if (value !== undefined) {
         target.searchParams.set(key, value);
       }

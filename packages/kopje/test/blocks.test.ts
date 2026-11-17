@@ -14,7 +14,7 @@ import { severCollections } from "../src/domain/collections";
 import { JOB_RETRY_DELAYS_MS } from "../src/domain/job-attempts";
 import { publicTimeline } from "../src/domain/timelines";
 import { sha256Hex } from "../src/security/tokens";
-import { type ApiHarness, bearer, json, login, settleDeliveries, sql } from "./api-helpers";
+import { type ApiHarness, bearer, form, json, login, settleDeliveries, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD, claimSent, runStoreJobs } from "./helpers";
 import { watchedCursor } from "./read-helpers";
@@ -755,6 +755,46 @@ describe("mutes", () => {
       muting: true,
       muting_expires_at: "9999-12-31T23:59:59.999Z",
     });
+  });
+
+  // params[:duration] as Rails holds it: the last value, the query's over the body's; then Ruby's to_i.
+  it("reads duration as Rails' last value, by Ruby's to_i", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const path = `/api/v1/accounts/${bob.id}/mute`;
+    const expiry = async (query: string, durations: string[]) => {
+      const response = await h.request(
+        `${path}${query}`,
+        bearer(alice.token, form(durations.map((duration): [string, string] => ["duration", duration]))),
+      );
+      expect(response.status).toBe(200);
+      return (await response.json<Relationship>()).muting_expires_at;
+    };
+    const after = (seconds: number) => new Date(NOW + seconds * 1000).toISOString();
+    expect(await expiry("", ["1_0"])).toBe(after(10));
+    expect(await expiry("", ["5", "0d20"])).toBe(after(20));
+    expect(await expiry("?duration=30", ["5"])).toBe(after(30));
+  });
+
+  // Rails' JSON params keep a number as a Float, which Ruby's to_i truncates; the same text sent as a string is read by
+  // String#to_i.
+  it("reads a JSON number duration by Ruby's to_i of the number", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const path = `/api/v1/accounts/${bob.id}/mute`;
+    const after = (seconds: number) => new Date(NOW + seconds * 1000).toISOString();
+    for (const [duration, expected] of [
+      [1e-7, null],
+      ["1e-7", after(1)],
+      [-0.5, null],
+      [1.5e3, after(1500)],
+      ["1.5e3", after(1)],
+      [1e21, "9999-12-31T23:59:59.999Z"],
+      ["1e21", after(1)],
+    ] as const) {
+      const relationship = await relate(h, alice, path, { duration });
+      expect([duration, relationship.muting_expires_at]).toEqual([duration, expected]);
+    }
   });
 
   it("hides the muted account from timelines and search; notifications only when it mutes them", async () => {

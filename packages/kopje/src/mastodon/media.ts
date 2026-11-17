@@ -23,7 +23,7 @@ import {
   withParams,
 } from "./context";
 import { mastodonError, recordNotFound } from "./errors";
-import { type FileRule, type Params, parseBody } from "./params";
+import { type FileRule, type ParamEntry, type Params, parseBody } from "./params";
 
 // /api/v1/media and /api/v2/media: upload, read and describe own unattached media.
 //
@@ -167,7 +167,7 @@ async function readMediaForm(request: Request, ms: number): Promise<MediaForm> {
   // presence and refused, and a description is judged by its own rule, so neither length is bounded here (the body's
   // is).
   const params = form.withQuery([...new URL(request.url).searchParams.entries()], UPLOAD_FILES);
-  const long = ([key, value]: readonly [string, string]) =>
+  const long = ([key, value]: ParamEntry) =>
     key !== "thumbnail" && key !== "description" && value.length > MAX_FIELD_LENGTH;
   if (params.entries.length > MAX_FIELDS || params.entries.some(long)) {
     return { error: "Validation failed: A form field is too long" };

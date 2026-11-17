@@ -10,8 +10,8 @@ import {
 } from "./context";
 import { mastodonError, recordNotFound } from "./errors";
 import { supportedTypes } from "./notifications";
-import { linkHeader, pageQuery, pageResponse } from "./pagination";
-import { type Params, parseBoolean } from "./params";
+import { feedPageQuery, linkHeader, pageQuery, pageResponse } from "./pagination";
+import { limitParam, type Params, parseBoolean } from "./params";
 
 // Grouped notifications (Mastodon 4.5's /api/v2/notifications) and the unread counts of /api/v1 and /api/v2; the Store
 // does the work (domain/notification-groups.ts).
@@ -26,16 +26,9 @@ const includeFiltered = (p: Params) => parseBoolean(p.get("include_filtered")) =
 // grouped_types[]: null when not sent (every groupable type), else the types sent.
 const groupedTypes = (p: Params) => (p.has("grouped_types") ? p.getAll("grouped_types") : null);
 
-// Ruby's String#to_i: the leading integer, 0 without one.
-function rubyInteger(value: string): number {
-  const match = /^\s*([+-]?\d+)/.exec(value);
-  return match?.[1] === undefined ? 0 : Number(match[1]);
-}
-
 // Api::BaseController#limit_param(DEFAULT_NOTIFICATIONS_COUNT_LIMIT, MAX_NOTIFICATIONS_COUNT_LIMIT).
 function unreadLimit(p: Params): number {
-  const limit = p.get("limit");
-  return limit === undefined ? DEFAULT_UNREAD_LIMIT : Math.min(Math.abs(rubyInteger(limit)), MAX_UNREAD_LIMIT);
+  return limitParam(p, DEFAULT_UNREAD_LIMIT, MAX_UNREAD_LIMIT);
 }
 
 // GET /api/v2/notifications: types[], exclude_types[], grouped_types[], include_filtered, expand_accounts,
@@ -52,7 +45,7 @@ export const listGroupedNotifications: ApiHandler = withParams(async (c, deps, p
       ),
     );
   }
-  const page = pageQuery(p);
+  const page = feedPageQuery(p);
   const credential = userCredential(c, deps);
   const { next, prev, ...grouped } = authorized(
     await storeCall(c, deps, (s, b) =>

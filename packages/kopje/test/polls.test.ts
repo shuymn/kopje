@@ -18,7 +18,7 @@ import {
 } from "../src/domain/polls";
 import { endPolls } from "../src/jobs/scheduled";
 import { API_BODY_LIMIT } from "../src/mastodon/params";
-import { type ApiHarness, bearer, json, settle, sql } from "./api-helpers";
+import { type ApiHarness, bearer, form, json, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
 import { remoteAccounts, staleStatistics, watchedCursor } from "./read-helpers";
@@ -189,6 +189,20 @@ describe("posting a poll", () => {
     });
   });
 
+  // Rails' JSON params keep a number as a Float, which Expireable#expires_in= reads by Ruby's to_i; the same text sent
+  // as a string is read by String#to_i.
+  it("reads a JSON number expires_in by Ruby's to_i of the number", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const deadline = async (expires_in: unknown) =>
+      refusal(await send(h, alice, "/api/v1/statuses", { status: "q", poll: { options: ["a", "b"], expires_in } }));
+    expect(await deadline(1e21)).toEqual({
+      status: 422,
+      body: { error: "Validation failed: Deadline is too far into the future" },
+    });
+    expect(await deadline("1e21")).toEqual({ status: 422, body: { error: "Validation failed: Deadline is too soon" } });
+  });
+
   // The strip is linear (platform/strip.ts): a choice with a run inside, filling the body (API_BODY_LIMIT), is read
   // within a generous time, with an invalid token (checked after the poll is read) and with alice's, whose 422 shows
   // the choice reached its length check.
@@ -338,6 +352,22 @@ describe("POST /api/v1/polls/:id/votes", () => {
     expect(await sql(h.store, "SELECT tallies, votes_count, voters_count FROM polls")).toEqual([
       { tallies: "[1,2,1]", votes_count: 4, voters_count: 2 },
     ]);
+  });
+
+  // VoteService reads each choice by Ruby's Integer(): a base prefix, a leading 0 as octal, underscores, ASCII
+  // whitespace around it; a JSON number by its to_i. One Integer() raises on is no choice (Mastodon answers 500).
+  it("reads each choice by Ruby's Integer()", async () => {
+    const h = await community(["alice", "bob", "carol", "dave"]);
+    const { alice, bob, carol, dave } = h.users;
+    const multiple = await polled(h, alice, { options: ["a", "b", "c", "d"], expires_in: 600, multiple: true });
+    const response = await voteOn(h, bob, multiple.id, ["0d1", "0b10", " 0x3\n", "0_0"]);
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(await response.json()).toMatchObject({ own_votes: [1, 2, 3, 0] });
+    expect(await (await voteOn(h, carol, multiple.id, [1.9, "02"])).json()).toMatchObject({ own_votes: [1, 2] });
+    const invalid = { status: 422, body: { error: "Validation failed: The chosen vote option does not exist" } };
+    for (const choice of ["010", "08", "1.5", "1e0", "1__0", "\u00a01", "0x"]) {
+      expect([choice, await refusal(await voteOn(h, dave, multiple.id, [choice]))]).toEqual([choice, invalid]);
+    }
   });
 
   it("refuses a vote as Mastodon's VoteValidator does, counting nothing", async () => {
@@ -548,6 +578,54 @@ describe("the Update of a local poll", () => {
 });
 
 describe("editing a status with a poll", () => {
+  // poll[expires_in] as Rails' params hold it: the last value; then Ruby's to_i. The query's `poll` replaces the
+  // body's whole (a shallow merge), so a query poll[expires_in] alone leaves the poll without choices.
+  it("reads poll[expires_in] as Rails' last value on a post and an edit", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const request = (path: string, method: string, query: string, durations: string[]) => {
+      const fields: [string, string][] = [
+        ["status", "q"],
+        ["poll[options][]", "a"],
+        ["poll[options][]", "b"],
+        ...durations.map((duration): [string, string] => ["poll[expires_in]", duration]),
+      ];
+      return h.request(`${path}${query}`, bearer(alice.token, form(fields, { method })));
+    };
+    const sent = async (path: string, method: string, query: string, durations: string[]) => {
+      const response = await request(path, method, query, durations);
+      expect(response.status, await response.clone().text()).toBe(200);
+      return response.json<PolledStatus>();
+    };
+    const query = (pairs: [string, string][]) => `?${new URLSearchParams(pairs).toString()}`;
+    const alone = query([["poll[expires_in]", "900"]]);
+    const whole = query([
+      ["poll[options][]", "c"],
+      ["poll[options][]", "d"],
+      ["poll[expires_in]", "900"],
+    ]);
+    const created = await sent("/api/v1/statuses", "POST", "", ["300", "600"]);
+    expect(created.poll?.expires_at).toBe(at(NOW + 600_000));
+    const replaced = (await sent("/api/v1/statuses", "POST", whole, ["600"])).poll;
+    expect([replaced?.expires_at, replaced?.options.map((o) => o.title)]).toEqual([at(NOW + 900_000), ["c", "d"]]);
+    expect((await sent("/api/v1/statuses", "POST", "", ["0d1200"])).poll?.expires_at).toBe(at(NOW + 1_200_000));
+    const path = `/api/v1/statuses/${created.id}`;
+    expect((await sent(path, "PUT", "", ["300", "600"])).poll?.expires_at).toBe(at(NOW + 600_000));
+    expect((await sent(path, "PUT", whole, ["600"])).poll?.expires_at).toBe(at(NOW + 900_000));
+    for (const [route, method] of [
+      ["/api/v1/statuses", "POST"],
+      [path, "PUT"],
+    ] as const) {
+      expect([route, await refusal(await request(route, method, alone, ["600"]))]).toEqual([
+        route,
+        {
+          status: 422,
+          body: { error: "Validation failed: Choices can't be blank, Choices must have more than one item" },
+        },
+      ]);
+    }
+  });
+
   it("keeps the votes when the choices stay, drops them when they change, and removes a poll not sent", async () => {
     const h = await community(["alice", "bob"]);
     const { alice, bob } = h.users;

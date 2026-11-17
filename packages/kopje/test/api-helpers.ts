@@ -296,7 +296,8 @@ export function json(body: unknown, init: RequestInit = {}): RequestInit {
   };
 }
 
-export function form(body: Record<string, string>, init: RequestInit = {}): RequestInit {
+// A urlencoded body: pairs keep a repeated name.
+export function form(body: Record<string, string> | [string, string][], init: RequestInit = {}): RequestInit {
   return {
     method: "POST",
     ...init,

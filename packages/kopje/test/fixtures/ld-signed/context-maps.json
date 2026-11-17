@@ -1,0 +1,429 @@
+[
+  {
+    "releases": ["v3.5.0", "v4.1.25"],
+    "definitions": {
+      "manuallyApprovesFollowers": ["as:manuallyApprovesFollowers"],
+      "sensitive": ["as:sensitive"],
+      "Hashtag": ["as:Hashtag"],
+      "movedTo": [
+        {
+          "@id": "as:movedTo",
+          "@type": "@id"
+        }
+      ],
+      "alsoKnownAs": [
+        {
+          "@id": "as:alsoKnownAs",
+          "@type": "@id"
+        }
+      ],
+      "toot": ["http://joinmastodon.org/ns#"],
+      "Emoji": ["toot:Emoji"],
+      "featured": [
+        {
+          "@id": "toot:featured",
+          "@type": "@id"
+        }
+      ],
+      "featuredTags": [
+        {
+          "@id": "toot:featuredTags",
+          "@type": "@id"
+        }
+      ],
+      "schema": ["http://schema.org#"],
+      "PropertyValue": ["schema:PropertyValue"],
+      "value": ["schema:value"],
+      "ostatus": ["http://ostatus.org#"],
+      "atomUri": ["ostatus:atomUri"],
+      "inReplyToAtomUri": ["ostatus:inReplyToAtomUri"],
+      "conversation": ["ostatus:conversation"],
+      "focalPoint": [
+        {
+          "@container": "@list",
+          "@id": "toot:focalPoint"
+        }
+      ],
+      "blurhash": ["toot:blurhash"],
+      "discoverable": ["toot:discoverable"],
+      "votersCount": ["toot:votersCount"],
+      "Device": ["toot:Device"],
+      "Ed25519Signature": ["toot:Ed25519Signature"],
+      "Ed25519Key": ["toot:Ed25519Key"],
+      "Curve25519Key": ["toot:Curve25519Key"],
+      "EncryptedMessage": ["toot:EncryptedMessage"],
+      "publicKeyBase64": ["toot:publicKeyBase64"],
+      "deviceId": ["toot:deviceId"],
+      "claim": [
+        {
+          "@type": "@id",
+          "@id": "toot:claim"
+        }
+      ],
+      "fingerprintKey": [
+        {
+          "@type": "@id",
+          "@id": "toot:fingerprintKey"
+        }
+      ],
+      "identityKey": [
+        {
+          "@type": "@id",
+          "@id": "toot:identityKey"
+        }
+      ],
+      "devices": [
+        {
+          "@type": "@id",
+          "@id": "toot:devices"
+        }
+      ],
+      "messageFranking": ["toot:messageFranking"],
+      "messageType": ["toot:messageType"],
+      "cipherText": ["toot:cipherText"],
+      "suspended": ["toot:suspended"]
+    }
+  },
+  {
+    "releases": ["v4.2.0", "v4.2.20"],
+    "definitions": {
+      "manuallyApprovesFollowers": ["as:manuallyApprovesFollowers"],
+      "sensitive": ["as:sensitive"],
+      "Hashtag": ["as:Hashtag"],
+      "movedTo": [
+        {
+          "@id": "as:movedTo",
+          "@type": "@id"
+        }
+      ],
+      "alsoKnownAs": [
+        {
+          "@id": "as:alsoKnownAs",
+          "@type": "@id"
+        }
+      ],
+      "toot": ["http://joinmastodon.org/ns#"],
+      "Emoji": ["toot:Emoji"],
+      "featured": [
+        {
+          "@id": "toot:featured",
+          "@type": "@id"
+        }
+      ],
+      "featuredTags": [
+        {
+          "@id": "toot:featuredTags",
+          "@type": "@id"
+        }
+      ],
+      "schema": ["http://schema.org#"],
+      "PropertyValue": ["schema:PropertyValue"],
+      "value": ["schema:value"],
+      "ostatus": ["http://ostatus.org#"],
+      "atomUri": ["ostatus:atomUri"],
+      "inReplyToAtomUri": ["ostatus:inReplyToAtomUri"],
+      "conversation": ["ostatus:conversation"],
+      "focalPoint": [
+        {
+          "@container": "@list",
+          "@id": "toot:focalPoint"
+        }
+      ],
+      "blurhash": ["toot:blurhash"],
+      "discoverable": ["toot:discoverable"],
+      "indexable": ["toot:indexable"],
+      "memorial": ["toot:memorial"],
+      "votersCount": ["toot:votersCount"],
+      "Device": ["toot:Device"],
+      "Ed25519Signature": ["toot:Ed25519Signature"],
+      "Ed25519Key": ["toot:Ed25519Key"],
+      "Curve25519Key": ["toot:Curve25519Key"],
+      "EncryptedMessage": ["toot:EncryptedMessage"],
+      "publicKeyBase64": ["toot:publicKeyBase64"],
+      "deviceId": ["toot:deviceId"],
+      "claim": [
+        {
+          "@type": "@id",
+          "@id": "toot:claim"
+        }
+      ],
+      "fingerprintKey": [
+        {
+          "@type": "@id",
+          "@id": "toot:fingerprintKey"
+        }
+      ],
+      "identityKey": [
+        {
+          "@type": "@id",
+          "@id": "toot:identityKey"
+        }
+      ],
+      "devices": [
+        {
+          "@type": "@id",
+          "@id": "toot:devices"
+        }
+      ],
+      "messageFranking": ["toot:messageFranking"],
+      "messageType": ["toot:messageType"],
+      "cipherText": ["toot:cipherText"],
+      "suspended": ["toot:suspended"]
+    }
+  },
+  {
+    "releases": ["v4.2.21", "v4.2.29"],
+    "definitions": {
+      "manuallyApprovesFollowers": ["as:manuallyApprovesFollowers"],
+      "sensitive": ["as:sensitive"],
+      "Hashtag": ["as:Hashtag"],
+      "movedTo": [
+        {
+          "@id": "as:movedTo",
+          "@type": "@id"
+        }
+      ],
+      "alsoKnownAs": [
+        {
+          "@id": "as:alsoKnownAs",
+          "@type": "@id"
+        }
+      ],
+      "toot": ["http://joinmastodon.org/ns#"],
+      "Emoji": ["toot:Emoji"],
+      "featured": [
+        {
+          "@id": "toot:featured",
+          "@type": "@id"
+        }
+      ],
+      "featuredTags": [
+        {
+          "@id": "toot:featuredTags",
+          "@type": "@id"
+        }
+      ],
+      "schema": ["http://schema.org#"],
+      "PropertyValue": ["schema:PropertyValue"],
+      "value": ["schema:value"],
+      "ostatus": ["http://ostatus.org#"],
+      "atomUri": ["ostatus:atomUri"],
+      "inReplyToAtomUri": ["ostatus:inReplyToAtomUri"],
+      "conversation": ["ostatus:conversation"],
+      "focalPoint": [
+        {
+          "@container": "@list",
+          "@id": "toot:focalPoint"
+        }
+      ],
+      "blurhash": ["toot:blurhash"],
+      "discoverable": ["toot:discoverable"],
+      "indexable": ["toot:indexable"],
+      "memorial": ["toot:memorial"],
+      "votersCount": ["toot:votersCount"],
+      "Device": ["toot:Device"],
+      "Ed25519Signature": ["toot:Ed25519Signature"],
+      "Ed25519Key": ["toot:Ed25519Key"],
+      "Curve25519Key": ["toot:Curve25519Key"],
+      "EncryptedMessage": ["toot:EncryptedMessage"],
+      "publicKeyBase64": ["toot:publicKeyBase64"],
+      "deviceId": ["toot:deviceId"],
+      "claim": [
+        {
+          "@type": "@id",
+          "@id": "toot:claim"
+        }
+      ],
+      "fingerprintKey": [
+        {
+          "@type": "@id",
+          "@id": "toot:fingerprintKey"
+        }
+      ],
+      "identityKey": [
+        {
+          "@type": "@id",
+          "@id": "toot:identityKey"
+        }
+      ],
+      "devices": [
+        {
+          "@type": "@id",
+          "@id": "toot:devices"
+        }
+      ],
+      "messageFranking": ["toot:messageFranking"],
+      "messageType": ["toot:messageType"],
+      "cipherText": ["toot:cipherText"],
+      "suspended": ["toot:suspended"],
+      "gts": ["https://gotosocial.org/ns#"],
+      "interactionPolicy": [
+        {
+          "@id": "gts:interactionPolicy",
+          "@type": "@id"
+        }
+      ],
+      "canQuote": [
+        {
+          "@id": "gts:canQuote",
+          "@type": "@id"
+        }
+      ],
+      "automaticApproval": [
+        {
+          "@id": "gts:automaticApproval",
+          "@type": "@id"
+        }
+      ],
+      "manualApproval": [
+        {
+          "@id": "gts:manualApproval",
+          "@type": "@id"
+        }
+      ]
+    }
+  },
+  {
+    "releases": ["v4.3.0", "v4.3.7"],
+    "definitions": {
+      "manuallyApprovesFollowers": ["as:manuallyApprovesFollowers"],
+      "sensitive": ["as:sensitive"],
+      "Hashtag": ["as:Hashtag"],
+      "movedTo": [
+        {
+          "@id": "as:movedTo",
+          "@type": "@id"
+        }
+      ],
+      "alsoKnownAs": [
+        {
+          "@id": "as:alsoKnownAs",
+          "@type": "@id"
+        }
+      ],
+      "toot": ["http://joinmastodon.org/ns#"],
+      "Emoji": ["toot:Emoji"],
+      "featured": [
+        {
+          "@id": "toot:featured",
+          "@type": "@id"
+        }
+      ],
+      "featuredTags": [
+        {
+          "@id": "toot:featuredTags",
+          "@type": "@id"
+        }
+      ],
+      "schema": ["http://schema.org#"],
+      "PropertyValue": ["schema:PropertyValue"],
+      "value": ["schema:value"],
+      "ostatus": ["http://ostatus.org#"],
+      "atomUri": ["ostatus:atomUri"],
+      "inReplyToAtomUri": ["ostatus:inReplyToAtomUri"],
+      "conversation": ["ostatus:conversation"],
+      "focalPoint": [
+        {
+          "@container": "@list",
+          "@id": "toot:focalPoint"
+        }
+      ],
+      "blurhash": ["toot:blurhash"],
+      "discoverable": ["toot:discoverable"],
+      "indexable": ["toot:indexable"],
+      "memorial": ["toot:memorial"],
+      "votersCount": ["toot:votersCount"],
+      "suspended": ["toot:suspended"],
+      "attributionDomains": [
+        {
+          "@id": "toot:attributionDomains",
+          "@type": "@id"
+        }
+      ]
+    }
+  },
+  {
+    "releases": ["v4.3.8", "v4.3.23"],
+    "definitions": {
+      "manuallyApprovesFollowers": ["as:manuallyApprovesFollowers"],
+      "sensitive": ["as:sensitive"],
+      "Hashtag": ["as:Hashtag"],
+      "movedTo": [
+        {
+          "@id": "as:movedTo",
+          "@type": "@id"
+        }
+      ],
+      "alsoKnownAs": [
+        {
+          "@id": "as:alsoKnownAs",
+          "@type": "@id"
+        }
+      ],
+      "toot": ["http://joinmastodon.org/ns#"],
+      "Emoji": ["toot:Emoji"],
+      "featured": [
+        {
+          "@id": "toot:featured",
+          "@type": "@id"
+        }
+      ],
+      "featuredTags": [
+        {
+          "@id": "toot:featuredTags",
+          "@type": "@id"
+        }
+      ],
+      "schema": ["http://schema.org#"],
+      "PropertyValue": ["schema:PropertyValue"],
+      "value": ["schema:value"],
+      "ostatus": ["http://ostatus.org#"],
+      "atomUri": ["ostatus:atomUri"],
+      "inReplyToAtomUri": ["ostatus:inReplyToAtomUri"],
+      "conversation": ["ostatus:conversation"],
+      "focalPoint": [
+        {
+          "@container": "@list",
+          "@id": "toot:focalPoint"
+        }
+      ],
+      "blurhash": ["toot:blurhash"],
+      "discoverable": ["toot:discoverable"],
+      "indexable": ["toot:indexable"],
+      "memorial": ["toot:memorial"],
+      "votersCount": ["toot:votersCount"],
+      "suspended": ["toot:suspended"],
+      "attributionDomains": [
+        {
+          "@id": "toot:attributionDomains",
+          "@type": "@id"
+        }
+      ],
+      "gts": ["https://gotosocial.org/ns#"],
+      "interactionPolicy": [
+        {
+          "@id": "gts:interactionPolicy",
+          "@type": "@id"
+        }
+      ],
+      "canQuote": [
+        {
+          "@id": "gts:canQuote",
+          "@type": "@id"
+        }
+      ],
+      "automaticApproval": [
+        {
+          "@id": "gts:automaticApproval",
+          "@type": "@id"
+        }
+      ],
+      "manualApproval": [
+        {
+          "@id": "gts:manualApproval",
+          "@type": "@id"
+        }
+      ]
+    }
+  }
+]
