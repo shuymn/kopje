@@ -582,6 +582,32 @@ function marksSensitive(meaning: Meaning | undefined, value: unknown): boolean {
   return !asIs || typeof value === "number" || railsBoolean(value) === true;
 }
 
+// What a node's types' own contexts make its members mean, in the body (each type a name it defines) and in the
+// compaction (the name full_context gives the type's IRI), applied in the order of the names.
+function scopedMeanings(
+  types: unknown,
+  meanings: ReadonlyMap<string, Meaning>,
+): [Map<string, Meaning>, Map<string, Meaning>] {
+  const body = new Map<string, Meaning>();
+  const full = new Map<string, Meaning>();
+  for (const name of leaves(types)
+    .filter((type): type is string => typeof type === "string" && isName(type))
+    .toSorted(byCodePoint)) {
+    const meaning = meanings.get(name);
+    const iri = meaning?.iri ?? null;
+    const compacted = iri === null ? undefined : FULL_TYPE_NAMES.get(iri);
+    for (const [scoped, definitions] of [
+      [body, meaning?.scoped],
+      [full, compacted === undefined ? undefined : FULL_CONTEXT_MEANINGS.get(compacted)?.scoped],
+    ] as const) {
+      for (const [key, value] of definitions ?? []) {
+        scoped.set(key, value);
+      }
+    }
+  }
+  return [body, full];
+}
+
 // An LD-signed body with its names, as members and as types, read only where Mastodon's compaction under full_context
 // writes them so, whatever D5 decides (ID-1). Mastodon's readers read a member by its name only where the compaction
 // writes that name, and Kopje's readers, given this body, read one only there too; any other is renamed `_:name`, which
@@ -614,28 +640,6 @@ function namedAsCompacted(json: Json, meanings: ReadonlyMap<string, Meaning>): J
       : blank(name);
   };
   const typed = (value: unknown) => (typeof value === "string" && isName(value) ? typeNamed(value) : value);
-  // What a node's types' own contexts make its members mean, in the body (each type a name it defines) and in the
-  // compaction (the name full_context gives the type's IRI), applied in the order of the names.
-  const scopedBy = (types: unknown): [Map<string, Meaning>, Map<string, Meaning>] => {
-    const body = new Map<string, Meaning>();
-    const full = new Map<string, Meaning>();
-    for (const name of leaves(types)
-      .filter((type): type is string => typeof type === "string" && isName(type))
-      .toSorted(byCodePoint)) {
-      const meaning = meanings.get(name);
-      const iri = meaning?.iri ?? null;
-      const compacted = iri === null ? undefined : FULL_TYPE_NAMES.get(iri);
-      for (const [scoped, definitions] of [
-        [body, meaning?.scoped],
-        [full, compacted === undefined ? undefined : FULL_CONTEXT_MEANINGS.get(compacted)?.scoped],
-      ] as const) {
-        for (const [key, value] of definitions ?? []) {
-          scoped.set(key, value);
-        }
-      }
-    }
-    return [body, full];
-  };
   const member = (
     key: string,
     value: unknown,
@@ -655,7 +659,7 @@ function namedAsCompacted(json: Json, meanings: ReadonlyMap<string, Meaning>): J
     return [key, meaning?.containers.includes("@language") === true ? written : node(written)];
   };
   const members = (object: Json, kept?: ReadonlySet<string>): Json => {
-    const scoped = scopedBy(object.type);
+    const scoped = scopedMeanings(object.type, meanings);
     return Object.fromEntries(
       Object.entries(object).map(([key, value]) => (kept?.has(key) ? [key, value] : member(key, value, scoped))),
     );
@@ -1011,6 +1015,32 @@ function rulesRefuse(json: Json, { senderShapes = true }: Rules): boolean {
   return (senderShapes && !senderShaped(json)) || !bodyKeysReadable(json) || !typesSortable(json);
 }
 
+// The retractions (#1717): an LD-signed Reject, Undo, Block or Delete, by the name its type is read as (D5), is read in
+// the forms below as Mastodon's compaction writes them, where Kopje shows the compaction succeeds (mastodonCompacts);
+// anywhere else it is read as received. Each ends what its signer did or holds (a follow, a block, a favourite, a boost,
+// a status, its account, its acceptance of a follow) or lifts its own block, and the envelope holds its actor to the
+// signer (inbound.ts activityEnvelope), so that a misreading grants nothing the signer could not send directly under its
+// own HTTP signature. Every other type keeps the reading as received, where a misreading could grant something new.
+const RETRACTIONS: ReadonlySet<string> = new Set(["Reject", "Undo", "Block", "Delete"]);
+
+function retraction(type: unknown, prefixes: Prefixes): boolean {
+  if (typeof type !== "string") {
+    return false;
+  }
+  const name = isName(type) ? type : TYPE_NAMES.get(expand(type, (prefix) => prefixes.get(prefix)) ?? "");
+  return name !== undefined && RETRACTIONS.has(name);
+}
+
+// A retraction's actor as a one-element array of a string or a node with an id, read as its element: Mastodon tells a
+// relay by the actor of the compaction, which writes the array as its element (process_activity_service.rb
+// different_actor?), and applies the activity as its signer's (Activity.factory with the signer), whatever the patch
+// puts back. Two elements, or a null, are left as they are, so the envelope finds no actor.
+function actorAsCompacted(json: Json): Json {
+  const [actor, ...rest] = Array.isArray(json.actor) ? (json.actor as unknown[]) : [];
+  const single = rest.length === 0 && (typeof actor === "string" || (isObject(actor) && typeof actor.id === "string"));
+  return single ? { ...json, actor } : json;
+}
+
 // Whether an LD-signed activity is read (its signature an object), and then how its types are read and its body as
 // Mastodon's compaction names its members (namedAsCompacted): null when the rules refuse it. Run after
 // withinJsonBounds, so the work is bounded by its values, and a proof's expansion by Mastodon's 1,000 values and
@@ -1028,17 +1058,17 @@ export async function ldSignedReading(
     return null;
   }
   let compacts: boolean | undefined;
+  const shown = () => (compacts ??= mastodonCompacts(json, context.prefixes));
   const readType: TypeReader = (type) => {
     const iri = expand(type, (prefix) => context.prefixes.get(prefix));
     const name = iri === null ? undefined : TYPE_NAMES.get(iri);
-    if (name === undefined) {
-      return type;
-    }
-    compacts ??= mastodonCompacts(json, context.prefixes);
-    return compacts ? name : type;
+    return name !== undefined && shown() ? name : type;
   };
-  const asReceived = await mastodonReadsAsReceived(json, context.meanings);
-  return { readType, body: asReceived ? json : namedAsCompacted(json, context.meanings) };
+  if (await mastodonReadsAsReceived(json, context.meanings)) {
+    return { readType, body: json };
+  }
+  const read = retraction(json.type, context.prefixes) && shown() ? actorAsCompacted(json) : json;
+  return { readType, body: namedAsCompacted(read, context.meanings) };
 }
 
 // Whether the rules (1-5) read an LD-signed body at all (ldSignedReading is null for no other).
