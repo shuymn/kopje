@@ -64,10 +64,11 @@ describe("push subscription endpoints", () => {
     expect((await call(h, alice, "GET")).body).toEqual(patched.body);
 
     expect(await call(h, alice, "DELETE")).toEqual({ status: 200, body: {} });
-    expect(await call(h, alice, "GET")).toEqual({ status: 404, body: { error: "Record not found" } });
+    // check_push_subscription's not_found (respond_with_error(404)), for a read and an update alike.
+    expect(await call(h, alice, "GET")).toEqual({ status: 404, body: { error: "Not Found" } });
     expect(await call(h, alice, "PUT", { data: { policy: "all" } })).toEqual({
       status: 404,
-      body: { error: "Record not found" },
+      body: { error: "Not Found" },
     });
     // Deleting nothing still answers {}.
     expect(await call(h, alice, "DELETE")).toEqual({ status: 200, body: {} });

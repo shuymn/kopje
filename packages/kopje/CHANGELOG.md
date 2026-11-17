@@ -503,6 +503,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `Validation failed: … can't be blank` (for the endpoint, `Endpoint can't be blank, Endpoint is invalid`), as
   Mastodon's validations do, where it answered `… is invalid`; an empty or absent one keeps its 400 (#1766). No Store
   migration and no `wrangler.jsonc` change.
+- `GET`, `PUT` and `PATCH /api/v1/push/subscription` for a token with no subscription answer 404 `Not Found`, as
+  Mastodon's do, where they answered `Record not found` (#1575). No Store migration and no `wrangler.jsonc` change.
 - A remote status's `sensitive` is read as Mastodon casts it to its boolean column, so any value but `false`, `0`, null
   and Rails' false strings (`"0"`, `"f"`, `"F"`, `"false"`, `"FALSE"`, `"off"`, `"OFF"`) marks it, where only `true`
   did (`"true"`, `1` and `[true]` now mark it), and an empty string refuses it where Mastodon's `NOT NULL` column

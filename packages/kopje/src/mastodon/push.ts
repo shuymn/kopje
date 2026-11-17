@@ -25,6 +25,8 @@ import { type Params, parseBoolean } from "./params";
 
 const MISSING = () => mastodonError(400, "param is missing or the value is empty or invalid: subscription");
 const invalid = (what: string) => mastodonError(422, `Validation failed: ${what}`);
+// check_push_subscription's not_found when the token has no subscription: Api::BaseController#respond_with_error(404).
+const NO_SUBSCRIPTION = () => mastodonError(404, "Not Found");
 
 const MAX_ENDPOINT_LENGTH = 2048;
 
@@ -133,7 +135,7 @@ export const getSubscription: ApiHandler = async (c, deps) => {
   }
   const credential = userCredential(c, deps);
   const subscription = authorized(await storeCall(c, deps, (s, b) => s.getPushSubscription(b, { credential })));
-  return subscription === null ? recordNotFound() : c.json(present(subscription, c.env));
+  return subscription === null ? NO_SUBSCRIPTION() : c.json(present(subscription, c.env));
 };
 
 export const updateSubscription: ApiHandler = withParams(async (c, deps, p) => {
@@ -148,7 +150,7 @@ export const updateSubscription: ApiHandler = withParams(async (c, deps, p) => {
   const subscription = authorized(
     await storeCall(c, deps, (s, b) => s.updatePushSubscription(b, { credential, ...data })),
   );
-  return subscription === null ? recordNotFound() : c.json(present(subscription, c.env));
+  return subscription === null ? NO_SUBSCRIPTION() : c.json(present(subscription, c.env));
 });
 
 export const deleteSubscription: ApiHandler = async (c, deps) => {
