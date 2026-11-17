@@ -342,7 +342,7 @@ function textPairs(input: string | Uint8Array): { pairs: FormPair[]; text: numbe
 }
 
 // One source's parameters and the UTF-8 bytes of its text as sent.
-type Source = { params: Params; text: number };
+type Source = { params: Params; formText: number };
 
 // The parameters of one source's pairs, in order, as Rack and then Rails nest them, each on a budget of its own:
 // refused (400) where either refuses (Rails: a key, or the value of a key with a top-level name, that is not UTF-8),
@@ -368,7 +368,7 @@ function formSource(input: { pairs: FormPair[]; text: number }, declared: Readon
       }
       store(RAILS, rails, name, value === undefined ? "" : value, 0, railsCharge);
     }
-    return { params: formParams(rails, declared, sent), text: input.text };
+    return { params: formParams(rails, declared, sent), formText: input.text };
   });
 }
 
@@ -450,7 +450,7 @@ export async function readParams(request: Request, options: ReadOptions = {}): P
   if (!("params" in read)) {
     return { ok: false, status: read.status };
   }
-  const query = options.bodyOnly === true ? { params: new Params([]), text: 0 } : read;
+  const query = options.bodyOnly === true ? { params: new Params([]), formText: 0 } : read;
   if (request.method === "GET" || request.method === "HEAD") {
     return { ok: true, params: query.params };
   }
@@ -473,7 +473,7 @@ export async function readParams(request: Request, options: ReadOptions = {}): P
   // A JSON body's names are generated, bounded by the path budget, and its values by the body; a form body's text,
   // every text part as sent (before a later one replaces it) and the query, is bounded here, so the files a multipart
   // body may carry cannot make room for more text.
-  if (formText !== null && formText + query.text > limit) {
+  if (formText !== null && formText + query.formText > limit) {
     return { ok: false, status: 413 };
   }
   return { ok: true, params };
@@ -511,8 +511,7 @@ async function parseCounted(
   }
   if (type === "application/x-www-form-urlencoded") {
     // Rack drops one NUL that ends the body (Request#form_pairs).
-    const source = formSource(textPairs(body.at(-1) === 0 ? body.subarray(0, -1) : body), declared);
-    return { params: source.params, formText: source.text };
+    return formSource(textPairs(body.at(-1) === 0 ? body.subarray(0, -1) : body), declared);
   }
   if (type === "multipart/form-data") {
     const form = await new Response(body, { headers: { "content-type": contentType } }).formData();
@@ -530,8 +529,7 @@ async function parseCounted(
     if (parts.length >= MULTIPART_PARTS || files >= MULTIPART_FILES) {
       throw new ParamsRefused(400);
     }
-    const source = formSource({ pairs: parts, text }, declared);
-    return { params: source.params, formText: source.text };
+    return formSource({ pairs: parts, text }, declared);
   }
   return { params: new Params([]), formText: null };
 }
