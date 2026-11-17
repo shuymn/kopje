@@ -782,6 +782,20 @@ const forms = {
   "Undo of a block, both typed as absolute IRIs, with an array in an array under a list": absoluteUndo({
     instrument: { orderedItems: [[ALICE]] },
   }),
+  // A proof of plain names given strings, which the ActivityStreams and security contexts leave undefined.
+  "Undo of a block, both typed as absolute IRIs, with a proof of plain names": absoluteUndo({
+    proof: { type: "DataIntegrityProof", cryptosuite: "eddsa-jcs-2022", proofValue: "z3placeholder" },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with two proofs of plain names": absoluteUndo({
+    proof: [
+      { type: "DataIntegrityProof", cryptosuite: "eddsa-jcs-2022", proofValue: "z3first" },
+      { type: "DataIntegrityProof", cryptosuite: "eddsa-jcs-2022", proofValue: "z3second" },
+    ],
+  }),
+  "Undo of a block, both typed as absolute IRIs, with a proof whose creator is over a prefix only full_context defines":
+    absoluteUndo({ proof: { type: "DataIntegrityProof", creator: "toot:key" } }),
+  "Undo of a block, both typed as absolute IRIs, with a proof whose @id is over a prefix only full_context defines":
+    absoluteUndo({ proof: { "@id": "toot:proof", type: "DataIntegrityProof" } }),
 };
 
 // The same bodies without a signature: read as received by both.

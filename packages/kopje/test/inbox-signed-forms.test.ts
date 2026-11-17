@@ -342,7 +342,6 @@ describe("D1: forms whose readings differ, each named by its class", () => {
   describe("reads less than Mastodon", () => {
     it.each([
       "under an inline context",
-      "with a proof of plain names",
       "with a number where an IRI is expected",
       "with a type naming id",
       "with a type naming type",
@@ -672,6 +671,7 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       "Undo of a block, both typed as IRIs",
       "Undo of a block, both typed as IRIs, with a language map tagged id and type",
       "Undo of a block, both typed as IRIs, with an array in an array",
+      "Undo of a block, both typed as IRIs, with a proof of plain names",
     ])("%s, in a body Mastodon compacts: both lift the block", async (name) => {
       expect(form(name).fallback).toBeUndefined();
       expect(accepted(await layered(form(name)))).toMatchObject({ type: "Undo", object: { type: "Block" } });
@@ -866,14 +866,13 @@ describe("D1: forms whose readings differ, each named by its class", () => {
         }
       }
       expect(names).toBeGreaterThanOrEqual(150);
-      expect(renamed.length).toBe(29);
+      expect(renamed.length).toBe(35);
       // Bodies Mastodon compacts outside the shape Kopje shows it compacts (an inline context, an array in an array,
       // a proof, a number where an IRI is expected, a type naming a keyword alias): their types are read as given, so
       // such an activity applies less than Mastodon's.
       expect([...kept]).toEqual([
         "Note type as an IRI",
         "Undo of a block, both typed as IRIs, under an inline context",
-        "Undo of a block, both typed as IRIs, with a proof of plain names",
         "Undo of a block, both typed as IRIs, with a number where an IRI is expected",
         "Undo of a block, both typed as IRIs, with a type naming id",
         "Undo of a block, both typed as IRIs, with a type naming type",
@@ -1740,6 +1739,7 @@ describe("rule (5): an LD-signed activity outside what real senders write is ign
       "QuoteRequest, its type left undefined, with a proof of a language alone",
       "QuoteRequest, its type left undefined, with a proof of an empty set",
       "QuoteRequest, its type left undefined, with a proof of an array of a null value",
+      "Undo of a block, both typed as absolute IRIs, with a proof whose @id is over a prefix only full_context defines",
     ],
   };
 

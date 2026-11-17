@@ -348,19 +348,15 @@ export function inlineDefinitionIris(context: unknown): Map<string, string> | nu
 
 // Rule (3): every key of every object in the body is a plain name, but the top-level @context (rules 1 and 2),
 // signature and proof. Mastodon leaves the signature out of the compaction; a proof it compacts as any other member,
-// keywords included, so the rule does not hold a proof's keys and D5 renames no type in a body that has one
-// (mastodonCompacts). Each value is visited once.
+// keywords included, so the rule does not hold a proof's keys and D5 renames no type in a body that has one but a
+// retraction's whose proof holds plain names only (mastodonCompacts).
 function bodyKeysReadable(json: Json): boolean {
-  const pending: unknown[] = [];
-  for (const [key, value] of Object.entries(json)) {
-    if (key === "@context" || key === "signature" || key === "proof") {
-      continue;
-    }
-    if (!isName(key)) {
-      return false;
-    }
-    pending.push(value);
-  }
+  return namedThroughout([Object.fromEntries(Object.entries(json).filter(([key]) => !AS_RECEIVED.has(key)))]);
+}
+
+// Whether every key of every object in `values`, at any depth, is a plain name. Each value is visited once.
+function namedThroughout(values: unknown[]): boolean {
+  const pending = [...values];
   while (pending.length > 0) {
     const value = pending.pop();
     if (Array.isArray(value)) {
@@ -407,6 +403,10 @@ function bodyKeysReadable(json: Json): boolean {
 //     too, as the compaction writes it as an IRI (one over a prefix only full_context defines raises);
 //   - an array directly in another, which JSON-LD's expansion flattens, but under a name either context gives a @list
 //     container (a list of lists);
+//   - a proof whose keys are plain names at any depth (rule 3 does not hold a proof's), which JSON-LD expands as any
+//     other member (its nodes held to the rules above), and the compaction writes as given: the contexts the shape takes
+//     leave `proof` undefined (the ActivityStreams and security contexts, and no sender's inline definition names it),
+//     so that it is no data-integrity proof's @graph container (mastodonReadsAsReceived);
 const JSONLD_BUDGET = 1_000;
 const UNSUPPORTED_JSONLD_KEYWORDS = new Set(["@graph", "@included", "@reverse"]);
 const SECURITY_V1 = "https://w3id.org/security/v1";
@@ -463,7 +463,7 @@ function mastodonCompacts(
   const context = json["@context"];
   if (
     received > JSONLD_BUDGET ||
-    json.proof !== undefined ||
+    (json.proof !== undefined && !(retracts && namedThroughout([json.proof]))) ||
     !(Array.isArray(context) ? context : [context]).every(
       (entry) => entry === AS || entry === SECURITY_V1 || (retracts && definedAsSent(entry)),
     )
