@@ -580,6 +580,9 @@ describe("Flag: bounds (RES-2, RES-7)", () => {
       // #1718: a lone surrogate makes the Flag JSON that does not parse, so no report is filed.
       ["a\uD800b", null],
       ["   \n\t", ""],
+      // ReportService's `presence`: Rails' blank? (U+0085 is blank, U+FEFF is not).
+      ["\u0085", ""],
+      [String.fromCodePoint(0xfeff), String.fromCodePoint(0xfeff)],
       [{ text: "object" }, ""],
       [42, ""],
     ];
