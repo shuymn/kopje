@@ -2,7 +2,13 @@ import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
 import { moderationUpdate } from "./actor-update";
 import { forgetAdminAccountId } from "./admin-authority";
-import { type ReachedAccount, reachFollowers, reachFollowing, reachMentioned } from "./audience";
+import {
+  REACH_INBOX_BYTES,
+  reachFollowerInboxes,
+  reachFollowing,
+  reachInboxWithinSql,
+  reachMentioned,
+} from "./audience";
 import type { Admin } from "./auth";
 import { beginStagedUpdate, endStaging, isDeliverableInbox, stageTargets } from "./deliveries";
 import { requireExactIncrement } from "./ids";
@@ -42,8 +48,12 @@ import { forgetActorSnapshots } from "./snapshot";
 // requested to follow since the cutoff (follows_pair over its whole following, a round at a time, at most RECENT_LIMIT
 // inboxes of each state). A capped source counts only the inboxes it stages first, as Mastodon caps each source's
 // distinct inboxes. The cutoff is two days before S, as Mastodon's for a locally suspended account; the restoration
-// uses the same one. Kopje has no relays, so they add no inboxes. Then the inboxes are written as the Update's targets
-// in inbox order (deliveries.ts stageTargets), and their staging rows deleted, a round at a time.
+// uses the same one. Kopje has no relays, so they add no inboxes. Each source reads an account's inbox in SQL by the
+// rule of audience.ts reachInboxSql (TEXT of 1 to REACH_INBOX_BYTES UTF-8 bytes without NUL, RES-2), so a round reads
+// at most REACH_ROUND inboxes of that size; one outside it is read as none and staged by no one. Then the staged
+// inboxes are written as the Update's targets and their staging rows deleted, a round at a time (consumeStaged): a
+// staged row is read by the same rule, since moderation_reach has no CHECK (an import or an earlier release's staging
+// may hold any value), and the rows a round reads are deleted by a boundary compared in SQL (DATA-6).
 //
 // A suspended sender's queued content is dropped when claimed (deliveries.ts REFUSED_SENDER), so only the Update and
 // retractions leave its lanes.
@@ -316,11 +326,12 @@ function current(db: Db, job: Job): boolean {
   return state !== undefined && state.current === 1 && (state.suspended_at !== null) === (job.kind === "suspension");
 }
 
-// Stages the inboxes of remote accounts; returns how many were not staged yet. A capped source counts only these, as
-// Mastodon's reach finder caps each source's distinct inboxes (an inbox another source staged first counts for none).
-function stage(db: Db, job: Job, rows: readonly ReachedAccount[]): number {
+// Stages the inboxes the sources read (each a remote account's within reachInboxSql's rule, else null); returns how
+// many were not staged yet. A capped source counts only these, as Mastodon's reach finder caps each source's distinct
+// inboxes (an inbox another source staged first counts for none).
+function stage(db: Db, job: Job, inboxes: readonly (string | null)[]): number {
   let staged = 0;
-  for (const inbox of new Set(rows.filter((row) => row.domain !== null).map((row) => row.inbox))) {
+  for (const inbox of new Set(inboxes)) {
     if (isDeliverableInbox(inbox)) {
       staged +=
         db.run("INSERT OR IGNORE INTO moderation_reach (job_id, inbox) VALUES (CAST(? AS INTEGER), ?)", job.id, inbox) >
@@ -364,15 +375,30 @@ function reachRound(db: Db, job: Job, state: JobState, now: number): boolean {
     }
     case "followers": {
       // The accepted followers up to the frozen bound, in id order (follows_target's range for the account and state).
-      const rows = reachFollowers(db, job.account_id, String(state.cursor ?? 0), job.follow_bound ?? "0", REACH_ROUND);
-      stage(db, job, rows);
+      const rows = reachFollowerInboxes(
+        db,
+        job.account_id,
+        String(state.cursor ?? 0),
+        job.follow_bound ?? "0",
+        REACH_ROUND,
+        REACH_INBOX_BYTES,
+      );
+      stage(
+        db,
+        job,
+        rows.map((row) => row.inbox),
+      );
       next(db, job, "followers", rows.length < REACH_ROUND, { cursor: rows.at(-1)?.id ?? state.cursor ?? "0" });
       return false;
     }
     case "reporters": {
       // Every reporter of the account, in account id order (reports_pair_state); local ones stage nothing.
       const rows = reachReporters(db, job.account_id, String(state.cursor ?? ""), REPORTER_ROUND);
-      stage(db, job, rows);
+      stage(
+        db,
+        job,
+        rows.map((row) => row.inbox),
+      );
       next(db, job, "reporters", rows.length < REPORTER_ROUND, {
         cursor: rows.at(-1)?.account_id ?? state.cursor ?? "",
       });
@@ -392,9 +418,9 @@ function reachRound(db: Db, job: Job, state: JobState, now: number): boolean {
           continue;
         }
         if (row.state === "accepted" && accepted < RECENT_LIMIT) {
-          accepted += stage(db, job, [row]);
+          accepted += stage(db, job, [row.inbox]);
         } else if (row.state !== "accepted" && pending < RECENT_LIMIT) {
-          pending += stage(db, job, [row]);
+          pending += stage(db, job, [row.inbox]);
         }
       }
       const full = accepted >= RECENT_LIMIT && pending >= RECENT_LIMIT;
@@ -406,22 +432,10 @@ function reachRound(db: Db, job: Job, state: JobState, now: number): boolean {
       return false;
     }
     case "write": {
-      // The staged inboxes in inbox order, written as the Update's targets and deleted.
-      const rows = db.all<{ inbox: string }>(
-        "SELECT inbox FROM moderation_reach WHERE job_id = CAST(? AS INTEGER) ORDER BY inbox LIMIT ?",
-        job.id,
-        REACH_ROUND,
-      );
-      const wrote =
-        job.intent_id === null
-          ? 0
-          : stageTargets(
-              db,
-              job.intent_id,
-              rows.map((row) => row.inbox),
-            );
-      dropStaged(db, job, rows);
-      if (rows.length < REACH_ROUND) {
+      // The staged inboxes, written as the Update's targets and deleted.
+      const { inboxes, consumed } = consumeStaged(db, job);
+      const wrote = job.intent_id === null ? 0 : stageTargets(db, job.intent_id, inboxes);
+      if (consumed < REACH_ROUND) {
         endJob(db, job);
       }
       return wrote > 0;
@@ -431,13 +445,7 @@ function reachRound(db: Db, job: Job, state: JobState, now: number): boolean {
       // touching its Update. The newer generation's Update superseded that one, and may since have been given
       // the same id (outbound_activities ids are reused once the newest row is deleted), so releasing it here
       // could drop the newer Update.
-      const rows = db.all<{ inbox: string }>(
-        "SELECT inbox FROM moderation_reach WHERE job_id = CAST(? AS INTEGER) ORDER BY inbox LIMIT ?",
-        job.id,
-        REACH_ROUND,
-      );
-      dropStaged(db, job, rows);
-      if (rows.length < REACH_ROUND) {
+      if (consumeStaged(db, job).consumed < REACH_ROUND) {
         finish(db, job);
       } else if (job.phase !== "end") {
         save(db, job, "end", {});
@@ -458,11 +466,29 @@ function next(db: Db, job: Job, phase: keyof typeof NEXT, done: boolean, state: 
   }
 }
 
-function dropStaged(db: Db, job: Job, rows: readonly { inbox: string }[]): void {
-  const last = rows.at(-1);
-  if (last !== undefined) {
-    db.run("DELETE FROM moderation_reach WHERE job_id = CAST(? AS INTEGER) AND inbox <= ?", job.id, last.inbox);
+// A write or end round's staged rows: the job's first REACH_ROUND in the stored inbox's order (moderation_reach's key,
+// `moderation_reach.inbox`: a bare `inbox` would name the projection, which sorts the rows outside the rule first and
+// reads other rows than the delete takes), each read by reachInboxSql's rule (null outside it), and deleted, up to the
+// last of them (the REACH_ROUND-th, else the last of all) by a boundary compared in SQL, never the decoded value bound
+// back (DATA-6), so a round deletes exactly the rows it read, those outside the rule included. Returns the inboxes
+// within the rule and how many rows the round consumed.
+function consumeStaged(db: Db, job: Job): { inboxes: string[]; consumed: number } {
+  const rows = db.all<{ inbox: string | null }>(
+    `SELECT CASE WHEN ${reachInboxWithinSql("inbox", String(REACH_INBOX_BYTES))} THEN inbox END AS inbox
+		FROM moderation_reach WHERE job_id = CAST(?1 AS INTEGER) ORDER BY moderation_reach.inbox LIMIT ?2`,
+    job.id,
+    REACH_ROUND,
+  );
+  if (rows.length > 0) {
+    db.run(
+      `DELETE FROM moderation_reach WHERE job_id = CAST(?1 AS INTEGER) AND inbox <= coalesce(
+				(SELECT inbox FROM moderation_reach WHERE job_id = CAST(?1 AS INTEGER) ORDER BY inbox LIMIT 1 OFFSET ?2),
+				(SELECT max(inbox) FROM moderation_reach WHERE job_id = CAST(?1 AS INTEGER)))`,
+      job.id,
+      REACH_ROUND - 1,
+    );
   }
+  return { inboxes: rows.flatMap((row) => (row.inbox === null ? [] : [row.inbox])), consumed: rows.length };
 }
 
 function endJob(db: Db, job: Job): void {
@@ -528,7 +554,7 @@ function mentionsRound(db: Db, job: Job, state: JobState): void {
     budget -= rows.length;
     for (const row of rows) {
       if (taken < RECENT_LIMIT) {
-        taken += stage(db, job, [row]);
+        taken += stage(db, job, [row.inbox]);
       }
     }
     mention = rows.length === 0 || budget > 0 ? null : rows.at(-1)!.account_id;

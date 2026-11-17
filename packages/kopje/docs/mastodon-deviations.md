@@ -1648,8 +1648,8 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   every body Mastodon 4.6.11 and 4.7.5 and Fedify 2.4.5 send in the captures passes, and so does each release's actor
   context from 3.5.0 to 4.3.23 (`test/fixtures/ld-signed/context-maps.json`). Accepted, 2026-11-17.
 
-Delivery recipients (a local account's followers and poll voters; Mastodon's `Account.inboxes`,
-`app/models/account.rb:490-493`; NET-2 and RES-2 in `docs/threat-model.md`):
+Delivery recipients (a local account's followers and poll voters, and the audience a staged `Update` or `Remove`
+reaches; Mastodon's `Account.inboxes`, `app/models/account.rb:490-493`; NET-2 and RES-2 in `docs/threat-model.md`):
 
 - A follower or voter is reached at its shared inbox, else its personal inbox, only when that one value is text of 1 to
   4,096 UTF-8 bytes without NUL (`reachInboxSql` in `src/domain/audience.ts`, the rule a block's collection `Remove`s
@@ -1660,6 +1660,13 @@ Delivery recipients (a local account's followers and poll voters; Mastodon's `Ac
   are the ones the same retraction read at once would have; an inbox that received what it withdraws is still reached
   through its receipt. Mastodon delivers to `preferred_inbox_url` whatever its length (PostgreSQL holds no NUL).
   Targets recorded or staged before the upgrade keep their inboxes. Accepted, 2026-11-17.
+- A local account's suspension and unsuspension `Update` (Mastodon's `AccountReachFinder`,
+  `app/lib/account_reach_finder.rb`: its followers, reporters and recently mentioned, followed and requested accounts)
+  and a block's collection `Remove`s reach an account only at an inbox within the same rule, judged as their audience
+  is staged; a moderation job's staged rows are read by it too, so rows an import or an earlier release staged outside
+  it are dropped unsent. An account whose inbox is outside the rule, which only an import or a restored dump holds, is
+  sent neither, where Mastodon's reach finder and `Account.inboxes` take its inbox whatever its length. Accepted,
+  2026-11-17.
 
 Outbound HTTP signatures (Mastodon's `Request#perform`, `app/lib/request.rb`; NET-1 in `docs/threat-model.md`):
 

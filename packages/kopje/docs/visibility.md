@@ -543,11 +543,13 @@ The admin suspends a local account other than its own (`POST .../action` with `s
 which makes it unavailable (R1) at once, and unsuspends it. The suspension refuses every token and code issued before
 it, also after the unsuspension (the credential epoch, which a suspension moves and an unsuspension keeps), resolves the
 reports on the account frozen at its time, and sends an `Update` of the redacted actor; the unsuspension sends one of
-the full actor. Both go to the audience of Mastodon's `AccountReachFinder` (R23, `reachFollowers`, `reachMentioned` and
-`reachFollowing` in `audience.ts`): the accepted remote followers, the remote accounts its newest 200 statuses of the
-two days before the suspension mention (at most 2,000), and the remote accounts it followed or asked to follow in those
-two days (at most 2,000 of each). The `Update` is neither content nor a retraction, so no one is left out. While the
-account is suspended, its lanes send only retractions and that `Update` (R1 above).
+the full actor. Both go to the audience of Mastodon's `AccountReachFinder` (R23, `reachFollowerInboxes`,
+`reachMentioned`, `reachFollowing` and `reachAccount` in `audience.ts`): the accepted remote followers, the remote
+accounts its newest 200 statuses of the two days before the suspension mention (at most 2,000), the remote accounts it
+followed or asked to follow in those two days (at most 2,000 of each), and the remote accounts that reported it. The
+`Update` is neither content nor a retraction, so no one is left out but an account whose stored inbox is past 4,096
+bytes or holds a NUL (`reachInboxSql`), which Kopje's ingestion never stores. While the account is suspended, its lanes
+send only retractions and that `Update` (R1 above).
 
 The admin also suspends a remote account (R38, `src/domain/remote-suspension.ts`, migration `0045_remote_suspension`),
 as Mastodon's `SuspendAccountService` for a remote account: it is unavailable (R1) from the suspension's commit, shown

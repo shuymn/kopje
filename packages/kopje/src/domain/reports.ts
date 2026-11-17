@@ -726,8 +726,9 @@ export function reportBound(db: Db): string {
 
 // The reporters of the account `target` after the account id `after`, in account id order, at most `limit`, each with
 // its reach (AccountReachFinder#reporters_inboxes, app/lib/account_reach_finder.rb:22-23: every reporter of the
-// account, whatever its reports' state): a seek of reports_pair_state and a read of the account by key per reporter,
-// so a reporter costs two reads however many reports it made. Fewer than `limit` means the walk is done.
+// account, whatever its reports' state; its inbox as audience.ts reachAccount reads it, within REACH_INBOX_BYTES): a
+// seek of reports_pair_state and a read of the account by key per reporter, so a reporter costs two reads however many
+// reports it made. Fewer than `limit` means the walk is done.
 export function reachReporters(
   db: Db,
   target: string,
@@ -747,7 +748,7 @@ export function reachReporters(
       break;
     }
     const account = reachAccount(db, next);
-    reached.push({ account_id: next, domain: account?.domain ?? null, inbox: account?.inbox ?? null });
+    reached.push({ account_id: next, inbox: account?.inbox ?? null });
     cursor = next;
   }
   return reached;

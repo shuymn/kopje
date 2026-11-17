@@ -2,6 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
+import { REACH_INBOX_BYTES } from "../src/domain/audience";
 import { TARGET_CHUNK_SIZE } from "../src/domain/deliveries";
 import { MODERATION_ROUND_ROWS, REPORT_ROUND } from "../src/domain/moderation-bounds";
 import {
@@ -34,6 +35,7 @@ import {
 import { NOW } from "./app-helpers";
 import { BUILD, migratedStore, deferred, drainDeliveries } from "./helpers";
 import { newClient, VAPID } from "./push-helpers";
+import { observedSql } from "./read-helpers";
 import { byText } from "./sort";
 import { community, post, remoteAccount, remoteFollows, seedStatus } from "./status-helpers";
 import { signIn } from "./web-helpers";
@@ -1063,6 +1065,355 @@ describe("the reach of both Updates: the account's reporters (AccountReachFinder
     expect(restored.filter((round) => round.phase === "reporters").length).toBe(3);
     expect(await targets(h.store)).toBe(2 * REPORTER_ROUND + 1);
   }, 120_000);
+});
+
+// A moderation Update's reach reads bounded inboxes (#1724; RES-2, RES-6, DATA-6): every source reads each account's
+// inbox by reachInboxSql's rule, and every write or end round reads its staged rows by the same rule, in the stored
+// inbox's order (moderation_reach's key), and deletes exactly those, by a boundary compared in SQL.
+describe("the moderation reach's inboxes (#1724, RES-2, DATA-6)", () => {
+  // An inbox of `bytes` UTF-8 bytes on the host `host` (SQL expressions): https://host/aaa…
+  const sizedSql = (host: string, bytes: string) =>
+    `('https://' || ${host} || '/' || substr(replace(hex(zeroblob(${bytes})), '0', 'a'), 1, ${bytes} - 9 - length(${host})))`;
+
+  // `count` remote accounts with ids `lead` then i (from 1), on hosts `${letter}NNN.example`, each with a personal inbox
+  // of REACH_INBOX_BYTES bytes and no shared one; then, with the next two ids, one whose inbox is a byte past it and one
+  // whose inbox holds a NUL, as only an import stores them.
+  async function accounts(store: StoreStub, lead: string, letter: string, count: number): Promise<void> {
+    await sql(
+      store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?3)
+			INSERT INTO accounts (id, uri, username, domain, inbox_url)
+			SELECT ?1 || printf('%016d', i), 'https://' || h || '/actor', 'actor', h, ${sizedSql("h", "?4")}
+			FROM (SELECT i, ?2 || printf('%03d', i) || '.example' AS h FROM n)`,
+      lead,
+      letter,
+      count,
+      REACH_INBOX_BYTES,
+    );
+    await sql(
+      store,
+      `INSERT INTO accounts (id, uri, username, domain, inbox_url) VALUES
+				(?1 || printf('%016d', ?3 + 1), 'https://' || ?2 || '-over.example/actor', 'actor', ?2 || '-over.example',
+					${sizedSql("?2 || '-over.example'", "?4 + 1")}),
+				(?1 || printf('%016d', ?3 + 2), 'https://' || ?2 || '-nul.example/actor', 'actor', ?2 || '-nul.example',
+					'https://' || ?2 || '-nul.example/in' || char(0) || 'box')`,
+      lead,
+      letter,
+      count,
+      REACH_INBOX_BYTES,
+    );
+  }
+
+  // Rows an import staged for `job`: REACH_ROUND inboxes of REACH_INBOX_BYTES bytes on e000.example to e499.example;
+  // one not UTF-8, e498's inbox with its last byte 0xFF, which sorts between e498's and e499's, so it is the
+  // REACH_ROUNDth row in the stored order, the last a full round reads (its decoded value, ending in U+FFFD, sorts
+  // below it); and, sorting after every other row, one a byte past the bound, one with a NUL and one BLOB.
+  async function imported(store: StoreStub, job: string): Promise<void> {
+    await sql(
+      store,
+      `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?2 - 1)
+			INSERT INTO moderation_reach (job_id, inbox)
+			SELECT CAST(?1 AS INTEGER), ${sizedSql("('e' || printf('%03d', i) || '.example')", "?3")} FROM n`,
+      job,
+      REACH_ROUND,
+      REACH_INBOX_BYTES,
+    );
+    const head = "https://e498.example/";
+    const malformed = new Uint8Array(REACH_INBOX_BYTES);
+    malformed.set(new TextEncoder().encode(head + "a".repeat(REACH_INBOX_BYTES - head.length - 1)));
+    malformed[REACH_INBOX_BYTES - 1] = 0xff;
+    await sql(
+      store,
+      `INSERT INTO moderation_reach (job_id, inbox) VALUES (CAST(?1 AS INTEGER), CAST(?2 AS TEXT)),
+				(CAST(?1 AS INTEGER), ${sizedSql("'zz-over.example'", "?3 + 1")}),
+				(CAST(?1 AS INTEGER), 'https://zz-nul.example/in' || char(0) || 'box'),
+				(CAST(?1 AS INTEGER), CAST('https://zz-blob.example/inbox' AS BLOB))`,
+      job,
+      malformed.buffer,
+      REACH_INBOX_BYTES,
+    );
+  }
+
+  // A staged row's key: its bytes' first 40 and last 8 (hex), its length in bytes, its type and its first NUL's place,
+  // which tell every row of this world apart (each test asserts the keys distinct).
+  const KEY = `hex(substr(CAST(inbox AS BLOB), 1, 40)) || '.' || hex(substr(CAST(inbox AS BLOB), -8)) || '.'
+		|| length(CAST(inbox AS BLOB)) || '.' || typeof(inbox) || '.' || instr(CAST(inbox AS BLOB), x'00')`;
+  // Whether a key's row is within the rule (judged here from the key, apart from reachInboxSql).
+  const within = (key: string) => {
+    const [, , bytes, type, nul] = key.split(".");
+    return type === "text" && Number(bytes) >= 1 && Number(bytes) <= REACH_INBOX_BYTES && nul === "0";
+  };
+  type Head = { key: string; text: string | null };
+  type Observed = {
+    kind: string;
+    phase: string;
+    // Every inbox the round's statements returned, in order.
+    returned: SqlStorageValue[];
+    wrote: number;
+    // The job's staged keys before and after the round, in the stored order, and its first REACH_ROUND rows before.
+    before: string[];
+    after: string[];
+    head: Head[];
+    // The targets' chunks before and after the round.
+    chunks: [number, number];
+  };
+
+  // Runs the moderation jobs round by round, each in its own transaction, up to the round `stop` names (by the job's
+  // kind and phase before it), observing each and holding it to expectRound as it ends.
+  async function observedRounds(
+    store: StoreStub,
+    consuming: (round: Observed) => boolean,
+    stop: (job: { kind: string; phase: string }) => boolean = () => false,
+  ): Promise<Observed[]> {
+    const measured: Observed[] = [];
+    let cursor = "0";
+    for (let i = 0; i < 1_000; i++) {
+      const round = await runInDurableObject(store, (_instance, state) => {
+        const real = state.storage.sql;
+        const job = real
+          .exec<{ id: string; kind: string; phase: string }>(
+            `SELECT CAST(id AS TEXT) AS id, kind, phase FROM moderation_jobs WHERE id > CAST(? AS INTEGER)
+						UNION ALL SELECT CAST(id AS TEXT) AS id, kind, phase FROM moderation_jobs LIMIT 1`,
+            cursor,
+          )
+          .toArray()[0];
+        if (job === undefined || stop(job)) {
+          return null;
+        }
+        const keys = () =>
+          real
+            .exec<{ key: string }>(
+              `SELECT ${KEY} AS key FROM moderation_reach WHERE job_id = CAST(? AS INTEGER) ORDER BY inbox`,
+              job.id,
+            )
+            .toArray()
+            .map((row) => row.key);
+        const chunks = () => real.exec<{ n: number }>("SELECT count(*) AS n FROM outbound_targets").one().n;
+        const before = keys();
+        const head = real
+          .exec<Head>(
+            `SELECT ${KEY} AS key, CASE WHEN typeof(inbox) = 'text' THEN inbox END AS text FROM moderation_reach
+						WHERE job_id = CAST(? AS INTEGER) ORDER BY inbox LIMIT ?`,
+            job.id,
+            REACH_ROUND,
+          )
+          .toArray();
+        const returned: SqlStorageValue[] = [];
+        const observed = observedSql(real, (rows) => {
+          for (const row of rows) {
+            if ("inbox" in row) {
+              returned.push(row.inbox);
+            }
+          }
+        });
+        const db = new Db(observed, (fn) => state.storage.transactionSync(fn));
+        const changes = () => real.exec<{ n: number }>("SELECT total_changes() AS n").one().n;
+        const [start, chunked] = [changes(), chunks()];
+        const ran = state.storage.transactionSync(() => moderationRound(db, NOW, cursor));
+        return {
+          id: ran?.id,
+          job,
+          observed: {
+            kind: job.kind,
+            phase: job.phase,
+            returned,
+            wrote: changes() - start,
+            before,
+            after: keys(),
+            head,
+            chunks: [chunked, chunks()],
+          } satisfies Observed,
+        };
+      });
+      if (round === null) {
+        return measured;
+      }
+      expectRound(round.observed, consuming(round.observed));
+      expect(round.id).toBe(round.job.id);
+      cursor = round.id!;
+      measured.push(round.observed);
+    }
+    throw new Error("the jobs did not end");
+  }
+
+  // A round reads no inbox past the rule and at most its source's cap of them; a staging round stages only inboxes
+  // within the rule and deletes no staged row; a write or end round (`consuming`) reads the job's first rows in the
+  // stored order, each by the rule, and deletes exactly those.
+  function expectRound(round: Observed, consuming: boolean): void {
+    const label = `${round.kind} ${round.phase}`;
+    expect(round.wrote, label).toBeLessThanOrEqual(MODERATION_ROUND_ROWS);
+    for (const inbox of round.returned) {
+      expect(
+        inbox === null || (typeof inbox === "string" && inbox.length <= REACH_INBOX_BYTES && !inbox.includes("\0")),
+        `${label}: ${typeof inbox === "string" ? inbox.slice(0, 40) : typeof inbox}`,
+      ).toBe(true);
+    }
+    // In UTF-16 code units, no more than the raw bytes they decode from (a malformed byte is one U+FFFD).
+    const cap = round.phase === "reporters" ? REPORTER_ROUND : REACH_ROUND;
+    expect(round.returned.length, label).toBeLessThanOrEqual(cap);
+    expect(unitsOf(round), label).toBeLessThanOrEqual(cap * REACH_INBOX_BYTES);
+    expect(new Set(round.before).size, label).toBe(round.before.length);
+    if (consuming) {
+      const n = round.returned.length;
+      expect(n, label).toBe(Math.min(REACH_ROUND, round.before.length));
+      expect(round.after, `${label}: deletes exactly the rows it read`).toEqual(round.before.slice(n));
+      expect(round.returned, `${label}: reads the stored order by the rule`).toEqual(
+        round.head.slice(0, n).map((row) => (within(row.key) ? row.text : null)),
+      );
+    } else {
+      const kept = new Set(round.after);
+      expect(
+        round.before.filter((key) => !kept.has(key)),
+        label,
+      ).toEqual([]);
+      const before = new Set(round.before);
+      expect(
+        round.after.filter((key) => !before.has(key) && !within(key)),
+        `${label}: stages within the rule`,
+      ).toEqual([]);
+    }
+  }
+
+  // The UTF-16 code units of the inboxes a round read.
+  const unitsOf = (round: Observed) =>
+    round.returned.reduce<number>((sum, inbox) => sum + (typeof inbox === "string" ? inbox.length : 0), 0);
+
+  // Each target's key: its first 24 characters (scheme and host), its length in characters and its last character's
+  // code point, sorted.
+  const targetKeys = async (store: StoreStub, intent: string) =>
+    (
+      await sql<{ key: string }>(
+        store,
+        `SELECT substr(json_extract(t.value, '$.inbox'), 1, 24) || '|' || length(json_extract(t.value, '$.inbox')) || '|'
+					|| unicode(substr(json_extract(t.value, '$.inbox'), -1)) AS key
+				FROM outbound_targets o, json_each(o.targets) t WHERE o.activity_id = CAST(? AS INTEGER)`,
+        intent,
+      )
+    )
+      .map((row) => row.key)
+      .toSorted();
+  // The inboxes within the rule of the sources (hosts `letter`001 to `letter`count) and, with `imported`, of the import.
+  const expected = (sources: [string, number][], withImported: boolean) =>
+    [
+      ...sources.flatMap(([letter, count]) =>
+        Array.from({ length: count }, (_, i) => `https://${letter}${String(i + 1).padStart(3, "0")}.example/aaa`),
+      ),
+      ...(withImported
+        ? Array.from({ length: REACH_ROUND }, (_, i) => `https://e${String(i).padStart(3, "0")}.example/aaa`)
+        : []),
+    ]
+      .map((head) => `${head}|${REACH_INBOX_BYTES}|97`)
+      .concat(withImported ? [`https://e498.example/aaa|${REACH_INBOX_BYTES}|65533`] : [])
+      .toSorted();
+  const intentOf = async (store: StoreStub, kind: string) =>
+    (
+      await sql<{ intent: string }>(
+        store,
+        "SELECT CAST(intent_id AS TEXT) AS intent FROM moderation_jobs WHERE kind = ?",
+        kind,
+      )
+    )[0]!.intent;
+  const jobOf = async (store: StoreStub, kind: string) =>
+    (await sql<{ id: string }>(store, "SELECT CAST(id AS TEXT) AS id FROM moderation_jobs WHERE kind = ?", kind))[0]!
+      .id;
+
+  it("reads no inbox past REACH_INBOX_BYTES in any phase", async () => {
+    const { h, admin, alice } = await world();
+    // Each source at its cap, every inbox at REACH_INBOX_BYTES bytes, with one past it and one with a NUL after the
+    // valid ones in its walk: REACH_ROUND accepted followers (follows.id order); REACH_ROUND recent follows, accepted
+    // and pending (target order, within RECENT_LIMIT each); two recent statuses mentioning REACH_ROUND accounts, 400
+    // then 100, so the first mentions round reads its whole budget (the two statuses found and 498 mentions); and
+    // REPORTER_ROUND remote reporters (account order).
+    const SOURCES: [string, number][] = [
+      ["f", REACH_ROUND],
+      ["g", REACH_ROUND],
+      ["m", REACH_ROUND],
+      ["r", REPORTER_ROUND],
+    ];
+    await accounts(h.store, "71", "f", REACH_ROUND);
+    await sql(
+      h.store,
+      "INSERT INTO follows (account_id, target_account_id, state) SELECT id, ?, 'accepted' FROM accounts WHERE id GLOB '71*' ORDER BY id",
+      alice.id,
+    );
+    await accounts(h.store, "72", "g", REACH_ROUND);
+    await sql(
+      h.store,
+      `INSERT INTO follows (account_id, target_account_id, state, created_at)
+			SELECT ?1, id, CASE WHEN CAST(id AS INTEGER) % 2 = 0 THEN 'accepted' ELSE 'pending' END, ?2 FROM accounts
+			WHERE id GLOB '72*'`,
+      alice.id,
+      new Date(NOW - 60_000).toISOString(),
+    );
+    await accounts(h.store, "73", "m", REACH_ROUND);
+    const statuses = [1n, 2n].map((n) => ((BigInt(NOW - 60_000) << 16n) | n).toString());
+    for (const [i, status] of statuses.entries()) {
+      await sql(
+        h.store,
+        `INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+				VALUES (?1, 'https://kopje.test/mentions/' || ?1, ?2, 'direct', '', ?3)`,
+        status,
+        alice.id,
+        new Date(NOW - 60_000).toISOString(),
+      );
+      await sql(
+        h.store,
+        `INSERT INTO status_mentions (status_id, account_id) SELECT ?1, id FROM accounts
+				WHERE id GLOB '73*' AND (CAST(substr(id, 3) AS INTEGER) <= 400) = ?2`,
+        status,
+        i === 0 ? 1 : 0,
+      );
+    }
+    await accounts(h.store, "74", "r", REPORTER_ROUND);
+    await sql(
+      h.store,
+      `INSERT INTO reports (account_id, target_account_id, uri, created_at)
+			SELECT id, ?, 'https://' || domain || '/flags/1', 'x' FROM accounts WHERE id GLOB '74*'`,
+      alice.id,
+    );
+
+    // The suspension, its staging read by an import beside the sources' rows.
+    expect(await act(h, admin, alice.id, { type: "suspend" })).toEqual({ status: 200, body: {} });
+    const suspension = await intentOf(h.store, "suspension");
+    await imported(h.store, await jobOf(h.store, "suspension"));
+    const first = (await observedRounds(h.store, (round) => round.phase === "write")).filter(
+      (round) => round.kind === "suspension",
+    );
+    // Each cap reached: a followers and a following round read REACH_ROUND inboxes of REACH_INBOX_BYTES, a reporters
+    // round REPORTER_ROUND, the first write round REACH_ROUND staged ones (the last, not UTF-8, as many code units).
+    const most = (phase: string) => Math.max(...first.filter((round) => round.phase === phase).map(unitsOf));
+    expect(["followers", "following", "reporters", "write"].map(most)).toEqual([
+      REACH_ROUND * REACH_INBOX_BYTES,
+      REACH_ROUND * REACH_INBOX_BYTES,
+      REPORTER_ROUND * REACH_INBOX_BYTES,
+      REACH_ROUND * REACH_INBOX_BYTES,
+    ]);
+    expect(first.filter((round) => round.phase === "write").length).toBe(5);
+    // Every staged inbox within the rule written once, the import's included; the rest none.
+    expect(await targetKeys(h.store, suspension)).toEqual(expected(SOURCES, true));
+    expect(await sql(h.store, "SELECT count(*) AS n FROM moderation_reach")).toEqual([{ n: 0 }]);
+
+    // The restoration: an import staged beside it too; its staging ends at its write phase, where a second suspension
+    // ends its generation, so its end rounds delete what it staged without writing it.
+    expect((await unsuspend(h, admin, alice.id)).status).toBe(200);
+    await imported(h.store, await jobOf(h.store, "reach"));
+    await observedRounds(
+      h.store,
+      () => false,
+      (job) => job.kind === "reach" && job.phase === "write",
+    );
+    expect(await act(h, admin, alice.id, { type: "suspend" })).toEqual({ status: 200, body: {} });
+    const second = await intentOf(h.store, "suspension");
+    const rest = await observedRounds(h.store, (round) => round.kind === "reach" || round.phase === "write");
+    const ended = rest.filter((round) => round.kind === "reach");
+    expect(ended.map((round) => round.phase)).toEqual(["write", "end", "end", "end", "end"]);
+    for (const round of ended) {
+      expect(round.chunks[1], "an end round writes no target").toBe(round.chunks[0]);
+    }
+    expect(await targetKeys(h.store, second)).toEqual(expected(SOURCES, false));
+    expect(await sql(h.store, "SELECT count(*) AS n FROM moderation_reach")).toEqual([{ n: 0 }]);
+    expect(await sql(h.store, "SELECT count(*) AS n FROM moderation_jobs")).toEqual([{ n: 0 }]);
+  }, 600_000);
 });
 
 describe("the sender rule (R1)", () => {
