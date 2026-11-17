@@ -1,5 +1,5 @@
+import type { RailsParam } from "../platform/rails-params";
 import { rubyStrip } from "../platform/strip";
-import type { RailsParam } from "./rails-params";
 
 // The representation Mastodon 4.7.5 gives a request, from its format parameter, Accept, X-Requested-With and
 // Content-Type, at a controller that serves both a page and a document (`respond_to { format.html; format.json }`):

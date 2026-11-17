@@ -377,6 +377,54 @@ describe("field bounds cover the query string (RES-1)", () => {
     }
     expect(h.codec.calls).toBe(calls);
   });
+
+  // Each field counts as sent (params.ts Params#sent), also one a later one of its name replaced, whatever it nested.
+  it("counts a field a later one of its name replaced, plain or nested", async () => {
+    const h = await users();
+    const send = (fields: [string, string][]) => {
+      const form = mediaForm(bytes(PNG_PLAIN), {}, "a.png", "image/png");
+      for (const [name, value] of fields) {
+        form.append(name, value);
+      }
+      return upload(h, h.users.alice, form);
+    };
+    // `count` fields, the first `first`: of one plain name, or nested under it before the plain name replaces them.
+    const plain = (count: number, first: string) =>
+      Array.from({ length: count }, (_, i): [string, string] => ["f", i === 0 ? first : "x"]);
+    const nested = (count: number, first: string) => [
+      ...Array.from({ length: count - 1 }, (_, i): [string, string] => [`f[x${i}]`, i === 0 ? first : "x"]),
+      ["f", "ok"] as [string, string],
+    ];
+    const long = "x".repeat(MAX_FIELD_LENGTH);
+    expect([(await send(plain(16, long))).status, (await send(nested(16, long))).status]).toEqual([200, 200]);
+    const calls = h.codec.calls;
+    for (const fields of [plain(17, "x"), plain(2, `${long}x`), nested(18, "x"), nested(2, `${long}x`)]) {
+      const response = await send(fields);
+      expect([response.status, await response.json()]).toEqual([422, FIELD_TOO_LONG]);
+    }
+    expect(h.codec.calls).toBe(calls);
+  });
+
+  // The upload reads its form and its query with readParams' parsers (params.ts parseBody, readQuery).
+  it("refuses a shape Rack refuses, in the form or the query, before processing", async () => {
+    const h = await users();
+    const form = mediaForm(bytes(PNG_PLAIN), {}, "a.png", "image/png");
+    form.append("a", "1");
+    form.append("a[]", "2");
+    const body = await upload(h, h.users.alice, form);
+    const query = await h.request(
+      "/api/v2/media?a=1&a[]=2",
+      bearer(h.users.alice.token, { method: "POST", body: mediaForm(bytes(PNG_PLAIN), {}, "a.png", "image/png") }),
+    );
+    const malformed = { error: "Malformed request body" };
+    expect([body.status, await body.json(), query.status, await query.json()]).toEqual([
+      400,
+      malformed,
+      400,
+      malformed,
+    ]);
+    expect(h.codec.calls).toBe(0);
+  });
 });
 
 describe("duplicate media attributes", () => {
