@@ -230,14 +230,14 @@ describe("the send boundary is confirmation", () => {
   // A delivery round over `store` held at its host check, after the claim and before confirmation: `reached` resolves
   // when it gets there, and `release` lets it go on.
   function heldAtHostCheck(store: StoreStub, fetch: typeof globalThis.fetch) {
-    const { checkHost, reached, release } = gatedHost();
+    const { resolveHost, reached, release } = gatedHost();
     const round = deliveryRound(testEnv, {
       ...deliveryDeps(
         () => store,
         fetch,
         () => NOW,
       ),
-      checkHost,
+      resolveHost,
     });
     return { reached, release, round };
   }

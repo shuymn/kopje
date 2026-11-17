@@ -558,6 +558,16 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   },
   // A held Reject's Follow id judged against its stored bound: a predicate (deliveries.ts heldFollowUriSql).
   'src/domain/deliveries.ts interpolation heldFollowUriSql("uri")': { count: 2, reason: PREDICATE },
+  // A drain's cursor judged against the CHECK delivery_hosts_drain_cursor's rule (deliveries.ts drainStep).
+  'src/domain/deliveries.ts interpolation drainCursorSql("host", "drain_lane")': { count: 1, reason: PREDICATE },
+  "src/domain/delivery-hosts.ts interpolation FAILURE_DAYS": {
+    count: 1,
+    reason: "a number constant (the failure days that make a host unavailable), naming no column",
+  },
+  "src/domain/delivery-hosts.ts interpolation RECEIVED_INBOX_BYTES": {
+    count: 1,
+    reason: "a number constant (the longest stored inbox the clear on receipt reads), naming no column",
+  },
   'src/domain/remote-status-reads.ts interpolation collectionSql("raw", "followers")': {
     count: 1,
     reason: COLLECTION,

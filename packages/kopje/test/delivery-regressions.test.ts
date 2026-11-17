@@ -22,7 +22,7 @@ import { act, community, post, remoteAccount, remoteFollows, seedStatus } from "
 const OK: DeliveryOutcome = { kind: "delivered", status: 202 };
 // A permanent refusal: a 404, 405 or 410 from a shared inbox would move a Like to the personal inbox instead.
 const REFUSED: DeliveryOutcome = { kind: "failed", status: 403, error: "HTTP 403", permanent: true };
-const publicHost = () => Promise.resolve();
+const publicHost = () => Promise.resolve({ kind: "public" } as const);
 
 type Row = {
   id: string;
@@ -160,7 +160,7 @@ function roundDeps(store: StoreStub, fetch: typeof globalThis.fetch, now = () =>
     store: () => store,
     now,
     fetch,
-    checkHost: publicHost,
+    resolveHost: publicHost,
     leaseToken: () => `lease-${++n}`,
   };
 }
@@ -368,12 +368,13 @@ describe("delivery time budget (NET-2, RES-6)", () => {
     const fetch = vi.fn(() =>
       Promise.resolve(new Response(null, { status: 202 })),
     ) as unknown as typeof globalThis.fetch;
-    const slowDns = () => new Promise<void>((resolve) => setTimeout(resolve, 100));
-    const deps = { fetch, checkHost: slowDns, userAgent: "Kopje/test", timeoutMs: 20, now: () => Date.now() };
+    const slowDns = () =>
+      new Promise<{ kind: "public" }>((resolve) => setTimeout(() => resolve({ kind: "public" }), 100));
+    const deps = { fetch, resolveHost: slowDns, userAgent: "Kopje/test", timeoutMs: 20, now: () => Date.now() };
     const target = { inbox: "https://slow.example/inbox", body, signer: sign, deadline: Date.now() + 60_000 };
     expect(await postActivity(deps, target)).toMatchObject({ kind: "failed", permanent: false });
     const slowKey = () => new Promise<never>(() => {});
-    expect(await postActivity({ ...deps, checkHost: publicHost }, { ...target, signer: slowKey })).toMatchObject({
+    expect(await postActivity({ ...deps, resolveHost: publicHost }, { ...target, signer: slowKey })).toMatchObject({
       kind: "failed",
       permanent: false,
     });
@@ -385,7 +386,7 @@ describe("delivery time budget (NET-2, RES-6)", () => {
     const fetch = vi.fn(() =>
       Promise.resolve(new Response(null, { status: 202 })),
     ) as unknown as typeof globalThis.fetch;
-    const deps = { fetch, checkHost: publicHost, userAgent: "Kopje/test", now: () => NOW };
+    const deps = { fetch, resolveHost: publicHost, userAgent: "Kopje/test", now: () => NOW };
     const target = { inbox: "https://remote.example/inbox", body, signer: sign, deadline: NOW };
     expect(await postActivity(deps, target)).toMatchObject({ kind: "failed", error: "lease budget exhausted" });
     expect(fetch).not.toHaveBeenCalled();

@@ -1260,7 +1260,7 @@ describe("cancellation against claims and expansion, in both serialized orders",
 
   // A round held at a gate: before its claim (`claim`), or after it, at the host check before confirmation ('host').
   function heldRound(store: StoreStub, fetch: typeof globalThis.fetch, at: "claim" | "host") {
-    const { checkHost: hold, reached, release } = gatedHost();
+    const { resolveHost: hold, reached, release } = gatedHost();
     const gated = new Proxy(store, {
       get(target, name) {
         if (name === "claimDeliveries" && at === "claim") {
@@ -1283,11 +1283,12 @@ describe("cancellation against claims and expansion, in both serialized orders",
         fetch,
         () => NOW,
       ),
-      checkHost: async () => {
+      resolveHost: async () => {
         if (at === "host" && !hostHeld) {
           hostHeld = true;
           await hold();
         }
+        return { kind: "public" } as const;
       },
     });
     return { reached, release, round };

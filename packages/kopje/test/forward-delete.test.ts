@@ -1736,6 +1736,7 @@ describe("the forward’s reads under stale statistics (T12, RES-7)", () => {
       id: row!.id,
       leaseToken: "plan",
       now: NOW,
+      storeNow: NOW,
       outcome: { kind: "failed", status: 404, error: "HTTP 404", permanent: true },
     });
     expect(failed.result).toMatchObject({ status: "retry" });

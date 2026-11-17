@@ -831,6 +831,7 @@ describe("who the Delete reaches (VIS-3)", () => {
           id: delivery.id,
           leaseToken: "held",
           now: NOW,
+          storeNow: NOW,
           outcome: { kind: "delivered", status: 202 },
         }),
       );

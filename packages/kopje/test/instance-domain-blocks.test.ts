@@ -438,7 +438,7 @@ describe("deliveries to a blocked domain (VIS-30)", () => {
           fetch,
           () => NOW,
         ),
-        checkHost: gate.checkHost,
+        resolveHost: gate.resolveHost,
       });
       await gate.reached;
       expect((await deliveries(w.h.store)).map((row) => row.state)).toEqual(["leased", "queued"]);

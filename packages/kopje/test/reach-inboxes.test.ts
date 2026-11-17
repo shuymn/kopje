@@ -855,9 +855,9 @@ describe("deliveries staged before the rule (#1733, NET-2, NET-3, VIS-30)", () =
         fetch,
         () => NOW,
       ),
-      checkHost: (url: URL) => {
+      resolveHost: (url: URL) => {
         checked.push(url.href);
-        return Promise.resolve();
+        return Promise.resolve({ kind: "public" } as const);
       },
     };
     const env = { ...h.env, USER_KEK: LEGACY.kek } as unknown as Env;

@@ -59,6 +59,7 @@ import {
   stagingRetraction,
   supersedeEarlier,
 } from "./deliveries";
+import { clearSenderHost } from "./delivery-hosts";
 import { recountFeatured } from "./featured-tags";
 import { type FetchPreparation, fetchPreparation } from "./fetch-preparation";
 import { type FollowerSigner, localFollower } from "./follower-signer";
@@ -3633,6 +3634,9 @@ function receive(db: Db, input: StoreReceiveInput): ReceiveResult {
   if (actor === undefined) {
     return ignored("unknown-actor");
   }
+  // RES-5: an activity from the actor, after the profile it brings is stored, makes its stored inbox's host available
+  // again (delivery-hosts.ts clearSenderHost), as Mastodon's inbox resets its signer's inbox host.
+  clearSenderHost(db, actor.id);
   const handler = HANDLERS[activity.type] as Handler<typeof activity.type>;
   const result = handler(db, actor, activity, input);
   // A sync of the actor's collections was asked for, or quotes have verification work due, or a create walk is (only

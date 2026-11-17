@@ -12,6 +12,7 @@ import { type AccessSettings, adminRefusal, adminUsable, normalizeTeamDomain } f
 import { readBackupConfig } from "../platform/backup-config";
 import { readBoundedBody } from "../platform/body";
 import { previousUserKek, readConfig, userKek } from "../platform/config";
+import { serverDomain } from "../platform/domain-name";
 import { errorFields, errorMessage } from "../platform/error-message";
 import type { ImageCodec } from "../platform/images";
 import { loggedMethod } from "../platform/log";
@@ -19,7 +20,7 @@ import { readQueueBacklog } from "../platform/queue-backlog";
 import type { ImportAuthority } from "../platform/store-admin";
 import type { StoreResolver, StoreStub } from "../platform/store-client";
 import { toStoreUnavailable } from "../platform/store-errors";
-import { storedAnnouncementText, storedEmojiCategory } from "../platform/stored-bounds";
+import { storedAnnouncementText, storedEmojiCategory, withinDeliveryHostBound } from "../platform/stored-bounds";
 import { type AccessDeps, type AccessIdentity, verifyAccessClaims } from "../security/access-jwt";
 import { constantTimeEqual, randomToken } from "../security/tokens";
 import { drainJournal } from "./cutover";
@@ -406,6 +407,56 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
     }
     const { ok: _ok, ...rest } = result;
     return c.json(rest);
+  });
+
+  // ---- delivery hosts (RES-5, domain/delivery-hosts.ts): the hosts deliveries failed to or the operator stopped, in
+  // host order. A request naming a stored host (`after`, a restart) is read by withinDeliveryHostBound, the stored
+  // predicate's twin, and used as given; a stop names a new one, read by serverDomain.
+
+  admin.get("/hosts", async (c) => {
+    const after = c.req.query("after");
+    const limit = c.req.query("limit");
+    if (
+      (after !== undefined && !withinDeliveryHostBound(after)) ||
+      (limit !== undefined && (!/^\d{1,3}$/.test(limit) || Number(limit) < 1 || Number(limit) > 100))
+    ) {
+      return c.json({ error: "after must be a listed host and limit a number from 1 to 100" }, 400);
+    }
+    const input = {
+      ...(after === undefined ? {} : { after }),
+      ...(limit === undefined ? {} : { limit: Number(limit) }),
+    };
+    return c.json(await stub(c).deliveryHosts(build(c.env), input));
+  });
+
+  admin.post("/hosts/stop", async (c) => {
+    const { host } = await jsonBody(c);
+    const domain = typeof host === "string" ? serverDomain(host) : null;
+    if (domain === null) {
+      return c.json({ error: 'expected {"host": string}, a domain name' }, 400);
+    }
+    const result = await stub(c).stopDeliveryHost(build(c.env), { host: domain });
+    if (!result.ok) {
+      return result.code === "hosts-full"
+        ? c.json(
+            { error: "every stored host is unavailable; restart one before stopping another", code: result.code },
+            409,
+          )
+        : c.json({ error: 'expected {"host": string}, a domain name', code: result.code }, 400);
+    }
+    if (result.draining) {
+      await doorbell(c.env).catch(() => {});
+    }
+    const { ok: _ok, ...rest } = result;
+    return c.json({ host: domain, ...rest });
+  });
+
+  admin.post("/hosts/restart", async (c) => {
+    const { host } = await jsonBody(c);
+    if (!withinDeliveryHostBound(host)) {
+      return c.json({ error: 'expected {"host": string}, a listed host' }, 400);
+    }
+    return c.json({ host, ...(await stub(c).restartDeliveryHost(build(c.env), { host })) });
   });
 
   // Failing jobs (backing off or parked, RES-5) made fresh, at most RETRY_JOBS_LIMIT a call (domain/job-attempts.ts);

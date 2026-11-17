@@ -37,6 +37,7 @@ import { runCollectionJobs } from "./domain/collection-jobs";
 import * as collections from "./domain/collections";
 import * as conversations from "./domain/conversations";
 import * as deliveries from "./domain/deliveries";
+import * as deliveryHosts from "./domain/delivery-hosts";
 import { directory } from "./domain/directory";
 import * as endorsements from "./domain/endorsements";
 import * as featuredTags from "./domain/featured-tags";
@@ -650,6 +651,10 @@ export const STORE_RPC = {
   deliveriesReport: deliveries.deliveriesReport,
   retryDeliveries: deliveries.retryDeliveries,
   sweepDeliveries: deliveries.sweepDeliveries,
+  // The operator's delivery hosts (RES-5): the listing, the stop with its first drain step, and the restart.
+  deliveryHosts: deliveryHosts.deliveryHostsPage,
+  stopDeliveryHost: deliveries.stopDeliveryHost,
+  restartDeliveryHost: deliveryHosts.restartDeliveryHost,
 
   // Local objects over ActivityPub (VIS-4).
   localNote: localNotes.getLocalNote,

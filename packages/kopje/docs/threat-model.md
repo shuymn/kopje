@@ -716,7 +716,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   each silent recipient a copy naming only them"), `test/signed-delete.test.ts` ("sends the stored bytes to every
   target, a silent recipient's own copy included").
 - **VIS-3: changes reach only the original audience.** `Update` and `Delete` are addressed to the audience the status
-  already had; `Delete` carries a `Tombstone`, not the content. The `Delete` of a local public or unlisted original
+  already had; `Delete` carries a `Tombstone`, not the content. A change to a host marked unavailable is given up unsent
+  (RES-5), as Mastodon skips it, and the operator may retry it once the host is back. The `Delete` of a local public or
+  unlisted original
   is LD-signed with its author's key (RsaSignature2017, `#main-key`; Mastodon's `always_sign` with `Status#sign?`) and
   addressed as Mastodon's `DeleteSerializer` addresses it, `to` Public alone with no `cc`, so it names no recipient and
   a booster or quoter may forward it with the author's proof. It is signed once, in the Worker, between a read that
@@ -2303,7 +2305,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   read by the same rule again (`test/admin-suspension.test.ts`); an activity without `to` (a Like, Follow, Accept,
   Reject, Block or their Undo, each naming its recipient through its object) goes to the recipient's shared inbox
   when it has one (R38's severing `Reject` alone goes to its
-  personal inbox, as Mastodon's `reject_remote_follows!` sends it). A remote actor's shared inbox is the one Mastodon
+  personal inbox, as Mastodon's `reject_remote_follows!` sends it). A row to a host marked unavailable, a retraction's
+  included, is given up unsent but a `Follow` (RES-5). A remote actor's shared inbox is the one Mastodon
   4.7.5 reads, kept only when Kopje POSTs to the URL Mastodon POSTs to for its spelling, else none, so the personal
   inbox is used and nothing goes to a guessed inbox (`sharedInboxUri` in `src/federation/remote-actor.ts`;
   `test/remote-actor-images.test.ts` ("keeps a spelling only where Kopje POSTs to Mastodon's URL")). Such a row moves in
@@ -2394,9 +2397,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   _Enforced (main)_ for documents and the Fedify rule: the fedify-usage lint rule
   (`packages/kopje/lint/fedify-usage.js`), which refuses sending or queueing through Fedify. Deliveries: _Enforced
   (main):_ `assertPublicShape` and the DNS check before every POST, the RFC 9421 retry's included, no redirects, 30 s
-  (`postActivity` in `src/federation/delivery.ts`); `test/delivery-post.test.ts` ("NET-3: refuses inboxes that fail the
-  public-host rules", "runs the host check again before the retry"). Web Push: _Enforced (main):_ the same sink before
-  every POST (`sendPush` in `src/jobs/push.ts`), and the
+  (`postActivity` in `src/federation/delivery.ts`); the DNS check is `resolveDeliveryHost` (`src/federation/loader.ts`),
+  the lookup Fedify's `validatePublicUrl` makes with its result kept, which lets no host through that
+  `validatePublicUrl` refuses (`test-node/delivery-host-resolution.test.ts`); `test/delivery-post.test.ts` ("NET-3:
+  refuses inboxes that fail the public-host rules", "runs the host check again before the retry"). Web Push: _Enforced
+  (main):_ the same sink before every POST (`sendPush` in `src/jobs/push.ts`), and the
   rules that need no lookup at registration (`publicShapeRefusal` in `src/platform/http-url.ts`, shared with
   `assertPublicShape`); `test/push.test.ts` ("NET-3: refuses endpoints that are not public https URLs"),
   `test/push-send.test.ts` ("PUSH-2: the endpoint is an outbound sink at every send", "never follows a redirect, and
@@ -3752,7 +3757,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   remote can ask again (`test/inbox-verify2.test.ts`). Operator retries pass the same admission, and a retry over a cap
   stays given up (`refused`); `test/deliveries.test.ts` ("lists given-up deliveries for the operator, retries them, and
   sweeps them after 30 days"), `test/delivery-regressions.test.ts` ("gives up new work for a lane over its cap", "gives
-  up new work once the whole backlog is at its cap").
+  up new work once the whole backlog is at its cap"). A target or row given up because its host is unavailable (RES-5)
+  is not admitted, so it counts toward neither cap. Delivery hosts (`delivery_hosts`, migration 0112): at most 10,000
+  (`MAX_DELIVERY_HOSTS`; the trigger `delivery_hosts_cap` for every writer and an import, each host in the stored set of
+  `deliveryHostSql`, ASCII of 3 to 253 bytes); a writer reads the count first, so past it a new host's failure is not
+  recorded (`kopje.delivery.hosts_full`) and an operator's stop of a new host takes the place of the available host of
+  the oldest counted day (`kopje.delivery.host_evicted`), or answers 409 when every kept host is unavailable; the
+  delivery sweep forgets up to 500 failing hosts a round 30 idle days after their last counted day.
+  `test/delivery-hosts.test.ts` ("records no new host past MAX_DELIVERY_HOSTS, still counts an existing one, and aborts
+  a 10,001st import", "forgets idle failing hosts SWEEP_BATCH a sweep, keeping a younger one and an unavailable one",
+  "evicts the available host of the oldest day for a stop of a new host; with none, answers 409 and writes nothing").
   Retractions: _Enforced (main):_ they expire after 30 days, each
   inbound activity sweeps 100 expired rows, and an actor has at most 10,000 live rows. Finished inbound jobs (and
   with them deleted actors' tombstones) expire 30 days after they finish. `test/inbox.test.ts`,
@@ -3841,12 +3855,35 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   continuing from the cursor it returns (`test/delivery-regressions.test.ts` ("refuses to retry a Like that its Undo
   has superseded"); `test/delivery-verify.test.ts` ("operator retries", "the `all` cursor")). So is a follow answer
   that a later `Follow` of its pair superseded under its lease (it is dropped, never given up), and one it cancelled
-  is gone (`test/follow-answers.test.ts`).
-  _Enforced (main):_ `src/domain/deliveries.ts`, `src/jobs/deliver.ts`;
-  `test/deliveries.test.ts` ("retries after min(30 s·2^n, 12 h)"), `test/delivery-post.test.ts` ("RES-5: claims
-  nothing and counts no attempt in maintenance"), `test/cli.test.ts`. Spool messages: _Enforced (main):_ a message whose
-  retries run out goes to the dead-letter queue (OPS-10), where it is kept for inspection, and a request refused for
-  good (401, 404, 415) is dropped as the live inbox answers it (`handleQueue` in `src/jobs/queue.ts`, the consumer's
+  is gone (`test/follow-answers.test.ts`). A host whose deliveries failed by its own doing on 7 different UTC days
+  since its last success is unavailable, as Mastodon's `DeliveryFailureTracker` marks it (`docs/mastodon-deviations.md`,
+  "Unavailable delivery hosts"): a failure counts only when its stage shows the host caused it (an answer of no address
+  or only non-public ones, a retryable answer, a network error, a timeout that ran the POST's whole time; never a
+  resolver, key or signing failure, a deadline cut or an exhausted budget), and a delivery that succeeds, an activity
+  the Store receives from an actor whose stored inbox is on the host, or the operator's restart clears it. While it is
+  unavailable no row to it but a `Follow` is sent: expansion writes its targets given up `host unavailable`, a claim
+  gives up a due row without an attempt, a failed completion gives up instead of retrying (a lease taken before the
+  mark is sent once), and the host's drain gives up its queued and pending rows in bounded steps (RES-6). The operator
+  lists, stops and restarts hosts through `/admin/hosts` and `kopje-admin hosts`, and retries the given-up rows
+  through `/admin/deliveries`. The drain covers the lanes `laneOf` writes, an https origin of at most 268 bytes; a row
+  on another lane (an import's, or one whose inbox host passes 253 bytes) is given up at its claim when due. _Gap
+  (accepted):_ failures count by host, so an actor whose stored inbox is on another origin whose path answers a
+  retryable failure counts against that host and can mark it unavailable for every account on it, as Mastodon's tracker
+  counts by host too; the stage keeps Kopje's own failures out but cannot tell such an inbox from the host's own, and
+  the operator restarts the host. The clear on receipt is keyed the same way: the signer's stored inbox may name any
+  host, so any activity the Store receives from an actor whose document names an inbox on a host it does not control
+  makes that host available, an operator's stop and its drain included, as Mastodon 4.7.5's inbox resets the verified
+  signer's inbox host (`DeliveryFailureTracker.reset!`, which destroys the domain's `UnavailableDomain`) and stores an
+  actor's inbox on any host. The host is then as it was before its mark: Kopje tries it again with each failure counted
+  anew, the rows already given up stay so, and the operator stops it again (`test/delivery-hosts.test.ts` ("a %s signed
+  activity of an actor whose inbox is on another host …")).
+  _Enforced (main):_ `src/domain/deliveries.ts`, `src/domain/delivery-hosts.ts`, `src/jobs/deliver.ts`;
+  `test/deliveries.test.ts` ("retries after min(30 s·2^n, 12 h)"), `test/delivery-post.test.ts` ("RES-5: claims nothing
+  and counts no attempt in maintenance"), `test/cli.test.ts`, `test/delivery-hosts.test.ts`,
+  `test/delivery-host-drain.test.ts`, `test-node/delivery-host-resolution.test.ts`. Spool messages: _Enforced (main):_ a
+  message whose retries run out goes to the dead-letter queue (OPS-10), where it is kept for inspection, and a request
+  refused for good (401, 404, 415) is dropped as the live inbox answers it (`handleQueue` in `src/jobs/queue.ts`, the
+  consumer's
   `dead_letter_queue` in `wrangler.jsonc`); `test/gate.test.ts` ("retries, and so counts against max_retries, only on
   real processing errors"). Jobs rounds: _Enforced (main):_ a jobs message is only a nudge, as the jobs and their
   progress are durable in the Store: it is acked and never retried, and a Queue batch runs at most one jobs round
@@ -4257,9 +4294,18 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   uploads once the monthly Images budget is reserved", "stops one account at its monthly share", "answers 503 when the
   transformation allowance is used up"), `test/media-reconcile.test.ts` ("spends no transformation on a reservation
   that expired", "charges the budgets of the month the transformations run in").
-  Delivery: _Enforced (main):_ an activity's targets are expanded 100 at a time, oldest
-  activity first, in the recording transaction and then in each claim; a claim reads at most 16 lane heads (only heads
-  are due); a Queue batch runs one round however many doorbells it holds; the consumer runs at most 4 batches at once
+  Delivery: _Enforced (main):_ an activity's targets are expanded 100 at a time, oldest activity first, in the recording
+  transaction and then in each claim; a claim reads at most 16 lane heads (only heads are due); an unavailable host's
+  drain (`drainStep`, RES-5) runs first in each claim, and in the operator's stop, and shares the claim's 100 rows
+  (`EXPANSION_STEP`) with expansion: a step reads at most that many of the host's queued and pending rows, `Follow`s
+  included, each with one rowid read of its activity, through `deliveries_host_drain` by the host's key, then lane and
+  id from its cursor, so it visits no entry it does not count and reads no other host's rows whatever cursor a dump
+  brought (one that names another host's lane restarts the drain); a host's n such rows are given up within ⌈n / 100⌉
+  steps. `test/delivery-host-drain.test.ts` ("drains a lane of 500 to a stopped host within ⌈500 / EXPANSION_STEP⌉
+  steps, its head due 12 hours ahead", "shares EXPANSION_STEP with expansion: 100 Follows and one row take 2 steps,
+  expansion writing what they leave", "visits none of 500 Follows kept behind its cursor", "reads only the host's own
+  lanes, each step's reads flat as other hosts' rows grow"); a Queue batch runs one round however many doorbells it
+  holds; the consumer runs at most 4 batches at once
   (`max_concurrency`); the backlog has the RES-4 caps. `test/deliveries.test.ts` ("bounds a claim to its limit"),
   `test/delivery-post.test.ts` ("runs one round for a batch of doorbells"), `test/delivery-regressions.test.ts`
   ("expands a large audience in bounded steps"). An intent's targets are stored in chunks (`outbound_targets`) of at

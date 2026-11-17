@@ -660,6 +660,7 @@ describe("lane promotion with stale statistics (RES-7)", () => {
         id,
         leaseToken: "a",
         now: NOW + 1,
+        storeNow: NOW + 1,
         outcome: OK,
       });
     const { before, after } = await staleStatistics(h, {
@@ -1331,6 +1332,7 @@ describe("the shared-inbox fallback by the row's provenance (#1686, NET-2)", () 
             id: subject.id,
             leaseToken: "a",
             now: NOW,
+            storeNow: NOW,
             outcome: MISSING,
           });
           // Put the row back as it was, leased at the shared inbox.

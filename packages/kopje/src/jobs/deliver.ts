@@ -3,6 +3,7 @@ import type { Completion, Confirmation, DeliverySigner } from "../domain/deliver
 import { CLAIM_LIMIT, INSTANCE_SIGNER } from "../domain/deliveries";
 import { COMPLETION_MARGIN_MS, type PostDeps, postActivity, ringDoorbell } from "../federation/delivery";
 import { instanceActorKey } from "../federation/federation";
+import type { HostResolution } from "../federation/loader";
 import { envInMaintenance, readConfig, userKek } from "../platform/config";
 import { errorFields } from "../platform/error-message";
 import { PACKAGE_VERSION } from "../platform/package-version";
@@ -24,7 +25,8 @@ export type DeliveryDeps = {
   store: StoreResolver;
   now: () => number;
   fetch: typeof fetch;
-  checkHost?: (url: URL) => Promise<void>;
+  // The delivery sink's host check (federation/loader.ts resolveDeliveryHost by default).
+  resolveHost?: (url: URL) => Promise<HostResolution>;
   timeoutMs?: number;
   // A fresh lease token per claim.
   leaseToken?: () => string;
@@ -95,7 +97,7 @@ export async function deliveryRound(env: Env, deps: DeliveryDeps): Promise<Round
   const origin = new URL(Object.values(claim.signers)[0]?.actorUri ?? claim.instanceActor ?? "https://invalid.").origin;
   const post: PostDeps = {
     fetch: deps.fetch,
-    checkHost: deps.checkHost,
+    resolveHost: deps.resolveHost,
     timeoutMs: deps.timeoutMs,
     now: deps.now,
     userAgent: `Kopje/${PACKAGE_VERSION} (+${origin}/)`,
