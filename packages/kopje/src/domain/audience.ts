@@ -1,6 +1,8 @@
 import { fixedColumns, selectSql } from "../db/columns";
 import {
   ACCOUNTS_ID_INDEX,
+  COLLECTION_ITEMS_ID_INDEX,
+  COLLECTIONS_ID_INDEX,
   INSTANCE_DOMAIN_BLOCKS_DOMAIN_INDEX,
   POLL_VOTES_KEY_INDEX,
   POLLS_STATUS_INDEX,
@@ -220,7 +222,7 @@ export function mutesSql(owner: string, x: string, now: string, notifications = 
 }
 
 // The host of an actor id as hostDomain (platform/domain-name.ts) reads it, in SQL: scheme, path and port dropped,
-// lowercased, without a trailing dot. Stored ids are URL hrefs, so an IDN host is already punycode.
+// lowercased, without its trailing dots. Stored ids are URL hrefs, so an IDN host is already punycode.
 function uriHostSql(uri: string): string {
   const rest = `substr(${uri}, instr(${uri}, '://') + 3)`;
   const hostPort = `substr(${rest}, 1, instr(${rest} || '/', '/') - 1)`;
@@ -1312,16 +1314,56 @@ export function collectionItemShownSql(i: string, c: string, viewer: string): st
 		AND (${viewer} IS NULL OR NOT ${blocksSql(viewer, `${i}.account_id`)}))`;
 }
 
-// R45 (AccountPolicy#feature?, Account#featureable_by?): whether `owner` may feature the account `member`: the member
-// is available, neither blocks the other, and the member is local, discoverable, and unlocked, followed (accepted) by
-// the owner, or the owner itself. A remote member has no policy Kopje reads yet, so it is refused (Mastodon's
-// `missing`).
+// R45 (Account#feature_policy_for_account, feature_approval.current_user): the answer to `viewer` (NULL: none signed
+// in) of whether it may feature the account row `a`. First Mastodon's policy in its order: 'denied' for no viewer; a
+// local account 'denied' when not discoverable (to itself too), else 'denied' when locked and the viewer neither
+// follows it (accepted) nor is it, else 'automatic'; a remote account 'missing', as Kopje stores no remote policy yet
+// (Mastodon answers 'automatic' to the account itself first, which a local viewer never is). Then only ever to
+// 'denied': when either blocks the other or the account is unavailable (R1), the refusals AccountPolicy#feature? adds
+// (docs/mastodon-deviations.md, "Collections"), so 'missing' stays reachable otherwise.
+export function featureApprovalSql(a: string, viewer: string): string {
+  return `CASE WHEN ${viewer} IS NULL OR NOT ${availableSql(`${a}.id`)} OR ${blocksSql(`${a}.id`, viewer)}
+			OR ${blocksSql(viewer, `${a}.id`)} THEN 'denied'
+		WHEN ${a}.domain IS NOT NULL THEN 'missing'
+		WHEN ${a}.discoverable IS NOT 1 THEN 'denied'
+		WHEN ${a}.locked = 1 AND ${a}.id <> ${viewer} AND NOT EXISTS (SELECT 1 FROM main.follows pff
+			WHERE pff.account_id = ${viewer} AND pff.target_account_id = ${a}.id AND pff.state = 'accepted') THEN 'denied'
+		ELSE 'automatic' END`;
+}
+
+export type FeatureApproval = "automatic" | "manual" | "unknown" | "missing" | "denied";
+
+// The viewer ?2's answer for an account: its id and one of five words (at most 9 bytes, 'automatic').
+export const FEATURE_APPROVAL_COLUMNS = fixedColumns(
+  { id: "a.id", current_user: featureApprovalSql("a", "?2") },
+  { id: 18, current_user: 9 },
+);
+
+// The answers of featureApprovalSql to the viewer for the accounts (null: none signed in, every answer 'denied' without
+// a read): one row per account, in no order, in one statement, the accounts by their key.
+export function featureApprovalReads(
+  db: Db,
+  accountIds: readonly string[],
+  viewerId: string | null,
+): Map<string, FeatureApproval> {
+  if (viewerId === null || accountIds.length === 0) {
+    return new Map();
+  }
+  const rows = db.all<{ id: string; current_user: FeatureApproval }>(
+    `SELECT ${selectSql(FEATURE_APPROVAL_COLUMNS.columns)} FROM main.accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
+				WHERE a.id IN (SELECT value FROM json_each(?1))`,
+    JSON.stringify(accountIds),
+    viewerId,
+  );
+  return new Map(rows.map((row) => [row.id, row.current_user]));
+}
+
+// R45 (AccountPolicy#feature?, Account#featureable_by?): whether `owner` may feature the account `member`: the answer
+// to the owner is 'automatic' or 'manual' (featureApprovalSql). A remote member answers 'missing' until Kopje reads
+// remote policies, so it is refused.
 export function mayFeatureSql(owner: string, member: string): string {
-  return `(${availableSql(member)} AND NOT ${blocksSql(owner, member)} AND NOT ${blocksSql(member, owner)}
-		AND EXISTS (SELECT 1 FROM main.accounts pfm INDEXED BY ${ACCOUNTS_ID_INDEX}
-			WHERE pfm.id = ${member} AND pfm.domain IS NULL AND pfm.discoverable = 1
-				AND (pfm.id = ${owner} OR pfm.locked = 0 OR EXISTS (SELECT 1 FROM main.follows pff
-					WHERE pff.account_id = ${owner} AND pff.target_account_id = ${member} AND pff.state = 'accepted'))))`;
+  return `coalesce((SELECT ${featureApprovalSql("pfm", owner)} FROM main.accounts pfm INDEXED BY ${ACCOUNTS_ID_INDEX}
+		WHERE pfm.id = ${member}) IN ('automatic', 'manual'), 0)`;
 }
 
 // R45 (Account#featured_in_collections, AccountPolicy#index_featured_in_collections?): whether the item `i` of the
@@ -1369,7 +1411,10 @@ function silencedSql(r: string, a: string, now: string): string {
 // accepted and the recipient may see the quoted status by itself (R35, VIS-27: Mastodon checks neither). An
 // admin.report is shown only while its recipient is `admin`, the OAuth admin's account id (R37; NULL for none), so it
 // leaves every read, push and stream when the admin changes; it goes with its report (notifications.report_id, ON
-// DELETE CASCADE).
+// DELETE CASCADE). An added_to_collection (about the item `item`) and a collection_update (about the collection
+// `collection`) are shown while their collection is the sender's and R45 shows it to the recipient
+// (collectionShownSql: the owner available and blocking the recipient neither directly, both terms of this rule for
+// the sender, nor by domain); each goes with its item or collection (migration 0107_collection_notifications).
 // The terms are written so that every statement holding the rule prepares on workerd (docs/engineering.md "Queries":
 // each domain coverage walk is resolved within CTE_GUARD_LIMIT cursors), without reading more than the rule as it
 // reads: a type's arm is written only where `type` may be that type, an arm that reads walks comes as early as the
@@ -1382,6 +1427,8 @@ export function shownSql(
   now: string,
   admin: string,
   warning: string,
+  item: string,
+  collection: string,
 ): string {
   const terms = [
     `(${from} <> ${r} OR ${type} IN ('poll', 'moderation_warning'))`,
@@ -1404,6 +1451,23 @@ export function shownSql(
       `EXISTS (SELECT 1 FROM main.quotes nq INDEXED BY ${QUOTES_STATUS_INDEX}
 			CROSS JOIN main.statuses nt INDEXED BY ${STATUSES_ID_INDEX} ON nt.id = nq.quoted_status_id
 			WHERE nq.status_id = ${status} AND nq.state = 'accepted' AND ${viewableSql("nt", r)})`,
+    ),
+    // R45 for the collection a collection notification is about: the sender's own (its availability and direct
+    // blocks are the terms above), not domain-blocked by it.
+    armSql(
+      type,
+      "added_to_collection",
+      `(EXISTS (SELECT 1 FROM main.collection_items nci INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
+				CROSS JOIN main.collections ncc INDEXED BY ${COLLECTIONS_ID_INDEX} ON ncc.id = nci.collection_id
+			WHERE nci.id = ${item} AND ncc.account_id = ${from})
+			AND NOT ${domainBlocksSql(from, r)})`,
+    ),
+    armSql(
+      type,
+      "collection_update",
+      `(EXISTS (SELECT 1 FROM main.collections ncu INDEXED BY ${COLLECTIONS_ID_INDEX}
+			WHERE ncu.id = ${collection} AND ncu.account_id = ${from})
+			AND NOT ${domainBlocksSql(from, r)})`,
     ),
     // The boost is the sender's (nr.account_id = from): visibleSql's availability and author-block terms over it are
     // availableSql(from) and NOT blocksSql(from, r) above.
@@ -1444,7 +1508,17 @@ function armSql(type: string, t: string, body: string): string | undefined {
 // R15 for the stored notification row `n` (an alias) of recipient `r`: shownSql over its own columns, as the reads
 // and the pushes of stored notifications judge them.
 export function shownNotificationSql(n: string, r: string, now: string, admin: string): string {
-  return shownSql(r, `${n}.type`, `${n}.from_account_id`, `${n}.status_id`, now, admin, `${n}.account_warning_id`);
+  return shownSql(
+    r,
+    `${n}.type`,
+    `${n}.from_account_id`,
+    `${n}.status_id`,
+    now,
+    admin,
+    `${n}.account_warning_id`,
+    `${n}.collection_item_id`,
+    `${n}.collection_id`,
+  );
 }
 
 // R31 (Account#muting_conversation?): whether `owner` mutes the conversation `thread`, an expression for a status's
@@ -1466,10 +1540,12 @@ export function notifiedSql(
   now: string,
   admin: string,
   warning: string,
+  item: string,
+  collection: string,
 ): string {
   return `((${status} IS NULL OR NOT EXISTS (SELECT 1 FROM main.statuses nc INDEXED BY ${STATUSES_ID_INDEX} WHERE nc.id = ${status}
 			AND ${conversationMutedSql(r, "nc.thread")}))
-		AND ${shownSql(r, type, from, status, now, admin, warning)})`;
+		AND ${shownSql(r, type, from, status, now, admin, warning, item, collection)})`;
 }
 
 // ---- Notification policies (R15 as notify writes; Mastodon 4.5's NotifyService::DropCondition and FilterCondition).
@@ -1506,9 +1582,9 @@ export function keptSql(n: string): string {
 		AND ${n}.id > ${dismissedSql(`${n}.account_id`, `${n}.group_key`)})`;
 }
 
-// The types a policy may filter or drop (Notification::PROPERTIES, app/models/notification.rb:37-83: `filterable`):
-// mention, reblog, follow, follow_request, favourite and quote. A post notification (`status`), an edit (`update`) and
-// a poll's end are never filtered.
+// The types a policy may filter or drop (Notification::PROPERTIES, app/models/notification.rb:37-105: `filterable`):
+// mention, reblog, follow, follow_request, favourite, quote and added_to_collection. A post notification (`status`),
+// an edit (`update`), a poll's end and a collection_update are never filtered.
 export const FILTERABLE_TYPES: readonly string[] = [
   "mention",
   "reblog",
@@ -1516,6 +1592,7 @@ export const FILTERABLE_TYPES: readonly string[] = [
   "follow_request",
   "favourite",
   "quote",
+  "added_to_collection",
 ];
 
 // A policy's choice for a condition (NotificationPolicy's enums, app/models/notification_policy.rb:35-40 in v4.7.5).
@@ -1784,15 +1861,16 @@ export function audienceOf(visibility: Visibility, recipients: readonly Recipien
 // ---------------------------------------------------------------------------------------------------------------
 
 // What an outbound activity does, which decides whom it may reach:
-//   - content carries a status, or a boost of one, to its audience: Create, an Update of a status, Announce. It goes
-//     to no unavailable account (R1) and to no one the signer blocks or whose domain it blocks (VIS-13, VIS-15): an
-//     addressed account the signer blocks or domain-blocks is neither named nor sent to, and a follower on a domain it
-//     blocks (one the domain block's cleanup has not removed yet) is not sent to.
+//   - content carries a status, or a boost of one, to its audience: Create, an Update of a status (or of anything
+//     else but the actor: a collection's, collection-documents.ts), Announce. It goes to no unavailable account (R1)
+//     and to no one the signer blocks or whose domain it blocks (VIS-13, VIS-15): an addressed account the signer
+//     blocks or domain-blocks is neither named nor sent to, and a follower on a domain it blocks (one the domain
+//     block's cleanup has not removed yet) is not sent to.
 //   - a retraction withdraws what was sent: a Delete, an Undo of anything, a Reject that ends a follow we had accepted
 //     (withdraws). It is named to and reaches its whole audience, the blocked included, and every inbox that received
 //     what it withdraws (deliveries.ts).
-//   - everything else (an Update of the actor, Like, Follow, Accept, a Reject of a request, Block) goes to its whole
-//     audience. Mastodon 4.5 filters none of these by block or domain block: FavouriteService, FollowService,
+//   - everything else (an Update of the actor, Like, Follow, Accept, a Reject of a request, Block, Add, Remove) goes to
+//     its whole audience. Mastodon 4.5 filters none of these by block or domain block: FavouriteService, FollowService,
 //     BlockService and RejectFollowService send to the account's inbox, and ActivityPub::UpdateDistributionWorker to
 //     followers.inboxes (AccountReachFinder); a domain block ends the follows with the domain instead
 //     (AfterBlockDomainFromAccountService), as its cleanup does here.
@@ -2130,6 +2208,33 @@ export function reachFollowers(
     after,
     bound,
     limit,
+  );
+}
+
+// reachFollowers' range, each follow's id with its follower's REACH_INBOX only where the follower is remote and the
+// inbox is TEXT of 1 to `bytes` UTF-8 bytes without NUL, judged in SQL before it is read (accounts' inbox columns have
+// no stored bound); else null.
+export function reachFollowerInboxes(
+  db: Db,
+  accountId: string,
+  after: string,
+  bound: string,
+  limit: number,
+  bytes: number,
+): { id: string; inbox: string | null }[] {
+  return db.all<{ id: string; inbox: string | null }>(
+    `SELECT CAST(w.id AS TEXT) AS id, CASE WHEN a.domain IS NOT NULL AND typeof(${REACH_INBOX}) = 'text'
+				AND length(CAST(${REACH_INBOX} AS BLOB)) BETWEEN 1 AND ?5 AND instr(CAST(${REACH_INBOX} AS BLOB), x'00') = 0
+			THEN ${REACH_INBOX} END AS inbox
+		FROM (SELECT f.id, f.account_id FROM main.follows f INDEXED BY follows_target
+			WHERE f.target_account_id = ?1 AND f.state = 'accepted' AND f.id > CAST(?2 AS INTEGER)
+				AND f.id <= CAST(?3 AS INTEGER) ORDER BY f.id LIMIT ?4) w
+		LEFT JOIN main.accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = w.account_id ORDER BY w.id`,
+    accountId,
+    after,
+    bound,
+    limit,
+    bytes,
   );
 }
 

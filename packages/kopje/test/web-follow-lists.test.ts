@@ -289,7 +289,7 @@ describe("the follow lists", () => {
 });
 
 // An account's settings form as the page renders it, with `changes` applied: every control's value as a browser
-// submits it (a checked box posts its value before its hidden false).
+// submits it (a checked box posts its hidden false, then its value).
 async function settingsForm(h: Harness, browser: Browser, changes: Record<string, boolean>) {
   const page = parseHtml(await (await h.request("/settings", { headers: { cookie: browser.cookie } })).text());
   const form = query(page, "form").find((f) => attr(f, "action") === "/settings/profile")!;

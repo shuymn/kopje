@@ -7,7 +7,7 @@ import {
   settingProjectionSql,
   storedTime,
 } from "../platform/stored-bounds";
-import { type Account, type Present, presentAccountsWithin } from "./accounts";
+import { type Account, presentAccountsWithin, presentFor, type PresentInput } from "./accounts";
 import { ANSWER_BYTES, jsonBytes } from "./answer-budget";
 import { annualReportCountedSql, annualReportOwnSql, DISTRIBUTABLE_SQL, viewableStatusIds } from "./audience";
 import { type UserContext, userReadOperation, userWriteOperation } from "./auth";
@@ -407,7 +407,12 @@ const FRAME_BYTES = jsonBytes({ annual_reports: [], accounts: [], statuses: [] }
 // The reports, the owner's account when any is listed (AnnualReportsPresenter#accounts), and the top statuses the
 // owner may view (R3, VIS-12: one deleted, withdrawn or not the owner's to see leaves by_reblogs null), newest first,
 // each admitted whole within what ANSWER_BYTES leaves (RES-3). No continuation: Mastodon has none.
-function presentReports(db: Db, rows: readonly ReportRow[], context: UserContext, present: Present): AnnualReports {
+function presentReports(
+  db: Db,
+  rows: readonly ReportRow[],
+  context: UserContext,
+  present: PresentInput,
+): AnnualReports {
   const owner = context.accountId;
   const viewable = viewableStatusIds(
     db,
@@ -436,7 +441,9 @@ function presentReports(db: Db, rows: readonly ReportRow[], context: UserContext
   });
   let left = ANSWER_BYTES - FRAME_BYTES - reports.reduce((bytes, report) => bytes + jsonBytes(report) + 1, 0);
   const accounts =
-    reports.length === 0 ? { items: [], bytes: 0 } : presentAccountsWithin(db, [owner], present, left, true);
+    reports.length === 0
+      ? { items: [], bytes: 0 }
+      : presentAccountsWithin(db, [owner], presentFor(present, owner), left, true);
   left -= accounts.bytes;
   const newest = viewable.toSorted((a, b) => (a < b ? 1 : a > b ? -1 : 0));
   const statuses = presentStatusesWithin(
@@ -450,12 +457,13 @@ function presentReports(db: Db, rows: readonly ReportRow[], context: UserContext
 }
 
 // GET /api/v1/annual_reports: the owner's pending reports (GeneratedAnnualReport.pending), at most REPORTS_LISTED.
-export const annualReports = userReadOperation<{ present: Present }, AnnualReports>((db, { present }, _v, context) =>
-  presentReports(db, db.all<ReportRow>(PENDING_REPORTS_SQL, context.accountId), context, present),
+export const annualReports = userReadOperation<{ present: PresentInput }, AnnualReports>(
+  (db, { present }, _v, context) =>
+    presentReports(db, db.all<ReportRow>(PENDING_REPORTS_SQL, context.accountId), context, present),
 );
 
 // GET /api/v1/annual_reports/:id: the owner's report of the year, read or not; null for none (Record not found).
-export const annualReport = userReadOperation<{ year: string; present: Present }, AnnualReports | null>(
+export const annualReport = userReadOperation<{ year: string; present: PresentInput }, AnnualReports | null>(
   (db, { year: requested, present }, _viewer, context) => {
     const year = reportYear(requested);
     const row = year === null ? undefined : db.first<ReportRow>(REPORT_SQL, context.accountId, year);

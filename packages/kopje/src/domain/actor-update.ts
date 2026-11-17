@@ -15,6 +15,7 @@ import { fieldSources } from "./accounts";
 import { featuredUri, followersUri, recordOutbound } from "./activities";
 import { ACTOR_ROW_COLUMN_MAP, type ActorRow } from "./actor-row";
 import { PUBLIC_COLLECTION } from "./audience";
+import { actorCollectionTerms, INTERACTION_POLICIES_TERMS } from "./collection-documents";
 import { localEmojiTags } from "./custom-emojis";
 import type { DeliveryEnvelope } from "./deliveries";
 import { allocateLocalId } from "./ids";
@@ -46,6 +47,7 @@ const CONTEXT = [
     showFeatured: "toot:showFeatured",
     showMedia: "toot:showMedia",
     showRepliesInMedia: "toot:showRepliesInMedia",
+    ...INTERACTION_POLICIES_TERMS,
   },
 ];
 
@@ -121,6 +123,12 @@ function documentOf(db: Db, row: ActorRow): Record<string, unknown> {
     showMedia: row.show_media !== 0,
     showRepliesInMedia: row.show_media_replies !== 0,
     ...attributionDomainsOf(row.attribution_domains),
+    // Its collections and who may feature it, from the stored settings, as the actor endpoint publishes them; a change
+    // of discoverable or locked therefore sends this Update.
+    ...actorCollectionTerms(row.uri, {
+      discoverable: row.discoverable === null ? null : row.discoverable === 1,
+      locked: row.locked === 1,
+    }),
   };
 }
 

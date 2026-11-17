@@ -128,6 +128,7 @@ describe("web page sink", () => {
     ["https://intranet/", "local-host"],
     ["https://site.example:8443/", "port"],
     ["https://site.example./", "trailing-dot"],
+    ["https://site.example.../", "trailing-dot"],
     [`https://site.example/${"a".repeat(WEB_PAGE_URL_LIMIT)}`, "url-too-long"],
   ])("NET-3: refuses web page URLs that fail the public-host rules before any request (%s)", async (url, reason) => {
     expect(webPageUrlRefusal(url)).toBe(reason);

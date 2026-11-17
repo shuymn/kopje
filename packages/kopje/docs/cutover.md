@@ -126,7 +126,7 @@ kopje-admin verify-conversion <export> <dump file> [--accept-deletions] [--accep
 
 **Kopje's own functions.** Where a value is one Kopje derives itself, such as sanitized HTML (bios, status content and
 earlier versions), the search text of accounts and statuses, hashtag names, an object's language, the domain of a domain
-block, a remote account's domain (its actor id's host without a port or a trailing dot, `hostDomain`), every status's
+block, a remote account's domain (its actor id's host without a port or trailing dots, `hostDomain`), every status's
 thread and the conversations of the direct statuses, the converter derives it with Kopje's code, through
 `cli/lib/cutover/kopje-runtime.js`, so a converted row is the row Kopje would have written; the image export checks an
 image's signature the same way. A new derived value follows the same rule: its module joins `kopje-runtime.js` and its
@@ -373,11 +373,15 @@ or outside years 0 to 9999) is stored: it reads it from a converted dump's `crea
 records its own time there, needs `--base-time` with the manifest's `baseTime` (without it the check stops with
 `base-time-required`).
 
-**Remote domains with a port or a trailing dot.** The converter stores a remote account's domain as the Worker does,
-without the port or trailing dot of its actor id's host. A Store converted before it did, or restored from such a
-Store's dump, may keep such domains, which address lookup, the one-account-per-address rule and the filters by domain
-read apart from the account's handle. Nothing stored tells a converted row from an imported one, so they are not
-rewritten; this read-only query lists the first 100 by id:
+**Remote domains with a port or trailing dots.** The converter stores a remote account's domain as the Worker does,
+without the port or any trailing dot of its actor id's host, so ids whose hosts differ only by those are one address:
+the later row's username becomes the reserved `! <id>` and its refresh is requested, as for any shared address.
+`verify-conversion` works the domain out on its own and compares the stored column as it is. A Store converted by an
+earlier release (which kept the whole host, or later every trailing dot but one), or restored from such a Store's
+dump, may keep such domains, which address lookup, the one-account-per-address rule and the filters by domain read
+apart from the account's handle; domain blocks read the actor id's host as well, without its port and trailing dots,
+so they still cover such an account. Nothing stored tells a converted row from an imported one, so they are not
+rewritten, by an upgrade or otherwise; this read-only query, which reads every account, lists the first 100 by id:
 
 ```sh
 kopje-admin sql "SELECT id, uri, domain FROM accounts WHERE domain IS NOT NULL AND (instr(domain, ':') > 0 OR substr(domain, -1) = '.') ORDER BY id LIMIT 100"

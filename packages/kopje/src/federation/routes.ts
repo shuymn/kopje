@@ -17,11 +17,23 @@ import {
   type FederationState,
   nodeInfo,
 } from "./federation";
+import { signatureKeyId } from "./inbox-request";
 import type { LoaderDeps } from "./loader";
+import { railsContentTypeRefused, railsFormat } from "./rails-format";
+import { railsFormatParam } from "./rails-params";
 import { notSetUp } from "./setup-gate";
 import { createSnapshotSaver, snapshotKey } from "./snapshot";
 
 const QUOTE_AUTHORIZATION_ROUTE = "/ap/users/:username/quote_authorizations/:authorization_id";
+
+// A local account's collections (FEP-7aa9, D18): the featured_collections Collection, a FeaturedCollection, a
+// FeaturedItem, and a member's FeatureAuthorization. A collection's id holds digits only, so the route never takes
+// /collections/featured or /collections/tags; it may end in an extension, as Mastodon's `(.:format)` (COLLECTION reads
+// it from the raw path).
+const FEATURED_COLLECTIONS_ROUTE = "/ap/users/:username/featured_collections";
+const COLLECTION_ROUTE = "/ap/users/:username/collections/:id{[0-9]+(?:\\.[^/]*)?}";
+const COLLECTION_ITEM_ROUTE = "/ap/users/:username/collection_items/:id";
+const FEATURE_AUTHORIZATION_ROUTE = "/ap/users/:username/feature_authorizations/:id";
 
 // The federation GETs. All but the collections are always served (app/gate.ts) and kept as snapshots.
 export const FEDERATION_GET_ROUTES = [
@@ -39,6 +51,10 @@ export const FEDERATION_GET_ROUTES = [
   "/ap/users/:username/collections/tags",
   "/ap/o/:uuid",
   QUOTE_AUTHORIZATION_ROUTE,
+  FEATURED_COLLECTIONS_ROUTE,
+  COLLECTION_ROUTE,
+  COLLECTION_ITEM_ROUTE,
+  FEATURE_AUTHORIZATION_ROUTE,
   "/emojis/:id",
 ];
 
@@ -51,6 +67,10 @@ export const SELF_GATED_ROUTES: ReadonlySet<string> = new Set([
   "/nodeinfo/2.1",
   "/actor/outbox",
   QUOTE_AUTHORIZATION_ROUTE,
+  FEATURED_COLLECTIONS_ROUTE,
+  COLLECTION_ROUTE,
+  COLLECTION_ITEM_ROUTE,
+  FEATURE_AUTHORIZATION_ROUTE,
   "/emojis/:id",
 ]);
 
@@ -166,6 +186,46 @@ async function respond(c: Context<FederationEnv>, deps: FederationRouteDeps, url
         ? (away(answer.domain) ?? { response: quoteAuthorization(answer.stamp), source: null })
         : null;
     }
+    case FEATURED_COLLECTIONS_ROUTE: {
+      const username = FEATURED_COLLECTIONS.exec(url.pathname)![1]!;
+      // params[:page] as Rack parses the query: the last of a repeated key.
+      const page = url.searchParams.getAll("page").at(-1) ?? null;
+      const keyId = signatureKeyId(c.req.raw.headers);
+      const answer = await read((s, b) => s.apFeaturedCollections(b, { username, page, keyId }));
+      return answer.status === "ok"
+        ? (away(answer.domain) ?? { response: collectionDocument(answer.document), source: null })
+        : null;
+    }
+    case COLLECTION_ROUTE: {
+      const path = COLLECTION.exec(url.pathname);
+      if (path === null) {
+        return { response: collectionDocument(null), source: null };
+      }
+      const [, username, id, extension] = path;
+      const input = { username: username!, id: id!, keyId: signatureKeyId(c.req.raw.headers) };
+      const answer = await read((s, b) => s.apFeaturedCollection(b, input));
+      if (answer.status !== "ok") {
+        return null;
+      }
+      const response = collectionAnswer(c, answer.document, input.id, extension, url.search.slice(1));
+      return away(answer.domain) ?? { response, source: null };
+    }
+    case COLLECTION_ITEM_ROUTE: {
+      const [, username, id] = ITEM.exec(url.pathname)!;
+      const input = { username: username!, id: id!, keyId: signatureKeyId(c.req.raw.headers) };
+      const answer = await read((s, b) => s.apFeaturedItem(b, input));
+      return answer.status === "ok"
+        ? (away(answer.domain) ?? { response: collectionDocument(answer.document), source: null })
+        : null;
+    }
+    case FEATURE_AUTHORIZATION_ROUTE: {
+      const [, username, id] = AUTHORIZATION.exec(url.pathname)!;
+      const input = { username: username!, id: id!, keyId: signatureKeyId(c.req.raw.headers) };
+      const answer = await read((s, b) => s.apFeatureAuthorization(b, input));
+      return answer.status === "ok"
+        ? (away(answer.domain) ?? { response: collectionDocument(answer.document, NO_STORE), source: null })
+        : null;
+    }
     case "/emojis/:id": {
       const id = EMOJI.exec(url.pathname)?.[1];
       const answer =
@@ -186,6 +246,14 @@ function spelled(route: string, path: string): boolean {
   switch (route) {
     case QUOTE_AUTHORIZATION_ROUTE:
       return STAMP.test(path);
+    case FEATURED_COLLECTIONS_ROUTE:
+      return FEATURED_COLLECTIONS.test(path);
+    case COLLECTION_ROUTE:
+      return COLLECTION.test(path);
+    case COLLECTION_ITEM_ROUTE:
+      return ITEM.test(path);
+    case FEATURE_AUTHORIZATION_ROUTE:
+      return AUTHORIZATION.test(path);
     case "/emojis/:id":
       return path.startsWith("/emojis/");
     default:
@@ -224,6 +292,64 @@ function quoteAuthorization(stamp: QuoteAuthorization | null): Response {
     headers: { "content-type": "application/activity+json", "cache-control": "no-store" },
   });
 }
+
+// A collection's documents (domain/collection-documents.ts), from the request's one read: 404 for none. Each answers
+// whoever asks, a fetcher its owner blocks excepted (the keyId of the request's signature, VIS-33), so none is kept as a
+// snapshot. An authorization is never cached: a revocation ends it at once, as a quote stamp's.
+function collectionDocument(document: string | null, headers: Record<string, string> = {}): Response {
+  if (document === null) {
+    return new Response("Not Found", { status: 404, headers });
+  }
+  return new Response(document, {
+    headers: { "content-type": "application/activity+json", ...headers },
+  });
+}
+
+// CollectionsController#show as Mastodon answers it (rails-params.ts, rails-format.ts), in its order: a query Rack
+// refuses or an extension the router refuses (400), a Content-Type Rails cannot read (406, ParamsWrapper), a query
+// Rails refuses (400), then an Accept or format Rails cannot read (406), all before the collection is found; then a
+// collection not found (404); then a request it answers with the page moves to the page (#redirect_to_canonical_url),
+// and one it answers with neither representation is refused (406).
+function collectionAnswer(
+  c: Context<FederationEnv>,
+  document: string | null,
+  id: string,
+  extension: string | undefined,
+  query: string,
+): Response {
+  const param = railsFormatParam(extension, query);
+  if (param.refused === "request") {
+    return new Response("Bad Request", { status: 400 });
+  }
+  if (railsContentTypeRefused(c.req.header("content-type"))) {
+    return new Response("Not Acceptable", { status: 406 });
+  }
+  if (param.refused === "controller") {
+    return new Response("Bad Request", { status: 400 });
+  }
+  const negotiated = railsFormat({
+    accept: c.req.header("accept"),
+    requestedWith: c.req.header("x-requested-with"),
+    contentType: c.req.header("content-type"),
+    format: param.format,
+  });
+  if (negotiated === "invalid" || (document !== null && negotiated === "none")) {
+    return new Response("Not Acceptable", { status: 406 });
+  }
+  if (document !== null && negotiated === "html") {
+    return new Response(null, { status: 302, headers: { location: `/collections/${id}` } });
+  }
+  return collectionDocument(document);
+}
+
+const NO_STORE = { "cache-control": "no-store" };
+
+const USERNAME = "([A-Za-z0-9_]{1,64})";
+const FEATURED_COLLECTIONS = new RegExp(`^/ap/users/${USERNAME}/featured_collections$`);
+// Mastodon's `(.:format)`: an extension of anything but `/`, `.` and `?`, percent-decoded (rails-params.ts).
+const COLLECTION = new RegExp(`^/ap/users/${USERNAME}/collections/(\\d{18})(?:\\.([^/.?]+))?$`);
+const ITEM = new RegExp(`^/ap/users/${USERNAME}/collection_items/(\\d{18})$`);
+const AUTHORIZATION = new RegExp(`^/ap/users/${USERNAME}/feature_authorizations/(\\d{18})$`);
 
 const EMOJI = /^\/emojis\/(\d{18})$/;
 

@@ -12,7 +12,7 @@ const CURSOR = /^\d{1,19}$/;
 // of its to_i, at most `maxLimit`), and a limit of 0 as 1, where Mastodon answers 500 (docs/mastodon-deviations.md,
 // "Request parameters").
 export function pageQuery(params: Params, defaultLimit = 40, maxLimit = 80): PageQuery {
-  const limit = params.last("limit");
+  const limit = params.integer("limit");
   return {
     maxId: cursor(params.get("max_id")),
     sinceId: cursor(params.get("since_id")),

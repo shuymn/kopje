@@ -101,7 +101,7 @@ function pollOf(p: Params): PollInput | string | undefined {
   }
   const checked = checkPoll({
     options: p.getAll("poll[options]").slice(0, MAX_POLL_OPTIONS_READ + 1),
-    expiresIn: p.last("poll[expires_in]"),
+    expiresIn: p.integer("poll[expires_in]"),
     multiple: parseBoolean(p.get("poll[multiple]")),
     hideTotals: parseBoolean(p.get("poll[hide_totals]")),
   });

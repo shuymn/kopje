@@ -697,6 +697,7 @@ function compareConfigs() {
     upload_source_maps: config.upload_source_maps,
     observability: config.observability,
     keep_vars: config.keep_vars,
+    limits: config.limits,
     version_metadata: config.version_metadata,
     durable_objects: config.durable_objects,
     migrations: config.migrations,

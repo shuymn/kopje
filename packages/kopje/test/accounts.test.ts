@@ -68,6 +68,7 @@ describe("credentials", () => {
       fields: [],
       noindex: false,
       roles: [],
+      feature_approval: { automatic: [], manual: [], current_user: "denied" },
       source: {
         privacy: "public",
         sensitive: false,
@@ -887,6 +888,10 @@ describe("account lookup", () => {
       expect(await response.json(), acct).toMatchObject({ id });
     }
     expect((await h.request("/api/v1/accounts/lookup?acct=bob")).status).toBe(404);
+    // Rails' params[:acct]: the last value the query gives.
+    const repeated = await h.request("/api/v1/accounts/lookup?acct=nobody&acct=alice");
+    expect([repeated.status, (await repeated.json<{ id?: string }>()).id]).toEqual([200, local]);
+    expect((await h.request("/api/v1/accounts/lookup?acct=alice&acct=nobody")).status).toBe(404);
     const remoteAccount = await (await h.request(`/api/v1/accounts/${remote}`)).json();
     expect(remoteAccount).toMatchObject({ acct: "bob@remote.test", url: "https://remote.test/@bob" });
   });

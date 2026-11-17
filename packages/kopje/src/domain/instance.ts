@@ -18,7 +18,7 @@ import {
   trimBlank,
 } from "../platform/stored-bounds";
 import { remoteHtmlText, sanitizeDocumentHtml } from "../security/html";
-import { type Account, accountByAddress, type Present, storedAddress } from "./accounts";
+import { type Account, accountByAddress, type Present, presentFor, type PresentInput, storedAddress } from "./accounts";
 import { accessAdminRefusal } from "./admin-authority";
 import { campaignYear, wrapstodonOn } from "./annual-reports";
 import { availableLocalSql } from "./audience";
@@ -178,7 +178,7 @@ function activeWindow(now: number): [string, string] {
 // /api/v1/instance: the settings and every count it presents.
 // storeNow is the Store's own time (atStoreTime), the clock refreshDomainCount stamps the kept count with.
 export const instanceInfo = readOperation.atStoreTime("storeNow")<
-  { now: number; storeNow: number; present: Present },
+  { now: number; storeNow: number; present: PresentInput },
   InstanceInfo
 >((db, { now, storeNow, present }) => {
   const fresh = db.first<{ n: number }>(FRESH_DOMAIN_COUNT_SQL, storeNow - DOMAIN_COUNT_FRESH_MS, storeNow);
@@ -193,21 +193,21 @@ export const instanceInfo = readOperation.atStoreTime("storeNow")<
     activeMonth: counts?.active ?? 0,
     statusCount: counts?.statuses ?? 0,
     domainCount: counts?.domains ?? 0,
-    contactAccount: contactAccount(db, settings, present),
+    contactAccount: contactAccount(db, settings, presentFor(present, null)),
   };
 });
 
 // /api/v2/instance: the settings, the one count it presents (usage.users.active_month) and the campaign, judged at
 // storeNow, the Store's own time (atStoreTime), as the annual report operations judge it.
 export const instanceUsage = readOperation.atStoreTime("storeNow")<
-  { now: number; storeNow: number; present: Present },
+  { now: number; storeNow: number; present: PresentInput },
   InstanceV2
 >((db, { now, storeNow, present }) => {
   const settings = settingsOf(db);
   return {
     ...settings,
     activeMonth: db.first<{ active: number }>(INSTANCE_ACTIVE_SQL, ...activeWindow(now))?.active ?? 0,
-    contactAccount: contactAccount(db, settings, present),
+    contactAccount: contactAccount(db, settings, presentFor(present, null)),
     wrapstodon: campaignYear(storeNow, wrapstodonOn(db)),
   };
 });

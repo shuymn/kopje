@@ -1334,8 +1334,8 @@ function check(sql: SqlStorage, c: Case, saw: Set<Scenario>, savepoint: Savepoin
         if (staged && target.domains !== null) {
           problems.push(`${what}: hosts ${JSON.stringify(target.domains)} behind ${target.inbox}`);
         } else if (!staged && !target.many) {
-          // The host of each actor id as domain blocks read it: lowercased, without a trailing dot.
-          const hosts = [...new Set(listed.map((x) => new URL(uriOf(x!)).hostname.replace(/\.$/, "")))].toSorted();
+          // The host of each actor id as domain blocks read it: lowercased, without its trailing dots.
+          const hosts = [...new Set(listed.map((x) => new URL(uriOf(x!)).hostname.replace(/\.+$/, "")))].toSorted();
           if (JSON.stringify(target.domains) !== JSON.stringify(hosts)) {
             problems.push(`${what}: hosts ${JSON.stringify(target.domains)} behind ${target.inbox}`);
           }

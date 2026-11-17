@@ -264,6 +264,35 @@ describe("sending a push", () => {
     expect(await pushedTypes(h, client)).toEqual(["mention"]);
   });
 
+  // Fails if a collection type has no title: its push's title would be the owner's name alone.
+  it("titles a collection notification's push with its fallback sentence, the owner by name", async () => {
+    const { h, client } = await pushing(["alice", "bob"], {
+      alerts: { added_to_collection: true, collection_update: true },
+    });
+    const { alice, bob } = h.users;
+    await sql(h.store, "UPDATE accounts SET discoverable = 1");
+    const created = await h.request(
+      "/api/v1/collections",
+      bearer(bob.token, json({ name: "c", sensitive: false, discoverable: true, account_ids: [alice.id] })),
+    );
+    expect(created.status).toBe(200);
+    const { collection } = await created.json<{ collection: { id: string } }>();
+    const updated = await h.request(
+      `/api/v1/collections/${collection.id}`,
+      bearer(bob.token, json({ name: "renamed" }, { method: "PATCH" })),
+    );
+    expect(updated.status).toBe(200);
+    const { fetch, sent } = recordingFetch();
+    await round(h, fetch);
+    const payloads = await Promise.all(sent.map((s) => readPush(client, s.request)));
+    expect(
+      payloads.map((p) => `${String(p.notification_type)}: ${String(p.title)}`).toSorted((a, b) => a.localeCompare(b)),
+    ).toEqual([
+      "added_to_collection: bob added you to a collection",
+      "collection_update: bob updated a collection you are in",
+    ]);
+  });
+
   it.each([
     ["all", ["bob", "carol"]],
     ["followed", ["bob"]],

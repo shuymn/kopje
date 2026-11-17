@@ -8,7 +8,10 @@ values that belong to this instance (its domain, the Access applications and the
 ## Before you start
 
 The account needs the Workers Paid plan. The Free plan allows 10 ms of CPU time and 50 subrequests per request, which
-signature checks on federated requests, the daily backup and media processing exceed.
+signature checks on federated requests, the daily backup and media processing exceed. `wrangler.jsonc` also raises
+the CPU time a request or a Store invocation may use to 60 seconds (`limits.cpu_ms`), which only Workers Paid allows.
+Keep that line: the Store upgrades its schema in one invocation, and without it an upgrade that needs more than 30
+seconds of CPU stops part way and leaves the instance unavailable until an attempt finishes ([upgrade.md](upgrade.md)).
 
 Some things cannot be done from the wizard. Do these in the Cloudflare dashboard first. The wizard lists them too, at
 `/setup/checklist`.
