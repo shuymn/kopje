@@ -39,6 +39,11 @@ Planned topics: the KV sweep (expired signed-fetch cache rows: NET-4, RES-4) and
   RES-6).
 - One Worker does HTTP, Access and signature verification, fetching, sanitizing, delivery and the Queue. One SQLite
   Durable Object, the Store, holds all state; each operation runs in `transactionSync` with no external I/O.
+- A request, a Queue batch and a Store invocation (a call or an alarm) may each use up to 60 s of CPU: the shipped
+  configs set `limits.cpu_ms` to 60,000, twice the platform's default, so that the Store's upgrade fits in its one
+  alarm (`test-node/wrangler-configs.test.ts`). Cloudflare lists the cron's CPU limit apart, at 30 s, and the backup is
+  sized to that (OPS-5). The bounds below are stated in rows, bytes, calls and turns and do not grow with the limit;
+  what it sets is how long one Store call within them may hold the Store before the platform stops it (A11).
 - Access protects only `/oauth/authorize` and `/admin/*`, each with its own application; the Worker verifies the JWT.
 - Media originals live in R2 and are re-encoded by Images; cached remote files live in R2 under `remote/`, verified
   but not re-encoded (MEDIA-6, MEDIA-7). Backups are age-encrypted to an offline key.
@@ -4597,7 +4602,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Streaming (VIS-26): _Enforced (main):_ at most 16 sockets per account (429) and 256 per
   instance (503); 16 subscriptions per socket, 16 stream keys per account and a socket's attachment at most 12 KiB (`Too
   many subscriptions`, 429); incoming messages text only (1003), at most 4 KiB and 120 a minute (1008). The fan-out runs
-  in turns, one at a time, each an incoming request to the Store's own stub, which restores the CPU allowance: a turn
+  in turns, one at a time, each an incoming request to the Store's own stub, which restores the CPU allowance (60 s,
+  Deployment assumptions): a turn
   spends at most 512 checks, 64 presentations and 4,096 sends, runs a unit only while what is left covers a unit's
   worst case (35 checks: 16 tokens, home, the mention, one for each of 16 keys (lists and feeds) and the feeds' mention
   filter; one presentation, 512 KiB of payload, 256 sends) and leaves the rest to the next turn. A payload is counted

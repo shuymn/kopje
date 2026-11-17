@@ -1,5 +1,6 @@
 import { readBoundedBody } from "../platform/body";
 import { utf8Length } from "../platform/dump-format";
+import { railsBoolean } from "../platform/rails-boolean";
 import { rubyNumberToI, rubyToI } from "../platform/ruby-to-i";
 
 // Request parameters as Mastodon reads them: the query string merged with a JSON, urlencoded or multipart body
@@ -446,13 +447,7 @@ export function limitParam(p: Params, fallback: number, max: number): number {
   return limit === undefined ? fallback : Math.min(Math.abs(rubyToI(limit)), max);
 }
 
-// ActiveModel::Type::Boolean#cast's false values, each in its own case only ('False' casts to true), with blank.
-export const RAILS_FALSE: readonly string[] = ["", "0", "f", "F", "false", "FALSE", "off", "OFF"];
-
-// Rails' boolean casting: blank is absent, a value of RAILS_FALSE is false, anything else is true.
+// A sent parameter as Rails casts it to a boolean (railsBoolean): blank is absent.
 export function parseBoolean(value: string | undefined): boolean | undefined {
-  if (value === undefined || value === "") {
-    return undefined;
-  }
-  return !RAILS_FALSE.includes(value);
+  return railsBoolean(value) ?? undefined;
 }

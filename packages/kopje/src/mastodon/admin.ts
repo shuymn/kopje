@@ -37,6 +37,7 @@ import {
 } from "../domain/reports";
 import { blockedDomain } from "../platform/domain-name";
 import { railsBlank } from "../platform/rails-blank";
+import { railsBoolean } from "../platform/rails-boolean";
 import { sha256Hex } from "../security/tokens";
 import {
   type ApiContext,
@@ -51,7 +52,7 @@ import {
 } from "./context";
 import { mastodonError, moderatingError, recordNotFound as notFound } from "./errors";
 import { pageQuery } from "./pagination";
-import { type Params, parseBoolean, RAILS_FALSE } from "./params";
+import { type Params, parseBoolean } from "./params";
 import { reportResponse } from "./reports";
 import * as trends from "./trends";
 
@@ -101,7 +102,7 @@ export const trendLinks = afterGate(trends.trendLinks);
 
 // A parameter as ActiveModel::Type::Boolean casts it, true or not: absent is nil.
 function railsTrue(value: string | null | undefined): boolean {
-  return value != null && !RAILS_FALSE.includes(value);
+  return railsBoolean(value) === true;
 }
 
 // The parameters the index's Link URLs carry (PAGINATION_PARAMS, reports_controller.rb:18-25, 108-110), with the

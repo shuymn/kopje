@@ -163,6 +163,15 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
+- `wrangler.jsonc`: add `"limits": { "cpu_ms": 60000 }` to the instance's config, as the template now has it
+  ([docs/upgrade.md](docs/upgrade.md)). A request, a Queue batch and a Store invocation may then use up to 60 seconds
+  of CPU instead of the platform's default 30. The Store applies and verifies a release's migrations in one
+  invocation, and on the migration bench's store this release's together take more than two thirds of 30 seconds, the
+  margin the bench keeps. Without the line, an upgrade that needs more than 30 seconds stops part way, and until an
+  attempt finishes the Store refuses every request, reads and sign-ins included, while migrations remain unapplied,
+  and stays readonly once they are applied but not yet verified, each attempt checking every reference of the Store
+  again. The migration bench's budget is now 40 seconds, two thirds of the new limit (RELEASING.md). Setting the limit
+  costs nothing by itself. No Store migration.
 - A remote actor's members are read only by their literal spelling, as Mastodon reads them: a name or bio given only
   as a language map (`nameMap`, `summaryMap`) is no longer read, so such an account shows an empty display name and
   bio, and a `movedTo` or `alsoKnownAs` spelled as a compact or full IRI no longer names a move. No Store migration and
@@ -373,6 +382,16 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- A remote status's `sensitive` is read as Mastodon casts it to its boolean column, so any value but `false`, `0`, null
+  and Rails' false strings (`"0"`, `"f"`, `"F"`, `"false"`, `"FALSE"`, `"off"`, `"OFF"`) marks it, where only `true`
+  did (`"true"`, `1` and `[true]` now mark it), and an empty string refuses it where Mastodon's `NOT NULL` column
+  does: a `Create` stores nothing and an `Update` with a newer `updated` changes nothing, while one that names no newer
+  version still updates the status's poll and quote (#1730). An unsigned `0.0` is read as `0`
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Reading inbound activities"). Statuses already stored
+  keep their mark until their next update. A filter keyword's `whole_word`, a nested keyword's `_destroy` and v1's
+  `irreversible` are read by the same cast, each false spelling in its own case only, so `"False"` and `"Off"` are true
+  (a keyword sent `_destroy: "False"` is deleted), where any case of them was false. No Store migration and no
+  `wrangler.jsonc` change.
 - The cutover stores a remote account's domain without the port or trailing dots of its actor id's host, as Kopje
   stores one, and `verify-conversion` compares the domain. A Store converted before keeps such domains until a refresh
   confirms each account; the query in [docs/cutover.md](docs/cutover.md) (Verification) lists them (#1725). A remote

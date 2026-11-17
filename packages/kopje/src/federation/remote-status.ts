@@ -27,6 +27,7 @@ import { httpUrl } from "../platform/http-url";
 import { STATUS_URI_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import { withinJsonBounds } from "../platform/json-bounds";
 import { railsBlank } from "../platform/rails-blank";
+import { railsBoolean } from "../platform/rails-boolean";
 import {
   CARD_URL_LIMIT,
   storedBlurhash,
@@ -544,7 +545,9 @@ export function parseRemoteStatus(
     spoilerText: converted
       ? ""
       : cutJsonString(cutCodeUnits(storedText(summary ?? ""), MAX_SPOILER_LENGTH), SPOILER_BYTES),
-    sensitive: object.sensitive === true,
+    // `@status_parser.sensitive || false` as Mastodon's boolean column casts it (create.rb:115,
+    // process_status_update_service.rb:184): absent, null and false are false, and "" is nil (RemoteStatusInput).
+    sensitive: railsBoolean(object.sensitive ?? false),
     language: languageOf(object),
     published: timeOf(object.published),
     updated: timeOf(object.updated),
