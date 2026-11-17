@@ -198,7 +198,9 @@ against their own instance. TLS is assumed between all parties.
   (`test/remote-actor-images.test.ts`, "verifies a signature by an actor whose icon is not an Image", "verifies a key
   Fedify fetches itself, by an actor whose icon is not an Image", "verifies a signature by an actor whose … is
   unreadable, its key at the actor's URL", "verifies a key document served at the key's URL";
-  `test/remote-actor-view.test.ts`, "hands Fedify only the inventory"). A key id the Store does not hold fresh, or whose
+  `test/remote-actor-view.test.ts`, "hands Fedify only the inventory"; `test/remote-actor-url.test.ts`, "verifies such
+  an actor's signature by its key alone, and applies only its own document").
+  A key id the Store does not hold fresh, or whose
   stored key fails, is resolved from the document at that id, as Kopje reads an actor's keys, and its owner judged as
   for any fetched key (`storedKeys`, `verify`). An RFC 9421 signature verifies with an RSA or Ed25519 key, the algorithm
   its own; a draft-cavage signature only with an RSA key, and one that names any other key is answered as a signature
@@ -2749,9 +2751,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   2,048 bytes and 4,098 JSON bytes (`snapshotMedia` in `src/domain/statuses.ts`; `test/status-bounds.test.ts`
   ("judges a media URL as decoded, then as normalized", "judges an imported snapshot's URLs and blurhash as live
   media")). _Enforced (main)_ for remote actors at ingest (profile URL, avatar, header, inboxes) and links in remote
-  HTML: `src/federation/remote-actor.ts` (the avatar and header read from the document's JSON by `profileImage`),
-  `src/security/html.ts`; `test/inbox.test.ts` ("stores the remote actor"), `test/remote-actor-images.test.ts` ("keeps
-  only an absolute http(s) URL within its bound"), `test/html.test.ts`. _Enforced (main)_ for field links and remote
+  HTML: `src/federation/remote-actor.ts` (the profile URL, avatar and header read from the document's JSON by
+  `profileUrl` and `profileImage`), `src/security/html.ts`; `test/inbox.test.ts` ("stores the remote actor"),
+  `test/remote-actor-images.test.ts` ("keeps only an absolute http(s) URL within its bound"),
+  `test/remote-actor-url.test.ts` ("keeps Mastodon's URL for each form, or the listed difference"),
+  `test/html.test.ts`. _Enforced (main)_ for field links and remote
   statuses at ingest (the status url and attachment and preview URLs, which are dropped unless http(s));
   `src/federation/remote-status.ts`;
   `test/inbox-statuses.test.ts` ("keeps only http(s) media (HTML-1, HTML-3)", "http(s) links only").
@@ -3522,8 +3526,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   take the same reads and presenters wherever its document is rendered (`ACTOR_ROW_COLUMN_MAP` in
   `src/domain/actor-row.ts`, `localActorOf`, `documentOf`: the endpoint, every Update and the maintenance snapshot;
   `test/actor-update.test.ts`). Mentions
-  read the username through the same projection (`src/domain/profile-bounds.ts`) and derive `acct` and a fallback url
-  from the cut username; the admin account search reads candidates' ids and flags only and tests their text in SQL. The
+  read the username through the same projection (`src/domain/profile-bounds.ts`) and derive `acct` from the cut
+  username and a url from the actor id (`remoteAccountUrl`), else from the cut username; the link card's mention test
+  reads no list of a status's mentions, only the accounts a link could name (RES-6, "Status cards"); the admin account
+  search reads candidates' ids and flags only and tests their text in SQL. The
   actor URI is bounded as stored (`ACTOR_URI_LIMIT`), read through `actorUriSql`, and
   refused at the cutover; the account's `uri` shows it only while its JSON is within `ACTOR_URI_LIMIT` bytes too
   (`withinIdentityBound`), and '' otherwise. An account that moved shows the account it moved to one level deep, read
@@ -3595,8 +3601,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   4 attachments rebuilt through the attachment bounds and '[]' over 308 KiB (four entries at their caps, at the worst
   escaping, `EDIT_MEDIA_BYTES`); a conversation presents its first 12 participants in stored order, cut in SQL. Every
   presented URL stays within its bound as serialized, derived or stored: a profile URL, avatar or header within 2,048 (a
-  profile URL falls back from the stored one to the actor's origin and to this instance's `/@acct` page, and to '' when
-  none fits), each of an attachment's four URLs within 2,048 (4,098 JSON bytes; a remote attachment's `remote_url` and
+  profile URL falls back from the stored one to a remote account's actor id, to the actor's origin and to this
+  instance's `/@acct` page, and to '' when none fits), each of an attachment's four URLs within 2,048 (4,098 JSON
+  bytes; a remote attachment's `remote_url` and
   `preview_remote_url` are its `url` and its icon, read with whether its account is remote by key through
   `sqlite_autoindex_accounts_1`), live or in an edit's snapshot. A local status's `application` reads its app's name and
   website as stored, within 240 and 2,000 bytes and only as text (`appNameSql` and `appWebsiteSql` in
@@ -3681,7 +3688,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   and a claim that never finished is given up after 2 (`src/domain/link-cards.ts`; `test/link-card-rounds.test.ts`
   ("expires at most CARD_EXPIRE_BATCH rows a claim", "keeps an open hold past the expiry, so a later round still
   defers its URL"), `test/cascade-guard.test.ts` ("trend and card rows within a batch"),
-  `test/link-cards.test.ts` ("deletes the card with the hide when %i rows are left")). Card images
+  `test/link-cards.test.ts` ("deletes the card with the hide when %i rows are left")). The index the mention test
+  seeks (`accounts_url`, migration `0111_account_urls`) holds one entry per remote account that stores a url: that
+  url, at most 2,048 bytes as stored, and its rowid, with SQLite's record and B-tree page overhead on top, so it grows
+  with the remote accounts that store a url, as the column does (`test/migrations.test.ts` ("0111_account_urls")). Card
+  images
   (`card_images`, migration `0070_card_images`): one row per image URL a card names, at most one written by a record;
   a pending row is dropped a day after it was enqueued (at most 500 a claim), when no card names it, or after 2 claims
   never finished; a stored row no card names is collected by the claim's GC, at most 64 a claim from a cursor, each
@@ -4094,7 +4105,18 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   indexes and keys, after ANALYZE and growth"), `test/remote-field-links.test.ts` ("stores at most two actors’ rows in a
   Move, with at most two statements each")). At most 288 claims a day, shared with local accounts.
   Status cards: _Enforced (main):_ a write only enqueues its status's link (`status_cards`, in its own transaction);
-  the cron runs one round per tick. Its claim expires at most 500 pending rows, then walks at most 64 due rows by
+  the cron runs one round per tick. A remote status's `Create` or `Update` picks that link from at most 16 anchors
+  (`CARD_CANDIDATES`), and each anchor's mention test (`mentionLink`, Mastodon's `mention_link?`) reads by the anchor,
+  not the status's mention rows, which a converted or imported status keeps in any number: at most three statements,
+  a seek of the local username and one of the actor id (each at most 3 rows: the index entry, the account and its
+  mention by key) and at most `MENTION_URL_ACCOUNTS` (200) entries of `accounts_url` with their accounts, then each
+  one's mention by key to the first (at most 201 rows). That is at most 207 rows an anchor and 3,312 a write, as the
+  cursor counts them, whatever the status holds; the one row it brings into the Worker is an actor's url and id, at
+  most 4,096 bytes, one at a time, and nothing else is kept between anchors (`test/link-cards.test.ts` ("reads the
+  mention test's candidates by index under stale statistics, flat past MENTION_URL_ACCOUNTS", "skips a mention's
+  profile link past MAX_STATUS_MENTION_ROWS silent rows with smaller account ids", "skips a current mention's profile
+  link at an Update after an import grew the status past its mention rows")). Its claim expires at most 500 pending
+  rows, then walks at most 64 due rows by
   `(due_at, status_id)` in order and stops at 6 claims, leaving the rest untouched; each row walked is deleted, attached
   from another status's fresh copy (an existence-gated update by key: no donor writes nothing), deferred to another
   row's open hold on its URL, or claimed for 5 minutes (twice the round); with at most 100 cached oEmbed endpoints
@@ -4650,7 +4672,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   in UTF-8 bytes as encoded, measured from the presented object before anything is encoded (`encodedTwiceBytes`): the
   measure of the 512 KiB past which it is skipped and logged with no string made. A unit within it is encoded once and
   sent one stream's envelope at a time, so a unit's isolate peak is its rows, its presented object and four frames of
-  the largest at most, 47,887,864.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
+  the largest at most, 47,898,184.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
   whole payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit:
   a turn presents at most 17,984,052 bytes, 4 MiB less 512 KiB plus 2S + 2 for the unit that crosses it (encoding the
   JSON again at most doubles it), S = 7,157,017 being the most JSON a streamed subject presents, the quote
@@ -5024,7 +5046,7 @@ triggers and the schema's CHECKs) allows, and each column that no CHECK bounds a
 account's three counts at 2^53−1, `presentedCountSql`, every account of the fills, nested ones included).
 `test/status-bounds.test.ts` ("the table of maxima") builds every part at its bound and measures what one read takes out
 of SQLite and what it presents, four ways: the escaped-text fill, using characters JSON escapes to six bytes; the same
-with mentioned accounts that have no stored url, so their url is derived; filled with what reads the most bytes for each
+with mentioned accounts that have no stored url, so it is their actor id; filled with what reads the most bytes for each
 bound (ASCII where the bound is in bytes, four-byte characters where it is in characters: a 10,000 character description
 reads 40,000 bytes); and the escaped fill with each poll's choices referencing the status's emoji in the fewest
 characters (37), so each poll shows all of them. Emoji arrays are at their presented bounds (12,288 and 6,144 JSON
@@ -5101,7 +5123,7 @@ logs (5.77 MB escaped, 4.66 MB raw, the fill of the largest SQLite read) are mea
 | Conversation: 12 participants presented, its last status a quote | 8,530,165         | 7,101,024       | 7,157,017         | 2,030     | 8,035 | 85.3%          |
 | Notification group: 8 sample accounts, its status a quote        | 7,906,448         | 6,531,047       | 6,572,780         | 2,014     | 7,192 | 78.4%          |
 | Report: its first status a quote past the 2 MiB allowance        | 7,216,692         | 5,994,590       | 6,015,173         | 1,957     | 6,485 | 71.7%          |
-| An admin.report notification of that report                      | 2,370,097         | 411,542         | 444,352           | 1,074     | 596   | 5.3%           |
+| An admin.report notification of that report                      | 2,374,193         | 411,542         | 444,352           | 1,074     | 596   | 5.3%           |
 | A moderation_warning notification, its local account at bounds   | 134,426           | 294,570         | 364,965           | 8         | 694   | 4.4%           |
 | Its notification group                                           | 134,426           | 294,759         | 365,154           | 8         | 701   | 4.4%           |
 | A filtered favourite of the quote, as include_filtered lists it  | 6,966,503         | 5,532,493       | 5,549,271         | 1,958     | 5,672 | 66.2%          |
@@ -5220,8 +5242,8 @@ rows at their widest columns); past the cap an announcement is shown escaped wit
 derived answer at three times its JSON and one rendering at a time (the budget, the one segment built past it, at
 most 310,064 bytes, and the fallback), the list's heap is at most about 20.1 MB.
 
-Mentions whose url is derived read and present less (the derived fill of `test/presented-maxima.ts`): a derived url
-within the bound is at most the stored bound, and a longer one presents as ''.
+Mentions without a stored url (the derived fill of `test/presented-maxima.ts`) read and present no more than the escaped
+fill: their url is the actor id, else a url derived from it, each within the stored bound, and '' past it.
 
 A Note shows what the Status entity shows: its hashtags and mentions are read through the same projections, its text
 and attachments as stored, and its card as a `Link` where the API shows the card (`statusFacts` in
@@ -5424,7 +5446,7 @@ within half of the Store isolate's 128 MB, and pins them (`STREAM_UNIT_PEAKS` an
 | ------------------------------------------------------ | ----------------------- | ----------------- | ------------------- | -------- |
 | Status (`update`, `status.update`: a boost of a quote) | 19.34 MB                | 17.46 MB          | 2.12 MB             | 38.92 MB |
 | Conversation (its last status a quote)                 | 23.02 MB                | 21.47 MB          | 2.12 MB             | 46.62 MB |
-| Notification (its status, report and warning together) | 25.88 MB                | 19.89 MB          | 2.12 MB             | 47.89 MB |
+| Notification (its status, report and warning together) | 25.89 MB                | 19.89 MB          | 2.12 MB             | 47.90 MB |
 | Announcement                                           | 7.28 MB                 | 0.75 MB           | 2.97 MB             | 11.01 MB |
 
 ### Data and keys (DATA)

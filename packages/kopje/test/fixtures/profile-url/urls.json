@@ -1,0 +1,1025 @@
+{
+  "ruby": "4.0.9",
+  "addressable": "2.9.2",
+  "rows": [
+    {
+      "value": null,
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": false,
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": " \t",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": [],
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": {},
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "https://actor.example/@a",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": "http://actor.example/@a",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "http://actor.example/@a"
+      }
+    },
+    {
+      "value": "https://actor.example:8443/@a",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example:8443/@a"
+      }
+    },
+    {
+      "value": "https://ACTOR.Example/@a",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://ACTOR.Example/@a"
+      }
+    },
+    {
+      "value": "https://actor.example/@a",
+      "uri": "https://ACTOR.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": "https://actor.example/@a",
+      "uri": "http://actor.example:8080/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": "https://user:pass@actor.example/@a",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://user:pass@actor.example/@a"
+      }
+    },
+    {
+      "value": "https://actor.example",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example"
+      }
+    },
+    {
+      "value": "https://actor.example/@a b",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a b"
+      }
+    },
+    {
+      "value": "https://actor.example/@a#about",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a#about"
+      }
+    },
+    {
+      "value": "https://actor.example/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      }
+    },
+    {
+      "value": "https://other.example/@a",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "https://actor.example./@a",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "https://actor.example/@a",
+      "uri": "https://actor.example./users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "https://sub.actor.example/@a",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "https://[::1]/@a",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "https:///@a",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "HTTPS://actor.example/@a",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "Https://actor.example/@a",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": " https://actor.example/@a",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "/@a",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "@a",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "not a url",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "mailto:a@actor.example",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "ftp://actor.example/@a",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "https:/actor.example/@a",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "javascript://actor.example/%0Aalert(1)",
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "https://%61ctor.example/@a",
+      "uri": "https://actor.example/users/a",
+      "listed": "host",
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "https://bücher.example/@a",
+      "uri": "https://xn--bcher-kva.example/users/a",
+      "listed": "host",
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "https://xn--bcher-kva.example/@a",
+      "uri": "https://bücher.example/users/a",
+      "listed": "host",
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "https://BÜCHER.example/@a",
+      "uri": "https://bücher.example/users/a",
+      "listed": "host",
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": "https://bücher.example/@a",
+      "uri": "https://bücher.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://bücher.example/@a"
+      }
+    },
+    {
+      "value": "https://act\tor.example/@a",
+      "uri": "https://actor.example/users/a",
+      "listed": "raises",
+      "mastodon": {
+        "raises": "Addressable::URI::InvalidURIError"
+      }
+    },
+    {
+      "value": "https://actor.example:99999/@a",
+      "uri": "https://actor.example/users/a",
+      "listed": "unparsed",
+      "mastodon": {
+        "url": "https://actor.example:99999/@a"
+      }
+    },
+    {
+      "value": "https://actor.example:x/@a",
+      "uri": "https://actor.example/users/a",
+      "listed": "raises",
+      "mastodon": {
+        "raises": "Addressable::URI::InvalidURIError"
+      }
+    },
+    {
+      "value": "https://actor.example/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "uri": "https://actor.example/users/a",
+      "listed": "bound",
+      "mastodon": {
+        "url": "https://actor.example/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "mimeType": "text/html",
+        "href": "https://actor.example/@a"
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": {
+        "href": "https://actor.example/@a"
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": "https://actor.example/@a"
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": "https://actor.example/@a",
+        "nameMap": {
+          "en": 5
+        }
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": "https://actor.example/@a",
+        "mimeType": ""
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": "https://actor.example/@a",
+        "mimeType": " "
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": "https://actor.example/@a",
+        "mimeType": []
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": "https://actor.example/@a",
+        "mimeType": false
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": "https://actor.example/@a",
+        "mimeType": null
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": "https://actor.example/@a",
+        "mimeType": "image/png"
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": "https://actor.example/@a",
+        "mimeType": "TEXT/HTML"
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": "https://actor.example/@a",
+        "mimeType": "text/html; charset=utf-8"
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": "https://actor.example/@a",
+        "mimeType": 5
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": "https://actor.example/@a",
+        "mimeType": ["text/html"]
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": "https://actor.example/@a",
+        "mediaType": "image/png"
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": "https://actor.example/@a",
+        "mediaType": "text/html",
+        "mimeType": "image/png"
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "mimeType": "text/html",
+        "href": "https://other.example/@a"
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": {
+        "type": "Link"
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": null
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": "/@a"
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": 5
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": "raises",
+      "mastodon": {
+        "raises": "NoMethodError"
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": ["https://actor.example/@a"]
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": "raises",
+      "mastodon": {
+        "raises": "NoMethodError"
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": {
+          "href": "https://actor.example/@a"
+        }
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": "raises",
+      "mastodon": {
+        "raises": "NoMethodError"
+      }
+    },
+    {
+      "value": {
+        "type": "Link",
+        "href": true
+      },
+      "uri": "https://actor.example/users/a",
+      "listed": "raises",
+      "mastodon": {
+        "raises": "NoMethodError"
+      }
+    },
+    {
+      "value": ["https://actor.example/@a"],
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": ["https://actor.example/@a", "https://actor.example/@b"],
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": [
+        "https://other.example/@a",
+        {
+          "type": "Link",
+          "mimeType": "text/html",
+          "href": "https://actor.example/@a"
+        }
+      ],
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": [
+        "/@a",
+        {
+          "type": "Link",
+          "mimeType": "text/html",
+          "href": "https://actor.example/@a"
+        }
+      ],
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": ["https://actor.example/@a", null],
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": [
+        {
+          "type": "Link",
+          "mimeType": "text/html",
+          "href": "https://actor.example/@a"
+        }
+      ],
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": [
+        {
+          "type": "Link",
+          "mimeType": "text/html",
+          "href": "https://other.example/@a"
+        },
+        {
+          "type": "Link",
+          "mimeType": "text/html",
+          "href": "https://actor.example/@a"
+        }
+      ],
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": [
+        {
+          "type": "Link",
+          "mimeType": "image/png",
+          "href": "https://other.example/a.png"
+        },
+        {
+          "type": "Link",
+          "mimeType": "text/html",
+          "href": "https://actor.example/@a"
+        }
+      ],
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": [
+        {
+          "type": "Link",
+          "mimeType": "image/png",
+          "href": "https://actor.example/a.png"
+        },
+        {
+          "type": "Link",
+          "mimeType": "text/html",
+          "href": "https://other.example/@a"
+        }
+      ],
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": [
+        {
+          "type": "Link",
+          "mimeType": "image/png",
+          "href": "https://actor.example/a.png"
+        },
+        {
+          "type": "Link",
+          "mimeType": "image/png",
+          "href": "https://other.example/a.png"
+        }
+      ],
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": [
+        {
+          "type": "Link",
+          "mimeType": "image/png",
+          "href": "https://actor.example/a.png"
+        },
+        "https://actor.example/@a"
+      ],
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": [
+        {
+          "type": "Link",
+          "mimeType": "image/png",
+          "href": "https://actor.example/a.png"
+        },
+        "https://other.example/@a",
+        {
+          "type": "Link",
+          "mimeType": "text/html",
+          "href": "https://actor.example/@a"
+        }
+      ],
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": [
+        {
+          "type": "Link",
+          "mimeType": "image/png",
+          "href": "https://actor.example/a.png"
+        },
+        "https://actor.example/mimeType",
+        {
+          "type": "Link",
+          "mimeType": "text/html",
+          "href": "https://actor.example/@a"
+        }
+      ],
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": [
+        {
+          "type": "Link",
+          "mimeType": "image/png",
+          "href": "https://actor.example/a.png"
+        },
+        "https://actor.example/mimeType"
+      ],
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": [
+        {},
+        {
+          "type": "Link",
+          "mimeType": "text/html",
+          "href": "https://actor.example/@a"
+        }
+      ],
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": null
+      }
+    },
+    {
+      "value": [
+        {
+          "type": "Link",
+          "mimeType": "text/html",
+          "href": "https://actor.example/@a"
+        },
+        null
+      ],
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": [
+        {
+          "type": "Link",
+          "mimeType": "text/html",
+          "href": "https://actor.example/@a"
+        },
+        5
+      ],
+      "uri": "https://actor.example/users/a",
+      "listed": null,
+      "mastodon": {
+        "url": "https://actor.example/@a"
+      }
+    },
+    {
+      "value": [
+        {
+          "type": "Link",
+          "mimeType": "image/png",
+          "href": "https://actor.example/a.png"
+        },
+        null,
+        {
+          "type": "Link",
+          "mimeType": "text/html",
+          "href": "https://actor.example/@a"
+        }
+      ],
+      "uri": "https://actor.example/users/a",
+      "listed": "raises",
+      "mastodon": {
+        "raises": "NoMethodError"
+      }
+    },
+    {
+      "value": [
+        {
+          "type": "Link",
+          "mimeType": "image/png",
+          "href": "https://actor.example/a.png"
+        },
+        5,
+        {
+          "type": "Link",
+          "mimeType": "text/html",
+          "href": "https://actor.example/@a"
+        }
+      ],
+      "uri": "https://actor.example/users/a",
+      "listed": "raises",
+      "mastodon": {
+        "raises": "TypeError"
+      }
+    },
+    {
+      "value": [
+        {
+          "type": "Link",
+          "mimeType": "image/png",
+          "href": "https://actor.example/a.png"
+        },
+        [
+          {
+            "type": "Link",
+            "mimeType": "text/html",
+            "href": "https://actor.example/@a"
+          }
+        ],
+        {
+          "type": "Link",
+          "mimeType": "text/html",
+          "href": "https://actor.example/@a"
+        }
+      ],
+      "uri": "https://actor.example/users/a",
+      "listed": "raises",
+      "mastodon": {
+        "raises": "TypeError"
+      }
+    },
+    {
+      "value": [
+        {
+          "type": "Link",
+          "mimeType": "image/png",
+          "href": "https://actor.example/a.png"
+        },
+        true,
+        {
+          "type": "Link",
+          "mimeType": "text/html",
+          "href": "https://actor.example/@a"
+        }
+      ],
+      "uri": "https://actor.example/users/a",
+      "listed": "raises",
+      "mastodon": {
+        "raises": "NoMethodError"
+      }
+    },
+    {
+      "value": [null, "https://actor.example/@a"],
+      "uri": "https://actor.example/users/a",
+      "listed": "raises",
+      "mastodon": {
+        "raises": "NoMethodError"
+      }
+    },
+    {
+      "value": [5],
+      "uri": "https://actor.example/users/a",
+      "listed": "raises",
+      "mastodon": {
+        "raises": "TypeError"
+      }
+    },
+    {
+      "value": [["https://actor.example/@a"]],
+      "uri": "https://actor.example/users/a",
+      "listed": "raises",
+      "mastodon": {
+        "raises": "TypeError"
+      }
+    },
+    {
+      "value": 5,
+      "uri": "https://actor.example/users/a",
+      "listed": "raises",
+      "mastodon": {
+        "raises": "TypeError"
+      }
+    },
+    {
+      "value": 0.5,
+      "uri": "https://actor.example/users/a",
+      "listed": "raises",
+      "mastodon": {
+        "raises": "NoMethodError"
+      }
+    },
+    {
+      "value": true,
+      "uri": "https://actor.example/users/a",
+      "listed": "raises",
+      "mastodon": {
+        "raises": "NoMethodError"
+      }
+    }
+  ]
+}

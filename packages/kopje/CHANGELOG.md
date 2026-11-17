@@ -172,6 +172,19 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   and stays readonly once they are applied but not yet verified, each attempt checking every reference of the Store
   again. The migration bench's budget is now 40 seconds, two thirds of the new limit (RELEASING.md). Setting the limit
   costs nothing by itself. No Store migration.
+- A remote account's profile URL is chosen from its actor's `url` as Mastodon 4.7.5 chooses it, before its host is
+  checked: one candidate (a string, an array's first string, or the first `Link` whose `mimeType` is blank or
+  `text/html`), kept only when it is on the actor id's host, whatever its scheme and port, and no later one once it is
+  refused; an actor whose `url` Fedify could not parse is no longer refused (#1734). A remote account without a
+  profile URL now shows its actor id as its `url`, in accounts, mentions, announcements and notification fallbacks,
+  where Kopje showed `/@username` on the actor's origin, as Mastodon does; a stored URL is replaced at the actor's
+  next update. A remote post's link card skips a link to the profile of any account the post mentions, however many
+  mentions a converted or imported post keeps, as Mastodon does
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Link previews"). Migration `0111_account_urls`: a
+  partial index of remote accounts by their stored url, rewriting no row (the migration bench's upgrade from
+  `0093_annual_reports` takes 16,681 ms with this file and 16,582 ms without it, medians of three runs).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
+  back past it needs a point-in-time restore.
 - A remote actor's members are read only by their literal spelling, as Mastodon reads them: a name or bio given only
   as a language map (`nameMap`, `summaryMap`) is no longer read, so such an account shows an empty display name and
   bio, and a `movedTo` or `alsoKnownAs` spelled as a compact or full IRI no longer names a move. No Store migration and

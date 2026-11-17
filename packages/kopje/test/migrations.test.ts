@@ -14956,3 +14956,48 @@ describe("0110_scheduled_params", () => {
     });
   });
 });
+
+describe("0111_account_urls", () => {
+  const NAME = "0111_account_urls";
+  const at = NAMES.indexOf(NAME);
+
+  it("indexes remote accounts by their stored url, built over the existing rows, which it leaves as they were", async () => {
+    const store = freshStore();
+    await runInDurableObject(store, async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec(
+        `INSERT INTO accounts (id, uri, username, domain, url) VALUES
+					('100000000000000001', 'https://r.example/users/a', 'a', 'r.example', 'https://r.example/@shared'),
+					('100000000000000002', 'https://r.example/users/b', 'b', 'r.example', 'https://r.example/@shared'),
+					('100000000000000003', 'https://r.example/users/c', 'c', 'r.example', NULL),
+					('100000000000000004', 'https://kopje.test/users/d', 'd', NULL, 'https://r.example/@shared')`,
+      );
+      const rows = () => sql.exec("SELECT * FROM accounts ORDER BY id").toArray();
+      const before = rows();
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      expect(rows()).toEqual(before);
+      expect(
+        sql.exec("SELECT \"unique\", partial FROM pragma_index_list('accounts') WHERE name = 'accounts_url'").toArray(),
+      ).toEqual([{ unique: 0, partial: 1 }]);
+      // Only the remote accounts that store a url, local ones and those without one left out.
+      expect(
+        sql
+          .exec(
+            "SELECT count(*) AS n FROM accounts INDEXED BY accounts_url WHERE domain IS NOT NULL AND url IS NOT NULL",
+          )
+          .one().n,
+      ).toBe(2);
+      const query = `SELECT id FROM accounts INDEXED BY accounts_url WHERE domain IS NOT NULL AND url = ?1 LIMIT 200`;
+      expect(sql.exec(query, "https://r.example/@shared").toArray()).toEqual([
+        { id: "100000000000000001" },
+        { id: "100000000000000002" },
+      ]);
+      const plan = sql
+        .exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, "https://r.example/@shared")
+        .toArray()
+        .map((row) => row.detail);
+      expect(plan).toEqual(["SEARCH accounts USING INDEX accounts_url (url=?)"]);
+    });
+  });
+});
