@@ -2287,7 +2287,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Worker configs"). A running Worker without the flag fails the health report's `runtime` check (`src/app/health.ts`);
   `test/health-runtime.test.ts` ("runtime check in healthReport").
 - **NET-2: deliveries reach only the audience's inboxes.** Inboxes come from the stored audience and are deduplicated by
-  shared inbox; an activity without `to` (a Like, Follow, Accept, Reject, Block or their Undo, each naming its recipient
+  shared inbox; a follower's or poll voter's inbox (its shared inbox, else its personal one, chosen before it is
+  judged, so a shared inbox outside the rule never sends the activity to the personal one) is read only when it is text
+  of 1 to 4,096 UTF-8 bytes without NUL (`reachInboxSql` in `src/domain/audience.ts`), for targets read at once and a
+  retraction staged in steps alike, while targets already recorded or staged keep their inboxes
+  (`test/reach-inboxes.test.ts`); an activity without `to` (a Like, Follow, Accept, Reject, Block or their Undo, each
+  naming its recipient
   through its object) goes to the recipient's shared inbox when it has one (R38's severing `Reject` alone goes to its
   personal inbox, as Mastodon's `reject_remote_follows!` sends it). A remote actor's shared inbox is the one Mastodon
   4.7.5 reads, kept only when Kopje POSTs to the URL Mastodon POSTs to for its spelling, else none, so the personal
@@ -3327,6 +3332,19 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (`verifiedLinksPastBoundSql`, `unverifiedLinksPastBoundSql`) refuses of the exact value written, never failing;
   `test/migrations.test.ts` ("0066_field_verification", "0076_field_link_checks"), `test/field-links.test.ts`
   ("records a value beside imported entries escaped up to the bound").
+  _Enforced (main)_ for followers' and voters' inboxes: `accounts.inbox_url` and `shared_inbox_url` keep no stored
+  bound (Kopje stores at most 2,048 characters of an actor document's), so an import or an older release may hold any
+  value. The readers of a follower's or poll voter's inbox for an activity's targets (`recipientsFor`, a staged
+  retraction's `stagedFollowers` and `stagedVoters`, and a block's collection `Remove`s' `reachFollowerInboxes`) choose
+  its shared inbox, else its personal one, and read that value only when it is text of 1 to `REACH_INBOX_BYTES` (4,096)
+  UTF-8 bytes without NUL, else none, in SQL (`reachInboxSql` in `src/domain/audience.ts`; the CHECK
+  `collection_reach_inbox` holds the same bound). An admitted value is at most 4,096 UTF-16 code units in the Worker,
+  12,288 bytes re-encoded as UTF-8 (a malformed byte decodes to U+FFFD) and 24,578 bytes as JSON (a control character
+  escapes as six); `test/reach-inboxes.test.ts` ("returns no inbox outside the rule, the bound's own whole"),
+  `test/reach-inbox-plans.test.ts` ("is at most the bound's raw bytes, its UTF-16 units, three times as UTF-8 and six
+  times as JSON"). A moderation `Update`'s audience (`reachFollowers`, `reachFollowing`, `reachMentioned`,
+  `reachAccount`) reads the inbox whole, as each addressed account's is read, and keeps only a deliverable one
+  (`isDeliverableInbox`).
   _Enforced (main)_ for attribution domains: `local_accounts.attribution_domains` keeps only its shape CHECK (migration
   `0024_attribution_domains`), so a stored value may be any JSON array: an import, or a list an earlier writer accepted
   with domains padded by characters IDNA ignores (100 of them pass `ATTRIBUTION_DOMAINS_BYTES`). Every reader
@@ -3754,7 +3772,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   into `collection_reach` up to the follow bound its first followers round takes and keeps, writes them to each `Remove`
   and deletes them, a round reading at most 500 rows of its phase's kind (`COLLECTION_REACH_ROUND`) and no inbox past
   the staged bound of 4,096 UTF-8 bytes (`accounts`' inbox columns have none, so `reachFollowerInboxes` judges each in
-  SQL before reading it), at most 4 rounds a run, as a job family of its own (RES-5; `src/domain/collection-jobs.ts`). A
+  SQL before reading it, by `reachInboxSql`, the rule every follower's and voter's inbox is read by), at most 4 rounds a
+  run, as a job family of its own (RES-5; `src/domain/collection-jobs.ts`). A
   collection's deletion writes the collection, its at most 50 items, their notifications, its `collection_update`
   notifications (one per local recipient, held unique by `notifications_collection`) and their pushes (at most
   `MAX_PUSH_BACKLOG`), by the foreign keys; an item's removal or eviction the item, its notification and that
@@ -4190,7 +4209,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/delivery-chunks.test.ts` (the chunk boundary, lane order across intents, an Update replacing a partly expanded
   intent, a claim failing at a chunk transition, a dump and import of a partly expanded intent, an oversized target).
   _Gap: computing an activity's targets reads all of the signer's remote followers in one transaction (a read, then one
-  row per chunk)._
+  row per chunk)._ Each follower's and poll voter's inbox is judged in SQL before the Worker reads it (`reachInboxSql`,
+  at most `REACH_INBOX_BYTES` raw bytes), and each source returns at most 34 rows per distinct inbox (VIS-30's
+  representatives), so the inbox values a source returns are at most 34 × 4,096 raw bytes per distinct inbox. The
+  number of distinct inboxes, the window's sort over every follower or voter, the host strings derived from imported
+  actor ids, and the addressed accounts' ids and inboxes (read whole) are not bounded by it; making the whole audience
+  a bounded series of rounds remains open.
   _Enforced (main)_ for relationship activities: one request's fetches share a budget of 8 fetches
   (documents, JSON-LD contexts, each redirect hop and each RFC 9421 retry), 2 MiB and 15 seconds (`requestBudget` in
   `src/federation/loader.ts`; cached contexts cost nothing; icons are taken only when embedded; `test/loader.test.ts`
@@ -4372,7 +4396,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   lists, two stored bytes an element at least (a forward's three), counted apart from the table rows it reads. The
   sources are read from cursors kept on the staging's row, each in its own index order: the audience's accounts, the
   status's mentions, its parent's author, boosters and quoters, the poll's voters (its current generation compared in
-  SQL), the followers up to the highest follow id when the staging began, then the earlier activities' targets not yet
+  SQL), the followers up to the highest follow id when the staging began (a follower's or voter's inbox by
+  `reachInboxSql`, as the targets read at once, so both reach the same inboxes), then the earlier activities' targets
+  not yet
   expanded, their delivery rows and the receipts, in that order, since evidence only moves from a target to a row to a
   receipt; whether an earlier activity retracts is read by its key before its rows or targets are, and a retraction's
   are not read. A forward's references are resolved as the staging reaches each, its shares then its receiptShares, one
@@ -4394,7 +4420,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   first", "keeps its intent while every chunk it has written is delivered", "resolves its references as it reaches
   them"), `test/admin-suspension.test.ts` ("sends the restoration to a non-follower even when the profile is edited
   before it is staged"), `test/forward-delete.test.ts` ("advances a forward whose every share resolves", "regenerates
-  its targets when restarted after a partial emit")). _Gap (accepted):_ a source row removed before its cursor reads it
+  its targets when restarted after a partial emit"), `test/reach-inboxes.test.ts` ("writes the rows staged before it and
+  ends": the rows an older release staged keep their inboxes and are written out)). _Gap (accepted):_ a source row
+  removed before its cursor reads it
   is missed unless other evidence names its inbox; a follow made after the staging began is not reached; a delivery row
   moved in place to a personal inbox (`moveToPersonal`) after the rows' walk passed it is missed when its receipt sorts
   behind the receipts' cursor, or when it stays pending or gives up without a receipt; writing out starts only once
@@ -4884,7 +4912,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   counts, tag history, login, outbound reach (the status, its parent, quoters and followers), the send-time check, the
   personal-inbox fallback, receipts, inbound Flag objects and follow-answer discovery (`test/context-work.test.ts`,
   `test/conversations.test.ts`, `test/featured-tags.test.ts`, `test/tags.test.ts`, `test/oauth.test.ts`,
-  `test/delivery-send-check.test.ts`, `test/inbox-flag.test.ts`, `test/follow-answers.test.ts`). The presented
+  `test/delivery-send-check.test.ts`, `test/inbox-flag.test.ts`, `test/follow-answers.test.ts`). The followers' and
+  poll voters' readers, whole and staged, judge each inbox in their projection alone (`reachInboxSql`): beside main's
+  statements they return main's targets by main's plans, reading no more rows than main's (the staged pages as many),
+  linear in the signer's own followers or voters as main's are and flat as other accounts' grow, under singleton
+  statistics and after `ANALYZE` (`test/reach-inbox-plans.test.ts`). The presented
   accounts' witnesses grow accounts, local_accounts and follows (the profile tabs' also statuses and the condition
   walk's tables) and check the access paths to those three: `a` and `l` by key, a follow by its rowid, no scan of any;
   not the status, field and cache tables the presenter also reads. The `a INDEXED BY` of the owned lists' window
