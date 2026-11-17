@@ -1710,7 +1710,10 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   writes otherwise (empty, `//…`, holding whitespace, or with a `.` or `..` segment); an activity's or its undone
   object's `id` that is not on its actor's origin is then refused all the same (ID-6), where Mastodon's `Undo` of a
   block reads neither; with a type naming `id` or `type`, which JSON-LD expands to the keyword and the compaction
-  writes as that alias again. Kopje reads a name, as a member or as a type, only where the compaction writes it so, as Mastodon's readers read it,
+  writes as that alias again; with a string or an array of strings under a language map property, which JSON-LD reads
+  as values of the property (`content` for `contentMap`), or a map whose lower-case tag holds an array of strings, but
+  a number or a node there, an array in such an array (which jsonld.js refuses), or an upper-case tag holding one
+  (which jsonld.js lower-cases). Kopje reads a name, as a member or as a type, only where the compaction writes it so, as Mastodon's readers read it,
   whatever the body's shape: a member's name where it means in the body's contexts what it means in `full_context`, or
   neither defines it (in a typed node, as the type's own context makes it mean on each side: the data-integrity
   contexts' `DataIntegrityProof`, the Multikey and CID contexts' `Multikey`); a type's where the IRI the body's contexts

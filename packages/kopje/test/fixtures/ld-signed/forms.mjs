@@ -871,6 +871,33 @@ const forms = {
   // A type naming a keyword alias, which JSON-LD expands to the keyword and the compaction writes as the alias again.
   "Undo of a block, both typed as absolute IRIs, with a type naming id": absoluteUndo({ tag: [{ type: "id" }] }),
   "Undo of a block, both typed as absolute IRIs, with a type naming type": absoluteUndo({ tag: [{ type: "type" }] }),
+  // A language map name given strings otherwise than as a map of tags to strings: an array of them, or one, which
+  // JSON-LD reads as values of the name, and a tag given an array of them; and, beside them, a number or a node, a tag
+  // given a number, or an array in such an array, and an upper-case tag given an array.
+  "Undo of a block, both typed as absolute IRIs, with a language map given as an array": absoluteUndo({
+    contentMap: ["blocked", "unblocked"],
+  }),
+  "Undo of a block, both typed as absolute IRIs, with a language map given as a string": absoluteUndo({
+    summaryMap: "blocked",
+  }),
+  "Undo of a block, both typed as absolute IRIs, with a language map of a tag to an array": absoluteUndo({
+    nameMap: { en: ["blocked", "unblocked"], ja: "ブロック" },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with a language map given as a number": absoluteUndo({
+    summaryMap: 5,
+  }),
+  "Undo of a block, both typed as absolute IRIs, with a language map given as an array holding a node": absoluteUndo({
+    contentMap: ["blocked", { type: "Note", content: "a node" }],
+  }),
+  "Undo of a block, both typed as absolute IRIs, with a language map member that is not a string": absoluteUndo({
+    contentMap: { en: 5 },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with a language map of a tag to an array in an array": absoluteUndo({
+    nameMap: { en: [["blocked"]] },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with a language map of an upper-case tag to an array": absoluteUndo({
+    nameMap: { EN: ["blocked"] },
+  }),
 };
 
 // The same bodies without a signature: read as received by both.

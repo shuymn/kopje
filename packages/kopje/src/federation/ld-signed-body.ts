@@ -413,6 +413,10 @@ function namedThroughout(values: unknown[]): boolean {
 //     (writtenAsGiven);
 //   - a type naming `id` or `type`, which JSON-LD expands to the keyword it aliases and the compaction writes as that
 //     alias again, as given;
+//   - under a language map name, a string or an array of strings, which JSON-LD reads as values of the name (a
+//     language map only from a map) and the compaction writes under another (`content` for `contentMap`), and a map
+//     whose tag, lower-case, holds an array of strings, which it expands to a value for each (jsonld.js lower-cases a
+//     tag, which Ruby's json-ld keeps); not a number or a node there, nor an array in such an array;
 const JSONLD_BUDGET = 1_000;
 const UNSUPPORTED_JSONLD_KEYWORDS = new Set(["@graph", "@included", "@reverse"]);
 const SECURITY_V1 = "https://w3id.org/security/v1";
@@ -510,6 +514,8 @@ function mastodonCompacts(
   const iriValued = (key: string) => IRI_VALUED.has(key) || (retracts && meanings.get(key)?.coercion === "@id");
   const scalar = (key: string, value: unknown) =>
     (typeof value === "number" || typeof value === "boolean") && key !== "object" && key !== "actor";
+  const texts = (value: unknown) =>
+    typeof value === "string" || (Array.isArray(value) && value.every((item) => typeof item === "string"));
   const listed = (key: string) =>
     [meanings.get(key), FULL_CONTEXT_MEANINGS.get(key)].some(
       (meaning) => meaning?.containers.includes("@list") === true,
@@ -518,20 +524,25 @@ function mastodonCompacts(
   const pending: [string, unknown][] = [["", node]];
   while (pending.length > 0) {
     const [key, value] = pending.pop()!;
-    if (Array.isArray(value)) {
-      if (LANGUAGE_MAPS.has(key) || (value.some(Array.isArray) && (!retracts || listed(key)))) {
-        return false;
-      }
-      pending.push(...value.map((item): [string, unknown] => [key, item]));
-    } else if (LANGUAGE_MAPS.has(key)) {
+    if (LANGUAGE_MAPS.has(key)) {
       if (
-        !isObject(value) ||
-        !Object.entries(value).every(
-          ([tag, member]) => LANGUAGE_TAG.test(tag) && (member === null || typeof member === "string"),
-        )
+        !(isObject(value)
+          ? Object.entries(value).every(
+              ([tag, member]) =>
+                LANGUAGE_TAG.test(tag) &&
+                (member === null ||
+                  typeof member === "string" ||
+                  (retracts && Array.isArray(member) && texts(member) && tag === tag.toLowerCase())),
+            )
+          : retracts && texts(value))
       ) {
         return false;
       }
+    } else if (Array.isArray(value)) {
+      if (value.some(Array.isArray) && (!retracts || listed(key))) {
+        return false;
+      }
+      pending.push(...value.map((item): [string, unknown] => [key, item]));
     } else if (isObject(value)) {
       if (
         (Object.hasOwn(value, "id") && !reference(value.id)) ||
