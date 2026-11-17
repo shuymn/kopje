@@ -859,6 +859,13 @@ that fetches nothing. A block names a domain, stored as `blockedDomain` returns 
   subdomain tree from a parent's `suspend`. Creating a block follows Mastodon's refusals: a domain already blocked, or
   one whose ruling block is at least as strict (`stricter_than?`). An update checks no conflict: it keeps the domain
   and may set any severity whatever its parents' and children's blocks are.
+- **Host keys.** A URL's host is ruled as one key everywhere: lowercase, punycode, without the port and without every
+  trailing dot, as `hostDomain` (`src/platform/domain-name.ts`) gives it in the Worker (the fetch policy and its
+  tickets, the inbox gate's actor host, the send-time check's inbox host) and `uriHostSql` (`src/domain/audience.ts`)
+  in SQL (an account's actor host, a recipient's host); a stored domain is compared without its trailing dots too. So
+  `blocked.example..` is ruled as `blocked.example` on every path, and the URL keeps its spelling
+  (`test/host-trailing-dots.test.ts`). Mastodon drops a single trailing dot
+  ([mastodon-deviations.md](mastodon-deviations.md)).
 - **The label bound.** A stored block has at most `MAX_BLOCK_LABELS` (8) labels (the table's CHECK; the create
   operation refuses a deeper one), so a host's rule is among its suffixes of at most 8 labels, and a deeper host is
   still matched by them. `hostCoveredSql` walks a host's suffixes from the longest and stops at the first one a block

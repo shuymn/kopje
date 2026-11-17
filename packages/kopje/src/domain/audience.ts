@@ -222,7 +222,7 @@ export function mutesSql(owner: string, x: string, now: string, notifications = 
 }
 
 // The host of an actor id as hostDomain (platform/domain-name.ts) reads it, in SQL: scheme, path and port dropped,
-// lowercased, without a trailing dot. Stored ids are URL hrefs, so an IDN host is already punycode.
+// lowercased, without its trailing dots. Stored ids are URL hrefs, so an IDN host is already punycode.
 function uriHostSql(uri: string): string {
   const rest = `substr(${uri}, instr(${uri}, '://') + 3)`;
   const hostPort = `substr(${rest}, 1, instr(${rest} || '/', '/') - 1)`;

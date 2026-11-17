@@ -301,23 +301,33 @@ describe("dump", () => {
 
   // A dump taken before 0096_remote_handles, of remote rows sharing an address, restores and upgrades through 0096,
   // which invalidates all but the oldest; the upgraded Store's own export restores into a Store at the latest file; a
-  // dump holding two remote rows of one address is refused by the UNIQUE index (D6).
+  // dump holding two remote rows of one address is refused by the UNIQUE index (D6). Domains with trailing dots, as a
+  // converter wrote them before it dropped every one (docs/cutover.md), are other addresses, kept byte for byte by the
+  // upgrade and the round trip: nothing rewrites a stored domain.
   it("restores a dump taken before 0096_remote_handles with shared addresses, and refuses a duplicate after it", async () => {
-    const remote = (n: number, username: string) =>
-      `INSERT INTO accounts (id, uri, username, domain) VALUES ('10000000000000000${n}', 'https://d.example/actors/${n}',
-				'${username}', 'd.example')`;
+    const remote = (n: number, username: string, host = "d.example", domain = host) =>
+      `INSERT INTO accounts (id, uri, username, domain) VALUES ('10000000000000000${n}', 'https://${host}/actors/${n}',
+				'${username}', '${domain}')`;
+    const rows = "SELECT username, hex(domain) AS domain FROM accounts ORDER BY rowid";
+    const hex = (text: string) =>
+      [...new TextEncoder().encode(text)].map((byte) => byte.toString(16).padStart(2, "0").toUpperCase()).join("");
+    const upgraded = [
+      { username: "alice", domain: hex("d.example") },
+      { username: "! 100000000000000002", domain: hex("d.example") },
+      { username: "alice", domain: hex("d.example.") },
+      { username: "alice", domain: hex("d.example..") },
+    ];
     const restored = await restoredBefore(
       "0096_remote_handles",
       (sql) => {
         sql.exec(remote(1, "alice"));
         sql.exec(remote(2, "Alice"));
+        sql.exec(remote(3, "alice", "d.example..", "d.example."));
+        sql.exec(remote(4, "alice", "d.example...", "d.example.."));
       },
       async (sql, upgrade) => {
         expect(await upgrade()).toMatchObject({ ok: true, applied: ["0096_remote_handles"] });
-        expect(sql.exec("SELECT username FROM accounts ORDER BY rowid").toArray()).toEqual([
-          { username: "alice" },
-          { username: "! 100000000000000002" },
-        ]);
+        expect(sql.exec(rows).toArray()).toEqual(upgraded);
       },
     );
     await runInDurableObject(restored, async (_instance, state) => {
@@ -327,6 +337,9 @@ describe("dump", () => {
     const target = await migratedStore();
     await copyConfig(restored, target);
     expect((await importViaRpc(target, text)).report).toMatchObject({ ok: true, problems: [] });
+    expect(await runInDurableObject(target, (_instance, state) => state.storage.sql.exec(rows).toArray())).toEqual(
+      upgraded,
+    );
     // The same dump with the invalidated row given the address back.
     const literal = "'! 100000000000000002'";
     expect(text).toContain(literal);
