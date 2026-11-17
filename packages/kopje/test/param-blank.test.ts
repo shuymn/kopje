@@ -451,6 +451,22 @@ describe("domain blocks (PB6)", () => {
     expect((await getJson(h, "/api/v1/admin/domain_blocks", token)).body).toEqual([]);
     expect(await adminBlock(" Admin.Example ")).toMatchObject({ status: 200, body: { domain: "admin.example" } });
   });
+
+  // Api::V1::DomainBlocks::PreviewsController has no presence check: a domain blank to Rails that is no domain counts
+  // nothing. Kopje's existing 400 for an absent domain or one empty once trimmed (U+FEFF included) is kept.
+  it("counts nothing on the preview for a domain blank to Rails", async () => {
+    const h = await community(["owner"], "read write follow");
+    const preview = async (query: string) =>
+      answer(await h.request(`/api/v1/domain_blocks/preview${query}`, bearer(h.users.owner.token)));
+    expect(await preview(`?domain=${Q.NEL}`)).toEqual({
+      status: 200,
+      body: { following_count: 0, followers_count: 0 },
+    });
+    const missing = { status: 400, body: { error: "param is missing or the value is empty: domain" } };
+    for (const query of ["", "?domain=%20", `?domain=${Q.BOM}`]) {
+      expect(await preview(query), query).toEqual(missing);
+    }
+  });
 });
 
 describe("app registration (PB7)", () => {

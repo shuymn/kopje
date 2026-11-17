@@ -115,9 +115,13 @@ export const unblockDomain: ApiHandler = withParams(async (c, deps, p) => {
   return c.json({});
 });
 
+// Mastodon's PreviewsController has no presence check (it normalizes whatever it is sent), so the preview does not take
+// the block's: it keeps its own rule, 400 for an absent domain or one empty once trimmed (String#trim), and counts
+// nothing for any other that is no domain.
 export const previewDomainBlock: ApiHandler = withParams(async (c, deps, p) => {
-  const { domain, blank } = domainParam(p);
-  if (blank) {
+  const raw = p.get("domain");
+  const domain = raw === undefined ? null : blockedDomain(raw);
+  if (raw === undefined || raw.trim() === "") {
     return refuseAfterAuth(c, deps, mastodonError(400, "param is missing or the value is empty: domain"));
   }
   if (domain === null) {
