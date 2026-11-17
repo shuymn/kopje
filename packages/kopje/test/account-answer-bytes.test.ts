@@ -470,7 +470,7 @@ describe("answers of many accounts are bounded in bytes (RES-3)", () => {
     const ids = await accounts(t, 3, BASE, typical);
     const answer = await runInDurableObject(t.store, (_instance, state) => {
       const db = new Db(state.storage.sql);
-      const present = { origin: ORIGIN };
+      const present = { origin: ORIGIN, viewerId: null };
       return [true, false].map((leading) => presentAccountsWithin(db, ids, present, 10, leading));
     });
     expect(answer.map((a) => [a.items.map((item) => item.id), a.cut])).toEqual([
@@ -624,7 +624,7 @@ describe("unexpected_accounts (RES-3)", () => {
     const mentioned = [...ids].toReversed();
     const text = mentioned.map((id) => `@a@d${BigInt(id) - BASE}.example`).join(" ");
     const whole = await runInDurableObject(t.store, (_instance, state) =>
-      presentAccountsWithin(new Db(state.storage.sql), mentioned, { origin: ORIGIN }, Infinity, true),
+      presentAccountsWithin(new Db(state.storage.sql), mentioned, { origin: ORIGIN, viewerId: null }, Infinity, true),
     );
     expect(whole.items).toHaveLength(count);
     expect(whole.bytes).toBeGreaterThan(ANSWER_BYTES);

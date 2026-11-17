@@ -5943,7 +5943,11 @@ describe("the quotes list reads a window, however many quotes a status has (RES-
     }
     expect(found).toEqual([quoting(0)]);
     expect(requests).toBe(1000 / PAGE.limit + 1);
-    // Each request reads at most what the first does; the last, a window of one, reads less.
-    expect(Math.max(...reads)).toBeLessThanOrEqual((reads[0] ?? 0) + ALLOWANCE);
+    // Each request reads at most what the first does, but the last, which presents the listed quote: at most what
+    // listing that quote alone reads (a window of one, the quote and its accounts' feature_approval presented).
+    const alone = await quoted(["listed"]);
+    const presenting = await rowsRead({ store: alone }, statusQuotes, input(PAGE));
+    expect(Math.max(...reads.slice(0, -1))).toBeLessThanOrEqual((reads[0] ?? 0) + ALLOWANCE);
+    expect(reads.at(-1)).toBeLessThanOrEqual(presenting + ALLOWANCE);
   }, 120_000);
 });

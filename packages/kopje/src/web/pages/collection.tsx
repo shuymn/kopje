@@ -1,7 +1,7 @@
 import type { FC } from "hono/jsx";
 
 import type { Account } from "../../domain/accounts";
-import type { Collection } from "../../domain/collections";
+import type { Collection } from "../../domain/collection-presenter";
 import type { Site } from "../../domain/web-pages/site";
 import { AccountFeed } from "../components/accounts";
 import { Layout } from "../components/layout";
@@ -29,7 +29,7 @@ function collectionPath(id: string): string {
 // /collections/:id: a local collection as Mastodon's page and web client show it: its name, its owner, its
 // description and hashtag, then its members as rows in one card. A sensitive collection keeps its description and
 // members behind the post's disclosure, and its head names no description. Every collection page asks not to be
-// indexed or archived, as Mastodon's (collections/show.html.haml).
+// indexed or archived, and links its FeaturedCollection, as Mastodon's (collections/show.html.haml).
 export const CollectionPage: FC<CollectionView> = ({ collection, owner, tag, accounts, site }) => {
   const { lang, m } = useUi();
   const { domain } = site;
@@ -67,6 +67,7 @@ export const CollectionPage: FC<CollectionView> = ({ collection, owner, tag, acc
           <meta property="og:url" content={canonical} />
           {collection.language === null ? null : <meta property="og:locale" content={collection.language} />}
           <link rel="canonical" href={canonical} />
+          <link rel="alternate" type="application/activity+json" href={collection.uri} />
         </>
       }
     >

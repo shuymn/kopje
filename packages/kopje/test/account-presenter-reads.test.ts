@@ -38,7 +38,7 @@ import { community, remoteAccount } from "./status-helpers";
 // `a INDEXED BY` of windowAccountIds and of the follow lists' window join, where the planner already seeks `a` as the
 // inner side of the CROSS JOIN; they keep the shape of their siblings.
 
-const present = { origin: "https://kopje.test" };
+const present = { origin: "https://kopje.test", viewerId: null };
 
 describe("account presentation with stale statistics (RES-7)", () => {
   it("seeks each account, its local row and each follow by key, reading as many rows after the growth", async () => {
@@ -78,6 +78,10 @@ describe("account presentation with stale statistics (RES-7)", () => {
           getAccounts.run(s, { ids: [alice.id, carol], present, credential: null }, transaction),
         );
         read("accountsOf", (s) => [...accountsOf(new Db(s), [alice.id, carol], present)]);
+        // To a viewer: feature_approval.current_user's read of the chunk (featureApprovalReads).
+        read("featureApproval", (s) => [
+          ...accountsOf(new Db(s), [alice.id, carol], { ...present, viewerId: alice.id }),
+        ]);
         read("partialAccountsOf", (s) => [...partialAccountsOf(new Db(s), [alice.id, carol], present)]);
         read("endorsements", (s) => accountEndorsementsWithin(new Db(s), alice.id, { page: { limit: 40 }, present }));
         for (const direction of ["followers", "following"] as const) {
@@ -126,6 +130,7 @@ describe("account presentation with stale statistics (RES-7)", () => {
       ["credentialAccount", alice.id],
       ["getAccounts", carol],
       ["accountsOf", carol],
+      ["featureApproval", carol],
       ["partialAccountsOf", carol],
       ["endorsements", carol],
       ["followers", carol],

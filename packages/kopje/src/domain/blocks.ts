@@ -6,9 +6,10 @@ import {
   accountsOf,
   type Page,
   type PageQuery,
-  type Present,
-  relationshipResult,
+  presentFor,
+  type PresentInput,
   type RelationshipResult,
+  relationshipResult,
   routeAccountId,
 } from "./accounts";
 import { blockActivity, blockUri, followAnswerActivity, recordOutbound, undoBlockActivity } from "./activities";
@@ -142,15 +143,18 @@ function relationTarget(db: Db, viewerId: string, id: string): Target {
 }
 
 export type RelationInput = { target: string; now: number };
+type BlockResult = RelationshipResult & { jobsPending?: true };
 
 // BlockService: the follows either way end, then the block is recorded, and a remote target is sent the Block. Blocking
-// an account already blocked changes nothing.
-export const block = userWriteOperation<RelationInput, RelationshipResult>((db, input, { accountId }) => {
+// an account already blocked changes nothing. jobsPending: the block took items out of local collections, whose
+// Removes a collection job delivers to their owners' followers (collection-jobs.ts).
+export const block = userWriteOperation<RelationInput, BlockResult>((db, input, { accountId }) => {
   const found = relationTarget(db, accountId, input.target);
   if (found.status !== "ok") {
     return found;
   }
   const { viewer, target } = found;
+  let jobsPending = false;
   const existing = db.first(
     "SELECT 1 AS x FROM blocks WHERE account_id = ? AND target_account_id = ?",
     viewer.id,
@@ -165,7 +169,7 @@ export const block = userWriteOperation<RelationInput, RelationshipResult>((db, 
     // BlockService#call: a permission given to the account by accepting its request goes too, so after an unblock its
     // notifications meet the policy again.
     db.run("DELETE FROM notification_permissions WHERE account_id = ? AND from_account_id = ?", viewer.id, target.id);
-    severCollections(db, viewer.id, target.id, input.now);
+    jobsPending = severCollections(db, viewer.id, target.id, input.now);
     const edge = db.first<{ id: string }>(
       `INSERT INTO blocks (account_id, target_account_id, created_at) VALUES (?, ?, ?)
 			RETURNING CAST(id AS TEXT) AS id`,
@@ -184,7 +188,8 @@ export const block = userWriteOperation<RelationInput, RelationshipResult>((db, 
       );
     }
   }
-  return relationshipResult(db, viewer.id, target.id, input.now);
+  const result = relationshipResult(db, viewer.id, target.id, input.now);
+  return jobsPending ? { ...result, jobsPending: true } : result;
 });
 
 // UnblockService: the block goes, and a remote target is sent its Undo. A migrated block without a uri is named as
@@ -287,7 +292,7 @@ function edgeRows<R extends { cursor: string }>(rows: R[], ascending: boolean) {
 }
 
 // GET /api/v1/blocks: the accounts the viewer blocks, by the block's id, within ANSWER_BYTES (accountPage).
-export const listBlocks = userReadOperation<{ page: PageQuery; present: Present }, Page<Account>>(
+export const listBlocks = userReadOperation<{ page: PageQuery; present: PresentInput }, Page<Account>>(
   (db, { page, present }, { accountId }) => {
     const ascending = page.minId !== undefined;
     const rows = db.all<{ cursor: string; id: string }>(
@@ -299,14 +304,14 @@ export const listBlocks = userReadOperation<{ page: PageQuery; present: Present 
       page.minId ?? page.sinceId ?? null,
       page.limit,
     );
-    return accountPage(db, edgeRows(rows, ascending), ascending, (row) => row.cursor, present);
+    return accountPage(db, edgeRows(rows, ascending), ascending, (row) => row.cursor, presentFor(present, accountId));
   },
 );
 
 // GET /api/v1/mutes: the accounts the viewer mutes now, by the mute's id, each with its expiry (Mastodon's
 // REST::MutedAccountSerializer), within ANSWER_BYTES: admitted in traversal order, a page cut there continuing from
 // its last admitted account (admittedPage).
-export const listMutes = userReadOperation<{ page: PageQuery; present: Present }, Page<MutedAccount>>(
+export const listMutes = userReadOperation<{ page: PageQuery; present: PresentInput }, Page<MutedAccount>>(
   (db, { page, present }, _viewer, { accountId, now }) => {
     const ascending = page.minId !== undefined;
     const rows = db.all<{ cursor: string; id: string; mute_expires_at: string | null }>(
@@ -328,7 +333,7 @@ export const listMutes = userReadOperation<{ page: PageQuery; present: Present }
         const accounts = accountsOf(
           db,
           traversal.map((row) => row.id),
-          present,
+          presentFor(present, accountId),
         );
         function* muted(): Generator<MutedAccount | undefined> {
           for (const row of traversal) {

@@ -6,6 +6,7 @@ import { PIN_LIMIT } from "../src/domain/activities";
 import { accountFeaturedTags } from "../src/domain/featured-tags";
 import { MAX_PENDING_APPS } from "../src/domain/oauth";
 import { readOperation, sessionOperation, writeOperation } from "../src/domain/operation";
+import { MAX_STATUS_MEDIA } from "../src/domain/status-bounds";
 import { followedTags } from "../src/domain/tags";
 import { MAX_PROFILE_UPDATES } from "../src/platform/dump-catalog";
 import type { DumpTrailer, TableSpec } from "../src/platform/dump-format";
@@ -301,23 +302,33 @@ describe("dump", () => {
 
   // A dump taken before 0096_remote_handles, of remote rows sharing an address, restores and upgrades through 0096,
   // which invalidates all but the oldest; the upgraded Store's own export restores into a Store at the latest file; a
-  // dump holding two remote rows of one address is refused by the UNIQUE index (D6).
+  // dump holding two remote rows of one address is refused by the UNIQUE index (D6). Domains with trailing dots, as a
+  // converter wrote them before it dropped every one (docs/cutover.md), are other addresses, kept byte for byte by the
+  // upgrade and the round trip: nothing rewrites a stored domain.
   it("restores a dump taken before 0096_remote_handles with shared addresses, and refuses a duplicate after it", async () => {
-    const remote = (n: number, username: string) =>
-      `INSERT INTO accounts (id, uri, username, domain) VALUES ('10000000000000000${n}', 'https://d.example/actors/${n}',
-				'${username}', 'd.example')`;
+    const remote = (n: number, username: string, host = "d.example", domain = host) =>
+      `INSERT INTO accounts (id, uri, username, domain) VALUES ('10000000000000000${n}', 'https://${host}/actors/${n}',
+				'${username}', '${domain}')`;
+    const rows = "SELECT username, hex(domain) AS domain FROM accounts ORDER BY rowid";
+    const hex = (text: string) =>
+      [...new TextEncoder().encode(text)].map((byte) => byte.toString(16).padStart(2, "0").toUpperCase()).join("");
+    const upgraded = [
+      { username: "alice", domain: hex("d.example") },
+      { username: "! 100000000000000002", domain: hex("d.example") },
+      { username: "alice", domain: hex("d.example.") },
+      { username: "alice", domain: hex("d.example..") },
+    ];
     const restored = await restoredBefore(
       "0096_remote_handles",
       (sql) => {
         sql.exec(remote(1, "alice"));
         sql.exec(remote(2, "Alice"));
+        sql.exec(remote(3, "alice", "d.example..", "d.example."));
+        sql.exec(remote(4, "alice", "d.example...", "d.example.."));
       },
       async (sql, upgrade) => {
         expect(await upgrade()).toMatchObject({ ok: true, applied: ["0096_remote_handles"] });
-        expect(sql.exec("SELECT username FROM accounts ORDER BY rowid").toArray()).toEqual([
-          { username: "alice" },
-          { username: "! 100000000000000002" },
-        ]);
+        expect(sql.exec(rows).toArray()).toEqual(upgraded);
       },
     );
     await runInDurableObject(restored, async (_instance, state) => {
@@ -327,6 +338,9 @@ describe("dump", () => {
     const target = await migratedStore();
     await copyConfig(restored, target);
     expect((await importViaRpc(target, text)).report).toMatchObject({ ok: true, problems: [] });
+    expect(await runInDurableObject(target, (_instance, state) => state.storage.sql.exec(rows).toArray())).toEqual(
+      upgraded,
+    );
     // The same dump with the invalidated row given the address back.
     const literal = "'! 100000000000000002'";
     expect(text).toContain(literal);
@@ -845,6 +859,115 @@ describe("dump", () => {
       code: "chunk-failed",
       message: expect.stringMatching(/status_pins: more pins than the account may keep/),
     });
+  }, 120_000);
+
+  // RES-2, RES-6: a scheduled status holds at most MAX_STATUS_MEDIA uploads (0109_scheduled_media_cap), so a dump
+  // holding more fails to import, as a value past any stored bound does; one at the cap round-trips.
+  it("round-trips a scheduled status's four held uploads, and refuses a fifth on import (0109)", async () => {
+    const source = await seeded(0);
+    const scheduled = "740000000000000001";
+    const upload = (i: number) => `81000000000000000${i}`;
+    await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      const account = sql
+        .exec<{ account_id: string }>("SELECT account_id FROM local_accounts ORDER BY account_id LIMIT 1")
+        .one().account_id;
+      sql.exec(
+        "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, ?, '{}')",
+        scheduled,
+        account,
+        "2026-12-01T00:00:00.000Z",
+      );
+      // Four held, and a fifth upload unattached.
+      for (let i = 0; i <= MAX_STATUS_MEDIA; i++) {
+        sql.exec(
+          `INSERT INTO media_attachments (id, account_id, scheduled_status_id, position, type, url, gc_at)
+					VALUES (?, ?, ?, ?, 'image', 'https://kopje.test/files/x/full', ?)`,
+          upload(i),
+          account,
+          i < MAX_STATUS_MEDIA ? scheduled : null,
+          i,
+          i < MAX_STATUS_MEDIA ? null : "2026-12-01T00:00:00.000Z",
+        );
+      }
+    });
+    const held = (store: StoreStub) =>
+      runInDurableObject(
+        store,
+        (_instance, state) =>
+          state.storage.sql
+            .exec("SELECT count(*) AS n FROM media_attachments WHERE scheduled_status_id = ?", scheduled)
+            .one().n,
+      );
+    const { text } = await dumpViaRpc(source);
+    const restored = await migratedStore();
+    await copyConfig(source, restored);
+    await importViaRpc(restored, text);
+    expect(await held(restored)).toBe(MAX_STATUS_MEDIA);
+    // The same dump with the fifth held, as a Store before 0109 could hold it.
+    await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      sql.exec("DROP TRIGGER media_attachments_scheduled_cap_insert");
+      sql.exec("DROP TRIGGER media_attachments_scheduled_cap_update");
+      sql.exec(
+        "UPDATE media_attachments SET scheduled_status_id = ?, gc_at = NULL WHERE id = ?",
+        scheduled,
+        upload(MAX_STATUS_MEDIA),
+      );
+    });
+    expect(await held(source)).toBe(MAX_STATUS_MEDIA + 1);
+    const past = await dumpViaRpc(source);
+    const target = await migratedStore();
+    await copyConfig(source, target);
+    expect(String(await rejectionOf(importViaRpc(target, past.text)))).toMatch(
+      /media_attachments: more media than a scheduled status may hold/,
+    );
+  }, 120_000);
+
+  // RES-2: a scheduled status's params are text with no NUL (0110_scheduled_params), so a dump holding others fails to
+  // import, as a value past any stored bound does; readable ones round-trip.
+  it("round-trips scheduled statuses' params, and refuses a NUL in them on import (0110)", async () => {
+    const source = await seeded(0);
+    const scheduled = "740000000000000001";
+    const params = JSON.stringify({ text: "later", spoiler_text: "", media_ids: null });
+    await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      const account = sql
+        .exec<{ account_id: string }>("SELECT account_id FROM local_accounts ORDER BY account_id LIMIT 1")
+        .one().account_id;
+      sql.exec(
+        "INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params) VALUES (?, ?, ?, ?)",
+        scheduled,
+        account,
+        "2026-12-01T00:00:00.000Z",
+        params,
+      );
+    });
+    const stored = (store: StoreStub) =>
+      runInDurableObject(
+        store,
+        (_instance, state) =>
+          state.storage.sql.exec("SELECT hex(params) AS hex FROM scheduled_statuses WHERE id = ?", scheduled).one().hex,
+      );
+    const { text } = await dumpViaRpc(source);
+    const restored = await migratedStore();
+    await copyConfig(source, restored);
+    await importViaRpc(restored, text);
+    expect(await stored(restored)).toBe(await stored(source));
+    // The same row with a NUL past the object, as a Store before 0110 could hold it.
+    await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      sql.exec("DROP TRIGGER scheduled_statuses_params_insert");
+      sql.exec("DROP TRIGGER scheduled_statuses_params_update");
+      sql.exec("UPDATE scheduled_statuses SET params = ? WHERE id = ?", `${params}\0x`, scheduled);
+    });
+    expect(await stored(source)).toMatch(/0078$/);
+    const past = await dumpViaRpc(source);
+    const target = await migratedStore();
+    await copyConfig(source, target);
+    expect(String(await rejectionOf(importViaRpc(target, past.text)))).toMatch(
+      /scheduled_statuses: a value past its stored bound/,
+    );
   }, 120_000);
 
   // statuses.published_at and edited_at have no stored bound (RES-2): reads project them, a dump keeps them as stored.

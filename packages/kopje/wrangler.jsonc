@@ -25,6 +25,11 @@
   "durable_objects": {
     "bindings": [{ "name": "STORE", "class_name": "Store" }],
   },
+  // CPU time per invocation: a request, a Queue batch, a Store call or alarm (the platform's default is 30 s; Workers
+  // Paid; Cloudflare lists the cron's limit apart, at 30 s). The Store applies and verifies a release's migrations in
+  // one invocation, an alarm, which can need more than 30 s; the migration bench's budget is two thirds of this
+  // (test/bench/migration-cost.ts, test-node/wrangler-configs.test.ts).
+  "limits": { "cpu_ms": 60000 },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Store"] }],
   "queues": {
     "producers": [{ "binding": "QUEUE", "queue": "kopje" }],

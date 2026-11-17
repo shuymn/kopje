@@ -198,7 +198,7 @@ export const updateCollection: ApiHandler = withParams(async (c, deps, p) => {
 
 // DELETE /api/v1/collections/:id.
 export const deleteCollection: ApiHandler = async (c, deps) => {
-  const input = { id: c.req.param("id") ?? "", credential: userCredential(c, deps) };
+  const input = { id: c.req.param("id") ?? "", credential: userCredential(c, deps), now: deps.now() };
   return emptyResponse(authorized(await storeCall(c, deps, (s, b) => s.deleteCollection(b, input))));
 };
 
@@ -231,6 +231,7 @@ export const removeCollectionItem: ApiHandler = async (c, deps) => {
     collection: c.req.param("id") ?? "",
     item: c.req.param("item_id") ?? "",
     credential: userCredential(c, deps),
+    now: deps.now(),
   };
   return emptyResponse(authorized(await storeCall(c, deps, (s, b) => s.removeCollectionItem(b, input))));
 };

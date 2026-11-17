@@ -22,7 +22,7 @@ import { remoteAccount } from "./status-helpers";
 // family's failure stops no other, a Store that refuses (maintenance) ends the round with nothing counted, and a Queue
 // batch runs one round however many nudges it holds (RES-5).
 
-// The eight families: the Store call that runs each (two pairs share a call, and so its transaction), the rows that
+// The nine families: the Store call that runs each (two pairs share a call, and so its transaction), the rows that
 // show its state, the work it still has, and a test trigger on a table only it writes in a round.
 const FAMILIES = {
   inbound: {
@@ -61,6 +61,12 @@ const FAMILIES = {
     work: "SELECT 1 FROM remote_moderation_jobs",
     fail: ["BEFORE UPDATE ON remote_moderation_jobs", "BEFORE DELETE ON remote_moderation_jobs"],
   },
+  collection_removals: {
+    call: "collection_removals",
+    state: "SELECT id, account_id, phase, follow_cursor, inbox_cursor FROM collection_jobs ORDER BY id",
+    work: "SELECT 1 FROM collection_jobs",
+    fail: ["BEFORE UPDATE ON collection_jobs", "BEFORE DELETE ON collection_jobs"],
+  },
   // Both tables of the family: the held handshakes and the held Rejects (migration 0092_reject_replays).
   handshake_replays: {
     call: "handshake_replays",
@@ -88,6 +94,7 @@ type Family = keyof typeof FAMILIES;
 const NAMES = Object.keys(FAMILIES) as Family[];
 // The Store calls of the families, sorted.
 const STORE_CALLS = [
+  "runCollectionJobs",
   "runDomainBlockCleanups",
   "runHandshakeReplays",
   "runInboundJobs",
@@ -179,6 +186,22 @@ async function seeded() {
   const remotes = [await remoteAccount(store, "s1", "s.example"), await remoteAccount(store, "s2", "s.example")];
   for (const id of [w.carol.id, w.dan.id, ...remotes]) {
     expect(await act(w, id, { type: "suspend" })).toMatchObject({ status: 200 });
+  }
+  // Collection removals: two jobs of alice's, each of a block's Remove gone since and two staged inboxes; a round
+  // drops one's inboxes and ends it.
+  for (const n of [1, 2]) {
+    const [job] = await sql<{ id: number }>(
+      store,
+      "INSERT INTO collection_jobs (account_id, follow_bound, phase) VALUES (?, 0, 'drop') RETURNING id",
+      w.alice.id,
+    );
+    await sql(
+      store,
+      `INSERT INTO collection_reach (job_id, inbox) VALUES (?1, 'https://k' || ?2 || '.example/inbox'),
+				(?1, 'https://l' || ?2 || '.example/inbox')`,
+      job!.id,
+      n,
+    );
   }
   // Held handshakes: alice's two pending follows of available accounts, each Follow held and due; a step records it.
   for (const name of ["h1", "h2"]) {
@@ -328,6 +351,11 @@ const FIRST_ITEMS: Record<Family, { table: string; key: readonly string[]; first
     table: "remote_moderation_jobs",
     key: ["id"],
     first: "SELECT id FROM remote_moderation_jobs ORDER BY id LIMIT 1",
+  },
+  collection_removals: {
+    table: "collection_jobs",
+    key: ["id"],
+    first: "SELECT id FROM collection_jobs ORDER BY id LIMIT 1",
   },
   handshake_replays: {
     table: "handshake_replays",
@@ -657,7 +685,7 @@ describe("the replies family (RES-5)", () => {
   const claimedQuotes = "SELECT 1 FROM quotes WHERE generation > 0";
   const env = (t: Awaited<ReturnType<typeof setup>>) => ({ ...t.env, MAINTENANCE: "off" }) as unknown as Env;
 
-  it("walks when every other family throws: nine boundaries, each logged once", async () => {
+  it("walks when every other family throws: ten boundaries, each logged once", async () => {
     const { t, answer } = await walking();
     const failing = failingStore(t.store, [...STORE_CALLS, "claimCollectionSync", "claimQuotes"], () => {
       return new Error("test: fails");
@@ -673,7 +701,7 @@ describe("the replies family (RES-5)", () => {
         (family) => expect.objectContaining({ family }) as unknown,
       ),
     );
-    expect(failures.length + 1).toBe(9);
+    expect(failures.length + 1).toBe(10);
     expect(await storedOf(t.store, [answer.id])).toEqual([answer.id]);
   }, 60_000);
 

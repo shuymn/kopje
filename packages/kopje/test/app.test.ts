@@ -87,6 +87,11 @@ describe("app skeleton", () => {
       "/ap/users/alice/quote_authorizations/x",
       "/emojis/123456789012345678",
       "/emojis/abc",
+      "/ap/users/alice/featured_collections",
+      "/ap/users/alice/featured_collections?page=x",
+      "/ap/users/alice/collections/123456789012345678",
+      "/ap/users/alice/collection_items/123456789012345678",
+      "/ap/users/alice/feature_authorizations/x",
     ];
     for (const path of ["/.well-known/webfinger", "/ap/users/alice", "/actor", "/nodeinfo/3.0", ...selfGated]) {
       for (const method of ["GET", "HEAD"]) {

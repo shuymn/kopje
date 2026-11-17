@@ -1526,6 +1526,74 @@ function purgeReports(db: Db, budget: JobBudget, id: string, window: string): vo
   );
 }
 
+// The first ?2 items of the account ?1 in any collection, one bounded range of collection_items_account.
+const MEMBER_ITEMS_WINDOW =
+  "SELECT id FROM collection_items INDEXED BY collection_items_account WHERE account_id = ?1 LIMIT ?2";
+
+// The first ?2 items of the collections of the account ?1 (MAX_STORED_ITEMS each), by collection.
+const OWNED_ITEMS_WINDOW = `SELECT i.id FROM collections c INDEXED BY collections_account
+	CROSS JOIN collection_items i INDEXED BY collection_items_order ON i.collection_id = c.id
+	WHERE c.account_id = ?1 LIMIT ?2`;
+
+// The first ?2 collections of the account ?1 (MAX_STORED_COLLECTIONS).
+const OWNED_COLLECTIONS_WINDOW =
+  "SELECT id FROM collections INDEXED BY collections_account WHERE account_id = ?1 LIMIT ?2";
+
+// The items or collections of a window of the account ?1 (`key` the notifications column naming them), child-first
+// so no delete cascades, as purgeReports: the pushes of their notifications (up to MAX_PUSH_BACKLOG each), then the
+// notifications left without one (notifications_collection_item, notifications_collection), then the rows of the
+// window: its items, whose one notification each (0107) the step before deleted, as it leaves the budget empty while
+// one remains, or its collections left without an item or a notification. Each statement reads only the window and
+// takes what the budget has left.
+function purgeCollectionRows(
+  db: Db,
+  budget: JobBudget,
+  id: string,
+  window: string,
+  key: "collection_item_id" | "collection_id",
+): void {
+  const index = key === "collection_item_id" ? "notifications_collection_item" : "notifications_collection";
+  spend(
+    db,
+    budget,
+    {
+      ids: `SELECT CAST(d.id AS TEXT) AS id FROM (${window}) w
+				CROSS JOIN notifications n INDEXED BY ${index} ON n.${key} = w.id
+				CROSS JOIN push_deliveries d INDEXED BY push_deliveries_notification ON d.notification_id = n.id LIMIT ?2`,
+      each: "DELETE FROM push_deliveries WHERE id = CAST(?1 AS INTEGER)",
+    },
+    id,
+  );
+  spend(
+    db,
+    budget,
+    {
+      ids: `SELECT CAST(n.id AS TEXT) AS id FROM (${window}) w
+				CROSS JOIN notifications n INDEXED BY ${index} ON n.${key} = w.id
+			WHERE NOT EXISTS (SELECT 1 FROM push_deliveries d WHERE d.notification_id = n.id) LIMIT ?2`,
+      each: "DELETE FROM notifications WHERE id = CAST(?1 AS INTEGER)",
+    },
+    id,
+  );
+  const notified = `EXISTS (SELECT 1 FROM notifications n INDEXED BY ${index} WHERE n.${key} = w.id)`;
+  spend(
+    db,
+    budget,
+    key === "collection_item_id"
+      ? {
+          ids: `SELECT w.id FROM (${window}) w LIMIT ?2`,
+          each: `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id = ?1`,
+        }
+      : {
+          ids: `SELECT w.id FROM (${window}) w
+				WHERE NOT EXISTS (SELECT 1 FROM collection_items i INDEXED BY collection_items_order WHERE i.collection_id = w.id)
+					AND NOT ${notified} LIMIT ?2`,
+          each: `DELETE FROM collections INDEXED BY ${COLLECTIONS_ID_INDEX} WHERE id = ?1`,
+        },
+    id,
+  );
+}
+
 // The first ?2 favourites of the account ?1 by id (favourites_account), so the purge reads one bounded range for
 // their tracked Like ids and for the favourites themselves, however many the account has (purgeRelationships).
 const FAVOURITE_WINDOW = "SELECT id, status_id FROM favourites WHERE account_id = ?1 ORDER BY id LIMIT ?2";
@@ -1723,32 +1791,12 @@ function purgeRelationships(db: Db, id: string, budget: JobBudget): void {
     id,
   );
   // Its items in any collection, then the items of its collections (MAX_STORED_ITEMS each), then each of its
-  // collections (MAX_STORED_COLLECTIONS) left without one, so no delete cascades (migration 0103_collections).
-  spend(
-    db,
-    budget,
-    `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id IN
-			(SELECT id FROM collection_items INDEXED BY collection_items_account WHERE account_id = ?1 LIMIT ?2)`,
-    id,
-  );
-  spend(
-    db,
-    budget,
-    `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id IN
-			(SELECT i.id FROM collections c INDEXED BY collections_account
-				CROSS JOIN collection_items i INDEXED BY collection_items_order ON i.collection_id = c.id
-			WHERE c.account_id = ?1 LIMIT ?2)`,
-    id,
-  );
-  spend(
-    db,
-    budget,
-    `DELETE FROM collections INDEXED BY ${COLLECTIONS_ID_INDEX} WHERE id IN
-			(SELECT c.id FROM collections c INDEXED BY collections_account WHERE c.account_id = ?1
-				AND NOT EXISTS (SELECT 1 FROM collection_items i INDEXED BY collection_items_order WHERE i.collection_id = c.id)
-			LIMIT ?2)`,
-    id,
-  );
+  // collections (MAX_STORED_COLLECTIONS) left without one, so no delete cascades (migration 0103_collections); each
+  // window child-first (purgeCollectionRows): its notifications' pushes, then those notifications (migration
+  // 0107_collection_notifications), then the rows left without one.
+  purgeCollectionRows(db, budget, id, MEMBER_ITEMS_WINDOW, "collection_item_id");
+  purgeCollectionRows(db, budget, id, OWNED_ITEMS_WINDOW, "collection_item_id");
+  purgeCollectionRows(db, budget, id, OWNED_COLLECTIONS_WINDOW, "collection_id");
   // Its profile link verification (domain/remote-field-links.ts): one row at most.
   spend(
     db,

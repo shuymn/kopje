@@ -607,7 +607,7 @@ export function convertLegacy(
         count(problems, "accounts:local-username-is-domain");
       }
     } else {
-      // The domain the Worker gives an actor id's host (hostDomain: no port, no trailing dot), so that address lookup,
+      // The domain the Worker gives an actor id's host (hostDomain: no port, no trailing dots), so that address lookup,
       // the handle index and the domain filters read a converted account as they read a fetched one.
       try {
         host = hostDomain(uri);

@@ -74,7 +74,10 @@ export const registerApp: ApiHandler = async (c, deps) => {
   }
   const p = result.params;
   const name = (p.get("client_name") ?? "").trim();
-  const redirectUris = p.getAll("redirect_uris").flatMap((value) => value.split(/\s+/).filter((uri) => uri !== ""));
+  // app_params[:redirect_uris] (`permit(:redirect_uris, redirect_uris: [])`): the array as sent, else the scalar's
+  // value, which Rails' params hold as its last; Doorkeeper joins an array with newlines and splits on whitespace.
+  const sentUris = p.list("redirect_uris") ?? [p.get("redirect_uris") ?? ""];
+  const redirectUris = sentUris.flatMap((value) => value.split(/\s+/).filter((uri) => uri !== ""));
   const scopes = parseScopes(p.get("scopes"));
   const website = (p.get("website") ?? "").trim();
   const problems: string[] = [];

@@ -23,11 +23,11 @@ export function serveWebFinger(web: RemoteWeb, resource: string, subject: string
 }
 
 // The WebFinger answer that confirms an actor document's handle (federation/resolve.ts confirmHandle): its
-// preferredUsername at its host (without a trailing dot), naming the actor itself, as the actor's own server answers.
+// preferredUsername at its host (without its trailing dots, as hostDomain reads it), naming the actor itself, as the actor's own server answers.
 export function serveOwnHandle(web: RemoteWeb, document: Record<string, unknown>): void {
   const { id, preferredUsername } = document;
   if (typeof id === "string" && typeof preferredUsername === "string") {
-    const handle = `acct:${preferredUsername}@${new URL(id).hostname.replace(/\.$/, "")}`;
+    const handle = `acct:${preferredUsername}@${new URL(id).hostname.replace(/\.+$/, "")}`;
     serveWebFinger(web, handle, handle, id);
   }
 }

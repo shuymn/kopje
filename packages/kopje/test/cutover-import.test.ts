@@ -12,13 +12,19 @@ import { ADMIN_AUD, ADMIN_EMAIL, dumpViaRpc, importViaRpc, setAccess, splitDump 
 declare module "vitest" {
   export interface ProvidedContext {
     cutover: { dump: string; expected: Record<string, Record<string, string>> };
+    cutoverHosts: { dump: string; expected: Record<string, Record<string, string>> };
   }
 }
 
 const AP = { headers: { accept: "application/activity+json" } };
 
-async function imported() {
-  const { dump, expected } = inject("cutover");
+async function imported(fixture: "cutover" | "cutoverHosts" = "cutover") {
+  const { dump, expected } = inject(fixture);
+  return { ...(await importedDump(dump)), expected };
+}
+
+// `dump` imported into a fresh Store and published.
+async function importedDump(dump: string) {
   const h = await apiHarness();
   // The /admin Access binding on the harness's own team, so the import and the sign-ins share one team.
   await setAccess(h.store, { access_team_domain: h.team.teamDomain });
@@ -32,7 +38,7 @@ async function imported() {
   const { report } = await importViaRpc(h.store, dump, 16 * 1024, authority);
   // What the runbook's step 9 does: an imported Store is readonly until published.
   await h.store.publish(BUILD, authority);
-  return { h, report, dump, expected };
+  return { h, report, dump };
 }
 
 describe("cutover import of a converted legacy export", () => {
@@ -332,6 +338,70 @@ describe("cutover import of a converted legacy export", () => {
     expect(instance.rules).toEqual([
       { id: "1", text: "No spam", hint: "", translations: {} },
       { id: "2", text: "スパム禁止", hint: "", translations: {} },
+    ]);
+  });
+});
+
+// Remote actors whose ids spell their host with a port, capitals, Unicode or trailing dots (test-node/legacy-fixture.ts
+// hostSpellings), converted, imported, dumped and imported again (docs/cutover.md, "Remote domains with a port or
+// trailing dots"): the Store keeps each converted domain, id and reserved username byte for byte through the round
+// trip and its dump passes the independent check; a domain an earlier converter wrote is kept the same way, and the
+// check, which reads the stored column as it is, reports it.
+describe("cutover import of actors whose ids spell their host otherwise", () => {
+  const spelled = (store: Parameters<typeof sql>[0]) =>
+    sql<{ uri: string; username: string; domain: string }>(
+      store,
+      "SELECT uri, username, hex(domain) AS domain FROM accounts WHERE display_name LIKE 'Spelled %' ORDER BY rowid",
+    );
+  const hex = (text: string) =>
+    [...new TextEncoder().encode(text)].map((byte) => byte.toString(16).padStart(2, "0").toUpperCase()).join("");
+  const failingOf = (result: Awaited<ReturnType<typeof compareConversion>>) =>
+    Object.entries(result.categories)
+      .filter(([, c]) => c.missing + c.extra + c.changed > 0)
+      .map(([name]) => name);
+
+  it("keeps the converted domains through a dump and a restore, and the check passes on each Store", async () => {
+    const { h, report, expected } = await imported("cutoverHosts");
+    expect(report).toMatchObject({ ok: true, foreignKeyViolations: 0, problems: [] });
+    const rows = await spelled(h.store);
+    expect(rows.map(({ uri, domain }) => [uri, domain])).toEqual(
+      [
+        ["https://Example.COM:8443/users/a", "example.com"],
+        ["https://bücher.example/u/b", "xn--bcher-kva.example"],
+        ["https://example.com./u/c", "example.com"],
+        ["https://h.example:8443/u/a", "h.example"],
+        ["https://h.example/u/a", "h.example"],
+        ["https://example.com../u/c", "example.com"],
+        ["https://example.com.../u/d", "example.com"],
+      ].map(([uri, domain]) => [uri, hex(domain!)]),
+    );
+    expect(rows.filter(({ username }) => username.startsWith("! ")).map(({ uri }) => uri)).toEqual([
+      "https://h.example/u/a",
+      "https://example.com../u/c",
+    ]);
+    const { text } = await dumpViaRpc(h.store);
+    expect(failingOf(await compareConversion(expected, actualFromDump(text)))).toEqual([]);
+    const again = await importedDump(text);
+    expect(again.report).toMatchObject({ ok: true, problems: [] });
+    expect(await spelled(again.h.store)).toEqual(rows);
+    const { text: restored } = await dumpViaRpc(again.h.store);
+    expect(failingOf(await compareConversion(expected, actualFromDump(restored)))).toEqual([]);
+  });
+
+  it("keeps a domain an earlier converter wrote through a dump and a restore, and the check reports it", async () => {
+    const { h, expected } = await imported("cutoverHosts");
+    // As the converter wrote them before it dropped every trailing dot: one fewer than the id's host has.
+    await sql(h.store, "UPDATE accounts SET domain = 'example.com.' WHERE uri = 'https://example.com../u/c'");
+    await sql(h.store, "UPDATE accounts SET domain = 'example.com..' WHERE uri = 'https://example.com.../u/d'");
+    const rows = await spelled(h.store);
+    const { text } = await dumpViaRpc(h.store);
+    expect(failingOf(await compareConversion(expected, actualFromDump(text)))).toEqual(["accounts"]);
+    const again = await importedDump(text);
+    expect(again.report).toMatchObject({ ok: true, problems: [] });
+    expect(await spelled(again.h.store)).toEqual(rows);
+    expect(rows.filter(({ uri }) => uri.startsWith("https://example.com..")).map(({ domain }) => domain)).toEqual([
+      hex("example.com."),
+      hex("example.com.."),
     ]);
   });
 });

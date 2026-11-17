@@ -245,10 +245,10 @@ describe(`request parameters match Mastodon v${mastodon.mastodon}`, () => {
   it("observes the reads of a real request through the spies", async () => {
     observer.clear();
     await (await w.h.request("/api/v1/timelines/home?limit=1", bearer(w.owner.token))).body?.cancel();
-    expect(observer.reads()).toContainEqual({ method: "last", name: "limit" });
+    expect(observer.reads()).toContainEqual({ method: "integer", name: "limit" });
     observer.clear();
     await (await w.h.request("/api/v1/accounts/lookup?acct=carol@remote.example")).body?.cancel();
-    expect(observer.reads()).toContainEqual({ method: "query", name: "acct" });
+    expect(observer.reads()).toContainEqual({ method: "queries", name: "acct" });
     observer.clear();
     const form = mediaForm(bytes(PNG_PLAIN), {}, "a.png", "image/png");
     await (await w.h.request("/api/v2/media", bearer(w.owner.token, { method: "POST", body: form }))).body?.cancel();

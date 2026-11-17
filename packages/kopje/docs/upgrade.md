@@ -20,6 +20,16 @@ uses public routing, a host in the instance's own zone included (NET-1 in the
 redirects or refuses; with it off, the next deploy removes that address. Attach the instance domain before you turn it
 off on an instance that has none yet.
 
+The template sets `"limits": { "cpu_ms": 60000 }` as well: a request, a Queue batch and a Store invocation may each use
+up to 60 seconds of CPU, where the platform's default is 30. The Store applies and verifies a version's migrations in
+one invocation (below), and they can need more than 30 seconds; a release's are held to 40 seconds on a large benchmark
+Store ([RELEASING.md](../RELEASING.md)). Without the line, such an upgrade is stopped part way, and until a later
+attempt finishes the Store refuses every request, reads and sign-ins included, while migrations remain unapplied
+(`schema-pending`), and stays readonly once they are applied but not yet verified. Each attempt resumes after the
+migrations already recorded and checks foreign keys over the whole Store, which on a large Store is most of an upgrade's
+time, so the attempts can keep failing. Add the line and deploy; the upgrade then resumes. Setting the limit costs
+nothing by itself; the CPU time used is billed as before.
+
 ## How an update arrives
 
 1. Dependabot (with the template's `.github/dependabot.yml`) opens a pull request that changes the `kopje` version in
@@ -103,6 +113,12 @@ would: a release without the signed `Delete` of a public or unlisted status (VIS
 `to`, Public alone, so a mentioned account still staging gets a copy of its own at its personal inbox rather than its
 server's shared one. The body goes unchanged to each (it is immutable, which those releases honor), names nobody, and
 reaches no inbox the audience does not hold: more POSTs, never a wider reach.
+
+A page a browser loaded from one version and submits to the other is read by the other's rules. Since the release that
+reads a repeated parameter's last value, as Rails does (#1729), the settings page writes each checkbox's hidden
+`false` before the box; a settings page loaded before that upgrade, or loaded after it and saved after a rollback across
+it, saves its ticked boxes as unticked. Reload any open settings page after an upgrade or a rollback across that
+release.
 
 ### A version that changed the schema
 

@@ -495,6 +495,61 @@ describe("POST /api/v1/statuses", () => {
     expect(explicit).toMatchObject({ visibility: "private", language: "en", sensitive: false });
   });
 
+  // Rails' params[name]: the last value of a repeated name (Rack assigns each in turn), the query's for a name the
+  // query sends, else the body's.
+  it("reads a repeated or query-sent text, warning, visibility and sensitive as Rails' params[name]", async () => {
+    const h = await community(["alice"]);
+    const send = async (pairs: [string, string][], query = "") => {
+      const response = await h.request(`/api/v1/statuses${query}`, bearer(h.users.alice.token, form(pairs)));
+      const text = await response.text();
+      expect(response.status, text).toBe(200);
+      return JSON.parse(text) as Status;
+    };
+    const repeated = await send([
+      ["status", "first"],
+      ["status", "last"],
+      ["spoiler_text", "cw1"],
+      ["spoiler_text", "cw2"],
+      ["visibility", "public"],
+      ["visibility", "direct"],
+    ]);
+    expect(repeated).toMatchObject({ content: "<p>last</p>", spoiler_text: "cw2", visibility: "direct" });
+    const unmarked = await send([
+      ["status", "s"],
+      ["sensitive", "true"],
+      ["sensitive", "false"],
+    ]);
+    const marked = await send([
+      ["status", "s"],
+      ["sensitive", "false"],
+      ["sensitive", "true"],
+    ]);
+    expect([unmarked.sensitive, marked.sensitive]).toEqual([false, true]);
+    const queried = await send(
+      [
+        ["status", "body"],
+        ["visibility", "direct"],
+      ],
+      "?status=query&visibility=private",
+    );
+    expect(queried).toMatchObject({ content: "<p>query</p>", visibility: "private" });
+    const warned = await send(
+      [
+        ["status", "s"],
+        ["spoiler_text", "body"],
+      ],
+      "?spoiler_text=query",
+    );
+    const notSensitive = await send(
+      [
+        ["status", "s"],
+        ["sensitive", "true"],
+      ],
+      "?sensitive=false",
+    );
+    expect([warned.spoiler_text, notSensitive.sensitive]).toEqual(["query", false]);
+  });
+
   // Status#prepare_contents strips a local status's text and warning (Ruby's String#strip: NUL, tab, LF, VT, FF, CR
   // and space) before it is validated and stored.
   it("strips a post's text and warning as Ruby", async () => {

@@ -19,7 +19,12 @@ import { USERNAME_LIMIT, usernameSql } from "./profile-bounds";
 
 // The types outside Mastodon's baseline (Notification::PROPERTIES) that Kopje writes; a restored row of another one
 // carries none.
-export const FALLBACK_TYPES = ["admin.report", "moderation_warning"] as const;
+export const FALLBACK_TYPES = [
+  "admin.report",
+  "moderation_warning",
+  "added_to_collection",
+  "collection_update",
+] as const;
 
 export type NotificationFallback = { title: string; summary: string; description: null };
 
@@ -29,7 +34,8 @@ export type NotificationFallback = { title: string; summary: string; description
 // The origin is the stored domain, as the API answers only on it (WEB-6): /setup (app/setup.tsx hostProblem) and the
 // configuration (platform/store-admin.ts parseConfigValues) store it within DNS's 253 octets, and a request reaches it
 // only as a DNS name, at most 253 octets, so a Store configured earlier with a longer name receives no request for it.
-// A moderation_warning's is under 1 KB. test/notification-fallback.test.ts derives it.
+// A moderation_warning's is under 1 KB, and a collection notification's names one account.
+// test/notification-fallback.test.ts derives it.
 export const FALLBACK_JSON_MAX = 28_521;
 
 // Api::V1::NotificationsController's and Api::V2's supported_notification_types, the raw parameter (`supported`: the
@@ -50,7 +56,8 @@ export function fallbackSet(types: readonly string[] | undefined): ReadonlySet<s
 // it is local, and its stored url as text (within PROFILE_URL_LIMIT as stored, migration 0048_stored_bounds).
 type AccountRow = { id: string; username: string; domain: string; local: 0 | 1; url: string | null };
 
-// An admin.report's sender (?1) and its report's target account (?2), each by its key.
+// An admin.report's sender (?1) and its report's target account (?2), or a collection notification's owner (both), each
+// by its key.
 const REPORT_ACCOUNTS_SQL = `SELECT a.id, coalesce(${byteCut(usernameSql("a.username"), USERNAME_LIMIT)}, '') AS username,
 	coalesce(${byteCut("a.domain", DOMAIN_BYTES)}, '') AS domain, a.domain IS NULL AS local,
 	CASE WHEN typeof(a.url) = 'text' THEN a.url END AS url
@@ -80,6 +87,14 @@ export function reportTitle(name: string, target: string): string {
 // notification_fallbacks.moderation_warning.title.
 export const WARNING_TITLE = "You have received a moderation warning.";
 
+// notification_fallbacks.added_to_collection.title_html and collection_update.title_html, the owner named by its
+// mention link (Mastodon interpolates collection_update's account object: docs/mastodon-deviations.md, "Notification
+// fallbacks").
+export const COLLECTION_TITLES: Readonly<Record<string, (name: string) => string>> = {
+  added_to_collection: (name) => `${name} added you to a collection`,
+  collection_update: (name) => `${name} updated a collection you are in`,
+};
+
 // notification_fallbacks.generic.summary_html and moderation_warning.summary_html, with the link to the instance's
 // front page (docs/mastodon-deviations.md, "Notification fallbacks").
 export function fallbackSummary(origin: string): string {
@@ -89,7 +104,8 @@ export function fallbackSummary(origin: string): string {
 
 // The fallback of a notification or group of `type` in FALLBACK_TYPES: an admin.report names `accountId` (the
 // sender, or a group's first sample) and `targetId` (its report's target account), a remote sender by its domain
-// (fallback_title), each read by its key. Undefined when an account is gone.
+// (fallback_title), and a collection notification `accountId` (the owner), each read by its key. Undefined when an
+// account is gone.
 export function notificationFallback(
   db: Db,
   type: string,
@@ -98,6 +114,17 @@ export function notificationFallback(
   const summary = fallbackSummary(input.origin);
   if (type === "moderation_warning") {
     return { title: WARNING_TITLE, summary, description: null };
+  }
+  const collectionTitle = COLLECTION_TITLES[type];
+  if (collectionTitle !== undefined) {
+    const owner = db.first<AccountRow>(REPORT_ACCOUNTS_SQL, input.accountId, input.accountId);
+    return owner === undefined
+      ? undefined
+      : {
+          title: collectionTitle(linkToMention(fallbackHref(owner, input.origin), owner.username)),
+          summary,
+          description: null,
+        };
   }
   if (type !== "admin.report" || input.targetId === null) {
     return undefined;

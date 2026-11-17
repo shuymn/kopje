@@ -27,8 +27,8 @@ describe("the coverage rule", () => {
   it("takes each accessor for the names it returns", () => {
     expect(covers({ method: "get", name: "a" }, "a")).toBe(true);
     expect(covers({ method: "get", name: "a" }, "a[]")).toBe(false);
-    expect(covers({ method: "last", name: "a" }, "a")).toBe(true);
-    expect(covers({ method: "last", name: "a" }, "a[]")).toBe(false);
+    expect(covers({ method: "integer", name: "a" }, "a")).toBe(true);
+    expect(covers({ method: "integer", name: "a" }, "a[]")).toBe(false);
     expect(covers({ method: "query", name: "acct" }, "acct")).toBe(true);
     expect(covers({ method: "file", name: "avatar" }, "avatar")).toBe(true);
     for (const method of ["has", "getAll", "getAllIntegers"] as const) {

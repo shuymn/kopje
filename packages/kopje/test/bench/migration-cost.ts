@@ -13,9 +13,9 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // The migration cost benchmark (RELEASING.md): pending migration files applied to a
 // large, representative Store in workerd's local Durable Object SQLite, as an upgrade applies them, timed. The whole
 // upgrade (the kernel's bookmark, each file's transaction and the schema verification, which runs once after all
-// pending files) must finish in at most UPGRADE_BUDGET_MS, two thirds of the default 30 seconds of CPU an invocation
-// may use (an alarm's upgrade included; committing each file does not start a new invocation). Local elapsed time
-// stands in for that CPU time.
+// pending files) must finish in at most UPGRADE_BUDGET_MS, two thirds of the 60 seconds of CPU a Store invocation may
+// use under the shipped configs' limits.cpu_ms (wrangler.jsonc, test-node/wrangler-configs.test.ts; an alarm's upgrade
+// included; committing each file does not start a new invocation). Local elapsed time stands in for that CPU time.
 // The verification checks every reference in the Store unless each file is declared foreignKeys: 'unchanged'
 // (src/db/migrations.ts); the output's foreignKeyCheck says which ('store' or 'skipped'). A marker-bearing retry of
 // the same files always checks the whole Store. retryEstimateMs estimates it: for a skipped check, the upgrade plus
@@ -125,19 +125,22 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // 0097_profile_descriptions reads no row (five columns of accounts with constant defaults and no CHECK, and two
 // triggers); 0098_card_attribution adds a column to status_cards and recreates its triggers (no row read, the attached
 // and pending cards seeded); 0101_pin_refresh tests its column's CHECK on every collection_pins_pending row
-// (MAX_REMOTE_PINS of each of SHAPE.collectionSyncs remote accounts, seeded while it is pending); 0102_quote_state_stream
-// reads no row (one trigger); 0104_quote_broadcast adds a checked column to quotes, which SQLite tests against each
-// quote, as 0094 does; 0105_media_description_bytes reads every media attachment's description and rewrites the
-// imported ones seeded while it is pending (1,000 malformed runs of 50,000 bytes and 1,000 BLOBs of 10,000, after
-// longMedia's rows); 0106_reply_walk_debts tests its columns' CHECKs on every reply_walks and reply_walk_nodes row and
-// reads every node for its two partial indexes (SHAPE.replyWalks walks of the first statuses, seeded while it is
-// pending: MAX_RUNNING_REFRESHES context walks running with WALK_STATUSES nodes each, the rest create walks waiting
-// with their root node), and as it creates tables its upgrade checks every reference. A migration that reads another
-// table must add it here before it is measured. The measured time is the whole upgrade, from before the bookmark to
-// after the verification: Date.now() in workerd moves only between I/O events, so the clock is read across an await on
-// each side.
+// (MAX_REMOTE_PINS of each of SHAPE.collectionSyncs remote accounts, seeded while it is pending);
+// 0102_quote_state_stream reads no row (one trigger); 0104_quote_broadcast adds a checked column to quotes, which
+// SQLite tests against each quote, as 0094 does; 0105_media_description_bytes reads every media attachment's
+// description and rewrites the imported ones seeded while it is pending (1,000 malformed runs of 50,000 bytes and 1,000
+// BLOBs of 10,000, after longMedia's rows); 0106_reply_walk_debts tests its columns' CHECKs on every reply_walks and
+// reply_walk_nodes row and reads every node for its two partial indexes (SHAPE.replyWalks walks of the first statuses,
+// seeded while it is pending: MAX_RUNNING_REFRESHES context walks running with WALK_STATUSES nodes each, the rest
+// create walks waiting with their root node), and as it creates tables its upgrade checks every reference;
+// 0109_scheduled_media_cap walks the held uploads (media_attachments_scheduled) and detaches those past each scheduled
+// status's first four (while it is pending: 6,000 scheduled statuses, TOTAL_LIMIT of each local account, holding four
+// uploads each, and the first 100 holding 1,000 more each, not scaled, so it detaches 100,000). A migration that reads
+// another table must add it here before it is measured. The measured time is the whole upgrade, from before the
+// bookmark to after the verification: Date.now() in workerd moves only between I/O events, so the clock is read across
+// an await on each side.
 
-export const UPGRADE_BUDGET_MS = 20_000;
+export const UPGRADE_BUDGET_MS = 40_000;
 
 // The share of the local quotes whose quoting status is withdrawn (SHAPE.localQuotes): the slowest of 0, 0.5 and 1
 // measured for 0091_live_local_quotes.
@@ -204,6 +207,11 @@ const SHAPE = {
   localPins: 120_000,
   pinningRemotes: 0,
   remotePins: 22,
+  // Scheduled statuses while 0109_scheduled_media_cap is pending, each holding four uploads; and (not scaled) the
+  // first heldPastStatuses holding heldPast more each.
+  scheduled: 6_000,
+  heldPastStatuses: 100,
+  heldPast: 1_000,
 };
 
 it("applies the migration to the benchmark store within the budget", async () => {
@@ -1018,7 +1026,56 @@ it("applies the migration to the benchmark store within the budget", async () =>
         accounts,
       );
     }
+    // While 0109_scheduled_media_cap is pending: SHAPE.scheduled scheduled statuses of the local accounts in turn, each
+    // holding four uploads of its account (ids from 750000000000000000), and the first SHAPE.heldPastStatuses holding
+    // SHAPE.heldPast more each, at positions after the four (ids from 760000000000000000).
+    const capPending = pending("0109_scheduled_media_cap") && has("scheduled_statuses");
+    const scheduledCount = Math.round(SHAPE.scheduled * scale);
+    const heldPastStatuses = Math.min(SHAPE.heldPastStatuses, scheduledCount);
+    if (capPending) {
+      run(
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+				INSERT INTO scheduled_statuses (id, account_id, scheduled_at, params)
+				SELECT CAST(650000000000000000 + i AS TEXT), CAST(100000000000000000 + i % ?2 AS TEXT),
+					strftime('%Y-%m-%dT%H:%M:%fZ', '2026-12-01', '+' || i || ' minutes'), '{"text":"later"}'
+				FROM n WHERE ?1 > 0`,
+        scheduledCount,
+        SHAPE.local,
+      );
+      run(
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 * 4 - 1)
+				INSERT INTO media_attachments (id, account_id, scheduled_status_id, position, type, url, description, meta)
+				SELECT CAST(750000000000000000 + i AS TEXT), CAST(100000000000000000 + (i / 4) % ?2 AS TEXT),
+					CAST(650000000000000000 + i / 4 AS TEXT), i % 4, 'image', 'https://files.bench.example/h/' || i || '.png',
+					'Held ' || i, '{"original":{"width":1200,"height":800},"small":{"width":640,"height":427}}'
+				FROM n WHERE ?1 > 0`,
+        scheduledCount,
+        SHAPE.local,
+      );
+      const past = heldPastStatuses * SHAPE.heldPast;
+      for (let start = 0; start < past; start += batch) {
+        run(
+          `WITH RECURSIVE n(i) AS (SELECT ?1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2 - 1)
+					INSERT INTO media_attachments (id, account_id, scheduled_status_id, position, type, url, description, meta)
+					SELECT CAST(760000000000000000 + i AS TEXT), CAST(100000000000000000 + (i / ?3) % ?4 AS TEXT),
+						CAST(650000000000000000 + i / ?3 AS TEXT), 4 + i % ?3, 'image',
+						'https://files.bench.example/p/' || i || '.png', 'Past ' || i,
+						'{"original":{"width":1200,"height":800},"small":{"width":640,"height":427}}'
+					FROM n`,
+          start,
+          Math.min(start + batch, past),
+          SHAPE.heldPast,
+          SHAPE.local,
+        );
+      }
+    }
     const count = (table: string) => sql.exec<{ n: number }>(`SELECT count(*) AS n FROM ${table}`).one().n;
+    // The held uploads past their scheduled status's first four, which 0109_scheduled_media_cap detaches.
+    const heldPast = () =>
+      count(
+        `(SELECT row_number() OVER (PARTITION BY scheduled_status_id ORDER BY position, id) AS n
+					FROM media_attachments WHERE scheduled_status_id IS NOT NULL) WHERE n > 4`,
+      );
     // The pins past a local account's limit, which 0089_pin_cap deletes.
     const excessPins = () =>
       pinsPending
@@ -1079,6 +1136,9 @@ it("applies the migration to the benchmark store within the budget", async () =>
       excessPins: excessPins(),
       pastDescriptions: descriptionsPending ? pastDescriptions() : 0,
       malformedDescriptions: descriptionsPending ? count(`media_attachments WHERE ${MALFORMED_RUN}`) : 0,
+      scheduled: capPending ? count("scheduled_statuses") : 0,
+      held: capPending ? count("media_attachments WHERE scheduled_status_id IS NOT NULL") : 0,
+      heldPast: capPending ? heldPast() : 0,
       collectionSyncs: handlesPending && has("collection_syncs") ? count("collection_syncs") : 0,
       pendingPins: refreshPending ? count("collection_pins_pending") : 0,
       replyWalks: walksPending ? [count("reply_walks"), count("reply_walk_nodes")] : [0, 0],
@@ -1120,6 +1180,18 @@ it("applies the migration to the benchmark store within the budget", async () =>
           cut: count(`media_attachments WHERE ${MALFORMED_RUN} AND length(CAST(description AS BLOB)) = 40000`),
         }
       : undefined;
+    // 0109_scheduled_media_cap: the uploads still held, those past four, and those it detached (held by none, with a
+    // grace, at position 0, of the seeded ids).
+    const heldLeft = capPending
+      ? [
+          count("media_attachments WHERE scheduled_status_id IS NOT NULL"),
+          heldPast(),
+          count(
+            `media_attachments WHERE scheduled_status_id IS NULL AND gc_at IS NOT NULL AND position = 0
+							AND id >= '750000000000000000' AND id < '770000000000000000'`,
+          ),
+        ]
+      : [0, 0, 0];
     // 0091_live_local_quotes: the backfilled copies, the rows of its index, and the plan of its backfill.
     const liveQuotes = has("quotes", "withdrawn")
       ? {
@@ -1224,6 +1296,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
           jamoLeft,
           pinsLeft,
           descriptions,
+          heldLeft,
           liveQuotes,
           rejectReplays,
           authorFetches,
@@ -1263,6 +1336,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
         jamoLeft,
         pinsLeft,
         descriptions,
+        heldLeft,
         liveQuotes,
         rejectReplays,
         authorFetches,
@@ -1303,6 +1377,12 @@ it("applies the migration to the benchmark store within the budget", async () =>
       SHAPE.local + pinningRemotes,
       [SHAPE.local * 5 + pinningRemotes * 20, 0],
     ]);
+  }
+  // The held uploads past four were there to detach, and the upgrade kept four of each scheduled status.
+  if (seeded.scheduled > 0) {
+    const past = Math.min(SHAPE.heldPastStatuses, seeded.scheduled) * SHAPE.heldPast;
+    expect([seeded.held, seeded.heldPast]).toEqual([seeded.scheduled * 4 + past, past]);
+    expect(measured.heldLeft).toEqual([seeded.scheduled * 4, 0, past]);
   }
   // The local quotes were there to copy and index, and the backfill read each once, its status by primary key.
   if (applied.includes("0091_live_local_quotes")) {

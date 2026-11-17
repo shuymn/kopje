@@ -1,10 +1,17 @@
 import { STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
-import { type Account, presentAccountsWithin, resolveAccountId, type SearchInput, searchAccountIds } from "./accounts";
+import {
+  type Account,
+  presentAccountsWithin,
+  presentFor,
+  resolveAccountId,
+  searchAccountIds,
+  type SearchInput,
+} from "./accounts";
 import { admit, ANSWER_BYTES, jsonBytes } from "./answer-budget";
 import { listableSql, statusReads } from "./audience";
 import { type UserContext, userReadOperation } from "./auth";
-import type { Collection } from "./collections";
+import type { Collection } from "./collection-presenter";
 import { statusQueryTerms } from "./search-text";
 import { tagNameSql } from "./status-bounds";
 import { presentation, presentStatusesWithin, type Status } from "./status-presenter";
@@ -72,7 +79,13 @@ export const search = userReadOperation<SearchRequest, SearchResults>((db, input
   let left = ANSWER_BYTES - SEARCH_FRAME_BYTES;
   let leading = true;
   const accounts = input.types.includes("accounts")
-    ? presentAccountsWithin(db, searchAccountIds(db, input, context.accountId), input.present, left, leading)
+    ? presentAccountsWithin(
+        db,
+        searchAccountIds(db, input, context.accountId),
+        presentFor(input.present, context.accountId),
+        left,
+        leading,
+      )
     : { items: [], bytes: 0 };
   left -= accounts.bytes;
   leading &&= accounts.items.length === 0;

@@ -56,13 +56,25 @@ export function blockedDomain(raw: string): string | null {
   return normalizeDomain(raw.trim().replace(/\/$/, "").replace(/\.$/, ""));
 }
 
-// The domain an actor id's host gives an account, as Mastodon takes it (Addressable::URI#normalized_host, without the
-// port): the hostname, lowercase and punycode, without a trailing dot or a port. The id itself is kept whole for
-// origin checks. A host the normalizer refuses (the loader refuses such hosts anyway) is used as the URL parser reads
-// it, without its trailing dot.
+// The domain an actor id's host gives an account, and the key every domain policy compares a URL's host by: the
+// hostname, lowercase and punycode, without the port and without every trailing dot, the key the SQL side reads too
+// (audience.ts uriHostSql). Mastodon's Addressable::URI#normalized_host drops a single trailing dot only
+// (docs/mastodon-deviations.md). The id itself is kept whole for origin checks. A host the normalizer refuses (the
+// loader refuses such hosts anyway) is used as the URL parser reads it, without its trailing dots.
 export function hostDomain(uri: string): string {
-  const host = new URL(uri).hostname.replace(/\.$/, "");
+  const host = withoutTrailingDots(new URL(uri).hostname);
   return normalizeDomain(host) ?? host;
+}
+
+// `host` without its trailing dots, in one backward scan (RES-2): a regex such as /\.+$/ retries at each dot of an
+// interior run, quadratic in a run as long as an inbound actor id (INBOX_BODY_LIMIT), which the inbox gate reads before
+// verification (instance-domain-blocks.ts actorDomainBlocked).
+function withoutTrailingDots(host: string): string {
+  let end = host.length;
+  while (end > 0 && host.charCodeAt(end - 1) === 0x2e) {
+    end--;
+  }
+  return host.slice(0, end);
 }
 
 // An address: user@domain, @user@domain or acct:user@domain, split into its parts first and its domain then

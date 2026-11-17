@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { threadsOf } from "../cli/lib/cutover/verify-expect.js";
+import { hostDomain } from "../src/platform/domain-name.js";
 import { isStorableActorId, MAX_LOCAL_ADDRESSED } from "../src/platform/identity-bounds.js";
 import {
   convert as convertIn,
@@ -741,13 +742,32 @@ describe("remote actors that share an address", () => {
   });
 });
 
-// The read-only query docs/cutover.md gives operators for remote domains with a port or a trailing dot, as written there.
+// The read-only query docs/cutover.md gives operators for remote domains with a port or trailing dots, as written there.
 function convertedDomainsQuery(): string {
   const doc = readFileSync(fileURLToPath(new URL("../docs/cutover.md", import.meta.url)), "utf8");
   const queries = [...doc.matchAll(/^kopje-admin sql "(SELECT id, uri, domain FROM accounts [^"]*)"$/gm)];
   expect(queries).toHaveLength(1);
   return queries[0]?.[1] ?? "";
 }
+
+// RES-2: hostDomain reads an id's host without its trailing dots in one scan. The converter reads a legacy actor id's
+// host before its identity bound (convert.js), and the inbox gate an inbound actor id as long as the body
+// (INBOX_BODY_LIMIT, test/host-trailing-dots.test.ts). A run of dots followed by another character is the quadratic case
+// of a regex such as /\.+$/ (about 10 s at 160,000 in Node); the smaller size fails first under it.
+describe("the host key of an id whose host is a run of dots", () => {
+  // INBOX_BODY_LIMIT (src/federation/spool.ts), which this project's sources cannot import.
+  const INBOX_BODY_BYTES = 1024 * 1024;
+
+  it("is read within a generous time at the size of an inbound activity", () => {
+    for (const size of [100_000, INBOX_BODY_BYTES]) {
+      const run = ".".repeat(size);
+      const started = performance.now();
+      const keys = [hostDomain(`https://a${run}b.example/u`), hostDomain(`https://a.example${run}/u`)];
+      expect(performance.now() - started, `${size}`).toBeLessThan(1000);
+      expect(keys).toEqual([`a${run}b.example`, "a.example"]);
+    }
+  });
+});
 
 describe("remote actors whose ids spell the host otherwise", () => {
   it("store the domain the Worker gives the id's host, address and search text with it, and verify", async () => {
@@ -758,7 +778,7 @@ describe("remote actors whose ids spell the host otherwise", () => {
     // The independent check works the domains and the shared address out on its own.
     const { ok: verified, categories } = await verifyWith(exportPath, dumpPath);
     expect(failing(categories)).toEqual([]);
-    expect(categories.handle_refreshes?.expected).toBe(1);
+    expect(categories.handle_refreshes?.expected).toBe(2);
     expect(verified).toBe(true);
     const db = await opened(dumpPath);
     const accounts = db
@@ -768,8 +788,10 @@ describe("remote actors whose ids spell the host otherwise", () => {
 				WHERE display_name LIKE 'Spelled %' ORDER BY a.rowid`,
       )
       .all();
-    // The port, the capitals and the trailing dot are dropped and a Unicode host is punycode, as hostDomain gives
-    // them; h.example:8443's a and h.example's a are then one address, so the later is invalidated and refreshed.
+    // The port, the capitals and every trailing dot are dropped and a Unicode host is punycode, as hostDomain gives
+    // them; h.example:8443's a and h.example's a are then one address, and so are example.com.'s c and example.com..'s
+    // c, so the later of each is invalidated (its username the reserved '! <id>') and refreshed. The ids keep their
+    // spelling.
     expect(accounts).toEqual([
       {
         uri: "https://Example.COM:8443/users/a",
@@ -806,22 +828,66 @@ describe("remote actors whose ids spell the host otherwise", () => {
         search_text: expect.any(String),
         refresh: 1,
       },
+      {
+        uri: "https://example.com../u/c",
+        domain: "example.com",
+        invalidated: 1,
+        search_text: expect.any(String),
+        refresh: 1,
+      },
+      {
+        uri: "https://example.com.../u/d",
+        domain: "example.com",
+        invalidated: 0,
+        search_text: "spelled 6 d@example.com",
+        refresh: null,
+      },
     ]);
-    // The operator's query for domains an earlier converter kept (docs/cutover.md, Verification) finds none here, and
-    // exactly the rows with a port or a trailing dot once each spelled row holds the domain the old line wrote.
+    // The operator's query for domains an earlier converter kept (docs/cutover.md, Verification) finds none here. Once
+    // each spelled row holds the domain an earlier converter wrote, it finds exactly the rows with a port or trailing
+    // dots: the id's host whole (before #1725), or the host without one trailing dot (before #1734); a domain confirmed
+    // on another host is not listed.
     const listed = () =>
       db
         .prepare(convertedDomainsQuery())
         .all()
-        .map((row) => (row as { uri: string }).uri);
+        .map((row) => (row as { uri: string }).uri)
+        .toSorted();
     expect(listed()).toEqual([]);
-    for (const { uri } of accounts as { uri: string }[]) {
-      db.prepare("UPDATE accounts SET domain = ? WHERE uri = ?").run(new URL(uri).host.toLowerCase(), uri);
-    }
-    expect(listed().toSorted()).toEqual(
-      ["https://Example.COM:8443/users/a", "https://example.com./u/c", "https://h.example:8443/u/a"].toSorted(),
+    const earlier = {
+      whole: (uri: string) => new URL(uri).host.toLowerCase(),
+      // The URL parser's hostname is already lowercase and punycode.
+      oneDot: (uri: string) => new URL(uri).hostname.replace(/\.$/, ""),
+    };
+    const lists = Object.fromEntries(
+      Object.entries(earlier).map(([name, domainOf]) => {
+        for (const { uri } of accounts as { uri: string }[]) {
+          db.prepare("UPDATE accounts SET domain = ? WHERE uri = ?").run(domainOf(uri), uri);
+        }
+        return [name, listed()];
+      }),
     );
+    expect(lists).toEqual({
+      whole: [
+        "https://Example.COM:8443/users/a",
+        "https://example.com.../u/d",
+        "https://example.com../u/c",
+        "https://example.com./u/c",
+        "https://h.example:8443/u/a",
+      ],
+      oneDot: ["https://example.com.../u/d", "https://example.com../u/c"],
+    });
+    db.prepare("UPDATE accounts SET domain = 'nice.example' WHERE uri = 'https://example.com.../u/d'").run();
+    expect(listed()).toEqual(["https://example.com../u/c"]);
     db.close();
+    // A stored domain that keeps all but one of the id's trailing dots, as the converter wrote it before #1734, is
+    // reported: the check reads the stored column as it is.
+    const dotted = await verifyWith(
+      exportPath,
+      await tampered(dumpPath, "UPDATE accounts SET domain = 'example.com..' WHERE uri = 'https://example.com.../u/d'"),
+    );
+    expect(failing(dotted.categories)).toEqual(["accounts"]);
+    expect(dotted.ok).toBe(false);
     // A stored domain that keeps the id's port, as the converter once wrote it, is reported.
     const ported = await verifyWith(
       exportPath,
