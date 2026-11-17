@@ -52,8 +52,9 @@ it with its own (both are the same script, so after the deploy both run the new 
   refuses the call as `version-mismatch`: the Mastodon API and the web answer 503 for that moment, and activities that
   other servers deliver to the inbox are spooled and replayed later, so none is lost.
 - **On the first call to the new code**, the Store checks its schema against the migrations the new version ships. If
-  some are not applied, it schedules the upgrade at once and stays readonly until the upgrade is done: reads and
-  sign-ins work, writes answer 503, and the inbox spools.
+  some are not applied, it schedules the upgrade at once. Until its migrations are applied, the Store refuses every
+  request, reads and sign-ins included (`schema-pending`): the Mastodon API and the web answer 503, the inbox spools,
+  and the actor documents, WebFinger and NodeInfo answer from the last snapshot.
 - **The upgrade** runs inside the Store, in three phases:
   1. it records the Store's current point-in-time-recovery bookmark (`lastBookmark` in `kopje-admin health`), before
      it changes anything;
@@ -64,15 +65,22 @@ it with its own (both are the same script, so after the deploy both run the new 
      upgrades, retries, verification-only runs and upgrades without that guarantee scan the whole Store; on a large
      Store this dominates upgrade time.
 
-  An upgrade that is interrupted resumes from where it stopped. An upgrade waits for a backup dump or an import that
-  is running, and starts when it ends.
+  The second and third phases run in one invocation of the Store: a request that arrives meanwhile waits for them to
+  end, and never meets a partly applied schema. An upgrade that is interrupted resumes from where it stopped. An
+  upgrade waits for a backup dump or an import that is running, and starts when it ends.
 
-- **If a phase fails**, the Store stays readonly with a hold (`bookmark-failed`, `upgrade-failed` or `verify-failed`)
-  and logs the reason (`kopje.store.upgrade.failed`; [observability.md](observability.md) says where to find it). The
-  hold stays until the next deployment, or until you run `kopje-admin upgrade retry`. Nothing is lost while it holds:
-  the inbox keeps spooling. Fix the cause (or roll back, below), then retry or deploy.
+- **If a phase fails**, the Store holds (`bookmark-failed`, `upgrade-failed` or `verify-failed`) and logs the reason
+  (`kopje.store.upgrade.failed`; [observability.md](observability.md) says where to find it). While a migration
+  remains unapplied (`bookmark-failed`, and `upgrade-failed` when a migration failed), it refuses every request
+  (`schema-pending`); once all are applied (`verify-failed`, and `upgrade-failed` when the error came after the last
+  one was recorded), it is readonly: reads and sign-ins work, and writes answer 503. `schema.status` in
+  `kopje-admin health` tells which. The hold stays until the next deployment, or until you run
+  `kopje-admin upgrade retry`. Nothing is lost while it holds: the inbox keeps spooling. Fix the cause (or roll back,
+  below), then retry or deploy.
 - **If the Store's schema has migrations the code does not know** (`schema-diverged`), for example after a rollback
-  across a schema change, the Store stays readonly until the code and the schema match again.
+  across a schema change, the Store refuses every request until the code and the schema match again.
+
+[What the Store serves in each phase](#what-the-store-serves-in-each-phase), below, puts these together.
 
 Check the result with the admin CLI. [setup.md](setup.md#running-the-admin-cli) says how to run it: in the instance's
 repository, `kopje-admin <command>` below is `npm run admin -- <command>`.
@@ -90,6 +98,37 @@ rollback across this upgrade restores, and the next upgrade replaces it.
 Some migrations rewrite stored values and keep no copy, such as `0048_stored_bounds` and `0049_instance_bounds`; the
 release notes ([CHANGELOG.md](../CHANGELOG.md)) say which values each rewrites. A restore to this bookmark is how to
 recover such a value.
+
+### What the Store serves in each phase
+
+The phases of an upgrade in order, with what the instance answers in each and what `kopje-admin health` shows then.
+
+| Phase                                            | Reads  | Sign-in | Writes | Refused as            | Inbox     | Actor, WebFinger, NodeInfo | `schema.status` | `readonly` | `upgrading` | `hold`            |
+| ------------------------------------------------ | ------ | ------- | ------ | --------------------- | --------- | -------------------------- | --------------- | ---------- | ----------- | ----------------- |
+| Migrations pending, none applied yet             | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `pending`       | `true`     | `false`     | `null`            |
+| Applying and verifying                           | wait   | wait    | wait   | —                     | wait      | wait                       | wait            | wait       | wait        | wait              |
+| Stopped while applying, until the next attempt   | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `pending`       | `true`     | `true`      | `null`            |
+| Stopped before verifying, until the next attempt | served | served  | 503    | `upgrade-in-progress` | spooled   | served                     | `current`       | `true`     | `true`      | `null`            |
+| Held: `bookmark-failed`                          | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `pending`       | `true`     | `false`     | `bookmark-failed` |
+| Held: `upgrade-failed`, a migration unapplied    | 503    | 503     | 503    | `schema-pending`      | spooled   | snapshot                   | `pending`       | `true`     | `true`      | `upgrade-failed`  |
+| Held: `upgrade-failed`, every migration applied  | served | served  | 503    | `upgrade-failed`      | spooled   | served                     | `current`       | `true`     | `true`      | `upgrade-failed`  |
+| Held: `verify-failed`                            | served | served  | 503    | `verify-failed`       | spooled   | served                     | `current`       | `true`     | `true`      | `verify-failed`   |
+| Schema diverged                                  | 503    | 503     | 503    | `schema-diverged`     | spooled   | snapshot                   | `diverged`      | `true`     | `false`     | `null`            |
+| Upgraded                                         | served | served  | served | —                     | processed | served                     | `current`       | `false`    | `false`     | `null`            |
+
+- **503** is the answer of the Mastodon API and the web pages. Writes include deleting media, and the media rebuild
+  is refused wherever writes are.
+- **Refused as** is the `reason` that `kopje.store.unavailable` logs ([observability.md](observability.md)).
+- **Spooled**: the inbox keeps the activity and replays it once the Store processes again, so none is lost.
+- **Snapshot**: actor documents, WebFinger and NodeInfo answer from the last good answer saved for the same request,
+  and 503 where none was saved.
+- **Wait**: the Store applies and verifies in one invocation, and a request that arrives meanwhile waits for it to
+  end, `kopje-admin health` included, and is then answered as the row the Store ends in says.
+- **`readonly: true`** means that the Store refuses writes. While `schema.status` is not `current`, it refuses reads
+  and sign-ins too.
+
+The table is the Store's own state. Maintenance the operator turns on (`MAINTENANCE`), a backup dump and an import
+refuse more on top of it ([backup.md](backup.md)).
 
 ## Rolling back
 
@@ -130,7 +169,7 @@ went wrong. If the upgrade succeeded and the new version only has a bug, prefer 
 You need the bookmark recorded before the upgrade (`lastBookmark`). Durable Objects keep point-in-time recovery for 30
 days, so the bookmark must be younger than that.
 
-1. **Roll back the code**, as above. The Store now reports `schema-diverged` and stays readonly.
+1. **Roll back the code**, as above. The Store now reports `schema-diverged` and refuses every request.
 2. **Set `MAINTENANCE=full`** on the Worker (dashboard: Settings, Variables and Secrets; as a plain-text variable).
    Set it after the rollback: a rollback restores the variables the old version had. The restore is refused without
    it, because it rewinds every flag inside the Store; the variable holds the instance from outside meanwhile.

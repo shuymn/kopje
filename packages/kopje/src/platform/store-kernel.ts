@@ -46,8 +46,9 @@ export type Migration = {
 //             through in readonly maintenance and while a verified import is unpublished; nothing else does
 export type OperationKind = "read" | "session" | "write" | "media-delete" | "media-rebuild";
 
-// The Store's own maintenance state is at most readonly (full is set only through the env). Readonly admits reads and
-// sessions and refuses writes. A held or upgrading Store refuses the media rebuild too.
+// What a held or upgrading Store whose schema is current admits: reads and sessions, and no write, the media rebuild
+// included. A schema that is not current admits nothing (refusalOf; docs/upgrade.md, "What the Store serves in each
+// phase").
 const READONLY_ADMITS: Record<OperationKind, boolean> = {
   read: true,
   session: true,
@@ -100,7 +101,8 @@ export type SchemaState =
 type Hold = { reason: MaintenanceReason; build: string; detail: string; at: number };
 
 // Persisted before the first file is applied and cleared only in the transaction of a successful verification. Any
-// isolate that finds it stays readonly and re-runs the upgrade, which resumes and verifies.
+// isolate that finds it refuses every operation while files remain unapplied and is readonly once they are applied
+// (refusalOf), and re-runs the upgrade, which resumes and verifies.
 type UpgradeMarker = { build: string; bookmark: string; at: number };
 
 type KernelState = { schema: SchemaState; hold: Hold | null; upgrading: UpgradeMarker | null };
@@ -398,13 +400,15 @@ export class StoreKernel {
 
   // Brings the schema up to date and verifies it. Called from the alarm; never from the constructor. Once the
   // starting state is loaded, a failure in any phase (bookmark, apply, verify) becomes a result and leaves the
-  // Store readonly; nothing throws past here.
+  // Store held: refusing every operation while files remain unapplied, readonly once they are applied (refusalOf);
+  // nothing throws past here. The files are applied and verified without an await, so no other request runs between
+  // them.
   async upgrade(): Promise<UpgradeResult> {
     const expected = await this.#expectedMigrations();
     const state = await this.#currentState();
     const { schema, hold } = state;
     if (hold !== null) {
-      // A failed upgrade of this build stays readonly until a new deployment or the DB is restored.
+      // A failed upgrade of this build stays held until a new deployment or the DB is restored.
       return { ok: false, bookmark: null, reason: hold.reason, detail: "held" };
     }
     if (schema.status === "diverged") {
@@ -486,7 +490,7 @@ export class StoreKernel {
         return this.#defer(error);
       }
       // An error does not prove a rollback: a timed-out transaction can still be durable. Report what is
-      // actually recorded; #fail re-reads the durable state and the Store stays readonly either way.
+      // actually recorded; #fail re-reads the durable state and the Store stays held either way.
       const failed = current;
       const detail =
         failed === null
