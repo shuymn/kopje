@@ -341,6 +341,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "addressedInboxSql",
   // A follower's or voter's inbox, an inbox column within its own byte bound (domain/audience.ts).
   "reachInboxSql",
+  // Whether a staged inbox is within that bound: a predicate (domain/audience.ts).
+  "reachInboxWithinSql",
   // Attribution domains within their read bound, or '[]' (platform/stored-bounds.ts): no bounded column.
   "attributionDomainsSql",
   "availableJoinedSql",

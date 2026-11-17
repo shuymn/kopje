@@ -306,15 +306,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "statusReads' hoisted row hp (src/domain/audience.ts) holds availableSql's coverage of the status's author and its original's once each, and SQLite's flattening repeats each at every use in the branches, so the plan prints SUSPEND_BLOCKS_SQL's one-entry read of the partial index instance_domain_blocks_suspend (migration 0046_instance_domain_blocks) more often than the text holds it and the fragment allowance (test/plan-audit-allowances.ts) does not stand for it; ps is ruledSql's recursive CTE over the author's domain suffixes (each key walked only within DNS_NAME_UTF8_BYTES (1,012) bytes; test/domain-suffix-walk.test.ts), which the classifier cannot bind where the flattened column is used, the fragment's `accounts ps` sharing its name; the copies keep pk and ps co-routines (NOT MATERIALIZED), as each of main's occurrences ran them",
   },
   {
-    id: "faf0592983e05942",
-    scans: ["accounts: SCAN a"],
-    site: "src/domain/audience.ts#reachFollowers < src/domain/suspension.ts#reachRound < src/domain/suspension.ts#<anonymous> in moderationRound < src/domain/job-attempts.ts#<anonymous> in isolated",
-    disposition: "background",
-    reason:
-      'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
-  },
-  {
-    id: "1f340ace00431562",
+    id: "d674e9521f137b3a",
     scans: ["accounts: SCAN a"],
     site: "src/domain/audience.ts#reachFollowing < src/domain/suspension.ts#reachRound < src/domain/suspension.ts#<anonymous> in moderationRound < src/domain/job-attempts.ts#<anonymous> in isolated",
     disposition: "background",
@@ -322,7 +314,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (job-attempts.ts#<anonymous> in isolated); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "bbbe8114cc0f87b3",
+    id: "793624e56387561b",
     scans: ["accounts: SCAN a"],
     site: "src/domain/audience.ts#reachMentioned < src/domain/suspension.ts#mentionsRound < src/domain/suspension.ts#reachRound < src/domain/suspension.ts#<anonymous> in moderationRound < src/domain/job-attempts.ts#<anonymous> in isolated",
     disposition: "background",

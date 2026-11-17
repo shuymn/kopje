@@ -2,20 +2,26 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
+import { REACH_INBOX_BYTES, reachFollowerInboxes } from "../src/domain/audience";
 import { REPORT_ROUND } from "../src/domain/moderation-bounds";
 import { writeOperation } from "../src/domain/operation";
 import { sweepStaleVotes } from "../src/domain/polls";
 import { remoteModerationRound } from "../src/domain/remote-suspension";
 import { resolveSuspensionReports } from "../src/domain/reports";
-import { moderationRound } from "../src/domain/suspension";
+import { moderationRound, REACH_ROUND } from "../src/domain/suspension";
+import type { StoreStub } from "../src/platform/store-client";
 import { sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { migratedStore } from "./helpers";
+import { expectBeside, expectGrowth, PlanWitness, type Run, STATISTICS, type Statistics } from "./plan-witness";
 import { observedSql, plannedRun, scansOf, staleStatistics } from "./read-helpers";
 import { act, world, type World } from "./remote-suspension-helpers";
+import { normalized } from "./sql-text";
 import { community, remoteAccount } from "./status-helpers";
 
 // RES-7: the cron's and the moderation jobs' bounded writes seek what they write by key, with statistics taken before
-// the Store grew: the stale-vote sweep (polls.ts) and a suspension's report resolution (reports.ts).
+// the Store grew: the stale-vote sweep (polls.ts), a suspension's report resolution (reports.ts), its followers round
+// and its staged rows (suspension.ts).
 
 const AT = new Date(NOW).toISOString();
 
@@ -223,4 +229,256 @@ describe("report ids past 2^53 through both suspension jobs (VIS-29)", () => {
     expect(await run(w, (db, after) => remoteModerationRound(db, NOW, after))).toEqual(expected.map((r) => r.id));
     expect(await resolved(w, carol)).toEqual(expected);
   }, 60_000);
+});
+
+// RES-7 witness of a suspension's followers round beside main's statement (#1724, test/plan-witness.ts): the round
+// reads its page through reachFollowerInboxes, which judges each inbox in SQL (audience.ts reachInboxSql), where main's
+// reachFollowers read the inbox whole, by an unpinned join. main's statement is its literal baseline, by its audited
+// identity, and returns main's rows once both sides are read as the round reads them: each follow's id (the cursor) and
+// its inbox, none for a local follower (main's domain) or an inbox outside the rule (main's value, the rewrite's NULL).
+// Each page reads no more rows than main's under the plan audit's singleton statistics and after ANALYZE, and stays
+// flat as each population grows apart, each counted by its own predicate: alice's own followers (the page's key, read
+// a LIMIT at a time), the followers of the accounts on either side of her id, and remote accounts that follow no one.
+// The world holds import-shaped followers beside 4,096-byte inboxes: a local follower, inboxes outside the rule (past
+// it, a NUL inside, a BLOB, empty, none, a shared inbox past it beside a valid personal one), two sharing one inbox,
+// and a pending request. No other statement may run.
+describe("a suspension's followers round beside main's (#1724, RES-7)", () => {
+  const ALICE = "600000000000000001";
+  const LOW = "500000000000000001";
+  const HIGH = "700000000000000001";
+  const PAGE = 10;
+  const V = "COALESCE(NULLIF(a.shared_inbox_url, ''), a.inbox_url)";
+  const MAIN = `SELECT CAST(f.id AS TEXT) AS id, a.domain, ${V} AS inbox FROM main.follows f INDEXED BY follows_target
+		JOIN main.accounts a ON a.id = f.account_id
+		WHERE f.target_account_id = ?1 AND f.state = 'accepted' AND f.id > CAST(?2 AS INTEGER) AND f.id <= CAST(?3 AS INTEGER)
+		ORDER BY f.id LIMIT ?4`;
+  const MINE = `SELECT CAST(w.id AS TEXT) AS id, CASE WHEN a.domain IS NOT NULL AND typeof(${V}) = 'text' AND length(CAST(${V} AS BLOB)) BETWEEN 1 AND ?5 AND instr(CAST(${V} AS BLOB), x'00') = 0 THEN ${V} END AS inbox FROM (SELECT f.id, f.account_id FROM main.follows f INDEXED BY follows_target WHERE f.target_account_id = ?1 AND f.state = 'accepted' AND f.id > CAST(?2 AS INTEGER) AND f.id <= CAST(?3 AS INTEGER) ORDER BY f.id LIMIT ?4) w LEFT JOIN main.accounts a INDEXED BY sqlite_autoindex_accounts_1 ON a.id = w.account_id ORDER BY w.id`;
+  const ID = "faf0592983e05942";
+  // An inbox the round stages: TEXT of 1 to REACH_INBOX_BYTES UTF-8 bytes without NUL (the world holds no malformed
+  // UTF-8, whose decoded length is not its raw length; the suspension witness in admin-suspension.test.ts holds one).
+  const admitted = (inbox: SqlStorageValue) =>
+    typeof inbox === "string" &&
+    inbox.length > 0 &&
+    !inbox.includes("\0") &&
+    new TextEncoder().encode(inbox).length <= REACH_INBOX_BYTES;
+  const WITNESS = new PlanWitness(
+    {
+      [ID]: {
+        sql: MAIN,
+        text: normalized(MINE),
+        params: (mine) => mine.slice(0, 4),
+        result: {
+          main: (rows) =>
+            rows.map((row) => ({ id: row.id, inbox: row.domain !== null && admitted(row.inbox!) ? row.inbox : null })),
+          mine: (rows) => rows,
+        },
+      },
+    },
+    undefined,
+    [],
+  );
+
+  type Shape = { own: number; others: number; idle: number };
+  const BASE: Shape = { own: 40, others: 40, idle: 40 };
+  const POPULATIONS = {
+    own: `SELECT count(*) AS n FROM follows WHERE target_account_id = '${ALICE}'`,
+    others: `SELECT count(*) AS n FROM follows WHERE target_account_id IN ('${LOW}', '${HIGH}')`,
+    idle: "SELECT count(*) AS n FROM accounts WHERE id GLOB '64*'",
+  };
+
+  function local(sql: SqlStorage, id: string, name: string) {
+    sql.exec(
+      "INSERT INTO accounts (id, uri, username) VALUES (?, ?, ?)",
+      id,
+      `https://kopje.test/ap/users/${name}`,
+      name,
+    );
+    sql.exec(
+      "INSERT INTO local_accounts (account_id, email, privkey, privkey_salt, pubkey) VALUES (?, ?, X'00', X'00', 'k')",
+      id,
+      `${name}@example.com`,
+    );
+  }
+
+  function remote(sql: SqlStorage, id: bigint, host: string, shared: SqlStorageValue) {
+    sql.exec(
+      `INSERT INTO accounts (id, uri, username, domain, inbox_url, shared_inbox_url)
+			VALUES (?1, 'https://' || ?2 || '/users/u' || ?1, 'u' || ?1, ?2, 'https://' || ?2 || '/users/u' || ?1 || '/inbox', ?3)`,
+      String(id),
+      host,
+      shared,
+    );
+    return String(id);
+  }
+
+  const follow = (sql: SqlStorage, account: string, target: string, state = "accepted") =>
+    sql.exec(
+      "INSERT INTO follows (account_id, target_account_id, state, created_at) VALUES (?, ?, ?, ?)",
+      account,
+      target,
+      state,
+      AT,
+    );
+  const sized = (host: string, bytes: number) => `https://${host}/` + "a".repeat(bytes - `https://${host}/`.length);
+
+  // The world of `shape`; the page's cursors: alice's highest follow id (the bound) and her fifth.
+  function shaped(sql: SqlStorage, shape: Shape): { bound: string; after: string } {
+    local(sql, LOW, "low");
+    local(sql, ALICE, "alice");
+    local(sql, HIGH, "high");
+    local(sql, "600000000000000002", "bob");
+    follow(sql, "600000000000000002", ALICE);
+    const max = sized("max.example", REACH_INBOX_BYTES);
+    for (let i = 0; i < 6; i++) {
+      follow(sql, remote(sql, 610000000000000000n + BigInt(i), `m${i}.example`, max), ALICE);
+    }
+    const outside: [string, SqlStorageValue[]][] = [
+      ["shared_inbox_url = ?", [sized("over.example", REACH_INBOX_BYTES + 1)]],
+      ["shared_inbox_url = ? || char(0) || 'box'", ["https://nul.example/in"]],
+      ["shared_inbox_url = CAST(? AS BLOB)", ["https://blob.example/inbox"]],
+      ["shared_inbox_url = '', inbox_url = ''", []],
+      ["shared_inbox_url = NULL, inbox_url = NULL", []],
+    ];
+    for (const [i, [assign, params]] of outside.entries()) {
+      const id = remote(sql, 611000000000000000n + BigInt(i), `x${i}.example`, null);
+      sql.exec(`UPDATE accounts SET ${assign} WHERE id = ?`, ...params, id);
+      follow(sql, id, ALICE);
+    }
+    follow(sql, remote(sql, 612000000000000000n, "p.example", null), ALICE, "pending");
+    for (let i = 0; i < shape.own; i++) {
+      follow(
+        sql,
+        remote(sql, 620000000000000000n + BigInt(i), `f${i % 7}.example`, `https://f${i % 7}.example/inbox`),
+        ALICE,
+      );
+    }
+    for (let i = 0; i < shape.others; i++) {
+      const id = remote(sql, 630000000000000000n + BigInt(i), `o${i % 7}.example`, `https://o${i % 7}.example/inbox`);
+      follow(sql, id, i % 2 === 0 ? LOW : HIGH);
+    }
+    for (let i = 0; i < shape.idle; i++) {
+      remote(sql, 640000000000000000n + BigInt(i), `i${i % 7}.example`, null);
+    }
+    const ids = sql
+      .exec<{ key: string }>(
+        "SELECT CAST(id AS TEXT) AS key FROM follows WHERE target_account_id = ? ORDER BY follows.id",
+        ALICE,
+      )
+      .toArray()
+      .map((row) => row.key);
+    return { bound: ids.at(-1)!, after: ids[4]! };
+  }
+
+  // The flow: a page from the start, which holds the import-shaped followers, and one from alice's fifth follow.
+  const EXPECTED = [ID, ID];
+  const flow = (sql: SqlStorage, cursors: { bound: string; after: string }) => {
+    const db = new Db(sql);
+    return [
+      reachFollowerInboxes(db, ALICE, "0", cursors.bound, PAGE, REACH_INBOX_BYTES),
+      reachFollowerInboxes(db, ALICE, cursors.after, cursors.bound, PAGE, REACH_INBOX_BYTES),
+    ];
+  };
+
+  async function measured(statistics: Statistics, shape: Shape): Promise<Run> {
+    const store = await migratedStore();
+    return runInDurableObject(store, (_instance, state) => {
+      const cursors = shaped(state.storage.sql, shape);
+      return WITNESS.measure(state, {
+        statistics,
+        expected: EXPECTED,
+        populations: POPULATIONS,
+        run: (sql) => flow(sql, cursors),
+      });
+    });
+  }
+
+  it("is main's audited statement", async () => {
+    await WITNESS.expectAudited();
+  });
+
+  it.each(STATISTICS)("%s statistics: main's rows, read in no more rows", async (statistics) => {
+    const run = await measured(statistics, BASE);
+    expectBeside(statistics, run, { singletonRows: true });
+    // The first page holds every import-shaped follower: only the 4,096-byte inboxes are read.
+    const [first] = run.result as { id: string; inbox: string | null }[][];
+    expect(first!.map((row) => row.inbox?.length ?? null)).toEqual([
+      null,
+      ...Array.from({ length: 6 }, () => REACH_INBOX_BYTES),
+      null,
+      null,
+      null,
+    ]);
+  });
+
+  it.each(
+    STATISTICS.flatMap((statistics) => (Object.keys(BASE) as (keyof Shape)[]).map((key) => [statistics, key] as const)),
+  )("%s statistics: rows read stay flat as %s grow", async (statistics, key) => {
+    const base = await measured(statistics, BASE);
+    const grown = await measured(statistics, { ...BASE, [key]: 400 });
+    expectBeside(statistics, grown, { singletonRows: true });
+    expectGrowth(base, grown, { populations: [key], perSide: {} });
+  });
+});
+
+// RES-7 witness of a write or end round's staged rows (#1724, suspension.ts consumeStaged): the read and the delete
+// walk moderation_reach's key (job_id, inbox) from the job's own id, with no sort and no scan, and read as many rows
+// with the job's own staged rows grown tenfold and another job's grown, statistics taken before either grew. The read
+// reads its REACH_ROUND rows; the delete walks REACH_ROUND entries to its boundary (the OFFSET subquery), then reads
+// the REACH_ROUND rows it deletes twice (SQLite collects the keys of a delete whose WHERE reads its own table, then
+// deletes each by key) and the entry past them.
+describe("a write round's staged rows with stale statistics (#1724, RES-7)", () => {
+  const stageRows = (store: StoreStub, job: string, from: number, count: number) =>
+    sql(
+      store,
+      `WITH RECURSIVE n(i) AS (SELECT ?2 UNION ALL SELECT i + 1 FROM n WHERE i < ?2 + ?3 - 1)
+			INSERT INTO moderation_reach (job_id, inbox)
+			SELECT CAST(?1 AS INTEGER), 'https://s' || printf('%07d', i) || '.example/inbox' FROM n`,
+      job,
+      from,
+      count,
+    );
+
+  it("seeks the job's own rows by key, as many with its own and another job's rows grown", async () => {
+    const w = await world();
+    for (const account of [w.alice.id, w.bob.id]) {
+      expect((await act(w, account, { type: "suspend" })).status).toBe(200);
+    }
+    const jobs = await sql<{ id: string }>(
+      w.h.store,
+      "SELECT CAST(id AS TEXT) AS id FROM moderation_jobs WHERE kind = 'suspension' ORDER BY id",
+    );
+    const [own, other] = jobs.map((job) => job.id) as [string, string];
+    await sql(w.h.store, "UPDATE moderation_jobs SET phase = 'write', state = '{}' WHERE kind = 'suspension'");
+    await stageRows(w.h.store, own, 0, 3);
+    await stageRows(w.h.store, other, 0, 3);
+    const round = writeOperation<{ after: string }, unknown>((db, { after }) => moderationRound(db, NOW, after));
+    const after = String(BigInt(own) - 1n);
+    const { before, after: grown } = await staleStatistics(w.h, {
+      settle: async () => {
+        await stageRows(w.h.store, own, 3, 600);
+        await stageRows(w.h.store, other, 3, 3_000);
+      },
+      capture: () => plannedRun(w.h, /FROM moderation_reach/, round, { after }, true),
+      grow: async () => {
+        await stageRows(w.h.store, own, 1_000, 6_000);
+        await stageRows(w.h.store, other, 10_000, 30_000);
+      },
+    });
+    for (const { plans } of [before, grown]) {
+      expect(plans.map((p) => p.query.trimStart().split(/\s/)[0])).toEqual(["SELECT", "DELETE"]);
+      for (const { query, plan } of plans) {
+        expect(scansOf(plan, ["moderation_reach"]), query).toEqual([]);
+        expect(plan.join(" | "), query).not.toContain("TEMP B-TREE");
+        expect(plan.join(" | "), query).toContain("SEARCH moderation_reach USING PRIMARY KEY (job_id=?)");
+      }
+    }
+    // The rows read stay flat: the job's own rows grew tenfold, the other job's tenfold.
+    expect(grown.plans.map((p) => p.rows)).toEqual(before.plans.map((p) => p.rows));
+    const [read, deleted] = grown.plans.map((p) => p.rows) as [number, number];
+    expect(read).toBe(REACH_ROUND);
+    expect(deleted).toBe(3 * REACH_ROUND + 1);
+    expect(
+      await sql(w.h.store, "SELECT count(*) AS n FROM moderation_reach WHERE job_id = CAST(? AS INTEGER)", own),
+    ).toEqual([{ n: 3 + 600 + 6_000 - 2 * REACH_ROUND }]);
+  }, 120_000);
 });

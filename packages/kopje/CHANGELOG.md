@@ -620,6 +620,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `Follow` (`as:Follow` or `QuoteRequest`, say) was ignored, so a rejected follow stayed and kept its access to the
   rejecting account's followers-only posts. The id still names only a follow of the answering actor. No Store
   migration and no `wrangler.jsonc` change.
+- A moderation round reads no stored inbox past 4,096 bytes (#1724): a local account's suspension and unsuspension
+  `Update` reach each account by the rule its followers' inboxes are read by, and a staged row outside it, which only
+  an import or an earlier release's staging holds, is deleted unsent; each round deletes exactly the staged rows it
+  read, so a row that is not UTF-8 is no longer read twice or deleted unread
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Delivery recipients"). No Store migration and no
+  `wrangler.jsonc` change.
 
 ## [0.5.2] - 2026-11-14
 
