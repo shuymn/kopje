@@ -246,6 +246,15 @@ export type Recipe = {
 
 const leaf = (name: string) => /([^[\]]+)\]?$/.exec(name)?.[1] ?? name;
 
+// A name's top-level key and the kind Rack nests under it: a scalar, an array or a hash.
+function shape(name: string): [key: string, kind: "scalar" | "array" | "hash"] {
+  const at = name.indexOf("[", 1);
+  if (at === -1) {
+    return [name, "scalar"];
+  }
+  return [name.slice(0, at), name.startsWith("[]", at) ? "array" : "hash"];
+}
+
 // One request: `params` in the query for GET and DELETE, else in a form body (multipart when a file name is sent).
 async function send(
   w: World,
@@ -253,7 +262,14 @@ async function send(
   baseline: Baseline,
   extra: Record<string, string> = {},
 ): Promise<Response> {
-  const params = Object.entries({ ...baseline.params, ...extra });
+  // A name sent as two kinds under one top-level key is refused before any read (mastodon/params.ts), so an added
+  // name replaces a baseline value of that key of another kind, as a client sends one of them.
+  const added = Object.keys(extra).map(shape);
+  const kept = Object.entries(baseline.params ?? {}).filter(([name]) => {
+    const [key, kind] = shape(name);
+    return added.every(([other, otherKind]) => other !== key || otherKind === kind);
+  });
+  const params = Object.entries({ ...Object.fromEntries(kept), ...extra });
   const token = baseline.token ?? w.owner.token;
   const headers = { authorization: `Bearer ${token}` };
   if (method === "GET" || method === "DELETE") {

@@ -97,6 +97,20 @@ function href(value) {
 /** @param {unknown} value */
 const text = (value) => (typeof value === "string" ? value.toWellFormed() : "");
 
+// ActiveModel's boolean cast as the Worker applies it to a remote actor's flag, `value || false`
+// (src/federation/remote-actor.ts), written here apart from the runtime's: false for false, 0 and these strings, each
+// in its own case only; null for "" (no discoverable; a new account's locked and indexable false); true for anything
+// else.
+/** @type {ReadonlySet<unknown>} */
+const RAILS_FALSE = new Set([false, 0, "0", "f", "F", "false", "FALSE", "off", "OFF"]);
+/** @param {unknown} value */
+const railsFlag = (value) => {
+  if (value === undefined || value === null) {
+    return 0;
+  }
+  return value === "" ? null : RAILS_FALSE.has(value) ? 0 : 1;
+};
+
 /**
  * A time as an ISO string. Legacy writes 'YYYY-MM-DD HH:MM[:SS[.fff]]' (cdate, in UTC) and may keep a time in that form
  * with its zone ('Z' or '+09:00'); a time without a zone is UTC. Anything else is read as written.
@@ -543,15 +557,16 @@ export function expectedFromLegacy(db, { originalActorIds, source, notificationS
       bio(p.summary),
       profileImage(p.icon, "avatar"),
       profileImage(p.image, "header"),
-      p.manuallyApprovesFollowers === true ? 1 : 0,
+      isLocal ? (p.manuallyApprovesFollowers === true ? 1 : 0) : (railsFlag(p.manuallyApprovesFollowers) ?? 0),
       // Legacy showed the type of the actors row; the properties' type where the row has none.
       text(actor.type) || text(p.type) || "Person",
-      // Unset: a local account stays undiscoverable, as legacy showed and published it (false); a remote one is unknown,
-      // as Kopje stores a fetched actor that omits it (src/federation/remote-actor.ts).
-      typeof p.discoverable === "boolean" ? (p.discoverable ? 1 : 0) : isLocal ? 0 : null,
+      // Unset: a local account stays undiscoverable, as legacy showed and published it (false).
+      isLocal ? (p.discoverable === true ? 1 : 0) : railsFlag(p.discoverable),
       // A remote profile's URL, as the Worker stores it (none past its bound).
       isLocal ? null : storedProfileUrl(href(p.url)),
       remoteDomain,
+      // A local account's is left unset.
+      isLocal ? null : (railsFlag(p.indexable) ?? 0),
     ]);
     if (!isLocal) {
       put("raw", `account ${uri}`, String(actor.properties));

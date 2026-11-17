@@ -964,6 +964,20 @@ describe("duplicate parameters", () => {
       expect(response.status, JSON.stringify(extra)).toBe(400);
       expect(await response.json()).toMatchObject({ error: "invalid_request" });
     }
+    // A plain name counts each time it is sent, also where a pair nested under it came between, which Rack and Rails
+    // accept (the later one replaces what that built).
+    const credentials = new URLSearchParams([
+      ["client_id", app.client_id],
+      ["client_secret", app.client_secret],
+    ]).toString();
+    for (const text of [
+      `code&code[x]=v&${body([])}`,
+      `grant_type&grant_type[x]=v&${body([])}`,
+      `grant_type&grant_type[x]=v&grant_type=client_credentials&${credentials}`,
+    ]) {
+      const response = await post("/oauth/token", text);
+      expect([text, response.status, await response.json()]).toMatchObject([text, 400, { error: "invalid_request" }]);
+    }
     // The same parameter in the query and the body counts as repeated too.
     const mixed = await post(`/oauth/token?code=${encodeURIComponent(code)}`, body([]));
     expect(mixed.status).toBe(400);
@@ -1013,10 +1027,14 @@ describe("duplicate parameters", () => {
       expect(response.status, JSON.stringify(extra)).toBe(302);
       expect(new URL(response.headers.get("location")!).searchParams.get("error")).toBe("invalid_request");
     }
-    for (const extra of [[["client_id", app.client_id]], [["redirect_uri", "https://evil.test/"]]] as [
-      string,
-      string,
-    ][][]) {
+    // A repeated client_id or redirect_uri is not redirected to; a name nested as two kinds is Rack's refusal, before
+    // the request is read.
+    for (const extra of [
+      [["client_id", app.client_id]],
+      [["redirect_uri", "https://evil.test/"]],
+      [["scope[]", "write"]],
+      [["response_type[x]", "y"]],
+    ] as [string, string][][]) {
       const response = await get(extra);
       expect(response.status, JSON.stringify(extra)).toBe(400);
       expect(response.headers.get("location")).toBeNull();

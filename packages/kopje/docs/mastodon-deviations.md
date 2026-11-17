@@ -13,15 +13,20 @@ Other documents point here rather than repeat the release.
   test), the request parameters each route reads (`test/mastodon-params.test.ts`), and the fields of the main entities
   (`test-node/mastodon-entities.test.ts`). Their fixtures carry the release in their names and their `mastodon` field,
   and `test-node/mastodon-reference.test.ts` checks that they name the release this page does.
-- **What clients are told.** `/api/v2/instance` advertises `version` 4.5.0 and `api_versions.mastodon` 7, and
+- **What clients are told.** `/api/v2/instance` advertises `version` 4.5.0 and `api_versions.mastodon` 9, and
   `/api/v1/instance` the same `version` (`src/mastodon/instance.ts`). Clients switch features on by these values, so
   they name the API level whose features Kopje serves, not the reference patch, Kopje's own release or its federation.
-  They rise only when every feature a client switches on at the higher value is served. Mastodon v4.7.5 advertises
-  `api_versions.mastodon` 11. Each step signals a feature:
-  - 8, `exclude_direct` (`mastodon#37763`);
-  - 9, the image descriptions of `/api/v1/profile` (`mastodon#38221`);
-  - 10, collections under `/api/v1` (`mastodon#39210`);
-  - 11, the image descriptions of `update_credentials` (`mastodon#39574`).
+  They rise only when every feature a client switches on at the higher value is served. `version` stays 4.5.0, the
+  release of `api_versions.mastodon` 7: no Mastodon release advertised 8 or 9 (4.6.0 advertised 10), and a 4.6
+  `version` would claim collections. Mastodon v4.7.5 advertises `api_versions.mastodon` 11. Each step signals a
+  feature:
+  - 8, `exclude_direct` (`mastodon#37763`), served with the departures under "Paged status lists with request
+    conditions"; from 8 the official Android and iOS apps also edit the profile through `/api/v1/profile`, served;
+  - 9, the image descriptions of `/api/v1/profile` (`mastodon#38221`), served;
+  - 10, collections under `/api/v1` (`mastodon#39210`), not yet served for remote accounts: Kopje stores only local
+    collections, so a client shows a remote account as having none (#1589);
+  - 11, the image descriptions of `update_credentials` (`mastodon#39574`), served, but raised together with 10, since
+    clients switch collections on at 10 or above; `version` then becomes 4.6.1, the first release to advertise 11.
 - **Streaming.** Kopje serves the streaming API of the reference release over WebSocket only (MD-8), with bounds on
   the subscriptions a socket and an account hold, past which a subscription is refused (`src/mastodon/streaming.ts`,
   `src/stream-hub.ts`; threat model DATA-5, VIS-26, RES-6, RES-7). An event whose payload, encoded as the streaming
@@ -248,12 +253,22 @@ settings page):
   `@value`) is none, where Mastodon fails the document. Accepted, 2026-11-15.
 - A remote actor document is read as Mastodon 4.7 reads it, each member by its literal spelling, except that Fedify
   parses the members Kopje reads from its object (`FEDIFY_MEMBERS` in `src/federation/remote-actor.ts`: the id, type,
-  username, inbox, name, bio, the locked, discoverable and indexable flags, `movedTo`, `alsoKnownAs` and the keys)
-  after JSON-LD expansion. Every other member, in any spelling, is read by spelling or not at all, so none refuses the
-  actor. Mastodon stores the account in two cases where Kopje refuses the actor, because Fedify cannot decode a member
-  it parses: a `publicKey` typed otherwise than a key, and a member the inventory keeps whose name the document's own
-  context maps to another member's IRI (`name` mapped to `icon` and holding a `Document`). A name or bio given only as
-  `nameMap` or `summaryMap` is not read, as Mastodon reads only `name` and `summary`.
+  username, inbox, name, bio, `movedTo`, `alsoKnownAs` and the keys) after JSON-LD expansion. Every other member, in any
+  spelling, is read by spelling or not at all, so none refuses the actor. Mastodon stores the account in two cases where
+  Kopje refuses the actor, because Fedify cannot decode a member it parses: a `publicKey` typed otherwise than a key,
+  and a member the inventory keeps whose name the document's own context maps to another member's IRI (`name` mapped to
+  `icon` and holding a `Document`). A name or bio given only as `nameMap` or `summaryMap` is not read, as Mastodon reads
+  only `name` and `summary`.
+- A remote actor's `manuallyApprovesFollowers`, `discoverable` and `indexable` are read by spelling as Mastodon 4.7.5
+  assigns them, `@json[name] || false` through ActiveModel's boolean cast (`process_account_service.rb:252-256`;
+  `test/fixtures/actor-booleans.json` holds its cast of each value), with two differences. An empty string, which the
+  cast makes nil, leaves the stored `locked` and `indexable` as they are (false for a new account), stores no
+  `discoverable` and stores the rest of the document, where Mastodon's `NOT NULL` `locked` and `indexable` refuse the
+  account's save and nothing of the document is stored. A float zero (`0.0`, `0e0`) is false, where Mastodon's Float
+  is true, as `JSON.parse` does not tell it from `0`. A remote account stored by an earlier release keeps the flags it
+  was read with until its actor document is stored again: when Kopje fetches it (a search, a mention, a key refresh),
+  when the actor delivers an `Update(Person)`, or when a status is fetched by an account whose document is 24 hours
+  old or more (`ACCOUNT_STALE_MS`). Accepted, 2026-11-17.
 - A remote account's profile URL is chosen from its actor's `url` as Mastodon 4.7.5 chooses it
   (`process_account_service.rb:454-465`, `json_ld_helper.rb:46-61`): one candidate, kept only when it begins with
   `http://` or `https://` and is on the actor id's host, whatever its scheme and port, and no later candidate once it
@@ -949,7 +964,7 @@ OAuth (`/oauth/authorize`, `/oauth/token/info`, `/oauth/introspect`):
 - `lang` has no effect: the consent page is English only.
 - Tokens are read from the `Authorization` header only, never from the `access_token` or `bearer_token` parameters.
   Introspection reads its parameters from the body only: a `token`, `client_id` or `client_secret` in the query is
-  absent.
+  absent (a query Rack refuses still answers 400).
 - `token/info` `resource_owner_id` is the account id, a string (Mastodon: the integer user id).
 - A suspended account's token is invalid at `token/info` and inactive at introspection; Mastodon shows it.
 - Introspection ignores `token_type_hint`: Kopje has no refresh tokens, and every token is looked up as an access
@@ -1238,6 +1253,27 @@ Notification fallbacks (`supported_types`, Mastodon 4.6's `NotificationFallbackC
 
 Request parameters:
 
+- The query and a urlencoded or multipart body are each read as Rack and Rails nest them, in the order sent (a POST body
+  without a media type as a urlencoded one, as Rack reads it; a `Content-Type` header sent empty is read the same way,
+  where Mastodon answers 406): a name nested as two kinds (`limit=1&limit[]=2`) answers
+  400, as Mastodon's does, and a later plain name replaces what an earlier one built under it (`limit[]=2&limit=1` reads
+  `limit` as 1). Kopje answers that 400 on the routes that read their parameters, after the token where the route checks
+  one; Mastodon answers it on every route, before the token, as Rack::Attack reads every request's parameters in a
+  middleware. The routes that read their query on their own do not refuse it: the account lookup, oEmbed and the peer
+  search, and Kopje's own pages, which read the first of a repeated name (the public pages' `max_id`, `min_id` and
+  `server`, `/login`, `/auth/callback`, `/settings` and the admin pages); nor do the routes that read no parameter. A
+  query or a urlencoded body past one of Rack's limits (more than 4,096 fields, more than 4 MiB), and a multipart body
+  of 4,096 parts or 128 file parts, are 400, where Mastodon answers 500; a part with an empty filename, which Rack
+  counts as a file part, counts as a text part. A multipart text part that is not UTF-8 is read with each bad sequence
+  replaced, where Rails answers 400, as Kopje does for the query and a urlencoded body; a multipart part with an empty
+  name answers 400, where Rack reads it under its filename or its content type and `[]` (`text/plain[]`).
+- An array parameter's objects (`media_attributes`, `keywords_attributes`, `fields_attributes`) are read as Rails'
+  strong parameters permit them, but for two kinds: a Hash with no index holding an object
+  (`keywords_attributes[id]=1&keywords_attributes[keyword]=a`, or its JSON) is read as no object, where Rails permits
+  it as one, whose values Mastodon then reads as the objects (answering 500 for a value that is not one) or, for
+  `keywords_attributes` holding an `id`, as the keyword to update; and a JSON body's objects under indexes
+  (`{"fields_attributes":{"1":{…},"0":{…}}}`) are read in index order, where Mastodon reads them in the order sent, as
+  Kopje does a form's.
 - Of repeated parts of a declared file parameter (`avatar`, `header`, `file`, `thumbnail`), text or file, the last is
   the one read, as Rails assigns them; on `/api/v{1,2}/media` a file followed by a string answers 422 `File can't be
   blank`, where Mastodon answers 400.
@@ -1268,11 +1304,18 @@ Request parameters:
   for any entry with an `id` (Mastodon reads only entries for the post's media).
   Mastodon may report other validation errors first or alongside it. On `/api/v1/media/:id`, a multipart body larger
   than 1 MiB plus 16 KiB answers 413.
+- An upload (`/api/v{1,2}/media`, `/api/v1/media/:id`) with more than 16 text pairs as sent (the query's
+  included), or with a text value other than `description` and `thumbnail` longer than 20,000 UTF-16 code units, answers
+  422 `Validation failed: A form field is too long`, so a small image cannot carry megabytes of text (RES-1); Mastodon
+  has no such bound.
+- A request whose parameters Kopje refuses as Rack does (a conflicting shape, past a Rack limit) answers 400 with a
+  JSON `error` (`Malformed request body`), where Mastodon answers an empty HTML page.
 - A multipart part with an empty filename is read as a text value, as workerd's parser reads it (Rack drops it as an
   empty file field): empty, it reads as absent; with bytes, a profile image answers 400.
 - A JSON body exceeding 10,000 generated parameter paths (object members, array objects and empty arrays; scalar
-  array items do not count), or the 2,097,152 UTF-16 code-unit flattening budget, answers 413; nesting beyond 32
-  levels answers 400 (Rack's `param_depth_limit`).
+  array items do not count), or the 2,097,152 UTF-16 code-unit flattening budget, answers 413, as does a query or a
+  form body whose nesting passes the same paths (each name built or assigned, a replacing one included) or code units;
+  Mastodon reads any number. Nesting beyond 32 levels answers 400 (Rack's `param_depth_limit`).
 - An empty JSON object counts as sent: `{"fields_attributes":{}}` clears the fields and `{"home":{}}` saves the home
   marker, as in Mastodon; `{"poll":{}}` is still no poll.
 
@@ -1445,11 +1488,11 @@ Filters (a status's `filtered`, Mastodon's `CustomFilter#to_regex` over `Status#
 - A remote status's lines end at every `<br>` element of its sanitized HTML, whatever its spelling or attributes
   (`<br/>`, `<br class="x">`, `<br lang="en">`), where Mastodon's `PlainTextFormatter` breaks only at `<br>`, `<br />`
   and `</p>` as the raw HTML writes them (any case) and matches a keyword across the others.
-- A keyword's `whole_word` sent blank or as JSON null is read as not sent, so a new keyword whole-word and an existing
-  one as stored, by `POST /api/v1/filters`, `PUT /api/v1/filters/:id`, `POST /api/v2/filters` and
+- A keyword's `whole_word` sent as an empty string or as JSON null is read as not sent, so a new keyword whole-word and
+  an existing one as stored, by `POST /api/v1/filters`, `PUT /api/v1/filters/:id`, `POST /api/v2/filters` and
   `PUT /api/v2/filters/:id` (`keywords_attributes`), `POST /api/v2/filters/:filter_id/keywords` and
   `PUT /api/v2/filters/keywords/:id`. Mastodon casts it to nil, which its `NOT NULL` column refuses, and answers 500
-  (`ActiveRecord::NotNullViolation`). Accepted, 2026-11-17.
+  (`ActiveRecord::NotNullViolation`). Whitespace alone is true in both, as the cast reads it. Accepted, 2026-11-17.
 
 Posting (`POST` and `PUT /api/v1/statuses`):
 

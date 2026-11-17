@@ -7,7 +7,7 @@ import type { FollowOutcome } from "../domain/interaction";
 import type { Resolved } from "../domain/remote-statuses";
 import { INTERACTION_PATH, interactionTarget } from "../domain/web-session";
 import { afterResponse, type ApiDeps, present, requestJobsSoon, storeCall } from "../mastodon/context";
-import { Params, readParams } from "../mastodon/params";
+import { Params, readParams, readQuery } from "../mastodon/params";
 import { errorFields } from "../platform/error-message";
 import { StoreUnavailableError } from "../platform/store-errors";
 import { InteractionPage, InteractionResultPage } from "../web/pages/interaction";
@@ -111,13 +111,18 @@ export function interactionRoutes(deps: InteractionDeps): Hono<WebEnv> {
   const credentialOf = (session: string) => sessionCredential(session, SCOPE, deps.now);
 
   app.get(INTERACTION_PATH, setup, async (c) => {
+    const query = readQuery(c.req.raw);
+    if (!query.ok) {
+      return message(c, 400, STRINGS.errors.invalidFormTitle, STRINGS.errors.invalidForm);
+    }
+    const p = query.params;
     const session = getCookie(c, SESSION_COOKIE, "host") ?? null;
     return page(
       c,
       200,
       <InteractionPage
         site={c.get("site")}
-        uri={interactionTarget(c.req.query("uri") ?? c.req.query("acct")?.replace(/^acct:/, "")) ?? ""}
+        uri={interactionTarget(p.get("uri") ?? p.get("acct")?.replace(/^acct:/, "")) ?? ""}
         csrf={session === null ? null : await csrfToken(session)}
       />,
     );

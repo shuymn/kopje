@@ -3,7 +3,7 @@ import { type Context, Hono } from "hono";
 import { type Client, type IssueCodeResult, type LoginAccount, OOB_REDIRECT_URI } from "../domain/oauth";
 import { type ApiDeps, storeCall } from "../mastodon/context";
 import { maintenanceError } from "../mastodon/errors";
-import { Params, readParams } from "../mastodon/params";
+import { type Params, readParams, readQuery } from "../mastodon/params";
 import { readConfig, userKek } from "../platform/config";
 import { decidesHost, offDomain } from "../platform/instance-host";
 import { railsBlank } from "../platform/rails-blank";
@@ -279,7 +279,11 @@ export function authorizeRoutes(deps: AuthorizeDeps): Hono<AuthorizeEnv> {
   app.get(
     "/oauth/authorize",
     decidesHost(async (c) => {
-      const checked = await check(c, deps, new Params([...new URL(c.req.url).searchParams]));
+      const query = readQuery(c.req.raw);
+      if (!query.ok) {
+        return message(c, 400, STRINGS.errors.invalidFormTitle, STRINGS.errors.invalidForm);
+      }
+      const checked = await check(c, deps, query.params);
       if ("response" in checked) {
         return checked.response;
       }

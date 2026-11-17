@@ -23,7 +23,7 @@ import {
   withParams,
 } from "./context";
 import { mastodonError, recordNotFound } from "./errors";
-import { type FileRule, type ParamEntry, type Params, parseBody } from "./params";
+import { type FileRule, type ParamEntry, type Params, parseBody, readQuery, refusedStatus } from "./params";
 
 // /api/v1/media and /api/v2/media: upload, read and describe own unattached media.
 //
@@ -115,7 +115,8 @@ export function descriptionProblem(description: string | undefined): string | un
 export const MAX_FIELD_LENGTH = 2 * MAX_MEDIA_DESCRIPTION_LENGTH;
 const MAX_FIELDS = 16;
 
-type MediaForm = { file: Uint8Array; params: Params } | { error: string };
+// `status`: a request the parameter parsers refuse (params.ts), else the form's 422.
+type MediaForm = { file: Uint8Array; params: Params } | { error: string; status?: 400 | 413 };
 
 // The file parameters of an upload form, with readParams' query merge (a declared name's body value wins).
 const UPLOAD_FILES = ["file", "thumbnail"];
@@ -137,6 +138,10 @@ async function readWithin(request: Request, ms: number): Promise<Uint8Array | "t
   }
 }
 
+function refusedForm(status: 400 | 413): MediaForm {
+  return { status, error: status === 413 ? "Request body is too large" : "Malformed request body" };
+}
+
 async function readMediaForm(request: Request, ms: number): Promise<MediaForm> {
   const body = await readWithin(request, ms);
   if (body === "expired") {
@@ -153,8 +158,13 @@ async function readMediaForm(request: Request, ms: number): Promise<MediaForm> {
   try {
     // Rails' last-part rule (params.ts): of repeated `file` or `thumbnail` parts, text or file, the last is read.
     form = await parseBody(contentType, body, { names: UPLOAD_FILES, maxBytes: IMAGE_SIZE_LIMIT });
-  } catch {
-    return { error: "Validation failed: File can't be blank" };
+  } catch (error) {
+    const status = refusedStatus(error);
+    return status === undefined ? { error: "Validation failed: File can't be blank" } : refusedForm(status);
+  }
+  const query = readQuery(request);
+  if (!query.ok) {
+    return refusedForm(query.status);
   }
   const file = form.file("file");
   if (file === undefined) {
@@ -163,13 +173,13 @@ async function readMediaForm(request: Request, ms: number): Promise<MediaForm> {
   if (file.size > IMAGE_SIZE_LIMIT) {
     return { error: TOO_LARGE };
   }
-  // The bounds hold for what is used: body fields and query parameters together. A thumbnail is only checked for
-  // presence and refused, and a description is judged by its own rule, so neither length is bounded here (the body's
-  // is).
-  const params = form.withQuery([...new URL(request.url).searchParams.entries()], UPLOAD_FILES);
+  // The bounds hold for what is sent: body fields and query parameters together, each text pair as sent (Params#sent:
+  // also one a later pair or the query replaced, whatever it nested under). A thumbnail is only checked for presence
+  // and refused, and a description is judged by its own rule, so neither length is bounded here (the body's is).
+  const params = form.withQuery(query.params, UPLOAD_FILES);
   const long = ([key, value]: ParamEntry) =>
     key !== "thumbnail" && key !== "description" && value.length > MAX_FIELD_LENGTH;
-  if (params.entries.length > MAX_FIELDS || params.entries.some(long)) {
+  if (params.sent.length > MAX_FIELDS || params.sent.some(long)) {
     return { error: "Validation failed: A form field is too long" };
   }
   return { file: new Uint8Array(await file.arrayBuffer()), params };
@@ -300,7 +310,7 @@ async function processUpload(
 ): Promise<Failure | MediaAttachment> {
   const form = await readMediaForm(c.req.raw, upload.deadline - deps.now());
   if ("error" in form) {
-    return { status: 422, error: form.error };
+    return { status: form.status ?? 422, error: form.error };
   }
   const refused = await check(form.params);
   if (refused !== null) {

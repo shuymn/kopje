@@ -67,8 +67,7 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   migration and no `wrangler.jsonc` change.
 - `GET /api/v1/accounts/:id/statuses` takes `exclude_direct`, leaving out direct posts, as Mastodon 4.7.5 does. Its
   `Link` keeps the parameter, where Mastodon's drops it
-  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). `api_versions.mastodon` stays 7. No Store migration and
-  no `wrangler.jsonc` change.
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). No Store migration and no `wrangler.jsonc` change.
 - `/api/v2/instance` lists the account limits Kopje enforces (display name, note, featured hashtags, pinned posts,
   profile fields and their name and value lengths) and a description of the default thumbnail, and
   `GET /api/v1/custom_emojis` shows `featured: false` beside each `category`, as Mastodon 4.7.5 does. No Store
@@ -184,6 +183,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
+- Breaking: the query and a urlencoded or multipart body are each read in Rack order, as Mastodon reads them
+  (#1734), also by `/oauth/authorize` and `/authorize_interaction`: a name sent as two kinds (`limit=1&limit[]=2`)
+  answers 400, a later plain name replaces what an earlier one sent under it (`limit[]=2&limit=1` reads 1), a name
+  without `=` is nil, an array's objects keep the boundaries Rails gives them, a POST body without a `Content-Type` is
+  read as a urlencoded form, the query and a urlencoded body are refused past Rack's limits (4,096 fields, 4 MiB) and
+  a multipart body at its 4,096th part or 128th file, and each, like a JSON body, past 10,000 parameter paths
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Request parameters"). No Store migration and no
+  `wrangler.jsonc` change.
 - `wrangler.jsonc`: add `"limits": { "cpu_ms": 60000 }` to the instance's config, as the template now has it
   ([docs/upgrade.md](docs/upgrade.md)). A request, a Queue batch and a Store invocation may then use up to 60 seconds
   of CPU instead of the platform's default 30. The Store applies and verifies a release's migrations in one
@@ -251,9 +258,15 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   and rolling back past it needs a point-in-time restore.
 - Kopje follows the client API of Mastodon v4.7.5, its reference release, where it followed v4.5.11
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md)). The differences from v4.7.5 are listed there or tracked
-  by issues. `/api/v1/instance` and `/api/v2/instance` still advertise `version` 4.5.0 and `api_versions.mastodon` 7,
-  since clients switch the 4.6 and 4.7 features on by them; they rise once Kopje serves those features. No Store
-  migration and no `wrangler.jsonc` change.
+  by issues. `/api/v1/instance` and `/api/v2/instance` still advertise `version` 4.5.0, and `api_versions.mastodon`
+  rises only to 9 (below), since clients switch the 4.6 and 4.7 features on by them; they rise once Kopje serves those
+  features. No Store migration and no `wrangler.jsonc` change.
+- `/api/v2/instance` advertises `api_versions.mastodon` 9, where it advertised 7, so the official Android app reads
+  `/api/v1/profile` and its display settings, the iOS app writes those settings, and Phanpy edits the avatar and
+  header descriptions there. `version` stays 4.5.0, as no Mastodon release
+  advertised 8 or 9; 10 and 11 wait on remote accounts' collections
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "What Kopje follows"). No Store migration and no
+  `wrangler.jsonc` change.
 - `GET /api/v1/annual_reports/:id` takes a token with `read:accounts`, as Mastodon 4.7.5 does; it asked for
   `write:accounts`.
 - A mention that a remote server tags but leaves out of the status's audience (Mastodon 4.6 and later do so for
@@ -438,6 +451,17 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- A remote actor's `manuallyApprovesFollowers`, `discoverable` and `indexable` are read by their literal spelling
+  through Rails' boolean cast, as Mastodon does (#1747): an actor that writes `"false"`, `"0"` or `"off"` is no longer
+  discoverable, where it was listed in the directory, suggestions, trends and the link timeline; `"true"`, `1` or `[]`
+  lock or index the account, where only `true` did; an absent or null `discoverable` is false, where it was unknown
+  (`null` in the API); and the three are read when the document's context does not define them. An empty string leaves
+  the stored `locked` and `indexable` as they are and stores no `discoverable`, while the rest of the document is
+  stored, where Mastodon's `NOT NULL` columns refuse the account; a float zero (`0.0`) is false
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Profile credentials"). A cutover converts a remote
+  actor's three the same way, `indexable` included, and its check compares them. Accepted risk: an account stored
+  earlier keeps the values it was read with until its actor document is stored again (a fetch, an Update, or a status
+  fetched once the document is 24 hours old). No Store migration and no `wrangler.jsonc` change.
 - A remote status's `sensitive` is read as Mastodon casts it to its boolean column, so any value but `false`, `0`, null
   and Rails' false strings (`"0"`, `"f"`, `"F"`, `"false"`, `"FALSE"`, `"off"`, `"OFF"`) marks it, where only `true`
   did (`"true"`, `1` and `[true]` now mark it), and an empty string refuses it where Mastodon's `NOT NULL` column
