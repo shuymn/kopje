@@ -1700,14 +1700,18 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   certain, an array holding a `null` beside http(s) IRIs only under a name typed `@id` with no container (`to: [null]`,
   `cc: [a, a, null]`; an array of equal values is not shortened and stops neither). Where the patch stops at another
   member (one holding a value the name does not take), or in an object holding a key shaped like an array index, whose
-  order JavaScript does not keep, such a member is refused, where Mastodon applies the activity (#1717). Such an
-  `actor` of two elements is refused, as Mastodon's job raises, and one of `null`, which Mastodon's compaction writes as
-  `[]` and so applies for the signer, is refused too (Kopje reads less). Each ends what its signer did or holds, or
-  lifts its own block, so reading it so grants nothing its signer could not send directly; every other type keeps the
-  reading as received. Compacting would add JSON-LD processing to every signed activity before its HTTP signature is
-  verified, and its readers would read a form other than the one the author proof verifies. This is weighed again when
-  a sender is seen writing one of these forms, or when the fixtures re-captured at a new reference release no longer
-  read the same. Accepted, 2026-11-16.
+  order JavaScript does not keep, such a member is refused, where Mastodon applies an `Undo` or a `Reject` (#1717). A
+  `Delete` whose `object` is given so after a certain stop is applied, the signer's own status or account deleted,
+  where Mastodon applies nothing: its inbox reads the `object` of a `Delete` or an `Update` before anything else
+  (`inboxes_controller.rb` `unknown_affected_account?`, `value_or_id`), which raises on an array, and answers 500 each
+  time it is sent again; an `Undo` or a `Reject` given so is applied by both. Such an `actor` of two elements is
+  refused, as Mastodon's job raises, and one of `null`, which Mastodon's compaction writes as `[]` and so applies for
+  the signer, is refused too (Kopje reads less). Each ends what its signer did or holds, or lifts its own block, so
+  reading it so grants nothing its signer could not send directly; every other type keeps the reading as received.
+  Compacting would add JSON-LD processing to every signed activity before its HTTP signature is verified, and its
+  readers would read a form other than the one the author proof verifies. This is weighed again when a sender is seen
+  writing one of these forms, or when the fixtures re-captured at a new reference release no longer read the same.
+  Accepted, 2026-11-16.
 - An activity that carries a Linked Data signature is read only where nothing Kopje reads from it has another meaning in
   Mastodon's reading, and is otherwise ignored (answered 202): its contexts must give each ActivityStreams term and each
   property Mastodon's `full_context` defines that context's meaning, give no other property one of those meanings or a
@@ -1722,9 +1726,11 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   Kopje shows the compaction succeeds with it so and writes it so (an http(s) IRI under no namespace of a prefix of
   `full_context`), as Mastodon's compaction writes it and its handler reads it. Elsewhere such a retraction is ignored
   and leaves in place the follow, the block or the status Mastodon's ends (#1717): the reference beside another key
-  (its `type`), under a name not typed `@id` (`content`), of an IRI the compaction writes as a compact IRI
-  (`as:Public`), or in a body Kopje does not show Mastodon compacts (the closed shape above, its values counted as
-  received); where Mastodon gives the compaction up, it reads such a reference as no IRI and applies nothing either.
+  (its `type`: a `Delete`'s status stays; an `Undo` of a `Follow`, a `Block` or a `Like` so given ends nothing in
+  Mastodon either, as its handler seeks what to end by the undone activity's own `object`, which such a reference
+  lacks), under a name not typed `@id` (`content`), of an IRI the compaction writes as a compact IRI (`as:Public`), or
+  in a body Kopje does not show Mastodon compacts (the closed shape above, its values counted as received); where
+  Mastodon gives the compaction up, it reads such a reference as no IRI and applies nothing either.
   This keeps the meaning of what Kopje reads; it does not make the two readings equal, and the shapes and values above
   still differ. It is ignored too where a node's `type` and `@type` together give two types or more one of which is not
   a string or is shaped like a keyword on any line (`[null, "Tombstone"]`, `["Tombstone", "@foo"]`, `"x\n@abc"`), or a

@@ -374,13 +374,13 @@
       "error": "TypeError: no implicit conversion of String into Integer"
     },
     {
-      "name": "Delete(status), object as a one-element array after to: [null], beside a key \"0\"",
+      "name": "Undo(Follow), object as a one-element array after to: [null], beside a key \"0\"",
       "reading": {
-        "type": "Delete",
-        "object": "https://mastodon.example/users/bob/statuses/deleted",
-        "object_type": "Tombstone",
-        "object_actor": null,
-        "object_object": null
+        "type": "Undo",
+        "object": "https://mastodon.example/users/bob/follows/14",
+        "object_type": "Follow",
+        "object_actor": "https://mastodon.example/users/bob",
+        "object_object": "https://kopje.test/ap/users/alice"
       }
     },
     {
@@ -480,6 +480,16 @@
     {
       "name": "Delete(status), object as a two-element array after to: [null]",
       "error": "TypeError: no implicit conversion of String into Integer"
+    },
+    {
+      "name": "Delete(status), object as {\"@id\": its id} with its type",
+      "reading": {
+        "type": "Delete",
+        "object": "https://mastodon.example/users/bob/statuses/deleted",
+        "object_type": "Tombstone",
+        "object_actor": null,
+        "object_object": null
+      }
     }
   ]
 }

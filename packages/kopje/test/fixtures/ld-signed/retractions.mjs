@@ -205,9 +205,9 @@ export function retractionEntries() {
     "Delete(status), object as a one-element array after a target that holds to: [null]",
     objectAfter(status(), { target: { id: `${BOB}/collections/target`, type: "Collection", to: [null] } }),
   );
-  add('Delete(status), object as a one-element array after to: [null], beside a key "0"', {
+  add('Undo(Follow), object as a one-element array after to: [null], beside a key "0"', {
     0: "zero",
-    ...stopped(status()),
+    ...stopped(retraction("Undo(Follow)")),
   });
   const followed = RETRACTIONS["Undo(Follow)"].object;
   add("Undo(Follow), its Follow's actor and object as one-element arrays after to: [null]", {
@@ -253,6 +253,11 @@ export function retractionEntries() {
     to: [null],
     object: [tombstone, { id: BOB_OTHER_STATUS, type: "Tombstone", atomUri: BOB_OTHER_STATUS }],
     signature,
+  });
+  // A reference beside its type, which rule (3) refuses: Mastodon's compaction writes it as a node, and deletes.
+  add('Delete(status), object as {"@id": its id} with its type', {
+    ...status(),
+    object: { "@id": BOB_STATUS, type: "Tombstone" },
   });
   return entries;
 }
