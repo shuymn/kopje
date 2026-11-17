@@ -361,10 +361,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   each account ([docs/cutover.md](docs/cutover.md), Verification). No Store migration and no `wrangler.jsonc` change.
 - A scheduled status holds at most four media, imports included: an import refuses a fifth, and the upgrade detaches
   any past the first four (attachable again for a day; only a restored row holds more). Migration
-  `0109_scheduled_media_cap`: the detach and two triggers on `media_attachments`; the upgrade checks no reference
-  (5,637 ms for this file in one local run of the migration bench, 100,000 uploads detached, at a load average of 27 to
-  33). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and
-  rolling back past it needs a point-in-time restore.
+  `0109_scheduled_media_cap`: the detach and two triggers on `media_attachments`; the upgrade checks no reference (the
+  migration bench's upgrade from `0093_annual_reports` takes 16,422 ms with this file and 15,572 ms without it,
+  medians of three runs). `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor
+  version, and rolling back past it needs a point-in-time restore.
 
 ### Fixed
 
