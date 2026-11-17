@@ -115,6 +115,7 @@ const FORM_4_AS_GIVEN = [
   "Undo of a block, both typed as absolute IRIs, with a relative reference of a dot segment",
   "Undo of a block, both typed as absolute IRIs, with a relative reference of a double-dot segment",
   "Undo of a block, both typed as absolute IRIs, with a relative reference of a double-dot segment before a fragment",
+  "Undo of a block, both typed as absolute IRIs, with a relative reference of a double-dot segment before a query",
   "Undo of a block, both typed as absolute IRIs, with a language map given as a number",
   "Undo of a block, both typed as absolute IRIs, with a language map given as an array holding a node",
   "Undo of a block, both typed as absolute IRIs, with a language map of a tag to an array in an array",
@@ -142,6 +143,7 @@ const FORM_4_PARTED = [
   "Undo of a block, both typed as absolute IRIs, with a language map of a tag to an array in an array",
   "Undo of a block, both typed as absolute IRIs, with a language map of an upper-case tag to an array",
   "Undo of a block, both typed as absolute IRIs, with a relative reference of a double-dot segment before a fragment",
+  "Undo of a block, both typed as absolute IRIs, with a relative reference of a double-dot segment before a query",
 ];
 
 // What Mastodon 4.7.5 applied from a form with its own readers (effects.rb): what bob's activity left, and the error
@@ -878,7 +880,7 @@ describe("D1: forms whose readings differ, each named by its class", () => {
         }
       }
       expect(names).toBeGreaterThanOrEqual(150);
-      expect(renamed.length).toBe(77);
+      expect(renamed.length).toBe(81);
       // Bodies Mastodon compacts outside the shape Kopje shows it compacts (an inline context, an array in an array,
       // a proof, a number where an IRI is expected, an id it writes otherwise or jsonld.js does, a language map of
       // another shape): their types are read as given, so such an activity applies less than Mastodon's.
@@ -901,6 +903,7 @@ describe("D1: forms whose readings differ, each named by its class", () => {
         "Undo of a block, both typed as absolute IRIs, with a language map of a tag to an array in an array",
         "Undo of a block, both typed as absolute IRIs, with a language map of an upper-case tag to an array",
         "Undo of a block, both typed as absolute IRIs, with a relative reference of a double-dot segment before a fragment",
+        "Undo of a block, both typed as absolute IRIs, with a relative reference of a double-dot segment before a query",
       ]);
     });
 
@@ -909,8 +912,7 @@ describe("D1: forms whose readings differ, each named by its class", () => {
     // full_context defines (as the captured `cc` and type ones), a number under a language map name and a map whose
     // key is no language tag are outside it; a blank node, an http(s) IRI whose scheme is upper-case or not followed by
     // `//`, a boolean where an IRI is expected, and a tag given an array of strings are inside a retraction's
-    // (form 4), but a `//` elsewhere than right after a scheme that is no name of full_context, and a dot segment
-    // before a query.
+    // (form 4), but a `//` elsewhere than right after a scheme that is no name of full_context.
     it.each([
       { added: { instrument: { name: "client" } }, read: "Undo" },
       { added: { cc: [null] }, read: "Undo" },
@@ -919,7 +921,6 @@ describe("D1: forms whose readings differ, each named by its class", () => {
       { added: { instrument: { id: "HTTPS://mastodon.example/client" } }, read: "Undo" },
       { added: { instrument: { id: "https:mastodon.example/client" } }, read: "Undo" },
       { added: { instrument: { id: "clients//1" } }, read: "as:Undo" },
-      { added: { instrument: { id: "clients/..?1" } }, read: "as:Undo" },
       { added: { instrument: { id: "HTTPS://mastodon.example//client" } }, read: "as:Undo" },
       { added: { instrument: { id: "Hashtag://mastodon.example/client" } }, read: "as:Undo" },
       { added: { cc: true }, read: "Undo" },

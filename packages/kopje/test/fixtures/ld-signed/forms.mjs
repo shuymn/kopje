@@ -942,6 +942,16 @@ const forms = {
   "Undo of a block, both typed as absolute IRIs, with 400 numbers where an IRI is expected": absoluteUndo({
     instrument: Array.from({ length: 400 }, () => 5),
   }),
+  // Dot segments after the path: in a fragment or a query, which both libraries keep, and in the path before a query,
+  // which jsonld.js removes.
+  "Undo of a block, both typed as absolute IRIs, with a relative reference of a double-dot fragment": absoluteUndo({
+    instrument: { id: "clients#.." },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with a relative reference of a double-dot query": absoluteUndo({
+    instrument: { id: "clients?.." },
+  }),
+  "Undo of a block, both typed as absolute IRIs, with a relative reference of a double-dot segment before a query":
+    absoluteUndo({ instrument: { id: "clients/..?1" } }),
 };
 
 // The same bodies without a signature: read as received by both.
