@@ -245,9 +245,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   by issues. `/api/v1/instance` and `/api/v2/instance` still advertise `version` 4.5.0, and `api_versions.mastodon`
   rises only to 9 (below), since clients switch the 4.6 and 4.7 features on by them; they rise once Kopje serves those
   features. No Store migration and no `wrangler.jsonc` change.
-- `/api/v2/instance` advertises `api_versions.mastodon` 9, where it advertised 7, so the official Android and iOS apps
-  edit the profile through `/api/v1/profile` (the display settings, and removing the avatar or header), and Phanpy
-  through `/api/v1/profile` with the avatar and header descriptions. `version` stays 4.5.0, as no Mastodon release
+- `/api/v2/instance` advertises `api_versions.mastodon` 9, where it advertised 7, so the official Android app reads
+  `/api/v1/profile` and its display settings, the iOS app writes those settings, and Phanpy edits the avatar and
+  header descriptions there. `version` stays 4.5.0, as no Mastodon release
   advertised 8 or 9; 10 and 11 wait on remote accounts' collections
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "What Kopje follows"). No Store migration and no
   `wrangler.jsonc` change.
