@@ -926,7 +926,7 @@ OAuth (`/oauth/authorize`, `/oauth/token/info`, `/oauth/introspect`):
 - `lang` has no effect: the consent page is English only.
 - Tokens are read from the `Authorization` header only, never from the `access_token` or `bearer_token` parameters.
   Introspection reads its parameters from the body only: a `token`, `client_id` or `client_secret` in the query is
-  absent.
+  absent (a query Rack refuses still answers 400).
 - `token/info` `resource_owner_id` is the account id, a string (Mastodon: the integer user id).
 - A suspended account's token is invalid at `token/info` and inactive at introspection; Mastodon shows it.
 - Introspection ignores `token_type_hint`: Kopje has no refresh tokens, and every token is looked up as an access
@@ -1215,6 +1215,17 @@ Notification fallbacks (`supported_types`, Mastodon 4.6's `NotificationFallbackC
 
 Request parameters:
 
+- The query and a urlencoded or multipart body are each read as Rack and Rails nest them, in the order sent: a name
+  nested as two kinds (`limit=1&limit[]=2`) answers 400, as Mastodon's does, and a later plain name replaces what an
+  earlier one built under it (`limit[]=2&limit=1` reads `limit` as 1). Kopje answers that 400 on the routes that read
+  their parameters, after the token where the route checks one; Mastodon answers it on every route, before the token,
+  as Rack::Attack reads every request's parameters in a middleware. The account lookup,
+  oEmbed and the peer search, which read their query on their own, and the routes that read no parameter, do not refuse
+  it. A query or a urlencoded body past one of Rack's limits (more than 4,096 fields, more than 4 MiB) is 400, where
+  Mastodon answers 500. A multipart text part that is not UTF-8 is read with each bad sequence replaced, where Rails
+  answers 400, as Kopje does for the query and a urlencoded body. In a form's array of objects
+  (`media_attributes[][id]`), an object that follows an item that is not an object, and that repeats no field of the
+  object before that item, is read as part of that object, where Mastodon reads two.
 - Of repeated parts of a declared file parameter (`avatar`, `header`, `file`, `thumbnail`), text or file, the last is
   the one read, as Rails assigns them; on `/api/v{1,2}/media` a file followed by a string answers 422 `File can't be
   blank`, where Mastodon answers 400.
@@ -1248,8 +1259,9 @@ Request parameters:
 - A multipart part with an empty filename is read as a text value, as workerd's parser reads it (Rack drops it as an
   empty file field): empty, it reads as absent; with bytes, a profile image answers 400.
 - A JSON body exceeding 10,000 generated parameter paths (object members, array objects and empty arrays; scalar
-  array items do not count), or the 2,097,152 UTF-16 code-unit flattening budget, answers 413; nesting beyond 32
-  levels answers 400 (Rack's `param_depth_limit`).
+  array items do not count), or the 2,097,152 UTF-16 code-unit flattening budget, answers 413, as does a query or a
+  form body whose nesting passes the same paths (each name built or assigned, a replacing one included) or code units;
+  Mastodon reads any number. Nesting beyond 32 levels answers 400 (Rack's `param_depth_limit`).
 - An empty JSON object counts as sent: `{"fields_attributes":{}}` clears the fields and `{"home":{}}` saves the home
   marker, as in Mastodon; `{"poll":{}}` is still no poll.
 

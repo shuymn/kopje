@@ -377,6 +377,46 @@ describe("field bounds cover the query string (RES-1)", () => {
     }
     expect(h.codec.calls).toBe(calls);
   });
+
+  // Each field counts as sent, also one a later one of its name replaced (params.ts Params#replaced).
+  it("counts a field a later one of its name replaced", async () => {
+    const h = await users();
+    const send = (count: number, first: string) => {
+      const form = mediaForm(bytes(PNG_PLAIN), {}, "a.png", "image/png");
+      form.append("f", first);
+      for (let i = 1; i < count; i++) {
+        form.append("f", "x");
+      }
+      return upload(h, h.users.alice, form);
+    };
+    expect((await send(16, "x".repeat(MAX_FIELD_LENGTH))).status).toBe(200);
+    const calls = h.codec.calls;
+    for (const response of [await send(17, "x"), await send(2, "x".repeat(MAX_FIELD_LENGTH + 1))]) {
+      expect([response.status, await response.json()]).toEqual([422, FIELD_TOO_LONG]);
+    }
+    expect(h.codec.calls).toBe(calls);
+  });
+
+  // The upload reads its form and its query with readParams' parsers (params.ts parseBody, readQuery).
+  it("refuses a shape Rack refuses, in the form or the query, before processing", async () => {
+    const h = await users();
+    const form = mediaForm(bytes(PNG_PLAIN), {}, "a.png", "image/png");
+    form.append("a", "1");
+    form.append("a[]", "2");
+    const body = await upload(h, h.users.alice, form);
+    const query = await h.request(
+      "/api/v2/media?a=1&a[]=2",
+      bearer(h.users.alice.token, { method: "POST", body: mediaForm(bytes(PNG_PLAIN), {}, "a.png", "image/png") }),
+    );
+    const malformed = { error: "Malformed request body" };
+    expect([body.status, await body.json(), query.status, await query.json()]).toEqual([
+      400,
+      malformed,
+      400,
+      malformed,
+    ]);
+    expect(h.codec.calls).toBe(0);
+  });
 });
 
 describe("duplicate media attributes", () => {

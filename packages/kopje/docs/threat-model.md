@@ -3141,9 +3141,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   route that reads files (`readParams`' file rule: the avatar and header of `update_credentials` and of the profile
   update, `PATCH` and `PUT /api/v1/profile`, and the settings page's image) takes a multipart body of the limit plus
   each file and its part headers (17,858,560 bytes for `update_credentials` and the profile update), chosen from
-  `Content-Type` before any byte is read, while its text stays within the limit in UTF-8 bytes; a JSON body is refused
-  past 10,000 generated parameter paths (object members, array objects and empty arrays) or 2,097,152 UTF-16 code units
-  of all its keys, charged before each key is built, and past 32 levels of nesting; `update_credentials` and the profile
+  `Content-Type` before any byte is read, while its text, each part as sent, stays within the limit in UTF-8 bytes; a
+  JSON body is refused past 10,000 generated parameter paths (object members, array objects and empty arrays) or
+  2,097,152 UTF-16 code units of all its keys, charged before each key is built, and past 32 levels of nesting; the
+  query, and a urlencoded body, are refused past Rack's limits (4 MiB, 4,096 fields), and the query's and a form body's
+  trees, as Rack and as Rails nest them (`src/platform/rails-params.ts`), each on its own budget, past the same 10,000
+  paths (each key built or assigned, a replacing one included) or 2,097,152 code units of their keys' names, charged
+  before each key, and past a nesting 32 deep; `test/param-shapes.test.ts` ("reads a tree at both caps and the deepest
+  nesting, and refuses one path or one unit more", "refuses a nesting past the deepest Rack reads, and Rack's field and
+  byte limits"); `update_credentials` and the profile
   update check the token before reading a multipart body (one handler, `credentialsUpdate` in
   `src/mastodon/accounts.ts`); `test/params.test.ts`, `test/profile-images.test.ts` ("takes a multipart body up to the
   text limit plus two files and refuses one byte more", "answers an invalid or under-scoped token without reading a
@@ -3176,7 +3182,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   read"), `test/migrations.test.ts` ("0110_scheduled_params"), `test/dump-import.test.ts` ("round-trips scheduled
   statuses' params").
   `scheduled_at` must name a date and time the calendar has (Ruby's `DateTime.parse`: no February 29 outside leap years,
-  no 31st of a 30-day month, minutes and hours in range), checked before its offset applies. Other query strings: _Gap._
+  no 31st of a 30-day month, minutes and hours in range), checked before its offset applies. A query `readParams` reads
+  is bounded with the body (above). A query read only through Hono (`/api/v1/accounts/lookup`, `/api/oembed`,
+  `/api/v1/peers/search`), or not at all: _Gap._
   _Enforced (main)_ for a search resolution's non-ActivityPub answer (NET-4): its `Link` header is read only within
   8,192 characters and 64 links, and not at all past either (`LINK_HEADER_CHARS`, `LINK_HEADER_LINKS` in
   `src/platform/link-header.ts`), in time linear in the value, and its HTML body only within 1 MiB, by
@@ -3217,6 +3225,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   cap within a generous time"). Removing the CDATA lines of a card's JSON-LD: _Enforced (main):_ `removeCdataJunk`
   (`src/federation/link-details.ts`) passes over a script in linear time; `test/link-details.test.ts` ("removes CDATA
   lines from a round of scripts at the JSON-LD cap within a generous time", "removes CDATA lines as the pattern does").
+  Request parameters: _Enforced (main):_ the query and a form body are nested in time linear in their bytes and in the
+  code units RES-1 charges (`src/platform/rails-params.ts`); `test/param-shapes.test.ts` ("reads a query at Rack's
+  limits and both caps within a generous time, before any token", "reads a form body at its limit and both caps within
+  a generous time").
   A URL's host key: _Enforced (main):_ `hostDomain` (`src/platform/domain-name.ts`) drops the trailing dots in one
   backward scan, where a regex retries at each dot of an interior run; `test-node/cutover-convert.test.ts` ("is read
   within a generous time at the size of an inbound activity"), `test/host-trailing-dots.test.ts` ("answers an inbound

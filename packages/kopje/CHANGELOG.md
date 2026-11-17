@@ -176,6 +176,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Changed
 
+- Breaking: the query and a urlencoded or multipart body are each read in Rack order, as Mastodon reads them
+  (#1734): a name sent as two kinds (`limit=1&limit[]=2`) answers 400, a later plain name replaces what an earlier
+  one sent under it (`limit[]=2&limit=1` reads 1), a name without `=` is nil, and the query and a urlencoded body are
+  refused past Rack's limits (4,096 fields, 4 MiB) and, like a JSON body, past 10,000 parameter paths
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Request parameters"). No Store migration and no
+  `wrangler.jsonc` change.
 - `wrangler.jsonc`: add `"limits": { "cpu_ms": 60000 }` to the instance's config, as the template now has it
   ([docs/upgrade.md](docs/upgrade.md)). A request, a Queue batch and a Store invocation may then use up to 60 seconds
   of CPU instead of the platform's default 30. The Store applies and verifies a release's migrations in one
