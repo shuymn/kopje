@@ -31,6 +31,7 @@ import { isActivityPubMediaType, parseMediaType } from "../platform/media-type";
 import { callStore } from "../platform/store-client";
 import { type GoneSettled, goneSettler, type SettleGone } from "./actor-gone";
 import { hasAuthorProof, verifyAuthorProof } from "./author-proof";
+import { featuredCollectionOf, featuredItemOf } from "./featured-collections";
 import {
   afterRevisionRead,
   createRemoteLoaders,
@@ -240,7 +241,7 @@ async function activityEnvelope(
   json: Json,
   rules: Rules = {},
 ): Promise<
-  | { ok: true; actor: string; id: string; type: string; readType: TypeReader; read: Json }
+  | { ok: true; actor: string; id: string | null; type: string; readType: TypeReader; read: Json }
   | { ok: false; reason: "no-context" | "ld-context" | "incomplete" }
 > {
   if (!hasActivityStreamsContext(json["@context"])) {
@@ -254,11 +255,16 @@ async function activityEnvelope(
   const actor = idOf(read.actor);
   const id = typeof read.id === "string" ? read.id : null;
   const type = typeof read.type === "string" ? readType(read.type) : null;
-  if (actor === null || originOf(actor) === null || id === null || type === null) {
+  // #1589's D20: an Add or Remove may have no id (Mastodon 4.7.5 sends a collection's so); a non-string one reads as
+  // none, as Mastodon never reads it. The Store admits such an activity for a collection target only.
+  if (actor === null || originOf(actor) === null || type === null || (id === null && !ID_LESS.has(type))) {
     return { ok: false, reason: "incomplete" };
   }
   return { ok: true, actor, id, type, readType, read };
 }
+
+// The types an activity may have without an id (#1589's D20).
+const ID_LESS: ReadonlySet<string> = new Set(["Add", "Remove"]);
 
 // `rules` is for tests of the reading's second layer (ldSignedReading); every caller reads under all of them.
 export async function parseActivity(body: Uint8Array, rules: Rules = {}): Promise<Parsed> {
@@ -313,14 +319,57 @@ function statusActivity(kind: "Create" | "UpdateStatus", id: string, json: Json)
   return object === null ? null : { type: kind, id, object };
 }
 
+// An Add or Remove (#1589's D20: with or without an id). The target is matched against the actor's own collections by
+// the Store. A Hashtag is named by its name; an embedded FeaturedCollection or FeaturedItem is read as one (only
+// embedded: one given by URI is never fetched); anything else by its id, as a status (Mastodon's Add and Remove read
+// any other object as one).
+function collectionActivity(
+  type: "Add" | "Remove",
+  id: string | null,
+  json: Json,
+  object: string | null,
+): ParsedActivity | null {
+  const target = idOf(json.target);
+  if (target === null) {
+    return null;
+  }
+  const embedded = isObject(json.object) ? json.object : null;
+  if (embedded !== null && embedded.type === "Hashtag") {
+    return typeof embedded.name === "string" ? { type, id, target, object: { hashtag: embedded.name } } : null;
+  }
+  if (embedded !== null && typeIs(embedded.type, ["FeaturedCollection"])) {
+    const collection = featuredCollectionOf(embedded);
+    return collection === null ? null : { type, id, target, object: { featuredCollection: collection } };
+  }
+  if (embedded !== null && typeIs(embedded.type, ["FeaturedItem"])) {
+    const item = featuredItemOf(embedded);
+    return item === null ? null : { type, id, target, object: { featuredItem: item } };
+  }
+  return object === null ? null : { type, id, target, object: { status: object } };
+}
+
+// An embedded FeatureAuthorization's collection and member (Delete#delete_feature_authorization!), or null for any
+// other object.
+function featureOf(value: unknown): { collection: string | null; member: string | null } | null {
+  return isObject(value) && typeIs(value.type, ["FeatureAuthorization"])
+    ? { collection: idOf(value.interactingObject), member: idOf(value.interactionTarget) }
+    : null;
+}
+
 function activityOf(
   type: string,
-  id: string,
+  id: string | null,
   actor: string,
   json: Json,
   object: string | null,
   readType: TypeReader,
 ): ParsedActivity | null {
+  if (type === "Add" || type === "Remove") {
+    return collectionActivity(type, id, json, object);
+  }
+  if (id === null) {
+    return null;
+  }
   if (LIKE_TYPES.has(type)) {
     return object === null ? null : { type: "Like", id, object };
   }
@@ -368,6 +417,11 @@ function activityOf(
       if (embedded !== null && typeIs(embedded.type, ACTOR_TYPES)) {
         return null;
       }
+      // A remote collection updated by its owner (Update#update_collection, checked in the Store).
+      if (embedded !== null && typeIs(embedded.type, ["FeaturedCollection"])) {
+        const collection = featuredCollectionOf(embedded);
+        return collection === null ? null : { type: "UpdateCollection", id, object: collection };
+      }
       if (embedded !== null && !typeIs(embedded.type, [...STATUS_TYPES, ...CONVERTED_TYPES])) {
         return null;
       }
@@ -385,23 +439,9 @@ function activityOf(
             id,
             object,
             atomUri: isObject(json.object) ? statusIdentity(json.object.atomUri) : null,
+            feature: featureOf(json.object),
             ...(hasAuthorProof(json) ? { signed: true } : {}),
           };
-    // The target is matched against the actor's own collections by the Store. A Hashtag is named by its name; anything
-    // else by its id, as a status (Mastodon's Add and Remove read any other object as one).
-    case "Add":
-    case "Remove": {
-      const target = idOf(json.target);
-      if (target === null) {
-        return null;
-      }
-      if (isObject(json.object) && json.object.type === "Hashtag") {
-        return typeof json.object.name === "string"
-          ? { type, id, target, object: { hashtag: json.object.name } }
-          : null;
-      }
-      return object === null ? null : { type, id, target, object: { status: object } };
-    }
     // A report (Mastodon's ActivityPub::Activity::Flag): its id within ACTIVITY_ID_LIMIT, else unsupported; the
     // objects by id, read as reports.ts flagObjects bounds them (MAX_FLAG_OBJECTS, each within ACTIVITY_ID_LIMIT), and
     // the comment cut by reportComment. The Store checks all of it again (fileRemoteReports). Nothing is fetched.
@@ -807,7 +847,7 @@ export async function receiveInbound(
       receivedAt: request.receivedAt,
     });
   }
-  if (!sameOrigin(activity.id, actorUri)) {
+  if (activity.id !== null && !sameOrigin(activity.id, actorUri)) {
     return { status: 202, reason: "foreign-id" };
   }
   // An Update of the actor that embeds its document fetches that document only when its key needs one, as any activity
@@ -1433,7 +1473,7 @@ export async function verifySpooledRequest(
   if (originOf(actorUri) === `https://${domain}`) {
     return { ok: false, transient: false, reason: "invalid-actor" };
   }
-  if (!sameOrigin(envelope.id, actorUri)) {
+  if (envelope.id !== null && !sameOrigin(envelope.id, actorUri)) {
     return { ok: false, transient: false, reason: "foreign-id" };
   }
   const deps = { ...loader, budget: requestBudget(Date.now()) };

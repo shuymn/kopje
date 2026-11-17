@@ -308,7 +308,8 @@ against their own instance. TLS is assumed between all parties.
   `full_context` lacks the stamp's terms, forwards Mastodon's stamp `Delete` without its signature
   (`safe_for_forwarding?`): a relay without a proof. In a profile the `@context` is deep-equal to the sender's (or,
   forwarded, in that form), every URL in it preloaded, and every key at every level is one the sender writes (`type` the
-  string `Delete`, the object an IRI or the sender's Tombstone or QuoteAuthorization, the signature or the single proof
+  string `Delete`, the object an IRI or the sender's Tombstone, QuoteAuthorization or FeatureAuthorization, the
+  signature or the single proof
   in the sender's shape, Mastodon's signature with an optional `expires`, a string in the form `sign!` writes, a proof's
   own `@context` the body's), so the body's JSON-LD meaning is its literal JSON:
   no inline term can nest, drop, alias or redefine a key the decision reads, and no context resolves differently
@@ -321,7 +322,10 @@ against their own instance. TLS is assumed between all parties.
   Applied, it reaches one handler, which decides again in the Store's transaction, from what it reads there, what it
   may act on: never an actor; a stored status only with the proof, only a public or unlisted original (never a boost)
   whose author is the actor and whose uri has the actor's origin, and then exactly as the actor's own `Delete` of it
-  (VIS-3, its forward included); anything else of the actor's origin as at most a stamp. A relay without a proof
+  (VIS-3, its forward included); a feature authorization (#1589, the `mastodonFeature` profile: Mastodon relays a
+  member's revocation in a collection on its own server, HTTP-signed by the collection's owner) only with the proof,
+  read from the proven body, and then exactly as the member's own `Delete` of it (ID-6); anything else of the actor's
+  origin as at most a stamp. A relay without a proof
   changes no status and is applied as nothing but a reason to verify the actor's accepted quote naming the stamp
   again; a proof that does not verify, or whose author's document is gone or unusable, is answered 202 and changes
   nothing (no status, no retraction, no stored actor document, never the unproven path), as Mastodon drops a relay
@@ -483,10 +487,25 @@ against their own instance. TLS is assumed between all parties.
   to a local account (Mastodon's `flag.rb:15-17`),
   available (R1); a named status is attached only when it is the reported account's original and passes the remote
   reporter rule (R34, `remoteReportableSql`). Nothing is fetched. `fileRemoteReports` in `src/domain/reports.ts`;
-  `test/inbox.test.ts` ("Flag: the actor is the reporter"), `test/inbox-flag.test.ts`.
+  `test/inbox.test.ts` ("Flag: the actor is the reporter"), `test/inbox-flag.test.ts`. _Enforced (main)_ for FEP-7aa9
+  remote collections (#1589, rows of the same table): an `Add` or `Remove` acts only on the actor's own collections, the
+  target its `featuredCollections` collection or a remote collection Kopje stores of the actor's, a collection's id on
+  the actor's origin with `attributedTo` the actor, an item's id on its collection's origin and its authorization on
+  its member's; such an `Add` or `Remove` may have no id (Mastodon 4.7.5 sends them so; their effects are keyed by the
+  collection's and the item's uri), one to the actor's `featured` or `featuredTags` collection may not; an `Update`
+  changes only a collection Kopje stores of the actor's; a `Delete` of a `FeatureAuthorization` is the member's alone
+  and revokes the member's item only while it names the item's current authorization (verified, or the candidate of
+  one not verified), never after a revision replaced it; the item checks accept nothing a member's server did not serve
+  (`src/domain/remote-featured-collections.ts`, `src/domain/collection-checks.ts`); `test/inbox-collections.test.ts`,
+  `test/collection-sync.test.ts` ("refuses a collection of another host or another owner, and cuts a long name and
+  description"), `test/remote-featured-collections.test.ts` ("leaves pending, without an error, a match whose
+  authorization the member holds in another row").
 - **ID-7: replay changes nothing twice.** A repeated activity creates no second relationship, counter change,
   notification, push or outbound intent (natural keys). A valid `Delete` or `Undo` that arrives before its target is
-  recorded for 30 days and prevents the target from appearing later. Input that fails ID-1 or ID-6 reserves no key and
+  recorded for 30 days and prevents the target from appearing later; so is a collection owner's `Remove` of an item
+  Kopje does not hold, which refuses the item's `Add` processed after it (#1589; `test/inbox-collections.test.ts`
+  ("records the Remove of an item it does not hold, refusing the Add processed after it")). Input that fails ID-1 or
+  ID-6 reserves no key and
   records no retraction. _Enforced (main):_ natural keys, `retract` and `isRetracted` in
   `src/domain/retractions.ts`. A `Flag` files one report per Flag id and reported account (`UNIQUE (uri,
   target_account_id)`, migration `0054_remote_reports`): a redelivery writes nothing, and a Flag id past

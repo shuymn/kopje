@@ -828,6 +828,12 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   five attempts stays unshown until the owner changes or re-adds it. Kopje learns that a member withdrew only from the
   owner's `Remove` or the member's own `Delete`: while the owner keeps listing a member that withdrew and Kopje
   receives neither, Kopje keeps showing the member. Accepted, 2026-11-17.
+- A member's `Delete` of its feature authorization revokes its membership of a remote collection too, when it names
+  the membership's current authorization (verified, or the one the owner lists while unchecked), including the copy
+  the collection's owner relays with the member's signature; Mastodon applies it to local collections only. Accepted,
+  2026-11-17.
+- An `Add` or `Remove` without an `id` is applied to a collection's or an item's collection only; one to the actor's
+  `featured` or `featuredTags` collection is ignored, where Mastodon applies it. Tracked by #1693.
 
 Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model WEB-6):
 

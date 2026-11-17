@@ -81,9 +81,13 @@ export const ALL_PARTS = PART_FEATURED | PART_NETWORK | PART_TAGS | PART_COLLECT
 const STORED_PARTS = PART_FEATURED | PART_NETWORK | PART_TAGS;
 
 // Which of the actor's own collections `target` is (Add#perform and Remove#perform compare it with the account's
-// featured_collection_url): its featured collection, or its featuredTags collection, on its own origin; null for
-// anything else.
-export function collectionOf(db: Db, accountId: string, target: string): "featured" | "featuredTags" | null {
+// featured_collection_url and collections_url): its featured collection, its featuredTags collection or its
+// featuredCollections collection (FEP-7aa9), on its own origin; null for anything else.
+export function collectionOf(
+  db: Db,
+  accountId: string,
+  target: string,
+): "featured" | "featuredTags" | "featuredCollections" | null {
   const row = db.first<{ uri: string; raw: string | null }>(
     "SELECT uri, raw FROM accounts WHERE id = ? AND domain IS NOT NULL",
     accountId,
@@ -92,7 +96,13 @@ export function collectionOf(db: Db, accountId: string, target: string): "featur
     return null;
   }
   const collections = actorCollections(row.raw);
-  return target === collections.featured ? "featured" : target === collections.featuredTags ? "featuredTags" : null;
+  return target === collections.featured
+    ? "featured"
+    : target === collections.featuredTags
+      ? "featuredTags"
+      : target === collections.featuredCollections
+        ? "featuredCollections"
+        : null;
 }
 
 type Pinnable = { id: string; uri: string; account_id: string; reblog_of_id: string | null; visibility: Visibility };

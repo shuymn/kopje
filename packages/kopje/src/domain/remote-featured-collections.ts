@@ -10,18 +10,21 @@ import {
   COLLECTION_URI_BYTES,
   COLLECTION_URL_BYTES,
   cutCodePoints,
+  MAX_STORED_ITEMS,
   storedText,
 } from "../platform/stored-bounds";
 import { sanitizeRemoteCodePoints } from "../security/html";
 import { notifyUpdated, remoteCollectionTag } from "./collections";
 import { allocateLocalId, insertWithFreshId } from "./ids";
 import { blank } from "./lists";
+import { isRetracted } from "./retractions";
 import { TREND_LANGUAGES } from "./trend-languages";
 
 // Remote accounts' collections (FEP-7aa9, Mastodon 4.7.5's ActivityPub::ProcessFeaturedCollectionService and
-// ProcessFeaturedItemService) as Kopje stores them, in the rows of migration 0103_collections, applied from the
-// collections part of a sync (#1589's D21, remote-collections.ts completeCollectionRead). Nothing here fetches: a
-// collection or an item given only as a URI is skipped,
+// ProcessFeaturedItemService) as Kopje stores them, in the rows of migration 0103_collections. One application serves
+// every path that carries an embedded collection or item (#1589's D21): the collections part of a sync
+// (remote-collections.ts completeCollectionRead), an inbound Add of a collection or an item and an Update of a
+// collection from its owner (inbox.ts). Nothing here fetches: a collection or an item given only as a URI is skipped,
 // and a member Kopje does not store is kept by its featuredObject alone, unshown and unchecked, until a later
 // application finds the account (never fetched for it: reading an account's collections leads to no other account).
 //
@@ -345,6 +348,71 @@ function applyListing(
   return queued;
 }
 
+// An inbound Add of one item to the collection (Add#add_collection_item, ProcessFeaturedItemService): applied by the
+// revision rule after every other item, unless the owner's Remove retracted it (ID-7), it is not one the collection
+// may hold, another collection holds its uri, another item of the collection holds its member, or the collection has
+// no live slot left for a new item (the next read applies the listing). At MAX_STORED_ITEMS rows the oldest retired
+// row of the collection is deleted first (collections.ts addCollectionItem). Whether it was queued, or null when
+// nothing was applied.
+export function applyFeaturedItem(
+  db: Db,
+  owner: { uri: string },
+  collection: { id: string; uri: string },
+  input: FeaturedItemInput,
+  origin: string,
+  now: number,
+): boolean | null {
+  const item = itemOf(db, collection, input, origin);
+  if (item === null || isRetracted(db, owner.uri, item.uri, now)) {
+    return null;
+  }
+  const stored = itemByUri(db, item.uri);
+  if (stored !== undefined && stored.collection_id !== collection.id) {
+    return null;
+  }
+  const counts = db.first<{ taken: number; live: number; total: number; last: number | null; retired: number }>(
+    `SELECT count(*) FILTER (WHERE account_id = ?2 AND id IS NOT ?3) AS taken,
+			count(*) FILTER (WHERE state IN (0, 1)) AS live, count(*) AS total, max(position) AS last,
+			count(*) FILTER (WHERE id = ?3 AND state IN (2, 3)) AS retired
+		FROM collection_items INDEXED BY collection_items_order WHERE collection_id = ?1`,
+    collection.id,
+    item.member,
+    stored?.id ?? null,
+  );
+  if ((counts?.taken ?? 0) > 0) {
+    return null;
+  }
+  // A retired row a changed revision would make live needs a live slot as a new one does.
+  const full = (counts?.live ?? 0) >= COLLECTION_MAX_ITEMS;
+  if (stored !== undefined) {
+    return full && counts?.retired === 1
+      ? null
+      : reviseItem(db, { ...item, position: positionOf(db, stored.id), existing: stored.id }, now);
+  }
+  if (full) {
+    return null;
+  }
+  if ((counts?.total ?? 0) >= MAX_STORED_ITEMS) {
+    db.run(
+      `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id =
+				(SELECT id FROM collection_items INDEXED BY collection_items_order
+					WHERE collection_id = ? AND state IN (2, 3) ORDER BY updated_at, id LIMIT 1)`,
+      collection.id,
+    );
+  }
+  const position = Math.min((counts?.last ?? 0) + 1, 2_147_483_647);
+  return insertItem(db, collection.id, { ...item, position }, now);
+}
+
+function positionOf(db: Db, item: string): number {
+  return (
+    db.first<{ position: number }>(
+      `SELECT position FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id = ?`,
+      item,
+    )?.position ?? 1
+  );
+}
+
 // The revision of an item as stored and as listed, compared in SQL (an imported URI may not survive a round trip
 // through JavaScript): its member (account_id, else object_uri) and its candidate.
 const REVISED = `(coalesce(account_id, object_uri) IS NOT coalesce(?2, ?3) OR candidate_approval_uri IS NOT ?4)`;
@@ -432,5 +500,83 @@ export function deleteUnlisted(db: Db, owner: string, kept: readonly string[]): 
 				AND id NOT IN (SELECT value FROM json_each(?2)))`,
     owner,
     JSON.stringify(kept),
+  );
+}
+
+// Remove#remove_collection: the owner's collection `uri`, with its items and notifications (as deleteUnlisted).
+// Whether one was deleted.
+export function removeFeaturedCollection(db: Db, owner: string, uri: string): boolean {
+  return (
+    db.run(
+      `DELETE FROM collections INDEXED BY ${COLLECTIONS_ID_INDEX} WHERE id =
+				(SELECT id FROM collections INDEXED BY collections_uri WHERE uri = ?2 AND account_id = ?1)`,
+      owner,
+      uri,
+    ) > 0
+  );
+}
+
+// The owner's stored collection `uri` (an Add's or a Remove's target among the account's collections).
+export function ownCollectionByUri(db: Db, owner: string, uri: string): { id: string; uri: string } | undefined {
+  return db.first<{ id: string; uri: string }>(
+    "SELECT id, uri FROM collections INDEXED BY collections_uri WHERE uri = ?2 AND account_id = ?1 AND local = 0",
+    owner,
+    uri,
+  );
+}
+
+// Remove#remove_collection_item: the item `uri` of the collection, with its notification. Whether one was deleted.
+export function removeFeaturedItem(db: Db, collection: string, uri: string): boolean {
+  return (
+    db.run(
+      `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id =
+				(SELECT id FROM collection_items INDEXED BY collection_items_uri WHERE uri = ?2 AND collection_id = ?1)`,
+      collection,
+      uri,
+    ) > 0
+  );
+}
+
+// A member's Delete of its feature authorization `authorization` (Delete#delete_feature_authorization!, #1589's
+// revocation rule): its row is the member's row whose approval_uri is it (collection_items_approval), or else the
+// member's row in the stored collection the embedded FeatureAuthorization's interactingObject names, when its
+// interactionTarget is the member. That row is revoked only while the authorization is its current one: its
+// approval_uri, or, with none verified, its candidate; then no later check completion accepts it (no token, no
+// queue). At most one row is read by each lookup and one written. Whether a row was revoked.
+export function revokeFeatureAuthorization(
+  db: Db,
+  member: { id: string; uri: string },
+  authorization: string,
+  feature: { collection: string | null; member: string | null } | null,
+  now: number,
+): boolean {
+  const row =
+    db.first<{ id: string }>(
+      "SELECT id FROM collection_items INDEXED BY collection_items_approval WHERE account_id = ?1 AND approval_uri = ?2",
+      member.id,
+      authorization,
+    ) ??
+    (feature !== null && feature.collection !== null && feature.member === member.uri
+      ? db.first<{ id: string }>(
+          `SELECT i.id FROM collections c INDEXED BY collections_uri
+						CROSS JOIN collection_items i INDEXED BY collection_items_member ON i.collection_id = c.id AND i.account_id = ?2
+					WHERE c.uri = ?1`,
+          feature.collection,
+          member.id,
+        )
+      : undefined);
+  if (row === undefined) {
+    return false;
+  }
+  return (
+    db.run(
+      `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
+				SET state = ${COLLECTION_ITEM_STATES.revoked}, check_due_at = NULL, check_token = NULL, updated_at = ?3
+			WHERE id = ?1 AND state <> ${COLLECTION_ITEM_STATES.revoked}
+				AND (approval_uri = ?2 OR (approval_uri IS NULL AND candidate_approval_uri = ?2))`,
+      row.id,
+      authorization,
+      new Date(now).toISOString(),
+    ) > 0
   );
 }

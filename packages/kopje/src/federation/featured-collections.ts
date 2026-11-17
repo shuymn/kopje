@@ -11,7 +11,8 @@ import { idOf } from "./remote-status";
 
 // An embedded FEP-7aa9 FeaturedCollection or FeaturedItem as Mastodon 4.7.5's ActivityPub::ProcessFeaturedCollectionService
 // and ProcessFeaturedItemService read one, for the Store to apply (domain/remote-featured-collections.ts, which checks
-// every rule again): the collection read from a sync's featuredCollections page. Nothing is fetched here.
+// every rule again): the collection read from a sync's featuredCollections page, an inbound Add or Update, or a search
+// resolve. Nothing is fetched here.
 
 // ProcessFeaturedCollectionService#url: url_to_href(url, 'text/html') when it is an http(s) URL, else none (the
 // collection's id stands for it).
@@ -39,7 +40,7 @@ function totalItemsOf(value: unknown): number | null {
 
 // An embedded FeaturedItem: its id and value_or_id of its featuredObject and featureAuthorization; null for an item
 // given only as a URI (ProcessFeaturedItemService would fetch it) or without a string id and object.
-function featuredItemOf(value: unknown): FeaturedItemInput | null {
+export function featuredItemOf(value: unknown): FeaturedItemInput | null {
   if (!isObject(value) || typeof value.id !== "string") {
     return null;
   }

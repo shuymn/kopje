@@ -242,10 +242,23 @@ describe("D2: real LD-signed payloads read as Mastodon reads them", () => {
     expect(accepted(await kopje(react))).toMatchObject({ type: "Like", object: "https://kopje.test/ap/o/remote-1" });
   });
 
-  it("refuses Mastodon's Add, Remove and FeatureRequest in both forms, as they carry no id or no actor", async () => {
-    for (const entry of corpus.filter((e) => /^(Add|Remove)\(Hashtag\)$|^FeatureRequest$/.test(e.name))) {
-      expect(await kopje(entry), `${entry.sender} ${entry.name}`).toEqual({ ok: false, reason: "incomplete" });
-      expect(await mastodon(entry)).toEqual({ ok: false, reason: "incomplete" });
+  // #1589's D20: Mastodon's Add and Remove carry no id, and are read without one (the Store applies them to a
+  // collection target only); a FeatureRequest carries no actor.
+  it("reads Mastodon's Add and Remove, and refuses FeatureRequest (no actor), in both forms", async () => {
+    const entries = corpus.filter((e) => /^(Add|Remove)\(Hashtag\)$|^FeatureRequest$/.test(e.name));
+    expect(entries.length).toBeGreaterThan(0);
+    for (const entry of entries) {
+      const name = `${entry.sender} ${entry.name}`;
+      if (entry.name === "FeatureRequest") {
+        expect(await kopje(entry), name).toEqual({ ok: false, reason: "incomplete" });
+        expect(await mastodon(entry)).toEqual({ ok: false, reason: "incomplete" });
+        continue;
+      }
+      expect(accepted(await kopje(entry)), name).toMatchObject({
+        type: entry.name.slice(0, -"(Hashtag)".length),
+        id: null,
+      });
+      expect(await kopje(entry), name).toEqual(await mastodon(entry));
     }
   });
 
