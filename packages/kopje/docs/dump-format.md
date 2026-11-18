@@ -496,7 +496,8 @@ writers store 1 when the attachment's focus was given (an upload's, a media upda
 attachment's `focalPoint`) and 0 when none was; an attachment shows its focus where the column is 1 or its point is not
 0,0. A restored row keeps its value. A dump taken before 0116 has no such column: it restores into a Store at its own
 migrations, which then upgrades, and every row reads 0 beside the point it held, so an attachment shows `focus_x` and
-`focus_y` as its focus only when they are not both 0. A file built from legacy data leaves it at 0.
+`focus_y` as its focus only when they are not both 0. A file built from legacy data holds 0, with 0,0, in every row: a
+legacy `focalPoint` is not carried ([cutover.md](cutover.md)).
 
 Account invitations (migration `0081_account_invitations`): an `account_invitations` row holds an `email` (text of 3 to
 254 UTF-8 bytes with no NUL, no ASCII control, space or DEL, and one `@` neither first nor last), a `username` (1 to 30

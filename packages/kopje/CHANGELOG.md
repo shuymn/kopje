@@ -780,7 +780,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   attachment without one has none, where Kopje showed `{"x": 0, "y": 0}`, and a `0,0` given by an upload,
   `PUT /api/v1/media/:id`, an edit or a remote `focalPoint` is shown. A media update, an edit or a remote `Update`
   without a focus keeps the one shown, and an edit that gives one where none was shown records a version, `0,0`
-  included. An attachment stored before the upgrade shows its focus when it is not `0,0`. Migration
+  included. An attachment stored before the upgrade shows its focus when it is not `0,0`. The cutover's conversion
+  carries no legacy `focalPoint`, as before, and `verify-conversion` now fails on any focus a converted attachment holds
+  and on an earlier version's attachments in any form but the one the conversion writes. Migration
   `0116_media_focus_given`: a column of `media_attachments` and its two triggers, reading no row; the upgrade checks no
   reference, but for one resumed or retried after a failure, which checks the whole Store. `wrangler.jsonc`: unchanged.
   This adds a Store migration, so the release is at least a minor version, and rolling back past it needs a

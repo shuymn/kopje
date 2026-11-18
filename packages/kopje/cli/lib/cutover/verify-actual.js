@@ -29,6 +29,7 @@ export const CATEGORIES = [
   "edits",
   "attachments",
   "media",
+  "media_focus",
   "media_files",
   "boosts",
   "legacy_ids",
@@ -83,6 +84,72 @@ function sizesOf(meta) {
     m.small?.height ?? null,
   ];
   return sizes;
+}
+
+/** @typedef {null | { [key: string]: Shape }} Shape a JSON value that is no object or array (null), or an object */
+
+// An attachment in a version's snapshot as the converter writes it (presented in convert.js), its meta included
+// (metaOf and the image mapper in convert.js, fit in upload-rules.js).
+const SIZE = { width: null, height: null };
+/** @type {Shape} */
+const ATTACHMENT = {
+  id: null,
+  type: null,
+  url: null,
+  preview_url: null,
+  remote_url: null,
+  preview_remote_url: null,
+  text_url: null,
+  meta: { original: SIZE, small: SIZE },
+  description: null,
+  blurhash: null,
+};
+
+/**
+ * Whether a JSON value fits a shape: null always; any other value that is no object or array where the shape is null;
+ * an object holding only the shape's keys, each fitting the shape there, where it is an object.
+ * @param {unknown} value @param {Shape} shape
+ * @returns {boolean}
+ */
+function fits(value, shape) {
+  if (value === null) {
+    return true;
+  }
+  if (typeof value !== "object") {
+    return shape === null;
+  }
+  return (
+    shape !== null &&
+    !Array.isArray(value) &&
+    Object.entries(value).every(([key, inner]) => Object.hasOwn(shape, key) && fits(inner, shape[key] ?? null))
+  );
+}
+
+/**
+ * A version's attachments if its snapshot is exactly what the converter writes, else null. The converter writes
+ * JSON.stringify of an array of attachments: TEXT that is valid UTF-8 without NUL (so a quoted literal in the dump),
+ * spelled as JSON.stringify spells what JSON.parse reads of it, each attachment an object of the converter's keys. The
+ * history reads a snapshot with SQLite's JSON functions (editMediaSql in src/domain/status-bounds.ts), not JSON.parse,
+ * so any other form could show what this check does not read.
+ * @param {string | undefined} literal
+ * @returns {{ url?: unknown, preview_url?: unknown, description?: unknown, meta?: unknown }[] | null}
+ */
+function convertedSnapshot(literal) {
+  if (literal === undefined || !literal.startsWith("'")) {
+    return null;
+  }
+  const text = textOf(literal) ?? "";
+  /** @type {unknown} */
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed) || JSON.stringify(parsed) !== text) {
+    return null;
+  }
+  return parsed.every((m) => m !== null && fits(m, ATTACHMENT)) ? parsed : null;
 }
 
 /**
@@ -260,19 +327,21 @@ export function actualFromDump(text) {
       case "status_edits": {
         const uri = status(t("status_id"))?.uri ?? "";
         emojiRows.status_edits += row.emojis === undefined || row.emojis === "NULL" ? 0 : 1;
-        // The attachments a version shows, as its media_json presents them.
-        /** @type {({ url?: unknown, preview_url?: unknown, description?: unknown, meta?: unknown } | null)[]} */
-        let shown = [];
-        try {
-          const parsed = /** @type {unknown} */ (JSON.parse(t("media_json") ?? "[]"));
-          shown = Array.isArray(parsed) ? /** @type {typeof shown} */ (parsed) : [];
-        } catch {
-          shown = [];
-        }
-        const media = shown.map(
-          (m) =>
-            /** @type {unknown[]} */ ([m?.url ?? null, m?.preview_url ?? null, m?.description ?? "", sizesOf(m?.meta)]),
-        );
+        // The attachments a version shows, as its media_json presents them; a snapshot the converter would not write
+        // matches no expected version.
+        const shown = convertedSnapshot(row.media_json);
+        const media =
+          shown === null
+            ? "not as converted"
+            : shown.map(
+                (m) =>
+                  /** @type {unknown[]} */ ([
+                    m.url ?? null,
+                    m.preview_url ?? null,
+                    m.description ?? "",
+                    sizesOf(m.meta),
+                  ]),
+              );
         edits.set(uri, [...(edits.get(uri) ?? []), [t("content"), t("spoiler_text"), int(row.sensitive), media]]);
         break;
       }
@@ -294,6 +363,12 @@ export function actualFromDump(text) {
             meta = null;
           }
           put("media_files", t("file_token") ?? "", [t("url"), t("preview_url"), t("content_type"), sizesOf(meta)]);
+        }
+        // Any focus the row holds (none expected: a legacy focalPoint is not carried, so every row holds 0, 0 and
+        // focus_given 0, whatever its source), under its URL and position: one record FAILs, however many share them.
+        const focus = [int(row.focus_x), int(row.focus_y), int(row.focus_given)];
+        if (focus.some((n) => n !== 0)) {
+          put("media_focus", `row\n${t("url") ?? ""}\n${t("position") ?? ""}`, focus);
         }
         // What the status shows now; an image only its earlier versions show (shown 0) is compared through them.
         const owner = int(row.shown) === 0 ? undefined : status(t("status_id"));

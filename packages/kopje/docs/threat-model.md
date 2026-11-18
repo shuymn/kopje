@@ -3555,7 +3555,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `0116_media_focus_given` refuse any other value, imports included (`focusGivenPastBoundSql` in
   `src/platform/stored-bounds.ts`). They bound its range only: a row the upgrade carried keeps 0 beside any point, which
   shows when it is not 0,0. The writers (`completeMedia` and `updateMedia` in `src/domain/media.ts`, the edit in
-  `src/domain/statuses.ts`, `writeMedia` in `src/domain/remote-statuses.ts`) store 0, 1 or
+  `src/domain/statuses.ts`, `writeMedia` in `src/domain/remote-statuses.ts`, the cutover's conversion) store 0, 1 or
   the value already stored, so a write never fails on it, and the reads use it only inside the SQL that decides whether
   a focus shows
   (`focusShownSql` in `src/domain/status-rows.ts`), so a status read takes no more columns (`test/migrations.test.ts`
