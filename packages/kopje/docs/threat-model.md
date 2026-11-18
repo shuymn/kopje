@@ -4213,7 +4213,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   remote moderation jobs in one, the collection jobs, the held handshakes, the unlock acceptances), then the Worker's
   collection syncs, checks of remote collections' items, quote verifications and replies walks, each its own round of
   Store calls and fetches. The deliveries
-  the Store calls recorded are rung once, before the Worker's fetches. A family that fails is logged
+  the Store calls recorded are rung once, before the Worker's fetches, and those the Worker's families recorded (a
+  collection read's answers) once after them. A family that fails is logged
   (`kopje.jobs.family.failed`), counts as having no work left, and stops no other family (the next resolves a new stub);
   a Store refusal (maintenance, a retryable or reset error) ends the round and counts nothing, and cron runs the next. A
   call the platform terminates (a CPU or memory limit) fails
@@ -4225,7 +4226,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   syncs throw", "walks when every other family throws: eleven boundaries, each logged once", "stops no other family when
   it throws", "rings for the Store calls’ deliveries before the collection syncs fetch", "ends the round at a
   retryable refusal after an earlier family reported pending", "gives the family after a failure a newly resolved
-  stub"). Inbound jobs: _Enforced (main):_ each batch of a purge, `Move` or status deletion runs in its own savepoint
+  stub"), `test/federation-feature-requests.test.ts` ("rings for the Delete a read of the owner's collections
+  records"). Inbound jobs: _Enforced (main):_ each batch of a purge, `Move` or status deletion runs in its own savepoint
   (`runJobBatch` in `src/domain/inbox.ts`, `isolated` in `src/domain/job-attempts.ts`); a batch that throws a
   recoverable error (a JavaScript exception, or an SQLite statement error that leaves the transaction usable, as a
   `RAISE(ABORT)` or a CHECK does) is rolled back alone, and one that leaves work and moved nothing (a stall: no
@@ -6014,8 +6016,8 @@ so the Store isolate's 128 MB holds them together.
   ids, fences and epochs: the moderation log's ids and the report fence (`logAction` in `src/domain/moderation-log.ts`,
   `actionBound` and `resolveSuspensionReports` in `src/domain/reports.ts`), credential epochs
   (`src/domain/suspension.ts`, `consumeCode` in `src/domain/oauth.ts`), push subscription ids (the tokens round,
-  `completePush` in `src/domain/push.ts`), the inserted notification's id passed to push selection, the inbound
-  doorbell's marks (`outboundSince` in `src/domain/inbox.ts`), a new conversation's id and streaming sequence, instance
+  `completePush` in `src/domain/push.ts`), the inserted notification's id passed to push selection, the doorbell's
+  marks (`outboundSince` in `src/domain/deliveries.ts`), a new conversation's id and streaming sequence, instance
   domain block ids, favourite and Like ids (`src/domain/inbox.ts`), the streaming journal's ids, the fan-out's position,
   a conversation event's ceiling and the sockets' change sequences (`src/domain/streaming.ts`, `src/stream-hub.ts`,
   ordered in the Worker by `compareIntegers`), remote media slot ids (`src/domain/remote-media.ts`: a due slot past the

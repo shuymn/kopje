@@ -7,7 +7,7 @@ import { type DeliveryOutcome, LEASE_MS, MAX_BACKLOG, MAX_LANE_BACKLOG } from ".
 import { ourFeatureRequest } from "../src/domain/feature-requests";
 import { SWEEP_BATCH } from "../src/domain/remote-actors";
 import { parseActivity } from "../src/federation/inbound";
-import { handleQueue } from "../src/jobs/queue";
+import { handleQueue, jobsRound } from "../src/jobs/queue";
 import { MAX_STORED_COLLECTIONS } from "../src/platform/stored-bounds";
 import { settleDeliveries, sql } from "./api-helpers";
 import { harness, inboxDeps, NOW } from "./app-helpers";
@@ -1604,6 +1604,31 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
       expect(await answerCopies(w.t, a)).toEqual([{ ...copies[1]!, state: "pending" }]);
     });
   }
+
+  // Code review r2: a read of the owner's collections that answers a listing with alice's Delete rings for its
+  // delivery in the same jobs round (jobsRound rings for the Worker families' deliveries after them). Fails if the
+  // answer waits for the delivery cron.
+  it("rings for the Delete a read of the owner's collections records", async () => {
+    const w = await owned();
+    expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+    const [row] = await localRows(w.t, ALICE);
+    expect(await revokeAs(w.t, await collectionIdOf(w.t, w.listed.id), row!.id)).toBe(200);
+    await deliverAll(w.t);
+    const a = authorization(row!.id);
+    w.listed.orderedItems = [localItem(w.owner, ALICE_URI, a)];
+    w.listed.totalItems = 1;
+    serveListing(w.t.web, w.owner, w.listed);
+    const ownerId = (await sql<{ id: string }>(w.t.store, "SELECT id FROM accounts WHERE uri = ?", w.owner.uri))[0]!.id;
+    await requestSync(w.t, ownerId);
+    w.t.queue.pending.length = 0;
+    const env = { ...w.t.env, MAINTENANCE: "off" } as unknown as Env;
+    await jobsRound(
+      env,
+      inboxDeps(() => w.t.store, w.t.web.loader),
+    );
+    expect((await answerCopies(w.t, a)).map((c) => c.inbox)).toEqual([`${w.owner.uri}/inbox`]);
+    expect(w.t.queue.pending.map((m) => m.body)).toContainEqual({ kind: "deliver" });
+  });
 
   // Code review r2: an answer goes to the owner's inbox as the owner's account names it when the listing is answered.
   // Fails if an answer waiting for the inbox the owner had before a refresh of its actor stands for the answer to the

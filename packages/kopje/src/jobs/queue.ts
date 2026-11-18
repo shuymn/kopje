@@ -1,5 +1,5 @@
 import { checkCollectionItems } from "../federation/collection-checks";
-import { syncCollections } from "../federation/collections";
+import { syncCollectionsRound } from "../federation/collections";
 import { isDeliverMessage } from "../federation/delivery";
 import {
   type InboxDeps,
@@ -167,7 +167,7 @@ const STORE_FAMILIES: Families = STORE_JOB_FAMILIES.map(({ family, run }) => ({
 
 // The Worker's families, whose rounds await network work.
 const WORKER_FAMILIES: Families = [
-  { family: "collections", run: async (env, deps) => ({ pending: await syncCollections(env, deps), delivers: false }) },
+  { family: "collections", run: syncCollectionsRound },
   {
     family: "collection_checks",
     run: async (env, deps) => ({ pending: await checkCollectionItems(env, deps), delivers: false }),
@@ -202,8 +202,9 @@ async function runFamilies(families: Families, env: Env, deps: InboxDeps): Promi
 // replies collections (federation/replies.ts), eleven error boundaries in all. Their work and progress are
 // durable in the Store, so the round is only nudged: one family's failure is logged and stops no other; the Store
 // refusing (maintenance, a retryable or reset error) ends the round with nothing counted (cron resumes it). The
-// deliveries the Store calls recorded are rung before the network work, and one jobs message asks for the next round
-// while any family has work left (RES-5).
+// deliveries the Store calls recorded are rung before the network work, those the Worker's families recorded (a
+// collection read's answers) after it, and one jobs message asks for the next round while any family has work left
+// (RES-5).
 export async function jobsRound(env: Env, deps: InboxDeps): Promise<void> {
   const store = await runFamilies(STORE_FAMILIES, env, deps);
   if (store.delivers) {
@@ -213,6 +214,9 @@ export async function jobsRound(env: Env, deps: InboxDeps): Promise<void> {
     return;
   }
   const worker = await runFamilies(WORKER_FAMILIES, env, deps);
+  if (worker.delivers) {
+    await ringDeliveries(env.QUEUE);
+  }
   if (!worker.refused && (store.pending || worker.pending)) {
     await requestInboundJobs(env.QUEUE);
   }
