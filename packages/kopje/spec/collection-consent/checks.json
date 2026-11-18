@@ -8,7 +8,7 @@
     },
     {
       "name": "S2",
-      "distinct": 123810,
+      "distinct": 121514,
       "depth": 23
     },
     {
@@ -18,7 +18,7 @@
     },
     {
       "name": "S4",
-      "distinct": 8811,
+      "distinct": 16570,
       "depth": 19
     },
     {
@@ -28,7 +28,7 @@
     },
     {
       "name": "S6",
-      "distinct": 40113,
+      "distinct": 39896,
       "depth": 22
     },
     {
@@ -53,7 +53,7 @@
     },
     {
       "name": "S11",
-      "distinct": 8265,
+      "distinct": 8187,
       "depth": 19
     },
     {
@@ -292,6 +292,20 @@
       "variant": "V25",
       "invariant": "MemberAvailability",
       "trace": 5
+    },
+    {
+      "name": "V26",
+      "scenario": "S4",
+      "variant": "V26",
+      "invariant": "AnswerBound",
+      "trace": 9
+    },
+    {
+      "name": "V27",
+      "scenario": "S2",
+      "variant": "V27",
+      "invariant": "AnswerBound",
+      "trace": 8
     }
   ],
   "findings": [],
@@ -722,6 +736,20 @@
       "goal": "DroppedDelivery",
       "trace": 5,
       "fixture": true
+    },
+    {
+      "name": "S4-AnsweredXRefused",
+      "scenario": "S4",
+      "goal": "AnsweredXRefused",
+      "trace": 7,
+      "fixture": true
+    },
+    {
+      "name": "S2-AnswerCoalesced",
+      "scenario": "S2",
+      "goal": "AnswerCoalesced",
+      "trace": 10,
+      "fixture": true
     }
   ],
   "replay": {
@@ -829,6 +857,14 @@
       {
         "variant": "V25",
         "fixture": "S12-DroppedDelivery"
+      },
+      {
+        "variant": "V26",
+        "fixture": "S4-AnsweredX"
+      },
+      {
+        "variant": "V27",
+        "fixture": "S2-AnswerCoalesced"
       }
     ],
     "exempt": [

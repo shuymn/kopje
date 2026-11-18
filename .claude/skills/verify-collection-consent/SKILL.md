@@ -91,6 +91,10 @@ cites the code):
   L is suspended the Store drops its ordinary activities when it claims them (only a `Delete` is still sent):
   `KDeliver` then has the input `dropped` and sends nothing, and the head is neither duplicated nor given up.
   `RJob` is one of R's jobs, which run in any order.
+- An answer to a listing of an authorization L's row no longer serves is a retraction only to R while Kopje holds the
+  row; X's, or any once the row is gone, is ordinary and refused at a full backlog. A retraction answer is not
+  recorded while one of the same authorization to the same inbox still waits in the lane (`Coalesced`), so the
+  listing step then records nothing.
 - `R*` and `XAdd` are R's requests and services; `Drop` loses an envelope; `Env` changes L's policy, the backlog, the
   retraction cap, C's slots or how many of R's collections Kopje holds.
 
@@ -99,7 +103,8 @@ cites the code):
 tracks, `unexcused` the corrections CR3 counts, `lastRd` the latest read that covered the row, which OV2
 compares). `MemberAvailability` fails when, while L is unavailable, Kopje answers for, creates or lists L's row, a read
 changes the row at all, or R receives an activity of L's other than a `Delete`. `OV3` fails when a read that does
-not cover the row replaces the covering read OV2 compares.
+not cover the row replaces the covering read OV2 compares. `AnswerBound` fails when Kopje's lane holds two retraction
+answers of one authorization: one to an account other than R, or a second to R while the first still waits.
 
 Tell the two kinds of failure apart by the step that breaks the invariant:
 

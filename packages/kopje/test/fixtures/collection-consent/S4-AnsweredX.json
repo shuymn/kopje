@@ -229,7 +229,7 @@
             "object": "a1",
             "result": null,
             "to": "X",
-            "class": "retraction",
+            "class": "ordinary",
             "outcome": "queued"
           }
         ],
