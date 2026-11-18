@@ -1,0 +1,5 @@
+# The JDK the official TLC runs under to cross-check Kopje's TLA+ specifications (packages/kopje/scripts/tlc-check.mjs),
+# apart from mise.toml so that only the specification's checks install it: select it with MISE_ENV=spec. mise.spec.lock
+# pins it, under mise.toml's settings.
+[tools]
+java = "temurin-21"

@@ -1,8 +1,8 @@
 name: Specification
 # Checks Kopje's TLA+ specifications (packages/kopje/spec/) under the official TLC, the second checker beside tla-ts,
 # which the Node suite runs (test-node/feature-d-spec.test.ts). Both must give the outcomes spec/feature-d/checks.json
-# records. It runs when a specification, its checks, the scripts that run them, the pinned JDK or the tla-ts pin
-# change.
+# records. It runs when a specification, its checks, the scripts that run them, the pinned tools (the JDK in
+# mise.spec.toml, node in mise.toml) or the tla-ts pin change.
 on:
   pull_request:
     paths:
@@ -10,8 +10,11 @@ on:
       - "packages/kopje/scripts/feature-d-plan.mjs"
       - "packages/kopje/scripts/tlc-check.mjs"
       - "pnpm-workspace.yaml"
+      - "pnpm-lock.yaml"
       - "mise.toml"
       - "mise.lock"
+      - "mise.spec.toml"
+      - "mise.spec.lock"
       - ".github/workflows/spec.yml"
   push:
     branches:
@@ -21,8 +24,11 @@ on:
       - "packages/kopje/scripts/feature-d-plan.mjs"
       - "packages/kopje/scripts/tlc-check.mjs"
       - "pnpm-workspace.yaml"
+      - "pnpm-lock.yaml"
       - "mise.toml"
       - "mise.lock"
+      - "mise.spec.toml"
+      - "mise.spec.lock"
       - ".github/workflows/spec.yml"
   workflow_dispatch:
 
@@ -34,17 +40,20 @@ concurrency:
 
 jobs:
   tlc:
-    # The checks take about 90 s on a laptop, one TLC process at a time.
+    # The checks take about 2 min on a laptop, one TLC process at a time.
     timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # mise.spec.toml's JDK, on top of mise.toml.
+    env:
+      MISE_ENV: spec
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # node and the JDK at the versions mise.lock pins. The script needs no package: it downloads TLC's jar and
-      # checks its SHA-256.
+      # node and the JDK at the versions mise.lock and mise.spec.lock pin. The script needs no package: it downloads
+      # TLC's jar and checks its SHA-256.
       - uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785 # v5.2.8
         with:
           install_args: node java

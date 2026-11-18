@@ -6,13 +6,13 @@
 //
 //   node scripts/tlc-check.mjs [--jar <tla2tools.jar>] [--only <name>]... [--trace]
 //
-// --only runs the checks of that name (S2, V13, challenge-1, S1-Accepted: checks.json's names); --trace prints TLC's
+// --only runs the checks of that name (S2, V13, S1-Accepted: checks.json's names); --trace prints TLC's
 // report of each violation, its trace with every variable at every step.
 //
 // The jar is TLC's release TLC_VERSION, checked against TLC_SHA256; without --jar it is downloaded once into
-// node_modules/.cache/. java is the JDK mise.toml pins (`mise exec -- node scripts/tlc-check.mjs`). Each check runs
-// in its own directory under the system temporary directory, one TLC worker at a time, and the directory is removed
-// after it.
+// node_modules/.cache/. java is the JDK mise.spec.toml pins (`MISE_ENV=spec mise exec -- node scripts/tlc-check.mjs`).
+// Each check runs in its own directory under the system temporary directory, one TLC worker at a time, and the
+// directory is removed after it.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
