@@ -75,6 +75,7 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 //   - 100,000 featured hashtags (from migration 0025_remote_collections on), MAX_FEATURED_TAGS of each of the first
 //     10,000 accounts;
 //   - 10,000 inbound jobs, status deletions of the first statuses, every other one finished;
+//   - 1,000,000 inbound retractions, one by each of as many remote actors, expiring over the next 30 days;
 //   - a notification policy of each local account (from migration 0020_notification_policies on), every condition at
 //     its default;
 //   - the other job families' rows: 10,000 stamp revocations (from 0033_quotes on), every other one done, by the
@@ -135,8 +136,8 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // create walks waiting with their root node), and as it creates tables its upgrade checks every reference;
 // 0109_scheduled_media_cap walks the held uploads (media_attachments_scheduled) and detaches those past each scheduled
 // status's first four (while it is pending: 6,000 scheduled statuses, TOTAL_LIMIT of each local account, holding four
-// uploads each, and the first 100 holding 1,000 more each, not scaled, so it detaches 100,000). A migration that reads
-// another table must add it here before it is measured. The measured time is the whole upgrade, from before the
+// uploads each, and the first 100 holding 1,000 more each, not scaled, so it detaches 100,000); 0117_retraction_counts
+// indexes every inbound retraction. A migration that reads another table must add it here before it is measured. The measured time is the whole upgrade, from before the
 // bookmark to after the verification: Date.now() in workerd moves only between I/O events, so the clock is read across
 // an await on each side.
 
@@ -187,6 +188,7 @@ const SHAPE = {
   skewedRows: 100_000,
   skewedFeatures: 100_000,
   inboundJobs: 10_000,
+  retractions: 1_000_000,
   revocations: 10_000,
   familyJobs: 1_000,
   collectionSyncs: 10_000,
@@ -247,6 +249,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
   const pendingCards = Math.min(Math.round(SHAPE.pendingCards * scale), cards);
   const featuredTags = Math.min(Math.round(SHAPE.featuredTags * scale), accounts * MAX_FEATURED_TAGS);
   const inboundJobs = Math.min(Math.round(SHAPE.inboundJobs * scale), statuses);
+  const retractions = Math.round(SHAPE.retractions * scale);
   const revocations = Math.round(SHAPE.revocations * scale);
   const familyJobs = Math.min(Math.round(SHAPE.familyJobs * scale), accounts - SHAPE.local);
   const hasTagKeys = at > MIGRATIONS.findIndex((m) => m.name === "0057_trends");
@@ -782,6 +785,18 @@ it("applies the migration to the benchmark store within the budget", async () =>
       SHAPE.domains,
       Date.parse(now),
     );
+    // Retractions: one by each of as many remote actors, of an id of its origin, expiring over the next 30 days
+    // (RETRACTION_TTL_MS, 2,592,000,000 ms).
+    run(
+      `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1)
+			INSERT INTO inbound_retractions (actor_uri, target_uri, expires_at)
+			SELECT 'https://d' || (i % ?2) || '.bench/users/r' || i, 'https://d' || (i % ?2) || '.bench/statuses/' || i,
+				?3 + i * (2592000000 / ?1)
+			FROM n WHERE ?1 > 0`,
+      retractions,
+      SHAPE.domains,
+      Date.parse(now),
+    );
     // A policy of each local account, the rows 0095_notification_policy_bots tests its CHECK on.
     const hasPolicies = has("notification_policies");
     if (hasPolicies) {
@@ -1103,6 +1118,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
       tags: count("status_tags"),
       notifications: count("notifications WHERE type <> 'admin.report'"),
       reports: count("reports"),
+      retractions: count("inbound_retractions"),
       reportNotifications: hasReportNotifications ? count("notifications WHERE report_id IS NOT NULL") : 0,
       pushes: count("push_deliveries"),
       moderationLog: moderationLog > 0 ? count("admin_actions") : 0,
@@ -1235,6 +1251,16 @@ it("applies the migration to the benchmark store within the budget", async () =>
           tables: [count("reply_walk_debts"), count("reply_walk_cursors")],
         }
       : undefined;
+    // 0117_retraction_counts: its index's definition, and the retractions it holds.
+    const retractionIndex = sql
+      .exec<{ sql: string }>(
+        "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = 'inbound_retractions_actor_expires'",
+      )
+      .toArray()
+      .map((row) => ({
+        sql: row.sql,
+        rows: count("inbound_retractions INDEXED BY inbound_retractions_actor_expires"),
+      }))[0];
     // 0092_reject_replays: its table, indexes (the unique key's included) and triggers, made and empty.
     const rejectReplays = has("reject_replays")
       ? {
@@ -1307,6 +1333,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
           pinRefresh,
           quoteBroadcast,
           walkDebts,
+          retractionIndex,
         },
       };
     }
@@ -1347,10 +1374,19 @@ it("applies the migration to the benchmark store within the budget", async () =>
         pinRefresh,
         quoteBroadcast,
         walkDebts,
+        retractionIndex,
       },
     };
   });
-  expect(seeded).toMatchObject({ accounts, local: SHAPE.local, statuses, notifications, reports, inboundJobs });
+  expect(seeded).toMatchObject({
+    accounts,
+    local: SHAPE.local,
+    statuses,
+    notifications,
+    reports,
+    inboundJobs,
+    retractions,
+  });
   if (at > MIGRATIONS.findIndex((migration) => migration.name === "0067_status_cards")) {
     expect(seeded).toMatchObject({ cards, pendingCards });
   }
@@ -1377,6 +1413,13 @@ it("applies the migration to the benchmark store within the budget", async () =>
       SHAPE.local + pinningRemotes,
       [SHAPE.local * 5 + pinningRemotes * 20, 0],
     ]);
+  }
+  // The retractions were there to index, and the index holds every one.
+  if (applied.includes("0117_retraction_counts")) {
+    expect(measured.retractionIndex).toEqual({
+      sql: "CREATE INDEX inbound_retractions_actor_expires ON inbound_retractions (actor_uri, expires_at)",
+      rows: retractions,
+    });
   }
   // The held uploads past four were there to detach, and the upgrade kept four of each scheduled status.
   if (seeded.scheduled > 0) {

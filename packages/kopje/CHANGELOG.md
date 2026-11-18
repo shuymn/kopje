@@ -811,6 +811,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   reference, but for one resumed or retried after a failure, which checks the whole Store. `wrangler.jsonc`: unchanged.
   This adds a Store migration, so the release is at least a minor version, and rolling back past it needs a
   point-in-time restore.
+- The per-actor retraction cap's count, taken whenever a retraction is recorded, reads only that actor's live
+  retractions, and at most 10,000 of them (`MAX_RETRACTIONS_PER_ACTOR`), whatever the Store's statistics and however
+  many an import holds; with statistics taken while the table held few actors, it read every actor's live retractions
+  (#1787). Migration `0117_retraction_counts`: an index of `inbound_retractions` by actor and expiry, rewriting no row
+  (building it over 1,000,000 retractions takes 444 ms in workerd's local Durable Object SQLite, and over 10,000,000
+  takes 5,206 ms, medians of three runs); the upgrade checks no reference, but for one resumed or retried after a
+  failure, which checks the whole Store. `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at
+  least a minor version, and rolling back past it needs a point-in-time restore.
 
 ## [0.5.2] - 2026-11-14
 
