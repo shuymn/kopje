@@ -107,6 +107,7 @@ describe("suites", () => {
       "packages/kopje/test-node/feature-d-fixtures.ts",
       "packages/kopje/scripts/feature-d-plan.mjs",
       "packages/kopje/test/feature-d-observe.ts",
+      "packages/kopje/test/feature-d-replay.test.ts",
       "packages/kopje/package.json",
       "pnpm-workspace.yaml",
       "vitest.config.ts",
