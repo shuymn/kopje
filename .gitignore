@@ -9,7 +9,7 @@ lefthook-local.yml
 # Local agent skills, except the repository's own (the first line overrides a local exclude of the directory).
 !/.claude/skills/
 /.claude/skills/*
-!/.claude/skills/verify-feature-d/
+!/.claude/skills/verify-collection-consent/
 packages/kopje/browser/.pages/
 packages/kopje/browser/.results/
 /coverage/

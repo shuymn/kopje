@@ -32,10 +32,10 @@ suites() {
 			*) kopje=true kopje_code=true ;;
 		esac
 		case $path in
-			packages/kopje/spec/* | packages/kopje/test/fixtures/feature-d/* | \
-				packages/kopje/test-node/feature-d-spec.test.ts | packages/kopje/test-node/feature-d-fixtures.ts | \
-				packages/kopje/scripts/feature-d-plan.mjs | packages/kopje/test/feature-d-observe.ts | \
-				packages/kopje/test/feature-d-replay.test.ts | \
+			packages/kopje/spec/* | packages/kopje/test/fixtures/collection-consent/* | \
+				packages/kopje/test-node/collection-consent-spec.test.ts | \
+				packages/kopje/test-node/collection-consent-fixtures.ts | packages/kopje/scripts/collection-consent-plan.mjs | \
+				packages/kopje/test/collection-consent-observe.ts | packages/kopje/test/collection-consent-replay.test.ts | \
 				package.json | packages/kopje/package.json | pnpm-lock.yaml | pnpm-workspace.yaml | mise.toml | mise.lock | \
 				vitest.config.ts | packages/kopje/vitest.spec.config.ts | scripts/test-affected.sh | .github/workflows/ci.yml)
 				kopje_spec=true

@@ -100,14 +100,14 @@ describe("suites", () => {
   // compare them, the dependencies and the test configuration (vitest.spec.config.ts), and nothing else.
   it("runs the specification's checks only for what they read", () => {
     for (const path of [
-      "packages/kopje/spec/feature-d/FeatureD.tla",
-      "packages/kopje/spec/feature-d/coverage.json",
-      "packages/kopje/test/fixtures/feature-d/S1-Accepted.json",
-      "packages/kopje/test-node/feature-d-spec.test.ts",
-      "packages/kopje/test-node/feature-d-fixtures.ts",
-      "packages/kopje/scripts/feature-d-plan.mjs",
-      "packages/kopje/test/feature-d-observe.ts",
-      "packages/kopje/test/feature-d-replay.test.ts",
+      "packages/kopje/spec/collection-consent/CollectionConsent.tla",
+      "packages/kopje/spec/collection-consent/coverage.json",
+      "packages/kopje/test/fixtures/collection-consent/S1-Accepted.json",
+      "packages/kopje/test-node/collection-consent-spec.test.ts",
+      "packages/kopje/test-node/collection-consent-fixtures.ts",
+      "packages/kopje/scripts/collection-consent-plan.mjs",
+      "packages/kopje/test/collection-consent-observe.ts",
+      "packages/kopje/test/collection-consent-replay.test.ts",
       "packages/kopje/package.json",
       "pnpm-workspace.yaml",
       "vitest.config.ts",
@@ -118,7 +118,7 @@ describe("suites", () => {
     }
     for (const path of [
       "packages/kopje/src/domain/collections.ts",
-      "packages/kopje/test-node/feature-d-coverage.test.ts",
+      "packages/kopje/test-node/collection-consent-coverage.test.ts",
     ]) {
       assert.deepEqual(suites(path), B(true, true, false), path);
     }

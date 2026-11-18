@@ -76,7 +76,7 @@
     "assets": "node scripts/build-assets.mjs",
     "build": "node scripts/build-assets.mjs && node scripts/build-package.mjs",
     "check:migrations": "node scripts/released-migrations.mjs",
-    "spec:fixtures": "node test-node/feature-d-fixtures.ts",
+    "spec:fixtures": "node test-node/collection-consent-fixtures.ts",
     "prepack": "node scripts/build-assets.mjs --check && node scripts/build-package.mjs"
   },
   "devDependencies": {
