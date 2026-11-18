@@ -486,11 +486,11 @@ EnvStep ==
 (***************************************************************************)
 \* The claim of a requested read; with none requested (sync false), the request (storing R's actor document) made
 \* just before it. The request stays until a completion reads it through (sync true from here). The claim
-\* revalidates R (claimCollectionSync claims only an available owner) and writes a new token. Once a read's lease ran
-\* out, a new claim may take the sync: its token replaces the read's, which turns stale (sr; remote-collections.ts:356,
-\* roundAccount :402). The row fence includes equality: a row changed in the same millisecond as the claim counts as
-\* changed at it, so a change by the last Store step before the claim may (g.tick); the step's input is then
-\* "sameTime".
+\* revalidates R (claimCollectionSync claims only an available owner) and writes a new token
+\* (remote-collections.ts:345-349). Once a read's lease ran out, a new claim may take the sync: its token replaces the
+\* read's, which turns stale (sr; roundAccount, :402). The row fence includes equality: a row changed in the same
+\* millisecond as the claim counts as changed at it, so a change by the last Store step before the claim may (g.tick);
+\* the step's input is then "sameTime".
 KClaim ==
   /\ k.rk /\ Can("reads") /\ Spend("reads")
   /\ \/ rd.ph = "none" /\ UNCHANGED sr
