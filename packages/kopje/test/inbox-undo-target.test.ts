@@ -154,16 +154,17 @@ const retractions = async (t: T, actorUri = t.rUri) =>
     .map((row) => row.target_uri)
     .toSorted();
 
-// Everything an Undo may change: the edges both ways, favourites, boosts, retractions, answers and their rows and
-// chunks, held Rejects and notifications.
+// Everything an Undo may change: the edges both ways, favourites, boosts and the counts they keep, retractions and
+// their expiry, answers and their rows and chunks, held Rejects and notifications.
 async function snapshot(store: StoreStub) {
   const tables = [
     "SELECT account_id, target_account_id, state, uri FROM follows",
     "SELECT account_id, target_account_id, uri FROM blocks",
+    "SELECT id, followers_count, following_count FROM accounts",
     "SELECT account_id, status_id, uri FROM favourites",
     "SELECT favourite_id, uri FROM favourite_likes",
-    "SELECT id, uri FROM statuses",
-    "SELECT actor_uri, target_uri FROM inbound_retractions",
+    "SELECT id, uri, reblogs_count, favourites_count FROM statuses",
+    "SELECT actor_uri, target_uri, expires_at FROM inbound_retractions",
     "SELECT id, body, superseded FROM outbound_activities",
     "SELECT activity_id, state FROM deliveries",
     "SELECT activity_id FROM outbound_targets",
@@ -843,7 +844,8 @@ describe("ID-6: another actor's Undo ends nothing of the pair it names", () => {
       reason: "retraction-recorded",
     });
     const after = await snapshot(t.store);
-    expect(after.toSpliced(5, 1)).toEqual(before.toSpliced(5, 1));
+    // All but the retractions (the snapshot's seventh table), which gain c's.
+    expect(after.toSpliced(6, 1)).toEqual(before.toSpliced(6, 1));
     expect(await retractions(t)).toEqual([]);
     expect(await retractions(t, t.cUri)).toEqual([c1]);
   });
@@ -895,8 +897,38 @@ describe("an Accept or a Reject of an object typed by an array", () => {
   }
   const ours = (t: T) =>
     sql<{ state: string }>(t.store, "SELECT state FROM follows WHERE account_id = ?", t.w.alice.id);
-  const answer = (t: T, type: string, object: Json) =>
-    deliver(t.store, t.rUri, { "@context": AS, id: `${t.rUri}#answer-${++sequence}`, type, actor: t.rUri, object });
+  const answer = (t: T, type: string, object: Json, extra: Json = {}) =>
+    deliver(t.store, t.rUri, {
+      "@context": AS,
+      id: `${t.rUri}#answer-${++sequence}`,
+      type,
+      actor: t.rUri,
+      object,
+      ...extra,
+    });
+  // alice's pending quote of r's status, as an API post records it with its QuoteRequest; the quote's status id and
+  // the QuoteRequest's id.
+  async function pendingQuote(t: T): Promise<{ id: string; request: string }> {
+    const theirs = `${REMOTE}/notes/${++sequence}`;
+    const quoted = await seedStatus(t.store, { accountId: t.r, visibility: "public", uri: theirs });
+    const mine = await alicePost(t, "quoting");
+    const request = `${mine.uri}#quote-request`;
+    await sql(
+      t.store,
+      `INSERT INTO quotes (status_id, quoted_uri, quoted_status_id, quoted_account_id, state, local, activity_uri,
+				updated_at)
+			VALUES (?, ?, ?, ?, 'pending', 1, ?, ?)`,
+      mine.id,
+      theirs,
+      quoted,
+      t.r,
+      request,
+      new Date(NOW).toISOString(),
+    );
+    return { id: mine.id, request };
+  }
+  const quoteState = async (t: T, id: string) =>
+    (await sql<{ state: string }>(t.store, "SELECT state FROM quotes WHERE status_id = ?", id))[0]?.state;
 
   it("accepts our follow by its id and by the pair, rejects it by its id, and reads a quote answer", async () => {
     const t = await setup();
@@ -920,6 +952,25 @@ describe("an Accept or a Reject of an object typed by an array", () => {
     expect(
       await answer(t, "Accept", { id: `${t.aliceUri}/statuses/1#quote-request`, type: ["QuoteRequest"] }),
     ).toMatchObject({ applied: false, reason: "quote-unchanged" });
+  });
+
+  it("accepts and rejects our pending quote by its QuoteRequest typed by an array", async () => {
+    const t = await setup();
+    const accepted = await pendingQuote(t);
+    const rejected = await pendingQuote(t);
+    expect(
+      await answer(
+        t,
+        "Accept",
+        { id: accepted.request, type: ["QuoteRequest"] },
+        { result: `${t.rUri}/quote_authorizations/${++sequence}` },
+      ),
+    ).toMatchObject({ applied: true, reason: "quote-accepted" });
+    expect(await answer(t, "Reject", { id: rejected.request, type: ["QuoteRequest"] })).toMatchObject({
+      applied: true,
+      reason: "quote-rejected",
+    });
+    expect([await quoteState(t, accepted.id), await quoteState(t, rejected.id)]).toEqual(["accepted", "rejected"]);
   });
 });
 
