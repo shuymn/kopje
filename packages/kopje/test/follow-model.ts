@@ -51,7 +51,18 @@ export type Intent = {
 
 export type Answer = { applied: boolean; reason: string };
 
-export type InboundRef = { id: string | null; type: string | null; actor: string | null; object: string | null };
+// typeUnread: a type given that is no single name (ID-6).
+export type InboundRef = {
+  id: string | null;
+  type: string | null;
+  typeUnread?: true;
+  actor: string | null;
+  object: string | null;
+};
+
+// ID-6: the undone types an Undo acts on ("`Follow`, `Block`, `Announce` and the names read as a `Like`", each read
+// as "Like").
+const UNDONE_TYPES: ReadonlySet<string> = new Set(["Follow", "Block", "Like", "Announce"]);
 
 export type Inbound =
   | { type: "Follow"; id: string; object: string }
@@ -382,10 +393,13 @@ export class Policy {
     return { applied: true, reason: "blocked" };
   }
 
-  // ID-7: "an Undo decides the undone type first (embedded, or a stored block with that id)"; its object is recorded
-  // as retracted whether or not it matched, so an Undo that overtook its activity keeps it from applying later, except
-  // a Follow's pair-shaped id, which "the same pair can undo a later generation" with: a typed pair Undo of a Follow
-  // ends the pair's follow whatever its uri, and records that uri instead.
+  // ID-6: "an undone `Follow` or `Block` named by its type requires its `object` to be a single IRI of a local account,
+  // or the `Undo` changes and records nothing, and ends the edge from the verified sender ... to that account whatever
+  // id the edge carries"; "one whose type is given but is not a single string, or is a string other than `Follow`,
+  // `Block`, `Announce` and the names read as a `Like` ..., changes nothing"; one "given without a type is sought by
+  // its id". ID-7: the untyped one "decides the undone type first (embedded, or a stored block with that id)"; its
+  // object is recorded as retracted whether or not it matched, so an Undo that overtook its activity keeps it from
+  // applying later, except a Follow's pair-shaped id, which "the same pair can undo a later generation" with.
   private undo(ref: InboundRef, now: number): Answer & { caught?: Intent[] } {
     if (ref.actor !== null && ref.actor !== this.rUri) {
       return { applied: false, reason: "not-own" };
@@ -394,47 +408,101 @@ export class Policy {
     if (id === null) {
       return { applied: false, reason: "unknown-object" };
     }
+    if (ref.typeUnread === true || (ref.type !== null && !UNDONE_TYPES.has(ref.type))) {
+      return { applied: false, reason: "unsupported-undo" };
+    }
+    if (ref.type === "Follow" || ref.type === "Block") {
+      return this.undoTyped(id, ref.type, ref.object, now);
+    }
+    if (ref.type !== null) {
+      throw new Error(`policy: an Undo of ${ref.type} is not modelled`);
+    }
     // NET-2: "An Undo of a Follow cancels and supersedes the same way the answers of the generation it undoes, typed,
     // embedded without a type or naming the Follow by its id alone ..., its edge stored or already ended (its id
     // retracted), and a Misskey pair Undo every answer of the pair".
     // The pair is known by the Undo's local target or the stored Follow its id names; "An Undo naming no local target
     // looks for the pairs through the local accounts", by an answer naming its id.
     const named = ref.object === this.lUri || this.lane.some((i) => i.answer && i.ref === id);
-    // The held Reject goes by the same rule within the pair, which a named hold makes known too (NET-2).
-    const undoneAnswers = (ofPair: boolean): Intent[] => {
-      const known = ofPair || this.heldReject?.ref === id;
-      if (this.heldReject !== null && (this.heldReject.ref === id || (known && pairShaped(id)))) {
-        this.heldReject = null;
-      }
-      return this.cancelAnswers(now, (answer) => (known && pairShaped(id)) || answer.ref === id);
-    };
     if (this.retracted.has(id)) {
-      const caught = ref.type === null || ref.type === "Follow" ? undoneAnswers(named) : [];
-      return { applied: false, reason: "retracted", caught };
+      return { applied: false, reason: "retracted", caught: this.undoneAnswers(id, named, now) };
     }
-    const pair = ref.type === "Follow" && pairShaped(id) && ref.object === this.lUri;
-    const followMatch =
-      (ref.type === null || ref.type === "Follow") && this.rl !== null && (this.rl.uri === id || pair);
-    const undoesBlock = ref.type === "Block" || (ref.type === null && !followMatch && this.blockRL === id);
-    const undoesFollow = !undoesBlock && (ref.type === null || ref.type === "Follow");
-    const caught = undoesFollow ? undoneAnswers(named || this.rl?.uri === id) : [];
+    const followMatch = this.rl !== null && this.rl.uri === id;
+    const undoesBlock = !followMatch && this.blockRL === id;
+    const caught = undoesBlock ? [] : this.undoneAnswers(id, named || followMatch, now);
     const ended = followMatch ? this.rl!.uri : null;
     let undone = false;
     if (followMatch) {
       this.rl = null;
       this.dropFollowNotifications();
       undone = true;
-    } else if (undoesBlock && this.blockRL === id) {
+    } else if (undoesBlock) {
       this.blockRL = null;
       undone = true;
     }
-    if (undoesFollow) {
-      this.retractFollow(id);
-    } else {
+    if (undoesBlock) {
       this.retract(id);
+    } else {
+      this.retractFollow(id);
     }
     this.retractFollow(ended);
     return { applied: true, reason: undone ? "undone" : "retraction-recorded", caught };
+  }
+
+  // The answers of the generation an Undo of a Follow `id` undoes: those naming it, and a pair id's every answer of the
+  // pair once the pair is known (`ofPair`). The held Reject goes by the same rule within the pair, which a named hold
+  // makes known too (NET-2). `ended`: the edge a typed Undo ends by the pair, whose own answers go too ("the answers
+  // naming its id or the ended edge's, and, for an edge stored without an id, that edge's own Accept").
+  private undoneAnswers(id: string, ofPair: boolean, now: number, ended: RemoteEdge = null): Intent[] {
+    const known = ofPair || this.heldReject?.ref === id;
+    if (this.heldReject !== null && (this.heldReject.ref === id || (known && pairShaped(id)))) {
+      this.heldReject = null;
+    }
+    return this.cancelAnswers(
+      now,
+      (answer) =>
+        (known && pairShaped(id)) ||
+        answer.ref === id ||
+        (ended !== null &&
+          (ended.uri === null ? answer.type === "Accept" && answer.ref === null : answer.ref === ended.uri)),
+    );
+  }
+
+  // ID-6 and ID-7: a typed Undo of a Follow or a Block ends R's edge to L by the pair, whatever its id, "unless the
+  // undone id has a live retraction, and both ids are recorded (a Follow's pair id excepted)".
+  private undoTyped(
+    id: string,
+    type: "Follow" | "Block",
+    object: string | null,
+    now: number,
+  ): Answer & { caught?: Intent[] } {
+    if (object !== this.lUri) {
+      return { applied: false, reason: "unknown-target" };
+    }
+    if (this.retracted.has(id)) {
+      return {
+        applied: false,
+        reason: "retracted",
+        caught: type === "Follow" ? this.undoneAnswers(id, true, now) : [],
+      };
+    }
+    if (type === "Block") {
+      const ended = this.blockRL;
+      this.blockRL = null;
+      this.retract(id);
+      if (ended !== null) {
+        this.retract(ended);
+      }
+      return { applied: true, reason: ended === null ? "retraction-recorded" : "undone", caught: [] };
+    }
+    const ended = this.rl;
+    const caught = this.undoneAnswers(id, true, now, ended);
+    if (ended !== null) {
+      this.rl = null;
+      this.dropFollowNotifications();
+    }
+    this.retractFollow(id);
+    this.retractFollow(ended?.uri ?? null);
+    return { applied: true, reason: ended === null ? "retraction-recorded" : "undone", caught };
   }
 
   // ID-6: only the followed side answers our Follow, by its id (every follow of L names one).

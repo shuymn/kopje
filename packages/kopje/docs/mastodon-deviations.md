@@ -1929,10 +1929,8 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   refused, as Mastodon's handler raises on it (`undo.rb` `target_uri`); where the patch stops at it or before it,
   Mastodon reads the compaction's single value and applies it where it names an account, as Kopje does where it reads
   the stop and that value as given. An `Undo` whose undone activity's type is an array of types is refused too, as
-  `undo.rb` takes no array as a type, where Kopje would read it as an `Undo` by reference; an empty one both read as
-  none. An `Undo` Kopje does apply, read so or as received (Mastodon's own fallback included), ends the follow, block
-  or like its undone activity's id names whatever that activity's `object` is, where Mastodon ends nothing for a target
-  that names no local account, as every `Undo` does (tracked by #1773).
+  `undo.rb` takes no array as a type; an empty one both read as none in the compaction. An `Undo` Kopje does apply,
+  read so or as received (Mastodon's own fallback included), ends what an unsigned one does.
   Each ends what its signer did or holds, or lifts its own block, so reading it so grants nothing its signer could not
   send directly; every other type keeps the reading as received.
   Compacting would add JSON-LD processing to every signed activity before its HTTP signature is verified, and its

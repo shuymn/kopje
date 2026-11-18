@@ -521,9 +521,9 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (deliveries.ts#<anonymous> in sweepDeliveries); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "fb743767a7db9d47",
+    id: "b567cb041f03a3e5",
     scans: ["outbound_activities: SCAN o"],
-    site: "src/domain/deliveries.ts#followAnswersOf < src/domain/inbox.ts#cancelUndoneAnswers < src/domain/inbox.ts#undo < src/domain/inbox.ts#receive < src/domain/inbox.ts#<anonymous> in receiveActivity",
+    site: "src/domain/deliveries.ts#followAnswersOf < src/domain/inbox.ts#cancelUndoneAnswers < src/domain/inbox.ts#undoRelationship < src/domain/inbox.ts#undo < src/domain/inbox.ts#receive",
     disposition: "pending",
     issue: "#1468 group 8",
   },
