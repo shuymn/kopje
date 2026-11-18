@@ -1,10 +1,12 @@
+import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { FOLLOW_ANSWER_INTENTS } from "../src/domain/deliveries";
-import type { InboundActivity, ReceiveResult } from "../src/domain/inbox";
+import { FOLLOW_ANSWER_INTENTS, HANDSHAKE_RECHECK_MS } from "../src/domain/deliveries";
+import { type InboundActivity, type ReceiveResult, receiveActivity } from "../src/domain/inbox";
 import { MAX_RETRACTIONS_PER_ACTOR } from "../src/domain/retractions";
 import { parseActivity } from "../src/federation/inbound";
 import { handleQueue } from "../src/jobs/queue";
+import { ACTIVITY_ID_LIMIT } from "../src/platform/identity-bounds";
 import type { StoreStub } from "../src/platform/store-client";
 import { bearer, json, sql } from "./api-helpers";
 import { countingStore, harness, inboxDeps, NOW } from "./app-helpers";
@@ -13,6 +15,7 @@ import formsFixture from "./fixtures/ld-signed/forms.json";
 import { BUILD, claimAndSettle, completeSetup, drainDeliveries, migratedStore } from "./helpers";
 import { LOCAL, mastodonActor, RemoteWeb, signedInit, type TestActor } from "./inbox-helpers";
 import { storeReceive } from "./inbox-store-helpers";
+import { longestString, observedSql } from "./read-helpers";
 import { act, receive, uriOf, world } from "./remote-suspension-helpers";
 import { post, remoteAccount, remoteFollows, seedStatus } from "./status-helpers";
 
@@ -396,6 +399,104 @@ describe("ID-6: an Undo ends what its undone activity's object names", () => {
       expect(await undo(t, b1, "Block", t.aliceUri)).toMatchObject({ applied: true, reason: "undone" });
       expect(await blocks(t)).toEqual([]);
       expect(await retractions(t)).toEqual([b1]);
+    });
+  });
+
+  // AC5 on what an import stores (engineering.md, "Imported TEXT"): the ended edge's uri may be malformed UTF-8 or of
+  // any length, so the Store reads only a bounded projection of it and copies its retraction from the row, byte for
+  // byte; and a Reject the import held beside the follow (its triggers do not run then, test/import-triggers.test.ts)
+  // goes with it.
+  describe("an edge an import stored", () => {
+    const EDGES: ["Follow" | "Block", "follows" | "blocks"][] = [
+      ["Follow", "follows"],
+      ["Block", "blocks"],
+    ];
+    // r's edge to alice in `table`, its uri the SQL expression `uri`.
+    const imported = (t: T, table: "follows" | "blocks", uri: string) =>
+      sql(
+        t.store,
+        table === "follows"
+          ? `INSERT INTO follows (account_id, target_account_id, state, uri) VALUES (?, ?, 'accepted', ${uri})`
+          : `INSERT INTO blocks (account_id, target_account_id, uri) VALUES (?, ?, ${uri})`,
+        t.r,
+        t.w.alice.id,
+      );
+    const hexOf = (text: string) =>
+      [...new TextEncoder().encode(text)].map((byte) => byte.toString(16).padStart(2, "0").toUpperCase()).join("");
+
+    it.each(EDGES)("preserves the ended URI's bytes: a typed Undo of a %s", async (type, table) => {
+      const t = await setup();
+      await imported(t, table, `'${REMOTE}/edges/malformed' || CAST(X'80' AS TEXT)`);
+      const [stored] = await sql<{ hex: string }>(
+        t.store,
+        `SELECT hex(uri) AS hex FROM ${table} WHERE account_id = ?`,
+        t.r,
+      );
+      expect(stored!.hex).toBe(`${hexOf(`${REMOTE}/edges/malformed`)}80`);
+      const other = type === "Follow" ? followId() : blockId();
+      expect(await undo(t, other, type, t.aliceUri)).toMatchObject({ applied: true, reason: "undone" });
+      expect(await sql(t.store, `SELECT 1 FROM ${table} WHERE account_id = ?`, t.r)).toEqual([]);
+      const recorded = await sql<{ hex: string }>(
+        t.store,
+        "SELECT hex(target_uri) AS hex FROM inbound_retractions WHERE actor_uri = ?",
+        t.rUri,
+      );
+      expect(recorded.map((row) => row.hex).toSorted()).toEqual([stored!.hex, hexOf(other)].toSorted());
+    });
+
+    // A uri of over 256 KiB: the Undo ends the edge and records it whole, and no value the Store reads is of its size.
+    it.each(EDGES)("records an oversized ended URI from its row, reading none of it: a %s", async (type, table) => {
+      const t = await setup();
+      const long = `'${REMOTE}/edges/' || replace(hex(zeroblob(150000)), '0', 'a')`;
+      await imported(t, table, long);
+      const other = type === "Follow" ? followId() : blockId();
+      const read = await parseActivity(
+        new TextEncoder().encode(JSON.stringify(undoBody(t.rUri, undone(t.rUri, other, type, t.aliceUri)))),
+      );
+      expect(read.ok).toBe(true);
+      const activity = (read as { activity: InboundActivity }).activity;
+      const { result, longest } = await runInDurableObject(t.store, (_instance, state) => {
+        let most = 0;
+        const observed = observedSql(state.storage.sql, (rows) => {
+          most = Math.max(most, longestString(rows));
+        });
+        const answer = receiveActivity.run(
+          observed,
+          { now: NOW, storeNow: NOW, origin: LOCAL, actorUri: t.rUri, actor: null, actorRevision: null, activity },
+          (fn) => state.storage.transactionSync(fn),
+        );
+        return { result: answer, longest: most };
+      });
+      expect(result).toMatchObject({ applied: true, reason: "undone" });
+      expect(longest).toBeLessThanOrEqual(ACTIVITY_ID_LIMIT);
+      expect(await sql(t.store, `SELECT 1 FROM ${table} WHERE account_id = ?`, t.r)).toEqual([]);
+      expect(
+        await sql(
+          t.store,
+          `SELECT count(*) AS n FROM inbound_retractions WHERE actor_uri = ? AND target_uri = ${long}`,
+          t.rUri,
+        ),
+      ).toEqual([{ n: 1 }]);
+    });
+
+    // r's accepted follow F1 and the pair's hold naming it, which only an import leaves together: a typed Undo under
+    // another id ends the follow, and the hold with it, so no replay sends a Reject of F1.
+    it("cancels the hold naming the ended edge", async () => {
+      const t = await setup();
+      const { id: f1, result } = await followFrom(t);
+      expect(result).toMatchObject({ reason: "followed" });
+      await sql(
+        t.store,
+        "INSERT INTO reject_replays (account_id, follower_id, follow_uri, check_at) VALUES (?, ?, ?, ?)",
+        t.w.alice.id,
+        t.r,
+        f1,
+        NOW,
+      );
+      expect(await undo(t, followId(), "Follow", t.aliceUri)).toMatchObject({ applied: true, reason: "undone" });
+      expect(await sql(t.store, "SELECT follow_uri FROM reject_replays WHERE follower_id = ?", t.r)).toEqual([]);
+      await t.store.runHandshakeReplays(BUILD, { now: NOW + HANDSHAKE_RECHECK_MS });
+      expect(await answersSent(t)).toEqual([]);
     });
   });
 

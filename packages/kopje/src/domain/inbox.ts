@@ -146,8 +146,10 @@ import {
   isRetracted,
   recordDeletedObject,
   retract,
+  retractEdge,
   retractFollow,
   retractMatched,
+  type StoredEdge,
 } from "./retractions";
 import { RowBudget, totalChanges } from "./row-budget";
 import { recountStatus, recountStatuses, UNTAG_WINDOW_SQL, withdrawLocalBoost } from "./statuses";
@@ -723,10 +725,11 @@ function replacedAnswer(answer: FollowAnswer): boolean {
 // the named ones too (HELD_REJECT_SIGNERS_SQL), so the set is shared: a pair id reaches only the pairs found by a
 // named answer or a named hold, never another local account's pair by its shape alone. One hold per pair at most.
 // `ended`, the follows row a typed Undo ends by its pair (undoRelationship, with the target given): that row's own
-// generation goes too, the answers naming its uri (`named`) and, for a row stored without one, its Accept, which names
-// no Follow (`accept`, the id followAnswerId gives it: `edge_answer`). No Reject naming no Follow, queued or held, is
-// tied to a stored row: Kopje deletes the row before it records its Reject, a hold needs a pair with no follow, and a
-// stored follow ends the pair's hold (0092_reject_replays). So none is selected by it, and a hold never names its uri.
+// generation goes too, the answers naming its uri (`named`) and a hold naming it, both compared with the stored uri in
+// SQL (an import may hold a follow beside its pair's hold: its triggers do not run then, test/import-triggers.test.ts),
+// and, for a row stored without one, its Accept, which names no Follow (`accept`, the id followAnswerId gives it:
+// `edge_answer`). No Reject naming no Follow is tied to a stored row (Kopje deletes the row before it records its
+// Reject), so none is selected by it.
 function cancelUndoneAnswers(
   db: Db,
   followerId: string,
@@ -769,11 +772,13 @@ function cancelUndoneAnswers(
   for (const target of targets) {
     db.run(
       `DELETE FROM reject_replays WHERE account_id = ?1 AND follower_id = ?2
-				AND (?4 OR CAST(follow_uri AS BLOB) = CAST(?3 AS BLOB))`,
+				AND (?4 OR CAST(follow_uri AS BLOB) = CAST(?3 AS BLOB)
+					OR CAST(follow_uri AS BLOB) = (SELECT CAST(f.uri AS BLOB) FROM follows f WHERE f.id = CAST(?5 AS INTEGER)))`,
       target,
       followerId,
       undone,
       pair ? 1 : 0,
+      ended?.id ?? null,
     );
   }
   return true;
@@ -1058,21 +1063,31 @@ function undoRelationship(
     }
     return ignored("retracted");
   }
-  const edge = db.first<{ id: string; uri: string | null }>(
-    follow
-      ? `SELECT CAST(id AS TEXT) AS id, uri FROM follows INDEXED BY follows_pair
-				WHERE account_id = ? AND target_account_id = ?`
-      : `SELECT CAST(id AS TEXT) AS id, uri FROM blocks INDEXED BY blocks_pair
-				WHERE account_id = ? AND target_account_id = ?`,
+  // The edge's uri stays in SQL (an import's may be malformed UTF-8 or of any length): read are whether it has one,
+  // whether it is the undone id byte for byte, and its first ACTIVITY_ID_LIMIT bytes, for its origin and pair shape
+  // (an actor URI is at most ACTOR_URI_LIMIT bytes, so a cut uri never shows the actor's origin falsely); the pair shape
+  // is tested only on a whole uri, as NET-2 tests it within the limit.
+  const edge = db.first<{ id: string; unnamed: number; same: number; long: number; head: string | null }>(
+    `SELECT CAST(id AS TEXT) AS id, uri IS NULL AS unnamed, coalesce(CAST(uri AS BLOB) = CAST(?3 AS BLOB), 0) AS same,
+			coalesce(length(CAST(uri AS BLOB)) > ?4, 0) AS long, CAST(substr(CAST(uri AS BLOB), 1, ?4) AS TEXT) AS head
+			FROM ${follow ? "follows INDEXED BY follows_pair" : "blocks INDEXED BY blocks_pair"}
+			WHERE account_id = ?1 AND target_account_id = ?2`,
     actor.id,
     target.id,
+    ref.id,
+    ACTIVITY_ID_LIMIT,
   );
-  const retracted = [
-    ...new Set(
-      [ref.id, edge?.uri ?? null].filter((uri): uri is string => uri !== null && !(follow && isMisskeyPairId(uri))),
-    ),
-  ];
-  if (!canRetract(db, actor.uri, retracted, now)) {
+  const undone = follow && isMisskeyPairId(ref.id) ? [] : [ref.id];
+  const stored: StoredEdge | undefined =
+    edge !== undefined &&
+    edge.unnamed === 0 &&
+    edge.same === 0 &&
+    edge.head !== null &&
+    sameOrigin(edge.head, actor.uri) &&
+    !(follow && edge.long === 0 && isMisskeyPairId(edge.head))
+      ? { table: follow ? "follows" : "blocks", id: edge.id }
+      : undefined;
+  if (!canRetract(db, actor.uri, undone, now, stored)) {
     return ignored("retraction-cap");
   }
   if (
@@ -1088,13 +1103,19 @@ function undoRelationship(
         : {
             id: edge.id,
             accept:
-              edge.uri === null
+              edge.unnamed === 1
                 ? followAnswerId("Accept", { localActorUri: target.uri, followUri: null, edgeId: edge.id })
                 : null,
           },
     )
   ) {
     return retryLater("follow-answer-backlog");
+  }
+  // Recorded whether or not an edge was found (Mastodon's delete_later!): an Undo that overtook its activity keeps it
+  // from applying later, and a replay of an undone activity does not restore it (ID-7). The edge's own uri is copied
+  // from its row before the row goes.
+  if (stored !== undefined) {
+    retractEdge(db, actor.uri, stored, now);
   }
   if (edge !== undefined) {
     if (follow) {
@@ -1108,9 +1129,7 @@ function undoRelationship(
       );
     }
   }
-  // Recorded whether or not an edge was found (Mastodon's delete_later!): an Undo that overtook its activity keeps it
-  // from applying later, and a replay of an undone activity does not restore it (ID-7).
-  for (const uri of retracted) {
+  for (const uri of undone) {
     retract(db, actor.uri, uri, now);
   }
   return edge === undefined ? applied("retraction-recorded") : applied("undone");
