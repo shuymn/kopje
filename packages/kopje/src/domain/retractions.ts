@@ -94,11 +94,15 @@ export function canRetract(
   if (missing === 0) {
     return true;
   }
+  // The actor's live retractions, read as one range of inbound_retractions_actor_expires (migration 0117) whatever the
+  // statistics (RES-7), and only up to the cap, however many an import holds: with at least one missing, a count at
+  // the cap refuses as the whole count would.
   const live =
     db.first<{ n: number }>(
-      "SELECT count(*) AS n FROM inbound_retractions WHERE actor_uri = ? AND expires_at > ?",
+      `SELECT count(*) AS n FROM (SELECT 1 FROM inbound_retractions WHERE actor_uri = ?1 AND expires_at > ?2 LIMIT ?3)`,
       actorUri,
       now,
+      MAX_RETRACTIONS_PER_ACTOR,
     )?.n ?? 0;
   return live + missing <= MAX_RETRACTIONS_PER_ACTOR;
 }
