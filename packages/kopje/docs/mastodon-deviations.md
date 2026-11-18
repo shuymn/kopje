@@ -2194,6 +2194,18 @@ ID-7 in `docs/threat-model.md`):
   status's uri, is ignored, so an activity naming such a status only by it matches nothing; no Mastodon writes a new
   one. A quote naming a status Kopje knows only under a differing `atomUri` is not linked to it: the quote is linked by
   the URI it names (VIS-28), as Mastodon names any quoted status by its URI.
+- An `Undo` (Mastodon's `ActivityPub::Activity::Undo`) differs from Mastodon's where it ends what the sender holds: one
+  given without a type that names a favourite's tracked `Like` by its id ends it, as a typed one does, where Mastodon's
+  reference (`handle_reference`) seeks no favourite (`try_undo_like`), so the unfavourites and unreactions Akkoma sends
+  so end nothing there; a typed `Undo` of a `Like` under an id the favourite does not track keeps it while another
+  tracked id is outstanding (each reaction is counted), where Mastodon ends the sender's favourite of the status
+  whatever the id; and a typed `Undo` of a `Like` naming a remote status ends the sender's favourite of it that the
+  cutover carried over, where Mastodon seeks only a local account's status, as it is the sender's own favourite and the
+  sender asked to end it. Kopje also requires what Mastodon's typed `Undo` does not read: the undone activity's id, as
+  a string on the sender's origin (each sender checked, Mastodon, Misskey, GoToSocial and Akkoma, embeds one), and,
+  where it names an actor, the sender. A reference given as a string is read as one whatever it holds, where Mastodon
+  reads its type with Ruby's `String#[]`, so that one whose IRI contains `type` ends nothing there. Accepted,
+  2026-11-18.
 
 Quote approvals (a local account's quote of a remote status; Mastodon's `ActivityPub::Activity::Accept`; VIS-28 in
 `docs/threat-model.md`):
