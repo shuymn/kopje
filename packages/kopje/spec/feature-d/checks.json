@@ -13,7 +13,7 @@
     },
     {
       "name": "S3",
-      "distinct": 1566,
+      "distinct": 1571,
       "depth": 16
     },
     {
@@ -38,12 +38,12 @@
     },
     {
       "name": "S8",
-      "distinct": 12394,
+      "distinct": 13335,
       "depth": 19
     },
     {
       "name": "S9",
-      "distinct": 18664,
+      "distinct": 20083,
       "depth": 15
     },
     {
@@ -58,8 +58,8 @@
     },
     {
       "name": "S12",
-      "distinct": 1466,
-      "depth": 12
+      "distinct": 6858,
+      "depth": 14
     },
     {
       "name": "S13",
@@ -271,6 +271,27 @@
       "variant": "V22",
       "invariant": "MemberAvailability",
       "trace": 7
+    },
+    {
+      "name": "V23",
+      "scenario": "S15",
+      "variant": "V23",
+      "invariant": "OV3",
+      "trace": 11
+    },
+    {
+      "name": "V24",
+      "scenario": "S12",
+      "variant": "V24",
+      "invariant": "MemberAvailability",
+      "trace": 11
+    },
+    {
+      "name": "V25",
+      "scenario": "S12",
+      "variant": "V25",
+      "invariant": "MemberAvailability",
+      "trace": 5
     }
   ],
   "findings": [],
@@ -489,7 +510,7 @@
       "name": "S8-GoneRead",
       "scenario": "S8",
       "goal": "GoneRead",
-      "trace": 9,
+      "trace": 11,
       "fixture": true
     },
     {
@@ -619,6 +640,13 @@
       "fixture": true
     },
     {
+      "name": "S12-SuspendedOmission",
+      "scenario": "S12",
+      "goal": "SuspendedOmission",
+      "trace": 11,
+      "fixture": true
+    },
+    {
       "name": "S8-FetchExisting",
       "scenario": "S8",
       "goal": "FetchExisting",
@@ -629,7 +657,7 @@
       "name": "S8-FetchOutdates",
       "scenario": "S8",
       "goal": "FetchOutdates",
-      "trace": 5,
+      "trace": 7,
       "fixture": true
     },
     {

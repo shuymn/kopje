@@ -108,41 +108,6 @@
       }
     },
     {
-      "action": "KSuspend",
-      "input": {},
-      "environment": {
-        "consent": true,
-        "slotsFull": false,
-        "held": "lt10",
-        "backlogFull": false,
-        "retractionCapFull": false
-      },
-      "observation": {
-        "row": {
-          "name": "row1",
-          "state": "accepted",
-          "authorization": "a1",
-          "request": "r1",
-          "listedAs": null
-        },
-        "collection": "stored",
-        "authorizationGet": {
-          "a1": {
-            "status": 404
-          }
-        },
-        "publicShows": false,
-        "memberDetail": false,
-        "inCollections": true,
-        "notified": false,
-        "response": null,
-        "recorded": [],
-        "mayAlsoRecord": [],
-        "readRequested": false,
-        "unspecified": []
-      }
-    },
-    {
       "action": "KDeliver",
       "input": {
         "activity": {
@@ -172,12 +137,49 @@
         "collection": "stored",
         "authorizationGet": {
           "a1": {
+            "status": 200,
+            "collection": "C",
+            "member": "L"
+          }
+        },
+        "publicShows": false,
+        "memberDetail": true,
+        "inCollections": true,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "KSuspend",
+      "input": {},
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "accepted",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": null
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": {
             "status": 404
           }
         },
         "publicShows": false,
-        "memberDetail": false,
-        "inCollections": true,
+        "memberDetail": "refused",
+        "inCollections": "refused",
         "notified": false,
         "response": null,
         "recorded": [],
@@ -220,8 +222,8 @@
           }
         },
         "publicShows": false,
-        "memberDetail": false,
-        "inCollections": true,
+        "memberDetail": "refused",
+        "inCollections": "refused",
         "notified": false,
         "response": null,
         "recorded": [],
@@ -261,8 +263,8 @@
           }
         },
         "publicShows": false,
-        "memberDetail": false,
-        "inCollections": true,
+        "memberDetail": "refused",
+        "inCollections": "refused",
         "notified": false,
         "response": 202,
         "recorded": [],

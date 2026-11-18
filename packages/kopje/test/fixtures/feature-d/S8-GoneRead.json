@@ -176,10 +176,107 @@
       }
     },
     {
+      "action": "KDeliver",
+      "input": {
+        "activity": {
+          "type": "Accept",
+          "object": "r1",
+          "result": "a1",
+          "to": "R",
+          "class": "ordinary",
+          "reason": "answer"
+        }
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "accepted",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": null
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": {
+            "status": 200,
+            "collection": "C",
+            "member": "L"
+          }
+        },
+        "publicShows": false,
+        "memberDetail": true,
+        "inCollections": true,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": true,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "RJob",
+      "input": {
+        "activity": {
+          "type": "Accept",
+          "object": "r1",
+          "result": "a1",
+          "to": "R",
+          "class": "ordinary",
+          "reason": "answer"
+        }
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "accepted",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": null
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": {
+            "status": 200,
+            "collection": "C",
+            "member": "L"
+          }
+        },
+        "publicShows": false,
+        "memberDetail": true,
+        "inCollections": true,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": true,
+        "unspecified": []
+      }
+    },
+    {
       "action": "KFetch",
       "input": {
         "envelope": {
-          "type": "Pages"
+          "type": "Pages",
+          "listing": {
+            "item": "I1",
+            "authorization": "a1",
+            "truncated": false
+          }
         },
         "value": "p1"
       },

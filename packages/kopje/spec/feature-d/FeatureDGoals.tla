@@ -23,6 +23,7 @@ StateGoals ==
    GoneFetch |-> GoalGoneFetch, GoneRead |-> GoalGoneRead, TruncatedShows |-> GoalTruncatedShows,
    TruncatedKeeps |-> GoalTruncatedKeeps, EmbeddedUnserved |-> EmbeddedUnserved,
    SuspendedRequest |-> GoalSuspendedRequest, SuspendedListing |-> GoalSuspendedListing,
+   SuspendedOmission |-> GoalSuspendedOmission,
    GonePurged |-> GoalGonePurged, LeaseApplies |-> GoalLeaseApplies, FetchExisting |-> GoalFetchExisting,
    FetchOutdates |-> GoalFetchOutdates, IgnoredThenStale |-> GoalIgnoredThenStale,
    RetiredRemoved |-> Acted("KRecv") /\ last.arg.env.ty = "Rem" /\ k.row.st = "ret" /\ k.sync,

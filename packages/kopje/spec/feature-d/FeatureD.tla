@@ -74,16 +74,18 @@
 (*    flight when R applied its acceptance, or recorded since, was refused *)
 (*    at a full backlog or given up (F7): a processed Delete that left R   *)
 (*    holding a counts against it.                                         *)
-(*  - ObservedVisibility OV1 /\ OV2: only an eligible untruncated read, an *)
-(*    exact item Remove, a re-accept by another request, the row's end or  *)
-(*    a loss of availability hides it; at quiescence after the latest read *)
-(*    that covered the row (applied with L available) and with R unchanged *)
-(*    since, a row it listed is shown unless an allowed hide followed, and *)
-(*    a shown row was listed unless something showed it since (a push, an  *)
-(*    instrument, L's unsuspension), the listing was truncated or the read *)
-(*    was fenced.                                                          *)
+(*  - ObservedVisibility OV1 /\ OV2 /\ OV3: only an eligible untruncated   *)
+(*    read, an exact item Remove, a re-accept by another request, the      *)
+(*    row's end or a loss of availability hides it; at quiescence after    *)
+(*    the latest read that covered the row (applied with L available) and  *)
+(*    with R unchanged since, a row it listed is shown unless an allowed   *)
+(*    hide followed, and a shown row was listed unless something showed it *)
+(*    since (a push, an instrument, L's unsuspension), the listing was     *)
+(*    truncated or the read was fenced; that latest covering read changes  *)
+(*    only at a read that covers the row.                                  *)
 (*  - MemberAvailability: while L is unavailable, Kopje records no answer  *)
-(*    for it and neither creates nor lists its row.                        *)
+(*    for it, neither creates nor lists its row, and changes nothing of    *)
+(*    the row at a read, and R receives no activity of L's but a Delete.   *)
 (*  - RemovalFinality: after R's Remove of C is processed, while its       *)
 (*    retraction lives, Kopje holds neither C nor a row of it and records  *)
 (*    no Accept.                                                           *)
@@ -154,7 +156,7 @@ Bud(f) ==
     [] Scenario = "S9" -> [Zero EXCEPT !.adds = 1, !.reads = 1, !.crowd = 2, !.held = 1, !.upd = 1][f]
     [] Scenario = "S10" -> [Zero EXCEPT !.adds = 1, !.dup = 1, !.slots = 2][f]
     [] Scenario = "S11" -> [Zero EXCEPT !.adds = 1, !.revoke = 1, !.rclean = 1, !.backlog = 1, !.dup = 1][f]
-    [] Scenario = "S12" -> [Zero EXCEPT !.adds = 1, !.reads = 1, !.susp = 2, !.dup = 1][f]
+    [] Scenario = "S12" -> [Zero EXCEPT !.adds = 1, !.reads = 1, !.susp = 2, !.dup = 1, !.remove = 1][f]
     [] Scenario = "S13" -> [Zero EXCEPT !.adds = 1, !.dup = 1, !.held = 2][f]
     [] Scenario = "S14" -> [Zero EXCEPT !.adds = 2, !.remove = 1, !.reads = 1][f]
     [] Scenario = "S15" -> [Zero EXCEPT !.adds = 1, !.reads = 3, !.lease = 1, !.upd = 1][f]
@@ -249,7 +251,7 @@ Init ==
   /\ g = [obl |-> NONE, accReq |-> {}, delServed |-> FALSE, refusedHeld |-> FALSE, missed |-> FALSE, ov1 |-> FALSE,
           nue |-> FALSE, nueLive |-> FALSE, rot |-> FALSE, avail |-> FALSE, rejected |-> {}, accAfterRem |-> FALSE,
           remLive |-> FALSE, afterGone |-> FALSE, unexcused |-> [a \in Auths |-> 0], tick |-> FALSE, held503 |-> FALSE,
-          o7 |-> FALSE, lastRd |-> NoLastRead, ign |-> FALSE]
+          o7 |-> FALSE, lastRd |-> NoLastRead, ign |-> FALSE, lrMoved |-> FALSE, fo |-> FALSE]
   /\ last = [act |-> "Init", arg |-> NoArg, rec |-> {}, resp |-> 0, ev |-> {}]
 
 (***************************************************************************)
@@ -311,6 +313,7 @@ GhostK(res, evid, opp, mayHide, allowedHide, mayShow, lr, remC, ev) ==
         !.tick = k2.row # k.row,
         !.held503 = @ \/ "held503" \in ev,
         !.o7 = @ \/ "o7" \in ev,
+        !.fo = @ \/ "outdRead" \in ev,
         !.lastRd = [lr EXCEPT !.kshow = @ \/ (mayShow /\ Shown(k2) /\ ~Shown(k)),
                              !.khide = @ \/ (allowedHide /\ ~Shown(k2))]]
 
@@ -426,10 +429,11 @@ KApplyFetch ==
   /\ fe' = NoFetch
   /\ UNCHANGED <<env, toK, rs, rin, spent>>
 
-KMember(res, evid, f, act) ==
+KMemberArg(res, evid, f, act, arg) ==
   /\ Can(f) /\ Spend(f)
-  /\ Commit(res, evid, NoOpp, TRUE, FALSE, FALSE, FALSE, act, NoArg, {})
+  /\ Commit(res, evid, NoOpp, TRUE, FALSE, FALSE, FALSE, act, arg, {})
   /\ UNCHANGED <<env, toK, rs, rin, fe>>
+KMember(res, evid, f, act) == KMemberArg(res, evid, f, act, NoArg)
 
 \* L's own acts, while it can sign in (not suspended).
 KRevoke == k.row.st = "acc" /\ ~k.ls /\ KMember(Revoke(k), TRUE, "revoke", "KRevoke")
@@ -437,7 +441,9 @@ KBlock == ~k.lblk /\ k.lx /\ ~k.ls /\ KMember(Block(k), TRUE, "block", "KBlock")
 \* Model-only: Kopje deletes no local account (src/federation/delivery-hosts.ts:63), so no fixture takes this step.
 KMemberGone == k.lx /\ KMember(MemberGone(k), TRUE, "ldel", "KMemberGone")
 KSuspend == k.lx /\ ~k.ls /\ KMember(Suspend(k), FALSE, "susp", "KSuspend")
-KUnsuspend == k.ls /\ KMember(Unsuspend(k), FALSE, "susp", "KUnsuspend")
+\* The suspension moves L's credential epoch and its lifting keeps it, so L reads with a credential issued after the
+\* lifting (suspension.ts suspendLocal, unsuspendLocal): the step's input "newCredential".
+KUnsuspend == k.ls /\ KMemberArg(Unsuspend(k), FALSE, "susp", "KUnsuspend", Arg(NoEnvelope, NoIntent, "newCredential"))
 
 \* D9's cleanup of the retired row. VARIANT V16: it also deletes the row's Delete still at the head of the lane.
 KCleanup ==
@@ -500,7 +506,7 @@ KClaim ==
        /\ last' = [act |-> "KClaim", arg |-> Arg(NoEnvelope, NoIntent, IF chg THEN "sameTime" ELSE NONE), rec |-> {},
                    resp |-> 0, ev |-> {}]
   /\ k' = [k EXCEPT !.sync = TRUE]
-  /\ g' = [g EXCEPT !.tick = FALSE]
+  /\ g' = [g EXCEPT !.tick = FALSE, !.fo = FALSE]
   /\ UNCHANGED <<env, kq, kg, toK, rs, rin, fe>>
 
 Page(p) == RServes /\ rs.pos = p
@@ -540,6 +546,8 @@ Settled == ~(\E i \in 1..Len(kq) : kq[i].ty = "Accept" /\ kq[i].res = k.row.auth
 Applies(read) == k.rk /\ ~read.outd /\ read.v.seen
 \* A completion that covers L's row: it applies, with L available (a read leaves an unavailable member's row as it is).
 Covers(read) == Applies(read) /\ LAvail(k)
+\* A read's snapshot, as OV2 compares it.
+Snap(l) == <<l.valid, l.i, l.a, l.tr, l.fenced>>
 \* An untruncated view that omits the accepted row, which an unfenced read would hide.
 WouldHide(read) ==
   /\ k.rk /\ k.row.st = "acc" /\ read.v.seen /\ ~read.v.tr
@@ -553,7 +561,9 @@ KApply ==
          mayHide == Covers(rd) /\ ~rd.v.tr /\ ~rd.chg /\ ~(named /\ rd.v.a = k.row.auth)
          \* OV2's latest covering read: this one when it covers L's row, else the one before, kept (an outdated read,
          \* one that never saw C, or one made while L was unavailable says nothing of the row).
-         lr == IF Covers(rd)
+         \* VARIANT V23: an ignored read (one that does not cover the row, after one that did) records its own
+         \* snapshot as the covering read.
+         lr == IF Covers(rd) \/ (Variant = "V23" /\ g.lastRd.valid)
                THEN [valid |-> TRUE, i |-> rd.v.i, a |-> rd.v.a, tr |-> rd.v.tr, fenced |-> rd.chg, rch |-> rd.rch,
                      kshow |-> FALSE, khide |-> FALSE]
                ELSE g.lastRd
@@ -564,14 +574,29 @@ KApply ==
                   THEN (IF rd.outd /\ ~rd.chg THEN {"fencedPush"} ELSE {})
                          \cup (IF rd.chg /\ ~rd.outd THEN {"fencedRow"} ELSE {})
                   ELSE {}
-         \* R gone is the only fence: the read saw C, nothing outdated it, and its token still holds.
-         gone == IF ~k.rk /\ ~rd.outd /\ rd.v.seen THEN {"goneOnly"} ELSE {}
+         \* R gone is the only fence: the read saw C and named L's unlisted row, nothing outdated it, and its token
+         \* still holds, so a completion past the fence would list the row.
+         gone == IF ~k.rk /\ ~rd.outd /\ rd.v.seen /\ named /\ rd.v.a = k.row.auth /\ k.row.uri = NONE
+                 THEN {"goneOnly"} ELSE {}
+         \* The round an instrument outdated (g.fo since the claim), R available: it applies nothing and leaves the
+         \* request.
+         outd == IF k.rk /\ rd.outd /\ g.fo THEN {"outdIgnored"} ELSE {}
+         \* An untruncated, unfenced read that omits L's listed row while L is suspended: the row stays as it is.
+         susp == IF /\ k.lx /\ k.ls /\ k.rk /\ ~rd.outd /\ rd.v.seen /\ ~rd.v.tr /\ ~rd.chg
+                    /\ k.row.st = "acc" /\ k.row.uri # NONE /\ ~(named /\ rd.v.a = k.row.auth) /\ res.k.row = k.row
+                 THEN {"suspOmits"} ELSE {}
          \* A read whose lease ran out, applied: no new claim took its token.
          expired == IF rd.exp /\ Covers(rd) THEN {"expiredApplied"} ELSE {}
-         ev == Events(res, fence \cup gone \cup expired \cup IF KeptByRow(k, rd.v, rd.outd) THEN {"kept"} ELSE {})
+         ev == Events(res, fence \cup gone \cup outd \cup susp \cup expired
+                             \cup IF KeptByRow(k, rd.v, rd.outd) THEN {"kept"} ELSE {})
+         \* OV3, apart from how lr is chosen: a read that does not cover the row leaves the covering read before it.
+         moved == ~Covers(rd) /\ Snap(lr) # Snap(g.lastRd)
+         \* MemberAvailability's read part: a read while L is unavailable changes nothing of its row.
+         rowChanged == k.lx /\ ~LAvail(k) /\ res.k.row # k.row
      IN /\ Record([res EXCEPT !.k.sync = sync])
         /\ g' = [GhostK(res, FALSE, opp, mayHide, FALSE, TRUE, lr, FALSE, ev) EXCEPT
-                   !.lastRd = IF Covers(rd) THEN lr ELSE @, !.ign = IF Covers(rd) THEN FALSE ELSE g.lastRd.valid]
+                   !.lastRd = lr, !.ign = IF Covers(rd) THEN FALSE ELSE g.lastRd.valid,
+                   !.lrMoved = @ \/ moved, !.avail = @ \/ rowChanged, !.fo = FALSE]
         /\ sr' = Touch(sr, res, FALSE)
         /\ last' = [act |-> "KApply", arg |-> NoArg, rec |-> res.rec, resp |-> 0, ev |-> ev]
   /\ rd' = NoRead
@@ -754,22 +779,35 @@ DeliveryStep(act, m) == last' = [act |-> act, arg |-> Arg(NoEnvelope, m, NONE), 
 CountHead(m, up) ==
   [g EXCEPT !.unexcused = [a \in Auths |-> IF ~Corrects(m, a) THEN @[a] ELSE IF up THEN @[a] + 1 ELSE @[a] - 1]]
 
+\* R1 for a suspended L (deliveries.ts REFUSED_SENDER): its lane's content other than a retraction (every Delete,
+\* audience.ts outboundKind) is dropped when claimed or confirmed while it is suspended, and what no claim took is sent
+\* after the lifting. So the head is then dropped by the delivery step (its input "dropped"), and is neither
+\* duplicated nor given up. VARIANT V25: it is delivered as for an available L.
+SenderDrops(m) == k.lx /\ k.ls /\ m.ty \notin {"Delete", "DeleteActor"}
+Drops(m) == SenderDrops(m) /\ Variant # "V25"
+\* MemberAvailability's delivery part: an activity R receives from L while L is suspended is a retraction.
+SentSuspended(m) == [g EXCEPT !.avail = @ \/ SenderDrops(m)]
+
 KDeliver ==
-  /\ kq # <<>>
-  /\ kq' = Tail(kq) /\ rin' = BagAdd(rin, Head(kq))
-  /\ DeliveryStep("KDeliver", Head(kq))
-  /\ UNCHANGED <<k, env, kg, toK, rs, rd, sr, fe, spent, g>>
+  /\ kq # <<>> /\ kq' = Tail(kq)
+  /\ IF Drops(Head(kq))
+     THEN /\ rin' = rin /\ g' = g
+          /\ last' = [act |-> "KDeliver", arg |-> Arg(NoEnvelope, Head(kq), "dropped"), rec |-> {}, resp |-> 0,
+                      ev |-> {"dropped"}]
+     ELSE /\ rin' = BagAdd(rin, Head(kq)) /\ g' = SentSuspended(Head(kq))
+          /\ DeliveryStep("KDeliver", Head(kq))
+  /\ UNCHANGED <<k, env, kg, toK, rs, rd, sr, fe, spent>>
 
 \* A POST whose response is lost: R queues the job, and the activity stays the lane's head.
 KDup ==
-  /\ kq # <<>> /\ Can("dup") /\ Spend("dup")
+  /\ kq # <<>> /\ ~Drops(Head(kq)) /\ Can("dup") /\ Spend("dup")
   /\ rin' = BagAdd(rin, Head(kq))
-  /\ g' = CountHead(Head(kq), TRUE)
+  /\ g' = [CountHead(Head(kq), TRUE) EXCEPT !.avail = @ \/ SenderDrops(Head(kq))]
   /\ DeliveryStep("KDup", Head(kq))
   /\ UNCHANGED <<k, env, kq, kg, toK, rs, rd, sr, fe>>
 
 KGiveUp ==
-  /\ kq # <<>>
+  /\ kq # <<>> /\ ~Drops(Head(kq))
   /\ kq' = Tail(kq) /\ kg' = kg \cup {Head(kq)}
   /\ g' = CountHead(Head(kq), FALSE)
   /\ DeliveryStep("KGiveUp", Head(kq))
@@ -828,7 +866,9 @@ OV2 ==
   OV2Holds =>
     /\ (Listed /\ ~g.lastRd.khide) => Shown(k)
     /\ (Shown(k) /\ ~g.lastRd.tr /\ ~g.lastRd.fenced /\ ~g.lastRd.kshow) => Listed
-ObservedVisibility == OV1 /\ OV2
+\* The covering read OV2 compares changes only at a read that covers the row.
+OV3 == ~g.lrMoved
+ObservedVisibility == OV1 /\ OV2 /\ OV3
 
 RemovalFinality == g.remLive => (~k.c /\ k.row = NoRow /\ ~g.accAfterRem)
 
@@ -838,6 +878,8 @@ NoUnilateralEnd == ~g.nue
 \* The part of it that ends R's live accepted item (implied by NoUnilateralEnd; V19's calibration names it).
 NoLiveReject == ~g.nueLive
 
+\* While L is unavailable: no answer for L, and no row created or listed (AvailBroken); no change of its row by a read
+\* (KApply); no activity of L's other than a Delete received by R (KDeliver, KDup).
 MemberAvailability == ~g.avail
 
 (***************************************************************************)
@@ -874,6 +916,8 @@ GoalOrder7Restored == Acted("KApply") /\ "showed" \in last.ev /\ g.o7
 GoalUnsuspended == Acted("KUnsuspend") /\ Shown(k) /\ spent.susp = 2
 \* A request for a suspended L, ignored; a listing of a suspended L's row, left as it was.
 GoalSuspendedRequest == Acted("KRecv") /\ last.arg.env.ty = "FR" /\ k.ls /\ k.row.st = "acc" /\ last.rec = {}
+\* A read while L is suspended omits L's listed row, R's Remove still in flight: the row stays listed.
+GoalSuspendedOmission == Acted("KApply") /\ "suspOmits" \in last.ev /\ \E e \in toK : e.ty = "Rem"
 GoalSuspendedListing ==
   /\ Acted("KRecv") /\ last.arg.env.ty = "Add" /\ k.ls /\ Served(k, last.arg.env.a) /\ k.row.uri = NONE
 GoalEvictedF8 == "f8" \in last.ev /\ k.issued > 0 /\ k.row = NoRow /\ Recorded1("Delete")
@@ -889,7 +933,7 @@ GoalHeldRecovered ==
 GoalGoneFetch == Acted("KApplyFetch") /\ ~k.rk /\ last.arg.val = "served"
 \* A read claimed before R's actor Delete, completing after it while the purge has not reached C or the read's sync:
 \* R's availability is what fences it.
-GoalGoneRead == Acted("KApply") /\ "goneOnly" \in last.ev /\ k.c
+GoalGoneRead == Acted("KApply") /\ "goneOnly" \in last.ev /\ k.c /\ \E e \in toK : e.ty = "Add"
 \* R's actor Delete whose first purge batch reaches C and L's row in the receive transaction.
 GoalGonePurged == Acted("KRecv") /\ last.arg.val = "purged" /\ k.issued > 0 /\ ~k.c /\ k.row = NoRow
 \* A read whose lease ran out completes and applies: the lease alone fences nothing.
@@ -899,8 +943,8 @@ GoalTruncatedShows == Acted("KApply") /\ "showed" \in last.ev /\ g.lastRd.tr
 GoalTruncatedKeeps == Acted("KApply") /\ Shown(k) /\ g.lastRd.valid /\ g.lastRd.tr /\ g.lastRd.i = NONE
 \* An instrument for a C stored since its fetch, decided on the existing collection.
 GoalFetchExisting == Acted("KApplyFetch") /\ "existing" \in last.ev /\ Recorded1("Accept")
-\* An instrument that stores C outdates a read under way.
-GoalFetchOutdates == Acted("KApplyFetch") /\ "outdRead" \in last.ev
+\* An instrument that stores C outdates a read under way, which then applies nothing and leaves the request.
+GoalFetchOutdates == Acted("KApply") /\ "outdIgnored" \in last.ev /\ k.sync
 \* A round that applied nothing (outdated, or C unseen), then a stale completion: OV2 still reads the covering read
 \* before them, which listed L's accepted row.
 GoalIgnoredThenStale == Acted("KStale") /\ g.ign /\ g.lastRd.valid /\ Listed
@@ -937,8 +981,9 @@ Observation ==
                                           THEN [status |-> 200, collection |-> "C", member |-> "L"]
                                           ELSE [status |-> 404, collection |-> NONE, member |-> NONE]],
    publicShows |-> Shown(k),
-   memberDetail |-> MemberDetail(k),
-   inCollections |-> InCollections(k),
+   \* L's own views, read with L's credential, which a suspension refuses (auth.ts authorize).
+   memberDetail |-> IF k.lx /\ k.ls THEN "refused" ELSE MemberDetail(k),
+   inCollections |-> IF k.lx /\ k.ls THEN "refused" ELSE InCollections(k),
    notified |-> "newRow" \in last.ev,
    response |-> last.resp,
    recorded |-> Recorded(last.rec),

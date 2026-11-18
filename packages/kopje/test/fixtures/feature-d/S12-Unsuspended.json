@@ -267,8 +267,8 @@
           }
         },
         "publicShows": false,
-        "memberDetail": false,
-        "inCollections": true,
+        "memberDetail": "refused",
+        "inCollections": "refused",
         "notified": false,
         "response": null,
         "recorded": [],
@@ -279,7 +279,9 @@
     },
     {
       "action": "KUnsuspend",
-      "input": {},
+      "input": {
+        "value": "newCredential"
+      },
       "environment": {
         "consent": true,
         "slotsFull": false,

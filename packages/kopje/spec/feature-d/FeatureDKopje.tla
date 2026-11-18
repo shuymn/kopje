@@ -301,7 +301,8 @@ Evict(kk) == Res([kk EXCEPT !.row = NoRow], {}, 0)
 (* claim and the outdated check is gone; V5 no exemption; V12 a truncated  *)
 (* listing hides; V13 a read honours retractions; V14a no outdated check;  *)
 (* V14b no row fence; V15 no answer; V18 no check of R at the completion;  *)
-(* V22 no listing gate.                                                    *)
+(* V22 no listing gate; V24 a read hides a suspended member's row it       *)
+(* omits.                                                                  *)
 (***************************************************************************)
 ApplyRead(kk, ee, v, chg, outd, hadRow, settled) ==
   IF ~kk.rk /\ Variant # "V18" THEN Res(kk, {}, 0)
@@ -311,7 +312,11 @@ ApplyRead(kk, ee, v, chg, outd, hadRow, settled) ==
              own == v.i # NONE /\ HeldRow(k1, v.a)
              fenced == chg /\ Variant # "V14b"
              omits == ~v.tr \/ Variant = "V12"
-             k2 == IF ~k1.c \/ ~Lists(k1) THEN k1
+             \* VARIANT V24: a read hides a suspended member's row it omits.
+             hidesSuspended == Variant = "V24" /\ k1.c /\ ~Lists(k1) /\ k1.row.st = "acc" /\ omits /\ ~fenced
+                               /\ ~(v.i # NONE /\ HeldRow(k1, v.a))
+             k2 == IF hidesSuspended THEN [k1 EXCEPT !.row.uri = NONE]
+                   ELSE IF ~k1.c \/ ~Lists(k1) THEN k1
                    ELSE IF own
                      THEN IF Variant = "V13" /\ v.i \in k1.ret THEN k1 ELSE [k1 EXCEPT !.row.uri = v.i]
                    ELSE IF k1.row.st = "acc" /\ omits /\ ~fenced

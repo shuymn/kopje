@@ -50,10 +50,13 @@ export interface Observation {
   authorizationGet: Partial<Record<Authorization, AuthorizationGet>>;
   /** An anonymous viewer and a third account see L in C (its items and its count). */
   publicShows: boolean;
-  /** L sees its own row among C's items (GET /api/v1/collections/:id). */
-  memberDetail: boolean;
-  /** C is among L's in_collections, its row in any state. */
-  inCollections: boolean;
+  /**
+   * L sees its own row among C's items (GET /api/v1/collections/:id), or "refused" while L is suspended: the Store
+   * refuses L's credential before it reads the row.
+   */
+  memberDetail: boolean | "refused";
+  /** C is among L's in_collections, its row in any state, or "refused" while L is suspended. */
+  inCollections: boolean | "refused";
   /** The step notified L added_to_collection (a new accepted row). */
   notified: boolean;
   /**
@@ -61,7 +64,10 @@ export interface Observation {
    * null for a step that is not an inbound activity.
    */
   response: 202 | 503 | "fetch" | null;
-  /** The activities this step recorded, in no particular order. */
+  /**
+   * The activities this step recorded, in no particular order. L's actor Update, which its suspension and lifting
+   * record, is outside the specification and left out.
+   */
   recorded: Recorded[];
   /**
    * The activities this step may record besides those: the design requires none of them and permits each (an
@@ -108,7 +114,9 @@ export interface Step {
   action: string;
   /**
    * value: a step's other input (the request R adds, the environment field changed, ...); a claim's "sameTime" when it
-   * is made in the same millisecond as the row's last change.
+   * is made in the same millisecond as the row's last change; a lifting's "newCredential": L's views after it are read
+   * with a credential issued after it, since the suspension's are still refused; a delivery's "dropped" when the Store
+   * drops a suspended L's ordinary activity instead of sending it.
    */
   input: { envelope?: Envelope; activity?: Activity; value?: string };
   environment: Environment;

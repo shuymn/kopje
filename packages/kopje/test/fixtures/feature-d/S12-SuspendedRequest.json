@@ -132,8 +132,8 @@
           }
         },
         "publicShows": false,
-        "memberDetail": false,
-        "inCollections": true,
+        "memberDetail": "refused",
+        "inCollections": "refused",
         "notified": false,
         "response": null,
         "recorded": [],
@@ -172,8 +172,8 @@
           }
         },
         "publicShows": false,
-        "memberDetail": false,
-        "inCollections": true,
+        "memberDetail": "refused",
+        "inCollections": "refused",
         "notified": false,
         "response": 202,
         "recorded": [],
