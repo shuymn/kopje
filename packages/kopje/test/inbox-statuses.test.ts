@@ -21,6 +21,7 @@ import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
 import { REMOTE_HTML_RAW_LIMIT } from "../src/security/html";
 import { seedAccount, sql } from "./api-helpers";
 import { harness, inboxDeps, NOW } from "./app-helpers";
+import { MASTODON_47_FORWARDED_CONTEXT, mastodonSigned } from "./author-proof-helpers";
 import { fixtureKeyGen } from "./federation-helpers";
 import { BUILD } from "./helpers";
 import {
@@ -660,7 +661,7 @@ describe("Update of a status (ID-6, ID-7, VIS-2)", () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");
     await followed(t, bob);
-    const image = (n: number, focalPoint?: [number, number]) => ({
+    const image = (n: number, focalPoint?: unknown) => ({
       type: "Document",
       mediaType: "image/png",
       url: `${MASTODON}/system/media/focus-${n}.png`,
@@ -722,6 +723,176 @@ describe("Update of a status (ID-6, ID-7, VIS-2)", () => {
     expect(await shown()).toEqual([
       { x: 0, y: 0 },
       { x: 0.5, y: -0.25 },
+    ]);
+
+    // So does one whose focalPoint gives none: a blank string, or an entry Ruby's to_f cannot cast, on which Mastodon
+    // fails the whole Update. The Update itself is applied.
+    await t.post(
+      bob,
+      update(
+        bob,
+        { ...note, content: "<p>edited</p>", attachment: [image(1, ""), image(2, [true, 0])] },
+        "2026-10-11T16:00:00Z",
+      ),
+    );
+    expect(await statusRow(t.store, note.id)).toMatchObject({ content: "<p>edited</p>" });
+    expect(await stored()).toEqual([
+      { focus_x: 0, focus_y: 0, focus_given: 1 },
+      { focus_x: 0.5, focus_y: -0.25, focus_given: 1 },
+    ]);
+
+    // One that casts, to 0,0 here, replaces it.
+    await t.post(bob, update(bob, { ...note, attachment: [image(1), image(2, ["a", "b"])] }, "2026-10-11T17:00:00Z"));
+    expect(await stored()).toEqual([
+      { focus_x: 0, focus_y: 0, focus_given: 1 },
+      { focus_x: 0, focus_y: 0, focus_given: 1 },
+    ]);
+    expect(await shown()).toEqual([
+      { x: 0, y: 0 },
+      { x: 0, y: 0 },
+    ]);
+  });
+
+  // MediaAttachment#focus= (Mastodon 4.7.5) ignores a blank focalPoint, and casts an array's or a comma-split string's
+  // elements with Ruby's to_f, unclamped; Kopje clamps each to -1..1 and reads what to_f cannot cast as none
+  // (docs/mastodon-deviations.md, "Media"). `focus`: what Kopje reads, null for none. RAW_1E400 marks the array
+  // [1e400, 0.5], spliced into the JSON text since JSON.stringify writes no number past the double range.
+  const RAW_1E400 = "raw 1e400";
+  it.each<{ focalPoint: unknown; focus: { x: number; y: number } | null }>(
+    [
+      { focalPoint: ["0", "0"], focus: { x: 0, y: 0 } },
+      { focalPoint: [2, 0], focus: { x: 1, y: 0 } },
+      { focalPoint: [-3, "-2"], focus: { x: -1, y: -1 } },
+      { focalPoint: ["a", "b"], focus: { x: 0, y: 0 } },
+      { focalPoint: ["  .5tail", "1e5"], focus: { x: 0.5, y: 1 } },
+      // Mastodon stores a missing second coordinate as null.
+      { focalPoint: [0.5], focus: { x: 0.5, y: 0 } },
+      { focalPoint: "0.5,-0.25", focus: { x: 0.5, y: -0.25 } },
+      { focalPoint: "0.5,", focus: { x: 0.5, y: 0 } },
+      { focalPoint: "0.5", focus: { x: 0.5, y: 0 } },
+      { focalPoint: "1.1foo,-2,-0.8", focus: { x: 1, y: -1 } },
+      { focalPoint: [null, 0.5], focus: { x: 0, y: 0.5 } },
+      { focalPoint: ["Infinity", "NaN"], focus: { x: 0, y: 0 } },
+      { focalPoint: ["0x1A", 0], focus: { x: 0, y: 0 } },
+      // Past the double range, as a string or a number: Mastodon stores Infinity, written as null.
+      { focalPoint: ["1e400", 0], focus: { x: 0, y: 0 } },
+      { focalPoint: RAW_1E400, focus: { x: 0, y: 0.5 } },
+      // parseFloat stops at the underscore, where Ruby's to_f reads 0.15.
+      { focalPoint: ["0.1_5", 0], focus: { x: 0.1, y: 0 } },
+      // Entries past the second are not read; Mastodon casts them too, and fails on one it cannot cast.
+      { focalPoint: [0, 0, true], focus: { x: 0, y: 0 } },
+      // Ruby's to_f raises on these entries, and Mastodon fails the whole activity.
+      { focalPoint: [true, 0], focus: null },
+      { focalPoint: [0, false], focus: null },
+      { focalPoint: [{}, 0], focus: null },
+      { focalPoint: [[0.5], 0], focus: null },
+      // Blank: Mastodon changes nothing.
+      { focalPoint: undefined, focus: null },
+      { focalPoint: null, focus: null },
+      { focalPoint: false, focus: null },
+      { focalPoint: "", focus: null },
+      { focalPoint: " \u0085", focus: null },
+      { focalPoint: [], focus: null },
+      { focalPoint: {}, focus: null },
+      // Neither an array nor a string: Mastodon fails the whole activity.
+      { focalPoint: true, focus: null },
+      { focalPoint: 5, focus: null },
+      { focalPoint: { x: 0.5, y: 0.5 }, focus: null },
+    ].map((row) => ({
+      ...row,
+      sent: row.focalPoint === RAW_1E400 ? "[1e400,0.5]" : (JSON.stringify(row.focalPoint) ?? "none"),
+    })),
+  )("reads a remote focalPoint of $sent as $focus, in a Create and in an Update", async ({ focalPoint, focus }) => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const image = (n: number, point: unknown) => ({
+      type: "Document",
+      mediaType: "image/png",
+      url: `${MASTODON}/system/media/cast-${n}.png`,
+      width: 640,
+      height: 480,
+      ...(point === undefined ? {} : { focalPoint: point }),
+    });
+    const body = (activity: unknown) => JSON.stringify(activity).replace(`"${RAW_1E400}"`, "[1e400,0.5]");
+    const read = async (uri: string) => {
+      const row = (await statusRow(t.store, uri))!;
+      const status = await t.api<{ media_attachments: { meta: { focus?: unknown } | null }[] }>(
+        `/api/v1/statuses/${row.id}`,
+      );
+      return {
+        stored: await sql(
+          t.store,
+          "SELECT focus_x, focus_y, focus_given FROM media_attachments WHERE status_id = ?",
+          row.id,
+        ),
+        shown: status.body.media_attachments.map((m) => m.meta?.focus),
+      };
+    };
+
+    const created = mastodonNote(bob, { attachment: [image(1, focalPoint)] });
+    expect(await t.post(bob, body(create(bob, created)))).toBe(202);
+    expect(await read(created.id)).toEqual({
+      stored: [
+        focus === null
+          ? { focus_x: 0, focus_y: 0, focus_given: 0 }
+          : { focus_x: focus.x, focus_y: focus.y, focus_given: 1 },
+      ],
+      shown: [focus ?? undefined],
+    });
+
+    // An Update replaces the stored focus with what it reads, and keeps it when it reads none.
+    const updated = mastodonNote(bob, { attachment: [image(2, [-0.75, 0.25])] });
+    expect(await t.post(bob, create(bob, updated))).toBe(202);
+    const edit = update(
+      bob,
+      { ...updated, content: "<p>edited</p>", attachment: [image(2, focalPoint)] },
+      "2026-10-11T13:00:00Z",
+    );
+    expect(await t.post(bob, body(edit))).toBe(202);
+    expect(await statusRow(t.store, updated.id)).toMatchObject({ content: "<p>edited</p>" });
+    const kept = focus ?? { x: -0.75, y: 0.25 };
+    expect(await read(updated.id)).toEqual({
+      stored: [{ focus_x: kept.x, focus_y: kept.y, focus_given: 1 }],
+      shown: [kept],
+    });
+  });
+
+  it("reads an LD-signed Create's focalPoint in the shape it was sent, a string as a string", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const image = (n: number, focalPoint: unknown) => ({
+      type: "Document",
+      mediaType: "image/png",
+      url: `${MASTODON}/system/media/signed-${n}.png`,
+      width: 640,
+      height: 480,
+      focalPoint,
+    });
+    const note = mastodonNote(bob, { attachment: [image(1, "0.5,-0.25"), image(2, [null, 0.5])] });
+    const signed = await mastodonSigned(create(bob, note, MASTODON_47_FORWARDED_CONTEXT), bob);
+    expect(signed.signature).toBeDefined();
+    expect(await t.post(bob, signed)).toBe(202);
+    const row = (await statusRow(t.store, note.id))!;
+    // Mastodon compacts such a body under its @list term, so that it reads ["0.5,-0.25"] as (0.5, null) and [0.5] (its
+    // null dropped) as (0.5, null).
+    expect(
+      await sql(
+        t.store,
+        "SELECT focus_x, focus_y, focus_given FROM media_attachments WHERE status_id = ? ORDER BY position",
+        row.id,
+      ),
+    ).toEqual([
+      { focus_x: 0.5, focus_y: -0.25, focus_given: 1 },
+      { focus_x: 0, focus_y: 0.5, focus_given: 1 },
+    ]);
+    const status = await t.api<{ media_attachments: { meta: { focus?: unknown } | null }[] }>(
+      `/api/v1/statuses/${row.id}`,
+    );
+    expect(status.body.media_attachments.map((m) => m.meta?.focus)).toEqual([
+      { x: 0.5, y: -0.25 },
+      { x: 0, y: 0.5 },
     ]);
   });
 
