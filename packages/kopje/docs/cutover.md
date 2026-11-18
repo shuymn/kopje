@@ -345,9 +345,9 @@ Read `conversion.dropped` in the manifest before passing the flag: every code th
 the converter, taking every audience from the addressing captured before the bridge, and reads actual records from a
 dump. Both sides call the Worker's runtime (`kopje-runtime.js`) for the HTML sanitizers, the normalization of stored
 values (bounds, cuts, times and blank settings), the identity checks and the media URL form, so where one of those
-helpers gives a wrong value and both records hold it, the record comparison misses the defect. `test-node/kopje-runtime.test.ts` pins some of
-their output by hand: the sanitizer's and an instance setting's bound. Records are
-keyed by AP URIs, never by assigned ids, and compared as exact values:
+helpers gives a wrong value and both records hold it, the record comparison misses the defect.
+`test-node/kopje-runtime.test.ts` pins some of their output by hand: the sanitizer's and an instance setting's bound.
+Records are keyed by AP URIs, never by assigned ids, and compared as exact values:
 
 | Category                                                                                                                                                           | Record                                                                                                                                                                                                          |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
