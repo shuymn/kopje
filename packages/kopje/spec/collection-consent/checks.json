@@ -3,77 +3,77 @@
   "scenarios": [
     {
       "name": "S1",
-      "distinct": 11090,
+      "distinct": 15082,
       "depth": 17
     },
     {
       "name": "S2",
-      "distinct": 121514,
+      "distinct": 170301,
       "depth": 23
     },
     {
       "name": "S3",
-      "distinct": 1571,
+      "distinct": 1783,
       "depth": 16
     },
     {
       "name": "S4",
-      "distinct": 16570,
-      "depth": 19
+      "distinct": 24296,
+      "depth": 20
     },
     {
       "name": "S5",
-      "distinct": 20680,
+      "distinct": 23051,
       "depth": 17
     },
     {
       "name": "S6",
-      "distinct": 39896,
+      "distinct": 54591,
       "depth": 22
     },
     {
       "name": "S7",
-      "distinct": 180,
+      "distinct": 206,
       "depth": 11
     },
     {
       "name": "S8",
-      "distinct": 13335,
+      "distinct": 15407,
       "depth": 19
     },
     {
       "name": "S9",
-      "distinct": 20083,
+      "distinct": 22072,
       "depth": 15
     },
     {
       "name": "S10",
-      "distinct": 191,
+      "distinct": 246,
       "depth": 11
     },
     {
       "name": "S11",
-      "distinct": 8187,
+      "distinct": 11256,
       "depth": 19
     },
     {
       "name": "S12",
-      "distinct": 6858,
+      "distinct": 8595,
       "depth": 14
     },
     {
       "name": "S13",
-      "distinct": 416,
+      "distinct": 530,
       "depth": 13
     },
     {
       "name": "S14",
-      "distinct": 4936,
+      "distinct": 6057,
       "depth": 16
     },
     {
       "name": "S15",
-      "distinct": 8318,
+      "distinct": 9341,
       "depth": 18
     }
   ],
@@ -306,6 +306,13 @@
       "variant": "V27",
       "invariant": "AnswerBound",
       "trace": 8
+    },
+    {
+      "name": "V28",
+      "scenario": "S2",
+      "variant": "V28",
+      "invariant": "AnswerBound",
+      "trace": 11
     }
   ],
   "findings": [],
@@ -750,6 +757,13 @@
       "goal": "AnswerCoalesced",
       "trace": 10,
       "fixture": true
+    },
+    {
+      "name": "S2-LeaseSuperseded",
+      "scenario": "S2",
+      "goal": "LeaseSuperseded",
+      "trace": 13,
+      "fixture": true
     }
   ],
   "replay": {
@@ -865,6 +879,10 @@
       {
         "variant": "V27",
         "fixture": "S2-AnswerCoalesced"
+      },
+      {
+        "variant": "V28",
+        "fixture": "S2-LeaseSuperseded"
       }
     ],
     "exempt": [

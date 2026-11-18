@@ -45,6 +45,9 @@ StateGoals ==
    AnswerCoalesced |->
      /\ Acted("KApply") /\ last.rec = {} /\ k.rk /\ LAvail(k)
      /\ \E a \in Auths : AnswerWaits(a, "R") /\ ~Served(k, a) /\ g.lastRd.a = a /\ g.lastRd.i # NONE,
+   \* A read records a retraction answer while one of the same authorization is leased (Coalesced does not count it),
+   \* then the leased one's POST fails: it is dropped as superseded (KFail).
+   LeaseSuperseded |-> Acted("KFail") /\ last.arg.val = "superseded" /\ g.overLease,
    \* A read lists the accepted row under an item R's Remove retracted: the row takes it (K14).
    ReadOverRetraction |-> Acted("KApply") /\ k.row.st = "acc" /\ k.row.uri # NONE /\ k.row.uri \in k.ret,
    \* The revoke's Delete is delivered after the retired row's cleanup (K10 leaves the lane as it is).
