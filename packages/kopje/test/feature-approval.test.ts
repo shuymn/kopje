@@ -5,10 +5,11 @@ import { Db } from "../src/db/sql";
 import { ANSWER_CHUNK, accountsOf } from "../src/domain/accounts";
 import { type RemoteFeaturePolicyInput, upsertRemoteActor } from "../src/domain/remote-actors";
 import { DOCUMENT_BODY_LIMIT } from "../src/federation/loader";
-import { jsonRefusal, MAX_JSON_NODES } from "../src/platform/json-bounds";
+import { jsonRefusal } from "../src/platform/json-bounds";
 import { type ApiHarness, sql } from "./api-helpers";
 import { actorDefaults, confirmedAs, mastodonActor } from "./inbox-helpers";
 import { accountId, ALICE, DAVE, followed, setup, type Setup } from "./inbox-status-helpers";
+import { boundFillers } from "./json-bound-helpers";
 import { block, community, follow, getJson, post, remoteAccount, type User } from "./status-helpers";
 import { recordingSql } from "./status-row-fixtures";
 
@@ -214,19 +215,11 @@ describe("a remote account's feature policy", () => {
   it("reads a half filling the document bounds within a generous time (#1774)", async () => {
     const t = await setup();
     const actor = await mastodonActor(t.web, "bound");
-    const values = (value: unknown): number =>
-      1 +
-      (typeof value === "object" && value !== null
-        ? Object.values(value).reduce<number>((n, member) => n + values(member), 0)
-        : 0);
     const document = (entries: string[]) => ({
       ...actor.document,
       interactionPolicy: { canFeature: { automaticApproval: [...entries, "as:Public"] } },
     });
-    const count = MAX_JSON_NODES - values(document([]));
-    const short = Array.from({ length: count }, (_, i) => `${i}`);
-    const room = DOCUMENT_BODY_LIMIT - JSON.stringify(document(short)).length;
-    const entries = short.map((n, i) => n + "x".repeat(Math.floor(room / count) + (i === 0 ? room % count : 0)));
+    const entries = boundFillers(document, DOCUMENT_BODY_LIMIT);
     const filled = document(entries);
     expect([JSON.stringify(filled).length, jsonRefusal(filled)]).toEqual([DOCUMENT_BODY_LIMIT, null]);
     expect(jsonRefusal(document([...entries, "y"]))).toBe("too-complex");

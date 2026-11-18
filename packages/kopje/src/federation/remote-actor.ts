@@ -491,7 +491,9 @@ function featurePolicyOf(json: Record<string, unknown>): RemoteFeaturePolicyInpu
         : Array.isArray(value)
           ? value
           : isObject(value)
-            ? Object.keys(value).map(() => null)
+            ? Object.keys(value).length === 0
+              ? []
+              : [null]
             : [value];
     return policyHalf(entries);
   };

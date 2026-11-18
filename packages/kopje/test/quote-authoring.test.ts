@@ -12,7 +12,7 @@ import { MAX_QUOTED_UPDATES, quotedUpdates } from "../src/domain/update-fan-out"
 import { INBOX_BODY_LIMIT } from "../src/federation/spool";
 import { deliveryRound } from "../src/jobs/deliver";
 import { publishScheduled } from "../src/jobs/scheduled";
-import { jsonRefusal, MAX_JSON_NODES } from "../src/platform/json-bounds";
+import { jsonRefusal } from "../src/platform/json-bounds";
 import { settle, settleDeliveries, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD, runStoreJobs, deferred } from "./helpers";
@@ -34,6 +34,7 @@ import {
   update,
 } from "./inbox-status-helpers";
 import { storeReceive } from "./inbox-store-helpers";
+import { boundFillers } from "./json-bound-helpers";
 import { contexts, deliveryDeps, quoteAccept as accept, quoteReject as reject } from "./quote-helpers";
 import { rowsRead } from "./read-helpers";
 import { outbound } from "./status-helpers";
@@ -564,20 +565,12 @@ describe("remote quote policies (StatusParser#quote_policy, row 2)", () => {
   // is stored with Mastodon's flags within a generous time. Fails if the half is cut (public is lost).
   it("reads a half filling the body bounds within a generous time (#1774)", async () => {
     const { t, bob } = await world();
-    const values = (value: unknown): number =>
-      1 +
-      (typeof value === "object" && value !== null
-        ? Object.values(value).reduce<number>((n, member) => n + values(member), 0)
-        : 0);
     const activity = (entries: string[]) =>
       create(bob, {
         ...mastodonNote(bob, { interactionPolicy: { canQuote: { automaticApproval: [...entries, "as:Public"] } } }),
         id: `${bob.uri}/statuses/bound`,
       });
-    const count = MAX_JSON_NODES - values(activity([]));
-    const short = Array.from({ length: count }, (_, i) => `${i}`);
-    const room = INBOX_BODY_LIMIT - JSON.stringify(activity(short)).length;
-    const entries = short.map((n, i) => n + "x".repeat(Math.floor(room / count) + (i === 0 ? room % count : 0)));
+    const entries = boundFillers(activity, INBOX_BODY_LIMIT);
     const filled = activity(entries);
     expect([JSON.stringify(filled).length, jsonRefusal(filled)]).toEqual([INBOX_BODY_LIMIT, null]);
     expect(jsonRefusal(activity([...entries, "y"]))).toBe("too-complex");
