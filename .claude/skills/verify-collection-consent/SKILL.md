@@ -44,14 +44,30 @@ move the record forward. A change to `spec/collection-consent/` itself always ne
 `tlc-check.mjs` downloads TLC's pinned jar into `node_modules/.cache/` once and checks its SHA-256. The JDK is the one
 `mise.spec.toml` pins, apart from `mise.toml` so that only these checks install it: `MISE_ENV=spec mise install java`.
 CI runs it in `.github/workflows/spec.yml` with `MISE_ENV=spec`, and runs the tla-ts checks as the `kopje-spec`
-project only for a change they read (`scripts/test-affected.sh`, `kopje_spec`). Before the replay exists,
-`collection-consent-coverage.mjs initial` records with the spec check alone.
+project only for a change they read (`scripts/test-affected.sh`, `kopje_spec`).
 
-The replay is a workerd test with one test per fixture (`test/fixtures/collection-consent/<name>.json`), titled by the
-fixture's name, that runs its steps against the Store and compares `compareObservation`
-(`test/collection-consent-observe.ts`) after each one. `collection-consent-spec.test.ts` fails for a fixture the replay
-does not name, and for a skipped test; `collection-consent-coverage.mjs forward` fails unless every fixture's test ran
-and passed. No fixture takes `KMemberGone` (Kopje deletes no local account), and the spec test checks that.
+## The replay
+
+`test/collection-consent-replay.test.ts` is a workerd test with one test per fixture
+(`test/fixtures/collection-consent/<name>.json`), titled by the fixture's name, that takes its steps through the paths
+Kopje takes them (the inbox, a sync's collections part, the delivery rounds, the API, the cron's and the operator's
+operations) and compares `compareObservation` (`test/collection-consent-observe.ts`) after each one.
+`collection-consent-spec.test.ts` fails for a fixture the replay does not name, and for a skipped test;
+`collection-consent-coverage.mjs forward` fails unless every fixture's test ran and passed. No fixture takes
+`KMemberGone` (Kopje deletes no local account), and the spec test checks that.
+
+One fixture: `pnpm exec vitest run --max-workers=1 test/collection-consent-replay.test.ts -t <name>`. A failure names
+the first step that disagrees, as `step <n> <action> <input>: <field>: expected <fixture's>, got <Store's>`, and stops
+there; the fixture's steps are in its JSON, in order.
+
+The replay builds the world the specification abstracts, and each choice is commented where the replay makes it: R and
+X on one Mastodon host, L following neither; the environment flags as seeded rows (other members' rows in C's slots,
+R's other collections, a backlog of other hosts' deliveries none of them due, R's retractions at the cap, R's other
+content before a deferred purge reaches C); gates that hold a read's fetches until its `KFetch` and its completion until
+its `KApply` or `KStale`, one claim to a `KClaim`; the lane head answered 202, a lost response, or 403 for a give-up;
+`recorded` as L's outbound rows new since the last step. A choice that lets the Store take a step the fixture does not
+state (a second claim in one call, a 400 the delivery resends, a key gone stale over `KCleanup`'s day that refetches
+R's document) makes a disagreement that is the replay's: fix the replay.
 
 Each calibration variant that changes what the Store does has a fixture whose replay fails against a Store that makes
 the variant's change. `checks.json`'s `replay` names it, and the spec test checks that the variant no longer
@@ -115,8 +131,9 @@ Tell the two kinds of failure apart by the step that breaks the invariant:
   BOUNDS): fix the model, not the rules.
 
 A replay that disagrees at a step is a code bug unless the fixture's `unspecified` names the field (those are skipped),
-the extra activity is one its `mayAlsoRecord` permits, or the step is one the Store cannot take as the fixture states
-it, which is a modelling question.
+the extra activity is one its `mayAlsoRecord` permits, the replay took the step otherwise than the fixture states it
+(above, "The replay"), or the step is one the Store cannot take as the fixture states it, which is a modelling
+question.
 
 If tla-ts and TLC disagree, that is a finding about a checker: report it with both outputs and keep the spec as it is.
 
