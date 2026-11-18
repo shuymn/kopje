@@ -44,6 +44,7 @@ import {
   setup,
   type Setup,
 } from "./inbox-status-helpers";
+import { storeReceive } from "./inbox-store-helpers";
 import { contexts } from "./quote-helpers";
 import { watchedCursor } from "./read-helpers";
 
@@ -1460,6 +1461,36 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
     expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: ACCEPTED, uri: first.id }]);
     expect(await w.t.post(w.owner, itemActivity(w, "Add", foreign(2, authorization("999999999999999996"))))).toBe(202);
     expect((await aliceAnswers(w.t)).map(({ activity }) => activity.type)).toEqual(["Accept"]);
+  });
+
+  // Code review r3: an Add naming the served authorization under an item uri another row holds (here a remote member's
+  // item of the same collection) names no row of a local member: nothing is applied and the row keeps its item. Fails if
+  // the Add is taken as listing the row ('item-listed').
+  it("takes no Add naming the member under an item uri another row holds", async () => {
+    const w = await owned();
+    expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+    const [row] = await localRows(w.t, ALICE);
+    const a = authorization(row!.id);
+    const first = localItem(w.owner, ALICE_URI, a);
+    expect(await w.t.post(w.owner, itemActivity(w, "Add", first))).toBe(202);
+    const held = remoteItem(w.owner, { uri: `${OTHER}/users/held` });
+    expect(await w.t.post(w.owner, itemActivity(w, "Add", held))).toBe(202);
+    expect(await sql(w.t.store, "SELECT account_id FROM collection_items WHERE uri = ?", held.id)).toEqual([
+      { account_id: null },
+    ]);
+    const add = (id: string) =>
+      storeReceive(w.t.store, w.owner.uri, {
+        type: "Add",
+        id: null,
+        target: w.listed.id,
+        object: { featuredItem: { id, object: ALICE_URI, authorization: a, published: null } },
+      });
+    expect(await add(held.id)).toMatchObject({ applied: false, reason: "not-applied" });
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: ACCEPTED, uri: first.id, position: 1 }]);
+    // The guarded branch: the same Add under a uri no row holds lists the row.
+    const free = localItem(w.owner, ALICE_URI, a);
+    expect(await add(free.id)).toMatchObject({ applied: true, reason: "item-listed" });
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, uri: free.id }]);
   });
 
   // 6-T6 with a second owner. Fails if another owner's listing of the authorization Kopje serves for this owner's

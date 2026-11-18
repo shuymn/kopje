@@ -102,22 +102,24 @@ export function serves(row: Pick<LocalRow, "id" | "account_id" | "state">, listi
 }
 
 // The owner's item `uri` (an Add's or a listing's, one of its collection's: remote-featured-collections.ts isItemOf)
-// named the row's authorization: its uri becomes the item's, unless another row holds that uri, and a listing gives it
-// its `position`. updated_at moves only when the uri does, so a read claimed before a change of who is shown keeps the
-// row (its fence), and a listing that names the row as it is listed already fences nothing.
-export function markListed(db: Db, row: string, uri: string, now: number, position: number | null = null): void {
-  db.run(
-    `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
-			SET uri = CASE WHEN NOT EXISTS (SELECT 1 FROM collection_items o INDEXED BY collection_items_uri
-					WHERE o.uri = ?2 AND o.id <> ?1) THEN ?2 ELSE uri END,
-				updated_at = CASE WHEN uri IS NOT ?2 AND NOT EXISTS (SELECT 1 FROM collection_items o
-					INDEXED BY collection_items_uri WHERE o.uri = ?2 AND o.id <> ?1) THEN ?3 ELSE updated_at END,
-				position = coalesce(?4, position)
-		WHERE id = ?1`,
-    row,
-    uri,
-    new Date(now).toISOString(),
-    position,
+// named the row's authorization: its uri becomes the item's, and a listing gives it its `position`; whether it did.
+// An item uri another row holds (another collection's item, or one this collection keeps) names no row of a local
+// member: the row is left as it is, so the listing has not listed it (it may hide it, applyListing). updated_at moves
+// only when the uri does, so a read claimed before a change of who is shown keeps the row (its fence), and a listing
+// that names the row as it is listed already fences nothing.
+export function markListed(db: Db, row: string, uri: string, now: number, position: number | null = null): boolean {
+  return (
+    db.first(
+      `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
+			SET uri = ?2, updated_at = CASE WHEN uri IS NOT ?2 THEN ?3 ELSE updated_at END, position = coalesce(?4, position)
+		WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM collection_items o INDEXED BY collection_items_uri
+				WHERE o.uri = ?2 AND o.id <> ?1)
+		RETURNING 1 AS x`,
+      row,
+      uri,
+      new Date(now).toISOString(),
+      position,
+    ) !== undefined
   );
 }
 

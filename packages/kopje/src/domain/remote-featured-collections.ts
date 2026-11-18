@@ -374,8 +374,9 @@ function itemByUri(db: Db, uri: string): StoredItem | undefined {
 // and an item whose uri another collection or a local member's row holds skipped. An entry naming a local account,
 // whose item may be one of the collection's (isItemOf, else it is skipped, naming no one), is matched to that member's
 // row by its authorization (feature-answers.ts, #1589's D21 and D24):
-// a row that serves it takes the item's uri and position; any other authorization of the member is answered with the
-// member's Delete of it, nothing stored; a member unavailable to every read is skipped (localListing). Every local
+// a row that serves it takes the item's uri and position, unless another row the listing leaves holds that uri, and is
+// then not named (markListed); any other authorization of the member is answered with the member's Delete of it,
+// nothing stored; a member unavailable to every read is skipped (localListing). Every local
 // member's row is kept, listed or not, in any state: no listing deletes one (threat-model.md ID-9). `hides`:
 // a read's claim, for an untruncated listing of a read (null for any other listing, which only shows): a local
 // member's accepted row it does not name, whose member is available and which did not change at or after the claim,
@@ -457,9 +458,10 @@ function applyListing(
   }
   for (const row of locals) {
     const named = listed.get(row.id);
-    if (named !== undefined) {
-      markListed(db, row.id, named.uri, now, named.position);
-    } else if (hides !== null && !keptUnlisted(row)) {
+    if (named !== undefined && markListed(db, row.id, named.uri, now, named.position)) {
+      continue;
+    }
+    if (hides !== null && !keptUnlisted(row)) {
       hideRow(db, row.id, now);
     }
   }
@@ -530,8 +532,8 @@ export function applyFeaturedItem(
 // the row's state stays); any other authorization of the member is answered with the member's Delete of it to the
 // sender, once per Add and whatever the retractions (the owner may have accepted again after its Remove), nothing
 // stored, unless Kopje serves it in any collection (answerUnserved). 'listed' or 'answered', else null (an item that
-// cannot be one of the collection's, isItemOf; no available local member, an authorization the member could not have
-// issued, or one served).
+// cannot be one of the collection's, isItemOf; an item uri another row holds, markListed; no available local member,
+// an authorization the member could not have issued, or one served).
 export function applyLocalFeaturedItem(
   db: Db,
   owner: Owner,
@@ -553,8 +555,7 @@ export function applyLocalFeaturedItem(
     if (isRetracted(db, owner.uri, input.id, now)) {
       return null;
     }
-    markListed(db, row.id, input.id, now);
-    return "listed";
+    return markListed(db, row.id, input.id, now) ? "listed" : null;
   }
   return answerUnserved(db, owner, collection.uri, listing, now) ? "answered" : null;
 }
