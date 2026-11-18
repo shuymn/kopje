@@ -1,5 +1,5 @@
 {
-  "$comment": "Expected outcomes of the checks of spec/collection-consent/ (scripts/collection-consent-plan.mjs explains each kind). Both tla-ts (test-node/collection-consent-spec.test.ts) and TLC (scripts/tlc-check.mjs) must give them. A change of a count is a change of the state space: rerun both checkers and explain it in the commit.",
+  "$comment": "Expected outcomes of the checks of spec/collection-consent/ (scripts/collection-consent-plan.mjs explains each kind). Both tla-ts (test-node/collection-consent-spec.test.ts) and TLC (scripts/tlc-check.mjs) must give them. A change of a count is a change of the state space: rerun both checkers and explain it in the commit. replay names, for each calibration variant, a fixture the variant no longer reproduces, so that the replay of that fixture fails against a Store that makes the variant's change, or, for a variant that changes only what an invariant counts, why it is exempt; the spec test checks both.",
   "scenarios": [
     {
       "name": "S1",
@@ -723,5 +723,123 @@
       "trace": 5,
       "fixture": true
     }
-  ]
+  ],
+  "replay": {
+    "catches": [
+      {
+        "variant": "V1",
+        "fixture": "S5-ReadHid"
+      },
+      {
+        "variant": "V2",
+        "fixture": "S5-ReadHid"
+      },
+      {
+        "variant": "V3",
+        "fixture": "S5-FencedByPush"
+      },
+      {
+        "variant": "V4",
+        "fixture": "S5-StaleOmits"
+      },
+      {
+        "variant": "V5",
+        "fixture": "S8-Kept"
+      },
+      {
+        "variant": "V6",
+        "fixture": "S5-Hidden"
+      },
+      {
+        "variant": "V7",
+        "fixture": "S8-Retried503"
+      },
+      {
+        "variant": "V7b",
+        "fixture": "S8-RemovalGuard"
+      },
+      {
+        "variant": "V9",
+        "fixture": "S2-RetractionAdmitted"
+      },
+      {
+        "variant": "V10",
+        "fixture": "S4-RecvXAdd"
+      },
+      {
+        "variant": "V11",
+        "fixture": "S5-FencedByPush"
+      },
+      {
+        "variant": "V12",
+        "fixture": "S9-TruncatedKeeps"
+      },
+      {
+        "variant": "V13",
+        "fixture": "S2-ReadOverRetraction"
+      },
+      {
+        "variant": "V14a",
+        "fixture": "S5-FencedByPush"
+      },
+      {
+        "variant": "V14b",
+        "fixture": "S5-FencedByRow"
+      },
+      {
+        "variant": "V15",
+        "fixture": "S2-Answered"
+      },
+      {
+        "variant": "V16",
+        "fixture": "S2-CleanupThenDelete"
+      },
+      {
+        "variant": "V16a",
+        "fixture": "S4-AnsweredX"
+      },
+      {
+        "variant": "V17",
+        "fixture": "S8-GoneFetch"
+      },
+      {
+        "variant": "V18",
+        "fixture": "S8-GoneRead"
+      },
+      {
+        "variant": "V19",
+        "fixture": "S1-AcceptedPolicyOff"
+      },
+      {
+        "variant": "V20",
+        "fixture": "S14-Order7"
+      },
+      {
+        "variant": "V21",
+        "fixture": "S12-SuspendedRequest"
+      },
+      {
+        "variant": "V22",
+        "fixture": "S12-SuspendedListing"
+      },
+      {
+        "variant": "V24",
+        "fixture": "S12-SuspendedOmission"
+      },
+      {
+        "variant": "V25",
+        "fixture": "S12-DroppedDelivery"
+      }
+    ],
+    "exempt": [
+      {
+        "variant": "V8",
+        "why": "It counts a correction refused at a full backlog against CR3 (F7 without F8's excuse): it changes what an invariant counts, no step of Kopje's."
+      },
+      {
+        "variant": "V23",
+        "why": "An ignored read records its own snapshot as the covering read OV2 compares: it changes what an invariant counts, no step of Kopje's."
+      }
+    ]
+  }
 }

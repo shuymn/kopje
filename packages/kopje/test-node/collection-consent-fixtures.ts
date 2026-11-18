@@ -200,6 +200,125 @@ const STRING_ARRAY = /\[\n\s+("[^"\n]*"(?:,\n\s+"[^"\n]*")*)\n\s+\]/g;
 export const fixtureText = (fixture: Fixture): string =>
   `${JSON.stringify(fixture, null, 2).replace(STRING_ARRAY, (_, items: string) => `[${items.split(/,\n\s+/).join(", ")}]`)}\n`;
 
+// The replay under another variant's rules. A fixture is reproduced when some run of the specification takes each of
+// its steps as recorded (action, input and environment, matched at every state) and gives after each an observation the
+// replay accepts: compareObservation's rules, with an unspecified field skipped, every activity required and only the
+// permitted ones besides. A calibration variant that changes what the Store does reproduces at least one fixture no
+// longer, so a Store with that change fails that fixture's replay (checks.json's replay).
+const NONE = "-";
+const SHORT = { ordinary: "ord", retraction: "ret" } as const;
+
+/** A JSON value as a TLA+ expression: a record for an object, a string, a boolean or a number. */
+function tla(value: unknown): string {
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+  if (typeof value === "number") return String(value);
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const fields = Object.entries(value).map(([key, inner]) => `${key} |-> ${tla(inner)}`);
+    return `[${fields.join(", ")}]`;
+  }
+  throw new Error(`no TLA+ form for ${JSON.stringify(value)}`);
+}
+
+/** The step as the specification's last.act, last.arg and env: the fixture's projection undone. */
+function stepKey(s: Step): string {
+  const e = s.input.envelope;
+  const l = e?.listing;
+  const m = s.input.activity;
+  const listing = { i: l?.item ?? NONE, a: l?.authorization ?? NONE, tr: l?.truncated ?? false };
+  const env = {
+    ty: e?.type ?? NONE,
+    r: e?.request ?? NONE,
+    i: e?.item ?? NONE,
+    a: e?.authorization ?? NONE,
+    l: listing,
+  };
+  const msg = {
+    ty: m?.type ?? NONE,
+    obj: m?.object ?? NONE,
+    res: m?.result ?? NONE,
+    to: m?.to ?? NONE,
+    cls: m ? SHORT[m.class] : NONE,
+    why: m?.reason ?? NONE,
+  };
+  const { consent, slotsFull, held, backlogFull, retractionCapFull } = s.environment;
+  return tla({
+    act: s.action,
+    arg: { env, msg, val: s.input.value ?? NONE },
+    env: { consent, slots: slotsFull, held, bl: backlogFull, cap: retractionCapFull },
+  });
+}
+
+const recordedSet = (ms: Recorded[]): string =>
+  `{${ms.map((m) => tla({ ...m, result: m.result ?? NONE, class: SHORT[m.class] })).join(", ")}}`;
+
+/** A TLA+ predicate over o, the specification's Observation, that holds when the replay accepts it as expected. */
+function accepts(expected: Observation): string {
+  // A field that is a boolean or "refused" is compared as ToJson's text, since TLA+ compares no boolean with a string.
+  const text = (value: unknown) => JSON.stringify(JSON.stringify(value));
+  const parts: string[] = [];
+  if (expected.row === null) parts.push(`o.row.name = ${tla(NONE)}`);
+  else {
+    for (const [key, value] of Object.entries(expected.row)) {
+      if (!expected.unspecified.includes(`row.${key}` as Observation["unspecified"][number])) {
+        parts.push(`o.row.${key} = ${tla(value ?? NONE)}`);
+      }
+    }
+  }
+  parts.push(`o.collection = ${tla(expected.collection)}`);
+  const gets = Object.entries(expected.authorizationGet);
+  parts.push(`DOMAIN o.authorizationGet = {${gets.map(([a]) => tla(a)).join(", ")}}`);
+  for (const [a, get] of gets) parts.push(`o.authorizationGet[${tla(a)}].status = ${get.status}`);
+  for (const key of ["publicShows", "memberDetail", "inCollections", "notified", "readRequested"] as const) {
+    parts.push(`ToJson(o.${key}) = ${text(expected[key])}`);
+  }
+  parts.push(`o.response = ${expected.response === null ? 0 : expected.response === "fetch" ? 1 : expected.response}`);
+  const required = recordedSet(expected.recorded);
+  parts.push(`${required} \\subseteq o.recorded`);
+  parts.push(`o.recorded \\subseteq ${required} \\cup ${recordedSet(expected.mayAlsoRecord)}`);
+  return parts.join(" /\\ ");
+}
+
+function replayModule(steps: Step[]): string {
+  const cases = steps.map((s, i) => `i = ${i + 1} -> ${accepts(s.observation)}`);
+  return [
+    "---- MODULE CollectionConsentReplay ----",
+    "EXTENDS CollectionConsentFixtures",
+    "VARIABLE pc",
+    `Keys == << ${steps.map(stepKey).join(",\n  ")} >>`,
+    "Key(l, e) == [act |-> l.act, arg |-> l.arg, env |-> e]",
+    `ReplayAccepts(i) == LET o == Observation IN\n  CASE ${cases.join("\n    [] ")}`,
+    "RInit == Init /\\ pc = 1 /\\ Key(last, env) = Keys[1]",
+    "RNext == pc < Len(Keys) /\\ ReplayAccepts(pc) /\\ Next /\\ pc' = pc + 1 /\\ Key(last', env') = Keys[pc + 1]",
+    "NotReproduced == ~(pc = Len(Keys) /\\ ReplayAccepts(pc))",
+    "====",
+    "",
+  ].join("\n");
+}
+
+/** Whether the specification under variant reproduces the fixture, as the replay compares it. */
+export async function reproduces(fixture: Fixture, variant: string): Promise<boolean> {
+  const source = replayModule(fixture.steps);
+  const config = [
+    "CONSTANTS",
+    `  Scenario = "${fixture.scenario}"`,
+    `  Variant = "${variant}"`,
+    '  Goal = "none"',
+    "INIT RInit",
+    "NEXT RNext",
+    "CHECK_DEADLOCK FALSE",
+    "INVARIANT NotReproduced",
+    "",
+  ].join("\n");
+  const result = await check({
+    source,
+    config,
+    loadModule: (name) => (name === "CollectionConsentReplay" ? source : readModule(name)),
+  });
+  if (result.failure) throw new Error(`${fixture.name} under ${variant}: ${result.failure.message}`);
+  return result.violation?.name === "NotReproduced";
+}
+
 async function main() {
   const fixtures = await generateFixtures(readPlan());
   mkdirSync(FIXTURE_DIR, { recursive: true });

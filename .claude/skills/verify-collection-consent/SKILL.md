@@ -54,11 +54,13 @@ does not name, and for a skipped test; `collection-consent-coverage.mjs forward`
 and passed. No fixture takes `KMemberGone` (Kopje deletes no local account), and the spec test checks that.
 
 Each calibration variant that changes what the Store does has a fixture whose replay fails against a Store that makes
-the variant's change: followed under the variant's rules, the fixture's steps either give a different observation or
-reach a step the variant cannot take as the fixture states it (V16: at `S2-CleanupThenDelete`'s last delivery the
+the variant's change. `checks.json`'s `replay` names it, and the spec test checks that the variant no longer
+reproduces it: no run under the variant's rules takes the fixture's steps as recorded (action, input, environment) and
+gives observations the replay accepts (`reproduces` in `collection-consent-fixtures.ts`). The difference is an
+observation, or a step the variant cannot take as recorded (V16: at `S2-CleanupThenDelete`'s last delivery the
 revoke's `Delete` is no longer the lane's head; V25: at `S12-DroppedDelivery` the suspended member's `Accept` is sent,
-not dropped). V8 and V23 change only what the invariants count, not the Store. A new variant of a Store rule comes with
-such a fixture.
+not dropped). A variant that changes only what an invariant counts (V8, V23) is listed there as exempt, with its
+reason, and must reproduce every fixture. A variant with neither fails the test.
 
 ## Reading a violation
 
@@ -120,7 +122,8 @@ first and on its own, with its case written out: the input or trace, what the sp
 evidence (Mastodon's source at v4.7.5, Kopje's documented rules, or a counter-example). Then edit the spec, rerun both
 checkers, update `checks.json` with the reason for each changed count in the commit, rewrite the fixtures, and move the
 drift record forward. A new rule that can fail gets a calibration variant (`Variant`, marked `VARIANT` in the spec;
-`"base"` is the rules as written) whose named invariant must fail.
+`"base"` is the rules as written) whose named invariant must fail, and, in `checks.json`'s `replay`, a fixture it no
+longer reproduces (a new goal marked fixture if none) or its exemption.
 
 ## Bounds and what is not covered
 

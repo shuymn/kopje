@@ -27,8 +27,12 @@ export const SPEC_DIR = fileURLToPath(new URL("../spec/collection-consent/", imp
 /** @typedef {{ name: string, scenario: string, variant: string, invariant: string, trace: number }} Violation */
 /** @typedef {{ name: string, scenario: string, goal: string, trace: number, fixture: boolean }} Goal */
 /**
+ * @typedef {{ catches: { variant: string, fixture: string }[], exempt: { variant: string, why: string }[] }} Replay
+ *   catches: a fixture each variant no longer reproduces; exempt: a variant that changes only what an invariant counts
+ */
+/**
  * @typedef {{ scenarios: Scenario[], induction: Induction, variants: Violation[], findings: Violation[],
- *   goals: Goal[] }} Plan
+ *   goals: Goal[], replay: Replay }} Plan
  */
 /**
  * @typedef {{ status: "success", distinct: number, depth: number }

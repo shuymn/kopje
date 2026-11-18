@@ -455,14 +455,15 @@ KSuspend == k.lx /\ ~k.ls /\ KMember(Suspend(k), FALSE, "susp", "KSuspend")
 \* lifting (suspension.ts suspendLocal, unsuspendLocal): the step's input "newCredential".
 KUnsuspend == k.ls /\ KMemberArg(Unsuspend(k), FALSE, "susp", "KUnsuspend", Arg(NoEnvelope, NoIntent, "newCredential"))
 
-\* The retired row's cleanup (pruneCollectionItems). VARIANT V16: it also deletes the row's Delete still at the head of
-\* the lane.
+\* The retired row's cleanup (pruneCollectionItems). VARIANT V16: it also deletes the row's Delete whenever that is
+\* still the head of the lane.
+HeadDelete == kq # <<>> /\ Head(kq).ty = "Delete" /\ Head(kq).obj = k.row.auth
 KCleanup ==
   /\ k.row.st = "ret"
   /\ Commit(Cleanup(k), FALSE, NoOpp, TRUE, FALSE, FALSE, FALSE, "KCleanup", NoArg, {})
   /\ UNCHANGED <<env, toK, rs, rin, fe, spent>>
 KCleanupV16 ==
-  /\ k.row.st = "ret" /\ kq # <<>> /\ Head(kq).ty = "Delete" /\ Head(kq).obj = k.row.auth
+  /\ k.row.st = "ret" /\ HeadDelete
   /\ k' = Cleanup(k).k /\ kq' = Tail(kq) /\ kg' = kg
   /\ g' = GhostK(Cleanup(k), FALSE, NoOpp, TRUE, FALSE, TRUE, g.lastRd, FALSE, {})
   /\ rd' = Touch(rd, Cleanup(k), FALSE) /\ sr' = Touch(sr, Cleanup(k), FALSE)
@@ -845,7 +846,7 @@ Drop ==
 Next ==
   \/ \E e \in toK : KRecv(e, FALSE) \/ KRecv(e, TRUE)
   \/ KApplyFetch \/ KRevoke \/ KBlock \/ KMemberGone \/ KSuspend \/ KUnsuspend \/ KEvict \/ KPurge
-  \/ IF Variant = "V16" THEN KCleanupV16 \/ KCleanup ELSE KCleanup
+  \/ IF Variant = "V16" /\ HeadDelete THEN KCleanupV16 ELSE KCleanup
   \/ EnvStep
   \/ KClaim \/ KFetch \/ KFetch1 \/ KFetch2 \/ KApply \/ KLease \/ KStale \/ KExpire
   \/ KDeliver \/ KGiveUp \/ KDup \/ KRetry
