@@ -1057,8 +1057,10 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   // UpdateStatusService#update_immediate_attributes!: the warning as sent, by Rails' present?.
   const sensitive = (input.sensitive ?? false) || (!keepsWarning && !railsBlank(input.spoilerText));
   const language = input.language ?? current.language;
-  const currentMedia = db.all<{ id: string; description: string; focus_x: number; focus_y: number }>(
-    "SELECT id, description, focus_x, focus_y FROM media_attachments WHERE status_id = ? AND shown = 1 ORDER BY position, id",
+  // focus_x is NULL where the attachment shows no focus.
+  const currentMedia = db.all<{ id: string; description: string; focus_x: number | null; focus_y: number }>(
+    `SELECT m.id, m.description, ${MEDIA_COLUMN_MAP.focus_x} AS focus_x, m.focus_y FROM media_attachments m
+			WHERE m.status_id = ? AND m.shown = 1 ORDER BY m.position, m.id`,
     current.id,
   );
   // Only attributes of media this edit attaches (own media, checked by mediaToAttach) are applied.
@@ -1069,6 +1071,8 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
     return (
       old === undefined ||
       (a.description !== undefined && a.description !== old.description) ||
+      // A focus given where none is shown (focus_x NULL) changes the attachment's meta, 0,0 included
+      // (file_meta_previously_changed?).
       (a.focus !== undefined && (a.focus.x !== old.focus_x || a.focus.y !== old.focus_y))
     );
   };
@@ -1147,11 +1151,12 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
   for (const a of attributes) {
     db.run(
       `UPDATE media_attachments SET description = COALESCE(?, description), focus_x = COALESCE(?, focus_x),
-				focus_y = COALESCE(?, focus_y)
+				focus_y = COALESCE(?, focus_y), focus_given = COALESCE(?, focus_given)
 			WHERE id = ? AND account_id = ? AND status_id = ?`,
       a.description === undefined ? null : storedMediaDescription(a.description),
       a.focus?.x ?? null,
       a.focus?.y ?? null,
+      a.focus === undefined ? null : 1,
       a.id,
       accountId,
       current.id,

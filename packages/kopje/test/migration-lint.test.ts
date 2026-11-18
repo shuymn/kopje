@@ -54,6 +54,7 @@ describe("migration lint", () => {
       "0111_account_urls",
       "0114_untrusted_counts",
       "0115_feature_policies",
+      "0116_media_focus_given",
     ]);
     for (const m of DECLARED) {
       expect(unchangedProblem(m.sql), m.name).toBeNull();

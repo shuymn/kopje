@@ -489,6 +489,15 @@ stored bound`. A restored row keeps its value until the Store stores that actor'
 (Mastodon's `missing`: no local account may feature the account until its document is stored again). A file built
 from legacy data leaves it at 0.
 
+Media focus (migration `0116_media_focus_given`): `media_attachments.focus_given` is 0 or 1; any other value, NULL
+included, fails with `media_attachments: focus_given past its stored bound` (INTEGER affinity stores numeric text and an
+integral REAL as the integer). The bound is its range only, not its agreement with `focus_x` and `focus_y`. Kopje's
+writers store 1 when the attachment's focus was given (an upload's, a media update's or an edit's `focus`, a remote
+attachment's `focalPoint`) and 0 when none was; an attachment shows its focus where the column is 1 or its point is not
+0,0. A restored row keeps its value. A dump taken before 0116 has no such column: it restores into a Store at its own
+migrations, which then upgrades, and every row reads 0 beside the point it held, so an attachment shows `focus_x` and
+`focus_y` as its focus only when they are not both 0. A file built from legacy data leaves it at 0.
+
 Account invitations (migration `0081_account_invitations`): an `account_invitations` row holds an `email` (text of 3 to
 254 UTF-8 bytes with no NUL, no ASCII control, space or DEL, and one `@` neither first nor last), a `username` (1 to 30
 ASCII letters, digits or underscores), both unique ignoring ASCII case, and a 24-byte ISO `created_at`; at most 10 rows.

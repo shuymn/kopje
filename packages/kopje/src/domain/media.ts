@@ -293,7 +293,8 @@ export type CompleteMediaInput = {
   // The preview's blurhash (platform/images.ts processImage), or null; stored as storedBlurhash keeps it.
   blurhash: string | null;
   description: string;
-  focus: { x: number; y: number };
+  // The focus sent, or none (stored as 0,0 with focus_given 0: Mastodon's meta then has no focus).
+  focus: { x: number; y: number } | undefined;
   now: number;
 };
 
@@ -322,7 +323,7 @@ export const completeMedia = userWriteOperation<CompleteMediaInput, MediaAttachm
     const origin = new URL(row.uri).origin;
     db.run(
       `UPDATE media_attachments SET url = ?, preview_url = ?, content_type = ?, meta = ?, blurhash = ?, description = ?,
-				focus_x = ?, focus_y = ?, processed = 1, gc_at = ?
+				focus_x = ?, focus_y = ?, focus_given = ?, processed = 1, gc_at = ?
 			WHERE id = ?`,
       mediaUrl(origin, row.token, "full", input.contentType),
       mediaUrl(origin, row.token, "small", input.contentType),
@@ -330,8 +331,9 @@ export const completeMedia = userWriteOperation<CompleteMediaInput, MediaAttachm
       uploadMediaMeta(input.original, input.small, input.animated),
       storedBlurhash(input.blurhash),
       storedMediaDescription(input.description),
-      input.focus.x,
-      input.focus.y,
+      input.focus?.x ?? 0,
+      input.focus?.y ?? 0,
+      input.focus === undefined ? 0 : 1,
       iso(input.now + DETACHED_GRACE_MS),
       input.id,
     );
@@ -454,11 +456,12 @@ export const updateMedia = userWriteOperation<
   }
   db.run(
     `UPDATE media_attachments SET description = COALESCE(?, description), focus_x = COALESCE(?, focus_x),
-				focus_y = COALESCE(?, focus_y)
+				focus_y = COALESCE(?, focus_y), focus_given = COALESCE(?, focus_given)
 			WHERE id = ?`,
     changes.description === undefined ? null : storedMediaDescription(changes.description),
     changes.focus?.x ?? null,
     changes.focus?.y ?? null,
+    changes.focus === undefined ? null : 1,
     id,
   );
   const row = ownUpload(db, accountId, id, now);

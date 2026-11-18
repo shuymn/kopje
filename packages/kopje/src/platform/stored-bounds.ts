@@ -2906,3 +2906,15 @@ export function featurePolicyPastBoundSql(row: string): string {
 	WHEN ${column} <> 0 AND ${row}.domain IS NULL THEN 1
 	ELSE 0 END`;
 }
+
+// ---- Media focus: media_attachments.focus_given (domain/media.ts, domain/statuses.ts, domain/remote-statuses.ts)
+
+// True when `column` holds anything but the integer 0 or 1 (INTEGER affinity has already stored numeric text and an
+// integral REAL as an integer): its range only, not its agreement with focus_x and focus_y. 1: a focus was given, which
+// the attachment shows whatever its point; 0: none was, or the row was stored before the column, whose point then
+// decides (status-rows.ts focusShownSql).
+export function focusGivenPastBoundSql(column: string): string {
+  return `CASE WHEN typeof(${column}) <> 'integer' THEN 1
+	WHEN ${column} NOT IN (0, 1) THEN 1
+	ELSE 0 END`;
+}

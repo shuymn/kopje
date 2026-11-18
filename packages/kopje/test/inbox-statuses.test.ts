@@ -656,6 +656,92 @@ describe("Update of a status (ID-6, ID-7, VIS-2)", () => {
     ).toEqual([{ account_id: DAVE, silent: 0 }]);
   });
 
+  it("shows a remote attachment's focus only once a focalPoint was sent, 0,0 included, and keeps it through an Update without one", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const image = (n: number, focalPoint?: [number, number]) => ({
+      type: "Document",
+      mediaType: "image/png",
+      url: `${MASTODON}/system/media/focus-${n}.png`,
+      width: 640,
+      height: 480,
+      ...(focalPoint === undefined ? {} : { focalPoint }),
+    });
+    const note = mastodonNote(bob, { attachment: [image(1), image(2, [0, 0])] });
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    const row = (await statusRow(t.store, note.id))!;
+    const stored = () =>
+      sql(
+        t.store,
+        "SELECT focus_x, focus_y, focus_given FROM media_attachments WHERE status_id = ? ORDER BY position",
+        row.id,
+      );
+    const shown = async () => {
+      const status = await t.api<{ media_attachments: { meta: { focus?: unknown } | null }[] }>(
+        `/api/v1/statuses/${row.id}`,
+      );
+      return status.body.media_attachments.map((m) => m.meta?.focus);
+    };
+    // Mastodon's Create sets `focus: attachment_parser.focus`, and MediaAttachment#focus= keeps none for a missing one.
+    expect(await stored()).toEqual([
+      { focus_x: 0, focus_y: 0, focus_given: 0 },
+      { focus_x: 0, focus_y: 0, focus_given: 1 },
+    ]);
+    expect(await shown()).toEqual([undefined, { x: 0, y: 0 }]);
+
+    // An Update without a focalPoint keeps the focus each attachment shows (ProcessStatusUpdateService sets
+    // `focus = nil`, which changes nothing).
+    await t.post(bob, update(bob, { ...note, attachment: [image(1), image(2)] }, "2026-10-11T13:00:00Z"));
+    expect(await stored()).toEqual([
+      { focus_x: 0, focus_y: 0, focus_given: 0 },
+      { focus_x: 0, focus_y: 0, focus_given: 1 },
+    ]);
+    expect(await shown()).toEqual([undefined, { x: 0, y: 0 }]);
+
+    // One with a focalPoint sets it, on an attachment that showed none too.
+    await t.post(
+      bob,
+      update(bob, { ...note, attachment: [image(1, [0, 0]), image(2, [0.5, -0.25])] }, "2026-10-11T14:00:00Z"),
+    );
+    expect(await stored()).toEqual([
+      { focus_x: 0, focus_y: 0, focus_given: 1 },
+      { focus_x: 0.5, focus_y: -0.25, focus_given: 1 },
+    ]);
+    expect(await shown()).toEqual([
+      { x: 0, y: 0 },
+      { x: 0.5, y: -0.25 },
+    ]);
+
+    // An Update without a focalPoint after a point that is not 0,0 keeps that point too.
+    await t.post(bob, update(bob, { ...note, attachment: [image(1), image(2)] }, "2026-10-11T15:00:00Z"));
+    expect(await stored()).toEqual([
+      { focus_x: 0, focus_y: 0, focus_given: 1 },
+      { focus_x: 0.5, focus_y: -0.25, focus_given: 1 },
+    ]);
+    expect(await shown()).toEqual([
+      { x: 0, y: 0 },
+      { x: 0.5, y: -0.25 },
+    ]);
+  });
+
+  it("shows the focalPoint of a remote attachment sent without its sizes as its whole meta", async () => {
+    const t = await setup();
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const video = (n: number) => ({
+      type: "Document",
+      mediaType: "video/mp4",
+      url: `${MASTODON}/system/media/v-${n}.mp4`,
+    });
+    const note = mastodonNote(bob, { attachment: [video(1), { ...video(2), focalPoint: [0.25, 0.5] }] });
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    const row = (await statusRow(t.store, note.id))!;
+    const status = await t.api<{ media_attachments: { meta: unknown }[] }>(`/api/v1/statuses/${row.id}`);
+    // MediaAttachment#focus= writes the focus into whatever meta the file has, none here.
+    expect(status.body.media_attachments.map((m) => m.meta)).toEqual([null, { focus: { x: 0.25, y: 0.5 } }]);
+  });
+
   it("ID-6: another actor of the same origin cannot update a status; nobody remote updates a local one (ID-3)", async () => {
     const t = await setup();
     const bob = await mastodonActor(t.web, "bob");

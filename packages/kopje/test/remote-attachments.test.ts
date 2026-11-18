@@ -921,7 +921,7 @@ describe("the presented attachment (presentMedia)", () => {
     preview_url: "https://files.example/p/1.png",
     description: "",
     meta: null,
-    focus_x: 0,
+    focus_x: null,
     focus_y: 0,
     blurhash: null,
     remote: 1,

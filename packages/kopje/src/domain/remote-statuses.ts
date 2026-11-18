@@ -265,10 +265,7 @@ function relatedToLocal(
 
 function mediaMeta(media: RemoteMediaInput): string | null {
   const original = media.width !== null && media.height !== null ? { width: media.width, height: media.height } : null;
-  if (original === null && media.focus === null) {
-    return null;
-  }
-  return storedMediaMeta(JSON.stringify(original === null ? {} : { original }));
+  return original === null ? null : storedMediaMeta(JSON.stringify({ original }));
 }
 
 function writeMedia(db: Db, statusId: string, author: Author, media: readonly RemoteMediaInput[], ctx: StoreContext) {
@@ -278,24 +275,19 @@ function writeMedia(db: Db, statusId: string, author: Author, media: readonly Re
   );
   const kept = new Set<string>();
   media.slice(0, MAX_STATUS_MEDIA).forEach((m, position) => {
-    const values = [
-      position,
-      m.type,
-      m.url,
-      m.previewUrl,
-      m.description,
-      mediaMeta(m),
-      m.focus?.x ?? 0,
-      m.focus?.y ?? 0,
-      m.blurhash,
-    ] as const;
+    const values = [position, m.type, m.url, m.previewUrl, m.description, mediaMeta(m), m.blurhash] as const;
+    // The focalPoint read, if any (focus_given 1 with it). An update without one keeps the stored focus, as
+    // ProcessStatusUpdateService's `media_attachment.focus = nil` changes nothing (MediaAttachment#focus=).
+    const focus = m.focus === null ? [null, null, null] : [m.focus.x, m.focus.y, 1];
     const existing = current.find((row) => row.url === m.url && !kept.has(row.id));
     if (existing !== undefined) {
       kept.add(existing.id);
       db.run(
         `UPDATE media_attachments SET position = ?, type = ?, url = ?, preview_url = ?, description = ?, meta = ?,
-					focus_x = ?, focus_y = ?, blurhash = ? WHERE id = ?`,
+					blurhash = ?, focus_x = COALESCE(?, focus_x), focus_y = COALESCE(?, focus_y),
+					focus_given = COALESCE(?, focus_given) WHERE id = ?`,
         ...values,
+        ...focus,
         existing.id,
       );
       syncAttachmentFiles(db, existing.id, ctx.now);
@@ -307,12 +299,13 @@ function writeMedia(db: Db, statusId: string, author: Author, media: readonly Re
       (id) => {
         db.run(
           `INSERT INTO media_attachments (id, account_id, status_id, position, type, url, preview_url, description,
-						meta, focus_x, focus_y, blurhash, processed, created_at)
-					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+						meta, blurhash, focus_x, focus_y, focus_given, processed, created_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, coalesce(?, 0), coalesce(?, 0), coalesce(?, 0), 1, ?)`,
           id,
           author.id,
           statusId,
           ...values,
+          ...focus,
           iso(ctx.now),
         );
         return id;
