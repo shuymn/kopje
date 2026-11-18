@@ -25,15 +25,15 @@ states the rules every page follows.
 - **Current browsers only.** Pages may use current HTML and CSS, such as `<dialog>` opened with
   `command="show-modal"`, without fallbacks for older browsers.
 - **English UI, ready for translation.** Kopje's own text comes from the string catalogue (`STRINGS` in
-  `src/web/strings.ts`), and `lint/web-strings.js` holds the pages and components under `src/web/` to it except
-  `src/web/setup-pages.tsx`: the setup wizard and the instance status page after it, with the check results and messages
-  `src/app/setup.tsx` writes, are inline English. A validation message from the Mastodon API's checks, such as an image
-  form posted without a file, is shown in the API's English. Text with numbers or names is a function of its arguments,
-  and dates and numbers are formatted with `Intl`. The page's `lang` is the UI language, and user-written content
-  carries its own `lang`: a post's language where it has one, and `lang=""` (unknown) where it has none, so the text
-  does not take the UI language's glyphs and hyphenation. An account records no language, so its name, bio and fields,
-  and an edit history's versions, are always `lang=""`. Remote HTML inside them keeps the `lang` its elements declare
-  (HTML-1).
+  `src/web/strings.ts`), and `lint/web-strings.js` holds `src/web/**/*.tsx` to it, except `src/web/setup-pages.tsx`; the
+  routes in `src/app/` are outside its scope. The setup wizard and the instance status page after it, with the check
+  results and messages `src/app/setup.tsx` writes, are inline English. A form's validation or upload failure is shown in
+  the English of the Mastodon API's error, such as an image form posted without a file or with media processing
+  unavailable. Text with numbers or names is a function of its arguments, and dates and numbers are formatted with
+  `Intl`. The page's `lang` is the UI language, and user-written content carries its own `lang`: a post's language where
+  it has one, and `lang=""` (unknown) where it has none, so the text does not take the UI language's glyphs and
+  hyphenation. An account records no language, so its name, bio and fields, and an edit history's versions, are always
+  `lang=""`. Remote HTML inside them keeps the `lang` its elements declare (HTML-1).
 - **No text that describes the page.** Pages do not explain what they show or leave out (for example "showing only
   …"). Headings, labels and navigation names are allowed; other UI text states an action, a result or a condition for
   acting. The edit history's notice that older versions are left out is the one exception (VIS-4).

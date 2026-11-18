@@ -3,8 +3,8 @@
 // bridge migration ran), and writes each record in the comparison form of verify-actual.js, keyed by AP URIs (never by
 // the ids the converter assigns). The only shared code is the Worker's own runtime (kopje-runtime.js): its HTML
 // sanitizers and text bounds, which the Store applies to every stored value (HTML-1, RES-2), and its identity checks;
-// test-node/kopje-runtime.test.ts pins some of their output by hand. A wrong value from one of them appears on both
-// sides alike, so the check does not find it (docs/cutover.md, Verification).
+// test-node/kopje-runtime.test.ts pins some of their output by hand. Where one of them gives a wrong value and both
+// records hold it, the record comparison misses the defect (docs/cutover.md, Verification).
 //
 // Records are kept as exact values, not digests, so a change of the same length is still a difference. They hold data
 // and are never printed: reports carry counts and digests only.
