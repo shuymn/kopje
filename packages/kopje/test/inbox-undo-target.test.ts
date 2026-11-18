@@ -518,6 +518,50 @@ describe("ID-6: an Undo ends what its undone activity's object names", () => {
       );
     });
 
+    // The bound is on the stored bytes, not on characters: an edge uri (an SQL expression) of r's origin, `bytes` bytes
+    // long, filled with two-byte or four-byte characters, or ending in malformed bytes (0x80, which SQLite's length()
+    // does not count as a character), is recorded at ACTIVITY_ID_LIMIT bytes, as its stored bytes, and not past it.
+    const PREFIX = `${REMOTE}/edges/`;
+    const filled = (unit: string, unitBytes: number) => (bytes: number) => {
+      const count = Math.floor((bytes - PREFIX.length) / unitBytes);
+      return `'${PREFIX}${"a".repeat(bytes - PREFIX.length - count * unitBytes)}${unit.repeat(count)}'`;
+    };
+    const malformed = (bytes: number) =>
+      `'${PREFIX}${"a".repeat(bytes - PREFIX.length - 100)}' || CAST(X'${"80".repeat(100)}' AS TEXT)`;
+    const FILLS: [string, (bytes: number) => string][] = [
+      ["two-byte characters", filled("é", 2)],
+      ["four-byte characters", filled("😀", 4)],
+      ["malformed bytes", malformed],
+    ];
+    it.each(
+      FILLS.flatMap(([label, uri]): [string, number, boolean, (bytes: number) => string][] => [
+        [label, ACTIVITY_ID_LIMIT, true, uri],
+        [label, ACTIVITY_ID_LIMIT + 1, false, uri],
+      ]),
+    )("a Follow's uri of %s, %i bytes stored, is recorded: %s", async (_, bytes, recorded, uri) => {
+      const t = await setup();
+      await imported(t, "follows", uri(bytes));
+      expect(
+        await sql(
+          t.store,
+          `SELECT length(CAST(uri AS BLOB)) AS bytes, length(uri) < length(CAST(uri AS BLOB)) AS fewer FROM follows
+					WHERE account_id = ?`,
+          t.r,
+        ),
+      ).toEqual([{ bytes, fewer: 1 }]);
+      const other = followId();
+      expect(await undo(t, other, "Follow", t.aliceUri)).toMatchObject({ applied: true, reason: "undone" });
+      expect(await follows(t)).toEqual([]);
+      expect(
+        await sql(
+          t.store,
+          `SELECT count(*) AS n FROM inbound_retractions WHERE actor_uri = ? AND target_uri = ${uri(bytes)}`,
+          t.rUri,
+        ),
+      ).toEqual([{ n: recorded ? 1 : 0 }]);
+      expect(await retractions(t)).toHaveLength(recorded ? 2 : 1);
+    });
+
     // r's accepted follow F1 and the pair's hold naming it, which only an import leaves together: a typed Undo under
     // another id ends the follow, and the hold with it, so no replay sends a Reject of F1.
     it("cancels the hold naming the ended edge", async () => {
