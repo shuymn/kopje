@@ -327,14 +327,22 @@ describe("D2: real LD-signed payloads read as Mastodon reads them", () => {
 
   // AR-T2 (ID-6, #1693): Mastodon's Add and Remove carry no id, and are read without one (the Store applies them as
   // one with an id); a FeatureRequest carries no actor.
-  it("reads Mastodon's Add and Remove, and refuses FeatureRequest (no actor), in both forms", async () => {
+  it("reads Mastodon's Add and Remove, and FeatureRequest (no actor) only as its signer's, in both forms", async () => {
     const entries = corpus.filter((e) => /^(Add|Remove)\(Hashtag\)$|^FeatureRequest$/.test(e.name));
     expect(entries.length).toBeGreaterThan(0);
     for (const entry of entries) {
       const name = `${entry.sender} ${entry.name}`;
       if (entry.name === "FeatureRequest") {
+        // Without a signature's key id it has no actor; with one, the key id's actor is its actor (#1589's D24).
         expect(await kopje(entry), name).toEqual({ ok: false, reason: "incomplete" });
         expect(await mastodon(entry)).toEqual({ ok: false, reason: "incomplete" });
+        const signer = `${new URL(String(entry.received.id)).origin}/users/owner`;
+        expect(await parseActivity(bytes(entry.received), {}, `${signer}#main-key`), name).toMatchObject({
+          ok: true,
+          actor: signer,
+          signer: true,
+          activity: { type: "FeatureRequest" },
+        });
         continue;
       }
       expect(accepted(await kopje(entry)), name).toMatchObject({

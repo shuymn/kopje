@@ -467,7 +467,16 @@ export const completeCollectionRead = writeOperation<CollectionReadInput, boolea
       account.id,
     )?.changed === 1;
   if (input.collections !== null && !outdated) {
-    replaceCollections(db, account, input.collections, input.origin, input.now);
+    // The round's claim (claimCollectionSync: due SYNC_LEASE_MS after it, which nothing moves while the token holds,
+    // requestCollectionSync), before which the documents read cannot be older: a local member's row changed since is
+    // kept (remote-featured-collections.ts applyListing).
+    const claimed = db.first<{ at: number }>(
+      "SELECT due_at - ?3 AS at FROM collection_syncs WHERE account_id = ?1 AND token = ?2",
+      account.id,
+      input.token,
+      SYNC_LEASE_MS,
+    );
+    replaceCollections(db, account, input.collections, input.origin, input.now, claimed?.at ?? input.now);
   }
   const before = isIntegerText(input.generation)
     ? db.first<{ parts_read: number }>(
@@ -675,6 +684,7 @@ function replaceCollections(
   read: NonNullable<CollectionReadInput["collections"]>,
   origin: string,
   now: number,
+  since: number,
 ): void {
   const listed = read.listed.slice(0, MAX_REMOTE_COLLECTIONS);
   if (read.complete) {
@@ -685,7 +695,7 @@ function replaceCollections(
     );
   }
   for (const input of listed) {
-    applyFeaturedCollection(db, account, input, origin, now);
+    applyFeaturedCollection(db, account, input, origin, now, since);
   }
 }
 

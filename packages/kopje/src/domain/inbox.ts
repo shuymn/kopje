@@ -45,7 +45,7 @@ import {
   removalBegunSql,
 } from "./audience";
 import { userReadOperation } from "./auth";
-import { collectionUri, markCollectionsChanged } from "./collection-requests";
+import { collectionUri, markCollectionsChanged, requestCollectionSync } from "./collection-requests";
 import {
   beginRetraction,
   cancelFollowAnswers,
@@ -60,11 +60,13 @@ import {
   supersedeEarlier,
 } from "./deliveries";
 import { clearSenderHost } from "./delivery-hosts";
+import { holdsLocalMember } from "./feature-answers";
 import { acceptFeatureRequest, ourFeatureRequest, rejectFeatureRequest } from "./feature-requests";
 import { recountFeatured } from "./featured-tags";
 import { type FetchPreparation, fetchPreparation } from "./fetch-preparation";
 import { type FollowerSigner, localFollower } from "./follower-signer";
 import { insertWithFreshId, NEW_GENERATION, remoteId } from "./ids";
+import { answerFeatureRequest } from "./inbound-feature-requests";
 import { actorDomainBlocked, type PolicyTicket, ticketFor } from "./instance-domain-blocks";
 import {
   FRESH_ATTEMPTS_SQL,
@@ -117,6 +119,7 @@ import { collectionOf, featureRemote, pinRemote, unfeatureRemote, unpinRemote } 
 import {
   applyFeaturedCollection,
   applyFeaturedItem,
+  applyLocalFeaturedItem,
   type FeaturedCollectionInput,
   type FeaturedItemInput,
   ownCollectionByUri,
@@ -189,6 +192,10 @@ import { unfollowRemote } from "./unfollow";
 //                actor may quote it (R36, mayQuoteSql, else a Reject); the instrument is the actor's own status, on its
 //                origin, and its stored quote names the object (else no answer); one answer per request id
 //                (quotes.ts answerQuoteRequest; test/quote-requests.test.ts)
+//   FeatureRequest the object is an available local account (exact actor URI, else no answer); the actor is the
+//                verified signer (federation/inbound.ts, when the request names no actor); the instrument is the
+//                actor's own collection on its origin (else no answer); the actor may feature the member (R45,
+//                mayFeatureSql, else a Reject) (inbound-feature-requests.ts; test/federation-feature-requests.test.ts)
 //   Create       the object has the actor's origin and names no other author (attributedTo)
 //   Like         the object is a local status the actor may see (VIS-1); the actor is the one who likes it
 //   Announce     the actor is the booster; the original is public, unlisted or the actor's own (VIS-6)
@@ -310,6 +317,8 @@ export type InboundActivity =
   | { type: "Remove"; id: string | null; target: string; object: CollectionItem }
   // A remote collection updated by its owner (Update#update_collection).
   | { type: "UpdateCollection"; id: string; object: FeaturedCollectionInput }
+  // A request to feature a local account (FEP-7aa9): object the account, instrument the actor's collection.
+  | { type: "FeatureRequest"; id: string; object: string; instrument: string }
   // embedded: the object as the Announce carried it (used only for the actor's own status, as Mastodon does).
   | {
       type: "Announce";
@@ -334,9 +343,11 @@ type CollectionItem =
 // A refresh need's failure that may pass is null too (applyRefresh).
 // revisions: a refresh need's revision, by the uri asked for (Need.state); a refetched document without one is
 // compared with null, so it stores nothing over a stored row.
+// collections: a FeatureRequest's instrument, read as an embedded FeaturedCollection (null: not one of that id).
 export type Prefetched = {
   statuses: Record<string, RemoteStatusInput | null>;
   actors: Record<string, RemoteActorInput | null | "gone">;
+  collections?: Record<string, FeaturedCollectionInput | null>;
   revisions?: Record<string, DocumentRevision>;
 };
 
@@ -365,13 +376,14 @@ export type ReceiveInput = {
 // author, a local account by username while it is available (a QuoteRequest's instrument, fetched as the quoted
 // author), or 'instance' for the instance actor; absent, the inbox's own (the recipient's for a personal inbox).
 // kind 'proof': verify the Delete's author proof before forwarding (quotes.ts revokeStamp, inbox.ts recordForwards);
-// uri is the actor's.
+// uri is the actor's. kind 'collection': a FeaturedCollection, one document under COLLECTIONS_CAPS
+// (inbound-feature-requests.ts).
 // refresh (kind 'actor' only): the stale stored row is usable without this document, so a fetch that may pass does not
 // fail the request (staleAccount, applyRefresh); state: that row's state as this answer read it, before the fetch
 // (actorState): its revision, which the Worker hands back with the document (Prefetched.revisions), and its handle,
 // which spares the confirmation of an unchanged claim.
 export type Need = {
-  kind: "status" | "actor" | "proof";
+  kind: "status" | "actor" | "proof" | "collection";
   uri: string;
   signer?: FollowerSigner | { local: string } | "instance";
   refresh?: true;
@@ -3594,6 +3606,10 @@ function addFeatured(
     return ignored("not-embedded");
   }
   markCollectionsChanged(db, actor.id);
+  if (sameOrigin(object.featuredItem.object, input.origin)) {
+    const local = applyLocalFeaturedItem(db, actor, owned, object.featuredItem, input.now);
+    return local === null ? ignored("not-applied") : applied(`item-${local}`);
+  }
   return applyFeaturedItem(db, actor, owned, object.featuredItem, input.origin, input.now) === null
     ? ignored("not-applied")
     : applied("item-added");
@@ -3619,7 +3635,10 @@ const remove: Handler<"Remove"> = (db, actor, activity, { now }) => {
 // the collection does not hold is recorded as the owner's retraction of it (ID-7), so its Add processed after the
 // Remove is refused (Mastodon processes each in a job of its own); at the per-actor cap the Remove is answered 503.
 // Either is a change of the actor's collections that a sync's read under way does not hold, whether Kopje held the
-// object or not (markCollectionsChanged).
+// object or not (markCollectionsChanged). In a collection that holds a local member's row (#1589's D24) the Remove
+// deletes nothing: it names only an item uri, and may be a late copy about an earlier item of the member, so a read of
+// the owner's collections is requested, which decides the row by the wait's rule (feature-answers.ts), and the item's
+// retraction is recorded.
 function removeFeatured(
   db: Db,
   actor: { id: string; uri: string },
@@ -3647,13 +3666,19 @@ function removeFeatured(
     return ignored("not-collection");
   }
   markCollectionsChanged(db, actor.id);
-  if (removeFeaturedItem(db, owned.id, uri)) {
+  const local = holdsLocalMember(db, owned.id);
+  if (local) {
+    requestCollectionSync(db, actor.id, now);
+  } else if (removeFeaturedItem(db, owned.id, uri)) {
     return applied("item-removed");
   }
   if (!sameOrigin(uri, actor.uri)) {
-    return ignored("foreign-object");
+    return local ? applied("sync-requested") : ignored("foreign-object");
   }
-  return retract(db, actor.uri, uri, now) ? applied("item-retracted") : retryLater("retraction-cap");
+  if (!retract(db, actor.uri, uri, now)) {
+    return retryLater("retraction-cap");
+  }
+  return applied(local ? "sync-requested" : "item-retracted");
 }
 
 // Update#update_collection: the actor's collection, by its id, stored or updated from the embedded document as an Add
@@ -3664,6 +3689,27 @@ const updateCollection: Handler<"UpdateCollection"> = (db, actor, activity, inpu
   markCollectionsChanged(db, actor.id);
   const { collection } = applyFeaturedCollection(db, actor, activity.object, input.origin, input.now);
   return collection === null ? ignored("not-applied") : applied("collection-updated");
+};
+
+// ActivityPub::Activity::FeatureRequest: the decision and its answer (inbound-feature-requests.ts). The instrument the
+// Store does not hold is fetched once, signed by the instance actor (a remote collection is public).
+const featureRequest: Handler<"FeatureRequest"> = (db, actor, activity, input) => {
+  const answer = answerFeatureRequest(
+    db,
+    actor,
+    activity,
+    input.prefetched?.collections?.[activity.instrument],
+    input.origin,
+    input.now,
+  );
+  switch (answer.kind) {
+    case "need":
+      return { ...ignored("need-instrument"), need: { kind: "collection", uri: answer.uri, signer: "instance" } };
+    case "ignored":
+      return ignored(answer.reason);
+    case "answered":
+      return applied(answer.reason);
+  }
 };
 
 // R34: receive an inbound Flag, as Mastodon's ActivityPub::Activity::Flag (reports.ts fileRemoteReports).
@@ -3692,6 +3738,7 @@ const HANDLERS: { [T in InboundActivity["type"]]: Handler<T> } = {
   Remove: remove,
   Flag: flag,
   UpdateCollection: updateCollection,
+  FeatureRequest: featureRequest,
 };
 
 export const receiveActivity = writeOperation.atStoreTime("storeNow")<StoreReceiveInput, ReceiveAnswer>((db, input) => {

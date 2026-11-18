@@ -23,14 +23,17 @@ import {
   type StoredRemoteKey,
 } from "../domain/inbox";
 import type { ActorState, RemoteActorInput, RemoteProfileInput } from "../domain/remote-actors";
+import type { FeaturedCollectionInput } from "../domain/remote-featured-collections";
 import { flagObjects, MAX_FLAG_OBJECTS, reportComment } from "../domain/reports";
 import { fetchableHref, sameOrigin } from "../platform/http-url";
 import { ACTIVITY_ID_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import { jsonRefusal, jsonTextMalformed } from "../platform/json-bounds";
 import { isActivityPubMediaType, parseMediaType } from "../platform/media-type";
+import { railsBlank } from "../platform/rails-blank";
 import { callStore } from "../platform/store-client";
 import { type GoneSettled, goneSettler, type SettleGone } from "./actor-gone";
 import { hasAuthorProof, verifyAuthorProof } from "./author-proof";
+import { COLLECTIONS_CAPS } from "./collections";
 import { featuredCollectionOf, featuredItemOf } from "./featured-collections";
 import {
   afterRevisionRead,
@@ -73,7 +76,9 @@ import { confirmedInput } from "./resolve";
 //      is judged by its spool time), by an RSA or Ed25519 key (a draft-cavage one by an RSA key only), and covers what
 //      Mastodon 4.7 requires (verifyHttpSignature). Unsigned or unverifiable: 401, nothing changes (ID-1).
 //   3. The body is a JSON object with the ActivityStreams context, a type, an actor and, for any type but Add and
-//      Remove, an id (a string or array root is refused, ID-8).
+//      Remove, an id (a string or array root is refused, ID-8). A FeatureRequest alone may name no actor (Mastodon
+//      4.7.5 sends it so): its actor is then the signature's key id without its fragment, which step 4 requires to be
+//      the key's owner (#1589's D24).
 //   4. ID-1: the actor is not local, and it owns the verifying key: its document (fetched, or the stored one while
 //      fresh) lists the key id, and the key names no other owner. The activity id, when present, has the actor's
 //      origin. One exception: a Delete another server relayed (a quoted author's revocation of a quote's stamp,
@@ -137,8 +142,9 @@ type ActorUpdate = { type: "UpdateActor"; id: string; embedded: Json | null };
 
 type ParsedActivity = Exclude<InboundActivity, { type: "UpdateActor" }> | Dereference | ActorUpdate;
 
+// signer: the actor was not named, and is the signature's (activityEnvelope).
 export type Parsed =
-  | { ok: true; actor: string; activity: ParsedActivity; target: string | null; body: Json }
+  | { ok: true; actor: string; activity: ParsedActivity; target: string | null; body: Json; signer?: true }
   // actor: the envelope's single actor, when the envelope is usable but its activity is not one Kopje reads.
   | { ok: false; reason: string; deleteOfSelf?: boolean; actor?: string };
 
@@ -238,11 +244,15 @@ const AS_GIVEN: TypeReader = (type) => type;
 // elsewhere, and its names, as members and types, read only where the compaction writes them so (ID-1,
 // ldSignedReading): `read` is the body Kopje reads, the activity as received is still what is forwarded and proven.
 // Shared by the inbox and the cutover rollback's drain, so neither hands on an activity the other would ignore.
+// A FeatureRequest that names no actor (absent, null or a blank string: Mastodon's `@json['actor'].present?`) takes
+// `signer`, the actor its signature's key id names (signerOf), and says so (signer: true); without one it is
+// incomplete, as any other type without an actor is.
 async function activityEnvelope(
   json: Json,
   rules: Rules = {},
+  signer: string | null = null,
 ): Promise<
-  | { ok: true; actor: string; id: string | null; type: string; readType: TypeReader; read: Json }
+  | { ok: true; actor: string; id: string | null; type: string; readType: TypeReader; read: Json; signer?: true }
   | { ok: false; reason: "no-context" | "ld-context" | "incomplete" }
 > {
   if (!hasActivityStreamsContext(json["@context"])) {
@@ -253,22 +263,40 @@ async function activityEnvelope(
     return { ok: false, reason: "ld-context" };
   }
   const { readType, body: read } = reading;
-  const actor = idOf(read.actor);
   const id = typeof read.id === "string" ? read.id : null;
   const type = typeof read.type === "string" ? readType(read.type) : null;
+  const named = idOf(read.actor);
+  const unnamed =
+    type === "FeatureRequest" &&
+    (read.actor === undefined || read.actor === null || (typeof read.actor === "string" && railsBlank(read.actor)));
+  const actor = unnamed ? signer : named;
   // ID-6: an Add or Remove may have no id (Mastodon 4.7.5 sends every one so, #1693), and is then read and applied as
   // one with an id; a non-string one reads as none, as Mastodon never reads it. Every other type needs a string id.
   if (actor === null || originOf(actor) === null || type === null || (id === null && !ID_LESS.has(type))) {
     return { ok: false, reason: "incomplete" };
   }
-  return { ok: true, actor, id, type, readType, read };
+  return unnamed
+    ? { ok: true, actor, id, type, readType, read, signer: true }
+    : { ok: true, actor, id, type, readType, read };
+}
+
+// The actor a signature's key id names: the key id without its fragment (Mastodon's `<actor>#main-key`), or null.
+function signerOf(keyId: string | null): string | null {
+  if (keyId === null || !URL.canParse(keyId)) {
+    return null;
+  }
+  const url = new URL(keyId);
+  url.hash = "";
+  return url.href;
 }
 
 // The types an activity may have without an id (ID-6, #1693).
 const ID_LESS: ReadonlySet<string> = new Set(["Add", "Remove"]);
 
-// `rules` is for tests of the reading's second layer (ldSignedReading); every caller reads under all of them.
-export async function parseActivity(body: Uint8Array, rules: Rules = {}): Promise<Parsed> {
+// `rules` is for tests of the reading's second layer (ldSignedReading); every caller reads under all of them. `keyId`:
+// the request's signature key id (inbox-request.ts signatureKeyId), which names the actor of a FeatureRequest that
+// names none (activityEnvelope).
+export async function parseActivity(body: Uint8Array, rules: Rules = {}, keyId: string | null = null): Promise<Parsed> {
   let text: string;
   let json: unknown;
   try {
@@ -294,7 +322,7 @@ export async function parseActivity(body: Uint8Array, rules: Rules = {}): Promis
   }
   // Decided before the envelope, of the body as received; the activity's object is the body read's (#1717).
   const deleteOfSelf = json.type === "Delete" && idOf(json.actor) !== null && idOf(json.object) === idOf(json.actor);
-  const envelope = await activityEnvelope(json, rules);
+  const envelope = await activityEnvelope(json, rules, signerOf(keyId));
   if (!envelope.ok) {
     return { ok: false, reason: envelope.reason, deleteOfSelf };
   }
@@ -303,7 +331,10 @@ export async function parseActivity(body: Uint8Array, rules: Rules = {}): Promis
   if (activity === null) {
     return { ok: false, reason: "unsupported", deleteOfSelf, actor };
   }
-  return { ok: true, actor, activity, target: type === "Move" ? idOf(read.target) : null, body: json };
+  const target = type === "Move" ? idOf(read.target) : null;
+  return envelope.signer === true
+    ? { ok: true, actor, activity, target, body: json, signer: true }
+    : { ok: true, actor, activity, target, body: json };
 }
 
 function strings(value: unknown): string[] {
@@ -402,6 +433,12 @@ function activityOf(
             instrument,
             embedded: isObject(json.instrument) ? parseRemoteStatus(json.instrument) : null,
           };
+    }
+    // FEP-7aa9: the object is a local account by id, the instrument the actor's collection by id (fetched by the
+    // Store's asking when it holds none; an embedded one is not read, as Mastodon fetches it).
+    case "FeatureRequest": {
+      const instrument = idOf(json.instrument);
+      return object === null || instrument === null ? null : { type, id, object, instrument };
     }
     case "Create":
       return statusActivity("Create", id, json);
@@ -830,6 +867,10 @@ export async function receiveInbound(
   const fromStore = served.get(key.id.href);
   const signerUri =
     fromStore !== undefined && fromStore.key === key ? fromStore.owner : (key.ownerId?.href ?? actorUri);
+  // A FeatureRequest that names no actor is the key owner's only when its key id names that owner (activityEnvelope).
+  if (parsed.signer === true && signerUri !== actorUri) {
+    return { status: 401, reason: "not-key-owner" };
+  }
   if (signerUri !== actorUri) {
     return relayed(deps, {
       activity,
@@ -1266,6 +1307,8 @@ async function apply(deps: InboundDeps, application: Application): Promise<Inbox
     }
     if (need.kind === "status") {
       prefetched.statuses[need.uri] = fetched as Prefetched["statuses"][string];
+    } else if (need.kind === "collection") {
+      prefetched.collections = { ...prefetched.collections, [need.uri]: fetched as FeaturedCollectionInput | null };
     } else {
       prefetched.actors[need.uri] = fetched === "transient" ? null : (fetched as Prefetched["actors"][string]);
       if (need.state !== undefined) {
@@ -1325,13 +1368,16 @@ async function fetchNeeded(
   loaders: RemoteLoaders,
   instanceDomain: string,
   settle: SettleGone,
-): Promise<Prefetched["statuses"][string] | Prefetched["actors"][string] | "transient"> {
+): Promise<Prefetched["statuses"][string] | Prefetched["actors"][string] | FeaturedCollectionInput | "transient"> {
   if (originOf(need.uri) === null || originOf(need.uri) === origin) {
     return null;
   }
   if (need.kind === "status") {
     const fetched = await fetchRemoteStatus(need.uri, loaders.document);
     return fetched.kind === "transient" ? "transient" : fetched.kind === "ok" ? fetched.status : null;
+  }
+  if (need.kind === "collection") {
+    return fetchCollection(need.uri, loaders);
   }
   const fetched = await fetchActor(need.uri, loaders.document, loaders.context);
   if (fetched.kind === "gone") {
@@ -1349,6 +1395,31 @@ async function fetchNeeded(
     return checked.outcome === "transient" ? "transient" : null;
   }
   return checked.input;
+}
+
+// A FeatureRequest's instrument (ActivityPub::FetchRemoteFeaturedCollectionService): one document under
+// COLLECTIONS_CAPS, of the ActivityStreams context, typed FeaturedCollection and of the id asked for, read as an embedded
+// one is (featured-collections.ts); null otherwise, 'transient' when fetching again may succeed. The Store applies it
+// only as its actor's (remote-featured-collections.ts).
+async function fetchCollection(
+  uri: string,
+  loaders: RemoteLoaders,
+): Promise<FeaturedCollectionInput | null | "transient"> {
+  let document: unknown;
+  try {
+    document = (await loaders.capped(COLLECTIONS_CAPS)(uri)).document;
+  } catch (error) {
+    return isTransientLoadError(error) ? "transient" : null;
+  }
+  if (
+    !isObject(document) ||
+    !hasActivityStreamsContext(document["@context"]) ||
+    document.type !== "FeaturedCollection"
+  ) {
+    return null;
+  }
+  const collection = featuredCollectionOf(document);
+  return collection?.id === uri ? collection : null;
 }
 
 // An actor may list a key by reference (publicKey: "<key URL>") rather than embed it. Fedify has just resolved that

@@ -10,6 +10,7 @@ import {
   checkGaveUp,
   DAY_MS,
   type FromMember,
+  type FromOwner,
   FeaturePolicy,
   type ItemState,
   MemberPeer,
@@ -18,23 +19,46 @@ import {
   type MemberLogged,
   type MemberRow,
   type Owner,
+  OwnerPeer,
   type Path,
   type Row,
   type ToMember,
+  type ToOwner,
 } from "./feature-model";
 import {
+  checkRound,
   collection,
   COLLECTIONS_ONLY,
+  FEATURE_CONTEXT,
   featuredOwner,
+  featureRequest,
+  item as remoteItem,
+  localItem,
+  localRows,
+  nextDue,
+  outbound,
   requestSync,
+  seededMembers,
   serveCollections,
+  serveListing,
   storedMember,
   storedOwner,
   syncAll,
 } from "./featured-collection-helpers";
 import { BUILD } from "./helpers";
 import { mastodonActor, type TestActor } from "./inbox-helpers";
-import { accountId, ALICE_URI, AS, DAVE_URI, nextId, OTHER, PUBLIC, setup, type Setup } from "./inbox-status-helpers";
+import {
+  accountId,
+  ALICE,
+  ALICE_URI,
+  AS,
+  DAVE_URI,
+  nextId,
+  OTHER,
+  PUBLIC,
+  setup,
+  type Setup,
+} from "./inbox-status-helpers";
 import { runs } from "./policy-world";
 
 // 5-T20: model-based checks of remote collections' items (#1589's D21 and D22; ID-6, ID-7 and RES-6 in
@@ -1332,5 +1356,248 @@ describe("a remote member of a local collection: Kopje against its policy and a 
     expect(w.stats["K.claim:gave-up"]).toBe(1);
     expect(w.policy.row).toMatchObject({ state: "pending", attempts: 5, due: null });
     expect(w.stats["quiescent: exception F4"]).toBe(1);
+  });
+});
+
+// ---- 6-T5: a Mastodon v4.7.5 owner featuring a local member (#1589's D24), the owner peer of test/feature-model.ts.
+
+type OwnerWorld = {
+  t: Setup;
+  owner: TestActor & { featuredCollections: string };
+  listed: ReturnType<typeof collection>;
+  ownerId: string;
+  peer: OwnerPeer;
+  // Kopje's answers handed to R (their intents), and the clock.
+  handed: Set<string>;
+  now: number;
+  // Remote members R lists before L (the 26th-item witness).
+  before: { uri: string }[];
+};
+
+let ownerWorlds = 0;
+
+async function ownerWorld(before = 0): Promise<OwnerWorld> {
+  const t = await setup();
+  await sql(t.store, "UPDATE accounts SET discoverable = 1 WHERE id = ?", ALICE);
+  const owner = await featuredOwner(t.web, `peer${++ownerWorlds}`, COLLECTIONS_ONLY);
+  const listed = collection(owner, []);
+  const w: OwnerWorld = {
+    t,
+    owner,
+    listed,
+    ownerId: "",
+    peer: new OwnerPeer(new URL(owner.uri).origin),
+    handed: new Set(),
+    now: NOW,
+    before: before === 0 ? [] : await seededMembers(t, before, `p${ownerWorlds}m`),
+  };
+  serveOwnerListing(w);
+  w.ownerId = await storedOwner(t, owner);
+  await syncAll(t);
+  return w;
+}
+
+// R's featuredCollections as R serves it now: the remote members it lists first, then its accepted item of L.
+function serveOwnerListing(w: OwnerWorld): void {
+  w.listed.orderedItems = [
+    ...w.before.map((member, n) => remoteItem(w.owner, member, 100_000 + n)),
+    ...w.peer.listing().map(({ item, authorization }) => localItem(w.owner, ALICE_URI, authorization, item)),
+  ];
+  serveListing(w.t.web, w.owner, w.listed);
+}
+
+const itemBody = (w: OwnerWorld, type: "Add" | "Remove", item: number, authorization: string) => ({
+  "@context": [...FEATURE_CONTEXT, { FeaturedItem: "https://w3id.org/fep/7aa9#FeaturedItem" }],
+  type,
+  actor: w.owner.uri,
+  target: w.listed.id,
+  object: localItem(w.owner, ALICE_URI, authorization, item),
+});
+
+// R's activities, delivered to Kopje in order.
+async function toKopje(w: OwnerWorld, activities: FromOwner[]): Promise<void> {
+  for (const activity of activities) {
+    const body =
+      activity.type === "FeatureRequest"
+        ? featureRequest(w.owner, ALICE_URI, w.listed.id, activity.request)
+        : itemBody(w, activity.type, activity.item, activity.type === "Add" ? activity.authorization : "");
+    expect(await w.t.post(w.owner, body)).toBe(202);
+  }
+}
+
+// Kopje's answers to R not handed over yet, in its lane's order; each is then delivered (its rows gone).
+async function fromKopje(w: OwnerWorld): Promise<ToOwner[]> {
+  const inbox = `${w.owner.uri}/inbox`;
+  const fresh = (await outbound(w.t, ALICE)).filter(
+    ({ id, superseded, deliveries }) =>
+      !w.handed.has(id) && superseded === 0 && deliveries.some((d) => d.inbox === inbox && d.state !== "gave_up"),
+  );
+  for (const { id } of fresh) {
+    w.handed.add(id);
+    await sql(w.t.store, "DELETE FROM deliveries WHERE activity_id = CAST(? AS INTEGER)", id);
+  }
+  return fresh.map(({ activity }): ToOwner => {
+    const object = activity.object;
+    switch (activity.type) {
+      case "Accept":
+        return { type: "Accept", request: String(object), result: String(activity.result) };
+      case "Reject":
+        return { type: "Reject", request: String(object) };
+      default:
+        return { type: "Delete", authorization: (object as { id: string }).id };
+    }
+  });
+}
+
+// R processes each answer, its own activities that follow delivered to Kopje.
+async function process(w: OwnerWorld, answers: ToOwner[], following = false): Promise<void> {
+  for (const answer of answers) {
+    await toKopje(w, w.peer.receive(answer, following));
+  }
+}
+
+// alice revokes her item in R's collection.
+async function revoke(w: OwnerWorld): Promise<void> {
+  const [row] = await localRows(w.t, ALICE);
+  const collectionId = (
+    await sql<{ id: string }>(w.t.store, "SELECT id FROM collections WHERE uri = ?", w.listed.id)
+  )[0]!.id;
+  const response = await w.t.request(`/api/v1/collections/${collectionId}/items/${row!.id}/revoke`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${w.t.tokens.alice}` },
+  });
+  expect(response.status).toBe(200);
+}
+
+// Quiescence: every wait ended and every read Kopje requested run, each read of R's listing as R serves it then, and
+// the answers of those reads processed by R.
+async function quiesce(w: OwnerWorld): Promise<void> {
+  for (let step = 0; step < 16; step++) {
+    await process(w, await fromKopje(w));
+    const due = await nextDue(w.t);
+    const syncs = await sql(w.t.store, "SELECT 1 FROM collection_syncs");
+    if (due === null && syncs.length === 0) {
+      return;
+    }
+    if (due !== null) {
+      w.now = Math.max(w.now, due);
+      await checkRound(w.t, w.now);
+    }
+    if ((await sql(w.t.store, "SELECT 1 FROM collection_syncs")).length > 0) {
+      w.now += 60_000;
+      serveOwnerListing(w);
+      await syncAll(w.t, w.t.web.loader, w.now);
+    }
+  }
+  throw new Error("no quiescence");
+}
+
+// One more read of R's collections (a refresh), its answers processed.
+async function refresh(w: OwnerWorld): Promise<void> {
+  w.now += 60_000;
+  serveOwnerListing(w);
+  await requestSync(w.t, w.ownerId);
+  await syncAll(w.t, w.t.web.loader, w.now);
+  await process(w, await fromKopje(w));
+}
+
+// Whether Kopje shows alice in R's collection: her row accepted (its authorization served).
+const kopjeShows = async (w: OwnerWorld) => (await localRows(w.t, ALICE)).some((row) => row.state === 1);
+
+describe("a Mastodon owner featuring a local member (6-T5)", () => {
+  it("converges through the answer to R's Add when R processes Delete(A) before Accept(A)", async () => {
+    const w = await ownerWorld();
+    await toKopje(w, w.peer.add());
+    const accept = await fromKopje(w);
+    await revoke(w);
+    const deleted = await fromKopje(w);
+    expect(deleted.map((a) => a.type)).toEqual(["Delete"]);
+    // R processes the Delete first (no item holds A yet), then the Accept: it accepts and distributes its Add.
+    await process(w, [...deleted, ...accept]);
+    // Before any read: the answer to R's Add alone ends R's acceptance.
+    await process(w, await fromKopje(w));
+    expect([w.peer.shows(), await kopjeShows(w)]).toEqual([false, false]);
+    await quiesce(w);
+    expect([w.peer.shows(), await kopjeShows(w)]).toEqual([false, false]);
+    expect(w.peer.item?.state).toBe("revoked");
+  });
+
+  it("deletes the row at the wait's read when R removed L before processing the Accept, L not following", async () => {
+    const w = await ownerWorld();
+    await toKopje(w, w.peer.add());
+    const accept = await fromKopje(w);
+    await toKopje(w, w.peer.remove(false));
+    await process(w, accept);
+    await quiesce(w);
+    expect([w.peer.shows(), await kopjeShows(w)]).toEqual([false, false]);
+    expect(await localRows(w.t, ALICE)).toEqual([]);
+  });
+
+  it("converges through the answer to R's Add when R processes the Accept after the wait's read deleted the row (F6)", async () => {
+    const w = await ownerWorld();
+    await toKopje(w, w.peer.add());
+    // The Accept is delivered, but R's backlog holds it past the wait.
+    const accept = await fromKopje(w);
+    await quiesce(w);
+    expect(await localRows(w.t, ALICE)).toEqual([]);
+    await process(w, accept);
+    expect(w.peer.shows()).toBe(true);
+    await quiesce(w);
+    expect([w.peer.shows(), await kopjeShows(w)]).toEqual([false, false]);
+  });
+
+  it("converges through a read's answer when R's Add after a late Accept never reaches Kopje (F6)", async () => {
+    const w = await ownerWorld();
+    await toKopje(w, w.peer.add());
+    const accept = await fromKopje(w);
+    await quiesce(w);
+    expect(await localRows(w.t, ALICE)).toEqual([]);
+    // R accepts late and its delivery of the Add gives up: the next read of its collections lists the item.
+    w.peer.receive(accept[0]!, false);
+    await refresh(w);
+    await quiesce(w);
+    expect([w.peer.shows(), await kopjeShows(w)]).toEqual([false, false]);
+  });
+
+  it("converges when a duplicated Accept re-accepts after R revoked", async () => {
+    const w = await ownerWorld();
+    await toKopje(w, w.peer.add());
+    const accept = await fromKopje(w);
+    await process(w, accept);
+    await revoke(w);
+    await process(w, await fromKopje(w));
+    expect(w.peer.item?.state).toBe("revoked");
+    // Kopje's lane delivers the Accept a second time: R accepts again and distributes its Add.
+    await process(w, accept);
+    await quiesce(w);
+    expect([w.peer.shows(), await kopjeShows(w)]).toEqual([false, false]);
+  });
+
+  it("keeps the row through R's Remove processed before its Add, until the wait's read", async () => {
+    const w = await ownerWorld();
+    await toKopje(w, w.peer.add());
+    const accept = await fromKopje(w);
+    const add = w.peer.receive(accept[0]!, true);
+    // R removes L (L follows R, so its Remove reaches Kopje), and Kopje processes the Remove before the Add.
+    await toKopje(w, w.peer.remove(true));
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ state: 1 }]);
+    await toKopje(w, add);
+    await quiesce(w);
+    expect([w.peer.shows(), await kopjeShows(w)]).toEqual([false, false]);
+  });
+
+  it("leaves R alone showing an item it lists past its first 25 that no answer reached (F7)", async () => {
+    const w = await ownerWorld(25);
+    await toKopje(w, w.peer.add());
+    const accept = await fromKopje(w);
+    await quiesce(w);
+    expect(await localRows(w.t, ALICE)).toEqual([]);
+    // R accepts late; its Add is never delivered; L's item is R's 26th.
+    w.peer.receive(accept[0]!, false);
+    for (let n = 0; n < 2; n++) {
+      await refresh(w);
+    }
+    expect([w.peer.shows(), await kopjeShows(w)]).toEqual([true, false]);
+    expect(w.listed.orderedItems).toHaveLength(26);
   });
 });

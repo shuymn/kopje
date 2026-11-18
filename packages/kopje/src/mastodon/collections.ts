@@ -237,13 +237,37 @@ export const removeCollectionItem: ApiHandler = async (c, deps) => {
   return emptyResponse(authorized(await storeCall(c, deps, (s, b) => s.removeCollectionItem(b, input))));
 };
 
-// POST /api/v1/collections/:collection_id/items/:id/revoke.
+// POST /api/v1/collections/:collection_id/items/:id/revoke. An item of a remote collection has the member's Delete of
+// its authorization LD-signed here, once, with the member's key, before the Store records it with the revoke, which
+// first checks it is that Delete (collections.ts revokeCollectionItem). The credential is taken anew for each Store
+// call, after the signing.
 export const revokeCollectionItem: ApiHandler = async (c, deps) => {
-  const input = {
-    collection: c.req.param("id") ?? "",
-    item: c.req.param("item_id") ?? "",
-    credential: userCredential(c, deps),
-    now: deps.now(),
-  };
-  return emptyResponse(authorized(await storeCall(c, deps, (s, b) => s.revokeCollectionItem(b, input))));
+  const target = { collection: c.req.param("id") ?? "", item: c.req.param("item_id") ?? "" };
+  const prepared = authorized(
+    await storeCall(c, deps, (s, b) => s.prepareItemRevoke(b, { ...target, credential: userCredential(c, deps) })),
+  );
+  if (prepared.refused !== null) {
+    return prepared.refused === "unsignable"
+      ? mastodonError(503, "This revocation cannot be signed here")
+      : emptyResponse(prepared.refused);
+  }
+  if (prepared.sign !== null && deps.signAsAuthor === undefined) {
+    return mastodonError(503, "This revocation cannot be signed here");
+  }
+  let signed: Record<string, unknown> | null = null;
+  if (prepared.sign !== null) {
+    try {
+      signed = await deps.signAsAuthor!(c.env, prepared.sign);
+    } catch {
+      return mastodonError(503, "This revocation could not be signed; try again");
+    }
+  }
+  const result = authorized(
+    await storeCall(c, deps, (s, b) =>
+      s.revokeCollectionItem(b, { ...target, signed, credential: userCredential(c, deps), now: deps.now() }),
+    ),
+  );
+  return result === "unsigned"
+    ? mastodonError(503, "This revocation could not be signed; try again")
+    : emptyResponse(result);
 };

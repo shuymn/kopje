@@ -724,7 +724,9 @@ An account may be featured only with its consent (`mayFeatureSql`): its answer t
 `automatic` or `manual`, so it is discoverable, and unlocked, followed by the owner (accepted) or the owner itself, and
 neither blocks the other; a remote account answers by the `canFeature` its actor document states (`missing` while it
 states none), and one that consents is added `pending` and asked with a `FeatureRequest`, then shown only once its
-server accepts (`threat-model.md` ID-6). Every account answer presents that answer to its viewer as
+server accepts (`threat-model.md` ID-6). A local account a remote owner asks for with a `FeatureRequest` is decided by
+the same rule, its answer to that owner (`featureApprovalSql`): it accepts, and is notified, only while it consents
+(`threat-model.md` ID-6, #1589's D24). Every account answer presents that answer to its viewer as
 `feature_approval.current_user` (`denied` with no viewer), read for
 each chunk of accounts presented in one statement (`featureApprovalReads`), and the policy's halves from the row; the
 presenter takes the viewer from the Store's judgment of the token (`Present.viewerId`), never from the Worker.
@@ -732,7 +734,8 @@ presenter takes the viewer from the Store's judgment of the token (`Present.view
 while the collection is found (`inCollectionsSql`): the items are the viewer's own, so the owner's availability only
 hides a candidate of the window ("Read bounds"), whose cursor is the item's id. A block by a local account revokes its
 items in the target's collections and deletes the target's items in its own (`severCollections`, in the block's
-transaction); an inbound `Block` changes no item, and R45 hides the blocked side's view. A member added is notified
+transaction), and a revoked item in a remote target's collection sends the account's `Delete` of its authorization to
+that owner alone; an inbound `Block` changes no item, and R45 hides the blocked side's view. A member added is notified
 `added_to_collection`, and each accepted member of a collection whose name, description, sensitivity or tag changes
 `collection_update`, which replaces its earlier one (R15 above: local recipients only, never the owner itself, while R45
 shows the collection to the recipient). Each is presented with its collection as R45 shows it to the recipient, its

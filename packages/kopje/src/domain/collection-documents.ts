@@ -64,6 +64,11 @@ const FEATURE_AUTHORIZATION_CONTEXT = [
   },
 ] as const;
 
+// The context of a member's Delete of its authorization: ActivityPub::DeleteFeatureAuthorizationSerializer's (its
+// object's feature_authorizations extension), then security/v1, which LinkedDataSignature#sign! appends and which
+// defines the signature's terms; federation/author-proof.ts's mastodonFeature profile reads this very context.
+const FEATURE_DELETE_CONTEXT = [...FEATURE_AUTHORIZATION_CONTEXT, "https://w3id.org/security/v1"] as const;
+
 // A FeaturedCollection's page holds this many collections (FeaturedCollectionsController::PER_PAGE).
 const FEATURED_COLLECTIONS_PER_PAGE = 5;
 
@@ -133,8 +138,18 @@ function collectionItemUri(ownerUri: string, itemId: string): string {
   return `${ownerUri}/collection_items/${itemId}`;
 }
 
-function featureAuthorizationUri(memberUri: string, itemId: string): string {
+// A local member's authorization of its item `itemId` (ActivityPub::TagManager, ap_account_feature_authorization_url),
+// which featureAuthorizationDocument serves while the item is accepted.
+export function featureAuthorizationUri(memberUri: string, itemId: string): string {
   return `${memberUri}/feature_authorizations/${itemId}`;
+}
+
+// The item id a local member's authorization `uri` names, when `uri` is exactly one featureAuthorizationUri writes for
+// the member (an item id is 18 digits, the collection_items CHECK); null for any other URI.
+export function authorizedItemOf(memberUri: string, uri: string): string | null {
+  const prefix = `${memberUri}/feature_authorizations/`;
+  const id = uri.startsWith(prefix) ? uri.slice(prefix.length) : "";
+  return /^\d{18}$/.test(id) ? id : null;
 }
 
 // context_helper.rb's interaction_policies extension, which ActivityPub::ActorSerializer names.
@@ -663,4 +678,58 @@ export function stageItemRemove(
   }
   const envelope = envelopeOf(db, reach, now, itemRemove(reach, item.id), item.account);
   return { owner: reach.owner, intent: beginFollowerStaging(db, reach.owner, envelope, now) };
+}
+
+// ---- A local member's activities about its items in remote collections (#1589's D24).
+
+// The member's Delete of its authorization `authorization` of its item in the remote collection `collection`
+// (ActivityPub::DeleteFeatureAuthorizationSerializer, its object the FeatureAuthorizationSerializer's): addressed to
+// Public alone, with no signature. The member's revoke LD-signs this very body (collections.ts prepareItemRevoke,
+// federation/ld-sign.ts); every other copy (a block, an answer to the owner's listing) is sent as it is, HTTP-signed
+// by the member, to the owner alone (docs/mastodon-deviations.md, "Collections").
+export function featureDeleteActivity(
+  memberUri: string,
+  authorization: string,
+  collection: string,
+): Record<string, unknown> {
+  return {
+    "@context": FEATURE_DELETE_CONTEXT,
+    id: `${authorization}#delete`,
+    type: "Delete",
+    actor: memberUri,
+    to: [PUBLIC_COLLECTION],
+    object: {
+      id: authorization,
+      type: "FeatureAuthorization",
+      interactingObject: collection,
+      interactionTarget: memberUri,
+    },
+  };
+}
+
+// The member's answer to the owner's FeatureRequest `request` (ActivityPub::AcceptFeatureRequestSerializer and
+// RejectFeatureRequestSerializer): its id under the member's (`#accepts/feature_requests/<n>`,
+// `#rejects/feature_requests/<n>`, n the item's id, or a fresh local id for a refusal that stores no item, where
+// Mastodon writes an unsaved item's empty id), `to` the owner, `object` the request answered, and an Accept's `result`
+// the authorization it grants. To the owner's personal inbox alone (queue_delivery!: @account.inbox_url).
+export function featureAnswerEnvelope(
+  kind: "Accept" | "Reject",
+  member: { uri: string },
+  owner: { id: string; uri: string },
+  request: string,
+  n: string,
+  result: string | null,
+): { activity: Record<string, unknown>; audience: { followers: false; accounts: string[] } } {
+  return {
+    activity: {
+      "@context": AS_CONTEXT,
+      id: `${member.uri}#${kind === "Accept" ? "accepts" : "rejects"}/feature_requests/${n}`,
+      type: kind,
+      actor: member.uri,
+      to: owner.uri,
+      object: request,
+      ...(result === null ? {} : { result }),
+    },
+    audience: { followers: false, accounts: [owner.id] },
+  };
 }

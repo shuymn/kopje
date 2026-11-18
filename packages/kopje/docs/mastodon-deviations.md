@@ -902,6 +902,28 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   for 30 days, so the check of a membership the owner lists with that authorization later (for the first time, or
   again after changing it) ends it as revoked, though the member's server may still serve the authorization from its
   cache. Accepted, 2026-11-17.
+- A local member's revocation in a remote collection is sent to the collection's owner and the member's followers,
+  where Mastodon sends it to the owner and the collection's reach. A local member's revocation by a block, and the
+  `Delete` answering an owner's listing (below), are sent to the owner's personal inbox alone without an LD signature
+  (Mastodon applies such a `Delete` from its HTTP signer, `delete.rb:6`, `:68-81`, and LD-signs it only in
+  `RevokeCollectionItemService`). A `FeatureRequest` that names no actor (as Mastodon sends it) is taken as its
+  signer's only when the signature's key id, without its fragment, is the signer's actor id. A feature request for a
+  member already in the collection is answered, naming that request, by its membership's state (an `Accept` with its
+  authorization while accepted, a `Reject` while revoked or once the member no longer consents), where Mastodon
+  answers nothing until the membership is gone. A local account's membership of a remote collection is kept until a
+  read of the owner's collections no longer lists it, and no read ends it within 4 days of the delivery of its latest
+  answer; a `Remove` asks for such a read instead of ending it; Mastodon ends it on the `Remove` and never learns of a
+  removal its member was not sent. An owner that processes the member's answer more than 4 days after its delivery may
+  find the membership ended. An owner's `Add`, or a listing, that names a local member's authorization Kopje no longer
+  serves is answered with the member's `Delete` of it, where Mastodon sends nothing. A remote collection's local
+  members take their places first: while one awaits that read, the owner's last listed member may be left out until
+  it, and a request for a local member when local members already fill 25 places is refused. A local member's item
+  that the owner lists past its first 25 items is beyond what a read sees: if the owner accepted it and no answer of
+  Kopje's reached the owner after that (the owner's `Add` was never delivered, or Kopje's answer was refused at a full
+  backlog), the owner shows the member while Kopje shows nothing and serves no authorization for it, with no limit in
+  time, until the owner removes or re-adds it or it moves into the first 25. When the row of an authorization is gone
+  (a read or the 24-hour cleanup removed it), Kopje's answer naming it is an ordinary delivery: refused at a full
+  backlog, it leaves the owner showing the member until the next `Add` or read once the backlog has room.
 
 Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model WEB-6):
 

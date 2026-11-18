@@ -458,6 +458,7 @@ export const STORE_RPC = {
   deleteCollection: collections.deleteCollection,
   addCollectionItem: collections.addCollectionItem,
   removeCollectionItem: collections.removeCollectionItem,
+  prepareItemRevoke: collections.prepareItemRevoke,
   revokeCollectionItem: collections.revokeCollectionItem,
   resolvedCollection: collections.resolvedCollection,
   pruneCollectionItems: collections.pruneCollectionItems,

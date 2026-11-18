@@ -729,8 +729,15 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   // A check's member, compared with the interactionTarget of the authorization it fetches; and a local collection's
   // owner, whose uri the collection's id it compares with the interactingObject is built from (checkedCollection).
   "src/domain/collection-checks.ts accounts.uri": { count: 2, reason: IDENTITY },
-  // A local owner's uri, which a remote member's FeatureRequest id is built from and stored as (insertItem).
-  "src/domain/collections.ts accounts.uri": { count: 1, reason: IDENTITY },
+  // A local owner's uri, which a remote member's FeatureRequest id is built from and stored as (insertItem); a local
+  // member's, which its Delete of an authorization in a remote collection is built from (remoteRevocation,
+  // severCollections).
+  "src/domain/collections.ts accounts.uri": { count: 3, reason: IDENTITY },
+  // A local member's uri, which its authorization and its answers to a remote owner are built from (localRows) and an
+  // owner's listing is matched with (localListing), and the request's object matched by its exact uri
+  // (answerFeatureRequest).
+  "src/domain/feature-answers.ts accounts.uri": { count: 2, reason: IDENTITY },
+  "src/domain/inbound-feature-requests.ts accounts.uri": { count: 1, reason: IDENTITY },
   // A local collection's owner, whose uri the collection's id is built from, compared with a member's Delete's
   // interactingObject (memberRowIn).
   "src/domain/remote-featured-collections.ts accounts.uri": { count: 1, reason: IDENTITY },

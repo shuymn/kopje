@@ -2,7 +2,7 @@ import { expect } from "vitest";
 
 import { checkCollectionItems } from "../src/federation/collection-checks";
 import { syncCollections } from "../src/federation/collections";
-import { sql } from "./api-helpers";
+import { settleDeliveries, sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
 import { type RemoteWeb, mastodonActor, type TestActor } from "./inbox-helpers";
 import { accountId, AS, followed, OTHER, type Setup } from "./inbox-status-helpers";
@@ -253,3 +253,104 @@ export const PENDING = 0;
 export const ACCEPTED = 1;
 export const REJECTED = 2;
 export const REVOKED = 3;
+
+// ---- Local accounts in remote collections (#1589's D24, PR 6).
+
+export const FEATURE_REQUEST_CONTEXT = [AS, { FeatureRequest: "https://w3id.org/fep/7aa9#FeatureRequest" }];
+const COLLECTION_CONTEXT = [
+  AS,
+  {
+    FeaturedCollection: "https://w3id.org/fep/7aa9#FeaturedCollection",
+    FeaturedItem: "https://w3id.org/fep/7aa9#FeaturedItem",
+  },
+];
+
+let requests = 0;
+
+// The owner's collection `listed` served at its id, and the owner's featuredCollections listing it alone.
+export function serveListing(web: RemoteWeb, owner: { featuredCollections: string }, listed: { id: string }): void {
+  web.serve(listed.id, { "@context": COLLECTION_CONTEXT, ...listed });
+  serveCollections(web, owner, [[listed]]);
+}
+
+// The owner's FeatureRequest for `member` with `instrument`, as feature_request_serializer.rb writes it: no actor.
+export function featureRequest(owner: TestActor, member: string, instrument: string, id?: string) {
+  return {
+    "@context": FEATURE_REQUEST_CONTEXT,
+    id: id ?? `${new URL(owner.uri).origin}/${crypto.randomUUID()}#r${++requests}`,
+    type: "FeatureRequest",
+    object: member,
+    instrument,
+  };
+}
+
+// An item of the owner's naming the local member `member` with the authorization `authorization`.
+export function localItem(owner: TestActor, member: string, authorization: string, n = ++sequence): Item {
+  return {
+    id: `${owner.uri}/collection_items/${n}`,
+    type: "FeaturedItem",
+    featuredObject: member,
+    featureAuthorization: authorization,
+  };
+}
+
+export type LocalRow = {
+  id: string;
+  state: number;
+  activity_uri: string | null;
+  uri: string | null;
+  candidate_approval_uri: string | null;
+  answer: string | null;
+  check_due_at: number | null;
+  check_token: string | null;
+  check_attempts: number;
+  position: number;
+  updated_at: string;
+};
+
+// The rows of the local account `account` in remote collections.
+export function localRows(t: Setup, account: string): Promise<LocalRow[]> {
+  return sql<LocalRow>(
+    t.store,
+    `SELECT i.id, i.state, i.activity_uri, i.uri, i.candidate_approval_uri, CAST(i.answer_activity_id AS TEXT) AS answer,
+			i.check_due_at, i.check_token, i.check_attempts, i.position, i.updated_at
+		FROM collection_items i JOIN collections c ON c.id = i.collection_id
+		WHERE i.account_id = ?1 AND c.local = 0 ORDER BY i.id`,
+    account,
+  );
+}
+
+export type Outbound = {
+  id: string;
+  activity: Record<string, unknown>;
+  retracts: number;
+  superseded: number;
+  // Sent byte for byte to every target (deliveries.ts DeliveryEnvelope.immutable).
+  immutable: boolean;
+  deliveries: Delivery[];
+};
+export type Delivery = { inbox: string; state: string; error: string | null };
+
+// Each activity the account recorded, with its deliveries once expanded, in record order.
+export async function outbound(t: Setup, account: string): Promise<Outbound[]> {
+  await settleDeliveries(t.store);
+  const rows = await sql<{ id: string; body: string; retracts: number; superseded: number }>(
+    t.store,
+    "SELECT CAST(id AS TEXT) AS id, body, retracts, superseded FROM outbound_activities WHERE account_id = ? ORDER BY id",
+    account,
+  );
+  const deliveries = await sql<{ activity: string; inbox: string; state: string; error: string | null }>(
+    t.store,
+    "SELECT CAST(activity_id AS TEXT) AS activity, inbox_url AS inbox, state, last_error AS error FROM deliveries ORDER BY id",
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    activity: (JSON.parse(row.body) as { activity: Record<string, unknown> }).activity,
+    immutable: (JSON.parse(row.body) as { immutable?: boolean }).immutable === true,
+    retracts: row.retracts,
+    superseded: row.superseded,
+    deliveries: deliveries
+      .filter((d) => d.activity === row.id)
+      .map(({ inbox, state, error }) => ({ inbox, state, error })),
+  }));
+}

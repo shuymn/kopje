@@ -1021,3 +1021,93 @@ export function memberQuiescence(
           : `not accepted (Kopje ${row?.state ?? "none"}, R ${item?.state ?? "none"})`;
   return { problems, outcome };
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// The owner peer: a Mastodon v4.7.5 owner featuring a local member (#1589's D24, 6-T5)
+// ---------------------------------------------------------------------------------------------------------------
+
+// What Kopje's member L sends the owner, and what the owner sends Kopje.
+export type ToOwner =
+  | { type: "Accept"; request: string; result: string }
+  | { type: "Reject"; request: string }
+  | { type: "Delete"; authorization: string };
+export type FromOwner =
+  | { type: "FeatureRequest"; request: string }
+  | { type: "Add"; item: number; authorization: string }
+  | { type: "Remove"; item: number };
+
+// The owner's item of L (CollectionItem.local): its id, its request (activity_uri), state and approval_uri.
+export type OwnerItem = {
+  id: number;
+  request: string;
+  state: "pending" | "accepted" | "rejected" | "revoked";
+  approval: string | null;
+};
+
+// R as Mastodon v4.7.5 runs it, one collection featuring L, each body it receives processed on its own:
+//   - add (AddAccountToCollectionService): a pending item with a new request, sent as a FeatureRequest; one item of L at
+//     most (collection_item.rb:33);
+//   - remove (DeleteCollectionItemService): the item destroyed, its Remove sent to the collection's reach as computed
+//     when the job runs, so L hears of it only while it follows R (collection_raw_distribution_worker.rb:13);
+//   - Accept (accept.rb:36-45): the item its request names, in any state, accepted with the result as its approval, and
+//     its Add distributed; an Accept of a request R no longer holds is ignored (activity.rb:160-164);
+//   - Reject (reject.rb:41-46): the item its request names rejected;
+//   - Delete (delete.rb:68-80): the item whose approval it names revoked (kept), and its Remove distributed;
+//   - listing (featured_collections_controller.rb:33-37): the accepted items.
+export class OwnerPeer {
+  item: OwnerItem | null = null;
+  private next = 0;
+
+  constructor(private readonly origin: string) {}
+
+  add(): FromOwner[] {
+    if (this.item !== null) {
+      return [];
+    }
+    const id = ++this.next;
+    this.item = { id, request: `${this.origin}/requests/${id}`, state: "pending", approval: null };
+    return [{ type: "FeatureRequest", request: this.item.request }];
+  }
+
+  remove(following: boolean): FromOwner[] {
+    const item = this.item;
+    this.item = null;
+    return item === null || !following ? [] : [{ type: "Remove", item: item.id }];
+  }
+
+  receive(activity: ToOwner, following: boolean): FromOwner[] {
+    const item = this.item;
+    switch (activity.type) {
+      case "Accept":
+        if (item === null || item.request !== activity.request) {
+          return [];
+        }
+        item.state = "accepted";
+        item.approval = activity.result;
+        return [{ type: "Add", item: item.id, authorization: activity.result }];
+      case "Reject":
+        if (item !== null && item.request === activity.request) {
+          item.state = "rejected";
+        }
+        return [];
+      case "Delete":
+        if (item === null || item.approval !== activity.authorization) {
+          return [];
+        }
+        item.state = "revoked";
+        return following ? [{ type: "Remove", item: item.id }] : [];
+    }
+  }
+
+  // The accepted items of the owner's listing.
+  listing(): { item: number; authorization: string }[] {
+    return this.item?.state === "accepted" && this.item.approval !== null
+      ? [{ item: this.item.id, authorization: this.item.approval }]
+      : [];
+  }
+
+  // Whether R shows L in the collection.
+  shows(): boolean {
+    return this.item?.state === "accepted";
+  }
+}

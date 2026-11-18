@@ -199,6 +199,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   column of `accounts` and its two triggers, reading no row; the upgrade checks no reference. `wrangler.jsonc`:
   unchanged. This adds a Store migration, so the release is at least a minor version, and rolling back past it needs a
   point-in-time restore.
+- Remote servers can feature local accounts, which accept or refuse by their discoverability and follow settings and
+  can revoke ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections"). No Store migration and no
+  `wrangler.jsonc` change.
 
 ### Changed
 

@@ -1,16 +1,46 @@
+import { type DocumentLoader, verifyJsonLd } from "@fedify/fedify";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
+import { MAX_BACKLOG, MAX_LANE_BACKLOG } from "../src/domain/deliveries";
+import { ANSWER_POLL_MS } from "../src/domain/feature-answers";
 import { ourFeatureRequest } from "../src/domain/feature-requests";
 import { SWEEP_BATCH } from "../src/domain/remote-actors";
+import { parseActivity } from "../src/federation/inbound";
 import { settleDeliveries, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { mastodon47Signed, mastodonFeatureDelete, signTime } from "./author-proof-helpers";
-import { checkRound, FEATURE_CONTEXT } from "./featured-collection-helpers";
+import {
+  checkRound,
+  collection,
+  COLLECTIONS_ONLY,
+  FEATURE_CONTEXT,
+  featuredOwner,
+  featureRequest,
+  item as remoteItem,
+  localItem,
+  localRows,
+  outbound,
+  serveListing,
+  storedMember,
+  syncAll,
+} from "./featured-collection-helpers";
 import { BUILD } from "./helpers";
-import { mastodonActor, type TestActor } from "./inbox-helpers";
-import { ALICE_URI, AS, followed, PUBLIC, retractionsAtCap, setup, type Setup } from "./inbox-status-helpers";
+import { MASTODON, mastodonActor, type TestActor } from "./inbox-helpers";
+import {
+  ALICE,
+  ALICE_URI,
+  AS,
+  DAVE,
+  followed,
+  OTHER,
+  PUBLIC,
+  retractionsAtCap,
+  setup,
+  type Setup,
+} from "./inbox-status-helpers";
+import { contexts } from "./quote-helpers";
 import { watchedCursor } from "./read-helpers";
 
 // Remote members of local collections (#1589's D23, Mastodon 4.7.5's AddAccountToCollectionService, FeatureRequest,
@@ -692,5 +722,508 @@ describe("a pending remote member's removal (D23)", () => {
     expect(await itemActivities(w.t, pending.item.id)).toEqual([]);
     expect(await itemActivities(w.t, blocked.item.id)).toEqual([]);
     expect(await itemActivities(w.t, accepted.item.id)).toEqual(["Add", "Remove"]);
+  });
+});
+
+// ---- Local accounts in remote collections (#1589's D24, PR 6: 6-T1 to 6-T4, 6-T6, 6-T9).
+
+type Owned = { t: Setup; owner: TestActor & { featuredCollections: string }; listed: ReturnType<typeof collection> };
+
+let owners = 0;
+
+// A remote Mastodon owner and one collection of its holding `items` (served at its id and listed), alice discoverable
+// so the owner may feature her (R45).
+async function owned(items: unknown[] = []): Promise<Owned> {
+  const t = await setup();
+  await sql(t.store, "UPDATE accounts SET discoverable = 1 WHERE id = ?", ALICE);
+  const owner = await featuredOwner(t.web, `owner${++owners}`, COLLECTIONS_ONLY);
+  const listed = collection(owner, items);
+  serveListing(t.web, owner, listed);
+  return { t, owner, listed };
+}
+
+const requestFor = (w: Owned, id?: string) => featureRequest(w.owner, ALICE_URI, w.listed.id, id);
+const authorization = (row: string) => `${ALICE_URI}/feature_authorizations/${row}`;
+
+// alice's answers (her Accepts, Rejects and Deletes), in record order.
+async function aliceAnswers(t: Setup) {
+  return (await outbound(t, ALICE)).filter(({ activity }) =>
+    ["Accept", "Reject", "Delete"].includes(String(activity.type)),
+  );
+}
+
+// The status of a fetch of alice's authorization document for the row `row`.
+async function authorizationStatus(t: Setup, row: string): Promise<number> {
+  const response = await t.request(`/ap/users/alice/feature_authorizations/${row}`, {
+    headers: { accept: "application/activity+json" },
+  });
+  await response.arrayBuffer();
+  return response.status;
+}
+
+async function revokeAs(t: Setup, collectionId: string, row: string): Promise<number> {
+  return (await call(t, "POST", `/api/v1/collections/${collectionId}/items/${row}/revoke`)).status;
+}
+
+async function collectionIdOf(t: Setup, uri: string): Promise<string> {
+  return (await sql<{ id: string }>(t.store, "SELECT id FROM collections WHERE uri = ?", uri))[0]!.id;
+}
+
+// The owner's Add (or Remove) of an item naming alice with the authorization `a`, as Mastodon 4.7.5 sends it (no id).
+function itemActivity(w: Owned, type: "Add" | "Remove", entry: unknown) {
+  return {
+    "@context": [...FEATURE_CONTEXT, { FeaturedItem: "https://w3id.org/fep/7aa9#FeaturedItem" }],
+    type,
+    actor: w.owner.uri,
+    target: w.listed.id,
+    object: entry,
+  };
+}
+
+const notifications = (t: Setup) =>
+  sql<{ type: string }>(t.store, "SELECT type FROM notifications WHERE account_id = ? ORDER BY id", ALICE);
+
+describe("a remote owner's feature request for a local account (D24)", () => {
+  // 6-T1. Fails if an answer names the row's stored request instead of the one answered (the owner ignores it), if a
+  // repeat does not queue the wait again, or if a replay after the revoke is accepted.
+  it("answers each request by the row's state, naming the request it answers and queuing the row's wait", async () => {
+    const w = await owned();
+    const r1 = requestFor(w);
+    expect(await w.t.post(w.owner, r1)).toBe(202);
+    const [row] = await localRows(w.t, ALICE);
+    const a = authorization(row!.id);
+    expect(row).toMatchObject({
+      state: ACCEPTED,
+      activity_uri: r1.id,
+      uri: null,
+      candidate_approval_uri: a,
+      check_due_at: NOW + ANSWER_POLL_MS,
+      check_token: null,
+    });
+    const accept = (request: string) => ({
+      "@context": AS,
+      id: `${ALICE_URI}#accepts/feature_requests/${row!.id}`,
+      type: "Accept",
+      actor: ALICE_URI,
+      to: w.owner.uri,
+      object: request,
+      result: a,
+    });
+    let sentAnswers = await aliceAnswers(w.t);
+    expect(sentAnswers.map(({ activity, deliveries }) => [activity, deliveries.map((d) => d.inbox)])).toEqual([
+      [accept(r1.id), [`${w.owner.uri}/inbox`]],
+    ]);
+    expect(row!.answer).toBe(sentAnswers[0]!.id);
+    expect(await notifications(w.t)).toEqual([{ type: "added_to_collection" }]);
+    expect(await authorizationStatus(w.t, row!.id)).toBe(200);
+
+    // A repeat of the same request: the same Accept, one row, one notification, the wait queued on the new answer.
+    expect(await w.t.post(w.owner, r1)).toBe(202);
+    sentAnswers = await aliceAnswers(w.t);
+    expect(sentAnswers.map(({ activity }) => activity)).toEqual([accept(r1.id), accept(r1.id)]);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, answer: sentAnswers[1]!.id }]);
+    expect(await notifications(w.t)).toHaveLength(1);
+
+    // Another request while accepted: an Accept naming it with the same authorization, the row's request replaced and
+    // its uri cleared.
+    await sql(
+      w.t.store,
+      "UPDATE collection_items SET uri = ? WHERE id = ?",
+      `${w.owner.uri}/collection_items/1`,
+      row!.id,
+    );
+    const r2 = requestFor(w);
+    expect(await w.t.post(w.owner, r2)).toBe(202);
+    sentAnswers = await aliceAnswers(w.t);
+    expect(sentAnswers.at(-1)!.activity).toEqual(accept(r2.id));
+    expect(await localRows(w.t, ALICE)).toMatchObject([
+      { id: row!.id, state: ACCEPTED, activity_uri: r2.id, uri: null, answer: sentAnswers.at(-1)!.id },
+    ]);
+    expect(await notifications(w.t)).toHaveLength(1);
+
+    // Consent withdrawn: a Reject naming the request, the row kept with its wait queued again.
+    await sql(w.t.store, "UPDATE accounts SET discoverable = 0 WHERE id = ?", ALICE);
+    const r3 = requestFor(w);
+    expect(await w.t.post(w.owner, r3)).toBe(202);
+    sentAnswers = await aliceAnswers(w.t);
+    expect(sentAnswers.at(-1)!.activity).toEqual({
+      "@context": AS,
+      id: `${ALICE_URI}#rejects/feature_requests/${row!.id}`,
+      type: "Reject",
+      actor: ALICE_URI,
+      to: w.owner.uri,
+      object: r3.id,
+    });
+    expect(await localRows(w.t, ALICE)).toMatchObject([
+      { id: row!.id, state: ACCEPTED, activity_uri: r2.id, answer: sentAnswers.at(-1)!.id },
+    ]);
+
+    // After the member revoked (the row kept 24 hours), a delayed request is refused and the authorization stays gone.
+    await sql(w.t.store, "UPDATE accounts SET discoverable = 1 WHERE id = ?", ALICE);
+    expect(await revokeAs(w.t, await collectionIdOf(w.t, w.listed.id), row!.id)).toBe(200);
+    expect(await authorizationStatus(w.t, row!.id)).toBe(404);
+    const r4 = requestFor(w);
+    expect(await w.t.post(w.owner, r4)).toBe(202);
+    expect((await aliceAnswers(w.t)).at(-1)!.activity).toMatchObject({ type: "Reject", object: r4.id });
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: REVOKED, activity_uri: r2.id }]);
+    expect(await authorizationStatus(w.t, row!.id)).toBe(404);
+
+    // Once the cleanup deleted the row, a request is decided again.
+    await sql(w.t.store, "DELETE FROM collection_items WHERE id = ?", row!.id);
+    const r5 = requestFor(w);
+    expect(await w.t.post(w.owner, r5)).toBe(202);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ state: ACCEPTED, activity_uri: r5.id }]);
+  });
+
+  // 6-T2. Each fails if its test is removed: a refused account gets a row or an Accept; a foreign id is answered; a
+  // foreign instrument is fetched; a collection attributed to another actor is applied as the actor's.
+  it("refuses a request by consent, and ignores a foreign id or an instrument not the actor's", async () => {
+    const w = await owned();
+    await sql(w.t.store, "UPDATE accounts SET discoverable = 0 WHERE id = ?", ALICE);
+    const refused = requestFor(w);
+    expect(await w.t.post(w.owner, refused)).toBe(202);
+    expect(await localRows(w.t, ALICE)).toEqual([]);
+    expect(
+      (await aliceAnswers(w.t)).map(({ activity }) => [activity.type, activity.object, "result" in activity]),
+    ).toEqual([["Reject", refused.id, false]]);
+    await sql(w.t.store, "UPDATE accounts SET discoverable = 1 WHERE id = ?", ALICE);
+    const before = (await aliceAnswers(w.t)).length;
+
+    // An id on another host.
+    expect(await w.t.post(w.owner, requestFor(w, `${OTHER}/requests/1`))).toBe(202);
+    // An instrument on another host: never fetched.
+    const foreign = `${OTHER}/collections/1`;
+    w.t.web.serve(foreign, { ...collection(w.owner, []), id: foreign, "@context": AS });
+    expect(await w.t.post(w.owner, featureRequest(w.owner, ALICE_URI, foreign))).toBe(202);
+    expect(w.t.web.fetched).not.toContain(foreign);
+    // A collection on the actor's host attributed to another actor.
+    const someone = await mastodonActor(w.t.web, `someone${owners}`);
+    const theirs = collection(someone, []);
+    w.t.web.serve(theirs.id, { "@context": AS, ...theirs });
+    expect(await w.t.post(w.owner, featureRequest(w.owner, ALICE_URI, theirs.id))).toBe(202);
+    expect(w.t.web.fetched).toContain(theirs.id);
+    // An object that is no local account.
+    expect(await w.t.post(w.owner, featureRequest(w.owner, `${ALICE_URI}x`, w.listed.id))).toBe(202);
+
+    expect(await localRows(w.t, ALICE)).toEqual([]);
+    expect(await aliceAnswers(w.t)).toHaveLength(before);
+    // The owner's own collection, which its first request fetched (as Mastodon stores it before deciding), alone.
+    expect(await sql(w.t.store, "SELECT uri FROM collections WHERE local = 0")).toEqual([{ uri: w.listed.id }]);
+  });
+
+  // 6-T3. Fails if the revoke's Delete is not LD-signed by the member's key, misses the owner or the member's
+  // followers, or the authorization is still served.
+  it("revokes with the member's LD-signed Delete to the owner and the member's followers", async () => {
+    const w = await owned();
+    const fan = await mastodonActor(w.t.web, "fan", { origin: OTHER });
+    await followed(w.t, fan, DAVE);
+    expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+    const [row] = await localRows(w.t, ALICE);
+    const a = authorization(row!.id);
+    expect(await revokeAs(w.t, await collectionIdOf(w.t, w.listed.id), row!.id)).toBe(200);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: REVOKED }]);
+    const deletes = (await aliceAnswers(w.t)).filter(({ activity }) => activity.type === "Delete");
+    expect(deletes).toHaveLength(1);
+    const { signature, ...unsigned } = deletes[0]!.activity;
+    expect(unsigned).toEqual({
+      "@context": [...FEATURE_CONTEXT, "https://w3id.org/security/v1"],
+      id: `${a}#delete`,
+      type: "Delete",
+      actor: ALICE_URI,
+      to: [PUBLIC],
+      object: { id: a, type: "FeatureAuthorization", interactingObject: w.listed.id, interactionTarget: ALICE_URI },
+    });
+    expect(signature).toMatchObject({ type: "RsaSignature2017", creator: `${ALICE_URI}#main-key` });
+    // The signature verifies against alice's key as her actor document serves it.
+    const actor = await (
+      await w.t.request("/ap/users/alice", { headers: { accept: "application/activity+json" } })
+    ).json<Record<string, unknown>>();
+    const documentLoader: DocumentLoader = (url) =>
+      url.split("#")[0] === ALICE_URI
+        ? Promise.resolve({ document: actor, documentUrl: ALICE_URI, contextUrl: null })
+        : contexts(url);
+    expect(await verifyJsonLd(deletes[0]!.activity, { documentLoader, contextLoader: contexts })).toBe(true);
+    expect(deletes[0]!.deliveries.map((d) => d.inbox).toSorted()).toEqual([`${w.owner.uri}/inbox`, `${OTHER}/inbox`]);
+    expect(await authorizationStatus(w.t, row!.id)).toBe(404);
+  });
+
+  // 6-T4. Fails if verification runs inline (the remote member's authorization is fetched within the request) or the
+  // request asks for a sync.
+  it("fetches the instrument once and applies it, its remote members' items queued for their checks", async () => {
+    const w = await owned();
+    const member = await storedMember(w.t, "rm", OTHER);
+    const entry = remoteItem(w.owner, member);
+    w.listed.orderedItems = [entry];
+    serveListing(w.t.web, w.owner, w.listed);
+    // The owner stored, its collections read before the request (none listed then).
+    serveCollectionsEmpty(w);
+    await followed(w.t, w.owner);
+    await syncAll(w.t);
+    serveListing(w.t.web, w.owner, w.listed);
+    const from = w.t.web.fetched.length;
+    expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+    expect(w.t.web.fetched.slice(from).filter((url) => url === w.listed.id)).toHaveLength(1);
+    expect(w.t.web.fetched).not.toContain(entry.featureAuthorization);
+    expect(await sql(w.t.store, "SELECT account_id FROM collection_syncs")).toEqual([]);
+    const stored = await sql<{ account_id: string | null; state: number; check_due_at: number | null }>(
+      w.t.store,
+      "SELECT account_id, state, check_due_at FROM collection_items ORDER BY position",
+    );
+    expect(stored).toEqual([
+      { account_id: expect.any(String), state: PENDING, check_due_at: NOW },
+      { account_id: ALICE, state: ACCEPTED, check_due_at: NOW + ANSWER_POLL_MS },
+    ]);
+  });
+
+  // 6-T9. Fails if the envelope admits another type without an actor, or if the actor comes from anything but the
+  // verified signature.
+  it("takes Mastodon's actor-less FeatureRequest as its verified signer's", async () => {
+    const w = await owned();
+    const r = requestFor(w);
+    const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
+    expect(await parseActivity(bytes(r), {}, w.owner.keyId)).toMatchObject({
+      ok: true,
+      actor: w.owner.uri,
+      signer: true,
+    });
+    expect(await parseActivity(bytes(r))).toMatchObject({ ok: false, reason: "incomplete" });
+    const follow = { "@context": AS, id: `${w.owner.uri}#f`, type: "Follow", object: ALICE_URI };
+    const create = { "@context": AS, id: `${w.owner.uri}#c`, type: "Create", object: `${w.owner.uri}/statuses/1` };
+    for (const other of [follow, create]) {
+      expect(await parseActivity(bytes(other), {}, w.owner.keyId)).toMatchObject({ ok: false, reason: "incomplete" });
+    }
+
+    // Unsigned: refused, no row.
+    const unsigned = await w.t.request("/inbox", {
+      method: "POST",
+      headers: { "content-type": "application/activity+json" },
+      body: JSON.stringify(r),
+    });
+    expect(unsigned.status).toBe(401);
+    // Signed by another actor's key (whose key id names that actor): its own request, on another host than its id.
+    const other = await mastodonActor(w.t.web, "intruder", { origin: OTHER });
+    expect(await w.t.post(other, r)).toBe(202);
+    // Naming the owner as its actor while signed by another: refused as today.
+    expect(await w.t.post(other, { ...r, actor: w.owner.uri })).toBe(202);
+    // Signed by a key whose id is a document of its own (GoToSocial's form): the actor that id names is not the key's
+    // owner, so the request is refused rather than read as one relayed by the owner.
+    const gts = await mastodonActor(w.t.web, "gts", { origin: new URL(w.owner.uri).origin });
+    const keyId = `${gts.uri}/main-key`;
+    const key = { id: keyId, type: "CryptographicKey", owner: gts.uri, publicKeyPem: gts.pem };
+    w.t.web.serve(gts.uri, { ...gts.document, publicKey: key });
+    w.t.web.serve(keyId, { "@context": "https://w3id.org/security/v1", ...key });
+    expect(await w.t.post(gts, featureRequest(gts, ALICE_URI, w.listed.id), { keyId })).toBe(401);
+    expect(await localRows(w.t, ALICE)).toEqual([]);
+    expect(await aliceAnswers(w.t)).toEqual([]);
+
+    // Signed by the owner: processed with the owner as its actor.
+    expect(await w.t.post(w.owner, r)).toBe(202);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ state: ACCEPTED, activity_uri: r.id }]);
+    expect((await aliceAnswers(w.t)).map(({ activity }) => activity.type)).toEqual(["Accept"]);
+  });
+});
+
+function serveCollectionsEmpty(w: Owned): void {
+  const root = w.owner.featuredCollections;
+  w.t.web.serve(root, { "@context": AS, id: root, type: "Collection", totalItems: 0, first: `${root}?page=1` });
+  w.t.web.serve(`${root}?page=1`, {
+    "@context": AS,
+    id: `${root}?page=1`,
+    type: "CollectionPage",
+    partOf: root,
+    items: [],
+  });
+}
+
+// The lane of alice's activities to `origin` holding `count` active rows (a Like's filler), and `others` active rows
+// in another lane of hers.
+async function filledLanes(t: Setup, origin: string, count: number, others = 0): Promise<void> {
+  await sql(
+    t.store,
+    `INSERT INTO outbound_activities (account_id, body, object_uri, retracts, created_at)
+		VALUES (?, '{"activity":{"type":"Like"},"audience":{"followers":false,"accounts":[]}}', 'filler', 0, ?)`,
+    ALICE,
+    NOW,
+  );
+  for (const [lane, n] of [
+    [origin, count],
+    ["https://filler.example", others],
+  ] as const) {
+    await sql(
+      t.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?3)
+			INSERT INTO deliveries (activity_id, account_id, inbox_url, lane, state, next_attempt_at, updated_at)
+			SELECT (SELECT id FROM outbound_activities WHERE object_uri = 'filler'), ?1, ?2 || '/inbox', ?2, 'queued', ?4, ?4
+			FROM n WHERE ?3 > 0`,
+      ALICE,
+      lane,
+      n,
+      NOW,
+    );
+  }
+}
+
+const activeIn = async (t: Setup, lane: string) =>
+  (
+    await sql<{ n: number }>(
+      t.store,
+      "SELECT count(*) AS n FROM deliveries WHERE account_id = ? AND lane = ? AND state IN ('queued', 'pending', 'leased')",
+      ALICE,
+      lane,
+    )
+  )[0]!.n;
+
+describe("the answers to an owner's listing of a local member (D24)", () => {
+  // 6-T6. Fails if the answer is sent while the row is accepted, if a retraction suppresses it, if the Remove deletes
+  // the row, or if the unsigned Delete reaches anyone but the owner's personal inbox or differs from the signed one.
+  it("answers an Add of an authorization not served with the member's Delete to the owner alone", async () => {
+    const w = await owned();
+    // A follower of alice on the owner's server: the answer never takes its shared inbox.
+    const fan = await mastodonActor(w.t.web, "fan2");
+    await followed(w.t, fan, DAVE);
+    expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+    const [row] = await localRows(w.t, ALICE);
+    const a = authorization(row!.id);
+    const deletes = async () => (await aliceAnswers(w.t)).filter(({ activity }) => activity.type === "Delete");
+
+    // An Add of the authorization Kopje serves: the row's uri set, nothing sent, the wait unchanged.
+    const served = localItem(w.owner, ALICE_URI, a);
+    expect(await w.t.post(w.owner, itemActivity(w, "Add", served))).toBe(202);
+    expect(await localRows(w.t, ALICE)).toMatchObject([
+      { id: row!.id, uri: served.id, check_due_at: row!.check_due_at, answer: row!.answer },
+    ]);
+    expect(await deletes()).toEqual([]);
+
+    // An Add naming an authorization of no row: an ordinary Delete of it, once per Add.
+    const unknown = authorization("999999999999999999");
+    const stray = localItem(w.owner, ALICE_URI, unknown);
+    expect(await w.t.post(w.owner, itemActivity(w, "Add", stray))).toBe(202);
+    let sent = await deletes();
+    expect(
+      sent.map(({ activity, retracts, deliveries }) => [activity, retracts, deliveries.map((d) => d.inbox)]),
+    ).toEqual([
+      [
+        {
+          "@context": [...FEATURE_CONTEXT, "https://w3id.org/security/v1"],
+          id: `${unknown}#delete`,
+          type: "Delete",
+          actor: ALICE_URI,
+          to: [PUBLIC],
+          object: {
+            id: unknown,
+            type: "FeatureAuthorization",
+            interactingObject: w.listed.id,
+            interactionTarget: ALICE_URI,
+          },
+        },
+        0,
+        [`${w.owner.uri}/inbox`],
+      ],
+    ]);
+    expect(await sql(w.t.store, "SELECT 1 FROM collection_items WHERE uri = ?", stray.id)).toEqual([]);
+
+    // The member revokes; an Add naming the revoked authorization, after the owner's Remove of that item retracted it,
+    // is answered all the same: a retraction, to the owner alone.
+    expect(await revokeAs(w.t, await collectionIdOf(w.t, w.listed.id), row!.id)).toBe(200);
+    const revokeDelete = (await deletes()).at(-1)!;
+    const late = localItem(w.owner, ALICE_URI, a);
+    expect(await w.t.post(w.owner, itemActivity(w, "Remove", late))).toBe(202);
+    expect(await w.t.post(w.owner, itemActivity(w, "Add", late))).toBe(202);
+    sent = await deletes();
+    const answer = sent.at(-1)!;
+    expect(answer.id).not.toBe(revokeDelete.id);
+    const { signature: _signature, ...unsignedRevoke } = revokeDelete.activity;
+    expect(answer.activity).toEqual(unsignedRevoke);
+    expect([revokeDelete.immutable, answer.immutable]).toEqual([true, true]);
+    expect([answer.retracts, answer.deliveries.map((d) => d.inbox)]).toEqual([1, [`${w.owner.uri}/inbox`]]);
+    // The revoke's own Delete still goes to the owner and the follower: the answer supersedes no copy of it.
+    expect((await aliceAnswers(w.t)).find(({ id }) => id === revokeDelete.id)!.superseded).toBe(0);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: REVOKED }]);
+
+    // A Remove in a collection holding alice's row: one sync of the owner requested, the row unchanged.
+    await sql(w.t.store, "DELETE FROM collection_syncs");
+    const removed = localItem(w.owner, ALICE_URI, a);
+    expect(await w.t.post(w.owner, itemActivity(w, "Remove", { ...removed, id: served.id }))).toBe(202);
+    const ownerId = (await sql<{ id: string }>(w.t.store, "SELECT id FROM accounts WHERE uri = ?", w.owner.uri))[0]!.id;
+    expect(await sql(w.t.store, "SELECT account_id FROM collection_syncs")).toEqual([{ account_id: ownerId }]);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: REVOKED, uri: served.id }]);
+  });
+
+  // 6-T6's caps. Fails if an answer of no row is admitted as a retraction (the lane passes 500), or if an answer for a
+  // revoked row is refused at the cap (Kopje revoked, the owner accepted).
+  it("admits an answer of no row under RES-4's caps, and one of a revoked row as a retraction past them", async () => {
+    const w = await owned();
+    expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+    const [row] = await localRows(w.t, ALICE);
+    expect(await revokeAs(w.t, await collectionIdOf(w.t, w.listed.id), row!.id)).toBe(200);
+    await filledLanes(w.t, MASTODON, MAX_LANE_BACKLOG);
+    const lane = await activeIn(w.t, MASTODON);
+    const added = async (a: string) => {
+      expect(await w.t.post(w.owner, itemActivity(w, "Add", localItem(w.owner, ALICE_URI, a)))).toBe(202);
+      return (await aliceAnswers(w.t)).at(-1)!;
+    };
+    // The lane full: an answer of no row is written gave_up 'backlog full', the lane unchanged.
+    const stray = await added(authorization("999999999999999998"));
+    expect([stray.retracts, stray.deliveries]).toEqual([
+      0,
+      [{ inbox: `${w.owner.uri}/inbox`, state: "gave_up", error: "backlog full" }],
+    ]);
+    expect(await activeIn(w.t, MASTODON)).toBe(lane);
+
+    // The revoked row's authorization: admitted as a retraction, once active however many Adds name it.
+    const first = await added(authorization(row!.id));
+    expect([first.retracts, first.deliveries.map((d) => d.state)]).toEqual([1, ["queued"]]);
+    await added(authorization(row!.id));
+    const active = (await aliceAnswers(w.t)).filter(
+      ({ activity, superseded, deliveries }) =>
+        activity.type === "Delete" &&
+        activity.id === `${authorization(row!.id)}#delete` &&
+        !("signature" in activity) &&
+        superseded === 0 &&
+        deliveries.some((d) => ["queued", "pending", "leased"].includes(d.state)),
+    );
+    expect(active).toHaveLength(1);
+  });
+
+  it("refuses an answer of no row when the Store's backlog is full, with this owner's lane empty", async () => {
+    const w = await owned();
+    expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+    await filledLanes(w.t, MASTODON, 0, MAX_BACKLOG);
+    const unknown = authorization("999999999999999997");
+    expect(await w.t.post(w.owner, itemActivity(w, "Add", localItem(w.owner, ALICE_URI, unknown)))).toBe(202);
+    const stray = (await aliceAnswers(w.t)).find(({ activity }) => activity.id === `${unknown}#delete`);
+    expect([stray!.retracts, stray!.deliveries]).toEqual([
+      0,
+      [{ inbox: `${w.owner.uri}/inbox`, state: "gave_up", error: "backlog full" }],
+    ]);
+  });
+
+  // D25: a local block revokes alice's item in the blocked owner's collection with her Delete, unsigned, to the owner's
+  // personal inbox alone. Fails if it is sent to the member's followers or the owner's shared inbox.
+  it("sends the block's Delete to the owner's personal inbox alone", async () => {
+    const w = await owned();
+    const fan = await mastodonActor(w.t.web, "fan3");
+    await followed(w.t, fan, DAVE);
+    expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+    const [row] = await localRows(w.t, ALICE);
+    const ownerId = (await sql<{ id: string }>(w.t.store, "SELECT id FROM accounts WHERE uri = ?", w.owner.uri))[0]!.id;
+    expect((await call(w.t, "POST", `/api/v1/accounts/${ownerId}/block`)).status).toBe(200);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: REVOKED }]);
+    const a = authorization(row!.id);
+    const deletes = (await aliceAnswers(w.t)).filter(({ activity }) => activity.type === "Delete");
+    expect(deletes.map(({ immutable }) => immutable)).toEqual([true]);
+    expect(deletes.map(({ activity, deliveries }) => [activity, deliveries.map((d) => d.inbox)])).toEqual([
+      [
+        {
+          "@context": [...FEATURE_CONTEXT, "https://w3id.org/security/v1"],
+          id: `${a}#delete`,
+          type: "Delete",
+          actor: ALICE_URI,
+          to: [PUBLIC],
+          object: { id: a, type: "FeatureAuthorization", interactingObject: w.listed.id, interactionTarget: ALICE_URI },
+        },
+        [`${w.owner.uri}/inbox`],
+      ],
+    ]);
   });
 });

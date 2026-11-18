@@ -18,6 +18,15 @@ import {
 import { sanitizeRemoteCodePoints } from "../security/html";
 import { localCollectionUri, recordItemRemove } from "./collection-documents";
 import { notifyUpdated, remoteCollectionTag } from "./collections";
+import {
+  answerUnserved,
+  keptUnlisted,
+  type LocalListing,
+  localListing,
+  localRows,
+  markListed,
+  serves,
+} from "./feature-answers";
 import { allocateLocalId, insertWithFreshId } from "./ids";
 import { isRetracted, retract } from "./retractions";
 import { TREND_LANGUAGES } from "./trend-languages";
@@ -39,7 +48,7 @@ import { TREND_LANGUAGES } from "./trend-languages";
 //     hashtag Tag would take (else refused), totalItems a count the column holds (else refused), url and uri within
 //     the stored bounds.
 //   - An item (#1589's D22): its id on its collection's origin, its featuredObject a remote account (an item naming a
-//     local account is #1589's PR 6 and is not stored), its featureAuthorization on the featuredObject's origin; at
+//     local account is matched to that member's row, feature-answers.ts), its featureAuthorization on the featuredObject's origin; at
 //     most COLLECTION_MAX_ITEMS live in a collection and one item a member. Its revision is its member (account_id, or
 //     object_uri while the account is unknown) and its candidate_approval_uri: an unchanged revision changes nothing
 //     (its state, accepted, rejected or revoked included, and its queue stay), a new item or a changed revision is
@@ -180,6 +189,7 @@ export function applyFeaturedCollection(
   input: FeaturedCollectionInput,
   origin: string,
   now: number,
+  since = now,
 ): Applied {
   const values = ownedCollection(owner, input) ? collectionValues(input) : null;
   if (values === null) {
@@ -264,7 +274,7 @@ export function applyFeaturedCollection(
       notifyUpdated(db, id, owner.id, now);
     }
   }
-  const queued = applyListing(db, { id, uri: input.id }, input.items, origin, now);
+  const queued = applyListing(db, owner, { id, uri: input.id }, input.items, origin, now, since);
   return { collection: id, queued };
 }
 
@@ -278,10 +288,12 @@ type Planned = {
   existing: string | undefined;
 };
 
-type StoredItem = { id: string; collection_id: string; position: number };
+// An item as stored, and whether a local member's row holds it (local: 1).
+type StoredItem = { id: string; collection_id: string; position: number; local: number };
 
-// An item of `input` the collection may hold, or null: its id on the collection's origin, its featuredObject a remote
-// URI (a local member's item is #1589's PR 6), its featureAuthorization on the featuredObject's origin
+// A remote member's item of `input` the collection may hold, or null: its id on the collection's origin, its
+// featuredObject a remote URI (a local member's is matched to its row, applyListing), its featureAuthorization on the
+// featuredObject's origin
 // (non_matching_actor_and_approval_uris?), each within the stored bound.
 function itemOf(
   db: Db,
@@ -315,26 +327,56 @@ function itemOf(
 // The item stored under `uri` (collection_items_uri), any collection.
 function itemByUri(db: Db, uri: string): StoredItem | undefined {
   return db.first<StoredItem>(
-    "SELECT id, collection_id, position FROM collection_items INDEXED BY collection_items_uri WHERE uri = ?",
+    `SELECT i.id, i.collection_id, i.position, (m.id IS NOT NULL AND m.domain IS NULL) AS local
+			FROM collection_items i INDEXED BY collection_items_uri
+				LEFT JOIN accounts m INDEXED BY ${ACCOUNTS_ID_INDEX} ON m.id = i.account_id
+			WHERE i.uri = ?`,
     uri,
   );
 }
 
 // The collection's items become the listing's (ProcessFeaturedCollectionService: the items not listed deleted, each
 // listed one processed): the first MAX_REMOTE_ITEMS entries, each it may hold (itemOf) in listed order, one a member
-// and an item whose uri another collection holds skipped; every other row of the collection (not listed, not applied,
-// whatever its state) is deleted first, so the live and stored triggers never see more than the listing, then each
-// listed item applied by the revision rule. Whether an item was queued.
+// and an item whose uri another collection or a local member's row holds skipped. An entry naming a local account is
+// matched to that member's row by its authorization (feature-answers.ts, #1589's D21 and D24): a row that serves it is
+// kept and takes the item's uri and position; any other authorization of the member is answered with the member's
+// Delete of it, nothing stored. A local member's row the listing does not name is kept while its wait is queued, while
+// it is retired, or while it changed at or after `since` (a read's claim; the application's own time otherwise), and
+// deleted otherwise. The rows kept hold their slots first: the remote members' items fill only the slots left of
+// COLLECTION_MAX_ITEMS live (and MAX_STORED_ITEMS stored) rows, in listed order, the rest skipped as past the 25 (D4).
+// Every other row of the collection (not listed, not applied, whatever its state) is deleted first, so the live and
+// stored triggers never see more than the listing, then each listed item applied by the revision rule. Whether an item
+// was queued.
 function applyListing(
   db: Db,
+  owner: Owner,
   collection: { id: string; uri: string },
   items: readonly (FeaturedItemInput | null)[],
   origin: string,
   now: number,
+  since: number,
 ): boolean {
+  const locals = localRows(db, collection.id, since);
+  // A local member's row kept, with the listed item's uri and position (null: kept unlisted).
+  const kept = new Map<string, { uri: string; position: number } | null>();
+  const answers: { listing: LocalListing; held: boolean }[] = [];
   const planned: Planned[] = [];
   const members = new Set<string>();
   items.slice(0, MAX_REMOTE_ITEMS).forEach((input, index) => {
+    if (input !== null && sameOrigin(input.object, origin)) {
+      const listing = localListing(db, input.object, input.authorization);
+      if (listing === null || members.has(listing.member.id)) {
+        return;
+      }
+      members.add(listing.member.id);
+      const row = locals.find((local) => local.account_id === listing.member.id);
+      if (row !== undefined && serves(row, listing)) {
+        kept.set(row.id, { uri: input.id, position: index + 1 });
+      } else {
+        answers.push({ listing, held: row?.id === listing.item });
+      }
+      return;
+    }
     const item = input === null ? null : itemOf(db, collection, input, origin);
     if (item === null || planned.some((other) => other.uri === item.uri)) {
       return;
@@ -343,7 +385,7 @@ function applyListing(
       return;
     }
     const stored = itemByUri(db, item.uri);
-    if (stored !== undefined && stored.collection_id !== collection.id) {
+    if (stored !== undefined && (stored.collection_id !== collection.id || stored.local === 1)) {
       return;
     }
     if (item.member !== null) {
@@ -351,23 +393,42 @@ function applyListing(
     }
     planned.push({ ...item, position: index + 1, existing: stored?.id });
   });
+  for (const row of locals) {
+    if (!kept.has(row.id) && keptUnlisted(row)) {
+      kept.set(row.id, null);
+    }
+  }
+  const live = locals.filter(
+    (row) =>
+      kept.has(row.id) &&
+      (row.state === COLLECTION_ITEM_STATES.pending || row.state === COLLECTION_ITEM_STATES.accepted),
+  ).length;
+  const applied = planned.slice(0, Math.max(0, Math.min(COLLECTION_MAX_ITEMS - live, MAX_STORED_ITEMS - kept.size)));
   db.run(
     `DELETE FROM collection_items INDEXED BY collection_items_order WHERE collection_id = ?1
 			AND id NOT IN (SELECT value FROM json_each(?2))`,
     collection.id,
-    JSON.stringify(planned.flatMap((item) => item.existing ?? [])),
+    JSON.stringify([...applied.flatMap((item) => item.existing ?? []), ...kept.keys()]),
   );
   // A kept row whose member changes gives its member up first, so a member moving between two kept rows never meets
   // the unique member index.
-  for (const item of planned) {
+  for (const item of applied) {
     if (item.existing !== undefined) {
       releaseMember(db, item.existing, item, now);
     }
   }
   let queued = false;
-  for (const item of planned) {
+  for (const item of applied) {
     queued =
       (item.existing === undefined ? insertItem(db, collection.id, item, now) : reviseItem(db, item, now)) || queued;
+  }
+  for (const [id, listed] of kept) {
+    if (listed !== null) {
+      markListed(db, id, listed.uri, collection.uri, now, listed.position);
+    }
+  }
+  for (const { listing, held } of answers) {
+    answerUnserved(db, owner, collection.uri, listing, held, now);
   }
   return queued;
 }
@@ -391,7 +452,7 @@ export function applyFeaturedItem(
     return null;
   }
   const stored = itemByUri(db, item.uri);
-  if (stored !== undefined && stored.collection_id !== collection.id) {
+  if (stored !== undefined && (stored.collection_id !== collection.id || stored.local === 1)) {
     return null;
   }
   const counts = db.first<{ taken: number; live: number; total: number; last: number | null; retired: number }>(
@@ -426,6 +487,39 @@ export function applyFeaturedItem(
   }
   const position = Math.min((counts?.last ?? 0) + 1, 2_147_483_647);
   return insertItem(db, collection.id, { ...item, position }, now);
+}
+
+// An inbound Add of an item naming a local account (#1589's D24): an authorization the member's row in the collection
+// serves (feature-answers.ts serves) gives the row the item's uri, unless the owner's Remove retracted that item (the
+// row's wait and state stay); any other authorization of the member is answered with the member's Delete of it, once
+// per Add and whatever the retractions (the owner may have accepted again after its Remove), nothing stored. 'listed'
+// or 'answered', else null (no local member, or an authorization the member could not have issued).
+export function applyLocalFeaturedItem(
+  db: Db,
+  owner: Owner,
+  collection: { id: string; uri: string },
+  input: FeaturedItemInput,
+  now: number,
+): "listed" | "answered" | null {
+  const listing = localListing(db, input.object, input.authorization);
+  if (listing === null) {
+    return null;
+  }
+  const row = db.first<{ id: string; account_id: string; state: number }>(
+    `SELECT id, account_id, state FROM collection_items INDEXED BY collection_items_member
+			WHERE collection_id = ?1 AND account_id = ?2`,
+    collection.id,
+    listing.member.id,
+  );
+  if (row !== undefined && serves(row, listing)) {
+    if (isRetracted(db, owner.uri, input.id, now)) {
+      return null;
+    }
+    markListed(db, row.id, input.id, collection.uri, now);
+    return "listed";
+  }
+  answerUnserved(db, owner, collection.uri, listing, row?.id === listing.item, now);
+  return "answered";
 }
 
 // The revision of an item as stored and as listed, compared in SQL (an imported URI may not survive a round trip
