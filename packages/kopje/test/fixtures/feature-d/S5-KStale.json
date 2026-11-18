@@ -50,7 +50,7 @@
         "response": null,
         "recorded": [],
         "mayAlsoRecord": [],
-        "readRequested": false,
+        "readRequested": true,
         "unspecified": []
       }
     },
@@ -80,7 +80,7 @@
         "response": null,
         "recorded": [],
         "mayAlsoRecord": [],
-        "readRequested": false,
+        "readRequested": true,
         "unspecified": []
       }
     },
@@ -105,7 +105,32 @@
         "response": null,
         "recorded": [],
         "mayAlsoRecord": [],
-        "readRequested": false,
+        "readRequested": true,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "KClaim",
+      "input": {},
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "stored",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": true,
         "unspecified": []
       }
     },
@@ -130,7 +155,7 @@
         "response": null,
         "recorded": [],
         "mayAlsoRecord": [],
-        "readRequested": false,
+        "readRequested": true,
         "unspecified": []
       }
     }

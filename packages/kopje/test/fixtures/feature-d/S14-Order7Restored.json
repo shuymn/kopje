@@ -378,7 +378,7 @@
         "response": null,
         "recorded": [],
         "mayAlsoRecord": [],
-        "readRequested": false,
+        "readRequested": true,
         "unspecified": []
       }
     },
@@ -425,7 +425,7 @@
         "response": null,
         "recorded": [],
         "mayAlsoRecord": [],
-        "readRequested": false,
+        "readRequested": true,
         "unspecified": []
       }
     },

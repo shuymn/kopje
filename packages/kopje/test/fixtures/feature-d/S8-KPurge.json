@@ -50,18 +50,13 @@
         "response": null,
         "recorded": [],
         "mayAlsoRecord": [],
-        "readRequested": false,
+        "readRequested": true,
         "unspecified": []
       }
     },
     {
-      "action": "KFetch",
-      "input": {
-        "envelope": {
-          "type": "Pages"
-        },
-        "value": "p1"
-      },
+      "action": "RDeleteSelf",
+      "input": {},
       "environment": {
         "consent": true,
         "slotsFull": false,
@@ -80,57 +75,7 @@
         "response": null,
         "recorded": [],
         "mayAlsoRecord": [],
-        "readRequested": false,
-        "unspecified": []
-      }
-    },
-    {
-      "action": "KApply",
-      "input": {},
-      "environment": {
-        "consent": true,
-        "slotsFull": false,
-        "held": "lt10",
-        "backlogFull": false,
-        "retractionCapFull": false
-      },
-      "observation": {
-        "row": null,
-        "collection": "stored",
-        "authorizationGet": {},
-        "publicShows": false,
-        "memberDetail": false,
-        "inCollections": false,
-        "notified": false,
-        "response": null,
-        "recorded": [],
-        "mayAlsoRecord": [],
-        "readRequested": false,
-        "unspecified": []
-      }
-    },
-    {
-      "action": "RDeleteSelf",
-      "input": {},
-      "environment": {
-        "consent": true,
-        "slotsFull": false,
-        "held": "lt10",
-        "backlogFull": false,
-        "retractionCapFull": false
-      },
-      "observation": {
-        "row": null,
-        "collection": "stored",
-        "authorizationGet": {},
-        "publicShows": false,
-        "memberDetail": false,
-        "inCollections": false,
-        "notified": false,
-        "response": null,
-        "recorded": [],
-        "mayAlsoRecord": [],
-        "readRequested": false,
+        "readRequested": true,
         "unspecified": []
       }
     },
@@ -139,7 +84,8 @@
       "input": {
         "envelope": {
           "type": "DelR"
-        }
+        },
+        "value": "deferred"
       },
       "environment": {
         "consent": true,
@@ -150,7 +96,7 @@
       },
       "observation": {
         "row": null,
-        "collection": "stored",
+        "collection": "absent",
         "authorizationGet": {},
         "publicShows": false,
         "memberDetail": false,
@@ -159,7 +105,7 @@
         "response": 202,
         "recorded": [],
         "mayAlsoRecord": [],
-        "readRequested": false,
+        "readRequested": true,
         "unspecified": []
       }
     },

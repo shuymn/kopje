@@ -10,8 +10,8 @@
     },
     {
       "path": "src/domain/inbox.ts",
-      "functions": ["receiveActivity"],
-      "spec": "FeatureD.tla RecvRes and Touch: which of FeatureDKopje.tla's operators an inbound activity runs, when it is ignored, and that every valid push of R's collections outdates a read under way, a no-op one included",
+      "functions": ["receiveActivity", "startActorDeletion", "purgeBatch"],
+      "spec": "FeatureD.tla RecvRes and Touch: which of FeatureDKopje.tla's operators an inbound activity runs, when it is ignored, and that every valid push of R's collections outdates a read under way, a no-op one included; OwnerGone and KPurge: an actor Delete writes R's tombstone and runs the first purge batch in its own transaction, which reaches C or not, and later batches purge the rest",
       "blob": "3a62db713f12edf18395f3947ad9c1f6b5d30274"
     },
     {
@@ -23,7 +23,7 @@
     {
       "path": "src/domain/inbound-feature-requests.ts",
       "functions": ["answerFeatureRequest"],
-      "spec": "FeatureDKopje.tla Decide (K1) and ApplyFetch (K1b)",
+      "spec": "FeatureDKopje.tla Decide (K1) and ApplyFetch (K1b): the availability gate, the existing-collection path for a collection stored since the fetch, and the outdated mark when the instrument stores one",
       "blob": null
     },
     {
@@ -37,7 +37,7 @@
         "answerUnserved",
         "answerRequest"
       ],
-      "spec": "FeatureDKopje.tla Served, Shown, AnswerClass, AddItem (K2), ApplyRead (K14) and KeptByRow",
+      "spec": "FeatureDKopje.tla Served, Shown, AnswerClass, AddItem (K2, with the listing gate), ApplyRead (K14) and KeptByRow",
       "blob": null
     },
     {
@@ -55,8 +55,8 @@
     },
     {
       "path": "src/domain/remote-collections.ts",
-      "functions": ["claimCollectionSync", "completeCollectionRead"],
-      "spec": "FeatureD.tla KClaim, KApply, KLease and KStale: a read's claim and completion, its outdated check and claim token",
+      "functions": ["claimCollectionSync", "endRound", "roundAccount", "completeCollectionRead"],
+      "spec": "FeatureD.tla KClaim, KApply, KLease and KStale: a read's claim (a new token; the request kept until a completion reads it through), its completion, its outdated check and its claim token, which only a new claim replaces (a lease's end alone fences nothing)",
       "blob": "01a08bba56f5d9e3dc6c38e6accd563d9e0572e9"
     },
     {

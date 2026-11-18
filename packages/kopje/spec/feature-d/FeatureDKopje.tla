@@ -40,7 +40,9 @@ AuthOf(n) == IF n = 0 THEN "a1" ELSE "a2"
 (*    read leaves it out, audience.ts availableSql), rk (R neither deleted *)
 (*    nor purged: false from R's tombstone on), lblk (L blocks R), ret     *)
 (*    (ID-7 retractions of R's items and of C), sync (a read of R          *)
-(*    requested).                                                          *)
+(*    requested and not yet read through: R's collection_syncs row, kept   *)
+(*    from the request through the claim until a completion reads it       *)
+(*    through, remote-collections.ts:309-398).                             *)
 (*  env: consent (L's policy toward R), slots (25 live slots all local     *)
 (*    rows, :292), held (R's collections Kopje holds besides C: below 10,  *)
 (*    below 50, at 50; :265-269), bl (RES-4's backlog to R's server full), *)
@@ -89,7 +91,10 @@ AuthorizationServed(kk, a) == Served(kk, a) /\ LAvail(kk) /\ kk.c
 \* The class of a Delete answering a listing of a: a retraction while Kopje holds a's row, else ordinary (F8, :338-339).
 AnswerClass(kk, a) == IF HeldRow(kk, a) THEN "ret" ELSE "ord"
 
-Res(kk, rec, resp) == [k |-> kk, rec |-> rec, resp |-> resp]
+\* A step's result. req: the step requests a read of R (requestCollectionSync), which a read already under way does not
+\* read through (FeatureD.tla's KApply).
+Res(kk, rec, resp) == [k |-> kk, rec |-> rec, resp |-> resp, req |-> FALSE]
+ResReq(kk, rec, resp) == [k |-> kk, rec |-> rec, resp |-> resp, req |-> TRUE]
 
 (***************************************************************************)
 (* K1, a FeatureRequest for C while Kopje stores C (D24 as (d) keeps it,   *)
@@ -100,16 +105,34 @@ Res(kk, rec, resp) == [k |-> kk, rec |-> rec, resp |-> resp]
 (*    check, the row taking the request (another request clears uri,       *)
 (*    :226, :322);                                                         *)
 (*  - a retired row: Reject (:325).                                        *)
+(* While L is unavailable (suspended, or gone), the request is ignored:    *)
+(* 202, nothing recorded, nothing fetched. (d) is silent here; the gate is *)
+(* main's for every request to a local account (inbox.ts:617-619, a Follow *)
+(* to a suspended target, and :1279, a Move; R38), and the purpose needs   *)
+(* it: a suspended member cannot consent, and its suspension changes none  *)
+(* of its grants (:224), so it issues none either.                         *)
 (* NeedsAuth: a third authorization would be needed, past the bound; the   *)
 (* step is then disabled (FeatureD.tla, Bounds).                           *)
 (* VARIANT V19: another request is decided by L's current policy, Accept   *)
 (* or Reject with the row kept.                                            *)
+(* VARIANT V20: another request rotates the authorization: the row takes a *)
+(* new one, and the Accept carries it.                                     *)
+(* VARIANT V21: no availability gate (a suspended member is decided as an  *)
+(* available one).                                                         *)
 (***************************************************************************)
 Consents(kk, ee) == ee.consent /\ ~kk.lblk
-NeedsAuth(kk, ee) == kk.lx /\ kk.row = NoRow /\ Consents(kk, ee) /\ ~ee.slots /\ kk.issued = 2
+\* The member a request or a listing may name: L available, unless VARIANT V21 (requests) or V22 (listings).
+Decides(kk) == IF Variant = "V21" THEN kk.lx ELSE LAvail(kk)
+Lists(kk) == IF Variant = "V22" THEN kk.lx ELSE LAvail(kk)
+Rotates(kk, r) == Variant = "V20" /\ kk.row.st = "acc" /\ kk.row.req # r
+NeedsAuth(kk, ee) ==
+  /\ Decides(kk)
+  /\ \/ kk.row = NoRow /\ Consents(kk, ee) /\ ~ee.slots
+     \/ Rotates(kk, "r1") \/ Rotates(kk, "r2")
+  /\ kk.issued = 2
 
 Decide(kk, ee, r) ==
-  IF ~kk.lx THEN Res(kk, {}, 202)
+  IF ~Decides(kk) THEN Res(kk, {}, 202)
   ELSE IF kk.row = NoRow
     THEN IF Consents(kk, ee) /\ ~ee.slots
          THEN Res([kk EXCEPT !.row = [auth |-> AuthOf(kk.issued), req |-> r, st |-> "acc", uri |-> NONE],
@@ -118,46 +141,64 @@ Decide(kk, ee, r) ==
          ELSE Res(kk, {Rej(r)}, 202)
   ELSE IF kk.row.st = "acc" /\ kk.row.req = r
     THEN Res(kk, {Acc(r, kk.row.auth)}, 202)
+  ELSE IF Rotates(kk, r)
+    THEN Res([kk EXCEPT !.row.req = r, !.row.uri = NONE, !.row.auth = AuthOf(kk.issued), !.issued = @ + 1],
+             {Acc(r, AuthOf(kk.issued))}, 202)
   ELSE IF kk.row.st = "acc" /\ (Variant # "V19" \/ Consents(kk, ee))
     THEN Res([kk EXCEPT !.row.req = r, !.row.uri = NONE], {Acc(r, kk.row.auth)}, 202)
   ELSE Res(kk, {Rej(r)}, 202)
 
 \* A listing that only shows (:220): sets uri for an accepted row it names, without a retraction check; never hides.
-ShowOnly(kk, l) == IF l.i # NONE /\ Served(kk, l.a) THEN [kk EXCEPT !.row.uri = l.i] ELSE kk
+\* A listing naming an unavailable L leaves its row as it is (Lists; K2).
+ShowOnly(kk, l) == IF l.i # NONE /\ Served(kk, l.a) /\ Lists(kk) THEN [kk EXCEPT !.row.uri = l.i] ELSE kk
 
 (***************************************************************************)
 (* K1b, the instrument's application, the resumed activity's own           *)
-(* transaction (:270-277): nothing once R is gone (its tombstone,          *)
-(* retractions.ts isDeleted) or retracted C (it stores nothing and grants  *)
-(* nothing), nothing for a collection R no longer serves, Reject at the 50 *)
-(* for a new collection (no collection or row), else C stored (:266-267),  *)
-(* its embedded listing shown, and the request decided as K1.              *)
+(* transaction (:270-277): nothing while L is unavailable (K1's gate) or   *)
+(* once R is gone (its tombstone, retractions.ts isDeleted). For a C       *)
+(* stored since the fetch, the existing-collection path (:281-282): the    *)
+(* stored C as it is, the fetched listing unused, and the request decided  *)
+(* as K1, as main resolves a collection it stores                          *)
+(* (remote-statuses.ts:1148-1164). Otherwise nothing for a retracted C (it *)
+(* stores nothing and grants nothing) or for one R no longer serves,       *)
+(* Reject at the 50 for a new collection (no collection or row), else C    *)
+(* stored (:266-267), its embedded listing shown, and the request decided  *)
+(* as K1. Storing C is a change of R's collections that a read under way   *)
+(* does not hold (FeatureD.tla KApplyFetch), as main marks for a           *)
+(* collection it applies (remote-statuses.ts:1157-1162).                   *)
 (* VARIANT V17: no tombstone check.                                        *)
 (***************************************************************************)
 ApplyFetch(kk, ee, f) ==
-  IF (~kk.rk /\ Variant # "V17") \/ "C" \in kk.ret \/ ~f.ex THEN Res(kk, {}, 202)
-  ELSE IF kk.c THEN Decide(ShowOnly(kk, f.l), ee, f.r)
+  IF ~Decides(kk) \/ (~kk.rk /\ Variant # "V17") THEN Res(kk, {}, 202)
+  ELSE IF kk.c THEN Decide(kk, ee, f.r)
+  ELSE IF "C" \in kk.ret \/ ~f.ex THEN Res(kk, {}, 202)
   ELSE IF ee.held = "at50" THEN Res(kk, {Rej(f.r)}, 202)
   ELSE Decide(ShowOnly([kk EXCEPT !.c = TRUE], f.l), ee, f.r)
 
 (***************************************************************************)
 (* K2, an item Add naming L's authorization a, from R (its collection C)   *)
-(* or from X (another owner on R's server, its own collection): while a    *)
-(* is served, sets uri unless R retracted the item (:219); while it is not *)
-(* and L exists, answers with L's Delete of a to the sender's inbox, a     *)
-(* retraction while a's row is held, else ordinary (:337-339, :489-494,    *)
-(* F8 :580-582); with no member left, nothing (:207).                      *)
+(* or from X (another owner on R's server, its own collection): while L is *)
+(* unavailable, nothing (the listing gate); while a is served, sets uri    *)
+(* unless R retracted the item (:219); while it is not, answers with L's   *)
+(* Delete of a to the sender's inbox, a retraction while a's row is held,  *)
+(* else ordinary (:337-339, :489-494, F8 :587-589). The gate covers every  *)
+(* listing that names L (an Add, an Update, an instrument, a read): (d) is *)
+(* silent, and the purpose needs it, as for K1's: a suspended member's row *)
+(* stays as it was (:224), and nothing is answered in its name while it    *)
+(* cannot act; a member gone is no member (:207).                          *)
 (* VARIANT V10: "served" is judged in X's collection only.                 *)
 (* VARIANT V15: no answer to an unserved authorization.                    *)
 (* VARIANT V16a: the answer to X's Add goes to R's inbox.                  *)
+(* VARIANT V22: no listing gate (a suspended member's listings are         *)
+(* processed as an available one's).                                       *)
 (***************************************************************************)
 AddItem(kk, ee, i, a, to) ==
   LET served == IF to = "X" /\ Variant = "V10" THEN FALSE ELSE Served(kk, a)
       inbox == IF to = "X" /\ Variant = "V16a" THEN "R" ELSE to
-  IN IF to = "R" /\ ~kk.rk THEN Res(kk, {}, 202)
+  IN IF (to = "R" /\ ~kk.rk) \/ ~Lists(kk) THEN Res(kk, {}, 202)
      ELSE IF served
        THEN Res(IF to = "R" /\ kk.c /\ i \notin kk.ret THEN [kk EXCEPT !.row.uri = i] ELSE kk, {}, 202)
-     ELSE IF kk.lx /\ Variant # "V15" THEN Res(kk, {Del(a, inbox, AnswerClass(kk, a), "answer")}, 202)
+     ELSE IF Variant # "V15" THEN Res(kk, {Del(a, inbox, AnswerClass(kk, a), "answer")}, 202)
      ELSE Res(kk, {}, 202)
 
 (***************************************************************************)
@@ -171,8 +212,8 @@ RemoveItem(kk, ee, i) ==
   ELSE IF ee.cap THEN Res(kk, {}, 503)
   ELSE IF kk.row # NoRow /\ kk.row.uri = i
     THEN IF Variant = "V6"
-         THEN Res([kk EXCEPT !.row = NoRow, !.ret = @ \cup {i}, !.sync = TRUE], {}, 202)
-         ELSE Res([kk EXCEPT !.row.uri = NONE, !.ret = @ \cup {i}, !.sync = TRUE], {}, 202)
+         THEN ResReq([kk EXCEPT !.row = NoRow, !.ret = @ \cup {i}, !.sync = TRUE], {}, 202)
+         ELSE ResReq([kk EXCEPT !.row.uri = NONE, !.ret = @ \cup {i}, !.sync = TRUE], {}, 202)
   ELSE Res([kk EXCEPT !.ret = @ \cup {i}], {}, 202)
 
 (***************************************************************************)
@@ -201,9 +242,14 @@ RemoveCollection(kk, ee) ==
        Res([kk EXCEPT !.c = FALSE, !.row = NoRow, !.ret = IF unrecorded THEN @ ELSE @ \cup {"C"}], {}, 202)
 
 \* K6, R gone (its actor Delete, a 410, or the operator's purge, :209): R's tombstone at once, after which Kopje
-\* ignores R; its collections and their rows go in the batched purge that follows (OwnerPurge).
-OwnerGone(kk) == Res([kk EXCEPT !.rk = FALSE], {}, 202)
-OwnerPurge(kk) == Res([kk EXCEPT !.c = FALSE, !.row = NoRow], {}, 0)
+\* ignores R; its collections, their rows and its read request go in the batched purge (OwnerPurge). The first batch
+\* runs in the same transaction (inbox.ts:1493-1509 startActorDeletion, :1550 purgeBatch); first: it reaches C, as it
+\* does when R has little else to purge (its read request, :1967-1971, then its collections' rows, :1977-1979), or
+\* not, when preceding work fills the batch.
+OwnerGone(kk, first) ==
+  Res(IF first THEN [kk EXCEPT !.rk = FALSE, !.c = FALSE, !.row = NoRow, !.sync = FALSE] ELSE [kk EXCEPT !.rk = FALSE],
+      {}, 202)
+OwnerPurge(kk) == Res([kk EXCEPT !.c = FALSE, !.row = NoRow, !.sync = FALSE], {}, 0)
 
 \* K7, L revokes its accepted row (D10, :206): retired, its Delete sent to R (:460) as a retraction.
 Revoke(kk) == Res([kk EXCEPT !.row.st = "ret"], {Del(kk.row.auth, "R", "ret", "revoke")}, 0)
@@ -225,7 +271,7 @@ Suspend(kk) == Res([kk EXCEPT !.ls = TRUE], {}, 0)
 Unsuspend(kk) == Res([kk EXCEPT !.ls = FALSE], {}, 0)
 
 \* K10, D9's cleanup of the retired row, which requests a read of R (:210, :261-264).
-Cleanup(kk) == Res([kk EXCEPT !.row = NoRow, !.sync = TRUE], {}, 0)
+Cleanup(kk) == ResReq([kk EXCEPT !.row = NoRow, !.sync = TRUE], {}, 0)
 \* The early eviction of the retired row when a new row comes into C at its 50 stored rows (:210; takeSlot).
 Evict(kk) == Res([kk EXCEPT !.row = NoRow], {}, 0)
 
@@ -238,8 +284,12 @@ Evict(kk) == Res([kk EXCEPT !.row = NoRow], {}, 0)
 (*    authorization takes the listed item, whatever the retractions        *)
 (*    (:216); an unserved authorization named is answered with L's Delete  *)
 (*    (:341-343); an untruncated listing that does not name the accepted   *)
-(*    row hides it, unless the row changed at or after the claim (:217).   *)
-(*    A truncated listing applies what it names and hides nothing (:218);  *)
+(*    row hides it, unless the row changed at or after the claim (:217). A *)
+(*    truncated listing applies what it names and hides nothing (:218).    *)
+(*    While L is unavailable, the read leaves its row as it is and answers *)
+(*    nothing (K2's listing gate): its naming of L is not processed, so    *)
+(*    its omission of L cannot be told from a naming and hides nothing     *)
+(*    either;                                                              *)
 (*  - C not seen, complete: C deleted only while it holds no row of L in   *)
 (*    any state (deleteUnlisted's exemption, :222, :257-258);              *)
 (*  - C not seen, incomplete: nothing.                                     *)
@@ -250,7 +300,8 @@ Evict(kk) == Res([kk EXCEPT !.row = NoRow], {}, 0)
 (* queued ((b)'s wait without the margin); V3 the exemption is read at the *)
 (* claim and the outdated check is gone; V5 no exemption; V12 a truncated  *)
 (* listing hides; V13 a read honours retractions; V14a no outdated check;  *)
-(* V14b no row fence; V15 no answer; V18 no check of R at the completion.  *)
+(* V14b no row fence; V15 no answer; V18 no check of R at the completion;  *)
+(* V22 no listing gate.                                                    *)
 (***************************************************************************)
 ApplyRead(kk, ee, v, chg, outd, hadRow, settled) ==
   IF ~kk.rk /\ Variant # "V18" THEN Res(kk, {}, 0)
@@ -260,7 +311,7 @@ ApplyRead(kk, ee, v, chg, outd, hadRow, settled) ==
              own == v.i # NONE /\ HeldRow(k1, v.a)
              fenced == chg /\ Variant # "V14b"
              omits == ~v.tr \/ Variant = "V12"
-             k2 == IF ~k1.c THEN k1
+             k2 == IF ~k1.c \/ ~Lists(k1) THEN k1
                    ELSE IF own
                      THEN IF Variant = "V13" /\ v.i \in k1.ret THEN k1 ELSE [k1 EXCEPT !.row.uri = v.i]
                    ELSE IF k1.row.st = "acc" /\ omits /\ ~fenced
@@ -268,7 +319,7 @@ ApplyRead(kk, ee, v, chg, outd, hadRow, settled) ==
                           THEN [k1 EXCEPT !.row = NoRow]
                           ELSE [k1 EXCEPT !.row.uri = NONE]
                    ELSE k1
-             answer == v.i # NONE /\ ~Served(k1, v.a) /\ k1.lx /\ Variant # "V15"
+             answer == v.i # NONE /\ ~Served(k1, v.a) /\ Lists(k1) /\ Variant # "V15"
          IN Res(k2, IF answer THEN {Del(v.a, "R", AnswerClass(k1, v.a), "answer")} ELSE {}, 0)
   ELSE IF v.cpl
     THEN IF kk.c /\ (kk.row = NoRow \/ Variant = "V5" \/ (Variant = "V3" /\ ~hadRow))

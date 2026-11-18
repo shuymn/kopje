@@ -3,17 +3,17 @@
   "scenarios": [
     {
       "name": "S1",
-      "distinct": 9836,
+      "distinct": 11090,
       "depth": 17
     },
     {
       "name": "S2",
-      "distinct": 145427,
+      "distinct": 123810,
       "depth": 23
     },
     {
       "name": "S3",
-      "distinct": 1788,
+      "distinct": 1566,
       "depth": 16
     },
     {
@@ -23,53 +23,58 @@
     },
     {
       "name": "S5",
-      "distinct": 18190,
+      "distinct": 20680,
       "depth": 17
     },
     {
       "name": "S6",
-      "distinct": 48343,
+      "distinct": 40113,
       "depth": 22
     },
     {
       "name": "S7",
-      "distinct": 182,
+      "distinct": 180,
       "depth": 11
     },
     {
       "name": "S8",
-      "distinct": 13021,
+      "distinct": 12394,
       "depth": 19
     },
     {
       "name": "S9",
-      "distinct": 19518,
+      "distinct": 18664,
       "depth": 15
     },
     {
       "name": "S10",
-      "distinct": 183,
+      "distinct": 191,
       "depth": 11
     },
     {
       "name": "S11",
-      "distinct": 7740,
+      "distinct": 8265,
       "depth": 19
     },
     {
       "name": "S12",
-      "distinct": 343,
-      "depth": 11
+      "distinct": 1466,
+      "depth": 12
     },
     {
       "name": "S13",
-      "distinct": 396,
+      "distinct": 416,
       "depth": 13
     },
     {
       "name": "S14",
-      "distinct": 5495,
+      "distinct": 4936,
       "depth": 16
+    },
+    {
+      "name": "S15",
+      "distinct": 8318,
+      "depth": 18
     }
   ],
   "induction": {
@@ -104,7 +109,7 @@
       "scenario": "S5",
       "variant": "V4",
       "invariant": "OV1",
-      "trace": 11
+      "trace": 12
     },
     {
       "name": "V4-quiescent",
@@ -146,7 +151,7 @@
       "scenario": "S2",
       "variant": "V8",
       "invariant": "CR3",
-      "trace": 10
+      "trace": 13
     },
     {
       "name": "V9",
@@ -206,10 +211,10 @@
     },
     {
       "name": "V16",
-      "scenario": "S11",
+      "scenario": "S2",
       "variant": "V16",
       "invariant": "CR3",
-      "trace": 8
+      "trace": 11
     },
     {
       "name": "V16a",
@@ -236,8 +241,36 @@
       "name": "V19",
       "scenario": "S1",
       "variant": "V19",
-      "invariant": "NoUnilateralEnd",
-      "trace": 8
+      "invariant": "NoLiveReject",
+      "trace": 10
+    },
+    {
+      "name": "V20",
+      "scenario": "S1",
+      "variant": "V20",
+      "invariant": "GP1",
+      "trace": 6
+    },
+    {
+      "name": "V20-induction",
+      "scenario": "Ind",
+      "variant": "V20",
+      "invariant": "IndInv",
+      "trace": 2
+    },
+    {
+      "name": "V21",
+      "scenario": "S12",
+      "variant": "V21",
+      "invariant": "MemberAvailability",
+      "trace": 4
+    },
+    {
+      "name": "V22",
+      "scenario": "S12",
+      "variant": "V22",
+      "invariant": "MemberAvailability",
+      "trace": 7
     }
   ],
   "findings": [],
@@ -323,7 +356,7 @@
       "name": "S2-F8ThenF7",
       "scenario": "S2",
       "goal": "F8ThenF7",
-      "trace": 10,
+      "trace": 13,
       "fixture": true
     },
     {
@@ -386,7 +419,7 @@
       "name": "S5-StaleOmits",
       "scenario": "S5",
       "goal": "StaleOmits",
-      "trace": 10,
+      "trace": 13,
       "fixture": true
     },
     {
@@ -456,14 +489,14 @@
       "name": "S8-GoneRead",
       "scenario": "S8",
       "goal": "GoneRead",
-      "trace": 6,
+      "trace": 9,
       "fixture": true
     },
     {
       "name": "S8-KPurge",
       "scenario": "S8",
       "goal": "KPurge",
-      "trace": 7,
+      "trace": 5,
       "fixture": true
     },
     {
@@ -491,7 +524,7 @@
       "name": "S5-KStale",
       "scenario": "S5",
       "goal": "KStale",
-      "trace": 5,
+      "trace": 6,
       "fixture": true
     },
     {
@@ -526,7 +559,7 @@
       "name": "S10-SlotsRecovered",
       "scenario": "S10",
       "goal": "SlotsRecovered",
-      "trace": 5,
+      "trace": 6,
       "fixture": true
     },
     {
@@ -547,7 +580,7 @@
       "name": "S12-Unsuspended",
       "scenario": "S12",
       "goal": "Unsuspended",
-      "trace": 5,
+      "trace": 8,
       "fixture": true
     },
     {
@@ -569,6 +602,55 @@
       "scenario": "S14",
       "goal": "Order7Restored",
       "trace": 12,
+      "fixture": true
+    },
+    {
+      "name": "S12-SuspendedRequest",
+      "scenario": "S12",
+      "goal": "SuspendedRequest",
+      "trace": 5,
+      "fixture": true
+    },
+    {
+      "name": "S12-SuspendedListing",
+      "scenario": "S12",
+      "goal": "SuspendedListing",
+      "trace": 7,
+      "fixture": true
+    },
+    {
+      "name": "S8-FetchExisting",
+      "scenario": "S8",
+      "goal": "FetchExisting",
+      "trace": 7,
+      "fixture": true
+    },
+    {
+      "name": "S8-FetchOutdates",
+      "scenario": "S8",
+      "goal": "FetchOutdates",
+      "trace": 5,
+      "fixture": true
+    },
+    {
+      "name": "S15-IgnoredThenStale",
+      "scenario": "S15",
+      "goal": "IgnoredThenStale",
+      "trace": 16,
+      "fixture": true
+    },
+    {
+      "name": "S8-GonePurged",
+      "scenario": "S8",
+      "goal": "GonePurged",
+      "trace": 6,
+      "fixture": true
+    },
+    {
+      "name": "S5-LeaseApplies",
+      "scenario": "S5",
+      "goal": "LeaseApplies",
+      "trace": 5,
       "fixture": true
     }
   ]

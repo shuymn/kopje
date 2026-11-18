@@ -12,14 +12,15 @@
 (* so an IndInv preserved by IndNext is preserved by Next.                 *)
 (*                                                                         *)
 (* ob is the obligation, as FeatureD.tla's ghost g.obl: the authorization  *)
-(* of the last Accept a step recorded, cleared by the steps that are       *)
-(* evidence (R's Remove of C or its tombstone while R is there, L's        *)
+(* of the first Accept a step recorded, kept until a step that is evidence *)
+(* clears it (R's Remove of C or its tombstone while R is there, L's       *)
 (* revoke, block or deletion).                                             *)
 (*                                                                         *)
 (* The starting states are every core of CoreType, with every obligation,  *)
 (* that satisfies IndInv. IndInv == TypeOK /\ GP1 /\ J1 /\ J2 /\ J3 /\ J4  *)
 (* /\ J5 /\ ~bad, where bad records a Delete of a served authorization     *)
-(* (GP2, a property of the step):                                          *)
+(* (GP2) or an Accept carrying another authorization than the one owed     *)
+(* (GP1's rotation clause), both properties of the step:                   *)
 (*  TypeOK the core is in CoreType;                                        *)
 (*  GP1  an obligation a means C stored and the row accepted with a;       *)
 (*  J1   while R and L are both there, an accepted row's authorization is  *)
@@ -46,12 +47,14 @@ IndInit == kc \in CoreType /\ ob \in Auths \cup {NONE} /\ bad = FALSE /\ IndInv
 \* Only the starting states are expanded: IndInv is checked one step after each.
 OneStep == TLCGet("level") < 2
 
-\* One step: its core, the obligation after it, and whether it recorded a Delete of a served authorization.
+\* One step: its core, the obligation after it (the first Accept's, kept until evidence clears it), and whether it
+\* recorded a Delete of a served authorization or an Accept carrying another authorization than the one owed.
 Step(res, evid) ==
   LET acc == {m \in res.rec : m.ty = "Accept"} IN
   /\ kc' = res.k
-  /\ ob' = IF acc # {} THEN (CHOOSE m \in acc : TRUE).res ELSE IF evid THEN NONE ELSE ob
-  /\ bad' = (bad \/ \E m \in res.rec : m.ty = "Delete" /\ Served(res.k, m.obj))
+  /\ ob' = IF evid THEN NONE ELSE IF ob # NONE \/ acc = {} THEN ob ELSE (CHOOSE m \in acc : TRUE).res
+  /\ bad' = (bad \/ (\E m \in res.rec : m.ty = "Delete" /\ Served(res.k, m.obj))
+                 \/ (~evid /\ ob # NONE /\ \E m \in acc : m.res # ob))
 
 Listings == ListingType
 Fetches == [on : {TRUE}, r : Reqs, ex : BOOLEAN, l : ListingType]
@@ -74,7 +77,7 @@ IndNext ==
   \/ \E ee \in Caps, i \in Items : Step(RemoveItem(kc, ee, i), FALSE)
   \/ \E ee \in Admissions, l \in Listings : Step(UpdateCollection(kc, ee, l), FALSE)
   \/ \E ee \in Caps : LET res == RemoveCollection(kc, ee) IN Step(res, kc.rk /\ res.resp = 202)
-  \/ Step(OwnerGone(kc), kc.rk)
+  \/ \E first \in BOOLEAN : Step(OwnerGone(kc, first), kc.rk)
   \/ ~kc.rk /\ Step(OwnerPurge(kc), FALSE)
   \/ kc.row.st = "acc" /\ Step(Revoke(kc), TRUE)
   \/ ~kc.lblk /\ kc.lx /\ Step(Block(kc), TRUE)

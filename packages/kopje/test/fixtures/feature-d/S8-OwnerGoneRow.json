@@ -180,7 +180,8 @@
       "input": {
         "envelope": {
           "type": "DelR"
-        }
+        },
+        "value": "deferred"
       },
       "environment": {
         "consent": true,

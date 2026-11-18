@@ -7,7 +7,8 @@
 //   induction  Ind.cfg over FeatureDInd.tla: IndInv holds one step after every state that satisfies it. Where a
 //              successor lies outside the starting states, TLC counts it and tla-ts does not; checks.json may then
 //              record TLC's own count ("tlc").
-//   variant    a calibration variant: the named invariant fails, with a shortest trace of the given length.
+//   variant    a calibration variant: the named invariant fails, with a shortest trace of the given length. Its
+//              scenario is a scenario's name, or the induction's (then FeatureDInd.tla under Ind.cfg's bounds).
 //   finding    a violation of (d) itself, raised against the design as a challenge: it must still fail until the
 //              design changes, and then checks.json and the spec change with it.
 //   goal       a reachability trap (FeatureDGoals.tla): NotReached fails, so the goal is reached, and its shortest
@@ -78,6 +79,23 @@ export function goalConfig(goal, alias) {
 }
 
 /**
+ * The induction's configuration with another variant and one invariant.
+ * @param {string} name
+ * @param {string} variant
+ * @param {string} invariant
+ */
+function inductionConfig(name, variant, invariant) {
+  const text = readFileSync(`${SPEC_DIR}${name}.cfg`, "utf8");
+  const changed = text
+    .replace(/^CONSTANT Variant = "d"$/m, `CONSTANT Variant = "${variant}"`)
+    .replace(/^INVARIANT IndInv$/m, `INVARIANT ${invariant}`);
+  if (!changed.includes(`"${variant}"`) || !changed.includes(`INVARIANT ${invariant}`)) {
+    throw new Error(`${name}.cfg names no variant or invariant to replace`);
+  }
+  return changed;
+}
+
+/**
  * Every check of the plan, in the order both checkers run them.
  * @param {Plan} plan
  * @returns {Check[]}
@@ -87,8 +105,12 @@ export function checks(plan) {
   const violation = (v, kind) => ({
     kind,
     name: v.name,
-    module: "FeatureD",
-    config: config({ Scenario: v.scenario, Variant: v.variant }, ["VIEW View", `INVARIANT ${v.invariant}`]),
+    ...(v.scenario === plan.induction.name
+      ? { module: "FeatureDInd", config: inductionConfig(plan.induction.name, v.variant, v.invariant) }
+      : {
+          module: "FeatureD",
+          config: config({ Scenario: v.scenario, Variant: v.variant }, ["VIEW View", `INVARIANT ${v.invariant}`]),
+        }),
     expected: { status: "invariant-violation", invariant: v.invariant, trace: v.trace },
   });
   return [
