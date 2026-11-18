@@ -13,9 +13,9 @@ oracle the implementation is held to. Commands below run from `packages/kopje/`.
 |---|---|
 | `FeatureDKopje.tla` | Kopje's rules (K1-K14), one operator per Store transaction, written from design (d) |
 | `FeatureD.tla` | the protocol: Kopje's steps, R's (cited to Mastodon file:line), the network; the invariants and goals |
-| `FeatureDInd.tla`, `Ind.cfg` | the induction check of Grant preservation |
+| `FeatureDInd.tla`, `Ind.cfg` | the induction check of Grant preservation, from every state of the core's type |
 | `FeatureDGoals.tla`, `FeatureDFixtures.tla` | reachability traps, and the projection the replay fixtures are written from |
-| `S1.cfg`-`S9.cfg` | the focused scenarios (`FeatureD.tla`, "Scenarios", says what each enables) |
+| `S1.cfg`-`S14.cfg` | the focused scenarios (`FeatureD.tla`, "Scenarios", says what each enables) |
 | `checks.json` | every check's expected outcome, which both checkers must give |
 | `coverage.json` | the Kopje files and functions the spec describes, with their blobs when last confirmed |
 
@@ -34,20 +34,23 @@ the record forward. A change to `spec/feature-d/` itself always needs the checks
 
 | Check | Command |
 |---|---|
-| tla-ts: every check of `checks.json`, the fixtures, the comparison (about 20 s) | `pnpm exec vitest run -c vitest.node.config.ts --max-workers=2 test-node/feature-d-spec.test.ts` |
-| official TLC: the same checks (about 90 s, one JVM at a time) | `mise exec -- node scripts/tlc-check.mjs` |
-| one check's TLC trace, every variable at every step | `mise exec -- node scripts/tlc-check.mjs --only <name> --trace` |
+| tla-ts: every check of `checks.json`, the fixtures, the comparison (about 2 min, the induction 30 s of it) | `pnpm exec vitest run -c vitest.node.config.ts --max-workers=2 test-node/feature-d-spec.test.ts` |
+| official TLC: the same checks (about 2 min, one JVM at a time) | `MISE_ENV=spec mise exec -- node scripts/tlc-check.mjs` |
+| one check's TLC trace, every variable at every step | `MISE_ENV=spec mise exec -- node scripts/tlc-check.mjs --only <name> --trace` |
 | rewrite the replay fixtures after a spec change | `pnpm run spec:fixtures` |
 | the replay against the real Store | `pnpm exec vitest run --max-workers=1 test/feature-d-replay.test.ts` |
 | move the drift record forward (runs the spec check and the replay first) | `node scripts/feature-d-coverage.mjs forward` |
 
-`tlc-check.mjs` downloads TLC's pinned jar into `node_modules/.cache/` once and checks its SHA-256; the JDK is the one
-`mise.toml` pins (`mise install java`). CI runs it in `.github/workflows/spec.yml`. Before the replay exists,
+`tlc-check.mjs` downloads TLC's pinned jar into `node_modules/.cache/` once and checks its SHA-256. The JDK is the one
+`mise.spec.toml` pins, apart from `mise.toml` so that only these checks install it: `MISE_ENV=spec mise install java`.
+CI runs it in `.github/workflows/spec.yml` with `MISE_ENV=spec`. Before the replay exists,
 `feature-d-coverage.mjs initial` records with the spec check alone.
 
-The replay is a workerd test that runs each fixture (`test/fixtures/feature-d/<name>.json`) step by step against the
-Store and compares `compareObservation` (`test/feature-d-observe.ts`) after each step. Each fixture's name appears as
-a string literal in it; `feature-d-spec.test.ts` fails for a fixture the replay does not name.
+The replay is a workerd test with one test per fixture (`test/fixtures/feature-d/<name>.json`), titled by the
+fixture's name, that runs its steps against the Store and compares `compareObservation` (`test/feature-d-observe.ts`)
+after each one. `feature-d-spec.test.ts` fails for a fixture the replay does not name, and for a skipped test;
+`feature-d-coverage.mjs forward` fails unless every fixture's test ran and passed. No fixture takes `KMemberGone`
+(Kopje deletes no local account), and the spec test checks that.
 
 ## Reading a violation
 
@@ -56,18 +59,23 @@ code):
 
 - `KRecv` with an envelope: one inbound activity in one Store transaction. `FR` a FeatureRequest, `Add`/`Rem` R's
   item Add or Remove, `Upd` an Update of C, `RemC` R's Remove of C, `DelR` R's actor Delete, `XAdd` another owner's Add
-  naming L's authorization. `KApplyFetch` applies the instrument a FeatureRequest fetched.
+  naming L's authorization. A FeatureRequest for a collection Kopje does not store answers "fetch" (response 1 in the
+  spec) and takes the instrument; `KApplyFetch` is the resumed activity, with the final status.
 - `KClaim`, `KFetch` (or `KFetch1`, `KFetch2` where pages move between GETs), `KApply`: a read of R's collections;
-  `KLease` lets its lease run out and `KStale` is its late completion.
-- `KRevoke`, `KBlock`, `KMemberGone`, `KCleanup`, `KExpire`: L's revoke, L's block, L's deletion, the retired row's
-  cleanup, a retraction's expiry.
-- `KDeliver`, `KDup`, `KGiveUp`, `KRetry`: one delivery of a recorded activity to R (processed by R in the same step,
-  except in S7, where `RJob` is R's job), one whose response is lost, the last attempt given up, an operator's retry.
+  `KLease` lets its lease run out and `KStale` is its late completion. A claim whose input is `sameTime` is made in
+  the millisecond of the row's last change, which the row fence counts as changed.
+- `KRevoke`, `KBlock`, `KSuspend`, `KUnsuspend`, `KCleanup`, `KEvict`, `KPurge`, `KExpire`: L's revoke and block, L's
+  suspension and its end, the retired row's cleanup or early eviction, one batch of R's purge after its tombstone, a
+  retraction's expiry. `KMemberGone`, L's deletion, is model-only.
+- `KDeliver`, `KDup`, `KGiveUp`, `KRetry`: the POST of the head of Kopje's lane to R's server, the same POST with its
+  response lost (the head stays), the head given up, an operator's retry (admitted again, then behind the head).
+  `RJob` is one of R's jobs, which run in any order.
 - `R*` and `XAdd` are R's requests and services; `Drop` loses an envelope; `Env` changes L's policy, the backlog, the
-  retraction cap or how many of R's collections Kopje holds.
+  retraction cap, C's slots or how many of R's collections Kopje holds.
 
 `last` in each state names the step, its input, what it recorded and its response; `k` is Kopje's core (`row`, its
-`uri` listing, `obl` the obligation Grant preservation tracks), `rs` is R's server, `g` the history the invariants read.
+`uri` listing), `rs` is R's server, `g` the history the invariants read (`obl` the obligation Grant preservation
+tracks, `unexcused` the corrections CR3 counts, `lastRd` the read OV2 compares).
 
 Tell the two kinds of failure apart by the step that breaks the invariant:
 
@@ -77,8 +85,9 @@ Tell the two kinds of failure apart by the step that breaks the invariant:
   cited file:line at v4.7.5), or a bound or merge in the abstraction makes it possible (`FeatureD.tla`, BOUNDS): fix the
   model, not the design.
 
-A replay that disagrees at a step is a code bug unless the fixture's `unspecified` names the field (those are skipped)
-or the step is one the Store cannot take as the fixture states it, which is a modelling question.
+A replay that disagrees at a step is a code bug unless the fixture's `unspecified` names the field (those are skipped),
+the extra activity is one its `mayAlsoRecord` permits, or the step is one the Store cannot take as the fixture states
+it, which is a modelling question.
 
 If tla-ts and TLC disagree, that is a finding about a checker: report it with both outputs and keep the spec as it is.
 
@@ -97,6 +106,7 @@ One owner R (plus X on R's server in S4), one member L, one collection C (other 
 pages and as Kopje's count of R's collections), two requests and two authorizations, and per-scenario budgets
 (`FeatureD.tla`, Bud). There is no fairness, so nothing is checked about eventually: any message may wait for ever.
 
-Not covered: other local members and owners, timing (a lease and a retraction's expiry are single events), the
-owner-block and availability predicates of what others see, Misskey and other servers, and the code itself except
-through the replay at the fixtures' steps.
+Not covered: other local members and owners (the 25 slots and the 50 stored rows are environment flags), timing (a
+lease and a retraction's expiry are single events), the owner-block predicate of what others see, Misskey and other
+servers, the Store's SQL work bounds (its own tests), and the code itself except through the replay at the fixtures'
+steps.
