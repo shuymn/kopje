@@ -827,6 +827,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "an Accept's follow by its id: the local accounts drive, each one's follow of the actor sought by follows_pair (ourFollow, src/domain/inbox.ts): local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\")",
   },
   {
+    id: "fd261ccaef071552",
+    scans: ["local_accounts: SCAN l USING COVERING INDEX sqlite_autoindex_local_accounts_1"],
+    site: "src/domain/inbox.ts#undoAccept < src/domain/inbox.ts#undo < src/domain/inbox.ts#receive < src/domain/inbox.ts#<anonymous>",
+    disposition: "deliberate",
+    reason:
+      "an undone Accept's follow by the Follow id it names: the local accounts drive, each one's follow of the actor read by follows_pair in a scalar subquery, one point lookup per local account (undoAccept, src/domain/inbox.ts): local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\"); test/inbox-undo-accept.test.ts holds its rows read under stale statistics",
+  },
+  {
     id: "c507c60814b4afbe",
     scans: ["instance_domain_blocks: SCAN instance_domain_blocks"],
     site: "src/domain/instance-domain-blocks.ts#blocksPage < src/domain/admin-domain-blocks.ts#<anonymous> in listAdminDomainBlocks < src/domain/auth.ts#<anonymous> in adminGuarded",

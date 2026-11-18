@@ -719,6 +719,17 @@ function supersedeIntent(db: Db, id: string): void {
   dropSettledActivity(db, id);
 }
 
+// Retires a local account's Follow by its id (a Follow's subject: subjectOf), as a retraction of it would supersede
+// it, the Follow type only: the inbox's Undo of the target's Accept of it (inbox.ts undoAccept), after which Mastodon
+// never sends that Follow again. A superseded Follow is no owed handshake (OWED_HANDSHAKE), so a copy the send-time
+// check drops is not held for a replay, and a given-up one may not be sent again (retryDeliveries); a copy still queued
+// is sent as it would have been (STALE_ANSWER is a follow answer's). Its seek is outbound_activities_unsuperseded's
+// (account_id, object_uri): the Follows of the one generation still queued, one per send of it (the follow, each
+// handshake replay).
+export function retireFollow(db: Db, followerId: string, followUri: string): void {
+  supersede(db, followerId, followUri, false, ["Follow"]);
+}
+
 // A retraction recorded in bounded steps: a job's Undo of a local boost and a local status's Delete (RES-6), whose
 // audience and receipts may be more targets than one batch can write. beginRetraction records the intent, superseding
 // the earlier activities about its object, in at most maxRows rows (null, writing nothing, when they do not fit), and

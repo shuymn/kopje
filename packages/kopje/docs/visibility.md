@@ -1023,7 +1023,9 @@ any change of its `uri` or `state` ends (`handshake_replays_generation`).
   its intent is neither superseded nor a retraction and is that follow's owed handshake: a `Follow` whose local
   account's follow of the account its object names is pending under that `Follow`'s id, or a follow pair's `Accept`
   whose remote follow is accepted under the `Follow` it answers (an edge without a `Follow` id, by an `Accept` that
-  names none). Ids are compared by their bytes. Nothing else is held but a `Reject` of a request (below): content, a
+  names none). Ids are compared by their bytes. An `Undo` of the target's `Accept` of a local follow supersedes that
+  `Follow` (`retireFollow`), so a follow it turns back into a request owes no `Follow`: Mastodon never sends a revoked
+  follow's `Follow` again. Nothing else is held but a `Reject` of a request (below): content, a
   `Block`, a quote's `Accept` or `Reject`, a superseded answer, a retraction, or a row whose sender was refused. A
   claim holds at most `CLAIM_LIMIT` rows, one hold for each refused row at most.
 - **Held Rejects.** A local account's `Reject` of a remote account's `Follow` is held in `reject_replays` (migration

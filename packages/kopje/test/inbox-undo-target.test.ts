@@ -693,7 +693,7 @@ describe("ID-6: an Undo ends what its undone activity's object names", () => {
     ["a number", 5],
     ["an object", {}],
     ["a boolean", true],
-    ["Accept", "Accept"],
+    ["Reject", "Reject"],
     ["a blank node", "_:Block"],
     ["an absolute IRI, unsigned", `${AS}#Block`],
   ])("an undone type given as %s changes nothing", async (_, type) => {

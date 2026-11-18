@@ -499,8 +499,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   missing one) or, for a `Follow` or `Block`, names no local account, where Kopje ended what the undone id named
   (#1773). An `Undo` of a `Like` that names another status than the liked one keeps the favourite, and records the
   undone id only when that status is a local post, as Mastodon's does. An `Undo` whose undone activity's type is no
-  single name (an array, as #1717 found in LD-signed ones) or one Kopje does not undo (`Accept`) changes nothing; one
-  without a type still ends what its id names. No Store migration and no `wrangler.jsonc` change.
+  single name (an array, as #1717 found in LD-signed ones) or one Kopje does not undo changes nothing; one without a
+  type still ends what its id names. No Store migration and no `wrangler.jsonc` change.
+- An `Undo` of an `Accept` of a local account's `Follow` turns that follow back into a request, as Mastodon's does but
+  also at the follower's follow limit, where Mastodon's fails: the follow of the sender whose id the `Accept` names goes
+  pending, leaves the follower's lists and endorsements, and is accepted again by a later `Accept`, where Kopje kept it
+  accepted (#1775). Kopje does not send that `Follow` again. No Store migration and no `wrangler.jsonc` change.
 - A remote actor's `manuallyApprovesFollowers`, `discoverable` and `indexable` are read by their literal spelling
   through Rails' boolean cast, as Mastodon does (#1747): an actor that writes `"false"`, `"0"` or `"off"` is no longer
   discoverable, where it was listed in the directory, suggestions, trends and the link timeline; `"true"`, `1` or `[]`

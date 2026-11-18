@@ -1477,9 +1477,9 @@ function inboxRaises(json: Json): boolean {
 // The patched reading `read` as Mastodon reads what an Undo undoes; any other activity, and an Undo of anything else,
 // as it is. Refused (null), where Mastodon applies nothing and Kopje's handler would end nothing either (ID-6), so that
 // the reading stays Mastodon's (test/inbox-signed-forms.test.ts):
-//   - a Follow, a Block or a Like whose `object` is an array, where Mastodon's reading has one too (patchedAsMastodon:
-//     the patch puts back each array whose length the compaction kept, an array in it as the compaction's value):
-//     undo.rb seeks what to end by it (target_uri, value_or_id), which raises on an array;
+//   - a Follow, a Block, a Like or an Accept whose `object` is an array, where Mastodon's reading has one too
+//     (patchedAsMastodon: the patch puts back each array whose length the compaction kept, an array in it as the
+//     compaction's value): undo.rb seeks what to end by it (target_uri, value_or_id), which raises on an array;
 //   - one whose type is an array holding a type, which the patch puts back as an array of the compaction's names, as
 //     where the compaction writes two or more (forms.json): undo.rb takes no array as a type, where Kopje's readers
 //     (refOf) read it as no single name, and nothing is undone.
@@ -1487,7 +1487,7 @@ function inboxRaises(json: Json): boolean {
 // writes it as null (forms.json), so undo.rb reads it as an Undo by reference (handle_reference), as Kopje reads one
 // without a type; as received, an empty array is no single name, and both apply nothing (refOf's typeUnread). Kopje
 // reads a one-element array after the patch's stop as its type (patchedAsMastodon).
-const UNDONE_BY_TARGET: ReadonlySet<string> = new Set(["Follow", "Block", "Like"]);
+const UNDONE_BY_TARGET: ReadonlySet<string> = new Set(["Follow", "Block", "Like", "Accept"]);
 function undoAsMastodon(read: Json, readType: TypeReader): Json | null {
   const undone = read.object;
   if (typeof read.type !== "string" || readType(read.type) !== "Undo" || !isObject(undone)) {

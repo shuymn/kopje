@@ -55,6 +55,7 @@ import {
   type FollowAnswers,
   followAnswersOf,
   FORWARD_SUBJECT,
+  retireFollow,
   stageRetraction,
   stagingRetraction,
   supersedeEarlier,
@@ -170,9 +171,11 @@ import { unfollowRemote } from "./unfollow";
 //   Reject       as Accept (quotes.ts rejectOurQuote)
 //   Undo         the undone activity's actor is the actor; a typed Follow or Block names a local account by its object
 //                (the edge from the actor to it ends whatever its id), a typed Like the status of the favourite it
-//                ends, a typed Announce the actor's boost by its id or atomUri; an untyped one names a Follow, a
-//                Block, a tracked Like or a boost by its id; a type given that is not a single string, or a string
-//                other than Follow, Block, Announce and LIKE_TYPES, nothing (see undo, undoInteraction)
+//                ends, a typed Announce the actor's boost by its id or atomUri, a typed Accept a local account's
+//                accepted follow of the actor by the Follow id it names (back to a request); an untyped one names a
+//                Follow, a Block, a tracked Like or a boost by its id; a type given that is not a single string, or a
+//                string other than Follow, Block, Announce, Accept and LIKE_TYPES, nothing (see undo, undoAccept,
+//                undoInteraction)
 //   Block        the object is a local account; the actor is the blocker
 //   Move         the object is the actor, and the target lists the actor in alsoKnownAs (ID-4)
 //   Update       of an actor: the object is the actor itself; of a status: the stored status's author is the actor
@@ -927,12 +930,13 @@ function isQuoteAnswer(ref: ActivityRef): boolean {
 // The undone types an Undo acts on, as Mastodon's Undo dispatches (undo.rb:4-19): any other type, or one given that is
 // no single string (ActivityRef.typeUnread), matches no branch there, a reference by id included, and changes nothing.
 // The names read as a Like (LIKE_TYPES) arrive as "Like".
-const UNDONE_TYPES: ReadonlySet<string> = new Set(["Follow", "Block", "Like", "Announce"]);
+const UNDONE_TYPES: ReadonlySet<string> = new Set(["Follow", "Block", "Like", "Announce", "Accept"]);
 
 // ID-6, as Mastodon's Undo: a Follow or a Block named by its type is sought by the local account its object names, the
 // edge from the actor to it whatever its id (undoRelationship); a Like by the status its object names, and an Announce
-// by its id or atomUri (undoInteraction); an undone activity given without a type, by its id among the actor's own
-// follows, blocks, tracked Likes and boosts (handle_reference). The id must be a string on the actor's origin.
+// by its id or atomUri (undoInteraction); an Accept by the Follow its object names (undoAccept); an undone activity
+// given without a type, by its id among the actor's own follows, blocks, tracked Likes and boosts (handle_reference).
+// The id must be a string on the actor's origin.
 //
 // A pair id names every generation of a follow, so it is never recorded as retracted itself: the generation it undid
 // is (that Follow's own id), and a later Follow and its Undo by the same pair id work again. The limit: a pair Undo
@@ -955,6 +959,9 @@ const undo: Handler<"Undo"> = (db, actor, activity, { now }) => {
   }
   if (ref.type === "Follow" || ref.type === "Block") {
     return undoRelationship(db, actor, { ...ref, id: ref.id }, ref.type, now);
+  }
+  if (ref.type === "Accept") {
+    return undoAccept(db, actor, ref.object);
   }
   // A Like named by its type is sought by its object (undo.rb:103-106), which must be a single IRI.
   if (ref.type === "Like" && ref.object === null) {
@@ -1034,6 +1041,50 @@ const undo: Handler<"Undo"> = (db, actor, activity, { now }) => {
   }
   return undone ? applied("undone") : applied("retraction-recorded");
 };
+
+// Undo of an Accept of a local account's Follow (ID-6, #1775), as Mastodon's undo_accept (undo.rb:85-87): the accepted
+// follow of the actor (the Follow's target) whose uri is, byte for byte, the Follow id the Accept's object names goes
+// back to a request, as revoke_request! (follow.rb:40-43) makes a FollowRequest of it (at the follower's follow limit
+// too, where that FollowRequest fails its FollowLimitValidator and Mastodon changes nothing: mastodon-deviations.md):
+// the row stays pending with its id and options, and what the follow's destroy ends there goes, the follower's list
+// membership of the actor (list_accounts' cascade), its endorsement (remove_endorsements) and its one edge from the
+// follower's following count. The Follow is retired (retireFollow), so nothing sends it again. A pending follow, an
+// id-less one, or none: nothing. Nothing is recorded either way (no delete_later!), so the Accept delivered again
+// accepts the follow again, as on Mastodon. The uri is not unique (an import may repeat it), so the oldest follow
+// carrying it answers: each local account's follow of the actor is read by its pair (follows_pair, one row) in a scalar
+// subquery, a point lookup per local account (operator-sized: docs/threat-model.md, "Deployment assumptions") that no
+// plan makes a walk of follows or a Bloom filter over it under stale statistics (RES-7).
+function undoAccept(db: Db, actor: RemoteRow, followUri: string | null): ReceiveResult {
+  if (followUri === null) {
+    return ignored("unknown-follow");
+  }
+  const follow = db.first<OurFollow>(
+    `WITH candidates AS MATERIALIZED (
+				SELECT l.account_id AS follower, (SELECT f.id FROM follows f INDEXED BY follows_pair
+						WHERE f.account_id = l.account_id AND f.target_account_id = ?2 AND f.uri = ?1 AND f.state = 'accepted') AS id
+				FROM local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX})
+			SELECT CAST(id AS TEXT) AS id, follower FROM candidates WHERE id IS NOT NULL ORDER BY candidates.id LIMIT 1`,
+    followUri,
+    actor.id,
+  );
+  if (follow === undefined) {
+    return ignored("unknown-follow");
+  }
+  db.run("UPDATE follows SET state = 'pending' WHERE id = CAST(? AS INTEGER)", follow.id);
+  retireFollow(db, follow.follower, followUri);
+  db.run(
+    `DELETE FROM list_accounts WHERE account_id = ?2
+			AND list_id IN (SELECT id FROM lists INDEXED BY lists_account WHERE account_id = ?1)`,
+    follow.follower,
+    actor.id,
+  );
+  db.run("DELETE FROM account_pins WHERE account_id = ? AND target_account_id = ?", follow.follower, actor.id);
+  db.run(
+    "UPDATE accounts SET following_count = max(following_count - 1, 0) WHERE id = ? AND domain IS NULL",
+    follow.follower,
+  );
+  return applied("follow-unaccepted");
+}
 
 // Undo of a Follow or a Block named by its type (ID-6, #1773), as Mastodon's (undo.rb:89-101, :116-126): the local
 // account the undone activity's object names, by its exact actor URI, else nothing is changed or recorded (Mastodon

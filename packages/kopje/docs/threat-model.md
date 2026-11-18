@@ -476,9 +476,14 @@ against their own instance. TLS is assumed between all parties.
   and ends the edge from the verified sender (its `actor.id`, the pair's first element) to that account whatever id the
   edge carries; an undone `Like` named by its type requires its `object` to be a single IRI, or the `Undo` changes and
   records nothing, and ends only the sender's favourite of the status it names; an undone `Announce` named by its type
-  ends the sender's boost its id names, or else its `atomUri`; an undone activity given without a type is sought by its
-  id; and one whose type is given but is not a single string, or is a string other than `Follow`, `Block`, `Announce`
-  and the names read as a `Like` (`LIKE_TYPES`), changes nothing; `Accept` and `Reject` require the target of the
+  ends the sender's boost its id names, or else its `atomUri`; an undone `Accept` named by its type turns a local
+  account's accepted follow of the sender whose id, byte for byte, its `object` names back into a request, as Mastodon's
+  `undo_accept` does but for a follower at its follow limit, where Mastodon's refuses the request
+  ([mastodon-deviations.md](mastodon-deviations.md)), and ends with it the follower's list membership of the sender and
+  endorsement of it, recording nothing; an undone activity given without a type is sought by its id; and one whose type
+  is given but is not a single
+  string, or is a string other than `Follow`, `Block`, `Announce`, `Accept` and the names read as a `Like`
+  (`LIKE_TYPES`), changes nothing; `Accept` and `Reject` require the target of the
   matching `Follow`; `Update` and `Delete` require the object's current author, and an update never changes the author.
   A same-origin but different actor is refused like a cross-origin one. _Enforced (main)_ for the id: `activityEnvelope`
   (`ID_LESS`) in `src/federation/inbound.ts` reads a missing or non-string id of an `Add` or `Remove` as none and
@@ -489,7 +494,9 @@ against their own instance. TLS is assumed between all parties.
   as Mastodon sends it"). _Enforced (main)_ for Follow, Accept, Reject, Undo, Block, Move and
   Update and Delete of actors: the table in `src/domain/inbox.ts`; `test/inbox.test.ts` ("ID-6: the authorization
   table"), `test/inbox-undo-target.test.ts` ("ID-6: an Undo ends what its undone activity's object names", "ID-6:
-  another actor's Undo ends nothing of the pair it names"). _Enforced (main)_ for Create, Update and Delete of statuses,
+  another actor's Undo ends nothing of the pair it names"), `test/inbox-undo-accept.test.ts` ("ID-6: an Undo of an
+  Accept turns the local account's follow back into a request").
+  _Enforced (main)_ for Create, Update and Delete of statuses,
   Like and Announce (the rows of the same table): `Create` needs the actor's origin and no other `attributedTo`;
   `Update` and `Delete` the stored status's author (a refused `Delete` records no retraction); `Like` a local status the
   actor may see (VIS-1, which Mastodon does not check), whichever of `Like`, `EmojiReact` or `EmojiReaction` it is
@@ -626,7 +633,10 @@ against their own instance. TLS is assumed between all parties.
   `Block` named by its type in an `Undo` ends the sender's edge to the local account its `object` names whatever id the
   edge carries, as Mastodon's `Undo` does (`undo.rb`), unless the undone id has a live retraction, and both ids are
   recorded (a Follow's pair id excepted, and an edge's id past `ACTIVITY_ID_LIMIT` bytes); so an `Undo` whose id has
-  none ends the current generation (see the accepted risks).
+  none ends the current generation (see the accepted risks). An `Undo` of an `Accept` keeps the generation (the
+  follow keeps its id) and records nothing, as Mastodon's: the `Accept` delivered again accepts the follow again, and
+  the `Follow` is retired, so no handshake replay or operator retry sends it again; a copy already queued is still sent
+  once (VIS-30's held handshakes).
   A Move is a job keyed by its id that never moves a follow made after it. The Store rounds of one request carry the
   same actor document and revision, and only the first round that finds the revision stores the document (ID-1). An
   actor's deletion is a tombstone (`inbound_jobs`) independent of the retraction cap and TTL, honoured by every upsert

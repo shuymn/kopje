@@ -1520,6 +1520,16 @@ Home and lists (`/api/v1/timelines/home`, `/api/v1/timelines/list/:id` and their
   boost of it is among the 80 newest entries of the feed as the boost arrives (`REBLOG_FALLOFF`; 40 before 4.7), unless
   the user turned off its web preference `aggregate_reblogs` (on by default). Kopje reads home and lists from stored
   statuses on each request and keeps no record of a feed's order at the time a boost arrived. Accepted, 2026-11-15.
+- Once a remote account's `Undo` of its `Accept` turns a local account's follow of it back into a request, home no
+  longer shows the statuses the follow brought there, those received before included, as home reads them from accepted
+  follows on each request; one that reaches home otherwise stays (a public status under a hashtag the local account
+  follows). Mastodon's `revoke_request!` ends the follow without unmerging the home feed (`follow.rb`), so the statuses
+  merged before stay in home until they fall off. Accepted, 2026-11-18.
+- The same `Undo` takes the account out of the local account's lists, and a list then shows none of its statuses,
+  those received before included, as a list is read on each request from its members the local account follows
+  (accepted). Mastodon's list membership goes by its foreign key's cascade, which unmerges nothing, and its list
+  endpoint reads the list's feed as it was merged (`Api::V1::Timelines::ListController`, `ListFeed`), so those statuses
+  stay in the list until they fall off. Accepted, 2026-11-18.
 
 Feed streams (the `public*` and `hashtag*` streams of `/api/v1/streaming`; Mastodon's `FanOutOnWriteService` and its
 streaming server's per-connection filter; R33 in [visibility.md](visibility.md)):
@@ -2206,6 +2216,11 @@ ID-7 in `docs/threat-model.md`):
   where it names an actor, the sender. A reference given as a string is read as one whatever it holds, where Mastodon
   reads its type with Ruby's `String#[]`, so that one whose IRI contains `type` ends nothing there. Accepted,
   2026-11-18.
+- An `Undo` of an `Accept` turns a local account's follow back into a request also when the account follows as many
+  accounts as its follow limit allows. Mastodon's `revoke_request!` creates the request before it destroys the follow
+  (`follow.rb`), so there its follow limit (`FollowLimitValidator`, which `FollowRequest` applies on create) refuses the
+  request, the `Undo` fails, and the follow stays accepted; Kopje changes the existing follow, to which no limit
+  applies. Accepted, 2026-11-18.
 
 Quote approvals (a local account's quote of a remote status; Mastodon's `ActivityPub::Activity::Accept`; VIS-28 in
 `docs/threat-model.md`):
