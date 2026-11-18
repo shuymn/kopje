@@ -355,8 +355,8 @@ Still to confirm:
   account ID is left empty. In the one check so far the lookup did not find exactly one account; when it does not,
   enter the account ID. The wizard says whether the token reached no account or several.
 - Still images of animated uploads. The local Images binding decodes one frame only and ignores `anim`, so tests
-  stand in for the real output. This check was last run for #1170, and the code that calls the binding has changed
-  since; nothing in the release steps runs it. On a real account, upload as the avatar, then as the header, a
+  stand in for the real output: the served frames must be checked on a deployed instance, and no release step runs this
+  check. On a real account, upload as the avatar, then as the header, a
   2-frame GIF, a 2-frame animated WebP, a 2-frame APNG and a still PNG (8 uploads, 24 transformations). For each,
   fetch `avatar` and `avatar_static` (`header` and `header_static`) and count the frames of the served bytes (WebP: the
   `ANMF` chunks, or 1 without the `VP8X` animation flag; PNG: `acTL`'s frame count, or 1 without it):
@@ -365,5 +365,5 @@ Still to confirm:
   - Still PNG and APNG: the upload answers 200, `avatar` has exactly 1 frame, and `avatar_static` equals `avatar`.
   - A GIF attached to a status: its `preview_url` has exactly 1 frame.
 
-  An upload that answers 500 with `kopje.media.transform_failed` in the log is a defect: the detail `output is
-  animated` for an animated upload, or `images 9401` for a PNG.
+  An upload that answers 500 with `kopje.media.transform_failed` in the log is a defect, for example with the
+  detail `output is animated` for an animated upload, or `images 9401` for a PNG.

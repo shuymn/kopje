@@ -343,9 +343,10 @@ Read `conversion.dropped` in the manifest before passing the flag: every code th
 
 `verify-conversion` computes expected records from the legacy data by its own code path, which shares no mapping with
 the converter, taking every audience from the addressing captured before the bridge, and reads actual records from a
-dump. Both sides call the Worker's runtime (`kopje-runtime.js`): its HTML sanitizers, the bounds and cuts of stored
-values, the identity checks and the media URL form. A defect there gives both sides the same value, so the check does
-not find it; a test pins only the sanitizer's output by hand (`test-node/cutover-sanitize.test.ts`). Records are
+dump. Both sides call the Worker's runtime (`kopje-runtime.js`) for the HTML sanitizers, the normalization of stored
+values (bounds, cuts, times and blank settings), the identity checks and the media URL form, so a wrong value from one
+of those helpers appears on both sides alike and the check passes it. `test-node/kopje-runtime.test.ts` pins some of
+their output by hand: the sanitizer's and an instance setting's bound. Records are
 keyed by AP URIs, never by assigned ids, and compared as exact values:
 
 | Category                                                                                                                                                           | Record                                                                                                                                                                                                          |
