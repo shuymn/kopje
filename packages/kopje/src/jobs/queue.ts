@@ -156,7 +156,12 @@ export const STORE_JOB_FAMILIES: readonly {
   { family: "unlock_accepts", run: (store, build, input) => store.runUnlockAccepts(build, input) },
 ];
 
-type Families = readonly { family: string; run: (env: Env, deps: InboxDeps) => Promise<FamilyRound> }[];
+// progress: what a Worker family's committed Store calls recorded so far, which runFamilies reads also when a later
+// call of the family throws.
+type Families = readonly {
+  family: string;
+  run: (env: Env, deps: InboxDeps, progress: { delivers: boolean }) => Promise<FamilyRound>;
+}[];
 
 // The Store's families as the round calls them. Each call takes a fresh stub, so a failed call leaves none behind for
 // the next family.
@@ -177,15 +182,18 @@ const WORKER_FAMILIES: Families = [
 ];
 
 // Runs each family in turn, each its own error boundary; refused: the Store refused a call, which ends the round.
+// delivers: a family recorded deliveries, also one that threw after a call of it that recorded some had committed.
 async function runFamilies(families: Families, env: Env, deps: InboxDeps): Promise<FamilyRound & { refused: boolean }> {
   let pending = false;
   let delivers = false;
   for (const { family, run } of families) {
+    const progress = { delivers: false };
     try {
-      const result = await run(env, deps);
+      const result = await run(env, deps, progress);
       pending = pending || result.pending;
       delivers = delivers || result.delivers;
     } catch (error) {
+      delivers = delivers || progress.delivers;
       if (error instanceof StoreUnavailableError) {
         return { pending: false, delivers, refused: true };
       }

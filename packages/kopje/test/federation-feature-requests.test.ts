@@ -1630,6 +1630,52 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
     expect(w.t.queue.pending.map((m) => m.body)).toContainEqual({ kind: "deliver" });
   });
 
+  // Code review r3: the read's Delete commits before the family's next claim, which throws; the jobs round still rings
+  // for it, and a Store refusal still ends the round (no jobs message). Fails if the family's error boundary drops what
+  // its committed calls recorded (the answer waits for the delivery cron).
+  for (const failure of ["an error", "a Store refusal"] as const) {
+    it(`rings for the Delete a read recorded when the family's next claim fails with ${failure}`, async () => {
+      const w = await owned();
+      expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+      const [row] = await localRows(w.t, ALICE);
+      expect(await revokeAs(w.t, await collectionIdOf(w.t, w.listed.id), row!.id)).toBe(200);
+      await deliverAll(w.t);
+      const a = authorization(row!.id);
+      w.listed.orderedItems = [localItem(w.owner, ALICE_URI, a)];
+      w.listed.totalItems = 1;
+      serveListing(w.t.web, w.owner, w.listed);
+      const ownerId = (await sql<{ id: string }>(w.t.store, "SELECT id FROM accounts WHERE uri = ?", w.owner.uri))[0]!
+        .id;
+      await requestSync(w.t, ownerId);
+      w.t.queue.pending.length = 0;
+      let claims = 0;
+      const store = new Proxy(w.t.store, {
+        get(target, key) {
+          if (key === "claimCollectionSync" && ++claims === 2) {
+            const error =
+              failure === "an error"
+                ? new Error("test: the claim fails")
+                : Object.assign(new Error("test"), { retryable: true });
+            return () => Promise.reject(error);
+          }
+          return Reflect.get(target, key) as unknown;
+        },
+      });
+      const env = { ...w.t.env, MAINTENANCE: "off" } as unknown as Env;
+      await jobsRound(
+        env,
+        inboxDeps(() => store, w.t.web.loader),
+      );
+      expect(claims).toBe(2);
+      expect((await answerCopies(w.t, a)).map((c) => c.inbox)).toEqual([`${w.owner.uri}/inbox`]);
+      const kinds = w.t.queue.pending.map((m) => (m.body as { kind: string }).kind);
+      expect(kinds).toContain("deliver");
+      if (failure === "a Store refusal") {
+        expect(kinds).toEqual(["deliver"]);
+      }
+    });
+  }
+
   // Code review r2: an answer goes to the owner's inbox as the owner's account names it when the listing is answered.
   // Fails if an answer waiting for the inbox the owner had before a refresh of its actor stands for the answer to the
   // new one (nothing reaches the new inbox), or if both wait (two copies of one answer to send).
