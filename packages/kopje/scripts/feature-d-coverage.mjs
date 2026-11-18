@@ -4,19 +4,23 @@
 // A change of a covered file then needs a re-look: rerun the specification and the replay, change the specification
 // through a challenge if the behaviour changed, then move the record forward:
 //
-//   node scripts/feature-d-coverage.mjs forward    runs both checks, then records HEAD and the files' blobs
+//   node scripts/feature-d-coverage.mjs forward    runs both checks, requires each fixture's replay test to have run
+//                                                  and passed, then records HEAD and the files' blobs
 //   node scripts/feature-d-coverage.mjs initial    only while no replay exists: runs the specification's checks alone
 //
 // Either refuses while a covered file differs from HEAD, so each blob recorded is the blob at the commit recorded.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PACKAGE = fileURLToPath(new URL("..", import.meta.url));
 const RECORD = fileURLToPath(new URL("../spec/feature-d/coverage.json", import.meta.url));
 const SPEC_TEST = "test-node/feature-d-spec.test.ts";
 const REPLAY_TEST = "test/feature-d-replay.test.ts";
+const FIXTURE_DIR = fileURLToPath(new URL("../test/fixtures/feature-d/", import.meta.url));
 
 /**
  * @typedef {{ path: string, functions: string[], spec: string, blob: string | null }} Covered
@@ -43,6 +47,50 @@ export function blobOf(path) {
 /** @param {string} command @param {string[]} args */
 const run = (command, args) => execFileSync(command, args, { cwd: PACKAGE, stdio: "inherit" });
 
+/**
+ * The fixtures for which a run of the replay, as Vitest's JSON reporter writes it, has no passed test titled by the
+ * fixture's name.
+ * @param {{ testResults: { assertionResults: { title: string, status: string }[] }[] }} report
+ * @param {string[]} names
+ */
+export function unrunFixtures(report, names) {
+  const passed = new Set(
+    report.testResults
+      .flatMap((f) => f.assertionResults)
+      .filter((a) => a.status === "passed")
+      .map((a) => a.title),
+  );
+  return names.filter((name) => !passed.has(name));
+}
+
+/**
+ * Runs the replay and requires a passed test titled by each fixture's name: a fixture named in the replay's source but
+ * not run (a loop that skips it, a filter) fails here.
+ */
+function runReplay() {
+  const dir = mkdtempSync(join(tmpdir(), "feature-d-replay-"));
+  try {
+    const report = join(dir, "report.json");
+    run("pnpm", [
+      "exec",
+      "vitest",
+      "run",
+      "--max-workers=1",
+      "--reporter=default",
+      "--reporter=json",
+      `--outputFile.json=${report}`,
+      REPLAY_TEST,
+    ]);
+    const names = readdirSync(FIXTURE_DIR)
+      .filter((file) => file.endsWith(".json"))
+      .map((file) => file.slice(0, -5));
+    const unrun = unrunFixtures(JSON.parse(readFileSync(report, "utf8")), names);
+    if (unrun.length > 0) throw new Error(`the replay ran and passed no test for ${unrun.join(", ")}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /** @param {"forward" | "initial"} mode */
 function moveForward(mode) {
   const record = readRecord();
@@ -53,7 +101,7 @@ function moveForward(mode) {
   const dirty = execFileSync("git", ["status", "--porcelain", "--", ...paths], { cwd: PACKAGE, encoding: "utf8" });
   if (dirty.trim() !== "") throw new Error(`commit the covered files first:\n${dirty}`);
   run("pnpm", ["exec", "vitest", "run", "-c", "vitest.node.config.ts", "--max-workers=1", SPEC_TEST]);
-  if (replay) run("pnpm", ["exec", "vitest", "run", "--max-workers=1", REPLAY_TEST]);
+  if (replay) runReplay();
   const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: PACKAGE, encoding: "utf8" }).trim();
   const files = record.files.map((f) => ({ ...f, blob: blobOf(f.path) }));
   writeFileSync(RECORD, `${JSON.stringify({ ...record, confirmed: head, files }, null, 2)}\n`);

@@ -11,13 +11,13 @@
     {
       "path": "src/domain/inbox.ts",
       "functions": ["receiveActivity"],
-      "spec": "FeatureD.tla RecvRes: which of FeatureDKopje.tla's operators an inbound activity runs, and when it is ignored",
+      "spec": "FeatureD.tla RecvRes and Touch: which of FeatureDKopje.tla's operators an inbound activity runs, when it is ignored, and that every valid push of R's collections outdates a read under way, a no-op one included",
       "blob": "3a62db713f12edf18395f3947ad9c1f6b5d30274"
     },
     {
       "path": "src/federation/inbound.ts",
       "functions": ["receiveInbound", "fetchesFirst"],
-      "spec": "FeatureD.tla KRecv and NeedsFetch: an inbound activity's routing, and the instrument fetched before a FeatureRequest for a collection Kopje does not store; the response (202, 503)",
+      "spec": "FeatureD.tla KRecv and NeedsFetch: an inbound activity's routing; the Store's need to fetch the instrument of a FeatureRequest for a collection Kopje does not store (the step's response \"fetch\"), then the resumed activity's own transaction and final status (202, 503)",
       "blob": "95288757c3cb04148792e37e8bdc02977460eab4"
     },
     {
@@ -68,25 +68,25 @@
     {
       "path": "src/domain/collections.ts",
       "functions": ["severCollections", "pruneCollectionItems"],
-      "spec": "FeatureDKopje.tla Block (K8), MemberGone (K9) and Cleanup (K10)",
+      "spec": "FeatureDKopje.tla Block (K8, an ordinary Block with the row's Delete), Cleanup (K10) and Evict; MemberGone (K9) is model-only",
       "blob": "f8802640b1225db85c030e41fbb826324d681393"
     },
     {
       "path": "src/domain/collection-documents.ts",
       "functions": ["featureAuthorizationDocument", "recordItemRemove"],
-      "spec": "FeatureDKopje.tla Served: GET of an authorization (200 or 404); the Delete an answer records",
+      "spec": "FeatureDKopje.tla AuthorizationServed: GET of an authorization, 200 with interactingObject C and interactionTarget L while the row is accepted and L available, else 404; the Delete an answer records",
       "blob": "867bce721b102917d936b0582d8d39538e662565"
     },
     {
       "path": "src/domain/activities.ts",
       "functions": ["revocationRejectActivity"],
-      "spec": "FeatureDKopje.tla Acc, Rej, RejKept, Del, Blk, DelL: the activities Kopje records",
+      "spec": "FeatureDKopje.tla Acc, Rej, Del, Blk, DelL: the activities Kopje records",
       "blob": "fc3e5f060c13c1b905fc2ef0307fe46fd424ad34"
     },
     {
       "path": "src/domain/deliveries.ts",
       "functions": ["enqueueActivity", "claimDeliveries", "confirmDelivery", "retryDeliveries"],
-      "spec": "FeatureD.tla Record (RES-4's refusal at a full backlog), KDeliver, KDup, KGiveUp and KRetry",
+      "spec": "FeatureD.tla Record (RES-4's refusal at a full backlog), the lane in id order (KDeliver, KDup, KGiveUp) and KRetry's admission re-check and place in the lane",
       "blob": "53d2651e0c776f92e7d1b54ed80ed94aaf78913c"
     },
     {
@@ -105,8 +105,38 @@
     {
       "path": "src/mastodon/collections.ts",
       "functions": ["inCollections", "showCollection"],
-      "spec": "FeatureDKopje.tla Shown and MemberShown: what others and L see",
+      "spec": "FeatureDKopje.tla Shown, MemberDetail and InCollections: what others and L see",
       "blob": "bf6e38b4cc1820294e0bbac168a4f3147c470b13"
+    },
+    {
+      "path": "src/domain/collection-requests.ts",
+      "functions": ["markCollectionsChanged"],
+      "spec": "FeatureD.tla Touch: a valid push of R's collections outdates a read under way (outd), apart from the row fence (chg)",
+      "blob": "fea787c9c45bed9bf02450182e0a3552e675ffd5"
+    },
+    {
+      "path": "src/domain/audience.ts",
+      "functions": ["collectionItemShownSql", "inCollectionsSql", "availableSql"],
+      "spec": "FeatureDKopje.tla Shown, MemberDetail, InCollections and LAvail (R45 and L's availability)",
+      "blob": "4a6caa5366ba75832e04ef1d3f1a3cd1c6b970db"
+    },
+    {
+      "path": "src/federation/featured-collections.ts",
+      "functions": ["featuredCollectionOf"],
+      "spec": "FeatureDKopje.tla ListingType: the listing's truncated flag, set before the entries are cut to 25",
+      "blob": "a0c479d8c14b5c44d0a8c7e5c4bd9d59bd31b25c"
+    },
+    {
+      "path": "src/domain/retractions.ts",
+      "functions": ["isRetracted", "isDeleted", "recordDeletedObject", "canRetract", "retract"],
+      "spec": "FeatureDKopje.tla ret (ID-7 retractions and the cap's 503) and rk (R's tombstone, checked by ApplyFetch and ApplyRead)",
+      "blob": "878764ba82b61aef40cb6292e17c8901d532de03"
+    },
+    {
+      "path": "src/domain/delivery-hosts.ts",
+      "functions": ["hostCaused"],
+      "spec": "FeatureD.tla KMemberGone is model-only: Kopje never deletes a local account (the comment above hostCaused)",
+      "blob": "77377fcb57234fa807122fda932f0acf6ba83f0e"
     }
   ]
 }

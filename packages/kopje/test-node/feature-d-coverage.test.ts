@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { blobOf, readRecord } from "../scripts/feature-d-coverage.mjs";
+import { blobOf, readRecord, unrunFixtures } from "../scripts/feature-d-coverage.mjs";
 
 const record = readRecord();
 const PACKAGE = fileURLToPath(new URL("..", import.meta.url));
@@ -27,4 +27,25 @@ describe(`spec/feature-d's coverage record (confirmed at ${record.confirmed.slic
       expect(names.filter((name) => !new RegExp(`\\b${name}\\b`).test(source))).toEqual([]);
     });
   }
+});
+
+describe("the replay's run (scripts/feature-d-coverage.mjs forward)", () => {
+  it("names each fixture without a passed test of its title", () => {
+    const report = {
+      testResults: [
+        {
+          assertionResults: [
+            { title: "S1-Accepted", status: "passed" },
+            { title: "S1-Shown", status: "skipped" },
+            { title: "S1-F3", status: "failed" },
+          ],
+        },
+      ],
+    };
+    expect(unrunFixtures(report, ["S1-Accepted", "S1-Shown", "S1-F3", "S1-KDup"])).toEqual([
+      "S1-Shown",
+      "S1-F3",
+      "S1-KDup",
+    ]);
+  });
 });
