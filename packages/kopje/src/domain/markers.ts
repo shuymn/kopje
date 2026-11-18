@@ -1,5 +1,6 @@
 import type { Db } from "../db/sql";
 import { railsBlank } from "../platform/rails-blank";
+import { sqliteLength } from "../platform/stored-bounds";
 import { userReadOperation, userWriteOperation } from "./auth";
 
 // Timeline markers (Mastodon 4.5's Marker and Api::V1::MarkersController): where a user stopped reading home and
@@ -53,13 +54,17 @@ export type MarkerUpdate = { timeline: MarkerTimeline; lastReadId: string | unde
 
 export type SaveMarkersResult = { status: "ok"; markers: Markers } | { status: "invalid"; errors: string[] };
 
-// Marker's validation of last_read_id (presence), with Rails' message, and Kopje's bound.
+// Marker's validation of last_read_id (presence), with Rails' message, and Kopje's bounds: its length, and no U+0000
+// at its start, which the column's length CHECK reads as empty (Mastodon reads the value as a bigint, U+0000 as 0).
 function lastReadIdErrors(lastReadId: string): string[] {
   if (railsBlank(lastReadId)) {
     return ["Last read can't be blank"];
   }
   if ([...lastReadId].length > MAX_LAST_READ_ID) {
     return [`Last read is too long (maximum is ${MAX_LAST_READ_ID} characters)`];
+  }
+  if (sqliteLength(lastReadId) === 0) {
+    return ["Last read can't start with a NUL character"];
   }
   return [];
 }

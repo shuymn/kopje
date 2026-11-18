@@ -20,6 +20,7 @@ import {
   presentedNote,
   presentedProfileDescription,
   REMOTE_VERIFIED_SHOWN,
+  sqliteLength,
 } from "../platform/stored-bounds";
 import { rubyStrip } from "../platform/strip";
 import { sanitizeRemoteHtml } from "../security/html";
@@ -1575,8 +1576,9 @@ export function followLimit(counts: { following_count: number; followers_count: 
 
 // POST /api/v1/accounts/:id/note (Accounts::NotesController, AccountNote): the viewer's private note on any stored
 // account, the viewer's own included. A blank comment (absent, or blank by railsBlank) deletes the note; a longer one
-// than AccountNote::COMMENT_SIZE_LIMIT characters is refused with Rails' message, after the account is found. The note
-// is kept as sent, and only its author is shown it (relationshipsOf).
+// than AccountNote::COMMENT_SIZE_LIMIT characters is refused with Rails' message, after the account is found, and so
+// is one that starts with U+0000, which the column's length CHECK reads as empty (Mastodon answers 500 to any U+0000,
+// docs/mastodon-deviations.md). The note is kept as sent, and only its author is shown it (relationshipsOf).
 export const MAX_NOTE_COMMENT = 2_000;
 
 export type NoteResult = RelationshipResult | { status: "invalid"; errors: string[] };
@@ -1592,6 +1594,8 @@ export const setNote = userWriteOperation<{ target: string; comment: string | un
       db.run("DELETE FROM account_notes WHERE account_id = ? AND target_account_id = ?", viewerId, id);
     } else if ([...comment].length > MAX_NOTE_COMMENT) {
       return { status: "invalid", errors: [`Comment is too long (maximum is ${MAX_NOTE_COMMENT} characters)`] };
+    } else if (sqliteLength(comment) === 0) {
+      return { status: "invalid", errors: ["Comment can't start with a NUL character"] };
     } else {
       // An unchanged note is not written again (`@note.save! if @note.changed?`).
       db.run(
