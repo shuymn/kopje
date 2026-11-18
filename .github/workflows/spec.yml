@@ -1,13 +1,13 @@
 name: Specification
 # Checks Kopje's TLA+ specifications (packages/kopje/spec/) under the official TLC, the second checker beside tla-ts,
-# which CI's kopje-spec project runs (test-node/feature-d-spec.test.ts). Both must give the outcomes
-# spec/feature-d/checks.json records. It runs when a specification, its checks, the scripts that run them, the pinned
-# tools (the JDK in mise.spec.toml, node in mise.toml) or the tla-ts pin change.
+# which CI's kopje-spec project runs (test-node/collection-consent-spec.test.ts). Both must give the outcomes
+# spec/collection-consent/checks.json records. It runs when a specification, its checks, the scripts that run them, the
+# pinned tools (the JDK in mise.spec.toml, node in mise.toml) or the tla-ts pin change.
 on:
   pull_request:
     paths:
       - "packages/kopje/spec/**"
-      - "packages/kopje/scripts/feature-d-plan.mjs"
+      - "packages/kopje/scripts/collection-consent-plan.mjs"
       - "packages/kopje/scripts/tlc-check.mjs"
       - "pnpm-workspace.yaml"
       - "pnpm-lock.yaml"
@@ -21,7 +21,7 @@ on:
       - main
     paths:
       - "packages/kopje/spec/**"
-      - "packages/kopje/scripts/feature-d-plan.mjs"
+      - "packages/kopje/scripts/collection-consent-plan.mjs"
       - "packages/kopje/scripts/tlc-check.mjs"
       - "pnpm-workspace.yaml"
       - "pnpm-lock.yaml"

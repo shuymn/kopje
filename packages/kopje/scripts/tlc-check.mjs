@@ -1,8 +1,8 @@
-// Runs every check of spec/feature-d/checks.json under the official TLC and compares its outcome with the one
-// recorded there, which test-node/feature-d-spec.test.ts requires of tla-ts: a scenario's and the induction's status,
-// distinct states and depth; a variant's, finding's or goal's violated invariant and shortest-trace length. Only the
-// induction's count is TLC's own (checks.json says why). Any other difference is a disagreement between the two
-// checkers to report, not a count to update.
+// Runs every check of spec/collection-consent/checks.json under the official TLC and compares its outcome with the one
+// recorded there, which test-node/collection-consent-spec.test.ts requires of tla-ts: a scenario's and the induction's
+// status, distinct states and depth; a variant's, finding's or goal's violated invariant and shortest-trace length.
+// Only the induction's count is TLC's own (checks.json says why). Any other difference is a disagreement between the
+// two checkers to report, not a count to update.
 //
 //   node scripts/tlc-check.mjs [--jar <tla2tools.jar>] [--only <name>]... [--trace]
 //
@@ -30,7 +30,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { SPEC_DIR, checks, readPlan } from "./feature-d-plan.mjs";
+import { SPEC_DIR, checks, readPlan } from "./collection-consent-plan.mjs";
 
 const TLC_VERSION = "1.7.4";
 const TLC_URL = `https://github.com/tlaplus/tlaplus/releases/download/v${TLC_VERSION}/tla2tools.jar`;
@@ -80,7 +80,7 @@ export function parseTlc(output) {
 
 /**
  * @param {string} jar
- * @param {import("./feature-d-plan.mjs").Check} check
+ * @param {import("./collection-consent-plan.mjs").Check} check
  */
 function runTlc(jar, check) {
   const dir = mkdtempSync(join(tmpdir(), "kopje-tlc-"));
