@@ -1,6 +1,6 @@
 {
   "$comment": "Kopje's sources spec/collection-consent/ describes, and their blobs when it was last confirmed to (scripts/collection-consent-coverage.mjs). A null blob is a file the specification describes that Kopje does not have yet. test-node/collection-consent-coverage.test.ts fails once a blob differs.",
-  "confirmed": "3144b6baadc3d9976a622a70c58088372444b612",
+  "confirmed": "3cfebad97e5a214dc5692b6d92639d43cbd75c3e",
   "files": [
     {
       "path": "src/store.ts",
@@ -12,19 +12,19 @@
       "path": "src/domain/inbox.ts",
       "functions": ["receiveActivity", "startActorDeletion", "purgeBatch"],
       "spec": "CollectionConsent.tla RecvRes and Touch: which of CollectionConsentKopje.tla's operators an inbound activity runs, when it is ignored, and that every valid push of R's collections outdates a read under way, a no-op one included; OwnerGone and KPurge: an actor Delete writes R's tombstone and runs the first purge batch in its own transaction, which reaches C or not, and later batches purge the rest",
-      "blob": "3a62db713f12edf18395f3947ad9c1f6b5d30274"
+      "blob": "c04be6d2bb8b7bcca1530bd884cf1faa50227d11"
     },
     {
       "path": "src/federation/inbound.ts",
       "functions": ["receiveInbound", "fetchesFirst"],
       "spec": "CollectionConsent.tla KRecv and NeedsFetch: an inbound activity's routing; the Store's need to fetch the instrument of a FeatureRequest for a collection Kopje does not store (the step's response \"fetch\"), then the resumed activity's own transaction and final status (202, 503)",
-      "blob": "95288757c3cb04148792e37e8bdc02977460eab4"
+      "blob": "41c661e8316b8ff261e2f2285a5ad61dcc5c1467"
     },
     {
       "path": "src/domain/inbound-feature-requests.ts",
       "functions": ["answerFeatureRequest"],
       "spec": "CollectionConsentKopje.tla Decide (K1) and ApplyFetch (K1b): the availability gate, the existing-collection path for a collection stored since the fetch, and the outdated mark when the instrument stores one",
-      "blob": null
+      "blob": "1bb3cc7db53fcbf336fc71caeaaad61cd59f1c85"
     },
     {
       "path": "src/domain/feature-answers.ts",
@@ -38,7 +38,7 @@
         "answerRequest"
       ],
       "spec": "CollectionConsentKopje.tla Served, Shown, AnswerClass, AddItem (K2, with the listing gate), ApplyRead (K14) and KeptByRow",
-      "blob": null
+      "blob": "644a597875840eec8b226baa8eb28cef2351dbcd"
     },
     {
       "path": "src/domain/remote-featured-collections.ts",
@@ -51,13 +51,13 @@
         "revokeFeatureAuthorization"
       ],
       "spec": "CollectionConsentKopje.tla AddItem (K2), RemoveItem (K3), UpdateCollection (K4), RemoveCollection (K5), OwnerGone (K6), Revoke (K7), ApplyRead (K14)",
-      "blob": "2c7ecf8e26c449901a358a90766f877e64121ee3"
+      "blob": "4d3ac1cd532aff73a821079f7b710d08c0d1cf33"
     },
     {
       "path": "src/domain/remote-collections.ts",
       "functions": ["claimCollectionSync", "endRound", "roundAccount", "completeCollectionRead"],
       "spec": "CollectionConsent.tla KClaim, KApply, KLease and KStale: a read's claim (a new token; the request kept until a completion reads it through), its completion, its outdated check and its claim token, which only a new claim replaces (a lease's end alone fences nothing)",
-      "blob": "01a08bba56f5d9e3dc6c38e6accd563d9e0572e9"
+      "blob": "774078290208baf7e9c264add5db110e8fa83515"
     },
     {
       "path": "src/federation/collections.ts",
@@ -69,13 +69,13 @@
       "path": "src/domain/collections.ts",
       "functions": ["severCollections", "pruneCollectionItems"],
       "spec": "CollectionConsentKopje.tla Block (K8, an ordinary Block with the row's Delete), Cleanup (K10) and Evict; MemberGone (K9) is model-only",
-      "blob": "f8802640b1225db85c030e41fbb826324d681393"
+      "blob": "2dc72f255bc0b112904ad847d9100a3b622a892d"
     },
     {
       "path": "src/domain/collection-documents.ts",
       "functions": ["featureAuthorizationDocument", "recordItemRemove"],
       "spec": "CollectionConsentKopje.tla AuthorizationServed: GET of an authorization, 200 with interactingObject C and interactionTarget L while the row is accepted and L available, else 404; the Delete an answer records",
-      "blob": "867bce721b102917d936b0582d8d39538e662565"
+      "blob": "d6e642fc9ddba0ee9fb08c868c96e3050d4ad9af"
     },
     {
       "path": "src/domain/activities.ts",
@@ -87,7 +87,7 @@
       "path": "src/domain/deliveries.ts",
       "functions": ["enqueueActivity", "claimDeliveries", "confirmDelivery", "retryDeliveries"],
       "spec": "CollectionConsent.tla Record (RES-4's refusal at a full backlog) and Coalesced (no retraction answer recorded while one of the same authorization to the same inbox waits), the lane in id order (KDeliver, KDup, KGiveUp) and KRetry's admission re-check and place in the lane",
-      "blob": "53d2651e0c776f92e7d1b54ed80ed94aaf78913c"
+      "blob": "7657b77071acb6ede771fe6232ef52cd8741a860"
     },
     {
       "path": "src/store-rpc.ts",
@@ -100,13 +100,13 @@
         "retryDeliveries"
       ],
       "spec": "CollectionConsent.tla's atomicity: each Kopje step is one of these RPCs",
-      "blob": "f9f8306d13083a32ecec2f78a09450abea43cdfc"
+      "blob": "b81a7c63ed2a9b0fd34443b9c1a990ea78880ea0"
     },
     {
       "path": "src/mastodon/collections.ts",
       "functions": ["inCollections", "showCollection"],
       "spec": "CollectionConsentKopje.tla Shown, MemberDetail and InCollections: what others and L see",
-      "blob": "bf6e38b4cc1820294e0bbac168a4f3147c470b13"
+      "blob": "1a334d5a2d17910101a25cd5fa86b655fa7ef636"
     },
     {
       "path": "src/domain/collection-requests.ts",
@@ -118,13 +118,13 @@
       "path": "src/domain/audience.ts",
       "functions": ["collectionItemShownSql", "inCollectionsSql", "availableSql"],
       "spec": "CollectionConsentKopje.tla Shown, MemberDetail, InCollections and LAvail (R45 and L's availability)",
-      "blob": "4a6caa5366ba75832e04ef1d3f1a3cd1c6b970db"
+      "blob": "2b3e6b7d0a2dc41f10890755e3dbf07fe153f09b"
     },
     {
       "path": "src/federation/featured-collections.ts",
       "functions": ["featuredCollectionOf"],
       "spec": "CollectionConsentKopje.tla ListingType: the listing's truncated flag, set before the entries are cut to 25",
-      "blob": "a0c479d8c14b5c44d0a8c7e5c4bd9d59bd31b25c"
+      "blob": "ffd71ac84ca4cac577b7857af10cf26c3715a5ae"
     },
     {
       "path": "src/domain/retractions.ts",
