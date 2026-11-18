@@ -612,6 +612,9 @@ describe("an actor's followers and following are read as Mastodon reads them (#1
     expect(await quoted(t, collision, [stored, collision.uri, G, PUBLIC])).toMatchObject({
       policy: QUOTE_FLAGS.public << 16,
     });
+    // The second public spelling is a string left at the unreadable collection: Mastodon reads it as followers if it
+    // stores that collection as the IRI, else as unsupported_policy (#1772), so it adds nothing.
+    expect(await quoted(t, collision, ["as:Public", PUBLIC])).toMatchObject({ policy: QUOTE_FLAGS.public << 16 });
     expect(await quoted(t, collision, [7], [{ id: stored }])).toMatchObject({
       policy: (QUOTE_FLAGS.unsupportedPolicy << 16) | QUOTE_FLAGS.unsupportedPolicy,
     });
@@ -622,6 +625,18 @@ describe("an actor's followers and following are read as Mastodon reads them (#1
       alice: "automatic",
       dave: "denied",
     });
+  });
+
+  // Mastodon takes one public spelling before the followers collection (status_parser.rb:184-186), so a collection
+  // named as the full IRI takes a second spelling: Mastodon 4.7.5 gives public | followers for this list (#1772). Fails
+  // if every public spelling is taken as public (followers would be lost).
+  it("takes one public spelling, then a collection named as another (R36)", async () => {
+    const t = await setup();
+    const named = await author(t, "publicfollowers", PUBLIC, H);
+    expect((await quoted(t, named, ["as:Public", PUBLIC])).policy).toBe(
+      (QUOTE_FLAGS.public | QUOTE_FLAGS.followers) << 16,
+    );
+    expect((await quoted(t, named, [PUBLIC])).policy).toBe(QUOTE_FLAGS.public << 16);
   });
 
   // A string entry is compared whatever its length, as Mastodon compares it, so one past MAX_URL_LENGTH is read in the

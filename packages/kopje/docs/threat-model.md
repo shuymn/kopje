@@ -3371,7 +3371,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Matching a username: _Enforced (main):_ `USERNAME` (`src/platform/domain-name.ts`) and `REMOTE_USERNAME`
   (`src/platform/identity-bounds.ts`) are written in a form matched in linear time; `test/username.test.ts` ("matches
   what the baseline matches"), `test/interaction.test.ts` ("reads an address at INTERACTION_TARGET_BYTES within a
-  generous time").
+  generous time"). Interaction policies: _Enforced (main):_ each half of a `canQuote` or `canFeature` is read whole, as
+  Mastodon reads it, its entries within the received document's `MAX_JSON_NODES` values and each string once
+  (`policyHalf` in `src/federation/remote-status.ts`, `subpolicyReader` in `src/domain/remote-actors.ts`);
+  `test/quote-authoring.test.ts` ("reads a half filling the body bounds within a generous time"),
+  `test/feature-approval.test.ts` ("reads a half filling the document bounds within a generous time").
   _Enforced (main)_ for JSON-LD
   processing and inbound JSON: every inbound activity and every fetched document must stay within 10,000 values and 32
   levels of nesting before anything reads it or hands it to JSON-LD (`withinJsonBounds` in

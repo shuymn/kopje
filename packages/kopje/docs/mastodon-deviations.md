@@ -693,15 +693,18 @@ Mastodon's `JsonLdHelper#collection_items`; RES-6 in [threat-model.md](threat-mo
   (a line feed in the userinfo as spelled, the port `4%0A` as `:4`). The Store's JSON functions read a lone surrogate's
   escape as bytes that come back as U+FFFD, so its SQL readers and `JSON.parse` would read two strings, and a line feed
   moves the splits of Ruby's line-anchored expressions. No addressing names such a collection, so a status addressed to
-  it is direct where Mastodon may make it private. A quote policy's entries are read in Mastodon's order (the public
-  collection, then the followers collection, then the following one, each match taken before the next,
-  `status_parser.rb:179-196`), and past such a collection an entry adds nothing but the public collection's flag, and a
-  value that is not a string `unsupported_policy`: Mastodon may store the collection as the very string a later entry
-  lists and read the entry as it, so neither a later collection's flag nor `unsupported_policy` (which lets anyone ask)
-  is known to be Mastodon's. Every string entry is compared as Mastodon compares it, whatever its length (a policy's
-  strings are the received object's, within its 1 MiB body bound; the stored collection compared with them has no fixed
-  bound), so each entry's flags are within Mastodon's, and no one may quote or ask where Mastodon refuses them.
-  Accepted, 2026-11-16.
+  it is direct where Mastodon may make it private. The entries of a quote policy (`canQuote`) and of an actor's
+  `canFeature` are read in Mastodon's order (one spelling of the public collection, then the followers collection, then
+  the following one, then the author itself, each match taken before the next: `status_parser.rb:179-196`,
+  `interaction_policy_parser.rb:22-40`), and past such a collection a string adds nothing but the public collection's
+  flag (the author itself still makes a `canFeature` half that adds nothing `disabled`), while a value that is not a
+  string, which no collection matches, adds `unsupported_policy` as in Mastodon: Mastodon may store the collection as
+  the very string a later entry lists and read the entry as it, so neither a later collection's flag nor
+  `unsupported_policy` for a string (which lets anyone ask to quote) is known to be Mastodon's. Every entry is read,
+  and every string entry compared as Mastodon compares it, whatever its length (a policy's entries are the received
+  object's, within its 1 MiB body bound and 10,000 values; the stored collection compared with them has no fixed
+  bound), so each entry's flags are within Mastodon's, and no one may quote, feature or ask where Mastodon refuses
+  them. Accepted, 2026-11-16.
 
 - An `Add` or `Remove` of a `Hashtag` aimed at the actor's `featuredTags` collection features or unfeatures it, as
   one aimed at its `featured` collection does. Mastodon 4.7.5 reads a hashtag only from one aimed at the `featured`
