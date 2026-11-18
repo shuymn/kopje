@@ -7,6 +7,8 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   // `cloudflare:test` and `cloudflare:workers` are workerd's built-in modules, not packages.
   "ignoreDependencies": ["cloudflare"],
+  // The JDK mise.spec.toml pins, which packages/kopje/scripts/tlc-check.mjs runs TLC under.
+  "ignoreBinaries": ["java"],
   "workspaces": {
     ".": {
       // The release scripts' tests (`pnpm run test:scripts`). The scripts themselves are found from the workflows and

@@ -46,7 +46,7 @@ function run(env = {}, ...args) {
   const result = spawnSync("bash", [script, ...args], {
     cwd: repo,
     encoding: "utf8",
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, KOPJE: "", KOPJE_CODE: "", ...env },
+    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, KOPJE: "", KOPJE_CODE: "", KOPJE_SPEC: "", ...env },
   });
   return { status: result.status, stderr: result.stderr, pnpm: readFileSync(join(work, "pnpm.log"), "utf8").trim() };
 }
@@ -54,21 +54,26 @@ function run(env = {}, ...args) {
 /**
  * @param {boolean} kopje
  * @param {boolean} kopjeCode
+ * @param {boolean} kopjeSpec
  */
-const B = (kopje, kopjeCode) => ({ kopje: `${kopje}`, kopje_code: `${kopjeCode}` });
+const B = (kopje, kopjeCode, kopjeSpec) => ({
+  kopje: `${kopje}`,
+  kopje_code: `${kopjeCode}`,
+  kopje_spec: `${kopjeSpec}`,
+});
 
 describe("suites", () => {
   it("runs only the Node suite for Kopje Markdown", () => {
-    assert.deepEqual(suites("packages/kopje/docs/visibility.md", "packages/kopje/CHANGELOG.md"), B(true, false));
-    assert.deepEqual(suites("deploy/README.md"), B(true, false));
+    assert.deepEqual(suites("packages/kopje/docs/visibility.md", "packages/kopje/CHANGELOG.md"), B(true, false, false));
+    assert.deepEqual(suites("deploy/README.md"), B(true, false, false));
   });
 
   it("runs no suite for Markdown outside the packages", () => {
-    assert.deepEqual(suites("AGENTS.md", "README.md", ".claude/rules/kopje-web.md"), B(false, false));
+    assert.deepEqual(suites("AGENTS.md", "README.md", ".claude/rules/kopje-web.md"), B(false, false, false));
   });
 
   it("runs Kopje for the scope table its vectors import", () => {
-    assert.deepEqual(suites("packages/kopje/docs/mastodon-api-spec/client-api/auth-oauth.md"), B(true, true));
+    assert.deepEqual(suites("packages/kopje/docs/mastodon-api-spec/client-api/auth-oauth.md"), B(true, true, false));
   });
 
   // test-node/witness-recording.test.ts records the flows of witness-world.ts on the Store's sources and compares
@@ -80,14 +85,43 @@ describe("suites", () => {
       "packages/kopje/src/domain/audience.ts",
       "packages/kopje/src/domain/windows.ts",
     ]) {
-      assert.deepEqual(suites(path), B(true, true), path);
+      assert.deepEqual(suites(path), B(true, true, false), path);
     }
   });
 
   it("runs every suite for code, root config and an empty list", () => {
-    assert.deepEqual(suites("packages/kopje/docs/x.md", "packages/kopje/src/store.ts"), B(true, true));
-    assert.deepEqual(suites("pnpm-lock.yaml"), B(true, true));
-    assert.deepEqual(suites(), B(true, true));
+    assert.deepEqual(suites("packages/kopje/docs/x.md", "packages/kopje/src/store.ts"), B(true, true, false));
+    assert.deepEqual(suites(".oxlintrc.json"), B(true, true, false));
+    assert.deepEqual(suites("pnpm-lock.yaml"), B(true, true, true));
+    assert.deepEqual(suites(), B(true, true, true));
+  });
+
+  // The specification's checks read the specification and its drift record, the fixtures, the files that run and
+  // compare them, the dependencies and the test configuration (vitest.spec.config.ts), and nothing else.
+  it("runs the specification's checks only for what they read", () => {
+    for (const path of [
+      "packages/kopje/spec/feature-d/FeatureD.tla",
+      "packages/kopje/spec/feature-d/coverage.json",
+      "packages/kopje/test/fixtures/feature-d/S1-Accepted.json",
+      "packages/kopje/test-node/feature-d-spec.test.ts",
+      "packages/kopje/test-node/feature-d-fixtures.ts",
+      "packages/kopje/scripts/feature-d-plan.mjs",
+      "packages/kopje/test/feature-d-observe.ts",
+      "packages/kopje/test/feature-d-replay.test.ts",
+      "packages/kopje/package.json",
+      "pnpm-workspace.yaml",
+      "vitest.config.ts",
+      "packages/kopje/vitest.spec.config.ts",
+      ".github/workflows/ci.yml",
+    ]) {
+      assert.deepEqual(suites(path), B(true, true, true), path);
+    }
+    for (const path of [
+      "packages/kopje/src/domain/collections.ts",
+      "packages/kopje/test-node/feature-d-coverage.test.ts",
+    ]) {
+      assert.deepEqual(suites(path), B(true, true, false), path);
+    }
   });
 });
 
@@ -135,7 +169,18 @@ describe("runs", () => {
   });
 
   it("runs only the Node suite when CI decided the change is Kopje Markdown", () => {
-    assert.equal(run({ KOPJE: "true", KOPJE_CODE: "false" }).pnpm, "run test --project kopje-cli");
+    assert.equal(run({ KOPJE: "true", KOPJE_CODE: "false", KOPJE_SPEC: "false" }).pnpm, "run test --project kopje-cli");
+  });
+
+  it("runs the specification's checks when CI decided the change is one they read, or decided only Kopje", () => {
+    assert.equal(
+      run({ KOPJE: "true", KOPJE_CODE: "true", KOPJE_SPEC: "true" }).pnpm,
+      "run test --project kopje --project kopje-streaming --project kopje-main-runtime --project kopje-cli --project kopje-spec",
+    );
+    assert.equal(
+      run({ KOPJE: "true" }).pnpm,
+      "run test --project kopje --project kopje-streaming --project kopje-main-runtime --project kopje-cli --project kopje-spec",
+    );
   });
 
   it("runs nothing when no suite reads the change", () => {

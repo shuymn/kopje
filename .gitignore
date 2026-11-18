@@ -6,7 +6,10 @@ packages/kopje/dist/
 .dev.vars
 lefthook-local.yml
 /.agents/skills/
-/.claude/skills/
+# Local agent skills, except the repository's own (the first line overrides a local exclude of the directory).
+!/.claude/skills/
+/.claude/skills/*
+!/.claude/skills/verify-feature-d/
 packages/kopje/browser/.pages/
 packages/kopje/browser/.results/
 /coverage/
