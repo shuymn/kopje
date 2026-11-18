@@ -3,12 +3,11 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
-import { EXPANSION_STEP, expandPending, MAX_BACKLOG, MAX_LANE_BACKLOG } from "../src/domain/deliveries";
-import { ANSWER_POLL_MS, PREAPPROVED_WAIT_MS } from "../src/domain/feature-answers";
+import { MAX_BACKLOG, MAX_LANE_BACKLOG } from "../src/domain/deliveries";
 import { ourFeatureRequest } from "../src/domain/feature-requests";
-import { answerFeatureRequest } from "../src/domain/inbound-feature-requests";
 import { SWEEP_BATCH } from "../src/domain/remote-actors";
 import { parseActivity } from "../src/federation/inbound";
+import { MAX_STORED_COLLECTIONS } from "../src/platform/stored-bounds";
 import { settleDeliveries, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { mastodon47Signed, mastodonFeatureDelete, signTime } from "./author-proof-helpers";
@@ -23,13 +22,14 @@ import {
   localItem,
   localRows,
   outbound,
+  requestSync,
   serveListing,
   storedMember,
   storedOwner,
   syncAll,
 } from "./featured-collection-helpers";
 import { BUILD } from "./helpers";
-import { LOCAL, MASTODON, mastodonActor, type TestActor } from "./inbox-helpers";
+import { MASTODON, mastodonActor, type TestActor } from "./inbox-helpers";
 import {
   ALICE,
   ALICE_URI,
@@ -807,19 +807,23 @@ const notifications = (t: Setup) =>
 
 describe("a remote owner's feature request for a local account (D24)", () => {
   // 6-T1. Fails if an answer names the row's stored request instead of the one answered (the owner ignores it), if a
-  // repeat does not queue the wait again, or if a replay after the revoke is accepted.
-  it("answers each request by the row's state, naming the request it answers and queuing the row's wait", async () => {
+  // request for an accepted row is decided by the member's policy (a Reject would end the owner's live item,
+  // reject.rb:41-46; Mastodon re-checks its policy, feature_request.rb:14-18), if the row is queued for a check, or if
+  // a replay after the revoke is accepted.
+  it("answers each request by the row's state, naming the request it answers, an accepted row with no policy check", async () => {
     const w = await owned();
     const r1 = requestFor(w);
     expect(await w.t.post(w.owner, r1)).toBe(202);
     const [row] = await localRows(w.t, ALICE);
     const a = authorization(row!.id);
+    // Answers are ordinary deliveries: no check, no wait.
     expect(row).toMatchObject({
       state: ACCEPTED,
       activity_uri: r1.id,
       uri: null,
-      candidate_approval_uri: a,
-      check_due_at: NOW + ANSWER_POLL_MS,
+      candidate_approval_uri: null,
+      answer: null,
+      check_due_at: null,
       check_token: null,
     });
     const accept = (request: string) => ({
@@ -835,15 +839,14 @@ describe("a remote owner's feature request for a local account (D24)", () => {
     expect(sentAnswers.map(({ activity, deliveries }) => [activity, deliveries.map((d) => d.inbox)])).toEqual([
       [accept(r1.id), [`${w.owner.uri}/inbox`]],
     ]);
-    expect(row!.answer).toBe(sentAnswers[0]!.id);
     expect(await notifications(w.t)).toEqual([{ type: "added_to_collection" }]);
     expect(await authorizationStatus(w.t, row!.id)).toBe(200);
 
-    // A repeat of the same request: the same Accept, one row, one notification, the wait queued on the new answer.
+    // A repeat of the same request: the same Accept, one row, one notification.
     expect(await w.t.post(w.owner, r1)).toBe(202);
     sentAnswers = await aliceAnswers(w.t);
     expect(sentAnswers.map(({ activity }) => activity)).toEqual([accept(r1.id), accept(r1.id)]);
-    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, answer: sentAnswers[1]!.id }]);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, activity_uri: r1.id }]);
     expect(await notifications(w.t)).toHaveLength(1);
 
     // Another request while accepted: an Accept naming it with the same authorization, the row's request replaced and
@@ -859,26 +862,18 @@ describe("a remote owner's feature request for a local account (D24)", () => {
     sentAnswers = await aliceAnswers(w.t);
     expect(sentAnswers.at(-1)!.activity).toEqual(accept(r2.id));
     expect(await localRows(w.t, ALICE)).toMatchObject([
-      { id: row!.id, state: ACCEPTED, activity_uri: r2.id, uri: null, answer: sentAnswers.at(-1)!.id },
+      { id: row!.id, state: ACCEPTED, activity_uri: r2.id, uri: null },
     ]);
     expect(await notifications(w.t)).toHaveLength(1);
 
-    // Consent withdrawn: a Reject naming the request, the row kept with its wait queued again.
+    // Consent withdrawn: the accepted row is the consent, so another request is accepted all the same.
     await sql(w.t.store, "UPDATE accounts SET discoverable = 0 WHERE id = ?", ALICE);
     const r3 = requestFor(w);
     expect(await w.t.post(w.owner, r3)).toBe(202);
     sentAnswers = await aliceAnswers(w.t);
-    expect(sentAnswers.at(-1)!.activity).toEqual({
-      "@context": AS,
-      id: `${ALICE_URI}#rejects/feature_requests/${row!.id}`,
-      type: "Reject",
-      actor: ALICE_URI,
-      to: w.owner.uri,
-      object: r3.id,
-    });
-    expect(await localRows(w.t, ALICE)).toMatchObject([
-      { id: row!.id, state: ACCEPTED, activity_uri: r2.id, answer: sentAnswers.at(-1)!.id },
-    ]);
+    expect(sentAnswers.at(-1)!.activity).toEqual(accept(r3.id));
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: ACCEPTED, activity_uri: r3.id }]);
+    expect(await authorizationStatus(w.t, row!.id)).toBe(200);
 
     // After the member revoked (the row kept 24 hours), a delayed request is refused and the authorization stays gone.
     await sql(w.t.store, "UPDATE accounts SET discoverable = 1 WHERE id = ?", ALICE);
@@ -887,105 +882,52 @@ describe("a remote owner's feature request for a local account (D24)", () => {
     const r4 = requestFor(w);
     expect(await w.t.post(w.owner, r4)).toBe(202);
     expect((await aliceAnswers(w.t)).at(-1)!.activity).toMatchObject({ type: "Reject", object: r4.id });
-    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: REVOKED, activity_uri: r2.id }]);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: REVOKED, activity_uri: r3.id }]);
     expect(await authorizationStatus(w.t, row!.id)).toBe(404);
 
-    // Once the cleanup deleted the row, a request is decided again.
+    // Once the cleanup deleted the retired row, a request is decided again.
     await sql(w.t.store, "DELETE FROM collection_items WHERE id = ?", row!.id);
     const r5 = requestFor(w);
     expect(await w.t.post(w.owner, r5)).toBe(202);
     expect(await localRows(w.t, ALICE)).toMatchObject([{ state: ACCEPTED, activity_uri: r5.id }]);
   });
 
-  // The wait ends only once every answer the row sent and that may still be delivered has settled, whatever RES-4's caps
-  // refused. Fails if a poll starts the margin while the first Accept is still queued in the lane, the repeat's Accept
-  // refused at the full lane when it is recorded or at a later expansion (its target held behind older ones): the read
-  // the margin's end requests would delete the accepted row before the owner received the Accept. Fails too if the
-  // wait does not end once the lane settled.
-  for (const refused of ["when recorded", "at a later expansion"] as const) {
-    it(`polls on while an earlier Accept is queued, a repeat's Accept refused ${refused}, and ends once all settled`, async () => {
-      const w = await owned();
-      await filledLanes(w.t, MASTODON, MAX_LANE_BACKLOG - 1);
-      const request = requestFor(w);
-      expect(await w.t.post(w.owner, request)).toBe(202);
-      const owner = (await sql<{ id: string }>(w.t.store, "SELECT id FROM accounts WHERE uri = ?", w.owner.uri))[0]!;
-      const [row] = await localRows(w.t, ALICE);
-      // alice's Accepts and their deliveries, read without settling any (outbound would expand the held target).
-      const accepts = () =>
-        sql<{ id: string; state: string | null; error: string | null }>(
-          w.t.store,
-          `SELECT CAST(o.id AS TEXT) AS id, d.state, d.last_error AS error FROM outbound_activities o
-					LEFT JOIN deliveries d ON d.activity_id = o.id
-				WHERE o.account_id = ? AND json_extract(o.body, '$.activity.type') = 'Accept' ORDER BY o.id`,
-          ALICE,
-        );
-      const [first] = await accepts();
-      expect(first).toMatchObject({ state: "queued" });
-
-      // A repeat of the request: its Accept the row's latest answer, refused at the full lane.
-      if (refused === "at a later expansion") {
-        // Older targets of another activity, an expansion step of them: recording the repeat's Accept spends its step on
-        // them (the repeat answered in the Store, with no delivery claim after it).
-        await olderTargets(w.t, 1);
-        const repeated = { id: request.id, object: ALICE_URI, instrument: w.listed.id };
-        expect(
-          await runInDurableObject(w.t.store, (_instance, state) =>
-            state.storage.transactionSync(() =>
-              answerFeatureRequest(
-                new Db(state.storage.sql),
-                { ...owner, uri: w.owner.uri },
-                repeated,
-                undefined,
-                LOCAL,
-                NOW,
-              ),
-            ),
-          ),
-        ).toEqual({ kind: "answered", reason: "feature-repeated" });
-      } else {
-        expect(await w.t.post(w.owner, request)).toBe(202);
-      }
-      const repeat = (await accepts()).at(-1)!;
-      expect([repeat.id === first!.id, repeat.state]).toEqual([
-        false,
-        refused === "at a later expansion" ? null : "gave_up",
-      ]);
-      expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, answer: repeat.id }]);
-
-      // It polls on past the margin while the first Accept is queued, the repeat's target expanded (refused) in
-      // between: no read requested, the row accepted.
-      await sql(w.t.store, "DELETE FROM collection_syncs");
-      let at = NOW + ANSWER_POLL_MS;
-      await checkRound(w.t, at);
-      for (let step = 0; step < 4 && (await accepts()).at(-1)!.state === null; step++) {
-        await expandTargets(w.t);
-      }
-      expect((await accepts()).map(({ state, error }) => [state, error])).toEqual([
-        ["queued", null],
-        ["gave_up", "backlog full"],
-      ]);
-      at = NOW + PREAPPROVED_WAIT_MS + 2 * ANSWER_POLL_MS;
-      await checkRound(w.t, at);
-      expect(await sql(w.t.store, "SELECT account_id FROM collection_syncs")).toEqual([]);
-      expect(await localRows(w.t, ALICE)).toMatchObject([
-        { id: row!.id, state: ACCEPTED, answer: repeat.id, check_due_at: at + ANSWER_POLL_MS },
-      ]);
-
-      // The lane settled (the first Accept delivered): the margin starts at the next poll, and its end requests a read.
-      await sql(
-        w.t.store,
-        "DELETE FROM deliveries WHERE account_id = ? AND lane = ? AND state IN ('queued', 'pending', 'leased')",
-        ALICE,
-        MASTODON,
-      );
-      at += ANSWER_POLL_MS;
-      await checkRound(w.t, at);
-      expect(await localRows(w.t, ALICE)).toMatchObject([{ answer: null, check_due_at: at + PREAPPROVED_WAIT_MS }]);
-      await checkRound(w.t, at + PREAPPROVED_WAIT_MS);
-      expect(await sql(w.t.store, "SELECT account_id FROM collection_syncs")).toEqual([{ account_id: owner.id }]);
-      expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: ACCEPTED, check_due_at: null }]);
-    });
-  }
+  // R45 for a remote collection (#1589's D24): a local member's accepted row is shown to its member at once, and to
+  // anyone else only once the owner lists it. Fails without audience.ts collectionItemShownSql's listing arm (dave and
+  // an anonymous viewer see alice unlisted) or its member arm (alice cannot find the row she revokes).
+  it("shows an unlisted row to its member alone, and to everyone once the owner lists it", async () => {
+    const w = await owned();
+    expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+    const [row] = await localRows(w.t, ALICE);
+    const id = await collectionIdOf(w.t, w.listed.id);
+    type Shown = { collection: { item_count: number; items: { account_id?: string }[] } };
+    const seen = async (as: "alice" | "dave" | null) => {
+      const shown = await w.t.api<Shown>(`/api/v1/collections/${id}`, as);
+      expect(shown.status).toBe(200);
+      return [shown.body.collection.item_count, shown.body.collection.items.map((item) => item.account_id)];
+    };
+    expect(await seen("alice")).toEqual([1, [ALICE]]);
+    expect(await seen("dave")).toEqual([0, []]);
+    expect(await seen(null)).toEqual([0, []]);
+    // The collection alice's added_to_collection notification presents holds her row too.
+    const notified =
+      await w.t.api<{ type: string; collection?: { items: { account_id?: string }[] } }[]>("/api/v1/notifications");
+    expect(
+      notified.body
+        .filter((n) => n.type === "added_to_collection")
+        .map((n) => n.collection?.items.map((i) => i.account_id)),
+    ).toEqual([[ALICE]]);
+    expect(
+      (
+        await w.t.api<{ collections: { id: string }[] }>(`/api/v1/accounts/${ALICE}/in_collections`)
+      ).body.collections.map((c) => c.id),
+    ).toEqual([id]);
+    // Listed by the owner's Add: shown to everyone.
+    const listed = localItem(w.owner, ALICE_URI, authorization(row!.id));
+    expect(await w.t.post(w.owner, itemActivity(w, "Add", listed))).toBe(202);
+    expect(await seen("dave")).toEqual([1, [ALICE]]);
+    expect(await seen(null)).toEqual([1, [ALICE]]);
+  });
 
   // 6-T2. Each fails if its test is removed: a refused account gets a row or an Accept; a foreign id is answered; a
   // foreign instrument is fetched; a collection attributed to another actor is applied as the actor's.
@@ -1083,8 +1025,157 @@ describe("a remote owner's feature request for a local account (D24)", () => {
     );
     expect(stored).toEqual([
       { account_id: expect.any(String), state: PENDING, check_due_at: NOW },
-      { account_id: ALICE, state: ACCEPTED, check_due_at: NOW + ANSWER_POLL_MS },
+      { account_id: ALICE, state: ACCEPTED, check_due_at: null },
     ]);
+  });
+
+  // Fails if a fetched instrument is applied over the collection Kopje came to store while it was fetched (the stored
+  // one decides, as it is): the fetched listing's member and name would replace the stored ones.
+  it("leaves a collection stored while its instrument was fetched as it is, the fetched listing unused", async () => {
+    const w = await owned();
+    const fetchedMember = await storedMember(w.t, "fm", OTHER);
+    const storedMemberRow = await storedMember(w.t, "sm", OTHER);
+    // The instrument as the owner serves it when the fetch arrives: another member and another name.
+    w.listed.orderedItems = [remoteItem(w.owner, fetchedMember)];
+    w.listed.totalItems = 1;
+    const fetchedDocument = { ...w.listed, name: "fetched" };
+    serveListing(w.t.web, w.owner, fetchedDocument);
+    await followed(w.t, w.owner);
+    const held = w.t.web.hold(w.listed.id, { snapshot: true });
+    const request = requestFor(w);
+    const posting = w.t.post(w.owner, request);
+    await held.reached;
+    // Meanwhile the owner's Add of the collection, as it is now, is stored.
+    const pushed = { ...w.listed, name: "stored", orderedItems: [remoteItem(w.owner, storedMemberRow)] };
+    expect(
+      await w.t.post(w.owner, {
+        "@context": AS,
+        type: "Add",
+        actor: w.owner.uri,
+        target: w.owner.featuredCollections,
+        object: pushed,
+      }),
+    ).toBe(202);
+    held.release();
+    expect(await posting).toBe(202);
+    expect(await sql(w.t.store, "SELECT name FROM collections WHERE uri = ?", w.listed.id)).toEqual([
+      { name: "stored" },
+    ]);
+    // The stored member's item and alice's accepted row; nothing of the fetched member's.
+    expect(
+      await sql(
+        w.t.store,
+        `SELECT a.uri, i.state FROM collection_items i JOIN accounts a ON a.id = i.account_id ORDER BY i.position`,
+      ),
+    ).toEqual([
+      { uri: storedMemberRow.uri, state: PENDING },
+      { uri: ALICE_URI, state: ACCEPTED },
+    ]);
+    expect((await aliceAnswers(w.t)).map(({ activity }) => [activity.type, activity.object])).toEqual([
+      ["Accept", request.id],
+    ]);
+  });
+
+  // ID-7 for a collection (#1589's D21): the owner's Remove of its collection records the owner's retraction of it,
+  // whether Kopje holds it or not, so an instrument fetched before the Remove and applied after it stores nothing and
+  // grants nothing. Fails if the held branch records no retraction (the fetched instrument stores the collection again
+  // and accepts the request), or if the unheld one does not.
+  for (const held of [true, false]) {
+    it(`stores nothing from an instrument fetched before the owner's Remove of its collection${held ? ", held" : ""}`, async () => {
+      const w = await owned();
+      await followed(w.t, w.owner);
+      const fetch = w.t.web.hold(w.listed.id, { snapshot: true });
+      const posting = w.t.post(w.owner, requestFor(w));
+      await fetch.reached;
+      const add = { "@context": AS, type: "Add", actor: w.owner.uri, target: w.owner.featuredCollections };
+      if (held) {
+        expect(await w.t.post(w.owner, { ...add, object: w.listed })).toBe(202);
+        expect(await sql(w.t.store, "SELECT 1 AS x FROM collections WHERE uri = ?", w.listed.id)).toEqual([{ x: 1 }]);
+      }
+      expect(await w.t.post(w.owner, { ...add, type: "Remove", object: w.listed.id })).toBe(202);
+      expect(
+        await sql(w.t.store, "SELECT actor_uri FROM inbound_retractions WHERE target_uri = ?", w.listed.id),
+      ).toEqual([{ actor_uri: w.owner.uri }]);
+      fetch.release();
+      expect(await posting).toBe(202);
+      expect(await sql(w.t.store, "SELECT uri FROM collections WHERE local = 0")).toEqual([]);
+      expect(await localRows(w.t, ALICE)).toEqual([]);
+      expect(await aliceAnswers(w.t)).toEqual([]);
+    });
+  }
+
+  // Fails if a held collection's Remove at the owner's retraction cap deletes it (the request it grants would then
+  // outlive a retraction never written), or if a retry once there is room does not delete it.
+  it("answers a held collection's Remove 503 at the owner's retraction cap, leaving it stored, and deletes it on a retry", async () => {
+    const w = await owned();
+    expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+    const [row] = await localRows(w.t, ALICE);
+    await retractionsAtCap(w.t, w.owner);
+    const remove = {
+      "@context": AS,
+      type: "Remove",
+      actor: w.owner.uri,
+      target: w.owner.featuredCollections,
+      object: w.listed.id,
+    };
+    expect(await w.t.post(w.owner, remove)).toBe(503);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: ACCEPTED }]);
+    expect(await sql(w.t.store, "SELECT 1 FROM inbound_retractions WHERE target_uri = ?", w.listed.id)).toEqual([]);
+    await sql(w.t.store, "DELETE FROM inbound_retractions WHERE target_uri LIKE '%/filler/%'");
+    expect(await w.t.post(w.owner, remove)).toBe(202);
+    expect(await sql(w.t.store, "SELECT uri FROM collections WHERE local = 0")).toEqual([]);
+    expect(await localRows(w.t, ALICE)).toEqual([]);
+    expect(await authorizationStatus(w.t, row!.id)).toBe(404);
+  });
+
+  // Fails if the Remove's delete rests on the retraction it records rather than on its own mark: a stored creation time
+  // later than that retraction's expiry (an imported Store's, written by another clock) would refuse it.
+  it("deletes a held collection on its Remove whatever its stored creation time, leaving no mark", async () => {
+    const w = await owned();
+    expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+    await sql(w.t.store, "UPDATE collections SET created_at = '2999-01-01T00:00:00.000Z' WHERE uri = ?", w.listed.id);
+    const remove = {
+      "@context": AS,
+      type: "Remove",
+      actor: w.owner.uri,
+      target: w.owner.featuredCollections,
+      object: w.listed.id,
+    };
+    expect(await w.t.post(w.owner, remove)).toBe(202);
+    expect(await sql(w.t.store, "SELECT uri FROM collections WHERE local = 0")).toEqual([]);
+    expect(await localRows(w.t, ALICE)).toEqual([]);
+    expect(await sql(w.t.store, "SELECT name FROM kopje_state WHERE name = 'collection_removal'")).toEqual([]);
+  });
+
+  // Admission (#1589's D21): a request's instrument stores a new collection only while Kopje holds fewer than
+  // MAX_STORED_COLLECTIONS of the owner's. Fails if a request past them is ignored (the owner's item stays pending for
+  // good) or stores a collection or a row.
+  it("refuses a request whose new instrument the owner's held collections leave no room for", async () => {
+    const w = await owned();
+    await followed(w.t, w.owner);
+    const ownerId = (await sql<{ id: string }>(w.t.store, "SELECT id FROM accounts WHERE uri = ?", w.owner.uri))[0]!.id;
+    await sql(
+      w.t.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+			INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, uri, created_at, updated_at)
+			SELECT '6' || printf('%017d', i), ?2, 0, 'held ' || i, 0, 1, ?3 || '/collections/held' || i, ?4, ?4 FROM n`,
+      MAX_STORED_COLLECTIONS,
+      ownerId,
+      w.owner.uri,
+      new Date(NOW).toISOString(),
+    );
+    const request = requestFor(w);
+    expect(await w.t.post(w.owner, request)).toBe(202);
+    expect(w.t.web.fetched).toContain(w.listed.id);
+    expect(await sql(w.t.store, "SELECT 1 FROM collections WHERE uri = ?", w.listed.id)).toEqual([]);
+    expect(await localRows(w.t, ALICE)).toEqual([]);
+    expect(
+      (await aliceAnswers(w.t)).map(({ activity }) => [activity.type, activity.object, "result" in activity]),
+    ).toEqual([["Reject", request.id, false]]);
+    // One held collection fewer: the same request is accepted.
+    await sql(w.t.store, "DELETE FROM collections WHERE id = ?", `6${"1".padStart(17, "0")}`);
+    expect(await w.t.post(w.owner, request)).toBe(202);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ state: ACCEPTED, activity_uri: request.id }]);
   });
 
   // 6-T9. Fails if the envelope admits another type without an actor, or if the actor comes from anything but the
@@ -1175,35 +1266,6 @@ async function filledLanes(t: Setup, origin: string, count: number, others = 0):
   }
 }
 
-// `steps` expansion steps of targets (EXPANSION_STEP each, one chunk) of another activity of alice's, to another server,
-// not yet expanded.
-async function olderTargets(t: Setup, steps: number): Promise<void> {
-  await sql(
-    t.store,
-    `INSERT INTO outbound_activities (account_id, body, object_uri, retracts, created_at)
-		VALUES (?, '{"activity":{"type":"Like"},"audience":{"followers":false,"accounts":[]}}', 'older targets', 0, ?)`,
-    ALICE,
-    NOW,
-  );
-  for (let step = 0; step < steps; step++) {
-    await sql(
-      t.store,
-      `INSERT INTO outbound_targets (activity_id, targets)
-			SELECT id, ? FROM outbound_activities WHERE object_uri = 'older targets'`,
-      JSON.stringify(
-        Array.from({ length: EXPANSION_STEP }, (_, n) => ({ inbox: `https://older.example/users/${step}-${n}/inbox` })),
-      ),
-    );
-  }
-}
-
-// One expansion step of the targets still to expand, as a delivery claim runs it.
-async function expandTargets(t: Setup): Promise<void> {
-  await runInDurableObject(t.store, (_instance, state) =>
-    state.storage.transactionSync(() => expandPending(new Db(state.storage.sql), NOW, EXPANSION_STEP)),
-  );
-}
-
 const activeIn = async (t: Setup, lane: string) =>
   (
     await sql<{ n: number }>(
@@ -1227,12 +1289,10 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
     const a = authorization(row!.id);
     const deletes = async () => (await aliceAnswers(w.t)).filter(({ activity }) => activity.type === "Delete");
 
-    // An Add of the authorization Kopje serves: the row's uri set, nothing sent, the wait unchanged.
+    // An Add of the authorization Kopje serves: the row's uri set, nothing sent, nothing queued.
     const served = localItem(w.owner, ALICE_URI, a);
     expect(await w.t.post(w.owner, itemActivity(w, "Add", served))).toBe(202);
-    expect(await localRows(w.t, ALICE)).toMatchObject([
-      { id: row!.id, uri: served.id, check_due_at: row!.check_due_at, answer: row!.answer },
-    ]);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, uri: served.id, check_due_at: null }]);
     expect(await deletes()).toEqual([]);
 
     // An Add naming an authorization of no row: an ordinary Delete of it, once per Add.
@@ -1285,19 +1345,62 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
     expect((await aliceAnswers(w.t)).find(({ id }) => id === revokeDelete.id)!.superseded).toBe(0);
     expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: REVOKED }]);
 
-    // A Remove in a collection holding alice's row: one sync of the owner requested, the row unchanged.
+    // The owner's Remove of the item alice's row is listed as: the row hidden, not deleted, the item retracted, and one
+    // sync of the owner requested.
     await sql(w.t.store, "DELETE FROM collection_syncs");
     const removed = localItem(w.owner, ALICE_URI, a);
     expect(await w.t.post(w.owner, itemActivity(w, "Remove", { ...removed, id: served.id }))).toBe(202);
     const ownerId = (await sql<{ id: string }>(w.t.store, "SELECT id FROM accounts WHERE uri = ?", w.owner.uri))[0]!.id;
     expect(await sql(w.t.store, "SELECT account_id FROM collection_syncs")).toEqual([{ account_id: ownerId }]);
-    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: REVOKED, uri: served.id }]);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: REVOKED, uri: null }]);
+    expect(
+      await sql(
+        w.t.store,
+        "SELECT 1 AS x FROM inbound_retractions WHERE actor_uri = ? AND target_uri = ?",
+        w.owner.uri,
+        served.id,
+      ),
+    ).toEqual([{ x: 1 }]);
+  });
+
+  // #1589's D21 and D24: an item's Remove hides an accepted row and never deletes it (a re-accept may have replaced the
+  // item while the authorization stands), an Add of a retracted item is refused, and a read lists it whatever the
+  // retractions. Fails if the Remove deletes the row (the next Add is answered with alice's Delete), or if a read
+  // honours the item's retraction.
+  it("keeps an accepted row through Add(I1), Remove(I1) and Add(I2), and a read lists I1 its retraction blocked", async () => {
+    const w = await owned();
+    expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+    const [row] = await localRows(w.t, ALICE);
+    const a = authorization(row!.id);
+    const first = localItem(w.owner, ALICE_URI, a);
+    expect(await w.t.post(w.owner, itemActivity(w, "Add", first))).toBe(202);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: ACCEPTED, uri: first.id }]);
+    expect(await w.t.post(w.owner, itemActivity(w, "Remove", first.id))).toBe(202);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: ACCEPTED, uri: null }]);
+    // The removed item added again: refused by its retraction (ID-7).
+    expect(await w.t.post(w.owner, itemActivity(w, "Add", first))).toBe(202);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, uri: null }]);
+    // A read of the owner's collections listing it: shown.
+    w.listed.orderedItems = [first];
+    w.listed.totalItems = 1;
+    serveListing(w.t.web, w.owner, w.listed);
+    const ownerId = (await sql<{ id: string }>(w.t.store, "SELECT id FROM accounts WHERE uri = ?", w.owner.uri))[0]!.id;
+    await requestSync(w.t, ownerId);
+    await syncAll(w.t, w.t.web.loader, NOW + 60_000);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: ACCEPTED, uri: first.id }]);
+    // Another item of the same authorization: the row's uri moves to it.
+    const second = localItem(w.owner, ALICE_URI, a);
+    expect(await w.t.post(w.owner, itemActivity(w, "Add", second))).toBe(202);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: ACCEPTED, uri: second.id }]);
+    expect((await aliceAnswers(w.t)).map(({ activity }) => activity.type)).toEqual(["Accept"]);
+    expect(await authorizationStatus(w.t, row!.id)).toBe(200);
   });
 
   // 6-T6 with a second owner. Fails if another owner's listing of the authorization Kopje serves for this owner's
-  // collection is answered with alice's Delete: a Mastodon server applies a Delete of a feature authorization to its own
-  // collection's item by the authorization and the signer alone (delete.rb:80), so that Delete, sent to another owner
-  // on this owner's server, would revoke alice's membership here.
+  // collection is answered with alice's Delete: a Mastodon server applies a Delete of a feature authorization to its
+  // own collection's item by the authorization and the signer alone (delete.rb:80), so that Delete, sent to another
+  // owner on this owner's server, would revoke alice's membership here. Fails too if the answer once she revoked it is
+  // a retraction, which admission never refuses.
   for (const kind of ["Add", "Update"] as const) {
     it(`sends no Delete for another owner's ${kind} listing an authorization served in this owner's collection`, async () => {
       const w = await owned();
@@ -1331,21 +1434,26 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
       expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: ACCEPTED }]);
       expect(await authorizationStatus(w.t, row!.id)).toBe(200);
 
-      // Once alice revokes it, Kopje serves it nowhere: the other owner's listing of it is answered, to that owner alone.
+      // Once alice revokes it, Kopje serves it nowhere: the other owner's listing of it is answered, to that owner
+      // alone, as new work under RES-4's caps (a retraction, never refused, is the row's own owner's alone: any number
+      // of accounts may list the authorization).
       expect(await revokeAs(w.t, await collectionIdOf(w.t, w.listed.id), row!.id)).toBe(200);
       const before = (await deletes()).length;
       await lists(2);
       const sent = await deletes();
-      expect([sent.length - before, sent.at(-1)!.activity.id, sent.at(-1)!.deliveries.map((d) => d.inbox)]).toEqual([
-        1,
-        `${a}#delete`,
-        [`${other.uri}/inbox`],
-      ]);
+      expect([
+        sent.length - before,
+        sent.at(-1)!.activity.id,
+        sent.at(-1)!.retracts,
+        sent.at(-1)!.deliveries.map((d) => d.inbox),
+      ]).toEqual([1, `${a}#delete`, 0, [`${other.uri}/inbox`]]);
     });
   }
 
-  // 6-T6's caps. Fails if an answer of no row is admitted as a retraction (the lane passes 500), or if an answer for a
-  // revoked row is refused at the cap (Kopje revoked, the owner accepted).
+  // 6-T6's caps. Fails if an answer of no row is admitted as a retraction (the lane passes 500), if an answer for a
+  // revoked row is refused at the cap (Kopje revoked, the owner accepted), if a repeated Add queues a second sendable
+  // copy while the first still waits (the lane grows past every cap with the owner's Adds), or if a copy already in
+  // flight stands for the next Add's answer (its POST may have preceded the owner's acceptance).
   it("admits an answer of no row under RES-4's caps, and one of a revoked row as a retraction past them", async () => {
     const w = await owned();
     expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
@@ -1365,19 +1473,30 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
     ]);
     expect(await activeIn(w.t, MASTODON)).toBe(lane);
 
-    // The revoked row's authorization: admitted as a retraction, once active however many Adds name it.
+    // The revoked row's authorization: admitted as a retraction, one copy to send however many Adds name it.
     const first = await added(authorization(row!.id));
     expect([first.retracts, first.deliveries.map((d) => d.state)]).toEqual([1, ["queued"]]);
+    // Every copy of the answer that a delivery round could still send, superseded or not.
+    const sendable = async () =>
+      (await aliceAnswers(w.t))
+        .filter(
+          ({ activity }) =>
+            activity.type === "Delete" &&
+            activity.id === `${authorization(row!.id)}#delete` &&
+            !("signature" in activity),
+        )
+        .flatMap(({ deliveries }) => deliveries.filter((d) => ["queued", "pending", "leased"].includes(d.state)));
     await added(authorization(row!.id));
-    const active = (await aliceAnswers(w.t)).filter(
-      ({ activity, superseded, deliveries }) =>
-        activity.type === "Delete" &&
-        activity.id === `${authorization(row!.id)}#delete` &&
-        !("signature" in activity) &&
-        superseded === 0 &&
-        deliveries.some((d) => ["queued", "pending", "leased"].includes(d.state)),
+    await added(authorization(row!.id));
+    expect(await sendable()).toEqual([{ inbox: `${w.owner.uri}/inbox`, state: "queued", error: null }]);
+    // Once that copy is in flight, the next Add is answered again, behind it.
+    await sql(
+      w.t.store,
+      `UPDATE deliveries SET state = 'leased', lease_token = 'in-flight' WHERE activity_id = ?`,
+      first.id,
     );
-    expect(active).toHaveLength(1);
+    await added(authorization(row!.id));
+    expect((await sendable()).map((d) => d.state)).toEqual(["leased", "queued"]);
   });
 
   it("refuses an answer of no row when the Store's backlog is full, with this owner's lane empty", async () => {
@@ -1420,5 +1539,33 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
         [`${w.owner.uri}/inbox`],
       ],
     ]);
+  });
+
+  // D25 through a Move: Mastodon's MoveWorker carries a local block of the source to the target by BlockService,
+  // which ends the blocker's memberships in the target's collections. Fails if the carried block leaves alice's grant
+  // in the target's collection standing (its Delete not sent, the target's next request accepted).
+  it("ends alice's membership of the Move target's collection when the Move carries her block to it", async () => {
+    const w = await owned();
+    expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+    const [row] = await localRows(w.t, ALICE);
+    const source = await mastodonActor(w.t.web, `source${owners}`, { origin: OTHER, key: 2, extra: {} });
+    await followed(w.t, source, DAVE);
+    const sourceId = (await sql<{ id: string }>(w.t.store, "SELECT id FROM accounts WHERE uri = ?", source.uri))[0]!.id;
+    expect((await call(w.t, "POST", `/api/v1/accounts/${sourceId}/block`)).status).toBe(200);
+    w.t.web.serve(w.owner.uri, { ...w.owner.document, alsoKnownAs: [source.uri] });
+    const move = { "@context": AS, id: `${source.uri}#moves/1`, type: "Move", actor: source.uri, object: source.uri };
+    expect(await w.t.post(source, { ...move, target: w.owner.uri })).toBe(202);
+
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: REVOKED }]);
+    const a = authorization(row!.id);
+    const deletes = (await aliceAnswers(w.t)).filter(({ activity }) => activity.type === "Delete");
+    expect(deletes.map(({ activity, deliveries }) => [activity.id, deliveries.map((d) => d.inbox)])).toEqual([
+      [`${a}#delete`, [`${w.owner.uri}/inbox`]],
+    ]);
+    expect(await w.t.post(w.owner, requestFor(w, `${w.owner.uri}/feature_requests/after-move`))).toBe(202);
+    expect((await aliceAnswers(w.t)).at(-1)!.activity).toMatchObject({
+      type: "Reject",
+      object: `${w.owner.uri}/feature_requests/after-move`,
+    });
   });
 });

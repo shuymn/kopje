@@ -730,7 +730,7 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   // A local member's uri, which its authorization and its answers to a remote owner are built from (localRows) and an
   // owner's listing is matched with (localListing), and the request's object matched by its exact uri
   // (answerFeatureRequest).
-  "src/domain/feature-answers.ts accounts.uri": { count: 2, reason: IDENTITY },
+  "src/domain/feature-answers.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/inbound-feature-requests.ts accounts.uri": { count: 1, reason: IDENTITY },
   // A local collection's owner, whose uri the collection's id is built from, compared with a member's Delete's
   // interactingObject (memberRowIn).

@@ -999,7 +999,13 @@ describe("collections: maxima", () => {
     });
     for (let i = 0; i < 25; i++) {
       const member = await remoteAccount(h.store, `m${i}`);
-      await seedItem(h, id, i, { account_id: member, object_uri: null, state: 1 });
+      // A remote collection's item as a listing stores it, with its uri (R45 shows a remote collection's item once listed).
+      await seedItem(h, id, i, {
+        account_id: member,
+        object_uri: null,
+        state: 1,
+        uri: `https://remote.example/items/${i}`,
+      });
     }
     const { collection, accounts } = await shownAtLongOrigin(h, id);
     expect(collection.items).toHaveLength(25);

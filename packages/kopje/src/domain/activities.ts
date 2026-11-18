@@ -27,13 +27,7 @@ import {
   type Visibility,
 } from "./audience";
 import { type EmojiTag, localEmojiTags } from "./custom-emojis";
-import {
-  type DeliveryEnvelope,
-  enqueueActivity,
-  enqueueIntent,
-  type OutboundOptions,
-  type ReachOf,
-} from "./deliveries";
+import { type DeliveryEnvelope, enqueueActivity, type OutboundOptions, type ReachOf } from "./deliveries";
 import { readOperation } from "./operation";
 import { actorUriSql, usernameSql } from "./profile-bounds";
 import type { NoteQuote } from "./quotes";
@@ -132,18 +126,6 @@ export function recordOutbound(
   options: OutboundOptions = {},
 ): boolean {
   return enqueueActivity(db, signerId, envelope, now, options);
-}
-
-// recordOutbound, answering the id of the intent it recorded (null for none): what a feature answer's row keeps to
-// watch the answer's delivery (feature-answers.ts, collection-checks.ts).
-export function recordOutboundIntent(
-  db: Db,
-  signerId: string,
-  envelope: OutboundEnvelope,
-  now: number,
-  options: OutboundOptions = {},
-): string | null {
-  return enqueueIntent(db, signerId, envelope, now, options).intent;
 }
 
 export function followersUri(actorUri: string): string {

@@ -115,6 +115,7 @@ import m0114 from "../../migrations/0114_untrusted_counts.sql";
 import m0115 from "../../migrations/0115_feature_policies.sql";
 import m0116 from "../../migrations/0116_media_focus_given.sql";
 import m0117 from "../../migrations/0117_retraction_counts.sql";
+import m0118 from "../../migrations/0118_feature_grant_guard.sql";
 
 // Store migrations in apply order. Append only: an applied file is recorded by name and checksum and must
 // never change. Each file runs in its own transaction, must finish well under 30 seconds, and must be pure SQL with no
@@ -238,4 +239,5 @@ export const MIGRATIONS: readonly { name: string; sql: string; foreignKeys?: "un
   { name: "0115_feature_policies", sql: m0115, foreignKeys: "unchanged" },
   { name: "0116_media_focus_given", sql: m0116, foreignKeys: "unchanged" },
   { name: "0117_retraction_counts", sql: m0117, foreignKeys: "unchanged" },
+  { name: "0118_feature_grant_guard", sql: m0118, foreignKeys: "unchanged" },
 ];

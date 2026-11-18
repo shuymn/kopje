@@ -468,8 +468,8 @@ export const completeCollectionRead = writeOperation<CollectionReadInput, boolea
     )?.changed === 1;
   if (input.collections !== null && !outdated) {
     // The round's claim (claimCollectionSync: due SYNC_LEASE_MS after it, which nothing moves while the token holds,
-    // requestCollectionSync), before which the documents read cannot be older: a local member's row changed since is
-    // kept (remote-featured-collections.ts applyListing).
+    // requestCollectionSync), before which the documents read cannot be older: a local member's row changed at or
+    // after it is not hidden (remote-featured-collections.ts applyListing).
     const claimed = db.first<{ at: number }>(
       "SELECT due_at - ?3 AS at FROM collection_syncs WHERE account_id = ?1 AND token = ?2",
       account.id,
@@ -675,9 +675,10 @@ function replacePins(db: Db, account: { id: string; uri: string }, uris: readonl
 }
 
 // The account's collections become those the read listed (ProcessFeaturedCollectionService for each), the first
-// MAX_REMOTE_COLLECTIONS of them. A complete read first deletes the stored ones it does not list as collections the
-// account may hold (deleteUnlisted), so the slots they held under MAX_REMOTE_COLLECTIONS are free for the new ones it
-// lists.
+// MAX_REMOTE_COLLECTIONS of them, a new one admitted while the account holds fewer than MAX_STORED_COLLECTIONS. A
+// complete read first deletes the stored ones it does not list as collections the account may hold, except one holding
+// a local member's row (deleteUnlisted), so the slots they held are free for the new ones it lists. `since`: the
+// round's claim, which fences the hides of its listings (applyListing).
 function replaceCollections(
   db: Db,
   account: { id: string; uri: string },
@@ -695,7 +696,7 @@ function replaceCollections(
     );
   }
   for (const input of listed) {
-    applyFeaturedCollection(db, account, input, origin, now, since);
+    applyFeaturedCollection(db, account, input, origin, now, { kind: "read", since });
   }
 }
 

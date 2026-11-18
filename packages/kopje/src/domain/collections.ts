@@ -56,6 +56,7 @@ import {
   presentItem,
   shownItems,
 } from "./collection-presenter";
+import { requestCollectionSync } from "./collection-requests";
 import { allocateLocalId, insertWithFreshId, requestedId, storedIdOf } from "./ids";
 import { notify } from "./notifications";
 import { writeOperation } from "./operation";
@@ -897,9 +898,9 @@ export function severCollections(db: Db, blocker: string, target: string, now: n
       target,
     )?.remote === 1;
   // A local blocker's items in a remote target's collections (#1589's D24 and D25): the member's Delete of each
-  // authorization, as its revoke sends it but not LD-signed (no key is unwrapped in the Store, DATA-1): Mastodon applies
-  // a Delete of a feature authorization by its HTTP signer (delete.rb:6, :68-81), so it goes to the owner's personal
-  // inbox alone, never where it could be relayed, immutable as the revoke's is. At most one a collection
+  // authorization, as its revoke sends it but not LD-signed (no key is unwrapped in the Store, DATA-1): Mastodon
+  // applies a Delete of a feature authorization by its HTTP signer (delete.rb:6, :68-81), so it goes to the owner's
+  // personal inbox alone, never where it could be relayed, immutable as the revoke's is. At most one a collection
   // (MAX_STORED_COLLECTIONS).
   const severed = !remote
     ? []
@@ -962,7 +963,11 @@ const RETIRED_WINDOW = `SELECT id FROM collection_items INDEXED BY collection_it
 // (RETIRED_WINDOW), the pushes of their notifications (pending or leased: a leased push whose row is gone completes as
 // nothing), then the notifications left without one, then the items left without a notification. Each statement reads
 // only the window and takes what the round has left, so a round writes at most RETIRED_ROWS_PER_ROUND rows, and the
-// next one continues from the oldest left. `deleted`: the rows written.
+// next one continues from the oldest left. A local member's retired row in a remote collection also asks for a read of
+// the collection's owner (requestCollectionSync: one pending per owner), which deletes the collection if it no longer
+// lists it and no local member's row is left (#1589's D21, threat-model.md ID-9: remote-featured-collections.ts
+// deleteUnlisted keeps it while one is); such a row takes two writes (the round's budget counts the request), so it is
+// deleted only while two are left. `deleted`: the rows written.
 export const pruneCollectionItems = writeOperation<{ now: number }, { deleted: number }>((db, { now }) => {
   const budget = new RowBudget(db, RETIRED_ROWS_PER_ROUND);
   const cutoff = new Date(now - RETIRED_ITEM_TTL_MS).toISOString();
@@ -980,16 +985,33 @@ export const pruneCollectionItems = writeOperation<{ now: number }, { deleted: n
 				WHERE d.notification_id = n.id) LIMIT ?2`,
       each: "DELETE FROM notifications WHERE id = CAST(?1 AS INTEGER)",
     },
-    {
-      ids: `SELECT w.id FROM (${RETIRED_WINDOW}) w
-			WHERE NOT EXISTS (SELECT 1 FROM notifications n INDEXED BY notifications_collection_item
-				WHERE n.collection_item_id = w.id) LIMIT ?2`,
-      each: `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id = ?1`,
-    },
   ];
   for (const write of writes) {
     if (budget.left() > 0) {
       writeEach(db, write, cutoff, budget.left());
+    }
+  }
+  const rows =
+    budget.left() === 0
+      ? []
+      : db.all<{ id: string; owner: string | null }>(
+          `SELECT w.id, CASE WHEN c.local = 0 AND m.id IS NOT NULL AND m.domain IS NULL THEN c.account_id END AS owner
+				FROM (${RETIRED_WINDOW}) w
+					CROSS JOIN collection_items i INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} ON i.id = w.id
+					CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = i.collection_id
+					LEFT JOIN accounts m INDEXED BY ${ACCOUNTS_ID_INDEX} ON m.id = i.account_id
+				WHERE NOT EXISTS (SELECT 1 FROM notifications n INDEXED BY notifications_collection_item
+					WHERE n.collection_item_id = w.id)`,
+          cutoff,
+          budget.left(),
+        );
+  for (const row of rows) {
+    if (budget.left() < (row.owner === null ? 1 : 2)) {
+      break;
+    }
+    db.run(`DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id = ?`, row.id);
+    if (row.owner !== null) {
+      requestCollectionSync(db, row.owner, now);
     }
   }
   return { deleted: budget.spent() };

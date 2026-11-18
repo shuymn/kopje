@@ -385,6 +385,10 @@ const HAND_WRITTEN_TRIGGERS: readonly { reason: string; names: readonly string[]
     reason: "0100: the stream journal's row for a quote's state change (the listener condition of stream-journal.ts)",
     names: ["stream_quote_state"],
   },
+  {
+    reason: "0118: a local member's accepted row in a remote collection ends only with evidence (structure)",
+    names: ["collection_items_grant_guard", "collections_grant_guard"],
+  },
 ];
 
 // What differs between the triggers of `sql`'s schema and the registry: a trigger whose text (SQLite keeps it

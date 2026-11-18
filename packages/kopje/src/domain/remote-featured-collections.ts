@@ -11,15 +11,19 @@ import {
   COLLECTION_URI_BYTES,
   COLLECTION_URL_BYTES,
   cutCodePoints,
+  MAX_STORED_COLLECTIONS,
   MAX_STORED_ITEMS,
   storedText,
   storedTime,
 } from "../platform/stored-bounds";
 import { sanitizeRemoteCodePoints } from "../security/html";
 import { localCollectionUri, recordItemRemove } from "./collection-documents";
+import { markCollectionsChanged } from "./collection-requests";
 import { notifyUpdated, remoteCollectionTag } from "./collections";
 import {
   answerUnserved,
+  hideRow,
+  holdsLocalMember,
   keptUnlisted,
   type LocalListing,
   localListing,
@@ -28,6 +32,7 @@ import {
   serves,
 } from "./feature-answers";
 import { allocateLocalId, insertWithFreshId } from "./ids";
+import { setState } from "./kopje-state";
 import { isRetracted, retract } from "./retractions";
 import { TREND_LANGUAGES } from "./trend-languages";
 
@@ -40,23 +45,28 @@ import { TREND_LANGUAGES } from "./trend-languages";
 // application finds the account (never fetched for it: reading an account's collections leads to no other account).
 //
 // The rules, each the Store's whatever the Worker read:
-//   - A collection: its id on its owner's origin and attributedTo exactly the owner (ID-6), at most
-//     MAX_REMOTE_COLLECTIONS a remote account, a name of 1 to COLLECTION_NAME_LENGTH.remote code points and a
+//   - A collection: its id on its owner's origin and attributedTo exactly the owner (ID-6), one the owner has not
+//     retracted by its Remove (ID-7), a new one admitted while the owner holds fewer than MAX_STORED_COLLECTIONS when a
+//     read or a request's instrument names it and fewer than MAX_REMOTE_COLLECTIONS when an Add or an Update of it or a
+//     search does (Admission), a name of 1 to COLLECTION_NAME_LENGTH.remote code points and a
 //     description of sanitized HTML within COLLECTION_DESCRIPTION_LENGTH.remote (both cut as Mastodon cuts them; a NUL
 //     refuses the collection, as PostgreSQL refuses it), sensitive and discoverable by Rails' boolean cast (absent:
 //     refused, as Collection's inclusion validations refuse it), the language a supported locale or none, the topic a
 //     hashtag Tag would take (else refused), totalItems a count the column holds (else refused), url and uri within
 //     the stored bounds.
 //   - An item (#1589's D22): its id on its collection's origin, its featuredObject a remote account (an item naming a
-//     local account is matched to that member's row, feature-answers.ts), its featureAuthorization on the featuredObject's origin; at
+//     local account is matched to that member's row, feature-answers.ts), its featureAuthorization on the
+//     featuredObject's origin; at
 //     most COLLECTION_MAX_ITEMS live in a collection and one item a member. Its revision is its member (account_id, or
 //     object_uri while the account is unknown) and its candidate_approval_uri: an unchanged revision changes nothing
 //     (its state, accepted, rejected or revoked included, and its queue stay), a new item or a changed revision is
 //     pending with the new candidate, no verified authorization, attempts 0, no claim, and queued for a check now
 //     while its member is known (collection-checks.ts).
 
-// The collections a remote account keeps (Mastodon reads up to 50) and the items listed in one that are applied
-// (Mastodon: 150, ProcessFeaturedCollectionService::ITEMS_LIMIT).
+// The collections of a remote account a read applies, and that an Add or an Update of a collection or a search stores
+// up to (Mastodon reads up to 50), and the items listed in one that are applied (Mastodon: 150,
+// ProcessFeaturedCollectionService::ITEMS_LIMIT). A read or a request's instrument stores up to MAX_STORED_COLLECTIONS
+// (#1589's D21: a collection holding a local member's row is kept when a read omits it, deleteUnlisted).
 export const MAX_REMOTE_COLLECTIONS = 10;
 export const MAX_REMOTE_ITEMS = COLLECTION_MAX_ITEMS;
 
@@ -68,7 +78,8 @@ export type FeaturedItemInput = { id: string; object: string; authorization: str
 // attributedTo, name and the topic's name when strings, the summary (summaryMap's first value, else summary, else ''),
 // the language (summaryMap's first key), sensitive and discoverable by Rails' boolean cast (null for nil), totalItems
 // (0 when absent, null when not an integer the column holds, which refuses the collection), url (url_to_href's), and
-// its first MAX_REMOTE_ITEMS orderedItems, null where one is given only as a URI or cannot be read.
+// its first MAX_REMOTE_ITEMS orderedItems, null where one is given only as a URI or cannot be read, and whether
+// orderedItems held more than those (truncated: a read's listing then hides nothing it omits, applyListing).
 export type FeaturedCollectionInput = {
   id: string;
   attributedTo: string | null;
@@ -81,6 +92,7 @@ export type FeaturedCollectionInput = {
   topic: string | null;
   url: string | null;
   items: (FeaturedItemInput | null)[];
+  truncated: boolean;
 };
 
 type Owner = { id: string; uri: string };
@@ -175,40 +187,56 @@ function collectionByUri(db: Db, uri: string): StoredCollection | undefined {
   );
 }
 
-// What applying a collection or an item did: the stored collection's id (null when nothing was stored), and whether an
-// item was queued for a check.
-export type Applied = { collection: string | null; queued: boolean };
+// What applying a collection or an item did: the stored collection's id (null when nothing was stored), whether an
+// item was queued for a check, and whether a new collection was refused only because the owner holds as many as its
+// path admits (Admission).
+export type Applied = { collection: string | null; queued: boolean; full: boolean };
+
+// The path a collection is applied by: an Add or an Update of it or a search ('push'), a request's instrument
+// ('instrument'), or a read of the owner's collections claimed at `since` ('read'). It decides how many collections of
+// the owner a new one is admitted under, and whether the listing may hide a local member's row (applyListing).
+type ListingSource = { kind: "push" } | { kind: "instrument" } | { kind: "read"; since: number };
 
 // ProcessFeaturedCollectionService#call: the owner's collection `input` stored or updated, then its items replaced by
 // the listing (applyListing); a change of its name, description, sensitivity or tag notifies its local accepted
-// members collection_update (NotifyOfCollectionUpdateService). A new collection past MAX_REMOTE_COLLECTIONS of the
-// owner, or one whose uri another account's collection holds, is not stored.
+// members collection_update (NotifyOfCollectionUpdateService). Not stored: a new collection the owner retracted by its
+// Remove (ID-7, on every path), one past what its path admits (MAX_STORED_COLLECTIONS of the owner's for a read or an
+// instrument, MAX_REMOTE_COLLECTIONS for a push), and one whose uri another account's collection holds. An instrument
+// that stores a new collection is a change of the owner's collections that a read under way does not hold
+// (markCollectionsChanged; a push marks it in inbox.ts, a read is the change itself).
 export function applyFeaturedCollection(
   db: Db,
   owner: Owner,
   input: FeaturedCollectionInput,
   origin: string,
   now: number,
-  since = now,
+  source: ListingSource,
 ): Applied {
   const values = ownedCollection(owner, input) ? collectionValues(input) : null;
   if (values === null) {
-    return { collection: null, queued: false };
+    return { collection: null, queued: false, full: false };
   }
   const at = new Date(now).toISOString();
   const stored = collectionByUri(db, input.id);
   if (stored !== undefined && stored.account_id !== owner.id) {
-    return { collection: null, queued: false };
+    return { collection: null, queued: false, full: false };
   }
   let id: string;
   if (stored === undefined) {
+    if (isRetracted(db, owner.uri, input.id, now)) {
+      return { collection: null, queued: false, full: false };
+    }
+    const admitted = source.kind === "push" ? MAX_REMOTE_COLLECTIONS : MAX_STORED_COLLECTIONS;
     const held = db.first<{ n: number }>(
       `SELECT count(*) AS n FROM (SELECT 1 FROM collections INDEXED BY collections_account WHERE account_id = ? LIMIT ?)`,
       owner.id,
-      MAX_REMOTE_COLLECTIONS,
+      admitted,
     );
-    if ((held?.n ?? 0) >= MAX_REMOTE_COLLECTIONS) {
-      return { collection: null, queued: false };
+    if ((held?.n ?? 0) >= admitted) {
+      return { collection: null, queued: false, full: true };
+    }
+    if (source.kind === "instrument") {
+      markCollectionsChanged(db, owner.id);
     }
     id = insertWithFreshId(
       "collections",
@@ -274,8 +302,9 @@ export function applyFeaturedCollection(
       notifyUpdated(db, id, owner.id, now);
     }
   }
-  const queued = applyListing(db, owner, { id, uri: input.id }, input.items, origin, now, since);
-  return { collection: id, queued };
+  const hides = source.kind === "read" && !input.truncated ? source.since : null;
+  const queued = applyListing(db, owner, { id, uri: input.id }, input.items, origin, now, hides);
+  return { collection: id, queued, full: false };
 }
 
 type Planned = {
@@ -338,15 +367,17 @@ function itemByUri(db: Db, uri: string): StoredItem | undefined {
 // The collection's items become the listing's (ProcessFeaturedCollectionService: the items not listed deleted, each
 // listed one processed): the first MAX_REMOTE_ITEMS entries, each it may hold (itemOf) in listed order, one a member
 // and an item whose uri another collection or a local member's row holds skipped. An entry naming a local account is
-// matched to that member's row by its authorization (feature-answers.ts, #1589's D21 and D24): a row that serves it is
-// kept and takes the item's uri and position; any other authorization of the member is answered with the member's
-// Delete of it, nothing stored. A local member's row the listing does not name is kept while its wait is queued, while
-// it is retired, or while it changed at or after `since` (a read's claim; the application's own time otherwise), and
-// deleted otherwise. The rows kept hold their slots first: the remote members' items fill only the slots left of
-// COLLECTION_MAX_ITEMS live (and MAX_STORED_ITEMS stored) rows, in listed order, the rest skipped as past the 25 (D4).
-// Every other row of the collection (not listed, not applied, whatever its state) is deleted first, so the live and
-// stored triggers never see more than the listing, then each listed item applied by the revision rule. Whether an item
-// was queued.
+// matched to that member's row by its authorization (feature-answers.ts, #1589's D21 and D24):
+// a row that serves it takes the item's uri and position; any other authorization of the member is answered with the
+// member's Delete of it, nothing stored; a member unavailable to every read is skipped (localListing). Every local
+// member's row is kept, listed or not, in any state: no listing deletes one (threat-model.md ID-9). `hides`:
+// a read's claim, for an untruncated listing of a read (null for any other listing, which only shows): a local
+// member's accepted row it does not name, whose member is available and which did not change at or after the claim,
+// is hidden (its uri cleared, R45). The local rows hold their slots first: the remote members' items fill only the
+// slots left of COLLECTION_MAX_ITEMS live (and MAX_STORED_ITEMS stored) rows, in listed order, the rest skipped as past
+// the 25 (D4). Every other row of the collection (not listed, not applied, whatever its state) is deleted first, so the
+// live and stored triggers never see more than the listing, then each listed item applied by the revision rule.
+// Whether an item was queued.
 function applyListing(
   db: Db,
   owner: Owner,
@@ -354,12 +385,12 @@ function applyListing(
   items: readonly (FeaturedItemInput | null)[],
   origin: string,
   now: number,
-  since: number,
+  hides: number | null,
 ): boolean {
-  const locals = localRows(db, collection.id, since);
-  // A local member's row kept, with the listed item's uri and position (null: kept unlisted).
-  const kept = new Map<string, { uri: string; position: number } | null>();
-  const answers: { listing: LocalListing; held: boolean }[] = [];
+  const locals = localRows(db, collection.id, hides ?? now);
+  // A local member's row the listing names, with the listed item's uri and position.
+  const listed = new Map<string, { uri: string; position: number }>();
+  const answers: LocalListing[] = [];
   const planned: Planned[] = [];
   const members = new Set<string>();
   items.slice(0, MAX_REMOTE_ITEMS).forEach((input, index) => {
@@ -371,9 +402,9 @@ function applyListing(
       members.add(listing.member.id);
       const row = locals.find((local) => local.account_id === listing.member.id);
       if (row !== undefined && serves(row, listing)) {
-        kept.set(row.id, { uri: input.id, position: index + 1 });
+        listed.set(row.id, { uri: input.id, position: index + 1 });
       } else {
-        answers.push({ listing, held: row?.id === listing.item });
+        answers.push(listing);
       }
       return;
     }
@@ -393,22 +424,18 @@ function applyListing(
     }
     planned.push({ ...item, position: index + 1, existing: stored?.id });
   });
-  for (const row of locals) {
-    if (!kept.has(row.id) && keptUnlisted(row)) {
-      kept.set(row.id, null);
-    }
-  }
   const live = locals.filter(
-    (row) =>
-      kept.has(row.id) &&
-      (row.state === COLLECTION_ITEM_STATES.pending || row.state === COLLECTION_ITEM_STATES.accepted),
+    (row) => row.state === COLLECTION_ITEM_STATES.pending || row.state === COLLECTION_ITEM_STATES.accepted,
   ).length;
-  const applied = planned.slice(0, Math.max(0, Math.min(COLLECTION_MAX_ITEMS - live, MAX_STORED_ITEMS - kept.size)));
+  const applied = planned.slice(
+    0,
+    Math.max(0, Math.min(COLLECTION_MAX_ITEMS - live, MAX_STORED_ITEMS - locals.length)),
+  );
   db.run(
     `DELETE FROM collection_items INDEXED BY collection_items_order WHERE collection_id = ?1
 			AND id NOT IN (SELECT value FROM json_each(?2))`,
     collection.id,
-    JSON.stringify([...applied.flatMap((item) => item.existing ?? []), ...kept.keys()]),
+    JSON.stringify([...applied.flatMap((item) => item.existing ?? []), ...locals.map((row) => row.id)]),
   );
   // A kept row whose member changes gives its member up first, so a member moving between two kept rows never meets
   // the unique member index.
@@ -422,13 +449,16 @@ function applyListing(
     queued =
       (item.existing === undefined ? insertItem(db, collection.id, item, now) : reviseItem(db, item, now)) || queued;
   }
-  for (const [id, listed] of kept) {
-    if (listed !== null) {
-      markListed(db, id, listed.uri, collection.uri, now, listed.position);
+  for (const row of locals) {
+    const named = listed.get(row.id);
+    if (named !== undefined) {
+      markListed(db, row.id, named.uri, collection.uri, now, named.position);
+    } else if (hides !== null && !keptUnlisted(row)) {
+      hideRow(db, row.id, now);
     }
   }
-  for (const { listing, held } of answers) {
-    answerUnserved(db, owner, collection.uri, listing, held, now);
+  for (const listing of answers) {
+    answerUnserved(db, owner, collection.uri, listing, now);
   }
   return queued;
 }
@@ -490,11 +520,11 @@ export function applyFeaturedItem(
 }
 
 // An inbound Add of an item naming a local account (#1589's D24): an authorization the member's row in the collection
-// serves (feature-answers.ts serves) gives the row the item's uri, unless the owner's Remove retracted that item (the
-// row's wait and state stay); any other authorization of the member is answered with the member's Delete of it, once
-// per Add and whatever the retractions (the owner may have accepted again after its Remove), nothing stored, unless
-// Kopje serves it in another collection (answerUnserved). 'listed' or 'answered', else null (no local member, an
-// authorization the member could not have issued, or one served elsewhere).
+// serves (feature-answers.ts serves) gives the row the item's uri, unless the owner's Remove retracted that item (ID-7;
+// the row's state stays); any other authorization of the member is answered with the member's Delete of it to the
+// sender, once per Add and whatever the retractions (the owner may have accepted again after its Remove), nothing
+// stored, unless Kopje serves it in any collection (answerUnserved). 'listed' or 'answered', else null (no available
+// local member, an authorization the member could not have issued, or one served).
 export function applyLocalFeaturedItem(
   db: Db,
   owner: Owner,
@@ -519,7 +549,7 @@ export function applyLocalFeaturedItem(
     markListed(db, row.id, input.id, collection.uri, now);
     return "listed";
   }
-  return answerUnserved(db, owner, collection.uri, listing, row?.id === listing.item, now) ? "answered" : null;
+  return answerUnserved(db, owner, collection.uri, listing, now) ? "answered" : null;
 }
 
 // The revision of an item as stored and as listed, compared in SQL (an imported URI may not survive a round trip
@@ -611,28 +641,43 @@ function insertItem(db: Db, collection: string, item: Omit<Planned, "existing">,
 // not among `kept` (the uris the read lists as collections the owner may hold) are deleted, each with its items, their
 // notifications, its collection_update notifications and those notifications' pushes by the foreign keys (at most
 // MAX_STORED_COLLECTIONS rows, read through collections_account). Mastodon keeps them until a Remove
-// (docs/mastodon-deviations.md, "Collections").
+// (docs/mastodon-deviations.md, "Collections"). A collection holding a local member's row, in any state, is kept whole
+// (threat-model.md ID-9: pages that shift between a read's fetches may omit a live collection, and a read is no
+// evidence that a grant ended): read through collection_items_order, at most MAX_STORED_ITEMS rows and as many account
+// probes a collection, stopping at the first local member's. D9's cleanup of its last local row asks for the read that
+// reclaims it (collections.ts pruneCollectionItems).
 export function deleteUnlisted(db: Db, owner: string, kept: readonly string[]): void {
   db.run(
     `DELETE FROM collections INDEXED BY ${COLLECTIONS_ID_INDEX} WHERE id IN
-			(SELECT id FROM collections INDEXED BY collections_account WHERE account_id = ?1
-				AND uri NOT IN (SELECT value FROM json_each(?2)))`,
+			(SELECT c.id FROM collections c INDEXED BY collections_account WHERE c.account_id = ?1
+				AND c.uri NOT IN (SELECT value FROM json_each(?2)) AND NOT ${holdsLocalMember("c.id")})`,
     owner,
     JSON.stringify(kept),
   );
 }
 
-// Remove#remove_collection: the owner's collection `uri`, with its items and notifications (as deleteUnlisted).
+// The mark of a Remove's delete of the collection whose uri it holds: the evidence migration 0118_feature_grant_guard
+// admits that delete by when the collection holds a local member's accepted row (ID-9). Written and removed around
+// the delete, inside its transaction, so no committed state admits another.
+const COLLECTION_REMOVAL = "collection_removal";
+
+// Remove#remove_collection: the owner's collection `uri`, with its items and notifications (as deleteUnlisted), a
+// local member's accepted row among them, since the owner's Remove ends the grants it holds (inbox.ts removeFeatured).
 // Whether one was deleted.
 export function removeFeaturedCollection(db: Db, owner: string, uri: string): boolean {
-  return (
-    db.run(
-      `DELETE FROM collections INDEXED BY ${COLLECTIONS_ID_INDEX} WHERE id =
+  setState(db, COLLECTION_REMOVAL, uri);
+  try {
+    return (
+      db.run(
+        `DELETE FROM collections INDEXED BY ${COLLECTIONS_ID_INDEX} WHERE id =
 				(SELECT id FROM collections INDEXED BY collections_uri WHERE uri = ?2 AND account_id = ?1)`,
-      owner,
-      uri,
-    ) > 0
-  );
+        owner,
+        uri,
+      ) > 0
+    );
+  } finally {
+    db.run("DELETE FROM kopje_state WHERE name = ?", COLLECTION_REMOVAL);
+  }
 }
 
 // The owner's stored collection `uri` (an Add's or a Remove's target among the account's collections).
@@ -644,7 +689,14 @@ export function ownCollectionByUri(db: Db, owner: string, uri: string): { id: st
   );
 }
 
-// Remove#remove_collection_item: the item `uri` of the collection, with its notification. Whether one was deleted.
+// The local member's row of the collection whose uri is `uri` (the owner's item that last listed it), in any state.
+export function localItemByUri(db: Db, collection: string, uri: string): string | undefined {
+  const item = itemByUri(db, uri);
+  return item?.collection_id === collection && item.local === 1 ? item.id : undefined;
+}
+
+// Remove#remove_collection_item: the item `uri` of the collection, with its notification (a local member's row is
+// hidden instead, the caller having found it by localItemByUri). Whether one was deleted.
 export function removeFeaturedItem(db: Db, collection: string, uri: string): boolean {
   return (
     db.run(

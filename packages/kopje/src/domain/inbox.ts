@@ -46,6 +46,7 @@ import {
 } from "./audience";
 import { userReadOperation } from "./auth";
 import { collectionUri, markCollectionsChanged, requestCollectionSync } from "./collection-requests";
+import { severCollections } from "./collections";
 import {
   beginRetraction,
   cancelFollowAnswers,
@@ -61,7 +62,7 @@ import {
   supersedeEarlier,
 } from "./deliveries";
 import { clearSenderHost } from "./delivery-hosts";
-import { holdsLocalMember } from "./feature-answers";
+import { hideRow } from "./feature-answers";
 import { acceptFeatureRequest, ourFeatureRequest, rejectFeatureRequest } from "./feature-requests";
 import { recountFeatured } from "./featured-tags";
 import { type FetchPreparation, fetchPreparation } from "./fetch-preparation";
@@ -123,6 +124,7 @@ import {
   applyLocalFeaturedItem,
   type FeaturedCollectionInput,
   type FeaturedItemInput,
+  localItemByUri,
   ownCollectionByUri,
   removeFeaturedCollection,
   removeFeaturedItem,
@@ -1334,15 +1336,24 @@ const move: Handler<"Move"> = (db, actor, activity, input) => {
     targetId,
   );
   const carried = [new Date(now).toISOString(), MOVE_MAX_CARRIED] as const;
-  db.run(
+  const blockers = db.all<{ account_id: string }>(
     `INSERT INTO blocks (account_id, target_account_id, created_at)
 		SELECT b.account_id, ?2, ?3 FROM blocks b JOIN local_accounts l ON l.account_id = b.account_id
 		WHERE b.target_account_id = ?1 AND b.account_id <> ?2 ORDER BY b.id LIMIT ?4
-		ON CONFLICT DO NOTHING`,
+		ON CONFLICT DO NOTHING
+		RETURNING account_id`,
     actor.id,
     targetId,
     ...carried,
   );
+  // MoveWorker#carry_blocks_over! carries a block by BlockService, whose handle_collections ends the blocker's
+  // memberships in the target's collections and the target's in the blocker's: a newly carried block severs them as a
+  // local block does (#1589's D25, threat-model.md ID-9), each pair within severCollections' bound (one row a
+  // collection of either account), at most MOVE_MAX_CARRIED pairs.
+  let severed = false;
+  for (const { account_id } of blockers) {
+    severed = severCollections(db, account_id, targetId, now) || severed;
+  }
   db.run(
     `INSERT INTO mutes (account_id, target_account_id, hide_notifications, expires_at, created_at)
 		SELECT m.account_id, ?2, m.hide_notifications, m.expires_at, ?3 FROM mutes m
@@ -1354,7 +1365,7 @@ const move: Handler<"Move"> = (db, actor, activity, input) => {
     targetId,
     ...carried,
   );
-  return applied("moved", runJobBatch(db, { kind: "move", key: activity.id }, now) === "advanced");
+  return applied("moved", runJobBatch(db, { kind: "move", key: activity.id }, now) === "advanced" || severed);
 };
 
 // Moves the next MOVE_BATCH local followers covered by the Move. Returns whether any remain.
@@ -3750,7 +3761,9 @@ function addFeatured(
       return ignored("not-embedded");
     }
     markCollectionsChanged(db, actor.id);
-    const { collection } = applyFeaturedCollection(db, actor, object.featuredCollection, input.origin, input.now);
+    const { collection } = applyFeaturedCollection(db, actor, object.featuredCollection, input.origin, input.now, {
+      kind: "push",
+    });
     return collection === null ? ignored("not-applied") : applied("collection-added");
   }
   const owned = ownCollectionByUri(db, actor.id, activity.target);
@@ -3790,10 +3803,14 @@ const remove: Handler<"Remove"> = (db, actor, activity, { now }) => {
 // the collection does not hold is recorded as the owner's retraction of it (ID-7), so its Add processed after the
 // Remove is refused (Mastodon processes each in a job of its own); at the per-actor cap the Remove is answered 503.
 // Either is a change of the actor's collections that a sync's read under way does not hold, whether Kopje held the
-// object or not (markCollectionsChanged). In a collection that holds a local member's row (#1589's D24) the Remove
-// deletes nothing: it names only an item uri, and may be a late copy about an earlier item of the member, so a read of
-// the owner's collections is requested, which decides the row by the wait's rule (feature-answers.ts), and the item's
-// retraction is recorded.
+// object or not (markCollectionsChanged). A collection's Remove records the owner's retraction of it whether Kopje
+// holds it or not, before it deletes it (#1589's D21: a request's instrument fetched before the Remove and applied
+// after it stores nothing, remote-featured-collections.ts applyFeaturedCollection), and at the cap answers 503 with
+// nothing written, held or not; the delete takes a local member's accepted row with it, the Remove being the evidence
+// that its grant ended (removeFeaturedCollection, threat-model.md ID-9). An item that is a local member's row (the
+// owner's item that last listed it) is hidden rather than deleted (it names only an item uri, which a re-accept may
+// have replaced while the member's grant stands, feature-answers.ts), its retraction recorded, and a read of the
+// owner's collections requested.
 function removeFeatured(
   db: Db,
   actor: { id: string; uri: string },
@@ -3812,28 +3829,39 @@ function removeFeatured(
   if (uri === null) {
     return ignored("not-collection");
   }
+  const own = sameOrigin(uri, actor.uri);
   if (collectionOf(db, actor.id, activity.target) === "featuredCollections") {
     markCollectionsChanged(db, actor.id);
-    return removeFeaturedCollection(db, actor.id, uri) ? applied("collection-removed") : ignored("not-held");
+    if (own && !retract(db, actor.uri, uri, now)) {
+      return retryLater("retraction-cap");
+    }
+    return removeFeaturedCollection(db, actor.id, uri)
+      ? applied("collection-removed")
+      : own
+        ? applied("collection-retracted")
+        : ignored("not-held");
   }
   const owned = ownCollectionByUri(db, actor.id, activity.target);
   if (owned === undefined) {
     return ignored("not-collection");
   }
   markCollectionsChanged(db, actor.id);
-  const local = holdsLocalMember(db, owned.id);
-  if (local) {
+  const local = localItemByUri(db, owned.id, uri);
+  if (local !== undefined) {
+    if (own && !retract(db, actor.uri, uri, now)) {
+      return retryLater("retraction-cap");
+    }
+    hideRow(db, local, now);
     requestCollectionSync(db, actor.id, now);
-  } else if (removeFeaturedItem(db, owned.id, uri)) {
+    return applied("item-hidden");
+  }
+  if (removeFeaturedItem(db, owned.id, uri)) {
     return applied("item-removed");
   }
-  if (!sameOrigin(uri, actor.uri)) {
-    return local ? applied("sync-requested") : ignored("foreign-object");
+  if (!own) {
+    return ignored("foreign-object");
   }
-  if (!retract(db, actor.uri, uri, now)) {
-    return retryLater("retraction-cap");
-  }
-  return applied(local ? "sync-requested" : "item-retracted");
+  return retract(db, actor.uri, uri, now) ? applied("item-retracted") : retryLater("retraction-cap");
 }
 
 // Update#update_collection: the actor's collection, by its id, stored or updated from the embedded document as an Add
@@ -3842,7 +3870,7 @@ function removeFeatured(
 // that a sync's read under way does not hold (markCollectionsChanged).
 const updateCollection: Handler<"UpdateCollection"> = (db, actor, activity, input) => {
   markCollectionsChanged(db, actor.id);
-  const { collection } = applyFeaturedCollection(db, actor, activity.object, input.origin, input.now);
+  const { collection } = applyFeaturedCollection(db, actor, activity.object, input.origin, input.now, { kind: "push" });
   return collection === null ? ignored("not-applied") : applied("collection-updated");
 };
 

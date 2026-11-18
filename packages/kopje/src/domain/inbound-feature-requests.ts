@@ -9,9 +9,8 @@ import {
 } from "../platform/stored-bounds";
 import { availableSql, mayFeatureSql } from "./audience";
 import { featureAuthorizationUri } from "./collection-documents";
-import { markCollectionsChanged } from "./collection-requests";
 import { notifyAdded } from "./collections";
-import { answerRequest, queueWait } from "./feature-answers";
+import { answerRequest } from "./feature-answers";
 import { allocateLocalId, insertWithFreshId } from "./ids";
 import {
   applyFeaturedCollection,
@@ -19,26 +18,32 @@ import {
   ownCollectionByUri,
   storableUrl,
 } from "./remote-featured-collections";
+import { isRetracted } from "./retractions";
 
-// An owner's FeatureRequest for a local account (#1589's D24, Mastodon 4.7.5's ActivityPub::Activity::FeatureRequest):
-// its actor (the verified HTTP signer when the request names none, federation/inbound.ts), its id on that actor's
-// origin (inbox.ts receive), its object a local account Kopje serves, and its instrument the actor's collection: one
-// Kopje stores, or one fetched once on the actor's origin and applied as any embedded collection is
-// (remote-featured-collections.ts applyFeaturedCollection, its remote members' items queued for their checks; nothing
-// verified inline, and no read requested). The member's row in that collection (at most one: collection_items_member)
-// decides the answer, and every answer names the request it answers (feature-answers.ts answerRequest) and queues the
-// row's wait again (queueWait):
+// An owner's FeatureRequest for a local account (#1589's D24, Mastodon 4.7.5's
+// ActivityPub::Activity::FeatureRequest): its actor (the verified HTTP signer when the request names none,
+// federation/inbound.ts), its id on that actor's origin (inbox.ts receive), its object a local account available to
+// every read (a suspended member cannot consent and issues nothing: the request is ignored, nothing fetched, as a
+// Follow to a suspended account is, R38), and its instrument the actor's collection: one Kopje stores, or one fetched
+// once on the actor's origin. The fetched one is applied only when Kopje still stores no collection of that uri when
+// the fetch returns (otherwise the stored one decides, as it is, and the fetched listing is unused), the owner has not
+// retracted it by its Remove (ID-7: then nothing is fetched or stored, and the request is ignored, as Mastodon's owner
+// has deleted the item), and it is the owner's (remote-featured-collections.ts applyFeaturedCollection, admitted up to
+// MAX_STORED_COLLECTIONS of the owner's: past them the request is refused, with no collection or row). Storing it is a
+// change of the owner's collections that a read under way does not hold (markCollectionsChanged, in the application).
+// The member's row in that collection (at most one: collection_items_member) decides the answer, which names the
+// request it answers (feature-answers.ts answerRequest):
 //   - no row: the consent rule (R45, mayFeatureSql) → an accepted row (activity_uri the request), the member notified
 //     added_to_collection, and an Accept granting its authorization; refused → a Reject and no row. The new row takes a
 //     live slot (takeSlot): at COLLECTION_MAX_ITEMS live items the last-positioned remote member's item is deleted (a
-//     copy of the owner's listing, which the read the wait ends with applies again), and when local members' rows hold
-//     every live slot the request is refused;
-//   - an accepted row and the same request (a retry): the same Accept, no second notification;
-//   - an accepted row and another request (Kopje cannot tell a request after the owner's earlier item was gone from a
-//     late copy of an earlier one): by consent, an Accept of this request with the row's authorization (the row's
-//     activity_uri becomes this request's, its uri cleared), or a Reject of it with the row kept;
-//   - a retired row (revoked: kept RETIRED_ITEM_TTL_MS): a Reject, nothing changed. Mastodon answers nothing while any
-//     item of the member exists (docs/mastodon-deviations.md, "Collections").
+//     copy of the owner's listing, which a later read applies again), and when local members' rows hold every live
+//     slot the request is refused;
+//   - an accepted row: an Accept with the row's authorization and no check of the member's policy, whichever request
+//     it is (the row is the consent, which only the member's revoke or block, or the end of the collection or of either
+//     account, ends; Mastodon re-checks its policy on every copy, docs/mastodon-deviations.md). Another request than
+//     the row's becomes the row's, its uri cleared (Kopje cannot tell a request after the owner's earlier item was gone
+//     from a late copy of an earlier one);
+//   - a retired row (revoked: kept RETIRED_ITEM_TTL_MS): a Reject, nothing changed.
 
 export type FeatureRequestActivity = { id: string; object: string; instrument: string };
 
@@ -76,17 +81,22 @@ export function answerFeatureRequest(
     if (!sameOrigin(activity.instrument, owner.uri)) {
       return { kind: "ignored", reason: "foreign-instrument" };
     }
+    if (isRetracted(db, owner.uri, activity.instrument, now)) {
+      return { kind: "ignored", reason: "retracted-instrument" };
+    }
     if (prefetched === undefined) {
       return { kind: "need", uri: activity.instrument };
     }
     if (prefetched === null || prefetched.id !== activity.instrument) {
       return { kind: "ignored", reason: "unknown-instrument" };
     }
-    // A change of the owner's collections that a read under way does not hold.
-    markCollectionsChanged(db, owner.id);
-    const applied = applyFeaturedCollection(db, owner, prefetched, origin, now);
+    const applied = applyFeaturedCollection(db, owner, prefetched, origin, now, { kind: "instrument" });
     if (applied.collection === null) {
-      return { kind: "ignored", reason: "unknown-instrument" };
+      if (!applied.full) {
+        return { kind: "ignored", reason: "unknown-instrument" };
+      }
+      answerRequest(db, "Reject", member, owner, activity.id, allocateLocalId(db, now), null, now);
+      return { kind: "answered", reason: "feature-collections-full" };
     }
     collection = { id: applied.collection, uri: activity.instrument };
   }
@@ -96,10 +106,8 @@ export function answerFeatureRequest(
     collection.id,
     member.id,
   );
-  const consents = () =>
-    db.first(`SELECT 1 AS x WHERE ${mayFeatureSql("?1", "?2")}`, owner.id, member.id) !== undefined;
   if (row === undefined) {
-    const consented = consents();
+    const consented = db.first(`SELECT 1 AS x WHERE ${mayFeatureSql("?1", "?2")}`, owner.id, member.id) !== undefined;
     const position = consented ? takeSlot(db, collection.id) : null;
     if (position === null) {
       answerRequest(db, "Reject", member, owner, activity.id, allocateLocalId(db, now), null, now);
@@ -137,20 +145,18 @@ export function answerFeatureRequest(
     accept(db, member, owner, activity.id, row.id, now);
     return { kind: "answered", reason: "feature-repeated" };
   }
-  if (!consents()) {
-    queueWait(db, row.id, member.uri, answerRequest(db, "Reject", member, owner, activity.id, row.id, null, now), now);
-    return { kind: "answered", reason: "feature-refused" };
-  }
   db.run(
-    `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} SET activity_uri = ?2, uri = NULL WHERE id = ?1`,
+    `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} SET activity_uri = ?2, uri = NULL, updated_at = ?3
+		WHERE id = ?1`,
     row.id,
     activity.id,
+    new Date(now).toISOString(),
   );
   accept(db, member, owner, activity.id, row.id, now);
   return { kind: "answered", reason: "feature-reaccepted" };
 }
 
-// The Accept of `request` granting the row's authorization, and the row's wait queued on it.
+// The Accept of `request` granting the row's authorization.
 function accept(
   db: Db,
   member: { id: string; uri: string },
@@ -159,13 +165,12 @@ function accept(
   row: string,
   now: number,
 ): void {
-  const result = featureAuthorizationUri(member.uri, row);
-  queueWait(db, row, member.uri, answerRequest(db, "Accept", member, owner, request, row, result, now), now);
+  answerRequest(db, "Accept", member, owner, request, row, featureAuthorizationUri(member.uri, row), now);
 }
 
 // The position of a new row in the collection when a live slot is left for it, taking one if needed (see the module's
 // header), else null. Reads the collection's rows once through collection_items_order (at most MAX_STORED_ITEMS), and
-// deletes at most one live item and one retired row.
+// deletes at most one live item (a remote member's) and one retired row (the early eviction, threat-model.md F8).
 function takeSlot(db: Db, collection: string): number | null {
   const counts = db.first<{ live: number; total: number; last: number | null }>(
     `SELECT count(*) FILTER (WHERE state IN (0, 1)) AS live, count(*) AS total, max(position) AS last

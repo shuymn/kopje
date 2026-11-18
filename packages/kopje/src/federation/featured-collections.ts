@@ -59,7 +59,9 @@ export function featuredItemOf(value: unknown): FeaturedItemInput | null {
 
 // An embedded FeaturedCollection, or null when it has no string id (one given only as a URI is not read). Its type is
 // not compared, as ProcessFeaturedCollectionService does not compare it. Its items: the first MAX_REMOTE_ITEMS of
-// orderedItems (`@json['orderedItems'] || []`), each read by featuredItemOf.
+// orderedItems (`@json['orderedItems'] || []`), each read by featuredItemOf; truncated when orderedItems held more,
+// told before the cut, so the Store can tell an omission from an entry past it (remote-featured-collections.ts
+// applyListing: a truncated listing hides nothing).
 export function featuredCollectionOf(value: unknown): FeaturedCollectionInput | null {
   if (!isObject(value) || typeof value.id !== "string") {
     return null;
@@ -81,5 +83,6 @@ export function featuredCollectionOf(value: unknown): FeaturedCollectionInput | 
     topic,
     url: urlOf(value.url),
     items: ordered.slice(0, MAX_REMOTE_ITEMS).map(featuredItemOf),
+    truncated: ordered.length > MAX_REMOTE_ITEMS,
   };
 }

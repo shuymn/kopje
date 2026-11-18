@@ -2,7 +2,6 @@ import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } fr
 import type { Db } from "../db/sql";
 import { COLLECTION_CHECK_ATTEMPTS, COLLECTION_ITEM_STATES } from "../platform/stored-bounds";
 import { localCollectionUri, recordItemAdd } from "./collection-documents";
-import { advanceWait } from "./feature-answers";
 import { writeOperation } from "./operation";
 
 // Checks of remote members' feature authorizations (#1589's D22, Mastodon 4.7.5's ActivityPub::VerifyFeaturedItemService):
@@ -37,9 +36,6 @@ import { writeOperation } from "./operation";
 // A claim is charged when it is made, so a round that dies spends its claims and its attempts, and its items come due
 // when their leases end. Whatever an owner does (removing and re-adding an item, changing its authorization after each
 // failure), its collections cost at most OWNER_CHECKS_PER_DAY claims a UTC day.
-// A local member's row in a remote collection is queued for its wait (#1589's D24, feature-answers.ts), not for a
-// check: claimItemChecks reads it among the ITEM_CHECK_CANDIDATES and moves it on (advanceWait) with no fetch, no token
-// and no claim charged, and it does not count among the round's ITEM_CHECKS_PER_ROUND.
 
 // The due items one claim reads, and claims, at most.
 export const ITEM_CHECK_CANDIDATES = 16;
@@ -72,14 +68,12 @@ type Candidate = {
   owner_uri: string | null;
   member: string | null;
   member_local: number | null;
-  answer: string | null;
 };
 
 // The due items, oldest due first, with what a claim reads of each by key: its collection and that collection's owner,
 // and its member. ?1 now, ?2 the most read.
 const DUE = `SELECT i.id, i.check_attempts AS attempts, i.candidate_approval_uri AS candidate, c.account_id AS owner,
-		c.local, i.collection_id, c.uri AS collection, o.uri AS owner_uri, a.uri AS member, a.domain IS NULL AS member_local,
-		CAST(i.answer_activity_id AS TEXT) AS answer
+		c.local, i.collection_id, c.uri AS collection, o.uri AS owner_uri, a.uri AS member, a.domain IS NULL AS member_local
 	FROM (SELECT id FROM collection_items INDEXED BY collection_items_check
 		WHERE check_due_at >= 0 AND check_due_at <= ?1 ORDER BY check_due_at, id LIMIT ?2) w
 	CROSS JOIN collection_items i INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} ON i.id = w.id
@@ -123,9 +117,8 @@ function endCheck(db: Db, id: string): void {
 }
 
 // The claims of a round (see the module's header): at most ITEM_CHECKS_PER_ROUND, and whether another item is due now.
-// A local member's row in a remote collection moves its wait on (advanceWait). A queued item Kopje does not check (a
-// local member's in a local collection; one without its collection, its member's account or its candidate, which only
-// an import writes) ends its check without a fetch.
+// A queued item this release does not check (a local member's, #1589's PR 6; one without its collection, its member's
+// account or its candidate, which only an import writes) ends its check without a fetch.
 export const claimItemChecks = writeOperation<{ now: number }, { checks: ItemCheck[]; pending: boolean }>(
   (db, { now }) => {
     const today = dayOf(now);
@@ -133,10 +126,6 @@ export const claimItemChecks = writeOperation<{ now: number }, { checks: ItemChe
     for (const row of db.all<Candidate>(DUE, now, ITEM_CHECK_CANDIDATES)) {
       if (checks.length >= ITEM_CHECKS_PER_ROUND) {
         break;
-      }
-      if (row.local === 0 && row.member_local === 1 && row.owner !== null && row.candidate !== null) {
-        advanceWait(db, { id: row.id, owner: row.owner, answer: row.answer }, now);
-        continue;
       }
       const collection = checkedCollection(row);
       if (

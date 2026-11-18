@@ -474,12 +474,14 @@ export class PolicyModel {
   }
 
   // R45: an item (state 0 pending, 1 accepted, 2 rejected, 3 revoked) of the owner's collection is shown to the viewer
-  // when its member is known and available, accepted (or pending, to the owner), and not blocked by the viewer.
-  collectionItemShown(owner: number, member: number | null, state: number, viewer: Viewer): boolean {
+  // when its member is known and available, accepted (or pending, to the owner), and not blocked by the viewer; an item
+  // of a remote owner's collection only while the owner lists it (`listed`: its uri set) or to its own member.
+  collectionItemShown(owner: number, member: number | null, state: number, viewer: Viewer, listed: boolean): boolean {
     return (
       member !== null &&
       this.available(member) &&
       (state === 1 || (state === 0 && viewer === owner)) &&
+      (this.account(owner).local || listed || viewer === member) &&
       !this.blocks(viewer, member)
     );
   }

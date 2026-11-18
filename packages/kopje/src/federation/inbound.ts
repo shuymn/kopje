@@ -1401,9 +1401,9 @@ async function fetchNeeded(
 }
 
 // A FeatureRequest's instrument (ActivityPub::FetchRemoteFeaturedCollectionService): one document under
-// COLLECTIONS_CAPS, of the ActivityStreams context, typed FeaturedCollection and of the id asked for, read as an embedded
-// one is (featured-collections.ts); null otherwise, 'transient' when fetching again may succeed. The Store applies it
-// only as its actor's (remote-featured-collections.ts).
+// COLLECTIONS_CAPS, of the ActivityStreams context, typed FeaturedCollection and of the id asked for, read as an
+// embedded one is (featured-collections.ts); null otherwise, 'transient' when fetching again may succeed. The Store
+// applies it only as its actor's (remote-featured-collections.ts).
 async function fetchCollection(
   uri: string,
   loaders: RemoteLoaders,

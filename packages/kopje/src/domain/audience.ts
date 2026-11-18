@@ -1307,10 +1307,14 @@ export function collectionListedSql(c: string, viewer: string): string {
 
 // R45 (Collection#items_for): whether the item `i` of the collection `c` is shown to `viewer`: its account is known
 // and available; the owner sees it pending or accepted, anyone else accepted; and the viewer does not block its account
-// (not_blocked_by: blocks only). An unavailable member is left out where Mastodon shows it (the departure above).
+// (not_blocked_by: blocks only). An unavailable member is left out where Mastodon shows it (the departure above). An
+// item of a remote collection is shown only while it is listed (its uri: the owner's item that last listed it) or to
+// its own member signed in (#1589's D24, threat-model.md ID-9: a local member's row stays until the member revokes it,
+// and is shown to others once the owner lists it; docs/visibility.md R45).
 export function collectionItemShownSql(i: string, c: string, viewer: string): string {
   return `(${i}.account_id IS NOT NULL AND ${availableSql(`${i}.account_id`)}
 		AND (${i}.state = 1 OR (${i}.state = 0 AND ${c}.account_id IS ${viewer}))
+		AND (${c}.local = 1 OR ${i}.uri IS NOT NULL OR (${viewer} IS NOT NULL AND ${i}.account_id = ${viewer}))
 		AND (${viewer} IS NULL OR NOT ${blocksSql(viewer, `${i}.account_id`)}))`;
 }
 

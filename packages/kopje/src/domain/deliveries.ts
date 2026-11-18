@@ -246,8 +246,9 @@ export function forwardSubject(object: string): string {
   return `${FORWARD_SUBJECT}${object}`;
 }
 
-// The subject of a feature answer (OutboundOptions.answer): its authorization's id behind a prefix no URI starts with,
-// so that it is about no other writer's subject, the member's own revocation of that authorization included.
+// The subject of a feature answer (OutboundOptions.answer): its authorization's id and the owner it answers (its
+// audience's account), behind a prefix no URI starts with, so that it is about no other writer's subject, the member's
+// own revocation of that authorization included, and an answer to one owner never stands for an answer to another.
 const ANSWER_SUBJECT = "answer ";
 
 // The local object an activity is about, and whether it retracts it (outboundKind in audience.ts).
@@ -259,10 +260,14 @@ function subjectOf(
   activity: Activity,
   withdraws: boolean,
   answer?: OutboundOptions["answer"],
+  audience?: DeliveryAudience,
 ): { object: string | null; retracts: boolean } {
   if (answer !== undefined) {
     const object = idOf(activity.object);
-    return { object: object === null ? null : `${ANSWER_SUBJECT}${object}`, retracts: answer === "retraction" };
+    return {
+      object: object === null ? null : `${ANSWER_SUBJECT}${object} ${(audience?.accounts ?? []).join(" ")}`,
+      retracts: answer === "retraction",
+    };
   }
   const retracts = outboundKind(activity, withdraws) === "retraction";
   switch (activity.type) {
@@ -466,7 +471,7 @@ function targetsOf(
   };
   const recipients = recipientsFor(db, signerId, activity, audience, withdraws);
   reach(recipients);
-  const { object, retracts } = subjectOf(activity, withdraws, answer);
+  const { object, retracts } = subjectOf(activity, withdraws, answer, audience);
   // A forward reaches its references' receivers (below), never the earlier receivers of its object's id, which is not
   // the signer's.
   if (retracts && object !== null && earlierReceivers && audience.shares === undefined) {
@@ -553,6 +558,28 @@ function receiversOf(db: Db, signerId: string, object: string): string[] {
 // Recording and expansion
 // ---------------------------------------------------------------------------------------------------------------
 
+// Whether a retraction answer of the same subject (an authorization to one owner) is still to be sent: its targets not
+// yet expanded, or a delivery queued or pending (a pending one is POSTed again, after anything the owner sent since).
+// A leased one is not: its POST may have reached the owner before the listing being answered, so a new answer goes
+// after it. Each retraction answer supersedes the earlier ones of its subject, so the subject's unsuperseded range
+// (outbound_activities_unsuperseded) holds the latest alone while the row is held: one intent, two probes.
+function answerOutstanding(db: Db, signerId: string, envelope: DeliveryEnvelope): boolean {
+  const { object } = subjectOf(envelope.activity, false, "retraction", envelope.audience);
+  return (
+    object !== null &&
+    db.first(
+      `SELECT 1 AS x FROM outbound_activities o INDEXED BY outbound_activities_unsuperseded
+			WHERE o.account_id = ?1 AND o.object_uri = ?2 AND o.superseded = 0 AND o.retracts = 1
+				AND (EXISTS (SELECT 1 FROM outbound_targets t INDEXED BY outbound_targets_activity WHERE t.activity_id = o.id)
+					OR EXISTS (SELECT 1 FROM deliveries d INDEXED BY deliveries_activity
+						WHERE d.activity_id = o.id AND d.state IN ('queued', 'pending')))
+			LIMIT 1`,
+      signerId,
+      object,
+    ) !== undefined
+  );
+}
+
 // Records the intent with its targets, and expands what the step allows. A retraction supersedes every earlier
 // activity about its object and drops the object's receipts (its own targets now hold that evidence); an Update
 // supersedes earlier Updates only. An Update of a status goes alone to servers known to have it (a receipt, or its
@@ -568,9 +595,11 @@ function receiversOf(db: Db, signerId: string, object: string): string[] {
 // (blocks.ts endFollow): a Follow's Reject matters to the follower's server only, at its current personal inbox, as
 // Mastodon's reject_remote_follows! sends it to inbox_url.
 // options.answer: a member's Delete of a feature authorization that answers an owner's listing (#1589's D24,
-// feature-answers.ts), about the authorization under a subject of its own (ANSWER_SUBJECT), so it supersedes only an
-// earlier answer about it, never the member's own revocation; 'retraction' for an authorization of a row Kopje holds
-// (never refused, one active), 'ordinary' for any other (admitted under RES-4's caps like new work).
+// feature-answers.ts), about the authorization and that owner under a subject of its own (ANSWER_SUBJECT), so it
+// supersedes only an earlier answer of it to that owner, never the member's own revocation; 'retraction' for an
+// authorization of a row Kopje holds (never refused, and not recorded while an earlier one to that owner is still to
+// be sent, answerOutstanding: one waiting a subject), 'ordinary' for any other (admitted under RES-4's caps like new
+// work).
 // Returns whether this call inserted an intent with at least one target (a chunk); the expansion it runs, which may
 // expand other intents, does not count. A handshake replay ends its hold only then (handshake-replays.ts).
 export type OutboundOptions = {
@@ -587,18 +616,9 @@ export function enqueueActivity(
   now: number,
   options: OutboundOptions = {},
 ): boolean {
-  return enqueueIntent(db, signerId, envelope, now, options).inserted;
-}
-
-// enqueueActivity, also answering the id of the envelope's own intent (null when none was inserted), which a feature
-// answer's row keeps to watch its delivery (collection-checks.ts).
-export function enqueueIntent(
-  db: Db,
-  signerId: string,
-  envelope: DeliveryEnvelope,
-  now: number,
-  options: OutboundOptions = {},
-): { inserted: boolean; intent: string | null } {
+  if (options.answer === "retraction" && answerOutstanding(db, signerId, envelope)) {
+    return false;
+  }
   const found = targetsOf(
     db,
     signerId,
@@ -625,7 +645,12 @@ export function enqueueIntent(
       return [shared === undefined ? t : { inbox: t.inbox, addressee: t.addressee, ...mergedProvenance(t, shared) }];
     });
   }
-  const { object, retracts } = subjectOf(envelope.activity, options.withdraws === true, options.answer);
+  const { object, retracts } = subjectOf(
+    envelope.activity,
+    options.withdraws === true,
+    options.answer,
+    envelope.audience,
+  );
   const types = supersededTypes(envelope.activity);
   if (object !== null && (retracts || types.length > 0)) {
     supersede(db, signerId, object, retracts, types);
@@ -638,7 +663,6 @@ export function enqueueIntent(
     );
   }
   let inserted = false;
-  let intent: string | null = null;
   // An actor Update goes unchanged to every target and replaces its waiting profile Updates, so quick edits deliver
   // only the latest document. A status Update follows the rule above; poll voters hold the status and take its counts
   // from an Update only (DistributePollUpdateWorker).
@@ -662,24 +686,21 @@ export function enqueueIntent(
       new Set(targets.filter((t) => t.inbox !== "").map((t) => laneOf(t.inbox))),
       now,
     );
-    intent = insertIntent(db, signerId, envelope, object, false, targets, now);
-    inserted = intent !== null;
+    inserted = insertIntent(db, signerId, envelope, object, false, targets, now);
   } else if (object !== null && envelope.activity.type === "Update" && !isCollectionObject(envelope.activity.object)) {
     const having = serversWithObject(db, signerId, object);
     const fresh = targets.filter((t) => t.inbox !== "" && !having.has(laneOf(t.inbox)) && !voters.has(t.inbox));
     if (fresh.length > 0) {
       replaceWaiting(db, signerId, object, new Set(fresh.map((t) => laneOf(t.inbox))), now);
       const creation = { ...envelope, activity: createOfCurrent(envelope.activity) };
-      inserted = insertIntent(db, signerId, creation, object, false, fresh, now) !== null;
+      inserted = insertIntent(db, signerId, creation, object, false, fresh, now);
     }
-    intent = insertIntent(db, signerId, envelope, object, false, targets, now);
-    inserted = intent !== null || inserted;
+    inserted = insertIntent(db, signerId, envelope, object, false, targets, now) || inserted;
   } else {
-    intent = insertIntent(db, signerId, envelope, object, retracts, targets, now);
-    inserted = intent !== null;
+    inserted = insertIntent(db, signerId, envelope, object, retracts, targets, now);
   }
   expandPending(db, now, EXPANSION_STEP);
-  return { inserted, intent };
+  return inserted;
 }
 
 // The earlier activities about an object that a new one supersedes. A moderation Update still staging (retracts 0,
@@ -2203,7 +2224,6 @@ function chunked(targets: Target[]): { json: string; last: number }[] {
   return chunks;
 }
 
-// The intent's id, or null when no target could be chunked (nothing recorded).
 function insertIntent(
   db: Db,
   signerId: string,
@@ -2212,10 +2232,10 @@ function insertIntent(
   retracts: boolean,
   targets: Target[],
   now: number,
-): string | null {
+): boolean {
   const chunks = chunked(targets);
   if (chunks.length === 0) {
-    return null;
+    return false;
   }
   const { followPair, ...stored } = envelope;
   const intent = db.first<{ id: string }>(
@@ -2229,7 +2249,7 @@ function insertIntent(
     followPair ?? null,
   )!;
   insertChunks(db, intent.id, chunks);
-  return intent.id;
+  return true;
 }
 
 // Writes chunks (chunked) as the intent's targets still to expand, one row each.
