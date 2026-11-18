@@ -23,7 +23,7 @@ import { FIXTURE_DIR, REPLAY_FILE, fixtureText, generateFixtures, reproduces } f
 const plan = readPlan();
 // The largest check, the induction, takes about 30 s under tla-ts on a laptop.
 const CHECK_TIMEOUT_MS = 120_000;
-// A fresh run of every fixture's goal: about 85 s on a laptop, S2-ReadOverRetraction's about 40 s of it.
+// A fresh run of every fixture's goal: about 95 s on a laptop, S2-ReadOverRetraction's about 40 s of it.
 const FIXTURES_TIMEOUT_MS = 300_000;
 const REPLAY_PATH = fileURLToPath(new URL(`../${REPLAY_FILE}`, import.meta.url));
 

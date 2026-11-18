@@ -313,6 +313,20 @@
       "variant": "V28",
       "invariant": "AnswerBound",
       "trace": 11
+    },
+    {
+      "name": "V29",
+      "scenario": "S2",
+      "variant": "V29",
+      "invariant": "CR3",
+      "trace": 10
+    },
+    {
+      "name": "V30",
+      "scenario": "S4",
+      "variant": "V30",
+      "invariant": "CR3",
+      "trace": 13
     }
   ],
   "findings": [],
@@ -764,6 +778,20 @@
       "goal": "LeaseSuperseded",
       "trace": 13,
       "fixture": true
+    },
+    {
+      "name": "S2-LeaseFailed",
+      "scenario": "S2",
+      "goal": "LeaseFailed",
+      "trace": 11,
+      "fixture": true
+    },
+    {
+      "name": "S4-LeaseFailedBesideX",
+      "scenario": "S4",
+      "goal": "LeaseFailedBesideX",
+      "trace": 13,
+      "fixture": true
     }
   ],
   "replay": {
@@ -883,6 +911,14 @@
       {
         "variant": "V28",
         "fixture": "S2-LeaseSuperseded"
+      },
+      {
+        "variant": "V29",
+        "fixture": "S2-LeaseFailed"
+      },
+      {
+        "variant": "V30",
+        "fixture": "S4-LeaseFailedBesideX"
       }
     ],
     "exempt": [

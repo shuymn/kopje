@@ -91,7 +91,8 @@
 (*    an unserved a only if every Delete of a in flight when R applied its *)
 (*    acceptance, or recorded since, was refused at a full backlog or      *)
 (*    given up (F7): a processed Delete that left R holding a counts       *)
-(*    against it.                                                          *)
+(*    against it, and so does one dropped after a failed POST unless a     *)
+(*    later answer to its inbox superseded it.                             *)
 (*  - ObservedVisibility OV1 /\ OV2 /\ OV3: only an eligible untruncated   *)
 (*    read, an exact item Remove, a re-accept by another request, the      *)
 (*    row's end or a loss of availability hides it; at quiescence after    *)
@@ -198,10 +199,11 @@ Can(f) == spent[f] < Bud(f)
 Spend(f) == spent' = [spent EXCEPT ![f] = @ + 1]
 
 \* The scenario checks fingerprint states without `last`, which records how a state was reached, not what it is,
-\* without the given-up deliveries once no operator retry is left to send them again, and without g.overLease, which
-\* only a goal reads. No action or invariant reads any of them.
+\* without the given-up deliveries once no operator retry is left to send them again, and without g.overLease and
+\* g.waitedAgain, which only goals read. No action or invariant reads any of them.
 View ==
-  <<k, env, kq, kl, IF Can("retry") THEN kg ELSE {}, toK, rs, rin, rd, sr, fe, spent, [g EXCEPT !.overLease = FALSE]>>
+  <<k, env, kq, kl, IF Can("retry") THEN kg ELSE {}, toK, rs, rin, rd, sr, fe, spent,
+    [g EXCEPT !.overLease = FALSE, !.waitedAgain = NONE]>>
 
 (***************************************************************************)
 (* Messages and records.                                                   *)
@@ -293,7 +295,8 @@ Init ==
   /\ g = [obl |-> NONE, accReq |-> {}, delServed |-> FALSE, refusedHeld |-> FALSE, missed |-> FALSE, ov1 |-> FALSE,
           nue |-> FALSE, nueLive |-> FALSE, rot |-> FALSE, avail |-> FALSE, rejected |-> {}, accAfterRem |-> FALSE,
           remLive |-> FALSE, afterGone |-> FALSE, unexcused |-> [a \in Auths |-> 0], tick |-> FALSE, held503 |-> FALSE,
-          o7 |-> FALSE, lastRd |-> NoLastRead, ign |-> FALSE, lrMoved |-> FALSE, fo |-> FALSE, overLease |-> FALSE]
+          o7 |-> FALSE, lastRd |-> NoLastRead, ign |-> FALSE, lrMoved |-> FALSE, fo |-> FALSE, overLease |-> FALSE,
+          waitedAgain |-> NONE]
   /\ last = [act |-> "Init", arg |-> NoArg, rec |-> {}, resp |-> 0, ev |-> {}]
 
 (***************************************************************************)
@@ -838,18 +841,26 @@ Drops(m) == SenderDrops(m) /\ Variant # "V25"
 \* MemberAvailability's delivery part: an activity R receives from L while L is suspended is a retraction.
 SentSuspended(m) == [g EXCEPT !.avail = @ \/ SenderDrops(m)]
 
-\* A leased head that a later answer superseded: an answer of the same authorization to the same inbox recorded while it
-\* was in flight (Coalesced does not count a leased one), which waits behind it. The stale-answer drop
-\* (deliveries.ts) then drops it when its POST fails or its lease is reclaimed, and the later answer is sent.
-Superseded ==
-  /\ kl /\ Head(kq).ty = "Delete" /\ Head(kq).why = "answer"
-  /\ \E i \in 2..Len(kq) :
-       kq[i].ty = "Delete" /\ kq[i].why = "answer" /\ kq[i].obj = Head(kq).obj /\ kq[i].to = Head(kq).to
-\* A failed POST of the head drops it if superseded. VARIANT V28: a superseded head waits again.
-DropsSuperseded == Superseded /\ Variant # "V28"
+\* The leased head is a corrective answer: L's Delete answering a listing.
+LeasedAnswer == kl /\ Head(kq).ty = "Delete" /\ Head(kq).why = "answer"
+\* A later answer of the leased head's authorization waits behind it: to the head's inbox (sameInbox), or to any.
+LaterAnswer(sameInbox) ==
+  \E i \in 2..Len(kq) :
+    /\ kq[i].ty = "Delete" /\ kq[i].why = "answer" /\ kq[i].obj = Head(kq).obj
+    /\ (kq[i].to = Head(kq).to \/ ~sameInbox)
+\* A leased answer that a later one superseded: an answer of the same authorization to the same inbox recorded while it
+\* was in flight (Coalesced does not count a leased one), which waits behind it and answers that inbox's listing too.
+\* The stale-answer drop (deliveries.ts) drops it when its POST fails or its lease is reclaimed, and the later one is
+\* sent. VARIANT V30: an answer of the same authorization to any inbox supersedes it.
+Superseded == LeasedAnswer /\ LaterAnswer(Variant # "V30")
+\* A failed POST drops the leased head if superseded. VARIANT V28: never. VARIANT V29: any leased answer.
+FailDrops == CASE Variant = "V28" -> FALSE [] Variant = "V29" -> LeasedAnswer [] OTHER -> Superseded
+\* CR3's count after a failed POST that drops the head: the head leaves it only when a later answer to its inbox
+\* carries its correction (an answer to another inbox does not answer this inbox's listing).
+FailCount == IF FailDrops /\ LaterAnswer(TRUE) THEN CountHead(Head(kq), FALSE) ELSE g
 \* A failed POST: the head waits again, or is dropped as superseded (its input "superseded").
 FailStep(act, m) ==
-  last' = [act |-> act, arg |-> Arg(NoEnvelope, m, IF DropsSuperseded THEN "superseded" ELSE NONE), rec |-> {},
+  last' = [act |-> act, arg |-> Arg(NoEnvelope, m, IF FailDrops THEN "superseded" ELSE NONE), rec |-> {},
            resp |-> 0, ev |-> {}]
 
 \* The head is claimed for its POST (claimDeliveries leases it), which is then in flight: it no longer waits, so a
@@ -866,8 +877,10 @@ KLeaseHead ==
 KFail ==
   /\ kl /\ ~Drops(Head(kq))
   /\ kl' = FALSE
-  /\ kq' = IF DropsSuperseded THEN Tail(kq) ELSE kq
-  /\ g' = IF DropsSuperseded THEN CountHead(Head(kq), FALSE) ELSE g
+  /\ kq' = IF FailDrops THEN Tail(kq) ELSE kq
+  \* A leased answer that waits again: alone, or beside an answer of its authorization to another inbox (goals only).
+  /\ g' = [FailCount EXCEPT !.waitedAgain = IF LeasedAnswer /\ ~FailDrops
+                                             THEN (IF LaterAnswer(FALSE) THEN "otherInbox" ELSE "alone") ELSE @]
   /\ FailStep("KFail", Head(kq))
   /\ UNCHANGED <<k, env, kg, toK, rs, rin, rd, sr, fe, spent>>
 
@@ -888,14 +901,14 @@ KDup ==
   /\ kq # <<>> /\ ~Drops(Head(kq)) /\ Can("dup") /\ Spend("dup")
   /\ rin' = BagAdd(rin, Head(kq))
   /\ kl' = FALSE
-  /\ kq' = IF DropsSuperseded THEN Tail(kq) ELSE kq
-  /\ g' = [(IF DropsSuperseded THEN g ELSE CountHead(Head(kq), TRUE)) EXCEPT !.avail = @ \/ SenderDrops(Head(kq))]
+  /\ kq' = IF FailDrops THEN Tail(kq) ELSE kq
+  /\ g' = [(IF FailDrops THEN g ELSE CountHead(Head(kq), TRUE)) EXCEPT !.avail = @ \/ SenderDrops(Head(kq))]
   /\ FailStep("KDup", Head(kq))
   /\ UNCHANGED <<k, env, kg, toK, rs, rd, sr, fe>>
 
-\* The head given up after its last attempt; a superseded one is dropped instead (KFail).
+\* The head given up after its last attempt; one a failure drops is dropped instead (KFail).
 KGiveUp ==
-  /\ kq # <<>> /\ ~Drops(Head(kq)) /\ ~DropsSuperseded
+  /\ kq # <<>> /\ ~Drops(Head(kq)) /\ ~FailDrops
   /\ kq' = Tail(kq) /\ kl' = FALSE /\ kg' = kg \cup {Head(kq)}
   /\ g' = CountHead(Head(kq), FALSE)
   /\ DeliveryStep("KGiveUp", Head(kq))
