@@ -700,10 +700,11 @@ Mastodon's `JsonLdHelper#collection_items`; RES-6 in [threat-model.md](threat-mo
   flag (the author itself still makes a `canFeature` half that adds nothing `disabled`), while a value that is not a
   string, which no collection matches, adds `unsupported_policy` as in Mastodon: Mastodon may store the collection as
   the very string a later entry lists and read the entry as it, so neither a later collection's flag nor
-  `unsupported_policy` for a string (which lets anyone ask to quote) is known to be Mastodon's. Every string entry is
-  compared as Mastodon compares it, whatever its length (a policy's strings are the received object's, within its 1 MiB
-  body bound; the stored collection compared with them has no fixed bound), so each entry's flags are within
-  Mastodon's, and no one may quote, feature or ask where Mastodon refuses them. Accepted, 2026-11-16.
+  `unsupported_policy` for a string (which lets anyone ask to quote) is known to be Mastodon's. Every entry is read,
+  and every string entry compared as Mastodon compares it, whatever its length (a policy's entries are the received
+  object's, within its 1 MiB body bound and 10,000 values; the stored collection compared with them has no fixed
+  bound), so each entry's flags are within Mastodon's, and no one may quote, feature or ask where Mastodon refuses
+  them. Accepted, 2026-11-16.
 
 - An `Add` or `Remove` of a `Hashtag` aimed at the actor's `featuredTags` collection features or unfeatures it, as
   one aimed at its `featured` collection does. Mastodon 4.7.5 reads a hashtag only from one aimed at the `featured`

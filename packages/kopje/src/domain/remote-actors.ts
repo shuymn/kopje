@@ -537,16 +537,17 @@ type SubpolicyBits = { unsupported_policy: number; public: number; followers: nu
 
 // Mastodon's reading of one half of a remote account's interaction policy, the same in StatusParser#quote_subpolicy
 // (status_parser.rb:179-196, canQuote) and InteractionPolicyParser#subpolicy (interaction_policy_parser.rb:22-40,
-// canFeature), with the collections the account's stored document names, read once for both halves. The entries once
-// each (uniq!), then removed as Mastodon removes them, each removal before the next: the first public spelling listed
-// of as:Public, Public and the full IRI in that order (one only: Mastodon's `||` stops at the first it deletes, so a
-// second spelling is left over), then the account's followers and its following collections as its stored document
-// names them ('' for none, as Mastodon stores it, which a listed "" matches), then the account itself (`itself`);
-// anything left over adds unsupported_policy. A value that is not a string (null) is always left over, as Mastodon's
-// Array#delete matches no string with it. A collection Kopje cannot read as Mastodon stores it (collection-requests.ts
-// UNREADABLE) makes every string left at it add nothing, from the first collection it cannot read on: Mastodon may
-// store that collection as the very string, so neither a later collection's flag nor unsupported_policy (which lets
-// anyone ask to quote) is known to be Mastodon's, and adding nothing grants no one more than Mastodon does.
+// canFeature), with the collections the account's stored document names, read once for both halves, and one pass over a
+// half's entries (federation/remote-status.ts policyHalf gives every entry). The entries once each (uniq!), then
+// removed as Mastodon removes them, each removal before the next: the first public spelling listed of as:Public, Public
+// and the full IRI in that order (one only: Mastodon's `||` stops at the first it deletes, so a second spelling is left
+// over), then the account's followers and its following collections as its stored document names them ('' for none, as
+// Mastodon stores it, which a listed "" matches), then the account itself (`itself`); anything left over adds
+// unsupported_policy. A value that is not a string (null) is always left over, as Mastodon's Array#delete matches no
+// string with it. A collection Kopje cannot read as Mastodon stores it (collection-requests.ts UNREADABLE) makes every
+// string left at it add nothing, from the first collection it cannot read on: Mastodon may store that collection as the
+// very string, so neither a later collection's flag nor unsupported_policy (which lets anyone ask to quote) is known to
+// be Mastodon's, and adding nothing grants no one more than Mastodon does.
 export function subpolicyReader(
   db: Db,
   account: { id: string; uri: string },
@@ -562,14 +563,8 @@ export function subpolicyReader(
     [collectionRead(row?.following ?? null), bits.following],
   ] as const;
   return (entries) => {
-    const left = [...new Set(entries)];
-    const take = (value: string) => {
-      const at = left.indexOf(value);
-      if (at >= 0) {
-        left.splice(at, 1);
-      }
-      return at >= 0;
-    };
+    const left = new Set(entries);
+    const take = (value: string) => left.delete(value);
     let flags = 0;
     if (take("as:Public") || take("Public") || take(PUBLIC_COLLECTION)) {
       flags |= bits.public;
@@ -585,7 +580,7 @@ export function subpolicyReader(
       }
     }
     const itself = take(account.uri);
-    if (left.some((entry) => readable || entry === null)) {
+    if (readable ? left.size > 0 : left.has(null)) {
       flags |= bits.unsupported_policy;
     }
     return { flags, itself };

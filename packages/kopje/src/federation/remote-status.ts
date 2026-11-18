@@ -378,28 +378,37 @@ function quoteOf(object: Json, embed: boolean): RemoteQuoteInput | null {
   };
 }
 
-// Entries of each half of a canQuote policy read at most (RES-1), and of an actor's canFeature (remote-actor.ts
-// featurePolicyOf). A policy names a few collections; a longer one only adds unsupported_policy, which an entry past the
-// bound would add anyway unless it named a collection twice.
-export const MAX_QUOTE_POLICY_ENTRIES = 32;
+// One half of an interaction policy as the Store reads it (remote-actors.ts subpolicyReader), from every entry it
+// lists: each string once, as listed, whatever its length, as Mastodon compares it, and one null when it lists anything
+// that is not a string. Mastodon's reading depends only on which distinct values a half lists (uniq!, then deletes of
+// strings, which leave every value that is not a string), so this reads the whole list as Mastodon does. A received
+// object holds at most MAX_JSON_NODES values (json-bounds.ts, RES-2) and its strings are within its body's bound
+// (INBOX_BODY_LIMIT or DOCUMENT_BODY_LIMIT, 1 MiB), as the raw object the input carries is, and each half is read in
+// one pass here and one in the Store; the stored collections they are compared with have no fixed bound
+// (collection-requests.ts collectionSql). Also canFeature's (remote-actor.ts featurePolicyOf).
+export function policyHalf(entries: readonly unknown[]): (string | null)[] {
+  const strings = new Set<string>();
+  let other = false;
+  for (const entry of entries) {
+    if (typeof entry === "string") {
+      strings.add(entry);
+    } else {
+      other = true;
+    }
+  }
+  return other ? [...strings, null] : [...strings];
+}
 
-// StatusParser#quote_policy's input: interactionPolicy.canQuote's automaticApproval and manualApproval, as the actor
-// URIs (or collections) they list: each string as listed, whatever its length, as Mastodon compares it (a "" matches a
-// collection the author names none of, as Mastodon stores it), and null for an entry that is not a string (read as
-// unsupported_policy). The strings are the received object's own, so together they are within its body's bound
-// (INBOX_BODY_LIMIT or DOCUMENT_BODY_LIMIT, 1 MiB), as the raw object the input carries is; the stored collections
-// they are compared with have no fixed bound (collection-requests.ts collectionSql). The Store turns them into
-// Mastodon's flags with the author's collections (remote-statuses.ts remoteQuotePolicy). null: the Note states no
-// policy.
+// StatusParser#quote_policy's input: interactionPolicy.canQuote's automaticApproval and manualApproval, each as
+// as_array reads it (policyHalf; a "" matches a collection the author names none of, as Mastodon stores it). The Store
+// turns them into Mastodon's flags with the author's collections (remote-statuses.ts remoteQuotePolicy). null: the
+// Note states no policy.
 function quotePolicyOf(object: Json): RemoteQuotePolicyInput | null {
   const policy = isObject(object.interactionPolicy) ? object.interactionPolicy.canQuote : undefined;
   if (!isObject(policy)) {
     return null;
   }
-  const half = (value: unknown) =>
-    asArray(value)
-      .slice(0, MAX_QUOTE_POLICY_ENTRIES)
-      .map((entry) => (typeof entry === "string" ? entry : null));
+  const half = (value: unknown) => policyHalf(asArray(value));
   return { automatic: half(policy.automaticApproval), manual: half(policy.manualApproval) };
 }
 
