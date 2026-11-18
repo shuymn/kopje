@@ -770,6 +770,7 @@ describe("Update of a status (ID-6, ID-7, VIS-2)", () => {
       { focalPoint: "0.5,-0.25", focus: { x: 0.5, y: -0.25 } },
       { focalPoint: "0.5,", focus: { x: 0.5, y: 0 } },
       { focalPoint: "0.5", focus: { x: 0.5, y: 0 } },
+      { focalPoint: "1.1foo,-2,-0.8", focus: { x: 1, y: -1 } },
       { focalPoint: [null, 0.5], focus: { x: 0, y: 0.5 } },
       { focalPoint: ["Infinity", "NaN"], focus: { x: 0, y: 0 } },
       { focalPoint: ["0x1A", 0], focus: { x: 0, y: 0 } },

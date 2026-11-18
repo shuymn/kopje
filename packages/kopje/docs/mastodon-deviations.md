@@ -1662,13 +1662,16 @@ Media (the `MediaAttachment` entity):
 - A remote attachment's `focalPoint` that is a string is read as an upload's `focus`; one that is a list that is not
   empty, by its first two entries, a number as given, `null` as 0 and a string by `parseFloat`, a missing second as 0,
   each clamped to −1 to 1 (`focusOf` in `src/federation/remote-status.ts`). A coordinate past the double range (`1e400`,
-  a number or a string) is 0, where Mastodon stores `null`. Mastodon casts every entry by Ruby's `to_f`, unclamped,
-  and fails the whole activity on one it cannot cast (a boolean, an object or a list, in any position) and on a
-  `focalPoint` that is neither blank, a list nor a string (`true`, a number, an object with members). Kopje reads no
-  entry past the second, and reads such a `focalPoint` as none, so the post arrives without a focus and an `Update`
-  keeps the one shown. An LD-signed activity's `focalPoint` is read in the shape it was sent, where Mastodon compacts
-  it under its `@list` term, which makes a string a list of one (`"0.5,-0.25"` is then `{x: 0.5, y: null}`) and drops
-  a list's nulls (`[null, 0.5]` is then `{x: 0.5, y: null}`). Accepted, 2026-11-18.
+  a number or a string) is 0, where Mastodon stores `null`, and `parseFloat` stops where Ruby's `to_f` reads on
+  (`"0.1_5"` is 0.1, 0.15 on Mastodon). Mastodon casts every entry by Ruby's `to_f`, unclamped, and fails the whole
+  activity on one it cannot cast (a boolean, an object or a list, in any position) and on a `focalPoint` that is neither
+  blank, a list nor a string in an activity that is not LD-signed (`true`, a number, an object with members). Kopje
+  reads no entry past the second, and reads such a `focalPoint` as none, so the post arrives without a focus and an
+  `Update` keeps the one shown. An LD-signed activity's `focalPoint`, where its contexts define the term (otherwise
+  neither reads it; "Inbound HTTP signatures" below), is read in the shape it was sent, where Mastodon compacts it under
+  its `@list` term, which makes a string or a number a list of one (`"0.5,-0.25"` and `0.5` are then
+  `{x: 0.5, y: null}`, none on Kopje for `0.5`) and drops a list's nulls (`[null, 0.5]` is then `{x: 0.5, y: null}`).
+  Accepted, 2026-11-18.
 
 Filters (a status's `filtered`, Mastodon's `CustomFilter#to_regex` over `Status#searchable_text`):
 
