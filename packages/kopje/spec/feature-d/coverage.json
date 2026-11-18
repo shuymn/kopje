@@ -1,6 +1,6 @@
 {
   "$comment": "Kopje's sources spec/feature-d/ describes, and their blobs when it was last confirmed to (scripts/feature-d-coverage.mjs). A null blob is a file design (d) adds. test-node/feature-d-coverage.test.ts fails once a blob differs.",
-  "confirmed": "487613ebdf6ea7f6d6708b0ce203d9241ff74270",
+  "confirmed": "3144b6baadc3d9976a622a70c58088372444b612",
   "files": [
     {
       "path": "src/store.ts",
@@ -130,7 +130,7 @@
       "path": "src/domain/retractions.ts",
       "functions": ["isRetracted", "isDeleted", "recordDeletedObject", "canRetract", "retract"],
       "spec": "FeatureDKopje.tla ret (ID-7 retractions and the cap's 503) and rk (R's tombstone, checked by ApplyFetch and ApplyRead)",
-      "blob": "878764ba82b61aef40cb6292e17c8901d532de03"
+      "blob": "27643dc628797486f62201bb9553a4ea38f91b05"
     },
     {
       "path": "src/domain/delivery-hosts.ts",
