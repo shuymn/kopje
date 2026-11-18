@@ -1,6 +1,15 @@
+import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { ANSWER_POLL_MS, PREAPPROVED_WAIT_MS } from "../src/domain/feature-answers";
+import { Db } from "../src/db/sql";
+import { claimItemChecks } from "../src/domain/collection-checks";
+import {
+  ANSWER_POLL_MS,
+  holdsLocalMember,
+  localRows as localRowsOf,
+  PREAPPROVED_WAIT_MS,
+} from "../src/domain/feature-answers";
+import { answerFeatureRequest } from "../src/domain/inbound-feature-requests";
 import {
   PART_COLLECTIONS,
   PART_FEATURED,
@@ -11,6 +20,7 @@ import {
 import { MAX_REMOTE_COLLECTIONS, MAX_REMOTE_ITEMS } from "../src/domain/remote-featured-collections";
 import { webfingerUrl } from "../src/domain/remote-statuses";
 import { COLLECTIONS_CAPS, FEATURED_COLLECTION_PAGES, syncCollections } from "../src/federation/collections";
+import { MAX_STORED_ITEMS } from "../src/platform/stored-bounds";
 import { sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
 import {
@@ -40,6 +50,7 @@ import {
 import { BUILD } from "./helpers";
 import { LOCAL, type RemoteWeb, type TestActor } from "./inbox-helpers";
 import { accountId, ALICE, ALICE_URI, AS, nextId, OTHER, type Setup, setup } from "./inbox-status-helpers";
+import { measuredStatements, watchedCursor } from "./read-helpers";
 
 // The collections part of a remote account's sync (#1589's D21: domain/remote-collections.ts PART_COLLECTIONS,
 // domain/remote-featured-collections.ts, federation/collections.ts): an account's featuredCollections collection and
@@ -710,6 +721,50 @@ describe("a local member's wait and the reads of its owner's collections", () =>
     expect(await localRows(v.t, ALICE)).toMatchObject([{ id: v.row, state: 3 }]);
   });
 
+  // D21 through an owner's Add or Update of the whole collection (inbox.ts addFeatured and updateCollection apply the
+  // read's rule, the activity's own time as its claim's). Fails if either deletes a local member's row it leaves out
+  // while the row's wait is queued, while it is revoked, or when it changed at the activity's time; the row that is none
+  // of these is deleted, so it is the rule that keeps the others.
+  for (const kind of ["Add", "Update"] as const) {
+    it(`keeps a row an owner's ${kind} of the collection leaves out while it waits, is revoked or changed then`, async () => {
+      const ended = ", check_due_at = NULL, candidate_approval_uri = NULL, answer_activity_id = NULL";
+      const cases: [string, string, number][] = [
+        ["waiting", "", NOW - 60_000],
+        ["revoked", `${ended}, state = 3`, NOW - 60_000],
+        ["changed at the activity's time", ended, NOW],
+        ["none of these", ended, NOW - 60_000],
+      ];
+      const kept: Record<string, boolean> = {};
+      for (const [name, set, changed] of cases) {
+        const w = await featuring();
+        await sql(
+          w.t.store,
+          `UPDATE collection_items SET updated_at = ?${set} WHERE id = ?`,
+          new Date(changed).toISOString(),
+          w.row,
+        );
+        // The collection as the owner sends it, without alice's item.
+        const object = { ...w.listed, name: "renamed" };
+        const actor = w.owner.uri;
+        const body =
+          kind === "Add"
+            ? { "@context": AS, type: "Add", actor, target: w.owner.featuredCollections, object }
+            : { "@context": AS, id: `${actor}#updates/${nextId()}`, type: "Update", actor, object };
+        expect(await w.t.post(w.owner, body)).toBe(202);
+        expect(await sql(w.t.store, "SELECT name FROM collections WHERE uri = ?", w.listed.id)).toEqual([
+          { name: "renamed" },
+        ]);
+        kept[name] = (await localRows(w.t, ALICE)).some((row) => row.id === w.row);
+      }
+      expect(kept).toEqual({
+        waiting: true,
+        revoked: true,
+        "changed at the activity's time": true,
+        "none of these": false,
+      });
+    });
+  }
+
   // 6-T8. Fails if the read applies the first 25 listed items regardless of local rows (the trigger refuses the 25th
   // and the part never completes) or if the request's row meets the trigger.
   it("applies a listing into the slots local members' rows leave, and gives a request a slot", async () => {
@@ -783,5 +838,216 @@ describe("a local member's wait and the reads of its owner's collections", () =>
     expect(await w.t.post(w.owner, request)).toBe(202);
     expect(await localRows(w.t, ALICE)).toEqual([]);
     expect((await outbound(w.t, ALICE)).at(-1)!.activity).toMatchObject({ type: "Reject", object: request.id });
+  });
+});
+
+// RES-7 for a local member's rows (design §5.1's row for PR 6, §5.2's delivery probe): each statement PR 6 adds walks
+// one collection's rows (collection_items_order, at most MAX_STORED_ITEMS by the trigger) or one answer's targets and
+// deliveries (outbound_targets_activity, deliveries_activity), or reads one row by a unique key. Statistics are taken
+// (ANALYZE) on a small world; the grown world then fills two of the owner's collections to their stored cap, the one
+// with every live slot taken (25 live remote members, 25 retired rows: takeSlot frees a live slot) and the other with
+// one live slot free (24 and 26: takeSlot frees a stored row), and grows every other key past it: the owner's 8 other
+// collections and another owner's 10 at their caps, and 2,000 deliveries and 200 unexpanded targets of other
+// activities. Each PR 6 statement's rows grow by at most its key's bound, and each delivery probe reads at most two.
+describe("a local member's reads at their caps, on statistics from before the growth", () => {
+  type Measured = { query: string; rows: number };
+
+  // Runs `fn` on a Db over the Store's storage in one transaction, each statement's rows read recorded.
+  function measuredDomain<T>(t: Setup, fn: (db: Db) => T): Promise<{ output: T; statements: Measured[] }> {
+    return runInDurableObject(t.store, (_instance, state) => {
+      const statements: Measured[] = [];
+      const real = state.storage.sql;
+      const counting = {
+        exec: (query: string, ...params: SqlStorageValue[]) => {
+          const cursor = real.exec(query, ...params);
+          const entry = { query: query.replace(/\s+/g, " ").trim(), rows: 0 };
+          statements.push(entry);
+          return watchedCursor(cursor, () => (entry.rows = cursor.rowsRead));
+        },
+      } as unknown as SqlStorage;
+      const output = state.storage.transactionSync(() =>
+        fn(new Db(counting, (inner) => state.storage.transactionSync(inner))),
+      );
+      return { output, statements };
+    });
+  }
+
+  async function readsWorld(grown: boolean) {
+    const t = await setup();
+    await sql(t.store, "UPDATE accounts SET discoverable = 1 WHERE id = ?", ALICE);
+    const n = ++featuredOwners;
+    const owner = await featuredOwner(t.web, `rw${n}`, COLLECTIONS_ONLY);
+    const listed = collection(owner, []);
+    const second = collection(owner, []);
+    serveListing(t.web, owner, listed);
+    serveCollections(t.web, owner, [[listed, second]]);
+    const ownerId = await storedOwner(t, owner);
+    await syncAll(t);
+    await sql(t.store, "ANALYZE");
+    if (grown) {
+      const members = await seededMembers(t, 10 * MAX_REMOTE_ITEMS, `g${n}m`);
+      const page = (of: TestActor, from: number) =>
+        members.slice(from, from + MAX_REMOTE_ITEMS).map((member) => item(of, member));
+      listed.orderedItems = page(owner, 0);
+      second.orderedItems = page(owner, MAX_REMOTE_ITEMS);
+      const others = Array.from({ length: 8 }, (_, k) => collection(owner, page(owner, (k + 2) * MAX_REMOTE_ITEMS)));
+      serveCollections(t.web, owner, [[listed, second, ...others.slice(0, 3)], others.slice(3)]);
+      await requestSync(t, ownerId);
+      await syncAll(t);
+      const x = await featuredOwner(t.web, `rx${n}`, COLLECTIONS_ONLY, OTHER);
+      serveCollections(t.web, x, [
+        Array.from({ length: 5 }, (_, k) => collection(x, page(x, k * MAX_REMOTE_ITEMS))),
+        Array.from({ length: 5 }, (_, k) => collection(x, page(x, (k + 5) * MAX_REMOTE_ITEMS))),
+      ]);
+      await storedOwner(t, x);
+      await syncAll(t);
+      // Both collections at their stored cap: 25 retired rows besides their 25 items, the second's last item retired.
+      const retired = await seededMembers(t, MAX_STORED_ITEMS - MAX_REMOTE_ITEMS, `r${n}m`);
+      for (const [k, { id }] of [listed, second].entries()) {
+        await sql(
+          t.store,
+          `INSERT INTO collection_items (id, collection_id, account_id, state, position, uri, created_at, updated_at)
+					SELECT '8' || printf('%017d', ?1 + j.key), c.id, a.id, 3, 1000 + j.key,
+						?3 || '/collection_items/r' || ?1 || '-' || j.key, ?4, ?4
+					FROM json_each(?2) j CROSS JOIN accounts a ON a.uri = j.value CROSS JOIN collections c ON c.uri = ?5`,
+          n * 1000 + k * 100,
+          JSON.stringify(retired.map((member) => member.uri)),
+          owner.uri,
+          new Date(NOW - 86_400_000).toISOString(),
+          id,
+        );
+      }
+      await sql(
+        t.store,
+        `UPDATE collection_items SET state = 3 WHERE id = (SELECT i.id FROM collection_items i
+				CROSS JOIN collections c ON c.id = i.collection_id
+				WHERE c.uri = ? AND i.state IN (0, 1) ORDER BY i.position DESC LIMIT 1)`,
+        second.id,
+      );
+      // No other item's check is due, so the round reads the wait.
+      await sql(t.store, "UPDATE collection_items SET check_due_at = NULL, candidate_approval_uri = NULL");
+      // Other activities' unexpanded targets and active deliveries, in the owner's lane and others.
+      await sql(
+        t.store,
+        `WITH RECURSIVE k(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM k WHERE i < 200)
+				INSERT INTO outbound_activities (account_id, body, object_uri, retracts, created_at)
+				SELECT ?1, '{"activity":{"type":"Like"},"audience":{"followers":false,"accounts":[]}}', 'filler ' || i, 0, ?2
+				FROM k`,
+        ALICE,
+        NOW,
+      );
+      await sql(
+        t.store,
+        `INSERT INTO outbound_targets (activity_id, targets)
+				SELECT id, '[]' FROM outbound_activities WHERE object_uri LIKE 'filler %'`,
+      );
+      await sql(
+        t.store,
+        `WITH RECURSIVE k(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM k WHERE i < 2000)
+				INSERT INTO deliveries (activity_id, account_id, inbox_url, lane, state, next_attempt_at, updated_at)
+				SELECT (SELECT min(id) FROM outbound_activities WHERE object_uri LIKE 'filler %') + i % 200, ?1,
+					CASE WHEN i % 4 = 0 THEN ?2 ELSE 'https://filler.example/inbox' END,
+					CASE WHEN i % 4 = 0 THEN ?3 ELSE 'https://filler.example' END, 'queued', ?4, ?4
+				FROM k`,
+        ALICE,
+        `${owner.uri}/inbox`,
+        new URL(owner.uri).origin,
+        NOW,
+      );
+      const stored = await sql<{ items: number }>(t.store, "SELECT count(*) AS items FROM collection_items");
+      expect(stored[0]!.items).toBeGreaterThanOrEqual(20 * MAX_REMOTE_ITEMS);
+      const capped = await sql<{ live: number; total: number }>(
+        t.store,
+        `SELECT count(*) FILTER (WHERE i.state IN (0, 1)) AS live, count(*) AS total FROM collection_items i
+				CROSS JOIN collections c ON c.id = i.collection_id WHERE c.uri IN (?, ?) GROUP BY c.uri ORDER BY c.uri = ?`,
+        listed.id,
+        second.id,
+        second.id,
+      );
+      expect(capped).toEqual([
+        { live: MAX_REMOTE_ITEMS, total: MAX_STORED_ITEMS },
+        { live: MAX_REMOTE_ITEMS - 1, total: MAX_STORED_ITEMS },
+      ]);
+    }
+    return { t, owner, listed, second, ownerId };
+  }
+
+  // What each statement of `run` read in the small and the grown world, by its text.
+  async function compare(run: (w: Awaited<ReturnType<typeof readsWorld>>) => Promise<Measured[]>) {
+    const few = await run(await readsWorld(false));
+    const many = await run(await readsWorld(true));
+    return { few, many };
+  }
+
+  it("answers a request, waits and reads within one collection's stored rows and one answer's deliveries", async () => {
+    const answered = await compare(async (w) => {
+      const collectionId = (
+        await sql<{ id: string }>(w.t.store, "SELECT id FROM collections WHERE uri = ?", w.listed.id)
+      )[0]!.id;
+      const owner = { id: w.ownerId, uri: w.owner.uri };
+      // A request into each collection: in the grown world, the first frees a live slot, the second a stored row.
+      const answer = await measuredDomain(w.t, (db) =>
+        [w.listed, w.second].map((instrument, k) =>
+          answerFeatureRequest(
+            db,
+            owner,
+            { id: `${new URL(w.owner.uri).origin}/requests/${k}`, object: ALICE_URI, instrument: instrument.id },
+            undefined,
+            LOCAL,
+            NOW,
+          ),
+        ),
+      );
+      expect(answer.output).toEqual([
+        { kind: "answered", reason: "feature-accepted" },
+        { kind: "answered", reason: "feature-accepted" },
+      ]);
+      const waited = await measuredStatements(
+        { store: w.t.store },
+        claimItemChecks,
+        { now: NOW + ANSWER_POLL_MS },
+        true,
+      );
+      expect(waited.output.checks).toEqual([]);
+      const listing = await measuredDomain(w.t, (db) => [
+        localRowsOf(db, collectionId, NOW),
+        holdsLocalMember(db, collectionId),
+      ]);
+      expect(listing.output[0]).toHaveLength(1);
+      return [...answer.statements, ...waited.statements, ...listing.statements];
+    });
+    // Each statement's rows in all, by its text; one only the grown world runs (the slot taken at the cap) from none.
+    const byQuery = (statements: Measured[]) => {
+      const rows = new Map<string, { rows: number; runs: number }>();
+      for (const { query, rows: read } of statements) {
+        const entry = rows.get(query) ?? { rows: 0, runs: 0 };
+        rows.set(query, { rows: entry.rows + read, runs: entry.runs + 1 });
+      }
+      return rows;
+    };
+    const probed = (query: string) => query.includes("outbound_targets_activity");
+    const few = byQuery(answered.few);
+    const many = byQuery(answered.many);
+    // Both of takeSlot's deletes ran in the grown world.
+    expect(
+      ["ORDER BY i.position DESC, i.id DESC LIMIT 1", "ORDER BY updated_at, id LIMIT 1"].map((tail) =>
+        [...many.keys()].some((query) => query.startsWith("DELETE FROM collection_items") && query.includes(tail)),
+      ),
+    ).toEqual([true, true]);
+    const grown = [...many].flatMap(([query, { rows, runs }]) => {
+      // A walk of the owner's collection grows by at most its stored rows, twice where it joins their members, and a
+      // new row by its two triggers' counts of the collection (§5.2, D4); any other statement not at all.
+      const bound = /collection_items_order|INSERT INTO collection_items/.test(query) ? runs * 2 * MAX_STORED_ITEMS : 0;
+      const before = few.get(query)?.rows ?? 0;
+      return /collection_items|deliveries_activity/.test(query) && !probed(query) && rows - before > bound
+        ? [`${query.slice(0, 160)}: ${before} -> ${rows}`]
+        : [];
+    });
+    expect(grown).toEqual([]);
+    // Each wait's delivery probe reads its answer's own target or delivery (an index entry past it at most), whatever
+    // the other activities hold: whether the answer is expanded yet depends on their backlog, not on its rows.
+    const probes = (statements: Measured[]) => statements.filter(({ query }) => probed(query)).map(({ rows }) => rows);
+    expect([probes(answered.few).length, probes(answered.many).length]).toEqual([2, 2]);
+    expect(Math.max(...probes(answered.few), ...probes(answered.many))).toBeLessThanOrEqual(2);
   });
 });

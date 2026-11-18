@@ -606,22 +606,26 @@ against their own instance. TLS is assumed between all parties.
   their checks"), `test/collection-sync.test.ts` ("refuses a request when local members' rows hold every live slot")).
   The wait polls the answer's delivery (a target not expanded, a delivery queued, pending or leased) every hour with no
   fetch, claim token or quota, then gives the owner 4 days from the delivery's end and requests a read of the owner's
-  collections; a read keeps the member's row it does not list while the wait is queued, while the row is retired, or
-  while it changed at or after the read's claim, and deletes it otherwise; the kept rows hold their live slots first
-  (`test/collection-sync.test.ts` ("polls the answer's delivery hourly, then waits four days and requests a read, with
-  no fetch, token or quota", "keeps a row changed between a read's claim and its completion, and a revoked row until
-  the cleanup", "applies a listing into the slots local members' rows leave, and gives a request a slot")). An owner's
-  `Add`, or a read's listing, naming an authorization of the member Kopje does not serve is answered with the member's
-  `Delete` of it, whatever the owner's retractions, to the owner's personal inbox alone; an owner's `Remove` in a
-  collection holding a local member's row requests a read and deletes nothing. The member's revoke sends its `Delete`
-  LD-signed by the member's key (signed in the Worker, checked by the Store to be that activity) to the owner's personal
-  inbox and the member's followers; a block's revocation and the answers are the same body without the signature, to
-  the owner's personal inbox alone, since a Mastodon owner applies a `Delete` of a feature authorization from its HTTP
-  signer (`delete.rb:6`, `:68-81`) and only `RevokeCollectionItemService` LD-signs it
-  (`test/federation-feature-requests.test.ts` ("revokes with the member's LD-signed Delete to the owner and the
-  member's followers", "answers an Add of an authorization not served with the member's Delete to the owner alone",
-  "sends the block's Delete to the owner's personal inbox alone")). Agreement with a Mastodon owner after quiescence has
-  the exceptions F3 (its PR 6 form), F6, F7 and F8 (Accepted risks).
+  collections; a read, or an owner's `Add` or `Update` of the whole collection (its own time as the claim), keeps the
+  member's row it does not list while the wait is queued, while the row is retired, or while it changed at or after the
+  read's claim, and deletes it otherwise; the kept rows hold their live slots first (`test/collection-sync.test.ts`
+  ("polls the answer's delivery hourly, then waits four days and requests a read, with no fetch, token or quota", "keeps
+  a row changed between a read's claim and its completion, and a revoked row until the cleanup", "keeps a row an owner's
+  … of the collection leaves out while it waits, is revoked or changed then", "applies a listing into the slots local
+  members' rows leave, and gives a request a slot")). An owner's `Add`, or a read's listing, naming an authorization of
+  the member Kopje does not serve is answered with the member's `Delete` of it, whatever the owner's retractions, to the
+  owner's personal inbox alone; an owner's `Remove` in a collection holding a local member's row requests a read and
+  deletes nothing. The member's revoke sends its `Delete` LD-signed by the member's key (signed in the Worker, checked
+  by the Store to be that activity) to the owner's personal inbox and the member's followers; a block's revocation and
+  the answers are the same body without the signature, to the owner's personal inbox alone, since a Mastodon owner
+  applies a `Delete` of a feature authorization from its HTTP signer (`delete.rb:6`, `:68-81`) and only
+  `RevokeCollectionItemService` LD-signs it (`test/federation-feature-requests.test.ts` ("revokes with the member's
+  LD-signed Delete to the owner and the member's followers", "answers an Add of an authorization not served with the
+  member's Delete to the owner alone", "sends the block's Delete to the owner's personal inbox alone")). Agreement with
+  a Mastodon owner after quiescence has the exceptions F3 (its PR 6 form), F6, F7 and F8 (Accepted risks);
+  `test/feature-lifecycle.test.ts` ("keeps the safety rules after every step, and agrees with the owner after quiescence
+  outside F6 and F7", against the Mastodon v4.7.5 owner `OwnerServer` in `test/feature-model.ts`, its jobs and their
+  reach run as separate steps) checks it in generated orders, F8 in `test/federation-feature-requests.test.ts` (above).
 - **ID-7: replay changes nothing twice.** A repeated activity creates no second relationship, counter change,
   notification, push or outbound intent (natural keys). A valid `Delete` or `Undo` that arrives before its target is
   recorded for 30 days and prevents the target from appearing later; so is a collection owner's `Remove` of an item

@@ -1121,6 +1121,10 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
       ],
     ]);
     expect(await sql(w.t.store, "SELECT 1 FROM collection_items WHERE uri = ?", stray.id)).toEqual([]);
+    // The owner's actor has a shared inbox (`${origin}/inbox`), which alice's follower shares; the Delete's `to` names
+    // only the public, so the owner is its silent recipient, whose copy takes its own inbox (deliveries.ts placement)
+    // whether or not the answer asks for it (OutboundOptions.personalInbox, which keeps it there should the body name
+    // the owner).
 
     // The member revokes; an Add naming the revoked authorization, after the owner's Remove of that item retracted it,
     // is answered all the same: a retraction, to the owner alone.
