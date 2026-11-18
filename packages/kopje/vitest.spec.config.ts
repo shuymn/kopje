@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 
 import { defineConfig } from "vitest/config";
 
-// The checks of the TLA+ specification spec/collection-consent/ under tla-ts (about 2 minutes), apart from the Node
+// The checks of the TLA+ specification spec/collection-consent/ under tla-ts (about 3 minutes), apart from the Node
 // suite so that CI runs them only for a change they read (scripts/test-affected.sh, kopje_spec). The drift check of the
 // code the specification describes (test-node/collection-consent-coverage.test.ts) stays in the Node suite, which every
 // Kopje change runs.

@@ -122,6 +122,9 @@ export interface Step {
    * is made in the same millisecond as the row's last change; a lifting's "newCredential": L's views after it are read
    * with a credential issued after it, since the suspension's are still refused; a delivery's "dropped" when the Store
    * drops a suspended L's ordinary activity instead of sending it.
+   *
+   * activity: for KDeliver, KDup and KGiveUp, the head of Kopje's lane to R's server, which the replay checks is the
+   * head before it acts; with "dropped", that the Store sends nothing and the head is gone after it.
    */
   input: { envelope?: Envelope; activity?: Activity; value?: string };
   environment: Environment;

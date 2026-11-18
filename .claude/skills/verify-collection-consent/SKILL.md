@@ -34,8 +34,8 @@ move the record forward. A change to `spec/collection-consent/` itself always ne
 
 | Check | Command |
 |---|---|
-| tla-ts: every check of `checks.json`, the fixtures, the comparison (about 2 min, the inductions 1 min of it) | `pnpm exec vitest run -c vitest.spec.config.ts --max-workers=2` |
-| official TLC: the same checks (about 2 min, one JVM at a time) | `MISE_ENV=spec mise exec -- node scripts/tlc-check.mjs` |
+| tla-ts: every check of `checks.json`, the fixtures, the comparison (about 3 min, the induction and the longest goal 1 min of it) | `pnpm exec vitest run -c vitest.spec.config.ts --max-workers=2` |
+| official TLC: the same checks (about 3 min, one JVM at a time) | `MISE_ENV=spec mise exec -- node scripts/tlc-check.mjs` |
 | one check's TLC trace, every variable at every step | `MISE_ENV=spec mise exec -- node scripts/tlc-check.mjs --only <name> --trace` |
 | rewrite the replay fixtures after a spec change | `pnpm run spec:fixtures` |
 | the replay against the real Store | `pnpm exec vitest run --max-workers=1 test/collection-consent-replay.test.ts` |
@@ -52,6 +52,13 @@ fixture's name, that runs its steps against the Store and compares `compareObser
 (`test/collection-consent-observe.ts`) after each one. `collection-consent-spec.test.ts` fails for a fixture the replay
 does not name, and for a skipped test; `collection-consent-coverage.mjs forward` fails unless every fixture's test ran
 and passed. No fixture takes `KMemberGone` (Kopje deletes no local account), and the spec test checks that.
+
+Each calibration variant that changes what the Store does has a fixture whose replay fails against a Store that makes
+the variant's change: followed under the variant's rules, the fixture's steps either give a different observation or
+reach a step the variant cannot take as the fixture states it (V16: at `S2-CleanupThenDelete`'s last delivery the
+revoke's `Delete` is no longer the lane's head; V25: at `S12-DroppedDelivery` the suspended member's `Accept` is sent,
+not dropped). V8 and V23 change only what the invariants count, not the Store. A new variant of a Store rule comes with
+such a fixture.
 
 ## Reading a violation
 

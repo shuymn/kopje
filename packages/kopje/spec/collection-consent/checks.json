@@ -680,6 +680,48 @@
       "goal": "LeaseApplies",
       "trace": 5,
       "fixture": true
+    },
+    {
+      "name": "S1-AcceptedPolicyOff",
+      "scenario": "S1",
+      "goal": "AcceptedPolicyOff",
+      "trace": 7,
+      "fixture": true
+    },
+    {
+      "name": "S2-RetractionAdmitted",
+      "scenario": "S2",
+      "goal": "RetractionAdmitted",
+      "trace": 5,
+      "fixture": true
+    },
+    {
+      "name": "S2-CleanupThenDelete",
+      "scenario": "S2",
+      "goal": "CleanupThenDelete",
+      "trace": 7,
+      "fixture": true
+    },
+    {
+      "name": "S2-ReadOverRetraction",
+      "scenario": "S2",
+      "goal": "ReadOverRetraction",
+      "trace": 16,
+      "fixture": true
+    },
+    {
+      "name": "S4-AnsweredX",
+      "scenario": "S4",
+      "goal": "AnsweredX",
+      "trace": 6,
+      "fixture": true
+    },
+    {
+      "name": "S12-DroppedDelivery",
+      "scenario": "S12",
+      "goal": "DroppedDelivery",
+      "trace": 5,
+      "fixture": true
     }
   ]
 }

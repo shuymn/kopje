@@ -40,7 +40,7 @@ concurrency:
 
 jobs:
   tlc:
-    # The checks take about 2 min on a laptop, one TLC process at a time.
+    # The checks take about 3 min on a laptop, one TLC process at a time.
     timeout-minutes: 15
     runs-on: ubuntu-latest
     permissions:
