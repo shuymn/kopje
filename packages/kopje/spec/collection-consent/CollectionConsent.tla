@@ -44,15 +44,20 @@
 (*    severCollections, src/domain/collections.ts:812; the account's       *)
 (*    changes; pruneCollectionItems, src/store-rpc.ts:463; the eviction in *)
 (*    the insert that needs the place; one later batch of R's purge).      *)
-(*  - KDeliver / KDup / KGiveUp / KRetry: the POST of the head of Kopje's  *)
-(*    lane to R's server (claimDeliveries and confirmDelivery,             *)
-(*    src/store-rpc.ts:654-655; a lane is the sender and the inbox's       *)
-(*    origin, delivered in id order, deliveries.ts:71), the same POST with *)
-(*    its response lost, its give-up after the last attempt, and an        *)
-(*    operator's retry (retryDeliveries, src/store-rpc.ts:658), admitted   *)
-(*    again only if it fits (deliveries.ts:3525). R's inbox answers 202    *)
-(*    and queues a job; RJob is one Sidekiq job, and jobs run in any       *)
-(*    order.                                                               *)
+(*  - KLeaseHead / KDeliver / KDup / KGiveUp / KFail / KRetry: the claim   *)
+(*    of the head of Kopje's lane to R's server, which leases it for its   *)
+(*    POST (claimDeliveries, src/store-rpc.ts:654; a lane is the sender    *)
+(*    and the inbox's origin, delivered in id order, deliveries.ts:71),    *)
+(*    and the POST's outcomes (confirmDelivery, :655): delivered,          *)
+(*    delivered with its response lost, given up after the last attempt,   *)
+(*    and a transient failure or the lease running out (the sweep's        *)
+(*    reclaim); and an operator's retry (retryDeliveries,                  *)
+(*    src/store-rpc.ts:658), admitted again only if it fits                *)
+(*    (deliveries.ts:3525). While leased, the head is in flight and no     *)
+(*    longer waits. KDeliver, KDup and KGiveUp also take a waiting head:   *)
+(*    the lease and its outcome with no step between them. R's inbox       *)
+(*    answers 202 and queues a job; RJob is one Sidekiq job, and jobs run  *)
+(*    in any order.                                                        *)
 (*  - RAdd, RRemove, RDeleteC, RCleanup, RDeleteSelf, RPurge, RUpdate: one *)
 (*    request or service call of R. A distribution job's delay is a        *)
 (*    delivery delay, and a job that reaches no one or finds its item gone *)
@@ -63,10 +68,11 @@
 (* requests r1, r2 (items I1, I2), two authorizations a1, a2; every other  *)
 (* count is a per-scenario budget (Bud). R's envelopes in flight are a     *)
 (* set, so equal envelopes merge; duplicates come from KRecv's lost        *)
-(* response. Kopje's lane is a sequence and R's jobs a bag. Steps that     *)
-(* would need a third authorization or a second instrument fetch are       *)
-(* disabled. R's purge batches reach C at once or later, never part of it. *)
-(* No fairness: any message may wait for ever or be dropped.               *)
+(* response. Kopje's lane is a sequence, with at most its head in flight,  *)
+(* and R's jobs a bag. Steps that would need a third authorization or a    *)
+(* second instrument fetch are disabled. R's purge batches reach C at once *)
+(* or later, never part of it. No fairness: any message may wait for ever  *)
+(* or be dropped.                                                          *)
 (*                                                                         *)
 (* INVARIANTS:                                                             *)
 (*  - GrantPreservation GP1 /\ GP2: while L's committed Accept of a has no *)
@@ -85,7 +91,8 @@
 (*    an unserved a only if every Delete of a in flight when R applied its *)
 (*    acceptance, or recorded since, was refused at a full backlog or      *)
 (*    given up (F7): a processed Delete that left R holding a counts       *)
-(*    against it.                                                          *)
+(*    against it, and so does one dropped after a failed POST unless a     *)
+(*    later answer to its inbox superseded it.                             *)
 (*  - ObservedVisibility OV1 /\ OV2 /\ OV3: only an eligible untruncated   *)
 (*    read, an exact item Remove, a re-accept by another request, the      *)
 (*    row's end or a loss of availability hides it; at quiescence after    *)
@@ -105,10 +112,12 @@
 (*    no row and records no Accept.                                        *)
 (*  - NoUnilateralEnd: no Reject of a request Kopje accepted with a is     *)
 (*    recorded while a is owed.                                            *)
-(*  - AnswerBound: Kopje's lane holds at most one retraction answer of an  *)
-(*    authorization, however many accounts list it and however often:      *)
+(*  - AnswerBound: at most one retraction answer of an authorization waits *)
+(*    in Kopje's lane, however many accounts list it and however often:    *)
 (*    RES-4 never refuses a retraction, so its count is bounded by Kopje's *)
-(*    own rows alone.                                                      *)
+(*    own rows alone. A leased head does not wait: a listing while it is   *)
+(*    in flight records another answer, and the leased one, if its POST    *)
+(*    fails, is dropped as superseded.                                     *)
 (*                                                                         *)
 (* GRANT PRESERVATION IS INDUCTIVE (CollectionConsentInd.tla checks it).   *)
 (* Per action: Decide and ApplyFetch create a row only with its Accept,    *)
@@ -131,6 +140,7 @@ VARIABLES
   k,      \* Kopje's core (CollectionConsentKopje.tla, CoreType)
   env,    \* the environment Kopje decides in (EnvType)
   kq,     \* Kopje's lane to R's server: recorded activities in id order, the head posted next
+  kl,     \* the lane's head is leased: its POST is in flight
   kg,     \* given up: refused at a full backlog, or after the last attempt
   toK,    \* R's envelopes in flight to Kopje (R retries until delivered or dropped)
   rs,     \* R's server (Mastodon v4.7.5)
@@ -142,7 +152,7 @@ VARIABLES
   g,      \* history the invariants and goals read
   last    \* the step: action, input, recorded activities, response, events (fixtures and traps only)
 
-vars == <<k, env, kq, kg, toK, rs, rin, rd, sr, fe, spent, g, last>>
+vars == <<k, env, kq, kl, kg, toK, rs, rin, rd, sr, fe, spent, g, last>>
 
 (***************************************************************************)
 (* Scenarios: each enables a focused set of actions through its budgets.   *)
@@ -188,9 +198,12 @@ Evicts == Scenario = "S11"
 Can(f) == spent[f] < Bud(f)
 Spend(f) == spent' = [spent EXCEPT ![f] = @ + 1]
 
-\* The scenario checks fingerprint states without `last`, which records how a state was reached, not what it is, and
-\* without the given-up deliveries once no operator retry is left to send them again. No action reads either.
-View == <<k, env, kq, IF Can("retry") THEN kg ELSE {}, toK, rs, rin, rd, sr, fe, spent, g>>
+\* The scenario checks fingerprint states without `last`, which records how a state was reached, not what it is,
+\* without the given-up deliveries once no operator retry is left to send them again, and without g.overLease and
+\* g.waitedAgain, which only goals read. No action or invariant reads any of them.
+View ==
+  <<k, env, kq, kl, IF Can("retry") THEN kg ELSE {}, toK, rs, rin, rd, sr, fe, spent,
+    [g EXCEPT !.overLease = FALSE, !.waitedAgain = NONE]>>
 
 (***************************************************************************)
 (* Messages and records.                                                   *)
@@ -241,11 +254,17 @@ RServes == rs.c /\ ~rs.gone
 Refused(m) == env.bl /\ (m.cls = "ord" \/ (Variant = "V9" /\ m.ty = "Delete"))
 \* A retraction answer of a: L's Delete of a answering a listing, never refused.
 RetractionAnswer(m, a) == m.ty = "Delete" /\ m.why = "answer" /\ m.cls = "ret" /\ m.obj = a
-\* A retraction answer of a to inbox `to` still to be sent: in Kopje's lane, whose head stays there after a lost
-\* response.
-AnswerWaits(a, to) == \E i \in 1..Len(kq) : RetractionAnswer(kq[i], a) /\ kq[i].to = to
-\* The Store records no retraction answer while one of the same authorization to the same inbox is still to be sent
-\* (deliveries.ts answerOutstanding): the waiting one answers the new listing too. VARIANT V27: each is recorded.
+\* The places in Kopje's lane that wait to be sent: all but a leased head, whose POST is in flight. A head stays waiting
+\* after a lost response, or after a failure unless superseded (KFail).
+Waiting == (IF kl THEN 2 ELSE 1)..Len(kq)
+\* A retraction answer of a to inbox `to` waits to be sent.
+AnswerWaits(a, to) == \E i \in Waiting : RetractionAnswer(kq[i], a) /\ kq[i].to = to
+\* A retraction answer recorded while one of the same authorization to the same inbox is leased: it supersedes that one
+\* (Superseded).
+OverLease(m) == kl /\ RetractionAnswer(m, m.obj) /\ RetractionAnswer(Head(kq), m.obj) /\ Head(kq).to = m.to
+\* The Store records no retraction answer while one of the same authorization to the same inbox waits to be sent
+\* (deliveries.ts answerOutstanding): the waiting one answers the new listing too. A leased one does not count: the new
+\* answer is recorded and supersedes it (Superseded). VARIANT V27: each is recorded.
 Coalesced(m) == RetractionAnswer(m, m.obj) /\ AnswerWaits(m.obj, m.to) /\ Variant # "V27"
 Coalesce(res) == [res EXCEPT !.rec = {m \in @ : ~Coalesced(m)}]
 \* A Delete of a: R's server revokes L's item approved by a, whichever of its inboxes it reaches (delete.rb:5-6,
@@ -268,7 +287,7 @@ Init ==
   \* S1 starts with either policy, so a request can be refused before L consents (F3).
   /\ env \in {[consent |-> c, slots |-> FALSE, held |-> "lt10", bl |-> FALSE, cap |-> FALSE] :
                c \in IF Scenario = "S1" THEN BOOLEAN ELSE {TRUE}}
-  /\ kq = <<>> /\ kg = {} /\ toK = {} /\ rin = EmptyBag
+  /\ kq = <<>> /\ kl = FALSE /\ kg = {} /\ toK = {} /\ rin = EmptyBag
   /\ rs \in {[c |-> TRUE, item |-> NoItem, adds |-> 0, kb |-> FALSE, la |-> TRUE, pos |-> p, crowd |-> "none",
               gone |-> FALSE] : p \in StartPages}
   /\ rd = NoRead /\ sr = NoRead /\ fe = NoFetch
@@ -276,7 +295,8 @@ Init ==
   /\ g = [obl |-> NONE, accReq |-> {}, delServed |-> FALSE, refusedHeld |-> FALSE, missed |-> FALSE, ov1 |-> FALSE,
           nue |-> FALSE, nueLive |-> FALSE, rot |-> FALSE, avail |-> FALSE, rejected |-> {}, accAfterRem |-> FALSE,
           remLive |-> FALSE, afterGone |-> FALSE, unexcused |-> [a \in Auths |-> 0], tick |-> FALSE, held503 |-> FALSE,
-          o7 |-> FALSE, lastRd |-> NoLastRead, ign |-> FALSE, lrMoved |-> FALSE, fo |-> FALSE]
+          o7 |-> FALSE, lastRd |-> NoLastRead, ign |-> FALSE, lrMoved |-> FALSE, fo |-> FALSE, overLease |-> FALSE,
+          waitedAgain |-> NONE]
   /\ last = [act |-> "Init", arg |-> NoArg, rec |-> {}, resp |-> 0, ev |-> {}]
 
 (***************************************************************************)
@@ -339,6 +359,7 @@ GhostK(res, evid, opp, mayHide, allowedHide, mayShow, lr, remC, ev) ==
         !.tick = k2.row # k.row,
         !.held503 = @ \/ "held503" \in ev,
         !.o7 = @ \/ "o7" \in ev,
+        !.overLease = @ \/ "overLease" \in ev,
         !.fo = @ \/ "outdRead" \in ev,
         !.lastRd = [lr EXCEPT !.kshow = @ \/ (mayShow /\ Shown(k2) /\ ~Shown(k)),
                              !.khide = @ \/ (allowedHide /\ ~Shown(k2))]]
@@ -365,7 +386,7 @@ RecSeq(rec) ==
 
 Record(res) ==
   /\ k' = res.k
-  /\ kq' = kq \o RecSeq({m \in res.rec : ~Refused(m)})
+  /\ kq' = kq \o RecSeq({m \in res.rec : ~Refused(m)}) /\ kl' = kl
   /\ kg' = kg \cup {m \in res.rec : Refused(m)}
 
 Commit(res, evid, opp, mayHide, allowedHide, outdNow, remC, act, arg, extra) ==
@@ -410,7 +431,7 @@ KRecv(e, dup) ==
   /\ IF dup THEN Can("dup") /\ Spend("dup") ELSE UNCHANGED spent
   /\ IF NeedsFetch(e)
      THEN /\ Consume(e, dup, 202)
-          /\ UNCHANGED <<k, env, kq, kg, rs, rin, rd, sr, g>>
+          /\ UNCHANGED <<k, env, kq, kl, kg, rs, rin, rd, sr, g>>
           /\ IF "C" \in k.ret
              THEN \* R retracted C: the request is ignored.
                   /\ UNCHANGED fe
@@ -474,15 +495,15 @@ KSuspend == k.lx /\ ~k.ls /\ KMember(Suspend(k), FALSE, "susp", "KSuspend")
 KUnsuspend == k.ls /\ KMemberArg(Unsuspend(k), FALSE, "susp", "KUnsuspend", Arg(NoEnvelope, NoIntent, "newCredential"))
 
 \* The retired row's cleanup (pruneCollectionItems). VARIANT V16: it also deletes the row's Delete whenever that is
-\* still the head of the lane.
-HeadDelete == kq # <<>> /\ Head(kq).ty = "Delete" /\ Head(kq).obj = k.row.auth
+\* still the head of the lane, and not leased.
+HeadDelete == kq # <<>> /\ ~kl /\ Head(kq).ty = "Delete" /\ Head(kq).obj = k.row.auth
 KCleanup ==
   /\ k.row.st = "ret"
   /\ Commit(Cleanup(k), FALSE, NoOpp, TRUE, FALSE, FALSE, FALSE, "KCleanup", NoArg, {})
   /\ UNCHANGED <<env, toK, rs, rin, fe, spent>>
 KCleanupV16 ==
   /\ k.row.st = "ret" /\ HeadDelete
-  /\ k' = Cleanup(k).k /\ kq' = Tail(kq) /\ kg' = kg
+  /\ k' = Cleanup(k).k /\ kq' = Tail(kq) /\ kl' = kl /\ kg' = kg
   /\ g' = GhostK(Cleanup(k), FALSE, NoOpp, TRUE, FALSE, TRUE, g.lastRd, FALSE, {})
   /\ rd' = Touch(rd, Cleanup(k), FALSE) /\ sr' = Touch(sr, Cleanup(k), FALSE)
   /\ last' = [act |-> "KCleanup", arg |-> NoArg, rec |-> {}, resp |-> 0, ev |-> {}]
@@ -508,7 +529,7 @@ EnvSet(f, field, value) ==
   /\ Can(f) /\ Spend(f)
   /\ env' = [env EXCEPT ![field] = value]
   /\ last' = [act |-> "Env", arg |-> Arg(NoEnvelope, NoIntent, field), rec |-> {}, resp |-> 0, ev |-> {}]
-  /\ UNCHANGED <<k, kq, kg, toK, rs, rin, rd, sr, fe, g>>
+  /\ UNCHANGED <<k, kq, kl, kg, toK, rs, rin, rd, sr, fe, g>>
 
 EnvStep ==
   \/ EnvSet("consent", "consent", ~env.consent)
@@ -537,7 +558,7 @@ KClaim ==
                    resp |-> 0, ev |-> {}]
   /\ k' = [k EXCEPT !.sync = TRUE]
   /\ g' = [g EXCEPT !.tick = FALSE, !.fo = FALSE]
-  /\ UNCHANGED <<env, kq, kg, toK, rs, rin, fe>>
+  /\ UNCHANGED <<env, kq, kl, kg, toK, rs, rin, fe>>
 
 Page(p) == RServes /\ rs.pos = p
 Seen(v) == [v EXCEPT !.seen = TRUE, !.i = RListing.i, !.a = RListing.a, !.tr = RListing.tr]
@@ -554,13 +575,13 @@ KFetch ==
   /\ LET v == IF RServes /\ rs.pos # "past" THEN Seen(NoView) ELSE NoView IN
      rd' = [rd EXCEPT !.ph = "done", !.rch = FALSE, !.v = [v EXCEPT !.cpl = Complete]]
   /\ last' = [act |-> "KFetch", arg |-> PagesArg, rec |-> {}, resp |-> 0, ev |-> {}]
-  /\ UNCHANGED <<k, env, kq, kg, toK, rs, rin, sr, fe, spent, g>>
+  /\ UNCHANGED <<k, env, kq, kl, kg, toK, rs, rin, sr, fe, spent, g>>
 
 KFetch1 ==
   /\ SplitPages /\ rd.ph = "cl"
   /\ rd' = [rd EXCEPT !.ph = "p1", !.v = IF Page("p1") THEN Seen(NoView) ELSE NoView, !.rch = FALSE]
   /\ last' = [act |-> "KFetch1", arg |-> PagesArg, rec |-> {}, resp |-> 0, ev |-> {}]
-  /\ UNCHANGED <<k, env, kq, kg, toK, rs, rin, sr, fe, spent, g>>
+  /\ UNCHANGED <<k, env, kq, kl, kg, toK, rs, rin, sr, fe, spent, g>>
 
 KFetch2 ==
   /\ SplitPages /\ rd.ph = "p1"
@@ -568,7 +589,7 @@ KFetch2 ==
          v == IF now THEN Seen(rd.v) ELSE rd.v
      IN rd' = [rd EXCEPT !.ph = "done", !.v = [v EXCEPT !.cpl = Complete], !.rch = IF now THEN FALSE ELSE @]
   /\ last' = [act |-> "KFetch2", arg |-> PagesArg, rec |-> {}, resp |-> 0, ev |-> {}]
-  /\ UNCHANGED <<k, env, kq, kg, toK, rs, rin, sr, fe, spent, g>>
+  /\ UNCHANGED <<k, env, kq, kl, kg, toK, rs, rin, sr, fe, spent, g>>
 
 \* V2's wait ended: no answer of the row is still in the lane.
 Settled == ~(\E i \in 1..Len(kq) : kq[i].ty = "Accept" /\ kq[i].res = k.row.auth)
@@ -617,7 +638,9 @@ KApply ==
                  THEN {"suspOmits"} ELSE {}
          \* A read whose lease ran out, applied: no new claim took its token.
          expired == IF rd.exp /\ Covers(rd) THEN {"expiredApplied"} ELSE {}
-         ev == Events(res, fence \cup gone \cup outd \cup susp \cup expired
+         \* The read records a retraction answer over a leased one (goal LeaseSuperseded).
+         overLease == IF \E m \in res.rec : OverLease(m) THEN {"overLease"} ELSE {}
+         ev == Events(res, fence \cup gone \cup outd \cup susp \cup expired \cup overLease
                              \cup IF KeptByRow(k, rd.v, rd.outd) THEN {"kept"} ELSE {})
          \* OV3, apart from how lr is chosen: a read that does not cover the row leaves the covering read before it.
          moved == ~Covers(rd) /\ Snap(lr) # Snap(g.lastRd)
@@ -638,7 +661,7 @@ KLease ==
   /\ rd.ph = "done" /\ ~rd.exp /\ Can("lease") /\ Spend("lease")
   /\ rd' = [rd EXCEPT !.exp = TRUE]
   /\ last' = [act |-> "KLease", arg |-> NoArg, rec |-> {}, resp |-> 0, ev |-> {}]
-  /\ UNCHANGED <<k, env, kq, kg, toK, rs, rin, sr, fe, g>>
+  /\ UNCHANGED <<k, env, kq, kl, kg, toK, rs, rin, sr, fe, g>>
 
 \* The stale read's completion: its claim token no longer matches, so it applies nothing. VARIANT V4: it applies.
 \* staleOmits: it would hide a shown row, and only the token fences it (no push or row change since its claim).
@@ -662,7 +685,7 @@ KExpire ==
        /\ g' = [g EXCEPT !.remLive = IF x = "C" THEN FALSE ELSE @, !.tick = FALSE]
        /\ last' = [act |-> "KExpire", arg |-> Arg(NoEnvelope, NoIntent, x), rec |-> {}, resp |-> 0, ev |-> {}]
   /\ Spend("expire")
-  /\ UNCHANGED <<env, kq, kg, toK, rs, rin, rd, sr, fe>>
+  /\ UNCHANGED <<env, kq, kl, kg, toK, rs, rin, rd, sr, fe>>
 
 (***************************************************************************)
 (* R, Mastodon v4.7.5.                                                     *)
@@ -691,28 +714,28 @@ RAdd ==
   /\ LET r == IF rs.adds = 0 THEN "r1" ELSE "r2" IN
      RStepG([rs EXCEPT !.item = [req |-> r, st |-> "pend", ap |-> NONE], !.adds = @ + 1], {EFR(r)}, "RAdd",
             Arg(NoEnvelope, NoIntent, r), {})
-  /\ UNCHANGED <<k, env, kq, kg, rin, fe, spent>>
+  /\ UNCHANGED <<k, env, kq, kl, kg, rin, fe, spent>>
 
 \* DeleteCollectionItemService: the item destroyed, its Remove distributed (delete_collection_item_service.rb:8-10,
 \* :18-24); L hears it only through R's reach, so it may be dropped.
 RRemove ==
   /\ rs.item # NoItem /\ ~rs.gone /\ Can("remove") /\ Spend("remove")
   /\ RStepG([rs EXCEPT !.item = NoItem], {ERem(ItemOf(rs.item.req))}, "RRemove", NoArg, {})
-  /\ UNCHANGED <<k, env, kq, kg, rin, fe>>
+  /\ UNCHANGED <<k, env, kq, kl, kg, rin, fe>>
 
 \* DeleteCollectionService: C and its items deleted (collection.rb:32), its Remove sent to R's reach only
 \* (delete_collection_service.rb:4-7, :14-19).
 RDeleteC ==
   /\ rs.c /\ ~rs.gone /\ Can("rdelc") /\ Spend("rdelc")
   /\ RStepG([rs EXCEPT !.c = FALSE, !.item = NoItem], {ERemC}, "RDeleteC", NoArg, {})
-  /\ UNCHANGED <<k, env, kq, kg, rin, fe>>
+  /\ UNCHANGED <<k, env, kq, kl, kg, rin, fe>>
 
 \* CollectionItemCleanupScheduler: rejected and revoked items destroyed 24 hours on, with no activity
 \* (collection_item_cleanup_scheduler.rb:6-15). A later Accept of that request finds no item (accept.rb:8).
 RCleanup ==
   /\ rs.item.st \in {"rej", "rev"} /\ Can("rclean") /\ Spend("rclean")
   /\ RStepG([rs EXCEPT !.item = NoItem], {}, "RCleanup", NoArg, {})
-  /\ UNCHANGED <<k, env, kq, kg, rin, fe>>
+  /\ UNCHANGED <<k, env, kq, kl, kg, rin, fe>>
 
 \* R deletes its account: DeleteAccountService distributes its actor Delete before it purges its content
 \* (delete_account_service.rb:94-95, :102-107), and the account answers 410 from the start (RServes). RPurge is the
@@ -720,19 +743,19 @@ RCleanup ==
 RDeleteSelf ==
   /\ ~rs.gone /\ Can("gone") /\ Spend("gone")
   /\ RStepG([rs EXCEPT !.gone = TRUE], {EDelR}, "RDeleteSelf", NoArg, {})
-  /\ UNCHANGED <<k, env, kq, kg, rin, fe>>
+  /\ UNCHANGED <<k, env, kq, kl, kg, rin, fe>>
 
 RPurge ==
   /\ rs.gone /\ (rs.c \/ rs.item # NoItem)
   /\ RStepG([rs EXCEPT !.c = FALSE, !.item = NoItem], {}, "RPurge", NoArg, {})
-  /\ UNCHANGED <<k, env, kq, kg, rin, fe, spent>>
+  /\ UNCHANGED <<k, env, kq, kl, kg, rin, fe, spent>>
 
 \* UpdateCollectionService: the Update carries C's listing as it is when enqueued (update_collection_service.rb:19,
 \* :26-27; update_featured_collection_serializer.rb:6).
 RUpdate ==
   /\ rs.c /\ ~rs.gone /\ Can("upd") /\ Spend("upd")
   /\ RStepG(rs, {EUpd(RListing)}, "RUpdate", NoArg, {})
-  /\ UNCHANGED <<k, env, kq, kg, rin, fe>>
+  /\ UNCHANGED <<k, env, kq, kl, kg, rin, fe>>
 
 \* R's featured collections are paged by 5 with no explicit order (featured_collections_controller.rb:8, :33-37): a
 \* filler collection before C deleted or created moves C across the boundary Kopje's 2 pages draw.
@@ -740,21 +763,21 @@ RShift ==
   /\ SplitPages /\ Can("shift") /\ Spend("shift")
   /\ \E p \in (CASE rs.pos = "p1" -> {"p2"} [] rs.pos = "p2" -> {"p1", "past"} [] OTHER -> {"p2"}) :
        RStepG([rs EXCEPT !.pos = p], {}, "RShift", Arg(NoEnvelope, NoIntent, p), {})
-  /\ UNCHANGED <<k, env, kq, kg, rin, fe>>
+  /\ UNCHANGED <<k, env, kq, kl, kg, rin, fe>>
 
 \* Other members join or leave C, so its listing is or stops being truncated, with L within the 25 or past them.
 RCrowd ==
   /\ Can("crowd") /\ Spend("crowd")
   /\ \E cr \in {"none", "within", "past"} \ {rs.crowd} :
        RStepG([rs EXCEPT !.crowd = cr], {}, "RCrowd", Arg(NoEnvelope, NoIntent, cr), {})
-  /\ UNCHANGED <<k, env, kq, kg, rin, fe>>
+  /\ UNCHANGED <<k, env, kq, kl, kg, rin, fe>>
 
 \* X, another owner on R's server, lists an authorization of L's in its own collection (adversarial: S4).
 XAdd ==
   /\ Can("x") /\ Spend("x")
   /\ \E a \in {AuthOf(j) : j \in {i \in 0..1 : i < k.issued}} :
        RStep(rs, {EXAdd(a)}, "XAdd", Arg(NoEnvelope, NoIntent, a), {})
-  /\ UNCHANGED <<k, env, kq, kg, rin, fe, g>>
+  /\ UNCHANGED <<k, env, kq, kl, kg, rin, fe, g>>
 
 \* One job of R's processing an activity Kopje delivered.
 \*  Accept: the item of that request, in any state (activity.rb:160-164), accepted with the result as its approval
@@ -798,7 +821,7 @@ RProcess(m) ==
 
 RJob ==
   /\ \E m \in DOMAIN rin : rin' = BagRemove(rin, m) /\ RProcess(m)
-  /\ UNCHANGED <<k, env, kq, kg, fe, spent>>
+  /\ UNCHANGED <<k, env, kq, kl, kg, fe, spent>>
 
 (***************************************************************************)
 (* Kopje's deliveries: the lane's head is POSTed to R's server, whose      *)
@@ -818,8 +841,52 @@ Drops(m) == SenderDrops(m) /\ Variant # "V25"
 \* MemberAvailability's delivery part: an activity R receives from L while L is suspended is a retraction.
 SentSuspended(m) == [g EXCEPT !.avail = @ \/ SenderDrops(m)]
 
+\* The leased head is a corrective answer: L's Delete answering a listing.
+LeasedAnswer == kl /\ Head(kq).ty = "Delete" /\ Head(kq).why = "answer"
+\* A later answer of the leased head's authorization waits behind it: to the head's inbox (sameInbox), or to any.
+LaterAnswer(sameInbox) ==
+  \E i \in 2..Len(kq) :
+    /\ kq[i].ty = "Delete" /\ kq[i].why = "answer" /\ kq[i].obj = Head(kq).obj
+    /\ (kq[i].to = Head(kq).to \/ ~sameInbox)
+\* A leased answer that a later one superseded: an answer of the same authorization to the same inbox recorded while it
+\* was in flight (Coalesced does not count a leased one), which waits behind it and answers that inbox's listing too.
+\* The stale-answer drop (deliveries.ts) drops it when its POST fails or its lease is reclaimed, and the later one is
+\* sent. VARIANT V30: an answer of the same authorization to any inbox supersedes it.
+Superseded == LeasedAnswer /\ LaterAnswer(Variant # "V30")
+\* A failed POST drops the leased head if superseded. VARIANT V28: never. VARIANT V29: any leased answer.
+FailDrops == CASE Variant = "V28" -> FALSE [] Variant = "V29" -> LeasedAnswer [] OTHER -> Superseded
+\* CR3's count after a failed POST that drops the head: the head leaves it only when a later answer to its inbox
+\* carries its correction (an answer to another inbox does not answer this inbox's listing).
+FailCount == IF FailDrops /\ LaterAnswer(TRUE) THEN CountHead(Head(kq), FALSE) ELSE g
+\* A failed POST: the head waits again, or is dropped as superseded (its input "superseded").
+FailStep(act, m) ==
+  last' = [act |-> act, arg |-> Arg(NoEnvelope, m, IF FailDrops THEN "superseded" ELSE NONE), rec |-> {},
+           resp |-> 0, ev |-> {}]
+
+\* The head is claimed for its POST (claimDeliveries leases it), which is then in flight: it no longer waits, so a
+\* listing of its authorization records another answer (Coalesced). A suspended L's ordinary head is dropped at its
+\* claim, which KDeliver's "dropped" covers.
+KLeaseHead ==
+  /\ kq # <<>> /\ ~kl /\ ~Drops(Head(kq))
+  /\ kl' = TRUE
+  /\ DeliveryStep("KLeaseHead", Head(kq))
+  /\ UNCHANGED <<k, env, kq, kg, toK, rs, rin, rd, sr, fe, spent, g>>
+
+\* The leased head's POST failed short of its last attempt (an error, a timeout, a 5xx), or its lease ran out and the
+\* sweep reclaimed it: R received nothing, and the head waits again, or is dropped as superseded.
+KFail ==
+  /\ kl /\ ~Drops(Head(kq))
+  /\ kl' = FALSE
+  /\ kq' = IF FailDrops THEN Tail(kq) ELSE kq
+  \* A leased answer that waits again: alone, or beside an answer of its authorization to another inbox (goals only).
+  /\ g' = [FailCount EXCEPT !.waitedAgain = IF LeasedAnswer /\ ~FailDrops
+                                             THEN (IF LaterAnswer(FALSE) THEN "otherInbox" ELSE "alone") ELSE @]
+  /\ FailStep("KFail", Head(kq))
+  /\ UNCHANGED <<k, env, kg, toK, rs, rin, rd, sr, fe, spent>>
+
+\* The head's POST, from the lane (claimed and sent in one step) or leased.
 KDeliver ==
-  /\ kq # <<>> /\ kq' = Tail(kq)
+  /\ kq # <<>> /\ kq' = Tail(kq) /\ kl' = FALSE
   /\ IF Drops(Head(kq))
      THEN /\ rin' = rin /\ g' = g
           /\ last' = [act |-> "KDeliver", arg |-> Arg(NoEnvelope, Head(kq), "dropped"), rec |-> {}, resp |-> 0,
@@ -828,17 +895,21 @@ KDeliver ==
           /\ DeliveryStep("KDeliver", Head(kq))
   /\ UNCHANGED <<k, env, kg, toK, rs, rd, sr, fe, spent>>
 
-\* A POST whose response is lost: R queues the job, and the activity stays the lane's head.
+\* A POST whose response is lost: R queues the job, and Kopje counts a failure, so the head waits again, or is dropped
+\* as superseded if it was leased.
 KDup ==
   /\ kq # <<>> /\ ~Drops(Head(kq)) /\ Can("dup") /\ Spend("dup")
   /\ rin' = BagAdd(rin, Head(kq))
-  /\ g' = [CountHead(Head(kq), TRUE) EXCEPT !.avail = @ \/ SenderDrops(Head(kq))]
-  /\ DeliveryStep("KDup", Head(kq))
-  /\ UNCHANGED <<k, env, kq, kg, toK, rs, rd, sr, fe>>
+  /\ kl' = FALSE
+  /\ kq' = IF FailDrops THEN Tail(kq) ELSE kq
+  /\ g' = [(IF FailDrops THEN g ELSE CountHead(Head(kq), TRUE)) EXCEPT !.avail = @ \/ SenderDrops(Head(kq))]
+  /\ FailStep("KDup", Head(kq))
+  /\ UNCHANGED <<k, env, kg, toK, rs, rd, sr, fe>>
 
+\* The head given up after its last attempt; one a failure drops is dropped instead (KFail).
 KGiveUp ==
-  /\ kq # <<>> /\ ~Drops(Head(kq))
-  /\ kq' = Tail(kq) /\ kg' = kg \cup {Head(kq)}
+  /\ kq # <<>> /\ ~Drops(Head(kq)) /\ ~FailDrops
+  /\ kq' = Tail(kq) /\ kl' = FALSE /\ kg' = kg \cup {Head(kq)}
   /\ g' = CountHead(Head(kq), FALSE)
   /\ DeliveryStep("KGiveUp", Head(kq))
   /\ UNCHANGED <<k, env, toK, rs, rin, rd, sr, fe, spent>>
@@ -852,14 +923,14 @@ KRetry ==
     /\ kq' = IF kq = <<>> THEN <<m>> ELSE <<Head(kq), m>> \o Tail(kq)
     /\ g' = CountHead(m, TRUE)
     /\ DeliveryStep("KRetry", m)
-    /\ UNCHANGED <<k, env, toK, rs, rin, rd, sr, fe>>
+    /\ UNCHANGED <<k, env, kl, toK, rs, rin, rd, sr, fe>>
 
 \* R's delivery to Kopje given up after its retries (delivery_worker.rb:11-21), or never sent: L outside its reach.
 Drop ==
   \E e \in toK :
     /\ toK' = toK \ {e}
     /\ last' = [act |-> "Drop", arg |-> Arg(e, NoIntent, NONE), rec |-> {}, resp |-> 0, ev |-> {}]
-    /\ UNCHANGED <<k, env, kq, kg, rs, rin, rd, sr, fe, spent, g>>
+    /\ UNCHANGED <<k, env, kq, kl, kg, rs, rin, rd, sr, fe, spent, g>>
 
 Next ==
   \/ \E e \in toK : KRecv(e, FALSE) \/ KRecv(e, TRUE)
@@ -867,7 +938,7 @@ Next ==
   \/ IF Variant = "V16" /\ HeadDelete THEN KCleanupV16 ELSE KCleanup
   \/ EnvStep
   \/ KClaim \/ KFetch \/ KFetch1 \/ KFetch2 \/ KApply \/ KLease \/ KStale \/ KExpire
-  \/ KDeliver \/ KGiveUp \/ KDup \/ KRetry
+  \/ KDeliver \/ KGiveUp \/ KDup \/ KRetry \/ KLeaseHead \/ KFail
   \/ RAdd \/ RRemove \/ RDeleteC \/ RCleanup \/ RDeleteSelf \/ RPurge \/ RUpdate \/ RShift \/ RCrowd \/ XAdd \/ RJob
   \/ Drop
 
@@ -913,8 +984,8 @@ NoLiveReject == ~g.nueLive
 MemberAvailability == ~g.avail
 
 \* At most one retraction answer of an authorization waits in Kopje's lane: one to R, the owner of its row's collection
-\* (AnswerClass), and one for R however often R lists it (Coalesced).
-AnswerBound == \A a \in Auths : Cardinality({i \in 1..Len(kq) : RetractionAnswer(kq[i], a)}) <= 1
+\* (AnswerClass), and one for R however often R lists it (Coalesced), a leased one's failure included (Superseded).
+AnswerBound == \A a \in Auths : Cardinality({i \in Waiting : RetractionAnswer(kq[i], a)}) <= 1
 
 (***************************************************************************)
 (* Reachability goals (each checked as INVARIANT ~Goal, which must fail).  *)

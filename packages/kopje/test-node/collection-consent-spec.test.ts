@@ -23,6 +23,8 @@ import { FIXTURE_DIR, REPLAY_FILE, fixtureText, generateFixtures, reproduces } f
 const plan = readPlan();
 // The largest check, the induction, takes about 30 s under tla-ts on a laptop.
 const CHECK_TIMEOUT_MS = 120_000;
+// A fresh run of every fixture's goal: about 95 s on a laptop, S2-ReadOverRetraction's about 40 s of it.
+const FIXTURES_TIMEOUT_MS = 300_000;
 const REPLAY_PATH = fileURLToPath(new URL(`../${REPLAY_FILE}`, import.meta.url));
 
 // Each of Kopje's steps in CollectionConsent.tla, an inbound activity by its envelope: the replay fixtures run each
@@ -49,6 +51,8 @@ const KOPJE_STEPS = [
   "KGiveUp",
   "KDup",
   "KRetry",
+  "KLeaseHead",
+  "KFail",
 ];
 
 // Steps the real Store cannot take: Kopje deletes no local account (src/domain/delivery-hosts.ts, hostCaused).
@@ -82,7 +86,7 @@ describe("spec/collection-consent under tla-ts", () => {
 });
 
 describe("replay fixtures", () => {
-  it("equal a fresh run of the specification", { timeout: CHECK_TIMEOUT_MS }, async () => {
+  it("equal a fresh run of the specification", { timeout: FIXTURES_TIMEOUT_MS }, async () => {
     const fresh = await generateFixtures(plan);
     expect(fixtureFiles()).toEqual(fresh.map((f) => `${f.name}.json`).toSorted());
     for (const fixture of fresh) {
