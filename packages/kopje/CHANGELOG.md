@@ -492,10 +492,15 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   one with an `id` is, under the same rules (its target, and the caps on a remote account's pins and featured hashtags:
   [docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Remote collections"); it was refused. No Store
   migration and no `wrangler.jsonc` change.
-- An LD-signed Undo read as Mastodon's compaction whose undone activity's type is given as an array of types is
-  ignored, as Mastodon applies none, where Kopje ended what that activity's id named (#1717;
-  [docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Reading inbound activities"). No Store migration and no
-  `wrangler.jsonc` change.
+- An `Undo` of a `Follow`, a `Block` or a `Like` ends what that activity's `object` names, as Mastodon's does: the
+  sender's follow or block of the local account it names, whatever the undone activity's id, so the unfollow or
+  unblock of a relationship stored without one (as the cutover carries some over) now applies, and its queued Accept
+  is withdrawn; and nothing, with no retraction recorded, when that `object` is not a single IRI (an array, null, a
+  missing one) or, for a `Follow` or `Block`, names no local account, where Kopje ended what the undone id named
+  (#1773). An `Undo` of a `Like` that names another status than the liked one keeps the favourite, and records the
+  undone id only when that status is a local post, as Mastodon's does. An `Undo` whose undone activity's type is no
+  single name (an array, as #1717 found in LD-signed ones) or one Kopje does not undo (`Accept`) changes nothing; one
+  without a type still ends what its id names. No Store migration and no `wrangler.jsonc` change.
 - A remote actor's `manuallyApprovesFollowers`, `discoverable` and `indexable` are read by their literal spelling
   through Rails' boolean cast, as Mastodon does (#1747): an actor that writes `"false"`, `"0"` or `"off"` is no longer
   discoverable, where it was listed in the directory, suggestions, trends and the link timeline; `"true"`, `1` or `[]`

@@ -26,7 +26,7 @@ import {
   statusMediaWindowSql,
   storedTime,
 } from "../platform/stored-bounds";
-import { followActivity, followAnswerActivity, followUri, recordOutbound } from "./activities";
+import { followActivity, followAnswerActivity, followAnswerId, followUri, recordOutbound } from "./activities";
 import { instanceDomainOf } from "./actors";
 import {
   activeMuteSql,
@@ -146,8 +146,10 @@ import {
   isRetracted,
   recordDeletedObject,
   retract,
+  retractEdge,
   retractFollow,
   retractMatched,
+  type StoredEdge,
 } from "./retractions";
 import { RowBudget, totalChanges } from "./row-budget";
 import { recountStatus, recountStatuses, UNTAG_WINDOW_SQL, withdrawLocalBoost } from "./statuses";
@@ -166,8 +168,11 @@ import { unfollowRemote } from "./unfollow";
 //                author of our pending quote, with a result on its origin (quotes.ts acceptOurQuote;
 //                test/quote-authoring.test.ts)
 //   Reject       as Accept (quotes.ts rejectOurQuote)
-//   Undo         the undone activity's actor is the actor, and it names the current Follow or Block (see undo), a Like
-//                its favourite tracks or a legacy favourite's status, or its boost (undoInteraction)
+//   Undo         the undone activity's actor is the actor; a typed Follow or Block names a local account by its object
+//                (the edge from the actor to it ends whatever its id), a typed Like the status of the favourite it
+//                ends, a typed Announce the actor's boost by its id or atomUri; an untyped one names a Follow, a
+//                Block, a tracked Like or a boost by its id; a type given that is not a single string, or a string
+//                other than Follow, Block, Announce and LIKE_TYPES, nothing (see undo, undoInteraction)
 //   Block        the object is a local account; the actor is the blocker
 //   Move         the object is the actor, and the target lists the actor in alsoKnownAs (ID-4)
 //   Update       of an actor: the object is the actor itself; of a status: the stored status's author is the actor
@@ -250,6 +255,9 @@ export const LIKE_RETIRE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 export type ActivityRef = {
   id: string | null;
   type: string | null;
+  // A type given that is no single name (an array, an object, a number, a boolean): Mastodon's Undo dispatches on the
+  // value (undo.rb:4-19) and matches no branch, the reference included. Read by undo only.
+  typeUnread?: true;
   actor: string | null;
   object: string | null;
   atomUri?: string | null;
@@ -716,12 +724,19 @@ function replacedAnswer(answer: FollowAnswer): boolean {
 // Follow id, byte for byte, or is a Misskey pair id. Without a target, the pairs whose hold names `undone` count among
 // the named ones too (HELD_REJECT_SIGNERS_SQL), so the set is shared: a pair id reaches only the pairs found by a
 // named answer or a named hold, never another local account's pair by its shape alone. One hold per pair at most.
+// `ended`, the follows row a typed Undo ends by its pair (undoRelationship, with the target given): that row's own
+// generation goes too, the answers naming its uri (`named`) and a hold naming it, both compared with the stored uri in
+// SQL (an import may hold a follow beside its pair's hold: its triggers do not run then, test/import-triggers.test.ts),
+// and, for a row stored without one, its Accept, which names no Follow (`accept`, the id followAnswerId gives it:
+// `edge_answer`). No Reject naming no Follow is tied to a stored row (Kopje deletes the row before it records its
+// Reject), so none is selected by it.
 function cancelUndoneAnswers(
   db: Db,
   followerId: string,
   targetId: string | undefined,
   undone: string,
   now: number,
+  ended?: { id: string; accept: string | null },
 ): boolean {
   const pair = isMisskeyPairId(undone);
   let targets = targetId === undefined ? undefined : [targetId];
@@ -742,8 +757,9 @@ function cancelUndoneAnswers(
   for (const target of targets) {
     const answers = followAnswersOf(db, target, followerId, {
       id: undone,
-      edgeId: null,
-      replaces: (answer) => pair || answer.named === 1,
+      edgeId: ended?.id ?? null,
+      edgeAnswer: ended?.accept ?? null,
+      replaces: (answer) => pair || answer.named === 1 || answer.edge_answer === 1,
     });
     if (answers === null) {
       return false;
@@ -756,11 +772,13 @@ function cancelUndoneAnswers(
   for (const target of targets) {
     db.run(
       `DELETE FROM reject_replays WHERE account_id = ?1 AND follower_id = ?2
-				AND (?4 OR CAST(follow_uri AS BLOB) = CAST(?3 AS BLOB))`,
+				AND (?4 OR CAST(follow_uri AS BLOB) = CAST(?3 AS BLOB)
+					OR CAST(follow_uri AS BLOB) = (SELECT CAST(f.uri AS BLOB) FROM follows f WHERE f.id = CAST(?5 AS INTEGER)))`,
       target,
       followerId,
       undone,
       pair ? 1 : 0,
+      ended?.id ?? null,
     );
   }
   return true;
@@ -906,8 +924,15 @@ function isQuoteAnswer(ref: ActivityRef): boolean {
   return ref.type === "QuoteRequest" || (untyped && ref.id !== null && ref.id.endsWith("#quote-request"));
 }
 
-// Undo of a Follow or a Block. The undone activity is found by its id among the actor's own edges. Without a match,
-// only Misskey's pair-shaped Follow id falls back to the actor's current follow of the embedded local target.
+// The undone types an Undo acts on, as Mastodon's Undo dispatches (undo.rb:4-19): any other type, or one given that is
+// no single string (ActivityRef.typeUnread), matches no branch there, a reference by id included, and changes nothing.
+// The names read as a Like (LIKE_TYPES) arrive as "Like".
+const UNDONE_TYPES: ReadonlySet<string> = new Set(["Follow", "Block", "Like", "Announce"]);
+
+// ID-6, as Mastodon's Undo: a Follow or a Block named by its type is sought by the local account its object names, the
+// edge from the actor to it whatever its id (undoRelationship); a Like by the status its object names, and an Announce
+// by its id or atomUri (undoInteraction); an undone activity given without a type, by its id among the actor's own
+// follows, blocks, tracked Likes and boosts (handle_reference). The id must be a string on the actor's origin.
 //
 // A pair id names every generation of a follow, so it is never recorded as retracted itself: the generation it undid
 // is (that Follow's own id), and a later Follow and its Undo by the same pair id work again. The limit: a pair Undo
@@ -924,91 +949,72 @@ const undo: Handler<"Undo"> = (db, actor, activity, { now }) => {
   if (!sameOrigin(ref.id, actor.uri)) {
     return ignored("foreign-object");
   }
+  // Decided before anything is read or written: nothing is recorded or cancelled for an Undo that ends nothing.
+  if (ref.typeUnread === true || (ref.type !== null && !UNDONE_TYPES.has(ref.type))) {
+    return ignored("unsupported-undo");
+  }
+  if (ref.type === "Follow" || ref.type === "Block") {
+    return undoRelationship(db, actor, { ...ref, id: ref.id }, ref.type, now);
+  }
+  // A Like named by its type is sought by its object (undo.rb:103-106), which must be a single IRI.
+  if (ref.type === "Like" && ref.object === null) {
+    return ignored("unknown-target");
+  }
   // A retracted id that a favourite or boost still holds is undone all the same (a Delete of it may have recorded the
   // retraction first), so no interaction is stranded behind its own tombstone.
-  const held = ref.type !== "Follow" && ref.type !== "Block" && interactionOf(db, actor, ref.id);
+  const held = interactionOf(db, actor, ref.id);
   if (!held && isRetracted(db, actor.uri, ref.id, now)) {
-    // A Follow Kopje ended or refused is recorded as retracted too, and its Undo, typed or not, still cancels its
-    // answers.
-    if (
-      (ref.type === "Follow" || ref.type === null) &&
-      !cancelUndoneAnswers(db, actor.id, localAccount(db, ref.object)?.id, ref.id, now)
-    ) {
+    // A Follow Kopje ended or refused is recorded as retracted too, and its Undo by id still cancels its answers.
+    if (ref.type === null && !cancelUndoneAnswers(db, actor.id, localAccount(db, ref.object)?.id, ref.id, now)) {
       return retryLater("follow-answer-backlog");
     }
     return ignored("retracted");
   }
-  if (ref.type === "Like" || ref.type === "Announce" || held) {
+  if (ref.type !== null || held) {
     return undoInteraction(db, actor, { ...ref, id: ref.id }, now);
   }
-  const pair = ref.type === "Follow" && isMisskeyPairId(ref.id);
-  type Edge = { target: string; uri: string | null };
-  let edge: Edge | undefined;
+  type Edge = { target: string };
   // The actor's follows and blocks by uri are walked through their pair indexes: the inbox writes only ones with a local
   // target, but an import does not hold them to it, and no index holds their uri (#1481). The uri is not unique (an
   // import may repeat it): the follow of the account the Undo names, local or not, is probed first by its pair, and only
   // when it does not carry the uri does the oldest under the uri go.
-  if (ref.type === null || ref.type === "Follow") {
-    const named =
-      ref.object === null
-        ? undefined
-        : db.first<{ id: string }>(
-            `SELECT id FROM accounts INDEXED BY ${ACCOUNTS_URI_INDEX} WHERE uri = ?`,
-            ref.object,
-          );
-    edge =
-      (named === undefined
-        ? undefined
-        : db.first<Edge>(
-            `SELECT target_account_id AS target, uri FROM follows INDEXED BY follows_pair
+  const named =
+    ref.object === null
+      ? undefined
+      : db.first<{ id: string }>(`SELECT id FROM accounts INDEXED BY ${ACCOUNTS_URI_INDEX} WHERE uri = ?`, ref.object);
+  const edge =
+    (named === undefined
+      ? undefined
+      : db.first<Edge>(
+          `SELECT target_account_id AS target FROM follows INDEXED BY follows_pair
 					WHERE account_id = ? AND target_account_id = ? AND uri = ?`,
-            actor.id,
-            named.id,
-            ref.id,
-          )) ??
-      db.first<Edge>(
-        `SELECT target_account_id AS target, uri FROM follows INDEXED BY follows_pair WHERE account_id = ?1 AND uri = ?2
+          actor.id,
+          named.id,
+          ref.id,
+        )) ??
+    db.first<Edge>(
+      `SELECT target_account_id AS target FROM follows INDEXED BY follows_pair WHERE account_id = ?1 AND uri = ?2
 				ORDER BY id LIMIT 1`,
-        actor.id,
-        ref.id,
-      );
-    // The Misskey pair fallback is the named local account's follow.
-    const target = localAccount(db, ref.object);
-    if (edge === undefined && pair && target !== undefined) {
-      edge = db.first<Edge>(
-        "SELECT target_account_id AS target, uri FROM follows WHERE account_id = ? AND target_account_id = ?",
-        actor.id,
-        target.id,
-      );
-    }
-  }
+      actor.id,
+      ref.id,
+    );
   // Everything this Undo records as retracted must fit, or nothing changes (ID-7). The undone activity's type is
-  // decided first: a Block (typed, or untyped and matching a stored block) is always recorded, whatever its id's
-  // shape. Only a Follow's pair id names every generation, so it is never recorded, whichever side carries it.
+  // decided first: a stored block with the id makes it a Block's Undo, always recorded, whatever its id's shape. Only a
+  // Follow's pair id names every generation, so it is never recorded. A follow found carries the id itself (both
+  // lookups match it), so the id is all there is to record.
   const undoesBlock =
-    ref.type === "Block" ||
-    (ref.type === null &&
-      edge === undefined &&
-      db.first(
-        "SELECT 1 AS x FROM blocks INDEXED BY blocks_pair WHERE account_id = ? AND uri = ?",
-        actor.id,
-        ref.id,
-      ) !== undefined);
-  const undoesFollow = !undoesBlock && (ref.type === null || ref.type === "Follow");
-  const retracted = [
-    ...(undoesFollow && isMisskeyPairId(ref.id) ? [] : [ref.id]),
-    ...(edge?.uri == null || isMisskeyPairId(edge.uri) ? [] : [edge.uri]),
-  ];
+    edge === undefined &&
+    db.first("SELECT 1 AS x FROM blocks INDEXED BY blocks_pair WHERE account_id = ? AND uri = ?", actor.id, ref.id) !==
+      undefined;
+  const retracted = !undoesBlock && isMisskeyPairId(ref.id) ? [] : [ref.id];
   if (!canRetract(db, actor.uri, retracted, now)) {
-    // An untyped Undo that matches nothing stored may name a Like or Announce still on its way: answered 503, so its
-    // tombstone is not lost (ID-7). One that names a stored follow or block keeps its answer.
-    return ref.type === null && edge === undefined && !undoesBlock
-      ? retryLater("retraction-cap")
-      : ignored("retraction-cap");
+    // An Undo that matches nothing stored may name a Like or Announce still on its way: answered 503, so its tombstone
+    // is not lost (ID-7). One that names a stored follow or block keeps its answer.
+    return edge === undefined && !undoesBlock ? retryLater("retraction-cap") : ignored("retraction-cap");
   }
   // The undone generation's answers go (cancelUndoneAnswers), whether or not its edge is still stored.
   if (
-    undoesFollow &&
+    !undoesBlock &&
     !cancelUndoneAnswers(db, actor.id, edge?.target ?? localAccount(db, ref.object)?.id, ref.id, now)
   ) {
     return retryLater("follow-answer-backlog");
@@ -1018,16 +1024,8 @@ const undo: Handler<"Undo"> = (db, actor, activity, { now }) => {
     undone = removeFollow(db, actor.id, edge.target);
     recountLocal(db, [edge.target]);
   }
-  if (!undone && (ref.type === null || ref.type === "Block")) {
-    undone =
-      db.run("DELETE FROM blocks INDEXED BY blocks_pair WHERE account_id = ? AND uri = ?", actor.id, ref.id) > 0 ||
-      (ref.type === "Block" &&
-        db.run(
-          `DELETE FROM blocks WHERE account_id = ? AND uri IS NULL
-						AND target_account_id = (SELECT a.id FROM accounts a WHERE a.uri = ? AND a.domain IS NULL)`,
-          actor.id,
-          ref.object,
-        ) > 0);
+  if (!undone) {
+    undone = db.run("DELETE FROM blocks INDEXED BY blocks_pair WHERE account_id = ? AND uri = ?", actor.id, ref.id) > 0;
   }
   // Recorded whether or not the target was found: an Undo that overtook its activity keeps it from applying later,
   // and a replay of an undone activity does not restore it (ID-7). Likes and Announces check it too.
@@ -1036,6 +1034,104 @@ const undo: Handler<"Undo"> = (db, actor, activity, { now }) => {
   }
   return undone ? applied("undone") : applied("retraction-recorded");
 };
+
+// Undo of a Follow or a Block named by its type (ID-6, #1773), as Mastodon's (undo.rb:89-101, :116-126): the local
+// account the undone activity's object names, by its exact actor URI, else nothing is changed or recorded (Mastodon
+// returns before its delete_later!); then the edge from the actor (the verified sender, the pair's first element) to
+// that account, whatever id it carries, unless the undone id has a live retraction (ID-7: a generation Kopje saw end
+// is not reached by its late Undo). An edge stored without an id (an import's) ends so too. The undone id and the
+// ended edge's are recorded, a Follow's pair id excepted, and with a Follow the answers of both generations go, the
+// Accept of an id-less edge included (cancelUndoneAnswers).
+function undoRelationship(
+  db: Db,
+  actor: RemoteRow,
+  ref: ActivityRef & { id: string },
+  type: "Follow" | "Block",
+  now: number,
+): ReceiveResult {
+  const target = localAccount(db, ref.object);
+  if (target === undefined) {
+    return ignored("unknown-target");
+  }
+  const follow = type === "Follow";
+  if (isRetracted(db, actor.uri, ref.id, now)) {
+    // A Follow Kopje ended or refused is recorded as retracted too, and its Undo still cancels its answers.
+    if (follow && !cancelUndoneAnswers(db, actor.id, target.id, ref.id, now)) {
+      return retryLater("follow-answer-backlog");
+    }
+    return ignored("retracted");
+  }
+  // The edge's uri is classified whole, read only within ACTIVITY_ID_LIMIT bytes, the bound of a stored activity id;
+  // its bytes stay in SQL (an import's may be malformed UTF-8, which decodes lossily): whether it is the undone id is
+  // compared there, and its retraction is copied from the row (retractEdge). A uri past the bound (an import's, or a
+  // Follow or Block whose id the inbox stored unbounded) is not recorded, nor taken for a pair id: the edge ends, and
+  // only the undone id is recorded (docs/threat-model.md, accepted risks).
+  const edge = db.first<{ id: string; unnamed: number; same: number; uri: string | null }>(
+    `SELECT CAST(id AS TEXT) AS id, uri IS NULL AS unnamed, coalesce(CAST(uri AS BLOB) = CAST(?3 AS BLOB), 0) AS same,
+			CASE WHEN length(CAST(uri AS BLOB)) <= ?4 THEN CAST(uri AS TEXT) END AS uri
+			FROM ${follow ? "follows INDEXED BY follows_pair" : "blocks INDEXED BY blocks_pair"}
+			WHERE account_id = ?1 AND target_account_id = ?2`,
+    actor.id,
+    target.id,
+    ref.id,
+    ACTIVITY_ID_LIMIT,
+  );
+  const undone = follow && isMisskeyPairId(ref.id) ? [] : [ref.id];
+  const stored: StoredEdge | undefined =
+    edge !== undefined &&
+    edge.uri !== null &&
+    edge.same === 0 &&
+    sameOrigin(edge.uri, actor.uri) &&
+    !(follow && isMisskeyPairId(edge.uri))
+      ? { table: follow ? "follows" : "blocks", id: edge.id }
+      : undefined;
+  if (!canRetract(db, actor.uri, undone, now, stored)) {
+    return ignored("retraction-cap");
+  }
+  if (
+    follow &&
+    !cancelUndoneAnswers(
+      db,
+      actor.id,
+      target.id,
+      ref.id,
+      now,
+      edge === undefined
+        ? undefined
+        : {
+            id: edge.id,
+            accept:
+              edge.unnamed === 1
+                ? followAnswerId("Accept", { localActorUri: target.uri, followUri: null, edgeId: edge.id })
+                : null,
+          },
+    )
+  ) {
+    return retryLater("follow-answer-backlog");
+  }
+  // Recorded whether or not an edge was found (Mastodon's delete_later!): an Undo that overtook its activity keeps it
+  // from applying later, and a replay of an undone activity does not restore it (ID-7). The edge's own uri is copied
+  // from its row before the row goes.
+  if (stored !== undefined) {
+    retractEdge(db, actor.uri, stored, now);
+  }
+  if (edge !== undefined) {
+    if (follow) {
+      removeFollow(db, actor.id, target.id);
+      recountLocal(db, [target.id]);
+    } else {
+      db.run(
+        "DELETE FROM blocks INDEXED BY blocks_pair WHERE account_id = ? AND target_account_id = ?",
+        actor.id,
+        target.id,
+      );
+    }
+  }
+  for (const uri of undone) {
+    retract(db, actor.uri, uri, now);
+  }
+  return edge === undefined ? applied("retraction-recorded") : applied("undone");
+}
 
 // Mastodon's ActivityPub::Activity::Block (block.rb:14-16): the blocker's accepted follow ends with a Reject, as
 // UnfollowService#unfollow! answers a remote follower of a local account (unfollow_service.rb:35-36), the local
@@ -3448,7 +3544,9 @@ function removeBoost(
 
 // Undo of a Like or an Announce, by the undone activity's id (ID-7). For a Like, in this order:
 //   - the actor's favourite tracking the id, or retaining it (favourites.uri, retainedLike), typed or untyped: the id
-//     goes (its row, or the retained uri cleared), and the favourite with its last outstanding one (removeFavourite);
+//     goes (its row, or the retained uri cleared), and the favourite with its last outstanding one (removeFavourite).
+//     A typed Like's id matches only the favourite of the status its object names (the undo handler requires one), as
+//     Mastodon's undo_like seeks the actor's favourite of that status (undo.rb:103-110, #1773);
 //   - for a typed Like naming a status the actor has an id-less favourite of (legacyFavourite: no tracked or retained
 //     id, a converted one): that favourite goes, as Mastodon's undo_like finds the actor's favourite of the object;
 //   - for a typed Like naming anything but a local original: nothing (Mastodon's undo_like). A server sends a
@@ -3458,21 +3556,27 @@ function removeBoost(
 // its id, else by the object's atomUri (namedStatus). Whatever changes, the Undo's id is recorded as retracted; if it
 // cannot be (the per-actor cap), nothing changes and the Undo is answered 503.
 function undoInteraction(db: Db, actor: RemoteRow, ref: ActivityRef & { id: string }, now: number): ReceiveResult {
-  const tracked = ref.type === "Announce" ? undefined : trackedLike(db, actor.id, ref.id);
-  const retained = tracked !== undefined || ref.type === "Announce" ? undefined : retainedLike(db, actor.id, ref.id);
+  const object = ref.type === "Like" ? ref.object : null;
+  // By the status's primary key: one row.
+  const ofObject = (favourite: { status_id: string }) =>
+    object === null ||
+    db.first("SELECT 1 AS x FROM statuses WHERE id = ? AND uri = ?", favourite.status_id, object) !== undefined;
+  const found = ref.type === "Announce" ? undefined : trackedLike(db, actor.id, ref.id);
+  const tracked = found !== undefined && ofObject(found) ? found : undefined;
+  const kept = tracked !== undefined || ref.type === "Announce" ? undefined : retainedLike(db, actor.id, ref.id);
+  const retained = kept !== undefined && ofObject(kept) ? kept : undefined;
   const legacy =
-    tracked === undefined && retained === undefined && ref.type === "Like" && ref.object !== null
-      ? legacyFavourite(db, actor.id, ref.object)
+    tracked === undefined && retained === undefined && object !== null
+      ? legacyFavourite(db, actor.id, object)
       : undefined;
   const named = ref.type === "Like" ? undefined : namedStatus(db, actor, ref.id, ref.atomUri, true);
   const boost = named === undefined ? undefined : { id: named.status.id, original: named.status.reblog_of_id! };
   if (
-    ref.type === "Like" &&
+    object !== null &&
     tracked === undefined &&
     retained === undefined &&
     legacy === undefined &&
-    ref.object !== null &&
-    originalByUri(db, ref.object)?.local !== 1
+    originalByUri(db, object)?.local !== 1
   ) {
     return ignored("unrelated");
   }

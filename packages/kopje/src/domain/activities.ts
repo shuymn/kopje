@@ -805,13 +805,22 @@ export type FollowAnswerInput = {
   edgeId: string;
 };
 
-export function followAnswerActivity(kind: "Accept" | "Reject", input: FollowAnswerInput) {
+// The id of the answer to a Follow: by the Follow's id, else, for an edge stored without one (an import's), by the
+// edge.
+export function followAnswerId(
+  kind: "Accept" | "Reject",
+  input: Pick<FollowAnswerInput, "localActorUri" | "followUri" | "edgeId">,
+): string {
   const path = kind === "Accept" ? "accepts" : "rejects";
   const name = input.followUri === null ? input.edgeId : sha256Hex(input.followUri);
+  return `${input.localActorUri}#${path}/follows/${name}`;
+}
+
+export function followAnswerActivity(kind: "Accept" | "Reject", input: FollowAnswerInput) {
   return {
     activity: {
       "@context": AS_CONTEXT,
-      id: `${input.localActorUri}#${path}/follows/${name}`,
+      id: followAnswerId(kind, input),
       type: kind,
       actor: input.localActorUri,
       object: {

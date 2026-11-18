@@ -182,9 +182,11 @@ async function world(n: number): Promise<StoreStub> {
 }
 
 type Case = {
-  // The statements witnessed, and the tables (by their names in them) none of them may scan.
+  // The statements witnessed, and the tables (by their names in them) none of them may scan; `witnessed`, a statement
+  // among them that must have run.
   pattern: RegExp;
   scanned: string[];
+  witnessed?: RegExp;
   // The subject's own rows, on top of the world.
   subject: string[];
   run: (sql: SqlStorage, transact: Transact) => unknown;
@@ -274,7 +276,7 @@ const CASES: Record<string, Case> = {
     answer: { applied: true, reason: "follow-accepted" },
   },
   "Undo of a follow": {
-    pattern: /AS target, uri FROM follows INDEXED BY follows_pair\s+WHERE account_id = \?/,
+    pattern: /AS target FROM follows INDEXED BY follows_pair\s+WHERE account_id = \?/,
     scanned: ["follows"],
     subject: [
       `INSERT INTO follows (account_id, target_account_id, state, uri) VALUES ('${BOB}', '${VIEWER}', 'accepted', '${BOB_URI}#f')`,
@@ -285,6 +287,35 @@ const CASES: Record<string, Case> = {
       object: { id: `${BOB_URI}#f`, type: null, actor: BOB_URI, object: VIEWER_URI },
     }),
     answer: { applied: true, reason: "undone" },
+  },
+  // A typed Undo of a Follow or a Block ends the edge to the account its object names, found by the pair (#1773).
+  "typed Undo of a follow": {
+    pattern: /FROM follows INDEXED BY follows_pair|DELETE FROM follows/,
+    scanned: ["follows"],
+    witnessed: /AS uri\s+FROM follows INDEXED BY follows_pair/,
+    subject: [
+      `INSERT INTO follows (account_id, target_account_id, state, uri) VALUES ('${BOB}', '${VIEWER}', 'accepted', NULL)`,
+    ],
+    run: inbound({
+      type: "Undo",
+      id: `${BOB_URI}#undo`,
+      object: { id: `${BOB_URI}#f`, type: "Follow", actor: BOB_URI, object: VIEWER_URI },
+    }),
+    answer: { applied: true, reason: "undone" },
+    left: `SELECT count(*) AS n FROM follows WHERE account_id = '${BOB}' AND target_account_id = '${VIEWER}'`,
+  },
+  "typed Undo of a block": {
+    pattern: /blocks INDEXED BY blocks_pair/,
+    scanned: ["blocks"],
+    witnessed: /AS uri\s+FROM blocks INDEXED BY blocks_pair/,
+    subject: [`INSERT INTO blocks (account_id, target_account_id, uri) VALUES ('${BOB}', '${VIEWER}', '${BOB_URI}#b')`],
+    run: inbound({
+      type: "Undo",
+      id: `${BOB_URI}#undo`,
+      object: { id: `${BOB_URI}#other`, type: "Block", actor: BOB_URI, object: VIEWER_URI },
+    }),
+    answer: { applied: true, reason: "undone" },
+    left: `SELECT count(*) AS n FROM blocks WHERE account_id = '${BOB}' AND target_account_id = '${VIEWER}'`,
   },
   "Undo of a block": {
     pattern: /FROM blocks INDEXED BY blocks_pair/,
@@ -330,9 +361,10 @@ const CASES: Record<string, Case> = {
     answer: { applied: true, reason: "undone" },
     left: `SELECT count(*) AS n FROM notifications WHERE type = 'favourite' AND from_account_id = '${BOB}' AND status_id = '${STATUS}'`,
   },
+  // A typed Like's tracked id matches only the favourite of the status its object names: that status by its key.
   "Undo of a tracked like": {
-    pattern: /favourite_likes_uri|type = 'favourite' AND from_account_id/,
-    scanned: ["l", "f", "notifications"],
+    pattern: /favourite_likes_uri|type = 'favourite' AND from_account_id|FROM statuses WHERE id = \? AND uri = \?/,
+    scanned: ["l", "f", "notifications", "statuses"],
     subject: [
       `INSERT INTO favourites (id, account_id, status_id) VALUES (990000, '${BOB}', '${STATUS}')`,
       `INSERT INTO favourite_likes (favourite_id, uri, received_at) VALUES (990000, '${BOB_URI}#tracked', ${NOW})`,
@@ -406,6 +438,9 @@ describe("relationship and inbound edges with grown neighbours (RES-7)", () => {
       expect([few.left, many.left]).toEqual([0, 0]);
       expect(many.result).toEqual(few.result);
       expect(many.plans.length).toBeGreaterThan(0);
+      if (c.witnessed !== undefined) {
+        expect(many.plans.some((p) => c.witnessed!.test(p.query))).toBe(true);
+      }
       for (const { plan } of many.plans) {
         expect(scansOf(plan, c.scanned)).toEqual([]);
       }
@@ -416,8 +451,9 @@ describe("relationship and inbound edges with grown neighbours (RES-7)", () => {
 });
 
 // Follows sharing one uri (no constraint makes it unique; an import may hold them): an Accept answers the follow of the
-// follower its Follow names, else the oldest; an Undo ends the follow of the target it names, else the oldest. The
-// same under no statistics, the plan audit's singleton ones, and ANALYZE.
+// follower its Follow names, else the oldest; an Undo of a Follow given without a type ends the follow of the target
+// it names, else the oldest, and a typed one only the follow of the local account its object names, whatever its uri.
+// The same under no statistics, the plan audit's singleton ones, and ANALYZE.
 const SHARED = `${BOB_URI}#shared`;
 const OTHER_URI = "https://kopje.test/ap/users/other";
 const CAROL = "560000000000000000";
@@ -491,10 +527,10 @@ describe("follows sharing one uri", () => {
     id: `${BOB_URI}#accept`,
     object: { id: SHARED, type: "Follow", actor, object: BOB_URI },
   });
-  const undo = (object: string): InboundActivity => ({
+  const undo = (object: string, type: "Follow" | null = null): InboundActivity => ({
     type: "Undo",
     id: `${BOB_URI}#undo`,
-    object: { id: SHARED, type: "Follow", actor: BOB_URI, object },
+    object: { id: SHARED, type, actor: BOB_URI, object },
   });
 
   it.each(["none", ...STATISTICS] as const)(
@@ -587,5 +623,27 @@ describe("follows sharing one uri", () => {
         undo(CAROL_URI),
       ),
     ).toEqual({ reason: "undone", follows: [{ follower: BOB, target: VIEWER, state: "accepted" }] });
+  });
+
+  it.each(["none", ...STATISTICS] as const)("a typed Undo ends the named local account's only (%s)", async (s) => {
+    const rows: [string, string, string][] = [
+      [BOB, VIEWER, "accepted"],
+      [BOB, OTHER, "accepted"],
+      [BOB, CAROL, "accepted"],
+    ];
+    expect(await shared(s, rows, undo(OTHER_URI, "Follow"))).toEqual({
+      reason: "undone",
+      follows: [
+        { follower: BOB, target: VIEWER, state: "accepted" },
+        { follower: BOB, target: CAROL, state: "accepted" },
+      ],
+    });
+    // A remote account, or one that is not stored: nothing ends.
+    for (const named of [CAROL_URI, BOB_URI, "https://kopje.test/ap/users/nobody"]) {
+      expect(await shared(s, rows, undo(named, "Follow"))).toEqual({
+        reason: "unknown-target",
+        follows: rows.map(([follower, target, state]) => ({ follower, target, state })),
+      });
+    }
   });
 });
