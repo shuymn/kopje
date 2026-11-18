@@ -73,8 +73,14 @@ code):
   suspension and its end, the retired row's cleanup or early eviction (input `insertAt50`: the replay fills C to 50
   rows with L's retired row the oldest and inserts another member's row, which evicts it in the same transaction), one
   later batch of R's purge that reaches C, a retraction's expiry. `KMemberGone`, L's deletion, is model-only.
+- While L is suspended the Store refuses L's credential, so L's own views (`memberDetail`, `inCollections`) are
+  `refused`; the row itself is still compared. `KUnsuspend` has the input `newCredential`: the suspension's
+  credentials stay refused after the lifting, so the replay reads L's views after it with a credential issued since.
+  The suspension and its lifting also record L's actor Update, which the spec leaves out of `recorded`.
 - `KDeliver`, `KDup`, `KGiveUp`, `KRetry`: the POST of the head of Kopje's lane to R's server, the same POST with its
-  response lost (the head stays), the head given up, an operator's retry (admitted again, then behind the head).
+  response lost (the head stays), the head given up, an operator's retry (admitted again, then behind the head). While
+  L is suspended the Store drops its ordinary activities when it claims them (only a `Delete` is still sent):
+  `KDeliver` then has the input `dropped` and sends nothing, and the head is neither duplicated nor given up.
   `RJob` is one of R's jobs, which run in any order.
 - `R*` and `XAdd` are R's requests and services; `Drop` loses an envelope; `Env` changes L's policy, the backlog, the
   retraction cap, C's slots or how many of R's collections Kopje holds.
@@ -82,7 +88,9 @@ code):
 `last` in each state names the step, its input, what it recorded and its response; `k` is Kopje's core (`row`, its
 `uri` listing), `rs` is R's server, `g` the history the invariants read (`obl` the obligation Grant preservation
 tracks, `unexcused` the corrections CR3 counts, `lastRd` the latest read that covered the row, which OV2
-compares). `MemberAvailability` fails when Kopje answers for, creates or lists L's row while L is unavailable.
+compares). `MemberAvailability` fails when, while L is unavailable, Kopje answers for, creates or lists L's row, a read
+changes the row at all, or R receives an activity of L's other than a `Delete`. `OV3` fails when a read that does
+not cover the row replaces the covering read OV2 compares.
 
 Tell the two kinds of failure apart by the step that breaks the invariant:
 
