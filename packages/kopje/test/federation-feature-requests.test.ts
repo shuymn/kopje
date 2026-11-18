@@ -1442,6 +1442,26 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
     expect(await authorizationStatus(w.t, row!.id)).toBe(200);
   });
 
+  // Code review r2: an Add whose item cannot be one of the collection's (an item on another origin) names no one: it
+  // moves no row's uri and is answered with nothing. Fails if such an Add takes the row (its uri becomes the foreign
+  // item) or is answered with alice's Delete.
+  it("takes no Add of an item on another origin naming the member, its authorization served or not", async () => {
+    const w = await owned();
+    expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+    const [row] = await localRows(w.t, ALICE);
+    const a = authorization(row!.id);
+    const first = localItem(w.owner, ALICE_URI, a);
+    expect(await w.t.post(w.owner, itemActivity(w, "Add", first))).toBe(202);
+    const foreign = (n: number, auth: string) => ({
+      ...localItem(w.owner, ALICE_URI, auth),
+      id: `${OTHER}/collection_items/${n}`,
+    });
+    expect(await w.t.post(w.owner, itemActivity(w, "Add", foreign(1, a)))).toBe(202);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: ACCEPTED, uri: first.id }]);
+    expect(await w.t.post(w.owner, itemActivity(w, "Add", foreign(2, authorization("999999999999999996"))))).toBe(202);
+    expect((await aliceAnswers(w.t)).map(({ activity }) => activity.type)).toEqual(["Accept"]);
+  });
+
   // 6-T6 with a second owner. Fails if another owner's listing of the authorization Kopje serves for this owner's
   // collection is answered with alice's Delete: a Mastodon server applies a Delete of a feature authorization to its
   // own collection's item by the authorization and the signer alone (delete.rb:80), so that Delete, sent to another

@@ -331,8 +331,7 @@ function itemOf(
   origin: string,
 ): Omit<Planned, "position" | "existing"> | null {
   if (
-    !storableUrl(input.id, COLLECTION_URI_BYTES) ||
-    !sameOrigin(input.id, collection.uri) ||
+    !isItemOf(collection, input.id) ||
     !storableUrl(input.object, COLLECTION_URI_BYTES) ||
     sameOrigin(input.object, origin) ||
     !storableUrl(input.authorization, COLLECTION_URI_BYTES) ||
@@ -353,6 +352,12 @@ function itemOf(
   };
 }
 
+// Whether `uri` may be an item of the collection: in its stored form (storableUrl), on the collection's origin, as
+// every item of it is. An entry or an Add naming any other is no item of the collection, whoever it names.
+function isItemOf(collection: { uri: string }, uri: string): boolean {
+  return storableUrl(uri, COLLECTION_URI_BYTES) && sameOrigin(uri, collection.uri);
+}
+
 // The item stored under `uri` (collection_items_uri), any collection.
 function itemByUri(db: Db, uri: string): StoredItem | undefined {
   return db.first<StoredItem>(
@@ -366,8 +371,9 @@ function itemByUri(db: Db, uri: string): StoredItem | undefined {
 
 // The collection's items become the listing's (ProcessFeaturedCollectionService: the items not listed deleted, each
 // listed one processed): the first MAX_REMOTE_ITEMS entries, each it may hold (itemOf) in listed order, one a member
-// and an item whose uri another collection or a local member's row holds skipped. An entry naming a local account is
-// matched to that member's row by its authorization (feature-answers.ts, #1589's D21 and D24):
+// and an item whose uri another collection or a local member's row holds skipped. An entry naming a local account,
+// whose item may be one of the collection's (isItemOf, else it is skipped, naming no one), is matched to that member's
+// row by its authorization (feature-answers.ts, #1589's D21 and D24):
 // a row that serves it takes the item's uri and position; any other authorization of the member is answered with the
 // member's Delete of it, nothing stored; a member unavailable to every read is skipped (localListing). Every local
 // member's row is kept, listed or not, in any state: no listing deletes one (threat-model.md ID-9). `hides`:
@@ -395,7 +401,7 @@ function applyListing(
   const members = new Set<string>();
   items.slice(0, MAX_REMOTE_ITEMS).forEach((input, index) => {
     if (input !== null && sameOrigin(input.object, origin)) {
-      const listing = localListing(db, input.object, input.authorization);
+      const listing = isItemOf(collection, input.id) ? localListing(db, input.object, input.authorization) : null;
       if (listing === null || members.has(listing.member.id)) {
         return;
       }
@@ -452,7 +458,7 @@ function applyListing(
   for (const row of locals) {
     const named = listed.get(row.id);
     if (named !== undefined) {
-      markListed(db, row.id, named.uri, collection.uri, now, named.position);
+      markListed(db, row.id, named.uri, now, named.position);
     } else if (hides !== null && !keptUnlisted(row)) {
       hideRow(db, row.id, now);
     }
@@ -523,8 +529,9 @@ export function applyFeaturedItem(
 // serves (feature-answers.ts serves) gives the row the item's uri, unless the owner's Remove retracted that item (ID-7;
 // the row's state stays); any other authorization of the member is answered with the member's Delete of it to the
 // sender, once per Add and whatever the retractions (the owner may have accepted again after its Remove), nothing
-// stored, unless Kopje serves it in any collection (answerUnserved). 'listed' or 'answered', else null (no available
-// local member, an authorization the member could not have issued, or one served).
+// stored, unless Kopje serves it in any collection (answerUnserved). 'listed' or 'answered', else null (an item that
+// cannot be one of the collection's, isItemOf; no available local member, an authorization the member could not have
+// issued, or one served).
 export function applyLocalFeaturedItem(
   db: Db,
   owner: Owner,
@@ -532,7 +539,7 @@ export function applyLocalFeaturedItem(
   input: FeaturedItemInput,
   now: number,
 ): "listed" | "answered" | null {
-  const listing = localListing(db, input.object, input.authorization);
+  const listing = isItemOf(collection, input.id) ? localListing(db, input.object, input.authorization) : null;
   if (listing === null) {
     return null;
   }
@@ -546,7 +553,7 @@ export function applyLocalFeaturedItem(
     if (isRetracted(db, owner.uri, input.id, now)) {
       return null;
     }
-    markListed(db, row.id, input.id, collection.uri, now);
+    markListed(db, row.id, input.id, now);
     return "listed";
   }
   return answerUnserved(db, owner, collection.uri, listing, now) ? "answered" : null;

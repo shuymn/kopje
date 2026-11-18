@@ -591,6 +591,21 @@ describe("a local member's row and the reads of its owner's collections", () => 
     expect(await localRows(w.t, ALICE)).toMatchObject([{ id: w.row, state: ACCEPTED, uri: served.id }]);
   });
 
+  // Code review r2: an entry whose item cannot be one of the collection's (an item on another origin) lists no one, so
+  // a read whose only entry naming the row's authorization is one hides the row, at its place. Fails if the read takes
+  // that entry for the row's (the row kept shown under its old item, moved to the entry's position, or shown under the
+  // foreign item).
+  it("hides the row on a read whose only entry naming its authorization is an item on another origin", async () => {
+    const w = await featuring();
+    const served = servedItem(w);
+    await readAt(w, [served], NOW + 60_000);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: w.row, uri: served.id, position: 1 }]);
+    const ghost = item(w.owner, { uri: `${OTHER}/users/ghost` });
+    const foreign = { ...servedItem(w), id: `${OTHER}/collection_items/${nextId()}` };
+    await readAt(w, [ghost, foreign], NOW + 120_000);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ id: w.row, state: ACCEPTED, uri: null, position: 1 }]);
+  });
+
   // Fails if a read hides a row changed at or after its claim (its listing may predate the change), the same
   // millisecond included, or hides a revoked row.
   it("keeps a row changed at or after the read's claim shown, and leaves a revoked row to the cleanup", async () => {

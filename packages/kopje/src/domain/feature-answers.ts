@@ -1,7 +1,6 @@
 import { ACCOUNTS_ID_INDEX, ACCOUNTS_URI_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
-import { sameOrigin } from "../platform/http-url";
-import { COLLECTION_ITEM_STATES, COLLECTION_URI_BYTES } from "../platform/stored-bounds";
+import { COLLECTION_ITEM_STATES } from "../platform/stored-bounds";
 import { recordOutbound } from "./activities";
 import { availableSql } from "./audience";
 import { authorizedItemOf, featureAnswerEnvelope, featureDeleteActivity } from "./collection-documents";
@@ -102,37 +101,21 @@ export function serves(row: Pick<LocalRow, "id" | "account_id" | "state">, listi
   );
 }
 
-// The owner's item `uri` (an Add's or a listing's, of the collection `collectionUri`) named the row's authorization:
-// its uri becomes the item's, unless another row holds that uri or it is not one of the collection's (the item's id on
-// its collection's origin, as every item of it), and a listing gives it its `position`. updated_at moves only when the
-// uri does, so a read claimed before a change of who is shown keeps the row (its fence), and a listing that names the
-// row as it is listed already fences nothing.
-export function markListed(
-  db: Db,
-  row: string,
-  uri: string,
-  collectionUri: string,
-  now: number,
-  position: number | null = null,
-): void {
-  // The stored form of an item's uri (remote-featured-collections.ts storableUrl: printable ASCII, so its length is its
-  // bytes).
-  const named =
-    uri.length <= COLLECTION_URI_BYTES &&
-    /^https:\/\/[!-~]+$/.test(uri) &&
-    URL.canParse(uri) &&
-    sameOrigin(uri, collectionUri);
+// The owner's item `uri` (an Add's or a listing's, one of its collection's: remote-featured-collections.ts isItemOf)
+// named the row's authorization: its uri becomes the item's, unless another row holds that uri, and a listing gives it
+// its `position`. updated_at moves only when the uri does, so a read claimed before a change of who is shown keeps the
+// row (its fence), and a listing that names the row as it is listed already fences nothing.
+export function markListed(db: Db, row: string, uri: string, now: number, position: number | null = null): void {
   db.run(
     `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
-			SET uri = CASE WHEN ?3 AND NOT EXISTS (SELECT 1 FROM collection_items o INDEXED BY collection_items_uri
+			SET uri = CASE WHEN NOT EXISTS (SELECT 1 FROM collection_items o INDEXED BY collection_items_uri
 					WHERE o.uri = ?2 AND o.id <> ?1) THEN ?2 ELSE uri END,
-				updated_at = CASE WHEN ?3 AND uri IS NOT ?2 AND NOT EXISTS (SELECT 1 FROM collection_items o
-					INDEXED BY collection_items_uri WHERE o.uri = ?2 AND o.id <> ?1) THEN ?4 ELSE updated_at END,
-				position = coalesce(?5, position)
+				updated_at = CASE WHEN uri IS NOT ?2 AND NOT EXISTS (SELECT 1 FROM collection_items o
+					INDEXED BY collection_items_uri WHERE o.uri = ?2 AND o.id <> ?1) THEN ?3 ELSE updated_at END,
+				position = coalesce(?4, position)
 		WHERE id = ?1`,
     row,
     uri,
-    named ? 1 : 0,
     new Date(now).toISOString(),
     position,
   );
