@@ -4,6 +4,7 @@ import { isPublicCollection } from "../domain/audience";
 import { isConversationId } from "../domain/conversation-rows";
 import { languageOf } from "../domain/language";
 import { CARD_CANDIDATES, CARD_RAW_HREF_LIMIT, type CardCandidate, type CardLink } from "../domain/link-cards";
+import { type Focus, focusCoordinate, parseFocus } from "../domain/media-focus";
 import { MAX_REMOTE_OPTION_LENGTH, MAX_REMOTE_OPTIONS, type RemotePollInput } from "../domain/polls";
 import type {
   RemoteMediaInput,
@@ -165,13 +166,31 @@ function dimension(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 100_000 ? value : null;
 }
 
-function focusOf(value: unknown): { x: number; y: number } | null {
-  if (!Array.isArray(value) || value.length !== 2) {
+// A remote attachment's focalPoint as MediaAttachment#focus= casts it (MediaAttachmentParser#focus passes it as given),
+// each coordinate kept as focusCoordinate keeps it; null: none, which an Update reads as keeping the stored focus. A
+// string is read as an upload's focus (parseFocus). An array that is not empty is read by its first two entries, a
+// number as given, null as 0 and a string by parseFloat, a missing second as 0; a boolean, object or array among them,
+// on which Ruby's to_f raises and Mastodon fails the activity, gives none, and later entries are not read. Anything
+// else (null, a boolean, a number, an object, an empty array) gives none (docs/mastodon-deviations.md, "Media").
+function focusOf(value: unknown): Focus | null {
+  if (typeof value === "string") {
+    return parseFocus(value) ?? null;
+  }
+  if (!Array.isArray(value) || value.length === 0) {
     return null;
   }
-  const [x, y] = value as unknown[];
-  const valid = (n: unknown): n is number => typeof n === "number" && n >= -1 && n <= 1;
-  return valid(x) && valid(y) ? { x, y } : null;
+  const coordinates: number[] = [];
+  for (const entry of (value as unknown[]).slice(0, 2)) {
+    if (typeof entry === "number" || entry === null) {
+      coordinates.push(focusCoordinate(entry ?? 0));
+    } else if (typeof entry === "string") {
+      coordinates.push(focusCoordinate(Number.parseFloat(entry)));
+    } else {
+      return null;
+    }
+  }
+  const [x = 0, y = 0] = coordinates;
+  return { x, y };
 }
 
 // Whether an attachment's href is a link's (Create#process_attachments, create.rb:306: Rails' present?): a string that

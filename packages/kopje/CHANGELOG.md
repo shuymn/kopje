@@ -494,6 +494,11 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   (#1772); and every entry is read, where Kopje read the first 32 of each list and missed a public spelling or a
   collection listed after them (#1774). A post stored earlier keeps its policy until its next `Update`. No Store
   migration and no `wrangler.jsonc` change.
+- A remote attachment's `focalPoint` is read as Mastodon casts it, each coordinate clamped to −1 to 1 as an upload's
+  `focus` is (a string such as `"0.5,-0.25"`, a list of numeric strings or `null`, a list of one, a coordinate past −1
+  to 1), where Kopje read only a list of two numbers from −1 to 1 and anything else as no focus, and a post stored
+  earlier keeps its focus until its next `Update` (#1777; [docs/mastodon-deviations.md](docs/mastodon-deviations.md),
+  "Media"). No Store migration and no `wrangler.jsonc` change.
 - An account note or a marker's `last_read_id` that starts with a NUL answers 422, refused before it is written; it
   failed the Store's length check with a 500 (#1767; [docs/mastodon-deviations.md](docs/mastodon-deviations.md),
   "Request parameters"). No Store migration and no `wrangler.jsonc` change.
