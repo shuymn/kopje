@@ -848,7 +848,7 @@ describe("a local member's wait and the reads of its owner's collections", () =>
 // with every live slot taken (25 live remote members, 25 retired rows: takeSlot frees a live slot) and the other with
 // one live slot free (24 and 26: takeSlot frees a stored row), and grows every other key past it: the owner's 8 other
 // collections and another owner's 10 at their caps, and 2,000 deliveries and 200 unexpanded targets of other
-// activities. Each PR 6 statement's rows grow by at most its key's bound, and each delivery probe reads at most two.
+// activities. Each PR 6 statement's rows grow by at most its key's bound, and each delivery probe reads at most four.
 describe("a local member's reads at their caps, on statistics from before the growth", () => {
   type Measured = { query: string; rows: number };
 
@@ -1044,10 +1044,12 @@ describe("a local member's reads at their caps, on statistics from before the gr
         : [];
     });
     expect(grown).toEqual([]);
-    // Each wait's delivery probe reads its answer's own target or delivery (an index entry past it at most), whatever
-    // the other activities hold: whether the answer is expanded yet depends on their backlog, not on its rows.
+    // Each wait's delivery probe reads at most its answer's target, its delivery (twice: active, then as the row its lane
+    // is read from) and the first older active delivery of that lane, whatever the other activities hold (the grown
+    // world's lane of the owner is at its cap, so its answers are refused there): whether the answer is expanded yet
+    // depends on their backlog, not on its rows.
     const probes = (statements: Measured[]) => statements.filter(({ query }) => probed(query)).map(({ rows }) => rows);
     expect([probes(answered.few).length, probes(answered.many).length]).toEqual([2, 2]);
-    expect(Math.max(...probes(answered.few), ...probes(answered.many))).toBeLessThanOrEqual(2);
+    expect(Math.max(...probes(answered.few), ...probes(answered.many))).toBeLessThanOrEqual(4);
   });
 });

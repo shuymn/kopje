@@ -604,24 +604,27 @@ against their own instance. TLS is assumed between all parties.
   naming the request it answers and queuing the row's wait", "refuses a request by consent, and ignores a foreign id or
   an instrument not the actor's", "fetches the instrument once and applies it, its remote members' items queued for
   their checks"), `test/collection-sync.test.ts` ("refuses a request when local members' rows hold every live slot")).
-  The wait polls the answer's delivery (a target not expanded, a delivery queued, pending or leased) every hour with no
-  fetch, claim token or quota, then gives the owner 4 days from the delivery's end and requests a read of the owner's
-  collections; a read, or an owner's `Add` or `Update` of the whole collection (its own time as the claim), keeps the
-  member's row it does not list while the wait is queued, while the row is retired, or while it changed at or after the
-  read's claim, and deletes it otherwise; the kept rows hold their live slots first (`test/collection-sync.test.ts`
-  ("polls the answer's delivery hourly, then waits four days and requests a read, with no fetch, token or quota", "keeps
-  a row changed between a read's claim and its completion, and a revoked row until the cleanup", "keeps a row an owner's
-  … of the collection leaves out while it waits, is revoked or changed then", "applies a listing into the slots local
-  members' rows leave, and gives a request a slot")). An owner's `Add`, or a read's listing, naming an authorization of
-  the member that Kopje serves in no collection is answered with the member's `Delete` of it, whatever the owner's
-  retractions, to the owner's personal inbox alone; another owner's listing of an authorization Kopje serves is not
-  answered, since a Mastodon server applies such a `Delete` to whichever of its collections holds the authorization
-  (`delete.rb:80`; `test/federation-feature-requests.test.ts` ("sends no Delete for another owner's … listing an
-  authorization served in this owner's collection")); an owner's `Remove` in a collection holding a local member's row
-  requests a read and deletes nothing. The member's revoke sends its `Delete` LD-signed by the member's key (signed in
-  the Worker, checked by the Store to be that activity) to the owner's personal inbox and the member's followers; a
-  block's revocation and the answers are the same body without the signature, to the owner's personal inbox alone, since
-  a Mastodon owner applies a `Delete` of a feature authorization from its HTTP signer (`delete.rb:6`, `:68-81`) and only
+  The wait polls every hour, with no fetch, claim token or quota, while any answer of the row may still be delivered
+  (the latest's target not expanded, its delivery queued, pending or leased, or an older delivery of its lane still
+  active ahead of it, whatever RES-4's caps refused), then gives the owner 4 days from the last delivery's end and
+  requests a read of the owner's collections (`test/federation-feature-requests.test.ts` ("polls on while an earlier
+  Accept is queued, a repeat's Accept refused …, and ends once all settled")); a read, or an owner's `Add` or `Update`
+  of the whole collection (its own time as the claim), keeps the member's row it does not list while the wait is queued,
+  while the row is retired, or while it changed at or after the read's claim, and deletes it otherwise; the kept rows
+  hold their live slots first (`test/collection-sync.test.ts` ("polls the answer's delivery hourly, then waits four days
+  and requests a read, with no fetch, token or quota", "keeps a row changed between a read's claim and its completion,
+  and a revoked row until the cleanup", "keeps a row an owner's … of the collection leaves out while it waits, is
+  revoked or changed then", "applies a listing into the slots local members' rows leave, and gives a request a slot")).
+  An owner's `Add`, or a read's listing, naming an authorization of the member that Kopje serves in no collection is
+  answered with the member's `Delete` of it, whatever the owner's retractions, to the owner's personal inbox alone;
+  another owner's listing of an authorization Kopje serves is not answered, since a Mastodon server applies such a
+  `Delete` to whichever of its collections holds the authorization (`delete.rb:80`;
+  `test/federation-feature-requests.test.ts` ("sends no Delete for another owner's … listing an authorization served in
+  this owner's collection")); an owner's `Remove` in a collection holding a local member's row requests a read and
+  deletes nothing. The member's revoke sends its `Delete` LD-signed by the member's key (signed in the Worker, checked
+  by the Store to be that activity) to the owner's personal inbox and the member's followers; a block's revocation and
+  the answers are the same body without the signature, to the owner's personal inbox alone, since a Mastodon owner
+  applies a `Delete` of a feature authorization from its HTTP signer (`delete.rb:6`, `:68-81`) and only
   `RevokeCollectionItemService` LD-signs it (`test/federation-feature-requests.test.ts` ("revokes with the member's
   LD-signed Delete to the owner and the member's followers", "answers an Add of an authorization not served with the
   member's Delete to the owner alone", "sends the block's Delete to the owner's personal inbox alone")). Agreement with

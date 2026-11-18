@@ -21,10 +21,11 @@ import { requestCollectionSync } from "./collection-requests";
 //   - The wait: every answer of a row (each request answered, a repeat of the same request included) queues the row's
 //     wait in its check columns (migration 0103_collections): candidate_approval_uri its own authorization,
 //     answer_activity_id the answer's outbound intent, check_due_at the next poll. collection-checks.ts runs a due wait
-//     with no fetch, no claim token and no quota (advanceWait): while the answer is still being delivered (a target of
-//     its intent not yet expanded, or a delivery of it queued, pending or leased) it polls again ANSWER_POLL_MS later;
-//     once its delivery settled, the wait has PREAPPROVED_WAIT_MS of margin for the owner to process it, and the
-//     margin's end requests a read of the owner's collections. Only the owner's requests extend a wait.
+//     with no fetch, no claim token and no quota (advanceWait): while any answer of the row may still be delivered (the
+//     latest's target not yet expanded, a delivery of it queued, pending or leased, or one ahead of it in its lane:
+//     delivering) it polls again ANSWER_POLL_MS later; once every answer settled, the wait has PREAPPROVED_WAIT_MS of
+//     margin for the owner to process them, and the margin's end requests a read of the owner's collections. Only the
+//     owner's requests extend a wait.
 //   - A read (remote-featured-collections.ts applyListing) that lists the row, an item naming the member with the
 //     row's authorization, sets the row's uri; a read that does not list it keeps it while its wait is queued, while it
 //     is retired (rejected or revoked: the 24-hour cleanup deletes it) or while it changed at or after the read's claim,
@@ -210,8 +211,9 @@ export function answerRequest(
   });
 }
 
-// Queues the row's wait on the answer `intent` (null: nothing was sent, so its delivery has settled): its candidate the
-// row's own authorization, the answer watched, due at the first poll, any earlier wait replaced.
+// Queues the row's wait on the answer `intent` (null: nothing was sent): its candidate the row's own authorization, the
+// answer watched (the row's latest: delivering also answers for every earlier one), due at the first poll, any earlier
+// wait replaced.
 export function queueWait(db: Db, row: string, memberUri: string, intent: string | null, now: number): void {
   db.run(
     `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
@@ -226,32 +228,53 @@ export function queueWait(db: Db, row: string, memberUri: string, intent: string
   );
 }
 
-// A due wait (collection-checks.ts claimItemChecks): no fetch, no token, no quota. While its answer is still being
-// delivered (a target of the intent not yet expanded, outbound_targets_activity; or a delivery of it queued, pending
-// or leased, deliveries_activity) it moves on by ANSWER_POLL_MS; once neither is left, the answer is no longer watched
-// and the margin starts; a wait whose margin ended requests a read of the owner's collections and ends (the row
-// changed: a read claimed before it keeps the row, and the read it requests decides).
+// Whether the row's latest answer `intent`, or any answer of the row before it, may still be delivered (the answers of
+// a row go to its owner's personal inbox, one lane: deliveries.ts delivers a lane in id order and expands targets in
+// id order, so the earlier ones are settled once all three are false, whatever RES-4's caps refused):
+//   - a target of the latest not yet expanded (outbound_targets_activity), every earlier answer's then unexpanded too
+//     or written;
+//   - a delivery of the latest queued, pending or leased (deliveries_activity), every earlier one ahead of it;
+//   - a delivery ahead of the latest's own row in its lane still queued, pending or leased (deliveries_lane, from the
+//     row a refusal leaves given up: the latest refused at the cap, an earlier answer may be the one the owner still
+//     receives). A delivered latest has no row left, and every delivery ahead of it settled before it.
+// Each EXISTS stops at its first row: the latest's target, its one delivery, and the lane's first older active row.
+// An operator's retry keeps a delivery's row, and so its place in the lane; one of an earlier answer after the latest
+// was delivered (its row gone) is not waited for (threat-model.md F6).
+function delivering(db: Db, intent: string): boolean {
+  return (
+    db.first(
+      `SELECT 1 AS x WHERE EXISTS (SELECT 1 FROM outbound_targets INDEXED BY outbound_targets_activity
+				WHERE activity_id = CAST(?1 AS INTEGER))
+			OR EXISTS (SELECT 1 FROM deliveries INDEXED BY deliveries_activity
+				WHERE activity_id = CAST(?1 AS INTEGER) AND state IN ('queued', 'pending', 'leased'))
+			OR EXISTS (SELECT 1 FROM deliveries a INDEXED BY deliveries_activity
+				CROSS JOIN deliveries d INDEXED BY deliveries_lane ON d.account_id = a.account_id AND d.lane = a.lane
+					AND d.state IN ('queued', 'pending', 'leased') AND d.id < a.id
+				WHERE a.activity_id = CAST(?1 AS INTEGER))`,
+      intent,
+    ) !== undefined
+  );
+}
+
+// A due wait (collection-checks.ts claimItemChecks): no fetch, no token, no quota. While the row's answers may still be
+// delivered (delivering) it moves on by ANSWER_POLL_MS; once none may, the answer is no longer watched and the margin
+// starts; a wait whose margin ended requests a read of the owner's collections and ends (the row changed: a read
+// claimed before it keeps the row, and the read it requests decides).
 export function advanceWait(
   db: Db,
   row: { id: string; owner: string; answer: string | null },
   now: number,
 ): "polled" | "delivered" | "ended" {
   if (row.answer !== null) {
-    const active = db.first(
-      `SELECT 1 AS x WHERE EXISTS (SELECT 1 FROM outbound_targets INDEXED BY outbound_targets_activity
-				WHERE activity_id = CAST(?1 AS INTEGER))
-			OR EXISTS (SELECT 1 FROM deliveries INDEXED BY deliveries_activity
-				WHERE activity_id = CAST(?1 AS INTEGER) AND state IN ('queued', 'pending', 'leased'))`,
-      row.answer,
-    );
+    const active = delivering(db, row.answer);
     db.run(
       `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
 				SET check_due_at = ?2, answer_activity_id = CASE WHEN ?3 THEN answer_activity_id END WHERE id = ?1`,
       row.id,
-      now + (active === undefined ? PREAPPROVED_WAIT_MS : ANSWER_POLL_MS),
-      active === undefined ? 0 : 1,
+      now + (active ? ANSWER_POLL_MS : PREAPPROVED_WAIT_MS),
+      active ? 1 : 0,
     );
-    return active === undefined ? "delivered" : "polled";
+    return active ? "polled" : "delivered";
   }
   requestCollectionSync(db, row.owner, now);
   db.run(

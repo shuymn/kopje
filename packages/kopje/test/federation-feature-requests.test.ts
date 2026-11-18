@@ -3,9 +3,10 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
-import { MAX_BACKLOG, MAX_LANE_BACKLOG } from "../src/domain/deliveries";
-import { ANSWER_POLL_MS } from "../src/domain/feature-answers";
+import { EXPANSION_STEP, expandPending, MAX_BACKLOG, MAX_LANE_BACKLOG } from "../src/domain/deliveries";
+import { ANSWER_POLL_MS, PREAPPROVED_WAIT_MS } from "../src/domain/feature-answers";
 import { ourFeatureRequest } from "../src/domain/feature-requests";
+import { answerFeatureRequest } from "../src/domain/inbound-feature-requests";
 import { SWEEP_BATCH } from "../src/domain/remote-actors";
 import { parseActivity } from "../src/federation/inbound";
 import { settleDeliveries, sql } from "./api-helpers";
@@ -28,7 +29,7 @@ import {
   syncAll,
 } from "./featured-collection-helpers";
 import { BUILD } from "./helpers";
-import { MASTODON, mastodonActor, type TestActor } from "./inbox-helpers";
+import { LOCAL, MASTODON, mastodonActor, type TestActor } from "./inbox-helpers";
 import {
   ALICE,
   ALICE_URI,
@@ -876,6 +877,96 @@ describe("a remote owner's feature request for a local account (D24)", () => {
     expect(await localRows(w.t, ALICE)).toMatchObject([{ state: ACCEPTED, activity_uri: r5.id }]);
   });
 
+  // The wait ends only once every answer the row sent and that may still be delivered has settled, whatever RES-4's caps
+  // refused. Fails if a poll starts the margin while the first Accept is still queued in the lane, the repeat's Accept
+  // refused at the full lane when it is recorded or at a later expansion (its target held behind older ones): the read
+  // the margin's end requests would delete the accepted row before the owner received the Accept. Fails too if the
+  // wait does not end once the lane settled.
+  for (const refused of ["when recorded", "at a later expansion"] as const) {
+    it(`polls on while an earlier Accept is queued, a repeat's Accept refused ${refused}, and ends once all settled`, async () => {
+      const w = await owned();
+      await filledLanes(w.t, MASTODON, MAX_LANE_BACKLOG - 1);
+      const request = requestFor(w);
+      expect(await w.t.post(w.owner, request)).toBe(202);
+      const owner = (await sql<{ id: string }>(w.t.store, "SELECT id FROM accounts WHERE uri = ?", w.owner.uri))[0]!;
+      const [row] = await localRows(w.t, ALICE);
+      // alice's Accepts and their deliveries, read without settling any (outbound would expand the held target).
+      const accepts = () =>
+        sql<{ id: string; state: string | null; error: string | null }>(
+          w.t.store,
+          `SELECT CAST(o.id AS TEXT) AS id, d.state, d.last_error AS error FROM outbound_activities o
+					LEFT JOIN deliveries d ON d.activity_id = o.id
+				WHERE o.account_id = ? AND json_extract(o.body, '$.activity.type') = 'Accept' ORDER BY o.id`,
+          ALICE,
+        );
+      const [first] = await accepts();
+      expect(first).toMatchObject({ state: "queued" });
+
+      // A repeat of the request: its Accept the row's latest answer, refused at the full lane.
+      if (refused === "at a later expansion") {
+        // Older targets of another activity, an expansion step of them: recording the repeat's Accept spends its step on
+        // them (the repeat answered in the Store, with no delivery claim after it).
+        await olderTargets(w.t, 1);
+        const repeated = { id: request.id, object: ALICE_URI, instrument: w.listed.id };
+        expect(
+          await runInDurableObject(w.t.store, (_instance, state) =>
+            state.storage.transactionSync(() =>
+              answerFeatureRequest(
+                new Db(state.storage.sql),
+                { ...owner, uri: w.owner.uri },
+                repeated,
+                undefined,
+                LOCAL,
+                NOW,
+              ),
+            ),
+          ),
+        ).toEqual({ kind: "answered", reason: "feature-repeated" });
+      } else {
+        expect(await w.t.post(w.owner, request)).toBe(202);
+      }
+      const repeat = (await accepts()).at(-1)!;
+      expect([repeat.id === first!.id, repeat.state]).toEqual([
+        false,
+        refused === "at a later expansion" ? null : "gave_up",
+      ]);
+      expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, answer: repeat.id }]);
+
+      // It polls on past the margin while the first Accept is queued, the repeat's target expanded (refused) in
+      // between: no read requested, the row accepted.
+      await sql(w.t.store, "DELETE FROM collection_syncs");
+      let at = NOW + ANSWER_POLL_MS;
+      await checkRound(w.t, at);
+      for (let step = 0; step < 4 && (await accepts()).at(-1)!.state === null; step++) {
+        await expandTargets(w.t);
+      }
+      expect((await accepts()).map(({ state, error }) => [state, error])).toEqual([
+        ["queued", null],
+        ["gave_up", "backlog full"],
+      ]);
+      at = NOW + PREAPPROVED_WAIT_MS + 2 * ANSWER_POLL_MS;
+      await checkRound(w.t, at);
+      expect(await sql(w.t.store, "SELECT account_id FROM collection_syncs")).toEqual([]);
+      expect(await localRows(w.t, ALICE)).toMatchObject([
+        { id: row!.id, state: ACCEPTED, answer: repeat.id, check_due_at: at + ANSWER_POLL_MS },
+      ]);
+
+      // The lane settled (the first Accept delivered): the margin starts at the next poll, and its end requests a read.
+      await sql(
+        w.t.store,
+        "DELETE FROM deliveries WHERE account_id = ? AND lane = ? AND state IN ('queued', 'pending', 'leased')",
+        ALICE,
+        MASTODON,
+      );
+      at += ANSWER_POLL_MS;
+      await checkRound(w.t, at);
+      expect(await localRows(w.t, ALICE)).toMatchObject([{ answer: null, check_due_at: at + PREAPPROVED_WAIT_MS }]);
+      await checkRound(w.t, at + PREAPPROVED_WAIT_MS);
+      expect(await sql(w.t.store, "SELECT account_id FROM collection_syncs")).toEqual([{ account_id: owner.id }]);
+      expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: ACCEPTED, check_due_at: null }]);
+    });
+  }
+
   // 6-T2. Each fails if its test is removed: a refused account gets a row or an Accept; a foreign id is answered; a
   // foreign instrument is fetched; a collection attributed to another actor is applied as the actor's.
   it("refuses a request by consent, and ignores a foreign id or an instrument not the actor's", async () => {
@@ -1062,6 +1153,35 @@ async function filledLanes(t: Setup, origin: string, count: number, others = 0):
       NOW,
     );
   }
+}
+
+// `steps` expansion steps of targets (EXPANSION_STEP each, one chunk) of another activity of alice's, to another server,
+// not yet expanded.
+async function olderTargets(t: Setup, steps: number): Promise<void> {
+  await sql(
+    t.store,
+    `INSERT INTO outbound_activities (account_id, body, object_uri, retracts, created_at)
+		VALUES (?, '{"activity":{"type":"Like"},"audience":{"followers":false,"accounts":[]}}', 'older targets', 0, ?)`,
+    ALICE,
+    NOW,
+  );
+  for (let step = 0; step < steps; step++) {
+    await sql(
+      t.store,
+      `INSERT INTO outbound_targets (activity_id, targets)
+			SELECT id, ? FROM outbound_activities WHERE object_uri = 'older targets'`,
+      JSON.stringify(
+        Array.from({ length: EXPANSION_STEP }, (_, n) => ({ inbox: `https://older.example/users/${step}-${n}/inbox` })),
+      ),
+    );
+  }
+}
+
+// One expansion step of the targets still to expand, as a delivery claim runs it.
+async function expandTargets(t: Setup): Promise<void> {
+  await runInDurableObject(t.store, (_instance, state) =>
+    state.storage.transactionSync(() => expandPending(new Db(state.storage.sql), NOW, EXPANSION_STEP)),
+  );
 }
 
 const activeIn = async (t: Setup, lane: string) =>
