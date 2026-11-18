@@ -167,6 +167,9 @@ type World = {
   seen: Set<string>;
   notified: number;
   fillers: number;
+  // The inboxes of L's followers, which her revocation reaches besides the owner's: none, as in the specification
+  // (init checks that no remote account follows her).
+  followers: string[];
 };
 
 const AP = { accept: "application/activity+json" };
@@ -254,7 +257,17 @@ async function init(environment: Environment, stored: boolean): Promise<World> {
     seen: new Set(await outboundKeys(t)),
     notified: 0,
     fillers: 0,
+    followers: [],
   };
+  expect(
+    await sql(
+      t.store,
+      `SELECT 1 FROM follows f JOIN accounts a ON a.id = f.account_id
+			WHERE f.target_account_id = ? AND a.domain IS NOT NULL`,
+      ALICE,
+    ),
+    "L's remote followers",
+  ).toEqual([]);
   await applyEnvironment(w, environment);
   return w;
 }
@@ -740,6 +753,11 @@ async function deliver(w: World, outcome: "delivered" | "lost" | "refused", expe
     ),
   );
   const toR = sent.filter((s) => new URL(s.url).origin === lane);
+  // Off R's server, a round sends only L's revocations to her followers (offR).
+  expect(
+    sent.filter((s) => new URL(s.url).origin !== lane && !offR(w, s.body).includes(s.url)).map((s) => s.url),
+    "the round's POSTs off R's server",
+  ).toEqual([]);
   if (dropped) {
     expect(toR, "a dropped activity is not sent").toEqual([]);
     expect(
@@ -948,6 +966,14 @@ const authorizationName = (w: World, uri: unknown): Recorded["result"] => {
   return at < 0 ? null : (`a${at + 1}` as Recorded["result"]);
 };
 
+// The inboxes off R's server an activity of L's is to reach as well: her followers' for her revocation (her LD-signed
+// Delete of an authorization, to the owner and her followers: "revokes with the member's LD-signed Delete to the owner
+// and the member's followers" in test/federation-feature-requests.test.ts), none for any other.
+function offR(w: World, activity: Record<string, unknown>): string[] {
+  const revocation = activity.type === "Delete" && "signature" in activity && named(w, "Delete", activity) !== "L";
+  return revocation ? w.followers : [];
+}
+
 // An activity as the specification records it, from its envelope, the inboxes its delivery rows (or POSTs) name, and
 // its class. Its destination is the one inbox it has on R's server: R's or X's own, or for a Block (which takes the
 // shared inbox, as any activity not placed at a personal one) the server's shared inbox for the one of them its
@@ -1001,15 +1027,16 @@ async function recorded(w: World): Promise<Recorded[]> {
     );
     const refused =
       deliveries.length > 0 && deliveries.every((d) => d.state === "gave_up" && d.error === "backlog full");
-    out.push({
-      ...asRecorded(
-        w,
-        envelope,
-        deliveries.map((d) => d.inbox),
-        row.retracts,
-      ),
-      outcome: refused ? "refused" : "queued",
-    });
+    const inboxes = deliveries.map((d) => d.inbox);
+    const entry = asRecorded(w, envelope, inboxes, row.retracts);
+    // Its full destination set: off R's server, exactly the inboxes offR names, else they are named as they are.
+    const lane = new URL(w.owner.uri).origin;
+    const off = inboxes.filter((inbox) => new URL(inbox).origin !== lane).toSorted();
+    const to =
+      JSON.stringify(off) === JSON.stringify(offR(w, envelope.activity).toSorted())
+        ? entry.to
+        : `${entry.to} and off R's server ${JSON.stringify(off)}`;
+    out.push({ ...entry, to: to as Recorded["to"], outcome: refused ? "refused" : "queued" });
   }
   return out;
 }

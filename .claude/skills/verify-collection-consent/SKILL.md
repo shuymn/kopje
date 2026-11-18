@@ -60,14 +60,17 @@ One fixture: `pnpm exec vitest run --max-workers=1 test/collection-consent-repla
 the first step that disagrees, as `step <n> <action> <input>: <field>: expected <fixture's>, got <Store's>`, and stops
 there; the fixture's steps are in its JSON, in order.
 
-The replay builds the world the specification abstracts, and each choice is commented where the replay makes it: R and
-X on one Mastodon host, L following neither; the environment flags as seeded rows (other members' rows in C's slots,
-R's other collections, a backlog of other hosts' deliveries none of them due, R's retractions at the cap, R's other
-content before a deferred purge reaches C); gates that hold a read's fetches until its `KFetch` and its completion until
-its `KApply` or `KStale`, one claim to a `KClaim`; the lane head answered 202, a lost response, or 403 for a give-up;
-`recorded` as L's outbound rows new since the last step. A choice that lets the Store take a step the fixture does not
-state (a second claim in one call, a 400 the delivery resends, a key gone stale over `KCleanup`'s day that refetches
-R's document) makes a disagreement that is the replay's: fix the replay.
+The replay builds the world the specification abstracts, and each choice is commented where the replay makes it: R and X
+on one Mastodon host, L following neither and followed by no remote account; the environment flags as seeded rows (other
+members' rows in C's slots, R's other collections, a backlog of other hosts' deliveries none of them due, R's
+retractions at the cap, R's other content before a deferred purge reaches C); gates that hold a read's fetches until its
+`KFetch` and its completion until its `KApply` or `KStale`, one claim to a `KClaim`; the lane head answered 202, a lost
+response, or 403 for a give-up; `recorded` as L's outbound rows new since the last step, each with its full destination
+set: its one inbox on R's server, which names its `to`, and off R's server exactly the inboxes `offR` states (L's
+followers for her revocation, none for anything else), so an extra copy anywhere shows in its `to`; and a delivery round
+POSTs nothing else off R's server. A choice that lets the Store take a step the fixture does not state (a second claim
+in one call, a 400 the delivery resends, a key gone stale over `KCleanup`'s day that refetches R's document) makes a
+disagreement that is the replay's: fix the replay.
 
 Each calibration variant that changes what the Store does has a fixture whose replay fails against a Store that makes
 the variant's change. `checks.json`'s `replay` names it, and the spec test checks that the variant no longer
