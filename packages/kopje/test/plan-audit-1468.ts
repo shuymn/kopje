@@ -711,7 +711,7 @@ export const ROWS_1468: readonly Row1468[] = [
     statement: "followAnswersOf's classes (found by the audit)",
     sites: ["src/domain/deliveries.ts#followAnswersOf"],
     status: "observed",
-    ids: ["fb743767a7db9d47"],
+    ids: ["b567cb041f03a3e5"],
   },
   {
     group: 8,

@@ -693,15 +693,18 @@ Mastodon's `JsonLdHelper#collection_items`; RES-6 in [threat-model.md](threat-mo
   (a line feed in the userinfo as spelled, the port `4%0A` as `:4`). The Store's JSON functions read a lone surrogate's
   escape as bytes that come back as U+FFFD, so its SQL readers and `JSON.parse` would read two strings, and a line feed
   moves the splits of Ruby's line-anchored expressions. No addressing names such a collection, so a status addressed to
-  it is direct where Mastodon may make it private. A quote policy's entries are read in Mastodon's order (the public
-  collection, then the followers collection, then the following one, each match taken before the next,
-  `status_parser.rb:179-196`), and past such a collection an entry adds nothing but the public collection's flag, and a
-  value that is not a string `unsupported_policy`: Mastodon may store the collection as the very string a later entry
-  lists and read the entry as it, so neither a later collection's flag nor `unsupported_policy` (which lets anyone ask)
-  is known to be Mastodon's. Every string entry is compared as Mastodon compares it, whatever its length (a policy's
-  strings are the received object's, within its 1 MiB body bound; the stored collection compared with them has no fixed
-  bound), so each entry's flags are within Mastodon's, and no one may quote or ask where Mastodon refuses them.
-  Accepted, 2026-11-16.
+  it is direct where Mastodon may make it private. The entries of a quote policy (`canQuote`) and of an actor's
+  `canFeature` are read in Mastodon's order (one spelling of the public collection, then the followers collection, then
+  the following one, then the author itself, each match taken before the next: `status_parser.rb:179-196`,
+  `interaction_policy_parser.rb:22-40`), and past such a collection a string adds nothing but the public collection's
+  flag (the author itself still makes a `canFeature` half that adds nothing `disabled`), while a value that is not a
+  string, which no collection matches, adds `unsupported_policy` as in Mastodon: Mastodon may store the collection as
+  the very string a later entry lists and read the entry as it, so neither a later collection's flag nor
+  `unsupported_policy` for a string (which lets anyone ask to quote) is known to be Mastodon's. Every entry is read,
+  and every string entry compared as Mastodon compares it, whatever its length (a policy's entries are the received
+  object's, within its 1 MiB body bound and 10,000 values; the stored collection compared with them has no fixed
+  bound), so each entry's flags are within Mastodon's, and no one may quote, feature or ask where Mastodon refuses
+  them. Accepted, 2026-11-16.
 
 - An `Add` or `Remove` of a `Hashtag` aimed at the actor's `featuredTags` collection features or unfeatures it, as
   one aimed at its `featured` collection does. Mastodon 4.7.5 reads a hashtag only from one aimed at the `featured`
@@ -1127,6 +1130,14 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
 - A `limit` or `offset` given as an array or a nested parameter (`limit[]=1`, `offset[a]=-1`) is not read: the search
   answers as without it, or 400 when the other one is negative. Mastodon 4.7.5 answers 500 to both, as its pagination
   check calls `to_i` on the array or hash. Accepted, 2026-11-17.
+- An account search finds the accounts whose display name and address hold each word of the query as a substring: the
+  query is normalized as stored names are (NFKC, lowercase, no variation selectors) and split at white space other than
+  U+0085 (`queryTerms` in `src/domain/search-text.ts`). Mastodon 4.7.5's PostgreSQL search (`Account::Search`,
+  `to_tsquery('simple')`) also splits at U+0085 and at the characters of emoji, and matches each word as the start of
+  a word, so a query that wraps a username in them (`alice😀`) finds that account there, and in Kopje finds only an
+  account whose display name holds the whole text. Splitting as Mastodon does inside Kopje's substring search would
+  change which accounts existing queries find and in what order, and so the pages of their results (#1767). Accepted,
+  2026-11-18.
 - `/api/v2/search` finds no hashtag for a `q` that a hashtag's name normalizes to nothing (U+FEFF, an emoji). Mastodon
   4.7.5 without Elasticsearch finds every listable hashtag, up to `limit`: `Tag.matches_name` searches the names that
   start with the normalized term, and an empty term starts every name. A query of characters no hashtag can hold names
@@ -1415,10 +1426,15 @@ Request parameters:
   surrogate no low one follows, and Rails a lone low one's invalid UTF-8) and 500 for a lone low surrogate only in a
   key, as for an inbox body ("Reading inbound activities", below). Accepted, 2026-11-18.
 - Text holding a NUL is stored as sent: a list's title, a filter's title, a keyword, a v1 filter's phrase, a report's
-  comment and an account note, but for an account note that starts with a NUL (`{"comment":"\u0000"}`), which fails
-  the Store's length check, as SQLite's `length()` stops at the first NUL, and answers 500 (#1767). A collection's
-  name, whose NULs are dropped before its presence is judged, of NULs alone answers 422 `Validation failed: Name can't
-  be blank`. Mastodon answers 500 to each, as PostgreSQL refuses a string with a null byte. Accepted, 2026-11-18.
+  comment and an account note. An account note that starts with a NUL (`{"comment":"\u0000"}`), which the Store's
+  length check reads as empty (SQLite's `length()` stops at the first NUL), answers 422 `Validation failed: Comment
+  can't start with a NUL character`. A collection's name, whose NULs are dropped before its presence is judged, of
+  NULs alone answers 422 `Validation failed: Name can't be blank`. Mastodon answers 500 to each, as PostgreSQL refuses
+  a string with a null byte. Accepted, 2026-11-18.
+- A marker's `last_read_id` (`POST /api/v1/markers`) is kept as sent, up to `MAX_LAST_READ_ID` characters
+  (`src/domain/markers.ts`); one that starts with a NUL, which the Store's length check reads as empty, answers 422
+  `Validation failed: Last read can't start with a NUL character`. Mastodon reads it as a bigint (Ruby's `to_i`, so
+  `abc` and a value that starts with a NUL as 0) and answers 200. Accepted, 2026-11-18.
 - A report's `category` that is not blank and names no category (U+FEFF, an emoji, a NUL) answers 422 `Validation
   failed: Category is not included in the list`; Mastodon answers 500, as assigning a value its `category` enum does
   not hold raises `ArgumentError`. Accepted, 2026-11-18.
@@ -1929,10 +1945,8 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   refused, as Mastodon's handler raises on it (`undo.rb` `target_uri`); where the patch stops at it or before it,
   Mastodon reads the compaction's single value and applies it where it names an account, as Kopje does where it reads
   the stop and that value as given. An `Undo` whose undone activity's type is an array of types is refused too, as
-  `undo.rb` takes no array as a type, where Kopje would read it as an `Undo` by reference; an empty one both read as
-  none. An `Undo` Kopje does apply, read so or as received (Mastodon's own fallback included), ends the follow, block
-  or like its undone activity's id names whatever that activity's `object` is, where Mastodon ends nothing for a target
-  that names no local account, as every `Undo` does (tracked by #1773).
+  `undo.rb` takes no array as a type; an empty one both read as none in the compaction. An `Undo` Kopje does apply,
+  read so or as received (Mastodon's own fallback included), ends what an unsigned one does.
   Each ends what its signer did or holds, or lifts its own block, so reading it so grants nothing its signer could not
   send directly; every other type keeps the reading as received.
   Compacting would add JSON-LD processing to every signed activity before its HTTP signature is verified, and its
@@ -2196,6 +2210,18 @@ ID-7 in `docs/threat-model.md`):
   status's uri, is ignored, so an activity naming such a status only by it matches nothing; no Mastodon writes a new
   one. A quote naming a status Kopje knows only under a differing `atomUri` is not linked to it: the quote is linked by
   the URI it names (VIS-28), as Mastodon names any quoted status by its URI.
+- An `Undo` (Mastodon's `ActivityPub::Activity::Undo`) differs from Mastodon's where it ends what the sender holds: one
+  given without a type that names a favourite's tracked `Like` by its id ends it, as a typed one does, where Mastodon's
+  reference (`handle_reference`) seeks no favourite (`try_undo_like`), so the unfavourites and unreactions Akkoma sends
+  so end nothing there; a typed `Undo` of a `Like` under an id the favourite does not track keeps it while another
+  tracked id is outstanding (each reaction is counted), where Mastodon ends the sender's favourite of the status
+  whatever the id; and a typed `Undo` of a `Like` naming a remote status ends the sender's favourite of it that the
+  cutover carried over, where Mastodon seeks only a local account's status, as it is the sender's own favourite and the
+  sender asked to end it. Kopje also requires what Mastodon's typed `Undo` does not read: the undone activity's id, as
+  a string on the sender's origin (each sender checked, Mastodon, Misskey, GoToSocial and Akkoma, embeds one), and,
+  where it names an actor, the sender. A reference given as a string is read as one whatever it holds, where Mastodon
+  reads its type with Ruby's `String#[]`, so that one whose IRI contains `type` ends nothing there. Accepted,
+  2026-11-18.
 
 Quote approvals (a local account's quote of a remote status; Mastodon's `ActivityPub::Activity::Accept`; VIS-28 in
 `docs/threat-model.md`):

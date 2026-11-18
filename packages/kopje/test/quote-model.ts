@@ -5,8 +5,8 @@
 //   NET-2), written from the docs and never from src/ (only types are imported): the statuses and their quote
 //   policies, the quotes with their states, authorizations and stamps, the requests answered, the revocations and
 //   retractions, the quote notifications and silent mentions, and Kopje's outstanding intents for R in their lane.
-//   A rule the code follows that the docs do not state yet cites the doc-gap issue as G1-G8; a suspected defect is
-//   never policy.
+//   A rule the code follows that the docs do not state yet cites #1784 as G1-G8; a suspected defect is never
+//   policy.
 // - QuotePeer: R's server, Mastodon v4.7.5, written from its source (each rule cites the file and line it models),
 //   applying the bytes Kopje confirmed, each with the inbox it reached, and sending back what Mastodon would.
 // - The quiescence relation (live-accepted, stamps) and the exception predicates of the accepted risks X1, X2 and X3,

@@ -1,7 +1,8 @@
 // docs/web-pages.md, "English UI, ready for translation": the web UI's text comes from the catalogue
 // (src/web/strings.ts) through useUi(), so a page can be translated. No component or page writes words itself: no
 // letters in JSX text, in a string a JSX child renders, or in a literal aria-label, title, alt, placeholder or label.
-// The root .oxlintrc.json turns this rule on for the pages and components, the setup wizard (not catalogued) left out.
+// The root .oxlintrc.json turns this rule on for the pages and components, the setup wizard (not in the catalogue) left
+// out.
 const NAMED_ATTRIBUTES = new Set(["aria-label", "title", "alt", "placeholder", "label"]);
 const LETTER = /\p{L}/u;
 
