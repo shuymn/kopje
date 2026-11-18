@@ -55,6 +55,7 @@ describe("migration lint", () => {
       "0114_untrusted_counts",
       "0115_feature_policies",
       "0116_media_focus_given",
+      "0117_retraction_counts",
     ]);
     for (const m of DECLARED) {
       expect(unchangedProblem(m.sql), m.name).toBeNull();
