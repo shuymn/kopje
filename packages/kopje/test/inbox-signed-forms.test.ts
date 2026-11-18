@@ -2712,10 +2712,10 @@ describe("#1717: LD-signed retractions in the forms Mastodon compacts", () => {
   // which is read as before.
   // Mastodon's inbox raises on a Delete typed by its plain name whose object is an array (retractions.rb `inbox`).
   const inboxRaises = (name: string) => captured.get(name)?.inbox !== undefined;
-  // Of form 4's, two in the closed shape whose patch stops nowhere, read alike without the forms; and the actors
-  // given as an array of an IRI Kopje does not show the compaction writes as given, which the forms refuse.
+  // Of form 4's, one in the closed shape whose patch stops nowhere, read alike without the forms (its block's empty
+  // type is not: the forms read it as none, as the compaction writes null, #1773); and the actors given as an array of
+  // an IRI Kopje does not show the compaction writes as given, which the forms refuse.
   const PUT_BACK = [
-    "Undo of a block, both typed as absolute IRIs, with its block's type as an empty array",
     "Undo of a block, both typed as absolute IRIs, with its block's actor as a one-element array after an array of an IRI",
   ];
   const ACTORS_UNSHOWN = [

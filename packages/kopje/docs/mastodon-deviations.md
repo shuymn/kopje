@@ -1932,10 +1932,8 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   refused, as Mastodon's handler raises on it (`undo.rb` `target_uri`); where the patch stops at it or before it,
   Mastodon reads the compaction's single value and applies it where it names an account, as Kopje does where it reads
   the stop and that value as given. An `Undo` whose undone activity's type is an array of types is refused too, as
-  `undo.rb` takes no array as a type, where Kopje would read it as an `Undo` by reference; an empty one both read as
-  none. An `Undo` Kopje does apply, read so or as received (Mastodon's own fallback included), ends the follow, block
-  or like its undone activity's id names whatever that activity's `object` is, where Mastodon ends nothing for a target
-  that names no local account, as every `Undo` does (tracked by #1773).
+  `undo.rb` takes no array as a type; an empty one both read as none in the compaction. An `Undo` Kopje does apply,
+  read so or as received (Mastodon's own fallback included), ends what an unsigned one does.
   Each ends what its signer did or holds, or lifts its own block, so reading it so grants nothing its signer could not
   send directly; every other type keeps the reading as received.
   Compacting would add JSON-LD processing to every signed activity before its HTTP signature is verified, and its
@@ -2199,6 +2197,18 @@ ID-7 in `docs/threat-model.md`):
   status's uri, is ignored, so an activity naming such a status only by it matches nothing; no Mastodon writes a new
   one. A quote naming a status Kopje knows only under a differing `atomUri` is not linked to it: the quote is linked by
   the URI it names (VIS-28), as Mastodon names any quoted status by its URI.
+- An `Undo` (Mastodon's `ActivityPub::Activity::Undo`) differs from Mastodon's where it ends what the sender holds: one
+  given without a type that names a favourite's tracked `Like` by its id ends it, as a typed one does, where Mastodon's
+  reference (`handle_reference`) seeks no favourite (`try_undo_like`), so the unfavourites and unreactions Akkoma sends
+  so end nothing there; a typed `Undo` of a `Like` under an id the favourite does not track keeps it while another
+  tracked id is outstanding (each reaction is counted), where Mastodon ends the sender's favourite of the status
+  whatever the id; and a typed `Undo` of a `Like` naming a remote status ends the sender's favourite of it that the
+  cutover carried over, where Mastodon seeks only a local account's status, as it is the sender's own favourite and the
+  sender asked to end it. Kopje also requires what Mastodon's typed `Undo` does not read: the undone activity's id, as
+  a string on the sender's origin (each sender checked, Mastodon, Misskey, GoToSocial and Akkoma, embeds one), and,
+  where it names an actor, the sender. A reference given as a string is read as one whatever it holds, where Mastodon
+  reads its type with Ruby's `String#[]`, so that one whose IRI contains `type` ends nothing there. Accepted,
+  2026-11-18.
 
 Quote approvals (a local account's quote of a remote status; Mastodon's `ActivityPub::Activity::Accept`; VIS-28 in
 `docs/threat-model.md`):

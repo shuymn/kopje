@@ -1043,8 +1043,9 @@ any change of its `uri` or `state` ends (`handshake_replays_generation`).
   sent: the item fails and parks (RES-5), and replays after a repair and the admin's retry. A hold ends with nothing
   recorded when a follow of the pair is stored (`reject_replays_follow_stored`: the new generation gets its own
   answer, which an older `Reject` would reach through the pair fallback), when the follower's `Undo` of a `Follow`
-  names its `Follow` id or is a Misskey pair id within its pair (`cancelUndoneAnswers` in `inbox.ts`), and when the
-  follower is purged.
+  names its `Follow` id, is a Misskey pair id within its pair, or ends the pair's follow whose stored id the hold
+  names, compared in SQL (an import, whose triggers do not run, may keep the two together) (`cancelUndoneAnswers` in
+  `inbox.ts`), and when the follower is purged.
 - **Replayed.** A job family (`src/domain/handshake-replays.ts`, RES-5) takes a due hold at a time from either table, a
   due retry first (the earlier `due_at`), else the fresh hold with the earlier `check_at` (a held handshake before a
   held `Reject` on equal times, then the integer key), and reads a held handshake's follow as it is now: a local
