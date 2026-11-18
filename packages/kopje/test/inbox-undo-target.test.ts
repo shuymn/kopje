@@ -404,9 +404,9 @@ describe("ID-6: an Undo ends what its undone activity's object names", () => {
   });
 
   // AC5 on what an import stores (engineering.md, "Imported TEXT"): the ended edge's uri may be malformed UTF-8 or of
-  // any length, so the Store reads only a bounded projection of it and copies its retraction from the row, byte for
-  // byte; and a Reject the import held beside the follow (its triggers do not run then, test/import-triggers.test.ts)
-  // goes with it.
+  // any length, so the Store classifies it only within ACTIVITY_ID_LIMIT bytes and copies its retraction from the row,
+  // byte for byte; and a Reject the import held beside the follow (its triggers do not run then,
+  // test/import-triggers.test.ts) goes with it.
   describe("an edge an import stored", () => {
     const EDGES: ["Follow" | "Block", "follows" | "blocks"][] = [
       ["Follow", "follows"],
@@ -445,8 +445,8 @@ describe("ID-6: an Undo ends what its undone activity's object names", () => {
       expect(recorded.map((row) => row.hex).toSorted()).toEqual([stored!.hex, hexOf(other)].toSorted());
     });
 
-    // A uri of over 256 KiB: the Undo ends the edge and records it whole, and no value the Store reads is of its size.
-    it.each(EDGES)("records an oversized ended URI from its row, reading none of it: a %s", async (type, table) => {
+    // A uri of over 256 KiB: the Undo ends the edge, records only its own id, and reads no value of the uri's size.
+    it.each(EDGES)("ends an edge whose uri is far past the bound, reading none of it: a %s", async (type, table) => {
       const t = await setup();
       const long = `'${REMOTE}/edges/' || replace(hex(zeroblob(150000)), '0', 'a')`;
       await imported(t, table, long);
@@ -471,13 +471,51 @@ describe("ID-6: an Undo ends what its undone activity's object names", () => {
       expect(result).toMatchObject({ applied: true, reason: "undone" });
       expect(longest).toBeLessThanOrEqual(ACTIVITY_ID_LIMIT);
       expect(await sql(t.store, `SELECT 1 FROM ${table} WHERE account_id = ?`, t.r)).toEqual([]);
-      expect(
+      expect(await retractions(t)).toEqual([other]);
+    });
+
+    // An edge uri of `bytes` bytes, of r's origin through its userinfo, or a Misskey pair id by its path.
+    const userinfo = (bytes: number) => {
+      const [head, tail] = ["https://user:", "@remote.example/edges/1"];
+      return `${head}${"a".repeat(bytes - head.length - tail.length)}${tail}`;
+    };
+    const pairShaped = (bytes: number) => {
+      const head = `${REMOTE}/follows/r/alice?`;
+      return `${head}${"a".repeat(bytes - head.length)}`;
+    };
+    // The edge's uri is classified whole within ACTIVITY_ID_LIMIT bytes: of r's origin it is recorded, so it applies no
+    // more; a pair id is not. Past the bound nothing is recorded for it, so it applies again, and the Undo needs only
+    // its own id's place under the cap (docs/threat-model.md, accepted risks).
+    it.each([
+      ["Follow", "of r's origin by its userinfo", ACTIVITY_ID_LIMIT, true, "follows", userinfo],
+      ["Block", "of r's origin by its userinfo", ACTIVITY_ID_LIMIT, true, "blocks", userinfo],
+      ["Follow", "of r's origin by its userinfo", ACTIVITY_ID_LIMIT + 1, false, "follows", userinfo],
+      ["Block", "of r's origin by its userinfo", ACTIVITY_ID_LIMIT + 1, false, "blocks", userinfo],
+      ["Follow", "shaped as a pair id by its path", ACTIVITY_ID_LIMIT, false, "follows", pairShaped],
+      ["Follow", "shaped as a pair id by its path", ACTIVITY_ID_LIMIT + 1, false, "follows", pairShaped],
+    ] as const)("a %s's uri %s of %i bytes is recorded: %s", async (type, _, bytes, recorded, table, shaped) => {
+      const t = await setup();
+      const uri = shaped(bytes);
+      expect(new TextEncoder().encode(uri).length).toBe(bytes);
+      await imported(t, table, `'${uri}'`);
+      if (!recorded) {
         await sql(
           t.store,
-          `SELECT count(*) AS n FROM inbound_retractions WHERE actor_uri = ? AND target_uri = ${long}`,
+          `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+					INSERT INTO inbound_retractions (actor_uri, target_uri, expires_at) SELECT ?, ? || '/filler/' || i, ? FROM n`,
+          MAX_RETRACTIONS_PER_ACTOR - 1,
           t.rUri,
-        ),
-      ).toEqual([{ n: 1 }]);
+          t.rUri,
+          LATER,
+        );
+      }
+      const other = type === "Follow" ? followId() : blockId();
+      expect(await undo(t, other, type, t.aliceUri)).toMatchObject({ applied: true, reason: "undone" });
+      expect(await sql(t.store, `SELECT 1 FROM ${table} WHERE account_id = ?`, t.r)).toEqual([]);
+      expect(await retractions(t)).toEqual((recorded ? [other, uri] : [other]).toSorted());
+      expect(await receive(t.store, t.rUri, { id: uri, type, object: t.aliceUri })).toMatchObject(
+        recorded ? { applied: false, reason: "retracted" } : { applied: true },
+      );
     });
 
     // r's accepted follow F1 and the pair's hold naming it, which only an import leaves together: a typed Undo under

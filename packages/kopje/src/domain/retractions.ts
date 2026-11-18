@@ -49,9 +49,9 @@ function recordable(actorUri: string, targetUri: string): boolean {
 }
 
 // A stored follows or blocks row whose uri is recorded as retracted from the row itself, in SQL: an imported uri may be
-// malformed UTF-8, which decodes lossily, or of any length, so it is never read into the Worker (engineering.md,
-// "Imported TEXT"). The caller decides from a bounded projection of the row that its uri is recordable (of the actor's
-// origin, and not a Follow's pair id) and differs from the other ids it records.
+// malformed UTF-8, which decodes lossily, so its bytes are never written back from the Worker (engineering.md,
+// "Imported TEXT"). The caller decides from the row, read within ACTIVITY_ID_LIMIT bytes, that its uri is recordable
+// (of the actor's origin, and not a Follow's pair id) and differs from the other ids it records.
 export type StoredEdge = { table: "follows" | "blocks"; id: string };
 
 function isEdgeRetracted(db: Db, actorUri: string, edge: StoredEdge, now: number): boolean {

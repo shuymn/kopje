@@ -1063,13 +1063,14 @@ function undoRelationship(
     }
     return ignored("retracted");
   }
-  // The edge's uri stays in SQL (an import's may be malformed UTF-8 or of any length): read are whether it has one,
-  // whether it is the undone id byte for byte, and its first ACTIVITY_ID_LIMIT bytes, for its origin and pair shape
-  // (an actor URI is at most ACTOR_URI_LIMIT bytes, so a cut uri never shows the actor's origin falsely); the pair shape
-  // is tested only on a whole uri, as NET-2 tests it within the limit.
-  const edge = db.first<{ id: string; unnamed: number; same: number; long: number; head: string | null }>(
+  // The edge's uri is classified whole, read only within ACTIVITY_ID_LIMIT bytes, the bound of a stored activity id;
+  // its bytes stay in SQL (an import's may be malformed UTF-8, which decodes lossily): whether it is the undone id is
+  // compared there, and its retraction is copied from the row (retractEdge). A uri past the bound (an import's, or a
+  // Follow or Block whose id the inbox stored unbounded) is not recorded, nor taken for a pair id: the edge ends, and
+  // only the undone id is recorded (docs/threat-model.md, accepted risks).
+  const edge = db.first<{ id: string; unnamed: number; same: number; uri: string | null }>(
     `SELECT CAST(id AS TEXT) AS id, uri IS NULL AS unnamed, coalesce(CAST(uri AS BLOB) = CAST(?3 AS BLOB), 0) AS same,
-			coalesce(length(CAST(uri AS BLOB)) > ?4, 0) AS long, CAST(substr(CAST(uri AS BLOB), 1, ?4) AS TEXT) AS head
+			CASE WHEN length(CAST(uri AS BLOB)) <= ?4 THEN CAST(uri AS TEXT) END AS uri
 			FROM ${follow ? "follows INDEXED BY follows_pair" : "blocks INDEXED BY blocks_pair"}
 			WHERE account_id = ?1 AND target_account_id = ?2`,
     actor.id,
@@ -1080,11 +1081,10 @@ function undoRelationship(
   const undone = follow && isMisskeyPairId(ref.id) ? [] : [ref.id];
   const stored: StoredEdge | undefined =
     edge !== undefined &&
-    edge.unnamed === 0 &&
+    edge.uri !== null &&
     edge.same === 0 &&
-    edge.head !== null &&
-    sameOrigin(edge.head, actor.uri) &&
-    !(follow && edge.long === 0 && isMisskeyPairId(edge.head))
+    sameOrigin(edge.uri, actor.uri) &&
+    !(follow && isMisskeyPairId(edge.uri))
       ? { table: follow ? "follows" : "blocks", id: edge.id }
       : undefined;
   if (!canRetract(db, actor.uri, undone, now, stored)) {
