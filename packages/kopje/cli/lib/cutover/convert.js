@@ -1192,11 +1192,12 @@ export function convertLegacy(
 
   // ---------------------------------------------------------------- media
   // Local media mapped from Cloudflare Images also get their file token, served type and preview URL. shown is 0 for
-  // an image only earlier versions of its status show (migration 0015_media_shown).
+  // an image only earlier versions of its status show (migration 0015_media_shown). No row has a focus: a legacy
+  // focalPoint is not carried (docs/cutover.md), so each row holds 0, 0 and focus_given 0, and shows none.
   const mediaRow = insert(
     `INSERT INTO media_attachments (id, account_id, status_id, position, type, url, preview_url, description, meta,
-			file_token, content_type, processed, legacy_ap_o, created_at, shown)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+			file_token, content_type, processed, legacy_ap_o, created_at, shown, focus_x, focus_y, focus_given)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 0, 0, 0)`,
   );
   /**
    * @param {string} id @param {string} account @param {string | null} status @param {number} position

@@ -207,7 +207,9 @@ non-public object whose author a bridge migration changed stops the conversion (
 URLs, `https://imagedelivery.net/<account hash>/<image id>/<variant>`, into actor properties, statuses, earlier
 versions of edited statuses and activities. Without `--images`, attachments, avatars and headers keep these URLs and
 nothing is downloaded: the media keeps working only while the images stay in Cloudflare Images. Unattached local images
-are kept without a status either way. To move the images into Kopje's own media (R2):
+are kept without a status either way. A legacy `focalPoint` is not carried (#1778): every media row holds no focus
+(`focus_x` and `focus_y` 0, `focus_given` 0) and no earlier version shows one, whatever the legacy object held. To move
+the images into Kopje's own media (R2):
 
 1. `kopje-admin images-export <export> --images-account <hash> --out <images dir>` reads the export and collects every
    image id under the operator's account hash (the `<hash>` in the URLs above) from actor and object properties and
@@ -360,6 +362,7 @@ Records are keyed by AP URIs, never by assigned ids, and compared as exact value
 | `replies`, `aliases`                                                                                                                                               | inReplyTo and the linked parent; remote proxy uuid to original URI                                                                                                                                              |
 | `counters`                                                                                                                                                         | the notification counter                                                                                                                                                                                        |
 | `edits`, `attachments`, `media`                                                                                                                                    | versions in order, each with what it shows (URL, preview, description, sizes); URLs and descriptions in order; each old image id with its URL, its owner (the stored author) and the status showing it, or none |
+| `media_focus`                                                                                                                                                      | any focus a media row holds (`focus_x`, `focus_y`, `focus_given`): none expected                                                                                                                                |
 | `media_files`                                                                                                                                                      | with `--images`: per file token, the full and preview URLs, the served type, and the full and preview sizes                                                                                                     |
 | `boosts` (with visibility and recipients), `follows` (Follow record or NULL, reblogs, notify, languages), `favourites` (Like record or NULL)                       | by the URIs of both ends                                                                                                                                                                                        |
 | `bookmarks`, `blocks` (Block record or NULL), `mutes`, `domain_blocks`, `lists` (policy, exclusive), `list_accounts`, `notifications`, `clients` (scopes, website) | by URI or kept id                                                                                                                                                                                               |
@@ -368,7 +371,11 @@ Records are keyed by AP URIs, never by assigned ids, and compared as exact value
 Any missing, extra or changed record FAILs: missing content, content rewritten to the same length, a dropped
 relationship, a recipient removed or added, a widened visibility, a dropped reply link and a count difference all do
 (DATA-12). Content over the sanitizer's limit fails too unless `--accept-truncation` is given
-(`truncation.overLimit`). A domain block whose value is no domain name and a notification a remote account owns, which
+(`truncation.overLimit`). An earlier version's attachments (`status_edits.media_json`) fail `edits` unless they are
+exactly what the conversion writes: text that a JSON parser reads as an array of objects, spelled as JSON serialization
+spells what it read, holding only the keys the conversion writes, in `meta` too. The history reads them with SQLite's
+JSON functions, which can read any other form otherwise than the check does. A domain block whose value is no domain
+name and a notification a remote account owns, which
 the conversion drops, fail too unless `--accept-deletions` is given (`dropped`). Run it twice in a cutover: on the
 converted dump before importing, and on a `kopje-admin dump` of the Store after the import. The check needs the
 conversion's base time, at which a status whose `published` and `cdate` are both outside the writers' form (unreadable,

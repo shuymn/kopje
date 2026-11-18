@@ -134,9 +134,10 @@ describe("POST /api/v2/media", () => {
       meta: {
         original: { width: 80, height: 60, size: "80x60", aspect: 80 / 60 },
         small: { width: 80, height: 60 },
-        focus: { x: 0, y: 0 },
       },
     });
+    // Sent without a focus, so its meta has none (MediaAttachment#focus=).
+    expect(Object.keys(media.meta ?? {})).toEqual(["original", "small"]);
     expect(media.url).toMatch(/^https:\/\/kopje\.test\/media\/[A-Za-z0-9_-]{32,64}\/full\.webp$/);
     expect(media.preview_url).toMatch(/^https:\/\/kopje\.test\/media\/[A-Za-z0-9_-]{32,64}\/small\.webp$/);
     const served = await h.request(pathOf(media.url));
@@ -467,6 +468,139 @@ describe("GET and PUT /api/v1/media/:id", () => {
     expect(await sql(h.store, "SELECT description FROM media_attachments WHERE id = ?", media.id)).toEqual([
       { description: "" },
     ]);
+  });
+});
+
+// MediaAttachment#focus= (Mastodon 4.7.5): meta holds a focus only once one is given, an explicit 0,0 included; a
+// blank one changes nothing, so nothing removes it. Kopje keeps whether it was given (focus_given) beside the point.
+describe("the focus of an image (#1767)", () => {
+  const png = (fields: Record<string, string> = {}) => mediaForm(bytes(PNG_PLAIN), fields, "p.png", "image/png");
+  const focusOf = (media: { meta: Attachment["meta"] }) => media.meta?.focus;
+  type Shown = { media_attachments: { meta: Attachment["meta"] }[] };
+
+  it("shows one only once it is given, on an upload, an update and a status", async () => {
+    const h = await users();
+    const { alice } = h.users;
+    const none = await uploaded(h, alice, png());
+    const centre = await uploaded(h, alice, png({ focus: "0,0" }));
+    const set = await uploaded(h, alice, png({ focus: "0.5,-0.25" }));
+    const v1 = await upload(h, alice, png({ focus: "0,0" }), "v1");
+    expect([none, centre, set, await v1.json<Attachment>()].map(focusOf)).toEqual([
+      undefined,
+      { x: 0, y: 0 },
+      { x: 0.5, y: -0.25 },
+      { x: 0, y: 0 },
+    ]);
+    expect(
+      await sql(
+        h.store,
+        "SELECT focus_x AS x, focus_y AS y, focus_given AS g FROM media_attachments WHERE id IN (?, ?, ?) ORDER BY id",
+        none.id,
+        centre.id,
+        set.id,
+      ),
+    ).toEqual([
+      { x: 0, y: 0, g: 0 },
+      { x: 0, y: 0, g: 1 },
+      { x: 0.5, y: -0.25, g: 1 },
+    ]);
+    const shown = async (id: string) =>
+      focusOf((await getJson<Attachment>(h, `/api/v1/media/${id}`, alice.token)).body);
+    expect([await shown(none.id), await shown(centre.id)]).toEqual([undefined, { x: 0, y: 0 }]);
+
+    // An update without a focus, or with one blank to Rails or null, leaves it as it is: none stays none.
+    const put = async (id: string, body: Record<string, unknown>) =>
+      focusOf(
+        await (await h.request(`/api/v1/media/${id}`, bearer(alice.token, json(body, { method: "PUT" })))).json(),
+      );
+    for (const body of [{ description: "d" }, { focus: "" }, { focus: " \u0085" }, { focus: null }]) {
+      expect(await put(none.id, body), JSON.stringify(body)).toBeUndefined();
+      expect(await put(set.id, body), JSON.stringify(body)).toEqual({ x: 0.5, y: -0.25 });
+    }
+    const multipart = await h.request(
+      `/api/v1/media/${none.id}`,
+      bearer(alice.token, { method: "PUT", body: multipartForm([["focus", "0,0"]]) }),
+    );
+    expect(focusOf(await multipart.json())).toEqual({ x: 0, y: 0 });
+    expect(await put(set.id, { focus: "0,0" })).toEqual({ x: 0, y: 0 });
+
+    // A status shows each as its attachment does, and so does its read.
+    const plain = await uploaded(h, alice, png());
+    const status = (await post(h, alice, { status: "x", media_ids: [plain.id, centre.id, set.id] })) as Status & Shown;
+    const expected = [undefined, { x: 0, y: 0 }, { x: 0, y: 0 }];
+    expect(status.media_attachments.map(focusOf)).toEqual(expected);
+    const read = await getJson<Shown>(h, `/api/v1/statuses/${status.id}`, alice.token);
+    expect(read.body.media_attachments.map(focusOf)).toEqual(expected);
+  });
+
+  // A row the upgrade carried holds focus_given 0, and an omitted focus as 0,0: it shows none at 0,0 (an explicit
+  // centre given before the upgrade too, which clients draw at the centre either way) and its point otherwise.
+  it("shows a row the upgrade carried without a focus at 0,0, and with its point otherwise", async () => {
+    const h = await users();
+    const { alice } = h.users;
+    const media = await uploaded(h, alice, png({ focus: "0,0" }));
+    const status = await post(h, alice, { status: "x", media_ids: [media.id] });
+    const read = async () =>
+      focusOf((await getJson<Shown>(h, `/api/v1/statuses/${status.id}`, alice.token)).body.media_attachments[0]!);
+    expect(await read()).toEqual({ x: 0, y: 0 });
+    await sql(h.store, "UPDATE media_attachments SET focus_given = 0 WHERE id = ?", media.id);
+    expect(await read()).toBeUndefined();
+    for (const [x, y] of [
+      [0.5, 0],
+      [0, -0.25],
+    ] as const) {
+      await sql(h.store, "UPDATE media_attachments SET focus_x = ?, focus_y = ? WHERE id = ?", x, y, media.id);
+      expect(await read()).toEqual({ x, y });
+    }
+  });
+
+  // UpdateStatusService: a focus given where none was changes the attachment's meta (significantly_changed?), so the
+  // edit is recorded, 0,0 included; the same focus again changes nothing.
+  it("records an edit that gives a focus where none was shown, 0,0 included, and not one that repeats it", async () => {
+    const h = await users();
+    const { alice } = h.users;
+    const media = await uploaded(h, alice, png());
+    const status = await post(h, alice, { status: "x", media_ids: [media.id] });
+    const edit = async (focus: string) => {
+      const body = { status: "x", media_ids: [media.id], media_attributes: [{ id: media.id, focus }] };
+      const response = await h.request(
+        `/api/v1/statuses/${status.id}`,
+        bearer(alice.token, json(body, { method: "PUT" })),
+      );
+      return focusOf((await response.json<Shown>()).media_attachments[0]!);
+    };
+    const versions = async () =>
+      (await getJson<Shown[]>(h, `/api/v1/statuses/${status.id}/history`, alice.token)).body.map((v) =>
+        focusOf(v.media_attachments[0]!),
+      );
+    expect(await edit("0,0")).toEqual({ x: 0, y: 0 });
+    expect(await versions()).toEqual([undefined, { x: 0, y: 0 }]);
+    expect(await edit("0,0")).toEqual({ x: 0, y: 0 });
+    expect(await versions()).toEqual([undefined, { x: 0, y: 0 }]);
+    expect(await sql(h.store, "SELECT focus_given AS g FROM media_attachments WHERE id = ?", media.id)).toEqual([
+      { g: 1 },
+    ]);
+    // A point given, then an edit of the description alone: the focus shown is kept (focus = nil changes nothing).
+    expect(await edit("0.5,-0.25")).toEqual({ x: 0.5, y: -0.25 });
+    const described = await h.request(
+      `/api/v1/statuses/${status.id}`,
+      bearer(
+        alice.token,
+        json(
+          { status: "x", media_ids: [media.id], media_attributes: [{ id: media.id, description: "now described" }] },
+          { method: "PUT" },
+        ),
+      ),
+    );
+    const kept = (await described.json<{ media_attachments: Attachment[] }>()).media_attachments[0]!;
+    expect([kept.description, focusOf(kept)]).toEqual(["now described", { x: 0.5, y: -0.25 }]);
+    expect(
+      await sql(
+        h.store,
+        "SELECT focus_x AS x, focus_y AS y, focus_given AS g FROM media_attachments WHERE id = ?",
+        media.id,
+      ),
+    ).toEqual([{ x: 0.5, y: -0.25, g: 1 }]);
   });
 });
 

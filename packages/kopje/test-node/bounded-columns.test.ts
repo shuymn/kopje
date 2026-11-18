@@ -537,6 +537,8 @@ const SNAPSHOT = "a field of an edit's media snapshot, bounded as an attachment'
 const SETTINGS = "the instance settings' stored-bound projections (settingProjectionSql), naming no bounded column";
 const NUMBER = "a number constant (the trends round’s count clamp, TREND_OBSERVED_MAX), naming no column";
 const MEASURE = "a measure walk's per-candidate judgements and its time (isoTimeSql), grouped into counts by day";
+const FOCUS =
+  "an attachment's focus x (a number, or NULL where none is shown), compared with an edit's, never presented";
 
 const STAGED =
   "a staged retraction's target (an inbox, or an addressee's identity), sent in an activity, never presented";
@@ -761,6 +763,7 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/status-actions.ts statuses.uri": { count: 1, reason: IDENTITY },
   "src/domain/statuses.ts accounts.uri": { count: 5, reason: IDENTITY },
   "src/domain/statuses.ts statuses.uri": { count: 7, reason: IDENTITY },
+  "src/domain/statuses.ts interpolation MEDIA_COLUMN_MAP.focus_x": { count: 1, reason: FOCUS },
   "src/domain/account-actions.ts accounts.username": { count: 1, reason: LOCAL },
   "src/domain/accounts.ts accounts.username": {
     count: 2,

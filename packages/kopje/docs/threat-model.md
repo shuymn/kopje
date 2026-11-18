@@ -3571,6 +3571,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   value of the bound as flags and never throws (`test/migrations.test.ts` ("0115_feature_policies"),
   `test/dump-import.test.ts` ("round-trips descriptions and settings (0097), and refuses one past its bound on import"),
   `test/feature-approval.test.ts` ("reads canFeature's halves as Mastodon's InteractionPolicyParser does")).
+  _Enforced (main)_ for media focus: `media_attachments.focus_given` holds the integer 0 or 1; the triggers
+  `media_attachments_focus_given_insert` and `media_attachments_focus_given_update` of migration
+  `0116_media_focus_given` refuse any other value, imports included (`focusGivenPastBoundSql` in
+  `src/platform/stored-bounds.ts`). They bound its range only: a row the upgrade carried keeps 0 beside any point, which
+  shows when it is not 0,0. The writers (`completeMedia` and `updateMedia` in `src/domain/media.ts`, the edit in
+  `src/domain/statuses.ts`, `writeMedia` in `src/domain/remote-statuses.ts`, the cutover's conversion) store 0, 1 or
+  the value already stored, so a write never fails on it, and the reads use it only inside the SQL that decides whether
+  a focus shows
+  (`focusShownSql` in `src/domain/status-rows.ts`), so a status read takes no more columns (`test/migrations.test.ts`
+  ("media_focus_given"), `test/dump-import.test.ts` ("round-trips media focus_given")).
   _Enforced (main)_ for static images: `accounts.avatar_static_url` and `header_static_url` hold NULL or text of at
   most 512 bytes without NUL, on a local row whose image is set; the triggers `accounts_static_images_insert` and
   `accounts_static_images_update` of migration `0061_account_static_images` refuse any other value, imports included,

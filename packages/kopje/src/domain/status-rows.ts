@@ -116,6 +116,13 @@ export function statusesOfSql(keys: string): string {
 		${APPLICATION_JOIN}`;
 }
 
+// Whether the attachment `m` shows its focus: Mastodon's meta holds one only once a focus was given
+// (MediaAttachment#focus=), focus_given 1, whatever its point (an explicit 0,0 included). A row stored before
+// focus_given existed holds 0 there and an omitted focus as 0,0, so its point decides: shown when not 0,0.
+function focusShownSql(m: string): string {
+  return `(${m}.focus_given = 1 OR ${m}.focus_x <> 0 OR ${m}.focus_y <> 0)`;
+}
+
 // The columns presentMedia reads, bounded as stored (platform/stored-bounds.ts), for every query that presents media,
 // over media_attachments as `m`. remote: whether the attachment's account is remote, by key (the index named: RES-7);
 // a file token does not say, as media kept by the cutover may have none. cached and cached_preview are NULL here:
@@ -128,7 +135,8 @@ export const MEDIA_COLUMN_MAP = {
   preview_url: "m.preview_url",
   description: "m.description",
   meta: "m.meta",
-  focus_x: "m.focus_x",
+  // NULL when the attachment shows no focus (focusShownSql).
+  focus_x: `CASE WHEN ${focusShownSql("m")} THEN m.focus_x END`,
   focus_y: "m.focus_y",
   blurhash: "m.blurhash",
   remote: `(SELECT md.domain IS NOT NULL FROM accounts md INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE md.id = m.account_id)`,

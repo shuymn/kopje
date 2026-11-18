@@ -84,6 +84,11 @@ export type FixtureOptions = {
   extraActors?: { id: string; preferredUsername: string }[];
   // Members merged into remote actor r<i>'s properties, by i (the flags a cutover casts, #1747).
   remoteProperties?: Record<number, Record<string, unknown>>;
+  // A focalPoint in each kind of legacy media source, which the conversion does not carry (#1767, #1778): r0's note's
+  // png [0.5, -0.25] and video [2, 0], and an earlier version of it whose third attachment (m/3.png, [0.5, -0.25]) its
+  // edit removed; the unattached image-2 [-0.5, 0.75]; alice's avatar [0.1, 0.2]; and with imagesAccount, in the
+  // edited status's first version, image-8 [0.25, 0.5] and image-9 [-0.25, -0.5].
+  focalPoints?: boolean;
 };
 
 export type LegacyFixture = {
@@ -211,6 +216,7 @@ export async function buildLegacyFixture(options: FixtureOptions): Promise<Legac
     hostSpellings = false,
     extraActors = [],
     remoteProperties = {},
+    focalPoints = false,
   } = options;
   const images = imagesAccount === undefined ? IMAGES : `https://imagedelivery.net/${imagesAccount}`;
   if (before0016 !== undefined && level < 16) {
@@ -268,7 +274,11 @@ export async function buildLegacyFixture(options: FixtureOptions): Promise<Legac
       // Bob never set it: legacy showed and published false.
       discoverable: i === 0 ? true : undefined,
       manuallyApprovesFollowers: i === 1,
-      icon: { type: "Image", url: `${images}/avatar-${i}/avatar` },
+      icon: {
+        type: "Image",
+        url: `${images}/avatar-${i}/avatar`,
+        focalPoint: focalPoints && i === 0 ? [0.1, 0.2] : undefined,
+      },
       image:
         i === 0
           ? { type: "Image", url: `${images}/header-${i}/header` }
@@ -436,6 +446,7 @@ export async function buildLegacyFixture(options: FixtureOptions): Promise<Legac
       url: `${images}/image-${n}/usercontent`,
       description: attachedTo ? "a wildebeest" : "",
       mediaType: "image/jpeg",
+      focalPoint: focalPoints && n === 2 ? [-0.5, 0.75] : undefined,
     };
     insert("objects", {
       id,
@@ -599,6 +610,22 @@ export async function buildLegacyFixture(options: FixtureOptions): Promise<Legac
     return note;
   };
 
+  const r0Attachments = [
+    {
+      type: "Document",
+      mediaType: "video/mp4",
+      url: "https://files.remote.example/m/1.mp4",
+      name: "a clip",
+      focalPoint: focalPoints ? [2, 0] : undefined,
+    },
+    {
+      type: "Document",
+      mediaType: "image/png",
+      url: "https://files.remote.example/m/2.png",
+      name: null,
+      focalPoint: focalPoints ? [0.5, -0.25] : undefined,
+    },
+  ];
   const r0Post = remoteNote({
     author: 0,
     minutes: 100,
@@ -619,11 +646,29 @@ export async function buildLegacyFixture(options: FixtureOptions): Promise<Legac
       // A single pass leaves U+1100 U+1161 U+11A8, which composes to U+AC01 (#1257).
       { type: "Hashtag", name: "#\u1100-\u1161-\u11A8", href: "https://remote.example/tags/x" },
     ],
-    attachment: [
-      { type: "Document", mediaType: "video/mp4", url: "https://files.remote.example/m/1.mp4", name: "a clip" },
-      { type: "Document", mediaType: "image/png", url: "https://files.remote.example/m/2.png", name: null },
-    ],
+    attachment: r0Attachments,
   });
+  if (focalPoints) {
+    insert("object_revisions", {
+      object_id: r0Post.id,
+      properties: JSON.stringify({
+        type: "Note",
+        id: r0Post.uri,
+        content: "<p>こんにちは</p>",
+        attachment: [
+          ...r0Attachments,
+          {
+            type: "Document",
+            mediaType: "image/png",
+            url: "https://files.remote.example/m/3.png",
+            name: null,
+            focalPoint: [0.5, -0.25],
+          },
+        ],
+      }),
+      cdate: cdate(101),
+    });
+  }
   const publicNote = localNote({
     author: alice,
     username: "alice",
@@ -740,8 +785,18 @@ export async function buildLegacyFixture(options: FixtureOptions): Promise<Legac
         imagesAccount === undefined
           ? []
           : [
-              { type: "Image", url: `${images}/image-8/usercontent`, name: "before" },
-              { type: "Image", url: `${images}/image-9/usercontent`, name: "first" },
+              {
+                type: "Image",
+                url: `${images}/image-8/usercontent`,
+                name: "before",
+                focalPoint: focalPoints ? [0.25, 0.5] : undefined,
+              },
+              {
+                type: "Image",
+                url: `${images}/image-9/usercontent`,
+                name: "first",
+                focalPoint: focalPoints ? [-0.25, -0.5] : undefined,
+              },
             ],
       published: iso(150),
     };

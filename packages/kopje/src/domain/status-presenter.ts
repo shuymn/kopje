@@ -261,7 +261,8 @@ export type MediaRow = {
   preview_url: string | null;
   description: string;
   meta: string | null;
-  focus_x: number;
+  // null: the attachment shows no focus (status-rows.ts focusShownSql).
+  focus_x: number | null;
   focus_y: number;
   blurhash: string | null;
   // 1 when the attachment's account is remote (MEDIA_COLUMN_MAP).
@@ -1120,7 +1121,7 @@ export function presentMedia(row: MediaRow, origin: string | null = null): Media
   const meta: MediaMeta = {
     ...(isSize(stored.original) ? { original: mediaSize(stored.original) } : {}),
     ...(isSize(stored.small) ? { small: mediaSize(stored.small) } : {}),
-    ...(row.meta === null ? {} : { focus: { x: row.focus_x, y: row.focus_y } }),
+    ...(row.focus_x === null ? {} : { focus: { x: row.focus_x, y: row.focus_y } }),
   };
   const remote = row.remote === 1;
   return {

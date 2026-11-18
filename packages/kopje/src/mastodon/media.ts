@@ -320,7 +320,7 @@ async function processUpload(
   }
   return transformReserved(c, deps, upload, form.file, {
     description: form.params.get("description") ?? "",
-    focus: parseFocus(form.params.get("focus")) ?? { x: 0, y: 0 },
+    focus: parseFocus(form.params.get("focus")),
   });
 }
 
@@ -331,7 +331,7 @@ async function transformReserved(
   deps: ApiDeps,
   upload: Upload,
   bytes: Uint8Array,
-  fields: { description: string; focus: { x: number; y: number } },
+  fields: { description: string; focus: { x: number; y: number } | undefined },
 ): Promise<Failure | MediaAttachment> {
   const { id, token, credential } = upload;
   // The Store revalidates the reservation with the time now and charges the transformations to this month.
@@ -420,7 +420,7 @@ export async function storeProfileImage(
   const { upload } = reserved;
   let outcome: Failure | MediaAttachment;
   try {
-    outcome = await transformReserved(c, deps, upload, bytes, { description: "", focus: { x: 0, y: 0 } });
+    outcome = await transformReserved(c, deps, upload, bytes, { description: "", focus: undefined });
   } catch (error) {
     await discard(c, deps, upload);
     throw error;

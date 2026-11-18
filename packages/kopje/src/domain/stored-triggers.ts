@@ -12,6 +12,7 @@ import {
   emojisPastBoundSql,
   featurePolicyPastBoundSql,
   filterTextUnitsPastBoundSql,
+  focusGivenPastBoundSql,
   indexablePastBoundSql,
   INSTANCE_SETTING_BOUNDS,
   INSTANCE_SETTING_NAMES,
@@ -483,6 +484,14 @@ END;`,
     "feature_policy, domain",
     featurePolicyPastBoundSql("NEW"),
     "accounts: feature_policy past its stored bound",
+  ),
+  // media_attachments.focus_given: whether an attachment's focus was given, 0 or 1.
+  ...boundTriggers(
+    "media_attachments_focus_given",
+    "media_attachments",
+    "focus_given",
+    focusGivenPastBoundSql("NEW.focus_given"),
+    "media_attachments: focus_given past its stored bound",
   ),
 ];
 

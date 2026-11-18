@@ -432,6 +432,11 @@ describe("duplicate media attributes", () => {
     const h = await users();
     const { alice } = h.users;
     const media = await uploaded(h, alice, png());
+    // A focus of 0,0 given, so the edit's last value, 0,0, leaves the attachment as it is.
+    expect(
+      (await h.request(`/api/v1/media/${media.id}`, bearer(alice.token, json({ focus: "0,0" }, { method: "PUT" }))))
+        .status,
+    ).toBe(200);
     const status = await post(h, alice, { status: "x", media_ids: [media.id] });
     const response = await h.request(
       `/api/v1/statuses/${status.id}`,

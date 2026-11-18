@@ -60,6 +60,9 @@ import {
   TABLES,
 } from "./stored-bounds-fixtures";
 
+// The migration that adds media_attachments.focus_given, by purpose rather than number.
+const FOCUS_GIVEN = MIGRATION_NAMES.find((name) => name.endsWith("_media_focus_given"))!;
+
 const TOKEN = { kind: "import-token" } as const;
 
 const readSettings = readOperation<void, number>((db) => db.all("SELECT * FROM instance_settings").length);
@@ -1545,6 +1548,91 @@ describe("dump", () => {
     expect((await importViaRpc(target, text)).report).toMatchObject({ ok: true, problems: [] });
     expect(withoutState(await tableSnapshot(target)).statuses).toEqual(
       withoutState(await tableSnapshot(restored)).statuses,
+    );
+  }, 120_000);
+
+  // RES-2: whether an attachment's focus was given (media_attachments.focus_given) round-trips as 0 and 1; a dump
+  // holding any other value, NULL included, is refused at apply.
+  it(`round-trips media focus_given (${FOCUS_GIVEN}), and refuses any value but 0 or 1 on import`, async () => {
+    const source = await seeded(0);
+    await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      const remote = sql
+        .exec<{ id: string }>("SELECT id FROM accounts WHERE domain IS NOT NULL ORDER BY id LIMIT 1")
+        .one().id;
+      for (const given of [0, 1]) {
+        sql.exec(
+          `INSERT INTO media_attachments (id, account_id, type, url, focus_given) VALUES (?, ?, 'image', ?, ?)`,
+          `99000000000000005${given}`,
+          remote,
+          `https://remote.test/m/focus-${given}`,
+          given,
+        );
+      }
+    });
+    const read = "SELECT id, focus_given FROM media_attachments WHERE id GLOB '99000000000000005*' ORDER BY id";
+    const { text } = await dumpViaRpc(source);
+    const restored = await migratedStore();
+    await copyConfig(source, restored);
+    await importViaRpc(restored, text);
+    expect(await runInDurableObject(restored, (_instance, state) => state.storage.sql.exec(read).toArray())).toEqual([
+      { id: "990000000000000050", focus_given: 0 },
+      { id: "990000000000000051", focus_given: 1 },
+    ]);
+    // A dump from elsewhere, as its text could hold it: the given attachment's row with another value in focus_given,
+    // its last column.
+    const start = text.indexOf("'https://remote.test/m/focus-1'");
+    const row = text.slice(start, text.indexOf(")", start) + 1);
+    expect(row.endsWith(",1)"), row).toBe(true);
+    expect(text.split(row)).toHaveLength(2);
+    for (const literal of ["2", "-1", "0.5", "'x'", "''", "X'31'", "NULL"]) {
+      const target = await migratedStore();
+      await copyConfig(source, target);
+      const dump = text.replace(row, `${row.slice(0, -2)}${literal})`);
+      expect(String(await rejectionOf(importViaRpc(target, dump))), literal).toMatch(
+        /media_attachments: focus_given past its stored bound/,
+      );
+    }
+  }, 300_000);
+
+  // UC6: a dump taken before media_attachments.focus_given restores into a Store at its own migrations, whose upgrade
+  // gives every attachment it carries 0, so its stored point decides whether it shows a focus; that Store's own export
+  // restores into a Store at the latest file with the same rows.
+  it(`restores a dump taken before ${FOCUS_GIVEN}, which then upgrades through it and exports again`, async () => {
+    const restored = await restoredBefore(
+      FOCUS_GIVEN,
+      (sql) => {
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username, domain) VALUES ('190000000000000004', 'https://r.test/u', 'u', 'r.test')",
+        );
+        sql.exec(
+          `INSERT INTO media_attachments (id, account_id, type, url, focus_x, focus_y)
+					VALUES ('990000000000000061', '190000000000000004', 'image', 'https://r.test/m/1.png', 0, 0),
+						('990000000000000062', '190000000000000004', 'image', 'https://r.test/m/2.png', 0.5, -0.25)`,
+        );
+      },
+      async (sql, upgrade) => {
+        expect(await upgrade()).toMatchObject({ ok: true, applied: [FOCUS_GIVEN] });
+        expect(
+          sql.exec("SELECT id, focus_x, focus_y, focus_given FROM media_attachments ORDER BY id").toArray(),
+        ).toEqual([
+          { id: "990000000000000061", focus_x: 0, focus_y: 0, focus_given: 0 },
+          { id: "990000000000000062", focus_x: 0.5, focus_y: -0.25, focus_given: 0 },
+        ]);
+        expect(() => sql.exec("UPDATE media_attachments SET focus_given = 2")).toThrow(
+          /media_attachments: focus_given past its stored bound/,
+        );
+      },
+    );
+    await runInDurableObject(restored, async (_instance, state) => {
+      expect(await testKernel(state).upgrade()).toMatchObject({ ok: true });
+    });
+    const { text } = await dumpViaRpc(restored, 64 * 1024);
+    const target = await migratedStore();
+    await copyConfig(restored, target);
+    expect((await importViaRpc(target, text)).report).toMatchObject({ ok: true, problems: [] });
+    expect(withoutState(await tableSnapshot(target)).media_attachments).toEqual(
+      withoutState(await tableSnapshot(restored)).media_attachments,
     );
   }, 120_000);
 
