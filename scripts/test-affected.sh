@@ -15,7 +15,7 @@
 # all Markdown sets kopje_code=false and runs only that suite, except the OAuth scope table that test/vectors.test.ts
 # imports. Markdown outside the package affects no suite.
 #
-# The specification's checks (kopje-spec, vitest.spec.config.ts, about 2 minutes) read only the specification, its
+# The specification's checks (kopje-spec, vitest.spec.config.ts, about 3 minutes) read only the specification, its
 # fixtures and drift record, the files that run and compare them, the dependencies and the test configuration, so only
 # a change to one of those sets kopje_spec=true.
 set -euo pipefail

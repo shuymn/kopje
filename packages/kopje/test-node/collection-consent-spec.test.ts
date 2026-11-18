@@ -1,7 +1,10 @@
 // Checks spec/collection-consent/, the TLA+ specification of a local account's consent to membership in a remote
 // collection (#1589), with tla-ts: every check of checks.json gives its expected outcome
 // (scripts/collection-consent-plan.mjs lists the kinds), the replay fixtures equal a fresh run, cover each of Kopje's
-// steps and take no model-only one, and each fixture names the replay that runs it.
+// steps and take no model-only one, and each fixture names the replay that runs it. Each calibration variant that
+// changes what the Store does no longer reproduces a fixture checks.json's replay names, so that fixture's replay fails
+// against a Store with the variant's change; a variant that changes only what an invariant counts is exempt there, with
+// its reason, and reproduces every fixture.
 // scripts/tlc-check.mjs runs the same checks under the official TLC.
 //
 // A scenario's distinct-state count and depth are fixed: a change means the state space changed, which the commit
@@ -15,7 +18,7 @@ import { describe, expect, it } from "vitest";
 import { checks, readModule, readPlan } from "../scripts/collection-consent-plan.mjs";
 import { compareObservation } from "../test/collection-consent-observe.js";
 import type { Fixture } from "../test/collection-consent-observe.js";
-import { FIXTURE_DIR, REPLAY_FILE, fixtureText, generateFixtures } from "./collection-consent-fixtures.js";
+import { FIXTURE_DIR, REPLAY_FILE, fixtureText, generateFixtures, reproduces } from "./collection-consent-fixtures.js";
 
 const plan = readPlan();
 // The largest check, the induction, takes about 30 s under tla-ts on a laptop.
@@ -124,6 +127,47 @@ describe("replay fixtures", () => {
     expect(missing).toEqual([]);
     expect(source.match(/\.(skip|skipIf|todo|only|fails)\b/g) ?? []).toEqual([]);
   });
+});
+
+describe("the calibration variants against the replay", () => {
+  const fixtures = new Map(
+    fixtureFiles().map((file): [string, Fixture] => [file.slice(0, -".json".length), readFixture(file)]),
+  );
+  const fixture = (name: string) => {
+    const found = fixtures.get(name);
+    if (found === undefined) throw new Error(`checks.json's replay names ${name}, which is no fixture`);
+    return found;
+  };
+  // Which fixtures the variant no longer reproduces.
+  const failed = async (variant: string) => {
+    const names: string[] = [];
+    for (const [name, f] of fixtures) if (!(await reproduces(f, variant))) names.push(name);
+    return names;
+  };
+
+  it("are each caught by a fixture or exempt, once", () => {
+    const variants = [...new Set(plan.variants.map((v) => v.variant))].toSorted();
+    const named = [...plan.replay.catches, ...plan.replay.exempt].map((entry) => entry.variant).toSorted();
+    expect(named).toEqual(variants);
+    for (const { fixture: name } of plan.replay.catches) expect(fixtures.has(name), name).toBe(true);
+    for (const { variant, why } of plan.replay.exempt) expect(why.trim(), variant).not.toBe("");
+  });
+
+  it("start from base rules that reproduce every fixture", { timeout: CHECK_TIMEOUT_MS }, async () => {
+    expect(await failed("base")).toEqual([]);
+  });
+
+  for (const { variant, fixture: name } of plan.replay.catches) {
+    it(`${variant} no longer reproduces ${name}`, { timeout: CHECK_TIMEOUT_MS }, async () => {
+      expect(await reproduces(fixture(name), variant)).toBe(false);
+    });
+  }
+
+  for (const { variant } of plan.replay.exempt) {
+    it(`${variant}, exempt, reproduces every fixture`, { timeout: CHECK_TIMEOUT_MS }, async () => {
+      expect(await failed(variant)).toEqual([]);
+    });
+  }
 });
 
 describe("compareObservation", () => {

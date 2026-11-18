@@ -34,8 +34,8 @@ move the record forward. A change to `spec/collection-consent/` itself always ne
 
 | Check | Command |
 |---|---|
-| tla-ts: every check of `checks.json`, the fixtures, the comparison (about 2 min, the inductions 1 min of it) | `pnpm exec vitest run -c vitest.spec.config.ts --max-workers=2` |
-| official TLC: the same checks (about 2 min, one JVM at a time) | `MISE_ENV=spec mise exec -- node scripts/tlc-check.mjs` |
+| tla-ts: every check of `checks.json`, the fixtures, the comparison (about 3 min, the induction and the longest goal 1 min of it) | `pnpm exec vitest run -c vitest.spec.config.ts --max-workers=2` |
+| official TLC: the same checks (about 3 min, one JVM at a time) | `MISE_ENV=spec mise exec -- node scripts/tlc-check.mjs` |
 | one check's TLC trace, every variable at every step | `MISE_ENV=spec mise exec -- node scripts/tlc-check.mjs --only <name> --trace` |
 | rewrite the replay fixtures after a spec change | `pnpm run spec:fixtures` |
 | the replay against the real Store | `pnpm exec vitest run --max-workers=1 test/collection-consent-replay.test.ts` |
@@ -52,6 +52,15 @@ fixture's name, that runs its steps against the Store and compares `compareObser
 (`test/collection-consent-observe.ts`) after each one. `collection-consent-spec.test.ts` fails for a fixture the replay
 does not name, and for a skipped test; `collection-consent-coverage.mjs forward` fails unless every fixture's test ran
 and passed. No fixture takes `KMemberGone` (Kopje deletes no local account), and the spec test checks that.
+
+Each calibration variant that changes what the Store does has a fixture whose replay fails against a Store that makes
+the variant's change. `checks.json`'s `replay` names it, and the spec test checks that the variant no longer
+reproduces it: no run under the variant's rules takes the fixture's steps as recorded (action, input, environment) and
+gives observations the replay accepts (`reproduces` in `collection-consent-fixtures.ts`). The difference is an
+observation, or a step the variant cannot take as recorded (V16: at `S2-CleanupThenDelete`'s last delivery the
+revoke's `Delete` is no longer the lane's head; V25: at `S12-DroppedDelivery` the suspended member's `Accept` is sent,
+not dropped). A variant that changes only what an invariant counts (V8, V23) is listed there as exempt, with its
+reason, and must reproduce every fixture. A variant with neither fails the test.
 
 ## Reading a violation
 
@@ -82,6 +91,10 @@ cites the code):
   L is suspended the Store drops its ordinary activities when it claims them (only a `Delete` is still sent):
   `KDeliver` then has the input `dropped` and sends nothing, and the head is neither duplicated nor given up.
   `RJob` is one of R's jobs, which run in any order.
+- An answer to a listing of an authorization L's row no longer serves is a retraction only to R while Kopje holds the
+  row; X's, or any once the row is gone, is ordinary and refused at a full backlog. A retraction answer is not
+  recorded while one of the same authorization to the same inbox still waits in the lane (`Coalesced`), so the
+  listing step then records nothing.
 - `R*` and `XAdd` are R's requests and services; `Drop` loses an envelope; `Env` changes L's policy, the backlog, the
   retraction cap, C's slots or how many of R's collections Kopje holds.
 
@@ -90,7 +103,8 @@ cites the code):
 tracks, `unexcused` the corrections CR3 counts, `lastRd` the latest read that covered the row, which OV2
 compares). `MemberAvailability` fails when, while L is unavailable, Kopje answers for, creates or lists L's row, a read
 changes the row at all, or R receives an activity of L's other than a `Delete`. `OV3` fails when a read that does
-not cover the row replaces the covering read OV2 compares.
+not cover the row replaces the covering read OV2 compares. `AnswerBound` fails when Kopje's lane holds two retraction
+answers of one authorization: one to an account other than R, or a second to R while the first still waits.
 
 Tell the two kinds of failure apart by the step that breaks the invariant:
 
@@ -113,7 +127,8 @@ first and on its own, with its case written out: the input or trace, what the sp
 evidence (Mastodon's source at v4.7.5, Kopje's documented rules, or a counter-example). Then edit the spec, rerun both
 checkers, update `checks.json` with the reason for each changed count in the commit, rewrite the fixtures, and move the
 drift record forward. A new rule that can fail gets a calibration variant (`Variant`, marked `VARIANT` in the spec;
-`"base"` is the rules as written) whose named invariant must fail.
+`"base"` is the rules as written) whose named invariant must fail, and, in `checks.json`'s `replay`, a fixture it no
+longer reproduces (a new goal marked fixture if none) or its exemption.
 
 ## Bounds and what is not covered
 

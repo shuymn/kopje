@@ -14,9 +14,9 @@
 (* docs/threat-model.md's. F7 and F8 are the two ways R may keep an        *)
 (* authorization Kopje no longer serves, which CorrectiveRevocation        *)
 (* excuses: F7, every Delete of it was refused at a full backlog or given  *)
-(* up after its last attempt; F8, once Kopje holds no row of it, the       *)
-(* Delete that answers a listing of it is ordinary, so a full backlog      *)
-(* refuses it.                                                             *)
+(* up after its last attempt; F8, the Delete that answers a listing of it  *)
+(* is ordinary once Kopje holds no row of it, and for any lister but R, so *)
+(* a full backlog refuses it.                                              *)
 (*                                                                         *)
 (* ATOMICITY. Each action is one indivisible step:                         *)
 (*  - KRecv: one inbound activity, one Store transaction                   *)
@@ -78,12 +78,14 @@
 (*    listed clears it, whatever the step does to the row.                 *)
 (*  - CorrectiveRevocation CR1 /\ CR2 /\ CR3: an item Add, or an applied   *)
 (*    read listing, of an unserved a is answered with L's Delete of a to   *)
-(*    the sender's inbox while L is available; only an ordinary Delete is  *)
-(*    refused at a full backlog (F8); at quiescence (no read of R still    *)
-(*    requested either) R holds an unserved a only if every Delete of a in *)
-(*    flight when R applied its acceptance, or recorded since, was refused *)
-(*    at a full backlog or given up (F7): a processed Delete that left R   *)
-(*    holding a counts against it.                                         *)
+(*    the sender's inbox while L is available, unless a retraction answer  *)
+(*    of a to that inbox still waits (Coalesced); no Delete to R of a row  *)
+(*    Kopje holds is refused at a full backlog (F8 refuses only the        *)
+(*    others); at quiescence (no read of R still requested either) R holds *)
+(*    an unserved a only if every Delete of a in flight when R applied its *)
+(*    acceptance, or recorded since, was refused at a full backlog or      *)
+(*    given up (F7): a processed Delete that left R holding a counts       *)
+(*    against it.                                                          *)
 (*  - ObservedVisibility OV1 /\ OV2 /\ OV3: only an eligible untruncated   *)
 (*    read, an exact item Remove, a re-accept by another request, the      *)
 (*    row's end or a loss of availability hides it; at quiescence after    *)
@@ -103,6 +105,10 @@
 (*    no row and records no Accept.                                        *)
 (*  - NoUnilateralEnd: no Reject of a request Kopje accepted with a is     *)
 (*    recorded while a is owed.                                            *)
+(*  - AnswerBound: Kopje's lane holds at most one retraction answer of an  *)
+(*    authorization, however many accounts list it and however often:      *)
+(*    RES-4 never refuses a retraction, so its count is bounded by Kopje's *)
+(*    own rows alone.                                                      *)
 (*                                                                         *)
 (* GRANT PRESERVATION IS INDUCTIVE (CollectionConsentInd.tla checks it).   *)
 (* Per action: Decide and ApplyFetch create a row only with its Accept,    *)
@@ -142,14 +148,15 @@ vars == <<k, env, kq, kg, toK, rs, rin, rd, sr, fe, spent, g, last>>
 (* Scenarios: each enables a focused set of actions through its budgets.   *)
 (* S1 answers and re-adds; S2 revoke and correction (C on page 1 or past   *)
 (* the window); S3 pages that shift between a read's GETs; S4 the          *)
-(* cross-owner Delete, and R's Remove and Update after a revoke; S5 stale  *)
-(* and outdated reads against pushes; S6 block and member deletion; S7     *)
-(* late and retried answers; S8 the instrument, R's Remove of C, the       *)
-(* retraction cap and expiry, R gone; S9 admission at 10 and 50 and        *)
-(* truncated listings; S10 the 25 slots; S11 the early eviction and        *)
-(* Mastodon's 24-hour cleanup against a late Accept; S12 L's suspension;   *)
-(* S13 recovery from the 50; S14 a stale request copy and the read that    *)
-(* restores what it hid; S15 an ignored round, then a stale completion.    *)
+(* cross-owner Delete, an ordinary answer refused at a full backlog, and   *)
+(* R's Remove and Update after a revoke; S5 stale and outdated reads       *)
+(* against pushes; S6 block and member deletion; S7 late and retried       *)
+(* answers; S8 the instrument, R's Remove of C, the retraction cap and     *)
+(* expiry, R gone; S9 admission at 10 and 50 and truncated listings; S10   *)
+(* the 25 slots; S11 the early eviction and Mastodon's 24-hour cleanup     *)
+(* against a late Accept; S12 L's suspension; S13 recovery from the 50;    *)
+(* S14 a stale request copy and the read that restores what it hid; S15 an *)
+(* ignored round, then a stale completion.                                 *)
 (***************************************************************************)
 Budgets == {"adds", "reads", "dup", "retry", "consent", "backlog", "cap", "held", "slots", "remove", "rclean",
             "upd", "x", "revoke", "block", "ldel", "susp", "rdelc", "gone", "shift", "crowd", "lease", "expire"}
@@ -158,7 +165,7 @@ Bud(f) ==
   CASE Scenario = "S1" -> [Zero EXCEPT !.adds = 2, !.remove = 1, !.consent = 1, !.dup = 1][f]
     [] Scenario = "S2" -> [Zero EXCEPT !.adds = 1, !.reads = 1, !.dup = 1, !.backlog = 1, !.revoke = 1][f]
     [] Scenario = "S3" -> [Zero EXCEPT !.adds = 1, !.reads = 2, !.shift = 1][f]
-    [] Scenario = "S4" -> [Zero EXCEPT !.adds = 1, !.x = 1, !.revoke = 1, !.remove = 1, !.upd = 1][f]
+    [] Scenario = "S4" -> [Zero EXCEPT !.adds = 1, !.x = 1, !.revoke = 1, !.remove = 1, !.upd = 1, !.backlog = 1][f]
     [] Scenario = "S5" -> [Zero EXCEPT !.adds = 1, !.reads = 2, !.remove = 1, !.upd = 1, !.lease = 1][f]
     [] Scenario = "S6" -> [Zero EXCEPT !.adds = 1, !.reads = 1, !.block = 1, !.ldel = 1][f]
     [] Scenario = "S7" -> [Zero EXCEPT !.adds = 1, !.reads = 1, !.retry = 1][f]
@@ -232,6 +239,15 @@ RServes == rs.c /\ ~rs.gone
 
 \* RES-4: an ordinary intent is refused at a full backlog (recorded as given up). VARIANT V9: a retraction too.
 Refused(m) == env.bl /\ (m.cls = "ord" \/ (Variant = "V9" /\ m.ty = "Delete"))
+\* A retraction answer of a: L's Delete of a answering a listing, never refused.
+RetractionAnswer(m, a) == m.ty = "Delete" /\ m.why = "answer" /\ m.cls = "ret" /\ m.obj = a
+\* A retraction answer of a to inbox `to` still to be sent: in Kopje's lane, whose head stays there after a lost
+\* response.
+AnswerWaits(a, to) == \E i \in 1..Len(kq) : RetractionAnswer(kq[i], a) /\ kq[i].to = to
+\* The Store records no retraction answer while one of the same authorization to the same inbox is still to be sent
+\* (deliveries.ts answerOutstanding): the waiting one answers the new listing too. VARIANT V27: each is recorded.
+Coalesced(m) == RetractionAnswer(m, m.obj) /\ AnswerWaits(m.obj, m.to) /\ Variant # "V27"
+Coalesce(res) == [res EXCEPT !.rec = {m \in @ : ~Coalesced(m)}]
 \* A Delete of a: R's server revokes L's item approved by a, whichever of its inboxes it reaches (delete.rb:5-6,
 \* :68-81: the item is found by approval_uri and its member alone).
 Corrects(m, a) == m.ty = "Delete" /\ m.obj = a
@@ -307,8 +323,9 @@ GhostK(res, evid, opp, mayHide, allowedHide, mayShow, lr, remC, ev) ==
         !.obl = OblAfter(res.rec, evid),
         !.accReq = AccReqAfter(res.rec, evid),
         !.delServed = @ \/ (\E m \in dels : Served(k2, m.obj)),
-        !.refusedHeld = @ \/ (\E m \in dels : Refused(m) /\ HeldRow(k2, m.obj)),
-        !.missed = @ \/ (opp.a # NONE /\ ~(\E m \in dels : m.obj = opp.a /\ m.to = opp.to)),
+        !.refusedHeld = @ \/ (\E m \in dels : Refused(m) /\ HeldRow(k2, m.obj) /\ m.to = "R"),
+        !.missed = @ \/ (opp.a # NONE /\ ~(\E m \in dels : m.obj = opp.a /\ m.to = opp.to)
+                         /\ ~AnswerWaits(opp.a, opp.to)),
         !.ov1 = @ \/ (Shown(k) /\ ~Shown(k2) /\ ~mayHide),
         !.nue = @ \/ (g.obl # NONE /\ \E m \in res.rec : m.ty = "Reject" /\ m.obj \in g.accReq),
         !.nueLive = @ \/ (g.obl # NONE /\ \E m \in res.rec : m.ty = "Reject" /\ m.obj \in g.accReq /\ RLive(m.obj)),
@@ -337,7 +354,8 @@ Events(res, extra) ==
   extra \cup (IF Shown(k) /\ ~Shown(res.k) /\ res.k.row.st = "acc" THEN {"hid"} ELSE {})
         \cup (IF ~Shown(k) /\ Shown(res.k) THEN {"showed"} ELSE {})
         \cup (IF k.row = NoRow /\ res.k.row # NoRow THEN {"newRow"} ELSE {})
-        \cup (IF \E m \in res.rec : m.ty = "Delete" /\ Refused(m) /\ ~HeldRow(res.k, m.obj) THEN {"f8"} ELSE {})
+        \cup (IF \E m \in res.rec : m.ty = "Delete" /\ Refused(m) /\ (~HeldRow(res.k, m.obj) \/ m.to # "R")
+              THEN {"f8"} ELSE {})
 
 \* The step's activities in the order it records them: a Delete before the Block it goes with.
 RecSeq(rec) ==
@@ -403,7 +421,7 @@ KRecv(e, dup) ==
                   /\ last' = [act |-> "KRecv", arg |-> Arg(e, NoIntent, NONE), rec |-> {}, resp |-> FETCH,
                               ev |-> {"fetch"}]
      ELSE \E first \in (IF e.ty = "DelR" /\ k.rk THEN BOOLEAN ELSE {FALSE}) :
-          LET res == RecvRes(e, first)
+          LET res == Coalesce(RecvRes(e, first))
               valid == k.rk /\ res.resp = 202
               opp == IF e.ty = "XAdd" /\ Lists(k) /\ ~Served(k, e.a) THEN [a |-> e.a, to |-> "X"]
                      ELSE IF e.ty = "Add" /\ k.rk /\ Lists(k) /\ ~Served(k, e.a) THEN [a |-> e.a, to |-> "R"]
@@ -455,14 +473,15 @@ KSuspend == k.lx /\ ~k.ls /\ KMember(Suspend(k), FALSE, "susp", "KSuspend")
 \* lifting (suspension.ts suspendLocal, unsuspendLocal): the step's input "newCredential".
 KUnsuspend == k.ls /\ KMemberArg(Unsuspend(k), FALSE, "susp", "KUnsuspend", Arg(NoEnvelope, NoIntent, "newCredential"))
 
-\* The retired row's cleanup (pruneCollectionItems). VARIANT V16: it also deletes the row's Delete still at the head of
-\* the lane.
+\* The retired row's cleanup (pruneCollectionItems). VARIANT V16: it also deletes the row's Delete whenever that is
+\* still the head of the lane.
+HeadDelete == kq # <<>> /\ Head(kq).ty = "Delete" /\ Head(kq).obj = k.row.auth
 KCleanup ==
   /\ k.row.st = "ret"
   /\ Commit(Cleanup(k), FALSE, NoOpp, TRUE, FALSE, FALSE, FALSE, "KCleanup", NoArg, {})
   /\ UNCHANGED <<env, toK, rs, rin, fe, spent>>
 KCleanupV16 ==
-  /\ k.row.st = "ret" /\ kq # <<>> /\ Head(kq).ty = "Delete" /\ Head(kq).obj = k.row.auth
+  /\ k.row.st = "ret" /\ HeadDelete
   /\ k' = Cleanup(k).k /\ kq' = Tail(kq) /\ kg' = kg
   /\ g' = GhostK(Cleanup(k), FALSE, NoOpp, TRUE, FALSE, TRUE, g.lastRd, FALSE, {})
   /\ rd' = Touch(rd, Cleanup(k), FALSE) /\ sr' = Touch(sr, Cleanup(k), FALSE)
@@ -566,7 +585,7 @@ WouldHide(read) ==
 
 KApply ==
   /\ rd.ph = "done"
-  /\ LET res == ApplyRead(k, env, rd.v, rd.chg, rd.outd, rd.hadRow, Settled)
+  /\ LET res == Coalesce(ApplyRead(k, env, rd.v, rd.chg, rd.outd, rd.hadRow, Settled))
          named == rd.v.i # NONE
          opp == IF Applies(rd) /\ named /\ Lists(k) /\ ~Served(k, rd.v.a) THEN [a |-> rd.v.a, to |-> "R"] ELSE NoOpp
          mayHide == Covers(rd) /\ ~rd.v.tr /\ ~rd.chg /\ ~(named /\ rd.v.a = k.row.auth)
@@ -625,7 +644,7 @@ KLease ==
 \* staleOmits: it would hide a shown row, and only the token fences it (no push or row change since its claim).
 KStale ==
   /\ sr.ph = "done"
-  /\ LET res == IF Variant = "V4" THEN ApplyRead(k, env, sr.v, sr.chg, sr.outd, sr.hadRow, Settled)
+  /\ LET res == IF Variant = "V4" THEN Coalesce(ApplyRead(k, env, sr.v, sr.chg, sr.outd, sr.hadRow, Settled))
                 ELSE Res(k, {}, 0)
          ev == Events(res, IF Shown(k) /\ WouldHide(sr) /\ ~sr.outd /\ ~sr.chg THEN {"staleOmits"} ELSE {})
      IN /\ Record(res)
@@ -845,7 +864,7 @@ Drop ==
 Next ==
   \/ \E e \in toK : KRecv(e, FALSE) \/ KRecv(e, TRUE)
   \/ KApplyFetch \/ KRevoke \/ KBlock \/ KMemberGone \/ KSuspend \/ KUnsuspend \/ KEvict \/ KPurge
-  \/ IF Variant = "V16" THEN KCleanupV16 \/ KCleanup ELSE KCleanup
+  \/ IF Variant = "V16" /\ HeadDelete THEN KCleanupV16 ELSE KCleanup
   \/ EnvStep
   \/ KClaim \/ KFetch \/ KFetch1 \/ KFetch2 \/ KApply \/ KLease \/ KStale \/ KExpire
   \/ KDeliver \/ KGiveUp \/ KDup \/ KRetry
@@ -892,6 +911,10 @@ NoLiveReject == ~g.nueLive
 \* While L is unavailable: no answer for L, and no row created or listed (AvailBroken); no change of its row by a read
 \* (KApply); no activity of L's other than a Delete received by R (KDeliver, KDup).
 MemberAvailability == ~g.avail
+
+\* At most one retraction answer of an authorization waits in Kopje's lane: one to R, the owner of its row's collection
+\* (AnswerClass), and one for R however often R lists it (Coalesced).
+AnswerBound == \A a \in Auths : Cardinality({i \in 1..Len(kq) : RetractionAnswer(kq[i], a)}) <= 1
 
 (***************************************************************************)
 (* Reachability goals (each checked as INVARIANT ~Goal, which must fail).  *)
@@ -975,7 +998,7 @@ EmbeddedUnserved ==
   /\ LAvail(k) /\ k.rk
   /\ ~Served(k, last.arg.env.l.a)
 MayAlsoRecord ==
-  IF EmbeddedUnserved THEN {Del(last.arg.env.l.a, "R", AnswerClass(k, last.arg.env.l.a), "answer")} ELSE {}
+  IF EmbeddedUnserved THEN {Del(last.arg.env.l.a, "R", AnswerClass(k, last.arg.env.l.a, "R"), "answer")} ELSE {}
 \* What the specification leaves open at a step, which a replay does not compare: a retired row's listedAs (the fixture
 \* writer compares it where a later step of the trace depends on it).
 Unspecified == IF k.row.st = "ret" THEN {"row.listedAs"} ELSE {}

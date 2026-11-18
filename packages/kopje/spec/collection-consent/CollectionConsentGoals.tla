@@ -29,7 +29,29 @@ StateGoals ==
    RetiredRemoved |-> Acted("KRecv") /\ last.arg.env.ty = "Rem" /\ k.row.st = "ret" /\ k.sync,
    BlockRow |-> Acted("KBlock") /\ Recorded1("Delete"),
    MemberGoneRow |-> Acted("KMemberGone") /\ k.issued > 0,
-   OwnerGoneRow |-> Acted("KRecv") /\ last.arg.env.ty = "DelR" /\ k.issued > 0]
+   OwnerGoneRow |-> Acted("KRecv") /\ last.arg.env.ty = "DelR" /\ k.issued > 0,
+   \* Another request for an accepted row is accepted with the row's authorization while L's policy refuses (K1).
+   AcceptedPolicyOff |->
+     /\ Acted("KRecv") /\ last.arg.env.ty = "FR" /\ ~env.consent
+     /\ \E m \in last.rec : m.ty = "Accept" /\ m.obj = last.arg.env.r
+     /\ \E q \in g.accReq : q # last.arg.env.r,
+   \* L's revoke at a full backlog: its Delete, a retraction, is queued (RES-4).
+   RetractionAdmitted |-> Acted("KRevoke") /\ env.bl,
+   \* X's Add naming an authorization Kopje does not serve is answered to X's inbox (K2).
+   AnsweredX |-> Acted("KRecv") /\ last.arg.env.ty = "XAdd" /\ \E m \in last.rec : m.ty = "Delete" /\ m.to = "X",
+   \* X's answer for a row Kopje holds, at a full backlog: ordinary, so refused (AnswerClass, F8).
+   AnsweredXRefused |-> Acted("KRecv") /\ last.arg.env.ty = "XAdd" /\ "f8" \in last.ev /\ HeldRow(k, last.arg.env.a),
+   \* A read names an authorization whose retraction answer to R still waits: it records no other (Coalesced).
+   AnswerCoalesced |->
+     /\ Acted("KApply") /\ last.rec = {} /\ k.rk /\ LAvail(k)
+     /\ \E a \in Auths : AnswerWaits(a, "R") /\ ~Served(k, a) /\ g.lastRd.a = a /\ g.lastRd.i # NONE,
+   \* A read lists the accepted row under an item R's Remove retracted: the row takes it (K14).
+   ReadOverRetraction |-> Acted("KApply") /\ k.row.st = "acc" /\ k.row.uri # NONE /\ k.row.uri \in k.ret,
+   \* The revoke's Delete is delivered after the retired row's cleanup (K10 leaves the lane as it is).
+   CleanupThenDelete |->
+     Acted("KDeliver") /\ last.arg.msg.ty = "Delete" /\ last.arg.msg.why = "revoke" /\ k.row = NoRow,
+   \* A suspended L's ordinary activity is dropped at its delivery.
+   DroppedDelivery |-> Acted("KDeliver") /\ "dropped" \in last.ev]
 
 Reached ==
   IF Goal \in DOMAIN StateGoals THEN StateGoals[Goal]

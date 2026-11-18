@@ -65,10 +65,10 @@ CoreType == [c : BOOLEAN, row : RowType, issued : 0..2, lx : BOOLEAN, ls : BOOLE
              ret : SUBSET (Items \cup {"C"}), sync : BOOLEAN]
 
 \* An activity Kopje records (an outbound intent). cls "ret" is a retraction, never refused at a full backlog (RES-4,
-\* deliveries.ts Admission); "ord" is any other, refused at a full backlog. A Delete is a retraction while Kopje holds
-\* the row it retracts and ordinary once the row is gone (F8); a Block is ordinary (audience.ts outboundKind). why tells
-\* an answer's Delete from a revoke's or a block's. to is the inbox: R's, or X's for X's Add (both on R's server, so one
-\* delivery lane).
+\* deliveries.ts Admission); "ord" is any other, refused at a full backlog. A revoke's or a block's Delete is a
+\* retraction, and an answer's is one only to R while Kopje holds the row it retracts (AnswerClass, F8); a Block is
+\* ordinary (audience.ts outboundKind). why tells an answer's Delete from a revoke's or a block's. to is the inbox: R's,
+\* or X's for X's Add (both on R's server, so one delivery lane).
 Acc(r, a) == [ty |-> "Accept", obj |-> r, res |-> a, to |-> "R", cls |-> "ord", why |-> "answer"]
 Rej(r) == [ty |-> "Reject", obj |-> r, res |-> NONE, to |-> "R", cls |-> "ord", why |-> "answer"]
 Del(a, to, cls, why) == [ty |-> "Delete", obj |-> a, res |-> NONE, to |-> to, cls |-> cls, why |-> why]
@@ -89,8 +89,11 @@ InCollections(kk) == kk.row # NoRow /\ kk.lx /\ kk.rk /\ kk.c
 \* GET of a's FeatureAuthorization (collection-documents.ts featureAuthorizationDocument): the row accepted with a and
 \* L available; its body binds C (interactingObject) and L (interactionTarget).
 AuthorizationServed(kk, a) == Served(kk, a) /\ LAvail(kk) /\ kk.c
-\* The class of a Delete answering a listing of a: a retraction while Kopje holds a's row, else ordinary (F8).
-AnswerClass(kk, a) == IF HeldRow(kk, a) THEN "ret" ELSE "ord"
+\* The class of a Delete answering a listing of a by `from` (R, the owner of C, or X): a retraction while Kopje holds
+\* a's row and R listed it, else ordinary (F8). A retraction is never refused, so only the row's one owner draws one:
+\* any other account may list an authorization it learnt from L's revocation, and its answer is new work under RES-4's
+\* caps (feature-answers.ts answerUnserved). VARIANT V26: any lister's answer is a retraction while the row is held.
+AnswerClass(kk, a, from) == IF HeldRow(kk, a) /\ (from = "R" \/ Variant = "V26") THEN "ret" ELSE "ord"
 
 \* A step's result. req: the step requests a read of R (requestCollectionSync), which a read already under way does not
 \* read through (CollectionConsent.tla's KApply).
@@ -178,11 +181,11 @@ ApplyFetch(kk, ee, f) ==
 (* or from X (another owner on R's server, its own collection): while L is *)
 (* unavailable, nothing (the listing gate); while a is served, sets uri    *)
 (* unless R retracted the item; while it is not, answers with L's Delete   *)
-(* of a to the sender's inbox, a retraction while a's row is held, else    *)
-(* ordinary (F8). The gate covers every listing that names L (an Add, an   *)
-(* Update, an instrument, a read), for K1's reason: a suspended member's   *)
-(* row stays as it was, and nothing is answered in its name while it       *)
-(* cannot act; a member gone is no member.                                 *)
+(* of a to the sender's inbox, a retraction while a's row is held and R    *)
+(* sent the Add, else ordinary (AnswerClass, F8). The gate covers every    *)
+(* listing that names L (an Add, an Update, an instrument, a read), for    *)
+(* K1's reason: a suspended member's row stays as it was, and nothing is   *)
+(* answered in its name while it cannot act; a member gone is no member.   *)
 (* VARIANT V10: "served" is judged in X's collection only.                 *)
 (* VARIANT V15: no answer to an unserved authorization.                    *)
 (* VARIANT V16a: the answer to X's Add goes to R's inbox.                  *)
@@ -195,7 +198,7 @@ AddItem(kk, ee, i, a, to) ==
   IN IF (to = "R" /\ ~kk.rk) \/ ~Lists(kk) THEN Res(kk, {}, 202)
      ELSE IF served
        THEN Res(IF to = "R" /\ kk.c /\ i \notin kk.ret THEN [kk EXCEPT !.row.uri = i] ELSE kk, {}, 202)
-     ELSE IF Variant # "V15" THEN Res(kk, {Del(a, inbox, AnswerClass(kk, a), "answer")}, 202)
+     ELSE IF Variant # "V15" THEN Res(kk, {Del(a, inbox, AnswerClass(kk, a, to), "answer")}, 202)
      ELSE Res(kk, {}, 202)
 
 (***************************************************************************)
@@ -320,7 +323,7 @@ ApplyRead(kk, ee, v, chg, outd, hadRow, settled) ==
                           ELSE [k1 EXCEPT !.row.uri = NONE]
                    ELSE k1
              answer == v.i # NONE /\ ~Served(k1, v.a) /\ Lists(k1) /\ Variant # "V15"
-         IN Res(k2, IF answer THEN {Del(v.a, "R", AnswerClass(k1, v.a), "answer")} ELSE {}, 0)
+         IN Res(k2, IF answer THEN {Del(v.a, "R", AnswerClass(k1, v.a, "R"), "answer")} ELSE {}, 0)
   ELSE IF v.cpl
     THEN IF kk.c /\ (kk.row = NoRow \/ Variant = "V5" \/ (Variant = "V3" /\ ~hadRow))
          THEN Res([kk EXCEPT !.c = FALSE, !.row = NoRow], {}, 0)
