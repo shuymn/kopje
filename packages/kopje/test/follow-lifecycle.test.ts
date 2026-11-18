@@ -996,8 +996,9 @@ const BLOCKS = ["b1", "b2"].map((s) => `${ORIGIN}/blocks/${s}`);
 type InboundAction =
   | { k: "inFollow" | "inBlock"; id: string }
   | { k: "inUndo"; id: string; type: "Follow" | "Block" | null; target?: "l" | "none" | "urn" | "unknown" }
+  | { k: "inAccept" | "inUndoAccept"; current: boolean }
   | { k: "lock"; locked: boolean }
-  | { k: "authorize" | "reject" | "removeFollower" };
+  | { k: "authorize" | "reject" | "removeFollower" | "follow" | "unfollow" };
 
 const inboundArb: fc.Arbitrary<InboundAction> = fc.oneof(
   { arbitrary: fc.record({ k: fc.constant("inFollow" as const), id: fc.constantFrom(...FOLLOWS) }), weight: 4 },
@@ -1016,9 +1017,22 @@ const inboundArb: fc.Arbitrary<InboundAction> = fc.oneof(
     arbitrary: fc.constantFrom({ k: "authorize" as const }, { k: "reject" as const }, { k: "removeFollower" as const }),
     weight: 2,
   },
+  // L's follow of R, R's Accept of it, and R's Undo of that Accept (#1775), naming L's latest Follow or another id.
+  {
+    arbitrary: fc.constantFrom({ k: "follow" as const }, { k: "follow" as const }, { k: "unfollow" as const }),
+    weight: 2,
+  },
+  {
+    arbitrary: fc.record({
+      k: fc.constantFrom("inAccept" as const, "inUndoAccept" as const),
+      current: fc.constantFrom(true, true, false),
+    }),
+    weight: 4,
+  },
 );
 
 let undoSequence = 0;
+let acceptSequence = 0;
 
 async function inbound(w: World, a: InboundAction): Promise<void> {
   switch (a.k) {
@@ -1039,13 +1053,38 @@ async function inbound(w: World, a: InboundAction): Promise<void> {
           : { id: a.id, type: a.type, actor: w.rUri, object: target };
       return deliverToKopje(w, { type: "Undo", id: `${ORIGIN}/undos/${++undoSequence}`, object }, "receive");
     }
+    case "inAccept":
+    case "inUndoAccept": {
+      const follow = a.current && w.lastFollow !== null ? w.lastFollow : `${w.lUri}#follows/other`;
+      const accept = { id: `${ORIGIN}/accepts/${++acceptSequence}`, type: "Follow", actor: w.lUri, object: w.rUri };
+      if (a.k === "inAccept") {
+        return deliverToKopje(w, { type: "Accept", id: accept.id, object: { ...accept, id: follow } }, "receive");
+      }
+      const object = { id: accept.id, type: "Accept", actor: w.rUri, object: follow };
+      return deliverToKopje(w, { type: "Undo", id: `${ORIGIN}/undos/${++undoSequence}`, object }, "receive");
+    }
     default:
       return local(w, a);
   }
 }
 
 describe("follow lifecycle: R's inbound activities against the policy", () => {
-  it("agrees with the policy after every activity, typed and untyped Undo included", async () => {
+  // #1775: R's Undo of its Accept of L's Follow turns L's follow back into a request (every step checked against the
+  // policy), and the Accept delivered again accepts it again; an Undo naming another Follow id changes nothing.
+  it("an Undo of R's Accept of L's Follow makes it a request, and the Accept again accepts it", async () => {
+    const w = await setup();
+    await inbound(w, { k: "follow" });
+    await inbound(w, { k: "inAccept", current: true });
+    expect(w.policy.lr?.state).toBe("accepted");
+    await inbound(w, { k: "inUndoAccept", current: false });
+    expect(w.policy.lr?.state).toBe("accepted");
+    await inbound(w, { k: "inUndoAccept", current: true });
+    expect(w.policy.lr?.state).toBe("pending");
+    await inbound(w, { k: "inAccept", current: true });
+    expect(w.policy.lr?.state).toBe("accepted");
+  });
+
+  it("agrees with the policy after every activity, typed and untyped Undo and an Undo of an Accept included", async () => {
     await fc.assert(
       fc.asyncProperty(fc.array(inboundArb, { minLength: 1, maxLength: 16 }), async (actions) => {
         const w = await setup();

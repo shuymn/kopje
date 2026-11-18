@@ -389,10 +389,12 @@ export class Policy {
 
   // ID-6: "an undone `Follow` or `Block` named by its type requires its `object` to be a single IRI of a local account,
   // or the `Undo` changes and records nothing, and ends the edge from the verified sender ... to that account whatever
-  // id the edge carries"; one "given without a type is sought by its id" (any other undone type is not modelled, and
-  // fails the run). ID-7: the untyped one "decides the undone type first (embedded, or a stored block with that id)"; its
-  // object is recorded as retracted whether or not it matched, so an Undo that overtook its activity keeps it from
-  // applying later, except a Follow's pair-shaped id, which "the same pair can undo a later generation" with.
+  // id the edge carries"; "an undone `Accept` named by its type turns the local account's accepted follow of the
+  // sender whose id its `object` names back into a request" (undoAccept); one "given without a type is sought by its
+  // id" (any other undone type is not modelled, and fails the run). ID-7: the untyped one "decides the undone type
+  // first (embedded, or a stored block with that id)"; its object is recorded as retracted whether or not it matched,
+  // so an Undo that overtook its activity keeps it from applying later, except a Follow's pair-shaped id, which "the
+  // same pair can undo a later generation" with.
   private undo(ref: InboundRef, now: number): Answer & { caught?: Intent[] } {
     if (ref.actor !== null && ref.actor !== this.rUri) {
       return { applied: false, reason: "not-own" };
@@ -403,6 +405,9 @@ export class Policy {
     }
     if (ref.type === "Follow" || ref.type === "Block") {
       return this.undoTyped(id, ref.type, ref.object, now);
+    }
+    if (ref.type === "Accept") {
+      return this.undoAccept(ref.object);
     }
     if (ref.type !== null) {
       throw new Error(`policy: an Undo of ${ref.type} is not modelled`);
@@ -491,6 +496,22 @@ export class Policy {
     this.retractFollow(id);
     this.retractFollow(ended?.uri ?? null);
     return { applied: true, reason: ended === null ? "retraction-recorded" : "undone", caught };
+  }
+
+  // ID-6 (#1775): R's Undo of its Accept of L's Follow, by the Follow's id, puts L's accepted follow of R back to a
+  // request, as Mastodon's undo_accept; ID-7: nothing is recorded, so the Accept delivered again accepts it again.
+  // VIS-30: L's Follow under that id is retired (superseded), so no hold owes it again; a copy still queued goes.
+  private undoAccept(followUri: string | null): Answer {
+    if (this.lr === null || this.lr.state !== "accepted" || followUri === null || this.lr.uri !== followUri) {
+      return { applied: false, reason: "unknown-follow" };
+    }
+    this.lr = { state: "pending", uri: this.lr.uri };
+    for (const intent of this.lane) {
+      if (intent.type === "Follow" && intent.ref === followUri) {
+        intent.superseded = true;
+      }
+    }
+    return { applied: true, reason: "follow-unaccepted" };
   }
 
   // ID-6: only the followed side answers our Follow, by its id (every follow of L names one).
