@@ -265,6 +265,26 @@ describe("a remote member's feature request (D23)", () => {
     expect((await call(w.t, "POST", `/api/v1/collections/${id}/items`, { account_id: silentId })).status).toBe(403);
     expect(await sql(w.t.store, "SELECT 1 FROM collection_items WHERE account_id = ?", silentId)).toEqual([]);
     expect((await sent(w.t)).length).toBe(before);
+
+    // One whose policy answers unknown (Mastodon's featureable_by? takes only automatic and manual): values that are
+    // not strings past a followers collection Kopje cannot read add unsupported_policy alone (#1772). Refused the same
+    // way. Fails if unknown is taken as consent (a pending row and a request).
+    const unknown = await mastodonActor(w.t.web, "unknownpolicy", {
+      extra: {
+        followers: "https://mastodon.example/users/unknownpolicy/followers�",
+        interactionPolicy: { canFeature: { automaticApproval: [7], manualApproval: [{ id: PUBLIC }] } },
+      },
+    });
+    const unknownId = await followed(w.t, unknown);
+    expect(await sql(w.t.store, "SELECT feature_policy AS p FROM accounts WHERE id = ?", unknownId)).toEqual([
+      { p: (1 << 16) | 1 },
+    ]);
+    const shown = await call(w.t, "GET", `/api/v1/accounts/${unknownId}`);
+    expect((shown.body.feature_approval as { current_user: string }).current_user).toBe("unknown");
+    const beforeUnknown = (await sent(w.t)).length;
+    expect((await call(w.t, "POST", `/api/v1/collections/${id}/items`, { account_id: unknownId })).status).toBe(403);
+    expect(await sql(w.t.store, "SELECT 1 FROM collection_items WHERE account_id = ?", unknownId)).toEqual([]);
+    expect((await sent(w.t)).length).toBe(beforeUnknown);
   });
 
   // 4-T3. Fails if the Accept is not taken as our request's answer (the item stays pending), or the Add is not sent.

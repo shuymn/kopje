@@ -2544,12 +2544,13 @@ function nextDueAt(db: Db, now: number, ownLease: string | null = null): number 
 // cannot be told from it). Any other Reject ends or refuses a generation Kopje no longer holds, which the follower's
 // server may still hold (an older Follow arriving late cannot be told from a newer one), so it is kept and delivered,
 // as Mastodon delivers its own (remove_from_followers_service.rb, follow.rb). An Undo of a Follow cancels the answers
-// of the generation it undoes, and a pair-shaped one every answer of the pair (inbox.ts undo): the follower withdrew
-// it itself, and a Reject of it sent later would reach its next request through the pair. Every row that is not
-// leased goes (queued, pending or given up, claimed before or not: a pending row's attempt has completed). A leased
-// row keeps its lane, so the new answer waits behind it, and its intent is superseded: the claim, the confirmation and
-// a failed completion drop a superseded answer (STALE_ANSWER) instead of sending, retrying or giving it up. Only a POST
-// whose confirmation was granted before the Follow committed still goes (the accepted risk in docs/threat-model.md).
+// of the generation it undoes (its id's, the ended edge's, and an id-less edge's own Accept), and a pair-shaped one
+// every answer of the pair (inbox.ts undo): the follower withdrew it itself, and a Reject of it sent later would reach
+// its next request through the pair. Every row that is not leased goes (queued, pending or given up, claimed before or
+// not: a pending row's attempt has completed). A leased row keeps its lane, so the new answer waits behind it, and its
+// intent is superseded: the claim, the confirmation and a failed completion drop a superseded answer (STALE_ANSWER)
+// instead of sending, retrying or giving it up. Only a POST whose confirmation was granted before the Follow committed
+// still goes (the accepted risk in docs/threat-model.md).
 //
 // Bounds (RES-6): a Follow, or an Undo of one, reads at most FOLLOW_ANSWER_INTENTS + 1 unsettled answers of its pair,
 // and of them FOLLOW_ANSWER_ROWS + 1 rows (leased or not) and FOLLOW_ANSWER_CHUNKS + 1 unexpanded chunks; over any
@@ -2583,16 +2584,26 @@ export const FOLLOW_ANSWER_CHUNKS_SQL = `SELECT CAST(id AS TEXT) AS id FROM outb
 
 // An unsettled answer as followAnswersOf's `replaces` judges it, classified in SQL: its type (ANSWER_TYPE), whether it
 // is superseded already, whether it names no Follow (object_uri NULL), whether its Follow is one of the selection's
-// (`named`: object_uri equal, byte for byte, to the selection's id or to the uri of its edge; DATA-6), and `shape`, the
-// Follow id it names when that is within ACTIVITY_ID_LIMIT bytes (else null, and its shape is not tested), for a shape
-// test only, never as an identity: an imported id may be malformed UTF-8, which decodes lossily.
-export type FollowAnswer = { type: string; superseded: number; unnamed: number; named: number; shape: string | null };
+// (`named`: object_uri equal, byte for byte, to the selection's id or to the uri of its edge; DATA-6), whether it is
+// the answer of an edge stored without a Follow id (`edge_answer`: naming no Follow, with the activity id
+// followAnswerId gives that edge's answer, the selection's `edgeAnswer`), and `shape`, the Follow id it names when that
+// is within ACTIVITY_ID_LIMIT bytes (else null, and its shape is not tested), for a shape test only, never as an
+// identity: an imported id may be malformed UTF-8, which decodes lossily.
+export type FollowAnswer = {
+  type: string;
+  superseded: number;
+  unnamed: number;
+  named: number;
+  edge_answer: number;
+  shape: string | null;
+};
 
-// What followAnswersOf selects: the answers `replaces` accepts, judged against `id` and the uri of the follows row
-// `edgeId` (each may be null).
+// What followAnswersOf selects: the answers `replaces` accepts, judged against `id`, the uri of the follows row
+// `edgeId` and the activity id `edgeAnswer` (each may be null or absent).
 export type FollowAnswerSelection = {
   id: string | null;
   edgeId: string | null;
+  edgeAnswer?: string | null;
   replaces: (answer: FollowAnswer) => boolean;
 };
 
@@ -2603,6 +2614,7 @@ const ANSWER_TYPE = `CASE json_extract(o.body, '$.activity.type') WHEN 'Accept' 
 export const FOLLOW_ANSWER_CLASSES_SQL = `SELECT CAST(o.id AS TEXT) AS id, ${ANSWER_TYPE} AS type, o.superseded,
 	o.object_uri IS NULL AS unnamed,
 	coalesce(o.object_uri = ?2 OR o.object_uri = (SELECT f.uri FROM follows f WHERE f.id = CAST(?3 AS INTEGER)), 0) AS named,
+	coalesce(o.object_uri IS NULL AND json_extract(o.body, '$.activity.id') = ?5, 0) AS edge_answer,
 	CASE WHEN length(CAST(o.object_uri AS BLOB)) <= ?4 THEN o.object_uri END AS shape
 	FROM outbound_activities o WHERE o.id IN (SELECT CAST(value AS INTEGER) FROM json_each(?1)) ORDER BY o.id`;
 
@@ -2632,6 +2644,7 @@ export function followAnswersOf(
             select.id,
             select.edgeId,
             ACTIVITY_ID_LIMIT,
+            select.edgeAnswer ?? null,
           )
           .filter(select.replaces)
           .map((r) => r.id);

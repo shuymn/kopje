@@ -16,7 +16,7 @@ import { MAX_PUBLIC_KEYS, readableKeys } from "./key-entries";
 import { remoteDescription } from "./lang-string";
 import { isTransientLoadError, loadFailureOf } from "./loader";
 import { emojiCandidates } from "./remote-emoji";
-import { MAX_QUOTE_POLICY_ENTRIES } from "./remote-status";
+import { policyHalf } from "./remote-status";
 
 // Remote actors as Kopje stores them: fetched through the safe loader (NET-1, ID-8), parsed by Fedify's lookupObject,
 // which checks the parsed id against the document's origin (ID-2), and reduced to bounded, safe columns.
@@ -473,9 +473,8 @@ export async function remoteActorInput(actor: Actor, document: unknown): Promise
 
 // ProcessAccountService#feature_approval_policy's input (process_account_service.rb:581-583): the document's
 // interactionPolicy.canFeature as ActivityPub::Parser::InteractionPolicyParser reads each of its halves, Ruby's
-// Array(automaticApproval) and Array(manualApproval): each string as listed, whatever its length, as Mastodon compares
-// it, and null for anything else, which Mastodon reads as unsupported_policy (an object's members are its pairs, each
-// such an entry; an empty object none). At most MAX_QUOTE_POLICY_ENTRIES are read of each half (RES-1). null when
+// Array(automaticApproval) and Array(manualApproval), every entry read as remote-status.ts policyHalf reads it (an
+// object's members are its pairs, each an entry that is not a string; an empty object none). null when
 // canFeature is absent or is no object: Mastodon stores 0 for a blank one (`@json.blank?`, an empty object included,
 // which reads as two empty halves here) and fails the account's processing on a value it cannot dig into; Kopje stores
 // 0 (no one may feature the account). The Store turns the halves into the bitmap with the account's collections
@@ -492,9 +491,11 @@ function featurePolicyOf(json: Record<string, unknown>): RemoteFeaturePolicyInpu
         : Array.isArray(value)
           ? value
           : isObject(value)
-            ? Object.keys(value).map(() => null)
+            ? Object.keys(value).length === 0
+              ? []
+              : [null]
             : [value];
-    return entries.slice(0, MAX_QUOTE_POLICY_ENTRIES).map((entry) => (typeof entry === "string" ? entry : null));
+    return policyHalf(entries);
   };
   return { automatic: half(policy.automaticApproval), manual: half(policy.manualApproval) };
 }
