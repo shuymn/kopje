@@ -79,12 +79,15 @@ const NAMES = [
   "S2-F7",
   "S2-F8",
   "S2-F8ThenF7",
+  "S2-LeaseFailed",
+  "S2-LeaseSuperseded",
   "S2-ReadOverRetraction",
   "S2-RetractionAdmitted",
   "S3-OV2Shown",
   "S4-AnsweredX",
   "S4-AnsweredXRefused",
   "S4-EmbeddedUnserved",
+  "S4-LeaseFailedBesideX",
   "S4-RecvXAdd",
   "S4-RetiredRemoved",
   "S5-FencedByPush",
@@ -161,6 +164,8 @@ type World = {
   // A request's instrument fetch: held for the next one, or reached and awaiting its KApplyFetch.
   instrument: { reached: Promise<void>; release: () => void } | null;
   fetching: { posting: Promise<number>; release: () => void } | null;
+  // The delivery round KLeaseHead holds at its POST to R's server.
+  flight: Flight | null;
   environment: Environment;
   // The outbound rows seen by the last observation (an id is reused once its row is deleted, so a row is keyed by
   // its id, its time and its body).
@@ -253,6 +258,7 @@ async function init(environment: Environment, stored: boolean): Promise<World> {
     rounds: [],
     instrument: null,
     fetching: null,
+    flight: null,
     environment: { consent: true, slotsFull: false, held: "lt10", backlogFull: false, retractionCapFull: false },
     seen: new Set(await outboundKeys(t)),
     notified: 0,
@@ -711,39 +717,71 @@ async function complete(w: World, stale: boolean): Promise<void> {
   w.rounds.splice(w.rounds.indexOf(round), 1);
 }
 
-// One delivery round, the head of Kopje's lane to R's server answered by `outcome`: 202, a lost response (the POST
-// reached R), or a refusal for good (403: delivery.ts classifyStatus, which resends a 400 at once). The clock moves to
-// the head's due time (a promoted row is pending or leased, the rows behind it queued). Checks that the lane's head
-// before the round is the activity the step names, at the inbox it names, and that the round POSTs exactly it there,
-// an Accept with its result; or, when it is dropped, that nothing is sent and the head is gone.
-async function deliver(w: World, outcome: "delivered" | "lost" | "refused", expected: Activity, dropped: boolean) {
-  const lane = new URL(w.owner.uri).origin;
-  const heads = await sql<{ id: number; due: number; inbox: string; retracts: number; body: string }>(
+// A delivery round's answer to the head of Kopje's lane to R's server: 202, a lost response (the POST reached R), a
+// refusal for good (403: delivery.ts classifyStatus, which resends a 400 at once), or a transient failure (503). Of
+// KFail's two forms (a failed POST, or a lease that runs out for the sweep), the replay takes the failed POST.
+type Outcome = "delivered" | "lost" | "refused" | "failed";
+const STATUS = { delivered: 202, refused: 403, failed: 503 } as const;
+
+type Head = { id: number; due: number; inbox: string; retracts: number; body: string };
+
+// A delivery round under way, its POSTs recorded and each held until the step that answers it.
+type Flight = {
+  head: Head;
+  sent: { url: string; body: Record<string, unknown> }[];
+  posted: Deferred;
+  answer: (outcome: Outcome) => void;
+  done: Promise<unknown>;
+};
+
+const laneOf = (w: World): string => new URL(w.owner.uri).origin;
+
+// The lane's rows waiting or in flight (a promoted row is pending or leased, the rows behind it queued).
+const laneRows = (w: World, states: string) =>
+  sql<Head>(
     w.t.store,
     `SELECT d.id, d.next_attempt_at AS due, d.inbox_url AS inbox, o.retracts, o.body FROM deliveries d
 			JOIN outbound_activities o ON o.id = d.activity_id
-			WHERE d.account_id = ? AND d.lane = ? AND d.state IN ('pending', 'leased')`,
+			WHERE d.account_id = ? AND d.lane = ? AND d.state IN (SELECT value FROM json_each(?)) ORDER BY d.id`,
     ALICE,
-    lane,
+    laneOf(w),
+    states,
   );
+
+const recordedAs = (w: World, row: Head) =>
+  asRecorded(w, JSON.parse(row.body) as Parameters<typeof asRecorded>[1], [row.inbox], row.retracts);
+
+// The lane's head, checked to be the activity the step names, at the inbox it names.
+async function laneHead(w: World, expected: Activity): Promise<Head> {
+  const heads = await laneRows(w, '["pending", "leased"]');
   expect(heads.length, "the lane's one head").toBe(1);
-  const [head] = heads as [(typeof heads)[number]];
+  const [head] = heads as [Head];
   const { reason: _reason, ...want } = expected;
-  const envelope = JSON.parse(head.body) as Parameters<typeof asRecorded>[1];
-  expect(asRecorded(w, envelope, [head.inbox], head.retracts), "the lane's head before the step").toEqual(want);
+  expect(recordedAs(w, head), "the lane's head before the step").toEqual(want);
+  return head;
+}
+
+// A delivery round at the head's due time.
+function fly(w: World, head: Head): Flight {
   if (head.due > w.clock.now) {
     w.clock.now = head.due;
   }
-  const sent: { url: string; body: Record<string, unknown> }[] = [];
+  let answer!: (outcome: Outcome) => void;
+  const outcome = new Promise<Outcome>((resolve) => (answer = resolve));
+  const flight: Flight = { head, sent: [], posted: deferred(), answer, done: Promise.resolve() };
   const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(input, init);
-    sent.push({ url: request.url, body: await request.json() });
-    if (outcome === "lost") {
+    flight.sent.push({ url: request.url, body: await request.json() });
+    if (new URL(request.url).origin === laneOf(w)) {
+      flight.posted.resolve();
+    }
+    const answered = await outcome;
+    if (answered === "lost") {
       throw new TypeError("network connection lost");
     }
-    return new Response(null, { status: outcome === "refused" ? 403 : 202 });
+    return new Response(null, { status: STATUS[answered] });
   }) as typeof globalThis.fetch;
-  await deliveryRound(
+  flight.done = deliveryRound(
     w.t.env,
     deliveryDeps(
       () => w.t.store,
@@ -752,30 +790,64 @@ async function deliver(w: World, outcome: "delivered" | "lost" | "refused", expe
       `replay-${++leases}`,
     ),
   );
-  const toR = sent.filter((s) => new URL(s.url).origin === lane);
+  return flight;
+}
+let leases = 0;
+
+// KLeaseHead: a round claims the head and holds its POST in flight until the step that answers it.
+async function lease(w: World, expected: Activity): Promise<void> {
+  const flight = fly(w, await laneHead(w, expected));
+  await Promise.race([
+    flight.posted.promise,
+    flight.done.then(() => {
+      throw new Error("the round sent nothing to R's server");
+    }),
+  ]);
+  w.flight = flight;
+}
+
+// A step that answers the head's POST: the one KLeaseHead holds, or that of a round claiming the waiting head. Checks
+// that the head before the step is the activity the step names and that the round POSTs exactly it there, an Accept
+// with its result. Then, by the step's input: "dropped", that nothing is sent and the head is gone; "superseded", that
+// the head is gone and a later answer of its authorization to its inbox waits; else, after a failed or lost POST, that
+// the head waits again.
+async function deliver(w: World, outcome: Outcome, expected: Activity, value: string | undefined) {
+  const head = await laneHead(w, expected);
+  const flight = w.flight ?? fly(w, head);
+  expect(flight.head.id, "the head in flight").toBe(head.id);
+  w.flight = null;
+  flight.answer(outcome);
+  await flight.done;
+  const lane = laneOf(w);
+  const toR = flight.sent.filter((s) => new URL(s.url).origin === lane);
   // Off R's server, a round sends only L's revocations to her followers (offR).
   expect(
-    sent.filter((s) => new URL(s.url).origin !== lane && !offR(w, s.body).includes(s.url)).map((s) => s.url),
+    flight.sent.filter((s) => new URL(s.url).origin !== lane && !offR(w, s.body).includes(s.url)).map((s) => s.url),
     "the round's POSTs off R's server",
   ).toEqual([]);
-  if (dropped) {
+  const left = () =>
+    sql(w.t.store, "SELECT state FROM deliveries WHERE id = ? AND state IN ('queued', 'pending', 'leased')", head.id);
+  if (value === "dropped") {
     expect(toR, "a dropped activity is not sent").toEqual([]);
-    expect(
-      await sql(
-        w.t.store,
-        "SELECT state FROM deliveries WHERE id = ? AND state IN ('queued', 'pending', 'leased')",
-        head.id,
-      ),
-      "a dropped activity's delivery is gone",
-    ).toEqual([]);
+    expect(await left(), "a dropped activity's delivery is gone").toEqual([]);
     return;
   }
+  const { reason: _reason, ...want } = expected;
+  const envelope = JSON.parse(head.body) as Parameters<typeof asRecorded>[1];
   expect(
     toR.map((s) => asRecorded(w, { ...envelope, activity: s.body }, [s.url], head.retracts)),
     "the lane's head, as sent",
   ).toEqual([want]);
+  if (value === "superseded") {
+    expect(await left(), "a superseded answer's delivery is gone").toEqual([]);
+    expect(
+      (await laneRows(w, '["queued", "pending"]')).map((row) => recordedAs(w, row)),
+      "the later answer waits",
+    ).toContainEqual(want);
+  } else if (outcome === "failed" || outcome === "lost") {
+    expect(await left(), "the head waits again").toEqual([{ state: "pending" }]);
+  }
 }
-let leases = 0;
 
 async function admin(w: World, path: string, init: RequestInit): Promise<void> {
   const response = await w.t.request(path, bearer(w.adminToken, init));
@@ -873,14 +945,20 @@ async function step(w: World, s: Step): Promise<202 | 503 | "fetch" | null> {
     case "KLease":
       w.clock.now += SYNC_LEASE_MS + 1000;
       return null;
+    case "KLeaseHead":
+      await lease(w, s.input.activity!);
+      return null;
     case "KDeliver":
-      await deliver(w, "delivered", s.input.activity!, value === "dropped");
+      await deliver(w, "delivered", s.input.activity!, value);
       return null;
     case "KDup":
-      await deliver(w, "lost", s.input.activity!, false);
+      await deliver(w, "lost", s.input.activity!, value);
       return null;
     case "KGiveUp":
-      await deliver(w, "refused", s.input.activity!, false);
+      await deliver(w, "refused", s.input.activity!, value);
+      return null;
+    case "KFail":
+      await deliver(w, "failed", s.input.activity!, value);
       return null;
     case "KRetry":
       await inDurableObject(w, (_db, storage) =>

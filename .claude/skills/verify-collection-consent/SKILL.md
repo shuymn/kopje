@@ -65,12 +65,13 @@ on one Mastodon host, L following neither and followed by no remote account; the
 members' rows in C's slots, R's other collections, a backlog of other hosts' deliveries none of them due, R's
 retractions at the cap, R's other content before a deferred purge reaches C); gates that hold a read's fetches until its
 `KFetch` and its completion until its `KApply` or `KStale`, one claim to a `KClaim`; the lane head answered 202, a lost
-response, or 403 for a give-up; `recorded` as L's outbound rows new since the last step, each with its full destination
-set: its one inbox on R's server, which names its `to`, and off R's server exactly the inboxes `offR` states (L's
-followers for her revocation, none for anything else), so an extra copy anywhere shows in its `to`; and a delivery round
-POSTs nothing else off R's server. A choice that lets the Store take a step the fixture does not state (a second claim
-in one call, a 400 the delivery resends, a key gone stale over `KCleanup`'s day that refetches R's document) makes a
-disagreement that is the replay's: fix the replay.
+response, 403 for a give-up, or 503 for `KFail` (of its two forms, the failed POST), a `KLeaseHead`'s round held at its
+POST until the step that answers it; `recorded` as L's outbound rows new since the last step, each with its full
+destination set: its one inbox on R's server, which names its `to`, and off R's server exactly the inboxes `offR` states
+(L's followers for her revocation, none for anything else), so an extra copy anywhere shows in its `to`; and a delivery
+round POSTs nothing else off R's server. A choice that lets the Store take a step the fixture does not state (a second
+claim in one call, a 400 the delivery resends, a key gone stale over `KCleanup`'s day that refetches R's document) makes
+a disagreement that is the replay's: fix the replay.
 
 Each calibration variant that changes what the Store does has a fixture whose replay fails against a Store that makes
 the variant's change. `checks.json`'s `replay` names it, and the spec test checks that the variant no longer reproduces
