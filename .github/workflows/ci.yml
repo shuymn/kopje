@@ -145,7 +145,7 @@ jobs:
         run: pnpm run test:scripts
 
   # Kopje's browser job (packages/kopje/browser/, design §10.11): the fixture pages in Chromium's headless shell, with
-  # axe in both colour schemes. Firefox and WebKit are checked by hand before a UI release. The limit holds the worst
+  # axe in both colour schemes. Firefox and WebKit are not run, here or in the release steps. The limit holds the worst
   # case: three timed-out downloads (8 min 15 s with the kill grace) after the install and the system dependencies,
   # then the tests (seconds) and the artifact upload.
   # A required check, so the job always runs: for a change no browser page reads (kopje_code is false) its steps are
