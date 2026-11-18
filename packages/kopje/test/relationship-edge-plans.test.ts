@@ -182,9 +182,11 @@ async function world(n: number): Promise<StoreStub> {
 }
 
 type Case = {
-  // The statements witnessed, and the tables (by their names in them) none of them may scan.
+  // The statements witnessed, and the tables (by their names in them) none of them may scan; `witnessed`, a statement
+  // among them that must have run.
   pattern: RegExp;
   scanned: string[];
+  witnessed?: RegExp;
   // The subject's own rows, on top of the world.
   subject: string[];
   run: (sql: SqlStorage, transact: Transact) => unknown;
@@ -274,7 +276,7 @@ const CASES: Record<string, Case> = {
     answer: { applied: true, reason: "follow-accepted" },
   },
   "Undo of a follow": {
-    pattern: /AS target, uri FROM follows INDEXED BY follows_pair\s+WHERE account_id = \?/,
+    pattern: /AS target FROM follows INDEXED BY follows_pair\s+WHERE account_id = \?/,
     scanned: ["follows"],
     subject: [
       `INSERT INTO follows (account_id, target_account_id, state, uri) VALUES ('${BOB}', '${VIEWER}', 'accepted', '${BOB_URI}#f')`,
@@ -286,10 +288,11 @@ const CASES: Record<string, Case> = {
     }),
     answer: { applied: true, reason: "undone" },
   },
-  // A typed Undo of a Follow ends the edge to the account its object names, by the pair (#1773).
+  // A typed Undo of a Follow or a Block ends the edge to the account its object names, found by the pair (#1773).
   "typed Undo of a follow": {
-    pattern: /AS id, uri FROM follows INDEXED BY follows_pair|DELETE FROM follows/,
+    pattern: /FROM follows INDEXED BY follows_pair|DELETE FROM follows/,
     scanned: ["follows"],
+    witnessed: /AS uri\s+FROM follows INDEXED BY follows_pair/,
     subject: [
       `INSERT INTO follows (account_id, target_account_id, state, uri) VALUES ('${BOB}', '${VIEWER}', 'accepted', NULL)`,
     ],
@@ -304,6 +307,7 @@ const CASES: Record<string, Case> = {
   "typed Undo of a block": {
     pattern: /blocks INDEXED BY blocks_pair/,
     scanned: ["blocks"],
+    witnessed: /AS uri\s+FROM blocks INDEXED BY blocks_pair/,
     subject: [`INSERT INTO blocks (account_id, target_account_id, uri) VALUES ('${BOB}', '${VIEWER}', '${BOB_URI}#b')`],
     run: inbound({
       type: "Undo",
@@ -434,6 +438,9 @@ describe("relationship and inbound edges with grown neighbours (RES-7)", () => {
       expect([few.left, many.left]).toEqual([0, 0]);
       expect(many.result).toEqual(few.result);
       expect(many.plans.length).toBeGreaterThan(0);
+      if (c.witnessed !== undefined) {
+        expect(many.plans.some((p) => c.witnessed!.test(p.query))).toBe(true);
+      }
       for (const { plan } of many.plans) {
         expect(scansOf(plan, c.scanned)).toEqual([]);
       }

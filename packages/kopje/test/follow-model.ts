@@ -51,18 +51,12 @@ export type Intent = {
 
 export type Answer = { applied: boolean; reason: string };
 
-// typeUnread: a type given that is no single name (ID-6).
 export type InboundRef = {
   id: string | null;
   type: string | null;
-  typeUnread?: true;
   actor: string | null;
   object: string | null;
 };
-
-// ID-6: the undone types an Undo acts on ("`Follow`, `Block`, `Announce` and the names read as a `Like`", each read
-// as "Like").
-const UNDONE_TYPES: ReadonlySet<string> = new Set(["Follow", "Block", "Like", "Announce"]);
 
 export type Inbound =
   | { type: "Follow"; id: string; object: string }
@@ -395,9 +389,8 @@ export class Policy {
 
   // ID-6: "an undone `Follow` or `Block` named by its type requires its `object` to be a single IRI of a local account,
   // or the `Undo` changes and records nothing, and ends the edge from the verified sender ... to that account whatever
-  // id the edge carries"; "one whose type is given but is not a single string, or is a string other than `Follow`,
-  // `Block`, `Announce` and the names read as a `Like` ..., changes nothing"; one "given without a type is sought by
-  // its id". ID-7: the untyped one "decides the undone type first (embedded, or a stored block with that id)"; its
+  // id the edge carries"; one "given without a type is sought by its id" (any other undone type is not modelled, and
+  // fails the run). ID-7: the untyped one "decides the undone type first (embedded, or a stored block with that id)"; its
   // object is recorded as retracted whether or not it matched, so an Undo that overtook its activity keeps it from
   // applying later, except a Follow's pair-shaped id, which "the same pair can undo a later generation" with.
   private undo(ref: InboundRef, now: number): Answer & { caught?: Intent[] } {
@@ -407,9 +400,6 @@ export class Policy {
     const id = ref.id;
     if (id === null) {
       return { applied: false, reason: "unknown-object" };
-    }
-    if (ref.typeUnread === true || (ref.type !== null && !UNDONE_TYPES.has(ref.type))) {
-      return { applied: false, reason: "unsupported-undo" };
     }
     if (ref.type === "Follow" || ref.type === "Block") {
       return this.undoTyped(id, ref.type, ref.object, now);
@@ -429,7 +419,6 @@ export class Policy {
     const followMatch = this.rl !== null && this.rl.uri === id;
     const undoesBlock = !followMatch && this.blockRL === id;
     const caught = undoesBlock ? [] : this.undoneAnswers(id, named || followMatch, now);
-    const ended = followMatch ? this.rl!.uri : null;
     let undone = false;
     if (followMatch) {
       this.rl = null;
@@ -444,7 +433,6 @@ export class Policy {
     } else {
       this.retractFollow(id);
     }
-    this.retractFollow(ended);
     return { applied: true, reason: undone ? "undone" : "retraction-recorded", caught };
   }
 

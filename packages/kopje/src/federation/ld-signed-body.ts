@@ -1322,7 +1322,7 @@ function patchedAsMastodon(json: Json, named: Json, meanings: ReadonlyMap<string
   // A member Kopje's readers read where it does not tell whether the patch put it back or left the compaction's: as
   // given only where both are the value as given, an IRI the compaction writes so or a node whose members so read are.
   // A type is read alike either way but a one-element array (the compaction's type, or an array of it), which
-  // undoesUnread refuses in an Undo, the only retraction whose reading turns on it.
+  // undoAsMastodon refuses in an Undo, the only retraction whose reading turns on it.
   const either = (member: unknown, read: string): void => {
     if (read === "type" || member === null || iriAsGiven(member)) {
       return;
@@ -1456,25 +1456,8 @@ export async function ldSignedReading(
   }
   const patched = patchedAsMastodon(body, named, context.meanings);
   const actor = patched === null ? null : actorAsCompacted(patched);
-  return actor === null || undoesUnread(actor, readType) ? null : { readType, body: undoneTypeless(actor, readType) };
-}
-
-// An Undo whose undone activity's type the patch leaves as an empty array: Mastodon's compaction writes it as null
-// (forms.json), so undo.rb reads it as an Undo by reference (handle_reference), as Kopje reads one without a type. As
-// received, an empty array is no single name, and both apply nothing (refOf's typeUnread).
-function undoneTypeless(read: Json, readType: TypeReader): Json {
-  const undone = read.object;
-  if (
-    typeof read.type !== "string" ||
-    readType(read.type) !== "Undo" ||
-    !isObject(undone) ||
-    !Array.isArray(undone.type) ||
-    undone.type.length > 0
-  ) {
-    return read;
-  }
-  const { type: _, ...typeless } = undone;
-  return { ...read, object: typeless };
+  const undo = actor === null ? null : undoAsMastodon(actor, readType);
+  return undo === null ? null : { readType, body: undo };
 }
 
 // Whether Mastodon's inbox answers the request 500 before it queues the job (inboxes_controller.rb:7 and :29-38,
@@ -1491,26 +1474,34 @@ function inboxRaises(json: Json): boolean {
   return json.type === "Delete" && Array.isArray(json.object);
 }
 
-// Whether an Undo gives what it undoes in a form where Mastodon applies nothing; Kopje's handler would end nothing
-// either (ID-6), and it is refused so that the reading stays Mastodon's (test/inbox-signed-forms.test.ts). Refused:
+// The patched reading `read` as Mastodon reads what an Undo undoes; any other activity, and an Undo of anything else,
+// as it is. Refused (null), where Mastodon applies nothing and Kopje's handler would end nothing either (ID-6), so that
+// the reading stays Mastodon's (test/inbox-signed-forms.test.ts):
 //   - a Follow, a Block or a Like whose `object` is an array, where Mastodon's reading has one too (patchedAsMastodon:
 //     the patch puts back each array whose length the compaction kept, an array in it as the compaction's value):
 //     undo.rb seeks what to end by it (target_uri, value_or_id), which raises on an array;
 //   - one whose type is an array holding a type, which the patch puts back as an array of the compaction's names, as
 //     where the compaction writes two or more (forms.json): undo.rb takes no array as a type, where Kopje's readers
-//     (refOf) read it as no single name, and nothing is undone. An empty one both read as none (Mastodon's compaction
-//     writes null; undoneTypeless), and Kopje reads a one-element array after the patch's stop as its type
-//     (patchedAsMastodon).
+//     (refOf) read it as no single name, and nothing is undone.
+// An undone activity whose type the patch leaves as an empty array is read without its type: Mastodon's compaction
+// writes it as null (forms.json), so undo.rb reads it as an Undo by reference (handle_reference), as Kopje reads one
+// without a type; as received, an empty array is no single name, and both apply nothing (refOf's typeUnread). Kopje
+// reads a one-element array after the patch's stop as its type (patchedAsMastodon).
 const UNDONE_BY_TARGET: ReadonlySet<string> = new Set(["Follow", "Block", "Like"]);
-function undoesUnread(read: Json, readType: TypeReader): boolean {
+function undoAsMastodon(read: Json, readType: TypeReader): Json | null {
   const undone = read.object;
   if (typeof read.type !== "string" || readType(read.type) !== "Undo" || !isObject(undone)) {
-    return false;
+    return read;
   }
   if (Array.isArray(undone.type)) {
-    return undone.type.length > 0;
+    if (undone.type.length > 0) {
+      return null;
+    }
+    const { type: _, ...typeless } = undone;
+    return { ...read, object: typeless };
   }
-  return typeof undone.type === "string" && UNDONE_BY_TARGET.has(readType(undone.type)) && Array.isArray(undone.object);
+  const byTarget = typeof undone.type === "string" && UNDONE_BY_TARGET.has(readType(undone.type));
+  return byTarget && Array.isArray(undone.object) ? null : read;
 }
 
 // Whether the rules (1-5) read an LD-signed body at all (ldSignedReading is null for no other).

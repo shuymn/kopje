@@ -973,7 +973,7 @@ const undo: Handler<"Undo"> = (db, actor, activity, { now }) => {
   if (ref.type !== null || held) {
     return undoInteraction(db, actor, { ...ref, id: ref.id }, now);
   }
-  type Edge = { target: string; uri: string | null };
+  type Edge = { target: string };
   // The actor's follows and blocks by uri are walked through their pair indexes: the inbox writes only ones with a local
   // target, but an import does not hold them to it, and no index holds their uri (#1481). The uri is not unique (an
   // import may repeat it): the follow of the account the Undo names, local or not, is probed first by its pair, and only
@@ -986,29 +986,27 @@ const undo: Handler<"Undo"> = (db, actor, activity, { now }) => {
     (named === undefined
       ? undefined
       : db.first<Edge>(
-          `SELECT target_account_id AS target, uri FROM follows INDEXED BY follows_pair
+          `SELECT target_account_id AS target FROM follows INDEXED BY follows_pair
 					WHERE account_id = ? AND target_account_id = ? AND uri = ?`,
           actor.id,
           named.id,
           ref.id,
         )) ??
     db.first<Edge>(
-      `SELECT target_account_id AS target, uri FROM follows INDEXED BY follows_pair WHERE account_id = ?1 AND uri = ?2
+      `SELECT target_account_id AS target FROM follows INDEXED BY follows_pair WHERE account_id = ?1 AND uri = ?2
 				ORDER BY id LIMIT 1`,
       actor.id,
       ref.id,
     );
   // Everything this Undo records as retracted must fit, or nothing changes (ID-7). The undone activity's type is
   // decided first: a stored block with the id makes it a Block's Undo, always recorded, whatever its id's shape. Only a
-  // Follow's pair id names every generation, so it is never recorded, whichever side carries it.
+  // Follow's pair id names every generation, so it is never recorded. A follow found carries the id itself (both
+  // lookups match it), so the id is all there is to record.
   const undoesBlock =
     edge === undefined &&
     db.first("SELECT 1 AS x FROM blocks INDEXED BY blocks_pair WHERE account_id = ? AND uri = ?", actor.id, ref.id) !==
       undefined;
-  const retracted = [
-    ...(!undoesBlock && isMisskeyPairId(ref.id) ? [] : [ref.id]),
-    ...(edge?.uri == null || isMisskeyPairId(edge.uri) ? [] : [edge.uri]),
-  ];
+  const retracted = !undoesBlock && isMisskeyPairId(ref.id) ? [] : [ref.id];
   if (!canRetract(db, actor.uri, retracted, now)) {
     // An Undo that matches nothing stored may name a Like or Announce still on its way: answered 503, so its tombstone
     // is not lost (ID-7). One that names a stored follow or block keeps its answer.
@@ -3568,18 +3566,17 @@ function undoInteraction(db: Db, actor: RemoteRow, ref: ActivityRef & { id: stri
   const kept = tracked !== undefined || ref.type === "Announce" ? undefined : retainedLike(db, actor.id, ref.id);
   const retained = kept !== undefined && ofObject(kept) ? kept : undefined;
   const legacy =
-    tracked === undefined && retained === undefined && ref.type === "Like" && ref.object !== null
-      ? legacyFavourite(db, actor.id, ref.object)
+    tracked === undefined && retained === undefined && object !== null
+      ? legacyFavourite(db, actor.id, object)
       : undefined;
   const named = ref.type === "Like" ? undefined : namedStatus(db, actor, ref.id, ref.atomUri, true);
   const boost = named === undefined ? undefined : { id: named.status.id, original: named.status.reblog_of_id! };
   if (
-    ref.type === "Like" &&
+    object !== null &&
     tracked === undefined &&
     retained === undefined &&
     legacy === undefined &&
-    ref.object !== null &&
-    originalByUri(db, ref.object)?.local !== 1
+    originalByUri(db, object)?.local !== 1
   ) {
     return ignored("unrelated");
   }
