@@ -29,11 +29,12 @@ import { requestCollectionSync } from "./collection-requests";
 //     row's authorization, sets the row's uri; a read that does not list it keeps it while its wait is queued, while it
 //     is retired (rejected or revoked: the 24-hour cleanup deletes it) or while it changed at or after the read's claim,
 //     and deletes it otherwise. The local members' rows a read keeps hold their live slots first.
-//   - An owner's listing (its Add, or a read) naming an authorization of the member that Kopje does not serve (no row,
-//     a retired row, or a row with another id) is answered with the member's Delete of it (answerUnserved), to the
-//     owner alone, once per listing, nothing stored: a retraction for an authorization of the row Kopje holds for that
-//     member in that collection, one active per authorization (deliveries.ts ANSWER_SUBJECT), and an ordinary intent
-//     under RES-4's caps for any other, which Kopje cannot tell from one it never issued.
+//   - An owner's listing (its Add, or a read) naming an authorization of the member that Kopje serves in no collection
+//     (no row, or a retired one) is answered with the member's Delete of it (answerUnserved), to the owner alone, once
+//     per listing, nothing stored: a retraction for an authorization of the row Kopje holds for that member in that
+//     collection, one active per authorization (deliveries.ts ANSWER_SUBJECT), and an ordinary intent under RES-4's
+//     caps for any other, which Kopje cannot tell from one it never issued. An authorization Kopje serves for another
+//     collection is not answered: a Mastodon server applies a Delete of it to whichever of its collections holds it.
 //   - An owner's Remove does not delete such a row (it names only an item uri, and may be a late copy about an earlier
 //     item of the member): it requests a read (inbox.ts removeFeatured).
 
@@ -157,6 +158,10 @@ export function markListed(
 // `collectionUri`: to the owner's personal inbox alone, immutable (the body of the member's LD-signed revocation without
 // its signature, byte for byte: no personal copy rewrites its addressing), a retraction when `held` (the authorization
 // of the row Kopje holds for the member there, retired), else an ordinary intent (deliveries.ts OutboundOptions.answer).
+// Nothing is sent for an authorization Kopje serves, in whatever collection (its row the member's and accepted, as
+// collection-documents.ts featureAuthorizationDocument serves it): a Mastodon server revokes its own collection's item
+// by the Delete's authorization and signer alone (delete.rb:80), so a Delete to another owner there would end the
+// membership it serves. Whether the Delete was recorded.
 export function answerUnserved(
   db: Db,
   owner: { id: string },
@@ -164,7 +169,16 @@ export function answerUnserved(
   listing: LocalListing,
   held: boolean,
   now: number,
-): void {
+): boolean {
+  const served = db.first(
+    `SELECT 1 AS x FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
+			WHERE id = ?1 AND account_id = ?2 AND state = ${COLLECTION_ITEM_STATES.accepted}`,
+    listing.item,
+    listing.member.id,
+  );
+  if (served !== undefined) {
+    return false;
+  }
   recordOutbound(
     db,
     listing.member.id,
@@ -176,6 +190,7 @@ export function answerUnserved(
     now,
     { answer: held ? "retraction" : "ordinary", audienceOnly: true, personalInbox: true },
   );
+  return true;
 }
 
 // The member's answer to the owner's request `request`, recorded from the member to the owner's personal inbox, and

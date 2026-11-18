@@ -1627,6 +1627,9 @@ type ServerWorld = {
   listed: ReturnType<typeof collection>;
   ownerId: string;
   before: { uri: string }[];
+  // Another owner on R's server (X) and a collection of its own that Kopje stores.
+  other: TestActor & { featuredCollections: string };
+  theirs: ReturnType<typeof collection>;
   // alice's activities before the run, the ones handed to R (when), and R's inbox jobs with their delivery times.
   since: number;
   handed: Map<string, number>;
@@ -1660,6 +1663,9 @@ async function serverWorld(before: number, following: boolean): Promise<ServerWo
   const owner = await featuredOwner(t.web, `srv${n}`, COLLECTIONS_ONLY);
   const r = new OwnerServer(new URL(owner.uri).origin);
   r.follow(following);
+  const other = await featuredOwner(t.web, `srvx${n}`, COLLECTIONS_ONLY);
+  const theirs = collection(other, []);
+  serveListing(t.web, other, theirs);
   const w: ServerWorld = {
     t,
     clock,
@@ -1668,6 +1674,8 @@ async function serverWorld(before: number, following: boolean): Promise<ServerWo
     listed: collection(owner, []),
     ownerId: "",
     before: before === 0 ? [] : await seededMembers(t, before, `s${n}m`),
+    other,
+    theirs,
     since: 0,
     handed: new Map(),
     watched: null,
@@ -1684,6 +1692,7 @@ async function serverWorld(before: number, following: boolean): Promise<ServerWo
   };
   serveServer(w);
   w.ownerId = await storedOwner(t, owner);
+  await storedOwner(t, other);
   await syncAll(t, t.web.loader, clock.now);
   await settleDeliveries(t.store, clock.now);
   w.since = (await sql<{ n: number }>(t.store, "SELECT coalesce(max(id), 0) AS n FROM outbound_activities"))[0]!.n;
@@ -1706,7 +1715,13 @@ function serverStep(w: ServerWorld, line: string, ...labels: string[]): void {
   labels.forEach((label) => tally(w.stats, label));
 }
 
-const serverInboxes = (w: ServerWorld) => [`${w.owner.uri}/inbox`, `${new URL(w.owner.uri).origin}/inbox`];
+// R's server's inboxes: R's, the shared one, and X's (a Delete to X reaches R's server, which applies it to whichever
+// of its collections holds the authorization, delete.rb:80).
+const serverInboxes = (w: ServerWorld) => [
+  `${w.owner.uri}/inbox`,
+  `${new URL(w.owner.uri).origin}/inbox`,
+  `${w.other.uri}/inbox`,
+];
 
 function toOwnerServer(activity: Record<string, unknown>): ToOwnerServer {
   switch (activity.type) {
@@ -1732,7 +1747,7 @@ async function serverLaneHead(w: ServerWorld): Promise<{ id: string; message: To
     w.t.store,
     `SELECT CAST(a.id AS TEXT) AS id, a.body FROM outbound_activities a
 		WHERE a.account_id = ?1 AND a.id > ?2 AND a.superseded = 0
-			AND EXISTS (SELECT 1 FROM deliveries d WHERE d.activity_id = a.id AND d.inbox_url IN (?3, ?4))
+			AND EXISTS (SELECT 1 FROM deliveries d WHERE d.activity_id = a.id AND d.inbox_url IN (?3, ?4, ?5))
 		ORDER BY a.id`,
     ALICE,
     w.since,
@@ -1756,7 +1771,7 @@ async function deliverToServer(w: ServerWorld, dup: boolean): Promise<void> {
   w.handed.set(head.id, w.clock.now);
   await sql(
     w.t.store,
-    "DELETE FROM deliveries WHERE activity_id = CAST(?1 AS INTEGER) AND inbox_url IN (?2, ?3)",
+    "DELETE FROM deliveries WHERE activity_id = CAST(?1 AS INTEGER) AND inbox_url IN (?2, ?3, ?4)",
     head.id,
     ...serverInboxes(w),
   );
@@ -2003,6 +2018,7 @@ type ServerAction =
   | { k: "day" }
   | { k: "read" }
   | { k: "split"; i: number; by: "process" | "send" | "checks" }
+  | { k: "xlist"; update: boolean }
   | { k: "refresh" };
 
 async function serverAct(w: ServerWorld, a: ServerAction): Promise<void> {
@@ -2122,6 +2138,39 @@ async function serverAct(w: ServerWorld, a: ServerAction): Promise<void> {
     case "refresh":
       await readAtKopje(w, a.k);
       return;
+    case "xlist": {
+      // X lists alice's latest authorization (the row Kopje holds for R's collection, served or retired) in its own
+      // collection, by an Add of the item or an Update of the whole collection.
+      const [row] = await localRows(w.t, ALICE);
+      if (row === undefined) {
+        break;
+      }
+      const entry = localItem(w.other, ALICE_URI, `${ALICE_URI}/feature_authorizations/${row.id}`);
+      const actor = w.other.uri;
+      const body = a.update
+        ? {
+            "@context": AS,
+            id: `${actor}#updates/${nextId()}`,
+            type: "Update",
+            actor,
+            object: { ...w.theirs, totalItems: 1, orderedItems: [entry] },
+          }
+        : {
+            "@context": [...FEATURE_CONTEXT, { FeaturedItem: "https://w3id.org/fep/7aa9#FeaturedItem" }],
+            type: "Add",
+            actor,
+            target: w.theirs.id,
+            object: entry,
+          };
+      expect(await w.t.post(w.other, body), w.trace.join("\n")).toBe(202);
+      const answered = (await freshTypes(w)).includes("Delete");
+      serverStep(
+        w,
+        `X's ${a.update ? "Update" : "Add"} listing L's authorization`,
+        answered ? "X.list:answered" : "X.list:none",
+      );
+      break;
+    }
     case "split":
       if (a.by === "checks") {
         // A read claimed just before the next check comes due, which runs between its claim and its completion.
@@ -2314,6 +2363,7 @@ const serverActionArb: fc.Arbitrary<ServerAction> = fc.oneof(
     weight: 3,
   },
   { arbitrary: fc.constant({ k: "refresh" as const }), weight: 1 },
+  { arbitrary: fc.record({ k: fc.constant("xlist" as const), update: fc.boolean() }), weight: 1 },
 );
 
 // The steps the prefixes below are made of.
@@ -2343,6 +2393,11 @@ const CARRIED: ServerAction[] = [...REQUESTED, DELIVER, PROCESS, RUN, SEND, WAIT
 //     reaching Kopje then (the read outdated, and the next one deciding);
 //   - Kopje's Accept delivered and its margin begun, then a read claimed just before the margin ends, the wait ending
 //     between its claim and its completion (a read keeping a row changed after its claim);
+//   - the membership carried through, then R's removal of L, who does not follow R, its Remove reaching no one (the
+//     freshness limit in its removal direction, which one more read closes);
+//   - the membership carried through, then X, another owner on R's server, listing its authorization by an Add and by an
+//     Update, before and after L revokes it (no Delete for an authorization Kopje serves, which R's server would apply
+//     to R's item);
 //   - the membership carried through and its Add's copy left in R's outbox; R removes and re-adds L; Kopje accepts the
 //     new request with the row's authorization; the stale copy of the first Add then reaches Kopje, and a refresh read
 //     runs before R processes the new Accept, the first item's Remove reaching Kopje after (the answer naming this
@@ -2353,6 +2408,7 @@ const PREFIXES: ServerAction[][] = [
   [],
   CARRIED,
   [...CARRIED, { k: "rremove" }, RUN],
+  [{ k: "follow", on: false }, ...CARRIED, { k: "rremove" }, RUN],
   [
     { k: "follow", on: true },
     ...REQUESTED,
@@ -2394,6 +2450,13 @@ const PREFIXES: ServerAction[][] = [
   [...REQUESTED, WAIT, DAY, DAY, DELIVER, DAY, DAY, WAIT, READ, PROCESS],
   [...REQUESTED, DELIVER, WAIT, WAIT, { k: "split", i: 0, by: "process" }],
   [...REQUESTED, DELIVER, WAIT, { k: "split", i: 0, by: "checks" }],
+  [
+    ...CARRIED,
+    { k: "xlist", update: false },
+    { k: "xlist", update: true },
+    { k: "revoke" },
+    { k: "xlist", update: true },
+  ],
   [
     ...REQUESTED,
     DELIVER,
@@ -2545,6 +2608,8 @@ const SERVER_REQUIRED = [
   "L.revoke",
   "L.refuses",
   "L.block",
+  "X.list:none",
+  "X.list:answered",
   "quiescent: both",
   "quiescent: neither",
   "quiescent: F7",

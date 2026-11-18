@@ -24,6 +24,7 @@ import {
   outbound,
   serveListing,
   storedMember,
+  storedOwner,
   syncAll,
 } from "./featured-collection-helpers";
 import { BUILD } from "./helpers";
@@ -1152,6 +1153,56 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
     expect(await sql(w.t.store, "SELECT account_id FROM collection_syncs")).toEqual([{ account_id: ownerId }]);
     expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: REVOKED, uri: served.id }]);
   });
+
+  // 6-T6 with a second owner. Fails if another owner's listing of the authorization Kopje serves for this owner's
+  // collection is answered with alice's Delete: a Mastodon server applies a Delete of a feature authorization to its own
+  // collection's item by the authorization and the signer alone (delete.rb:80), so that Delete, sent to another owner
+  // on this owner's server, would revoke alice's membership here.
+  for (const kind of ["Add", "Update"] as const) {
+    it(`sends no Delete for another owner's ${kind} listing an authorization served in this owner's collection`, async () => {
+      const w = await owned();
+      expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+      const [row] = await localRows(w.t, ALICE);
+      const a = authorization(row!.id);
+      // Another owner on the same server, with a collection of its own stored.
+      const other = await featuredOwner(w.t.web, `owner${++owners}`, COLLECTIONS_ONLY);
+      const theirs = collection(other, []);
+      serveListing(w.t.web, other, theirs);
+      await storedOwner(w.t, other);
+      await syncAll(w.t);
+      const deletes = async () => (await aliceAnswers(w.t)).filter(({ activity }) => activity.type === "Delete");
+      const lists = async (n: number) => {
+        const entry = localItem(other, ALICE_URI, a);
+        const body =
+          kind === "Add"
+            ? itemActivity({ t: w.t, owner: other, listed: theirs }, "Add", entry)
+            : {
+                "@context": AS,
+                id: `${other.uri}#updates/${n}`,
+                type: "Update",
+                actor: other.uri,
+                object: { ...theirs, totalItems: 1, orderedItems: [entry] },
+              };
+        expect(await w.t.post(other, body)).toBe(202);
+      };
+
+      await lists(1);
+      expect(await deletes()).toEqual([]);
+      expect(await localRows(w.t, ALICE)).toMatchObject([{ id: row!.id, state: ACCEPTED }]);
+      expect(await authorizationStatus(w.t, row!.id)).toBe(200);
+
+      // Once alice revokes it, Kopje serves it nowhere: the other owner's listing of it is answered, to that owner alone.
+      expect(await revokeAs(w.t, await collectionIdOf(w.t, w.listed.id), row!.id)).toBe(200);
+      const before = (await deletes()).length;
+      await lists(2);
+      const sent = await deletes();
+      expect([sent.length - before, sent.at(-1)!.activity.id, sent.at(-1)!.deliveries.map((d) => d.inbox)]).toEqual([
+        1,
+        `${a}#delete`,
+        [`${other.uri}/inbox`],
+      ]);
+    });
+  }
 
   // 6-T6's caps. Fails if an answer of no row is admitted as a retraction (the lane passes 500), or if an answer for a
   // revoked row is refused at the cap (Kopje revoked, the owner accepted).

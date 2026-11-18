@@ -492,8 +492,9 @@ export function applyFeaturedItem(
 // An inbound Add of an item naming a local account (#1589's D24): an authorization the member's row in the collection
 // serves (feature-answers.ts serves) gives the row the item's uri, unless the owner's Remove retracted that item (the
 // row's wait and state stay); any other authorization of the member is answered with the member's Delete of it, once
-// per Add and whatever the retractions (the owner may have accepted again after its Remove), nothing stored. 'listed'
-// or 'answered', else null (no local member, or an authorization the member could not have issued).
+// per Add and whatever the retractions (the owner may have accepted again after its Remove), nothing stored, unless
+// Kopje serves it in another collection (answerUnserved). 'listed' or 'answered', else null (no local member, an
+// authorization the member could not have issued, or one served elsewhere).
 export function applyLocalFeaturedItem(
   db: Db,
   owner: Owner,
@@ -518,8 +519,7 @@ export function applyLocalFeaturedItem(
     markListed(db, row.id, input.id, collection.uri, now);
     return "listed";
   }
-  answerUnserved(db, owner, collection.uri, listing, row?.id === listing.item, now);
-  return "answered";
+  return answerUnserved(db, owner, collection.uri, listing, row?.id === listing.item, now) ? "answered" : null;
 }
 
 // The revision of an item as stored and as listed, compared in SQL (an imported URI may not survive a round trip
