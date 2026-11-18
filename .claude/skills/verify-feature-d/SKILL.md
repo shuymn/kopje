@@ -15,7 +15,7 @@ oracle the implementation is held to. Commands below run from `packages/kopje/`.
 | `FeatureD.tla` | the protocol: Kopje's steps, R's (cited to Mastodon file:line), the network; the invariants and goals |
 | `FeatureDInd.tla`, `Ind.cfg` | the induction check of Grant preservation, from every state of the core's type |
 | `FeatureDGoals.tla`, `FeatureDFixtures.tla` | reachability traps, and the projection the replay fixtures are written from |
-| `S1.cfg`-`S14.cfg` | the focused scenarios (`FeatureD.tla`, "Scenarios", says what each enables) |
+| `S1.cfg`-`S15.cfg` | the focused scenarios (`FeatureD.tla`, "Scenarios", says what each enables) |
 | `checks.json` | every check's expected outcome, which both checkers must give |
 | `coverage.json` | the Kopje files and functions the spec describes, with their blobs when last confirmed |
 
@@ -34,7 +34,7 @@ the record forward. A change to `spec/feature-d/` itself always needs the checks
 
 | Check | Command |
 |---|---|
-| tla-ts: every check of `checks.json`, the fixtures, the comparison (about 2 min, the induction 30 s of it) | `pnpm exec vitest run -c vitest.node.config.ts --max-workers=2 test-node/feature-d-spec.test.ts` |
+| tla-ts: every check of `checks.json`, the fixtures, the comparison (about 2 min, the inductions 1 min of it) | `pnpm exec vitest run -c vitest.spec.config.ts --max-workers=2` |
 | official TLC: the same checks (about 2 min, one JVM at a time) | `MISE_ENV=spec mise exec -- node scripts/tlc-check.mjs` |
 | one check's TLC trace, every variable at every step | `MISE_ENV=spec mise exec -- node scripts/tlc-check.mjs --only <name> --trace` |
 | rewrite the replay fixtures after a spec change | `pnpm run spec:fixtures` |
@@ -43,7 +43,8 @@ the record forward. A change to `spec/feature-d/` itself always needs the checks
 
 `tlc-check.mjs` downloads TLC's pinned jar into `node_modules/.cache/` once and checks its SHA-256. The JDK is the one
 `mise.spec.toml` pins, apart from `mise.toml` so that only these checks install it: `MISE_ENV=spec mise install java`.
-CI runs it in `.github/workflows/spec.yml` with `MISE_ENV=spec`. Before the replay exists,
+CI runs it in `.github/workflows/spec.yml` with `MISE_ENV=spec`, and runs the tla-ts checks as the `kopje-spec`
+project only for a change they read (`scripts/test-affected.sh`, `kopje_spec`). Before the replay exists,
 `feature-d-coverage.mjs initial` records with the spec check alone.
 
 The replay is a workerd test with one test per fixture (`test/fixtures/feature-d/<name>.json`), titled by the
@@ -61,12 +62,17 @@ code):
   item Add or Remove, `Upd` an Update of C, `RemC` R's Remove of C, `DelR` R's actor Delete, `XAdd` another owner's Add
   naming L's authorization. A FeatureRequest for a collection Kopje does not store answers "fetch" (response 1 in the
   spec) and takes the instrument; `KApplyFetch` is the resumed activity, with the final status.
-- `KClaim`, `KFetch` (or `KFetch1`, `KFetch2` where pages move between GETs), `KApply`: a read of R's collections;
-  `KLease` lets its lease run out and `KStale` is its late completion. A claim whose input is `sameTime` is made in
-  the millisecond of the row's last change, which the row fence counts as changed.
+- `KClaim`, `KFetch` (or `KFetch1`, `KFetch2` where pages move between GETs), `KApply`: a read of R's collections.
+  `KLease` lets its lease run out, which alone fences nothing; a `KClaim` after it writes a new token, and the old
+  round's late completion is `KStale`. A claim whose input is `sameTime` is made in the millisecond of the row's last
+  change, which the row fence counts as changed. `readRequested` is R's sync row, kept from the request (or the
+  claim) until a completion reads it through.
+- `KRecv` of `DelR` has the input `purged` (the first purge batch, in the same transaction, reaches C: R has little
+  else to purge) or `deferred` (the replay seeds R with other content first, so a later `KPurge` batch reaches C).
 - `KRevoke`, `KBlock`, `KSuspend`, `KUnsuspend`, `KCleanup`, `KEvict`, `KPurge`, `KExpire`: L's revoke and block, L's
-  suspension and its end, the retired row's cleanup or early eviction, one batch of R's purge after its tombstone, a
-  retraction's expiry. `KMemberGone`, L's deletion, is model-only.
+  suspension and its end, the retired row's cleanup or early eviction (input `insertAt50`: the replay fills C to 50
+  rows with L's retired row the oldest and inserts another member's row, which evicts it in the same transaction), one
+  later batch of R's purge that reaches C, a retraction's expiry. `KMemberGone`, L's deletion, is model-only.
 - `KDeliver`, `KDup`, `KGiveUp`, `KRetry`: the POST of the head of Kopje's lane to R's server, the same POST with its
   response lost (the head stays), the head given up, an operator's retry (admitted again, then behind the head).
   `RJob` is one of R's jobs, which run in any order.
@@ -75,7 +81,8 @@ code):
 
 `last` in each state names the step, its input, what it recorded and its response; `k` is Kopje's core (`row`, its
 `uri` listing), `rs` is R's server, `g` the history the invariants read (`obl` the obligation Grant preservation
-tracks, `unexcused` the corrections CR3 counts, `lastRd` the read OV2 compares).
+tracks, `unexcused` the corrections CR3 counts, `lastRd` the latest read that covered the row, which OV2
+compares). `MemberAvailability` fails when Kopje answers for, creates or lists L's row while L is unavailable.
 
 Tell the two kinds of failure apart by the step that breaks the invariant:
 
@@ -107,6 +114,6 @@ pages and as Kopje's count of R's collections), two requests and two authorizati
 (`FeatureD.tla`, Bud). There is no fairness, so nothing is checked about eventually: any message may wait for ever.
 
 Not covered: other local members and owners (the 25 slots and the 50 stored rows are environment flags), timing (a
-lease and a retraction's expiry are single events), the owner-block predicate of what others see, Misskey and other
+lease and a retraction's expiry are single events), a purge batch that reaches part of C, the owner-block predicate of what others see, Misskey and other
 servers, the Store's SQL work bounds (its own tests), and the code itself except through the replay at the fixtures'
 steps.
