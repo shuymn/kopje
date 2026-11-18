@@ -1,0 +1,251 @@
+{
+  "name": "S2-F7",
+  "scenario": "S2",
+  "goal": "F7",
+  "replayedBy": "test/feature-d-replay.test.ts::S2-F7",
+  "steps": [
+    {
+      "action": "Init",
+      "input": {},
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "stored",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberShows": false,
+        "response": null,
+        "recorded": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "RAdd",
+      "input": {
+        "value": "r1"
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "stored",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberShows": false,
+        "response": null,
+        "recorded": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "KRecv",
+      "input": {
+        "envelope": {
+          "type": "FR",
+          "request": "r1"
+        }
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "accepted",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": null
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": 200
+        },
+        "publicShows": false,
+        "memberShows": true,
+        "response": 202,
+        "recorded": [
+          {
+            "type": "Accept",
+            "object": "r1",
+            "result": "a1",
+            "to": "R",
+            "class": "ordinary",
+            "outcome": "queued"
+          }
+        ],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "KRevoke",
+      "input": {},
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "retired",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": null
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": 404
+        },
+        "publicShows": false,
+        "memberShows": false,
+        "response": null,
+        "recorded": [
+          {
+            "type": "Delete",
+            "object": "a1",
+            "result": null,
+            "to": "R",
+            "class": "retraction",
+            "outcome": "queued"
+          }
+        ],
+        "readRequested": false,
+        "unspecified": ["row.listedAs"]
+      }
+    },
+    {
+      "action": "KDeliver",
+      "input": {
+        "activity": {
+          "type": "Accept",
+          "object": "r1",
+          "result": "a1",
+          "to": "R",
+          "class": "ordinary",
+          "reason": "answer"
+        }
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "retired",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": null
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": 404
+        },
+        "publicShows": false,
+        "memberShows": false,
+        "response": null,
+        "recorded": [],
+        "readRequested": false,
+        "unspecified": ["row.listedAs"]
+      }
+    },
+    {
+      "action": "KGiveUp",
+      "input": {
+        "activity": {
+          "type": "Delete",
+          "object": "a1",
+          "result": null,
+          "to": "R",
+          "class": "retraction",
+          "reason": "revoke"
+        }
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "retired",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": null
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": 404
+        },
+        "publicShows": false,
+        "memberShows": false,
+        "response": null,
+        "recorded": [],
+        "readRequested": false,
+        "unspecified": ["row.listedAs"]
+      }
+    },
+    {
+      "action": "Drop",
+      "input": {
+        "envelope": {
+          "type": "Add",
+          "item": "I1",
+          "authorization": "a1"
+        }
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "retired",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": null
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": 404
+        },
+        "publicShows": false,
+        "memberShows": false,
+        "response": null,
+        "recorded": [],
+        "readRequested": false,
+        "unspecified": ["row.listedAs"]
+      }
+    }
+  ]
+}

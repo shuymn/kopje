@@ -1,0 +1,184 @@
+{
+  "name": "S8-OwnerGoneRow",
+  "scenario": "S8",
+  "goal": "OwnerGoneRow",
+  "replayedBy": "test/feature-d-replay.test.ts::S8-OwnerGoneRow",
+  "steps": [
+    {
+      "action": "Init",
+      "input": {},
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "absent",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberShows": false,
+        "response": null,
+        "recorded": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "RAdd",
+      "input": {
+        "value": "r1"
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "absent",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberShows": false,
+        "response": null,
+        "recorded": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "KRecv",
+      "input": {
+        "envelope": {
+          "type": "FR",
+          "request": "r1"
+        }
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "absent",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberShows": false,
+        "response": 202,
+        "recorded": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "KApplyFetch",
+      "input": {
+        "envelope": {
+          "type": "Instrument",
+          "request": "r1"
+        },
+        "value": "served"
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "accepted",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": null
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": 200
+        },
+        "publicShows": false,
+        "memberShows": true,
+        "response": 202,
+        "recorded": [
+          {
+            "type": "Accept",
+            "object": "r1",
+            "result": "a1",
+            "to": "R",
+            "class": "ordinary",
+            "outcome": "queued"
+          }
+        ],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "RDeleteSelf",
+      "input": {},
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "accepted",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": null
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": 200
+        },
+        "publicShows": false,
+        "memberShows": true,
+        "response": null,
+        "recorded": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "KRecv",
+      "input": {
+        "envelope": {
+          "type": "DelR"
+        }
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "absent",
+        "authorizationGet": {
+          "a1": 404
+        },
+        "publicShows": false,
+        "memberShows": false,
+        "response": 202,
+        "recorded": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    }
+  ]
+}

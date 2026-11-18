@@ -1,0 +1,78 @@
+{
+  "name": "S9-RecvUpd",
+  "scenario": "S9",
+  "goal": "KRecv.Upd",
+  "replayedBy": "test/feature-d-replay.test.ts::S9-RecvUpd",
+  "steps": [
+    {
+      "action": "Init",
+      "input": {},
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "absent",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberShows": false,
+        "response": null,
+        "recorded": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "RUpdate",
+      "input": {},
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "absent",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberShows": false,
+        "response": null,
+        "recorded": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "KRecv",
+      "input": {
+        "envelope": {
+          "type": "Upd"
+        }
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "stored",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberShows": false,
+        "response": 202,
+        "recorded": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    }
+  ]
+}

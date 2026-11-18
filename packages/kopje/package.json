@@ -76,6 +76,7 @@
     "assets": "node scripts/build-assets.mjs",
     "build": "node scripts/build-assets.mjs && node scripts/build-package.mjs",
     "check:migrations": "node scripts/released-migrations.mjs",
+    "spec:fixtures": "node test-node/feature-d-fixtures.ts",
     "prepack": "node scripts/build-assets.mjs --check && node scripts/build-package.mjs"
   },
   "devDependencies": {
@@ -111,6 +112,7 @@
     "sanitize-html": "catalog:",
     "structured-field-values": "catalog:",
     "temporal-polyfill": "catalog:",
+    "tla-ts": "catalog:",
     "typescript": "catalog:",
     "valibot": "catalog:",
     "vite": "catalog:",
