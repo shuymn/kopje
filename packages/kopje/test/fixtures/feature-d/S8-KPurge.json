@@ -1,8 +1,8 @@
 {
-  "name": "S6-F7",
-  "scenario": "S6",
-  "goal": "F7",
-  "replayedBy": "test/feature-d-replay.test.ts::S6-F7",
+  "name": "S8-KPurge",
+  "scenario": "S8",
+  "goal": "KPurge",
+  "replayedBy": "test/feature-d-replay.test.ts::S8-KPurge",
   "steps": [
     {
       "action": "Init",
@@ -16,20 +16,51 @@
       },
       "observation": {
         "row": null,
-        "collection": "stored",
+        "collection": "absent",
         "authorizationGet": {},
         "publicShows": false,
-        "memberShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
         "response": null,
         "recorded": [],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }
     },
     {
-      "action": "RAdd",
+      "action": "KClaim",
+      "input": {},
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "absent",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "KFetch",
       "input": {
-        "value": "r1"
+        "envelope": {
+          "type": "Pages"
+        },
+        "value": "p1"
       },
       "environment": {
         "consent": true,
@@ -40,62 +71,21 @@
       },
       "observation": {
         "row": null,
-        "collection": "stored",
+        "collection": "absent",
         "authorizationGet": {},
         "publicShows": false,
-        "memberShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
         "response": null,
         "recorded": [],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }
     },
     {
-      "action": "KRecv",
-      "input": {
-        "envelope": {
-          "type": "FR",
-          "request": "r1"
-        }
-      },
-      "environment": {
-        "consent": true,
-        "slotsFull": false,
-        "held": "lt10",
-        "backlogFull": false,
-        "retractionCapFull": false
-      },
-      "observation": {
-        "row": {
-          "name": "row1",
-          "state": "accepted",
-          "authorization": "a1",
-          "request": "r1",
-          "listedAs": null
-        },
-        "collection": "stored",
-        "authorizationGet": {
-          "a1": 200
-        },
-        "publicShows": false,
-        "memberShows": true,
-        "response": 202,
-        "recorded": [
-          {
-            "type": "Accept",
-            "object": "r1",
-            "result": "a1",
-            "to": "R",
-            "class": "ordinary",
-            "outcome": "queued"
-          }
-        ],
-        "readRequested": false,
-        "unspecified": []
-      }
-    },
-    {
-      "action": "KMemberGone",
+      "action": "KApply",
       "input": {},
       "environment": {
         "consent": true,
@@ -107,38 +97,21 @@
       "observation": {
         "row": null,
         "collection": "stored",
-        "authorizationGet": {
-          "a1": 404
-        },
+        "authorizationGet": {},
         "publicShows": false,
-        "memberShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
         "response": null,
-        "recorded": [
-          {
-            "type": "DeleteActor",
-            "object": "L",
-            "result": null,
-            "to": "R",
-            "class": "ordinary",
-            "outcome": "queued"
-          }
-        ],
+        "recorded": [],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }
     },
     {
-      "action": "KDeliver",
-      "input": {
-        "activity": {
-          "type": "Accept",
-          "object": "r1",
-          "result": "a1",
-          "to": "R",
-          "class": "ordinary",
-          "reason": "answer"
-        }
-      },
+      "action": "RDeleteSelf",
+      "input": {},
       "environment": {
         "consent": true,
         "slotsFull": false,
@@ -149,13 +122,14 @@
       "observation": {
         "row": null,
         "collection": "stored",
-        "authorizationGet": {
-          "a1": 404
-        },
+        "authorizationGet": {},
         "publicShows": false,
-        "memberShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
         "response": null,
         "recorded": [],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }
@@ -164,9 +138,7 @@
       "action": "KRecv",
       "input": {
         "envelope": {
-          "type": "Add",
-          "item": "I1",
-          "authorization": "a1"
+          "type": "DelR"
         }
       },
       "environment": {
@@ -179,29 +151,21 @@
       "observation": {
         "row": null,
         "collection": "stored",
-        "authorizationGet": {
-          "a1": 404
-        },
+        "authorizationGet": {},
         "publicShows": false,
-        "memberShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
         "response": 202,
         "recorded": [],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }
     },
     {
-      "action": "KGiveUp",
-      "input": {
-        "activity": {
-          "type": "DeleteActor",
-          "object": "L",
-          "result": null,
-          "to": "R",
-          "class": "ordinary",
-          "reason": null
-        }
-      },
+      "action": "KPurge",
+      "input": {},
       "environment": {
         "consent": true,
         "slotsFull": false,
@@ -211,14 +175,15 @@
       },
       "observation": {
         "row": null,
-        "collection": "stored",
-        "authorizationGet": {
-          "a1": 404
-        },
+        "collection": "absent",
+        "authorizationGet": {},
         "publicShows": false,
-        "memberShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
         "response": null,
         "recorded": [],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }

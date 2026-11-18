@@ -4,11 +4,12 @@
 // and the configuration a checker reads.
 //
 //   scenario   one focused scenario of FeatureD.tla (its .cfg): no invariant fails; distinct states and depth fixed.
-//   induction  Ind.cfg over FeatureDInd.tla: IndInv holds one step after every state that satisfies it. TLC also
-//              counts the successors past the step bound, which tla-ts does not: checks.json records its own count.
+//   induction  Ind.cfg over FeatureDInd.tla: IndInv holds one step after every state that satisfies it. Where a
+//              successor lies outside the starting states, TLC counts it and tla-ts does not; checks.json may then
+//              record TLC's own count ("tlc").
 //   variant    a calibration variant: the named invariant fails, with a shortest trace of the given length.
-//   finding    a violation of (d) itself, raised against the design (a challenge, the F7 gap): it must still fail
-//              until the design changes, and then checks.json and the spec change with it.
+//   finding    a violation of (d) itself, raised against the design as a challenge: it must still fail until the
+//              design changes, and then checks.json and the spec change with it.
 //   goal       a reachability trap (FeatureDGoals.tla): NotReached fails, so the goal is reached, and its shortest
 //              witness has the given length; a goal marked fixture is also a replay fixture.
 //
@@ -20,7 +21,7 @@ import { fileURLToPath } from "node:url";
 export const SPEC_DIR = fileURLToPath(new URL("../spec/feature-d/", import.meta.url));
 
 /** @typedef {{ name: string, distinct: number, depth: number }} Scenario */
-/** @typedef {Scenario & { tlc: { distinct: number, depth: number, why: string } }} Induction */
+/** @typedef {Scenario & { tlc?: { distinct: number, depth: number, why: string } }} Induction */
 /** @typedef {{ name: string, scenario: string, variant: string, invariant: string, trace: number }} Violation */
 /** @typedef {{ name: string, scenario: string, goal: string, trace: number, fixture: boolean }} Goal */
 /**
@@ -104,7 +105,9 @@ export function checks(plan) {
       module: "FeatureDInd",
       config: readFileSync(`${SPEC_DIR}${plan.induction.name}.cfg`, "utf8"),
       expected: { status: "success", distinct: plan.induction.distinct, depth: plan.induction.depth },
-      tlc: { status: "success", distinct: plan.induction.tlc.distinct, depth: plan.induction.tlc.depth },
+      ...(plan.induction.tlc && {
+        tlc: { status: "success", distinct: plan.induction.tlc.distinct, depth: plan.induction.tlc.depth },
+      }),
     },
     ...plan.variants.map((v) => violation(v, "variant")),
     ...plan.findings.map((v) => violation(v, "finding")),

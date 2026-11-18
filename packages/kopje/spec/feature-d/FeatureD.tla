@@ -13,10 +13,11 @@
 (*  - KRecv: one inbound activity, one Store transaction                   *)
 (*    (Store.receiveActivity, src/store.ts:357); a 503 rolls it back and   *)
 (*    the envelope stays for R's retry. A FeatureRequest for a collection  *)
-(*    Kopje does not store also takes the instrument's snapshot: the       *)
-(*    decision to fetch writes nothing, so it is merged with the fetch     *)
-(*    (a network GET of R's state at that moment); KApplyFetch is the      *)
-(*    later Store transaction that applies it.                             *)
+(*    Kopje does not store is answered with the Store's need to fetch      *)
+(*    (src/federation/inbound.ts, the `need` loop) and writes nothing; the *)
+(*    fetch, a GET of R's state at that moment, is merged into that step.  *)
+(*    KApplyFetch is the resumed activity's own Store transaction, which   *)
+(*    gives the final status.                                              *)
 (*  - KClaim / KFetch / KApply: a read's claim (claimCollectionSync,       *)
 (*    src/domain/remote-collections.ts:309), its page GETs                 *)
 (*    (src/federation/collections.ts:303-343, one per page; one step for   *)
@@ -25,81 +26,88 @@
 (*    steps, as Kopje splits them (syncCollections,                        *)
 (*    src/federation/collections.ts:459-518). KLease turns a claimed read  *)
 (*    stale (its lease ran out); KStale is its late completion.            *)
-(*  - KRevoke, KBlock, KMemberGone, KCleanup: one Store call each (the     *)
-(*    member's revoke and severCollections, src/domain/collections.ts:812; *)
-(*    the account deletion; pruneCollectionItems, src/store-rpc.ts:463).   *)
-(*  - KDeliver / KGiveUp / KRetry: one delivery's outcome (claimDeliveries *)
-(*    and confirmDelivery, src/store-rpc.ts:654-655, a POST to R's inbox;  *)
-(*    its give-up after the last attempt; retryDeliveries, :658).          *)
-(*  - RJob: one Sidekiq job of R processing one activity Kopje delivered   *)
-(*    (each delivery is its own job, so they run in any order).            *)
-(*  - RAdd, RRemove, RDeleteC, RCleanup, RDeleteSelf, RUpdate: one request *)
-(*    or service call of R. A distribution job's delay before it sends is  *)
-(*    the same as a delivery delay, and a job that reaches no one or finds *)
-(*    its item gone is a dropped envelope (Drop), so R's sends go straight *)
-(*    into toK.                                                            *)
+(*  - KRevoke, KBlock, KMemberGone, KSuspend, KUnsuspend, KCleanup,        *)
+(*    KEvict, KPurge: one Store call each (the member's revoke and         *)
+(*    severCollections, src/domain/collections.ts:812; the account's       *)
+(*    changes; pruneCollectionItems, src/store-rpc.ts:463; the eviction in *)
+(*    the insert that needs the place; one batch of R's purge).            *)
+(*  - KDeliver / KDup / KGiveUp / KRetry: the POST of the head of Kopje's  *)
+(*    lane to R's server (claimDeliveries and confirmDelivery,             *)
+(*    src/store-rpc.ts:654-655; a lane is the sender and the inbox's       *)
+(*    origin, delivered in id order, deliveries.ts:71), the same POST with *)
+(*    its response lost, its give-up after the last attempt, and an        *)
+(*    operator's retry (retryDeliveries, :658), admitted again only if it  *)
+(*    fits (deliveries.ts:3525). R's inbox answers 202 and queues a job;   *)
+(*    RJob is one Sidekiq job, and jobs run in any order.                  *)
+(*  - RAdd, RRemove, RDeleteC, RCleanup, RDeleteSelf, RPurge, RUpdate: one *)
+(*    request or service call of R. A distribution job's delay is a        *)
+(*    delivery delay, and a job that reaches no one or finds its item gone *)
+(*    is a dropped envelope (Drop), so R's sends go straight into toK.     *)
 (*                                                                         *)
 (* BOUNDS. One owner R (plus X on R's server, scenario S4), one member L,  *)
 (* one focal collection C (filler collections abstracted to C's page),     *)
 (* two requests r1, r2 (items I1, I2), two authorizations a1, a2; every    *)
-(* other count is a per-scenario budget (Bud). Sets hold the channels, so  *)
-(* equal messages merge; duplicates come from KDup and the duplicate       *)
-(* delivery of a processed envelope. Steps that would need a third         *)
-(* authorization or a second instrument fetch are disabled. No fairness:   *)
-(* any message may wait for ever or be dropped.                            *)
+(* other count is a per-scenario budget (Bud). R's envelopes in flight are *)
+(* a set, so equal envelopes merge; duplicates come from KRecv's lost      *)
+(* response. Kopje's lane is a sequence and R's jobs a bag. Steps that     *)
+(* would need a third authorization or a second instrument fetch are       *)
+(* disabled. No fairness: any message may wait for ever or be dropped.     *)
 (*                                                                         *)
 (* INVARIANTS:                                                             *)
 (*  GrantPreservation  GP1 /\ GP2: while L's committed Accept of a has no  *)
-(*    evidence event since (R's Remove of C processed, R or L gone, L's    *)
-(*    revoke or block), Kopje holds C and L's accepted row with a, and     *)
-(*    serves a; no Delete of a is recorded while a is served.              *)
-(*  CorrectiveRevocation  CR1 /\ CR2 /\ CR3: an item Add, or a read's      *)
-(*    listing, of an unserved a is answered with L's Delete of a; only an  *)
-(*    ordinary Delete is refused at a full backlog (F8); at quiescence R   *)
-(*    holds an unserved a only under F7 (CR3, with F7 as proposed for      *)
-(*    amendment; CR3Design states F7 as the design does).                  *)
-(*  ObservedVisibility  OV1 /\ OV2: only an eligible read, an exact item   *)
-(*    Remove, a re-accept or the row's end hides it; at quiescence after   *)
-(*    the latest read, with nothing changed since, others see L exactly    *)
-(*    when that read listed the row's authorization.                       *)
+(*    evidence event since (R's Remove of C processed, R's tombstone, L's  *)
+(*    revoke, block or deletion), Kopje holds C and L's accepted row with  *)
+(*    a; no Delete of a is recorded while a's row is accepted. The         *)
+(*    obligation is a ghost: set by the Accept a step records, cleared by  *)
+(*    the evidence steps listed, whatever the step does to the row.        *)
+(*  CorrectiveRevocation  CR1 /\ CR2 /\ CR3: an item Add, or an applied    *)
+(*    read listing, of an unserved a is answered with L's Delete of a to   *)
+(*    the sender's inbox; only an ordinary Delete is refused at a full     *)
+(*    backlog (F8); at quiescence R holds an unserved a only if every      *)
+(*    Delete of a in flight when R applied its acceptance, or recorded     *)
+(*    since, was refused at a full backlog or given up (F7).               *)
+(*  ObservedVisibility  OV1 /\ OV2: only an eligible untruncated read, an  *)
+(*    exact item Remove, a re-accept by another request, the row's end or  *)
+(*    a loss of availability hides it; at quiescence after the latest      *)
+(*    applied read with R unchanged since, a listed row is shown unless an *)
+(*    allowed hide followed, and a shown row was listed unless something   *)
+(*    showed it since, the listing was truncated or the read was fenced.   *)
 (*  RemovalFinality: after R's Remove of C is processed, while its         *)
 (*    retraction lives, Kopje holds neither C nor a row of it and records  *)
 (*    no Accept.                                                           *)
-(*  NoUnilateralEnd: R never rejects L's accepted item on a Reject Kopje   *)
-(*    sent while it kept the row. (d) violates it, so checks.json lists it *)
-(*    as a finding to settle, not an invariant of the scenarios.           *)
+(*  GoneFinality: from R's tombstone on, Kopje stores no C anew, creates   *)
+(*    no row and records no Accept.                                        *)
+(*  NoUnilateralEnd: no Reject of a request Kopje accepted with a is       *)
+(*    recorded while a is owed.                                            *)
 (*                                                                         *)
-(* GRANT PRESERVATION IS INDUCTIVE (FeatureDInd.tla checks it). IndInv =   *)
-(* GP1 /\ J1 /\ J2 /\ J3 /\ J4 over the type domain, J1: an accepted row's *)
-(* authorization is the obligation; J2: a retired row has none; J3: a row  *)
-(* lives in a stored C; J4: its authorization was issued. Per action:      *)
-(* Decide and ApplyFetch create a row only with its                        *)
-(* Accept and set the obligation together; every other K1-K4 branch and    *)
-(* K14's listing part change uri, retractions or sync only, and record a   *)
-(* Delete only when no accepted row has its authorization (GP2);           *)
-(* deleteUnlisted deletes C only with no row (so, by GP1, no obligation);  *)
-(* K5, K6 and K9 delete and clear the obligation in one step; K7 and K8    *)
-(* retire the row and clear it in one step, then record the Delete;        *)
-(* K10 deletes only a retired row (J2); every R, network and environment   *)
-(* action leaves Kopje's core unchanged.                                   *)
+(* GRANT PRESERVATION IS INDUCTIVE (FeatureDInd.tla checks it). Per        *)
+(* action: Decide and ApplyFetch create a row only with its Accept, which  *)
+(* sets the obligation; every other K1-K4 branch and K14's listing part    *)
+(* change uri, retractions or sync only, and record a Delete only when no  *)
+(* accepted row has its authorization (GP2); deleteUnlisted deletes C only *)
+(* with no row; K5 and K9 delete the row with the evidence that clears the *)
+(* obligation; K6 tombstones R with it, and the purge after deletes only   *)
+(* under the tombstone; K7 and K8 retire the row and clear it in one step; *)
+(* K10 and the eviction delete only a retired row; every R, network and    *)
+(* environment action leaves Kopje's core unchanged.                       *)
 (***************************************************************************)
-EXTENDS FeatureDKopje, TLC
+EXTENDS FeatureDKopje, TLC, Sequences
 
 CONSTANT Scenario
 
 VARIABLES
   k,      \* Kopje's core (FeatureDKopje.tla, CoreType)
   env,    \* the environment Kopje decides in (EnvType)
-  kq,     \* Kopje's recorded activities queued for delivery
+  kq,     \* Kopje's lane to R's server: recorded activities in id order, the head posted next
   kg,     \* given up: refused at a full backlog, or after the last attempt
   toK,    \* R's envelopes in flight to Kopje (R retries until delivered or dropped)
   rs,     \* R's server (Mastodon v4.7.5)
-  rin,    \* Kopje's activities delivered to R, each a Sidekiq job of R's
+  rin,    \* R's queued jobs: a bag of Kopje's delivered activities
   rd,     \* the current read of R's collections
   sr,     \* a stale read: its lease ran out before it completed
   fe,     \* the pending instrument fetch
   spent,  \* budget counters
-  g,      \* history the invariants read
+  g,      \* history the invariants and goals read
   last    \* the step: action, input, recorded activities, response, events (fixtures and traps only)
 
 vars == <<k, env, kq, kg, toK, rs, rin, rd, sr, fe, spent, g, last>>
@@ -108,40 +116,46 @@ vars == <<k, env, kq, kg, toK, rs, rin, rd, sr, fe, spent, g, last>>
 (* Scenarios: each enables a focused set of actions through its budgets.   *)
 (*  S1 answers and re-adds; S2 revoke and correction (C on page 1 or past  *)
 (*  the window); S3 pages that shift between a read's GETs; S4 the         *)
-(*  cross-owner Delete; S5 stale and outdated reads against pushes; S6     *)
-(*  block and member deletion; S7 late and retried answers; S8 the         *)
-(*  instrument, R's Remove of C, the retraction cap and expiry, R gone;    *)
-(*  S9 admission at 10 and 50 and truncated listings.                      *)
+(*  cross-owner Delete, and R's Remove and Update after a revoke; S5 stale *)
+(*  and outdated reads against pushes; S6 block and member deletion; S7    *)
+(*  late and retried answers; S8 the instrument, R's Remove of C, the      *)
+(*  retraction cap and expiry, R gone; S9 admission at 10 and 50 and       *)
+(*  truncated listings; S10 the 25 slots; S11 the early eviction and       *)
+(*  Mastodon's 24-hour cleanup against a late Accept; S12 L's suspension;  *)
+(*  S13 recovery from the 50; S14 a stale request copy and the read that   *)
+(*  restores what it hid.                                                  *)
 (***************************************************************************)
-Budgets == {"adds", "reads", "dup", "retry", "consent", "backlog", "cap", "held", "remove", "rclean", "upd", "x",
-            "revoke", "block", "ldel", "rdelc", "gone", "shift", "crowd", "lease", "expire"}
+Budgets == {"adds", "reads", "dup", "retry", "consent", "backlog", "cap", "held", "slots", "remove", "rclean",
+            "upd", "x", "revoke", "block", "ldel", "susp", "rdelc", "gone", "shift", "crowd", "lease", "expire"}
 Zero == [f \in Budgets |-> 0]
 Bud(f) ==
   CASE Scenario = "S1" -> [Zero EXCEPT !.adds = 2, !.remove = 1, !.consent = 1, !.dup = 1][f]
     [] Scenario = "S2" -> [Zero EXCEPT !.adds = 1, !.reads = 1, !.dup = 1, !.backlog = 1, !.revoke = 1][f]
     [] Scenario = "S3" -> [Zero EXCEPT !.adds = 1, !.reads = 2, !.shift = 1][f]
-    [] Scenario = "S4" -> [Zero EXCEPT !.adds = 1, !.x = 1, !.revoke = 1][f]
+    [] Scenario = "S4" -> [Zero EXCEPT !.adds = 1, !.x = 1, !.revoke = 1, !.remove = 1, !.upd = 1][f]
     [] Scenario = "S5" -> [Zero EXCEPT !.adds = 1, !.reads = 2, !.remove = 1, !.upd = 1, !.lease = 1][f]
     [] Scenario = "S6" -> [Zero EXCEPT !.adds = 1, !.reads = 1, !.block = 1, !.ldel = 1][f]
     [] Scenario = "S7" -> [Zero EXCEPT !.adds = 1, !.reads = 1, !.retry = 1][f]
-    [] Scenario = "S8" -> [Zero EXCEPT !.adds = 1, !.reads = 1, !.rdelc = 1, !.cap = 1, !.expire = 1, !.gone = 1][f]
-    [] Scenario = "S9" -> [Zero EXCEPT !.adds = 1, !.reads = 1, !.crowd = 1, !.held = 1, !.upd = 1][f]
+    [] Scenario = "S8" -> [Zero EXCEPT !.adds = 1, !.reads = 1, !.rdelc = 1, !.cap = 2, !.expire = 1, !.gone = 1][f]
+    [] Scenario = "S9" -> [Zero EXCEPT !.adds = 1, !.reads = 1, !.crowd = 2, !.held = 1, !.upd = 1][f]
+    [] Scenario = "S10" -> [Zero EXCEPT !.adds = 1, !.dup = 1, !.slots = 2][f]
+    [] Scenario = "S11" -> [Zero EXCEPT !.adds = 1, !.revoke = 1, !.rclean = 1, !.backlog = 1, !.dup = 1][f]
+    [] Scenario = "S12" -> [Zero EXCEPT !.adds = 1, !.reads = 1, !.susp = 2][f]
+    [] Scenario = "S13" -> [Zero EXCEPT !.adds = 1, !.dup = 1, !.held = 2][f]
+    [] Scenario = "S14" -> [Zero EXCEPT !.adds = 2, !.remove = 1, !.reads = 1][f]
 \* Kopje starts without C where the instrument, admission and R's Remove of C are checked.
-StartsWithC == Scenario \notin {"S8", "S9"}
+StartsWithC == Scenario \notin {"S8", "S9", "S13"}
 \* C's place in R's featured collections at the start: on page 1, page 2 (S3, where it moves), or past the window.
 StartPages == CASE Scenario \in {"S2", "S6"} -> {"p1", "past"} [] Scenario = "S3" -> {"p2"} [] OTHER -> {"p1"}
-
-\* S7 keeps a delivery and R's job apart, so Kopje can see an answer delivered that R has not processed ((b)'s wait,
-\* V2); elsewhere nothing Kopje decides depends on that, and R processes a delivery in the same step.
-Staged == Scenario = "S7"
-
 \* S3 splits a read into its page GETs, so C can move across the page boundary between them.
 SplitPages == Scenario = "S3"
+\* S11 lets C reach its 50 stored rows, where a new row evicts L's retired one.
+Evicts == Scenario = "S11"
 Can(f) == spent[f] < Bud(f)
 Spend(f) == spent' = [spent EXCEPT ![f] = @ + 1]
 
-\* The scenario checks fingerprint states without `last`, which records how a state was reached, not what it is,
-\* and without the given-up deliveries once no operator retry is left to send them again.
+\* The scenario checks fingerprint states without `last`, which records how a state was reached, not what it is, and
+\* without the given-up deliveries once no operator retry is left to send them again. No action reads either.
 View == <<k, env, kq, IF Can("retry") THEN kg ELSE {}, toK, rs, rin, rd, sr, fe, spent, g>>
 
 (***************************************************************************)
@@ -164,92 +178,143 @@ NoItem == [req |-> NONE, st |-> NONE, ap |-> NONE]
 NoView == [seen |-> FALSE, i |-> NONE, a |-> NONE, tr |-> FALSE, cpl |-> FALSE]
 NoRead == [ph |-> "none", v |-> NoView, chg |-> FALSE, outd |-> FALSE, rch |-> FALSE, hadRow |-> FALSE]
 NoFetch == [on |-> FALSE, r |-> NONE, ex |-> FALSE, l |-> NoListing]
-NoLastRead == [valid |-> FALSE, i |-> NONE, a |-> NONE, rch |-> FALSE, kch |-> FALSE]
+\* OV2's latest applied read: what it listed, whether it was truncated or fenced, and what changed since: R (rch),
+\* a show the design allows (kshow: a push, an instrument, L's unsuspension), or a hide OV1 allows other than a
+\* read's (khide).
+NoLastRead == [valid |-> FALSE, i |-> NONE, a |-> NONE, tr |-> FALSE, fenced |-> FALSE, rch |-> FALSE,
+               kshow |-> FALSE, khide |-> FALSE]
+
+\* R's job queue, a bag: each activity with its number of queued copies.
+EmptyBag == [x \in {} |-> 0]
+BagCount(b, m) == IF m \in DOMAIN b THEN b[m] ELSE 0
+BagAdd(b, m) == [x \in DOMAIN b \cup {m} |-> IF x = m THEN BagCount(b, m) + 1 ELSE b[x]]
+BagRemove(b, m) == [x \in {y \in DOMAIN b : y # m \/ b[y] > 1} |-> IF x = m THEN b[x] - 1 ELSE b[x]]
 
 \* R's FeaturedCollection lists L's accepted item with its approval (featured_collection_serializer.rb:14, :56-58;
-\* featured_item_serializer.rb:22-28). rs.crowd: more than 25 entries with L's past the 25th, which single adds allow
-\* (add_account_to_collection_service.rb:23-26; collection.rb:57, :112-114 check only the collection's own save).
+\* featured_item_serializer.rb:22-28). rs.crowd: more than 25 entries, with L's within the first 25 or past them, which
+\* single adds allow (add_account_to_collection_service.rb:23-26; collection.rb:57, :112-114 check only the
+\* collection's own save).
 RListing ==
-  IF rs.item.st = "acc" /\ ~rs.crowd THEN [i |-> ItemOf(rs.item.req), a |-> rs.item.ap, tr |-> FALSE]
-  ELSE [i |-> NONE, a |-> NONE, tr |-> rs.crowd]
+  IF rs.item.st = "acc" /\ rs.crowd # "past"
+  THEN [i |-> ItemOf(rs.item.req), a |-> rs.item.ap, tr |-> rs.crowd = "within"]
+  ELSE [i |-> NONE, a |-> NONE, tr |-> rs.crowd # "none"]
+\* R serves C (its pages, its instrument) while C exists and R's account is not being deleted (a suspended account's
+\* documents answer 410).
+RServes == rs.c /\ ~rs.gone
 
 \* RES-4: an ordinary intent is refused at a full backlog (recorded as given up). VARIANT V9: a retraction too.
 Refused(m) == env.bl /\ (m.cls = "ord" \/ (Variant = "V9" /\ m.ty = "Delete"))
+\* A Delete of a: R's server revokes L's item approved by a, whichever of its inboxes it reaches (delete.rb:5-6,
+\* :68-81: the item is found by approval_uri and its member alone).
+Corrects(m, a) == m.ty = "Delete" /\ m.obj = a
+\* The corrections of a in Kopje's lane or R's job queue.
+InFlight(a) ==
+  Cardinality({i \in 1..Len(kq) : Corrects(kq[i], a)})
+    + Cardinality(UNION {{<<m, j>> : j \in 1..rin[m]} : m \in {x \in DOMAIN rin : Corrects(x, a)}})
 
-Quiescent == toK = {} /\ rin = {} /\ kq = {} /\ rd.ph = "none" /\ sr.ph = "none" /\ ~fe.on
+Quiescent == toK = {} /\ rin = EmptyBag /\ kq = <<>> /\ rd.ph = "none" /\ sr.ph = "none" /\ ~fe.on
 
 (***************************************************************************)
 (* Init.                                                                   *)
 (***************************************************************************)
 Init ==
-  /\ k = [c |-> StartsWithC, row |-> NoRow, issued |-> 0, obl |-> NONE, lx |-> TRUE, rk |-> TRUE,
-          lblk |-> FALSE, ret |-> {}, sync |-> FALSE]
+  /\ k = [c |-> StartsWithC, row |-> NoRow, issued |-> 0, lx |-> TRUE, ls |-> FALSE, rk |-> TRUE, lblk |-> FALSE,
+          ret |-> {}, sync |-> FALSE]
   \* S1 starts with either policy, so a request can be refused before L consents (F3).
   /\ env \in {[consent |-> c, slots |-> FALSE, held |-> "lt10", bl |-> FALSE, cap |-> FALSE] :
                c \in IF Scenario = "S1" THEN BOOLEAN ELSE {TRUE}}
-  /\ kq = {} /\ kg = {} /\ toK = {} /\ rin = {}
-  /\ rs \in {[c |-> TRUE, item |-> NoItem, adds |-> 0, kb |-> FALSE, la |-> TRUE, pos |-> p, crowd |-> FALSE,
+  /\ kq = <<>> /\ kg = {} /\ toK = {} /\ rin = EmptyBag
+  /\ rs \in {[c |-> TRUE, item |-> NoItem, adds |-> 0, kb |-> FALSE, la |-> TRUE, pos |-> p, crowd |-> "none",
               gone |-> FALSE] : p \in StartPages}
   /\ rd = NoRead /\ sr = NoRead /\ fe = NoFetch
   /\ spent = Zero
-  /\ g = [delServed |-> FALSE, refusedHeld |-> FALSE, missed |-> FALSE, ov1 |-> FALSE, nue |-> FALSE,
-          accAfterRem |-> FALSE, remLive |-> FALSE, tags |-> [a \in Auths |-> {}], lastRd |-> NoLastRead]
+  /\ g = [obl |-> NONE, accReq |-> {}, delServed |-> FALSE, refusedHeld |-> FALSE, missed |-> FALSE, ov1 |-> FALSE,
+          nue |-> FALSE, accAfterRem |-> FALSE, remLive |-> FALSE, afterGone |-> FALSE,
+          unexcused |-> [a \in Auths |-> 0], tick |-> FALSE, held503 |-> FALSE, o7 |-> FALSE, lastRd |-> NoLastRead]
   /\ last = [act |-> "Init", arg |-> NoArg, rec |-> {}, resp |-> 0, ev |-> {}]
 
 (***************************************************************************)
-(* One Kopje step. res: a FeatureDKopje operator's result. opp: the        *)
-(* authorization an item Add or an applied read listing named (CR1's       *)
-(* opportunity), or NONE. mayHide: the step is of a kind that may hide the *)
-(* row (OV1), judged from its kind and input alone. outdNow: an inbound    *)
-(* change of R's collections, which makes a read under way outdated. lr:   *)
-(* OV2's latest read after the step. remC: R's Remove of C succeeded.      *)
+(* One Kopje step. res: a FeatureDKopje operator's result. evid: the step  *)
+(* is an evidence event that ends L's grant (GrantPreservation). opp: the  *)
+(* correction the step owes, [a, to] for an item Add or an applied read    *)
+(* listing that names an unserved a while L exists, or NONE (CR1).         *)
+(* mayHide: the step is of a kind that may hide the row (OV1).             *)
+(* allowedHide: it is a hide OV1 allows other than a read's (OV2's khide). *)
+(* mayShow: a show by this step is one the design allows (OV2's kshow):    *)
+(* every step but a stale read's completion.                               *)
+(* outdNow: a valid push of R's collections, which outdates a read under   *)
+(* way. remC: R's Remove of C succeeded. ev: the step's events.            *)
 (***************************************************************************)
-\* F7's history: what each correction opportunity for a since R last accepted with a came to.
-OppTag(k2, rec, a) ==
-  IF Served(k2, a) THEN {"served"}
-  ELSE IF ~k2.lx THEN {"lGone"}
-  ELSE IF \E m \in rec : m.ty = "Delete" /\ m.obj = a /\ Refused(m) THEN {"f8"}
-  ELSE {}
+NoOpp == [a |-> NONE, to |-> NONE]
+Accepted(rec) == {m \in rec : m.ty = "Accept"}
+\* The ghost obligation after a step: the Accept it records, else cleared by evidence, else unchanged.
+OblAfter(rec, evid) ==
+  IF Accepted(rec) # {} THEN (CHOOSE m \in Accepted(rec) : TRUE).res ELSE IF evid THEN NONE ELSE g.obl
+\* The requests Kopje accepted with the owed authorization.
+AccReqAfter(rec, evid) ==
+  IF Accepted(rec) # {}
+  THEN LET m == CHOOSE x \in Accepted(rec) : TRUE IN IF m.res = g.obl THEN g.accReq \cup {m.obj} ELSE {m.obj}
+  ELSE IF evid THEN {} ELSE g.accReq
 
-GhostK(res, opp, mayHide, lr, remC) ==
+\* How many corrections of a the step queues: refused ones count only under VARIANT V8 (F7 without its F8 excuse).
+Queued(rec, a) == Cardinality({m \in rec : Corrects(m, a) /\ (~Refused(m) \/ Variant = "V8")})
+
+GhostK(res, evid, opp, mayHide, allowedHide, mayShow, lr, remC, ev) ==
   LET k2 == res.k
       dels == {m \in res.rec : m.ty = "Delete"}
   IN [g EXCEPT
+        !.obl = OblAfter(res.rec, evid),
+        !.accReq = AccReqAfter(res.rec, evid),
         !.delServed = @ \/ (\E m \in dels : Served(k2, m.obj)),
         !.refusedHeld = @ \/ (\E m \in dels : Refused(m) /\ HeldRow(k2, m.obj)),
-        !.missed = @ \/ (opp # NONE /\ ~Served(k2, opp) /\ k2.lx /\ ~(\E m \in dels : m.obj = opp)),
+        !.missed = @ \/ (opp.a # NONE /\ ~(\E m \in dels : m.obj = opp.a /\ m.to = opp.to)),
         !.ov1 = @ \/ (Shown(k) /\ ~Shown(k2) /\ ~mayHide),
-        !.tags = [a \in Auths |-> IF a = opp THEN g.tags[a] \cup OppTag(k2, res.rec, a) ELSE g.tags[a]],
-        !.lastRd = lr,
-        !.accAfterRem = @ \/ (g.remLive /\ (\E m \in res.rec : m.ty = "Accept")),
-        !.remLive = @ \/ remC]
+        !.nue = @ \/ (g.obl # NONE /\ \E m \in res.rec : m.ty = "Reject" /\ m.obj \in g.accReq),
+        !.accAfterRem = @ \/ (g.remLive /\ Accepted(res.rec) # {}),
+        !.remLive = @ \/ remC,
+        !.afterGone = @ \/ (~k.rk /\ ((k2.c /\ ~k.c) \/ (k2.row # NoRow /\ k.row = NoRow) \/ Accepted(res.rec) # {})),
+        !.unexcused = [a \in Auths |-> @[a] + Queued(res.rec, a)],
+        !.tick = k2.row # k.row,
+        !.held503 = @ \/ "held503" \in ev,
+        !.o7 = @ \/ "o7" \in ev,
+        !.lastRd = [lr EXCEPT !.kshow = @ \/ (mayShow /\ Shown(k2) /\ ~Shown(k)),
+                             !.khide = @ \/ (allowedHide /\ ~Shown(k2))]]
 
-\* OV2's latest read after a Kopje step other than a read's completion: a change of the row is recorded.
-Touched(k2) == [g.lastRd EXCEPT !.kch = @ \/ (k2.row # k.row)]
-
-\* A read under way sees Kopje's changes of the row (its fence) and inbound changes (outdated).
+\* A read under way sees Kopje's changes of the row (its fence) and valid pushes (outdated), apart.
 Touch(read, k2, outdNow) ==
   IF read.ph = "none" THEN read
   ELSE [read EXCEPT !.chg = @ \/ (k2.row # k.row), !.outd = @ \/ outdNow]
 
 Events(res, extra) ==
   extra \cup (IF Shown(k) /\ ~Shown(res.k) /\ res.k.row.st = "acc" THEN {"hid"} ELSE {})
+        \cup (IF ~Shown(k) /\ Shown(res.k) THEN {"showed"} ELSE {})
+        \cup (IF k.row = NoRow /\ res.k.row # NoRow THEN {"newRow"} ELSE {})
         \cup (IF \E m \in res.rec : m.ty = "Delete" /\ Refused(m) /\ ~HeldRow(res.k, m.obj) THEN {"f8"} ELSE {})
+
+\* The step's activities in the order it records them: a Delete before the Block it goes with.
+RecSeq(rec) ==
+  LET dels == {m \in rec : m.ty = "Delete"}
+      one(s) == IF s = {} THEN <<>> ELSE <<CHOOSE m \in s : TRUE>>
+  IN one(dels) \o one(rec \ dels)
 
 Record(res) ==
   /\ k' = res.k
-  /\ kq' = kq \cup {m \in res.rec : ~Refused(m)}
+  /\ kq' = kq \o RecSeq({m \in res.rec : ~Refused(m)})
   /\ kg' = kg \cup {m \in res.rec : Refused(m)}
 
-Commit(res, opp, mayHide, outdNow, remC, act, arg, extra) ==
+Commit(res, evid, opp, mayHide, allowedHide, outdNow, remC, act, arg, extra) ==
+  LET ev == Events(res, extra) IN
   /\ Record(res)
-  /\ g' = GhostK(res, opp, mayHide, Touched(res.k), remC)
+  /\ g' = GhostK(res, evid, opp, mayHide, allowedHide, TRUE, g.lastRd, remC, ev)
   /\ rd' = Touch(rd, res.k, outdNow)
   /\ sr' = Touch(sr, res.k, outdNow)
-  /\ last' = [act |-> act, arg |-> arg, rec |-> res.rec, resp |-> res.resp, ev |-> Events(res, extra)]
+  /\ last' = [act |-> act, arg |-> arg, rec |-> res.rec, resp |-> res.resp, ev |-> ev]
 
 \* A step that would create a row with a third authorization lies past the bound.
 PastBound == NeedsAuth(k, env)
+
+\* A re-accept by another request (the row takes the request, its uri cleared): the one decision that hides.
+ReAccept(res) == Accepted(res.rec) # {} /\ k.row.st = "acc" /\ res.k.row.req # k.row.req
 
 (***************************************************************************)
 (* KRecv: Kopje processes an envelope from toK. dup: its response is lost, *)
@@ -268,7 +333,7 @@ RecvRes(e) ==
          [] e.ty = "RemC" -> RemoveCollection(k, env)
          [] e.ty = "DelR" -> OwnerGone(k)
 
-\* A FeatureRequest for a collection Kopje does not store: the instrument is fetched (a snapshot of R's C now).
+\* A FeatureRequest for a collection Kopje does not store: the Store asks for the instrument, fetched now.
 NeedsFetch(e) == e.ty = "FR" /\ ~k.c /\ k.lx /\ k.rk
 
 Consume(e, dup, resp) == toK' = IF dup \/ resp = 503 THEN toK ELSE toK \ {e}
@@ -280,51 +345,82 @@ KRecv(e, dup) ==
      THEN /\ Consume(e, dup, 202)
           /\ UNCHANGED <<k, env, kq, kg, rs, rin, rd, sr, g>>
           /\ IF "C" \in k.ret
-             THEN \* R retracted C: the request is ignored (:269-272).
+             THEN \* R retracted C: the request is ignored (:274-277).
                   /\ UNCHANGED fe
                   /\ last' = [act |-> "KRecv", arg |-> Arg(e, NoIntent, NONE), rec |-> {}, resp |-> 202,
                               ev |-> IF g.remLive THEN {"rfGuard"} ELSE {}]
              ELSE /\ ~fe.on
-                  /\ fe' = [on |-> TRUE, r |-> e.r, ex |-> rs.c, l |-> RListing]
-                  /\ last' = [act |-> "KRecv", arg |-> Arg(e, NoIntent, NONE), rec |-> {}, resp |-> 202,
+                  /\ fe' = [on |-> TRUE, r |-> e.r, ex |-> RServes, l |-> RListing]
+                  /\ last' = [act |-> "KRecv", arg |-> Arg(e, NoIntent, NONE), rec |-> {}, resp |-> FETCH,
                               ev |-> {"fetch"}]
      ELSE LET res == RecvRes(e)
-              opp == IF e.ty = "XAdd" \/ (e.ty = "Add" /\ k.rk) THEN e.a ELSE NONE
-              mayHide == CASE e.ty = "FR" -> k.row.st = "acc" /\ k.row.req # e.r
-                           [] e.ty = "Rem" -> k.row # NoRow /\ k.row.uri = e.i
-                           [] e.ty \in {"RemC", "DelR"} -> TRUE
-                           [] OTHER -> FALSE
+              valid == k.rk /\ res.resp = 202
+              opp == IF e.ty = "XAdd" /\ k.lx /\ ~Served(k, e.a) THEN [a |-> e.a, to |-> "X"]
+                     ELSE IF e.ty = "Add" /\ k.rk /\ k.lx /\ ~Served(k, e.a) THEN [a |-> e.a, to |-> "R"]
+                     ELSE NoOpp
+              allowed == (e.ty = "FR" /\ ReAccept(res)) \/ (e.ty = "Rem" /\ k.row # NoRow /\ k.row.uri = e.i)
+              \* A copy of an earlier request hides a row R lists (order 7, :248-251).
+              o7 == e.ty = "FR" /\ Shown(k) /\ ~Shown(res.k) /\ rs.item.st = "acc" /\ rs.item.ap = k.row.auth
+              extra == (IF res.resp = 503 THEN {"503"} ELSE {})
+                         \cup (IF res.resp = 503 /\ e.ty = "RemC" /\ k.c THEN {"held503"} ELSE {})
+                         \cup (IF o7 THEN {"o7"} ELSE {})
           IN /\ ~(e.ty = "FR" /\ PastBound)
-             /\ Commit(res, opp, mayHide, e.ty \in Pushes /\ res.k # k, e.ty = "RemC" /\ res.resp = 202 /\ k.rk,
-                       "KRecv", Arg(e, NoIntent, NONE), IF res.resp = 503 THEN {"503"} ELSE {})
+             /\ Commit(res, valid /\ e.ty \in {"RemC", "DelR"}, opp, allowed \/ e.ty \in {"RemC", "DelR"}, allowed,
+                       valid /\ e.ty \in Pushes, valid /\ e.ty = "RemC", "KRecv", Arg(e, NoIntent, NONE), extra)
              /\ Consume(e, dup, res.resp)
              /\ UNCHANGED <<env, rs, rin, fe>>
 
-\* K1b: the instrument fetched by KRecv applied (a Store transaction of its own).
+\* K1b: the instrument fetched by KRecv applied, in the resumed activity's own transaction.
 KApplyFetch ==
   /\ fe.on
   /\ ~PastBound
-  /\ Commit(ApplyFetch(k, env, fe), NONE, k.row.st = "acc" /\ k.row.req # fe.r, FALSE, FALSE, "KApplyFetch",
-            Arg(Envelope("Instrument", fe.r, fe.l.i, fe.l.a, fe.l), NoIntent, IF fe.ex THEN "served" ELSE "gone"),
-            IF "C" \in k.ret /\ g.remLive THEN {"rfGuard"} ELSE {})
+  /\ LET res == ApplyFetch(k, env, fe)
+     IN Commit(res, FALSE, NoOpp, ReAccept(res), ReAccept(res), FALSE, FALSE, "KApplyFetch",
+               Arg(Envelope("Instrument", fe.r, fe.l.i, fe.l.a, fe.l), NoIntent, IF fe.ex THEN "served" ELSE "gone"),
+               IF "C" \in k.ret /\ g.remLive THEN {"rfGuard"} ELSE {})
   /\ fe' = NoFetch
   /\ UNCHANGED <<env, toK, rs, rin, spent>>
 
-KMember(res, f, act) ==
+KMember(res, evid, f, act) ==
   /\ Can(f) /\ Spend(f)
-  /\ Commit(res, NONE, TRUE, FALSE, FALSE, act, NoArg, {})
+  /\ Commit(res, evid, NoOpp, TRUE, FALSE, FALSE, FALSE, act, NoArg, {})
   /\ UNCHANGED <<env, toK, rs, rin, fe>>
 
-KRevoke == k.row.st = "acc" /\ KMember(Revoke(k), "revoke", "KRevoke")
-KBlock == ~k.lblk /\ k.lx /\ KMember(Block(k), "block", "KBlock")
-KMemberGone == k.lx /\ KMember(MemberGone(k), "ldel", "KMemberGone")
+\* L's own acts, while it can sign in (not suspended).
+KRevoke == k.row.st = "acc" /\ ~k.ls /\ KMember(Revoke(k), TRUE, "revoke", "KRevoke")
+KBlock == ~k.lblk /\ k.lx /\ ~k.ls /\ KMember(Block(k), TRUE, "block", "KBlock")
+\* Model-only: Kopje deletes no local account (src/federation/delivery-hosts.ts:63), so no fixture takes this step.
+KMemberGone == k.lx /\ KMember(MemberGone(k), TRUE, "ldel", "KMemberGone")
+KSuspend == k.lx /\ ~k.ls /\ KMember(Suspend(k), FALSE, "susp", "KSuspend")
+KUnsuspend == k.ls /\ KMember(Unsuspend(k), FALSE, "susp", "KUnsuspend")
 
+\* D9's cleanup of the retired row. VARIANT V16: it also deletes the row's Delete still at the head of the lane.
 KCleanup ==
   /\ k.row.st = "ret"
-  /\ Commit(Cleanup(k), NONE, TRUE, FALSE, FALSE, "KCleanup", NoArg, {})
+  /\ Commit(Cleanup(k), FALSE, NoOpp, TRUE, FALSE, FALSE, FALSE, "KCleanup", NoArg, {})
+  /\ UNCHANGED <<env, toK, rs, rin, fe, spent>>
+KCleanupV16 ==
+  /\ k.row.st = "ret" /\ kq # <<>> /\ Head(kq).ty = "Delete" /\ Head(kq).obj = k.row.auth
+  /\ k' = Cleanup(k).k /\ kq' = Tail(kq) /\ kg' = kg
+  /\ g' = GhostK(Cleanup(k), FALSE, NoOpp, TRUE, FALSE, TRUE, g.lastRd, FALSE, {})
+  /\ rd' = Touch(rd, Cleanup(k).k, FALSE) /\ sr' = Touch(sr, Cleanup(k).k, FALSE)
+  /\ last' = [act |-> "KCleanup", arg |-> NoArg, rec |-> {}, resp |-> 0, ev |-> {}]
   /\ UNCHANGED <<env, toK, rs, rin, fe, spent>>
 
-\* The environment: L's policy, RES-4's backlog, the retraction cap, how many of R's collections Kopje holds.
+\* The early eviction of L's retired row, when a new row comes into C at its 50 stored rows.
+KEvict ==
+  /\ Evicts /\ k.row.st = "ret"
+  /\ Commit(Evict(k), FALSE, NoOpp, TRUE, FALSE, FALSE, FALSE, "KEvict", NoArg, {})
+  /\ UNCHANGED <<env, toK, rs, rin, fe, spent>>
+
+\* One batch of R's purge after its tombstone: C and its rows.
+KPurge ==
+  /\ ~k.rk /\ (k.c \/ k.row # NoRow)
+  /\ Commit(OwnerPurge(k), FALSE, NoOpp, TRUE, FALSE, FALSE, FALSE, "KPurge", NoArg, {})
+  /\ UNCHANGED <<env, toK, rs, rin, fe, spent>>
+
+\* The environment: L's policy, RES-4's backlog, the retraction cap, C's 25 slots all held by local rows (while C is
+\* stored), how many of R's collections Kopje holds.
 EnvSet(f, field, value) ==
   /\ Can(f) /\ Spend(f)
   /\ env' = [env EXCEPT ![field] = value]
@@ -335,31 +431,38 @@ EnvStep ==
   \/ EnvSet("consent", "consent", ~env.consent)
   \/ EnvSet("backlog", "bl", ~env.bl)
   \/ EnvSet("cap", "cap", ~env.cap)
+  \/ (k.c /\ EnvSet("slots", "slots", ~env.slots))
   \/ \E h \in {"lt10", "lt50", "at50"} \ {env.held} : EnvSet("held", "held", h)
 
 (***************************************************************************)
 (* Reads (D21 as (d) keeps it): claim, page GETs, completion.              *)
 (***************************************************************************)
+\* The claim revalidates R (claimCollectionSync claims only an available owner). The row fence includes equality: a
+\* row changed in the same millisecond as the claim counts as changed at it, so a change by the last Store step
+\* before the claim may (g.tick); the step's input is then "sameTime".
 KClaim ==
   /\ rd.ph = "none" /\ k.rk /\ Can("reads") /\ Spend("reads")
-  /\ rd' = [NoRead EXCEPT !.ph = "cl", !.hadRow = (Variant = "V3" /\ k.row # NoRow)]
+  /\ \E chg \in {FALSE} \cup (IF g.tick THEN {TRUE} ELSE {}) :
+       /\ rd' = [NoRead EXCEPT !.ph = "cl", !.chg = chg, !.hadRow = (Variant = "V3" /\ k.row # NoRow)]
+       /\ last' = [act |-> "KClaim", arg |-> Arg(NoEnvelope, NoIntent, IF chg THEN "sameTime" ELSE NONE), rec |-> {},
+                   resp |-> 0, ev |-> {}]
   /\ k' = [k EXCEPT !.sync = FALSE]
-  /\ last' = [act |-> "KClaim", arg |-> NoArg, rec |-> {}, resp |-> 0, ev |-> {}]
-  /\ UNCHANGED <<env, kq, kg, toK, rs, rin, sr, fe, g>>
+  /\ g' = [g EXCEPT !.tick = FALSE]
+  /\ UNCHANGED <<env, kq, kg, toK, rs, rin, sr, fe>>
 
-Page(p) == rs.c /\ rs.pos = p
+Page(p) == RServes /\ rs.pos = p
 Seen(v) == [v EXCEPT !.seen = TRUE, !.i = RListing.i, !.a = RListing.a, !.tr = RListing.tr]
 Complete == ~Page("past")
 
 \* A fetch step's input, what R serves: C's listing and its place (p1, p2, past the 2 pages Kopje reads, or absent).
 PagesArg ==
-  Arg(Envelope("Pages", NONE, NONE, NONE, IF rs.c THEN RListing ELSE NoListing), NoIntent,
-      IF rs.c THEN rs.pos ELSE "absent")
+  Arg(Envelope("Pages", NONE, NONE, NONE, IF RServes THEN RListing ELSE NoListing), NoIntent,
+      IF RServes THEN rs.pos ELSE "absent")
 
 \* Both pages in one step, where C cannot move between them.
 KFetch ==
   /\ ~SplitPages /\ rd.ph = "cl"
-  /\ LET v == IF rs.c /\ rs.pos # "past" THEN Seen(NoView) ELSE NoView IN
+  /\ LET v == IF RServes /\ rs.pos # "past" THEN Seen(NoView) ELSE NoView IN
      rd' = [rd EXCEPT !.ph = "done", !.rch = FALSE, !.v = [v EXCEPT !.cpl = Complete]]
   /\ last' = [act |-> "KFetch", arg |-> PagesArg, rec |-> {}, resp |-> 0, ev |-> {}]
   /\ UNCHANGED <<k, env, kq, kg, toK, rs, rin, sr, fe, spent, g>>
@@ -378,21 +481,32 @@ KFetch2 ==
   /\ last' = [act |-> "KFetch2", arg |-> PagesArg, rec |-> {}, resp |-> 0, ev |-> {}]
   /\ UNCHANGED <<k, env, kq, kg, toK, rs, rin, sr, fe, spent, g>>
 
-\* (b)'s wait ended (V2 only): no answer of the row is still queued.
-Settled == ~(\E m \in kq : m.ty = "Accept" /\ m.res = k.row.auth)
-Eligible(read) == ~read.outd /\ read.v.seen /\ ~read.v.tr
+\* (b)'s wait ended (V2 only): no answer of the row is still in the lane.
+Settled == ~(\E i \in 1..Len(kq) : kq[i].ty = "Accept" /\ kq[i].res = k.row.auth)
+\* A completion whose listing Kopje applies: R still there, no valid push since the claim, C seen.
+Applies(read) == k.rk /\ ~read.outd /\ read.v.seen
+\* An untruncated view that omits the accepted row, which an unfenced read would hide.
+WouldHide(read) ==
+  /\ k.rk /\ k.row.st = "acc" /\ read.v.seen /\ ~read.v.tr
+  /\ ~(read.v.i # NONE /\ read.v.a = k.row.auth)
 
 KApply ==
   /\ rd.ph = "done"
   /\ LET res == ApplyRead(k, env, rd.v, rd.chg, rd.outd, rd.hadRow, Settled)
-         opp == IF Eligible(rd) /\ rd.v.i # NONE THEN rd.v.a ELSE NONE
-         mayHide == Eligible(rd) /\ ~rd.chg /\ ~(rd.v.i # NONE /\ rd.v.a = k.row.auth)
-         lr == [valid |-> Eligible(rd), i |-> rd.v.i, a |-> rd.v.a, rch |-> rd.rch, kch |-> rd.chg]
+         named == rd.v.i # NONE
+         opp == IF Applies(rd) /\ named /\ k.lx /\ ~Served(k, rd.v.a) THEN [a |-> rd.v.a, to |-> "R"] ELSE NoOpp
+         mayHide == Applies(rd) /\ ~rd.v.tr /\ ~rd.chg /\ ~(named /\ rd.v.a = k.row.auth)
+         lr == [valid |-> Applies(rd), i |-> rd.v.i, a |-> rd.v.a, tr |-> rd.v.tr, fenced |-> rd.chg,
+                rch |-> rd.rch, kshow |-> FALSE, khide |-> FALSE]
+         fence == IF Shown(k) /\ WouldHide(rd)
+                  THEN (IF rd.outd /\ ~rd.chg THEN {"fencedPush"} ELSE {})
+                         \cup (IF rd.chg /\ ~rd.outd THEN {"fencedRow"} ELSE {})
+                  ELSE {}
+         ev == Events(res, fence \cup IF KeptByRow(k, rd.v, rd.outd) THEN {"kept"} ELSE {})
      IN /\ Record(res)
-        /\ g' = GhostK(res, opp, mayHide, lr, FALSE)
+        /\ g' = [GhostK(res, FALSE, opp, mayHide, FALSE, TRUE, lr, FALSE, ev) EXCEPT !.lastRd = lr]
         /\ sr' = Touch(sr, res.k, FALSE)
-        /\ last' = [act |-> "KApply", arg |-> NoArg, rec |-> res.rec, resp |-> 0,
-                    ev |-> Events(res, IF KeptByRow(k, rd.v, rd.outd) THEN {"kept"} ELSE {})]
+        /\ last' = [act |-> "KApply", arg |-> NoArg, rec |-> res.rec, resp |-> 0, ev |-> ev]
   /\ rd' = NoRead
   /\ UNCHANGED <<env, toK, rs, rin, fe, spent>>
 
@@ -408,10 +522,11 @@ KStale ==
   /\ sr.ph = "done"
   /\ LET res == IF Variant = "V4" THEN ApplyRead(k, env, sr.v, sr.chg, sr.outd, sr.hadRow, Settled)
                 ELSE Res(k, {}, 0)
+         ev == Events(res, IF Shown(k) /\ WouldHide(sr) THEN {"staleOmits"} ELSE {})
      IN /\ Record(res)
-        /\ g' = GhostK(res, NONE, FALSE, g.lastRd, FALSE)
+        /\ g' = GhostK(res, FALSE, NoOpp, FALSE, FALSE, FALSE, g.lastRd, FALSE, ev)
         /\ rd' = Touch(rd, res.k, FALSE)
-        /\ last' = [act |-> "KStale", arg |-> NoArg, rec |-> res.rec, resp |-> 0, ev |-> Events(res, {})]
+        /\ last' = [act |-> "KStale", arg |-> NoArg, rec |-> res.rec, resp |-> 0, ev |-> ev]
   /\ sr' = NoRead
   /\ UNCHANGED <<env, toK, rs, rin, fe, spent>>
 
@@ -420,7 +535,7 @@ KExpire ==
   /\ Can("expire") /\ toK = {} /\ rd.ph = "none" /\ sr.ph = "none" /\ ~fe.on
   /\ \E x \in k.ret :
        /\ k' = [k EXCEPT !.ret = @ \ {x}]
-       /\ g' = [g EXCEPT !.remLive = IF x = "C" THEN FALSE ELSE @]
+       /\ g' = [g EXCEPT !.remLive = IF x = "C" THEN FALSE ELSE @, !.tick = FALSE]
        /\ last' = [act |-> "KExpire", arg |-> Arg(NoEnvelope, NoIntent, x), rec |-> {}, resp |-> 0, ev |-> {}]
   /\ Spend("expire")
   /\ UNCHANGED <<env, kq, kg, toK, rs, rin, rd, sr, fe>>
@@ -430,8 +545,9 @@ KExpire ==
 (* A change of R's item or collection after a read fetched C's page makes  *)
 (* that read's view older than R (OV2's rch).                              *)
 (***************************************************************************)
-RChanged(rs2) == rs2.item # rs.item \/ rs2.c # rs.c
+RChanged(rs2) == rs2.item # rs.item \/ rs2.c # rs.c \/ rs2.crowd # rs.crowd \/ rs2.gone # rs.gone
 RTouch(read, rs2) == IF read.v.seen /\ RChanged(rs2) THEN [read EXCEPT !.rch = TRUE] ELSE read
+RGhost(gg, rs2) == [gg EXCEPT !.lastRd = [@ EXCEPT !.rch = @ \/ RChanged(rs2)]]
 
 RStep(rs2, sent, act, arg, extra) ==
   /\ rs' = rs2
@@ -441,7 +557,7 @@ RStep(rs2, sent, act, arg, extra) ==
 
 RStepG(rs2, sent, act, arg, extra) ==
   /\ RStep(rs2, sent, act, arg, extra)
-  /\ g' = [g EXCEPT !.lastRd = [@ EXCEPT !.rch = @ \/ RChanged(rs2)]]
+  /\ g' = RGhost(g, rs2)
 
 \* AddAccountToCollectionService: refused while L blocks R (account_policy.rb:68-70, the service's :10); one item of L
 \* per collection (collection_item.rb:33); a pending item with a new request (the service's :23-26,
@@ -456,7 +572,7 @@ RAdd ==
 \* DeleteCollectionItemService: the item destroyed, its Remove distributed (delete_collection_item_service.rb:8-10,
 \* :18-24); L hears it only through R's reach, so it may be dropped.
 RRemove ==
-  /\ rs.item # NoItem /\ Can("remove") /\ Spend("remove")
+  /\ rs.item # NoItem /\ ~rs.gone /\ Can("remove") /\ Spend("remove")
   /\ RStepG([rs EXCEPT !.item = NoItem], {ERem(ItemOf(rs.item.req))}, "RRemove", NoArg, {})
   /\ UNCHANGED <<k, env, kq, kg, rin, fe>>
 
@@ -467,19 +583,25 @@ RDeleteC ==
   /\ RStepG([rs EXCEPT !.c = FALSE, !.item = NoItem], {ERemC}, "RDeleteC", NoArg, {})
   /\ UNCHANGED <<k, env, kq, kg, rin, fe>>
 
-\* CollectionItemCleanupScheduler: rejected and revoked items destroyed, with no activity
-\* (collection_item_cleanup_scheduler.rb:6-15).
+\* CollectionItemCleanupScheduler: rejected and revoked items destroyed 24 hours on, with no activity
+\* (collection_item_cleanup_scheduler.rb:6-15). A later Accept of that request finds no item (accept.rb:8).
 RCleanup ==
   /\ rs.item.st \in {"rej", "rev"} /\ Can("rclean") /\ Spend("rclean")
   /\ RStepG([rs EXCEPT !.item = NoItem], {}, "RCleanup", NoArg, {})
   /\ UNCHANGED <<k, env, kq, kg, rin, fe>>
 
-\* R deletes its account: its collections purged (delete_account_service.rb:6-14), its actor Delete sent
-\* (:102-107, :305-311).
+\* R deletes its account: DeleteAccountService distributes its actor Delete before it purges its content
+\* (delete_account_service.rb:94-95, :102-107), and the account answers 410 from the start (RServes). RPurge is the
+\* purge after: R's collections and their items (:6-14).
 RDeleteSelf ==
   /\ ~rs.gone /\ Can("gone") /\ Spend("gone")
-  /\ RStepG([rs EXCEPT !.gone = TRUE, !.c = FALSE, !.item = NoItem], {EDelR}, "RDeleteSelf", NoArg, {})
+  /\ RStepG([rs EXCEPT !.gone = TRUE], {EDelR}, "RDeleteSelf", NoArg, {})
   /\ UNCHANGED <<k, env, kq, kg, rin, fe>>
+
+RPurge ==
+  /\ rs.gone /\ (rs.c \/ rs.item # NoItem)
+  /\ RStepG([rs EXCEPT !.c = FALSE, !.item = NoItem], {}, "RPurge", NoArg, {})
+  /\ UNCHANGED <<k, env, kq, kg, rin, fe, spent>>
 
 \* UpdateCollectionService: the Update carries C's listing as it is when enqueued (update_collection_service.rb:19,
 \* :26-27; update_featured_collection_serializer.rb:6).
@@ -496,9 +618,11 @@ RShift ==
        RStepG([rs EXCEPT !.pos = p], {}, "RShift", Arg(NoEnvelope, NoIntent, p), {})
   /\ UNCHANGED <<k, env, kq, kg, rin, fe>>
 
+\* Other members join or leave C, so its listing is or stops being truncated, with L within the 25 or past them.
 RCrowd ==
   /\ Can("crowd") /\ Spend("crowd")
-  /\ RStepG([rs EXCEPT !.crowd = ~@], {}, "RCrowd", NoArg, {})
+  /\ \E cr \in {"none", "within", "past"} \ {rs.crowd} :
+       RStepG([rs EXCEPT !.crowd = cr], {}, "RCrowd", Arg(NoEnvelope, NoIntent, cr), {})
   /\ UNCHANGED <<k, env, kq, kg, rin, fe>>
 
 \* X, another owner on R's server, lists an authorization of L's in its own collection (adversarial: S4).
@@ -510,83 +634,85 @@ XAdd ==
 
 \* One job of R's processing an activity Kopje delivered.
 \*  Accept: the item of that request, in any state (activity.rb:160-164), accepted with the result as its approval
-\*    and its Add distributed (accept.rb:36-45); with no such item, ignored (accept.rb:8).
+\*    and its Add distributed (accept.rb:36-45); with no such item, ignored (accept.rb:8). The corrections of that
+\*    authorization CR3 counts from here are those still in flight.
 \*  Reject: the item of that request rejected, in any state (reject.rb:41-46).
-\*  Delete: the item of L's with that approval, found across R's server in any state, revoked and kept, its Remove
-\*    distributed (delete.rb:6, :68-81; delete_collection_item_service.rb:8-10).
+\*  Delete: the item of L's with that approval, in any state, revoked and kept, its Remove distributed (delete.rb:6,
+\*    :68-81; delete_collection_item_service.rb:8-10).
 \*  Block: recorded; no collection changes (activity/block.rb:3-22, after_block_service.rb:4-13).
 \*  DeleteActor: L's items purged with its account (delete.rb:5, :13-17; delete_account_service.rb:14, :214-218).
-RProcess(m, act) ==
+\* Every processed correction leaves CR3's count, whatever it found.
+RProcess(m) ==
   LET it == rs.item
       mine(r) == it # NoItem /\ it.req = r
       live == ~rs.gone /\ rs.la
       arg == Arg(NoEnvelope, m, NONE)
-  IN CASE m.ty = "Accept" /\ live /\ mine(m.obj) ->
-            /\ RStep([rs EXCEPT !.item = [it EXCEPT !.st = "acc", !.ap = m.res]], {EAdd(ItemOf(m.obj), m.res)}, act,
-                     arg, {"accepted"})
-            /\ g' = [g EXCEPT !.lastRd = [@ EXCEPT !.rch = TRUE],
-                              !.tags = [a \in Auths |-> IF a = m.res THEN {} ELSE g.tags[a]]]
-       [] m.ty = "Reject" /\ live /\ mine(m.obj) ->
-            /\ RStep([rs EXCEPT !.item = [it EXCEPT !.st = "rej"]], {}, act, arg, {})
-            /\ g' = [g EXCEPT !.lastRd = [@ EXCEPT !.rch = TRUE],
-                              !.nue = @ \/ (m.why = "kept" /\ it.st = "acc" /\ Served(k, it.ap))]
-       [] m.ty = "Delete" /\ live /\ it # NoItem /\ it.ap = m.obj ->
-            RStepG([rs EXCEPT !.item = [it EXCEPT !.st = "rev"]], {ERem(ItemOf(it.req))}, act, arg,
-                   IF m.why = "answer" THEN {"corrected"} ELSE {})
-       [] m.ty = "Block" ->
-            RStepG([rs EXCEPT !.kb = TRUE], {}, act, arg, {})
-       [] m.ty = "DeleteActor" ->
-            RStepG([rs EXCEPT !.item = NoItem, !.la = FALSE], {}, act, arg, {})
+      done(gg) == [gg EXCEPT !.unexcused = [a \in Auths |-> IF Corrects(m, a) THEN @[a] - 1 ELSE @[a]]]
+      acc == m.ty = "Accept" /\ live /\ mine(m.obj)
+      rev == m.ty = "Delete" /\ live /\ it # NoItem /\ it.ap = m.obj
+      rs2 == CASE acc -> [rs EXCEPT !.item = [it EXCEPT !.st = "acc", !.ap = m.res]]
+               [] m.ty = "Reject" /\ live /\ mine(m.obj) -> [rs EXCEPT !.item = [it EXCEPT !.st = "rej"]]
+               [] rev -> [rs EXCEPT !.item = [it EXCEPT !.st = "rev"]]
+               [] m.ty = "Block" -> [rs EXCEPT !.kb = TRUE]
+               [] m.ty = "DeleteActor" -> [rs EXCEPT !.item = NoItem, !.la = FALSE]
+               [] OTHER -> rs
+  IN CASE acc ->
+            /\ RStep(rs2, {EAdd(ItemOf(m.obj), m.res)}, "RJob", arg, {"accepted"})
+            /\ g' = [RGhost(g, rs2) EXCEPT !.unexcused = [a \in Auths |-> IF a = m.res THEN InFlight(a) ELSE @[a]]]
+       [] rev ->
+            /\ RStep(rs2, {ERem(ItemOf(it.req))}, "RJob", arg, IF m.why = "answer" THEN {"corrected"} ELSE {})
+            /\ g' = done(RGhost(g, rs2))
+       [] rs2 # rs ->
+            /\ RStep(rs2, {}, "RJob", arg, {})
+            /\ g' = RGhost(g, rs2)
        [] OTHER ->
-            RStepG(rs, {}, act, arg, {"ignored"})
+            /\ RStep(rs, {}, "RJob", arg, {"ignored"})
+            /\ g' = done(g)
 
 RJob ==
-  /\ Staged
-  /\ \E m \in rin : rin' = rin \ {m} /\ RProcess(m, "RJob")
+  /\ \E m \in DOMAIN rin : rin' = BagRemove(rin, m) /\ RProcess(m)
   /\ UNCHANGED <<k, env, kq, kg, fe, spent>>
 
 (***************************************************************************)
-(* Kopje's deliveries to R's inbox (X's inbox is on R's server).           *)
+(* Kopje's deliveries: the lane's head is POSTed to R's server, whose      *)
+(* inbox answers 202 and queues a job.                                     *)
 (***************************************************************************)
 DeliveryStep(act, m) == last' = [act |-> act, arg |-> Arg(NoEnvelope, m, NONE), rec |-> {}, resp |-> 0, ev |-> {}]
+\* CR3's count of a's corrections after m leaves the lane (up FALSE) or gains a copy in flight (up TRUE).
+CountHead(m, up) ==
+  [g EXCEPT !.unexcused = [a \in Auths |-> IF ~Corrects(m, a) THEN @[a] ELSE IF up THEN @[a] + 1 ELSE @[a] - 1]]
 
 KDeliver ==
-  \E m \in kq :
-    /\ kq' = kq \ {m}
-    /\ IF Staged
-       THEN /\ rin' = rin \cup {m}
-            /\ DeliveryStep("KDeliver", m)
-            /\ UNCHANGED <<k, env, kg, toK, rs, rd, sr, fe, spent, g>>
-       ELSE /\ RProcess(m, "KDeliver")
-            /\ UNCHANGED <<k, env, kg, rin, fe, spent>>
+  /\ kq # <<>>
+  /\ kq' = Tail(kq) /\ rin' = BagAdd(rin, Head(kq))
+  /\ DeliveryStep("KDeliver", Head(kq))
+  /\ UNCHANGED <<k, env, kg, toK, rs, rd, sr, fe, spent, g>>
+
+\* A POST whose response is lost: R queues the job, and the activity stays the lane's head.
+KDup ==
+  /\ kq # <<>> /\ Can("dup") /\ Spend("dup")
+  /\ rin' = BagAdd(rin, Head(kq))
+  /\ g' = CountHead(Head(kq), TRUE)
+  /\ DeliveryStep("KDup", Head(kq))
+  /\ UNCHANGED <<k, env, kq, kg, toK, rs, rd, sr, fe>>
 
 KGiveUp ==
-  \E m \in kq :
-    /\ kq' = kq \ {m} /\ kg' = kg \cup {m}
-    /\ LET tag == IF m.why = "answer" THEN "gaveUp" ELSE "gaveUpRevoke" IN
-       g' = [g EXCEPT !.tags = [a \in Auths |-> IF m.ty = "Delete" /\ m.obj = a THEN g.tags[a] \cup {tag}
-                                                ELSE g.tags[a]]]
-    /\ DeliveryStep("KGiveUp", m)
-    /\ UNCHANGED <<k, env, toK, rs, rin, rd, sr, fe, spent>>
+  /\ kq # <<>>
+  /\ kq' = Tail(kq) /\ kg' = kg \cup {Head(kq)}
+  /\ g' = CountHead(Head(kq), FALSE)
+  /\ DeliveryStep("KGiveUp", Head(kq))
+  /\ UNCHANGED <<k, env, toK, rs, rin, rd, sr, fe, spent>>
 
-\* A delivery whose response is lost: R gets it, and it stays queued, to be delivered again or given up.
-KDup ==
-  \E m \in kq :
-    /\ Can("dup") /\ Spend("dup")
-    /\ IF Staged
-       THEN /\ rin' = rin \cup {m}
-            /\ DeliveryStep("KDup", m)
-            /\ UNCHANGED <<k, env, kq, kg, toK, rs, rd, sr, fe, g>>
-       ELSE /\ RProcess(m, "KDup")
-            /\ UNCHANGED <<k, env, kq, kg, rin, fe>>
-
-\* An operator retries a given-up delivery (retryDeliveries); :322 allows it for any unrevoked row's answer.
+\* An operator retries a given-up delivery (retryDeliveries): admitted again only if it fits (a retraction always
+\* does), it goes behind the lane's current head, older than the rest by its id.
 KRetry ==
   \E m \in kg :
-    /\ Can("retry") /\ Spend("retry")
-    /\ kg' = kg \ {m} /\ kq' = kq \cup {m}
+    /\ Can("retry") /\ Spend("retry") /\ ~Refused(m)
+    /\ kg' = kg \ {m}
+    /\ kq' = IF kq = <<>> THEN <<m>> ELSE <<Head(kq), m>> \o Tail(kq)
+    /\ g' = CountHead(m, TRUE)
     /\ DeliveryStep("KRetry", m)
-    /\ UNCHANGED <<k, env, toK, rs, rin, rd, sr, fe, g>>
+    /\ UNCHANGED <<k, env, toK, rs, rin, rd, sr, fe>>
 
 \* R's delivery to Kopje given up after its retries (delivery_worker.rb:11-21), or never sent: L outside its reach.
 Drop ==
@@ -597,82 +723,113 @@ Drop ==
 
 Next ==
   \/ \E e \in toK : KRecv(e, FALSE) \/ KRecv(e, TRUE)
-  \/ KApplyFetch \/ KRevoke \/ KBlock \/ KMemberGone \/ KCleanup \/ EnvStep
+  \/ KApplyFetch \/ KRevoke \/ KBlock \/ KMemberGone \/ KSuspend \/ KUnsuspend \/ KEvict \/ KPurge
+  \/ IF Variant = "V16" THEN KCleanupV16 \/ KCleanup ELSE KCleanup
+  \/ EnvStep
   \/ KClaim \/ KFetch \/ KFetch1 \/ KFetch2 \/ KApply \/ KLease \/ KStale \/ KExpire
   \/ KDeliver \/ KGiveUp \/ KDup \/ KRetry
-  \/ RAdd \/ RRemove \/ RDeleteC \/ RCleanup \/ RDeleteSelf \/ RUpdate \/ RShift \/ RCrowd \/ XAdd \/ RJob \/ Drop
+  \/ RAdd \/ RRemove \/ RDeleteC \/ RCleanup \/ RDeleteSelf \/ RPurge \/ RUpdate \/ RShift \/ RCrowd \/ XAdd \/ RJob
+  \/ Drop
 
 Spec == Init /\ [][Next]_vars
 
 (***************************************************************************)
 (* Invariants.                                                             *)
 (***************************************************************************)
-GP1 == k.obl # NONE => (k.c /\ k.row.st = "acc" /\ k.row.auth = k.obl)
+GP1 == g.obl # NONE => (k.c /\ k.row.st = "acc" /\ k.row.auth = g.obl)
 GP2 == ~g.delServed
 GrantPreservation == GP1 /\ GP2
 
 \* R holds L's item accepted with a, which Kopje does not serve, and R and L are both still there for each other.
 RHoldsUnserved(a) == rs.item.st = "acc" /\ rs.item.ap = a /\ ~Served(k, a) /\ k.rk /\ rs.la /\ ~rs.gone
-\* F7 as the design states it (:553-559): each opportunity since R accepted was answered by an F8-refused Delete.
-F7Design(a) == g.tags[a] \subseteq {"f8", "gaveUpRevoke"}
-\* F7 as proposed for amendment: no Delete of a reached R since it accepted. In this model it follows from RJob's
-\* Delete rule and the reset at acceptance, and is kept as the statement CR3 holds the design to.
-F7Amended(a) == g.tags[a] \subseteq {"f8", "gaveUp", "gaveUpRevoke", "lGone", "served"}
-\* VARIANT V8 (oracle side): F7 without its F8 clause.
-F7NoF8(a) == g.tags[a] \subseteq {"gaveUp", "gaveUpRevoke", "lGone", "served"}
 
 CR1 == ~g.missed
 CR2 == ~g.refusedHeld
-CR3 == Quiescent => \A a \in Auths : RHoldsUnserved(a) => F7Amended(a)
-CR3Design == Quiescent => \A a \in Auths : RHoldsUnserved(a) => F7Design(a)
-CR3NoF8 == Quiescent => \A a \in Auths : RHoldsUnserved(a) => F7NoF8(a)
+CR3 == Quiescent => \A a \in Auths : RHoldsUnserved(a) => g.unexcused[a] = 0
 CorrectiveRevocation == CR1 /\ CR2 /\ CR3
 
 OV1 == ~g.ov1
-OV2Holds == Quiescent /\ g.lastRd.valid /\ ~g.lastRd.rch /\ ~g.lastRd.kch
-OV2 == OV2Holds => (Shown(k) <=> (k.row.st = "acc" /\ g.lastRd.i # NONE /\ g.lastRd.a = k.row.auth))
+OV2Holds == Quiescent /\ g.lastRd.valid /\ ~g.lastRd.rch
+\* The latest applied read named the row's authorization, which is accepted and available.
+Listed == g.lastRd.i # NONE /\ g.lastRd.a = k.row.auth /\ k.row.st = "acc" /\ LAvail(k) /\ k.rk /\ k.c
+OV2 ==
+  OV2Holds =>
+    /\ (Listed /\ ~g.lastRd.khide) => Shown(k)
+    /\ (Shown(k) /\ ~g.lastRd.tr /\ ~g.lastRd.fenced /\ ~g.lastRd.kshow) => Listed
 ObservedVisibility == OV1 /\ OV2
 
 RemovalFinality == g.remLive => (~k.c /\ k.row = NoRow /\ ~g.accAfterRem)
 
-NoUnilateralEnd == ~g.nue
+GoneFinality == ~g.afterGone
 
-Oracle == GrantPreservation /\ CorrectiveRevocation /\ ObservedVisibility /\ RemovalFinality
+NoUnilateralEnd == ~g.nue
 
 (***************************************************************************)
 (* Reachability goals (each checked as INVARIANT ~Goal, which must fail).  *)
 (***************************************************************************)
 Acted(a) == last.act = a
+Recorded1(ty) == \E m \in last.rec : m.ty = ty
 GoalAccepted == k.row.st = "acc" /\ rs.item.st = "acc" /\ rs.item.ap = k.row.auth
 GoalShown == Shown(k)
 GoalHidden == "hid" \in last.ev
+GoalReadHid == Acted("KApply") /\ "hid" \in last.ev
 GoalCorrected == "corrected" \in last.ev
 GoalF8 == "f8" \in last.ev
 GoalF7 == Quiescent /\ \E a \in Auths : RHoldsUnserved(a)
-GoalF8ThenF7 == Quiescent /\ \E a \in Auths : RHoldsUnserved(a) /\ "f8" \in g.tags[a]
+GoalF8ThenF7 == GoalF7 /\ "f8" \in last.ev
 GoalF3 == k.row.st = "acc" /\ rs.item.st = "rej" /\ rs.item.req = k.row.req
 GoalKept == "kept" \in last.ev
 GoalRemovalGuard == "rfGuard" \in last.ev
 Goal503 == "503" \in last.ev
+\* A held C's Remove refused at the cap, then retried with room, then the instrument fetched before it applied.
+GoalRetried503 == Acted("KApplyFetch") /\ g.held503 /\ "rfGuard" \in last.ev
 GoalOV2Shown == OV2Holds /\ Shown(k)
 GoalOV2Hidden == OV2Holds /\ k.row.st = "acc" /\ ~Shown(k)
-GoalObligation == k.obl # NONE
+GoalObligation == g.obl # NONE
 GoalCR1 == \E m \in last.rec : m.ty = "Delete" /\ m.why = "answer"
+\* A read that would hide a shown row, stopped by one fence alone, or a stale completion that would.
+GoalFencedByPush == Acted("KApply") /\ Shown(k) /\ "fencedPush" \in last.ev
+GoalFencedByRow == Acted("KApply") /\ Shown(k) /\ "fencedRow" \in last.ev
+GoalStaleOmits == Acted("KStale") /\ Shown(k) /\ "staleOmits" \in last.ev
+\* Order 7: a stale request copy hides a row R lists, and a covering read shows it again.
+GoalOrder7 == "o7" \in last.ev
+GoalOrder7Restored == Acted("KApply") /\ "showed" \in last.ev /\ g.o7
+GoalUnsuspended == Acted("KUnsuspend") /\ k.row.st = "acc" /\ spent.susp = 2
+GoalEvictedF8 == "f8" \in last.ev /\ k.issued > 0 /\ k.row = NoRow /\ Recorded1("Delete")
+GoalRCleanLateAccept == Acted("RJob") /\ last.arg.msg.ty = "Accept" /\ "ignored" \in last.ev /\ spent.rclean = 1
+GoalSlotsReject == Acted("KRecv") /\ env.slots /\ Recorded1("Reject")
+GoalSlotsRecovered == Acted("KRecv") /\ ~env.slots /\ spent.slots = 2 /\ Recorded1("Accept")
+GoalHeldReject == Acted("KApplyFetch") /\ env.held = "at50" /\ Recorded1("Reject")
+GoalHeldRecovered ==
+  /\ Acted("KApplyFetch") /\ env.held = "lt50" /\ spent.held = 2 /\ Recorded1("Accept")
+  /\ \E i \in 1..Len(kq) : kq[i].ty = "Reject"
+GoalGoneFetch == Acted("KApplyFetch") /\ ~k.rk /\ last.arg.val = "served"
+GoalGoneRead == Acted("KApply") /\ ~k.rk
+\* A truncated listing admits C and applies what its first 25 name, and hides nothing it omits.
+GoalTruncatedShows == Acted("KApply") /\ "showed" \in last.ev /\ g.lastRd.tr
+GoalTruncatedKeeps == Acted("KApply") /\ Shown(k) /\ g.lastRd.valid /\ g.lastRd.tr /\ g.lastRd.i = NONE
 
 (***************************************************************************)
 (* The abstract observation the real Store gives after each step           *)
 (* (test/feature-d-observe.ts; FeatureDFixtures.tla exports it).           *)
 (***************************************************************************)
 Issued == {AuthOf(j) : j \in {i \in 0..1 : i < k.issued}}
-\* What the design leaves open at a step, which a replay does not compare: whether an embedded listing
-\* (an Update of C, an instrument) that names an unserved authorization is answered, and a retired row's listing.
+\* An embedded listing (an Update of C, an instrument) that names an unserved authorization: the design requires no
+\* answer to it, and permits only L's Delete of it to R as one.
 EmbeddedUnserved ==
   /\ last.act \in {"KRecv", "KApplyFetch"}
   /\ last.arg.env.ty \in {"Upd", "Instrument"}
   /\ last.arg.env.l.i # NONE
+  /\ k.lx /\ k.rk
   /\ ~Served(k, last.arg.env.l.a)
-Unspecified ==
-  (IF EmbeddedUnserved THEN {"recorded"} ELSE {}) \cup (IF k.row.st = "ret" THEN {"row.listedAs"} ELSE {})
+MayAlsoRecord ==
+  IF EmbeddedUnserved THEN {Del(last.arg.env.l.a, "R", AnswerClass(k, last.arg.env.l.a), "answer")} ELSE {}
+\* What the design leaves open at a step, which a replay does not compare: a retired row's listedAs (the fixture
+\* writer compares it where a later step of the trace depends on it).
+Unspecified == IF k.row.st = "ret" THEN {"row.listedAs"} ELSE {}
+Recorded(ms) ==
+  {[type |-> m.ty, object |-> m.obj, result |-> m.res, to |-> m.to, class |-> m.cls,
+    outcome |-> IF Refused(m) THEN "refused" ELSE "queued"] : m \in ms}
 Observation ==
   [row |-> IF k.row = NoRow THEN [name |-> NONE, state |-> NONE, authorization |-> NONE, request |-> NONE,
                                   listedAs |-> NONE]
@@ -680,12 +837,16 @@ Observation ==
                  state |-> IF k.row.st = "acc" THEN "accepted" ELSE "retired",
                  authorization |-> k.row.auth, request |-> k.row.req, listedAs |-> k.row.uri],
    collection |-> IF k.c THEN "stored" ELSE "absent",
-   authorizationGet |-> [a \in Issued |-> IF Served(k, a) THEN 200 ELSE 404],
+   authorizationGet |-> [a \in Issued |-> IF AuthorizationServed(k, a)
+                                          THEN [status |-> 200, collection |-> "C", member |-> "L"]
+                                          ELSE [status |-> 404, collection |-> NONE, member |-> NONE]],
    publicShows |-> Shown(k),
-   memberShows |-> MemberShown(k),
+   memberDetail |-> MemberDetail(k),
+   inCollections |-> InCollections(k),
+   notified |-> "newRow" \in last.ev,
    response |-> last.resp,
-   recorded |-> {[type |-> m.ty, object |-> m.obj, result |-> m.res, to |-> m.to, class |-> m.cls,
-                  outcome |-> IF Refused(m) THEN "refused" ELSE "queued"] : m \in last.rec},
+   recorded |-> Recorded(last.rec),
+   mayAlsoRecord |-> Recorded(MayAlsoRecord),
    readRequested |-> k.sync,
    unspecified |-> Unspecified]
 =============================================================================

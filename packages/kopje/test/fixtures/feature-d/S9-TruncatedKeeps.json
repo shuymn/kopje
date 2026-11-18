@@ -1,0 +1,437 @@
+{
+  "name": "S9-TruncatedKeeps",
+  "scenario": "S9",
+  "goal": "TruncatedKeeps",
+  "replayedBy": "test/feature-d-replay.test.ts::S9-TruncatedKeeps",
+  "steps": [
+    {
+      "action": "Init",
+      "input": {},
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "absent",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "RAdd",
+      "input": {
+        "value": "r1"
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "absent",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "KRecv",
+      "input": {
+        "envelope": {
+          "type": "FR",
+          "request": "r1"
+        }
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "absent",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
+        "response": "fetch",
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "KApplyFetch",
+      "input": {
+        "envelope": {
+          "type": "Instrument",
+          "request": "r1"
+        },
+        "value": "served"
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "accepted",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": null
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": {
+            "status": 200,
+            "collection": "C",
+            "member": "L"
+          }
+        },
+        "publicShows": false,
+        "memberDetail": true,
+        "inCollections": true,
+        "notified": true,
+        "response": 202,
+        "recorded": [
+          {
+            "type": "Accept",
+            "object": "r1",
+            "result": "a1",
+            "to": "R",
+            "class": "ordinary",
+            "outcome": "queued"
+          }
+        ],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "KDeliver",
+      "input": {
+        "activity": {
+          "type": "Accept",
+          "object": "r1",
+          "result": "a1",
+          "to": "R",
+          "class": "ordinary",
+          "reason": "answer"
+        }
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "accepted",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": null
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": {
+            "status": 200,
+            "collection": "C",
+            "member": "L"
+          }
+        },
+        "publicShows": false,
+        "memberDetail": true,
+        "inCollections": true,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "RCrowd",
+      "input": {
+        "value": "past"
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "accepted",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": null
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": {
+            "status": 200,
+            "collection": "C",
+            "member": "L"
+          }
+        },
+        "publicShows": false,
+        "memberDetail": true,
+        "inCollections": true,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "RJob",
+      "input": {
+        "activity": {
+          "type": "Accept",
+          "object": "r1",
+          "result": "a1",
+          "to": "R",
+          "class": "ordinary",
+          "reason": "answer"
+        }
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "accepted",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": null
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": {
+            "status": 200,
+            "collection": "C",
+            "member": "L"
+          }
+        },
+        "publicShows": false,
+        "memberDetail": true,
+        "inCollections": true,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "KRecv",
+      "input": {
+        "envelope": {
+          "type": "Add",
+          "item": "I1",
+          "authorization": "a1"
+        }
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "accepted",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": "I1"
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": {
+            "status": 200,
+            "collection": "C",
+            "member": "L"
+          }
+        },
+        "publicShows": true,
+        "memberDetail": true,
+        "inCollections": true,
+        "notified": false,
+        "response": 202,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "KClaim",
+      "input": {},
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "accepted",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": "I1"
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": {
+            "status": 200,
+            "collection": "C",
+            "member": "L"
+          }
+        },
+        "publicShows": true,
+        "memberDetail": true,
+        "inCollections": true,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "KFetch",
+      "input": {
+        "envelope": {
+          "type": "Pages",
+          "listing": {
+            "item": null,
+            "authorization": null,
+            "truncated": true
+          }
+        },
+        "value": "p1"
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "accepted",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": "I1"
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": {
+            "status": 200,
+            "collection": "C",
+            "member": "L"
+          }
+        },
+        "publicShows": true,
+        "memberDetail": true,
+        "inCollections": true,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "KApply",
+      "input": {},
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "accepted",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": "I1"
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": {
+            "status": 200,
+            "collection": "C",
+            "member": "L"
+          }
+        },
+        "publicShows": true,
+        "memberDetail": true,
+        "inCollections": true,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    }
+  ]
+}

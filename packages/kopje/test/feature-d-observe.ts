@@ -35,21 +35,39 @@ export interface Recorded {
 }
 
 /** A field the design leaves open at this step (FeatureD.tla's Unspecified): a replay does not compare it. */
-export type Unspecified = "recorded" | "row.listedAs";
+export type Unspecified = "row.listedAs";
+
+/**
+ * GET of an authorization: 200 with its body's interactingObject (C) and interactionTarget (L), as abstract names, or
+ * 404.
+ */
+export type AuthorizationGet = { status: 200; collection: "C"; member: "L" } | { status: 404 };
 
 export interface Observation {
   row: Row | null;
   collection: "stored" | "absent";
-  /** The status of GET on each authorization issued so far. */
-  authorizationGet: Partial<Record<Authorization, 200 | 404>>;
+  /** GET of each authorization issued so far. */
+  authorizationGet: Partial<Record<Authorization, AuthorizationGet>>;
   /** An anonymous viewer and a third account see L in C (its items and its count). */
   publicShows: boolean;
-  /** L sees its own row (C's items, in_collections). */
-  memberShows: boolean;
-  /** The inbound POST's status, or null for a step that is not an inbound activity. */
-  response: 202 | 503 | null;
+  /** L sees its own row among C's items (GET /api/v1/collections/:id). */
+  memberDetail: boolean;
+  /** C is among L's in_collections, its row in any state. */
+  inCollections: boolean;
+  /** The step notified L added_to_collection (a new accepted row). */
+  notified: boolean;
+  /**
+   * The inbound activity's final status, "fetch" when the Store answers that it needs the instrument fetched first, or
+   * null for a step that is not an inbound activity.
+   */
+  response: 202 | 503 | "fetch" | null;
   /** The activities this step recorded, in no particular order. */
   recorded: Recorded[];
+  /**
+   * The activities this step may record besides those: the design requires none of them and permits each (an
+   * embedded listing's answer to an unserved authorization).
+   */
+  mayAlsoRecord: Recorded[];
   /** The step requested a read of R's collections. */
   readRequested: boolean;
   unspecified: Unspecified[];
@@ -81,13 +99,17 @@ export interface Activity {
   result: Authorization | null;
   to: "R" | "X";
   class: Recorded["class"];
-  /** "answer", "kept" (a Reject of another request while the row is kept), "revoke" or "block". */
+  /** "answer", "revoke" or "block". */
   reason: string | null;
 }
 
 export interface Step {
   /** FeatureD.tla's action: K* are Kopje's steps, R* and XAdd R's, Drop the network's, Env the environment's. */
   action: string;
+  /**
+   * value: a step's other input (the request R adds, the environment field changed, ...); a claim's "sameTime" when it
+   * is made in the same millisecond as the row's last change.
+   */
   input: { envelope?: Envelope; activity?: Activity; value?: string };
   environment: Environment;
   observation: Observation;
@@ -107,11 +129,15 @@ const sortedRecorded = (values: readonly Recorded[]): string[] =>
   values.map((m) => JSON.stringify(RECORDED_KEYS.map((key) => m[key]))).toSorted();
 const sortedEntries = (record: object) => Object.entries(record).toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 
+/** The real Store's observation: what a replay reads after a step. */
+export type Actual = Omit<Observation, "unspecified" | "mayAlsoRecord">;
+
 /**
  * The fields where actual differs from expected, each as "field: expected …, got …"; empty when they agree. The
- * fields expected names as unspecified are skipped, and recorded is compared as a multiset.
+ * fields expected names as unspecified are skipped, and recorded is compared as a multiset: it holds expected's
+ * activities and any of mayAlsoRecord's, each at most once.
  */
-export function compareObservation(expected: Observation, actual: Omit<Observation, "unspecified">): string[] {
+export function compareObservation(expected: Observation, actual: Actual): string[] {
   const skip = new Set<string>(expected.unspecified);
   const differences: string[] = [];
   const compare = (field: string, want: unknown, got: unknown) => {
@@ -127,9 +153,19 @@ export function compareObservation(expected: Observation, actual: Omit<Observati
   compare("collection", expected.collection, actual.collection);
   compare("authorizationGet", sortedEntries(expected.authorizationGet), sortedEntries(actual.authorizationGet));
   compare("publicShows", expected.publicShows, actual.publicShows);
-  compare("memberShows", expected.memberShows, actual.memberShows);
+  compare("memberDetail", expected.memberDetail, actual.memberDetail);
+  compare("inCollections", expected.inCollections, actual.inCollections);
+  compare("notified", expected.notified, actual.notified);
   compare("response", expected.response, actual.response);
-  compare("recorded", sortedRecorded(expected.recorded), sortedRecorded(actual.recorded));
+  // Actual's activities, less one copy of each permitted activity it holds beyond those expected requires.
+  const required = sortedRecorded(expected.recorded);
+  const permitted = new Set(sortedRecorded(expected.mayAlsoRecord));
+  const rest = sortedRecorded(actual.recorded);
+  const count = (values: string[], value: string) => values.filter((v) => v === value).length;
+  for (const m of new Set(rest)) {
+    if (permitted.has(m) && count(rest, m) > count(required, m)) rest.splice(rest.indexOf(m), 1);
+  }
+  compare("recorded", required, rest);
   compare("readRequested", expected.readRequested, actual.readRequested);
   return differences;
 }

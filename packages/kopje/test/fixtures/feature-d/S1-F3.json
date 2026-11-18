@@ -19,9 +19,12 @@
         "collection": "stored",
         "authorizationGet": {},
         "publicShows": false,
-        "memberShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
         "response": null,
         "recorded": [],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }
@@ -43,9 +46,12 @@
         "collection": "stored",
         "authorizationGet": {},
         "publicShows": false,
-        "memberShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
         "response": null,
         "recorded": [],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }
@@ -70,7 +76,9 @@
         "collection": "stored",
         "authorizationGet": {},
         "publicShows": false,
-        "memberShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
         "response": 202,
         "recorded": [
           {
@@ -82,6 +90,7 @@
             "outcome": "queued"
           }
         ],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }
@@ -103,9 +112,12 @@
         "collection": "stored",
         "authorizationGet": {},
         "publicShows": false,
-        "memberShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
         "response": null,
         "recorded": [],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }
@@ -135,10 +147,16 @@
         },
         "collection": "stored",
         "authorizationGet": {
-          "a1": 200
+          "a1": {
+            "status": 200,
+            "collection": "C",
+            "member": "L"
+          }
         },
         "publicShows": false,
-        "memberShows": true,
+        "memberDetail": true,
+        "inCollections": true,
+        "notified": true,
         "response": 202,
         "recorded": [
           {
@@ -150,6 +168,7 @@
             "outcome": "queued"
           }
         ],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }
@@ -183,12 +202,65 @@
         },
         "collection": "stored",
         "authorizationGet": {
-          "a1": 200
+          "a1": {
+            "status": 200,
+            "collection": "C",
+            "member": "L"
+          }
         },
         "publicShows": false,
-        "memberShows": true,
+        "memberDetail": true,
+        "inCollections": true,
+        "notified": false,
         "response": null,
         "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "RJob",
+      "input": {
+        "activity": {
+          "type": "Reject",
+          "object": "r1",
+          "result": null,
+          "to": "R",
+          "class": "ordinary",
+          "reason": "answer"
+        }
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "accepted",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": null
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": {
+            "status": 200,
+            "collection": "C",
+            "member": "L"
+          }
+        },
+        "publicShows": false,
+        "memberDetail": true,
+        "inCollections": true,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }

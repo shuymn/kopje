@@ -1,8 +1,8 @@
 {
-  "name": "S6-MemberGoneRow",
-  "scenario": "S6",
-  "goal": "MemberGoneRow",
-  "replayedBy": "test/feature-d-replay.test.ts::S6-MemberGoneRow",
+  "name": "S10-SlotsRecovered",
+  "scenario": "S10",
+  "goal": "SlotsRecovered",
+  "replayedBy": "test/feature-d-replay.test.ts::S10-SlotsRecovered",
   "steps": [
     {
       "action": "Init",
@@ -19,9 +19,66 @@
         "collection": "stored",
         "authorizationGet": {},
         "publicShows": false,
-        "memberShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
         "response": null,
         "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "Env",
+      "input": {
+        "value": "slots"
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": true,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "stored",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "Env",
+      "input": {
+        "value": "slots"
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "stored",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }
@@ -43,9 +100,12 @@
         "collection": "stored",
         "authorizationGet": {},
         "publicShows": false,
-        "memberShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
         "response": null,
         "recorded": [],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }
@@ -75,10 +135,16 @@
         },
         "collection": "stored",
         "authorizationGet": {
-          "a1": 200
+          "a1": {
+            "status": 200,
+            "collection": "C",
+            "member": "L"
+          }
         },
         "publicShows": false,
-        "memberShows": true,
+        "memberDetail": true,
+        "inCollections": true,
+        "notified": true,
         "response": 202,
         "recorded": [
           {
@@ -90,39 +156,7 @@
             "outcome": "queued"
           }
         ],
-        "readRequested": false,
-        "unspecified": []
-      }
-    },
-    {
-      "action": "KMemberGone",
-      "input": {},
-      "environment": {
-        "consent": true,
-        "slotsFull": false,
-        "held": "lt10",
-        "backlogFull": false,
-        "retractionCapFull": false
-      },
-      "observation": {
-        "row": null,
-        "collection": "stored",
-        "authorizationGet": {
-          "a1": 404
-        },
-        "publicShows": false,
-        "memberShows": false,
-        "response": null,
-        "recorded": [
-          {
-            "type": "DeleteActor",
-            "object": "L",
-            "result": null,
-            "to": "R",
-            "class": "ordinary",
-            "outcome": "queued"
-          }
-        ],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }

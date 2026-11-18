@@ -1,6 +1,7 @@
 // Checks spec/feature-d/, the TLA+ specification of #1589's feature authorizations under design (d), with tla-ts:
 // every check of checks.json gives its expected outcome (scripts/feature-d-plan.mjs lists the kinds), the replay
-// fixtures equal a fresh run and cover each of Kopje's steps, and each fixture names the replay that runs it.
+// fixtures equal a fresh run, cover each of Kopje's steps and take no model-only one, and each fixture names the
+// replay that runs it.
 // scripts/tlc-check.mjs runs the same checks under the official TLC.
 //
 // A scenario's distinct-state count and depth are fixed: a change means the state space changed, which the commit
@@ -17,7 +18,7 @@ import type { Fixture } from "../test/feature-d-observe.js";
 import { FIXTURE_DIR, REPLAY_FILE, fixtureText, generateFixtures } from "./feature-d-fixtures.js";
 
 const plan = readPlan();
-// The largest check, S2, takes about 4 s and 340 MB under tla-ts on a laptop.
+// The largest check, the induction, takes about 30 s under tla-ts on a laptop.
 const CHECK_TIMEOUT_MS = 120_000;
 const REPLAY_PATH = fileURLToPath(new URL(`../${REPLAY_FILE}`, import.meta.url));
 
@@ -27,8 +28,11 @@ const KOPJE_STEPS = [
   "KApplyFetch",
   "KRevoke",
   "KBlock",
-  "KMemberGone",
+  "KSuspend",
+  "KUnsuspend",
   "KCleanup",
+  "KEvict",
+  "KPurge",
   "KClaim",
   "KFetch",
   "KFetch1",
@@ -42,6 +46,9 @@ const KOPJE_STEPS = [
   "KDup",
   "KRetry",
 ];
+
+// Steps the real Store cannot take: Kopje deletes no local account (src/domain/delivery-hosts.ts, hostCaused).
+const MODEL_ONLY = ["KMemberGone"];
 
 const fixtureFiles = () =>
   readdirSync(FIXTURE_DIR)
@@ -88,6 +95,15 @@ describe("replay fixtures", () => {
     expect(KOPJE_STEPS.filter((s) => !covered.has(s))).toEqual([]);
   });
 
+  it("take no step the Store cannot take", () => {
+    const taken = fixtureFiles().flatMap((file) =>
+      readFixture(file)
+        .steps.filter((s) => MODEL_ONLY.includes(s.action))
+        .map((s) => `${file}: ${s.action}`),
+    );
+    expect(taken).toEqual([]);
+  });
+
   it("each name their replay", () => {
     for (const file of fixtureFiles()) {
       const fixture = readFixture(file);
@@ -95,15 +111,17 @@ describe("replay fixtures", () => {
     }
   });
 
-  // The replay is the implementer's (a workerd test against the real Store). Until it exists only the names above
-  // are checked; then each fixture's name must appear as a string literal in it, so a fixture added later fails here
-  // until a test runs it.
+  // The replay is the implementer's (a workerd test against the real Store, one test per fixture, titled by the
+  // fixture's name). Until it exists only the names above are checked; then each fixture's name must appear as a
+  // string literal in it, and it may skip none, so a fixture added later fails here until a test runs it. That each
+  // fixture's test ran and passed is checked from the replay's own run (scripts/feature-d-coverage.mjs forward).
   it.skipIf(!existsSync(REPLAY_PATH))("are each run by the replay they name", () => {
     const source = readFileSync(REPLAY_PATH, "utf8");
     const missing = fixtureFiles()
       .map((file) => readFixture(file).name)
       .filter((name) => !['"', "'", "`"].some((quote) => source.includes(`${quote}${name}${quote}`)));
     expect(missing).toEqual([]);
+    expect(source.match(/\.(skip|skipIf|todo|only|fails)\b/g) ?? []).toEqual([]);
   });
 });
 
@@ -120,10 +138,38 @@ describe("compareObservation", () => {
   it("names each field that differs", () => {
     const exact = { ...observation, unspecified: [] };
     const row = observation.row && { ...observation.row, listedAs: "I1" as const };
-    expect(compareObservation(exact, { ...observation, row, memberShows: true })).toEqual([
+    const served = { a1: { status: 200, collection: "C", member: "L" } } as const;
+    expect(observation).toMatchObject({
+      authorizationGet: { a1: { status: 404 } },
+      inCollections: true,
+      notified: false,
+    });
+    const actual = {
+      ...observation,
+      row,
+      authorizationGet: served,
+      memberDetail: true,
+      inCollections: false,
+      notified: true,
+    };
+    expect(compareObservation(exact, actual)).toEqual([
       'row.listedAs: expected null, got "I1"',
-      "memberShows: expected false, got true",
+      'authorizationGet: expected [["a1",{"status":404}]], got [["a1",{"status":200,"collection":"C","member":"L"}]]',
+      "memberDetail: expected false, got true",
+      "inCollections: expected true, got false",
+      "notified: expected false, got true",
     ]);
+  });
+
+  it("accepts each permitted activity once, besides the required ones", () => {
+    const [required, permitted] = observation.recorded;
+    const expected = { ...observation, recorded: [required!], mayAlsoRecord: [permitted!] };
+    expect(compareObservation(expected, { ...observation, recorded: [required!] })).toEqual([]);
+    expect(compareObservation(expected, { ...observation, recorded: [permitted!, required!] })).toEqual([]);
+    expect(
+      compareObservation(expected, { ...observation, recorded: [permitted!, required!, permitted!] }),
+    ).toHaveLength(1);
+    expect(compareObservation(expected, { ...observation, recorded: [permitted!] })).toHaveLength(1);
   });
 
   it("skips the fields the design leaves open at the step", () => {

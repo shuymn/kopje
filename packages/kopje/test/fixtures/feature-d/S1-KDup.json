@@ -19,9 +19,12 @@
         "collection": "stored",
         "authorizationGet": {},
         "publicShows": false,
-        "memberShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
         "response": null,
         "recorded": [],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }
@@ -43,9 +46,12 @@
         "collection": "stored",
         "authorizationGet": {},
         "publicShows": false,
-        "memberShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
         "response": null,
         "recorded": [],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }
@@ -70,7 +76,9 @@
         "collection": "stored",
         "authorizationGet": {},
         "publicShows": false,
-        "memberShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
         "response": 202,
         "recorded": [
           {
@@ -82,6 +90,7 @@
             "outcome": "queued"
           }
         ],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }
@@ -110,9 +119,12 @@
         "collection": "stored",
         "authorizationGet": {},
         "publicShows": false,
-        "memberShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
         "response": null,
         "recorded": [],
+        "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": []
       }
