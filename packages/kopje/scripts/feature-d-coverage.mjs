@@ -100,7 +100,7 @@ function moveForward(mode) {
   const paths = record.files.map((f) => f.path);
   const dirty = execFileSync("git", ["status", "--porcelain", "--", ...paths], { cwd: PACKAGE, encoding: "utf8" });
   if (dirty.trim() !== "") throw new Error(`commit the covered files first:\n${dirty}`);
-  run("pnpm", ["exec", "vitest", "run", "-c", "vitest.node.config.ts", "--max-workers=1", SPEC_TEST]);
+  run("pnpm", ["exec", "vitest", "run", "-c", "vitest.spec.config.ts", "--max-workers=1", SPEC_TEST]);
   if (replay) runReplay();
   const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: PACKAGE, encoding: "utf8" }).trim();
   const files = record.files.map((f) => ({ ...f, blob: blobOf(f.path) }));
