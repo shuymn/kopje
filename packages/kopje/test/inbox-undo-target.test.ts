@@ -103,30 +103,36 @@ async function api(t: T, path: string) {
   expect(response.status, path).toBe(200);
 }
 
-// One claim at `now`, every sent row completed with `outcome`; the sent rows' types.
 let lease = 0;
-async function claimOnce(t: T, failed: boolean): Promise<string[]> {
-  const { sent } = await claimAndSettle(t.store, {
-    now: NOW,
-    leaseToken: `once-${++lease}`,
-    outcome: failed
-      ? { kind: "failed", status: 503, error: "HTTP 503", permanent: false }
-      : { kind: "delivered", status: 202 },
-  });
-  return sent.map(({ body }) => (JSON.parse(body) as { type: string }).type);
-}
 
-// A claim took alice's lane head to remote.example and it failed, so every row behind it waits queued.
 // A public post of alice's.
 async function alicePost(t: T, text: string): Promise<{ id: string; uri: string }> {
   const status = await post(t.w.h, t.w.alice, { status: text, visibility: "public" });
   return { id: status.id, uri: status.uri as string };
 }
 
+// A claim took alice's lane head to remote.example and it failed, so every row behind it waits queued.
 async function outage(t: T): Promise<void> {
   await post(t.w.h, t.w.alice, { status: "head" });
-  expect(await claimOnce(t, true)).toEqual(["Create"]);
+  const { sent } = await claimAndSettle(t.store, {
+    now: NOW,
+    leaseToken: `once-${++lease}`,
+    outcome: { kind: "failed", status: 503, error: "HTTP 503", permanent: false },
+  });
+  expect(sent.map(({ body }) => (JSON.parse(body) as { type: string }).type)).toEqual(["Create"]);
 }
+
+// Fills r's retractions to one place short of the cap (fillers of its origin, expiring at LATER).
+const oneSlotLeft = (t: T) =>
+  sql(
+    t.store,
+    `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
+		INSERT INTO inbound_retractions (actor_uri, target_uri, expires_at) SELECT ?, ? || '/filler/' || i, ? FROM n`,
+    MAX_RETRACTIONS_PER_ACTOR - 1,
+    t.rUri,
+    t.rUri,
+    LATER,
+  );
 
 // The answers delivered once everything due by LATER goes, in lane order, each as [type, the Follow id it names].
 async function answersSent(t: T): Promise<[string, string | null][]> {
@@ -213,13 +219,17 @@ describe("ID-6: an Undo ends what its undone activity's object names", () => {
       const before = await snapshot(t.store);
       expect(await undo(t, id, "Follow", object(t))).toMatchObject({ applied: false, reason: "unknown-target" });
       expect(await snapshot(t.store)).toEqual(before);
-      // Naming alice, it ends the follow and its Accept.
-      expect(await undo(t, id, "Follow", t.aliceUri)).toMatchObject({ applied: true, reason: "undone" });
-      expect(await follows(t)).toEqual([]);
-      expect(await retractions(t)).toEqual([id]);
-      expect(await answersSent(t)).toEqual([]);
     },
   );
+
+  it("a typed Undo of a Follow naming alice by her IRI ends the follow and its Accept", async () => {
+    const t = await setup();
+    const { id } = await followFrom(t);
+    expect(await undo(t, id, "Follow", t.aliceUri)).toMatchObject({ applied: true, reason: "undone" });
+    expect(await follows(t)).toEqual([]);
+    expect(await retractions(t)).toEqual([id]);
+    expect(await answersSent(t)).toEqual([]);
+  });
 
   it.each(NOT_A_LOCAL_ACCOUNT)(
     "a typed Undo of a Block whose object is %s ends nothing and records nothing",
@@ -229,11 +239,16 @@ describe("ID-6: an Undo ends what its undone activity's object names", () => {
       const before = await snapshot(t.store);
       expect(await undo(t, id, "Block", object(t))).toMatchObject({ applied: false, reason: "unknown-target" });
       expect(await snapshot(t.store)).toEqual(before);
-      expect(await undo(t, id, "Block", { id: t.aliceUri })).toMatchObject({ applied: true, reason: "undone" });
-      expect(await blocks(t)).toEqual([]);
-      expect(await retractions(t)).toEqual([id]);
     },
   );
+
+  it("a typed Undo of a Block naming alice by an object with her id ends the block", async () => {
+    const t = await setup();
+    const id = await blockFrom(t);
+    expect(await undo(t, id, "Block", { id: t.aliceUri })).toMatchObject({ applied: true, reason: "undone" });
+    expect(await blocks(t)).toEqual([]);
+    expect(await retractions(t)).toEqual([id]);
+  });
 
   // F5, B5: the edge from the sender to alice ends whatever its id, and both ids are recorded, so neither activity
   // applies again (ID-7).
@@ -259,9 +274,9 @@ describe("ID-6: an Undo ends what its undone activity's object names", () => {
     expect(await blocks(t)).toEqual([]);
   });
 
-  // F6: a follow stored without an id (a cutover's), which a typed Undo matching by id never ended. Its owner's answer
-  // names no Follow: the Accept of that edge goes with it, unexpanded, queued or leased; a Reject of a request the
-  // owner refused, whose edge is gone, stays (F6r, an accepted risk). B4: a block stored without an id ends too.
+  // F6: a typed Undo ends a follow stored without an id (a cutover's) by its pair. Its owner's answer names no Follow:
+  // the Accept of that edge goes with it, unexpanded, queued or leased; a Reject of a request the owner refused, whose
+  // edge is gone, stays (F6r, an accepted risk). B4: a block stored without an id ends too.
   describe("an edge stored without an id", () => {
     // r's pending request of alice, imported without a Follow id; its edge id.
     async function importedRequest(t: T): Promise<string> {
@@ -499,15 +514,7 @@ describe("ID-6: an Undo ends what its undone activity's object names", () => {
       expect(new TextEncoder().encode(uri).length).toBe(bytes);
       await imported(t, table, `'${uri}'`);
       if (!recorded) {
-        await sql(
-          t.store,
-          `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
-					INSERT INTO inbound_retractions (actor_uri, target_uri, expires_at) SELECT ?, ? || '/filler/' || i, ? FROM n`,
-          MAX_RETRACTIONS_PER_ACTOR - 1,
-          t.rUri,
-          t.rUri,
-          LATER,
-        );
+        await oneSlotLeft(t);
       }
       const other = type === "Follow" ? followId() : blockId();
       expect(await undo(t, other, type, t.aliceUri)).toMatchObject({ applied: true, reason: "undone" });
@@ -636,15 +643,7 @@ describe("ID-6: an Undo ends what its undone activity's object names", () => {
   it("changes nothing when the two ids cannot both be recorded", async () => {
     const t = await setup();
     await followFrom(t);
-    await sql(
-      t.store,
-      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)
-			INSERT INTO inbound_retractions (actor_uri, target_uri, expires_at) SELECT ?, ? || '/filler/' || i, ? FROM n`,
-      MAX_RETRACTIONS_PER_ACTOR - 1,
-      t.rUri,
-      t.rUri,
-      LATER,
-    );
+    await oneSlotLeft(t);
     const before = await snapshot(t.store);
     expect(await undo(t, followId(), "Follow", t.aliceUri)).toMatchObject({ applied: false, reason: "retraction-cap" });
     expect(await snapshot(t.store)).toEqual(before);
