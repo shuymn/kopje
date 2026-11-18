@@ -3,7 +3,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
-import { MAX_BACKLOG, MAX_LANE_BACKLOG } from "../src/domain/deliveries";
+import { type DeliveryOutcome, LEASE_MS, MAX_BACKLOG, MAX_LANE_BACKLOG } from "../src/domain/deliveries";
 import { ourFeatureRequest } from "../src/domain/feature-requests";
 import { SWEEP_BATCH } from "../src/domain/remote-actors";
 import { parseActivity } from "../src/federation/inbound";
@@ -1266,6 +1266,33 @@ async function filledLanes(t: Setup, origin: string, count: number, others = 0):
   }
 }
 
+// Every due delivery delivered (202), round after round, until none is due at NOW.
+async function deliverAll(t: Setup): Promise<void> {
+  for (let round = 0; round < 10; round++) {
+    const claim = await t.store.claimDeliveries(BUILD, { now: NOW, leaseToken: `all-${round}` });
+    if (claim.deliveries.length === 0) {
+      return;
+    }
+    for (const { id } of claim.deliveries) {
+      const outcome: DeliveryOutcome = { kind: "delivered", status: 202 };
+      await t.store.completeDelivery(BUILD, { id, leaseToken: claim.leaseToken, now: NOW, outcome });
+    }
+  }
+  throw new Error("deliveries still due");
+}
+
+// Each copy of alice's answer of `a` (her unsigned Delete of it, not her signed revocation) that a delivery round
+// could still send, superseded or not, with its intent.
+async function answerCopies(t: Setup, a: string) {
+  return (await aliceAnswers(t))
+    .filter(({ activity }) => activity.type === "Delete" && activity.id === `${a}#delete` && !("signature" in activity))
+    .flatMap(({ id, deliveries }) =>
+      deliveries
+        .filter((d) => ["queued", "pending", "leased"].includes(d.state))
+        .map((d) => ({ intent: id, inbox: d.inbox, state: d.state })),
+    );
+}
+
 const activeIn = async (t: Setup, lane: string) =>
   (
     await sql<{ n: number }>(
@@ -1497,6 +1524,147 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
     );
     await added(authorization(row!.id));
     expect((await sendable()).map((d) => d.state)).toEqual(["leased", "queued"]);
+  });
+
+  // Challenge 1589-pr6-9 (code review r2): an answer leased when the next listing records another is superseded by
+  // it, and is dropped instead of being POSTed again, at its failure, at its lease's expiry and at its confirmation;
+  // the later answer, behind it in the lane, is promoted. Fails if a superseded answer is retried, claimed again or
+  // sent (two copies of one answer to send).
+  for (const end of ["failure", "lease expiry", "confirmation"] as const) {
+    it(`drops a leased answer the next listing's answer superseded, at its ${end}`, async () => {
+      const w = await owned();
+      expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+      const [row] = await localRows(w.t, ALICE);
+      expect(await revokeAs(w.t, await collectionIdOf(w.t, w.listed.id), row!.id)).toBe(200);
+      await deliverAll(w.t);
+      const a = authorization(row!.id);
+      const add = async () =>
+        expect(await w.t.post(w.owner, itemActivity(w, "Add", localItem(w.owner, ALICE_URI, a)))).toBe(202);
+      await add();
+      const [first] = await answerCopies(w.t, a);
+      const claim = await w.t.store.claimDeliveries(BUILD, { now: NOW, leaseToken: "in-flight" });
+      expect(claim.deliveries.map((d) => d.inbox)).toEqual([`${w.owner.uri}/inbox`]);
+      await add();
+      const copies = await answerCopies(w.t, a);
+      expect(copies.map((c) => [c.intent === first!.intent, c.state])).toEqual([
+        [true, "leased"],
+        [false, "queued"],
+      ]);
+      const id = claim.deliveries[0]!.id;
+      if (end === "failure") {
+        const outcome: DeliveryOutcome = { kind: "failed", status: 503, error: "HTTP 503", permanent: false };
+        const done = await w.t.store.completeDelivery(BUILD, { id, leaseToken: "in-flight", now: NOW, outcome });
+        expect(done.status).toBe("dropped");
+      } else if (end === "lease expiry") {
+        const again = await w.t.store.claimDeliveries(BUILD, { now: NOW + LEASE_MS, leaseToken: "again" });
+        expect(again.deliveries).toEqual([]);
+      } else {
+        const confirmed = await w.t.store.confirmDelivery(BUILD, { id, leaseToken: "in-flight", now: NOW });
+        expect(confirmed.status).toBe("dropped");
+      }
+      expect(await answerCopies(w.t, a)).toEqual([{ ...copies[1]!, state: "pending" }]);
+    });
+  }
+
+  // Code review r2: an answer goes to the owner's inbox as the owner's account names it when the listing is answered.
+  // Fails if an answer waiting for the inbox the owner had before a refresh of its actor stands for the answer to the
+  // new one (nothing reaches the new inbox), or if both wait (two copies of one answer to send).
+  it("answers at the owner's new inbox after a refresh, replacing the answer waiting for the old one", async () => {
+    const w = await owned();
+    expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+    const [row] = await localRows(w.t, ALICE);
+    expect(await revokeAs(w.t, await collectionIdOf(w.t, w.listed.id), row!.id)).toBe(200);
+    await deliverAll(w.t);
+    const a = authorization(row!.id);
+    const add = async () =>
+      expect(await w.t.post(w.owner, itemActivity(w, "Add", localItem(w.owner, ALICE_URI, a)))).toBe(202);
+    await add();
+    const old = await answerCopies(w.t, a);
+    expect(old.map((c) => [c.inbox, c.state])).toEqual([[`${w.owner.uri}/inbox`, "pending"]]);
+    // The owner's Update of its actor, whose document names a new inbox.
+    const inbox = `${w.owner.uri}/inbox2`;
+    w.t.web.serve(w.owner.uri, { ...w.owner.document, inbox });
+    const update = {
+      "@context": AS,
+      id: `${w.owner.uri}#updates/1`,
+      type: "Update",
+      actor: w.owner.uri,
+      object: w.owner.uri,
+    };
+    expect(await w.t.post(w.owner, update)).toBe(202);
+    expect(await sql(w.t.store, "SELECT inbox_url FROM accounts WHERE uri = ?", w.owner.uri)).toEqual([
+      { inbox_url: inbox },
+    ]);
+    await add();
+    const fresh = await answerCopies(w.t, a);
+    expect(fresh.map((c) => [c.inbox, c.state])).toEqual([[inbox, "pending"]]);
+    // Another listing: the answer waiting for the new inbox stands for it.
+    await add();
+    expect(await answerCopies(w.t, a)).toEqual(fresh);
+  });
+
+  // Code review r2: an answer whose target is not expanded yet (still in its intent's chunk) waits as a queued one
+  // does: it stands for the next listing's answer to the same inbox, and an answer to the owner's new inbox replaces
+  // it. Fails if the gate ignores a waiting target (two answers to send), or if the replacement leaves it (a copy to
+  // the old inbox).
+  it("counts and replaces an answer whose target is not expanded yet", async () => {
+    const w = await owned();
+    expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+    const [row] = await localRows(w.t, ALICE);
+    expect(await revokeAs(w.t, await collectionIdOf(w.t, w.listed.id), row!.id)).toBe(200);
+    await deliverAll(w.t);
+    const a = authorization(row!.id);
+    const add = async () =>
+      expect(await w.t.post(w.owner, itemActivity(w, "Add", localItem(w.owner, ALICE_URI, a)))).toBe(202);
+    // The answers recorded, read without expanding anything.
+    const intents = () =>
+      sql<{ id: number }>(
+        w.t.store,
+        `SELECT id FROM outbound_activities WHERE json_extract(body, '$.activity.id') = ?
+			AND json_extract(body, '$.activity.signature') IS NULL ORDER BY id`,
+        `${a}#delete`,
+      );
+    await add();
+    // Its row taken back into its target, as an expansion step that ran out of rows leaves it.
+    const [first] = await intents();
+    const [taken] = await sql<{ inbox: string; addressee: string; accounts: string; domains: string }>(
+      w.t.store,
+      `DELETE FROM deliveries WHERE activity_id = ?
+			RETURNING inbox_url AS inbox, addressee, recipient_accounts AS accounts, recipient_domains AS domains`,
+      first!.id,
+    );
+    const target = {
+      inbox: taken!.inbox,
+      addressee: taken!.addressee,
+      accounts: JSON.parse(taken!.accounts) as string[],
+      domains: JSON.parse(taken!.domains) as string[],
+    };
+    await sql(
+      w.t.store,
+      "INSERT INTO outbound_targets (activity_id, targets) VALUES (?, ?)",
+      first!.id,
+      JSON.stringify([target]),
+    );
+    await add();
+    // Nothing recorded: the target still waits, unexpanded (an answer recorded would have been expanded at once).
+    expect(await intents()).toEqual([first]);
+    expect(await sql(w.t.store, "SELECT activity_id FROM outbound_targets WHERE activity_id = ?", first!.id)).toEqual([
+      { activity_id: first!.id },
+    ]);
+    // The owner's new inbox: the waiting target is replaced.
+    const inbox = `${w.owner.uri}/inbox2`;
+    w.t.web.serve(w.owner.uri, { ...w.owner.document, inbox });
+    const update = {
+      "@context": AS,
+      id: `${w.owner.uri}#updates/1`,
+      type: "Update",
+      actor: w.owner.uri,
+      object: w.owner.uri,
+    };
+    expect(await w.t.post(w.owner, update)).toBe(202);
+    await add();
+    expect(await sql(w.t.store, "SELECT 1 FROM outbound_targets WHERE activity_id = ?", first!.id)).toEqual([]);
+    expect((await answerCopies(w.t, a)).map((c) => [c.inbox, c.state])).toEqual([[inbox, "pending"]]);
   });
 
   it("refuses an answer of no row when the Store's backlog is full, with this owner's lane empty", async () => {

@@ -697,7 +697,7 @@ export const ROWS_1468: readonly Row1468[] = [
     statement: "the leased row and its activity at confirm and complete (found by the audit)",
     sites: ["src/domain/deliveries.ts#confirmDelivery", "src/domain/deliveries.ts#completeDelivery"],
     status: "observed",
-    ids: ["fdf81c8176f0cc69", "f2dc1c7cafd52620"],
+    ids: ["2951d310523c9605", "5bfb0ad3af62025a"],
   },
   {
     group: 8,

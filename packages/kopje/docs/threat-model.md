@@ -4057,12 +4057,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   remote can ask again (`test/inbox-verify2.test.ts`). A local member's `Delete` answering a remote owner's listing of
   an authorization Kopje does not serve (#1589's D24) is a retraction only for the authorization of a row Kopje holds
   for that member in a collection of that owner, and is not recorded while an earlier one of that authorization is
-  still queued or pending, so at most one copy waits for each such row, however many `Add`s name it (one already in
-  flight does not count: its POST may have preceded the owner's acceptance); for any other (no row, a row of another
-  id, or another account's listing of it) it is new work and passes admission, given up at a full backlog (F8;
+  still queued or pending for the owner's current inbox; one waiting for another inbox (the owner's before a refresh)
+  is replaced, and one in flight that a later one supersedes is dropped at its confirmation, its failure or its lease's
+  expiry, so at most one copy waits for each such row, however many `Add`s name it (one in flight does not count: its
+  POST may have preceded the owner's acceptance); for any other (no row, a row of another id, or another account's
+  listing of it) it is new work and passes admission, given up at a full backlog (F8;
   `test/federation-feature-requests.test.ts` ("admits an answer of no row under RES-4's caps, and one of a revoked row
-  as a retraction past them", "refuses an answer of no row when the Store's backlog is full, with this owner's lane
-  empty", "sends no Delete for another owner's … listing an authorization served in this owner's collection")).
+  as a retraction past them", "drops a leased answer the next listing's answer superseded, at its …", "answers at the
+  owner's new inbox after a refresh, replacing the answer waiting for the old one", "refuses an answer of no row when
+  the Store's backlog is full, with this owner's lane empty", "sends no Delete for another owner's … listing an
+  authorization served in this owner's collection")).
   Operator retries pass the same admission, and a retry over a cap stays given up (`refused`); `test/deliveries.test.ts`
   ("lists given-up deliveries for the operator, retries them, and sweeps them after 30 days"),
   `test/delivery-regressions.test.ts` ("gives up new work for a lane over its cap", "gives up new work once the whole

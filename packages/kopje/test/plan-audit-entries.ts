@@ -473,7 +473,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (deliveries.ts#<anonymous> in claimDeliveries); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "f9c4114aadc30a0d",
+    id: "2107eb7e7a16c585",
     scans: ["deliveries: SCAN d", "outbound_activities: SCAN o LEFT-JOIN"],
     site: "src/domain/deliveries.ts#<anonymous> in claimDeliveries",
     disposition: "background",
@@ -620,14 +620,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "the operator's delivery report (deliveriesReport, src/domain/deliveries.ts) counts the activities still expanding: the walk is the report, which only the Access admin reads (GET /admin/deliveries, src/app/admin.ts)",
   },
   {
-    id: "fdf81c8176f0cc69",
+    id: "2951d310523c9605",
     scans: ["deliveries: SCAN d", "outbound_activities: SCAN o LEFT-JOIN"],
     site: "src/domain/deliveries.ts#<anonymous> in confirmDelivery",
     disposition: "pending",
     issue: "#1468 group 8",
   },
   {
-    id: "f2dc1c7cafd52620",
+    id: "5bfb0ad3af62025a",
     scans: ["deliveries: SCAN d", "outbound_activities: SCAN o LEFT-JOIN"],
     site: "src/domain/deliveries.ts#<anonymous> in completeDelivery",
     disposition: "pending",
