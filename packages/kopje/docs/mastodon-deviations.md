@@ -1127,6 +1127,14 @@ Search (`/api/v2/search`, `/api/v1/accounts/search`):
 - A `limit` or `offset` given as an array or a nested parameter (`limit[]=1`, `offset[a]=-1`) is not read: the search
   answers as without it, or 400 when the other one is negative. Mastodon 4.7.5 answers 500 to both, as its pagination
   check calls `to_i` on the array or hash. Accepted, 2026-11-17.
+- An account search finds the accounts whose display name and address hold each word of the query as a substring: the
+  query is normalized as stored names are (NFKC, lowercase, no variation selectors) and split at white space other than
+  U+0085 (`queryTerms` in `src/domain/search-text.ts`). Mastodon 4.7.5's PostgreSQL search (`Account::Search`,
+  `to_tsquery('simple')`) also splits at U+0085 and at the characters of emoji, and matches each word as the start of
+  a word, so a query that wraps a username in them (`alice😀`) finds that account there, and in Kopje finds only an
+  account whose display name holds the whole text. Splitting as Mastodon does inside Kopje's substring search would
+  change which accounts existing queries find and in what order, and so the pages of their results (#1767). Accepted,
+  2026-11-18.
 - `/api/v2/search` finds no hashtag for a `q` that a hashtag's name normalizes to nothing (U+FEFF, an emoji). Mastodon
   4.7.5 without Elasticsearch finds every listable hashtag, up to `limit`: `Tag.matches_name` searches the names that
   start with the normalized term, and an empty term starts every name. A query of characters no hashtag can hold names
@@ -1423,7 +1431,7 @@ Request parameters:
 - A marker's `last_read_id` (`POST /api/v1/markers`) is kept as sent, up to `MAX_LAST_READ_ID` characters
   (`src/domain/markers.ts`); one that starts with a NUL, which the Store's length check reads as empty, answers 422
   `Validation failed: Last read can't start with a NUL character`. Mastodon reads it as a bigint (Ruby's `to_i`, so
-  `abc` and a value that starts with a NUL as 0) and answers 200.
+  `abc` and a value that starts with a NUL as 0) and answers 200. Accepted, 2026-11-18.
 - A report's `category` that is not blank and names no category (U+FEFF, an emoji, a NUL) answers 422 `Validation
   failed: Category is not included in the list`; Mastodon answers 500, as assigning a value its `category` enum does
   not hold raises `ArgumentError`. Accepted, 2026-11-18.
