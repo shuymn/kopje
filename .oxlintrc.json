@@ -122,7 +122,7 @@
       "files": ["packages/kopje/src/**/*.{ts,tsx}"],
       "rules": { "kopje/fedify-usage": "error", "kopje/layering": "error", "kopje/log-events": "error" }
     },
-    // The setup wizard is not catalogued (docs/web-pages.md).
+    // The setup wizard is not in the catalogue (docs/web-pages.md, "English UI, ready for translation").
     { "files": ["packages/kopje/src/web/**/*.tsx"], "rules": { "kopje/web-strings": "error" } },
     { "files": ["packages/kopje/src/web/setup-pages.tsx"], "rules": { "kopje/web-strings": "off" } },
     // A nullish value must not reach SQL or HTML text through `${}` (test-node/lint-config.test.ts).

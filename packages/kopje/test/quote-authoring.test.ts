@@ -9,8 +9,10 @@ import { holdsLocalStamp } from "../src/domain/quotes";
 import { RETRACTION_TTL_MS } from "../src/domain/retractions";
 import { suspendLocal } from "../src/domain/suspension";
 import { MAX_QUOTED_UPDATES, quotedUpdates } from "../src/domain/update-fan-out";
+import { INBOX_BODY_LIMIT } from "../src/federation/spool";
 import { deliveryRound } from "../src/jobs/deliver";
 import { publishScheduled } from "../src/jobs/scheduled";
+import { jsonRefusal } from "../src/platform/json-bounds";
 import { settle, settleDeliveries, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD, runStoreJobs, deferred } from "./helpers";
@@ -32,6 +34,7 @@ import {
   update,
 } from "./inbox-status-helpers";
 import { storeReceive } from "./inbox-store-helpers";
+import { boundFillers } from "./json-bound-helpers";
 import { contexts, deliveryDeps, quoteAccept as accept, quoteReject as reject } from "./quote-helpers";
 import { rowsRead } from "./read-helpers";
 import { outbound } from "./status-helpers";
@@ -44,6 +47,8 @@ import { outbound } from "./status-helpers";
 
 const NOT_FOUND = "The post you are trying to quote does not appear to exist.";
 const NOT_MENTIONED = "Validation failed: Cannot quote a non-mentioned user in a Private Mention post.";
+// A generous bound on a request at the input bounds (RES-2).
+const GENEROUS_MS = 2_000;
 
 type Posted = {
   id: string;
@@ -516,6 +521,64 @@ describe("remote quote policies (StatusParser#quote_policy, row 2)", () => {
     expect(await t.post(bob, update(bob, mixed, "2026-10-11T14:00:00Z"))).toBe(202);
     expect(await sql(t.store, "SELECT quote_policy FROM statuses WHERE id = ?", theirs.id)).toEqual([
       { quote_policy: ((4 | 8) << 16) | 2 | 1 },
+    ]);
+  });
+
+  // Each row's flags are what Mastodon 4.7.5's StatusParser#quote_policy gave for the same canQuote, with the author's
+  // followers and following collections and its id as stated here (remote-statuses.ts remoteQuotePolicy,
+  // remote-actors.ts subpolicyReader). Each fails with its rule changed: every public spelling taken (the first three
+  // rows lose unsupported_policy), the entries not taken once each (a duplicate would add unsupported_policy), the
+  // author itself not taken (unsupported_policy), a value that is not a string taken as a match, or a half cut at 32
+  // entries (the last four rows lose public or followers).
+  it("reads each half as Mastodon's quote_subpolicy (#1772)", async () => {
+    const { t, bob } = await world();
+    const automatic = (flags: number) => flags << 16;
+    const others = Array.from({ length: 32 }, (_, i) => `https://other.example/users/${i}`);
+    for (const [name, canQuote, expected] of [
+      ["two spellings", { automaticApproval: ["as:Public", PUBLIC] }, automatic(2 | 1)],
+      ["three spellings", { automaticApproval: [PUBLIC, "Public", "as:Public"] }, automatic(2 | 1)],
+      ["two spellings, manual", { manualApproval: ["Public", PUBLIC] }, 2 | 1],
+      ["a spelling twice", { automaticApproval: ["as:Public", "as:Public"] }, automatic(2)],
+      ["followers twice", { automaticApproval: [`${bob.uri}/followers`, `${bob.uri}/followers`] }, automatic(4)],
+      ["the author", { automaticApproval: [bob.uri], manualApproval: [bob.uri] }, 0],
+      ["the author and Public", { automaticApproval: [bob.uri, PUBLIC] }, automatic(2)],
+      ["not strings", { automaticApproval: [7, null, { id: PUBLIC }] }, automatic(1)],
+      ["an object", { automaticApproval: {} }, automatic(1)],
+      ["a string", { automaticApproval: "as:Public" }, automatic(2)],
+      ["an empty string", { automaticApproval: [""] }, automatic(1)],
+      // Every entry is read (#1774): what comes after the 32nd counts as any other.
+      ["IRI after 32 others", { automaticApproval: [...others, PUBLIC] }, automatic(2 | 1)],
+      ["as:Public after 32 others", { automaticApproval: [...others, "as:Public"] }, automatic(2 | 1)],
+      ["followers after 32 others", { automaticApproval: [...others, `${bob.uri}/followers`] }, automatic(4 | 1)],
+      ["Public after 33 values", { automaticApproval: [...Array.from({ length: 33 }, () => 7), PUBLIC] }, automatic(3)],
+    ] as const) {
+      const note = mastodonNote(bob, { interactionPolicy: { canQuote } });
+      expect(await t.post(bob, create(bob, note)), name).toBe(202);
+      expect(await sql(t.store, "SELECT quote_policy FROM statuses WHERE uri = ?", note.id), name).toEqual([
+        { quote_policy: expected },
+      ]);
+    }
+  });
+
+  // RES-2: a half is read whole (policyHalf, subpolicyReader), its entries bounded by MAX_JSON_NODES, so a Create at
+  // INBOX_BODY_LIMIT bytes and MAX_JSON_NODES values whose automatic half is all distinct strings ending with as:Public
+  // is stored with Mastodon's flags within a generous time. Fails if the half is cut (public is lost).
+  it("reads a half filling the body bounds within a generous time (#1774)", async () => {
+    const { t, bob } = await world();
+    const activity = (entries: string[]) =>
+      create(bob, {
+        ...mastodonNote(bob, { interactionPolicy: { canQuote: { automaticApproval: [...entries, "as:Public"] } } }),
+        id: `${bob.uri}/statuses/bound`,
+      });
+    const entries = boundFillers(activity, INBOX_BODY_LIMIT);
+    const filled = activity(entries);
+    expect([JSON.stringify(filled).length, jsonRefusal(filled)]).toEqual([INBOX_BODY_LIMIT, null]);
+    expect(jsonRefusal(activity([...entries, "y"]))).toBe("too-complex");
+    const started = performance.now();
+    expect(await t.post(bob, filled)).toBe(202);
+    expect(performance.now() - started).toBeLessThan(GENEROUS_MS);
+    expect(await sql(t.store, "SELECT quote_policy FROM statuses WHERE uri = ?", `${bob.uri}/statuses/bound`)).toEqual([
+      { quote_policy: (2 | 1) << 16 },
     ]);
   });
 });

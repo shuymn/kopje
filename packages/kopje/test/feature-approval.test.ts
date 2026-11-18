@@ -4,9 +4,12 @@ import { describe, expect, it } from "vitest";
 import { Db } from "../src/db/sql";
 import { ANSWER_CHUNK, accountsOf } from "../src/domain/accounts";
 import { type RemoteFeaturePolicyInput, upsertRemoteActor } from "../src/domain/remote-actors";
+import { DOCUMENT_BODY_LIMIT } from "../src/federation/loader";
+import { jsonRefusal } from "../src/platform/json-bounds";
 import { type ApiHarness, sql } from "./api-helpers";
 import { actorDefaults, confirmedAs, mastodonActor } from "./inbox-helpers";
 import { accountId, ALICE, DAVE, followed, setup, type Setup } from "./inbox-status-helpers";
+import { boundFillers } from "./json-bound-helpers";
 import { block, community, follow, getJson, post, remoteAccount, type User } from "./status-helpers";
 import { recordingSql } from "./status-row-fixtures";
 
@@ -149,9 +152,10 @@ describe("a remote account's feature policy", () => {
 
   // Each fails with its rule removed from remoteFeaturePolicy or featurePolicyOf: a public spelling not matched (the
   // first three), the `||` read as an or of all three (the fourth: Public would be deleted too, no unsupported_policy),
-  // the followers or following match, the leftover rule, the disabled rule, MAX_QUOTE_POLICY_ENTRIES (the 33rd would
-  // add public), an object half read as one entry ({} would add unsupported_policy), or an unreadable collection
-  // read as one that matches nothing (unsupported_policy would be added).
+  // the followers or following match, the leftover rule, the disabled rule, a half cut at 32 entries (the 33rd's public
+  // or followers would be lost; Mastodon 4.7.5 gives these rows' flags), an object half read as one entry ({} would add
+  // unsupported_policy), or an unreadable collection read as one that matches nothing (unsupported_policy would be
+  // added).
   it("reads canFeature's halves as Mastodon's InteractionPolicyParser does", async () => {
     const t = await setup();
     const followers = "$self/followers";
@@ -176,7 +180,8 @@ describe("a remote account's feature policy", () => {
       ["itself and a flag", { automaticApproval: ["$self", AS_PUBLIC] }, automatic(F.public)],
       ["a duplicate", { automaticApproval: [followers, followers] }, automatic(F.followers)],
       ["not a string", { automaticApproval: [{ id: AS_PUBLIC }] }, automatic(F.unsupported_policy)],
-      ["33 entries", { automaticApproval: [...filler, AS_PUBLIC] }, automatic(F.unsupported_policy)],
+      ["33 entries", { automaticApproval: [...filler, AS_PUBLIC] }, automatic(F.public | F.unsupported_policy)],
+      ["followers 33rd", { automaticApproval: [...filler, followers] }, automatic(F.followers | F.unsupported_policy)],
       [
         "32 entries",
         { automaticApproval: [...filler.slice(1), AS_PUBLIC] },
@@ -190,11 +195,41 @@ describe("a remote account's feature policy", () => {
     ] as const) {
       expect((await stored(t, canFeature)).policy, name).toBe(expected);
     }
-    // A followers collection Kopje cannot read as Mastodon stores it (UNREADABLE): from it on, an entry adds nothing
-    // but public and the account itself, so no unsupported_policy and no following.
+    // A followers collection Kopje cannot read as Mastodon stores it (UNREADABLE): from it on, a string adds nothing
+    // but public and the account itself, so no unsupported_policy and no following. A value that is not a string is
+    // left over whatever Mastodon stores (Mastodon 4.7.5 gives unsupported_policy in both halves for the second
+    // policy), so it still adds unsupported_policy, and the account itself beside it is not `disabled`; fails if a
+    // value that is not a string past the collection adds nothing.
     const unreadable = { followers: "https://mastodon.example/users/u/followers\uFFFD" };
     const policy = { automaticApproval: [AS_PUBLIC, "https://other.example/x", following], manualApproval: ["$self"] };
     expect((await stored(t, policy, "u", unreadable)).policy).toBe(automatic(F.public) | F.disabled);
+    const others = { automaticApproval: [7], manualApproval: ["$self", { id: AS_PUBLIC }] };
+    expect((await stored(t, others, "u2", unreadable)).policy).toBe(
+      automatic(F.unsupported_policy) | F.unsupported_policy,
+    );
+  });
+
+  // RES-2: a half is read whole (policyHalf, subpolicyReader), its entries bounded by MAX_JSON_NODES, so an actor
+  // document at DOCUMENT_BODY_LIMIT bytes and MAX_JSON_NODES values whose automatic half is all distinct strings ending
+  // with as:Public is stored with Mastodon's flags within a generous time. Fails if the half is cut (public is lost).
+  it("reads a half filling the document bounds within a generous time (#1774)", async () => {
+    const t = await setup();
+    const actor = await mastodonActor(t.web, "bound");
+    const document = (entries: string[]) => ({
+      ...actor.document,
+      interactionPolicy: { canFeature: { automaticApproval: [...entries, "as:Public"] } },
+    });
+    const entries = boundFillers(document, DOCUMENT_BODY_LIMIT);
+    const filled = document(entries);
+    expect([JSON.stringify(filled).length, jsonRefusal(filled)]).toEqual([DOCUMENT_BODY_LIMIT, null]);
+    expect(jsonRefusal(document([...entries, "y"]))).toBe("too-complex");
+    t.web.serve(actor.uri, filled);
+    const started = performance.now();
+    const id = await followed(t, actor);
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(await sql(t.store, "SELECT feature_policy AS p FROM accounts WHERE id = ?", id)).toEqual([
+      { p: automatic(F.public | F.unsupported_policy) },
+    ]);
   });
 
   // The stored policy is read again by every store of the document (the actor's Update embedding it, here), with the

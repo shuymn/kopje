@@ -488,6 +488,15 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- A remote post's quote policy is read as Mastodon reads it. When it names the public collection under more than one
+  spelling (`as:Public`, `Public`, the full IRI), only the first spelling found counts as public and any other is an
+  unsupported entry, so `quote_approval` lists `unsupported_policy` too, where Kopje read every spelling as public
+  (#1772); and every entry is read, where Kopje read the first 32 of each list and missed a public spelling or a
+  collection listed after them (#1774). A post stored earlier keeps its policy until its next `Update`. No Store
+  migration and no `wrangler.jsonc` change.
+- An account note or a marker's `last_read_id` that starts with a NUL answers 422, refused before it is written; it
+  failed the Store's length check with a 500 (#1767; [docs/mastodon-deviations.md](docs/mastodon-deviations.md),
+  "Request parameters"). No Store migration and no `wrangler.jsonc` change.
 - An `Add` or `Remove` without an `id`, as Mastodon sends those of featured hashtags and pinned posts, is applied as
   one with an `id` is, under the same rules (its target, and the caps on a remote account's pins and featured hashtags:
   [docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Remote collections"); it was refused. No Store

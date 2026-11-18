@@ -131,6 +131,28 @@ describe("markers", () => {
     });
   });
 
+  // The column's CHECK counts as SQLite's length() does, up to the first U+0000, so a value that starts with one is
+  // refused before the write; Mastodon reads it as a bigint, 0 (docs/mastodon-deviations.md).
+  it("refuses a last_read_id that starts with a NUL with 422, and keeps one with a NUL after its start", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    await save(h, alice, { home: { last_read_id: "5" } });
+    const refused = { status: 422, body: { error: "Validation failed: Last read can't start with a NUL character" } };
+    for (const value of ["\u0000", "\u00001"]) {
+      expect(await save(h, alice, { home: { last_read_id: value } }), JSON.stringify(value)).toEqual(refused);
+    }
+    expect(await save(h, alice, { home: { last_read_id: "6" }, notifications: { last_read_id: "\u0000" } })).toEqual(
+      refused,
+    );
+    expect(await sql(h.store, "SELECT timeline, last_read_id, version FROM markers")).toEqual([
+      { timeline: "home", last_read_id: "5", version: 1 },
+    ]);
+    expect(await save(h, alice, { home: { last_read_id: "1\u0000" } })).toMatchObject({
+      status: 200,
+      body: { home: { last_read_id: "1\u0000", version: 2 } },
+    });
+  });
+
   it("applies concurrent updates one after the other, each counted, with no conflict", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
