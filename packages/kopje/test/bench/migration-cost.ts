@@ -1251,6 +1251,16 @@ it("applies the migration to the benchmark store within the budget", async () =>
           tables: [count("reply_walk_debts"), count("reply_walk_cursors")],
         }
       : undefined;
+    // 0117_retraction_counts: its index's definition, and the retractions it holds.
+    const retractionIndex = sql
+      .exec<{ sql: string }>(
+        "SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = 'inbound_retractions_actor_expires'",
+      )
+      .toArray()
+      .map((row) => ({
+        sql: row.sql,
+        rows: count("inbound_retractions INDEXED BY inbound_retractions_actor_expires"),
+      }))[0];
     // 0092_reject_replays: its table, indexes (the unique key's included) and triggers, made and empty.
     const rejectReplays = has("reject_replays")
       ? {
@@ -1323,6 +1333,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
           pinRefresh,
           quoteBroadcast,
           walkDebts,
+          retractionIndex,
         },
       };
     }
@@ -1363,6 +1374,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
         pinRefresh,
         quoteBroadcast,
         walkDebts,
+        retractionIndex,
       },
     };
   });
@@ -1401,6 +1413,13 @@ it("applies the migration to the benchmark store within the budget", async () =>
       SHAPE.local + pinningRemotes,
       [SHAPE.local * 5 + pinningRemotes * 20, 0],
     ]);
+  }
+  // The retractions were there to index, and the index holds every one.
+  if (applied.includes("0117_retraction_counts")) {
+    expect(measured.retractionIndex).toEqual({
+      sql: "CREATE INDEX inbound_retractions_actor_expires ON inbound_retractions (actor_uri, expires_at)",
+      rows: retractions,
+    });
   }
   // The held uploads past four were there to detach, and the upgrade kept four of each scheduled status.
   if (seeded.scheduled > 0) {
