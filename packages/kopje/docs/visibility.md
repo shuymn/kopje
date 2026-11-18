@@ -280,9 +280,10 @@ name, an array's first value, an object's last `id`, and of a string the URI Add
 at a line feed), compared with the addressing as spelled. Any other value is none, which Mastodon stores as an empty
 string and compares as one: a status whose `to` holds `""` is private when its author names no followers collection, and
 a quote policy's `""` names that collection. A value Kopje cannot read as Mastodon stores it is named by no addressing,
-so a status addressed to it is direct, and a quote policy's entries, read in Mastodon's order (the public collection,
-the followers collection, then the following one), add nothing after it but the public collection's flag, and a value
-that is not a string `unsupported_policy` ([mastodon-deviations.md](mastodon-deviations.md), Remote collections).
+so a status addressed to it is direct, and of a quote policy's entries, read in Mastodon's order (one spelling of the
+public collection, the followers collection, then the following one), a string adds nothing after it but the public
+collection's flag, and a value that is not a string `unsupported_policy`
+([mastodon-deviations.md](mastodon-deviations.md), Remote collections).
 
 A quote (R35, VIS-27; Mastodon 4.5's `REST::BaseQuoteSerializer` and `StatusFilter#filter_state_for_quote`) is shown
 with the status that makes it, and never widens what that status's rule passed: the quoted status is judged on its own
@@ -1026,7 +1027,9 @@ any change of its `uri` or `state` ends (`handshake_replays_generation`).
   its intent is neither superseded nor a retraction and is that follow's owed handshake: a `Follow` whose local
   account's follow of the account its object names is pending under that `Follow`'s id, or a follow pair's `Accept`
   whose remote follow is accepted under the `Follow` it answers (an edge without a `Follow` id, by an `Accept` that
-  names none). Ids are compared by their bytes. Nothing else is held but a `Reject` of a request (below): content, a
+  names none). Ids are compared by their bytes. An `Undo` of the target's `Accept` of a local follow supersedes that
+  `Follow` (`retireFollow`), so a follow it turns back into a request owes no `Follow`: Mastodon never sends a revoked
+  follow's `Follow` again. Nothing else is held but a `Reject` of a request (below): content, a
   `Block`, a quote's `Accept` or `Reject`, a superseded answer, a retraction, or a row whose sender was refused. A
   claim holds at most `CLAIM_LIMIT` rows, one hold for each refused row at most.
 - **Held Rejects.** A local account's `Reject` of a remote account's `Follow` is held in `reject_replays` (migration
@@ -1045,8 +1048,9 @@ any change of its `uri` or `state` ends (`handshake_replays_generation`).
   sent: the item fails and parks (RES-5), and replays after a repair and the admin's retry. A hold ends with nothing
   recorded when a follow of the pair is stored (`reject_replays_follow_stored`: the new generation gets its own
   answer, which an older `Reject` would reach through the pair fallback), when the follower's `Undo` of a `Follow`
-  names its `Follow` id or is a Misskey pair id within its pair (`cancelUndoneAnswers` in `inbox.ts`), and when the
-  follower is purged.
+  names its `Follow` id, is a Misskey pair id within its pair, or ends the pair's follow whose stored id the hold
+  names, compared in SQL (an import, whose triggers do not run, may keep the two together) (`cancelUndoneAnswers` in
+  `inbox.ts`), and when the follower is purged.
 - **Replayed.** A job family (`src/domain/handshake-replays.ts`, RES-5) takes a due hold at a time from either table, a
   due retry first (the earlier `due_at`), else the fresh hold with the earlier `check_at` (a held handshake before a
   held `Reject` on equal times, then the integer key), and reads a held handshake's follow as it is now: a local

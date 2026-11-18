@@ -201,6 +201,8 @@ function idOf(value: unknown): string | null {
 // EmojiReaction (Misskey's isLike, core/activitypub/type.ts). A favourite; the emoji is not kept (as Mastodon).
 export const LIKE_TYPES: ReadonlySet<string> = new Set(["Like", "EmojiReact", "EmojiReaction"]);
 
+// An object given as an id, or embedded. Its type absent or null is no type; one given that is no single string is no
+// type either, and marked unread (ActivityRef.typeUnread), which only undo reads.
 function refOf(value: unknown, readType: TypeReader): ActivityRef {
   if (!isObject(value)) {
     return { id: idOf(value), type: null, actor: null, object: null, atomUri: null };
@@ -209,6 +211,7 @@ function refOf(value: unknown, readType: TypeReader): ActivityRef {
   return {
     id: idOf(value),
     type: type !== null && LIKE_TYPES.has(type) ? "Like" : type,
+    ...(value.type === undefined || value.type === null || type !== null ? {} : { typeUnread: true as const }),
     actor: idOf(value.actor),
     object: idOf(value.object),
     atomUri: statusIdentity(value.atomUri),

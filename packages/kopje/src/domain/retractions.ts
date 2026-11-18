@@ -48,19 +48,61 @@ function recordable(actorUri: string, targetUri: string): boolean {
   return sameOrigin(targetUri, actorUri);
 }
 
-// Whether every one of targetUris can be recorded as retracted by actorUri now: those not recorded yet fit under the
-// cap. A change whose generation could not be recorded is not made (ID-7: it could come back).
-export function canRetract(db: Db, actorUri: string, targetUris: readonly string[], now: number): boolean {
-  const missing = new Set(targetUris.filter((uri) => recordable(actorUri, uri) && !isRetracted(db, actorUri, uri, now)))
-    .size;
+// A stored follows or blocks row whose uri is recorded as retracted from the row itself, in SQL: an imported uri may be
+// malformed UTF-8, which decodes lossily, so its bytes are never written back from the Worker (engineering.md,
+// "Imported TEXT"). The caller decides from the row, read within ACTIVITY_ID_LIMIT bytes, that its uri is recordable
+// (of the actor's origin, and not a Follow's pair id) and differs from the other ids it records.
+export type StoredEdge = { table: "follows" | "blocks"; id: string };
+
+function isEdgeRetracted(db: Db, actorUri: string, edge: StoredEdge, now: number): boolean {
+  return (
+    db.first(
+      `SELECT 1 AS x FROM inbound_retractions WHERE actor_uri = ?1
+				AND target_uri = (SELECT e.uri FROM ${edge.table} e WHERE e.id = CAST(?2 AS INTEGER)) AND expires_at > ?3`,
+      actorUri,
+      edge.id,
+      now,
+    ) !== undefined
+  );
+}
+
+// Records the uri of the stored row `edge` as retracted by actorUri, copied in SQL; run before the row is deleted.
+export function retractEdge(db: Db, actorUri: string, edge: StoredEdge, now: number): void {
+  db.run(
+    `INSERT INTO inbound_retractions (actor_uri, target_uri, expires_at)
+		SELECT ?1, e.uri, ?3 FROM ${edge.table} e WHERE e.id = CAST(?2 AS INTEGER) AND e.uri IS NOT NULL
+		ON CONFLICT DO UPDATE SET expires_at = excluded.expires_at`,
+    actorUri,
+    edge.id,
+    now + RETRACTION_TTL_MS,
+  );
+}
+
+// Whether every one of targetUris, and the uri of the stored row `edge` when given, can be recorded as retracted by
+// actorUri now: those not recorded yet fit under the cap. A change whose generation could not be recorded is not made
+// (ID-7: it could come back).
+export function canRetract(
+  db: Db,
+  actorUri: string,
+  targetUris: readonly string[],
+  now: number,
+  edge?: StoredEdge,
+): boolean {
+  const missing =
+    new Set(targetUris.filter((uri) => recordable(actorUri, uri) && !isRetracted(db, actorUri, uri, now))).size +
+    (edge !== undefined && !isEdgeRetracted(db, actorUri, edge, now) ? 1 : 0);
   if (missing === 0) {
     return true;
   }
+  // The actor's live retractions, read as one range of inbound_retractions_actor_expires (migration 0117) whatever the
+  // statistics (RES-7), and only up to the cap, however many an import holds: with at least one missing, a count at
+  // the cap refuses as the whole count would.
   const live =
     db.first<{ n: number }>(
-      "SELECT count(*) AS n FROM inbound_retractions WHERE actor_uri = ? AND expires_at > ?",
+      `SELECT count(*) AS n FROM (SELECT 1 FROM inbound_retractions WHERE actor_uri = ?1 AND expires_at > ?2 LIMIT ?3)`,
       actorUri,
       now,
+      MAX_RETRACTIONS_PER_ACTOR,
     )?.n ?? 0;
   return live + missing <= MAX_RETRACTIONS_PER_ACTOR;
 }

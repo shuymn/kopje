@@ -521,9 +521,9 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       'a job or round traversal (deliveries.ts#<anonymous> in sweepDeliveries); each round is bounded by its batch (docs/engineering.md, "Ordering, rounds and fences")',
   },
   {
-    id: "fb743767a7db9d47",
+    id: "b567cb041f03a3e5",
     scans: ["outbound_activities: SCAN o"],
-    site: "src/domain/deliveries.ts#followAnswersOf < src/domain/inbox.ts#cancelUndoneAnswers < src/domain/inbox.ts#undo < src/domain/inbox.ts#receive < src/domain/inbox.ts#<anonymous> in receiveActivity",
+    site: "src/domain/deliveries.ts#followAnswersOf < src/domain/inbox.ts#cancelUndoneAnswers < src/domain/inbox.ts#undoRelationship < src/domain/inbox.ts#undo < src/domain/inbox.ts#receive",
     disposition: "pending",
     issue: "#1468 group 8",
   },
@@ -825,6 +825,14 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
     disposition: "deliberate",
     reason:
       "an Accept's follow by its id: the local accounts drive, each one's follow of the actor sought by follows_pair (ourFollow, src/domain/inbox.ts): local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\")",
+  },
+  {
+    id: "fd261ccaef071552",
+    scans: ["local_accounts: SCAN l USING COVERING INDEX sqlite_autoindex_local_accounts_1"],
+    site: "src/domain/inbox.ts#undoAccept < src/domain/inbox.ts#undo < src/domain/inbox.ts#receive < src/domain/inbox.ts#<anonymous>",
+    disposition: "deliberate",
+    reason:
+      "an undone Accept's follow by the Follow id it names: the local accounts drive, each one's follow of the actor read by follows_pair in a scalar subquery, one point lookup per local account (undoAccept, src/domain/inbox.ts): local accounts are operator-sized (docs/threat-model.md, \"Deployment assumptions\"); test/inbox-undo-accept.test.ts holds its rows read under stale statistics",
   },
   {
     id: "c507c60814b4afbe",
@@ -1410,7 +1418,7 @@ export const PLAN_AUDIT_ENTRIES: readonly PlanAuditEntry[] = [
       "setup before bootstrap only: SETUP_TOKEN-gated, and refused once bootstrapped (SETUP-2, src/domain/setup.ts:267 and :537), when kopje_state holds at most MAX_SETUP_SESSIONS (8, setup.ts:52) sessions besides the Store's own names and the monthly transform counters the setup's Images check charges (src/domain/media.ts:227), one per month it ran",
   },
   {
-    id: "2c2a44d373aa8740",
+    id: "38046abfaad0ba0b",
     scans: ["?: SCAN c", "local_accounts: SCAN l"],
     site: "src/domain/status-presenter.ts#statusRowBounds < src/domain/status-presenter.ts#plannedChunks < src/domain/status-presenter.ts#statusStream",
     disposition: "deliberate",

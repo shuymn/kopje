@@ -4,6 +4,7 @@ import { isPublicCollection } from "../domain/audience";
 import { isConversationId } from "../domain/conversation-rows";
 import { languageOf } from "../domain/language";
 import { CARD_CANDIDATES, CARD_RAW_HREF_LIMIT, type CardCandidate, type CardLink } from "../domain/link-cards";
+import { type Focus, focusCoordinate, parseFocus } from "../domain/media-focus";
 import { MAX_REMOTE_OPTION_LENGTH, MAX_REMOTE_OPTIONS, type RemotePollInput } from "../domain/polls";
 import type {
   RemoteMediaInput,
@@ -165,13 +166,31 @@ function dimension(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 100_000 ? value : null;
 }
 
-function focusOf(value: unknown): { x: number; y: number } | null {
-  if (!Array.isArray(value) || value.length !== 2) {
+// A remote attachment's focalPoint as MediaAttachment#focus= casts it (MediaAttachmentParser#focus passes it as given),
+// each coordinate kept as focusCoordinate keeps it; null: none, which an Update reads as keeping the stored focus. A
+// string is read as an upload's focus (parseFocus). An array that is not empty is read by its first two entries, a
+// number as given, null as 0 and a string by parseFloat, a missing second as 0; a boolean, object or array among them,
+// on which Ruby's to_f raises and Mastodon fails the activity, gives none, and later entries are not read. Anything
+// else (null, a boolean, a number, an object, an empty array) gives none (docs/mastodon-deviations.md, "Media").
+function focusOf(value: unknown): Focus | null {
+  if (typeof value === "string") {
+    return parseFocus(value) ?? null;
+  }
+  if (!Array.isArray(value) || value.length === 0) {
     return null;
   }
-  const [x, y] = value as unknown[];
-  const valid = (n: unknown): n is number => typeof n === "number" && n >= -1 && n <= 1;
-  return valid(x) && valid(y) ? { x, y } : null;
+  const coordinates: number[] = [];
+  for (const entry of (value as unknown[]).slice(0, 2)) {
+    if (typeof entry === "number" || entry === null) {
+      coordinates.push(focusCoordinate(entry ?? 0));
+    } else if (typeof entry === "string") {
+      coordinates.push(focusCoordinate(Number.parseFloat(entry)));
+    } else {
+      return null;
+    }
+  }
+  const [x = 0, y = 0] = coordinates;
+  return { x, y };
 }
 
 // Whether an attachment's href is a link's (Create#process_attachments, create.rb:306: Rails' present?): a string that
@@ -378,28 +397,37 @@ function quoteOf(object: Json, embed: boolean): RemoteQuoteInput | null {
   };
 }
 
-// Entries of each half of a canQuote policy read at most (RES-1), and of an actor's canFeature (remote-actor.ts
-// featurePolicyOf). A policy names a few collections; a longer one only adds unsupported_policy, which an entry past the
-// bound would add anyway unless it named a collection twice.
-export const MAX_QUOTE_POLICY_ENTRIES = 32;
+// One half of an interaction policy as the Store reads it (remote-actors.ts subpolicyReader), from every entry it
+// lists: each string once, as listed, whatever its length, as Mastodon compares it, and one null when it lists anything
+// that is not a string. Mastodon's reading depends only on which distinct values a half lists (uniq!, then deletes of
+// strings, which leave every value that is not a string), so this reads the whole list as Mastodon does. A received
+// object holds at most MAX_JSON_NODES values (json-bounds.ts, RES-2) and its strings are within its body's bound
+// (INBOX_BODY_LIMIT or DOCUMENT_BODY_LIMIT, 1 MiB), as the raw object the input carries is, and each half is read in
+// one pass here and one in the Store; the stored collections they are compared with have no fixed bound
+// (collection-requests.ts collectionSql). Also canFeature's (remote-actor.ts featurePolicyOf).
+export function policyHalf(entries: readonly unknown[]): (string | null)[] {
+  const strings = new Set<string>();
+  let other = false;
+  for (const entry of entries) {
+    if (typeof entry === "string") {
+      strings.add(entry);
+    } else {
+      other = true;
+    }
+  }
+  return other ? [...strings, null] : [...strings];
+}
 
-// StatusParser#quote_policy's input: interactionPolicy.canQuote's automaticApproval and manualApproval, as the actor
-// URIs (or collections) they list: each string as listed, whatever its length, as Mastodon compares it (a "" matches a
-// collection the author names none of, as Mastodon stores it), and null for an entry that is not a string (read as
-// unsupported_policy). The strings are the received object's own, so together they are within its body's bound
-// (INBOX_BODY_LIMIT or DOCUMENT_BODY_LIMIT, 1 MiB), as the raw object the input carries is; the stored collections
-// they are compared with have no fixed bound (collection-requests.ts collectionSql). The Store turns them into
-// Mastodon's flags with the author's collections (remote-statuses.ts remoteQuotePolicy). null: the Note states no
-// policy.
+// StatusParser#quote_policy's input: interactionPolicy.canQuote's automaticApproval and manualApproval, each as
+// as_array reads it (policyHalf; a "" matches a collection the author names none of, as Mastodon stores it). The Store
+// turns them into Mastodon's flags with the author's collections (remote-statuses.ts remoteQuotePolicy). null: the
+// Note states no policy.
 function quotePolicyOf(object: Json): RemoteQuotePolicyInput | null {
   const policy = isObject(object.interactionPolicy) ? object.interactionPolicy.canQuote : undefined;
   if (!isObject(policy)) {
     return null;
   }
-  const half = (value: unknown) =>
-    asArray(value)
-      .slice(0, MAX_QUOTE_POLICY_ENTRIES)
-      .map((entry) => (typeof entry === "string" ? entry : null));
+  const half = (value: unknown) => policyHalf(asArray(value));
   return { automatic: half(policy.automaticApproval), manual: half(policy.manualApproval) };
 }
 

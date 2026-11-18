@@ -130,12 +130,15 @@ function fakeFetch(answers: Record<string, Answer>) {
   return { fetch, calls };
 }
 
-async function exportFixture() {
-  return exportOf(space.dir, { level: 39, imagesAccount: ACCOUNT });
+async function exportFixture(focalPoints = false) {
+  return exportOf(space.dir, { level: 39, imagesAccount: ACCOUNT, focalPoints });
 }
 
-async function downloaded(answers: Record<string, Answer> = FILES, extra: { token?: string } = {}) {
-  const exportPath = await exportFixture();
+async function downloaded(
+  answers: Record<string, Answer> = FILES,
+  extra: { token?: string; focalPoints?: boolean | undefined } = {},
+) {
+  const exportPath = await exportFixture(extra.focalPoints);
   const outDir = join(space.dir, "images");
   const { fetch, calls } = fakeFetch(answers);
   const result = await exportImages({
@@ -383,8 +386,12 @@ describe("images-export", () => {
 });
 
 describe("convert and verify-conversion with --images", () => {
-  async function converted(extra: { answers?: Record<string, Answer>; acceptMissingImages?: boolean } = {}) {
-    const { exportPath, outDir: imagesDir } = await downloaded(extra.answers ?? FILES);
+  async function converted(
+    extra: { answers?: Record<string, Answer>; acceptMissingImages?: boolean; focalPoints?: boolean } = {},
+  ) {
+    const { exportPath, outDir: imagesDir } = await downloaded(extra.answers ?? FILES, {
+      focalPoints: extra.focalPoints,
+    });
     const result = await convert(space.dir, exportPath, {
       imagesDir,
       acceptMissingImages: extra.acceptMissingImages,
@@ -543,6 +550,49 @@ describe("convert and verify-conversion with --images", () => {
     const again = await convert(space.dir, exportPath, { imagesDir, acceptDeletions: true, out: "out-again" });
     expect(await readFile(again.dumpPath, "utf8")).toBe(dump);
   });
+
+  // A focalPoint in a mapped source (an avatar, an unattached image, an image only an earlier version shows, an earlier
+  // version's attachment) is not carried either (#1778), and the check FAILs on any focus a row or a version holds.
+  it("carries no focalPoint into a mapped row or a version, and the check FAILs on any", async () => {
+    const { ok, dumpPath, exportPath, imagesDir } = await converted({ focalPoints: true });
+    expect(ok).toBe(true);
+    const db = await opened(dumpPath);
+    const value = (sql: string) => Object.values(db.prepare(sql).get() ?? {})[0];
+    expect(value("SELECT count(*) FROM media_attachments WHERE file_token IS NOT NULL")).toBeGreaterThan(5);
+    expect(value("SELECT count(*) FROM media_attachments WHERE focus_x <> 0 OR focus_y <> 0 OR focus_given <> 0")).toBe(
+      0,
+    );
+    expect(value(`SELECT count(*) FROM status_edits WHERE media_json LIKE '%"focus"%'`)).toBe(0);
+    db.close();
+    const verified = await verify(exportPath, dumpPath, { acceptDeletions: true, imagesDir });
+    expect(failing(verified.categories)).toEqual([]);
+    expect(verified.ok).toBe(true);
+    const profile = (column: string) =>
+      `url = (SELECT ${column} FROM accounts WHERE username = 'alice' AND domain IS NULL)`;
+    for (const [sql, category] of [
+      [`UPDATE media_attachments SET focus_x = 0.1 WHERE ${profile("avatar_url")}`, "media_focus"],
+      [`UPDATE media_attachments SET focus_given = 1 WHERE ${profile("header_url")}`, "media_focus"],
+      [
+        "UPDATE media_attachments SET focus_y = 0.75 WHERE status_id IS NULL AND legacy_ap_o IS NOT NULL",
+        "media_focus",
+      ],
+      ["UPDATE media_attachments SET focus_given = 1 WHERE shown = 0", "media_focus"],
+      ["UPDATE media_attachments SET focus_given = 1 WHERE description = 'after'", "media_focus"],
+      // A version's image given a focus beside its sizes, which read as before: a key the conversion does not write.
+      [
+        `UPDATE status_edits SET media_json = json_set(media_json, '$[0].meta.focus', json('{"x":0.25,"y":0.5}'))
+          WHERE media_json LIKE '%"before"%'`,
+        "edits",
+      ],
+    ] as const) {
+      const result = await verify(exportPath, await tampered(space.dir, dumpPath, sql), {
+        acceptDeletions: true,
+        imagesDir,
+      });
+      expect(result.ok, sql).toBe(false);
+      expect(failing(result.categories), sql).toEqual([category]);
+    }
+  }, 60_000);
 
   it("drops legacy's default avatar for local accounts only", async () => {
     const exportPath = await exportFixture();
@@ -770,6 +820,15 @@ describe("convert and verify-conversion with --images", () => {
       ["UPDATE status_edits SET media_json = '[]'", ["edits"]],
       // An earlier version given the description the image has now.
       ["UPDATE status_edits SET media_json = replace(media_json, '\"before\"', '\"after\"')", ["edits"]],
+      // An image no status shows now takes a focus, column by column: unattached (image-2, with its sizes) and one only
+      // an earlier version shows (image-9, shown 0).
+      ...["focus_x = 0.5", "focus_y = -0.5", "focus_given = 1"].flatMap((set): [string, string[]][] => [
+        [
+          `UPDATE media_attachments SET ${set} WHERE status_id IS NULL AND legacy_ap_o IS NOT NULL AND file_token IS NOT NULL`,
+          ["media_focus"],
+        ],
+        [`UPDATE media_attachments SET ${set} WHERE shown = 0`, ["media_focus"]],
+      ]),
     ];
     for (const [sql, categories] of cases) {
       const damaged = await tampered(space.dir, dumpPath, sql);

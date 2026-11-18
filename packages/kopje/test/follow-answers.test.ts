@@ -1090,7 +1090,7 @@ describe("bounds and refusals (RES-6)", () => {
       "SEARCH o USING COVERING INDEX outbound_activities_follow_pair (account_id=? AND follow_pair=?)",
     ]);
     // The classes of at most 32 answers, by primary key, and the edge's uri by its id.
-    expect(await plan(FOLLOW_ANSWER_CLASSES_SQL, "[1]", "x", "1", 4096)).toEqual([
+    expect(await plan(FOLLOW_ANSWER_CLASSES_SQL, "[1]", "x", "1", 4096, "y")).toEqual([
       "SEARCH o USING INTEGER PRIMARY KEY (rowid=?)",
       "LIST SUBQUERY 2",
       "SCAN json_each VIRTUAL TABLE INDEX 1:",

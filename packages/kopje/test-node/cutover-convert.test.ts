@@ -406,6 +406,19 @@ describe("convert and verify-conversion", () => {
       ["a follow loses its languages", "UPDATE follows SET languages = NULL", "follows"],
       ["a favourite loses its Like record", "UPDATE favourites SET uri = NULL", "favourites"],
       ["a block loses its Block record", "UPDATE blocks SET uri = NULL", "blocks"],
+      // No converted row has a focus (a legacy focalPoint is not carried), so any column of one is a FAIL: a focus is
+      // shown where focus_given is 1, so an attachment given one shows a focus its server never sent.
+      [
+        "an attachment gains a focus",
+        "UPDATE media_attachments SET focus_given = 1 WHERE status_id IS NOT NULL",
+        "media_focus",
+      ],
+      // An image no status shows (image-2, kept by its URL, without sizes) takes one, column by column.
+      ...["focus_x = 0.5", "focus_y = -0.5", "focus_given = 1"].map((set): [string, string, string] => [
+        `an unattached image takes ${set}`,
+        `UPDATE media_attachments SET ${set} WHERE status_id IS NULL AND legacy_ap_o IS NOT NULL`,
+        "media_focus",
+      ]),
       ["a status takes its own thread", "UPDATE statuses SET thread = uri WHERE in_reply_to_id IS NOT NULL", "threads"],
       ["a conversation is marked unread", "UPDATE conversations SET unread = 1 - unread", "conversations"],
       ["a conversation loses its statuses", "DELETE FROM conversation_statuses", "conversations"],
@@ -671,6 +684,132 @@ describe("a legacy object without an internal id", () => {
     db.close();
     expect(rows).toEqual([{ visibility: "public", media: 2 }]);
   });
+});
+
+describe("a focalPoint in legacy media (#1767)", () => {
+  // Legacy kept every object whole, so a focalPoint can be in any media source (an attachment, of an earlier version
+  // too, an unattached image, an avatar). The conversion carries none (#1778): every row holds 0, 0 and focus_given 0,
+  // no version shows a focus, and the check FAILs on any.
+  it("is not carried, and the check FAILs on any focus a row or a version holds", async () => {
+    const exportPath = await exportOf({ level: 39, focalPoints: true });
+    const { ok, dumpPath } = await convert(exportPath);
+    expect(ok).toBe(true);
+    const db = await opened(dumpPath);
+    const value = (sql: string) => Object.values(db.prepare(sql).get() ?? {})[0];
+    expect(value("SELECT count(*) FROM media_attachments")).toBeGreaterThan(2);
+    expect(value("SELECT count(*) FROM media_attachments WHERE focus_x <> 0 OR focus_y <> 0 OR focus_given <> 0")).toBe(
+      0,
+    );
+    // The earlier version of r0's note shows the attachment its edit removed (m/3.png), without its focalPoint.
+    expect(value("SELECT count(*) FROM status_edits WHERE media_json LIKE '%/m/3.png%'")).toBe(1);
+    expect(value(`SELECT count(*) FROM status_edits WHERE media_json LIKE '%"focus"%'`)).toBe(0);
+    db.close();
+    const verified = await verify(exportPath, dumpPath);
+    expect(failing(verified.categories)).toEqual([]);
+    expect(verified.ok).toBe(true);
+    for (const [sql, categories] of [
+      ["UPDATE media_attachments SET focus_x = 0.5 WHERE url LIKE '%/m/2.png'", ["media_focus"]],
+      ["UPDATE media_attachments SET focus_given = 1 WHERE url LIKE '%.mp4'", ["media_focus"]],
+      ["UPDATE media_attachments SET focus_y = -0.25 WHERE url LIKE '%/image-2/%'", ["media_focus"]],
+      // A version given a focus: a key the conversion does not write.
+      [
+        `UPDATE status_edits SET media_json = json_set(media_json, '$[2].meta', json('{"focus":{"x":0.5,"y":-0.25}}'))
+          WHERE media_json LIKE '%/m/3.png%'`,
+        ["edits"],
+      ],
+    ] as const) {
+      const { ok: tamperedOk, categories: found } = await verify(exportPath, await tampered(dumpPath, sql));
+      expect(tamperedOk, sql).toBe(false);
+      expect(failing(found), sql).toEqual(categories);
+    }
+  });
+});
+
+// The history reads a version's snapshot with SQLite's JSON functions (editMediaSql in src/domain/status-bounds.ts
+// takes `value -> '$.meta'`), which read some forms otherwise than a JSON parser does, so the check takes a snapshot only
+// as the conversion writes it (JSON.stringify of attachments holding the conversion's keys) and FAILs `edits` on any
+// other (#1767).
+describe("a version's snapshot in a form the conversion does not write", () => {
+  const focus = '{"focus":{"x":0.5,"y":-0.25}}';
+  // The earlier version of r0's note, which shows three attachments, each with no meta.
+  const edited = "media_json LIKE '%/m/3.png%'";
+  // A version that shows none, given the first of them with a focus.
+  const bare = "id = (SELECT min(id) FROM status_edits WHERE media_json = '[]')";
+  const given = `(SELECT json_set(media_json, '$[0].meta', json('${focus}')) FROM status_edits WHERE ${edited})`;
+  /** Whether every version's snapshot is TEXT spelled as JSON.stringify spells what JSON.parse reads of it. */
+  const canonical = (rows: Record<string, unknown>[]) =>
+    rows.every((r) => {
+      try {
+        return r.type === "text" && JSON.stringify(JSON.parse(String(r.media_json))) === r.media_json;
+      } catch {
+        return false;
+      }
+    });
+  for (const [form, sql, focused, spelled, categories] of [
+    ["none (a dump of the conversion's own)", "SELECT 1", 0, true, []],
+    // The history reads the first of the two, JSON.parse the last.
+    [
+      "a key held twice",
+      `UPDATE status_edits SET media_json = replace(media_json, '"meta":null', '"meta":${focus},"meta":null') WHERE ${edited}`,
+      3,
+      false,
+      ["edits"],
+    ],
+    // The history reads the key up to its NUL as `meta`.
+    [
+      "a key with a NUL",
+      `UPDATE status_edits SET media_json = replace(media_json, '"meta":null', '"meta\\u0000x":${focus},"meta":null')
+        WHERE ${edited}`,
+      3,
+      true,
+      ["edits"],
+    ],
+    ["a BLOB", `UPDATE status_edits SET media_json = CAST(${given} AS BLOB) WHERE ${bare}`, 1, false, ["edits"]],
+    [
+      "text with a NUL and bytes past it",
+      `UPDATE status_edits SET media_json = CAST(CAST(${given} AS BLOB) || X'00' || CAST('[]' AS BLOB) AS TEXT) WHERE ${bare}`,
+      1,
+      false,
+      ["edits"],
+    ],
+    [
+      "an object where the conversion writes a value",
+      `UPDATE status_edits SET media_json = json_set(media_json, '$[0].blurhash', json('{}')) WHERE ${edited}`,
+      0,
+      true,
+      ["edits"],
+    ],
+    [
+      "a key the conversion does not write",
+      `UPDATE status_edits SET media_json = json_set(media_json, '$[0].x', 1) WHERE ${edited}`,
+      0,
+      true,
+      ["edits"],
+    ],
+  ] as const) {
+    it(`${categories.length === 0 ? "passes" : "FAILs edits"} on ${form}`, async () => {
+      const exportPath = await exportOf({ level: 39, focalPoints: true });
+      const { ok, dumpPath } = await convert(exportPath);
+      expect(ok).toBe(true);
+      const damaged = await tampered(dumpPath, sql);
+      const store = await opened(damaged);
+      const shown = store
+        .prepare(
+          `SELECT count(*) AS n FROM status_edits s, json_each(s.media_json) e
+            WHERE e.value -> '$.meta' ->> '$.focus.x' = 0.5`,
+        )
+        .get();
+      const rows = store.prepare("SELECT typeof(media_json) AS type, media_json FROM status_edits").all();
+      store.close();
+      // What the history shows of a focus, and whether the form is spelled as the conversion spells one (so what
+      // refuses a key in such a form is the key).
+      expect(shown?.n).toBe(focused);
+      expect(canonical(rows)).toBe(spelled);
+      const result = await verify(exportPath, damaged);
+      expect(failing(result.categories)).toEqual(categories);
+      expect(result.ok).toBe(categories.length === 0);
+    });
+  }
 });
 
 describe("text with a lone surrogate", () => {

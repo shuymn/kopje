@@ -2,13 +2,13 @@ import { HTTPException } from "hono/http-exception";
 
 import type { UserCredential } from "../domain/auth";
 import { type MediaChanges, type MonthlyTransforms, SWEEP_BATCH } from "../domain/media";
+import { parseFocus } from "../domain/media-focus";
 import type { MediaAttachment } from "../domain/status-presenter";
 import { readBoundedBody } from "../platform/body";
 import { accountMonthlyTransforms, readConfig } from "../platform/config";
 import { errorFields } from "../platform/error-message";
 import { IMAGE_MATRIX_LIMIT, IMAGE_SIZE_LIMIT, processImage, type ProcessedImage } from "../platform/images";
 import { fileKey, mediaKeys, originalKey } from "../platform/media-files";
-import { railsBlank } from "../platform/rails-blank";
 import { callStore, type StoreResolver } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
 import { MAX_MEDIA_DESCRIPTION_LENGTH, yieldsMoreThan } from "../platform/stored-bounds";
@@ -77,20 +77,6 @@ export const PIXELS_PROBLEM = `dimensions exceed ${IMAGE_MATRIX_LIMIT} pixels`;
 
 function mediaId(c: ApiContext): string {
   return c.req.param("id") ?? "";
-}
-
-// Mastodon's focus: "x,y" with each coordinate in [-1, 1]; unparsable parts read as 0, as Ruby's to_f does. A blank
-// one (railsBlank) changes nothing (MediaAttachment#focus=: `return if point.blank?`).
-export function parseFocus(value: string | undefined): { x: number; y: number } | undefined {
-  if (value === undefined || railsBlank(value)) {
-    return undefined;
-  }
-  // At most two components are split off, however many commas the value has.
-  const [x = 0, y = 0] = value.split(",", 2).map((part) => {
-    const n = Number.parseFloat(part);
-    return Number.isFinite(n) ? Math.min(1, Math.max(-1, n)) : 0;
-  });
-  return { x, y };
 }
 
 // Whether `text` has more than `max` characters (code points): by its length when that settles it (a code point is one
@@ -320,7 +306,7 @@ async function processUpload(
   }
   return transformReserved(c, deps, upload, form.file, {
     description: form.params.get("description") ?? "",
-    focus: parseFocus(form.params.get("focus")) ?? { x: 0, y: 0 },
+    focus: parseFocus(form.params.get("focus")),
   });
 }
 
@@ -331,7 +317,7 @@ async function transformReserved(
   deps: ApiDeps,
   upload: Upload,
   bytes: Uint8Array,
-  fields: { description: string; focus: { x: number; y: number } },
+  fields: { description: string; focus: { x: number; y: number } | undefined },
 ): Promise<Failure | MediaAttachment> {
   const { id, token, credential } = upload;
   // The Store revalidates the reservation with the time now and charges the transformations to this month.
@@ -420,7 +406,7 @@ export async function storeProfileImage(
   const { upload } = reserved;
   let outcome: Failure | MediaAttachment;
   try {
-    outcome = await transformReserved(c, deps, upload, bytes, { description: "", focus: { x: 0, y: 0 } });
+    outcome = await transformReserved(c, deps, upload, bytes, { description: "", focus: undefined });
   } catch (error) {
     await discard(c, deps, upload);
     throw error;

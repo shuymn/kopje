@@ -136,8 +136,10 @@ async function setup() {
     delivered: [] as Inbound[],
     receivedAt: new Map<string, number>(),
     undoReceivedAt: new Map<string, number>(),
-    // R's generations an older Follow of R's reached Kopje after (its deliveries are independent jobs).
+    // R's generations an older Follow of R's reached Kopje after (its deliveries are independent jobs), and those a
+    // typed Undo of an older generation ended there by the pair.
     olderFollowAfter: new Set<string>(),
+    olderUndoAfter: new Set<string>(),
     // L's newest follow and block ids.
     lastFollow: null as string | null,
     lastBlock: null as string | null,
@@ -294,6 +296,15 @@ async function deliverToKopje(w: World, activity: Inbound, label: string): Promi
     order.indexOf(activity.id) < order.indexOf(rl.uri)
   ) {
     w.olderFollowAfter.add(rl.uri);
+  }
+  if (
+    activity.type === "Undo" &&
+    activity.object.type === "Follow" &&
+    predicted.reason === "undone" &&
+    rl?.uri != null &&
+    rl.uri !== activity.object.id
+  ) {
+    w.olderUndoAfter.add(rl.uri);
   }
   w.trace.push(`  -> ${result.reason}`);
   if (activity.type === "Follow" && !w.receivedAt.has(activity.id)) {
@@ -790,7 +801,14 @@ async function settle(w: World): Promise<void> {
 // Quiescence: Kopje against the peer
 // ---------------------------------------------------------------------------------------------------------------
 
-type Exception = "net2-answer" | "kept-reject" | "block-race" | "reordered-follows" | "refused-refollow" | null;
+type Exception =
+  | "net2-answer"
+  | "kept-reject"
+  | "block-race"
+  | "reordered-follows"
+  | "reordered-undo"
+  | "refused-refollow"
+  | null;
 
 const peerState = (edge: { state: string; uri: string } | null) =>
   edge === null ? null : { state: edge.state === "pending" ? "requested" : edge.state, uri: edge.uri };
@@ -822,6 +840,12 @@ function rlException(w: World, kopje: { state: string; uri: string } | null): Ex
   // while R's server holds g. Kopje holds anything but g; R's server holds g.
   if (w.olderFollowAfter.has(g) && mine?.uri !== g && theirs?.uri === g) {
     return "reordered-follows";
+  }
+  // The accepted risk of a typed Undo whose undone id has no live retraction (docs/threat-model.md): R's Undo of an
+  // older generation reached Kopje after g, and a typed Undo ends the pair's follow whatever its id, as Mastodon's
+  // does (undo.rb:89-101), so it ended g at Kopje while R's server holds g.
+  if (w.olderUndoAfter.has(g) && mine?.uri !== g && theirs?.uri === g) {
+    return "reordered-undo";
   }
   // The accepted risk of a refused refollow: R's server dropped its accepted follow g for a refollow (RefollowWorker,
   // which sends no Undo) and FollowService refused the replacement, since R blocks L (follow_service.rb:56-58). Kopje
@@ -962,7 +986,8 @@ describe("follow lifecycle: Kopje against its policy and a Mastodon peer", () =>
 
 // ---------------------------------------------------------------------------------------------------------------
 // The inbound family alone (policy only, not Mastodon realism): Follow generations and their replays, typed and
-// untyped Undo of Follows and Blocks, Blocks with new ids, with L's lock and its answers, checked after every step.
+// untyped Undo of Follows and Blocks (a typed one naming L, no object, a URN or a local IRI of no account), Blocks with
+// new ids, with L's lock and its answers, checked after every step.
 // ---------------------------------------------------------------------------------------------------------------
 
 const FOLLOWS = ["f1", "f2", "f3"].map((s) => `${ORIGIN}/follows/${s}`);
@@ -970,9 +995,10 @@ const BLOCKS = ["b1", "b2"].map((s) => `${ORIGIN}/blocks/${s}`);
 
 type InboundAction =
   | { k: "inFollow" | "inBlock"; id: string }
-  | { k: "inUndo"; id: string; type: "Follow" | "Block" | null }
+  | { k: "inUndo"; id: string; type: "Follow" | "Block" | null; target?: "l" | "none" | "urn" | "unknown" }
+  | { k: "inAccept" | "inUndoAccept"; current: boolean }
   | { k: "lock"; locked: boolean }
-  | { k: "authorize" | "reject" | "removeFollower" };
+  | { k: "authorize" | "reject" | "removeFollower" | "follow" | "unfollow" };
 
 const inboundArb: fc.Arbitrary<InboundAction> = fc.oneof(
   { arbitrary: fc.record({ k: fc.constant("inFollow" as const), id: fc.constantFrom(...FOLLOWS) }), weight: 4 },
@@ -982,6 +1008,7 @@ const inboundArb: fc.Arbitrary<InboundAction> = fc.oneof(
       k: fc.constant("inUndo" as const),
       id: fc.constantFrom(...FOLLOWS, ...BLOCKS),
       type: fc.constantFrom("Follow" as const, "Block" as const, null),
+      target: fc.constantFrom("l" as const, "l" as const, "none" as const, "urn" as const, "unknown" as const),
     }),
     weight: 3,
   },
@@ -990,9 +1017,22 @@ const inboundArb: fc.Arbitrary<InboundAction> = fc.oneof(
     arbitrary: fc.constantFrom({ k: "authorize" as const }, { k: "reject" as const }, { k: "removeFollower" as const }),
     weight: 2,
   },
+  // L's follow of R, R's Accept of it, and R's Undo of that Accept (#1775), naming L's latest Follow or another id.
+  {
+    arbitrary: fc.constantFrom({ k: "follow" as const }, { k: "follow" as const }, { k: "unfollow" as const }),
+    weight: 2,
+  },
+  {
+    arbitrary: fc.record({
+      k: fc.constantFrom("inAccept" as const, "inUndoAccept" as const),
+      current: fc.constantFrom(true, true, false),
+    }),
+    weight: 4,
+  },
 );
 
 let undoSequence = 0;
+let acceptSequence = 0;
 
 async function inbound(w: World, a: InboundAction): Promise<void> {
   switch (a.k) {
@@ -1001,10 +1041,26 @@ async function inbound(w: World, a: InboundAction): Promise<void> {
     case "inBlock":
       return deliverToKopje(w, { type: "Block", id: a.id, object: w.lUri }, "receive");
     case "inUndo": {
+      const target = {
+        l: w.lUri,
+        none: null,
+        urn: "urn:x:kopje",
+        unknown: new URL("/ap/users/nobody", w.lUri).href,
+      }[a.target ?? "l"];
       const object =
         a.type === null
           ? { id: a.id, type: null, actor: null, object: null }
-          : { id: a.id, type: a.type, actor: w.rUri, object: w.lUri };
+          : { id: a.id, type: a.type, actor: w.rUri, object: target };
+      return deliverToKopje(w, { type: "Undo", id: `${ORIGIN}/undos/${++undoSequence}`, object }, "receive");
+    }
+    case "inAccept":
+    case "inUndoAccept": {
+      const follow = a.current && w.lastFollow !== null ? w.lastFollow : `${w.lUri}#follows/other`;
+      const accept = { id: `${ORIGIN}/accepts/${++acceptSequence}`, type: "Follow", actor: w.lUri, object: w.rUri };
+      if (a.k === "inAccept") {
+        return deliverToKopje(w, { type: "Accept", id: accept.id, object: { ...accept, id: follow } }, "receive");
+      }
+      const object = { id: accept.id, type: "Accept", actor: w.rUri, object: follow };
       return deliverToKopje(w, { type: "Undo", id: `${ORIGIN}/undos/${++undoSequence}`, object }, "receive");
     }
     default:
@@ -1013,7 +1069,22 @@ async function inbound(w: World, a: InboundAction): Promise<void> {
 }
 
 describe("follow lifecycle: R's inbound activities against the policy", () => {
-  it("agrees with the policy after every activity, typed and untyped Undo included", async () => {
+  // #1775: R's Undo of its Accept of L's Follow turns L's follow back into a request (every step checked against the
+  // policy), and the Accept delivered again accepts it again; an Undo naming another Follow id changes nothing.
+  it("an Undo of R's Accept of L's Follow makes it a request, and the Accept again accepts it", async () => {
+    const w = await setup();
+    await inbound(w, { k: "follow" });
+    await inbound(w, { k: "inAccept", current: true });
+    expect(w.policy.lr?.state).toBe("accepted");
+    await inbound(w, { k: "inUndoAccept", current: false });
+    expect(w.policy.lr?.state).toBe("accepted");
+    await inbound(w, { k: "inUndoAccept", current: true });
+    expect(w.policy.lr?.state).toBe("pending");
+    await inbound(w, { k: "inAccept", current: true });
+    expect(w.policy.lr?.state).toBe("accepted");
+  });
+
+  it("agrees with the policy after every activity, typed and untyped Undo and an Undo of an Accept included", async () => {
     await fc.assert(
       fc.asyncProperty(fc.array(inboundArb, { minLength: 1, maxLength: 16 }), async (actions) => {
         const w = await setup();
@@ -1403,9 +1474,10 @@ describe("follow lifecycle accepted races", () => {
     expect(w.peer.rl?.state).toBe("accepted");
   });
 
-  // The older Follow arrives after its own Undo, which recorded it as retracted (ID-7): it is ignored, takes nothing
-  // over, and so allows no difference.
-  it("R's older Follow ignored after its Undo allows no difference", async () => {
+  // The older Follow arrives after its own Undo, which recorded it as retracted (ID-7): it is ignored and takes nothing
+  // over. The Undo, typed and reaching Kopje after the newer Follow, ended the newer follow by the pair (#1773), as
+  // Mastodon's would: the accepted risk of a typed Undo whose undone id has no live retraction.
+  it("R's older Follow ignored after its Undo, which ended the newer follow by the pair", async () => {
     const w = await run([
       { k: "peerFollow" },
       { k: "peerUnfollow" },
@@ -1417,6 +1489,9 @@ describe("follow lifecycle accepted races", () => {
     expect(w.trace).toContain("  -> retracted");
     expect(w.olderFollowAfter.size).toBe(0);
     expect(w.stats["exception reordered-follows"]).toBeUndefined();
+    expect(w.stats["exception reordered-undo"]).toBe(1);
+    expect((await project(w)).rl).toBeNull();
+    expect(w.peer.rl).not.toBeNull();
   });
 
   // L's lane delivers in order, but R's server processes each body as its own job, and Mastodon's typed Undo of a

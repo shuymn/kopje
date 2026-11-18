@@ -1,4 +1,5 @@
 import { API_VISIBILITIES, type ApiVisibility, QUOTE_POLICY_NAMES, type QuotePolicyName } from "../domain/audience";
+import { parseFocus } from "../domain/media-focus";
 import { checkPoll, isPollInput, type PollInput } from "../domain/polls";
 import type { Refresh } from "../domain/reply-walk-reads";
 import { blankText, exceedsRawLength, MAX_STATUS_CHARACTERS, statusLength } from "../domain/status-text";
@@ -29,7 +30,7 @@ import {
   withParams,
 } from "./context";
 import { mastodonError, recordNotFound } from "./errors";
-import { descriptionProblem, parseFocus, sweepSoon, THUMBNAIL_MUST_BE_BLANK, thumbnailSent } from "./media";
+import { descriptionProblem, sweepSoon, THUMBNAIL_MUST_BE_BLANK, thumbnailSent } from "./media";
 import { pageQuery, pageResponse } from "./pagination";
 import { type Params, parseBoolean } from "./params";
 

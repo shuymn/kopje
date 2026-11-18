@@ -32,6 +32,7 @@ import { MAX_REMOTE_PINS } from "../src/domain/remote-collections";
 import { storeRemoteStatus } from "../src/domain/remote-statuses";
 import { NODE_ATTEMPTS, REPLY_READ_ENTRIES, WALK_PAGES, WALK_STATUSES } from "../src/domain/reply-walks";
 import { actOnReport, fileRemoteReports, getAdminReport } from "../src/domain/reports";
+import { canRetract, RETRACTION_TTL_MS } from "../src/domain/retractions";
 import { heldFullSql } from "../src/domain/scheduled-statuses";
 import { accountSearchText } from "../src/domain/search-text";
 import { MAX_STATUS_MEDIA, MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
@@ -136,6 +137,7 @@ import { ACCOUNT_EMOJIS_FULL, accountAtCap, padded, STATUS_EMOJIS_FULL, statusAt
 import { BUILD, freshStore as newStore, migratedStore, rejectionOf, tableNames, testKernel as kernel } from "./helpers";
 import { BREAK_WITNESSES } from "./migration-fixtures";
 import { TEMPLATE_FIXTURES } from "./oembed-template-fixtures";
+import { watchedCursor } from "./read-helpers";
 import { byText } from "./sort";
 import {
   blurhashOf,
@@ -424,9 +426,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(96);
+      expect(STORED_TRIGGERS.size).toBe(98);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        96 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        98 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -15455,6 +15457,171 @@ describe("0115_feature_policies", () => {
       expect(sql.exec("SELECT count(*) AS n FROM accounts WHERE domain IS NULL AND feature_policy <> 0").one().n).toBe(
         0,
       );
+    });
+  });
+});
+
+describe("media_focus_given", () => {
+  const NAME = NAMES.find((name) => name.endsWith("_media_focus_given"))!;
+  const at = NAMES.indexOf(NAME);
+  const ACCOUNT = "100000000000000001";
+  const REFUSED = /media_attachments: focus_given past its stored bound/;
+
+  it("follows 0115_feature_policies and is declared foreignKeys: 'unchanged'", () => {
+    expect(NAMES[at - 1]).toBe("0115_feature_policies");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+  });
+
+  // Rows the upgrade carries read 0, whatever their point (an omitted focus was stored as 0,0); the stored bound then
+  // holds the column to the integer 0 or 1 on insert and update.
+  it("reads 0 on the rows a Store held before it, then bounds focus_given on insert and update", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      sql.exec("INSERT INTO accounts (id, uri, username) VALUES (?, 'https://kopje.test/ap/users/a', 'a')", ACCOUNT);
+      sql.exec(
+        `INSERT INTO media_attachments (id, account_id, type, url, focus_x, focus_y)
+					VALUES ('800000000000000001', ?1, 'image', 'https://kopje.test/m/1', 0, 0),
+						('800000000000000002', ?1, 'image', 'https://kopje.test/m/2', 0.5, -0.25)`,
+        ACCOUNT,
+      );
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      expect(
+        sql
+          .exec(
+            "SELECT id, focus_x AS x, focus_y AS y, focus_given AS g, typeof(focus_given) AS t FROM media_attachments",
+          )
+          .toArray(),
+      ).toEqual([
+        { id: "800000000000000001", x: 0, y: 0, g: 0, t: "integer" },
+        { id: "800000000000000002", x: 0.5, y: -0.25, g: 0, t: "integer" },
+      ]);
+      const update = (value: SqlStorageValue) =>
+        sql.exec("UPDATE media_attachments SET focus_given = ? WHERE id = '800000000000000001'", value);
+      let n = 3;
+      const mediaId = (i: number) => `8${String(i).padStart(17, "0")}`;
+      const insert = (value: SqlStorageValue) =>
+        sql.exec(
+          "INSERT INTO media_attachments (id, account_id, type, url, focus_given) VALUES (?1, ?2, 'image', 'u', ?3)",
+          mediaId(n++),
+          ACCOUNT,
+          value,
+        );
+      const last = () => mediaId(n - 1);
+      // Both values, and what INTEGER affinity stores as an integer: numeric text and an integral REAL.
+      for (const [value, stored] of [
+        [1, 1],
+        [0, 0],
+        ["1", 1],
+        [1.0, 1],
+      ] as const) {
+        update(value);
+        expect(sql.exec("SELECT focus_given AS g FROM media_attachments WHERE id = '800000000000000001'").one().g).toBe(
+          stored,
+        );
+        insert(value);
+        expect(
+          sql
+            .exec("SELECT focus_given AS g, typeof(focus_given) AS t FROM media_attachments WHERE id = ?", last())
+            .one(),
+        ).toEqual({ g: stored, t: "integer" });
+      }
+      // In order: a text, a REAL that is not integral, a BLOB, NULL, below 0 and past 1.
+      for (const [name, value] of [
+        ["a text", "x"],
+        ["a REAL", 0.5],
+        ["a BLOB", new Uint8Array([49]).buffer],
+        ["NULL", null],
+        ["below 0", -1],
+        ["past 1", 2],
+      ] as [string, SqlStorageValue][]) {
+        expect(() => update(value), name).toThrow(REFUSED);
+        expect(() => insert(value), name).toThrow(REFUSED);
+      }
+      expect(sql.exec("SELECT focus_given AS g FROM media_attachments WHERE id = '800000000000000001'").one().g).toBe(
+        1,
+      );
+    });
+  });
+});
+
+describe("0117_retraction_counts", () => {
+  const NAME = "0117_retraction_counts";
+  const at = NAMES.indexOf(NAME);
+  const ACTOR = "https://a.example/users/a";
+
+  it("follows 0116_media_focus_given and is declared foreignKeys: 'unchanged'", () => {
+    expect(NAMES[at - 1]).toBe("0116_media_focus_given");
+    expect(MIGRATIONS[at]?.foreignKeys).toBe("unchanged");
+  });
+
+  // The upgrade's window: the Store's statistics were taken before the index existed, while the table held one actor.
+  it("indexes the retractions by actor and expiry over the rows it carries, which the cap's count reads", async () => {
+    await runInDurableObject(freshStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      await kernel(state, MIGRATIONS.slice(0, at)).upgrade();
+      const seed = (actor: string, count: number, expires: number) =>
+        sql.exec(
+          `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?2 - 1)
+					INSERT INTO inbound_retractions (actor_uri, target_uri, expires_at)
+					SELECT ?1, ?1 || '/' || ?3 || '/' || i, ?3 FROM n`,
+          actor,
+          count,
+          expires,
+        );
+      seed(ACTOR, 200, NOW + RETRACTION_TTL_MS);
+      sql.exec("ANALYZE");
+      const rows = () => sql.exec("SELECT * FROM inbound_retractions ORDER BY actor_uri, target_uri").toArray();
+      const before = rows();
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true, applied: [NAME] });
+      expect(rows()).toEqual(before);
+      expect(
+        sql
+          .exec(
+            `SELECT "unique", partial FROM pragma_index_list('inbound_retractions')
+							WHERE name = 'inbound_retractions_actor_expires'`,
+          )
+          .toArray(),
+      ).toEqual([{ unique: 0, partial: 0 }]);
+      expect(
+        sql.exec("SELECT name FROM pragma_index_info('inbound_retractions_actor_expires') ORDER BY seqno").toArray(),
+      ).toEqual([{ name: "actor_uri" }, { name: "expires_at" }]);
+      // The sweep's walk in expiry order stays.
+      expect(
+        sql.exec("SELECT name FROM pragma_index_info('inbound_retractions_expires') ORDER BY seqno").toArray(),
+      ).toEqual([{ name: "expires_at" }]);
+      expect(sql.exec("SELECT idx FROM sqlite_stat1 WHERE tbl = 'inbound_retractions' ORDER BY idx").toArray()).toEqual(
+        [{ idx: "inbound_retractions" }, { idx: "inbound_retractions_expires" }],
+      );
+      seed("https://b.example/users/b", 100_000, NOW + RETRACTION_TTL_MS);
+      seed(ACTOR, 1_000, NOW - 1);
+      const counts: { plan: string[]; rows: number }[] = [];
+      const counting = {
+        exec: (query: string, ...params: SqlStorageValue[]) => {
+          const cursor = sql.exec(query, ...params);
+          if (!query.includes("count(*)")) {
+            return cursor;
+          }
+          const plan = sql
+            .exec<{ detail: string }>(`EXPLAIN QUERY PLAN ${query}`, ...params)
+            .toArray()
+            .map((row) => row.detail)
+            .filter((detail) => detail.includes("inbound_retractions"));
+          const entry = { plan, rows: 0 };
+          counts.push(entry);
+          return watchedCursor(cursor, () => (entry.rows = cursor.rowsRead));
+        },
+      } as unknown as SqlStorage;
+      expect(canRetract(new Db(counting), ACTOR, [`${ACTOR}/statuses/1`], NOW)).toBe(true);
+      expect(counts).toEqual([
+        {
+          plan: [
+            "SEARCH inbound_retractions USING COVERING INDEX inbound_retractions_actor_expires (actor_uri=? AND expires_at>?)",
+          ],
+          // The actor's 200 live entries and the read that finds their end.
+          rows: 201,
+        },
+      ]);
     });
   });
 });

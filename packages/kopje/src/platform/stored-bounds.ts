@@ -175,6 +175,14 @@ export function storedText(text: string): string {
   return wellFormed.includes("\u0000") ? wellFormed.replaceAll("\u0000", "") : wellFormed;
 }
 
+// SQLite's length() of `text` as stored: the code points before its first U+0000, so a CHECK on length() reads a text
+// that starts with U+0000 as empty. A writer that keeps text as sent under such a CHECK refuses that text itself,
+// before the write.
+export function sqliteLength(text: string): number {
+  const nul = text.indexOf("\u0000");
+  return [...(nul === -1 ? text : text.slice(0, nul))].length;
+}
+
 // The first `limit` code points of `text`. A string has at least as many code units as code points.
 export function cutCodePoints(text: string, limit: number): string {
   if (text.length <= limit) {
@@ -2904,5 +2912,17 @@ export function featurePolicyPastBoundSql(row: string): string {
   return `CASE WHEN typeof(${column}) <> 'integer' THEN 1
 	WHEN ${column} NOT BETWEEN 0 AND ${FEATURE_POLICY_MAX} THEN 1
 	WHEN ${column} <> 0 AND ${row}.domain IS NULL THEN 1
+	ELSE 0 END`;
+}
+
+// ---- Media focus: media_attachments.focus_given (domain/media.ts, domain/statuses.ts, domain/remote-statuses.ts)
+
+// True when `column` holds anything but the integer 0 or 1 (INTEGER affinity has already stored numeric text and an
+// integral REAL as an integer): its range only, not its agreement with focus_x and focus_y. 1: a focus was given, which
+// the attachment shows whatever its point; 0: none was, or the row was stored before the column, whose point then
+// decides (status-rows.ts focusShownSql).
+export function focusGivenPastBoundSql(column: string): string {
+  return `CASE WHEN typeof(${column}) <> 'integer' THEN 1
+	WHEN ${column} NOT IN (0, 1) THEN 1
 	ELSE 0 END`;
 }

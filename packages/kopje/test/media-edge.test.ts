@@ -215,10 +215,8 @@ describe("focus through a status edit", () => {
       `/api/v1/statuses/${status.id}/history`,
       alice.token,
     );
-    expect(history.body.map((v) => v.media_attachments[0]?.meta.focus)).toEqual([
-      { x: 0, y: 0 },
-      { x: 0.25, y: -0.5 },
-    ]);
+    // The upload sent no focus, so the first version shows none.
+    expect(history.body.map((v) => v.media_attachments[0]?.meta.focus)).toEqual([undefined, { x: 0.25, y: -0.5 }]);
     // Not another account's status, and an unchanged focus records no edit.
     expect((await edit(bob.token, [{ id: media.id, focus: "1,1" }])).status).toBe(404);
     await edit(alice.token, [{ id: media.id, focus: "0.25,-0.5" }]);
@@ -317,8 +315,8 @@ describe("inputs beyond still images", () => {
     expect(await mediaKeysIn(await rowKeys(h.store))).toEqual([]);
   });
 
-  // That the frames survive in the served file and the preview is a still is the release check of docs/setup.md
-  // ("Still images of animated uploads").
+  // That the frames survive in the served file and the preview is a still is checked by hand on a deployed instance
+  // (docs/setup.md, "Still images of animated uploads").
   it("accepts a multi-frame GIF as WebP", async () => {
     const h = await users();
     const media = await uploaded(h, h.users.alice, mediaForm(bytes(ANIMATED_GIF), {}, "a.gif", "image/gif"));

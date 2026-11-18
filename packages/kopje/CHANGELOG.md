@@ -491,14 +491,38 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- A remote post's quote policy is read as Mastodon reads it. When it names the public collection under more than one
+  spelling (`as:Public`, `Public`, the full IRI), only the first spelling found counts as public and any other is an
+  unsupported entry, so `quote_approval` lists `unsupported_policy` too, where Kopje read every spelling as public
+  (#1772); and every entry is read, where Kopje read the first 32 of each list and missed a public spelling or a
+  collection listed after them (#1774). A post stored earlier keeps its policy until its next `Update`. No Store
+  migration and no `wrangler.jsonc` change.
+- A remote attachment's `focalPoint` is read where Mastodon reads one, each coordinate as an upload's `focus` is, by
+  `parseFloat` and clamped to −1 to 1 (a string such as `"0.5,-0.25"`, a list of numeric strings or `null`, a list of
+  one, a coordinate past −1 to 1), where Kopje read only a list of two numbers from −1 to 1 and anything else as no
+  focus, and a post stored earlier keeps its focus until its next `Update` or a refetch of a newer version (#1777;
+  [docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Media"). No Store migration and no `wrangler.jsonc`
+  change.
+- An account note or a marker's `last_read_id` that starts with a NUL answers 422, refused before it is written; it
+  failed the Store's length check with a 500 (#1767; [docs/mastodon-deviations.md](docs/mastodon-deviations.md),
+  "Request parameters"). No Store migration and no `wrangler.jsonc` change.
 - An `Add` or `Remove` without an `id`, as Mastodon sends those of featured hashtags and pinned posts, is applied as
   one with an `id` is, under the same rules (its target, and the caps on a remote account's pins and featured hashtags:
   [docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Remote collections"); it was refused. No Store
   migration and no `wrangler.jsonc` change.
-- An LD-signed Undo read as Mastodon's compaction whose undone activity's type is given as an array of types is
-  ignored, as Mastodon applies none, where Kopje ended what that activity's id named (#1717;
-  [docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Reading inbound activities"). No Store migration and no
-  `wrangler.jsonc` change.
+- An `Undo` of a `Follow`, a `Block` or a `Like` ends what that activity's `object` names, as Mastodon's does: the
+  sender's follow or block of the local account it names, whatever the undone activity's id, so the unfollow or
+  unblock of a relationship stored without one (as the cutover carries some over) now applies, and its queued Accept
+  is withdrawn; and nothing, with no retraction recorded, when that `object` is not a single IRI (an array, null, a
+  missing one) or, for a `Follow` or `Block`, names no local account, where Kopje ended what the undone id named
+  (#1773). An `Undo` of a `Like` that names another status than the liked one keeps the favourite, and records the
+  undone id only when that status is a local post, as Mastodon's does. An `Undo` whose undone activity's type is no
+  single name (an array, as #1717 found in LD-signed ones) or one Kopje does not undo changes nothing; one without a
+  type still ends what its id names. No Store migration and no `wrangler.jsonc` change.
+- An `Undo` of an `Accept` of a local account's `Follow` turns that follow back into a request, as Mastodon's does but
+  also at the follower's follow limit, where Mastodon's fails: the follow of the sender whose id the `Accept` names goes
+  pending, leaves the follower's lists and endorsements, and is accepted again by a later `Accept`, where Kopje kept it
+  accepted (#1775). Kopje does not send that `Follow` again. No Store migration and no `wrangler.jsonc` change.
 - A remote actor's `manuallyApprovesFollowers`, `discoverable` and `indexable` are read by their literal spelling
   through Rails' boolean cast, as Mastodon does (#1747): an actor that writes `"false"`, `"0"` or `"off"` is no longer
   discoverable, where it was listed in the directory, suggestions, trends and the link timeline; `"true"`, `1` or `[]`
@@ -779,6 +803,25 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   an upgrade: it refuses every request, reads and sign-ins included, while the new migrations are not all applied,
   and is readonly until they are verified, also when an upgrade fails and holds (#1753). It said that the Store stayed
   readonly throughout. No Store migration and no `wrangler.jsonc` change.
+- A media attachment's `meta` has a `focus` only once one was given, as Mastodon's does (#1767): an upload or a remote
+  attachment without one has none, where Kopje showed `{"x": 0, "y": 0}`, and a `0,0` given by an upload,
+  `PUT /api/v1/media/:id`, an edit or a remote `focalPoint` is shown. A media update, an edit or a remote `Update`
+  without a focus keeps the one shown, and an edit that gives one where none was shown records a version, `0,0`
+  included. An attachment stored before the upgrade shows its focus when it is not `0,0`. The cutover's conversion
+  carries no legacy `focalPoint`, as before, and `verify-conversion` now fails on any focus a converted attachment holds
+  and on an earlier version's attachments in any form but the one the conversion writes. Migration
+  `0116_media_focus_given`: a column of `media_attachments` and its two triggers, reading no row; the upgrade checks no
+  reference, but for one resumed or retried after a failure, which checks the whole Store. `wrangler.jsonc`: unchanged.
+  This adds a Store migration, so the release is at least a minor version, and rolling back past it needs a
+  point-in-time restore.
+- The per-actor retraction cap's count, taken whenever a retraction is recorded, reads only that actor's live
+  retractions, and at most 10,000 of them (`MAX_RETRACTIONS_PER_ACTOR`), whatever the Store's statistics and however
+  many an import holds; with statistics taken while the table held few actors, it read every actor's live retractions
+  (#1787). Migration `0117_retraction_counts`: an index of `inbound_retractions` by actor and expiry, rewriting no row
+  (building it over 1,000,000 retractions takes 444 ms in workerd's local Durable Object SQLite, and over 10,000,000
+  takes 5,206 ms, medians of three runs); the upgrade checks no reference, but for one resumed or retried after a
+  failure, which checks the whole Store. `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at
+  least a minor version, and rolling back past it needs a point-in-time restore.
 
 ## [0.5.2] - 2026-11-14
 
