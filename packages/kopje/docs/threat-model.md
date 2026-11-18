@@ -2604,28 +2604,28 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   changed since is in another lane, and is not held); its intent is superseded, and from then on it gets no further
   attempt and no failure backoff, the decision reading only `follow_pair` and `superseded`, never the activity's JSON:
   the claim after its lease expires, its confirmation and a failed completion (transient, permanent, the personal-inbox
-  fallback, the last attempt) delete it and promote the lane instead of leasing, sending, retrying or giving it up. The
-  same holds for an `Accept` that a block's withdrawing `Reject` superseded. Only a POST whose confirmation was granted
-  before the `Follow` or the `Undo` committed still goes (see the accepted risks); `kopje.delivery.stale_follow_answer`
-  records each answer caught and each such one delivered (`sent_in_flight`), by type and step only (DATA-5). A `Follow`
-  the target refuses because it blocks the follower records its `Reject` and cancels nothing. A replayed `Accept`
-  (VIS-30, held handshakes) is the pair's current answer, cancelled and superseded as any other
-  (`test/handshake-replays.test.ts` ("a replayed Accept is the pair's answer")). A held `Reject` (VIS-30) is owed only
-  while its pair holds no follow, stricter than the keep rule above, since a hold can last as long as a suspension: a
-  stored follow of the pair ends it (`reject_replays_follow_stored`), and so does an `Undo` of a `Follow` within its
-  pair when it names the held `Follow` id or is a Misskey pair id; an `Undo` naming no local target finds the pairs by
-  a named answer or a named hold, so a pair id reaches no other local account's pair by its shape alone. Once its replay
-  records it, a replayed `Reject` is an ordinary queued answer under `replacedAnswer` and the keep rule above, with its
-  accepted window: a newer `Follow` arriving before its claim keeps it, and an `Undo` of its generation before the
-  claim cancels it (`test/reject-replays.test.ts`, W5, W6, "a replayed Reject under NET-2's keep rule").
-  `cancelFollowAnswers` and `STALE_ANSWER` in `src/domain/deliveries.ts`, `replacedAnswer` and `cancelUndoneAnswers` in
-  `src/domain/inbox.ts`; `test/follow-answers.test.ts` (each renewal path; "a Follow keeps the Reject of a generation
-  Kopje no longer holds"; "a renewal cancels every answer of the pair that is not leased, claimed before or not"; "a
-  superseded answer under lease gets no further attempt"; "a superseded imported answer without an activity type gets no
-  further attempt"; "the follow-answer check leaves other superseded activities alone"; both serialized orders against a
-  claim and an expansion, and a POST held in flight), `test/follow-lifecycle.test.ts` (claims, confirmations and
-  completions as separate generated steps, stale attempts and stale answers among them, and an answer in flight applied
-  to the next generation).
+  fallback, the last attempt) delete it and promote the lane instead of leasing, sending, retrying or giving it up, a
+  failed POST still counting toward its host (RES-5). The same holds for an `Accept` that a block's withdrawing `Reject`
+  superseded. Only a POST whose confirmation was granted before the `Follow` or the `Undo` committed still goes (see the
+  accepted risks); `kopje.delivery.stale_follow_answer` records each answer caught and each such one delivered
+  (`sent_in_flight`), by type and step only (DATA-5). A `Follow` the target refuses because it blocks the follower
+  records its `Reject` and cancels nothing. A replayed `Accept` (VIS-30, held handshakes) is the pair's current answer,
+  cancelled and superseded as any other (`test/handshake-replays.test.ts` ("a replayed Accept is the pair's answer")). A
+  held `Reject` (VIS-30) is owed only while its pair holds no follow, stricter than the keep rule above, since a hold
+  can last as long as a suspension: a stored follow of the pair ends it (`reject_replays_follow_stored`), and so does an
+  `Undo` of a `Follow` within its pair when it names the held `Follow` id or is a Misskey pair id; an `Undo` naming no
+  local target finds the pairs by a named answer or a named hold, so a pair id reaches no other local account's pair by
+  its shape alone. Once its replay records it, a replayed `Reject` is an ordinary queued answer under `replacedAnswer`
+  and the keep rule above, with its accepted window: a newer `Follow` arriving before its claim keeps it, and an `Undo`
+  of its generation before the claim cancels it (`test/reject-replays.test.ts`, W5, W6, "a replayed Reject under NET-2's
+  keep rule"). `cancelFollowAnswers` and `STALE_ANSWER` in `src/domain/deliveries.ts`, `replacedAnswer` and
+  `cancelUndoneAnswers` in `src/domain/inbox.ts`; `test/follow-answers.test.ts` (each renewal path; "a Follow keeps the
+  Reject of a generation Kopje no longer holds"; "a renewal cancels every answer of the pair that is not leased, claimed
+  before or not"; "a superseded answer under lease gets no further attempt"; "a superseded imported answer without an
+  activity type gets no further attempt"; "the follow-answer check leaves other superseded activities alone"; both
+  serialized orders against a claim and an expansion, and a POST held in flight), `test/follow-lifecycle.test.ts`
+  (claims, confirmations and completions as separate generated steps, stale attempts and stale answers among them, and
+  an answer in flight applied to the next generation).
 - **NET-3: every outbound sink has its own policy.** Any URL derived from remote or user input is fetched only through a
   sink client that applies NET-1's host rules (https, public address, re-checked hops, a hop limit) plus its own budget:
   documents as NET-1, tighter where a caller caps them (`DocumentCaps`): a collection sync's collections part reads the

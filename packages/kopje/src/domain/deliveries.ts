@@ -3340,17 +3340,19 @@ export const completeDelivery = writeOperation.atStoreTime("storeNow")<
     clearHost(db, deliveryHost(row.inbox_url), "delivered");
     return { status: "delivered", nextDueAt: nextDueAt(db, now, leaseToken) };
   }
-  // Before every failure exit (the personal inbox, giving up, a retry): a superseded answer gets no further attempt.
+  // A failure the host caused counts its day whatever becomes of the row, a superseded answer's included.
+  const host = deliveryHost(row.inbox_url);
+  if (host !== null && hostCaused(outcome.failure, outcome.permanent)) {
+    recordHostFailure(db, host, storeNow);
+  }
+  // Before every other failure exit (the personal inbox, giving up, a retry): a superseded answer gets no further
+  // attempt.
   if (row.stale_answer !== null) {
     dropRow(db, row, now);
     droppedAnswer(row, "failure");
     return { status: "dropped", nextDueAt: nextDueAt(db, now, leaseToken) };
   }
   const error = outcome.error.slice(0, MAX_ERROR_LENGTH);
-  const host = deliveryHost(row.inbox_url);
-  if (host !== null && hostCaused(outcome.failure, outcome.permanent)) {
-    recordHostFailure(db, host, storeNow);
-  }
   if (row.follow !== 1 && hostUnavailable(db, host)) {
     giveUp(db, row, now, outcome.status, HOST_UNAVAILABLE);
     return { status: "gave_up", nextDueAt: nextDueAt(db, now, leaseToken) };

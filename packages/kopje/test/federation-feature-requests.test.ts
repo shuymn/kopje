@@ -1598,8 +1598,9 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
 
   // Challenge 1589-pr6-9 (code review r2): an answer leased when the next listing records another is superseded by
   // it, and is dropped instead of being POSTed again, at its failure, at its lease's expiry and at its confirmation;
-  // the later answer, behind it in the lane, is promoted. Fails if a superseded answer is retried, claimed again or
-  // sent (two copies of one answer to send).
+  // the later answer, behind it in the lane, is promoted; a failed POST counts toward its host first (code review r3).
+  // Fails if a superseded answer is retried, claimed again or sent (two copies of one answer to send), or if its
+  // 503 leaves the host's day uncounted.
   for (const end of ["failure", "lease expiry", "confirmation"] as const) {
     it(`drops a leased answer the next listing's answer superseded, at its ${end}`, async () => {
       const w = await owned();
@@ -1622,9 +1623,19 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
       ]);
       const id = claim.deliveries[0]!.id;
       if (end === "failure") {
-        const outcome: DeliveryOutcome = { kind: "failed", status: 503, error: "HTTP 503", permanent: false };
+        const outcome: DeliveryOutcome = {
+          kind: "failed",
+          status: 503,
+          error: "HTTP 503",
+          permanent: false,
+          failure: { stage: "post" },
+        };
+        expect(await sql(w.t.store, "SELECT host FROM delivery_hosts")).toEqual([]);
         const done = await w.t.store.completeDelivery(BUILD, { id, leaseToken: "in-flight", now: NOW, outcome });
         expect(done.status).toBe("dropped");
+        expect(await sql(w.t.store, "SELECT host, failure_days FROM delivery_hosts")).toEqual([
+          { host: new URL(w.owner.uri).host, failure_days: 1 },
+        ]);
       } else if (end === "lease expiry") {
         const again = await w.t.store.claimDeliveries(BUILD, { now: NOW + LEASE_MS, leaseToken: "again" });
         expect(again.deliveries).toEqual([]);
