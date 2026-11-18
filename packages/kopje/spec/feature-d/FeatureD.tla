@@ -563,9 +563,9 @@ KDeliver ==
 KGiveUp ==
   \E m \in kq :
     /\ kq' = kq \ {m} /\ kg' = kg \cup {m}
-    /\ g' = [g EXCEPT !.tags = [a \in Auths |-> IF m.ty = "Delete" /\ m.obj = a
-                                                           THEN g.tags[a] \cup {IF m.why = "answer" THEN "gaveUp" ELSE "gaveUpRevoke"}
-                                                           ELSE g.tags[a]]]
+    /\ LET tag == IF m.why = "answer" THEN "gaveUp" ELSE "gaveUpRevoke" IN
+       g' = [g EXCEPT !.tags = [a \in Auths |-> IF m.ty = "Delete" /\ m.obj = a THEN g.tags[a] \cup {tag}
+                                                ELSE g.tags[a]]]
     /\ DeliveryStep("KGiveUp", m)
     /\ UNCHANGED <<k, env, toK, rs, rin, rd, sr, fe, spent>>
 
