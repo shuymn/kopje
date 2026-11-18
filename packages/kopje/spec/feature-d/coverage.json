@@ -1,0 +1,112 @@
+{
+  "$comment": "Kopje's sources spec/feature-d/ describes, and their blobs when it was last confirmed to (scripts/feature-d-coverage.mjs). A null blob is a file design (d) adds. test-node/feature-d-coverage.test.ts fails once a blob differs.",
+  "confirmed": "487613ebdf6ea7f6d6708b0ce203d9241ff74270",
+  "files": [
+    {
+      "path": "src/store.ts",
+      "functions": ["Store.receiveActivity"],
+      "spec": "FeatureD.tla KRecv: one inbound activity, one Store transaction",
+      "blob": "183b69c2706093971964235a98cdc1a6c33d1ba3"
+    },
+    {
+      "path": "src/domain/inbox.ts",
+      "functions": ["receiveActivity"],
+      "spec": "FeatureD.tla RecvRes: which of FeatureDKopje.tla's operators an inbound activity runs, and when it is ignored",
+      "blob": "3a62db713f12edf18395f3947ad9c1f6b5d30274"
+    },
+    {
+      "path": "src/federation/inbound.ts",
+      "functions": ["receiveInbound", "fetchesFirst"],
+      "spec": "FeatureD.tla KRecv and NeedsFetch: an inbound activity's routing, and the instrument fetched before a FeatureRequest for a collection Kopje does not store; the response (202, 503)",
+      "blob": "95288757c3cb04148792e37e8bdc02977460eab4"
+    },
+    {
+      "path": "src/domain/inbound-feature-requests.ts",
+      "functions": ["answerFeatureRequest"],
+      "spec": "FeatureDKopje.tla Decide (K1) and ApplyFetch (K1b)",
+      "blob": null
+    },
+    {
+      "path": "src/domain/feature-answers.ts",
+      "functions": [
+        "holdsLocalMember",
+        "keptUnlisted",
+        "localListing",
+        "serves",
+        "markListed",
+        "answerUnserved",
+        "answerRequest"
+      ],
+      "spec": "FeatureDKopje.tla Served, Shown, AnswerClass, AddItem (K2), ApplyRead (K14) and KeptByRow",
+      "blob": null
+    },
+    {
+      "path": "src/domain/remote-featured-collections.ts",
+      "functions": [
+        "applyFeaturedCollection",
+        "applyFeaturedItem",
+        "deleteUnlisted",
+        "removeFeaturedCollection",
+        "removeFeaturedItem",
+        "revokeFeatureAuthorization"
+      ],
+      "spec": "FeatureDKopje.tla AddItem (K2), RemoveItem (K3), UpdateCollection (K4), RemoveCollection (K5), OwnerGone (K6), Revoke (K7), ApplyRead (K14)",
+      "blob": "2c7ecf8e26c449901a358a90766f877e64121ee3"
+    },
+    {
+      "path": "src/domain/remote-collections.ts",
+      "functions": ["claimCollectionSync", "completeCollectionRead"],
+      "spec": "FeatureD.tla KClaim, KApply, KLease and KStale: a read's claim and completion, its outdated check and claim token",
+      "blob": "01a08bba56f5d9e3dc6c38e6accd563d9e0572e9"
+    },
+    {
+      "path": "src/federation/collections.ts",
+      "functions": ["syncCollections"],
+      "spec": "FeatureD.tla KFetch, KFetch1 and KFetch2: a read's page GETs",
+      "blob": "bfe069b83f9fe95475aa3c8e8098da63d496b7ad"
+    },
+    {
+      "path": "src/domain/collections.ts",
+      "functions": ["severCollections", "pruneCollectionItems"],
+      "spec": "FeatureDKopje.tla Block (K8), MemberGone (K9) and Cleanup (K10)",
+      "blob": "f8802640b1225db85c030e41fbb826324d681393"
+    },
+    {
+      "path": "src/domain/collection-documents.ts",
+      "functions": ["featureAuthorizationDocument", "recordItemRemove"],
+      "spec": "FeatureDKopje.tla Served: GET of an authorization (200 or 404); the Delete an answer records",
+      "blob": "867bce721b102917d936b0582d8d39538e662565"
+    },
+    {
+      "path": "src/domain/activities.ts",
+      "functions": ["revocationRejectActivity"],
+      "spec": "FeatureDKopje.tla Acc, Rej, RejKept, Del, Blk, DelL: the activities Kopje records",
+      "blob": "fc3e5f060c13c1b905fc2ef0307fe46fd424ad34"
+    },
+    {
+      "path": "src/domain/deliveries.ts",
+      "functions": ["enqueueActivity", "claimDeliveries", "confirmDelivery", "retryDeliveries"],
+      "spec": "FeatureD.tla Record (RES-4's refusal at a full backlog), KDeliver, KDup, KGiveUp and KRetry",
+      "blob": "53d2651e0c776f92e7d1b54ed80ed94aaf78913c"
+    },
+    {
+      "path": "src/store-rpc.ts",
+      "functions": [
+        "claimCollectionSync",
+        "completeCollectionRead",
+        "pruneCollectionItems",
+        "claimDeliveries",
+        "confirmDelivery",
+        "retryDeliveries"
+      ],
+      "spec": "FeatureD.tla's atomicity: each Kopje step is one of these RPCs",
+      "blob": "f9f8306d13083a32ecec2f78a09450abea43cdfc"
+    },
+    {
+      "path": "src/mastodon/collections.ts",
+      "functions": ["inCollections", "showCollection"],
+      "spec": "FeatureDKopje.tla Shown and MemberShown: what others and L see",
+      "blob": "bf6e38b4cc1820294e0bbac168a4f3147c470b13"
+    }
+  ]
+}
