@@ -2,15 +2,18 @@ import fc from "fast-check";
 import { describe, expect, inject, it } from "vitest";
 
 import type { ItemCheckOutcome } from "../src/domain/collection-checks";
+import { syncCollections } from "../src/federation/collections";
 import { settleDeliveries, sql } from "./api-helpers";
-import { NOW } from "./app-helpers";
+import { inboxDeps, NOW } from "./app-helpers";
 import { mastodon47Signed, mastodonFeatureDelete, signTime } from "./author-proof-helpers";
 import {
+  ANSWER_MARGIN_MS,
   CHECK_LEASE_MS,
   checkGaveUp,
   DAY_MS,
   type FromMember,
   type FromOwner,
+  type FromOwnerServer,
   FeaturePolicy,
   type ItemState,
   MemberPeer,
@@ -20,10 +23,12 @@ import {
   type MemberRow,
   type Owner,
   OwnerPeer,
+  OwnerServer,
   type Path,
   type Row,
   type ToMember,
   type ToOwner,
+  type ToOwnerServer,
 } from "./feature-model";
 import {
   checkRound,
@@ -35,6 +40,7 @@ import {
   item as remoteItem,
   localItem,
   localRows,
+  type LocalRow,
   nextDue,
   outbound,
   requestSync,
@@ -1600,4 +1606,973 @@ describe("a Mastodon owner featuring a local member (6-T5)", () => {
     expect([w.peer.shows(), await kopjeShows(w)]).toEqual([true, false]);
     expect(w.listed.orderedItems).toHaveLength(26);
   });
+});
+
+// ---- 6-T5 in generated orders: Kopje against a Mastodon v4.7.5 owner's server (OwnerServer, test/feature-model.ts).
+// R adds, removes, re-adds and blocks L, runs its jobs when it chooses (its FeatureRequest retried, each distribution
+// reaching L as computed when it runs, L following R or not), processes its inbox in any order and delivers to Kopje in
+// any order, a delivery repeated or given up; L consents or refuses, revokes, blocks and unblocks; Kopje's lane delivers
+// in order, a body once or twice; Kopje's waits come due whether or not R processed the answer, its reads run (one with
+// an owner's activity between its claim and its completion), and the clock passes R's and Kopje's cleanups. L's item is
+// R's first, or its 26th after 25 remote members. After every step the safety rules hold (serverCheck); after quiescence
+// (every wait ended, every read Kopje requested run, R's and Kopje's queues empty) Kopje equals R, outside F7 and the
+// freshness limit's two directions (equal after one more refresh read); progress holds when L consented throughout and
+// no one ended the membership, outside F6 (R processed an Accept past the margin after its delivery) and F7.
+
+type ServerWorld = {
+  t: Setup;
+  clock: { now: number };
+  owner: TestActor & { featuredCollections: string };
+  r: OwnerServer;
+  listed: ReturnType<typeof collection>;
+  ownerId: string;
+  before: { uri: string }[];
+  // alice's activities before the run, the ones handed to R (when), and R's inbox jobs with their delivery times.
+  since: number;
+  handed: Map<string, number>;
+  // The answer the row's wait watched last (its answer after a step).
+  watched: string | null;
+  inbox: { message: ToOwnerServer; delivered: number }[];
+  // R's blocks of L so far (each Block's id), and whether alice blocks R.
+  blocks: number;
+  lBlocks: boolean;
+  // The safety rules' view: alice's activities checked, and Kopje's rows after the last step.
+  seen: number;
+  rows: LocalRow[];
+  // When Kopje last delivered an answer to each of R's requests (the margin's start for R's processing of it).
+  answered: Map<string, number>;
+  // What ended or prevented a membership: L's revoke, refusal or block, or R's block, anywhere in the run (Kopje keeps
+  // a retired row or a block's refusal past R's next request), and R's removal or a delivery R gave up, since R's latest
+  // add. Progress is owed only without any.
+  sticky: Set<string>;
+  ended: Set<string>;
+  stats: Stats;
+  trace: string[];
+};
+
+let serverWorlds = 0;
+
+async function serverWorld(before: number, following: boolean): Promise<ServerWorld> {
+  const clock = { now: NOW };
+  const t = await setup(clock);
+  await sql(t.store, "UPDATE accounts SET discoverable = 1 WHERE id = ?", ALICE);
+  const n = ++serverWorlds;
+  const owner = await featuredOwner(t.web, `srv${n}`, COLLECTIONS_ONLY);
+  const r = new OwnerServer(new URL(owner.uri).origin);
+  r.follow(following);
+  const w: ServerWorld = {
+    t,
+    clock,
+    owner,
+    r,
+    listed: collection(owner, []),
+    ownerId: "",
+    before: before === 0 ? [] : await seededMembers(t, before, `s${n}m`),
+    since: 0,
+    handed: new Map(),
+    watched: null,
+    inbox: [],
+    blocks: 0,
+    lBlocks: false,
+    seen: 0,
+    rows: [],
+    answered: new Map(),
+    sticky: new Set(),
+    ended: new Set(),
+    stats: {},
+    trace: [],
+  };
+  serveServer(w);
+  w.ownerId = await storedOwner(t, owner);
+  await syncAll(t, t.web.loader, clock.now);
+  await settleDeliveries(t.store, clock.now);
+  w.since = (await sql<{ n: number }>(t.store, "SELECT coalesce(max(id), 0) AS n FROM outbound_activities"))[0]!.n;
+  w.seen = w.since;
+  w.trace.push(`-- R ${owner.uri}, ${before} members before L, L ${following ? "follows" : "does not follow"} R`);
+  return w;
+}
+
+// R's featuredCollections as R serves it now: the remote members it lists first, then its accepted item of L.
+function serveServer(w: ServerWorld): void {
+  w.listed.orderedItems = [
+    ...w.before.map((member, n) => remoteItem(w.owner, member, 200_000 + n)),
+    ...w.r.listing().map(({ item, authorization }) => localItem(w.owner, ALICE_URI, authorization, item)),
+  ];
+  serveListing(w.t.web, w.owner, w.listed);
+}
+
+function serverStep(w: ServerWorld, line: string, ...labels: string[]): void {
+  w.trace.push(`${w.trace.length} @${w.clock.now - NOW} ${line}${labels.length > 0 ? ` -> ${labels.join(", ")}` : ""}`);
+  labels.forEach((label) => tally(w.stats, label));
+}
+
+const serverInboxes = (w: ServerWorld) => [`${w.owner.uri}/inbox`, `${new URL(w.owner.uri).origin}/inbox`];
+
+function toOwnerServer(activity: Record<string, unknown>): ToOwnerServer {
+  switch (activity.type) {
+    case "Accept":
+      return { type: "Accept", request: String(activity.object), result: String(activity.result) };
+    case "Reject":
+      return { type: "Reject", request: String(activity.object) };
+    case "Delete":
+      return { type: "Delete", authorization: (activity.object as { id: string }).id };
+    case "Block":
+      return { type: "Block" };
+    case "Undo":
+      return { type: "Undo" };
+  }
+  throw new Error(`unexpected ${String(activity.type)} for R`);
+}
+
+// The next body of Kopje's lane to R not handed over: alice's activities with a delivery to R's inbox or its server's
+// shared inbox, in record order, a superseded one never sent.
+async function serverLaneHead(w: ServerWorld): Promise<{ id: string; message: ToOwnerServer } | undefined> {
+  await settleDeliveries(w.t.store, w.clock.now);
+  const rows = await sql<{ id: string; body: string }>(
+    w.t.store,
+    `SELECT CAST(a.id AS TEXT) AS id, a.body FROM outbound_activities a
+		WHERE a.account_id = ?1 AND a.id > ?2 AND a.superseded = 0
+			AND EXISTS (SELECT 1 FROM deliveries d WHERE d.activity_id = a.id AND d.inbox_url IN (?3, ?4))
+		ORDER BY a.id`,
+    ALICE,
+    w.since,
+    ...serverInboxes(w),
+  );
+  const head = rows.find((row) => !w.handed.has(row.id));
+  return head === undefined
+    ? undefined
+    : {
+        id: head.id,
+        message: toOwnerServer((JSON.parse(head.body) as { activity: Record<string, unknown> }).activity),
+      };
+}
+
+// Kopje's lane delivers its head to R, once or twice (its deliveries to R then gone).
+async function deliverToServer(w: ServerWorld, dup: boolean): Promise<void> {
+  const head = await serverLaneHead(w);
+  if (head === undefined) {
+    return;
+  }
+  w.handed.set(head.id, w.clock.now);
+  await sql(
+    w.t.store,
+    "DELETE FROM deliveries WHERE activity_id = CAST(?1 AS INTEGER) AND inbox_url IN (?2, ?3)",
+    head.id,
+    ...serverInboxes(w),
+  );
+  for (let copy = 0; copy < (dup ? 2 : 1); copy++) {
+    w.inbox.push({ message: head.message, delivered: w.clock.now });
+  }
+  if (head.message.type === "Accept" || head.message.type === "Reject") {
+    w.answered.set(head.message.request, w.clock.now);
+  }
+  serverStep(w, `${dup ? "two copies of " : ""}${head.message.type} to R`, dup ? "K.dup" : "K.deliver");
+}
+
+function serverBody(w: ServerWorld, message: FromOwnerServer): Record<string, unknown> {
+  const actor = w.owner.uri;
+  const block = `${actor}#blocks/${w.blocks}`;
+  switch (message.type) {
+    case "FeatureRequest":
+      return featureRequest(w.owner, ALICE_URI, w.listed.id, message.request);
+    case "Add":
+    case "Remove":
+      return {
+        "@context": [...FEATURE_CONTEXT, { FeaturedItem: "https://w3id.org/fep/7aa9#FeaturedItem" }],
+        type: message.type,
+        actor,
+        target: w.listed.id,
+        object: localItem(w.owner, ALICE_URI, message.type === "Add" ? message.authorization : "", message.item),
+      };
+    case "Block":
+      return { "@context": AS, id: block, type: "Block", actor, object: ALICE_URI };
+    case "Undo":
+      return {
+        "@context": AS,
+        id: `${block}/undo`,
+        type: "Undo",
+        actor,
+        object: { id: block, type: "Block", actor, object: ALICE_URI },
+      };
+  }
+}
+
+const freshTypes = async (w: ServerWorld) =>
+  (
+    await sql<{ body: string }>(
+      w.t.store,
+      "SELECT body FROM outbound_activities WHERE account_id = ? AND id > ? ORDER BY id",
+      ALICE,
+      w.seen,
+    )
+  ).map(({ body }) => (JSON.parse(body) as { activity: { type: string } }).activity.type);
+
+// What Kopje did with R's delivery, by alice's new activities and her row before and after.
+async function kopjeEffect(w: ServerWorld, message: FromOwnerServer, before: LocalRow | undefined): Promise<string> {
+  const fresh = await freshTypes(w);
+  const [after] = await localRows(w.t, ALICE);
+  switch (message.type) {
+    case "FeatureRequest":
+      if (fresh.includes("Accept")) {
+        return before === undefined
+          ? "K.FR:accepted"
+          : before.activity_uri === message.request
+            ? "K.FR:repeated"
+            : "K.FR:reaccepted";
+      }
+      if (fresh.includes("Reject")) {
+        return before === undefined ? "K.FR:refused" : before.state === 1 ? "K.FR:refused-held" : "K.FR:retired";
+      }
+      return "K.FR:none";
+    case "Add":
+      return fresh.includes("Delete")
+        ? "K.Add:answered"
+        : after?.uri !== null && after?.uri !== before?.uri
+          ? "K.Add:listed"
+          : "K.Add:none";
+    case "Remove":
+      return (await sql(w.t.store, "SELECT 1 FROM collection_syncs")).length > 0 ? "K.Remove:read" : "K.Remove:none";
+    default:
+      return `K.${message.type}`;
+  }
+}
+
+// One of R's deliveries reaching Kopje; a repeated one stays in R's outbox.
+async function sendFromServer(w: ServerWorld, index: number, dup: boolean): Promise<void> {
+  const outbox = w.r.outbox;
+  const at = index % Math.max(outbox.length, 1);
+  const message = outbox[at];
+  if (message === undefined) {
+    return;
+  }
+  if (!dup) {
+    outbox.splice(at, 1);
+  }
+  const [before] = await localRows(w.t, ALICE);
+  expect(await w.t.post(w.owner, serverBody(w, message)), w.trace.join("\n")).toBe(202);
+  serverStep(w, `${dup ? "a repeat of " : ""}R's ${message.type} to Kopje`, await kopjeEffect(w, message, before));
+}
+
+// A read of R's collections that Kopje requested, R's listing served as it is at the claim. `between`: R's steps between
+// the claim that fetches R's featured collections and its completion (a split read). Each of the Store's claims while
+// the read runs reads at its own time, the rows as they are then (a read a step requests is claimed again in the same
+// run, after the change).
+async function readAtKopje(
+  w: ServerWorld,
+  kind: "read" | "refresh" | "split",
+  between: readonly ServerAction[] = [],
+): Promise<void> {
+  if (kind === "refresh") {
+    await requestSync(w.t, w.ownerId);
+  }
+  if ((await sql(w.t.store, "SELECT 1 FROM collection_syncs")).length === 0) {
+    return;
+  }
+  w.clock.now += 60_000;
+  const claim = w.clock.now;
+  serveServer(w);
+  const rounds: { claim: number; before: LocalRow[] }[] = [];
+  let hooked: number | undefined;
+  const page = `${w.owner.featuredCollections}?page=1`;
+  let split = kind !== "split";
+  const loader = {
+    ...w.t.web.loader,
+    fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = input instanceof Request ? input : new Request(input, init);
+      // After R's steps, R serves its listing as it is then (the round the Store reads again: an inbound change marks
+      // the read under way outdated).
+      if (split && kind === "split") {
+        serveServer(w);
+      }
+      const response = await w.t.web.fetch(request);
+      if (!split && request.url === page) {
+        split = true;
+        hooked = rounds.length - 1;
+        w.clock.now = claim + 30_000;
+        for (const a of between) {
+          await serverAct(w, a);
+        }
+        rounds[hooked]!.before = await localRows(w.t, ALICE);
+        w.clock.now = claim + 60_000;
+      }
+      return response;
+    },
+  };
+  const store = new Proxy(w.t.store, {
+    get(target, key) {
+      const value: unknown = Reflect.get(target, key);
+      if (typeof value !== "function") {
+        return value;
+      }
+      // An RPC method has no bind or apply of its own (each would be another RPC call).
+      return async (...args: unknown[]) => {
+        if (key === "claimCollectionSync") {
+          rounds.push({ claim: w.clock.now, before: await localRows(w.t, ALICE) });
+        }
+        return Reflect.apply(value, target, args) as unknown;
+      };
+    },
+  });
+  const deps = { ...inboxDeps(() => store, loader), now: () => w.clock.now };
+  for (let round = 0; round < 8 && (await syncCollections(w.t.env, deps)); round++) {
+    // Another sync waits.
+  }
+  const after = await localRows(w.t, ALICE);
+  const reads = rounds.map((round, k) => ({ ...round, after: rounds[k + 1]?.before ?? after }));
+  const labels: string[] = (reads[hooked ?? 0]?.before ?? []).map((row) => {
+    const now = after.find((other) => other.id === row.id);
+    return now === undefined
+      ? "K.read:deleted"
+      : now.uri !== null && now.uri !== row.uri
+        ? "K.read:listed"
+        : row.check_due_at !== null
+          ? "K.read:kept-waiting"
+          : row.state !== 1
+            ? "K.read:kept-retired"
+            : "K.read:kept-listed";
+  });
+  // The claim that read R's listing kept a row changed after it (the next claim may delete it).
+  const read = hooked === undefined ? undefined : reads[hooked];
+  if (
+    read?.before.some(
+      (row) =>
+        row.state === 1 &&
+        row.check_due_at === null &&
+        Date.parse(row.updated_at) >= read.claim &&
+        read.after.some((one) => one.id === row.id),
+    )
+  ) {
+    labels.push("K.read:kept-changed");
+  }
+  if ((await freshTypes(w)).includes("Delete")) {
+    labels.push("K.read:answered");
+  }
+  serverStep(w, `Kopje's ${kind}`, ...labels);
+  await serverCheck(w, reads);
+}
+
+// Kopje's next check round, the clock moved to its due check unless `now` (a round only if one is due already). A wait
+// ends no sooner than ANSWER_MARGIN_MS after R was handed the answer it watched (D21: it polls the answer's delivery,
+// then gives R the margin).
+async function waitAtKopje(w: ServerWorld, now = false): Promise<void> {
+  const due = await nextDue(w.t);
+  if (due === null || (now && due > w.clock.now)) {
+    return;
+  }
+  w.clock.now = Math.max(w.clock.now, due);
+  const [before] = await localRows(w.t, ALICE);
+  await checkRound(w.t, w.clock.now);
+  const [after] = await localRows(w.t, ALICE);
+  const label =
+    before?.check_due_at === null || before === undefined || before.check_due_at > w.clock.now
+      ? "K.checks"
+      : after?.check_due_at === null
+        ? "K.wait:ended"
+        : before.answer !== null && after?.answer === null
+          ? "K.wait:delivered"
+          : "K.wait:polled";
+  serverStep(w, "Kopje's checks come due", label);
+  const handed = w.watched === null ? undefined : w.handed.get(w.watched);
+  if (label === "K.wait:ended" && handed !== undefined) {
+    expect(w.clock.now - handed, w.trace.join("\n")).toBeGreaterThanOrEqual(ANSWER_MARGIN_MS);
+  }
+}
+
+async function serverCollectionId(w: ServerWorld): Promise<string> {
+  return (await sql<{ id: string }>(w.t.store, "SELECT id FROM collections WHERE uri = ?", w.listed.id))[0]!.id;
+}
+
+type ServerAction =
+  | { k: "radd" }
+  | { k: "rremove" }
+  | { k: "rblock" }
+  | { k: "runblock" }
+  | { k: "run"; i: number; again: boolean }
+  | { k: "process"; i: number }
+  | { k: "send"; i: number; dup: boolean }
+  | { k: "drop"; i: number }
+  | { k: "deliver"; dup: boolean }
+  | { k: "revoke" }
+  | { k: "consent"; on: boolean }
+  | { k: "lblock" }
+  | { k: "lunblock" }
+  | { k: "follow"; on: boolean }
+  | { k: "wait" }
+  | { k: "checks" }
+  | { k: "hour" }
+  | { k: "day" }
+  | { k: "read" }
+  | { k: "split"; i: number; by: "process" | "send" | "checks" }
+  | { k: "refresh" };
+
+async function serverAct(w: ServerWorld, a: ServerAction): Promise<void> {
+  switch (a.k) {
+    case "radd": {
+      const label = w.r.add();
+      if (label === "R.add") {
+        w.ended.clear();
+      }
+      serverStep(w, "R adds L", label);
+      break;
+    }
+    case "rremove": {
+      const label = w.r.remove();
+      if (label === "R.remove") {
+        w.ended.add(label);
+      }
+      serverStep(w, "R removes L", label);
+      break;
+    }
+    case "rblock":
+      if (!w.r.blocks) {
+        w.blocks++;
+        w.sticky.add("R.block");
+      }
+      serverStep(w, "R blocks L", w.r.block());
+      break;
+    case "runblock":
+      serverStep(w, "R unblocks L", w.r.unblock());
+      break;
+    case "run":
+      if (w.r.jobs.length > 0) {
+        serverStep(w, `R runs a job${a.again ? " (retried later)" : ""}`, w.r.run(a.i % w.r.jobs.length, a.again));
+      }
+      break;
+    case "process": {
+      const [job] = w.inbox.splice(a.i % Math.max(w.inbox.length, 1), 1);
+      if (job !== undefined) {
+        const { message } = job;
+        const latest = message.type === "Accept" ? (w.answered.get(message.request) ?? job.delivered) : job.delivered;
+        serverStep(w, `R processes ${message.type}`, w.r.receive(message, latest, w.clock.now));
+      }
+      break;
+    }
+    case "send":
+      await sendFromServer(w, a.i, a.dup);
+      break;
+    case "drop":
+      if (w.r.outbox.length > 0) {
+        w.ended.add("R.drop");
+        serverStep(w, "R's delivery gives up", w.r.drop(a.i % w.r.outbox.length));
+      }
+      break;
+    case "deliver":
+      await deliverToServer(w, a.dup);
+      break;
+    case "revoke": {
+      const row = w.rows.find((one) => one.state === 1);
+      if (row !== undefined) {
+        const revoked = await alice(
+          w.t,
+          "POST",
+          `/api/v1/collections/${await serverCollectionId(w)}/items/${row.id}/revoke`,
+        );
+        expect(revoked.status, w.trace.join("\n")).toBe(200);
+        w.sticky.add("L.revoke");
+        serverStep(w, "L revokes", "L.revoke");
+      }
+      break;
+    }
+    case "consent":
+      await sql(w.t.store, "UPDATE accounts SET discoverable = ? WHERE id = ?", a.on ? 1 : 0, ALICE);
+      if (!a.on) {
+        w.sticky.add("L.refuses");
+      }
+      serverStep(w, `L ${a.on ? "consents" : "refuses"}`, a.on ? "L.consents" : "L.refuses");
+      break;
+    case "lblock":
+      if (!w.lBlocks) {
+        expect((await alice(w.t, "POST", `/api/v1/accounts/${w.ownerId}/block`)).status).toBe(200);
+        for (let round = 0; round < 8 && (await sql(w.t.store, "SELECT 1 FROM collection_jobs")).length > 0; round++) {
+          await w.t.store.runCollectionJobs(BUILD, { now: w.clock.now });
+        }
+        w.lBlocks = true;
+        w.sticky.add("L.block");
+        serverStep(w, "L blocks R", "L.block");
+      }
+      break;
+    case "lunblock":
+      if (w.lBlocks) {
+        expect((await alice(w.t, "POST", `/api/v1/accounts/${w.ownerId}/unblock`)).status).toBe(200);
+        w.lBlocks = false;
+        serverStep(w, "L unblocks R", "L.unblock");
+      }
+      break;
+    case "follow":
+      serverStep(w, `L ${a.on ? "follows" : "unfollows"} R`, w.r.follow(a.on));
+      break;
+    case "wait":
+      await waitAtKopje(w);
+      break;
+    case "checks":
+      await waitAtKopje(w, true);
+      break;
+    case "hour":
+      w.clock.now += 3_600_000;
+      serverStep(w, "an hour");
+      break;
+    case "day": {
+      w.clock.now += DAY_MS + 1;
+      await w.t.store.pruneCollectionItems(BUILD, { now: w.clock.now });
+      const cleaned = w.r.cleanup();
+      serverStep(w, "a day: the cleanups", "K.cleanup", ...(cleaned === null ? [] : [cleaned]));
+      break;
+    }
+    case "read":
+    case "refresh":
+      await readAtKopje(w, a.k);
+      return;
+    case "split":
+      if (a.by === "checks") {
+        // A read claimed just before the next check comes due, which runs between its claim and its completion.
+        const due = await nextDue(w.t);
+        if (due !== null) {
+          w.clock.now = Math.max(w.clock.now, due - 90_000);
+          await requestSync(w.t, w.ownerId);
+          await readAtKopje(w, "split", [{ k: "checks" }]);
+        }
+      } else if (w.r.outbox.length > 0 || w.inbox.length > 0) {
+        await readAtKopje(w, "split", a.by === "process" ? [PROCESS, RUN, SEND] : [{ k: "send", i: a.i, dup: false }]);
+      }
+      return;
+  }
+  await serverCheck(w);
+}
+
+// The safety rules after a step, from alice's new activities, her rows and her consent:
+//   - an answer names a request R made;
+//   - an Accept grants the authorization of a row that is accepted with its wait queued, and, while L does not consent
+//     (not discoverable, or a block either way), only repeats the row's own request;
+//   - no Delete names an authorization Kopje serves;
+//   - while L blocks R, no row is accepted;
+//   - a read deletes only a row that is accepted, not waiting, and unchanged since its claim;
+//   - a wait ends no sooner than ANSWER_MARGIN_MS after R was handed its answer (waitAtKopje).
+async function serverCheck(
+  w: ServerWorld,
+  reads: readonly { claim: number; before: LocalRow[]; after: LocalRow[] }[] = [],
+): Promise<void> {
+  const context = w.trace.join("\n");
+  const rows = await localRows(w.t, ALICE);
+  const fresh = await sql<{ id: number; body: string }>(
+    w.t.store,
+    "SELECT id, body FROM outbound_activities WHERE account_id = ? AND id > ? ORDER BY id",
+    ALICE,
+    w.seen,
+  );
+  const consents =
+    (
+      await sql<{ consents: number }>(
+        w.t.store,
+        `SELECT (SELECT discoverable FROM accounts WHERE id = ?1) = 1 AND NOT EXISTS (SELECT 1 FROM blocks
+				WHERE (account_id = ?1 AND target_account_id = ?2) OR (account_id = ?2 AND target_account_id = ?1)) AS consents`,
+        ALICE,
+        w.ownerId,
+      )
+    )[0]!.consents === 1;
+  const named = (authorization: string) =>
+    rows.find((row) => authorization === `${ALICE_URI}/feature_authorizations/${row.id}`);
+  for (const { id, body } of fresh) {
+    w.seen = id;
+    const activity = (JSON.parse(body) as { activity: Record<string, unknown> }).activity;
+    if (activity.type === "Accept" || activity.type === "Reject") {
+      expect(w.r.requests.has(String(activity.object)), context).toBe(true);
+    }
+    if (activity.type === "Accept") {
+      const row = named(String(activity.result));
+      expect([row?.state, row?.check_due_at === null], context).toEqual([1, false]);
+      if (!consents) {
+        expect(
+          w.rows.some((one) => one.state === 1 && one.activity_uri === activity.object),
+          context,
+        ).toBe(true);
+      }
+    }
+    if (activity.type === "Delete") {
+      expect(named((activity.object as { id: string }).id)?.state, context).not.toBe(1);
+    }
+  }
+  if (w.lBlocks) {
+    expect(
+      rows.filter((row) => row.state === 1),
+      context,
+    ).toEqual([]);
+  }
+  for (const read of reads) {
+    for (const row of read.before) {
+      if (!read.after.some((one) => one.id === row.id)) {
+        expect([row.state, row.check_due_at, Date.parse(row.updated_at) < read.claim], context).toEqual([
+          1,
+          null,
+          true,
+        ]);
+      }
+    }
+  }
+  w.rows = rows;
+  w.watched = rows.find((row) => row.answer !== null)?.answer ?? w.watched;
+}
+
+// Quiescence: until nothing moves, Kopje's lane delivered, R's inbox processed, its jobs run and its deliveries sent,
+// every read Kopje requested run and every due wait or check advanced.
+async function serverSettle(w: ServerWorld): Promise<void> {
+  w.trace.push("-- settle");
+  for (let round = 0; round < SETTLE_ROUNDS * 2; round++) {
+    let moved = false;
+    while ((await serverLaneHead(w)) !== undefined) {
+      await serverAct(w, { k: "deliver", dup: false });
+      moved = true;
+    }
+    while (w.inbox.length > 0) {
+      await serverAct(w, { k: "process", i: 0 });
+      moved = true;
+    }
+    while (w.r.jobs.length > 0) {
+      await serverAct(w, { k: "run", i: 0, again: false });
+      moved = true;
+    }
+    while (w.r.outbox.length > 0) {
+      await serverAct(w, { k: "send", i: 0, dup: false });
+      moved = true;
+    }
+    if ((await sql(w.t.store, "SELECT 1 FROM collection_syncs")).length > 0) {
+      await serverAct(w, { k: "read" });
+    } else if ((await nextDue(w.t)) !== null) {
+      await serverAct(w, { k: "wait" });
+    } else if (!moved) {
+      return;
+    }
+  }
+  throw new Error(`no quiescence\n${w.trace.join("\n")}`);
+}
+
+// After quiescence: Kopje shows L in R's collection exactly when R does, except F7 (L's item past R's first 25,
+// accepted by R, no answer of Kopje's reaching R after) and the freshness limit's two directions, which one more refresh
+// read closes: R ended its item without L hearing of it (no Remove reached L), or R accepted it and its Add never
+// reached Kopje. Progress: when L consented throughout, R asked, and no one ended the membership, both show it, unless R
+// processed an Accept past the margin after its delivery (F6) or L's item is past R's first 25 (F7).
+async function serverQuiescence(w: ServerWorld): Promise<string> {
+  await serverSettle(w);
+  const context = w.trace.join("\n");
+  const kopjeShowsIt = async () => (await localRows(w.t, ALICE)).some((row) => row.state === 1);
+  const f7 = async () => w.before.length > 0 && w.r.shows() && !(await kopjeShowsIt());
+  let outcome: string;
+  if ((await kopjeShowsIt()) === w.r.shows()) {
+    outcome = w.r.shows() ? "both" : "neither";
+  } else if (await f7()) {
+    outcome = "F7";
+  } else {
+    const direction = w.r.shows() ? "acceptance" : "removal";
+    expect(direction === "acceptance" ? w.r.lostAdd : w.r.unheardEnd, context).toBe(true);
+    await serverAct(w, { k: "refresh" });
+    await serverSettle(w);
+    expect((await kopjeShowsIt()) === w.r.shows() || (await f7()), w.trace.join("\n")).toBe(true);
+    outcome = `freshness: ${direction}`;
+  }
+  const owed = w.sticky.size === 0 && w.ended.size === 0 && w.r.requests.size > 0 && !w.r.late && w.before.length === 0;
+  if (owed) {
+    expect(outcome, context).toBe("both");
+    tally(w.stats, "progress owed");
+  }
+  if (w.r.late) {
+    tally(w.stats, "F6");
+  }
+  tally(w.stats, `quiescent: ${outcome}`);
+  return outcome;
+}
+
+const serverActionArb: fc.Arbitrary<ServerAction> = fc.oneof(
+  { arbitrary: fc.constant({ k: "radd" as const }), weight: 2 },
+  { arbitrary: fc.constant({ k: "rremove" as const }), weight: 1 },
+  { arbitrary: fc.constant({ k: "rblock" as const }), weight: 1 },
+  { arbitrary: fc.constant({ k: "runblock" as const }), weight: 2 },
+  {
+    arbitrary: fc.record({ k: fc.constant("run" as const), i: fc.nat(3), again: fc.constantFrom(false, false, true) }),
+    weight: 5,
+  },
+  { arbitrary: fc.record({ k: fc.constant("process" as const), i: fc.nat(3) }), weight: 5 },
+  {
+    arbitrary: fc.record({ k: fc.constant("send" as const), i: fc.nat(3), dup: fc.constantFrom(false, false, true) }),
+    weight: 5,
+  },
+  { arbitrary: fc.record({ k: fc.constant("drop" as const), i: fc.nat(3) }), weight: 1 },
+  { arbitrary: fc.record({ k: fc.constant("deliver" as const), dup: fc.constantFrom(false, false, true) }), weight: 5 },
+  { arbitrary: fc.constant({ k: "revoke" as const }), weight: 1 },
+  { arbitrary: fc.record({ k: fc.constant("consent" as const), on: fc.boolean() }), weight: 1 },
+  { arbitrary: fc.constant({ k: "lblock" as const }), weight: 1 },
+  { arbitrary: fc.constant({ k: "lunblock" as const }), weight: 2 },
+  { arbitrary: fc.record({ k: fc.constant("follow" as const), on: fc.boolean() }), weight: 1 },
+  { arbitrary: fc.constant({ k: "wait" as const }), weight: 4 },
+  { arbitrary: fc.constant({ k: "hour" as const }), weight: 1 },
+  { arbitrary: fc.constant({ k: "day" as const }), weight: 2 },
+  { arbitrary: fc.constant({ k: "read" as const }), weight: 2 },
+  {
+    arbitrary: fc.record({
+      k: fc.constant("split" as const),
+      i: fc.nat(3),
+      by: fc.constantFrom("process" as const, "send" as const, "checks" as const),
+    }),
+    weight: 3,
+  },
+  { arbitrary: fc.constant({ k: "refresh" as const }), weight: 1 },
+);
+
+// The steps the prefixes below are made of.
+const RUN: ServerAction = { k: "run", i: 0, again: false };
+const SEND: ServerAction = { k: "send", i: 0, dup: false };
+const DELIVER: ServerAction = { k: "deliver", dup: false };
+const PROCESS: ServerAction = { k: "process", i: 0 };
+const WAIT: ServerAction = { k: "wait" };
+const READ: ServerAction = { k: "read" };
+const DAY: ServerAction = { k: "day" };
+const REQUESTED: ServerAction[] = [{ k: "radd" }, RUN, SEND];
+
+// A membership carried through from R's add, R's Add listed, and its wait run out.
+const CARRIED: ServerAction[] = [...REQUESTED, DELIVER, PROCESS, RUN, SEND, WAIT, WAIT, WAIT, READ];
+
+// Orders a run may start from, each one the design's 6-T5 names a mutation for, and which single actions reach rarely:
+//   - L follows R; the membership carried through with Kopje's Accept delivered twice; L revokes; R processes the Delete
+//     and its Remove reaches Kopje, whose read sees the item revoked; then R processes the second Accept and re-accepts,
+//     and its Add after its Remove reaches Kopje with no read to follow (D24's answer to the Add, whatever the Remove's
+//     retraction);
+//   - R's request retried after Kopje's Accept was delivered and its margin began, the second Accept delivered three
+//     days later, and R processing the first a day past the first margin (the wait queued again by the repeat);
+//   - Kopje's Accept delivered two days after it was recorded, a wait polling before (its delivery queued, its one
+//     target expanded as it was recorded), and R processing it two days after the delivery (the margin counted from
+//     the delivery);
+//   - the wait run out before R processes the Accept, which it does between a read's claim and its completion, its Add
+//     reaching Kopje then (the read outdated, and the next one deciding);
+//   - Kopje's Accept delivered and its margin begun, then a read claimed just before the margin ends, the wait ending
+//     between its claim and its completion (a read keeping a row changed after its claim);
+//   - the membership carried through and its Add's copy left in R's outbox; R removes and re-adds L; Kopje accepts the
+//     new request with the row's authorization; the stale copy of the first Add then reaches Kopje, and a refresh read
+//     runs before R processes the new Accept, the first item's Remove reaching Kopje after (the answer naming this
+//     request, an Add that ends no wait, a Remove that deletes no row).
+const PREFIXES: ServerAction[][] = [
+  [],
+  [],
+  [],
+  CARRIED,
+  [...CARRIED, { k: "rremove" }, RUN],
+  [
+    { k: "follow", on: true },
+    ...REQUESTED,
+    { k: "deliver", dup: true },
+    PROCESS,
+    RUN,
+    SEND,
+    WAIT,
+    WAIT,
+    WAIT,
+    READ,
+    { k: "revoke" },
+    DELIVER,
+    { k: "process", i: 1 },
+    RUN,
+    SEND,
+    READ,
+    PROCESS,
+    RUN,
+    SEND,
+  ],
+  [
+    { k: "radd" },
+    { k: "run", i: 0, again: true },
+    SEND,
+    DELIVER,
+    WAIT,
+    DAY,
+    DAY,
+    DAY,
+    RUN,
+    SEND,
+    DELIVER,
+    DAY,
+    WAIT,
+    READ,
+    PROCESS,
+  ],
+  [...REQUESTED, WAIT, DAY, DAY, DELIVER, DAY, DAY, WAIT, READ, PROCESS],
+  [...REQUESTED, DELIVER, WAIT, WAIT, { k: "split", i: 0, by: "process" }],
+  [...REQUESTED, DELIVER, WAIT, { k: "split", i: 0, by: "checks" }],
+  [
+    ...REQUESTED,
+    DELIVER,
+    PROCESS,
+    RUN,
+    { k: "send", i: 0, dup: true },
+    { k: "rremove" },
+    { k: "radd" },
+    { k: "run", i: 1, again: false },
+    { k: "send", i: 1, dup: false },
+    SEND,
+    { k: "refresh" },
+  ],
+];
+
+// What ends or refuses a membership; a calm run has none of it, so progress is owed there unless F6 or F7.
+const ENDING = new Set<ServerAction["k"]>(["rremove", "rblock", "drop", "revoke", "lblock"]);
+const calmed = (a: ServerAction) => !ENDING.has(a.k) && !(a.k === "consent" && !a.on);
+
+// Runs of single actions, with short steps the single ones reach rarely in order: R's request carried to Kopje;
+// Kopje's answer carried through R and its distribution back to Kopje; R's request retried, alone or after L revoked;
+// a read of R's listing before R's Add reaches Kopje; Kopje's head processed by R past the margin after its delivery;
+// (its Add then given up, or not), and the waits run out before R removes L. A run may start from a membership carried through (and removed by R), and
+// a calm run leaves out every action that ends or refuses a membership.
+const serverRunArb = fc
+  .record({
+    before: fc.constantFrom(0, 0, 0, 25),
+    following: fc.boolean(),
+    calm: fc.constantFrom(false, false, true),
+    prefix: fc.constantFrom(...PREFIXES),
+    short: fc.constantFrom(false, false, false, true),
+    groups: fc.array(
+      fc.oneof(
+        { arbitrary: serverActionArb.map((a) => [a]), weight: 8 },
+        {
+          arbitrary: fc.constant<ServerAction[]>([
+            { k: "radd" },
+            { k: "run", i: 0, again: false },
+            { k: "send", i: 0, dup: false },
+          ]),
+          weight: 2,
+        },
+        {
+          arbitrary: fc.constant<ServerAction[]>([
+            { k: "deliver", dup: false },
+            { k: "process", i: 0 },
+            { k: "run", i: 0, again: false },
+            { k: "send", i: 0, dup: false },
+          ]),
+          weight: 3,
+        },
+        ...[[], [{ k: "revoke" as const }]].map((between) => ({
+          arbitrary: fc.constant<ServerAction[]>([
+            { k: "radd" },
+            { k: "run", i: 0, again: true },
+            { k: "send", i: 0, dup: false },
+            ...between,
+            { k: "run", i: 0, again: false },
+            { k: "send", i: 0, dup: false },
+          ]),
+          weight: 1,
+        })),
+        {
+          arbitrary: fc.constant<ServerAction[]>([
+            { k: "deliver", dup: false },
+            { k: "process", i: 0 },
+            { k: "refresh" },
+          ]),
+          weight: 1,
+        },
+        ...[[], [{ k: "run", i: 0, again: false } as const, { k: "drop", i: 0 } as const]].map((after) => ({
+          arbitrary: fc.constant<ServerAction[]>([
+            { k: "deliver", dup: false },
+            ...Array.from({ length: 5 }, (): ServerAction => ({ k: "day" })),
+            { k: "wait" },
+            { k: "wait" },
+            { k: "read" },
+            { k: "process", i: 0 },
+            ...after,
+          ]),
+          weight: 1,
+        })),
+        {
+          arbitrary: fc.constant<ServerAction[]>([
+            { k: "wait" },
+            { k: "wait" },
+            { k: "wait" },
+            { k: "read" },
+            { k: "rremove" },
+            { k: "run", i: 0, again: false },
+          ]),
+          weight: 1,
+        },
+      ),
+      { minLength: 14, maxLength: 28 },
+    ),
+  })
+  .map(({ before, following, calm, prefix, short, groups }) => {
+    const suffix = short ? [] : groups.flat();
+    return { before, following, actions: [...prefix, ...(calm ? suffix.filter(calmed) : suffix)] };
+  });
+
+async function serverRun(before: number, following: boolean, actions: readonly ServerAction[]): Promise<ServerWorld> {
+  const w = await serverWorld(before, following);
+  await serverCheck(w);
+  for (const a of actions) {
+    await serverAct(w, a);
+  }
+  await serverQuiescence(w);
+  return w;
+}
+
+// Each transition kind the seed's runs reach, and the quiescent outcomes.
+const SERVER_REQUIRED = [
+  "R.add",
+  "R.remove",
+  "R.block",
+  "R.unblock",
+  "R.run:FeatureRequest",
+  "R.run:Add",
+  "R.run:Remove",
+  "R.run:Remove-unreached",
+  "R.Accept:accepted",
+  "R.Accept:ignored",
+  "R.Reject:rejected",
+  "R.Delete:revoked",
+  "R.Block",
+  "R.cleanup",
+  "K.deliver",
+  "K.dup",
+  "K.FR:accepted",
+  "K.FR:repeated",
+  "K.FR:reaccepted",
+  "K.FR:refused",
+  "K.FR:retired",
+  "K.Add:listed",
+  "K.Add:answered",
+  "K.Remove:read",
+  "K.Block",
+  "K.wait:polled",
+  "K.wait:delivered",
+  "K.wait:ended",
+  "K.read:deleted",
+  "K.read:listed",
+  "K.read:kept-waiting",
+  "K.read:kept-retired",
+  "K.read:kept-changed",
+  "K.read:answered",
+  "L.revoke",
+  "L.refuses",
+  "L.block",
+  "quiescent: both",
+  "quiescent: neither",
+  "quiescent: F7",
+  "quiescent: freshness: removal",
+  "quiescent: freshness: acceptance",
+  "progress owed",
+  "F6",
+];
+
+const SERVER_CASES = 100;
+
+describe("a Mastodon owner featuring a local member, in generated orders (6-T5)", () => {
+  it("keeps the safety rules after every step, and agrees with the owner after quiescence outside F6 and F7", async () => {
+    const stats: Stats = {};
+    let steps = 0;
+    await fc.assert(
+      fc.asyncProperty(serverRunArb, async ({ before, following, actions }) => {
+        const w = await serverRun(before, following, actions);
+        steps += w.trace.length;
+        for (const [key, n] of Object.entries(w.stats)) {
+          stats[key] = (stats[key] ?? 0) + n;
+        }
+      }),
+      runs(SERVER_CASES, SEED),
+    );
+    console.log("owner lifecycle coverage", steps, JSON.stringify(stats, null, 1));
+    if (inject("fcSeed") === "") {
+      expect(SERVER_REQUIRED.filter((key) => stats[key] === undefined)).toEqual([]);
+    }
+  }, 600_000);
 });

@@ -1111,3 +1111,210 @@ export class OwnerPeer {
     return this.item?.state === "accepted";
   }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// The owner's server in generated orders (6-T5): R's jobs, its reach and its blocks
+// ---------------------------------------------------------------------------------------------------------------
+
+// The owner processes a delivered answer of Kopje's within this margin (docs/threat-model.md F6 `late-accept`: "more
+// than 4 days after its delivery").
+export const ANSWER_MARGIN_MS = 4 * DAY_MS;
+
+// What L sends R beyond its answers (its Block and the Block's Undo), and what R sends Kopje beyond its items.
+export type ToOwnerServer = ToOwner | { type: "Block" } | { type: "Undo" };
+export type FromOwnerServer = FromOwner | { type: "Block" } | { type: "Undo" };
+
+// R's jobs, each a step of its own: its payload built when it was enqueued, its reach when it runs.
+export type OwnerJob =
+  | { kind: "FeatureRequest"; item: number }
+  | { kind: "Add"; item: number; authorization: string }
+  | { kind: "Remove"; item: number };
+
+// R as Mastodon v4.7.5 runs it, with its jobs and deliveries as steps of their own (OwnerPeer's rules otherwise):
+//   - add (AddAccountToCollectionService, refused by AccountPolicy#feature? while either side blocks): a pending item and
+//     its FeatureRequestWorker, which sends the item's request while the item exists (feature_request_worker.rb:4-11,
+//     retried as a whole);
+//   - remove (DeleteCollectionItemService): the item destroyed and its Remove's distribution job enqueued;
+//   - block (BlockService#handle_following_relationships, #handle_collections, block_service.rb:32-42): L's follow ended,
+//     L's item destroyed with its Remove's job, and R's Block sent to Kopje; an unblock sends its Undo;
+//   - Accept, Reject and Delete as OwnerPeer (accept.rb:36-45, reject.rb:41-46, delete.rb:68-80: the revoked item kept,
+//     its Remove's job enqueued); L's Block ends L's follow (activity/block.rb) and changes no collection;
+//   - a distribution job (CollectionRawDistributionWorker) reaches L while L follows R or L's item is pending or accepted
+//     when the job runs (collection_reach_finder.rb:9-17, collection.rb:35); a job that reaches no one sends nothing;
+//   - R's cleanup deletes its rejected and revoked items (collection_item_cleanup_scheduler.rb:6-15).
+// It records what the exceptions after quiescence name: an Accept of its current item processed past the margin after
+// Kopje's latest delivered answer to that request (F6), an end of R's item L never heard of (the freshness limit,
+// removal), and an Add of R's current item that never reached Kopje (the freshness limit, acceptance).
+export class OwnerServer {
+  item: OwnerItem | null = null;
+  readonly jobs: OwnerJob[] = [];
+  readonly outbox: FromOwnerServer[] = [];
+  readonly requests = new Set<string>();
+  following = false;
+  blocks = false;
+  blockedBy = false;
+  late = false;
+  unheardEnd = false;
+  lostAdd = false;
+  private next = 0;
+
+  constructor(private readonly origin: string) {}
+
+  add(): string {
+    if (this.blocks || this.blockedBy) {
+      return "R.add:refused";
+    }
+    if (this.item !== null) {
+      return "R.add:held";
+    }
+    const id = ++this.next;
+    this.item = { id, request: `${this.origin}/requests/${id}`, state: "pending", approval: null };
+    this.requests.add(this.item.request);
+    this.late = false;
+    this.unheardEnd = false;
+    this.lostAdd = false;
+    this.jobs.push({ kind: "FeatureRequest", item: id });
+    return "R.add";
+  }
+
+  remove(): string {
+    if (this.item === null) {
+      return "R.remove:none";
+    }
+    this.jobs.push({ kind: "Remove", item: this.item.id });
+    this.item = null;
+    return "R.remove";
+  }
+
+  block(): string {
+    if (this.blocks) {
+      return "R.block:held";
+    }
+    this.blocks = true;
+    this.following = false;
+    if (this.item !== null) {
+      this.jobs.push({ kind: "Remove", item: this.item.id });
+      this.item = null;
+    }
+    this.outbox.push({ type: "Block" });
+    return "R.block";
+  }
+
+  unblock(): string {
+    if (!this.blocks) {
+      return "R.unblock:none";
+    }
+    this.blocks = false;
+    this.outbox.push({ type: "Undo" });
+    return "R.unblock";
+  }
+
+  follow(on: boolean): string {
+    this.following = on && !this.blocks && !this.blockedBy;
+    return this.following ? "L.follows" : "L.unfollows";
+  }
+
+  // R's inbox job of `message`, processed at `now`; `delivered`: when Kopje last delivered an answer to its request.
+  receive(message: ToOwnerServer, delivered: number, now: number): string {
+    const item = this.item;
+    switch (message.type) {
+      case "Accept":
+        if (item === null || item.request !== message.request) {
+          return "R.Accept:ignored";
+        }
+        if (now - delivered > ANSWER_MARGIN_MS) {
+          this.late = true;
+        }
+        item.state = "accepted";
+        item.approval = message.result;
+        this.jobs.push({ kind: "Add", item: item.id, authorization: message.result });
+        return "R.Accept:accepted";
+      case "Reject":
+        if (item === null || item.request !== message.request) {
+          return "R.Reject:ignored";
+        }
+        item.state = "rejected";
+        return "R.Reject:rejected";
+      case "Delete":
+        if (item === null || item.approval !== message.authorization) {
+          return "R.Delete:nothing";
+        }
+        item.state = "revoked";
+        this.jobs.push({ kind: "Remove", item: item.id });
+        return "R.Delete:revoked";
+      case "Block":
+        this.blockedBy = true;
+        this.following = false;
+        return "R.Block";
+      case "Undo":
+        this.blockedBy = false;
+        return "R.Undo";
+    }
+  }
+
+  // Runs the job `index`, kept for a retry when `again`.
+  run(index: number, again: boolean): string {
+    const job = this.jobs[index];
+    if (job === undefined) {
+      return "R.run:none";
+    }
+    if (!again) {
+      this.jobs.splice(index, 1);
+    }
+    const item = this.item;
+    if (job.kind === "FeatureRequest") {
+      if (item?.id !== job.item) {
+        return "R.run:FeatureRequest-gone";
+      }
+      this.outbox.push({ type: "FeatureRequest", request: item.request });
+      return "R.run:FeatureRequest";
+    }
+    const member = item !== null && (item.state === "pending" || item.state === "accepted");
+    if (!this.following && !member) {
+      if (job.kind === "Add") {
+        this.lostAdd ||= item?.id === job.item;
+      } else {
+        this.unheardEnd = true;
+      }
+      return `R.run:${job.kind}-unreached`;
+    }
+    this.outbox.push(
+      job.kind === "Add"
+        ? { type: "Add", item: job.item, authorization: job.authorization }
+        : { type: "Remove", item: job.item },
+    );
+    return `R.run:${job.kind}`;
+  }
+
+  // R's delivery `index` to Kopje given up.
+  drop(index: number): string {
+    const [message] = this.outbox.splice(index, 1);
+    if (message === undefined) {
+      return "R.drop:none";
+    }
+    if (message.type === "Add") {
+      this.lostAdd ||= this.item?.id === message.item;
+    } else if (message.type === "Remove") {
+      this.unheardEnd = true;
+    }
+    return `R.drop:${message.type}`;
+  }
+
+  cleanup(): string | null {
+    if (this.item?.state === "rejected" || this.item?.state === "revoked") {
+      this.item = null;
+      return "R.cleanup";
+    }
+    return null;
+  }
+
+  listing(): { item: number; authorization: string }[] {
+    return this.item?.state === "accepted" && this.item.approval !== null
+      ? [{ item: this.item.id, authorization: this.item.approval }]
+      : [];
+  }
+
+  shows(): boolean {
+    return this.item?.state === "accepted";
+  }
+}
