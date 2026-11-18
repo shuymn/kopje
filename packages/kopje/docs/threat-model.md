@@ -473,8 +473,11 @@ against their own instance. TLS is assumed between all parties.
   `Add` or `Remove` may have none (Mastodon sends them so), and one without is held to the rules of one with an id, its
   effects keyed by nature (ID-7). Only a `FeatureRequest` may name no actor (Mastodon 4.7.5 sends it so, #1589's D24):
   its actor is then the actor its signature's key id names (the key id without its fragment), which ID-1 requires to own
-  the verifying key, so it is never anyone but the verified signer (`activityEnvelope` and `receiveInbound`;
-  `test/federation-feature-requests.test.ts` ("takes Mastodon's actor-less FeatureRequest as its verified signer's")).
+  the verifying key, so it is never anyone but the verified signer, on the inbox, in a spooled request's replay and in
+  the rollback drain's check (`activityEnvelope`, `receiveInbound` and `verifySpooledRequest`;
+  `test/federation-feature-requests.test.ts` ("takes Mastodon's actor-less FeatureRequest as its verified signer's",
+  "takes a spooled actor-less FeatureRequest as its signer's on its replay"), `test/cutover-rollback.test.ts` ("hands
+  on Mastodon's actor-less FeatureRequest as its signer's, and keeps one whose key another actor owns")).
   `Undo` requires the actor of the undone activity; an undone `Follow` or `Block` named
   by its type requires its `object` to be a single IRI of a local account, or the `Undo` changes and records nothing,
   and ends the edge from the verified sender (its `actor.id`, the pair's first element) to that account whatever id the

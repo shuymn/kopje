@@ -43,6 +43,7 @@ import {
   type RemoteLoaders,
   withinBounds,
 } from "./federation";
+import { signatureKeyId } from "./inbox-request";
 import { typeIs } from "./json-shapes";
 import { MAX_PUBLIC_KEYS } from "./key-entries";
 import { ldSignedReading, type Rules, type TypeReader } from "./ld-signed-body";
@@ -1539,8 +1540,11 @@ export async function verifySpooledRequest(
   if (!isObject(json) || refusal !== null) {
     return { ok: false, transient: false, reason: "not-an-object" };
   }
-  // What Kopje's inbox would ignore is not handed to the legacy instance either.
-  const envelope = await activityEnvelope(json);
+  // What Kopje's inbox would ignore is not handed to the legacy instance either, and what it reads is read alike: a
+  // FeatureRequest that names no actor takes the one its signature's key id names, as parseActivity reads it on the
+  // inbox. The key-owner rule below refuses any other owner of the key, which the inbox refuses for such a request too
+  // (receiveInbound).
+  const envelope = await activityEnvelope(json, {}, signerOf(signatureKeyId(headers)));
   if (!envelope.ok) {
     return { ok: false, transient: false, reason: envelope.reason };
   }

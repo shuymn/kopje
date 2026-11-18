@@ -7,9 +7,10 @@ import { type DeliveryOutcome, LEASE_MS, MAX_BACKLOG, MAX_LANE_BACKLOG } from ".
 import { ourFeatureRequest } from "../src/domain/feature-requests";
 import { SWEEP_BATCH } from "../src/domain/remote-actors";
 import { parseActivity } from "../src/federation/inbound";
+import { handleQueue } from "../src/jobs/queue";
 import { MAX_STORED_COLLECTIONS } from "../src/platform/stored-bounds";
 import { settleDeliveries, sql } from "./api-helpers";
-import { NOW } from "./app-helpers";
+import { harness, inboxDeps, NOW } from "./app-helpers";
 import { mastodon47Signed, mastodonFeatureDelete, signTime } from "./author-proof-helpers";
 import {
   checkRound,
@@ -28,8 +29,9 @@ import {
   storedOwner,
   syncAll,
 } from "./featured-collection-helpers";
+import { fixtureKeyGen } from "./federation-helpers";
 import { BUILD } from "./helpers";
-import { MASTODON, mastodonActor, type TestActor } from "./inbox-helpers";
+import { MASTODON, mastodonActor, signedInit, type TestActor } from "./inbox-helpers";
 import {
   ALICE,
   ALICE_URI,
@@ -1180,6 +1182,23 @@ describe("a remote owner's feature request for a local account (D24)", () => {
 
   // 6-T9. Fails if the envelope admits another type without an actor, or if the actor comes from anything but the
   // verified signature.
+  // A spooled request's replay reads it as the inbox does (processInbox's "replay" mode: parseActivity with the
+  // stored request's signature key id). Fails if the replay reads it without that key id (incomplete, dropped).
+  it("takes a spooled actor-less FeatureRequest as its signer's on its replay", async () => {
+    const w = await owned();
+    const maintenance = harness(w.t.store, { MAINTENANCE: "readonly" }, BUILD, {
+      keygen: fixtureKeyGen,
+      loader: w.t.web.loader,
+    });
+    const r = requestFor(w);
+    expect((await maintenance.request("/inbox", await signedInit(w.owner, "/inbox", r))).status).toBe(202);
+    expect(await localRows(w.t, ALICE)).toEqual([]);
+    const deps = inboxDeps(() => w.t.store, w.t.web.loader);
+    await maintenance.queue.deliver((batch) => handleQueue(batch, { ...w.t.env, MAINTENANCE: "off" } as Env, deps));
+    expect(maintenance.queue.pending).toEqual([]);
+    expect(await localRows(w.t, ALICE)).toMatchObject([{ state: ACCEPTED, activity_uri: r.id }]);
+  });
+
   it("takes Mastodon's actor-less FeatureRequest as its verified signer's", async () => {
     const w = await owned();
     const r = requestFor(w);
