@@ -3901,7 +3901,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `favourited_by`, `reblogged_by`) select ids for their window and read the profiles of the page only
   (`test/account-answer-bytes.test.ts`, `test/admin-accounts.test.ts`). _Enforced (main)_ for answers of many accounts
   (a list's members and endorsements with `limit=0`, familiar followers): the whole response body is at most
-  `ANSWER_BYTES` (8 MiB, `src/domain/answer-budget.ts`), its own JSON reserved first, only an answer's first account
+  `ANSWER_BYTES` (8 MiB, `src/domain/answer-bytes.ts`), its own JSON reserved first, only an answer's first account
   standing alone past it; accounts are read in chunks of 50 that stop once it is reached, so at most one chunk (6.91 MB
   with their static images, their remote verification times and the accounts they moved to) is read past it. A
   `limit=0` answer cut there links `next` to the rest with `max_id`, a deliberate deviation (Mastodon ignores `max_id`
@@ -5820,8 +5820,9 @@ accounts, its first status (a quote) and nothing more, or a small first status a
 and its reporter (a remote one, from a `Flag`) and its comment are at their bounds: the comment's CHECK (migration
 `0054_remote_reports`) holds 20,000 bytes, which a stored NUL followed by U+0001 makes about 120 KB of JSON (Kopje's
 writers make about 30 KB: 5,000 code points). Every shape stays within 89% of an answer of 8 MiB with filter results
-included, measured and conservative alike, and so within `STATUS_ANSWER_BYTES` (95.5% of it), so an answer that admits
-whole items always fits its first. The 89% ceiling accommodates the conversation's 14
+included, measured and conservative alike, and so within `STATUS_ANSWER_BYTES`, 93.4% of 8 MiB: 89% of 8 MiB is 95.3% of
+it, and the largest shape, the conversation's conservative JSON, 94.42%. So an answer that admits whole items always
+fits its first. The 89% ceiling accommodates the conversation's 14
 account arrays and four status/poll arrays, allowing 40 typical emoji per status and 20 per profile. Through the real
 Store RPC, maximal answers of plain notifications, grouped notifications, conversations, admin reports and the directory
 return 7.83, 7.82, 7.83, 7.14 and 8.30 MB of JSON (`test/rpc-budgets.test.ts`).

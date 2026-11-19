@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
+import { ANSWER_BYTES, STATUS_ANSWER_BYTES } from "../src/domain/answer-bytes.js";
 import {
   COLUMN_FILL,
   CONSERVATIVE_JSON,
@@ -13,6 +14,7 @@ import {
   NOTE_MAXIMA,
   type Peaks,
   PROFILE_MAXIMA,
+  SHAPE_CEILING_PERCENT,
   type Shape,
   type ShapeName,
   STREAM_UNIT_PEAKS,
@@ -20,18 +22,18 @@ import {
 
 // docs/threat-model.md "Maxima of presented units" and "Heap at 8 MiB per answer" (RES-3) state the figures
 // test/status-bounds.test.ts asserts from test/presented-maxima.ts: each cell of their tables equals the module's
-// figure, written as the document writes it, and so do the stream unit's figures in its prose and RES-6, and the status
-// budget's in RES-3, the heap prose and docs/response-inventory.md.
+// figure, written as the document writes it, and so do the stream unit's figures in its prose and RES-6, and every
+// figure the documents give of the answer budgets (src/domain/answer-bytes.ts, whose values this reads), in RES-3, the
+// maxima and heap prose and docs/response-inventory.md.
 
 const DOCUMENT = readFileSync(new URL("../docs/threat-model.md", import.meta.url), "utf8");
 const INVENTORY = readFileSync(new URL("../docs/response-inventory.md", import.meta.url), "utf8");
-// STATUS_ANSWER_BYTES as src/domain/answer-budget.ts writes it, read from its source (the module is not Node's).
-const STATUS_ANSWER_BYTES = Number(
-  /export const STATUS_ANSWER_BYTES = ([\d_]+);/
-    .exec(readFileSync(new URL("../src/domain/answer-budget.ts", import.meta.url), "utf8"))![1]!
-    .replaceAll("_", ""),
-);
-const ANSWER_BYTES = 8 * 1024 * 1024;
+
+/** A whole number of MiB as the documents write it. */
+function mib(n: number): string {
+  expect(n % (1024 * 1024), `${n} is a whole number of MiB`).toBe(0);
+  return `${n / 1024 / 1024} MiB`;
+}
 
 type Row = { label: string; cells: string[] };
 
@@ -65,7 +67,7 @@ const MAXIMA_HEADER = [
   "Conservative JSON",
   "Rows read",
   "Nodes",
-  "Share of 8 MiB",
+  `Share of ${mib(ANSWER_BYTES)}`,
 ];
 const ITEM_HEADER = ["Item", "Rows, with 25% headroom", "Rejected-item objects"];
 const ANSWER_HEADER = [
@@ -244,22 +246,71 @@ describe("the heap tables (RES-3)", () => {
       rows,
       peaks(ANSWERS, (p) => [mb(p.normal), mb(p.backstop), mb(p.single)]),
     );
-    // The phases' Store peaks are the timelines'; the other cells are not the module's.
+    // The phases' Store peaks are the timelines'; the RPC copy is the answer's bytes, and in the Worker, as the prose
+    // below the table counts it, three times them: the copy deserialized, then the JSON string at two bytes a character
+    // and the body, both held at the peak.
     const phases = table(PHASE_HEADER);
     expect(phases.map((row) => row.label)).toEqual(PHASES);
-    expect(phases.slice(2).map((row) => row.cells[0])).toEqual([
-      mb(HEAP_PEAKS.timelines.normal),
-      mb(HEAP_PEAKS.timelines.backstop),
+    const tenth = (n: number) => `${(n / 1e6).toFixed(1)} MB`;
+    const worker = `${Math.round((6 * ANSWER_BYTES) / 1e6)} MB`;
+    expect(phases.map((row) => row.cells)).toEqual([
+      [tenth(ANSWER_BYTES), tenth(3 * ANSWER_BYTES)],
+      ["", tenth(3 * ANSWER_BYTES)],
+      [mb(HEAP_PEAKS.timelines.normal), worker],
+      [mb(HEAP_PEAKS.timelines.backstop), worker],
     ]);
+    expect(DOCUMENT.replace(/\s+/g, " ")).toContain(
+      `The Worker's JSON string is counted at two bytes a character (${tenth(2 * ANSWER_BYTES)})`,
+    );
   });
 
-  // Every place the documents give STATUS_ANSWER_BYTES, the admitted answer's heap at it (three times the budget) or
-  // how far one 8 KiB step more would pass half the isolate (64 MB), each from the code's figure.
+  // Every place the documents give ANSWER_BYTES or a figure that follows from it: its MiB where they name it, the
+  // ceiling of every shape (SHAPE_CEILING_PERCENT of it) and the conversation's spare under it, an announcement's share
+  // of it, the admitted answer's heap at it (three times it) and a limit=0 list's bound.
+  it("states the answer budget as the code gives it", () => {
+    const document = DOCUMENT.replace(/\s+/g, " ");
+    const answer = mib(ANSWER_BYTES);
+    expect(document).toContain(`\`ANSWER_BYTES\` (${answer}, \`src/domain/answer-bytes.ts\`)`);
+    expect(INVENTORY.replace(/\s+/g, " ")).toContain(`\`ANSWER_BYTES\` (${answer}, \`src/domain/answer-bytes.ts\`)`);
+    expect(document).toContain(`\`ANSWER_BYTES\` (${answer} of the answer's JSON, containers included)`);
+    expect(document).toContain(`returns within \`ANSWER_BYTES\` (${answer})`);
+    expect(document).toContain(
+      `Heap at ${answer} per answer. Assumptions: one request at a time per isolate; the answer's
+JSON is at most ${answer},`.replace(/\s+/g, " "),
+    );
+    const ceiling = Math.floor((SHAPE_CEILING_PERCENT / 100) * ANSWER_BYTES);
+    const spare = ceiling - CONSERVATIVE_JSON.conversation;
+    expect(document).toContain(`Every shape stays within ${SHAPE_CEILING_PERCENT}% of an answer of ${answer}`);
+    expect(document).toContain(
+      `conservative JSON is ${count(spare)} bytes within ${SHAPE_CEILING_PERCENT}% of ${answer} (${count(ceiling)})`,
+    );
+    expect(document).toContain(`the conversation's JSON keeps ${count(spare)} under its ceiling`);
+    const announcement = /One announcement is at most ([\d,]+) bytes \(([\d.]+%) of (\d+ MiB)\)/.exec(document);
+    expect(announcement?.slice(2)).toEqual([share(Number(announcement![1]!.replaceAll(",", ""))), answer]);
+    expect(document).toContain(`the admitted answer's ${((3 * ANSWER_BYTES) / 1e6).toFixed(1)} MB (`);
+    expect(document).toContain(`at most ${answer} of accounts, linking \`next\` to the rest`);
+    expect(document).toContain(`1,000 and ${answer} keep it well within the isolate's 128 MB`);
+  });
+
+  // Every place the documents give STATUS_ANSWER_BYTES: its bytes and what it leaves of ANSWER_BYTES, its share of
+  // ANSWER_BYTES and the shares of it the shape ceiling and the largest shape's conservative JSON take, the admitted
+  // answer's heap at it (three times the budget) and how far one 8 KiB step more would pass half the isolate (64 MB),
+  // each from the code's figure.
   it("states the status budget, its heap and its next step as the code gives them", () => {
     const flat = (text: string) => text.replace(/\s+/g, " ");
-    const budget = `${count(STATUS_ANSWER_BYTES)} bytes, 8 MiB less ${(ANSWER_BYTES - STATUS_ANSWER_BYTES) / 1024} KiB`;
+    const answer = mib(ANSWER_BYTES);
+    const budget = `${count(STATUS_ANSWER_BYTES)} bytes, ${answer} less ${(ANSWER_BYTES - STATUS_ANSWER_BYTES) / 1024} KiB`;
     expect(flat(DOCUMENT)).toContain(`\`STATUS_ANSWER_BYTES\` instead (${budget})`);
     expect(flat(INVENTORY)).toContain(`\`STATUS_ANSWER_BYTES\` (${budget})`);
+    const percent = (n: number, of: number, digits: number) => `${((100 * n) / of).toFixed(digits)}%`;
+    const largest = Math.max(...Object.values(CONSERVATIVE_JSON));
+    expect(largest, "the conversation is the largest shape").toBe(CONSERVATIVE_JSON.conversation);
+    expect(flat(DOCUMENT)).toContain(
+      `within \`STATUS_ANSWER_BYTES\`, ${percent(STATUS_ANSWER_BYTES, ANSWER_BYTES, 1)} of ${answer}: ` +
+        `${SHAPE_CEILING_PERCENT}% of ${answer} is ` +
+        `${percent((SHAPE_CEILING_PERCENT / 100) * ANSWER_BYTES, STATUS_ANSWER_BYTES, 1)} of it, and the largest ` +
+        `shape, the conversation's conservative JSON, ${percent(largest, STATUS_ANSWER_BYTES, 2)}.`,
+    );
     const heaps = [
       ...flat(DOCUMENT).matchAll(
         /([\d.]+ MB) at `STATUS_ANSWER_BYTES`|`STATUS_ANSWER_BYTES` for each answer below \(([\d.]+ MB)\)/g,

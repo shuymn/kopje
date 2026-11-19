@@ -6,7 +6,7 @@ operation returns and adds nothing to it.
 
 Mechanisms:
 
-- **Budget**: the answer's JSON is at most `ANSWER_BYTES` (8 MiB, `src/domain/answer-budget.ts`), containers
+- **Budget**: the answer's JSON is at most `ANSWER_BYTES` (8 MiB, `src/domain/answer-bytes.ts`), containers
   included. Items are admitted whole in traversal order, each presented and measured when it is reached, its rows read
   in small chunks (statuses in chunks planned by the bound of their rows, "Heap at 8 MiB per answer" in
   `threat-model.md`; 2 notifications, one conversation or report, 50 accounts with their static images and the accounts
