@@ -1,6 +1,7 @@
 import { writeEach } from "../db/by-ids";
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { type CollectionAddress, servedCollectionAddress } from "../platform/collection-address";
 import { railsBlank } from "../platform/rails-blank";
 import {
   COLLECTION_DESCRIPTION_LENGTH,
@@ -61,10 +62,8 @@ import {
   presentCollection,
   presentCollections,
   presentItem,
-  ROUTED_ID_PATH,
   shownItems,
   taggableCollections,
-  type TaggedCollection,
 } from "./collection-presenter";
 import { requestCollectionSync } from "./collection-requests";
 import { allocateLocalId, insertWithFreshId, requestedId, storedIdOf } from "./ids";
@@ -1032,15 +1031,15 @@ export const pruneCollectionItems = writeOperation<{ now: number }, { deleted: n
 // ---- Collections named by URL: reports, search, and a status's links and tags.
 
 // What a URL names among the collections Kopje stores is decided by namedCollection alone (#1589's D1, D3), for every
-// caller. A URL naming a local collection ends with `/collections/` and the collection's id: the key each lookup reads
-// the one candidate by. On the instance's domain a collection's web page is `/collections/:id` and its route
-// `/ap/users/:username/collections/:id` (ROUTED_ID_PATH); a path of either shape there (ROUTE_PATH) is Kopje's own,
-// never fetched.
-const COLLECTION_TAIL = /\/collections\/(\d{1,18})$/;
-const WEB_PATH = /^\/collections\/\d{1,18}$/;
+// caller and before any caller's filter: a local collection by its id as localCollectionUri builds it (D1), on any host,
+// or, over http or https on the instance's domain, by an address whose GET serves it (platform/collection-address.ts,
+// the routes' own parser); nothing else on that domain, where no remote collection's id is (D2); elsewhere what the
+// caller finds among the remote collections. A local collection's id ends with its 18 digits (ID_TAIL). A path of a
+// collection route's shape on the instance's domain (ROUTE_PATH) is Kopje's own, which search never fetches.
+const ID_TAIL = /\/collections\/(\d{18})$/;
 const ROUTE_PATH = /^\/(?:ap\/users\/[^/]+\/)?collections\/\d{1,18}$/;
 
-// A local collection as a lookup reads it by its key, with its owner.
+// A local collection as namedCollection reads it by its key, with its owner, whatever its state.
 type LocalCandidate = CollectionOwner & { id: string; account_id: string };
 
 // `text` as a URL a lookup compares (the WHATWG href without its fragment, as a status's links are read); null when it
@@ -1054,40 +1053,46 @@ function comparedUrl(text: string): URL | null {
   return url;
 }
 
-// The stored id of the one local collection `url` can name (COLLECTION_TAIL), or null.
-function collectionKey(url: URL): string | null {
-  const match = COLLECTION_TAIL.exec(url.href);
-  return match === null ? null : storedIdOf(match[1]!);
+// The address whose GET serves a local collection that `url` is, over http or https on the instance's `domain`
+// (servedCollectionAddress); null elsewhere.
+function domainAddress(url: URL, domain: ConfiguredDomain): CollectionAddress | null {
+  return (url.protocol === "http:" || url.protocol === "https:") && onConfiguredDomain(url, domain)
+    ? servedCollectionAddress(url)
+    : null;
 }
 
-// Whether `url` names the local collection `row`, read by collectionKey (ActivityPub::TagManager#uri_to_resource for a
-// local collection): its id as localCollectionUri builds it from its owner's stored actor id, compared as hrefs,
-// whatever its host (D1); or, over http or https on the instance's `domain` (D3, never a request's host), its web page,
-// or its route with its owner's username as the route takes it (collection-documents.ts localAccountId).
-function namesLocalCollection(db: Db, url: URL, domain: ConfiguredDomain, row: LocalCandidate): boolean {
+// Whether `url` names the local collection `row`: it is its id as localCollectionUri builds it from its owner's stored
+// actor id, compared as hrefs, whatever its host (D1); or its `address` (domainAddress) serves it, a FeaturedCollection's
+// under its owner's username as the route takes it (collection-documents.ts localAccountId).
+function namesLocalCollection(db: Db, url: URL, address: CollectionAddress | null, row: LocalCandidate): boolean {
   const id = localCollectionUri(row.owner_uri, row.id);
   if (id !== null && comparedUrl(id)?.href === url.href) {
     return true;
   }
-  if (!["http:", "https:"].includes(url.protocol) || !onConfiguredDomain(url, domain) || url.search !== "") {
+  if (address === null || address.id !== row.id) {
     return false;
   }
-  const route = ROUTED_ID_PATH.exec(url.pathname);
-  return WEB_PATH.test(url.pathname) || (route !== null && localAccountId(db, route[1]!) === row.account_id);
+  return address.kind === "page" || localAccountId(db, address.username) === row.account_id;
 }
 
-// What `url` (comparedUrl) names: the local collection `local` reads by the URL's key, when namesLocalCollection holds;
-// else nothing on the instance's domain, where no remote collection's id is (#1589's D2); elsewhere "remote", for the
-// caller's lookup among the remote collections. `domain`: the instance's, read once for the whole resolution.
-function namedCollection<T extends LocalCandidate>(
-  db: Db,
-  url: URL,
-  domain: ConfiguredDomain,
-  local: (key: string) => T | undefined,
-): T | "remote" | null {
-  const key = collectionKey(url);
-  const row = key === null ? undefined : local(key);
-  if (row !== undefined && namesLocalCollection(db, url, domain, row)) {
+// What `url` (comparedUrl) names, read and decided before any caller's filter: the local collection it names
+// (namesLocalCollection; its row by key, the id its address serves or its id's last segment), whatever its state, which
+// the caller then shows, tags or reports, or not, never looking further, for a URL naming a local collection names no
+// remote one; else nothing on the instance's domain; elsewhere "remote", for the caller's lookup among the remote
+// collections. `domain`: the instance's, read once for the whole resolution.
+function namedCollection(db: Db, url: URL, domain: ConfiguredDomain): LocalCandidate | "remote" | null {
+  const address = domainAddress(url, domain);
+  const key = address?.id ?? ID_TAIL.exec(url.href)?.[1] ?? null;
+  const row =
+    key === null
+      ? undefined
+      : db.first<LocalCandidate>(
+          `SELECT c.id, c.account_id, ${collectionOwnerSql("a")} FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
+						CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
+					WHERE c.id = ? AND c.local = 1`,
+          key,
+        );
+  if (row !== undefined && namesLocalCollection(db, url, address, row)) {
     return row;
   }
   return onConfiguredDomain(url, domain) ? null : "remote";
@@ -1098,11 +1103,12 @@ function ownCollectionRoute(url: URL, domain: ConfiguredDomain): boolean {
   return onConfiguredDomain(url, domain) && ROUTE_PATH.test(url.pathname);
 }
 
-// Whether a search query could name a local collection (a URL with COLLECTION_TAIL), so the Worker asks the Store
-// (resolvedCollection) before it resolves the query over the network; host-free, the Store decides.
+// Whether a search query could name a local collection (an address whose GET would serve one, or a URL ending as a
+// local collection's id does), so the Worker asks the Store (resolvedCollection) before it resolves the query over the
+// network; host-free, the Store decides.
 export function mayNameCollection(query: string): boolean {
   const url = comparedUrl(query);
-  return url !== null && collectionKey(url) !== null;
+  return url !== null && (servedCollectionAddress(url) !== null || ID_TAIL.test(url.href));
 }
 
 // The collection `id` when R45 shows it to `viewer` (CollectionPolicy#show?), as the viewer sees it; null otherwise.
@@ -1121,15 +1127,12 @@ export const resolvedCollection = userReadOperation<
   { url: string; present: PresentInput },
   { named: boolean; collection: Collection | null }
 >((db, input, { accountId: viewer }) => {
-  const url = comparedUrl(input.url);
-  if (url === null || collectionKey(url) === null) {
+  const url = mayNameCollection(input.url) ? comparedUrl(input.url) : null;
+  if (url === null) {
     return { named: false, collection: null };
   }
   const domain = configuredDomain(db);
-  const named = namedCollection(db, url, domain, (key) => {
-    const row = foundCollection(db, key);
-    return row?.local === 1 ? row : undefined;
-  });
+  const named = namedCollection(db, url, domain);
   const id = named === null || named === "remote" ? null : named.id;
   return {
     named: id !== null || ownCollectionRoute(url, domain),
@@ -1175,16 +1178,9 @@ export function flaggedCollections(db: Db, objects: readonly string[]): { id: st
     return [];
   }
   const domain = configuredDomain(db);
-  const local = (key: string) =>
-    db.first<LocalCandidate>(
-      `SELECT c.id, c.account_id, ${collectionOwnerSql("a")} FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
-				CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
-			WHERE c.id = ? AND c.local = 1`,
-      key,
-    );
   const named = objects.flatMap((uri) => {
     const url = comparedUrl(uri);
-    const found = url === null ? "remote" : namedCollection(db, url, domain, local);
+    const found = url === null ? "remote" : namedCollection(db, url, domain);
     return found === null ? [] : [found === "remote" ? { uri: uri.split("#")[0]! } : { id: found.id }];
   });
   const rows = db.all<{ key: number; id: string; account_id: string }>(
@@ -1215,34 +1211,27 @@ export function flaggedCollections(db: Db, objects: readonly string[]): { id: st
 // does not store references nothing, and nothing of a tag but its id is read (docs/mastodon-deviations.md,
 // "Collections"). No R45 test applies to the author: the presenters apply R45 to each viewer.
 
-// The collection `where` picks, by key, when a status can tag it whatever the viewer (taggableCollections, the readers'
-// decision: its owner available, its id served or its validity, its text), so one no surface would show takes no
-// slot; null otherwise.
-function taggableRow(
-  db: Db,
-  domain: ConfiguredDomain,
-  where: string,
-  ...params: SqlStorageValue[]
-): TaggedCollection | undefined {
-  return taggableCollections(db, {
-    from: `collections c INDEXED BY ${COLLECTIONS_ID_INDEX} CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
+// The collection `id` when a status can tag it whatever the viewer (taggableCollections, the readers' decision: its
+// owner available, its id served or its validity, its text), read by key with its owner, so one no surface would show
+// takes no slot; null otherwise.
+function taggableId(db: Db, domain: ConfiguredDomain, id: string): string | null {
+  return (
+    taggableCollections(db, {
+      from: `collections c INDEXED BY ${COLLECTIONS_ID_INDEX} CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
 			ON a.id = c.account_id`,
-    where,
-    params,
-    domain,
-  })[0];
+      where: "c.id = ?1",
+      params: [id],
+      domain,
+    })[0]?.id ?? null
+  );
 }
 
-function taggableId(db: Db, domain: ConfiguredDomain, where: string, ...params: SqlStorageValue[]): string | null {
-  return taggableRow(db, domain, where, ...params)?.id ?? null;
-}
-
-// The collection a status's link or tag `url` (comparedUrl) names, when a status can tag it: a local one as
-// namedCollection decides, its row by key as taggableCollections reads it; elsewhere `remote`'s, the lookups among the
-// remote collections. `domain`: the instance's, read once for the status.
+// The collection a status's link or tag `url` (comparedUrl) names, when a status can tag it: the local one
+// namedCollection names, when taggableId admits it (else none: a URL naming a local collection names no remote one);
+// elsewhere `remote`'s, the lookups among the remote collections. `domain`: the instance's, read once for the status.
 function taggedBy(db: Db, url: URL, domain: ConfiguredDomain, remote: () => string | null): string | null {
-  const named = namedCollection(db, url, domain, (key) => taggableRow(db, domain, "c.id = ?1 AND c.local = 1", key));
-  return named === "remote" ? remote() : (named?.id ?? null);
+  const named = namedCollection(db, url, domain);
+  return named === "remote" ? remote() : named === null ? null : taggableId(db, domain, named.id);
 }
 
 // The remote collection stored under the id `uri`, byte for byte (collections_uri, one entry), read by key with its
@@ -1252,7 +1241,7 @@ function collectionByStoredUri(db: Db, domain: ConfiguredDomain, uri: string): s
     "SELECT id FROM collections INDEXED BY collections_uri WHERE uri = ?1 AND local = 0",
     uri,
   );
-  return row === undefined ? null : taggableId(db, domain, "c.id = ?1", row.id);
+  return row === undefined ? null : taggableId(db, domain, row.id);
 }
 
 // The remote collection whose stored url is `url` byte for byte and whose stored uri begins with `linked` (the link's
@@ -1270,7 +1259,7 @@ function collectionByStoredUrl(db: Db, domain: ConfiguredDomain, url: string, li
     `${linked}0`,
   );
   const [row] = rows;
-  return rows.length === 1 && row !== undefined ? taggableId(db, domain, "c.id = ?1", row.id) : null;
+  return rows.length === 1 && row !== undefined ? taggableId(db, domain, row.id) : null;
 }
 
 // The ids of the first MAX_TAGGED_COLLECTIONS distinct collections `candidates` name, in their order, each resolved by
@@ -1315,10 +1304,10 @@ export function linkedCollections(db: Db, source: string): string[] {
 }
 
 // The collections a remote Note's FeaturedCollection tags name (federation/remote-status.ts collectionTags: their ids,
-// in tag order, at most MAX_TAG_LINK_CANDIDATES): a local collection by its id or web page (namedCollection, with the
-// instance's domain read here: #1589's D3, never the host the Note was fetched through), elsewhere a valid remote
-// collection by its stored uri, the id before any `#`. A tag only references (b1): nothing is fetched, stored or
-// notified from it.
+// in tag order, at most MAX_TAG_LINK_CANDIDATES): a local collection by any address its routes serve, http included
+// (namedCollection, with the instance's domain read here: #1589's D3, never the host the Note was fetched through),
+// elsewhere a valid remote collection by its stored uri (https, as the schema stores one), the id before any `#`. A tag
+// only references (b1): nothing is fetched, stored or notified from it.
 export function taggedCollections(db: Db, ids: readonly string[]): string[] {
   if (ids.length === 0) {
     return [];

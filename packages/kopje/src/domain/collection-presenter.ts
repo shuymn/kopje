@@ -1,8 +1,9 @@
 import { type ColumnMap, fixedColumns, selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { collectionDocumentAddress } from "../platform/collection-address";
 import { sameOrigin } from "../platform/http-url";
-import { ACTOR_URI_LIMIT, ROUTE_USERNAME, withinIdentityBound } from "../platform/identity-bounds";
+import { ACTOR_URI_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import {
   COLLECTION_DESCRIPTION_LENGTH,
   COLLECTION_NAME_LENGTH,
@@ -64,17 +65,16 @@ export function localCollectionUri(ownerUri: string | null, id: string): string 
     : `${ownerUri}/collections/${id}`;
 }
 
-// The path of a local collection's id that the collection route takes (federation/routes.ts COLLECTION: a
-// ROUTE_USERNAME under /ap/users/, its first group, and the id's 18 digits), with no query or fragment, on any host
-// (#1589's D2), which a lookup of the route by URL takes alike (collections.ts namesLocalCollection).
-export const ROUTED_ID_PATH = new RegExp(`^/ap/users/(${ROUTE_USERNAME})/collections/\\d{18}$`);
-
+// Whether a local collection's id is a path the collection route takes, on any host (#1589's D2): its
+// FeaturedCollection's address (platform/collection-address.ts, the route's own parser), with no extension, query or
+// fragment.
 function routedPath(id: string): boolean {
   if (!URL.canParse(id)) {
     return false;
   }
   const url = new URL(id);
-  return url.search === "" && url.hash === "" && ROUTED_ID_PATH.test(url.pathname);
+  const address = collectionDocumentAddress(url);
+  return url.search === "" && url.hash === "" && address !== null && address.extension === undefined;
 }
 
 // A tagged collection as a tag reads it (TAGGED_COLLECTION_COLUMNS).

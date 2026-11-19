@@ -35,8 +35,8 @@ export function isRemoteUsername(value: string): boolean {
 }
 
 // A local account's username as its collection routes take it (federation/routes.ts): 1 to 64 ASCII letters, digits or
-// underscores. The path of a local collection's id and of its route (collection-presenter.ts ROUTED_ID_PATH) takes the
-// same pattern, so the two cannot differ.
+// underscores. A local collection's address (collection-address.ts, which its route and a lookup by URL both read)
+// takes the same pattern.
 export const ROUTE_USERNAME = "[A-Za-z0-9_]{1,64}";
 
 export function withinIdentityBound(value: string, limit: number): boolean {

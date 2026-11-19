@@ -6,9 +6,15 @@ import type { NodeInfoUsage } from "../domain/actors";
 import type { EmojiTag } from "../domain/custom-emojis";
 import type { QuoteAuthorization } from "../domain/quotes";
 import type { SnapshotSource } from "../domain/snapshot";
+import {
+  type CollectionDocumentAddress,
+  collectionDocumentAddress,
+  collectionDocumentFormat,
+} from "../platform/collection-address";
 import { readConfig, userKek } from "../platform/config";
 import { ROUTE_USERNAME } from "../platform/identity-bounds";
 import { offDomain } from "../platform/instance-host";
+import { railsContentTypeRefused, railsFormat } from "../platform/rails-format";
 import { callStore, type StoreResolver, type StoreStub } from "../platform/store-client";
 import type { KeyGen } from "../security/key-wrap";
 import {
@@ -20,8 +26,6 @@ import {
 } from "./federation";
 import { signatureKeyId } from "./inbox-request";
 import type { LoaderDeps } from "./loader";
-import { railsContentTypeRefused, railsFormat } from "./rails-format";
-import { railsFormatParam } from "./rails-params";
 import { notSetUp } from "./setup-gate";
 import { createSnapshotSaver, snapshotKey } from "./snapshot";
 
@@ -29,8 +33,8 @@ const QUOTE_AUTHORIZATION_ROUTE = "/ap/users/:username/quote_authorizations/:aut
 
 // A local account's collections (FEP-7aa9, D18): the featured_collections Collection, a FeaturedCollection, a
 // FeaturedItem, and a member's FeatureAuthorization. A collection's id holds digits only, so the route never takes
-// /collections/featured or /collections/tags; it may end in an extension, as Mastodon's `(.:format)` (COLLECTION reads
-// it from the raw path).
+// /collections/featured or /collections/tags; it may end in an extension, as Mastodon's `(.:format)`. Which collection
+// the FeaturedCollection's route serves is platform/collection-address.ts's, from the raw path.
 const FEATURED_COLLECTIONS_ROUTE = "/ap/users/:username/featured_collections";
 const COLLECTION_ROUTE = "/ap/users/:username/collections/:id{[0-9]+(?:\\.[^/]*)?}";
 const COLLECTION_ITEM_ROUTE = "/ap/users/:username/collection_items/:id";
@@ -131,7 +135,7 @@ async function respond(c: Context<FederationEnv>, deps: FederationRouteDeps, url
     return response === null ? null : { response, source: null };
   };
   const route = routePath(c);
-  if (SELF_GATED_ROUTES.has(route) && !spelled(route, url.pathname)) {
+  if (SELF_GATED_ROUTES.has(route) && !spelled(route, url)) {
     // Hono matched the decoded path ('/.well-known/%6eodeinfo'); Fedify answers the raw one (404), from the domain alone.
     const site = await read((s, b) => s.apSite(b));
     return site.status === "ok" ? (away(site.domain) ?? viaFedify(c, deps, site.domain, url)) : null;
@@ -198,17 +202,16 @@ async function respond(c: Context<FederationEnv>, deps: FederationRouteDeps, url
         : null;
     }
     case COLLECTION_ROUTE: {
-      const path = COLLECTION.exec(url.pathname);
-      if (path === null) {
+      const address = collectionDocumentAddress(url);
+      if (address === null) {
         return { response: collectionDocument(null), source: null };
       }
-      const [, username, id, extension] = path;
-      const input = { username: username!, id: id!, keyId: signatureKeyId(c.req.raw.headers) };
+      const input = { username: address.username, id: address.id, keyId: signatureKeyId(c.req.raw.headers) };
       const answer = await read((s, b) => s.apFeaturedCollection(b, input));
       if (answer.status !== "ok") {
         return null;
       }
-      const response = collectionAnswer(c, answer.document, input.id, extension, url.search.slice(1));
+      const response = collectionAnswer(c, answer.document, address, url);
       return away(answer.domain) ?? { response, source: null };
     }
     case COLLECTION_ITEM_ROUTE: {
@@ -243,14 +246,15 @@ async function respond(c: Context<FederationEnv>, deps: FederationRouteDeps, url
 }
 
 // Whether the raw path is one a self-gated route answers itself; any other spelling Hono matches goes to Fedify.
-function spelled(route: string, path: string): boolean {
+function spelled(route: string, url: URL): boolean {
+  const path = url.pathname;
   switch (route) {
     case QUOTE_AUTHORIZATION_ROUTE:
       return STAMP.test(path);
     case FEATURED_COLLECTIONS_ROUTE:
       return FEATURED_COLLECTIONS.test(path);
     case COLLECTION_ROUTE:
-      return COLLECTION.test(path);
+      return collectionDocumentAddress(url) !== null;
     case COLLECTION_ITEM_ROUTE:
       return ITEM.test(path);
     case FEATURE_AUTHORIZATION_ROUTE:
@@ -306,19 +310,18 @@ function collectionDocument(document: string | null, headers: Record<string, str
   });
 }
 
-// CollectionsController#show as Mastodon answers it (rails-params.ts, rails-format.ts), in its order: a query Rack
-// refuses or an extension the router refuses (400), a Content-Type Rails cannot read (406, ParamsWrapper), a query
-// Rails refuses (400), then an Accept or format Rails cannot read (406), all before the collection is found; then a
-// collection not found (404); then a request it answers with the page moves to the page (#redirect_to_canonical_url),
-// and one it answers with neither representation is refused (406).
+// CollectionsController#show as Mastodon answers it (platform/collection-address.ts collectionDocumentFormat,
+// rails-format.ts), in its order: a query Rack refuses or an extension the router refuses (400), a Content-Type Rails
+// cannot read (406, ParamsWrapper), a query Rails refuses (400), then an Accept or format Rails cannot read (406), all
+// before the collection is found; then a collection not found (404); then a request it answers with the page moves to
+// the page (#redirect_to_canonical_url), and one it answers with neither representation is refused (406).
 function collectionAnswer(
   c: Context<FederationEnv>,
   document: string | null,
-  id: string,
-  extension: string | undefined,
-  query: string,
+  address: CollectionDocumentAddress,
+  url: URL,
 ): Response {
-  const param = railsFormatParam(extension, query);
+  const param = collectionDocumentFormat(address, url);
   if (param.refused === "request") {
     return new Response("Bad Request", { status: 400 });
   }
@@ -338,7 +341,7 @@ function collectionAnswer(
     return new Response("Not Acceptable", { status: 406 });
   }
   if (document !== null && negotiated === "html") {
-    return new Response(null, { status: 302, headers: { location: `/collections/${id}` } });
+    return new Response(null, { status: 302, headers: { location: `/collections/${address.id}` } });
   }
   return collectionDocument(document);
 }
@@ -347,8 +350,6 @@ const NO_STORE = { "cache-control": "no-store" };
 
 const USERNAME = `(${ROUTE_USERNAME})`;
 const FEATURED_COLLECTIONS = new RegExp(`^/ap/users/${USERNAME}/featured_collections$`);
-// Mastodon's `(.:format)`: an extension of anything but `/`, `.` and `?`, percent-decoded (rails-params.ts).
-const COLLECTION = new RegExp(`^/ap/users/${USERNAME}/collections/(\\d{18})(?:\\.([^/.?]+))?$`);
 const ITEM = new RegExp(`^/ap/users/${USERNAME}/collection_items/(\\d{18})$`);
 const AUTHORIZATION = new RegExp(`^/ap/users/${USERNAME}/feature_authorizations/(\\d{18})$`);
 

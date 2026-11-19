@@ -1778,6 +1778,106 @@ describe("rows no writer produces (7-T9)", () => {
     });
   });
 
+  // #1589's D1 and D3: one parser reads a local collection's address for its routes and for a lookup by URL
+  // (platform/collection-address.ts), so a URL on the instance's domain names a collection exactly when its GET serves
+  // it: the page by its id as the router decodes the path (`%31` is a 1), whatever the query, a short id naming no
+  // stored one; the FeaturedCollection by its raw path (a percent-encoded digit is Fedify's 404) with a format the
+  // route answers with (`?format=xml` is its 406). Each URL is fetched as ActivityPub (the collection served: its id's
+  // last segment) and searched for and linked by a post, with alice's L and her collection O, whose id is 18 digits
+  // with leading zeros.
+  it("names a local collection by a URL exactly when its GET serves it", async () => {
+    const t = await setup();
+    const L = await localCollection(t, ALICE, 1);
+    const O = "000000000000000123";
+    await sql(
+      t.store,
+      `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, created_at, updated_at)
+			VALUES (?, ?, 1, 'zeros', 0, 1, ?, ?)`,
+      O,
+      ALICE,
+      T,
+      T,
+    );
+    const route = `${LOCAL}/ap/users/alice/collections`;
+    const encoded = `${L.slice(0, -1)}%3${L.at(-1)}`;
+    const spellings: [string, string | null][] = [
+      [`${LOCAL}/collections/${L}`, L],
+      [`${route}/${L}`, L],
+      [`${LOCAL}/collections/${O}`, O],
+      [`${LOCAL}/collections/123`, null],
+      [`${route}/123`, null],
+      [`${LOCAL}/collections/${encoded}`, L],
+      [`${route}/${encoded}`, null],
+      [`${LOCAL}/collections/${L}?from=profile`, L],
+      [`${route}/${L}?from=profile`, L],
+      [`${route}/${L}.json`, L],
+      [`${route}/${L}?format=xml`, null],
+    ];
+    const served = async (url: string) => {
+      const response = await through(t, url, AP_GET);
+      return response.status === 200 ? ((await response.json<{ id: string }>()).id.split("/").at(-1) ?? null) : null;
+    };
+    const searched = async (url: string) =>
+      (
+        await t.api<{ collections: { id: string }[] }>(
+          `/api/v2/search?type=collections&resolve=true&q=${encodeURIComponent(url)}`,
+          "dave",
+        )
+      ).body.collections.map((c) => c.id);
+    const each = [];
+    for (const [url] of spellings) {
+      each.push({
+        url,
+        served: await served(url),
+        searched: await searched(url),
+        linked: await tagged(t, await posted(t, url)),
+      });
+    }
+    expect(each).toEqual(
+      spellings.map(([url, id]) => ({
+        url,
+        served: id,
+        searched: id === null ? [] : [id],
+        linked: id === null ? [] : [id],
+      })),
+    );
+  });
+
+  // #1589's D1 and D26, a URL resolved before it is filtered: alice's actor id kept on an earlier domain, L's id is
+  // https://old.example/ap/users/alice/collections/<L>, which zed's collection R there is stored under too, and L's
+  // restored name is malformed, so no status can tag L. A post linking that id and a Note tagging it reference nothing,
+  // for the id names L, never R, as search finds L; with L gone, the id names R, which a post then references.
+  it("tags nothing by a local collection's id when no status can tag it, whatever remote row shares the id", async () => {
+    const t = await setup();
+    const L = await localCollection(t, ALICE, 1);
+    const old = "https://old.example/ap/users/alice";
+    await sql(t.store, "UPDATE accounts SET uri = ? WHERE id = ?", old, ALICE);
+    const id = `${old}/collections/${L}`;
+    const R = await remoteCollection(t, await remoteOwner(t, 1, "https://old.example/users/zed"), 2, id);
+    await sql(t.store, "UPDATE collections SET name = CAST(unhex('F09080') AS TEXT) WHERE id = ?", L);
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const note = mastodonNote(bob, { tag: [{ type: "FeaturedCollection", id }] });
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    const [row] = await sql<{ id: string }>(t.store, "SELECT id FROM statuses WHERE uri = ?", note.id);
+    const searched = await t.api<{ collections: { id: string }[] }>(
+      `/api/v2/search?type=collections&resolve=true&q=${encodeURIComponent(id)}`,
+      "dave",
+    );
+    const named = {
+      linked: await tagged(t, await posted(t, id)),
+      noted: await tagged(t, row!.id),
+      searched: searched.body.collections.map((c) => c.id),
+    };
+    await sql(t.store, "DELETE FROM collections WHERE id = ?", L);
+    expect({ ...named, gone: await tagged(t, await posted(t, id)) }).toEqual({
+      linked: [],
+      noted: [],
+      searched: [L],
+      gone: [R],
+    });
+  });
+
   // #1589's D2 and D4: a restored row of alice's, `local = 0` with an id on the instance's origin (validRemoteCollection
   // admits it: on its owner's origin), with dave's accepted item. Only a local collection is on that origin, so S's
   // reference to it is neither presented nor named, a link to its id references none, alice's listing holds her local

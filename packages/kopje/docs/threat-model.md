@@ -1983,7 +1983,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   only while a status can tag it, whatever the viewer (one decision, `taggableCollections`: its owner available, and
   `taggable`): its name, description and tag well-formed UTF-8 as stored; a local one only while it is stored as local,
   its owner is a local account, and its id has the path the collection route takes (`ROUTE_USERNAME`, 1 to 64 ASCII
-  letters, digits or underscores, the routes' own pattern), on any host; a remote one only while it is stored as remote,
+  letters, digits or underscores, as the route's own parser reads it), on any host; a remote one only while it is
+  stored as remote,
   its id is a valid id on its owner's origin, that owner's id read within `ACTOR_URI_LIMIT` (`actorUriSql`), and not on
   the instance's domain (`onDomain`, the routes' own test of the configured domain, by host), its name and description
   are within its writer's bounds, and its `url` only as its writer would store it. One function builds a local
@@ -1996,9 +1997,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   updates its collections as any owner's; an actor id the account presenter does not show (past `ACTOR_URI_LIMIT` as
   JSON) gives none. A search with `resolve=true`, a link, a Note's tag and a Flag's object name a collection through one
   resolver (`namedCollection`), with the instance's domain read once for the whole resolution: a local collection by
-  that id exactly, or, over http or https on the instance's domain, by its web page or by its route under its owner's
-  username, as the route takes it (`namesLocalCollection`), never by the request's host; any other URL on that domain
-  names none, a stored remote row's id included. The owner's `featured_collections` lists its local collections alone,
+  that id exactly, or, over http or https on the instance's domain, by an address whose GET serves it, read by the
+  routes' one parser (`servedCollectionAddress`: the page's id as the router decodes the path, whatever the query; the
+  `FeaturedCollection`'s raw path under its owner's username, with a format the route answers with), never by the
+  request's host; any other URL on that domain names none, a stored remote row's id included. It decides before any
+  caller's filter, so a URL that names a local collection no status can tag tags nothing, never a remote row under the
+  same id. The domain is a value only `configuredDomain` makes, whose name only `onConfiguredDomain` reads (a private
+  field: a literal, a spread or a cast object has none, and the class's constructor makes one with none). The owner's
+  `featured_collections` lists its local collections alone,
   under its stored actor id, wherever the actor route serves the owner. So a restored dump's malformed text is presented
   nowhere, and a restored row stored as remote under a local id is neither listed, tagged nor authorized. The writer
   applies the same decision to a post's links and a Note's tags before it takes the first four, so a collection no
@@ -2021,8 +2027,11 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `taggedCollectionsOf` (read by the status presenter's `hydrate` unless `Present.page`, which `pagePresent` in
   `src/domain/web-pages/site.ts`, oEmbed and `/authorize_interaction` set), `taggableCollections`, `localCollectionUri`
   and `shownItems` (`src/domain/collection-presenter.ts`), `configuredDomain` and `onConfiguredDomain`
-  (`src/domain/instance-domain.ts`), `onDomain` (`src/platform/instance-host.ts`), `namedCollection`,
-  `namesLocalCollection`, `resolvedCollection` and `flaggedCollections` (`src/domain/collections.ts`),
+  (`src/domain/instance-domain.ts`), `onDomain` (`src/platform/instance-host.ts`), `collectionPageId`,
+  `collectionDocumentAddress` and `servedCollectionAddress` (`src/platform/collection-address.ts`, read by the page's
+  route in `src/app/public-pages.tsx`, the `FeaturedCollection`'s in `src/federation/routes.ts` and `namedCollection`),
+  `namedCollection`, `namesLocalCollection`, `resolvedCollection` and `flaggedCollections`
+  (`src/domain/collections.ts`),
   `severCollections` (`src/domain/collections.ts`, run by a local block in `src/domain/blocks.ts`), the documents and
   activities in `src/domain/collection-documents.ts` (served by `src/federation/routes.ts`); `test/collections.test.ts`
   ("shows a collection and its items only as R45 allows", "asks the member's consent: discoverable, and unlocked or
@@ -2047,13 +2056,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   actor id on every surface, whatever the host", "names a local collection by the instance's domain, whatever the
   author's actor id's", "finds a local collection by the uri and url the API returns and by its route, over http and
   after a domain change", "names a local collection by its id as emitted, or by its route with its owner's username",
+  "names a local collection by a URL exactly when its GET serves it", "tags nothing by a local collection's id when no
+  status can tag it, whatever remote row shares the id",
   "reads the instance's domain once for a post's links", "references a local collection alike from a Note resolved over
-  HTTPS or HTTP", "neither lists nor tags a remote row whose id is on the instance's origin", "gives a post's slots only
+  HTTPS or HTTP", "references a local collection by its route or web page over http, from a Create and an Update",
+  "neither lists nor tags a remote row whose id is on the instance's origin", "gives a post's slots only
   to collections whose owner is available, before it takes the first four", "gives no slot to a collection whose
   restored text is malformed", "names each collection by its id alone, after the other tags, under the
   featured_collections terms", "lets S's Note name Y alone, by its id", "leaves out a
   collection whose owner's id is past ACTOR_URI_LIMIT, and references none"), `test/inbox-flag.test.ts` ("names only
-  local collections on the instance's domain, as a status's links do"), `test-node/tagged-collection-reads.test.ts`.
+  local collections on the instance's domain, as a status's links do"), `test/instance-domain.test.ts`,
+  `test-node/tagged-collection-reads.test.ts`.
 
 ### Authorization (AUTH)
 

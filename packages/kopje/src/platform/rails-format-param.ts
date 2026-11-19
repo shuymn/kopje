@@ -9,11 +9,11 @@ import {
   Refused,
   store,
   text,
-} from "../platform/rails-params";
+} from "./rails-params";
 
 // The format parameter Mastodon 4.7.5 reads at a route with Rails' `(.:format)` (parameters[:format]), and where it
 // refuses the request (400) before reading it: while the request is read, before any controller, or in the controller.
-// Two parsers read the query (platform/rails-params.ts), in this order:
+// Two parsers read the query (rails-params.ts), in this order:
 //   - Rack's, in a middleware (Rack::Attack's throttle_authenticated_paging reads every request's params), on the
 //     key's bytes: its refusals are 400, a nesting 32 deep, more than 4,096 fields or more than 4 MiB (QueryLimitError)
 //     an unmapped 500 there, and 400 here;

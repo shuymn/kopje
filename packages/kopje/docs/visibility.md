@@ -760,7 +760,7 @@ viewer (`taggableCollections`: its owner available, `collectionFoundSql`, and `t
 rest of `collectionShownSql`, is per viewer): its name, description and tag well-formed UTF-8 as stored, read with no
 more U+FFFD than their stored bytes hold as EF BF BD, since decoding adds one for each malformed sequence
 (`wellFormed`); a local one only while it is stored as local, its owner is a local account, and its id has the path
-the collection route takes, on any host (`ROUTED_ID_PATH`, of `ROUTE_USERNAME`, the routes' own pattern); a remote one
+the collection route takes, on any host (`collectionDocumentAddress`, the route's own parser); a remote one
 only while it is stored as remote, its id is a valid id on its owner's origin (`validRemoteCollection`, against the
 owner's id as `actorUriSql` reads it: '' past `ACTOR_URI_LIMIT`) and not on the instance's domain (`onDomain` in
 `platform/instance-host.ts`, the routes' own test of the configured domain, by host, read by `instanceDomainOf`), and
@@ -778,10 +778,15 @@ row no writer would store (a remote row under a local id included) is neither sh
 (`collections.ts`) applies the same `taggableCollections` to a post's links and a Note's tags before it takes the first
 four, so a collection no surface shows takes no slot. A link, a Note's tag, a Flag's object and a search with
 `resolve=true` name a collection through one resolver (`namedCollection`): a local collection by its id exactly as the
-surfaces emit it, or, over http or https on the instance's domain, by its web page or by its route under its owner's
-username, as the route takes it (`namesLocalCollection`), never by the author's actor id or the request's host, and any
-other URL on that domain names none; no function that decides or looks up a local collection takes a request's origin. A
-collection that stops being available after the post is written is left out as the readers read it. No page presents
+surfaces emit it, or, over http or https on the instance's domain, by an address whose GET serves it, as the routes
+read it (`servedCollectionAddress` in `platform/collection-address.ts`, their one parser: the page's id as the router
+decodes the path, whatever the query; the `FeaturedCollection`'s raw path under its owner's username, with a format the
+route answers with), never by the author's actor id or the request's host, and any other URL on that domain names none.
+It decides before any caller's filter, so a URL that names a local collection names no remote one, and tags nothing when
+no status can tag that collection. No function that decides or looks up a local collection takes a request's origin:
+the instance's domain is a value only `configuredDomain` makes (`ConfiguredDomain`, whose name only
+`onConfiguredDomain` reads). A collection that stops being available after the post is written is left out as the
+readers read it. No page presents
 them or reads a reference: the status page and its thread, the profile's tabs and pins, the hashtag page, the interact
 handoff, oEmbed and the `/authorize_interaction` result present `[]` (`Present.page`, set by `pagePresent`, which
 `anonymous()` spreads, and by oEmbed and `/authorize_interaction`; the chunk planner's term is 0 under it). A local

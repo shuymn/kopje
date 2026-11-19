@@ -7,7 +7,7 @@ import { editOnce, guardFixtures, inventoryDiff, ownerOf, parse, sources, walk, 
 // (collection-presenter.ts taggableCollections: the owner available, and taggable), which the writer applies to each
 // link or tag before it takes a slot and the readers to each reference before they present or name it, so a
 // collection takes a slot only when every surface would show it to some viewer. This inventory holds the decision's
-// three callers (the writer's taggableRow, the REST presenter's taggedCollectionsOf and the Note's statusFacts) and the
+// three callers (the writer's taggableId, the REST presenter's taggedCollectionsOf and the Note's statusFacts) and the
 // reads of the columns it judges: its own, and R's term and column map, which charge them without reading a row. A new
 // read of the columns, or a reader or writer that stops calling it, fails here.
 //
@@ -28,7 +28,7 @@ const EXPECTED = {
   "src/domain/collection-presenter.ts taggableCollections TAGGED_COLLECTION_COLUMNS": 1,
   "src/domain/status-rows.ts hydrateQueries TAGGED_COLLECTION_COLUMNS": 1,
   "src/domain/status-rows.ts statusRowTerms TAGGED_COLLECTION_COLUMNS": 1,
-  "src/domain/collections.ts taggableRow taggableCollections": 1,
+  "src/domain/collections.ts taggableId taggableCollections": 1,
   "src/domain/collection-presenter.ts taggedCollectionsOf taggableCollections": 1,
   "src/domain/activities.ts statusFacts taggableCollections": 1,
 };
@@ -60,18 +60,18 @@ function sites(all: readonly Source[]): string[] {
 const violations = (all: readonly Source[]) => inventoryDiff(sites(all), EXPECTED);
 
 const BUILT = {
-  // The builder, and the path of its ids the collection route takes (D2).
+  // The builder.
   "src/domain/collection-presenter.ts localCollectionUri": 1,
-  "src/domain/collection-presenter.ts ROUTED_ID_PATH": 1,
   // The page's url and the route path an ActivityPub client is forwarded to, which are no ids.
   "src/domain/collection-presenter.ts collectionUrl": 1,
   "src/domain/collections.ts localCollectionPath": 1,
   "src/web/pages/collection.tsx collectionPath": 1,
   "src/federation/routes.ts collectionAnswer": 1,
-  // The routes' patterns: the page, the documents and the API.
+  // The routes' patterns (the page, the documents and the API), and the document's path as the one parser of a local
+  // collection's addresses reads it, for its route and a lookup by URL.
   "src/app/public-pages.tsx publicPageRoutes": 2,
   "src/federation/routes.ts COLLECTION_ROUTE": 1,
-  "src/federation/routes.ts COLLECTION": 1,
+  "src/platform/collection-address.ts DOCUMENT_PATH": 1,
   "src/federation/routes.ts FEDERATION_GET_ROUTES": 2,
   "src/mastodon/routes.ts collectionRoutes": 9,
   "src/mastodon/routes.ts DEPRECATED_ROUTES": 9,
@@ -180,7 +180,7 @@ describe("the reads of a status's tagged collections (#1589's D26)", () => {
       flagged: {
         "a writer that resolves a candidate without the decision": [
           editOnce(writer.text, /taggableCollections\(db, \{/, "readCollections(db, {"),
-          "src/domain/collections.ts taggableRow taggableCollections has 0, expected 1",
+          "src/domain/collections.ts taggableId taggableCollections has 0, expected 1",
         ],
       },
       passed: {},
