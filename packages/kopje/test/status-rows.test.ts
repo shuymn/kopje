@@ -410,6 +410,21 @@ describe("the hydrate queries (RES-3)", () => {
     return { h, f, ids };
   }
 
+  // The instance's domain, which the tagged collections' decision reads for a remote collection (instanceDomainOf, a
+  // hydrate query of its own), counts in R once for a status that tags a collection: a domain 100 bytes longer adds two
+  // bytes a byte (rowHeapSql), and nothing for a status that tags none.
+  it("count the instance's domain in R for a status that tags a collection", async () => {
+    const { h, f } = await fixture();
+    const grown = await runInDurableObject(h.store, (_instance, state) => {
+      const ids = [build(state.storage.sql, f, { ...TINY, collections: 1 }), build(state.storage.sql, f, TINY)];
+      const before = boundsOf(state, f.viewer, ids, 0);
+      state.storage.sql.exec("UPDATE instance_settings SET value = value || ? WHERE name = 'domain'", "x".repeat(100));
+      const after = boundsOf(state, f.viewer, ids, 0);
+      return ids.map((id) => after.get(id)! - before.get(id)!);
+    });
+    expect(grown).toEqual([200, 0]);
+  });
+
   it("take their columns from the registered maps (drift)", async () => {
     const { h, f, ids } = await rich();
     const reads = await runInDurableObject(h.store, (_instance, state) =>

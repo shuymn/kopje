@@ -5876,27 +5876,29 @@ shown it. Each status row whose author has a stored move also counts the moved-t
 moved). An item with a local author, or an author moved to a local account, also counts the OAuth admin's lookup whole
 (the `admin_email` row and, while it is set, the scan of the operator-sized `local_accounts`, each account sought by
 key: `OAUTH_ADMIN_HEAP_SQL` in `src/domain/admin-authority.ts`), which a local account's Owner role reads at most once
-per operation, in whichever chunk first shows one; R reads neither for an answer without one. A chunk holds
-statuses while their R sums to at most its target, at most 80 and at least one: 392 KiB of heap for pages, contexts,
-search, histories and lookups (`PAGE_CHUNKS`), and 1 MiB for grouped notifications and admin reports
-(`LARGE_ITEM_CHUNKS`). A chunk of several is read through a `RowMeter` (`src/db/sql.ts`), which adds each
-row's heap under the model as the cursor returns it (workerd's cursor runs the statement lazily, one row ahead of the
-one it returns) and throws past its cap, which equals the target, so only a term R misses passes it. The chunk is then
-dropped, `kopje.presenter.row-cap-exceeded` is logged with its ids, and its statuses are read one at a time. A status
-alone is not capped: its rows are bounded as a unit (the maxima above). The meter bounds the row objects and strings a
-chunk's queries return, past the cap by at most the row that passed it (at most 1.20 MB, measured: a poll of 100 choices
-of 1,000 characters JSON escapes to six bytes, read as ASCII); it does not bound SQLite's page cache, statement and
-sorter scratch, the parsing buffers of `json_each` and the `json_*` functions, the conversion of the current row, or
-garbage awaiting collection. No hydrate query sorts a chunk's payload: media, mentions and hashtags are put in order in
-JavaScript, and a temporary B-tree holds only ids (own votes, sorted by id, carry ids and choices only), the two host
-names of one account in the visibility rule, or one row's value (an actor document's attachment entries, at most 2 MiB
-fetched and 16 kept; a poll's at most 100 choices). `test/status-rows.test.ts` ("steps lazily, one row ahead", "is at
-least the meter's count of each status alone and of each chunk, for mixed sizes", "plans 40 boosts of statuses with 200
-mentions and 70 hashtags without the backstop", "take their columns from the registered maps", "sort no chunk-wide
-payload", "reads a chunk past its cap again one status at a time, with the same answer") and
-`test/status-bounds.test.ts` ("bounds the rows each shape reads by R") pin these. R counts a value's UTF-8 bytes twice
-where the meter counts its UTF-16 code units twice, so it overstates text that is not ASCII (up to three times for CJK)
-and plans such chunks smaller than the cap; it never understates.
+per operation, in whichever chunk first shows one; R reads neither for an answer without one. A status that tags a
+collection also counts the instance's domain setting (`INSTANCE_DOMAIN_COLUMNS` in `src/domain/instance-domain.ts`),
+which the tagged collections' decision reads at most once a chunk, for a remote collection (`test/status-rows.test.ts`
+("count the instance's domain in R for a status that tags a collection")). A chunk holds statuses while their R sums to
+at most its target, at most 80 and at least one: 392 KiB of heap for pages, contexts, search, histories and lookups
+(`PAGE_CHUNKS`), and 1 MiB for grouped notifications and admin reports (`LARGE_ITEM_CHUNKS`). A chunk of several is read
+through a `RowMeter` (`src/db/sql.ts`), which adds each row's heap under the model as the cursor returns it (workerd's
+cursor runs the statement lazily, one row ahead of the one it returns) and throws past its cap, which equals the target,
+so only a term R misses passes it. The chunk is then dropped, `kopje.presenter.row-cap-exceeded` is logged with its ids,
+and its statuses are read one at a time. A status alone is not capped: its rows are bounded as a unit (the maxima
+above). The meter bounds the row objects and strings a chunk's queries return, past the cap by at most the row that
+passed it (at most 1.20 MB, measured: a poll of 100 choices of 1,000 characters JSON escapes to six bytes, read as
+ASCII); it does not bound SQLite's page cache, statement and sorter scratch, the parsing buffers of `json_each` and the
+`json_*` functions, the conversion of the current row, or garbage awaiting collection. No hydrate query sorts a chunk's
+payload: media, mentions and hashtags are put in order in JavaScript, and a temporary B-tree holds only ids (own votes,
+sorted by id, carry ids and choices only), the two host names of one account in the visibility rule, or one row's value
+(an actor document's attachment entries, at most 2 MiB fetched and 16 kept; a poll's at most 100 choices).
+`test/status-rows.test.ts` ("steps lazily, one row ahead", "is at least the meter's count of each status alone and of
+each chunk, for mixed sizes", "plans 40 boosts of statuses with 200 mentions and 70 hashtags without the backstop",
+"take their columns from the registered maps", "sort no chunk-wide payload", "reads a chunk past its cap again one
+status at a time, with the same answer") and `test/status-bounds.test.ts` ("bounds the rows each shape reads by R") pin
+these. R counts a value's UTF-8 bytes twice where the meter counts its UTF-16 code units twice, so it overstates text
+that is not ASCII (up to three times for CJK) and plans such chunks smaller than the cap; it never understates.
 
 A page of 40 statuses, each with 3 Misskey-shaped emoji and its author with 2, presented through `presentation` and
 `presentStatusesWithin`, mean of two sets of 20 runs at a load average of 6 (measured at a 768 KiB target, where the

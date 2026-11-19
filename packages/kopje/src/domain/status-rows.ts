@@ -38,6 +38,7 @@ import { ACCOUNT_COLUMN_MAP, LOCAL_ROW_JOIN, MOVED_ACCOUNT_COLUMNS } from "./acc
 import { ADMIN_EMAIL_COLUMNS, LOCAL_EMAIL_COLUMNS, OAUTH_ADMIN_HEAP_SQL } from "./admin-authority";
 import { FEATURE_APPROVAL_COLUMNS, QUOTE_APPROVAL_COLUMNS, QUOTE_READ_COLUMNS, quotedStatusIdSql } from "./audience";
 import { ITEM_COLUMNS, TAG_REFERENCE_COLUMNS, TAGGED_COLLECTION_COLUMNS } from "./collection-presenter";
+import { INSTANCE_DOMAIN_COLUMNS, INSTANCE_DOMAIN_FROM } from "./instance-domain";
 import { actorUriSql, usernameSql } from "./profile-bounds";
 import { CACHED_IMAGE_COLUMNS, CACHED_IMAGE_KINDS } from "./remote-media";
 import {
@@ -293,6 +294,7 @@ export function hydrateQueries(): Readonly<Record<HydrateQuery, ColumnMap>> {
     items: ITEM_COLUMNS.columns,
     adminEmail: ADMIN_EMAIL_COLUMNS,
     localEmails: LOCAL_EMAIL_COLUMNS,
+    instanceDomain: INSTANCE_DOMAIN_COLUMNS,
   };
 }
 
@@ -316,7 +318,8 @@ export type HydrateQuery =
   | "collections"
   | "items"
   | "adminEmail"
-  | "localEmails";
+  | "localEmails"
+  | "instanceDomain";
 
 // Per-row aggregates a hydrate query may sort in a temporary B-tree, by map and column: each sorts within one stored
 // value, at most one row at a time (an actor document's attachment entries, at most 2 MiB fetched and
@@ -335,7 +338,9 @@ export const PER_ROW_SORTS: readonly { query: HydrateQuery; column: string }[] =
 // hashtags, poll, votes and card are not read (hydrate in status-presenter.ts), so they count for another status only;
 // nor are its tagged collections, which a page (`tags` 0) reads for no status: each of a status's references
 // (MAX_TAGGED_COLLECTIONS at most, the triggers' bound) counts with its collection and owner as stored and
-// MAX_STORED_ITEMS item rows, though a chunk reads a collection several statuses tag once and its shown items only.
+// MAX_STORED_ITEMS item rows, though a chunk reads a collection several statuses tag once and its shown items only,
+// and a status with any reference counts the instance's domain setting once (INSTANCE_DOMAIN_COLUMNS, which the
+// tagged collections' decision reads at most once a chunk, for a remote collection).
 function statusRowTerms(viewer: string, filterRows: string, tags: string): string {
   const cachedImage = CACHED_IMAGE_COLUMNS.rowHeap;
   const movedHeap = MOVED_ACCOUNT_COLUMNS.rowHeap + CACHED_IMAGE_KINDS.length * cachedImage;
@@ -358,6 +363,7 @@ function statusRowTerms(viewer: string, filterRows: string, tags: string): strin
     `CASE WHEN ${tags} THEN ${one(
       `SELECT sum(${TAG_REFERENCE_COLUMNS.rowHeap} + ${rowHeapSql(TAGGED_COLLECTION_COLUMNS)}
 					+ ${MAX_STORED_ITEMS} * ${ITEM_COLUMNS.rowHeap})
+					+ coalesce((SELECT ${rowHeapSql(INSTANCE_DOMAIN_COLUMNS)} FROM ${INSTANCE_DOMAIN_FROM}), 0)
 				FROM status_collections r CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = r.collection_id
 				CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
 				WHERE r.status_id = x.id`,
