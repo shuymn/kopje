@@ -74,8 +74,11 @@
 (* response. Kopje's lane is a sequence, with at most its head, an         *)
 (* answer, in flight, and R's jobs a bag. Steps that would need a third    *)
 (* authorization or a second instrument fetch are disabled. R's purge      *)
-(* batches reach C at once or later, never part of it. No fairness: any    *)
-(* message may wait for ever or be dropped.                                *)
+(* batches reach C at once or later, never part of it. Each owner has one  *)
+(* inbox that never changes, so an answer's inbox (`to`) stands for its    *)
+(* owner: where the Store keys by the owner and sends to its current inbox *)
+(* (an answer's supersession), "the same inbox" here is "the same owner".  *)
+(* No fairness: any message may wait for ever or be dropped.               *)
 (*                                                                         *)
 (* INVARIANTS:                                                             *)
 (*  - GrantPreservation GP1 /\ GP2: while L's committed Accept of a has no *)
@@ -127,9 +130,12 @@
 (*    fails or its lease is reclaimed, is dropped as superseded.           *)
 (*  - Supersession: a leased answer is dropped as superseded only if it is *)
 (*    a retraction answer and a later retraction answer of its             *)
-(*    authorization to its inbox waits behind it, to be sent in its place: *)
-(*    the Store supersedes only the latest retraction answer, so an        *)
-(*    ordinary one keeps its course.                                       *)
+(*    authorization to the same owner waits behind it, to be sent in its   *)
+(*    place: the Store supersedes only the latest retraction answer of an  *)
+(*    authorization to an owner, so an ordinary one keeps its course. An   *)
+(*    owner's inbox stands for the owner (BOUNDS); the Store sends the new *)
+(*    answer to the owner's current inbox, which may differ from the       *)
+(*    leased one's.                                                        *)
 (*                                                                         *)
 (* GRANT PRESERVATION IS INDUCTIVE (CollectionConsentInd.tla checks it).   *)
 (* Per action: Decide and ApplyFetch create a row only with its Accept,    *)
@@ -218,12 +224,12 @@ Spend(f) == spent' = [spent EXCEPT ![f] = @ + 1]
 
 \* The scenario checks fingerprint states without `last`, which records how a state was reached, not what it is,
 \* without the given-up deliveries once no operator retry is left to send them again, and without g.overLease,
-\* g.waitedAgain, g.reclaimed, g.overReclaim and g.reclaimedLs, which only goals read. No action or invariant reads any
-\* of them.
+\* g.waitedAgain, g.reclaimed, g.overReclaim, g.reclaimedLs and g.overOrd, which only goals read. No action or invariant
+\* reads any of them.
 View ==
   <<k, env, kq, kl, IF Can("retry") THEN kg ELSE {}, toK, rs, rin, rd, sr, fe, spent,
     [g EXCEPT !.overLease = FALSE, !.waitedAgain = NONE, !.reclaimed = FALSE, !.overReclaim = FALSE,
-              !.reclaimedLs = FALSE]>>
+              !.reclaimedLs = FALSE, !.overOrd = FALSE]>>
 
 (***************************************************************************)
 (* Messages and records.                                                   *)
@@ -282,6 +288,12 @@ AnswerWaits(a, to) == \E i \in Waiting : RetractionAnswer(kq[i], a) /\ kq[i].to 
 \* A retraction answer recorded while one of the same authorization to the same inbox is leased: it supersedes that one
 \* (Superseded).
 OverLease(m) == kl /\ RetractionAnswer(m, m.obj) /\ RetractionAnswer(Head(kq), m.obj) /\ Head(kq).to = m.to
+\* A retraction answer recorded while an ordinary answer of the same authorization to the same inbox is leased: it
+\* supersedes nothing (Superseded; goal OrdinaryOverRetraction).
+OverOrdinary(m) ==
+  /\ kl /\ RetractionAnswer(m, m.obj)
+  /\ Head(kq).ty = "Delete" /\ Head(kq).why = "answer" /\ Head(kq).cls = "ord"
+  /\ Head(kq).obj = m.obj /\ Head(kq).to = m.to
 \* The Store records no retraction answer while one of the same authorization to the same inbox waits to be sent
 \* (deliveries.ts answerOutstanding): the waiting one answers the new listing too. A leased one does not count: the new
 \* answer is recorded and supersedes it (Superseded). VARIANT V27: each is recorded.
@@ -317,7 +329,7 @@ Init ==
           remLive |-> FALSE, afterGone |-> FALSE, unexcused |-> [a \in Auths |-> 0], tick |-> FALSE, held503 |-> FALSE,
           o7 |-> FALSE, lastRd |-> NoLastRead, ign |-> FALSE, lrMoved |-> FALSE, fo |-> FALSE, overLease |-> FALSE,
           waitedAgain |-> NONE, reclaimed |-> FALSE, overReclaim |-> FALSE, reclaimedLs |-> FALSE,
-          wrongDrop |-> FALSE]
+          wrongDrop |-> FALSE, overOrd |-> FALSE]
   /\ last = [act |-> "Init", arg |-> NoArg, rec |-> {}, resp |-> 0, ev |-> {}]
 
 (***************************************************************************)
@@ -382,6 +394,7 @@ GhostK(res, evid, opp, mayHide, allowedHide, mayShow, lr, remC, ev) ==
         !.o7 = @ \/ "o7" \in ev,
         !.overLease = @ \/ "overLease" \in ev,
         !.overReclaim = @ \/ (g.reclaimed /\ \E m \in res.rec : OverLease(m)),
+        !.overOrd = @ \/ (\E m \in res.rec : OverOrdinary(m)),
         !.fo = @ \/ "outdRead" \in ev,
         !.lastRd = [lr EXCEPT !.kshow = @ \/ (mayShow /\ Shown(k2) /\ ~Shown(k)),
                              !.khide = @ \/ (allowedHide /\ ~Shown(k2))]]
@@ -903,12 +916,13 @@ LaterAnswer(retraction, sameInbox) ==
     /\ (kq[i].cls = "ret" \/ ~retraction)
     /\ (kq[i].to = Head(kq).to \/ ~sameInbox)
 \* A leased retraction answer that a later one superseded: a retraction answer of the same authorization to the same
-\* inbox, recorded while it was in flight (Coalesced does not count a leased one), which waits behind it and answers
-\* that inbox's listing too. The stale-answer drop (deliveries.ts) drops it when its POST fails or the sweep reclaims
-\* its lease, and the later one is sent. A retraction answer supersedes only the latest retraction answer of its
-\* authorization, so a leased ordinary answer (one recorded before Kopje issued the authorization: RGuess) keeps its
-\* course whatever waits behind it; and an ordinary answer supersedes nothing: each listing's is its own, so a leased
-\* head with only ordinary answers behind it is retried. VARIANT V30: an answer of the same authorization supersedes
+\* owner (its one inbox here, BOUNDS), recorded while it was in flight (Coalesced does not count a leased one), which
+\* waits behind it and answers that owner's listing too. The stale-answer drop (deliveries.ts) drops it when its POST
+\* fails or the sweep reclaims its lease, and the later one is sent. A retraction answer supersedes only the latest
+\* retraction answer of its authorization to that owner, so a leased ordinary answer (one recorded before Kopje issued
+\* the authorization: RGuess) keeps its course whatever waits behind it, even one recorded while it was leased; and an
+\* ordinary answer supersedes nothing: each listing's is its own, so a leased head with only ordinary answers behind it
+\* is retried. VARIANT V30: an answer of the same authorization supersedes
 \* any leased answer, whatever its class and inbox. VARIANT V31: one of any class to the same inbox does. VARIANT V37:
 \* a retraction answer to the same inbox supersedes any leased answer, an ordinary one too.
 Superseded ==
@@ -1086,7 +1100,9 @@ MemberAvailability == ~g.avail
 AnswerBound == \A a \in Auths : Cardinality({i \in Waiting : RetractionAnswer(kq[i], a)}) <= 1
 
 \* A leased answer is dropped as superseded only if it is a retraction answer and a later retraction answer of its
-\* authorization to its inbox waits behind it, to be sent in its place (Superseding: KFail, KDup, KReclaim).
+\* authorization to the same owner waits behind it, to be sent in its place (Superseding: KFail, KDup, KReclaim). The
+\* Store keys this by the authorization and the owner, whose current inbox the later answer goes to; each owner's one
+\* fixed inbox (BOUNDS) makes LaterAnswer's same-inbox test that.
 Supersession == ~g.wrongDrop
 
 (***************************************************************************)
