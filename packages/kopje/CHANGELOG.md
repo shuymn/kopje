@@ -8,6 +8,13 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Fixed
+
+- A PNG image that carries EXIF, such as a macOS screenshot, can be uploaded again. Cloudflare Images keeps a PNG's
+  `eXIf` chunk in its PNG output, although it documents that PNG output has no metadata, so the check that served
+  images carry none refused the upload and `POST /api/v1/media` answered 500 "Error processing uploaded media". Kopje
+  now removes a PNG's metadata chunks before Images reads it; the check stays.
+
 ## [0.6.0] - 2026-11-19
 
 A minor release, published under the npm dist-tag `latest`. `kopje-admin` works again: since Cloudflare Access began

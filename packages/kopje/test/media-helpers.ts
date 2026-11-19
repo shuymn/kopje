@@ -99,8 +99,8 @@ export function pathOf(url: string | null): string {
 // A codec over the local Images binding (Miniflare's, backed by sharp) with Images' 'rgba' output stood in for
 // (images-binding.ts localRgba, whose output() calls are in `outputs`), that records calls and can be told to
 // misbehave: fail with an Images error code, or return given bytes instead of a re-encoding (to inject EXIF), for
-// every call (encodeResult) or per call (encodeResponder, given the call's options and its 0-based index; null falls
-// through to the real binding); the 'rgba' output by RgbaControl. Miniflare's binding decodes only the first frame and
+// every call (encodeResult) or per call (encodeResponder, given the call's options, its 0-based index and its input;
+// null falls through to the real binding); the 'rgba' output by RgbaControl. Miniflare's binding decodes only the first frame and
 // ignores anim, so an animated output is stood in for through these.
 export class TestCodec implements ImageCodec, RgbaControl {
   failRgba: number | null = null;
@@ -113,7 +113,7 @@ export class TestCodec implements ImageCodec, RgbaControl {
   failInfo: number | null = null;
   failEncode: number | null = null;
   encodeResult: Uint8Array | null = null;
-  encodeResponder: ((options: EncodeOptions, index: number) => Uint8Array | null) | null = null;
+  encodeResponder: ((options: EncodeOptions, index: number, input: Uint8Array) => Uint8Array | null) | null = null;
   infoResult: ImageInfo | null = null;
 
   info(bytes: Uint8Array): Promise<ImageInfo> {
@@ -135,7 +135,7 @@ export class TestCodec implements ImageCodec, RgbaControl {
     if (this.encodeResult !== null) {
       return Promise.resolve(this.encodeResult);
     }
-    const given = this.encodeResponder?.(options, this.encodeCalls.length - 1) ?? null;
+    const given = this.encodeResponder?.(options, this.encodeCalls.length - 1, bytes) ?? null;
     if (given !== null) {
       return Promise.resolve(given);
     }

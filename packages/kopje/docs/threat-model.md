@@ -3139,19 +3139,21 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 - **MEDIA-3: served images are re-encoded.** An uploaded image, and a card image, is served only as Images output with
   location metadata removed; if transformation fails, the upload is refused and original bytes are never served.
   Cached remote files are not transformed; MEDIA-6 holds for them.
-  _Enforced (main):_ outputs are PNG or WebP only, for which Images discards all metadata (the binding has no
-  metadata option, and JPEG output would keep the EXIF copyright tag); `processImage` in `src/platform/images.ts` then
-  checks every output with `retainedMetadata` (`src/platform/image-bytes.ts`), which refuses any EXIF, XMP, IPTC,
-  comment, text chunk or unknown JPEG application segment and keeps only colour profiles, and refuses the upload
-  otherwise; `test/image-bytes.test.ts` ("refuses every EXIF block", "refuses XMP, IPTC, comments"),
-  `test/media.test.ts` ("re-encodes an image without its location", "refuses a failed transformation", "refuses an
-  output that keeps …"). Tests use Miniflare's local Images binding (sharp); the production binding's output is
-  verified on a deployed instance. The media rebuild, which makes the served files of restored or moved
-  media from their originals, goes through the same `processImage` and writes nothing for an original that fails, and
-  never serves an original instead; it refuses an original whose served type differs from the row's (its URLs name that
-  type). `test/media-rebuild.test.ts` ("makes both files … and corrects meta", "reports a missing original and a type
-  mismatch"). The RGBA output of an upload's preview, from which its blurhash is computed, is only hashed: it is never
-  stored or served.
+  _Enforced (main):_ outputs are PNG or WebP only, for which Images documents that it discards all metadata (the binding
+  has no metadata option, and JPEG output would keep the EXIF copyright tag); production Images keeps a PNG's `eXIf`
+  chunk all the same, so `processImage` in `src/platform/images.ts` gives Images a PNG without its metadata chunks
+  (`pngWithoutMetadata` in `src/platform/image-bytes.ts`), and then checks every output with `retainedMetadata`
+  (`src/platform/image-bytes.ts`), which refuses any EXIF, XMP, IPTC, comment, text chunk or unknown JPEG application
+  segment and keeps only colour profiles, and refuses the upload otherwise; `test/image-bytes.test.ts` ("refuses every
+  EXIF block", "refuses XMP, IPTC, comments", "drops every chunk retainedMetadata counts"), `test/media.test.ts`
+  ("re-encodes an image without its location", "refuses a failed transformation", "refuses an output that keeps …",
+  "strips a PNG's metadata before Images reads it"). Tests use Miniflare's local Images binding (sharp); the production
+  binding's output is verified on a deployed instance. The media rebuild, which makes the served files of restored or
+  moved media from their originals, goes through the same `processImage` and writes nothing for an original that fails,
+  and never serves an original instead; it refuses an original whose served type differs from the row's (its URLs name
+  that type). `test/media-rebuild.test.ts` ("makes both files … and corrects meta", "reports a missing original and a
+  type mismatch"). The RGBA output of an upload's preview, from which its blurhash is computed, is only hashed: it is
+  never stored or served.
   Custom emoji (`src/platform/emoji-image.ts`): an input is PNG, GIF or WebP by signature, below 262,144 bytes, with
   edges of at most 1,024 read by the free `info()` before anything is charged; the published `full` is below 262,144
   bytes (what Mastodon downloads, `CustomEmoji::LIMIT`) and `small` at most 524,288, judged before any R2 write. The

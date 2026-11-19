@@ -220,6 +220,32 @@ describe("POST /api/v2/media", () => {
     });
   }
 
+  // Production Images keeps a PNG's eXIf chunk in its PNG output (platform/images.ts); the codec stands in by echoing
+  // its input. A macOS screenshot carries eXIf, an XMP iTXt and Apple's iDOT.
+  it("strips a PNG's metadata before Images reads it, so a screenshot uploads (MEDIA-3)", async () => {
+    const h = await users();
+    const inputs: Uint8Array[] = [];
+    h.codec.encodeResponder = (options, _index, input) => {
+      inputs.push(input);
+      return options.format === "image/png" ? input : null;
+    };
+    const screenshot = pngWithChunk(
+      pngWithChunk(bytes(PNG_WITH_GPS), "iTXt", "XML:com.adobe.xmp\0\0\0\0\0<x/>"),
+      "iDOT",
+      "\0\0\0\x02",
+    );
+    expect(retainedMetadata(screenshot, "image/png")).toBe("segment");
+    const media = await uploaded(h, h.users.alice, mediaForm(screenshot, {}, "a.png", "image/png"));
+    // The full image, its preview and the preview's RGBA.
+    expect(inputs.length).toBe(3);
+    for (const input of inputs) {
+      expect(retainedMetadata(input, "image/png")).toBeNull();
+    }
+    const served = await h.request(pathOf(media.url));
+    expect(served.headers.get("content-type")).toBe("image/png");
+    expect(retainedMetadata(new Uint8Array(await served.arrayBuffer()), "image/png")).toBeNull();
+  });
+
   it("accepts an output that keeps only a colour profile", async () => {
     const h = await users();
     h.codec.encodeResult = bytes(WEBP_ICC);

@@ -1,7 +1,14 @@
 import { imageBlurhash, type Rgba } from "./blurhash";
 import { readBodyPrefix } from "./body";
 import { DeadlinePassed, within } from "./deadline";
-import { IMAGE_MATRIX_LIMIT, type ImageType, isAnimated, retainedMetadata, sniffImageType } from "./image-bytes";
+import {
+  IMAGE_MATRIX_LIMIT,
+  type ImageType,
+  isAnimated,
+  pngWithoutMetadata,
+  retainedMetadata,
+  sniffImageType,
+} from "./image-bytes";
 
 // Re-encoding of uploaded images (MEDIA-3). The Images binding is reached only through ImageCodec, a narrow
 // interface, so tests can substitute a codec that keeps EXIF or fails; production uses imagesCodec(env.IMAGES).
@@ -135,9 +142,9 @@ export function imagesCodec(binding: ImagesBinding, { input = "stream" }: { inpu
 
 // Mastodon's limits for images: 16 MB (MediaAttachment::IMAGE_LIMIT) and 16,777,216 pixels (IMAGE_MATRIX_LIMIT, kept
 // in platform/image-bytes.ts with the byte-level checks). Workers accept request bodies up to 100 MB and have 128 MB
-// of memory; one upload holds the body, the file, two outputs and the preview's RGBA (at most PREVIEW_RGBA_LIMIT
-// bytes, its blurhash's fit at most 40,000), so 16 MB stays well inside both. No test models an upload's peak (the
-// card image's is test/cron-memory.test.ts).
+// of memory; one upload holds the body, the file, a PNG's copy without its metadata (pngWithoutMetadata, when it has
+// any), two outputs and the preview's RGBA (at most PREVIEW_RGBA_LIMIT bytes, its blurhash's fit at most 40,000), so
+// 16 MB stays well inside both. No test models an upload's peak (the card image's is test/cron-memory.test.ts).
 export const IMAGE_SIZE_LIMIT = 16 * 1024 * 1024;
 export { IMAGE_MATRIX_LIMIT };
 
@@ -179,9 +186,11 @@ export const RGBA_CALL_MS = 5_000;
 // anim: https://developers.cloudflare.com/images/transform-images/bindings/), and Images discards all metadata for
 // WebP and PNG output but keeps the EXIF copyright tag in JPEG by default ("For all other output formats (e.g. WebP or
 // PNG), all metadata will always be discarded":
-// https://developers.cloudflare.com/images/transform-images/transform-via-url/#metadata). So metadata is stripped at
-// the source, and retainedMetadata is the safety net. PNG keeps PNG (lossless, transparency); JPEG, GIF, WebP and AVIF
-// become WebP (it keeps transparency and animation).
+// https://developers.cloudflare.com/images/transform-images/transform-via-url/#metadata). Production Images keeps a
+// PNG's eXIf chunk in PNG output all the same (seen in November 2026 on macOS screenshots, which carry one), so
+// processImage strips a PNG's metadata chunks before Images reads it, and retainedMetadata is the safety net for every
+// output. PNG keeps PNG (lossless, transparency); JPEG, GIF, WebP and AVIF become WebP (it keeps transparency and
+// animation).
 type OutputType = "image/png" | "image/webp";
 
 const OUTPUT: Record<ImageType, OutputType> = {
@@ -398,7 +407,9 @@ export async function processImage(
   try {
     const target = fit(original, FULL_EDGE);
     const resize = target.width === original.width && target.height === original.height ? {} : target;
-    const full = await encodeChecked(codec, bytes, { ...resize, format });
+    // A PNG goes to Images without its metadata chunks (pngWithoutMetadata).
+    const source = type === "image/png" ? pngWithoutMetadata(bytes) : bytes;
+    const full = await encodeChecked(codec, source, { ...resize, format });
     // The preview is made from the re-encoded image, so it starts without metadata and in the served orientation. It
     // is a still, so an animated image's preview serves as its account's avatar_static or header_static (media.ts).
     const preview = fit(full, SMALL_EDGE);
