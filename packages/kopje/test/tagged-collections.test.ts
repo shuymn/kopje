@@ -40,7 +40,14 @@ import {
   type Setup,
   update,
 } from "./inbox-status-helpers";
-import { measuredRead, measuredStatements, type PlannedStatement, plannedSql, staleStatistics } from "./read-helpers";
+import {
+  measuredRead,
+  measuredStatements,
+  plannedRun,
+  type PlannedStatement,
+  plannedSql,
+  staleStatistics,
+} from "./read-helpers";
 import { act, block, community, getJson, outbound, post, remoteAccount, seedStatus } from "./status-helpers";
 import { postsTab } from "./web-helpers";
 
@@ -212,22 +219,21 @@ describe("a local post's links (7-T1)", () => {
 });
 
 // The post operation as POST /api/v1/statuses runs it, for dave, with each statement measured.
+// postStatus's input for dave's post of `text`.
+async function postInput(t: Setup, text: string) {
+  return {
+    credential: { tokenHash: await sha256Hex(t.tokens.dave), scope: "write:statuses", now: NOW } as never,
+    text,
+    spoilerText: "",
+    mediaIds: [],
+    objectId: crypto.randomUUID(),
+    now: NOW,
+    present: { origin: LOCAL },
+  };
+}
+
 async function measuredPost(t: Setup, text: string) {
-  const credential = { tokenHash: await sha256Hex(t.tokens.dave), scope: "write:statuses", now: NOW } as never;
-  return measuredStatements(
-    t,
-    postStatus,
-    {
-      credential,
-      text,
-      spoilerText: "",
-      mediaIds: [],
-      objectId: crypto.randomUUID(),
-      now: NOW,
-      present: { origin: LOCAL },
-    },
-    true,
-  );
+  return measuredStatements(t, postStatus, await postInput(t, text), true);
 }
 
 describe("a post's slots (7-T2)", () => {
@@ -325,45 +331,54 @@ describe("a link to a remote collection's web page (7-T3, c2a)", () => {
     expect(await tagged(t, await posted(t, `${M}/collections/1`))).toEqual([]);
   });
 
-  // The lookup reads at most 2 entries of collections_url however many rows share the url and range, under
-  // statistics taken over 3 of them: the 1,000 added (rows a restored dump may hold, their owners on another origin)
-  // sort first, so a walk that tested owners before its LIMIT would read them all; the answer is none either way.
+  // The lookup reads at most 2 entries of collections_url however many rows share the url, under statistics taken over
+  // 3 of them, seeking the url and the range of ids on the link's origin: of the rows added (rows a restored dump may
+  // hold, their owners on another origin), 1,000 in the range sort first, so a walk that tested owners before its LIMIT
+  // would read them all, and 1,000 with ids on m.example.org sort before the range, so a walk that did not seek the
+  // range would read them all; the answer is none either way.
   it("reads two rows of one url under statistics taken before it grew", async () => {
     const t = await setup();
-    const add = (from: number, n: number, owner: string, path: string) =>
+    const add = (from: number, n: number, owner: string, uri: string) =>
       sql(
         t.store,
         `WITH RECURSIVE n(i) AS (SELECT ?1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 + ?2 - 1)
 				INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, uri, url, total_items,
 					created_at, updated_at)
-				SELECT printf('5%017d', i), printf(?3, 1 + i / 50), 0, 'c', 0, 1, 'https://m.example/' || ?4 || i,
+				SELECT printf('5%017d', i), printf(?3, 1 + i / 50), 0, 'c', 0, 1, ?4 || i,
 					'https://m.example/collections/1', 0, ?5, ?5 FROM n`,
         from,
         n,
         owner,
-        path,
+        uri,
         T,
       );
     await sql(
       t.store,
-      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 30)
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 60)
 			INSERT INTO accounts (id, uri, username, domain)
 			SELECT printf('7%017d', i), 'https://m.example/users/w' || i, 'w' || i, 'm.example' FROM n
 			UNION ALL SELECT printf('8%017d', i), 'https://m.example.org/users/v' || i, 'v' || i, 'm.example.org' FROM n`,
     );
-    await add(0, 3, "7%017d", "users/w/collections/");
+    await add(0, 3, "7%017d", `${M}/users/w/collections/`);
     await sql(t.store, "ANALYZE");
     const rows = async () => {
-      const { output, statements } = await measuredPost(t, `${M}/collections/1`);
-      expect(output).toMatchObject({ status: "ok", value: { status: "ok" } });
-      const id = (output as { value: { value: { id: string } } }).value.value.id;
+      const { result, plans } = await plannedRun(
+        t,
+        /collections_url/,
+        postStatus,
+        await postInput(t, `${M}/collections/1`),
+        true,
+      );
+      expect(result).toMatchObject({ status: "ok", value: { status: "ok" } });
+      const id = (result as { value: { value: { id: string } } }).value.value.id;
       expect(await tagged(t, id)).toEqual([]);
-      const lookups = statements.filter((s) => s.query.includes("collections_url"));
-      expect(lookups).toHaveLength(1);
-      return lookups[0]!.rows;
+      expect(plans).toHaveLength(1);
+      expect(plans[0]!.plan).toContain("SEARCH collections USING INDEX collections_url (url=? AND uri>? AND uri<?)");
+      return plans[0]!.rows;
     };
     const few = await rows();
-    await add(100, 1000, "8%017d", "a/collections/");
+    await add(100, 1000, "8%017d", `${M}/a/collections/`);
+    await add(2000, 1000, "8%017d", `${M}.org/v/collections/`);
     expect(await rows()).toBe(few);
   });
 });
