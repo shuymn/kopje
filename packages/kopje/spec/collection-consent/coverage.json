@@ -1,6 +1,6 @@
 {
   "$comment": "Kopje's sources spec/collection-consent/ describes, and their blobs when it was last confirmed to (scripts/collection-consent-coverage.mjs). A null blob is a file the specification describes that Kopje does not have yet. test-node/collection-consent-coverage.test.ts fails once a blob differs.",
-  "confirmed": "e91eb37551caf97d6ac111812426299fc6c99afa",
+  "confirmed": "52432501006e454f2ed5ff9baebb7951c84e3a70",
   "files": [
     {
       "path": "src/store.ts",
@@ -38,7 +38,7 @@
         "answerRequest"
       ],
       "spec": "CollectionConsentKopje.tla Served, Shown, AnswerClass, AddItem (K2, with the listing gate), ApplyRead (K14) and KeptByRow",
-      "blob": "2c22559b2aaf6e6e9ea131af988d26eadaf5f1f7"
+      "blob": "31702f72db9459a6ebd9ce070c11cb6d5c43511d"
     },
     {
       "path": "src/domain/remote-featured-collections.ts",
@@ -51,7 +51,7 @@
         "revokeFeatureAuthorization"
       ],
       "spec": "CollectionConsentKopje.tla AddItem (K2), RemoveItem (K3), UpdateCollection (K4), RemoveCollection (K5), OwnerGone (K6), Revoke (K7), ApplyRead (K14)",
-      "blob": "0692ec67a53fc28d7827e2b72b7ee02839c01920"
+      "blob": "229bdf7b18b1f22d0ce76aa999eb014285e53e1a"
     },
     {
       "path": "src/domain/remote-collections.ts",
@@ -63,7 +63,7 @@
       "path": "src/federation/collections.ts",
       "functions": ["syncCollections"],
       "spec": "CollectionConsent.tla KFetch, KFetch1 and KFetch2: a read's page GETs",
-      "blob": "076a723b3e82a75b1014d1e64e05a022e4e700de"
+      "blob": "a812128a9cb10ccd6c5cdeea5a23fe24f4bdd591"
     },
     {
       "path": "src/domain/collections.ts",
@@ -87,7 +87,7 @@
       "path": "src/domain/deliveries.ts",
       "functions": ["enqueueActivity", "claimDeliveries", "confirmDelivery", "retryDeliveries"],
       "spec": "CollectionConsent.tla Record (RES-4's refusal at a full backlog) and Coalesced (no retraction answer recorded while one of the same authorization to the same inbox waits), the lane in id order, a corrective answer at its head leased for the POST (KLeaseHead, KDeliver, KDup, KGiveUp, KFail, and KReclaim, the sweep's reclaim under a new lease; Superseded: a leased answer that a later retraction answer of the same authorization to the same inbox superseded is dropped when its POST fails or its lease is reclaimed) and KRetry's admission re-check and place in the lane",
-      "blob": "b3e672673a0f5ea0d708660b2dcc5f3a5f558d31"
+      "blob": "c58933cf2a083d3a6e216d4147f0081b4e316be3"
     },
     {
       "path": "src/store-rpc.ts",
