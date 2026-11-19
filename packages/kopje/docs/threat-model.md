@@ -4158,7 +4158,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   per-status figure above, inserts at most 200 nodes and updates at most 400 (`src/domain/reply-walks.ts`;
   `test/reply-walks.test.ts` ("prunes at most WALK_PRUNE_BATCH finished walks a claim", "records at most WALK_STATUSES
   nodes", "stores a reply and its embedded self-quote … within the figure")). Besides these, a completion that applies a
-  stored node's document writes at most what an inbound `Update` at its caps writes, and one that starts a node's
+  stored node's document writes at most what an inbound `Update` at its caps writes (its `MAX_TAGGED_COLLECTIONS` tag
+  references replaced by as many others among them), and one that starts a node's
   removal at most what that start writes (its job, the streamed delete, `HIDE_ROWS`, the quote's retirement, its
   parent's count), each with at most two debts paid and one collection debt owed after one replacement delete
   (`test/reply-walk-debt-bounds.test.ts` ("updates a node at every cap of updateRemoteStatus within the figure", "starts
@@ -4189,10 +4190,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   run, as a job family of its own (RES-5; `src/domain/collection-jobs.ts`). A
   collection's deletion writes the collection, its at most 50 items, their notifications, its `collection_update`
   notifications (one per local recipient, held unique by `notifications_collection`) and their pushes (at most
-  `MAX_PUSH_BACKLOG`), by the foreign keys; an item's removal or eviction the item, its notification and that
-  notification's pushes. The purge of a remote account deletes its items, the items of its collections and then its
-  collections, each window child-first (the pushes of their notifications, those notifications, then the rows), each
-  step counted against the batch's budget (`src/domain/inbox.ts`). `test/collections.test.ts` ("evicts the oldest
+  `MAX_PUSH_BACKLOG`) and its at most 100 tag references (`MAX_TAGGING_STATUSES`, which the triggers of migration
+  `0120_tagged_collections` hold, imports included), by the foreign keys; an item's removal or eviction the item, its
+  notification and that notification's pushes; a status's deletion its at most 4 tag references
+  (`MAX_TAGGED_COLLECTIONS`, a `STATUS_CHILDREN` step). The purge of a remote account deletes its items, the items of
+  its collections, the tag references to its collections and then its collections, each window child-first (the pushes
+  of their notifications, those notifications, then the rows), and its statuses' references before them, each step
+  counted against the batch's budget (`src/domain/inbox.ts`). `test/collections.test.ts` ("evicts the oldest
   retired item when an add meets the stored bound", "deletes retired items a day old, RETIRED_ROWS_PER_ROUND a round,
   keeping younger and live ones"), `test/collection-notifications.test.ts` ("deletions with pushes waiting (2-T9)",
   "purges a remote account's collection rows child-first, within PURGE_BATCH a batch"), `test/blocks.test.ts` ("revokes
@@ -4201,6 +4205,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (RES-6)", "reads no follower's inbox past the staged bound while a block's Removes reach its followers (RES-6)",
   "reaches the owner's followers of when its job starts, keeping its bound from then on (RES-6)"),
   `test/inbox-regressions.test.ts` ("purges a remote account's collections and memberships within the batch budget"),
+  `test/tagged-collections.test.ts` ("purges the author's status within each batch, its references before it, whatever
+  the budget left", "purges an owner's collection within each batch, its references first, whatever the budget left",
+  "deletes a collection's MAX_TAGGING_STATUSES references with it on its owner's DELETE"),
   `test/cascade-guard.test.ts`.
 - **RES-5: retries are bounded, but maintenance is not a failure.** Waiting out maintenance consumes no processing
   retry; real processing errors count against `max_retries`. _Enforced (main):_ `src/jobs/queue.ts`; `test/gate.test.ts`
@@ -4748,7 +4755,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   ends the list, and the part completes with what it read. It keeps at most `MAX_REMOTE_COLLECTIONS` (10) embedded
   collections of `MAX_REMOTE_ITEMS` (25) embedded items, fetches nothing given only as a URI and no member, and deletes
   the account's other stored collections only after a complete read (`test/collection-sync.test.ts` ("reads two pages
-  in one round of three documents, keeps ten collections, and fetches no URI-only entry", "its budget")), except one
+  in one round of three documents, keeps ten collections, and fetches no URI-only entry", "its budget")): at most 50
+  collections and their at most 5,000 tag references (50 × `MAX_TAGGING_STATUSES`, the triggers, imports included),
+  and for state Kopje's writers produced their items (at most 50 each), their `collection_update` notifications and
+  at most `MAX_PUSH_BACKLOG` pushes in all, which a restored Store may exceed (#1797) (`test/tagged-collections.test.ts`
+  ("deletes the omitted collections with their 5,000 references, within the call's bound", "deletes the 5,000
+  references of a restored Store's omitted collections, reporting the rest")), except one
   holding a local member's row (ID-9): that exemption reads at most the owner's `MAX_STORED_COLLECTIONS` collections and
   each one's `MAX_STORED_ITEMS` rows with an account probe each, stopping at the first local member's, and a new
   collection is admitted while the owner holds fewer than `MAX_STORED_COLLECTIONS` for a read or a request's instrument,
