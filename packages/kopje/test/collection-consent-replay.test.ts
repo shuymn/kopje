@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { pruneCollectionItems } from "../src/domain/collections";
-import { expandPending, MAX_BACKLOG, MAX_LANE_BACKLOG, retryDeliveries } from "../src/domain/deliveries";
+import { type Claim, expandPending, MAX_BACKLOG, MAX_LANE_BACKLOG, retryDeliveries } from "../src/domain/deliveries";
 import { purgeBatch } from "../src/domain/inbox";
 import { SYNC_LEASE_MS } from "../src/domain/remote-collections";
 import { MAX_REMOTE_ITEMS } from "../src/domain/remote-featured-collections";
@@ -75,6 +75,9 @@ const NAMES = [
   "S16-DroppedAnswer",
   "S16-LeasedSentSuspended",
   "S16-ReclaimRefused",
+  "S16-ReclaimRetraction",
+  "S16-RetractionSentSuspended",
+  "S17-OrdinaryOverRetraction",
   "S2-AnswerCoalesced",
   "S2-Answered",
   "S2-CleanupThenDelete",
@@ -165,6 +168,8 @@ type World = {
   c: ReturnType<typeof collection>;
   requests: Record<string, string>;
   rows: string[];
+  // The authorizations R listed before Kopje issued them (RGuess), by name: the row id each names.
+  guessed: Record<string, string>;
   aliceToken: string;
   adminToken: string;
   rounds: Round[];
@@ -263,6 +268,7 @@ async function init(environment: Environment, stored: boolean): Promise<World> {
     c,
     requests: {},
     rows: [],
+    guessed: {},
     aliceToken: await aliceCredential(t, 0),
     adminToken: admin,
     rounds: [],
@@ -314,10 +320,25 @@ const outboundKeys = async (t: Setup) => (await outbound(t)).map(keyOf);
 const collectionId = async (w: World): Promise<string | undefined> =>
   (await sql<{ id: string }>(w.t.store, "SELECT id FROM collections WHERE uri = ?", w.c.id))[0]?.id;
 
-// L's authorization `a` (a1, a2: the rows Kopje issued, in order).
+// L's authorization `a` (a1, a2: the rows Kopje issued, in order; before its issuance, the row R guessed).
 function authorization(w: World, name: string): string {
-  const row = w.rows[Number(name.slice(1)) - 1];
+  const row = w.rows[Number(name.slice(1)) - 1] ?? w.guessed[name];
   return `${ALICE_URI}/feature_authorizations/${row ?? "0"}`;
+}
+
+// RGuess: R lists the authorization Kopje issues next before Kopje issues it, which only an owner that guesses its URI
+// does. R's Add reaches Kopje at a later KRecv; here the replay picks the id, a local id of a time a year ahead, which no
+// allocation reaches by the clock, and sets Kopje's last local id just below it, so the next local id Kopje allocates is
+// the guessed one (ids.ts allocateLocalId: one past the last while the last is ahead of the clock). observe checks that
+// the row the issuing request inserts takes it, so an allocation in a step between shows there.
+async function guess(w: World, name: string): Promise<void> {
+  const id = BigInt(w.clock.now + 365 * 86_400_000) << 16n;
+  w.guessed[name] = id.toString();
+  await sql(
+    w.t.store,
+    "INSERT OR REPLACE INTO kopje_state (name, value) VALUES ('last_local_id', ?)",
+    (id - 1n).toString(),
+  );
 }
 
 const itemId = (w: World, name: string) =>
@@ -736,10 +757,12 @@ const STATUS = { delivered: 202, refused: 403, failed: 503 } as const;
 
 type Head = { id: number; state: string; due: number; inbox: string; retracts: number; body: string };
 
-// A delivery round under way, its POSTs recorded and each held until the step that answers it; token: its lease.
+// A delivery round under way, its POSTs recorded and each held until the step that answers it; token: its lease;
+// claims: the delivery ids each of its claims returned (claimDeliveries: those it leased to send).
 type Flight = {
   head: Head;
   token: string;
+  claims: string[][];
   sent: { url: string; body: Record<string, unknown> }[];
   posted: Deferred;
   answer: (outcome: Outcome) => void;
@@ -781,6 +804,23 @@ function fly(w: World, head: Head): Flight {
   let answer!: (outcome: Outcome) => void;
   const outcome = new Promise<Outcome>((resolve) => (answer = resolve));
   const prefix = `replay-${++leases}`;
+  const claims: Flight["claims"] = [];
+  const stub = w.t.store as unknown as Record<string, (...args: unknown[]) => unknown>;
+  const store = new Proxy(w.t.store, {
+    get(_target, property) {
+      if (typeof property !== "string") {
+        return undefined;
+      }
+      if (property === "claimDeliveries") {
+        return async (...args: unknown[]) => {
+          const claim = (await stub.claimDeliveries!(...args)) as Claim;
+          claims.push(claim.deliveries.map((d) => d.id));
+          return claim;
+        };
+      }
+      return (...args: unknown[]) => stub[property]!(...args);
+    },
+  });
   const sent: Flight["sent"] = [];
   const posted = deferred();
   const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -798,13 +838,13 @@ function fly(w: World, head: Head): Flight {
   const done = deliveryRound(
     w.t.env,
     deliveryDeps(
-      () => w.t.store,
+      () => store,
       fetch,
       () => w.clock.now,
       prefix,
     ),
   );
-  const flight: Flight = { head, token: `${prefix}-1`, sent, posted, answer, done };
+  const flight: Flight = { head, token: `${prefix}-1`, claims, sent, posted, answer, done };
   w.flights.push(flight);
   return flight;
 }
@@ -821,7 +861,8 @@ async function posted(flight: Flight): Promise<void> {
 }
 
 // The round's POSTs: to R's server exactly the head, as the step names it (an Accept with its result), at its inbox,
-// and off R's server only L's revocations to her followers (offR).
+// under the top-level id of the activity the head stores (which the recorded form leaves out), and off R's server only
+// L's revocations to her followers (offR).
 function expectSent(w: World, flight: Flight, head: Head, expected: Activity): void {
   const lane = laneOf(w);
   expect(
@@ -830,12 +871,23 @@ function expectSent(w: World, flight: Flight, head: Head, expected: Activity): v
   ).toEqual([]);
   const { reason: _reason, ...want } = expected;
   const envelope = JSON.parse(head.body) as Parameters<typeof asRecorded>[1];
+  const toR = flight.sent.filter((s) => new URL(s.url).origin === lane);
   expect(
-    flight.sent
-      .filter((s) => new URL(s.url).origin === lane)
-      .map((s) => asRecorded(w, { ...envelope, activity: s.body }, [s.url], head.retracts)),
+    toR.map((s) => asRecorded(w, { ...envelope, activity: s.body }, [s.url], head.retracts)),
     "the lane's head, as sent",
   ).toEqual([want]);
+  expect(typeof envelope.activity.id, "the stored activity's id").toBe("string");
+  expect(
+    toR.map((s) => s.body.id),
+    "the lane's head, sent under its stored id",
+  ).toEqual([envelope.activity.id]);
+}
+
+// A head the send-time check refuses (a suspended L's ordinary activity) is dropped by the round's claim, which never
+// leases it: absent from the delivery ids the claim returned, not leased and then dropped at its confirmation.
+function expectRefusedAtClaim(flight: Flight, head: Head): void {
+  expect(flight.claims.length, "the round's one claim").toBe(1);
+  expect(flight.claims[0], "the claim's deliveries, without the refused head").not.toContain(String(head.id));
 }
 
 // KLeaseHead: a round claims the head and holds its POST in flight until the step that answers it.
@@ -873,8 +925,9 @@ async function supersededBy(w: World, head: Head, want: Omit<Activity, "reason">
 // KReclaim: the held POST's lease runs out, and a delivery round at its expiry (claimDeliveries, after LEASE_MS)
 // reclaims the head: under a new lease, its POST to R's server in flight again (the head leased, never waiting), or
 // dropped, the round sending nothing (its POSTs answered before it is awaited, so one it makes fails the step at once):
-// "superseded", as supersededBy states; "dropped", a suspended L's ordinary activity refused at the reclaim, its delivery
-// deleted, not given up. The old POST is then answered 503, too late: its completion is stale and changes nothing.
+// "superseded", as supersededBy states; "dropped", a suspended L's ordinary activity refused by the reclaim's claim
+// (expectRefusedAtClaim), its delivery deleted, not given up. The old POST is then answered 503, too late: its
+// completion is stale and changes nothing.
 async function reclaim(w: World, expected: Activity, value: string | undefined): Promise<void> {
   const head = await laneHead(w, expected);
   const held = w.flight;
@@ -893,6 +946,7 @@ async function reclaim(w: World, expected: Activity, value: string | undefined):
     if (value === "superseded") {
       await supersededBy(w, head, want);
     } else {
+      expectRefusedAtClaim(flight, head);
       expect(await deliveryOf(w, head), "a dropped activity's delivery is gone").toEqual([]);
     }
   } else {
@@ -909,9 +963,10 @@ async function reclaim(w: World, expected: Activity, value: string | undefined):
 
 // A step that answers the head's POST: the one KLeaseHead or KReclaim holds, or that of a round claiming the waiting
 // head. Checks that the head before the step is the activity the step names and that the round POSTs exactly it there,
-// an Accept with its result (expectSent). Then, by the step's input: "dropped", that nothing is sent and the head's
-// delivery is gone (deleted, not given up); "superseded", supersededBy; else, after a 202, that the round delivered it
-// and its delivery is gone, and after a failed or lost POST, that the head waits again.
+// an Accept with its result (expectSent). Then, by the step's input: "dropped", that the round's claim refused the
+// waiting head (expectRefusedAtClaim), nothing is sent and the head's delivery is gone (deleted, not given up);
+// "superseded", supersededBy; else, after a 202, that the round delivered it and its delivery is gone, and after a
+// failed or lost POST, that the head waits again.
 async function deliver(w: World, outcome: Outcome, expected: Activity, value: string | undefined) {
   const head = await laneHead(w, expected);
   const flight = w.flight ?? fly(w, head);
@@ -920,6 +975,7 @@ async function deliver(w: World, outcome: Outcome, expected: Activity, value: st
   flight.answer(outcome);
   const { settled } = await flight.done;
   if (value === "dropped") {
+    expectRefusedAtClaim(flight, head);
     expect(
       flight.sent.filter((s) => !offR(w, s.body).includes(s.url)).map((s) => s.url),
       "a dropped activity is not sent",
@@ -1009,6 +1065,9 @@ async function step(w: World, s: Step): Promise<202 | 503 | "fetch" | null> {
       if (s.action === "RAdd") {
         requestId(w, value!);
       }
+      return null;
+    case "RGuess":
+      await guess(w, value!);
       return null;
     case "Env":
       await applyEnvironment(w, s.environment);
@@ -1130,7 +1189,8 @@ function named(w: World, type: string, activity: Record<string, unknown>): strin
       return "L";
     }
     const at = w.rows.findIndex((row) => id === `${ALICE_URI}/feature_authorizations/${row}`);
-    return at < 0 ? id : `a${at + 1}`;
+    const guessed = Object.entries(w.guessed).find(([, row]) => id === `${ALICE_URI}/feature_authorizations/${row}`);
+    return at >= 0 ? `a${at + 1}` : (guessed?.[0] ?? id);
   }
   return id;
 }
@@ -1244,6 +1304,10 @@ async function observe(w: World, response: Actual["response"]): Promise<Actual> 
           ALICE,
         );
   if (stored !== undefined && !w.rows.includes(stored.id)) {
+    const guessed = w.guessed[`a${w.rows.length + 1}`];
+    if (guessed !== undefined) {
+      expect(stored.id, "the authorization Kopje issued, as R listed it before").toBe(guessed);
+    }
     w.rows.push(stored.id);
   }
   const row: Row | null =

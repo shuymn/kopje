@@ -15,7 +15,7 @@ oracle the implementation is held to. Commands below run from `packages/kopje/`.
 | `CollectionConsent.tla` | the protocol: Kopje's steps, R's (cited to Mastodon file:line), the network; the invariants and goals |
 | `CollectionConsentInd.tla`, `Ind.cfg` | the induction check of Grant preservation, from every state of the core's type |
 | `CollectionConsentGoals.tla`, `CollectionConsentFixtures.tla` | reachability traps, and the projection the replay fixtures are written from |
-| `S1.cfg`-`S16.cfg` | the focused scenarios (`CollectionConsent.tla`, "Scenarios", says what each enables) |
+| `S1.cfg`-`S17.cfg` | the focused scenarios (`CollectionConsent.tla`, "Scenarios", says what each enables) |
 | `checks.json` | every check's expected outcome, which both checkers must give |
 | `coverage.json` | the Kopje files and functions the spec describes, with their blobs when last confirmed |
 
@@ -63,22 +63,26 @@ there; the fixture's steps are in its JSON, in order.
 The replay builds the world the specification abstracts, and each choice is commented where the replay makes it: R and X
 on one Mastodon host, L following neither and followed by no remote account; the environment flags as seeded rows (other
 members' rows in C's slots, R's other collections, a backlog of other hosts' deliveries none of them due, R's
-retractions at the cap, R's other content before a deferred purge reaches C); gates that hold a read's fetches until its
-`KFetch` and its completion until its `KApply` or `KStale`, one claim to a `KClaim`; the lane head answered 202, a lost
-response, 403 for a give-up, or 503 for `KFail`'s failed POST, a `KLeaseHead`'s round held at its POST until the step
-that answers it; `KReclaim` as a delivery round at the held lease's expiry (`claimDeliveries` after `LEASE_MS`), whose
-POST is then held in its place under the new lease, or which sends nothing for a superseded head or a suspended L's
-refused one (`dropped`), the expired lease's POST then answered 503 and its completion stale; `recorded` as L's outbound
-rows new since the last step, each with its full destination set: its one inbox on R's server, which names its `to`, and
-off R's server exactly the inboxes `offR` states (L's followers for her revocation, none for anything else), so an extra
-copy anywhere shows in its `to`; a delivery round POSTs nothing else off R's server, and to R's server exactly the head
-the step names, at its inbox, checked when each POST is held (`KLeaseHead`, `KReclaim`) as well as when it is answered;
-and after each delivery step the head's delivery is read in any state: one the step drops (`dropped`, `superseded`) is
-deleted, not given up, a `superseded` one leaves exactly one later answer of its recorded form in the lane (pending as
-its first row, queued behind another), a 202 deletes it and the round reports it delivered, a failed or lost POST leaves
-the head pending, and any other `KReclaim` leaves it leased under the new lease. A round that should send nothing is
-answered before it is awaited, and every round the replay started is answered and awaited when it ends, so a POST the
-Store should not make fails its step at once and no POST outlives the test. A choice that lets the Store take a step the
+retractions at the cap, R's other content before a deferred purge reaches C); `RGuess`'s authorization as a local id a
+year ahead of the clock, Kopje's last local id set just below it at `RGuess` and the row the issuing request inserts
+checked to take it, so an allocation in a step between shows; gates that hold a read's fetches until its `KFetch` and
+its completion until its `KApply` or `KStale`, one claim to a `KClaim`; the lane head answered 202, a lost response, 403
+for a give-up, or 503 for `KFail`'s failed POST, a `KLeaseHead`'s round held at its POST until the step that answers it;
+`KReclaim` as a delivery round at the held lease's expiry (`claimDeliveries` after `LEASE_MS`), whose POST is then held
+in its place under the new lease, or which sends nothing for a superseded head or a suspended L's refused one
+(`dropped`), the expired lease's POST then answered 503 and its completion stale; `recorded` as L's outbound rows new
+since the last step, each with its full destination set: its one inbox on R's server, which names its `to`, and off R's
+server exactly the inboxes `offR` states (L's followers for her revocation, none for anything else), so an extra copy
+anywhere shows in its `to`; a delivery round POSTs nothing else off R's server, and to R's server exactly the head the
+step names, at its inbox and under the top-level `id` of the activity the head stores, checked when each POST is held
+(`KLeaseHead`, `KReclaim`) as well as when it is answered; and after each delivery step the head's delivery is read in
+any state: one the step drops (`dropped`, `superseded`) is deleted, not given up, a `dropped` one is absent from the
+delivery ids the round's claim returned (`claimDeliveries`, at a fresh claim and at the reclaim: refused by the claim,
+never leased), a `superseded` one leaves exactly one later answer of its recorded form in the lane (pending as its first
+row, queued behind another), a 202 deletes it and the round reports it delivered, a failed or lost POST leaves the head
+pending, and any other `KReclaim` leaves it leased under the new lease. A round that should send nothing is answered
+before it is awaited, and every round the replay started is answered and awaited when it ends, so a POST the Store
+should not make fails its step at once and no POST outlives the test. A choice that lets the Store take a step the
 fixture does not state (a second claim in one call, a 400 the delivery resends, a key gone stale over `KCleanup`'s day
 that refetches R's document) makes a disagreement that is the replay's: fix the replay.
 
@@ -91,9 +95,11 @@ longer the lane's head; V25: at `S12-DroppedDelivery` the suspended member's `Ac
 `S2-LeaseSuperseded`'s `KFail` the superseded answer waits again, not dropped; V29, V30 and V31: at `S2-LeaseFailed`'s,
 `S4-LeaseFailedBesideX`'s and `S2-LeaseFailedOrdinary`'s `KFail` the answer is dropped, not waiting again; V32: at
 `S16-ReclaimRefused`'s `KReclaim` the suspended member's ordinary answer stays leased, not dropped; V33: at
-`S16-DroppedAnswer`'s last delivery it is sent, not dropped). A variant that changes only what an invariant counts (V8,
-V23, V34) is listed there as exempt, with its reason, and must reproduce every fixture. A variant with neither fails the
-test.
+`S16-DroppedAnswer`'s last delivery it is sent, not dropped; V35: at `S16-ReclaimRetraction`'s `KReclaim` the suspended
+member's retraction answer is dropped, not leased again; V36: at `S16-RetractionSentSuspended`'s last delivery the
+revoke's `Delete` is dropped, not sent; V37: at `S17-OrdinaryOverRetraction`'s `KFail` the ordinary answer is dropped
+as superseded, not waiting again). A variant that changes only what an invariant counts (V8, V23, V34) is listed there
+as exempt, with its reason, and must reproduce every fixture. A variant with neither fails the test.
 
 ## Reading a violation
 
@@ -126,20 +132,24 @@ cites the code):
   completes the leased head, or takes a waiting head, claim and outcome in one step. `KFail` is the leased POST's
   transient failure, after which the head waits again. `KReclaim` is its lease running out and the sweep reclaiming it,
   a claim of its own: the head stays in flight under a new lease and never waits. After `KDup`, `KFail` or `KReclaim` a
-  leased head is dropped instead (input `superseded`) when a retraction answer of its authorization to its inbox was
-  recorded while it was in flight (`Superseded`); an ordinary answer, or one to another inbox, supersedes nothing.
+  leased retraction answer is dropped instead (input `superseded`) when a retraction answer of its authorization to its
+  inbox was recorded while it was in flight (`Superseded`); an ordinary answer, or one to another inbox, supersedes
+  nothing, and a leased ordinary answer (one to a listing made before Kopje issued the authorization) keeps its course
+  whatever waits behind it.
   `KRetry` is an operator's retry (admitted again, then behind the head). While L is suspended the Store drops its
-  ordinary activities when it claims them, by their class: a retraction is still sent, and an answer once Kopje holds
-  no row, or to X, is ordinary. A waiting head is then `KDeliver` with the input `dropped`, which sends nothing, and is
-  neither duplicated nor given up; a leased one is `KReclaim` with the input `dropped`. A POST claimed before the
-  suspension may still complete. `RJob` is one of R's jobs, which run in any order.
+  ordinary activities when it claims them, by their class: a retraction is still sent, a fresh claim and the reclaim of
+  its lease alike, and an answer once Kopje holds no row, or to X, is ordinary. A waiting head is then `KDeliver` with
+  the input `dropped`, which sends nothing, and is neither duplicated nor given up; a leased one is `KReclaim` with the
+  input `dropped`. A POST claimed before the suspension may still complete. `RJob` is one of R's jobs, which run in
+  any order.
 - An answer to a listing of an authorization L's row no longer serves is a retraction only to R while Kopje holds the
   row; X's, or any once the row is gone, is ordinary and refused at a full backlog. A retraction answer is not
   recorded while one of the same authorization to the same inbox still waits in the lane (`Coalesced`), so the
   listing step then records nothing; a leased one (its lease reclaimed or not) does not wait, so the listing records
   another, which supersedes it.
-- `R*` and `XAdd` are R's requests and services; `Drop` loses an envelope; `Env` changes L's policy, the backlog, the
-  retraction cap, C's slots or how many of R's collections Kopje holds.
+- `R*` and `XAdd` are R's requests and services; `RGuess` (S17) is R's `Add` of the authorization Kopje issues next,
+  before Kopje issues it, which only an owner that guesses its URI sends; `Drop` loses an envelope; `Env` changes L's
+  policy, the backlog, the retraction cap, C's slots or how many of R's collections Kopje holds.
 
 `last` in each state names the step, its input, what it recorded and its response; `k` is Kopje's core (`row`, its
 `uri` listing), `rs` is R's server, `g` the history the invariants read (`obl` the obligation Grant preservation
@@ -149,7 +159,9 @@ changes the row at all, or Kopje claims an activity of L's other than a retracti
 reclaim). `OV3` fails when a read that does not cover the row replaces the covering read OV2 compares. `AnswerBound`
 fails when two retraction answers of one authorization wait in Kopje's lane (a leased head does not wait): one to an
 account other than R, a second to R recorded while the first waited, or a superseded one waiting again after its POST
-failed.
+failed. `Supersession` fails when a leased answer is dropped as superseded that is not a retraction answer, or that has
+no later retraction answer to the same owner behind it to be sent in its place (each owner has one fixed inbox in the
+model, so the same inbox is the same owner; the Store sends the later answer to the owner's current inbox).
 
 Tell the two kinds of failure apart by the step that breaks the invariant:
 
