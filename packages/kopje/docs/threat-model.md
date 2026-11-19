@@ -2028,8 +2028,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `src/domain/web-pages/site.ts`, oEmbed and `/authorize_interaction` set), `taggableCollections`, `localCollectionUri`
   and `shownItems` (`src/domain/collection-presenter.ts`), `configuredDomain` and `onConfiguredDomain`
   (`src/domain/instance-domain.ts`), `onDomain` (`src/platform/instance-host.ts`), `collectionPageId`,
-  `collectionDocumentAddress` and `servedCollectionAddress` (`src/platform/collection-address.ts`, read by the page's
-  route in `src/app/public-pages.tsx`, the `FeaturedCollection`'s in `src/federation/routes.ts` and `namedCollection`),
+  `collectionDocumentAddress`, `servedCollectionAddress` and `localCollectionKey` (`src/platform/collection-address.ts`,
+  read by the page's route in `src/app/public-pages.tsx`, the `FeaturedCollection`'s in `src/federation/routes.ts`,
+  `namedCollection` and search's `ownCollectionRoute`),
   `namedCollection`, `namesLocalCollection`, `resolvedCollection` and `flaggedCollections`
   (`src/domain/collections.ts`),
   `severCollections` (`src/domain/collections.ts`, run by a local block in `src/domain/blocks.ts`), the documents and
@@ -2060,12 +2061,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   status can tag it, whatever remote row shares the id",
   "reads the instance's domain once for a post's links", "references a local collection alike from a Note resolved over
   HTTPS or HTTP", "references a local collection by its route or web page over http, from a Create and an Update",
+  "references a local collection by its id padded past COLLECTION_URI_BYTES by its fragment alone",
   "neither lists nor tags a remote row whose id is on the instance's origin", "gives a post's slots only
   to collections whose owner is available, before it takes the first four", "gives no slot to a collection whose
   restored text is malformed", "names each collection by its id alone, after the other tags, under the
   featured_collections terms", "lets S's Note name Y alone, by its id", "leaves out a
   collection whose owner's id is past ACTOR_URI_LIMIT, and references none"), `test/inbox-flag.test.ts` ("names only
-  local collections on the instance's domain, as a status's links do"), `test/instance-domain.test.ts`,
+  local collections on the instance's domain, as a status's links do"), `test/search-resolution-store-calls.test.ts`
+  ("is answered by the Store's lookup alone, for every address a collection route serves"),
+  `test/instance-domain.test.ts`,
   `test-node/tagged-collection-reads.test.ts`.
 
 ### Authorization (AUTH)

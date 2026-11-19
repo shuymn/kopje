@@ -4,10 +4,19 @@ import { ROUTE_USERNAME } from "./identity-bounds";
 import { railsFormat } from "./rails-format";
 import { railsFormatParam } from "./rails-format-param";
 
-// A local collection's two addresses, as its routes read a request's URL (#1589's D1, D3), the one parser of them: the
-// routes take the collection they serve from it, and a lookup by URL (domain/collections.ts namedCollection) the
-// collection a URL names, so a URL on the instance's domain names a local collection exactly when its GET serves it.
-// A fragment is never part of a request, and neither reads it.
+// A local collection's URLs (#1589's D1, D3), the one parser of them: its two addresses, as its routes read a request's
+// URL, which the routes take the collection they serve from, and a lookup by URL (domain/collections.ts
+// namedCollection) the collection a URL names, so a URL on the instance's domain names a local collection exactly when
+// its GET serves it; and its id, on any host. A fragment is never part of a request, and neither address reads it.
+
+// A local collection's id as localCollectionUri builds it, `<actor id>/collections/<id>`, ends with its 18 digits: the
+// key a lookup by that id reads its one candidate by, whatever the host and the actor id (the lookup then compares the
+// whole id); null for a URL that ends otherwise.
+const ID_TAIL = /\/collections\/(\d{18})$/;
+
+export function localCollectionKey(href: string): string | null {
+  return ID_TAIL.exec(href)?.[1] ?? null;
+}
 
 // The page, /collections/:id (app/public-pages.tsx): matched as the router matches it, on the path Hono decodes
 // (getPath: decodeURI, so `%33` is a 3), an id of 1 to 19 digits as the path spells it, which the page reads exactly

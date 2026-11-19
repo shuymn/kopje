@@ -1,7 +1,7 @@
 import { writeEach } from "../db/by-ids";
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
-import { type CollectionAddress, servedCollectionAddress } from "../platform/collection-address";
+import { type CollectionAddress, localCollectionKey, servedCollectionAddress } from "../platform/collection-address";
 import { railsBlank } from "../platform/rails-blank";
 import {
   COLLECTION_DESCRIPTION_LENGTH,
@@ -1034,10 +1034,8 @@ export const pruneCollectionItems = writeOperation<{ now: number }, { deleted: n
 // caller and before any caller's filter: a local collection by its id as localCollectionUri builds it (D1), on any host,
 // or, over http or https on the instance's domain, by an address whose GET serves it (platform/collection-address.ts,
 // the routes' own parser); nothing else on that domain, where no remote collection's id is (D2); elsewhere what the
-// caller finds among the remote collections. A local collection's id ends with its 18 digits (ID_TAIL). A path of a
-// collection route's shape on the instance's domain (ROUTE_PATH) is Kopje's own, which search never fetches.
-const ID_TAIL = /\/collections\/(\d{18})$/;
-const ROUTE_PATH = /^\/(?:ap\/users\/[^/]+\/)?collections\/\d{1,18}$/;
+// caller finds among the remote collections. An address a collection route serves on that domain is Kopje's own, which
+// search never fetches.
 
 // A local collection as namedCollection reads it by its key, with its owner, whatever its state.
 type LocalCandidate = CollectionOwner & { id: string; account_id: string };
@@ -1076,13 +1074,13 @@ function namesLocalCollection(db: Db, url: URL, address: CollectionAddress | nul
 }
 
 // What `url` (comparedUrl) names, read and decided before any caller's filter: the local collection it names
-// (namesLocalCollection; its row by key, the id its address serves or its id's last segment), whatever its state, which
+// (namesLocalCollection; its row by key, the id its address serves or localCollectionKey's), whatever its state, which
 // the caller then shows, tags or reports, or not, never looking further, for a URL naming a local collection names no
 // remote one; else nothing on the instance's domain; elsewhere "remote", for the caller's lookup among the remote
 // collections. `domain`: the instance's, read once for the whole resolution.
 function namedCollection(db: Db, url: URL, domain: ConfiguredDomain): LocalCandidate | "remote" | null {
   const address = domainAddress(url, domain);
-  const key = address?.id ?? ID_TAIL.exec(url.href)?.[1] ?? null;
+  const key = address?.id ?? localCollectionKey(url.href);
   const row =
     key === null
       ? undefined
@@ -1098,9 +1096,10 @@ function namedCollection(db: Db, url: URL, domain: ConfiguredDomain): LocalCandi
   return onConfiguredDomain(url, domain) ? null : "remote";
 }
 
-// Whether `url` is on the instance's `domain` with a collection route's path: Kopje's own, which search never fetches.
+// Whether `url` is an address a collection route serves on the instance's `domain` (domainAddress), whatever
+// collection it names: Kopje's own, which search never fetches.
 function ownCollectionRoute(url: URL, domain: ConfiguredDomain): boolean {
-  return onConfiguredDomain(url, domain) && ROUTE_PATH.test(url.pathname);
+  return domainAddress(url, domain) !== null;
 }
 
 // Whether a search query could name a local collection (an address whose GET would serve one, or a URL ending as a
@@ -1108,7 +1107,7 @@ function ownCollectionRoute(url: URL, domain: ConfiguredDomain): boolean {
 // network; host-free, the Store decides.
 export function mayNameCollection(query: string): boolean {
   const url = comparedUrl(query);
-  return url !== null && (servedCollectionAddress(url) !== null || ID_TAIL.test(url.href));
+  return url !== null && (servedCollectionAddress(url) !== null || localCollectionKey(url.href) !== null);
 }
 
 // The collection `id` when R45 shows it to `viewer` (CollectionPolicy#show?), as the viewer sees it; null otherwise.

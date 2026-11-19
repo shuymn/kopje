@@ -1,5 +1,6 @@
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { localCollectionKey } from "../platform/collection-address";
 import { sameOrigin } from "../platform/http-url";
 import { railsBlank } from "../platform/rails-blank";
 import {
@@ -843,8 +844,8 @@ function memberRowIn(db: Db, uri: string, member: string): MemberRow | undefined
   if (remote !== undefined) {
     return remote;
   }
-  const id = /\/collections\/(\d{18})$/.exec(uri)?.[1];
-  if (id === undefined) {
+  const id = localCollectionKey(uri);
+  if (id === null) {
     return undefined;
   }
   const local = db.first<MemberRow & CollectionOwner>(
