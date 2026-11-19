@@ -1,6 +1,6 @@
 {
   "$comment": "Kopje's sources spec/collection-consent/ describes, and their blobs when it was last confirmed to (scripts/collection-consent-coverage.mjs). A null blob is a file the specification describes that Kopje does not have yet. test-node/collection-consent-coverage.test.ts fails once a blob differs.",
-  "confirmed": "204165790e6bb04989b72be24d5d61744b37a598",
+  "confirmed": "37623aca185c9b9088f6d8c395129c6540d76cd8",
   "files": [
     {
       "path": "src/store.ts",
@@ -51,7 +51,7 @@
         "revokeFeatureAuthorization"
       ],
       "spec": "CollectionConsentKopje.tla AddItem (K2), RemoveItem (K3), UpdateCollection (K4), RemoveCollection (K5), OwnerGone (K6), Revoke (K7), ApplyRead (K14)",
-      "blob": "dd83f059d82ea8b327f30638f48f669a581e7f36"
+      "blob": "319cc1d1c9cdbc1118bfa28f7be49cf6dc619a2d"
     },
     {
       "path": "src/domain/remote-collections.ts",
@@ -69,7 +69,7 @@
       "path": "src/domain/collections.ts",
       "functions": ["severCollections", "pruneCollectionItems"],
       "spec": "CollectionConsentKopje.tla Block (K8, an ordinary Block with the row's Delete), Cleanup (K10) and Evict; MemberGone (K9) is model-only",
-      "blob": "ac7fcb474d7135df19ba1cd0d4c9fd7f42c74911"
+      "blob": "598e402c207fd0d3db3e1a1c1452951c668a9a0a"
     },
     {
       "path": "src/domain/collection-documents.ts",
@@ -87,7 +87,7 @@
       "path": "src/domain/deliveries.ts",
       "functions": ["enqueueActivity", "claimDeliveries", "confirmDelivery", "retryDeliveries"],
       "spec": "CollectionConsent.tla Record (RES-4's refusal at a full backlog) and Coalesced (no retraction answer recorded while one of the same authorization to the same inbox waits), the lane in id order, a corrective answer at its head leased for the POST (KLeaseHead, KDeliver, KDup, KGiveUp, KFail, and KReclaim, the sweep's reclaim under a new lease; Superseded: a leased retraction answer that a later one of the same authorization to the same owner superseded is dropped when its POST fails or its lease is reclaimed), sender refusal by the activity's class at a claim, fresh or the reclaim (Drops, ReclaimDrops), and KRetry's admission re-check and place in the lane",
-      "blob": "991cc26febaf1b698ededfa78b25fe91d7f7aab3"
+      "blob": "00c5c4bfa1d6aab8a2c5b5e9b1733b1d414c7d3b"
     },
     {
       "path": "src/store-rpc.ts",
