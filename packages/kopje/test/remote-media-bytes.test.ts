@@ -729,7 +729,8 @@ describe("recognizeMedia: hostile WebM", () => {
   });
 });
 
-// Images' output stripped before its check (platform/images.ts encodeChecked): production Images keeps a PNG's eXIf.
+// Images' output stripped before its check (platform/images.ts encodeChecked): production Images keeps a PNG's Exif
+// and XMP.
 describe("stripImageOutput (MEDIA-3)", () => {
   const pngTypes = (png: Uint8Array) => {
     const types: string[] = [];

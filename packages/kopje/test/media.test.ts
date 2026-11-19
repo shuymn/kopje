@@ -265,8 +265,8 @@ describe("POST /api/v2/media", () => {
     expect(remoteImageMetadata(served, "image/webp")).toBeNull();
   });
 
-  // Production Images keeps a PNG's eXIf chunk in its PNG output (platform/images.ts), as den did with every macOS
-  // screenshot: the codec adds one to each PNG output of the local binding.
+  // Production Images keeps a macOS screenshot's eXIf and XMP iTXt in its PNG output (platform/images.ts): the codec
+  // adds an eXIf to each PNG output of the local binding.
   const keepsExif = (output: Uint8Array, options: { format: string }) =>
     options.format === "image/png" ? pngWithChunk(output, "eXIf", exifOrientation(1).subarray(6)) : output;
 
@@ -338,7 +338,8 @@ describe("POST /api/v2/media", () => {
 
   it("keeps a PNG output's colour signalling: cICP, mDCV and cLLI (MEDIA-3)", async () => {
     const h = await users();
-    // Display P3 (primaries 12, transfer 13, matrix 0, full range), as Images would carry it over.
+    // Display P3 (primaries 12, transfer 13, matrix 0, full range), from a codec that writes them: production Images
+    // converts to sRGB and writes none (platform/images.ts), so this is Kopje's strip and check keeping them.
     const colour = (output: Uint8Array, options: { format: string }) =>
       options.format === "image/png"
         ? pngWithChunk(

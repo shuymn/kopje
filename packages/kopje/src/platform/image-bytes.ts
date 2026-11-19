@@ -210,7 +210,9 @@ function jpegMetadata(bytes: Uint8Array): RetainedMetadata | null {
 // PNG chunks a re-encoded image may keep: structure, transparency, colour (gAMA, cHRM, sRGB, iCCP, and PNG 3's cICP,
 // mDCV and cLLI), pixel density and animation (APNG). Anything else counts as metadata. Colour signalling describes
 // how to display the pixels (a colour space, a display's mastering volume, light levels), not who made the image or
-// where, and PNG 3 gives cICP precedence over iCCP and sRGB, so dropping it would change the colours shown.
+// where, and PNG 3 gives cICP precedence over iCCP and sRGB, so dropping it would change the colours shown. Production
+// Images converts a PNG to sRGB and writes neither iCCP nor cICP (platform/images.ts), so keeping them matters for
+// cached remote images (remote-media-bytes.ts) and for a codec that writes them, not for an upload's served files.
 const PNG_CHUNKS: ReadonlySet<string> = new Set([
   "IHDR",
   "PLTE",

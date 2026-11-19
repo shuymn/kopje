@@ -178,14 +178,16 @@ export const RGBA_MIN_CALL_MS = 2_000;
 export const RGBA_CALL_MS = 5_000;
 
 // Only PNG and WebP are produced. The Images binding has no metadata option (its output() takes format, quality and
-// anim: https://developers.cloudflare.com/images/transform-images/bindings/), and Images discards all metadata for
-// WebP and PNG output but keeps the EXIF copyright tag in JPEG by default ("For all other output formats (e.g. WebP or
-// PNG), all metadata will always be discarded":
-// https://developers.cloudflare.com/images/transform-images/transform-via-url/#metadata). Production Images keeps a
-// PNG's eXIf chunk in PNG output all the same (seen in November 2026 on macOS screenshots, which carry one). The input
-// goes to Images whole, since Images applies its Exif orientation and its colour (iCCP, cICP), and encodeChecked
-// strips each output (stripImageOutput) before retainedMetadata, the safety net, checks it. PNG keeps PNG (lossless, transparency); JPEG, GIF, WebP and AVIF become WebP (it keeps transparency and
-// animation).
+// anim: https://developers.cloudflare.com/images/transform-images/bindings/), and Images documents that it discards
+// all metadata for WebP and PNG output but keeps the EXIF copyright tag in JPEG by default ("For all other output
+// formats (e.g. WebP or PNG), all metadata will always be discarded":
+// https://developers.cloudflare.com/images/transform-images/transform-via-url/#metadata). Production Images does not
+// (measured on a staging instance in November 2026): from a PNG it drops an Exif block that holds only the orientation,
+// which it applies, but keeps one with any other field (a macOS screenshot's resolution, user comment and pixel size)
+// and an XMP iTXt chunk, with or without a resize. So encodeChecked strips each output (stripImageOutput) before
+// retainedMetadata, the safety net, checks it. The input goes to Images whole, so Images applies its Exif orientation.
+// Images also converts a PNG's colours to sRGB and writes neither iCCP nor cICP in its PNG output. PNG keeps PNG
+// (lossless, transparency); JPEG, GIF, WebP and AVIF become WebP (it keeps transparency and animation).
 type OutputType = "image/png" | "image/webp";
 
 const OUTPUT: Record<ImageType, OutputType> = {
