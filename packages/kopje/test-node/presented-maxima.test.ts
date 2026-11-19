@@ -2,13 +2,16 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
-import { ANSWER_BYTES, STATUS_ANSWER_BYTES } from "../src/domain/answer-bytes.js";
+import { ANSWER_BYTES, OUTBOX_BYTES, STATUS_ANSWER_BYTES } from "../src/domain/answer-bytes.js";
 import {
+  CAP_STEP,
   COLUMN_FILL,
   CONSERVATIVE_JSON,
   FILL_SHAPES,
   FILLS,
+  HALF,
   HEAP_PEAKS,
+  LARGE_ITEM_CHUNK_BYTES,
   MESSAGE_MAX,
   MOVED_ACCOUNT_MAXIMA,
   NOTE_MAXIMA,
@@ -17,7 +20,9 @@ import {
   SHAPE_CEILING_PERCENT,
   type Shape,
   type ShapeName,
+  SPARE_FLOOR,
   STREAM_UNIT_PEAKS,
+  TIMELINE_CHUNK_BYTES,
 } from "../test/presented-maxima.js";
 
 // docs/threat-model.md "Maxima of presented units" and "Heap at 8 MiB per answer" (RES-3) state the figures
@@ -285,6 +290,9 @@ JSON is at most ${answer},`.replace(/\s+/g, " "),
       `conservative JSON is ${count(spare)} bytes within ${SHAPE_CEILING_PERCENT}% of ${answer} (${count(ceiling)})`,
     );
     expect(document).toContain(`the conversation's JSON keeps ${count(spare)} under its ceiling`);
+    expect(document).toContain(
+      `the least whole percent that keeps it at least the ${count(SPARE_FLOOR)} bytes a change may not cross`,
+    );
     const announcement = /One announcement is at most ([\d,]+) bytes \(([\d.]+%) of (\d+ MiB)\)/.exec(document);
     expect(announcement?.slice(2)).toEqual([share(Number(announcement![1]!.replaceAll(",", ""))), answer]);
     expect(document).toContain(`the admitted answer's ${((3 * ANSWER_BYTES) / 1e6).toFixed(1)} MB (`);
@@ -317,8 +325,45 @@ JSON is at most ${answer},`.replace(/\s+/g, " "),
       ),
     ].map((match) => match[1] ?? match[2]);
     expect(heaps).toEqual([mb(3 * STATUS_ANSWER_BYTES), mb(3 * STATUS_ANSWER_BYTES)]);
-    const past = HEAP_PEAKS.timelines.backstop + 3 * 8 * 1024 - 64_000_000;
-    expect(flat(DOCUMENT)).toContain(`8 KiB more would pass half by ${count(past)} bytes`);
+    const step = `${CAP_STEP / 1024} KiB`;
+    const spare = `${count(SPARE_FLOOR)} bytes`;
+    const isolate = `${(2 * HALF) / 1e6} MB`;
+    expect(flat(DOCUMENT)).toContain(
+      `the largest multiple of ${step} that keeps it at least ${spare} under half (\`test/status-bounds.test.ts\``,
+    );
+    expect(flat(DOCUMENT)).toContain(
+      `asserts the timelines' peaks within half of the Store isolate's ${isolate} with at least ${spare} to spare`,
+    );
+    const chunk = (bytes: number) =>
+      `${bytes % (1024 * 1024) === 0 ? mib(bytes) : `${bytes / 1024} KiB`} (${mb(bytes)})`;
+    expect(flat(DOCUMENT)).toContain(
+      `A chunk of several takes at most its target of heap: ${chunk(TIMELINE_CHUNK_BYTES)} for timelines, ` +
+        `${chunk(LARGE_ITEM_CHUNK_BYTES)} for groups and reports.`,
+    );
+    const past = HEAP_PEAKS.timelines.backstop + 3 * CAP_STEP - HALF;
+    expect(flat(DOCUMENT)).toContain(
+      `The ${TIMELINE_CHUNK_BYTES / 1024} KiB timeline cap and \`STATUS_ANSWER_BYTES\`, the largest multiple of ` +
+        `${step} that does with that cap (each byte of budget is three of heap, so ${step} more would pass half by ` +
+        `${count(past)} bytes), keep the fallback below half the isolate's memory even while the dropped chunk ` +
+        `remains live, with at least ${spare} to spare under ${HALF / 1e6} MB`,
+    );
+  });
+
+  // The outbox's budget (RES-3): ANSWER_BYTES less the reserve answer-bytes.ts gives, the page size getOutbox reads
+  // (local-notes.ts, which imports the Store's modules, so read from its source) and the share of it the largest
+  // Create takes (NOTE_MAXIMA, over every fill).
+  it("states the outbox budget as the code gives it", () => {
+    const flat = (text: string) => text.replace(/\s+/g, " ");
+    const pageSize = /\nconst OUTBOX_PAGE_SIZE = (\d+);\n/.exec(
+      readFileSync(new URL("../src/domain/local-notes.ts", import.meta.url), "utf8"),
+    )?.[1];
+    expect(flat(INVENTORY)).toContain(
+      `at most ${pageSize} activities within \`OUTBOX_BYTES\` (\`ANSWER_BYTES\` less ` +
+        `${(ANSWER_BYTES - OUTBOX_BYTES) / 1024} KiB for the page around them)`,
+    );
+    expect(flat(DOCUMENT)).toContain(
+      `the Create is ${Math.floor((100 * NOTE_MAXIMA.create) / OUTBOX_BYTES)}% of \`OUTBOX_BYTES\``,
+    );
   });
 });
 

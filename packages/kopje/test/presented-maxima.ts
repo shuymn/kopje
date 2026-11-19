@@ -7,6 +7,16 @@
 // spare at least SPARE_FLOOR (status-bounds.test.ts asserts both).
 export const SHAPE_CEILING_PERCENT = 89;
 
+// The heap model's bounds (status-bounds.test.ts): half of the Store isolate's 128 MB, within which a timeline's peak
+// stays; the least spare the timeline heap and the conversation's JSON keep, which a change may not cross without a
+// review (#1142); the step STATUS_ANSWER_BYTES is derived in; and the chunk caps the peaks are measured at
+// (status-presenter.ts PAGE_CHUNKS and LARGE_ITEM_CHUNKS, which the test holds equal).
+export const HALF = 64_000_000;
+export const SPARE_FLOOR = 4096;
+export const CAP_STEP = 8 * 1024;
+export const TIMELINE_CHUNK_BYTES = 392 * 1024;
+export const LARGE_ITEM_CHUNK_BYTES = 1024 * 1024;
+
 // The fills of test/status-bounds.test.ts, described where it defines how a fixture fills text.
 export type Fill = "escaped" | "derived" | "raw" | "emoji-poll" | "emoji-cache";
 export const FILLS = ["escaped", "derived", "raw", "emoji-poll", "emoji-cache"] as const satisfies readonly Fill[];
@@ -127,8 +137,25 @@ export const MOVED_ACCOUNT_MAXIMA = { json: 11_340, sqlite: 12_464, rows: 1, hea
 export const PROFILE_MAXIMA = { json: 326_185, conservative: 372_038 };
 
 // The ActivityPub Note of a local status at its bounds, its card's Link included, addressed to MAX_LOCAL_ADDRESSED
-// accounts: what its read takes out of SQLite, the rows and nodes, and the JSON of the Note and of its Create.
-export const NOTE_MAXIMA = { sqlite: 3_767_169, rows: 1_342, nodes: 3_184, note: 4_262_049, create: 6_318_633 };
+// accounts, in each fill of its parts (status-bounds.test.ts): what its read takes out of SQLite, the rows and nodes,
+// and the JSON of the Note and of its Create.
+type NoteShape = { sqlite: number; rows: number; nodes: number; note: number; create: number };
+export const NOTE_FILLS: Record<Fill, NoteShape> = {
+  escaped: { sqlite: 3_767_169, rows: 1_342, nodes: 3_184, note: 4_262_049, create: 6_318_633 },
+  derived: { sqlite: 3_767_169, rows: 1_342, nodes: 3_184, note: 4_262_049, create: 6_318_633 },
+  raw: { sqlite: 3_810_046, rows: 1_342, nodes: 3_184, note: 3_973_943, create: 6_030_527 },
+  "emoji-poll": { sqlite: 3_766_984, rows: 1_342, nodes: 3_184, note: 4_261_864, create: 6_318_448 },
+  "emoji-cache": { sqlite: 3_767_169, rows: 1_342, nodes: 3_184, note: 4_262_049, create: 6_318_633 },
+};
+
+// Each column's most of NOTE_FILLS, as the table of maxima states it.
+export const NOTE_MAXIMA: NoteShape = {
+  sqlite: Math.max(...FILLS.map((fill) => NOTE_FILLS[fill].sqlite)),
+  rows: Math.max(...FILLS.map((fill) => NOTE_FILLS[fill].rows)),
+  nodes: Math.max(...FILLS.map((fill) => NOTE_FILLS[fill].nodes)),
+  note: Math.max(...FILLS.map((fill) => NOTE_FILLS[fill].note)),
+  create: Math.max(...FILLS.map((fill) => NOTE_FILLS[fill].create)),
+};
 
 // The peaks of the heap model (status-bounds.test.ts peaks), in bytes, for answers whose largest item is a timeline's
 // item, a group or a report: the item's rows with 25% headroom, the largest single row, the rejected item's objects,

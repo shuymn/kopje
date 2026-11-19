@@ -160,7 +160,12 @@ import {
   HEAP_PEAKS,
   MESSAGE_MAX,
   MOVED_ACCOUNT_MAXIMA,
-  NOTE_MAXIMA,
+  NOTE_FILLS,
+  SPARE_FLOOR,
+  CAP_STEP,
+  HALF,
+  TIMELINE_CHUNK_BYTES,
+  LARGE_ITEM_CHUNK_BYTES,
   type Peaks,
   type Shape,
   SHAPE_CEILING_PERCENT,
@@ -3056,9 +3061,6 @@ describe("an attachment of malformed imported text (RES-3)", () => {
   });
 });
 
-// The least spare the timeline heap and the conversation's JSON keep (#1142).
-const SPARE_FLOOR = 4096;
-
 describe("the table of maxima (RES-3)", () => {
   // docs/threat-model.md "Maxima of presented units" states these. An answer admits a whole item, so every atomic
   // shape stays within SHAPE_CEILING_PERCENT of ANSWER_BYTES (8 MiB) with filters included, measured and conservative
@@ -3248,11 +3250,9 @@ describe("the table of maxima (RES-3)", () => {
     }).toEqual({ chunk: 6_905_800, page: 12_034_240 });
   }, 600_000);
 
-  // Half of the Store isolate's 128 MB. A timeline's largest item is a status, a quote or a boost of a quote; groups
-  // and reports keep the presentation's state besides (10.1 and 12.5 MB, docs/threat-model.md) and pass half, below
-  // the whole (the RES-3 gap).
-  const HALF = 64_000_000;
-  const CAP_STEP = 8 * 1024;
+  // Within HALF: a timeline's largest item is a status, a quote or a boost of a quote; groups and reports keep the
+  // presentation's state besides (10.1 and 12.5 MB, docs/threat-model.md) and pass half, below the whole (the RES-3
+  // gap).
   it("keeps the peaks of the heap model within their bounds, from the maxima per column", async () => {
     const timelines = await peaks(["status", "quote", "boostOfQuote"], PAGE_CHUNKS, 0);
     const groups = await peaks(["group"], LARGE_ITEM_CHUNKS, 10_100_000);
@@ -3267,7 +3267,8 @@ describe("the table of maxima (RES-3)", () => {
     // With PAGE_CHUNKS at 392 KiB, STATUS_ANSWER_BYTES is the largest budget in steps of 8 KiB that keeps it: every
     // peak grows by 3 bytes a byte of the budget (the admitted answer, its RPC copy and its JSON), and a status's
     // tagged_collections at their maxima (#1589's D26) would pass it at ANSWER_BYTES.
-    expect(PAGE_CHUNKS.cap).toBe(392 * 1024);
+    expect(PAGE_CHUNKS.cap).toBe(TIMELINE_CHUNK_BYTES);
+    expect(LARGE_ITEM_CHUNKS.cap).toBe(LARGE_ITEM_CHUNK_BYTES);
     expect(STATUS_ANSWER_BYTES % CAP_STEP).toBe(0);
     expect(HALF - (timelines.backstop + 3 * CAP_STEP)).toBeLessThan(SPARE_FLOOR);
     expect(HALF - (timelines.backstop + 3 * (ANSWER_BYTES - STATUS_ANSWER_BYTES))).toBeLessThan(SPARE_FLOOR);
@@ -3435,116 +3436,131 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
   // in ASCII: the most bytes its projection reads) are at their bounds,
   // built as statusFacts and noteOf build the object endpoint's Note, the outbox's Create and the featured
   // collection's Notes; each status tags four valid remote collections whose ids are COLLECTION_URI_BYTES of characters
-  // JSON escapes (maximalCollections). docs/threat-model.md "Maxima of presented units" states the Note and the Create.
-  it("measures the Note and the Create, within OUTBOX_BYTES, and five Notes of the featured collection", async () => {
-    const t = await setup();
-    const parts = await maximalParts(t);
-    // Addressed to MAX_LOCAL_ADDRESSED accounts, each actor id at ACTOR_URI_LIMIT: the mentions above and more.
-    const base = 950_000_000_000_000_000n;
-    const more = MAX_LOCAL_ADDRESSED - parts.mentions.length;
-    await sql(
-      t.store,
-      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+  // JSON escapes (maximalCollections). Each fill of the status's parts (maximalParts) is measured, as the table of
+  // maxima's shapes are, and docs/threat-model.md "Maxima of presented units" states each column's most of them
+  // (NOTE_MAXIMA); the featured collection is measured in the escaped fill, the most JSON.
+  it.each(FILLS)(
+    "measures the Note and the Create in the %s fill, within OUTBOX_BYTES, and five Notes of the featured collection",
+    async (fill) => {
+      const t = await setup();
+      const parts = await maximalParts(t, fill);
+      // Addressed to MAX_LOCAL_ADDRESSED accounts, each actor id at ACTOR_URI_LIMIT: the mentions above and more.
+      const base = 950_000_000_000_000_000n;
+      const more = MAX_LOCAL_ADDRESSED - parts.mentions.length;
+      await sql(
+        t.store,
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
 			INSERT INTO accounts (id, uri, username, domain)
 			SELECT CAST(?2 + i AS TEXT), substr(?3 || (?2 + i) || '/' || ?4, 1, ?5), 'a' || i, ?6 FROM n`,
-      more,
-      String(base),
-      `https://${HOST}/users/`,
-      "u".repeat(ACTOR_URI_LIMIT),
-      ACTOR_URI_LIMIT,
-      HOST,
-    );
-    parts.mentions = [...parts.mentions, ...Array.from({ length: more }, (_, i) => String(base + BigInt(i + 1)))];
-    // A local emoji snapshot at exactly STATUS_EMOJIS_BYTES presented bytes, every entry resolved to an Emoji tag
-    // (custom-emojis.ts localEmojiTags), with as many entries as fit (local-emoji-helpers.ts localSnapshotAtCap).
-    parts.emojis = await localSnapshotAtCap(t.store, ALICE, STATUS_EMOJIS_BYTES);
-    expect(presentedEmojiBytes(JSON.parse(parts.emojis) as [string, string][])).toBe(STATUS_EMOJIS_BYTES);
-    const ids: string[] = [];
-    for (let i = 0; i < PIN_LIMIT; i++) {
-      const id = await storedStatus(t, ALICE, parts);
-      await maximalCard(t, id, "raw");
-      await sql(t.store, "INSERT INTO status_pins (account_id, status_id) VALUES (?, ?)", ALICE, id);
-      ids.push(id);
-    }
-    await maximalCollections(t.store, W, ids);
-    const measuredNote = await runInDurableObject(t.store, (_instance, state) => {
-      let sqlite = 0;
-      let rows = 0;
-      const counting = observedSql(state.storage.sql, (read) => {
-        for (const row of read) {
-          rows++;
-          for (const value of Object.values(row)) {
-            sqlite += typeof value === "string" ? utf8Length(value) : 8;
+        more,
+        String(base),
+        `https://${HOST}/users/`,
+        "u".repeat(ACTOR_URI_LIMIT),
+        ACTOR_URI_LIMIT,
+        HOST,
+      );
+      parts.mentions = [...parts.mentions, ...Array.from({ length: more }, (_, i) => String(base + BigInt(i + 1)))];
+      // A local emoji snapshot at exactly STATUS_EMOJIS_BYTES presented bytes, every entry resolved to an Emoji tag
+      // (custom-emojis.ts localEmojiTags), with as many entries as fit (local-emoji-helpers.ts localSnapshotAtCap).
+      parts.emojis = await localSnapshotAtCap(t.store, ALICE, STATUS_EMOJIS_BYTES);
+      expect(presentedEmojiBytes(JSON.parse(parts.emojis) as [string, string][])).toBe(STATUS_EMOJIS_BYTES);
+      const ids: string[] = [];
+      for (let i = 0; i < PIN_LIMIT; i++) {
+        const id = await storedStatus(t, ALICE, parts);
+        await maximalCard(t, id, "raw");
+        await sql(t.store, "INSERT INTO status_pins (account_id, status_id) VALUES (?, ?)", ALICE, id);
+        ids.push(id);
+      }
+      await maximalCollections(t.store, W, ids);
+      const measuredNote = await runInDurableObject(t.store, (_instance, state) => {
+        let sqlite = 0;
+        let rows = 0;
+        const counting = observedSql(state.storage.sql, (read) => {
+          for (const row of read) {
+            rows++;
+            for (const value of Object.values(row)) {
+              sqlite += typeof value === "string" ? utf8Length(value) : 8;
+            }
           }
-        }
+        });
+        const facts = statusFacts(new Db(counting), ids[0]!, noteQuote, { reached: false })!;
+        const note = noteOf(facts);
+        return {
+          sqlite,
+          rows,
+          nodes: nodes(note),
+          note: jsonBytes(note),
+          create: jsonBytes(createActivity(facts).activity),
+          tags: facts.tags.length,
+          longest: Math.max(...facts.tags.map((tag) => [...tag.name].length)),
+          mentions: facts.mentions.length,
+          media: facts.media.length,
+          emojis: facts.emojis.length,
+          emojiTags: jsonBytes(facts.emojis),
+          collections: facts.collections.length,
+          link: jsonBytes(note.attachment) - jsonBytes((note.attachment as unknown[]).slice(0, -1)),
+        };
       });
-      const facts = statusFacts(new Db(counting), ids[0]!, noteQuote, { reached: false })!;
-      const note = noteOf(facts);
-      return {
-        sqlite,
-        rows,
-        nodes: nodes(note),
-        note: jsonBytes(note),
-        create: jsonBytes(createActivity(facts).activity),
-        tags: facts.tags.length,
-        longest: Math.max(...facts.tags.map((tag) => [...tag.name].length)),
-        mentions: facts.mentions.length,
-        media: facts.media.length,
-        emojis: facts.emojis.length,
-        emojiTags: jsonBytes(facts.emojis),
-        collections: facts.collections.length,
-        link: jsonBytes(note.attachment) - jsonBytes((note.attachment as unknown[]).slice(0, -1)),
-      };
-    });
-    expect(measuredNote).toMatchObject({ tags: MAX_PRESENTED_TAGS, mentions: MAX_STATUS_MENTION_ROWS, media: 4 });
-    expect(measuredNote.longest).toBeLessThanOrEqual(MAX_TAG_LENGTH);
-    expect(measuredNote.create).toBeLessThanOrEqual(OUTBOX_BYTES);
-    const featured = await runInDurableObject(t.store, (_instance, state) =>
-      getFeatured.run(state.storage.sql, { username: "alice" }),
-    );
-    // Five such Notes pass the bound: the first ones are shown whole, the rest by their uri.
-    let items = featured as unknown;
-    while (!Array.isArray(items)) {
-      items = (items as { value: unknown }).value;
-    }
-    const pins = items as { uri: string; note: string | null }[];
-    const featuredBytes = jsonBytes(pins);
-    expect(featuredBytes).toBeLessThanOrEqual(ANSWER_BYTES);
-    const whole = pins.filter((item) => item.note !== null).length;
-    expect(whole).toBeGreaterThan(0);
-    expect(whole).toBeLessThan(PIN_LIMIT);
-    expect(pins).toHaveLength(PIN_LIMIT);
-    // Three hashtags far past their bound, as a converted row may hold them, are left out, as the Status entity leaves
-    // them out.
-    const long = await storedStatus(t, ALICE, {
-      ...parts,
-      mentions: [],
-      media: [],
-      poll: null,
-      tags: [1, 2, 3].map((i) => `${i}${"x".repeat(240_000)}`),
-    });
-    const shown = await runInDurableObject(t.store, (_instance, state) => {
-      const facts = statusFacts(new Db(state.storage.sql), long, noteQuote, { reached: false })!;
-      return { tags: facts.tags.length, create: jsonBytes(createActivity(facts).activity) };
-    });
-    expect(shown.tags).toBe(0);
-    expect(shown.create).toBeLessThan(200_000);
-    expect({ ...measuredNote, featured: featuredBytes, whole }).toEqual({
-      ...NOTE_MAXIMA,
-      tags: MAX_PRESENTED_TAGS,
-      longest: MAX_TAG_LENGTH,
-      mentions: MAX_STATUS_MENTION_ROWS,
-      media: 4,
-      emojis: 61,
-      emojiTags: 14_850,
-      collections: MAX_TAGGED_COLLECTIONS,
-      // The Link and its comma: `,{"type":"Link","href":""}` and the url.
-      link: 26 + CARD_URL_LIMIT,
-      featured: 4_489_880,
-      whole: 1,
-    });
-  }, 300_000);
+      expect(measuredNote).toMatchObject({ tags: MAX_PRESENTED_TAGS, mentions: MAX_STATUS_MENTION_ROWS, media: 4 });
+      expect(measuredNote.longest).toBeLessThanOrEqual(MAX_TAG_LENGTH);
+      expect(measuredNote.create).toBeLessThanOrEqual(OUTBOX_BYTES);
+      if (fill !== "escaped") {
+        expect(measuredNote).toEqual({ ...NOTE_FILLS[fill], ...NOTE_COUNTS });
+        return;
+      }
+      const featured = await runInDurableObject(t.store, (_instance, state) =>
+        getFeatured.run(state.storage.sql, { username: "alice" }),
+      );
+      // Five such Notes pass the bound: the first ones are shown whole, the rest by their uri.
+      let items = featured as unknown;
+      while (!Array.isArray(items)) {
+        items = (items as { value: unknown }).value;
+      }
+      const pins = items as { uri: string; note: string | null }[];
+      const featuredBytes = jsonBytes(pins);
+      expect(featuredBytes).toBeLessThanOrEqual(ANSWER_BYTES);
+      const whole = pins.filter((item) => item.note !== null).length;
+      expect(whole).toBeGreaterThan(0);
+      expect(whole).toBeLessThan(PIN_LIMIT);
+      expect(pins).toHaveLength(PIN_LIMIT);
+      // Three hashtags far past their bound, as a converted row may hold them, are left out, as the Status entity leaves
+      // them out.
+      const long = await storedStatus(t, ALICE, {
+        ...parts,
+        mentions: [],
+        media: [],
+        poll: null,
+        tags: [1, 2, 3].map((i) => `${i}${"x".repeat(240_000)}`),
+      });
+      const shown = await runInDurableObject(t.store, (_instance, state) => {
+        const facts = statusFacts(new Db(state.storage.sql), long, noteQuote, { reached: false })!;
+        return { tags: facts.tags.length, create: jsonBytes(createActivity(facts).activity) };
+      });
+      expect(shown.tags).toBe(0);
+      expect(shown.create).toBeLessThan(200_000);
+      expect({ ...measuredNote, featured: featuredBytes, whole }).toEqual({
+        ...NOTE_FILLS.escaped,
+        ...NOTE_COUNTS,
+        featured: 4_489_880,
+        whole: 1,
+      });
+    },
+    300_000,
+  );
 });
+
+// What the Note of a status at its bounds names, in every fill.
+const NOTE_COUNTS = {
+  tags: MAX_PRESENTED_TAGS,
+  longest: MAX_TAG_LENGTH,
+  mentions: MAX_STATUS_MENTION_ROWS,
+  media: 4,
+  emojis: 61,
+  emojiTags: 14_850,
+  collections: MAX_TAGGED_COLLECTIONS,
+  // The Link and its comma: `,{"type":"Link","href":""}` and the url.
+  link: 26 + CARD_URL_LIMIT,
+};
 
 describe("the public pages at the maxima (RES-3)", () => {
   // Every input the page reads at its cap at once, in the emoji-poll fill (the largest quote payloads of the fills:

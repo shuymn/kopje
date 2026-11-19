@@ -13,3 +13,7 @@ export const ANSWER_BYTES = 8 * 1024 * 1024;
 // test/status-bounds.test.ts derives it; every atomic status item is within it, and a page it cuts continues from its
 // last admitted item.
 export const STATUS_ANSWER_BYTES = 7_831_552;
+
+// The bytes of an outbox page's serialized activities at most (RES-3): ANSWER_BYTES less a reserve for the
+// collection page around them, which the Worker builds (local-notes.ts getOutbox).
+export const OUTBOX_BYTES = ANSWER_BYTES - 64 * 1024;
