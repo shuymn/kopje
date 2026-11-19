@@ -1,6 +1,7 @@
 import { writeEach } from "../db/by-ids";
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { onDomain } from "../platform/instance-host";
 import { railsBlank } from "../platform/rails-blank";
 import {
   COLLECTION_DESCRIPTION_LENGTH,
@@ -56,15 +57,17 @@ import {
   collectionOwnerSql,
   type CollectionRow,
   collectionUri,
+  localCollectionUri,
   presentCollection,
   presentCollections,
   presentItem,
   shownItems,
   taggableCollections,
+  type TaggedCollection,
 } from "./collection-presenter";
 import { requestCollectionSync } from "./collection-requests";
 import { allocateLocalId, insertWithFreshId, requestedId, storedIdOf } from "./ids";
-import { instanceOrigin } from "./instance-domain";
+import { instanceDomainOf } from "./instance-domain";
 import { notify } from "./notifications";
 import { writeOperation } from "./operation";
 import { RowBudget } from "./row-budget";
@@ -102,11 +105,11 @@ const COLLECTION_LIMIT_MESSAGE = `Collections are too many, no more than ${COLLE
 
 // The most JSON a Collection presents (RES-3), each derived from the bounds and measured by test/collections.test.ts: a
 // local one's name and description at their bounds in characters JSON escapes to six bytes, its tag at the tag-name
-// bound (its URL encoding each byte in three), 25 accepted items, an instance domain of 253 octets and an owner's
-// username at LOCAL_USERNAME_BYTES; a remote one's longer name and description likewise, and its stored uri and url at
-// their bounds of printable ASCII, which JSON escapes to two bytes at most. COLLECTION_JSON_MAX is the larger, a remote
-// one's.
-export const LOCAL_COLLECTION_JSON_MAX = 9_165;
+// bound (its URL encoding each byte in three), 25 accepted items, its url on an instance domain of 253 octets and its
+// uri under its owner's actor id at ACTOR_URI_LIMIT as JSON (localCollectionUri); a remote one's longer name and
+// description likewise, and its stored uri and url at their bounds of printable ASCII, which JSON escapes to two bytes
+// at most. COLLECTION_JSON_MAX is the larger, a remote one's.
+export const LOCAL_COLLECTION_JSON_MAX = 10_912;
 export const COLLECTION_JSON_MAX = 29_701;
 
 // REST::CollectionWithAccountsSerializer.
@@ -1025,22 +1028,53 @@ export const pruneCollectionItems = writeOperation<{ now: number }, { deleted: n
 
 // ---- Collections named by reports and search.
 
-// The route of a local collection a URL names on `origin`: the stored id of a uri
-// (`/ap/users/:username/collections/:id`, with the username as written) or a url (`/collections/:id`, username null);
-// null for any other.
-function localCollectionRoute(url: string, origin: string): { id: string; username: string | null } | null {
-  if (!url.startsWith(`${origin}/`)) {
+// A URL naming a local collection (#1589's D1, D3) ends with `/collections/` and the collection's id: the key each
+// lookup reads the one candidate by. Its web page is `/collections/:id` on the instance's domain; the collection
+// routes' paths (that and `/ap/users/:username/collections/:id`) on that domain are Kopje's own, never fetched.
+const COLLECTION_TAIL = /\/collections\/(\d{1,18})$/;
+const WEB_PATH = /^\/collections\/\d{1,18}$/;
+const ROUTE_PATH = /^\/(?:ap\/users\/[^/]+\/)?collections\/\d{1,18}$/;
+
+// `text` as a URL a lookup compares (the WHATWG href without its fragment, as a status's links are read); null when it
+// is none.
+function comparedUrl(text: string): URL | null {
+  if (!URL.canParse(text)) {
     return null;
   }
-  const match = /^(?:ap\/users\/([^/?#]+)\/)?collections\/(\d{1,18})$/.exec(url.slice(origin.length + 1));
-  return match === null ? null : { id: storedIdOf(match[2]!), username: match[1] ?? null };
+  const url = new URL(text);
+  url.hash = "";
+  return url;
 }
 
-// The local collection a URL names by its route (ActivityPub::TagManager#uri_to_local_collection,
-// ResolveURLService#process_local_url): its stored id when the URL is a local collection's uri or url on `origin`,
-// whatever the username; null for any other.
-export function localCollectionId(url: string, origin: string): string | null {
-  return localCollectionRoute(url, origin)?.id ?? null;
+// The stored id of the one local collection `url` can name (COLLECTION_TAIL), or null.
+function collectionKey(url: URL): string | null {
+  const match = COLLECTION_TAIL.exec(url.href);
+  return match === null ? null : storedIdOf(match[1]!);
+}
+
+// Whether `url` names the local collection `row`, read by collectionKey (ActivityPub::TagManager#uri_to_resource for
+// a local collection, without a username taken from the path): it is the collection's id as localCollectionUri builds
+// it from its owner's stored actor id, compared as hrefs, whatever its host (D1); or, on the instance's `domain`
+// (onDomain, the routes' own test: D3, never a request's host), its web page.
+function namesLocalCollection(url: URL, domain: string | null, row: CollectionOwner & { id: string }): boolean {
+  if (domain !== null && onDomain(url, domain) && url.search === "" && WEB_PATH.test(url.pathname)) {
+    return true;
+  }
+  const id = localCollectionUri(row.owner_uri, row.id);
+  return id !== null && comparedUrl(id)?.href === url.href;
+}
+
+// Whether `url` is on the instance's `domain` with a collection route's path: Kopje's own, which no lookup fetches or
+// looks for among remote collections.
+function ownCollectionRoute(url: URL, domain: string | null): boolean {
+  return domain !== null && onDomain(url, domain) && ROUTE_PATH.test(url.pathname);
+}
+
+// Whether a search query could name a local collection (a URL with COLLECTION_TAIL), so the Worker asks the Store
+// (resolvedCollection) before it resolves the query over the network; host-free, the Store decides.
+export function mayNameCollection(query: string): boolean {
+  const url = comparedUrl(query);
+  return url !== null && collectionKey(url) !== null;
 }
 
 // The collection `id` when R45 shows it to `viewer` (CollectionPolicy#show?), as the viewer sees it; null otherwise.
@@ -1051,10 +1085,27 @@ export function shownCollection(db: Db, id: string, viewer: string | null, origi
     : (presentCollections(db, [row], viewer, origin)[0] ?? null);
 }
 
-// Search with resolve=true of a local collection's URL (ResolveURLService#check_collection): shownCollection.
-export const resolvedCollection = userReadOperation<{ id: string; present: PresentInput }, Collection | null>(
-  (db, input, { accountId: viewer }) => shownCollection(db, input.id, viewer, input.present.origin),
-);
+// Search with resolve=true of a URL that may name a local collection (ResolveURLService#process_local_url and
+// #check_collection): `named` when it is a local collection's id or web page (namesLocalCollection) or one of Kopje's
+// own collection routes (ownCollectionRoute), which the Worker then does not fetch; `collection` the one it names when
+// R45 shows it to the viewer (shownCollection), presented on the request's origin.
+export const resolvedCollection = userReadOperation<
+  { url: string; present: PresentInput },
+  { named: boolean; collection: Collection | null }
+>((db, input, { accountId: viewer }) => {
+  const url = comparedUrl(input.url);
+  const key = url === null ? null : collectionKey(url);
+  if (url === null || key === null) {
+    return { named: false, collection: null };
+  }
+  const domain = instanceDomainOf(db);
+  const row = foundCollection(db, key);
+  const id = row !== undefined && row.local === 1 && namesLocalCollection(url, domain, row) ? row.id : null;
+  return {
+    named: id !== null || ownCollectionRoute(url, domain),
+    collection: id === null ? null : shownCollection(db, id, viewer, input.present.origin),
+  };
+});
 
 // ReportService#reported_collection_ids (`@target_account.collections.find(ids)`): the target's collections the
 // `raw` ids name, in any visibility, each read as Ruby's to_i reads it, in the order given; null unless each names one
@@ -1086,16 +1137,26 @@ export function collectionUris(db: Db, ids: readonly string[]): string[] {
 }
 
 // The collections an inbound Flag names among its objects (ActivityPub::Activity::Flag#perform's collection_from_uri,
-// TagManager#uri_to_resource), with their owners, in the objects' order: a local one by route on `origin`, a remote
-// one by its stored uri, the object's fragment removed. Each read by key.
-export function flaggedCollections(
-  db: Db,
-  objects: readonly string[],
-  origin: string,
-): { id: string; account_id: string }[] {
+// TagManager#uri_to_resource), with their owners, in the objects' order: a local one by its id or web page
+// (namesLocalCollection, the instance's domain read here), a remote one by its stored uri, the object's fragment
+// removed. Each read by key.
+export function flaggedCollections(db: Db, objects: readonly string[]): { id: string; account_id: string }[] {
+  const domain = objects.length === 0 ? null : instanceDomainOf(db);
   const named = objects.map((uri) => {
-    const local = localCollectionId(uri, origin);
-    return local === null ? { uri: uri.split("#")[0]! } : { id: local };
+    const url = comparedUrl(uri);
+    const key = url === null ? null : collectionKey(url);
+    const row =
+      key === null
+        ? undefined
+        : db.first<CollectionOwner & { id: string }>(
+            `SELECT c.id, ${collectionOwnerSql("a")} FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
+						CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
+					WHERE c.id = ? AND c.local = 1`,
+            key,
+          );
+    return url !== null && row !== undefined && namesLocalCollection(url, domain, row)
+      ? { id: row.id }
+      : { uri: uri.split("#")[0]! };
   });
   const rows = db.all<{ key: number; id: string; account_id: string }>(
     `SELECT w.key, c.id, c.account_id FROM json_each(?1) w
@@ -1128,37 +1189,40 @@ export function flaggedCollections(
 // The collection `where` picks, by key, when a status can tag it whatever the viewer (taggableCollections, the readers'
 // decision: its owner available, its id served or its validity, its text), so one no surface would show takes no
 // slot; null otherwise.
-function taggableId(db: Db, origin: string | null, where: string, ...params: SqlStorageValue[]): string | null {
-  return (
-    taggableCollections(
-      db,
-      origin,
-      `collections c INDEXED BY ${COLLECTIONS_ID_INDEX} CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
-				ON a.id = c.account_id`,
-      where,
-      ...params,
-    )[0]?.id ?? null
-  );
+function taggableRow(db: Db, where: string, ...params: SqlStorageValue[]): TaggedCollection | undefined {
+  return taggableCollections(db, {
+    from: `collections c INDEXED BY ${COLLECTIONS_ID_INDEX} CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
+			ON a.id = c.account_id`,
+    where,
+    params,
+  })[0];
 }
 
-// The collection a local route on `origin` names: the row by key, local, and for the uri form owned by the username
-// given, compared byte for byte (Mastodon's route lookup takes the id alone), with its owner by key (taggableId).
-function routedCollection(db: Db, url: string, origin: string): string | null {
-  const route = localCollectionRoute(url, origin);
-  return route === null
-    ? null
-    : taggableId(db, origin, "c.id = ?1 AND c.local = 1 AND (?2 IS NULL OR a.username = ?2)", route.id, route.username);
+function taggableId(db: Db, where: string, ...params: SqlStorageValue[]): string | null {
+  return taggableRow(db, where, ...params)?.id ?? null;
+}
+
+// The collection `url` (a link or a tag, comparedUrl) names, when a status can tag it (#1589's D1, D3): a local one by
+// its id or web page (namesLocalCollection, its row by key as taggableCollections reads it); none for another of the
+// instance's own routes (ownCollectionRoute) or a URL on the instance's domain, where no remote collection's id is
+// (taggable); elsewhere `remote`'s. `domain`: the instance's, which the caller read.
+function namedCollection(db: Db, url: URL, domain: string | null, remote: () => string | null): string | null {
+  const key = collectionKey(url);
+  const local = key === null ? undefined : taggableRow(db, "c.id = ?1 AND c.local = 1", key);
+  if (local !== undefined && namesLocalCollection(url, domain, local)) {
+    return local.id;
+  }
+  return domain !== null && onDomain(url, domain) ? null : remote();
 }
 
 // The remote collection stored under the id `uri`, byte for byte (collections_uri, one entry), read by key with its
-// owner (taggableId: a restored owner id past ACTOR_URI_LIMIT, as actorUriSql reads it, makes it invalid). `origin`:
-// the instance's.
-function collectionByStoredUri(db: Db, uri: string, origin: string | null): string | null {
+// owner (taggableId: a restored owner id past ACTOR_URI_LIMIT, as actorUriSql reads it, makes it invalid).
+function collectionByStoredUri(db: Db, uri: string): string | null {
   const row = db.first<{ id: string }>(
     "SELECT id FROM collections INDEXED BY collections_uri WHERE uri = ?1 AND local = 0",
     uri,
   );
-  return row === undefined ? null : taggableId(db, origin, "c.id = ?1", row.id);
+  return row === undefined ? null : taggableId(db, "c.id = ?1", row.id);
 }
 
 // The remote collection whose stored url is `url` byte for byte and whose stored uri begins with `linked` (the link's
@@ -1166,8 +1230,8 @@ function collectionByStoredUri(db: Db, uri: string, origin: string | null): stri
 // it (taggableId; #1589's D26, c2a): the prefix puts its id, and validity its owner, on the link's origin, so no other
 // server claims the URL. collections_url walks at most 2 entries (the LIMIT, before any test, so a row no status can
 // tag still makes the URL ambiguous), and the one is read by key with its owner. `local = 0` is a literal: the partial
-// index serves only a statement whose terms imply its condition. `origin`: the instance's.
-function collectionByStoredUrl(db: Db, url: string, linked: string, origin: string | null): string | null {
+// index serves only a statement whose terms imply its condition.
+function collectionByStoredUrl(db: Db, url: string, linked: string): string | null {
   const rows = db.all<{ id: string }>(
     `SELECT id FROM collections INDEXED BY collections_url
 		WHERE url = ?1 AND uri >= ?2 AND uri < ?3 AND local = 0 LIMIT 2`,
@@ -1176,7 +1240,7 @@ function collectionByStoredUrl(db: Db, url: string, linked: string, origin: stri
     `${linked}0`,
   );
   const [row] = rows;
-  return rows.length === 1 && row !== undefined ? taggableId(db, origin, "c.id = ?1", row.id) : null;
+  return rows.length === 1 && row !== undefined ? taggableId(db, "c.id = ?1", row.id) : null;
 }
 
 // The ids of the first MAX_TAGGED_COLLECTIONS distinct collections `candidates` name, in their order, each resolved by
@@ -1198,44 +1262,42 @@ function distinctCollections<T>(candidates: readonly T[], resolve: (candidate: T
 
 // The collections a local status's text links (ProcessLinksService#call), for a post or an edit: the http(s) links
 // parseStatusText finds, in text order, the first MAX_TAG_LINK_CANDIDATES, each as its WHATWG href without its
-// fragment. On the instance's origin (instanceOrigin, read once when the text has a link: #1589's D3, never the
-// author's actor id's origin) a link names a local collection by its route; elsewhere a valid remote collection by its
-// stored uri, else (c2a) by its stored url on the link's origin.
+// fragment (comparedUrl). A link names a local collection by its id or web page (namedCollection, with the instance's
+// domain read once when the text has a link: #1589's D3, never the author's actor id's or the request's host);
+// elsewhere a valid remote collection by its stored uri, else (c2a) by its stored url on the link's origin.
 export function linkedCollections(db: Db, source: string): string[] {
   const links = parseStatusText(source).segments.flatMap((segment) => {
-    if (segment.kind !== "url") {
-      return [];
-    }
-    let url: URL;
-    try {
-      url = new URL(segment.url);
-    } catch {
-      return [];
-    }
-    url.hash = "";
-    return [url];
+    const url = segment.kind === "url" ? comparedUrl(segment.url) : null;
+    return url === null ? [] : [url];
   });
   if (links.length === 0) {
     return [];
   }
-  const origin = instanceOrigin(db);
-  return distinctCollections(links.slice(0, MAX_TAG_LINK_CANDIDATES), ({ href, origin: linked }) =>
-    origin !== null && href.startsWith(`${origin}/`)
-      ? routedCollection(db, href, origin)
-      : (collectionByStoredUri(db, href, origin) ?? collectionByStoredUrl(db, href, linked, origin)),
+  const domain = instanceDomainOf(db);
+  return distinctCollections(links.slice(0, MAX_TAG_LINK_CANDIDATES), (url) =>
+    namedCollection(
+      db,
+      url,
+      domain,
+      () => collectionByStoredUri(db, url.href) ?? collectionByStoredUrl(db, url.href, url.origin),
+    ),
   );
 }
 
 // The collections a remote Note's FeaturedCollection tags name (federation/remote-status.ts collectionTags: their ids,
-// in tag order, at most MAX_TAG_LINK_CANDIDATES): on `origin` (the instance's) a local collection by its route,
-// elsewhere a valid remote collection by its stored uri, the id before any `#`. A tag only references (b1): nothing is
-// fetched, stored or notified from it.
-export function taggedCollections(db: Db, ids: readonly string[], origin: string): string[] {
-  return distinctCollections(ids, (id) =>
-    id.startsWith(`${origin}/`)
-      ? routedCollection(db, id, origin)
-      : collectionByStoredUri(db, id.split("#")[0]!, origin),
-  );
+// in tag order, at most MAX_TAG_LINK_CANDIDATES): a local collection by its id or web page (namedCollection, with the
+// instance's domain read here: #1589's D3, never the host the Note was fetched through), elsewhere a valid remote
+// collection by its stored uri, the id before any `#`. A tag only references (b1): nothing is fetched, stored or
+// notified from it.
+export function taggedCollections(db: Db, ids: readonly string[]): string[] {
+  if (ids.length === 0) {
+    return [];
+  }
+  const domain = instanceDomainOf(db);
+  return distinctCollections(ids, (id) => {
+    const url = comparedUrl(id);
+    return url === null ? null : namedCollection(db, url, domain, () => collectionByStoredUri(db, id.split("#")[0]!));
+  });
 }
 
 // The status `statusId`'s references made `slots` (linkedCollections' or taggedCollections': at most

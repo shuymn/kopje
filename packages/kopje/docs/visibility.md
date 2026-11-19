@@ -762,27 +762,30 @@ more U+FFFD than their stored bytes hold as EF BF BD, since decoding adds one fo
 (`wellFormed`); a local one only while it is stored as local, its owner is a local account, and its id has the path
 the collection route takes, on any host (`ROUTED_ID_PATH`, of `ROUTE_USERNAME`, the routes' own pattern); a remote one
 only while it is stored as remote, its id is a valid id on its owner's origin (`validRemoteCollection`, against the
-owner's id as `actorUriSql` reads it: '' past `ACTOR_URI_LIMIT`) and not on the instance's origin (`instanceOrigin` in
-`instance-domain.ts`, the configured domain the routes answer on), and its name and description are within its writer's
-bounds (`withinRemoteText`). One function builds a local collection's id from its owner's stored actor id,
-`<actor id>/collections/<id>` (`localCollectionUri`, read through `collectionOwnerSql`): the API's `uri` and
-`tagged_collections`, the Note's tag, the collection's documents (its items' and its local members' authorizations'
-included), the owner's `featured_collections`, the activities and the page's alternate. None compares it with the
-request's host or the configured one, so a collection's id resolves exactly when its owner's actor id does: an account
-whose actor id does not (restored inconsistently, or kept from an earlier domain) has collections no more and no less
-reachable than itself, and the API creates and updates its collections as any owner's. The owner's
-`featured_collections` lists its local collections alone, under its stored actor id, wherever the actor route serves
-the owner. So a restored dump's malformed UTF-8 is presented nowhere, and a restored row no writer would store (a remote
-row under a local id included) is neither shown, listed nor authorized. The writer (`collections.ts`) applies the same
-`taggableCollections` to a post's links and a Note's tags before it takes the first four, so a collection no surface
-shows takes no slot; a link names a local collection when it is on the instance's origin (`instanceOrigin`), whatever
-the author's actor id or the request's host, as the Note's tags and the federation reads decide it. A collection that
-stops being available after the post is written is left out as the readers read it. No page presents them or reads a
-reference: the status page and its thread, the profile's tabs and pins, the hashtag page, the interact handoff, oEmbed
-and the `/authorize_interaction` result present `[]` (`Present.page`, set by `pagePresent`, which `anonymous()` spreads,
-and by oEmbed and `/authorize_interaction`; the chunk planner's term is 0 under it). A local status's ActivityPub forms
-name each collection it tags that a status can tag (`taggableCollections`, as the API decides it before R45) by its id
-alone (`statusFacts` and `noteOf` in `activities.ts`): with no viewer, the id is all they send, so no collection's name,
+owner's id as `actorUriSql` reads it: '' past `ACTOR_URI_LIMIT`) and not on the instance's domain (`onDomain` in
+`platform/instance-host.ts`, the routes' own test of the configured domain, by host, read by `instanceDomainOf`), and
+its name and description are within its writer's bounds (`withinRemoteText`). One function builds a local collection's
+id from its owner's stored actor id, `<actor id>/collections/<id>` (`localCollectionUri`, read through
+`collectionOwnerSql`): the API's `uri` and `tagged_collections`, the Note's tag, the collection's documents (its items'
+and its local members' authorizations' included), the owner's `featured_collections`, the activities and the page's
+alternate; it is none where the account presenter shows no actor id either (past `ACTOR_URI_LIMIT` as JSON,
+`withinIdentityBound`). None compares it with the request's host or the configured one, so a collection's id resolves
+exactly when its owner's actor id does: an account whose actor id does not (restored inconsistently, or kept from an
+earlier domain) has collections no more and no less reachable than itself, and the API creates and updates its
+collections as any owner's. The owner's `featured_collections` lists its local collections alone, under its stored actor
+id, wherever the actor route serves the owner. So a restored dump's malformed UTF-8 is presented nowhere, and a restored
+row no writer would store (a remote row under a local id included) is neither shown, listed nor authorized. The writer
+(`collections.ts`) applies the same `taggableCollections` to a post's links and a Note's tags before it takes the first
+four, so a collection no surface shows takes no slot. A link, a Note's tag, a Flag's object and a search with
+`resolve=true` name a local collection by its id exactly as the surfaces emit it, or by its web page on the instance's
+domain (`namesLocalCollection`), never by a username taken from the path, the author's actor id or the request's host;
+no function that decides or looks up a local collection takes a request's origin. A collection that stops being
+available after the post is written is left out as the readers read it. No page presents them or reads a reference: the
+status page and its thread, the profile's tabs and pins, the hashtag page, the interact handoff, oEmbed and the
+`/authorize_interaction` result present `[]` (`Present.page`, set by `pagePresent`, which `anonymous()` spreads, and by
+oEmbed and `/authorize_interaction`; the chunk planner's term is 0 under it). A local status's ActivityPub forms name
+each collection it tags that a status can tag (`taggableCollections`, as the API decides it before R45) by its id alone
+(`statusFacts` and `noteOf` in `activities.ts`): with no viewer, the id is all they send, so no collection's name,
 description or members travel in the post's activities. That bounds the wire's content, not who learns of the
 collection: a local collection's id is under its owner's actor id, which names the owner, and a fetch of it is judged by
 R45 for the fetcher, the remote account whose stored key the signature names (a key Kopje does not store names none, and

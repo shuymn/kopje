@@ -470,7 +470,7 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
   );
   writeTags(db, id, input.tags.slice(0, MAX_STATUS_TAGS));
   // Create#process_tags' FeaturedCollection tags: the collections Kopje stores that they name (collections.ts).
-  writeTaggedCollections(db, id, taggedCollections(db, input.collectionTags ?? [], ctx.origin));
+  writeTaggedCollections(db, id, taggedCollections(db, input.collectionTags ?? []));
   writeMedia(db, id, author, input.media, ctx);
   noteStatusEmoji(db, id, ctx.now);
   if (input.poll !== null && input.poll !== undefined) {
@@ -814,7 +814,7 @@ export function updateRemoteStatus(
   // update_tags!'s FeaturedCollection tags: the set this version names replaces the stored one, significant or not;
   // a document from an earlier build, which read none, leaves it.
   if (input.collectionTags !== undefined) {
-    writeTaggedCollections(db, existing.id, taggedCollections(db, input.collectionTags, ctx.origin));
+    writeTaggedCollections(db, existing.id, taggedCollections(db, input.collectionTags));
   }
   writeMedia(db, existing.id, author, media, ctx);
   measureFilterText(db, existing.id, iso(ctx.now));

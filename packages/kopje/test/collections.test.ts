@@ -10,6 +10,7 @@ import {
   RETIRED_ROWS_PER_ROUND,
   showCollection,
 } from "../src/domain/collections";
+import { ACTOR_URI_LIMIT } from "../src/domain/profile-bounds";
 import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
 import { TREND_LANGUAGES } from "../src/domain/trend-languages";
 import { handleScheduled } from "../src/jobs/scheduled";
@@ -961,23 +962,20 @@ describe("collections: maxima", () => {
     const listed = await call(h, "GET", `/api/v1/accounts/${owner}/collections?limit=100`, alice.token);
     expect(listed.body.collections).toHaveLength(10);
     expect(jsonBytes(listed.body)).toBeLessThanOrEqual(10 * (COLLECTION_JSON_MAX + 1) + jsonBytes({ collections: [] }));
-    // Its actor id on LONG_ORIGIN, where the answer is presented: a local collection's id is under it while it is its
-    // username's route there (localCollectionUri).
-    await sql(
-      h.store,
-      "UPDATE accounts SET uri = ? WHERE id = ?",
-      `${LONG_ORIGIN}/ap/users/${"o".repeat(LOCAL_USERNAME_BYTES)}`,
-      owner,
-    );
+    // Its stored actor id at ACTOR_URI_LIMIT, as JSON too (a restored row: localCollectionUri builds the id under any
+    // actor id the account presenter shows, withinIdentityBound), on LONG_ORIGIN, where the answer is presented.
+    const actor = `${LONG_ORIGIN}/ap/users/`.padEnd(ACTOR_URI_LIMIT, "o");
+    await sql(h.store, "UPDATE accounts SET uri = ? WHERE id = ?", actor, owner);
     const { collection, accounts } = await shownAtLongOrigin(h, collectionId(0));
     expect(collection.items).toHaveLength(25);
     expect(accounts).toHaveLength(26);
-    // The bound: the skeleton and each string at its most, as JSON (six bytes for each escaped character): its uri and
-    // url on LONG_ORIGIN.
+    // The bound: the skeleton and each string at its most, as JSON (six bytes for each escaped character): its uri
+    // under the actor id at its bound, and its url on LONG_ORIGIN.
+    expect(collection.uri).toBe(`${actor}/collections/${collectionId(0)}`);
     const max =
       skeleton(collection) +
       shared +
-      (LONG_ORIGIN.length + "/ap/users/".length + LOCAL_USERNAME_BYTES + "/collections/".length + 18) + // uri
+      (ACTOR_URI_LIMIT + "/collections/".length + 18) + // uri
       6 * COLLECTION_NAME_LENGTH.local +
       6 * COLLECTION_DESCRIPTION_LENGTH.local +
       (LONG_ORIGIN.length + "/collections/".length + 18); // url
@@ -985,6 +983,10 @@ describe("collections: maxima", () => {
     expect(LOCAL_COLLECTION_JSON_MAX).toBeLessThan(COLLECTION_JSON_MAX);
     // The fill reaches the bound but for local and discoverable, true and one byte shorter than false.
     expect(LOCAL_COLLECTION_JSON_MAX - jsonBytes(collection)).toBe(2);
+    // An actor id whose JSON passes ACTOR_URI_LIMIT (its last byte a `"`, escaped to two), which the account presenter
+    // does not show either, builds no id (localCollectionUri): the collection is presented with the uri "".
+    await sql(h.store, "UPDATE accounts SET uri = ? WHERE id = ?", `${actor.slice(0, -1)}"`, owner);
+    expect((await shownAtLongOrigin(h, collectionId(0))).collection.uri).toBe("");
     // CollectionWithAccounts: the collection and 26 accounts at the account occurrence's conservative bound.
     const frame = jsonBytes({ collection: {}, accounts: [] }) - 2;
     expect(COLLECTION_JSON_MAX + frame + 26 * (CONSERVATIVE_JSON.account + 1)).toBeLessThan(ANSWER_BYTES);

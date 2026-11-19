@@ -1,4 +1,4 @@
-import { localCollectionId } from "../domain/collections";
+import { mayNameCollection } from "../domain/collections";
 import { isUrlQuery } from "../domain/remote-statuses";
 import type { SearchType } from "../domain/search";
 import { envInMaintenance } from "../platform/config";
@@ -112,14 +112,14 @@ export const search: ApiHandler = withParams(async (c, deps, p) => {
     if (offset > 0) {
       return nothing();
     }
-    const collection = localCollectionId(query, new URL(c.req.url).origin);
-    if (collection !== null) {
-      if (!collections) {
-        return nothing();
+    // A local collection's id or web page, or another of Kopje's collection routes, is answered from the Store, which
+    // decides it by the collection's id and the instance's domain (#1589's D1, D3), never by this request's host.
+    if (mayNameCollection(query)) {
+      const input = { credential: userCredential(c, deps), url: query, present: present(c) };
+      const local = authorized(await storeCall(c, deps, (s, b) => s.resolvedCollection(b, input)));
+      if (local.named) {
+        return c.json({ ...NOTHING, collections: collections && local.collection !== null ? [local.collection] : [] });
       }
-      const input = { credential: userCredential(c, deps), id: collection, present: present(c) };
-      const found = authorized(await storeCall(c, deps, (s, b) => s.resolvedCollection(b, input)));
-      return c.json({ ...NOTHING, collections: found === null ? [] : [found] });
     }
     // Any other URL resolves to an account, a status or a remote collection (resolveQuery).
     if (!types.includes("accounts") && !types.includes("statuses") && !collections) {

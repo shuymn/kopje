@@ -44,6 +44,7 @@ import { BUILD } from "./helpers";
 import { MASTODON, mastodonActor } from "./inbox-helpers";
 import {
   ALICE,
+  AS,
   create,
   DAVE,
   followed,
@@ -124,6 +125,14 @@ async function remoteCollection(t: Setup, owner: string, n: number, uri: string,
     T,
   );
   return collectionId(n);
+}
+
+// A request to any URL, through the app as t.request sends one to the instance's.
+async function through(t: Setup, url: string, init: RequestInit = {}): Promise<Response> {
+  const ctx = createExecutionContext();
+  const response = await t.app.fetch(new Request(url, init), t.env, ctx);
+  await waitOnExecutionContext(ctx);
+  return response;
 }
 
 // The collections the status `id` references, by id.
@@ -464,6 +473,23 @@ describe("a remote Note's tags (7-T4)", () => {
     expect(await count(t, "collections")).toBe(before.collections);
     expect(await count(t, "collection_items")).toBe(0);
     expect(await count(t, "notifications")).toBe(before.notifications);
+  });
+
+  // #1589's D3: a Note search resolves names the local collection its tag gives by the instance's domain, so it is
+  // referenced alike whether the search came over HTTPS or HTTP.
+  it("references a local collection alike from a Note resolved over HTTPS or HTTP", async () => {
+    const { t, bob, L } = await world();
+    const notes = [mastodonNote(bob, tags(localUri(L))), mastodonNote(bob, tags(localUri(L)))];
+    const references: string[][] = [];
+    for (const [i, origin] of [LOCAL, "http://kopje.test"].entries()) {
+      const note = notes[i]!;
+      t.web.serve(note.id, { "@context": AS, ...note });
+      const path = `/api/v2/search?type=statuses&resolve=true&q=${encodeURIComponent(note.id)}`;
+      const response = await through(t, `${origin}${path}`, { headers: { authorization: `Bearer ${t.tokens.dave}` } });
+      expect((await response.json<{ statuses: unknown[] }>()).statuses).toHaveLength(1);
+      references.push(await tagged(t, await statusId(t, note)));
+    }
+    expect(references).toEqual([[L], [L]]);
   });
 
   it("reads the first MAX_TAG_LINK_CANDIDATES distinct tag ids", async () => {
@@ -1475,13 +1501,7 @@ describe("rows no writer produces (7-T9)", () => {
     for (const id of [L, V]) {
       await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", S, id);
     }
-    // A request to any URL, through the app as t.request sends one to the instance's.
-    const fetched = async (url: string, init: RequestInit = {}) => {
-      const ctx = createExecutionContext();
-      const response = await t.app.fetch(new Request(url, init), t.env, ctx);
-      await waitOnExecutionContext(ctx);
-      return response;
-    };
+    const fetched = (url: string, init: RequestInit = {}) => through(t, url, init);
     const on = (origin: string, path: string, init: RequestInit = {}) => fetched(`${origin}${path}`, init);
     const as = (who: "alice" | "dave") => ({ authorization: `Bearer ${t.tokens[who]}` });
     // Every id a surface emits for L, read on `origin`, and the ids beside it.
@@ -1596,25 +1616,98 @@ describe("rows no writer produces (7-T9)", () => {
     expect([advertised, await statusOf(advertised)]).toEqual([`${actor}/featured_collections`, 200]);
   });
 
-  // #1589's D3: whether a link names a local collection is decided by the instance's origin, not by its author's actor
-  // id: dave's actor id kept on an earlier domain, his post linking L's url on this one references L, which the API
-  // presents and the Note names.
+  // #1589's D3: whether a link names a local collection is decided by the instance's domain, not by its author's actor
+  // id, nor by the request's host: dave's actor id kept on an earlier domain, his post linking L's url on this one
+  // references L, which the API presents and the Note names, read over HTTPS and over HTTP alike.
   it("names a local collection by the instance's origin, whatever the author's actor id's", async () => {
     const t = await setup();
     const L = await localCollection(t, ALICE, 1);
     await sql(t.store, "UPDATE accounts SET uri = ? WHERE id = ?", "https://old.example/ap/users/dave", DAVE);
     const S = await posted(t, `${LOCAL}/collections/${L}`);
     const l = `${LOCAL}/ap/users/alice/collections/${L}`;
-    const { body } = await t.api<Status>(`/api/v1/statuses/${S}`, "dave");
+    const presented = async (origin: string) =>
+      (
+        await (
+          await through(t, `${origin}/api/v1/statuses/${S}`, { headers: { authorization: `Bearer ${t.tokens.dave}` } })
+        ).json<Status>()
+      ).tagged_collections.map(({ uri }) => uri);
     const named = await runInDurableObject(
       t.store,
       (_instance, state) => statusFacts(new Db(state.storage.sql), S, () => null)?.collections ?? [],
     );
-    expect({ tagged: await tagged(t, S), presented: body.tagged_collections.map(({ uri }) => uri), named }).toEqual({
-      tagged: [L],
-      presented: [l],
-      named: [l],
-    });
+    expect({
+      tagged: await tagged(t, S),
+      presented: [await presented(LOCAL), await presented("http://kopje.test")],
+      named,
+    }).toEqual({ tagged: [L], presented: [[l], [l]], named: [l] });
+  });
+
+  // #1589's D1: search with resolve=true finds a local collection by the uri the API returns, and by its url, over HTTP
+  // and after a domain change, for each local owner, deciding by the collection's id and the instance's domain, never
+  // by the request's origin.
+  it("finds a local collection by the uri and url the API returns, over HTTP and after a domain change", async () => {
+    const t = await setup();
+    const L = await localCollection(t, ALICE, 1);
+    const M = await localCollection(t, DAVE, 2);
+    const dave = { headers: { authorization: `Bearer ${t.tokens.dave}` } };
+    const found = async (origin: string) =>
+      Promise.all(
+        [L, M].map(async (id) => {
+          const shown = await (
+            await through(t, `${origin}/api/v1/collections/${id}`, dave)
+          ).json<{
+            collection: { uri: string; url: string };
+          }>();
+          return Promise.all(
+            [shown.collection.uri, shown.collection.url].map(async (q) => {
+              const path = `/api/v2/search?type=collections&resolve=true&q=${encodeURIComponent(q)}`;
+              const body = await (await through(t, `${origin}${path}`, dave)).json<{ collections: { id: string }[] }>();
+              return body.collections.map((c) => c.id);
+            }),
+          );
+        }),
+      );
+    const each = [
+      [[L], [L]],
+      [[M], [M]],
+    ];
+    const fetchedBefore = t.web.fetched.length;
+    expect(await found("http://kopje.test")).toEqual(each);
+    await setSetting(t.store, "domain", "other.test");
+    expect(await found("https://other.test")).toEqual(each);
+    expect(t.web.fetched.slice(fetchedBefore)).toEqual([]);
+  });
+
+  // #1589's D1: a link or a tag names a local collection by its id exactly as every surface emits it, under its owner's
+  // stored actor id, not by a username taken from the path: with alice's actor id at /ap/users/old_alice, the old_alice
+  // id is referenced by a post and a remote Note and found by search, and the /ap/users/alice spelling is not.
+  it("names a local collection by its id as emitted, not by the username in its path", async () => {
+    const t = await setup();
+    const L = await localCollection(t, ALICE, 1);
+    const old = `${LOCAL}/ap/users/old_alice`;
+    await sql(t.store, "UPDATE accounts SET uri = ? WHERE id = ?", old, ALICE);
+    const exact = `${old}/collections/${L}`;
+    const spelled = `${LOCAL}/ap/users/alice/collections/${L}`;
+    const searched = async (q: string) =>
+      (
+        await t.api<{ collections: { id: string }[] }>(
+          `/api/v2/search?type=collections&resolve=true&q=${encodeURIComponent(q)}`,
+          "dave",
+        )
+      ).body.collections.map((c) => c.id);
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    const noted = async (id: string) => {
+      const note = mastodonNote(bob, { tag: [{ type: "FeaturedCollection", id }] });
+      expect(await t.post(bob, create(bob, note))).toBe(202);
+      const [row] = await sql<{ id: string }>(t.store, "SELECT id FROM statuses WHERE uri = ?", note.id);
+      return tagged(t, row!.id);
+    };
+    expect({
+      linked: [await tagged(t, await posted(t, exact)), await tagged(t, await posted(t, spelled))],
+      noted: [await noted(exact), await noted(spelled)],
+      searched: [await searched(exact), await searched(spelled)],
+    }).toEqual({ linked: [[L], []], noted: [[L], []], searched: [[L], []] });
   });
 
   // #1589's D2 and D4: a restored row of alice's, `local = 0` with an id on the instance's origin (validRemoteCollection

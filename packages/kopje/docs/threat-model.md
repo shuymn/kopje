@@ -1985,59 +1985,66 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   its owner is a local account, and its id has the path the collection route takes (`ROUTE_USERNAME`, 1 to 64 ASCII
   letters, digits or underscores, the routes' own pattern), on any host; a remote one only while it is stored as remote,
   its id is a valid id on its owner's origin, that owner's id read within `ACTOR_URI_LIMIT` (`actorUriSql`), and not on
-  the instance's origin (`instanceOrigin`, the configured domain the routes answer on), its name and description are
-  within its writer's bounds, and its `url` only as its writer would store it. One function builds a local collection's
-  id from its owner's stored actor id, `<actor id>/collections/<id>` (`localCollectionUri`), and every surface that
-  emits it (the API's `uri` and `tagged_collections`, the Note's tag, the collection's documents and activities, its
-  `FeaturedItem`s, a local member's authorization, the owner's `featured_collections`, its page's alternate) takes it
-  from there, comparing it with neither the request's host nor the configured one: a collection's id resolves exactly
-  when its owner's actor id does, so an account whose actor id does not (restored inconsistently, or kept from an
-  earlier domain) has collections no more and no less reachable than itself, and the API creates and updates its
-  collections as any owner's. The owner's `featured_collections` lists its local collections alone, under its stored
+  the instance's domain (`onDomain`, the routes' own test of the configured domain, by host), its name and description
+  are within its writer's bounds, and its `url` only as its writer would store it. One function builds a local
+  collection's id from its owner's stored actor id, `<actor id>/collections/<id>` (`localCollectionUri`), and every
+  surface that emits it (the API's `uri` and `tagged_collections`, the Note's tag, the collection's documents and
+  activities, its `FeaturedItem`s, a local member's authorization, the owner's `featured_collections`, its page's
+  alternate) takes it from there, comparing it with neither the request's host nor the configured one: a collection's id
+  resolves exactly when its owner's actor id does, so an account whose actor id does not (restored inconsistently, or
+  kept from an earlier domain) has collections no more and no less reachable than itself, and the API creates and
+  updates its collections as any owner's; an actor id the account presenter does not show (past `ACTOR_URI_LIMIT` as
+  JSON) gives none. A search with `resolve=true`, a link, a Note's tag and a Flag's object name a local collection by
+  that id exactly, or by its web page on the instance's domain (`namesLocalCollection`), never by a username taken from
+  the path or the request's host. The owner's `featured_collections` lists its local collections alone, under its stored
   actor id, wherever the actor route serves the owner. So a restored dump's malformed text is presented nowhere, and a
   restored row stored as remote under a local id is neither listed, tagged nor authorized. The writer applies the same
   decision to a post's links and a Note's tags before it takes the first four, so a collection no surface shows takes no
-  slot, and a link names a local collection when it is on the instance's origin, whatever the author's actor id or the
-  request's host; R45, the part that depends on the viewer, is the readers' alone, and a collection that stops being
-  available after the post is written is left out as they read it. No public page presents them or reads a reference:
-  the status page and its thread, the profile's tabs and pins, the hashtag page, the interact handoff, oEmbed and the
-  `/authorize_interaction` result present `[]`. A local status's ActivityPub forms (its Note or Question as served, in
-  the outbox and in `featured`, its `Create` and `Update`s and a `QuoteRequest`'s instrument) name each collection it
-  tags that a status can tag (`taggableCollections`) by its id alone, under the `featured_collections` terms, so no
-  collection's name, description or members travel in the post's activities. This bounds the wire's content, not who
-  learns of the collection: a local collection's id is under its owner's actor id, which names the owner, and a fetch of
-  it is judged by R45 for the fetcher, the remote account whose stored key the signature names (a key Kopje does not
-  store names none, and the fetch is anonymous), so a server whose user the owner blocks may still read it with another
-  key, its instance actor's included unless the owner blocks that account or its domain, or show its copy to that user.
-  _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`, `collectionItemShownSql`,
-  `featureApprovalSql`, `featureApprovalReads`, `mayFeatureSql` and `inCollectionsSql` in `src/domain/audience.ts`,
-  `statusFacts`, `noteOf` and `contextOf` (`src/domain/activities.ts`), the account presenter and `presentFor`
-  (`src/domain/accounts.ts`), `src/domain/collections.ts`, `notifiedCollection`, `taggedCollectionsOf` (read by the
-  status presenter's `hydrate` unless `Present.page`, which `pagePresent` in `src/domain/web-pages/site.ts`, oEmbed and
-  `/authorize_interaction` set), `taggableCollections`, `localCollectionUri` and `shownItems`
-  (`src/domain/collection-presenter.ts`), `instanceOrigin` (`src/domain/instance-domain.ts`), `severCollections`
-  (`src/domain/collections.ts`, run by a local block in `src/domain/blocks.ts`), the documents and activities in
-  `src/domain/collection-documents.ts` (served by `src/federation/routes.ts`); `test/collections.test.ts` ("shows a
-  collection and its items only as R45 allows", "asks the member's consent: discoverable, and unlocked or followed, no
-  block either way, local", "lets only the item's account revoke it, which keeps the row and the membership listed"),
-  `test/blocks.test.ts` ("revokes and deletes the collection memberships a block severs", "delivers a block's collection
-  Removes to every follower in bounded rounds (RES-6)"), `test/collection-notifications.test.ts` ("presents the
-  collection to its recipient, with the items R45 shows the recipient, on v1 and v2"), `test/feature-approval.test.ts`,
-  `test/federation-collections.test.ts` ("refuses a fetcher the owner blocks or domain-blocks, and an authorization to
-  one its member blocks", "leaves a suspended member out of every document, and its FeaturedItem 404, as REST and the
-  page do", "sends a collection's Add, Update and Remove and its items' Add and Remove to followers and members", "sends
-  the owner's Remove of an item a block or its member's revoke takes out", "keeps an item's Add before the Removes a
-  block and its owner record around it"), `test/policy-oracle.test.ts` (against `collectionFound`, `collectionShown`,
-  `collectionListed`, `collectionItemShown`, `featureApproval`, `mayFeature` and `inCollections` in
-  `test/policy-model.ts`), `test-node/policy-boundary.test.ts`, `test/tagged-collections.test.ts` ("shows each viewer
-  the collection and the items R45 shows them", "presents a boost's original and a quote's own and quoted collections",
-  "reads no reference for a page, which presents none, while the API presents them", "presents Y alone, with its uri for
-  the url no writer would store", "leaves out a restored collection whose text reads past its writer's bounds", "leaves
-  out a restored collection whose text is malformed, however wide it decodes", "decides a local collection by its
-  owner's actor id's path, on any host, whatever the username", "leaves out a local collection whose owner is not a
-  local account", "gives a post's slots only to collections a status can tag, before it takes the first four", "builds a
-  local collection's id from its owner's stored actor id on every surface, whatever the host", "names a local collection
-  by the instance's origin, whatever the author's actor id's", "neither lists nor tags a remote row whose id is on the
+  slot, whatever the author's actor id or the request's host, and no function that decides or looks up a local
+  collection takes a request's origin; R45, the part that depends on the viewer, is the readers' alone, and a collection
+  that stops being available after the post is written is left out as they read it. No public page presents them or
+  reads a reference: the status page and its thread, the profile's tabs and pins, the hashtag page, the interact
+  handoff, oEmbed and the `/authorize_interaction` result present `[]`. A local status's ActivityPub forms (its Note or
+  Question as served, in the outbox and in `featured`, its `Create` and `Update`s and a `QuoteRequest`'s instrument)
+  name each collection it tags that a status can tag (`taggableCollections`) by its id alone, under the
+  `featured_collections` terms, so no collection's name, description or members travel in the post's activities. This
+  bounds the wire's content, not who learns of the collection: a local collection's id is under its owner's actor id,
+  which names the owner, and a fetch of it is judged by R45 for the fetcher, the remote account whose stored key the
+  signature names (a key Kopje does not store names none, and the fetch is anonymous), so a server whose user the owner
+  blocks may still read it with another key, its instance actor's included unless the owner blocks that account or its
+  domain, or show its copy to that user. _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`,
+  `collectionListedSql`, `collectionItemShownSql`, `featureApprovalSql`, `featureApprovalReads`, `mayFeatureSql` and
+  `inCollectionsSql` in `src/domain/audience.ts`, `statusFacts`, `noteOf` and `contextOf` (`src/domain/activities.ts`),
+  the account presenter and `presentFor` (`src/domain/accounts.ts`), `src/domain/collections.ts`, `notifiedCollection`,
+  `taggedCollectionsOf` (read by the status presenter's `hydrate` unless `Present.page`, which `pagePresent` in
+  `src/domain/web-pages/site.ts`, oEmbed and `/authorize_interaction` set), `taggableCollections`, `localCollectionUri`
+  and `shownItems` (`src/domain/collection-presenter.ts`), `instanceDomainOf` (`src/domain/instance-domain.ts`),
+  `onDomain` (`src/platform/instance-host.ts`), `namesLocalCollection` and `resolvedCollection`
+  (`src/domain/collections.ts`), `severCollections` (`src/domain/collections.ts`, run by a local block in
+  `src/domain/blocks.ts`), the documents and activities in `src/domain/collection-documents.ts` (served by
+  `src/federation/routes.ts`); `test/collections.test.ts` ("shows a collection and its items only as R45 allows", "asks
+  the member's consent: discoverable, and unlocked or followed, no block either way, local", "lets only the item's
+  account revoke it, which keeps the row and the membership listed"), `test/blocks.test.ts` ("revokes and deletes the
+  collection memberships a block severs", "delivers a block's collection Removes to every follower in bounded rounds
+  (RES-6)"), `test/collection-notifications.test.ts` ("presents the collection to its recipient, with the items R45
+  shows the recipient, on v1 and v2"), `test/feature-approval.test.ts`, `test/federation-collections.test.ts` ("refuses
+  a fetcher the owner blocks or domain-blocks, and an authorization to one its member blocks", "leaves a suspended
+  member out of every document, and its FeaturedItem 404, as REST and the page do", "sends a collection's Add, Update
+  and Remove and its items' Add and Remove to followers and members", "sends the owner's Remove of an item a block or
+  its member's revoke takes out", "keeps an item's Add before the Removes a block and its owner record around it"),
+  `test/policy-oracle.test.ts` (against `collectionFound`, `collectionShown`, `collectionListed`, `collectionItemShown`,
+  `featureApproval`, `mayFeature` and `inCollections` in `test/policy-model.ts`), `test-node/policy-boundary.test.ts`,
+  `test/tagged-collections.test.ts` ("shows each viewer the collection and the items R45 shows them", "presents a
+  boost's original and a quote's own and quoted collections", "reads no reference for a page, which presents none, while
+  the API presents them", "presents Y alone, with its uri for the url no writer would store", "leaves out a restored
+  collection whose text reads past its writer's bounds", "leaves out a restored collection whose text is malformed,
+  however wide it decodes", "decides a local collection by its owner's actor id's path, on any host, whatever the
+  username", "leaves out a local collection whose owner is not a local account", "gives a post's slots only to
+  collections a status can tag, before it takes the first four", "builds a local collection's id from its owner's stored
+  actor id on every surface, whatever the host", "names a local collection by the instance's origin, whatever the
+  author's actor id's", "finds a local collection by the uri and url the API returns, over HTTP and after a domain
+  change", "names a local collection by its id as emitted, not by the username in its path", "references a local
+  collection alike from a Note resolved over HTTPS or HTTP", "neither lists nor tags a remote row whose id is on the
   instance's origin", "gives a post's slots only to collections whose owner is available, before it takes the first
   four", "gives no slot to a collection whose restored text is malformed", "names each collection by its id alone, after
   the other tags, under the featured_collections terms", "lets S's Note name Y alone, by its id", "leaves out a
@@ -5768,23 +5775,24 @@ past the name bound are refused, and lists leave out stored names past it or not
 `test/tag-names.test.ts`); v2 search shows a malformed name decoded, identified by its stored bytes, at most 12,750
 bytes (a 1,024-byte key of U+FFFD, nine bytes each in the url).
 
-A collection's maximum is derived from its bounds. A local one's is 9,165 bytes (`LOCAL_COLLECTION_JSON_MAX`;
+A collection's maximum is derived from its bounds. A local one's is 10,912 bytes (`LOCAL_COLLECTION_JSON_MAX`;
 `test/collections.test.ts` ("derives a local collection's maximum from the bounds, and fits the answers of a full
 account")): its name and description at 40 and 100 characters JSON escapes to six bytes each, its language the longest
 supported, its tag at the tag-name bound with the URL encoding each byte in three, 25 accepted items (its 25 retired
-ones are not shown), an owner's username at its bound and an instance domain of 253 octets; the fill measures within 2
-bytes of it (`local` and `discoverable` true). A remote one's, the larger, is `COLLECTION_JSON_MAX`, 29,701 bytes
-(`test/collections.test.ts` ("derives COLLECTION_JSON_MAX from a remote collection's bounds")): its name and
-description at 256 and 2,048 characters at six bytes each, and its stored uri and url at 2,048 bytes of printable ASCII,
-each byte past the scheme at two, with the same language, tag and 25 shown items; the fill measures within 1 byte of it
-(`discoverable` true). Its `CollectionWithAccounts` adds at most 26 accounts (the owner and the members) at the account
-occurrence's conservative JSON, within `ANSWER_BYTES`, and the presenter admits accounts within what the collection
-leaves of it. An account's list holds at most its 50 stored collections (10 made through the API, 10 a remote account's
-read, each within `COLLECTION_JSON_MAX`). A collection notification (`added_to_collection`, `collection_update`)
-presents its owner's account, its collection for its recipient and its fallback: at most 208,847 bytes, and 208,999 as
-a group, under a warning notification's and a warning group's conservative JSON, so it adds no shape
-(`test/collection-notifications.test.ts`, "presents within a warning notification's maximum, so it adds no shape").
-Its collection is read by key, with at most `MAX_STORED_ITEMS` (50) item rows (`notifiedCollection` in
+ones are not shown), its uri under its owner's actor id at `ACTOR_URI_LIMIT` as JSON (2,048 bytes and the id's own 31: a
+longer one gives no id, as the account presenter shows none) and its url on an instance domain of 253 octets; the fill
+measures within 2 bytes of it (`local` and `discoverable` true). A remote one's, the larger, is `COLLECTION_JSON_MAX`,
+29,701 bytes (`test/collections.test.ts` ("derives COLLECTION_JSON_MAX from a remote collection's bounds")): its name
+and description at 256 and 2,048 characters at six bytes each, and its stored uri and url at 2,048 bytes of printable
+ASCII, each byte past the scheme at two, with the same language, tag and 25 shown items; the fill measures within 1 byte
+of it (`discoverable` true). Its `CollectionWithAccounts` adds at most 26 accounts (the owner and the members) at the
+account occurrence's conservative JSON, within `ANSWER_BYTES`, and the presenter admits accounts within what the
+collection leaves of it. An account's list holds at most its 50 stored collections (10 made through the API, 10 a remote
+account's read, each within `COLLECTION_JSON_MAX`). A collection notification (`added_to_collection`,
+`collection_update`) presents its owner's account, its collection for its recipient and its fallback: at most 208,847
+bytes, and 208,999 as a group, under a warning notification's and a warning group's conservative JSON, so it adds no
+shape (`test/collection-notifications.test.ts`, "presents within a warning notification's maximum, so it adds no
+shape"). Its collection is read by key, with at most `MAX_STORED_ITEMS` (50) item rows (`notifiedCollection` in
 `src/domain/collection-presenter.ts`), as a report notification reads its report.
 
 A scheduled status's maximum is derived from its caps (`test/scheduled-statuses.test.ts`, "a scheduled status at its

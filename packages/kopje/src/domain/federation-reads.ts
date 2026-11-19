@@ -69,5 +69,5 @@ export const apFeaturedItem = federationRead<DocumentRequest & { id: string }, C
 );
 
 export const apFeatureAuthorization = federationRead<DocumentRequest & { id: string }, CollectionDocument>(
-  (db, input, domain) => serialized(featureAuthorizationDocument(db, input, `https://${domain}`)),
+  (db, input) => serialized(featureAuthorizationDocument(db, input)),
 );

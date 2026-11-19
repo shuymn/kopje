@@ -262,7 +262,7 @@ export function fileRemoteReports(
   );
   // The collections it names (a local one by route on the instance's origin, a remote one by its stored uri), with
   // their owners; a target's at most MAX_STORED_COLLECTIONS.
-  const collections = flaggedCollections(db, flagObjects(flag.objects), `https://${configuredDomain(db) ?? ""}`);
+  const collections = flaggedCollections(db, flagObjects(flag.objects));
   const repliesToLocal = (target: string) =>
     statuses.some((status) => status.account_id === target && status.replies_to_local === 1);
   const distinct = [
