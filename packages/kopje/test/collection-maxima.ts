@@ -1,5 +1,6 @@
 import { MAX_TAG_LENGTH } from "../src/domain/status-bounds";
 import { TREND_LANGUAGES } from "../src/domain/trend-languages";
+import { ACTOR_URI_LIMIT, REMOTE_USERNAME_LIMIT } from "../src/platform/identity-bounds";
 import type { StoreStub } from "../src/platform/store-client";
 import {
   COLLECTION_DESCRIPTION_LENGTH,
@@ -15,18 +16,21 @@ let sequence = 840_000_000_000_000_000n;
 const nextId = () => String(sequence++);
 
 // `count` remote collections at their maxima as a sync stores them (#1589's D26), and their ids: their owner on
-// o.example, each id and web address on its origin with the rest of its bound in `"` (escaped to two bytes), its name
-// and description at their bounds in `unit` (a character JSON escapes to six bytes, or one of four UTF-8 bytes), the
-// longest language, a hashtag at its bound, and the 25 accepted items of 25 members a listing stores (each with its
-// uri, so R45 shows it). Presented, each is COLLECTION_JSON_MAX less its origin's bytes in its id and url.
+// o.example with its actor id and username at their bounds in ASCII (ACTOR_URI_LIMIT bytes, REMOTE_USERNAME_LIMIT
+// characters; the reads take both with each collection), each id and web address on its origin with the rest of its
+// bound in `"` (escaped to two bytes), its name and description at their bounds in `unit` (a character JSON escapes
+// to six bytes, or one of four UTF-8 bytes), the longest language, a hashtag at its bound, and the 25 accepted items of
+// 25 members a listing stores (each with its uri, so R45 shows it). Presented, each is COLLECTION_JSON_MAX less its
+// origin's bytes in its id and url.
 export async function maximalCollectionRows(store: StoreStub, unit: string, count: number): Promise<string[]> {
   const origin = "https://o.example";
   const owner = nextId();
   await sql(
     store,
-    "INSERT INTO accounts (id, uri, username, domain) VALUES (?, ?, 'o', 'o.example')",
+    "INSERT INTO accounts (id, uri, username, domain) VALUES (?, ?, ?, 'o.example')",
     owner,
-    `${origin}/users/o`,
+    `${origin}/users/${owner}/`.padEnd(ACTOR_URI_LIMIT, "a"),
+    `o${owner}`.padEnd(REMOTE_USERNAME_LIMIT, "o"),
   );
   const members = Array.from({ length: 25 }, () => nextId());
   for (const [i, member] of members.entries()) {
