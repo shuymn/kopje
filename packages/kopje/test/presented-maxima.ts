@@ -56,16 +56,16 @@ export const FILL_SHAPES: Record<Fill, Record<ShapeName, Shape>> = {
   },
   raw: {
     account: { sqlite: 124_499, json: 124_972, rows: 1, nodes: 92 },
-    status: { sqlite: 4_620_257, json: 2_188_384, rows: 1500, nodes: 2400 },
-    quote: { sqlite: 7_161_902, json: 4_367_121, rows: 1947, nodes: 4782 },
-    boostOfQuote: { sqlite: 7_458_211, json: 4_607_023, rows: 2010, nodes: 5742 },
-    conversation: { sqlite: 8_861_085, json: 5_866_754, rows: 2046, nodes: 5877 },
-    group: { sqlite: 8_237_296, json: 5_367_321, rows: 2030, nodes: 5530 },
-    report: { sqlite: 7_547_452, json: 4_827_290, rows: 1973, nodes: 5111 },
+    status: { sqlite: 4_622_481, json: 2_188_384, rows: 1500, nodes: 2400 },
+    quote: { sqlite: 7_166_350, json: 4_367_121, rows: 1947, nodes: 4782 },
+    boostOfQuote: { sqlite: 7_462_659, json: 4_607_023, rows: 2010, nodes: 5742 },
+    conversation: { sqlite: 8_865_533, json: 5_866_754, rows: 2046, nodes: 5877 },
+    group: { sqlite: 8_241_744, json: 5_367_321, rows: 2030, nodes: 5530 },
+    report: { sqlite: 7_551_900, json: 4_827_290, rows: 1973, nodes: 5111 },
     reportNotification: { sqlite: 2_374_225, json: 276_270, rows: 1074, nodes: 348 },
     warningNotification: { sqlite: 134_434, json: 238_308, rows: 8, nodes: 230 },
     warningGroup: { sqlite: 134_434, json: 238_497, rows: 8, nodes: 237 },
-    filteredNotification: { sqlite: 7_297_239, json: 4_492_219, rows: 1974, nodes: 4878 },
+    filteredNotification: { sqlite: 7_301_687, json: 4_492_219, rows: 1974, nodes: 4878 },
   },
   "emoji-poll": {
     account: { sqlite: 103_606, json: 142_608, rows: 1, nodes: 104 },
@@ -143,28 +143,28 @@ export type Peaks = {
 };
 export const HEAP_PEAKS: Record<"timelines" | "groups" | "reports", Peaks> = {
   timelines: {
-    rows: 20_277_497.5,
+    rows: 20_288_617.5,
     largestRow: 1_204_476,
     rejected: 18_173_202,
-    normal: 61_987_991.5,
-    backstop: 63_995_346.5,
-    single: 61_987_991.5,
+    normal: 61_974_535.5,
+    backstop: 63_981_890.5,
+    single: 61_974_535.5,
   },
   groups: {
-    rows: 22_334_635,
+    rows: 22_345_755,
     largestRow: 1_204_476,
     rejected: 20_431_326,
-    normal: 76_403_253,
-    backstop: 79_219_568,
-    single: 76_403_253,
+    normal: 76_389_797,
+    backstop: 79_206_112,
+    single: 76_389_797,
   },
   reports: {
-    rows: 20_508_477.5,
+    rows: 20_519_597.5,
     largestRow: 1_204_476,
     rejected: 18_758_505,
-    normal: 75_304_274.5,
-    backstop: 78_120_589.5,
-    single: 75_304_274.5,
+    normal: 75_290_818.5,
+    backstop: 78_107_133.5,
+    single: 75_290_818.5,
   },
 };
 
@@ -176,8 +176,8 @@ export const HEAP_PEAKS: Record<"timelines" | "groups" | "reports", Peaks> = {
 export const MESSAGE_MAX = 261_706;
 export type UnitPeak = { rows: number; objects: number; transient: number; peak: number };
 export const STREAM_UNIT_PEAKS: Record<"status" | "conversation" | "notification" | "announcement", UnitPeak> = {
-  status: { rows: 20_277_497.5, objects: 18_173_202, transient: 1_064_884, peak: 39_515_583.5 },
-  conversation: { rows: 23_961_950, objects: 22_184_037, transient: 1_064_884, peak: 47_210_871 },
-  notification: { rows: 26_825_157.5, objects: 20_601_153, transient: 1_064_884, peak: 48_491_194.5 },
+  status: { rows: 20_288_617.5, objects: 18_173_202, transient: 1_064_884, peak: 39_526_703.5 },
+  conversation: { rows: 23_973_070, objects: 22_184_037, transient: 1_064_884, peak: 47_221_991 },
+  notification: { rows: 26_836_277.5, objects: 20_601_153, transient: 1_064_884, peak: 48_502_314.5 },
   announcement: { rows: 7_283_520, objects: 746_991, transient: 1_918_042, peak: 9_948_553 },
 };

@@ -6,6 +6,7 @@ import { NOW } from "./app-helpers";
 import {
   answer,
   bigStatus,
+  STATUS_PAGE_SHARE,
   expectByteCutFirstPage,
   expectByteCutWalk,
   expectStatusBudgetCut,
@@ -129,7 +130,8 @@ describe("notification requests within STATUS_ANSWER_BYTES (RES-3)", () => {
     const shown: string[] = [];
     for (const [i, kind] of KINDS.entries()) {
       const sender = await remoteAccount(h.store, `sender${i}`);
-      const status = kind === "V" ? await bigStatus(h, sender, NOW - (KINDS.length - i) * 60_000) : null;
+      const status =
+        kind === "V" ? await bigStatus(h, sender, NOW - (KINDS.length - i) * 60_000, {}, STATUS_PAGE_SHARE) : null;
       if (kind === "M") {
         // An unavailable sender's request is not listed.
         await sql(h.store, "UPDATE accounts SET deleted_at = ? WHERE id = ?", new Date(NOW).toISOString(), sender);

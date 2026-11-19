@@ -1,8 +1,8 @@
 import { type ColumnMap, fixedColumns, selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
-import { utf8Length } from "../platform/dump-format";
 import { sameOrigin } from "../platform/http-url";
+import { isRemoteUsername } from "../platform/identity-bounds";
 import {
   byteBoundSql,
   COLLECTION_DESCRIPTION_LENGTH,
@@ -42,25 +42,34 @@ export function validRemoteCollection(uri: string | null, ownerUri: string | nul
 type TaggedRow = Omit<CollectionRow, "username"> & {
   username: string | null;
   username_bytes: number;
-  text_bytes: number;
+  text_replacements: number;
   owner_uri: string | null;
 };
 
-// Whether a local collection's id can name its owner as stored: the username read within USERNAME_LIMIT bytes and
-// decoded to as many bytes as it stores. A restored owner's malformed username decodes each bad byte to a U+FFFD of
-// three bytes, so its count differs and the collection, whose id would carry it, is left out.
+// Whether a local collection's id names its owner as stored: the username, read within USERNAME_LIMIT bytes, is one
+// of Mastodon's grammar (isRemoteUsername, which every LOCAL_USERNAME and every username a cutover brings is), so it is
+// ASCII, and has as many characters as it stores bytes, so it was read whole. A restored username of malformed UTF-8
+// decodes to a U+FFFD for each bad sequence, which is no ASCII, whatever its width (F0 90 80 to the same three bytes),
+// so the collection, whose id would carry it, is left out.
 export function tagNamesOwner<T extends { username: string | null; username_bytes: number }>(
   row: T,
 ): row is T & { username: string } {
-  return row.username !== null && utf8Length(row.username) === row.username_bytes;
+  return row.username !== null && isRemoteUsername(row.username) && row.username.length === row.username_bytes;
 }
 
-// Whether a tagged collection's presented text decodes to as many bytes as it stores (name, description, tag and, for
-// a local one, its owner's username): a restored row of malformed UTF-8 within the CHECKs decodes each bad byte to a
-// U+FFFD of three bytes, so it is left out before it is presented and no JSON carries a value grown by decoding.
-function decodedAsStored(row: TaggedRow): boolean {
+// The U+FFFD in a text as read.
+function replacements(text: string | null): number {
+  return text === null ? 0 : text.split("\uFFFD").length - 1;
+}
+
+// Whether a tagged collection's presented text is well-formed UTF-8 as stored (name, description and tag, and, for a
+// local one, its owner's username: tagNamesOwner). Decoding gives one U+FFFD for each malformed sequence and decodes
+// well-formed bytes exactly, each stored EF BF BD to one U+FFFD (EF starts a sequence, so no malformed one takes it
+// in), so a text read with more U+FFFD than it stores (text_replacements) is malformed, a replacement of the same width
+// included, and is left out before it is presented: no JSON carries a value decoding replaced.
+function wellFormed(row: TaggedRow): boolean {
   return (
-    utf8Length(row.name) + utf8Length(row.description ?? "") + utf8Length(row.tag ?? "") === row.text_bytes &&
+    replacements(row.name) + replacements(row.description) + replacements(row.tag) === row.text_replacements &&
     (row.local !== 1 || tagNamesOwner(row))
   );
 }
@@ -161,19 +170,25 @@ export const TAG_REFERENCE_COLUMNS = fixedColumns(
 export const TAG_OWNER_USERNAME = byteBoundSql(usernameSql("a.username"), USERNAME_LIMIT);
 export const TAG_OWNER_USERNAME_BYTES = "length(CAST(a.username AS BLOB))";
 
+// The U+FFFD a stored text holds as bytes (EF BF BD), 0 for NULL. replace() compares bytes and returns text, whose
+// length counts characters, so both lengths are of bytes.
+function storedReplacementsSql(column: string): string {
+  const bytes = (text: string) => `length(CAST(${text} AS BLOB))`;
+  return `coalesce((${bytes(column)} - ${bytes(`replace(CAST(${column} AS BLOB), X'EFBFBD', X'')`)}) / 3, 0)`;
+}
+
 // A tagged collection as taggedCollectionsOf reads it, every text column within a bound of stored bytes before it
 // reaches JavaScript: its columns as stored, each within its CHECK, imports included (migration 0103_collections: the
 // name, description and tag by stored bytes, the uri, url, language and times ASCII); its owner's username
 // (TAG_OWNER_USERNAME) with its stored bytes; its owner's uri as actorUriSql reads it ('' past ACTOR_URI_LIMIT, so such
-// a remote one is invalid), against which a remote one's id is judged (validRemoteCollection); and the stored bytes of
-// the name, description and tag, which decodedAsStored compares. The status presenter and R read these same columns.
+// a remote one is invalid), against which a remote one's id is judged (validRemoteCollection); and the U+FFFD the name,
+// description and tag store, which wellFormed compares. The status presenter and R read these same columns.
 export const TAGGED_COLLECTION_COLUMNS: ColumnMap = {
   id: "c.id",
   account_id: "c.account_id",
   username: TAG_OWNER_USERNAME,
   username_bytes: TAG_OWNER_USERNAME_BYTES,
-  text_bytes:
-    "length(CAST(c.name AS BLOB)) + coalesce(length(CAST(c.description AS BLOB)), 0) + coalesce(length(CAST(c.tag AS BLOB)), 0)",
+  text_replacements: ["c.name", "c.description", "c.tag"].map(storedReplacementsSql).join(" + "),
   local: "c.local",
   name: "c.name",
   description: "c.description",
@@ -280,7 +295,7 @@ export function shownItems(db: Db, collections: readonly string[], viewer: strin
 // status, each status's in collection-id order with the items R45 shows the viewer (#1589's D26): the references by
 // the primary key's prefix (at most MAX_TAGGED_COLLECTIONS a status, the trigger's bound), each collection once by key
 // with its owner, then shownItems once for them, so a collection several statuses tag is read once. A collection is
-// shown only while its text decodes as stored (decodedAsStored), and a remote one only while valid
+// shown only while its text is well-formed as stored (wellFormed), and a remote one only while valid
 // (validRemoteCollection) with its text within its writer's bounds (withinRemoteText), and its url only when its writer
 // would store it (storableUrl), else its uri (presentCollection), so a restored row shows nothing a writer would not
 // have admitted and each stays within COLLECTION_JSON_MAX.
@@ -312,8 +327,7 @@ export function taggedCollectionsOf(
   );
   const shown = rows.filter(
     (row) =>
-      decodedAsStored(row) &&
-      (row.local === 1 || (validRemoteCollection(row.uri, row.owner_uri) && withinRemoteText(row))),
+      wellFormed(row) && (row.local === 1 || (validRemoteCollection(row.uri, row.owner_uri) && withinRemoteText(row))),
   );
   const items = shownItems(
     db,

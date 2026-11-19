@@ -227,7 +227,7 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 - Answers that present statuses (the timelines and status lists, a context, quotes, statuses by id, search with
   statuses, trending statuses, notifications, grouped notifications, notification requests, conversations, admin
-  reports and annual reports) stop at 7,839,744 bytes of JSON, 536 KiB short of 8 MiB, so that the Store's heap holds a
+  reports and annual reports) stop at 7,831,552 bytes of JSON, 544 KiB short of 8 MiB, so that the Store's heap holds a
   page of posts each tagging four collections at their bounds; a page that reaches it ends at a whole item and its
   `Link` (or offset, or `more`) continues after it, and realistic content does not reach it. No Store migration and no
   `wrangler.jsonc` change.

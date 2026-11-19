@@ -1,3 +1,4 @@
+import { USERNAME_LIMIT } from "../src/domain/profile-bounds";
 import { MAX_TAG_LENGTH } from "../src/domain/status-bounds";
 import { TREND_LANGUAGES } from "../src/domain/trend-languages";
 import { ACTOR_URI_LIMIT, REMOTE_USERNAME_LIMIT } from "../src/platform/identity-bounds";
@@ -22,8 +23,9 @@ const nextId = () => String(sequence++);
 // to six bytes, or one of four UTF-8 bytes), the longest language, a hashtag at its bound, and the 25 accepted items of
 // 25 members a listing stores (each with its uri, so R45 shows it). Presented, each is COLLECTION_JSON_MAX less its
 // origin's bytes in its id and url. `restored`: as a restored dump may hold them, each text a tag reads that can be
-// malformed (the owner's actor id and username past their ASCII heads, the name, description and tag) at its stored
-// byte bound in characters of 0xC0 and three continuation bytes, each byte of which decodes to a U+FFFD; none is shown.
+// malformed at the most the read takes of it, decoded at its widest (`malformed`): the owner's actor id at
+// ACTOR_URI_LIMIT bytes (actorUriSql), its username at USERNAME_LIMIT (TAG_OWNER_USERNAME), and the name, description
+// and tag at their CHECKs' bytes. The other columns the read takes are ASCII or digits by their CHECKs. None is shown.
 export async function maximalCollectionRows(
   store: StoreStub,
   unit: string,
@@ -36,10 +38,8 @@ export async function maximalCollectionRows(
     store,
     "INSERT INTO accounts (id, uri, username, domain) VALUES (?, CAST(?2 AS TEXT), CAST(?3 AS TEXT), 'o.example')",
     owner,
-    restored
-      ? malformed(`${origin}/users/${owner}/`, ACTOR_URI_LIMIT)
-      : `${origin}/users/${owner}/`.padEnd(ACTOR_URI_LIMIT, "a"),
-    restored ? malformed(`o${owner}`, REMOTE_USERNAME_LIMIT) : `o${owner}`.padEnd(REMOTE_USERNAME_LIMIT, "o"),
+    restored ? malformed(ACTOR_URI_LIMIT, owner) : `${origin}/users/${owner}/`.padEnd(ACTOR_URI_LIMIT, "a"),
+    restored ? malformed(USERNAME_LIMIT, owner) : `o${owner}`.padEnd(REMOTE_USERNAME_LIMIT, "o"),
   );
   const members = Array.from({ length: 25 }, () => nextId());
   for (const [i, member] of members.entries()) {
@@ -65,10 +65,10 @@ export async function maximalCollectionRows(
 			VALUES (?, ?, 0, CAST(?3 AS TEXT), CAST(?4 AS TEXT), ?, 0, 0, CAST(?6 AS TEXT), ?, ?, 25, ?9, ?9)`,
       id,
       owner,
-      restored ? malformed("", 4 * COLLECTION_NAME_LENGTH.remote) : text(COLLECTION_NAME_LENGTH.remote),
-      restored ? malformed("", 4 * COLLECTION_DESCRIPTION_LENGTH.remote) : text(COLLECTION_DESCRIPTION_LENGTH.remote),
+      restored ? malformed(4 * COLLECTION_NAME_LENGTH.remote) : text(COLLECTION_NAME_LENGTH.remote),
+      restored ? malformed(4 * COLLECTION_DESCRIPTION_LENGTH.remote) : text(COLLECTION_DESCRIPTION_LENGTH.remote),
       language,
-      restored ? malformed("", 4 * MAX_TAG_LENGTH) : "\u{20000}".repeat(MAX_TAG_LENGTH),
+      restored ? malformed(4 * MAX_TAG_LENGTH) : "\u{20000}".repeat(MAX_TAG_LENGTH),
       quoted(`c${n}`, COLLECTION_URI_BYTES),
       quoted(`w${n}`, COLLECTION_URL_BYTES),
       at,
@@ -91,13 +91,16 @@ export async function maximalCollectionRows(
   return ids;
 }
 
-// `bytes` bytes: `head` in UTF-8, then characters of 0xC0 and three continuation bytes (SQLite counts each as one).
-function malformed(head: string, bytes: number): ArrayBuffer {
+// `bytes` stored bytes of restored text decoded at their widest: 0xC0, which no well-formed sequence starts with, then
+// continuation bytes, `seed`'s digits among them so that two owners differ. Decoding gives one code point for each
+// well-formed sequence, of as many UTF-8 bytes, and one U+FFFD, three bytes, for each malformed sequence of at least
+// one byte, so no b bytes decode to more than 3b; here each byte is a malformed sequence of its own, 3b. SQLite counts
+// the whole as one character, so it is within each character bound the read or a CHECK applies (usernameSql's cut).
+export function malformed(bytes: number, seed = ""): ArrayBuffer {
   const out = new Uint8Array(bytes).fill(0x80);
-  const ascii = new TextEncoder().encode(head);
-  out.set(ascii);
-  for (let i = ascii.length; i < bytes; i += 4) {
-    out[i] = 0xc0;
+  out[0] = 0xc0;
+  for (const [i, digit] of [...seed].entries()) {
+    out[1 + i] = 0x80 + Number(digit);
   }
   return out.buffer;
 }

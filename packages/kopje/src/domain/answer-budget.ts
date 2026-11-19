@@ -11,7 +11,7 @@ export const ANSWER_BYTES = 8 * 1024 * 1024;
 // would otherwise pass. The largest multiple of 8 KiB that keeps that peak SPARE_FLOOR under half the isolate, as
 // test/status-bounds.test.ts derives it; every atomic status item is within it, and a page it cuts continues from its
 // last admitted item.
-export const STATUS_ANSWER_BYTES = 7_839_744;
+export const STATUS_ANSWER_BYTES = 7_831_552;
 
 // STATUS_ANSWER_BYTES for an answer that is one JSON array of status items (ARRAY_ANSWER_BYTES's rule).
 export const STATUS_ARRAY_ANSWER_BYTES = STATUS_ANSWER_BYTES - 1;

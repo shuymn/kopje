@@ -17,18 +17,29 @@ import { ALL_PARTS, completeCollectionRead } from "../src/domain/remote-collecti
 import { removeFeaturedCollection } from "../src/domain/remote-featured-collections";
 import { startRemoval } from "../src/domain/remote-removal";
 import { postStatus, publishScheduled } from "../src/domain/scheduled-statuses";
+import { MAX_TAG_LENGTH } from "../src/domain/status-bounds";
 import { presentation, type Quote, type Status, statusStream } from "../src/domain/status-presenter";
 import { webInteractTarget } from "../src/domain/web-pages/interact";
 import { webProfilePage } from "../src/domain/web-pages/profile";
 import { embeddedStatus, webStatusPage } from "../src/domain/web-pages/status";
 import { webTagPage } from "../src/domain/web-pages/tags";
 import { endPolls } from "../src/jobs/scheduled";
+import { utf8Length } from "../src/platform/dump-format";
+import { ACTOR_URI_LIMIT } from "../src/platform/identity-bounds";
 import type { StoreStub } from "../src/platform/store-client";
-import { COLLECTION_ITEM_STATES, MAX_TAG_LINK_CANDIDATES, MAX_TAGGING_STATUSES } from "../src/platform/stored-bounds";
+import {
+  COLLECTION_DESCRIPTION_LENGTH,
+  COLLECTION_ITEM_STATES,
+  COLLECTION_NAME_LENGTH,
+  MAX_TAG_LINK_CANDIDATES,
+  MAX_TAGGED_COLLECTIONS,
+  MAX_TAGGING_STATUSES,
+} from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, bearer, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { acceptQuote } from "./budget-helpers";
+import { malformed, maximalCollections } from "./collection-maxima";
 import { BUILD } from "./helpers";
 import { MASTODON, mastodonActor } from "./inbox-helpers";
 import {
@@ -1259,16 +1270,18 @@ describe("rows no writer produces (7-T9)", () => {
     expect(body.tagged_collections.map(({ id }) => id)).toEqual([V]);
   });
 
-  // U's tag is 256 characters of 0xC0 and three continuation bytes (1,024 bytes, within its CHECK), and W's name 10 of
-  // 0xC0 and one (20 bytes, read as 20 U+FFFD, within withinRemoteText's bound): each decodes past its stored bytes, so
-  // neither is presented; V, beside them, is.
-  it("leaves out a restored collection whose text decodes past its stored bytes", async () => {
+  // The first's tag is 256 characters of 0xC0 and three continuation bytes (1,024 bytes, within its CHECK, read as 1,024
+  // U+FFFD), and the third's name F0 90 80, a sequence cut short that decodes to one U+FFFD of the same three bytes:
+  // each is malformed, so neither is presented. The fourth's description stores a U+FFFD, well-formed, so it is
+  // presented beside the second.
+  it("leaves out a restored collection whose text is malformed, however wide it decodes", async () => {
     const t = await setup();
     const owner = await remoteOwner(t, 1, `${MASTODON}/users/x`);
-    const U = await remoteCollection(t, owner, 1, `${MASTODON}/users/x/collections/1`);
-    const V = await remoteCollection(t, owner, 2, `${MASTODON}/users/x/collections/2`);
-    const W = await remoteCollection(t, owner, 3, `${MASTODON}/users/x/collections/3`);
-    const malformed = (column: string, count: number, character: string, id: string) =>
+    const ids: string[] = [];
+    for (let n = 1; n <= 4; n++) {
+      ids.push(await remoteCollection(t, owner, n, `${MASTODON}/users/x/collections/${n}`));
+    }
+    const restore = (column: string, count: number, character: string, id: string) =>
       sql(
         t.store,
         `UPDATE collections SET ${column} = CAST(unhex(replace(hex(zeroblob(?)), '00', ?)) AS TEXT) WHERE id = ?`,
@@ -1276,14 +1289,56 @@ describe("rows no writer produces (7-T9)", () => {
         character,
         id,
       );
-    await malformed("tag", 256, "C0808080", U);
-    await malformed("name", 10, "C080", W);
+    await restore("tag", 256, "C0808080", ids[0]!);
+    await restore("name", 1, "F09080", ids[2]!);
+    await sql(t.store, "UPDATE collections SET description = ? WHERE id = ?", "a\uFFFDb", ids[3]!);
     const S = await posted(t, "S");
-    for (const id of [U, V, W]) {
+    for (const id of ids) {
       await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", S, id);
     }
     const { body } = await t.api<Status>(`/api/v1/statuses/${S}`, "dave");
-    expect(body.tagged_collections.map(({ id }) => id)).toEqual([V]);
+    expect(body.tagged_collections.map(({ id }) => id)).toEqual([ids[1], ids[3]]);
+  });
+
+  // Each text of a restored collection (maximalCollections' restored shape) as the tag read returns it: three times the
+  // bytes the read takes of it, which no stored bytes decode past (collection-maxima.ts, `malformed`), so the fill the
+  // heap model measures is the widest. None of the four is presented or named.
+  it("reads a restored collection's every text at three times the bytes the read takes of it", async () => {
+    const t = await setup();
+    const S = await posted(t, "S");
+    await maximalCollections(t.store, "\u0001", [S], true);
+    const read = await runInDurableObject(t.store, (_instance, state) => {
+      const widths: Record<string, number>[] = [];
+      const db = new Db(
+        observedSql(state.storage.sql, (rows) => {
+          for (const row of rows) {
+            if ("owner_uri" in row && "name" in row) {
+              const { owner_uri, username, name, description, tag } = row as Record<string, string>;
+              const width = (value: string) => utf8Length(value);
+              widths.push({
+                owner_uri: width(owner_uri!),
+                username: width(username!),
+                name: width(name!),
+                description: width(description!),
+                tag: width(tag!),
+              });
+            }
+          }
+        }),
+      );
+      const presented = taggedCollectionsOf(db, [S], null, LOCAL).get(S) ?? [];
+      const named = statusFacts(db, S, () => null)?.collections ?? [];
+      return { widths, presented: presented.length, named };
+    });
+    const widest = {
+      owner_uri: 3 * ACTOR_URI_LIMIT,
+      username: 3 * USERNAME_LIMIT,
+      name: 3 * 4 * COLLECTION_NAME_LENGTH.remote,
+      description: 3 * 4 * COLLECTION_DESCRIPTION_LENGTH.remote,
+      tag: 3 * 4 * MAX_TAG_LENGTH,
+    };
+    expect(read.widths).toEqual(Array.from({ length: MAX_TAGGED_COLLECTIONS }, () => widest));
+    expect({ presented: read.presented, named: read.named }).toEqual({ presented: 0, named: [] });
   });
 
   // alice's username restored as 0xC0 and 8,191 continuation bytes, one character to usernameSql's fallback cut: the
@@ -1323,6 +1378,53 @@ describe("rows no writer produces (7-T9)", () => {
       presented: [V],
       named: [`${MASTODON}/users/x/collections/2`],
     });
+  });
+
+  // alice's username restored within USERNAME_LIMIT bytes, which the read returns: 0xC0 and 254 continuation bytes,
+  // read as 255 U+FFFD; F0 90 80, a sequence cut short read as one U+FFFD of the same three bytes; and 45 letters and
+  // an é, which usernameSql's fallback cuts to 42 letters, a username but not hers. None names her, so neither the REST
+  // read nor the Note's presents or names L, whose id would carry it; V, beside it, is.
+  it("leaves out a local owner's collection whose username, as read, is not hers", async () => {
+    const t = await setup();
+    const L = await localCollection(t, ALICE, 1);
+    const owner = await remoteOwner(t, 2, `${MASTODON}/users/x`);
+    const V = await remoteCollection(t, owner, 2, `${MASTODON}/users/x/collections/2`);
+    const S = await posted(t, "S");
+    for (const id of [L, V]) {
+      await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", S, id);
+    }
+    const seen: unknown[] = [];
+    const restored = [
+      malformed(USERNAME_LIMIT),
+      Uint8Array.from([0xf0, 0x90, 0x80]).buffer,
+      Uint8Array.from(new TextEncoder().encode(`${"a".repeat(45)}é`)).buffer,
+    ];
+    for (const username of restored) {
+      await sql(t.store, "UPDATE accounts SET username = CAST(? AS TEXT) WHERE id = ?", username, ALICE);
+      seen.push(
+        await runInDurableObject(t.store, (_instance, state) => {
+          const read: (string | null)[] = [];
+          const db = new Db(
+            observedSql(state.storage.sql, (rows) => {
+              for (const row of rows) {
+                if ("username_bytes" in row && row.id === L) {
+                  read.push(row.username as string | null);
+                }
+              }
+            }),
+          );
+          const presented = (taggedCollectionsOf(db, [S], null, LOCAL).get(S) ?? []).map(({ id }) => id);
+          const named = statusFacts(db, S, () => null)?.collections ?? [];
+          return { read: read.map((value) => value?.length), presented, named };
+        }),
+      );
+    }
+    const left = (length: number) => ({
+      read: [length, length],
+      presented: [V],
+      named: [`${MASTODON}/users/x/collections/2`],
+    });
+    expect(seen).toEqual([left(USERNAME_LIMIT), left(1), left(42)]);
   });
 
   it("lets S's Note name Y alone, by its id", async () => {

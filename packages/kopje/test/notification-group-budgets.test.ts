@@ -18,6 +18,7 @@ import {
   type Answer,
   answer,
   bigStatus,
+  STATUS_PAGE_SHARE,
   expectByteCutWalk,
   fallbackReports,
   maximalAccounts,
@@ -291,7 +292,7 @@ describe("grouped notifications within STATUS_ANSWER_BYTES (RES-3)", () => {
     const large = await maximalAccounts(h, "large", 8);
     const small = await Promise.all(Array.from({ length: 8 }, (_, i) => remoteAccount(h.store, `small${i}`)));
     // A, a quote of about 1.94 MB, and B, a small status. Below min_id, seven favourites of each from large
-    // accounts. Above it, walked oldest first: six groups of about 0.97 MB, A's eighth large favourite and eight
+    // accounts. Above it, walked oldest first: six groups of about 0.95 MB, A's eighth large favourite and eight
     // small ones, B's eighth large favourite, a group C, and eight small favourites of B.
     const a = await bigStatus(h, alice.id, NOW - 60_000);
     await acceptQuote(h, a, await bigStatus(h, alice.id, NOW - 90_000));
@@ -303,7 +304,7 @@ describe("grouped notifications within STATUS_ANSWER_BYTES (RES-3)", () => {
     }
     const pads: string[] = [];
     for (let i = 0; i < 6; i++) {
-      pads.push(await favourite(h, alice.id, fan, await bigStatus(h, alice.id, NOW - 120_000)));
+      pads.push(await favourite(h, alice.id, fan, await bigStatus(h, alice.id, NOW - 120_000, {}, STATUS_PAGE_SHARE)));
     }
     await favourite(h, alice.id, large[7]!, a);
     for (const account of small) {
@@ -865,13 +866,13 @@ describe("grouped notifications within one work budget (RES-7)", () => {
     const { alice } = h.users;
     const fan = await remoteAccount(h.store, "fan");
     const domain = await manyAccounts(h, 2 * GROUP_COUNT);
-    // The measured worst case's shape, scaled: ten groups of big statuses (about 0.97 MB each, eight fit an answer),
+    // The measured worst case's shape, scaled: ten groups of big statuses (about 0.95 MB each, eight fit an answer),
     // each with GROUP_COUNT favourites below min_id, one from a fan above it, in the groups' order, and GROUP_COUNT
     // more above those. Walked up from min_id, the first pass is cut by bytes at the ninth group, and its eight are
     // admitted again over their own range until the budget runs out.
     const statuses: string[] = [];
     for (let i = 0; i < 10; i++) {
-      statuses.push(await bigStatus(h, alice.id, NOW - (20 - i) * 60_000));
+      statuses.push(await bigStatus(h, alice.id, NOW - (20 - i) * 60_000, {}, STATUS_PAGE_SHARE));
     }
     await favouritesFrom(h, alice, domain, statuses, GROUP_COUNT);
     const below = await newestId(h);

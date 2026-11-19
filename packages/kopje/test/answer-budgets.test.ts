@@ -34,7 +34,7 @@ import {
   DAY,
   expectByteCutFirstPage,
   expectByteCutWalk,
-  EDGE_BIG_SHARE,
+  STATUS_PAGE_SHARE,
   expectStatusBudgetCut,
   maximalAccounts,
   nextId,
@@ -350,7 +350,7 @@ describe("status pages are answers within ANSWER_BYTES (RES-3)", () => {
     const quoted = await seedStatus(h.store, { accountId: author, visibility: "public", published: NOW - 2 * DAY });
     const quoting: string[] = [];
     for (let i = 0; i < 10; i++) {
-      const id = await bigStatus(h, author, NOW - DAY + i * 60_000);
+      const id = await bigStatus(h, author, NOW - DAY + i * 60_000, {}, STATUS_PAGE_SHARE);
       await acceptQuote(h, id, quoted);
       quoting.push(id);
     }
@@ -532,7 +532,7 @@ describe("status answers within STATUS_ANSWER_BYTES (RES-3)", () => {
     // Eight big replies, then statusBudgetEdge's third-size one: descendants are in id order.
     const big: string[] = [];
     for (let i = 0; i < 8; i++) {
-      big.push(await bigStatus(h, author, NOW - (20 - i) * 60_000, { inReplyToId: root }, EDGE_BIG_SHARE));
+      big.push(await bigStatus(h, author, NOW - (20 - i) * 60_000, { inReplyToId: root }, STATUS_PAGE_SHARE));
     }
     const edge = await bigStatus(h, author, NOW - 60_000, { inReplyToId: root }, 3);
     type Context = { ancestors: unknown[]; descendants: { id: string }[] };
