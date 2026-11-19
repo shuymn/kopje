@@ -777,21 +777,22 @@ id, wherever the actor route serves the owner. So a restored dump's malformed UT
 row no writer would store (a remote row under a local id included) is neither shown, listed nor authorized. The writer
 (`collections.ts`) applies the same `taggableCollections` to a post's links and a Note's tags before it takes the first
 four, so a collection no surface shows takes no slot. A link, a Note's tag, a Flag's object and a search with
-`resolve=true` name a local collection by its id exactly as the surfaces emit it, or by its web page on the instance's
-domain (`namesLocalCollection`), never by a username taken from the path, the author's actor id or the request's host;
-no function that decides or looks up a local collection takes a request's origin. A collection that stops being
-available after the post is written is left out as the readers read it. No page presents them or reads a reference: the
-status page and its thread, the profile's tabs and pins, the hashtag page, the interact handoff, oEmbed and the
-`/authorize_interaction` result present `[]` (`Present.page`, set by `pagePresent`, which `anonymous()` spreads, and by
-oEmbed and `/authorize_interaction`; the chunk planner's term is 0 under it). A local status's ActivityPub forms name
-each collection it tags that a status can tag (`taggableCollections`, as the API decides it before R45) by its id alone
-(`statusFacts` and `noteOf` in `activities.ts`): with no viewer, the id is all they send, so no collection's name,
-description or members travel in the post's activities. That bounds the wire's content, not who learns of the
-collection: a local collection's id is under its owner's actor id, which names the owner, and a fetch of it is judged by
-R45 for the fetcher, the remote account whose stored key the signature names (a key Kopje does not store names none, and
-the fetch is anonymous), so a server whose user the owner blocks may still read it with another key, its instance
-actor's included unless the owner blocks that account or its domain, or show a copy it holds to that user. A local
-account's collections are served over ActivityPub (FEP-7aa9, `src/domain/collection-documents.ts`): the
+`resolve=true` name a collection through one resolver (`namedCollection`): a local collection by its id exactly as the
+surfaces emit it, or, over http or https on the instance's domain, by its web page or by its route under its owner's
+username, as the route takes it (`namesLocalCollection`), never by the author's actor id or the request's host, and any
+other URL on that domain names none; no function that decides or looks up a local collection takes a request's origin. A
+collection that stops being available after the post is written is left out as the readers read it. No page presents
+them or reads a reference: the status page and its thread, the profile's tabs and pins, the hashtag page, the interact
+handoff, oEmbed and the `/authorize_interaction` result present `[]` (`Present.page`, set by `pagePresent`, which
+`anonymous()` spreads, and by oEmbed and `/authorize_interaction`; the chunk planner's term is 0 under it). A local
+status's ActivityPub forms name each collection it tags that a status can tag (`taggableCollections`, as the API decides
+it before R45) by its id alone (`statusFacts` and `noteOf` in `activities.ts`): with no viewer, the id is all they send,
+so no collection's name, description or members travel in the post's activities. That bounds the wire's content, not who
+learns of the collection: a local collection's id is under its owner's actor id, which names the owner, and a fetch of
+it is judged by R45 for the fetcher, the remote account whose stored key the signature names (a key Kopje does not store
+names none, and the fetch is anonymous), so a server whose user the owner blocks may still read it with another key, its
+instance actor's included unless the owner blocks that account or its domain, or show a copy it holds to that user. A
+local account's collections are served over ActivityPub (FEP-7aa9, `src/domain/collection-documents.ts`): the
 `featured_collections` collection and its pages, a `FeaturedCollection`, a `FeaturedItem` and a member's
 `FeatureAuthorization`. Each reads R45 with the fetcher as its viewer: the remote account whose stored key the
 request's signature names by its `keyId` (unverified, since every document is also served unsigned and naming a key

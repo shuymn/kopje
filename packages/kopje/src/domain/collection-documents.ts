@@ -1,13 +1,12 @@
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
-import { onDomain } from "../platform/instance-host";
 import { MAX_STORED_COLLECTIONS } from "../platform/stored-bounds";
 import { FEATURED_COLLECTIONS_TERMS, followersUri, recordOutbound } from "./activities";
 import { availableSql, blockedSql, collectionItemShownSql, collectionShownSql, PUBLIC_COLLECTION } from "./audience";
 import { type CollectionOwner, collectionOwnerSql, collectionUrl, localCollectionUri } from "./collection-presenter";
 import { beginFollowerStaging, type DeliveryEnvelope } from "./deliveries";
 import { allocateLocalId } from "./ids";
-import { instanceDomainOf } from "./instance-domain";
+import { configuredDomain, onConfiguredDomain } from "./instance-domain";
 import { withinTagNameBound } from "./tag-bounds";
 import { normalizeTag } from "./tag-name";
 
@@ -307,8 +306,9 @@ function fetcherOf(db: Db, keyId: string | null): string | null {
   );
 }
 
-// The local account `username` (its stored spelling: ID-5), by accounts_local_username.
-function localAccountId(db: Db, username: string): string | null {
+// The local account `username` (its stored spelling: ID-5), by accounts_local_username: the owner the collection routes
+// take a path's username for, which a lookup of a route by URL takes alike (collections.ts namesLocalCollection).
+export function localAccountId(db: Db, username: string): string | null {
   return (
     db.first<{ id: string }>(
       `SELECT a.id FROM accounts a INDEXED BY accounts_local_username
@@ -435,17 +435,11 @@ export function featuredItemDocument(db: Db, input: DocumentRequest & { id: stri
     : { "@context": FEATURED_ITEM_CONTEXT, ...itemDocument(row, ownerUri) };
 }
 
-// Whether `url` is on the instance's domain, read here (the routes' test, onDomain).
-function onInstanceDomain(db: Db, url: URL): boolean {
-  const domain = instanceDomainOf(db);
-  return domain !== null && onDomain(url, domain);
-}
-
 // /ap/users/:username/feature_authorizations/:id (FeatureAuthorizationsController#show): the FeatureAuthorization of
 // the item `id` of the local member `username`, only while it is accepted, the member available and not blocking the
 // fetcher or its domain. Its collection is a local one's id (localCollectionUri), or a remote one's as stored while it
-// is not on the instance's domain (onDomain, the domain read here), where only a local collection is (#1589's D2: a
-// restored row).
+// is not on the instance's domain (onConfiguredDomain, the domain read here), where only a local collection is (#1589's
+// D2: a restored row).
 export function featureAuthorizationDocument(
   db: Db,
   input: DocumentRequest & { id: string },
@@ -473,7 +467,7 @@ export function featureAuthorizationDocument(
       ? null
       : row.local === 1
         ? localCollectionUri(row.owner_uri, row.collection_id)
-        : row.uri !== null && URL.canParse(row.uri) && !onInstanceDomain(db, new URL(row.uri))
+        : row.uri !== null && URL.canParse(row.uri) && !onConfiguredDomain(new URL(row.uri), configuredDomain(db))
           ? row.uri
           : null;
   if (row === undefined || collection === null) {

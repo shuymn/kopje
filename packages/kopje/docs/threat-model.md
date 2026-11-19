@@ -1994,19 +1994,21 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   resolves exactly when its owner's actor id does, so an account whose actor id does not (restored inconsistently, or
   kept from an earlier domain) has collections no more and no less reachable than itself, and the API creates and
   updates its collections as any owner's; an actor id the account presenter does not show (past `ACTOR_URI_LIMIT` as
-  JSON) gives none. A search with `resolve=true`, a link, a Note's tag and a Flag's object name a local collection by
-  that id exactly, or by its web page on the instance's domain (`namesLocalCollection`), never by a username taken from
-  the path or the request's host. The owner's `featured_collections` lists its local collections alone, under its stored
-  actor id, wherever the actor route serves the owner. So a restored dump's malformed text is presented nowhere, and a
-  restored row stored as remote under a local id is neither listed, tagged nor authorized. The writer applies the same
-  decision to a post's links and a Note's tags before it takes the first four, so a collection no surface shows takes no
-  slot, whatever the author's actor id or the request's host, and no function that decides or looks up a local
-  collection takes a request's origin; R45, the part that depends on the viewer, is the readers' alone, and a collection
-  that stops being available after the post is written is left out as they read it. No public page presents them or
-  reads a reference: the status page and its thread, the profile's tabs and pins, the hashtag page, the interact
-  handoff, oEmbed and the `/authorize_interaction` result present `[]`. A local status's ActivityPub forms (its Note or
-  Question as served, in the outbox and in `featured`, its `Create` and `Update`s and a `QuoteRequest`'s instrument)
-  name each collection it tags that a status can tag (`taggableCollections`) by its id alone, under the
+  JSON) gives none. A search with `resolve=true`, a link, a Note's tag and a Flag's object name a collection through one
+  resolver (`namedCollection`), with the instance's domain read once for the whole resolution: a local collection by
+  that id exactly, or, over http or https on the instance's domain, by its web page or by its route under its owner's
+  username, as the route takes it (`namesLocalCollection`), never by the request's host; any other URL on that domain
+  names none, a stored remote row's id included. The owner's `featured_collections` lists its local collections alone,
+  under its stored actor id, wherever the actor route serves the owner. So a restored dump's malformed text is presented
+  nowhere, and a restored row stored as remote under a local id is neither listed, tagged nor authorized. The writer
+  applies the same decision to a post's links and a Note's tags before it takes the first four, so a collection no
+  surface shows takes no slot, whatever the author's actor id or the request's host, and no function that decides or
+  looks up a local collection takes a request's origin; R45, the part that depends on the viewer, is the readers' alone,
+  and a collection that stops being available after the post is written is left out as they read it. No public page
+  presents them or reads a reference: the status page and its thread, the profile's tabs and pins, the hashtag page, the
+  interact handoff, oEmbed and the `/authorize_interaction` result present `[]`. A local status's ActivityPub forms (its
+  Note or Question as served, in the outbox and in `featured`, its `Create` and `Update`s and a `QuoteRequest`'s
+  instrument) name each collection it tags that a status can tag (`taggableCollections`) by its id alone, under the
   `featured_collections` terms, so no collection's name, description or members travel in the post's activities. This
   bounds the wire's content, not who learns of the collection: a local collection's id is under its owner's actor id,
   which names the owner, and a fetch of it is judged by R45 for the fetcher, the remote account whose stored key the
@@ -2018,16 +2020,17 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the account presenter and `presentFor` (`src/domain/accounts.ts`), `src/domain/collections.ts`, `notifiedCollection`,
   `taggedCollectionsOf` (read by the status presenter's `hydrate` unless `Present.page`, which `pagePresent` in
   `src/domain/web-pages/site.ts`, oEmbed and `/authorize_interaction` set), `taggableCollections`, `localCollectionUri`
-  and `shownItems` (`src/domain/collection-presenter.ts`), `instanceDomainOf` (`src/domain/instance-domain.ts`),
-  `onDomain` (`src/platform/instance-host.ts`), `namesLocalCollection` and `resolvedCollection`
-  (`src/domain/collections.ts`), `severCollections` (`src/domain/collections.ts`, run by a local block in
-  `src/domain/blocks.ts`), the documents and activities in `src/domain/collection-documents.ts` (served by
-  `src/federation/routes.ts`); `test/collections.test.ts` ("shows a collection and its items only as R45 allows", "asks
-  the member's consent: discoverable, and unlocked or followed, no block either way, local", "lets only the item's
-  account revoke it, which keeps the row and the membership listed"), `test/blocks.test.ts` ("revokes and deletes the
-  collection memberships a block severs", "delivers a block's collection Removes to every follower in bounded rounds
-  (RES-6)"), `test/collection-notifications.test.ts` ("presents the collection to its recipient, with the items R45
-  shows the recipient, on v1 and v2"), `test/feature-approval.test.ts`, `test/federation-collections.test.ts` ("refuses
+  and `shownItems` (`src/domain/collection-presenter.ts`), `configuredDomain` and `onConfiguredDomain`
+  (`src/domain/instance-domain.ts`), `onDomain` (`src/platform/instance-host.ts`), `namedCollection`,
+  `namesLocalCollection`, `resolvedCollection` and `flaggedCollections` (`src/domain/collections.ts`),
+  `severCollections` (`src/domain/collections.ts`, run by a local block in `src/domain/blocks.ts`), the documents and
+  activities in `src/domain/collection-documents.ts` (served by `src/federation/routes.ts`); `test/collections.test.ts`
+  ("shows a collection and its items only as R45 allows", "asks the member's consent: discoverable, and unlocked or
+  followed, no block either way, local", "lets only the item's account revoke it, which keeps the row and the membership
+  listed"), `test/blocks.test.ts` ("revokes and deletes the collection memberships a block severs", "delivers a block's
+  collection Removes to every follower in bounded rounds (RES-6)"), `test/collection-notifications.test.ts` ("presents
+  the collection to its recipient, with the items R45 shows the recipient, on v1 and v2"),
+  `test/feature-approval.test.ts`, `test/federation-collections.test.ts` ("refuses
   a fetcher the owner blocks or domain-blocks, and an authorization to one its member blocks", "leaves a suspended
   member out of every document, and its FeaturedItem 404, as REST and the page do", "sends a collection's Add, Update
   and Remove and its items' Add and Remove to followers and members", "sends the owner's Remove of an item a block or
@@ -2041,15 +2044,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   however wide it decodes", "decides a local collection by its owner's actor id's path, on any host, whatever the
   username", "leaves out a local collection whose owner is not a local account", "gives a post's slots only to
   collections a status can tag, before it takes the first four", "builds a local collection's id from its owner's stored
-  actor id on every surface, whatever the host", "names a local collection by the instance's origin, whatever the
-  author's actor id's", "finds a local collection by the uri and url the API returns, over HTTP and after a domain
-  change", "names a local collection by its id as emitted, not by the username in its path", "references a local
-  collection alike from a Note resolved over HTTPS or HTTP", "neither lists nor tags a remote row whose id is on the
-  instance's origin", "gives a post's slots only to collections whose owner is available, before it takes the first
-  four", "gives no slot to a collection whose restored text is malformed", "names each collection by its id alone, after
-  the other tags, under the featured_collections terms", "lets S's Note name Y alone, by its id", "leaves out a
-  collection whose owner's id is past ACTOR_URI_LIMIT, and references none"),
-  `test-node/tagged-collection-reads.test.ts`.
+  actor id on every surface, whatever the host", "names a local collection by the instance's domain, whatever the
+  author's actor id's", "finds a local collection by the uri and url the API returns and by its route, over http and
+  after a domain change", "names a local collection by its id as emitted, or by its route with its owner's username",
+  "reads the instance's domain once for a post's links", "references a local collection alike from a Note resolved over
+  HTTPS or HTTP", "neither lists nor tags a remote row whose id is on the instance's origin", "gives a post's slots only
+  to collections whose owner is available, before it takes the first four", "gives no slot to a collection whose
+  restored text is malformed", "names each collection by its id alone, after the other tags, under the
+  featured_collections terms", "lets S's Note name Y alone, by its id", "leaves out a
+  collection whose owner's id is past ACTOR_URI_LIMIT, and references none"), `test/inbox-flag.test.ts` ("names only
+  local collections on the instance's domain, as a status's links do"), `test-node/tagged-collection-reads.test.ts`.
 
 ### Authorization (AUTH)
 

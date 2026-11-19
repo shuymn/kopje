@@ -35,14 +35,9 @@ export function isRemoteUsername(value: string): boolean {
 }
 
 // A local account's username as its collection routes take it (federation/routes.ts): 1 to 64 ASCII letters, digits or
-// underscores. A collection's id names its owner by it, so a tag names a local collection only while its owner's
-// username is one (isRouteUsername, collection-presenter.ts tagNamesOwner): the same pattern, so the two cannot differ.
+// underscores. The path of a local collection's id and of its route (collection-presenter.ts ROUTED_ID_PATH) takes the
+// same pattern, so the two cannot differ.
 export const ROUTE_USERNAME = "[A-Za-z0-9_]{1,64}";
-const ROUTE_USERNAME_ONLY = new RegExp(`^${ROUTE_USERNAME}$`);
-
-export function isRouteUsername(value: string): boolean {
-  return ROUTE_USERNAME_ONLY.test(value);
-}
 
 export function withinIdentityBound(value: string, limit: number): boolean {
   return value.length <= limit && ENCODER.encode(JSON.stringify(value)).length - 2 <= limit;

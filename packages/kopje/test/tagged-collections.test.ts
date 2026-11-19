@@ -285,6 +285,24 @@ describe("a post's slots (7-T2)", () => {
     expect(statements.filter((s) => s.query.includes("status_collections_collection"))).toHaveLength(4);
   });
 
+  // #1589's D3: the instance's domain, which decides every candidate, is read once for the post's links, however many
+  // of them resolve to a remote collection, and once each when the Note (statusFacts) and the answer read the post's
+  // tagged collections.
+  it("reads the instance's domain once for a post's links", async () => {
+    const t = await setup();
+    const uri = `${MASTODON}/users/x/collections/1`;
+    const X = await remoteCollection(t, await remoteOwner(t, 1, `${MASTODON}/users/x`), 1, uri);
+    const links = Array.from({ length: MAX_TAG_LINK_CANDIDATES }, () => uri).join("\n");
+    const { output, statements } = await measuredPost(t, links);
+    const id = (output as { value: { value: { id: string } } }).value.value.id;
+    const domainReads = statements.filter(
+      (s) =>
+        s.query.replace(/\s+/g, " ").trim() ===
+        "SELECT s.value AS value FROM instance_settings s WHERE s.name = 'domain'",
+    );
+    expect({ tagged: await tagged(t, id), domainReads: domainReads.length }).toEqual({ tagged: [X], domainReads: 3 });
+  });
+
   it("fetches nothing for a link to a collection Kopje does not store, and stores none", async () => {
     const t = await setup();
     const link = "https://unknown.example/collections/1";
@@ -1617,13 +1635,14 @@ describe("rows no writer produces (7-T9)", () => {
   });
 
   // #1589's D3: whether a link names a local collection is decided by the instance's domain, not by its author's actor
-  // id, nor by the request's host: dave's actor id kept on an earlier domain, his post linking L's url on this one
-  // references L, which the API presents and the Note names, read over HTTPS and over HTTP alike.
-  it("names a local collection by the instance's origin, whatever the author's actor id's", async () => {
+  // id, nor by the request's host or the link's scheme: dave's actor id kept on an earlier domain, his post linking L's
+  // url on this one over http references L, which the API presents and the Note names, read over HTTPS and over HTTP
+  // alike; his post linking it over https references it too.
+  it("names a local collection by the instance's domain, whatever the author's actor id's", async () => {
     const t = await setup();
     const L = await localCollection(t, ALICE, 1);
     await sql(t.store, "UPDATE accounts SET uri = ? WHERE id = ?", "https://old.example/ap/users/dave", DAVE);
-    const S = await posted(t, `${LOCAL}/collections/${L}`);
+    const S = await posted(t, `http://kopje.test/collections/${L}`);
     const l = `${LOCAL}/ap/users/alice/collections/${L}`;
     const presented = async (origin: string) =>
       (
@@ -1636,30 +1655,34 @@ describe("rows no writer produces (7-T9)", () => {
       (_instance, state) => statusFacts(new Db(state.storage.sql), S, () => null)?.collections ?? [],
     );
     expect({
-      tagged: await tagged(t, S),
+      tagged: [await tagged(t, S), await tagged(t, await posted(t, `${LOCAL}/collections/${L}`))],
       presented: [await presented(LOCAL), await presented("http://kopje.test")],
       named,
-    }).toEqual({ tagged: [L], presented: [[l], [l]], named: [l] });
+    }).toEqual({ tagged: [[L], [L]], presented: [[l], [l]], named: [l] });
   });
 
-  // #1589's D1: search with resolve=true finds a local collection by the uri the API returns, and by its url, over HTTP
-  // and after a domain change, for each local owner, deciding by the collection's id and the instance's domain, never
-  // by the request's origin.
-  it("finds a local collection by the uri and url the API returns, over HTTP and after a domain change", async () => {
+  // #1589's D1 and D3: search with resolve=true finds a local collection by the uri and url the API returns, and by its
+  // route on the instance's domain over http and https, before and after a domain change, for each local owner,
+  // deciding by the collection's id and the instance's domain, never by the request's origin.
+  it("finds a local collection by the uri and url the API returns and by its route, over http and after a domain change", async () => {
     const t = await setup();
     const L = await localCollection(t, ALICE, 1);
     const M = await localCollection(t, DAVE, 2);
     const dave = { headers: { authorization: `Bearer ${t.tokens.dave}` } };
-    const found = async (origin: string) =>
+    const found = async (origin: string, domain: string) =>
       Promise.all(
-        [L, M].map(async (id) => {
+        [
+          [L, "alice"],
+          [M, "dave"],
+        ].map(async ([id, username]) => {
           const shown = await (
             await through(t, `${origin}/api/v1/collections/${id}`, dave)
           ).json<{
             collection: { uri: string; url: string };
           }>();
+          const route = `//${domain}/ap/users/${username}/collections/${id}`;
           return Promise.all(
-            [shown.collection.uri, shown.collection.url].map(async (q) => {
+            [shown.collection.uri, shown.collection.url, `http:${route}`, `https:${route}`].map(async (q) => {
               const path = `/api/v2/search?type=collections&resolve=true&q=${encodeURIComponent(q)}`;
               const body = await (await through(t, `${origin}${path}`, dave)).json<{ collections: { id: string }[] }>();
               return body.collections.map((c) => c.id);
@@ -1668,26 +1691,28 @@ describe("rows no writer produces (7-T9)", () => {
         }),
       );
     const each = [
-      [[L], [L]],
-      [[M], [M]],
+      [[L], [L], [L], [L]],
+      [[M], [M], [M], [M]],
     ];
     const fetchedBefore = t.web.fetched.length;
-    expect(await found("http://kopje.test")).toEqual(each);
+    expect(await found("http://kopje.test", "kopje.test")).toEqual(each);
     await setSetting(t.store, "domain", "other.test");
-    expect(await found("https://other.test")).toEqual(each);
+    expect(await found("https://other.test", "other.test")).toEqual(each);
     expect(t.web.fetched.slice(fetchedBefore)).toEqual([]);
   });
 
-  // #1589's D1: a link or a tag names a local collection by its id exactly as every surface emits it, under its owner's
-  // stored actor id, not by a username taken from the path: with alice's actor id at /ap/users/old_alice, the old_alice
-  // id is referenced by a post and a remote Note and found by search, and the /ap/users/alice spelling is not.
-  it("names a local collection by its id as emitted, not by the username in its path", async () => {
+  // #1589's D1 and D3: a link, a tag or a search names a local collection by its id exactly as every surface emits it,
+  // under its owner's stored actor id, or by its route on the instance's domain with its owner's username, as the route
+  // takes it: with alice's actor id at /ap/users/old_alice, the old_alice id and the /ap/users/alice route are
+  // referenced by a post and a remote Note and found by search, and the route under dave's username is not.
+  it("names a local collection by its id as emitted, or by its route with its owner's username", async () => {
     const t = await setup();
     const L = await localCollection(t, ALICE, 1);
     const old = `${LOCAL}/ap/users/old_alice`;
     await sql(t.store, "UPDATE accounts SET uri = ? WHERE id = ?", old, ALICE);
     const exact = `${old}/collections/${L}`;
     const spelled = `${LOCAL}/ap/users/alice/collections/${L}`;
+    const other = `${LOCAL}/ap/users/dave/collections/${L}`;
     const searched = async (q: string) =>
       (
         await t.api<{ collections: { id: string }[] }>(
@@ -1703,11 +1728,20 @@ describe("rows no writer produces (7-T9)", () => {
       const [row] = await sql<{ id: string }>(t.store, "SELECT id FROM statuses WHERE uri = ?", note.id);
       return tagged(t, row!.id);
     };
-    expect({
-      linked: [await tagged(t, await posted(t, exact)), await tagged(t, await posted(t, spelled))],
-      noted: [await noted(exact), await noted(spelled)],
-      searched: [await searched(exact), await searched(spelled)],
-    }).toEqual({ linked: [[L], []], noted: [[L], []], searched: [[L], []] });
+    const each = [exact, spelled, other];
+    const linked = [];
+    const notedEach = [];
+    const searchedEach = [];
+    for (const q of each) {
+      linked.push(await tagged(t, await posted(t, q)));
+      notedEach.push(await noted(q));
+      searchedEach.push(await searched(q));
+    }
+    expect({ linked, noted: notedEach, searched: searchedEach }).toEqual({
+      linked: [[L], [L], []],
+      noted: [[L], [L], []],
+      searched: [[L], [L], []],
+    });
   });
 
   // #1589's D2 and D4: a restored row of alice's, `local = 0` with an id on the instance's origin (validRemoteCollection

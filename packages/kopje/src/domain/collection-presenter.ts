@@ -3,7 +3,6 @@ import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } fr
 import type { Db } from "../db/sql";
 import { sameOrigin } from "../platform/http-url";
 import { ACTOR_URI_LIMIT, ROUTE_USERNAME, withinIdentityBound } from "../platform/identity-bounds";
-import { onDomain } from "../platform/instance-host";
 import {
   COLLECTION_DESCRIPTION_LENGTH,
   COLLECTION_NAME_LENGTH,
@@ -11,7 +10,7 @@ import {
   COLLECTION_URL_BYTES,
 } from "../platform/stored-bounds";
 import { collectionFoundSql, collectionItemShownSql, collectionShownSql, collectionViewerSql } from "./audience";
-import { instanceDomainOf } from "./instance-domain";
+import { type ConfiguredDomain, configuredDomain, onConfiguredDomain } from "./instance-domain";
 import { actorUriSql } from "./profile-bounds";
 import { withinTagNameBound } from "./tag-bounds";
 import { normalizeTag } from "./tag-name";
@@ -66,8 +65,9 @@ export function localCollectionUri(ownerUri: string | null, id: string): string 
 }
 
 // The path of a local collection's id that the collection route takes (federation/routes.ts COLLECTION: a
-// ROUTE_USERNAME under /ap/users/ and the id's 18 digits), with no query or fragment, on any host (#1589's D2).
-const ROUTED_ID_PATH = new RegExp(`^/ap/users/${ROUTE_USERNAME}/collections/\\d{18}$`);
+// ROUTE_USERNAME under /ap/users/, its first group, and the id's 18 digits), with no query or fragment, on any host
+// (#1589's D2), which a lookup of the route by URL takes alike (collections.ts namesLocalCollection).
+export const ROUTED_ID_PATH = new RegExp(`^/ap/users/(${ROUTE_USERNAME})/collections/\\d{18}$`);
 
 function routedPath(id: string): boolean {
   if (!URL.canParse(id)) {
@@ -109,9 +109,8 @@ function withinRemoteText(row: { name: string; description: string | null }): bo
 // Whether a status can tag the collection `row`, as stored (#1589's D2): its text well-formed (wellFormed); a local one
 // owned by a local account, its id (localCollectionUri) on a path the collection route takes (routedPath); a remote one
 // valid (validRemoteCollection) with its text within its writer's bounds (withinRemoteText), its id not on the
-// instance's domain (onDomain, the routes' test; `domain` read only for a remote row), where only a local collection
-// is.
-function taggable(row: TaggedCollection, domain: () => string | null): boolean {
+// instance's domain (onConfiguredDomain; `domain` read only for a remote row), where only a local collection is.
+function taggable(row: TaggedCollection, domain: () => ConfiguredDomain): boolean {
   if (!wellFormed(row)) {
     return false;
   }
@@ -122,13 +121,18 @@ function taggable(row: TaggedCollection, domain: () => string | null): boolean {
   if (!validRemoteCollection(row.uri, row.owner_uri) || !withinRemoteText(row)) {
     return false;
   }
-  const instance = domain();
-  return instance === null || !onDomain(new URL(row.uri!), instance);
+  return !onConfiguredDomain(new URL(row.uri!), domain());
 }
 
 // A read taggableCollections decides: `from` joins `collections c` and its owner `accounts a`, `where` picks the rows,
-// with `params`. One object, so no argument besides it (a request's origin) can reach the decision.
-export type TaggableRead = { from: string; where: string; params: readonly SqlStorageValue[] };
+// with `params`; `domain` the instance's, when the caller has read it for a whole resolution (the writer). One object
+// whose domain only configuredDomain makes, so no request's origin can reach the decision.
+export type TaggableRead = {
+  from: string;
+  where: string;
+  params: readonly SqlStorageValue[];
+  domain?: ConfiguredDomain;
+};
 
 // The collections `read` names that a status can tag whatever the viewer (#1589's D26, D2): its owner available
 // (collectionFoundSql: not suspended, deleted or covered) and taggable. The writer (collections.ts) resolves a status's
@@ -136,12 +140,13 @@ export type TaggableRead = { from: string; where: string; params: readonly SqlSt
 // (taggedCollectionsOf, adding R45's part that depends on the viewer) and the Note (activities.ts statusFacts) read a
 // status's references through it, which leaves out a row restored, written before a rule was, or whose owner became
 // unavailable since: one decision, so a collection takes a slot only when every surface would show it to some viewer.
-// Each row with TAGGED_COLLECTION_COLUMNS, which R's term charges. The instance's domain (instanceDomainOf, never a
-// request's host) is read here, once at most and only for a remote row; R charges that read too (status-rows.ts).
+// Each row with TAGGED_COLLECTION_COLUMNS, which R's term charges. The instance's domain (configuredDomain, never a
+// request's host) is the read's, else read here, once at most and only for a remote row; R charges that read too
+// (status-rows.ts).
 export function taggableCollections(db: Db, read: TaggableRead): TaggedCollection[] {
   const { from, where, params } = read;
-  let instance: string | null | undefined;
-  const instanceOf = () => (instance === undefined ? (instance = instanceDomainOf(db)) : instance);
+  let instance = read.domain;
+  const instanceOf = () => (instance ??= configuredDomain(db));
   return db
     .all<TaggedCollection>(
       `SELECT ${selectSql(TAGGED_COLLECTION_COLUMNS)} FROM ${from} WHERE ${collectionFoundSql("c")} AND ${where}`,
