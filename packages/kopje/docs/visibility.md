@@ -766,8 +766,10 @@ status's ActivityPub forms name each collection it tags whose owner is available
 alone, a remote one only while valid (`statusFacts` and `noteOf` in `activities.ts`): with no viewer, the id is all
 they send, so no collection's name, description or members travel in the post's activities. That bounds the wire's
 content, not who learns of the collection: a local collection's id is its owner's route, which names the owner, and a
-fetch of it is judged by R45 for the fetcher, so a server whose user the owner blocks may still read it signed by its
-instance actor (refused only when the owner blocks that server's domain) or show a copy it holds to that user.
+fetch of it is judged by R45 for the fetcher, the remote account whose stored key the signature names (a key Kopje does
+not store names none, and the fetch is anonymous), so a server whose user the owner blocks may still read it with
+another key, its instance actor's included unless the owner blocks that account or its domain, or show a copy it holds
+to that user.
 A local account's collections are served over ActivityPub (FEP-7aa9, `src/domain/collection-documents.ts`): the
 `featured_collections` collection and its pages, a `FeaturedCollection`, a `FeaturedItem` and a member's
 `FeatureAuthorization`. Each reads R45 with the fetcher as its viewer: the remote account whose stored key the

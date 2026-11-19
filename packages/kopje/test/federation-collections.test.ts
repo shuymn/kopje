@@ -410,6 +410,12 @@ describe("collections over ActivityPub: the documents (D18)", () => {
   it("refuses a fetcher the owner blocks or domain-blocks, and an authorization to one its member blocks", async () => {
     const { h, alice, bob, id, items } = await world();
     const eve = await fetcher(h, "eve", "fetch.example");
+    // eve's server's instance actor, whose key the Store lists too, and a key on that server the Store does not list.
+    const server = await fetcher(h, "fetch.example", "fetch.example");
+    const stranger = {
+      signature:
+        'keyId="https://fetch.example/users/mallory#main-key",algorithm="rsa-sha256",headers="(request-target)",signature="x"',
+    };
     const paths = [
       "/ap/users/alice/featured_collections",
       "/ap/users/alice/featured_collections?page=1",
@@ -427,24 +433,24 @@ describe("collections over ActivityPub: the documents (D18)", () => {
     // Unsigned, and signed by eve, before any block.
     expect(await statuses({})).toEqual([200, 200, 200, 200, 200]);
     expect(await statuses(eve.signature)).toEqual([200, 200, 200, 200, 200]);
-    // The owner blocks eve: its documents refuse her; bob's authorization does not, and no one else is refused.
+    // The owner blocks eve: its documents refuse her; bob's authorization does not, and no one else is refused, her
+    // server's instance actor included.
     await block(h.store, alice.id, eve.id);
     expect(await statuses(eve.signature)).toEqual([404, 404, 404, 404, 200]);
     expect(await statuses({})).toEqual([200, 200, 200, 200, 200]);
+    expect(await statuses(server.signature)).toEqual([200, 200, 200, 200, 200]);
     await sql(h.store, "DELETE FROM blocks");
-    // The owner blocks her domain.
+    // The owner blocks her domain: every listed key of it is refused, and a key the Store does not list names no one.
     await sql(h.store, "INSERT INTO domain_blocks (account_id, domain) VALUES (?, 'fetch.example')", alice.id);
     expect(await statuses(eve.signature)).toEqual([404, 404, 404, 404, 200]);
+    expect(await statuses(server.signature)).toEqual([404, 404, 404, 404, 200]);
+    expect(await statuses(stranger)).toEqual([200, 200, 200, 200, 200]);
     await sql(h.store, "DELETE FROM domain_blocks");
     // The member blocks her: only its authorization refuses her.
     await block(h.store, bob.id, eve.id);
     expect(await statuses(eve.signature)).toEqual([200, 200, 200, 200, 404]);
     // A key the Store does not list names no one: served as unsigned.
     await block(h.store, alice.id, eve.id);
-    const stranger = {
-      signature:
-        'keyId="https://fetch.example/users/mallory#main-key",algorithm="rsa-sha256",headers="(request-target)",signature="x"',
-    };
     expect(await statuses(stranger)).toEqual([200, 200, 200, 200, 200]);
     // A pending, revoked or rejected item has no authorization.
     for (const state of [0, 2, 3]) {
