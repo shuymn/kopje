@@ -1797,9 +1797,9 @@ describe("rows no writer produces (7-T9)", () => {
   // (platform/collection-address.ts), so a URL on the instance's domain names a collection exactly when its GET serves
   // it: the page by its id as the router decodes the path (`%31` is a 1), whatever the query, a short id naming no
   // stored one; the FeaturedCollection by its raw path (a percent-encoded digit is Fedify's 404) with a format the
-  // route answers with (`?format=xml` is its 406). Each URL is fetched as ActivityPub (the collection served: its id's
-  // last segment) and searched for and linked by a post, with alice's L and her collection O, whose id is 18 digits
-  // with leading zeros.
+  // route answers with (`?format=xml` is its 406) and a query it reads (`a=%FF`, not UTF-8, is its 400 whatever the
+  // format). Each URL is fetched as ActivityPub (the collection served: its id's last segment) and searched for and
+  // linked by a post, with alice's L and her collection O, whose id is 18 digits with leading zeros.
   it("names a local collection by a URL exactly when its GET serves it", async () => {
     const t = await setup();
     const L = await localCollection(t, ALICE, 1);
@@ -1827,6 +1827,7 @@ describe("rows no writer produces (7-T9)", () => {
       [`${route}/${L}?from=profile`, L],
       [`${route}/${L}.json`, L],
       [`${route}/${L}?format=xml`, null],
+      [`${route}/${L}?format=json&a=%FF`, null],
     ];
     const served = async (url: string) => {
       const response = await through(t, url, AP_GET);
