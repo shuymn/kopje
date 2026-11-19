@@ -72,6 +72,9 @@ const NAMES = [
   "S14-Order7",
   "S14-Order7Restored",
   "S15-IgnoredThenStale",
+  "S16-DroppedAnswer",
+  "S16-LeasedSentSuspended",
+  "S16-ReclaimRefused",
   "S2-AnswerCoalesced",
   "S2-Answered",
   "S2-CleanupThenDelete",
@@ -79,10 +82,12 @@ const NAMES = [
   "S2-F7",
   "S2-F8",
   "S2-F8ThenF7",
+  "S2-LeaseDupSuperseded",
   "S2-LeaseFailed",
   "S2-LeaseFailedOrdinary",
   "S2-LeaseSuperseded",
   "S2-ReadOverRetraction",
+  "S2-ReclaimOrdinary",
   "S2-ReclaimSuperseded",
   "S2-RetractionAdmitted",
   "S3-OV2Shown",
@@ -866,9 +871,10 @@ async function supersededBy(w: World, head: Head, want: Omit<Activity, "reason">
 }
 
 // KReclaim: the held POST's lease runs out, and a delivery round at its expiry (claimDeliveries, after LEASE_MS)
-// reclaims the head: under a new lease, its POST to R's server in flight again (the head leased, never waiting), or,
-// "superseded", dropped, the round sending R's server nothing (its POSTs answered before it is awaited, so one it makes
-// fails the step at once). The old POST is then answered 503, too late: its completion is stale and changes nothing.
+// reclaims the head: under a new lease, its POST to R's server in flight again (the head leased, never waiting), or
+// dropped, the round sending nothing (its POSTs answered before it is awaited, so one it makes fails the step at once):
+// "superseded", as supersededBy states; "dropped", a suspended L's ordinary activity refused at the reclaim, its delivery
+// deleted, not given up. The old POST is then answered 503, too late: its completion is stale and changes nothing.
 async function reclaim(w: World, expected: Activity, value: string | undefined): Promise<void> {
   const head = await laneHead(w, expected);
   const held = w.flight;
@@ -877,14 +883,18 @@ async function reclaim(w: World, expected: Activity, value: string | undefined):
   w.flight = null;
   const flight = fly(w, head);
   const { reason: _reason, ...want } = expected;
-  if (value === "superseded") {
+  if (value === "superseded" || value === "dropped") {
     flight.answer("failed");
     await flight.done;
     expect(
       flight.sent.map((s) => s.url),
-      "a reclaimed superseded answer is not sent",
+      `a reclaimed ${value} activity is not sent`,
     ).toEqual([]);
-    await supersededBy(w, head, want);
+    if (value === "superseded") {
+      await supersededBy(w, head, want);
+    } else {
+      expect(await deliveryOf(w, head), "a dropped activity's delivery is gone").toEqual([]);
+    }
   } else {
     await posted(flight);
     expectSent(w, flight, head, expected);

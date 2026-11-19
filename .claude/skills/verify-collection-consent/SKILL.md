@@ -67,20 +67,20 @@ retractions at the cap, R's other content before a deferred purge reaches C); ga
 `KFetch` and its completion until its `KApply` or `KStale`, one claim to a `KClaim`; the lane head answered 202, a lost
 response, 403 for a give-up, or 503 for `KFail`'s failed POST, a `KLeaseHead`'s round held at its POST until the step
 that answers it; `KReclaim` as a delivery round at the held lease's expiry (`claimDeliveries` after `LEASE_MS`), whose
-POST is then held in its place under the new lease, or which sends nothing for a superseded head, the expired lease's
-POST then answered 503 and its completion stale; `recorded` as L's outbound rows new since the last step, each with its
-full destination set: its one inbox on R's server, which names its `to`, and off R's server exactly the inboxes `offR`
-states (L's followers for her revocation, none for anything else), so an extra copy anywhere shows in its `to`; a
-delivery round POSTs nothing else off R's server, and to R's server exactly the head the step names, at its inbox,
-checked when each POST is held (`KLeaseHead`, `KReclaim`) as well as when it is answered; and after each delivery step
-the head's delivery is read in any state: one the step drops (`dropped`, `superseded`) is deleted, not given up, a
-`superseded` one leaves exactly one later answer of its recorded form in the lane (pending as its first row, queued
-behind another), a 202 deletes it and the round reports it delivered, a failed or lost POST leaves the head pending,
-and any other `KReclaim` leaves it leased under the new lease. A round that should send nothing is answered before it
-is awaited, and every round the replay started is answered and awaited when it ends, so a POST the Store should not
-make fails its step at once and no POST outlives the test. A choice that lets the Store
-take a step the fixture does not state (a second claim in one call, a 400 the delivery resends, a key gone stale over
-`KCleanup`'s day that refetches R's document) makes a disagreement that is the replay's: fix the replay.
+POST is then held in its place under the new lease, or which sends nothing for a superseded head or a suspended L's
+refused one (`dropped`), the expired lease's POST then answered 503 and its completion stale; `recorded` as L's outbound
+rows new since the last step, each with its full destination set: its one inbox on R's server, which names its `to`, and
+off R's server exactly the inboxes `offR` states (L's followers for her revocation, none for anything else), so an extra
+copy anywhere shows in its `to`; a delivery round POSTs nothing else off R's server, and to R's server exactly the head
+the step names, at its inbox, checked when each POST is held (`KLeaseHead`, `KReclaim`) as well as when it is answered;
+and after each delivery step the head's delivery is read in any state: one the step drops (`dropped`, `superseded`) is
+deleted, not given up, a `superseded` one leaves exactly one later answer of its recorded form in the lane (pending as
+its first row, queued behind another), a 202 deletes it and the round reports it delivered, a failed or lost POST leaves
+the head pending, and any other `KReclaim` leaves it leased under the new lease. A round that should send nothing is
+answered before it is awaited, and every round the replay started is answered and awaited when it ends, so a POST the
+Store should not make fails its step at once and no POST outlives the test. A choice that lets the Store take a step the
+fixture does not state (a second claim in one call, a 400 the delivery resends, a key gone stale over `KCleanup`'s day
+that refetches R's document) makes a disagreement that is the replay's: fix the replay.
 
 Each calibration variant that changes what the Store does has a fixture whose replay fails against a Store that makes
 the variant's change. `checks.json`'s `replay` names it, and the spec test checks that the variant no longer reproduces
