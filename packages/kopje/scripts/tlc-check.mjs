@@ -1,5 +1,5 @@
 // Runs every check of spec/collection-consent/checks.json under the official TLC and compares its outcome with the one
-// recorded there, which test-node/collection-consent-spec.test.ts requires of tla-ts: a scenario's and the induction's
+// recorded there, which test-node/collection-consent-spec/ requires of tla-ts: a scenario's and the induction's
 // status, distinct states and depth; a variant's, finding's or goal's violated invariant and shortest-trace length.
 // Only the induction's count is TLC's own (checks.json says why). Any other difference is a disagreement between the
 // two checkers to report, not a count to update.

@@ -1,5 +1,5 @@
 // The checks of spec/collection-consent/, the TLA+ specification of a local account's consent to membership in a remote
-// collection (#1589), as one plan that both checkers run: test-node/collection-consent-spec.test.ts under tla-ts,
+// collection (#1589), as one plan that both checkers run: test-node/collection-consent-spec/ under tla-ts,
 // scripts/tlc-check.mjs under the official TLC. spec/collection-consent/checks.json holds each check's expected
 // outcome; this module gives each check the root module and the configuration a checker reads.
 //
