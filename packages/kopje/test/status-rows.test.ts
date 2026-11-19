@@ -27,6 +27,7 @@ import {
 } from "../src/domain/status-rows";
 import { statusContext } from "../src/domain/statuses";
 import type { StoreStub } from "../src/platform/store-client";
+import { MAX_TAGGED_COLLECTIONS } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, seedAccount, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
@@ -78,6 +79,7 @@ const itemArb = fc.record({
   media: fc.integer({ min: 0, max: 5 }),
   poll: fc.integer({ min: 0, max: MAX_REMOTE_OPTIONS }),
   viewer: fc.boolean(),
+  collections: fc.integer({ min: 0, max: MAX_TAGGED_COLLECTIONS }),
   // Each status's author drawn apart: a boost's original or a quoted status may be local under a remote top level.
   local: fc.boolean(),
   originalLocal: fc.boolean(),
@@ -387,7 +389,17 @@ describe("the hydrate queries (RES-3)", () => {
   // hashtags, media, the viewer's flags and the OAuth admin's lookup for a local author.
   async function rich(): Promise<{ h: ApiHarness; f: Fixture; ids: string[] }> {
     const { h, f } = await fixture({ admin: true });
-    const base: Item = { kind: "status", text: 300, wide: true, mentions: 3, tags: 5, media: 2, poll: 3, viewer: true };
+    const base: Item = {
+      kind: "status",
+      text: 300,
+      wide: true,
+      mentions: 3,
+      tags: 5,
+      media: 2,
+      poll: 3,
+      viewer: true,
+      collections: 2,
+    };
     const ids = await runInDurableObject(h.store, (_instance, state) => [
       ...(["status", "quote", "boost", "boostOfQuote"] as const).map((kind) =>
         build(state.storage.sql, f, { ...base, kind }),
@@ -397,6 +409,21 @@ describe("the hydrate queries (RES-3)", () => {
     ]);
     return { h, f, ids };
   }
+
+  // The instance's domain, which the tagged collections' decision reads for a remote collection (instanceDomainOf, a
+  // hydrate query of its own), counts in R once for a status that tags a collection: a domain 100 bytes longer adds two
+  // bytes a byte (rowHeapSql), and nothing for a status that tags none.
+  it("count the instance's domain in R for a status that tags a collection", async () => {
+    const { h, f } = await fixture();
+    const grown = await runInDurableObject(h.store, (_instance, state) => {
+      const ids = [build(state.storage.sql, f, { ...TINY, collections: 1 }), build(state.storage.sql, f, TINY)];
+      const before = boundsOf(state, f.viewer, ids, 0);
+      state.storage.sql.exec("UPDATE instance_settings SET value = value || ? WHERE name = 'domain'", "x".repeat(100));
+      const after = boundsOf(state, f.viewer, ids, 0);
+      return ids.map((id) => after.get(id)! - before.get(id)!);
+    });
+    expect(grown).toEqual([200, 0]);
+  });
 
   it("take their columns from the registered maps (drift)", async () => {
     const { h, f, ids } = await rich();
@@ -576,11 +603,12 @@ describe("the hydrate queries (RES-3)", () => {
     );
     expect(counts.shown).toEqual(Array.from({ length: 40 }, () => 3));
     // Without emoji: one chunk, 13 queries for the statuses (the window of R among them) and one each for their
-    // accounts' cached profile images and the viewer's feature_approval answers (cachedImagesOf and
-    // featureApprovalReads, one a chunk each).
+    // accounts' cached profile images, the viewer's feature_approval answers and the statuses' tagged collections
+    // (cachedImagesOf, featureApprovalReads and taggedCollectionsOf, which reads collections only for a status that
+    // tags one, one a chunk each).
     expect(counts.plainPlanned).toBeLessThanOrEqual(PAGE_CHUNKS.target);
     expect([counts.plain.windows, counts.plain.chunks, counts.plainPacked]).toEqual([1, 1, 1]);
-    expect(counts.plain.queries).toBeLessThanOrEqual(13 + 2);
+    expect(counts.plain.queries).toBeLessThanOrEqual(13 + 3);
     // With them: the chunks its R packs, each running the plain chunk's queries but its window.
     expect(counts.page.windows).toBe(1);
     expect(counts.page.chunks).toBe(counts.packed);
@@ -958,11 +986,11 @@ describe("query ceilings (RES-3)", () => {
     await sql(h.store, "DELETE FROM filter_keywords");
     const counted = await countedContext(h.store, f, await sha256Hex(f.token));
     // 200 candidates of a few KB of R each: one window of R per 80, each packed into chunks within PAGE_CHUNKS'
-    // target, each about 13 queries (the cards' among them), and two a chunk for its accounts' cached profile images
-    // and the viewer's feature_approval answers.
+    // target, each about 13 queries (the cards' among them), and three a chunk for its accounts' cached profile
+    // images, the viewer's feature_approval answers and the statuses' tagged collections.
     expect(counted.windows).toBe(3);
     expect(counted.chunks).toBe(packed(counted.bounds));
-    expect(counted.queries).toBeLessThanOrEqual(65 + 2 * counted.chunks);
+    expect(counted.queries).toBeLessThanOrEqual(65 + 3 * counted.chunks);
     console.info(`Context of 200: ${counted.chunks} chunks, ${counted.queries} queries`);
   }, 120_000);
 });

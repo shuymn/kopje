@@ -1,7 +1,7 @@
 import { STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { type Account, accountsOf, type Page, type PageQuery, presentFor, type PresentInput } from "./accounts";
-import { admit, admittedPage, ARRAY_ANSWER_BYTES, firstUses } from "./answer-budget";
+import { admit, admittedPage, firstUses, STATUS_ARRAY_ANSWER_BYTES } from "./answer-budget";
 import { statusReads, type ViewerContext } from "./audience";
 import { userReadOperation, userWriteOperation } from "./auth";
 import { participantsSql } from "./conversation-rows";
@@ -192,7 +192,7 @@ export const listConversations = userReadOperation<{ page: PageQuery; present: P
       read,
       ascending,
       (row) => row.last_status_id,
-      (traversal) => admit(conversationStream(db, traversal, viewer, present), ARRAY_ANSWER_BYTES, true),
+      (traversal) => admit(conversationStream(db, traversal, viewer, present), STATUS_ARRAY_ANSWER_BYTES, true),
     );
   },
 );

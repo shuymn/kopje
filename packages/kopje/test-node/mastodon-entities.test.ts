@@ -10,7 +10,6 @@ import {
   deviationsCited,
   type Exception,
   type Exceptions,
-  open,
   unresolvedFailures,
 } from "../test/mastodon-conformance.js";
 import { PARAM_EXCEPTIONS } from "../test/mastodon-params-exceptions.js";
@@ -96,7 +95,6 @@ const NOTIFICATION: Record<string, Exception> = {
 const ENTITY_EXCEPTIONS: Exceptions = {
   "REST::AccountSerializer": ACCOUNT,
   "REST::CredentialAccountSerializer": ACCOUNT,
-  "REST::StatusSerializer": open(1589, "collections", "tagged_collections"),
   "REST::MediaAttachmentSerializer": accepted("MD-6", "text_url"),
   "REST::NotificationSerializer": NOTIFICATION,
   "REST::NotificationGroupSerializer": {

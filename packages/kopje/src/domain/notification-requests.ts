@@ -2,7 +2,7 @@ import { STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
 import { type Account, accountsOf, type Page, type PageQuery, presentFor, type PresentInput } from "./accounts";
-import { admit, admittedPage, ARRAY_ANSWER_BYTES, firstUses } from "./answer-budget";
+import { admit, admittedPage, firstUses, STATUS_ARRAY_ANSWER_BYTES } from "./answer-budget";
 import {
   availableSql,
   keptSql,
@@ -232,7 +232,7 @@ export const listNotificationRequests = userReadOperation<
     shown,
     ascending,
     (row) => row.id,
-    (traversal) => admit(requestStream(db, viewer, traversal, present), ARRAY_ANSWER_BYTES, true),
+    (traversal) => admit(requestStream(db, viewer, traversal, present), STATUS_ARRAY_ANSWER_BYTES, true),
   );
 });
 

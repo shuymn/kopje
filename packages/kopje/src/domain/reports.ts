@@ -17,7 +17,7 @@ import {
 import { flagActivity, instanceActorUri, recordOutbound } from "./activities";
 import { type AdminAccount, adminAccountStream } from "./admin-account-presenter";
 import { accessAdminRefusal, adminAccountIdOnce } from "./admin-authority";
-import { admit, ARRAY_ANSWER_BYTES, jsonBytes } from "./answer-budget";
+import { admit, jsonBytes, STATUS_ARRAY_ANSWER_BYTES } from "./answer-budget";
 import { availableSql, type ReachedAccount, reachAccount, remoteReportStatusIds, reportForwardees } from "./audience";
 import {
   ADMIN_PERMISSION,
@@ -181,7 +181,7 @@ export const createReport = userWriteOperation<ReportInput, ReportResult>((db, i
           actorUri: instanceActorUri(domain),
           targetUri: account.uri,
           statusUris: statuses.map((status) => status.uri),
-          collectionUris: collectionUris(db, collectionIds, `https://${domain}`),
+          collectionUris: collectionUris(db, collectionIds),
           comment,
           recipients,
         }),
@@ -262,7 +262,7 @@ export function fileRemoteReports(
   );
   // The collections it names (a local one by route on the instance's origin, a remote one by its stored uri), with
   // their owners; a target's at most MAX_STORED_COLLECTIONS.
-  const collections = flaggedCollections(db, flagObjects(flag.objects), `https://${configuredDomain(db) ?? ""}`);
+  const collections = flaggedCollections(db, flagObjects(flag.objects));
   const repliesToLocal = (target: string) =>
     statuses.some((status) => status.account_id === target && status.replies_to_local === 1);
   const distinct = [
@@ -575,9 +575,9 @@ export const listAdminReports = adminReadOperation<
     kept.push(row);
     statuses += count;
   }
-  // Within ANSWER_BYTES (RES-3), cut at a report: the page ends at its last admitted report, and `more` offers the
-  // next.
-  const admitted = admit(adminReportStream(db, kept, admin, present), ARRAY_ANSWER_BYTES, true);
+  // Within STATUS_ANSWER_BYTES (RES-3: a report presents statuses), cut at a report: the page ends at its last admitted
+  // report, and `more` offers the next.
+  const admitted = admit(adminReportStream(db, kept, admin, present), STATUS_ARRAY_ANSWER_BYTES, true);
   const shown = kept.slice(0, admitted.consumed);
   if (ascending) {
     shown.reverse();

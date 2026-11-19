@@ -94,6 +94,7 @@ describe("POST /api/v1/statuses", () => {
       media_attachments: [],
       mentions: [],
       tags: [],
+      tagged_collections: [],
       emojis: [],
       quote: null,
       quote_approval: { automatic: ["public"], manual: [], current_user: "automatic" },

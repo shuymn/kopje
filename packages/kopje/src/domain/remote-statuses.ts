@@ -29,7 +29,7 @@ import {
 import { userWriteOperation } from "./auth";
 import type { Collection } from "./collection-presenter";
 import { markCollectionsChanged } from "./collection-requests";
-import { shownCollection } from "./collections";
+import { shownCollection, taggedCollections, writeTaggedCollections } from "./collections";
 import { emojiSnapshot } from "./custom-emojis";
 import { insertWithFreshId, remoteId } from "./ids";
 import { enqueueCard, remoteCardLink } from "./link-cards";
@@ -469,6 +469,8 @@ export function storeRemoteStatus(db: Db, author: Author, input: RemoteStatusInp
     JSON.stringify(rows.map((m) => ({ accountId: m.accountId, silent: m.silent ? 1 : 0 }))),
   );
   writeTags(db, id, input.tags.slice(0, MAX_STATUS_TAGS));
+  // Create#process_tags' FeaturedCollection tags: the collections Kopje stores that they name (collections.ts).
+  writeTaggedCollections(db, id, taggedCollections(db, input.collectionTags ?? []));
   writeMedia(db, id, author, input.media, ctx);
   noteStatusEmoji(db, id, ctx.now);
   if (input.poll !== null && input.poll !== undefined) {
@@ -809,6 +811,11 @@ export function updateRemoteStatus(
   const addressed = new Set([...audience.local, ...(ctx.deliveredTo === null ? [] : [ctx.deliveredTo])]);
   updateMentions(db, existing, input, addressed);
   writeTags(db, existing.id, input.tags.slice(0, MAX_STATUS_TAGS));
+  // update_tags!'s FeaturedCollection tags: the set this version names replaces the stored one, significant or not;
+  // a document from an earlier build, which read none, leaves it.
+  if (input.collectionTags !== undefined) {
+    writeTaggedCollections(db, existing.id, taggedCollections(db, input.collectionTags));
+  }
   writeMedia(db, existing.id, author, media, ctx);
   measureFilterText(db, existing.id, iso(ctx.now));
   noteStatusEmoji(db, existing.id, ctx.now);

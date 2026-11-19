@@ -10,6 +10,7 @@ import {
   RETIRED_ROWS_PER_ROUND,
   showCollection,
 } from "../src/domain/collections";
+import { ACTOR_URI_LIMIT } from "../src/domain/profile-bounds";
 import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "../src/domain/status-bounds";
 import { TREND_LANGUAGES } from "../src/domain/trend-languages";
 import { handleScheduled } from "../src/jobs/scheduled";
@@ -22,6 +23,7 @@ import {
 } from "../src/platform/stored-bounds";
 import { type ApiHarness, bearer, seedAccount, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { malformed } from "./collection-maxima";
 import { BUILD } from "./helpers";
 import { CONSERVATIVE_JSON } from "./presented-maxima";
 import { block, community, remoteAccount, type User } from "./status-helpers";
@@ -893,6 +895,17 @@ describe("collections: maxima", () => {
   const LONG_ORIGIN = `https://${"h".repeat(253 - ".example".length)}.example`;
   const language = [...TREND_LANGUAGES].reduce((a, b) => (b.length > a.length ? b : a));
   const escaped = (n: number) => "\u0001".repeat(n);
+  // A text of `n` characters at its CHECK's widest decoding, as a restored row may hold it: `n` - 1 characters JSON
+  // escapes to six bytes, then a lead byte and continuation bytes (malformed), which the CHECK counts as one character
+  // and the read decodes to a U+FFFD each, three JSON bytes, up to the CHECK's 4 * `n` bytes: 15 * `n` - 3 JSON bytes,
+  // where `n` well-formed characters give 6 * `n` at most.
+  const widest = (n: number) => {
+    const bytes = new Uint8Array(4 * n);
+    bytes.fill(0x01, 0, n - 1);
+    bytes.set(new Uint8Array(malformed(3 * n + 1)), n - 1);
+    return bytes.buffer;
+  };
+  const widestJson = (n: number) => 6 * (n - 1) + 3 * (3 * n + 1);
   // A four-byte character a hashtag holds as it is (an ideograph: NFKC and lowercase keep it).
   const tag = "\u{20000}".repeat(MAX_TAG_LENGTH);
 
@@ -957,29 +970,46 @@ describe("collections: maxima", () => {
     for (const [i, member] of retired.entries()) {
       await seedItem(h, collectionId(0), 50 + i, { account_id: member, object_uri: null, state: 3 });
     }
+    // The list at limit=100, on the API's origin: the account's 10 collections.
+    const listed = await call(h, "GET", `/api/v1/accounts/${owner}/collections?limit=100`, alice.token);
+    expect(listed.body.collections).toHaveLength(10);
+    expect(jsonBytes(listed.body)).toBeLessThanOrEqual(10 * (COLLECTION_JSON_MAX + 1) + jsonBytes({ collections: [] }));
+    // Its stored actor id at ACTOR_URI_LIMIT, as JSON too (a restored row: localCollectionUri builds the id under any
+    // actor id the account presenter shows, withinIdentityBound), on LONG_ORIGIN, where the answer is presented; and
+    // the shown collection's name and description at their widest decoding (widest), as restored.
+    const actor = `${LONG_ORIGIN}/ap/users/`.padEnd(ACTOR_URI_LIMIT, "o");
+    await sql(h.store, "UPDATE accounts SET uri = ? WHERE id = ?", actor, owner);
+    await sql(
+      h.store,
+      "UPDATE collections SET name = CAST(?1 AS TEXT), description = CAST(?2 AS TEXT) WHERE id = ?3",
+      widest(COLLECTION_NAME_LENGTH.local),
+      widest(COLLECTION_DESCRIPTION_LENGTH.local),
+      collectionId(0),
+    );
     const { collection, accounts } = await shownAtLongOrigin(h, collectionId(0));
     expect(collection.items).toHaveLength(25);
     expect(accounts).toHaveLength(26);
-    // The bound: the skeleton and each string at its most, as JSON (six bytes for each escaped character): its uri and
-    // url on LONG_ORIGIN.
+    // The bound: the skeleton and each string at its most, as JSON: its name and description at their widest decoding,
+    // its uri under the actor id at its bound, and its url on LONG_ORIGIN.
+    expect(collection.uri).toBe(`${actor}/collections/${collectionId(0)}`);
     const max =
       skeleton(collection) +
       shared +
-      (LONG_ORIGIN.length + "/ap/users/".length + LOCAL_USERNAME_BYTES + "/collections/".length + 18) + // uri
-      6 * COLLECTION_NAME_LENGTH.local +
-      6 * COLLECTION_DESCRIPTION_LENGTH.local +
+      (ACTOR_URI_LIMIT + "/collections/".length + 18) + // uri
+      widestJson(COLLECTION_NAME_LENGTH.local) +
+      widestJson(COLLECTION_DESCRIPTION_LENGTH.local) +
       (LONG_ORIGIN.length + "/collections/".length + 18); // url
     expect(max).toBe(LOCAL_COLLECTION_JSON_MAX);
     expect(LOCAL_COLLECTION_JSON_MAX).toBeLessThan(COLLECTION_JSON_MAX);
     // The fill reaches the bound but for local and discoverable, true and one byte shorter than false.
     expect(LOCAL_COLLECTION_JSON_MAX - jsonBytes(collection)).toBe(2);
+    // An actor id whose JSON passes ACTOR_URI_LIMIT (its last byte a `"`, escaped to two), which the account presenter
+    // does not show either, builds no id (localCollectionUri): the collection is presented with the uri "".
+    await sql(h.store, "UPDATE accounts SET uri = ? WHERE id = ?", `${actor.slice(0, -1)}"`, owner);
+    expect((await shownAtLongOrigin(h, collectionId(0))).collection.uri).toBe("");
     // CollectionWithAccounts: the collection and 26 accounts at the account occurrence's conservative bound.
     const frame = jsonBytes({ collection: {}, accounts: [] }) - 2;
     expect(COLLECTION_JSON_MAX + frame + 26 * (CONSERVATIVE_JSON.account + 1)).toBeLessThan(ANSWER_BYTES);
-    // The list at limit=100: the account's 10 collections.
-    const listed = await call(h, "GET", `/api/v1/accounts/${owner}/collections?limit=100`, alice.token);
-    expect(listed.body.collections).toHaveLength(10);
-    expect(jsonBytes(listed.body)).toBeLessThanOrEqual(10 * (COLLECTION_JSON_MAX + 1) + jsonBytes({ collections: [] }));
   });
 
   // 5-T8: a remote collection's longer name and description, and its uri and url as stored (https and printable ASCII,

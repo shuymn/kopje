@@ -33,10 +33,10 @@ import {
   presentEmojis,
 } from "./custom-emojis";
 import { allocateLocalId } from "./ids";
+import { instanceOrigin } from "./instance-domain";
 import { logAction, MODERATION_LOG_PRUNE } from "./moderation-log";
 import { readOperation, writeOperation } from "./operation";
 import { ACTOR_URI_LIMIT, actorUriSql, PROFILE_URL_LIMIT, USERNAME_LIMIT, usernameSql } from "./profile-bounds";
-import { instanceOrigin } from "./push";
 import { RowBudget } from "./row-budget";
 import { MAX_TAG_LENGTH, TAG_NAME_BYTES } from "./status-bounds";
 import {

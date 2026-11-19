@@ -21,6 +21,10 @@ export const ADDED_STATEMENTS: Readonly<Record<string, { readonly reason: string
   "4dc5aeca990f6cc8": {
     reason: "#1589 D16: feature_approval.current_user, one read per chunk of the accounts presented to a viewer",
   },
+  // taggedCollectionsOf's reference read (src/domain/collection-presenter.ts).
+  "4a803b70c2e5aa07": {
+    reason: "#1589 D26: a status's tagged collections, one read per chunk of the statuses an answer presents",
+  },
 };
 
 // The leading parameters main's statement takes where the rewrite binds more: main's text runs with those alone.
@@ -31,4 +35,6 @@ export const MAIN_PARAMETERS: Readonly<Record<string, { readonly count: number; 
   caea065fa6952c2a: { count: 6, reason: "#1589: the collection keys ?7 and ?8 (migration 0107)" },
   // notify's insert (src/domain/notifications.ts).
   b32922276dba79b0: { count: 10, reason: "#1589: the collection keys ?11 and ?12 (migration 0107)" },
+  // R, the chunk planner's row bound (statusRowBoundSql, src/domain/status-rows.ts).
+  "498ac8adb066550d": { count: 3, reason: "#1589 D26: the page flag ?4, a page's statuses read no tagged collection" },
 };

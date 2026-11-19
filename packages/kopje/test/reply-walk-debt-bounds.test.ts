@@ -11,7 +11,7 @@ import { claimReplyWalk, WALK_PAGES, WALK_STATUSES } from "../src/domain/reply-w
 import { MAX_STATUS_MEDIA, MAX_STATUS_MENTION_ROWS, MAX_STATUS_TAGS } from "../src/domain/status-bounds";
 import { MAX_STATUS_EDITS } from "../src/domain/statuses";
 import { REPLY_STEPS_PER_WALK, walkReplies } from "../src/federation/replies";
-import { MAX_REMOTE_OPTIONS } from "../src/platform/stored-bounds";
+import { MAX_REMOTE_OPTIONS, MAX_TAGGED_COLLECTIONS } from "../src/platform/stored-bounds";
 import { sql } from "./api-helpers";
 import { inboxDeps } from "./app-helpers";
 import { BUILD } from "./helpers";
@@ -516,10 +516,13 @@ describe("a walk completion's rows at the caps (D12, Bounds: a walk completion's
     return Array.from({ length: count }, (_, i) => `${OTHER_ORIGIN}/users/m${from + i}`);
   }
 
+  // bob's collection i of version k, which Kopje stores (storedCollections).
+  const collectionUri = (bob: TestActor, k: number, i: number) => `${bob.uri}/collections/v${k}c${i}`;
+
   // Version k of bob's reply S at every cap updateRemoteStatus writes, all of it new at each version:
   // MAX_STATUS_TAGS hashtags, MAX_STATUS_MEDIA attachments, a poll of MAX_REMOTE_OPTIONS choices, a link (its card),
   // MAX_STATUS_MENTION_TAGS mentions, the local `local` first, and `accounts` with it in cc, past
-  // MAX_STATUS_MENTION_ROWS.
+  // MAX_STATUS_MENTION_ROWS, and MAX_TAGGED_COLLECTIONS collections of bob's that Kopje stores.
   function version(bob: TestActor, base: Note, k: number, local: string, accounts: readonly string[]): Note {
     const content = `<p>version ${k} <a href="https://cards.example/v${k}">a link</a></p>`;
     return {
@@ -538,6 +541,10 @@ describe("a walk completion's rows at the caps (D12, Bounds: a walk completion's
         ...[local, ...accounts]
           .slice(0, MAX_STATUS_MENTION_TAGS)
           .map((href) => ({ type: "Mention", href, name: "@m" })),
+        ...Array.from({ length: MAX_TAGGED_COLLECTIONS }, (_, i) => ({
+          type: "FeaturedCollection",
+          id: collectionUri(bob, k, i),
+        })),
       ],
       attachment: Array.from({ length: MAX_STATUS_MEDIA }, (_, i) => ({
         type: "Document",
@@ -555,12 +562,28 @@ describe("a walk completion's rows at the caps (D12, Bounds: a walk completion's
     };
   }
 
-  // T, and S, bob's reply to it at every cap (version 0: MAX_STATUS_MENTION_ROWS mention rows, alice's first), its
-  // history at MAX_STATUS_EDITS versions, its card, boosted by every local account; T owes S a row debt (so S is the
-  // walk's first node, in the owed lane). bob's document is fresh, so the completion needs no author step (#1592's
-  // completion witness measures one).
+  // T, and S, bob's reply to it at every cap (version 0: MAX_STATUS_MENTION_ROWS mention rows, alice's first, and its
+  // MAX_TAGGED_COLLECTIONS references), its history at MAX_STATUS_EDITS versions, its card, boosted by every local
+  // account; T owes S a row debt (so S is the walk's first node, in the owed lane). bob's document is fresh, so the
+  // completion needs no author step (#1592's completion witness measures one). bob's collections of versions 0 and 1
+  // are stored, so version 1 replaces S's references with as many others.
   async function capped() {
     const { t, root, bob } = await threadWorld();
+    const [owner] = await sql<{ id: string }>(t.store, "SELECT id FROM accounts WHERE uri = ?", bob.uri);
+    for (const k of [0, 1]) {
+      for (let i = 0; i < MAX_TAGGED_COLLECTIONS; i++) {
+        await sql(
+          t.store,
+          `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, uri, total_items, created_at,
+						updated_at)
+					VALUES (printf('6%017d', ?1), ?2, 0, 'c', 0, 1, ?3, 0, ?4, ?4)`,
+          10 * k + i,
+          owner!.id,
+          collectionUri(bob, k, i),
+          "2026-10-11T12:00:00.000Z",
+        );
+      }
+    }
     const locals = (await sql<{ id: string }>(t.store, "SELECT account_id AS id FROM local_accounts")).map((r) => r.id);
     const first = await remoteAccounts(t, MAX_STATUS_MENTION_ROWS, 0);
     const second = await remoteAccounts(t, MAX_STATUS_MENTION_ROWS, MAX_STATUS_MENTION_ROWS);
@@ -571,11 +594,12 @@ describe("a walk completion's rows at the caps (D12, Bounds: a walk completion's
     const sId = (await statusRow(t.store, base.id))!.id;
     const count = async (table: string) =>
       (await sql<{ n: number }>(t.store, `SELECT count(*) AS n FROM ${table} WHERE status_id = ?`, sId))[0]!.n;
-    expect([await count("status_mentions"), await count("status_tags"), await count("media_attachments")]).toEqual([
-      MAX_STATUS_MENTION_ROWS,
-      MAX_STATUS_TAGS,
-      MAX_STATUS_MEDIA,
-    ]);
+    expect([
+      await count("status_mentions"),
+      await count("status_tags"),
+      await count("media_attachments"),
+      await count("status_collections"),
+    ]).toEqual([MAX_STATUS_MENTION_ROWS, MAX_STATUS_TAGS, MAX_STATUS_MEDIA, MAX_TAGGED_COLLECTIONS]);
     await sql(
       t.store,
       `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
@@ -645,7 +669,8 @@ describe("a walk completion's rows at the caps (D12, Bounds: a walk completion's
     // updateRemoteStatus at its caps (a significant edit), L the local accounts: the status's row and its filter text;
     // the history at MAX_STATUS_EDITS, its newest version replaced and the edit recorded; the poll reset, its choices
     // and its fetch mark, each moving polls_revision; the mention rows, each evicted, made silent or kept, and those
-    // admitted (≤ MAX_STATUS_MENTION_ROWS each); the hashtags replaced; each attachment written or deleted with its
+    // admitted (≤ MAX_STATUS_MENTION_ROWS each); the hashtags replaced; the collection references replaced (each of
+    // MAX_TAGGED_COLLECTIONS deleted, as many others written); each attachment written or deleted with its
     // remote_media and remote_media_usage rows; the card's row; and the fan-out (edit-fan-out.test.ts's formula with
     // no push subscription: the quote's 3, each local mention's 7, each booster's and quoter's 3) with the replaced
     // poll's notifications.
@@ -655,6 +680,7 @@ describe("a walk completion's rows at the caps (D12, Bounds: a walk completion's
       polls: 3 * 2,
       status_mentions: 2 * MAX_STATUS_MENTION_ROWS,
       status_tags: 2 * MAX_STATUS_TAGS,
+      status_collections: 2 * MAX_TAGGED_COLLECTIONS,
       media_attachments: 2 * MAX_STATUS_MEDIA,
       remote_media: 2 * MAX_STATUS_MEDIA,
       remote_media_usage: 2 * MAX_STATUS_MEDIA,
@@ -662,12 +688,13 @@ describe("a walk completion's rows at the caps (D12, Bounds: a walk completion's
       notifications: 3 + locals * (7 + 3 + 3) + locals,
     };
     within(call, { ...WALK, ...update }, update);
-    // What reached its caps: the walk full (S's row debt paid, its reading cut and owed), every tag and attachment
-    // replaced, the history kept at MAX_STATUS_EDITS.
+    // What reached its caps: the walk full (S's row debt paid, its reading cut and owed), every tag, collection
+    // reference and attachment replaced, the history kept at MAX_STATUS_EDITS.
     expect(call.tables).toMatchObject({
       reply_walk_nodes: WALK_STATUSES - 2 + 3,
       reply_walk_debts: 2,
       status_tags: 2 * MAX_STATUS_TAGS,
+      status_collections: 2 * MAX_TAGGED_COLLECTIONS,
       media_attachments: 2 * MAX_STATUS_MEDIA,
       status_edits: 2,
     });

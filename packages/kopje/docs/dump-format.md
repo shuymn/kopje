@@ -565,6 +565,13 @@ CHECK's name (`collection_name`, `collection_item_state`, `collection_item_accep
 bound` or `collection_items: past the live bound`. A restored row is presented as it was dumped; the cron deletes a
 rejected or revoked item a day after its `updated_at`. A dump taken before 0103 has no such table: it restores into a
 Store at its own migrations, which then upgrades. A file built from legacy data has no row.
+The collections a status tags (migration `0120_tagged_collections`): a `status_collections` row names a status
+(`status_id`) and a collection (`collection_id`), the delete of either cascading to it, once per pair; a status tags at
+most 4 collections, and a collection is tagged by at most 100 statuses. Anything else fails with a `FOREIGN KEY` or
+`UNIQUE` failure, `status_collections: past the per-status bound` or `status_collections: past the per-collection
+bound`. A restored row stays as dumped until its status is next edited or updated, which writes the status's tags
+again. A dump taken before 0120 has no such table: it restores into a Store at its own migrations, which then
+upgrades, and its statuses tag no collection. A file built from legacy data has no row.
 A remote account's collection sync and the checks of its collections' items (migration
 `0113_featured_collection_syncs`): `collection_syncs.collections_read` is 0 or 1, whether the read under way has read
 the account's `featuredCollections`, and `collections_changed` 0 or 1, whether the account's collections changed since

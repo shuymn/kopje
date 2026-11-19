@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { Db } from "../src/db/sql";
 import type { PageQuery } from "../src/domain/accounts";
 import { setAccountEmail } from "../src/domain/admin-accounts";
-import { ANSWER_BYTES } from "../src/domain/answer-budget";
+import { STATUS_ANSWER_BYTES } from "../src/domain/answer-budget";
 import { filterTextLimits, MAX_FILTER_REQUEST_TEXT, MAX_FILTER_TEXT } from "../src/domain/filters";
 import { logAction, MODERATION_LOG_KEEP, MODERATION_LOG_PRUNE } from "../src/domain/moderation-log";
 import { streamedNotification } from "../src/domain/notifications";
@@ -23,7 +23,15 @@ import { sha256Hex } from "../src/security/tokens";
 import { adminClaims, adminHarness, adminTeam, setTeamAccess, type AccessTeam } from "./access-helpers";
 import { type ApiHarness, bearer, form, json, login, registerApp, seedAccount, setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
-import { type Answer, answer, hugeStatus, ORIGIN } from "./budget-helpers";
+import {
+  type Answer,
+  answer,
+  bigStatus,
+  expectStatusBudgetCut,
+  hugeStatus,
+  ORIGIN,
+  statusBudgetEdge,
+} from "./budget-helpers";
 import { migratedStore } from "./helpers";
 import { ACCESS, ADMIN_EMAIL } from "./ops-helpers";
 import { observedSql, plannedRun } from "./read-helpers";
@@ -955,7 +963,7 @@ describe("POST /admin/accounts/email (set-email)", () => {
   });
 });
 
-describe("report answers within ANSWER_BYTES (RES-3)", () => {
+describe("report answers within STATUS_ANSWER_BYTES (RES-3)", () => {
   it("embed a first status past the allowance alone, on the list, the report and an action, and cut a page at a report", async () => {
     const w = await world();
     const huge = await hugeStatus(w.h, w.carol, NOW - 3_600_000);
@@ -968,7 +976,7 @@ describe("report answers within ANSWER_BYTES (RES-3)", () => {
     const walked: string[] = [];
     for (let at: string | null = "/api/v1/admin/reports?limit=10"; at !== null;) {
       const page: Answer<AdminReportBody[]> = await answer<AdminReportBody[]>(w.h, at, w.admin);
-      expect(page.bytes).toBeLessThanOrEqual(ANSWER_BYTES);
+      expect(page.bytes).toBeLessThanOrEqual(STATUS_ANSWER_BYTES);
       expect(page.body.length).toBeLessThan(5);
       for (const report of page.body) {
         // The first status, past REPORT_STATUS_BYTES alone, is the one shown.
@@ -981,7 +989,7 @@ describe("report answers within ANSWER_BYTES (RES-3)", () => {
     const ascending: string[] = [];
     for (let at: string | null = "/api/v1/admin/reports?limit=10&min_id=0"; at !== null;) {
       const page: Answer<AdminReportBody[]> = await answer<AdminReportBody[]>(w.h, at, w.admin);
-      expect(page.bytes).toBeLessThanOrEqual(ANSWER_BYTES);
+      expect(page.bytes).toBeLessThanOrEqual(STATUS_ANSWER_BYTES);
       ascending.push(...page.body.map((report) => report.id).toReversed());
       at = page.body.length === 0 ? null : page.prev;
     }
@@ -1012,6 +1020,22 @@ describe("report answers within ANSWER_BYTES (RES-3)", () => {
     });
     expect(read).toContain(huge);
     expect(read).not.toContain(small);
+  }, 300_000);
+
+  it("end a page where STATUS_ANSWER_BYTES ends", async () => {
+    const w = await world();
+    const reports = new Map<string, string>();
+    const { big, edge } = await statusBudgetEdge(async (i, share) => {
+      const status = await bigStatus(w.h, w.carol, NOW - (20 - i) * 60_000, {}, share);
+      await seedReports(w.h.store, w.alice.id, w.carol, 1, { statuses: [status] });
+      const [row] = await sql<{ id: string }>(w.h.store, "SELECT CAST(max(id) AS TEXT) AS id FROM reports");
+      reports.set(status, row!.id);
+      return status;
+    });
+    const page = await answer<AdminReportBody[]>(w.h, "/api/v1/admin/reports?limit=40", w.admin);
+    expect(page.body.map((report) => report.id)).toEqual(big.map((status) => reports.get(status)));
+    const one = await answer<unknown>(w.h, `/api/v1/admin/reports/${reports.get(edge)!}`, w.admin);
+    expectStatusBudgetCut("reports", page.bytes, one.bytes);
   }, 300_000);
 
   it("find the first status a report presents one at a time, and stop when it uses up the allowance", async () => {

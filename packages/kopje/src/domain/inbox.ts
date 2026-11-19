@@ -1711,12 +1711,23 @@ const OWNED_ITEMS_WINDOW = `SELECT i.id FROM collections c INDEXED BY collection
 const OWNED_COLLECTIONS_WINDOW =
   "SELECT id FROM collections INDEXED BY collections_account WHERE account_id = ?1 LIMIT ?2";
 
+// The tables a collection's delete cascades to, which purgeCollectionRows empties first for a window of collections
+// (and for its items, with OWNED_ITEMS_WINDOW), so the purge's delete of a collection cascades nothing;
+// test/cascade-guard.test.ts checks the list against the schema.
+export const COLLECTION_CHILDREN: readonly string[] = [
+  "push_deliveries",
+  "notifications",
+  "collection_items",
+  "status_collections",
+];
+
 // The items or collections of a window of the account ?1 (`key` the notifications column naming them), child-first
 // so no delete cascades, as purgeReports: the pushes of their notifications (up to MAX_PUSH_BACKLOG each), then the
-// notifications left without one (notifications_collection_item, notifications_collection), then the rows of the
-// window: its items, whose one notification each (0107) the step before deleted, as it leaves the budget empty while
-// one remains, or its collections left without an item or a notification. Each statement reads only the window and
-// takes what the budget has left.
+// notifications left without one (notifications_collection_item, notifications_collection), then for collections the
+// statuses' references to them (status_collections_collection: MAX_TAGGING_STATUSES a collection), then the rows of
+// the window: its items, whose one notification each (0107) the step before deleted, as it leaves the budget empty
+// while one remains, or its collections left without an item, a notification or a reference. Each statement reads only
+// the window and takes what the budget has left.
 function purgeCollectionRows(
   db: Db,
   budget: JobBudget,
@@ -1747,6 +1758,18 @@ function purgeCollectionRows(
     },
     id,
   );
+  if (key === "collection_id") {
+    spend(
+      db,
+      budget,
+      {
+        ids: `SELECT json_array(r.status_id, r.collection_id) AS id FROM (${window}) w
+					CROSS JOIN status_collections r INDEXED BY status_collections_collection ON r.collection_id = w.id LIMIT ?2`,
+        each: "DELETE FROM status_collections WHERE status_id = ?1 ->> 0 AND collection_id = ?1 ->> 1",
+      },
+      id,
+    );
+  }
   const notified = `EXISTS (SELECT 1 FROM notifications n INDEXED BY ${index} WHERE n.${key} = w.id)`;
   spend(
     db,
@@ -1759,7 +1782,9 @@ function purgeCollectionRows(
       : {
           ids: `SELECT w.id FROM (${window}) w
 				WHERE NOT EXISTS (SELECT 1 FROM collection_items i INDEXED BY collection_items_order WHERE i.collection_id = w.id)
-					AND NOT ${notified} LIMIT ?2`,
+					AND NOT ${notified}
+					AND NOT EXISTS (SELECT 1 FROM status_collections r INDEXED BY status_collections_collection
+						WHERE r.collection_id = w.id) LIMIT ?2`,
           each: `DELETE FROM collections INDEXED BY ${COLLECTIONS_ID_INDEX} WHERE id = ?1`,
         },
     id,
@@ -2174,6 +2199,15 @@ export const STATUS_CHILDREN: readonly {
     column: "status_id",
     remove: [
       "DELETE FROM status_tags WHERE status_id = ?1 AND name IN (SELECT name FROM status_tags WHERE status_id = ?1 LIMIT ?2)",
+    ],
+  },
+  // The collections it tags (migration 0120_tagged_collections): MAX_TAGGED_COLLECTIONS at most, by key.
+  {
+    table: "status_collections",
+    column: "status_id",
+    remove: [
+      `DELETE FROM status_collections WHERE status_id = ?1
+			AND collection_id IN (SELECT collection_id FROM status_collections WHERE status_id = ?1 LIMIT ?2)`,
     ],
   },
   // The tracked Like ids of the status's favourites (migration 0052_favourite_likes), at most MAX_TRACKED_LIKES per

@@ -6,6 +6,7 @@ import {
   STATUSES_URI_INDEX,
 } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { localCollectionKey } from "../platform/collection-address";
 import { hostDomain } from "../platform/domain-name";
 import { ACTIVITY_ID_LIMIT, ACTOR_URI_LIMIT } from "../platform/identity-bounds";
 import { drainCursorSql, LANE_BYTES, laneHostSql, withinDeliveryHostBound } from "../platform/stored-bounds";
@@ -214,12 +215,10 @@ function supersededTypes(activity: Activity): string[] {
   }
 }
 
-// A local collection's id (`<actor>/collections/<digits>`); the featured collections (`/collections/featured`,
-// `/collections/tags`) and featured_collections are not.
-const LOCAL_COLLECTION = /\/collections\/\d+$/;
-
+// A target that is a local collection's id (localCollectionKey: `<actor>/collections/<id>`); the featured collections
+// (`/collections/featured`, `/collections/tags`) and featured_collections are not.
 function isCollectionItemActivity(activity: Activity): boolean {
-  return typeof activity.target === "string" && LOCAL_COLLECTION.test(activity.target);
+  return typeof activity.target === "string" && localCollectionKey(activity.target) !== null;
 }
 
 // A FeaturedCollection's Update, which goes as it is: a collection has no Create to pair it with.

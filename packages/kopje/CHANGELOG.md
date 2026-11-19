@@ -8,6 +8,30 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Added
+
+- A post that links a collection presents it in `tagged_collections` to those who may see it, and its ActivityPub
+  `Note` names the collection in `tag`, so Mastodon shows it too; a link to a remote collection's web page tags it when
+  Kopje stores that collection under that address; a remote post's collection tag is shown when Kopje already stores
+  that collection as it stores the post, or a newer version of the post that still tags it. At most 4 collections are
+  tagged per post, and the first 100 posts to tag a collection keep the tag
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections"). Migration `0120_tagged_collections`: a
+  new table with its index and four triggers, and an index of `collections` built over its rows, reading no other row;
+  as it creates a table, the upgrade checks every reference of the Store (the migration bench's upgrade from 0093 takes
+  18,333 ms with this file and 18,469 ms without it, medians of three runs: the difference is within run-to-run
+  noise).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
+  back past it needs a point-in-time restore.
+
+### Changed
+
+- Answers that present statuses (the timelines and status lists, a context, quotes, statuses by id, search with
+  statuses, trending statuses, notifications, grouped notifications, notification requests, conversations, admin
+  reports and annual reports) stop at 7,839,744 bytes of JSON, 536 KiB short of 8 MiB, so that the Store's heap holds a
+  page of posts each tagging four collections at their bounds; a page that reaches it ends at a whole item and its
+  `Link` (or offset, or `more`) continues after it, and realistic content does not reach it. No Store migration and no
+  `wrangler.jsonc` change.
+
 ## [0.6.0] - 2026-11-19
 
 A minor release, published under the npm dist-tag `latest`. `kopje-admin` works again: since Cloudflare Access began

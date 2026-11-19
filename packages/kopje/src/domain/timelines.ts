@@ -2,7 +2,7 @@ import { ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { CARD_PUBLIC_LINK_INDEX } from "../platform/stored-bounds";
 import { type Page, type PageQuery, type PresentInput, routeAccountId } from "./accounts";
-import { admit, type Admitted, admittedPage, ARRAY_ANSWER_BYTES } from "./answer-budget";
+import { admit, type Admitted, admittedPage, STATUS_ARRAY_ANSWER_BYTES } from "./answer-budget";
 import {
   audienceSql,
   blocksSql,
@@ -44,7 +44,8 @@ import {
 // local, remote, only_media, all and none) are tested by key on the candidates a walk examined (walkedWindow,
 // passingIds), so a range they reject costs at most CONDITION_WALK entries a page. The feed
 // condition is the visibility list the partial index statuses_feed declares (REACHES_FOLLOWERS_SQL). A page is one
-// answer within ANSWER_BYTES (RES-3, admittedPage): cut there, it is Page.cut and continues from its last status.
+// answer within STATUS_ANSWER_BYTES (RES-3, admittedPage): cut there, it is Page.cut and continues from its last
+// status.
 
 const FEED = `s.visibility IN ${REACHES_FOLLOWERS_SQL}`;
 
@@ -120,7 +121,7 @@ function passingIds(
 // admitted with `leading` (answerAdmission); a web page's list shares the page's budget (domain/web-pages/budget.ts).
 export type StatusAdmission = (entries: Iterable<Status | undefined>) => Admitted<Status>;
 
-const answerAdmission: StatusAdmission = (entries) => admit(entries, ARRAY_ANSWER_BYTES, true);
+const answerAdmission: StatusAdmission = (entries) => admit(entries, STATUS_ARRAY_ANSWER_BYTES, true);
 
 // A page of statuses and whether a continuation follows it: a row may lie past it (windowPage's `more`), or it was
 // cut by bytes.

@@ -24,7 +24,7 @@ import {
   TOP_STATUS_SQL,
   YEAR_STATUSES_SQL,
 } from "../src/domain/annual-reports";
-import { ANSWER_BYTES, jsonBytes } from "../src/domain/answer-budget";
+import { jsonBytes, STATUS_ANSWER_BYTES } from "../src/domain/answer-budget";
 import { TAG_NAME_BYTES } from "../src/domain/status-bounds";
 import { TAG_NAME_JSON_BYTES } from "../src/domain/tag-bounds";
 import { sha256Hex } from "../src/security/tokens";
@@ -43,6 +43,7 @@ import {
 import { expectStatements, GENERATE_STATEMENTS, STATE_STATEMENTS } from "./annual-report-statements";
 import { apiHarness, seedAccount, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { answer, bigStatus, expectStatusBudgetCut, statusBudgetEdge } from "./budget-helpers";
 import { singletonStatistics } from "./plan-audit-store";
 import { explainPlan, measuredStatements, scansOf, scopedToken } from "./read-helpers";
 
@@ -318,7 +319,7 @@ describe("the list", () => {
 });
 
 describe("sizes", () => {
-  it("presents a report at its bounds in REPORT_JSON_BYTES, and an answer of REPORTS_LISTED of them within ANSWER_BYTES", async () => {
+  it("presents a report at its bounds in REPORT_JSON_BYTES, and an answer of REPORTS_LISTED of them within STATUS_ANSWER_BYTES", async () => {
     const w = await world();
     const top = idIn(YEAR, 1);
     // A name of MAX_TAG_LENGTH characters that each escape to six bytes: TAG_NAME_JSON_BYTES.
@@ -351,7 +352,31 @@ describe("sizes", () => {
     for (const r of reports) {
       expect(jsonBytes(r)).toBe(REPORT_JSON_BYTES);
     }
-    expect(jsonBytes(answer.output.value)).toBeLessThanOrEqual(ANSWER_BYTES);
-    expect(REPORTS_LISTED * (REPORT_JSON_BYTES + 1)).toBeLessThan(ANSWER_BYTES / 2);
+    expect(jsonBytes(answer.output.value)).toBeLessThanOrEqual(STATUS_ANSWER_BYTES);
+    expect(REPORTS_LISTED * (REPORT_JSON_BYTES + 1)).toBeLessThan(STATUS_ANSWER_BYTES / 2);
   });
+
+  it("ends the top statuses where STATUS_ANSWER_BYTES ends", async () => {
+    const w = await world();
+    const author = await seedAccount(w.h.store, { username: "top", domain: "remote.example" });
+    // A pending report of each year whose top status is one of statusBudgetEdge's, newest first.
+    const { big, edge } = await statusBudgetEdge(async (i, share) => {
+      const top = await bigStatus(w.h, author, NOW - (20 - i) * 60_000, {}, share);
+      await sql(
+        w.h.store,
+        `INSERT INTO annual_reports (account_id, year, archetype, statuses, followers, top_status_id, created_at)
+				VALUES (?, ?, 'pollster', 1, 1, ?, '2026-12-11T00:00:00.000Z')`,
+        w.alice,
+        9999 - i,
+        top,
+      );
+      return top;
+    });
+    const listed = await w.list();
+    if (listed.output.status !== "ok") throw new Error(listed.output.status);
+    expect(listed.output.value.statuses.map((status) => status.id)).toEqual(big);
+    const token = await scopedToken(w.h, "read");
+    const next = (await answer<unknown>(w.h, `/api/v1/statuses/${edge}`, token)).bytes;
+    expectStatusBudgetCut("annual reports", jsonBytes(listed.output.value), next);
+  }, 300_000);
 });

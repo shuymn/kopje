@@ -12,7 +12,7 @@ import {
   type PresentInput,
 } from "./accounts";
 import { adminAccountIdOnce } from "./admin-authority";
-import { admittedPage, ANSWER_BYTES, ARRAY_ANSWER_BYTES, firstUses, jsonBytes } from "./answer-budget";
+import { admittedPage, ARRAY_ANSWER_BYTES, firstUses, jsonBytes, STATUS_ANSWER_BYTES } from "./answer-budget";
 import { statusReads } from "./audience";
 import { type UserContext, userReadOperation, userWriteOperation } from "./auth";
 import { type Collection, notifiedCollection } from "./collection-presenter";
@@ -671,11 +671,11 @@ const MAX_READMISSIONS = 2;
 // GET /api/v2/notifications: newest first by each group's first notification read; with min_id, the groups right
 // above it, walked oldest first (each group's oldest notification above min_id stands for it) and answered newest
 // first.
-// The answer is within ANSWER_BYTES (RES-3): groups are admitted in discovery order (admitGroups). Cut by bytes, the
-// page is the groups up to the last one admitted, as if the walk had found those alone: its range (membersOf,
-// oldestOf) and cursors are of those groups, and the walk's continuation (a walk cut at GROUP_WALK), which lies past
-// a group left out, is dropped. Those groups are then admitted again over that range, since sampling below a lower
-// upper end can show other accounts; while they do not all fit, the last ones are dropped the same way, at most
+// The answer is within STATUS_ANSWER_BYTES (RES-3): groups are admitted in discovery order (admitGroups). Cut by bytes,
+// the page is the groups up to the last one admitted, as if the walk had found those alone: its range (membersOf,
+// oldestOf) and cursors are of those groups, and the walk's continuation (a walk cut at GROUP_WALK), which lies past a
+// group left out, is dropped. Those groups are then admitted again over that range, since sampling below a lower upper
+// end can show other accounts; while they do not all fit, the last ones are dropped the same way, at most
 // MAX_READMISSIONS times. A group left out is found again by the next page.
 // Every pass shares one work budget (RES-7, PASS_LIMITS): a read starts only while the most it may read still fits. A
 // page none of whose reads would pass it answers as it would without one. When one would, the page is the groups the
@@ -707,7 +707,7 @@ export const listGroupedNotifications = userReadOperation<ListGroupedInput, Grou
       ...new Set(groups.flatMap(({ first }) => (first.status_id === null ? [] : [first.status_id]))),
     ];
     const shared = presentation(db, statusesOf(walk.groups), { ...input.present, viewer });
-    const budget = ANSWER_BYTES - jsonBytes(emptyAnswer(input.expandAccounts));
+    const budget = STATUS_ANSWER_BYTES - jsonBytes(emptyAnswer(input.expandAccounts));
     const options = { ...input, fallback: fallbackSet(input.fallbackTypes) };
     // A pass over the range of `read`'s groups that visits `visited` of them.
     const admit = (read: Walk, visited: readonly Found[], limits: typeof PASS_LIMITS) => {

@@ -8,7 +8,7 @@ import {
   storedTime,
 } from "../platform/stored-bounds";
 import { type Account, presentAccountsWithin, presentFor, type PresentInput } from "./accounts";
-import { ANSWER_BYTES, jsonBytes } from "./answer-budget";
+import { jsonBytes, STATUS_ANSWER_BYTES } from "./answer-budget";
 import { annualReportCountedSql, annualReportOwnSql, DISTRIBUTABLE_SQL, viewableStatusIds } from "./audience";
 import { type UserContext, userReadOperation, userWriteOperation } from "./auth";
 import { tagNameSql } from "./status-bounds";
@@ -406,7 +406,7 @@ const FRAME_BYTES = jsonBytes({ annual_reports: [], accounts: [], statuses: [] }
 
 // The reports, the owner's account when any is listed (AnnualReportsPresenter#accounts), and the top statuses the
 // owner may view (R3, VIS-12: one deleted, withdrawn or not the owner's to see leaves by_reblogs null), newest first,
-// each admitted whole within what ANSWER_BYTES leaves (RES-3). No continuation: Mastodon has none.
+// each admitted whole within what STATUS_ANSWER_BYTES leaves (RES-3). No continuation: Mastodon has none.
 function presentReports(
   db: Db,
   rows: readonly ReportRow[],
@@ -439,7 +439,7 @@ function presentReports(
       account_id: owner,
     };
   });
-  let left = ANSWER_BYTES - FRAME_BYTES - reports.reduce((bytes, report) => bytes + jsonBytes(report) + 1, 0);
+  let left = STATUS_ANSWER_BYTES - FRAME_BYTES - reports.reduce((bytes, report) => bytes + jsonBytes(report) + 1, 0);
   const accounts =
     reports.length === 0
       ? { items: [], bytes: 0 }

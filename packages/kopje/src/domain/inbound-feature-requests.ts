@@ -9,6 +9,7 @@ import {
 } from "../platform/stored-bounds";
 import { availableSql, mayFeatureSql } from "./audience";
 import { featureAuthorizationUri } from "./collection-documents";
+import { storableUrl } from "./collection-presenter";
 import { notifyAdded } from "./collections";
 import { answerRequest } from "./feature-answers";
 import { allocateLocalId, insertWithFreshId } from "./ids";
@@ -16,7 +17,6 @@ import {
   applyFeaturedCollection,
   type FeaturedCollectionInput,
   ownCollectionByUri,
-  storableUrl,
 } from "./remote-featured-collections";
 import { isRetracted } from "./retractions";
 

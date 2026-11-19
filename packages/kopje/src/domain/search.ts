@@ -8,7 +8,7 @@ import {
   searchAccountIds,
   type SearchInput,
 } from "./accounts";
-import { admit, ANSWER_BYTES, jsonBytes } from "./answer-budget";
+import { admit, ANSWER_BYTES, jsonBytes, STATUS_ANSWER_BYTES } from "./answer-budget";
 import { listableSql, statusReads } from "./audience";
 import { type UserContext, userReadOperation } from "./auth";
 import type { Collection } from "./collection-presenter";
@@ -39,7 +39,8 @@ import { statusCursor } from "./windows";
 // outside the windows is not found, even by its exact name; a status the viewer saved that later became hidden (its
 // author blocked them) still takes a slot of the viewer's own windows, which reveals that something changed, not what.
 //
-// The whole answer, accounts, statuses and hashtags, is one answer within ANSWER_BYTES (RES-3), admitted in that order
+// The whole answer, accounts, statuses and hashtags, is one answer within ANSWER_BYTES (RES-3), within
+// STATUS_ANSWER_BYTES from its first admission when it may present statuses, admitted in that order
 // with the account resolve=true found first among the accounts. Search pages by offset, so an answer cut there holds
 // fewer results: a client advancing its offset by the number received continues after them, while Mastodon's web
 // client, which takes a short answer for the last one, shows no more (docs/response-inventory.md).
@@ -76,7 +77,7 @@ const SEARCH_FRAME_BYTES = jsonBytes({
 } satisfies SearchResults);
 
 export const search = userReadOperation<SearchRequest, SearchResults>((db, input, viewer, context) => {
-  let left = ANSWER_BYTES - SEARCH_FRAME_BYTES;
+  let left = (input.types.includes("statuses") ? STATUS_ANSWER_BYTES : ANSWER_BYTES) - SEARCH_FRAME_BYTES;
   let leading = true;
   const accounts = input.types.includes("accounts")
     ? presentAccountsWithin(

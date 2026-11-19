@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { railsFormatParam } from "../src/federation/rails-params";
+import { railsFormatParam } from "../src/platform/rails-format-param";
 import { ParamHash, type RailsParam } from "../src/platform/rails-params";
 import corpus from "./fixtures/rails-params/format-corpus.json";
 

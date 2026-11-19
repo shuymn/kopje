@@ -1977,24 +1977,100 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   local collection (its `Add`, `Update` and `Remove`, an item's `Add` and `Remove`, the owner's `Remove` of an item its
   member revokes or a block takes out) is sent, signed by the owner, to the owner's followers and the collection's
   pending and accepted remote members alone (R23), a block's members from the block on and its followers through a
-  collection job after it, each after the item's `Add`; a suspension sends none.
-  _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`, `collectionItemShownSql`,
-  `featureApprovalSql`, `featureApprovalReads`, `mayFeatureSql` and `inCollectionsSql` in `src/domain/audience.ts`, the
-  account presenter and `presentFor` (`src/domain/accounts.ts`), `src/domain/collections.ts`, `notifiedCollection` and
-  `shownItems` (`src/domain/collection-presenter.ts`), `severCollections` (`src/domain/collections.ts`, run by a local
-  block in `src/domain/blocks.ts`), the documents and activities in `src/domain/collection-documents.ts` (served by
-  `src/federation/routes.ts`); `test/collections.test.ts` ("shows a collection and its items only as R45 allows", "asks
-  the member's consent: discoverable, and unlocked or followed, no block either way, local", "lets only the item's
-  account revoke it, which keeps the row and the membership listed"), `test/blocks.test.ts` ("revokes and deletes the
-  collection memberships a block severs", "delivers a block's collection Removes to every follower in bounded rounds
-  (RES-6)"), `test/collection-notifications.test.ts` ("presents the collection to its recipient, with the items R45
-  shows the recipient, on v1 and v2"), `test/feature-approval.test.ts`, `test/federation-collections.test.ts` ("refuses
+  collection job after it, each after the item's `Add`; a suspension sends none. A status's `tagged_collections`
+  (migration `0120_tagged_collections`, #1589's D26) are the collections it tags that are shown to the viewer, each with
+  the members shown to the viewer, on an original and a quoted status (a boost presents none, its original them), each
+  only while a status can tag it, whatever the viewer (one decision, `taggableCollections`: its owner available, and
+  `taggable`): its name, description and tag well-formed UTF-8 as stored; a local one only while it is stored as local,
+  its owner is a local account, and its id has the path the collection route takes (`ROUTE_USERNAME`, 1 to 64 ASCII
+  letters, digits or underscores, as the route's own parser reads it), on any host; a remote one only while it is
+  stored as remote,
+  its id is a valid id on its owner's origin, that owner's id read within `ACTOR_URI_LIMIT` (`actorUriSql`), and not on
+  the instance's domain (`onDomain`, the routes' own test of the configured domain, by host), its name and description
+  are within its writer's bounds, and its `url` only as its writer would store it. One function builds a local
+  collection's id from its owner's stored actor id, `<actor id>/collections/<id>` (`localCollectionUri`), and every
+  surface that emits it (the API's `uri` and `tagged_collections`, the Note's tag, the collection's documents and
+  activities, its `FeaturedItem`s, a local member's authorization, the owner's `featured_collections`, its page's
+  alternate) takes it from there, comparing it with neither the request's host nor the configured one: a collection's id
+  resolves exactly when its owner's actor id does, so an account whose actor id does not (restored inconsistently, or
+  kept from an earlier domain) has collections no more and no less reachable than itself, and the API creates and
+  updates its collections as any owner's; an actor id the account presenter does not show (past `ACTOR_URI_LIMIT` as
+  JSON) gives none. A search with `resolve=true`, a link, a Note's tag and a Flag's object name a collection through one
+  resolver (`namedCollection`), with the instance's domain read once for the whole resolution: a local collection by
+  that id exactly, or, over http or https on the instance's domain, by an address whose GET serves it, read by the
+  routes' one parser (`servedCollectionAddress`: the page's id as the router decodes the path, whatever the query; the
+  `FeaturedCollection`'s raw path under its owner's username, with a format the route answers with), never by the
+  request's host; any other URL on that domain names none, a stored remote row's id included. It decides before any
+  caller's filter, so a URL that names a local collection no status can tag tags nothing, never a remote row under the
+  same id. The domain is a value only `configuredDomain` makes, whose name only `onConfiguredDomain` reads (a private
+  field: a literal, a spread or a cast object has none, and the class's constructor makes one with none). The owner's
+  `featured_collections` lists its local collections alone,
+  under its stored actor id, wherever the actor route serves the owner. So a restored dump's malformed text is presented
+  nowhere, and a restored row stored as remote under a local id is neither listed, tagged nor authorized. The writer
+  applies the same decision to a post's links and a Note's tags before it takes the first four, so a collection no
+  surface shows takes no slot, whatever the author's actor id or the request's host, and no function that decides or
+  looks up a local collection takes a request's origin; R45, the part that depends on the viewer, is the readers' alone,
+  and a collection that stops being available after the post is written is left out as they read it. No public page
+  presents them or reads a reference: the status page and its thread, the profile's tabs and pins, the hashtag page, the
+  interact handoff, oEmbed and the `/authorize_interaction` result present `[]`. A local status's ActivityPub forms (its
+  Note or Question as served, in the outbox and in `featured`, its `Create` and `Update`s and a `QuoteRequest`'s
+  instrument) name each collection it tags that a status can tag (`taggableCollections`) by its id alone, under the
+  `featured_collections` terms, so no collection's name, description or members travel in the post's activities. This
+  bounds the wire's content, not who learns of the collection: a local collection's id is under its owner's actor id,
+  which names the owner, and a fetch of it is judged by R45 for the fetcher, the remote account whose stored key the
+  signature names (a key Kopje does not store names none, and the fetch is anonymous), so a server whose user the owner
+  blocks may still read it with another key, its instance actor's included unless the owner blocks that account or its
+  domain, or show its copy to that user. _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`,
+  `collectionListedSql`, `collectionItemShownSql`, `featureApprovalSql`, `featureApprovalReads`, `mayFeatureSql` and
+  `inCollectionsSql` in `src/domain/audience.ts`, `statusFacts`, `noteOf` and `contextOf` (`src/domain/activities.ts`),
+  the account presenter and `presentFor` (`src/domain/accounts.ts`), `src/domain/collections.ts`, `notifiedCollection`,
+  `taggedCollectionsOf` (read by the status presenter's `hydrate` unless `Present.page`, which `pagePresent` in
+  `src/domain/web-pages/site.ts`, oEmbed and `/authorize_interaction` set), `taggableCollections`, `localCollectionUri`
+  and `shownItems` (`src/domain/collection-presenter.ts`), `configuredDomain` and `onConfiguredDomain`
+  (`src/domain/instance-domain.ts`), `onDomain` (`src/platform/instance-host.ts`), `collectionPageId`,
+  `collectionDocumentAddress`, `servedCollectionAddress` and `localCollectionKey` (`src/platform/collection-address.ts`,
+  read by the page's route in `src/app/public-pages.tsx`, the `FeaturedCollection`'s in `src/federation/routes.ts`,
+  `namedCollection` and search's `ownCollectionRoute`),
+  `namedCollection`, `namesLocalCollection`, `resolvedCollection` and `flaggedCollections`
+  (`src/domain/collections.ts`),
+  `severCollections` (`src/domain/collections.ts`, run by a local block in `src/domain/blocks.ts`), the documents and
+  activities in `src/domain/collection-documents.ts` (served by `src/federation/routes.ts`); `test/collections.test.ts`
+  ("shows a collection and its items only as R45 allows", "asks the member's consent: discoverable, and unlocked or
+  followed, no block either way, local", "lets only the item's account revoke it, which keeps the row and the membership
+  listed"), `test/blocks.test.ts` ("revokes and deletes the collection memberships a block severs", "delivers a block's
+  collection Removes to every follower in bounded rounds (RES-6)"), `test/collection-notifications.test.ts` ("presents
+  the collection to its recipient, with the items R45 shows the recipient, on v1 and v2"),
+  `test/feature-approval.test.ts`, `test/federation-collections.test.ts` ("refuses
   a fetcher the owner blocks or domain-blocks, and an authorization to one its member blocks", "leaves a suspended
   member out of every document, and its FeaturedItem 404, as REST and the page do", "sends a collection's Add, Update
   and Remove and its items' Add and Remove to followers and members", "sends the owner's Remove of an item a block or
   its member's revoke takes out", "keeps an item's Add before the Removes a block and its owner record around it"),
   `test/policy-oracle.test.ts` (against `collectionFound`, `collectionShown`, `collectionListed`, `collectionItemShown`,
-  `featureApproval`, `mayFeature` and `inCollections` in `test/policy-model.ts`), `test-node/policy-boundary.test.ts`.
+  `featureApproval`, `mayFeature` and `inCollections` in `test/policy-model.ts`), `test-node/policy-boundary.test.ts`,
+  `test/tagged-collections.test.ts` ("shows each viewer the collection and the items R45 shows them", "presents a
+  boost's original and a quote's own and quoted collections", "reads no reference for a page, which presents none, while
+  the API presents them", "presents Y alone, with its uri for the url no writer would store", "leaves out a restored
+  collection whose text reads past its writer's bounds", "leaves out a restored collection whose text is malformed,
+  however wide it decodes", "decides a local collection by its owner's actor id's path, on any host, whatever the
+  username", "leaves out a local collection whose owner is not a local account", "gives a post's slots only to
+  collections a status can tag, before it takes the first four", "builds a local collection's id from its owner's stored
+  actor id on every surface, whatever the host", "names a local collection by the instance's domain, whatever the
+  author's actor id's", "finds a local collection by the uri and url the API returns and by its route, over http and
+  after a domain change", "names a local collection by its id as emitted, or by its route with its owner's username",
+  "names a local collection by a URL exactly when its GET serves it", "tags nothing by a local collection's id when no
+  status can tag it, whatever remote row shares the id",
+  "reads the instance's domain once for a post's links", "references a local collection alike from a Note resolved over
+  HTTPS or HTTP", "references a local collection by its route or web page over http, from a Create and an Update",
+  "references a local collection by its id padded past COLLECTION_URI_BYTES by its fragment alone",
+  "neither lists nor tags a remote row whose id is on the instance's origin", "gives a post's slots only
+  to collections whose owner is available, before it takes the first four", "gives no slot to a collection whose
+  restored text is malformed", "names each collection by its id alone, after the other tags, under the
+  featured_collections terms", "lets S's Note name Y alone, by its id", "leaves out a
+  collection whose owner's id is past ACTOR_URI_LIMIT, and references none"), `test/inbox-flag.test.ts` ("names only
+  local collections on the instance's domain, as a status's links do"), `test/search-resolution-store-calls.test.ts`
+  ("is answered by the Store's lookup alone, for every address a collection route serves"),
+  `test/instance-domain.test.ts`,
+  `test-node/tagged-collection-reads.test.ts`.
 
 ### Authorization (AUTH)
 
@@ -3821,10 +3897,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   their bounds"). _Enforced (main)_ for annual reports: `GET /api/v1/annual_reports` lists at most
   `REPORTS_LISTED` (40) pending reports, newest year first, each at most `REPORT_JSON_BYTES` (a name of
   `TAG_NAME_JSON_BYTES`, counts of 16 digits, 18-digit ids), then the owner's account and the top statuses the owner may
-  view admitted whole within what `ANSWER_BYTES` leaves, with no continuation (`src/domain/annual-reports.ts`);
+  view admitted whole within what `STATUS_ANSWER_BYTES` leaves, with no continuation (`src/domain/annual-reports.ts`);
   `test/annual-report-bounds.test.ts` ("presents a report at its bounds in REPORT_JSON_BYTES, and an answer of
-  REPORTS_LISTED of them within ANSWER_BYTES"), `test/annual-reports.test.ts` ("lists the owner's pending reports,
-  newest first, at most REPORTS_LISTED, with the owner's account"). _Enforced (main)_ for the profile fields
+  REPORTS_LISTED of them within STATUS_ANSWER_BYTES"), `test/annual-reports.test.ts` ("lists the owner's pending
+  reports, newest first, at most REPORTS_LISTED, with the owner's account"). _Enforced (main)_ for the profile fields
   of each presented account: a remote account's row carries at most 16 fields, each name and value cut, 32 KiB of
   JSON in all, chosen in SQL from the stored actor document; the presenter then shows only the leading fields whose
   sanitized names and values fit 32 KiB once serialized as JSON, dropping the rest whole. So one account answers at
@@ -3870,7 +3946,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `favourited_by`, `reblogged_by`) select ids for their window and read the profiles of the page only
   (`test/account-answer-bytes.test.ts`, `test/admin-accounts.test.ts`). _Enforced (main)_ for answers of many accounts
   (a list's members and endorsements with `limit=0`, familiar followers): the whole response body is at most
-  `ANSWER_BYTES` (8 MiB, `src/domain/answer-budget.ts`), its own JSON reserved first, only an answer's first account
+  `ANSWER_BYTES` (8 MiB, `src/domain/answer-bytes.ts`), its own JSON reserved first, only an answer's first account
   standing alone past it; accounts are read in chunks of 50 that stop once it is reached, so at most one chunk (6.91 MB
   with their static images, their remote verification times and the accounts they moved to) is read past it. A
   `limit=0` answer cut there links `next` to the rest with `max_id`, a deliberate deviation (Mastodon ignores `max_id`
@@ -3882,23 +3958,36 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   notifications: the Store operation that returns it owns one budget of `ANSWER_BYTES` (8 MiB of the answer's JSON,
   containers included) or a stated unit or count bound, and admits items whole in traversal order, the first whatever
   its size, so what is held past the admitted answer is one chunk of rows and one item at their maxima ("Heap at 8 MiB
-  per answer"). _Gap:_ under that section's heap model, a page of grouped notifications or of admin reports passes half
-  of the Store isolate's 128 MB, below 128 MB (the peaks table there): their single item dominates, so no chunk target
-  or cap lowers it. A measured factor for presented objects and the strings they share with rows, or lower unit maxima,
-  would close it. Each operation's mechanism, continuation and admission rules, and the ActivityPub collections, are in
-  [response-inventory.md](response-inventory.md). One presentation per answer compiles the viewer's filters once and
-  fixes the filter text level (`MAX_FILTER_REQUEST_TEXT`) over the answer's candidates in a preparation pass, so chunked
-  presentation matches as one whole presentation does, and matches each status and quoted status once. When the viewer
-  has keyword filters, that pass reads one figure per candidate in SQL, one seek of `statuses` by key each
-  (`filterTextUnitsSql`): the stored measure, or, for an unmeasured status, a bound from the bytes of its texts, its
-  poll's choices (at most 100 parsed) and its at most 4 shown descriptions; no text reaches the Worker, and its work is
-  bounded by the candidate caps (a context's 8,192), not by the answer budget (`test/filter-text-units.test.ts` ("the
-  level pass reads figures, never text"), `src/domain/answer-budget.ts`, `presentation` and `presentStatusesWithin` in
-  `src/domain/status-presenter.ts`, `src/domain/status-rows.ts`; `test/answer-budgets.test.ts`,
-  `test/status-rows.test.ts`, `test/notification-budgets.test.ts`, `test/notification-group-budgets.test.ts`,
-  `test/conversation-budgets.test.ts`, `test/account-page-budgets.test.ts`, `test/activitypub-budgets.test.ts`,
-  `test/admin-reports.test.ts`). Streaming events stay one unit each, and an event over 254 KiB is skipped whole,
-  measured from its presented object before any of it is encoded (RES-6). Its
+  per answer"). An answer that presents statuses owns `STATUS_ANSWER_BYTES` instead (7,839,744 bytes, 8 MiB less 536
+  KiB), a composite one (search with statuses among its types) from its first admission: the timelines and status
+  lists, a context, quotes, statuses by id, trending statuses, notifications, grouped notifications, notification
+  requests, conversations, admin reports and annual reports. Each byte an answer admits is held three times in the
+  heap model, so the lower budget is what keeps a timeline's peak within half of the Store isolate with a status's
+  `tagged_collections` at their maxima (#1589's D26): the largest multiple of 8 KiB that keeps it at least 4,096 bytes
+  under half (`test/status-bounds.test.ts` ("keeps the peaks of the heap model within their bounds, from the maxima
+  per column")). Every atomic item that presents statuses is within it, so such an answer still admits its first
+  item; a page it cuts continues from its last admitted item through the answer's own continuation (the id cursor, a
+  group's discovery position, `more`, or search's offset), so a page of byte-heavy statuses ends sooner than at
+  `ANSWER_BYTES` and the next page shows the rest. Each such answer ends where `STATUS_ANSWER_BYTES` ends, before an
+  item `ANSWER_BYTES` would admit (`statusBudgetEdge` in `test/budget-helpers.ts`; `test/answer-budgets.test.ts`,
+  `test/notification-budgets.test.ts`, `test/conversation-budgets.test.ts`, `test/admin-reports.test.ts` and
+  `test/annual-report-bounds.test.ts`). _Gap:_ under that section's heap model, a page of grouped notifications or of
+  admin reports passes half of the Store isolate's 128 MB, below 128 MB (the peaks table there): their single item
+  dominates, so no chunk target or cap lowers it. A measured factor for presented objects and the strings they share
+  with rows, or lower unit maxima, would close it. Each operation's mechanism, continuation and admission rules, and
+  the ActivityPub collections, are in [response-inventory.md](response-inventory.md). One presentation per answer
+  compiles the viewer's filters once and fixes the filter text level (`MAX_FILTER_REQUEST_TEXT`) over the answer's
+  candidates in a preparation pass, so chunked presentation matches as one whole presentation does, and matches each
+  status and quoted status once. When the viewer has keyword filters, that pass reads one figure per candidate in SQL,
+  one seek of `statuses` by key each (`filterTextUnitsSql`): the stored measure, or, for an unmeasured status, a bound
+  from the bytes of its texts, its poll's choices (at most 100 parsed) and its at most 4 shown descriptions; no text
+  reaches the Worker, and its work is bounded by the candidate caps (a context's 8,192), not by the answer budget
+  (`test/filter-text-units.test.ts` ("the level pass reads figures, never text"), `src/domain/answer-budget.ts`,
+  `presentation` and `presentStatusesWithin` in `src/domain/status-presenter.ts`, `src/domain/status-rows.ts`;
+  `test/answer-budgets.test.ts`, `test/status-rows.test.ts`, `test/notification-budgets.test.ts`,
+  `test/notification-group-budgets.test.ts`, `test/conversation-budgets.test.ts`, `test/account-page-budgets.test.ts`,
+  `test/activitypub-budgets.test.ts`, `test/admin-reports.test.ts`). Streaming events stay one unit each, and an event
+  over 254 KiB is skipped whole, measured from its presented object before any of it is encoded (RES-6). Its
   payload counts the media descriptions with the rest of the event, formatted text expanded as it is encoded (a link
   written twice, profile fields, poll choices), so a local post and its quote reach it with descriptions of emoji at
   their length, a post or its boost beside long text and profiles, or with descriptions of control characters such as
@@ -4129,7 +4218,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   per-status figure above, inserts at most 200 nodes and updates at most 400 (`src/domain/reply-walks.ts`;
   `test/reply-walks.test.ts` ("prunes at most WALK_PRUNE_BATCH finished walks a claim", "records at most WALK_STATUSES
   nodes", "stores a reply and its embedded self-quote … within the figure")). Besides these, a completion that applies a
-  stored node's document writes at most what an inbound `Update` at its caps writes, and one that starts a node's
+  stored node's document writes at most what an inbound `Update` at its caps writes (its `MAX_TAGGED_COLLECTIONS` tag
+  references replaced by as many others among them), and one that starts a node's
   removal at most what that start writes (its job, the streamed delete, `HIDE_ROWS`, the quote's retirement, its
   parent's count), each with at most two debts paid and one collection debt owed after one replacement delete
   (`test/reply-walk-debt-bounds.test.ts` ("updates a node at every cap of updateRemoteStatus within the figure", "starts
@@ -4160,10 +4250,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   run, as a job family of its own (RES-5; `src/domain/collection-jobs.ts`). A
   collection's deletion writes the collection, its at most 50 items, their notifications, its `collection_update`
   notifications (one per local recipient, held unique by `notifications_collection`) and their pushes (at most
-  `MAX_PUSH_BACKLOG`), by the foreign keys; an item's removal or eviction the item, its notification and that
-  notification's pushes. The purge of a remote account deletes its items, the items of its collections and then its
-  collections, each window child-first (the pushes of their notifications, those notifications, then the rows), each
-  step counted against the batch's budget (`src/domain/inbox.ts`). `test/collections.test.ts` ("evicts the oldest
+  `MAX_PUSH_BACKLOG`) and its at most 100 tag references (`MAX_TAGGING_STATUSES`, which the triggers of migration
+  `0120_tagged_collections` hold, imports included), by the foreign keys; an item's removal or eviction the item, its
+  notification and that notification's pushes; a status's deletion its at most 4 tag references
+  (`MAX_TAGGED_COLLECTIONS`, a `STATUS_CHILDREN` step). The purge of a remote account deletes its items, the items of
+  its collections, the tag references to its collections and then its collections, each window child-first (the pushes
+  of their notifications, those notifications, then the rows), and its statuses' references before them, each step
+  counted against the batch's budget (`src/domain/inbox.ts`). `test/collections.test.ts` ("evicts the oldest
   retired item when an add meets the stored bound", "deletes retired items a day old, RETIRED_ROWS_PER_ROUND a round,
   keeping younger and live ones"), `test/collection-notifications.test.ts` ("deletions with pushes waiting (2-T9)",
   "purges a remote account's collection rows child-first, within PURGE_BATCH a batch"), `test/blocks.test.ts` ("revokes
@@ -4172,6 +4265,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (RES-6)", "reads no follower's inbox past the staged bound while a block's Removes reach its followers (RES-6)",
   "reaches the owner's followers of when its job starts, keeping its bound from then on (RES-6)"),
   `test/inbox-regressions.test.ts` ("purges a remote account's collections and memberships within the batch budget"),
+  `test/tagged-collections.test.ts` ("purges the author's status within each batch, its references before it, whatever
+  the budget left", "purges an owner's collection within each batch, its references first, whatever the budget left",
+  "deletes a collection's MAX_TAGGING_STATUSES references with it on its owner's DELETE"),
   `test/cascade-guard.test.ts`.
 - **RES-5: retries are bounded, but maintenance is not a failure.** Waiting out maintenance consumes no processing
   retry; real processing errors count against `max_retries`. _Enforced (main):_ `src/jobs/queue.ts`; `test/gate.test.ts`
@@ -4719,7 +4815,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   ends the list, and the part completes with what it read. It keeps at most `MAX_REMOTE_COLLECTIONS` (10) embedded
   collections of `MAX_REMOTE_ITEMS` (25) embedded items, fetches nothing given only as a URI and no member, and deletes
   the account's other stored collections only after a complete read (`test/collection-sync.test.ts` ("reads two pages
-  in one round of three documents, keeps ten collections, and fetches no URI-only entry", "its budget")), except one
+  in one round of three documents, keeps ten collections, and fetches no URI-only entry", "its budget")): at most 50
+  collections and their at most 5,000 tag references (50 × `MAX_TAGGING_STATUSES`, the triggers, imports included),
+  and for state Kopje's writers produced their items (at most 50 each), their `collection_update` notifications and
+  at most `MAX_PUSH_BACKLOG` pushes in all, which a restored Store may exceed (#1797) (`test/tagged-collections.test.ts`
+  ("deletes the omitted collections with their 5,000 references, within the call's bound", "deletes the 5,000
+  references of a restored Store's omitted collections, reporting the rest")), except one
   holding a local member's row (ID-9): that exemption reads at most the owner's `MAX_STORED_COLLECTIONS` collections and
   each one's `MAX_STORED_ITEMS` rows with an account probe each, stopping at the first local member's, and a new
   collection is admitted while the owner holds fewer than `MAX_STORED_COLLECTIONS` for a read or a request's instrument,
@@ -5101,10 +5202,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   measure of the 254 KiB past which it is skipped and logged with no string made (254 KiB keeps the largest frame and
   its terminating byte within 256 KiB). A unit within it is encoded once and
   sent one stream's envelope at a time, so a unit's isolate peak is its rows, its presented object and four frames of
-  the largest at most, 46,841,856.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
+  the largest at most, 48,486,839.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
   whole payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit:
-  a turn presents at most 18,248,244 bytes, 4 MiB less 254 KiB plus 2S + 2 for the unit that crosses it (encoding the
-  JSON again at most doubles it), S = 7,157,017 being the most JSON a streamed subject presents, the quote
+  a turn presents at most 18,723,568 bytes, 4 MiB less 254 KiB plus 2S + 2 for the unit that crosses it (encoding the
+  JSON again at most doubles it), S = 7,394,679 being the most JSON a streamed subject presents, the quote
   conversation's (`update` and `status.update` a boost of a quote, `conversation` one whose last status is a quote, as a
   conversation shows no boost as its last status, `notification` its status, report and warning together, an
   announcement), derived from the maxima table (`test/status-bounds.test.ts`, `test/streaming/split.test.ts`). Held
@@ -5543,16 +5644,18 @@ status, and naming the statuses read, so every status carries 50 filter results 
 takes the 1,000 keywords. SQLite bytes are the UTF-8 bytes of every value read (8 per number); nodes are the objects,
 arrays and strings presented; rows read are the rows those reads return. The fills measure the account occurrence and
 the ten status and notification shapes (`FILL_SHAPES`), and each of their measured cells is the most any of the test's
-five fills gives (the four above and the emoji-cache fill), each column taking it from one fill: the SQLite bytes and
-the rows read from the raw fill, the JSON from the emoji-poll fill and the nodes from the emoji-cache fill
-(`COLUMN_FILL`). The moved-to account is derived from its caps, and the Note is measured on a fixture of its own with
-text escaped (below). The figures are `test/presented-maxima.ts`, which the test asserts and
-`test-node/presented-maxima.test.ts` compares with this table cell by cell. Measured shapes are read through the Store
-operation. No one fill holds a status's emoji arrays and its polls' at their bounds at once (the references a poll's
-choices need displace escaped characters), so the conservative JSON of a shape is the escaped fill's plus 12,286 bytes
-for each poll it shows, at least every fill's (`test/status-bounds.test.ts` ("keeps the conservative JSON of every shape
-within the ceiling, above every fill")); shares are of it. Each remote account of the fills carries its actor id
-(`uri`) at its bound, 2,048 bytes as JSON, the most it presents. An imported account whose display name and bio hold
+five fills gives (the four above and the emoji-cache fill), each column but the rows read taking it from one fill: the
+SQLite bytes from the raw fill, the JSON from the emoji-poll fill and the nodes from the emoji-cache fill
+(`COLUMN_FILL`); the raw fill's tagged collections are restored text, which no presenter shows (below), so it reads none
+of their items, and the rows read are the most any fill gives each shape. The moved-to account is derived from its
+caps, and the Note is measured on a fixture of its own with text escaped (below). The figures are
+`test/presented-maxima.ts`, which the test asserts and `test-node/presented-maxima.test.ts` compares with this table
+cell by cell. Measured shapes are read through the Store operation. No one fill holds a status's emoji arrays and its
+polls' at their bounds at once (the references a poll's choices need displace escaped characters), so the conservative
+JSON of a shape is the escaped fill's plus 12,286 bytes for each poll it shows, at least every fill's
+(`test/status-bounds.test.ts` ("keeps the conservative JSON of every shape within the ceiling, above every fill"));
+shares are of it. Each remote account of the fills carries its actor id (`uri`) at its bound, 2,048 bytes as JSON, the
+most it presents. An imported account whose display name and bio hold
 malformed UTF-8 (0xFF and 1,048,575 continuation bytes, and 65,534 continuation bytes) is no fill, since a fill measures
 decoded values in UTF-8, which triples such a byte: it is checked in each unit on its own, reading the raw fill's 8,192
 and 65,534 bytes of the two (SQL `octet_length` of the projected values), holding a decoded row within `rowHeapSql` of
@@ -5567,7 +5670,21 @@ An imported attachment description of malformed UTF-8 at its stored bound (0xFF 
 `MEDIA_DESCRIPTION_BYTES`, 40,000) decodes to 40,000 U+FFFD, of which every presenter shows the first 10,000
 (`presentedMediaDescription`): within the escaped fill's description, so the fills stay the maxima; a status of four
 such attachments reads within R (`test/status-bounds.test.ts` ("an attachment of malformed imported text")).
-A local account also shows `noindex` and `roles`, at most the Owner's
+A status's tagged collections are read before any is judged, so the raw fill holds them as a restored dump may, each
+text the read takes at its widest decoded: the name, description and tag at their CHECKs' bytes (1,024, 8,192 and
+1,024), and the owner's actor id at `ACTOR_URI_LIMIT` (`actorUriSql`), each a byte 0xC0 and continuation bytes, which
+decode to a U+FFFD a byte, three bytes. Decoding gives one code point for each well-formed sequence, of as many bytes,
+and one U+FFFD for each malformed sequence of at least one byte, so no stored bytes decode past three times their count,
+and the heap model counts each column at that width (`malformed` in `test/collection-maxima.ts`;
+`test/tagged-collections.test.ts` ("reads a restored collection's every text at three times the bytes the read takes of
+it")). The presenter leaves out a collection whose name, description or tag is malformed, read with more U+FFFD than its
+stored bytes hold as EF BF BD (a stored EF BF BD is one U+FFFD, and each malformed sequence adds one, a replacement of
+the same width such as F0 90 80 included), and a local one whose owner is not a local account or whose id, under its
+owner's actor id, is not on the collection route's path (`taggable`, `wellFormed` and `localCollectionUri` in
+`src/domain/collection-presenter.ts`), so no answer presents a value decoding replaced
+(`test/tagged-collections.test.ts` ("leaves out a restored collection whose text is malformed, however wide it decodes",
+"decides a local collection by its owner's actor id's path, on any host, whatever the username", "gives no slot to a
+collection whose restored text is malformed")). A local account also shows `noindex` and `roles`, at most the Owner's
 badge: the account occurrence's conservative JSON adds those keys (63 bytes) to the remote one measured, and what a
 local account's four fields at their derived most (37,677 bytes: names of six-byte escapes, each value at 7,822 and
 verified) present past the remote one's fields. Every presented account but the viewer's moved to an account of its own
@@ -5593,24 +5710,24 @@ page, a context and a search answer of statuses of about 0.98 MB each, each cut 
 each (`test/answer-budgets.test.ts` ("the Store RPC returns a maximal answer")), and the boost of a quote above, alone
 or as the one status a lookup of it, the quote and the quoted status admits, returns within `ANSWER_BYTES` (8 MiB), well
 under the 32 MiB RPC limit, which `test/status-bounds.test.ts` asserts for the escaped and the raw fill; the sizes it
-logs (5.77 MB escaped, 4.66 MB raw, the fill of the largest SQLite read) are measurements, not asserted.
+logs (6.01 MB escaped, 4.64 MB raw, the fill of the largest SQLite read) are measurements, not asserted.
 
 | Shape                                                            | Most SQLite bytes | Most JSON bytes | Conservative JSON | Rows read | Nodes | Share of 8 MiB |
 | ---------------------------------------------------------------- | ----------------- | --------------- | ----------------- | --------- | ----- | -------------- |
 | Account occurrence, with the account it moved to                 | 124,499           | 142,608         | 150,428           | 1         | 216   | 1.8%           |
 | Moved-to account (nested), derived from its caps                 | 12,464            |                 | 11,340            | 1         |       | 0.1%           |
-| Status                                                           | 4,454,913         | 2,699,703       | 2,706,431         | 1,492     | 2,735 | 32.3%          |
-| Quote (the status and its quoted status)                         | 6,831,214         | 5,389,759       | 5,402,972         | 1,931     | 5,452 | 64.4%          |
-| Boost of a quote                                                 | 7,127,523         | 5,800,871       | 5,820,048         | 1,994     | 6,535 | 69.4%          |
-| Conversation: 12 participants presented, its last status a quote | 8,530,397         | 7,101,024       | 7,157,017         | 2,030     | 8,035 | 85.3%          |
-| Notification group: 8 sample accounts, its status a quote        | 7,906,608         | 6,531,047       | 6,572,780         | 2,014     | 7,192 | 78.4%          |
-| Report: its first status a quote past the 2 MiB allowance        | 7,216,764         | 5,994,590       | 6,015,173         | 1,957     | 6,485 | 71.7%          |
+| Status                                                           | 4,619,421         | 2,817,458       | 2,825,262         | 1,597     | 3,292 | 33.7%          |
+| Quote (the status and its quoted status)                         | 7,160,230         | 5,625,269       | 5,640,634         | 2,140     | 6,566 | 67.2%          |
+| Boost of a quote                                                 | 7,456,539         | 6,036,405       | 6,057,734         | 2,199     | 7,650 | 72.2%          |
+| Conversation: 12 participants presented, its last status a quote | 8,859,413         | 7,336,534       | 7,394,679         | 2,191     | 9,149 | 88.2%          |
+| Notification group: 8 sample accounts, its status a quote        | 8,235,624         | 6,766,557       | 6,810,442         | 2,191     | 8,306 | 81.2%          |
+| Report: its first status a quote past the 2 MiB allowance        | 7,545,780         | 6,230,100       | 6,252,835         | 2,158     | 7,599 | 74.5%          |
 | An admin.report notification of that report                      | 2,374,225         | 411,542         | 444,352           | 1,074     | 596   | 5.3%           |
 | A moderation_warning notification, its local account at bounds   | 134,434           | 294,570         | 364,965           | 8         | 694   | 4.4%           |
 | Its notification group                                           | 134,434           | 294,759         | 365,154           | 8         | 701   | 4.4%           |
-| A filtered favourite of the quote, as include_filtered lists it  | 6,966,551         | 5,532,493       | 5,549,271         | 1,958     | 5,672 | 66.2%          |
-| ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,700,089         | 4,245,597       |                   | 1,338     | 3,172 | 50.6%          |
-| Its Create (the Note and its addressing again)                   |                   | 6,301,685       |                   |           |       | 75.1%          |
+| A filtered favourite of the quote, as include_filtered lists it  | 7,295,567         | 5,768,003       | 5,786,933         | 2,163     | 6,786 | 69.0%          |
+| ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,809,036         | 4,262,049       |                   | 1,343     | 3,184 | 50.8%          |
+| Its Create (the Note and its addressing again)                   |                   | 6,318,633       |                   |           |       | 75.3%          |
 | Profile, derived from its caps                                   |                   | 326,185         | 372,038           |           |       | 4.4%           |
 | Announcement: each part derived from its caps                    |                   | 121,774         | 248,997           |           |       | 3.0%           |
 | Trending hashtag (Tag with history), derived from its caps       |                   | 4,508           | 4,572             |           |       | 0.1%           |
@@ -5649,7 +5766,7 @@ conversation never shows a boost as its last status: no writer links one (`addTo
 boost that a restored row names, or that the trigger moves back to through a restored link, as `last_status: null`
 (`conversationStream`; `test/conversations.test.ts` ("presents no boost as a conversation's last status")), so the
 quote is the largest last status it shows. The
-conversation's conservative JSON is 57,185 bytes within 86% of 8 MiB (7,214,202), the least whole percent that keeps
+conversation's conservative JSON is 71,182 bytes within 89% of 8 MiB (7,465,861), the least whole percent that keeps
 it at least the 4,096 bytes a change may not cross without a review (#1142). Every remote account shown but the
 account occurrence counts its fields at 33,485 JSON bytes, derived from the constants (32 KiB of names and values as
 presented, 16 fields' keys, 4 verification times of 31 bytes and 12 nulls: 565 bytes past the fill's 8 fields); the
@@ -5679,23 +5796,27 @@ past the name bound are refused, and lists leave out stored names past it or not
 `test/tag-names.test.ts`); v2 search shows a malformed name decoded, identified by its stored bytes, at most 12,750
 bytes (a 1,024-byte key of U+FFFD, nine bytes each in the url).
 
-A collection's maximum is derived from its bounds. A local one's is 9,165 bytes (`LOCAL_COLLECTION_JSON_MAX`;
+A collection's maximum is derived from its bounds. A local one's is 12,166 bytes (`LOCAL_COLLECTION_JSON_MAX`;
 `test/collections.test.ts` ("derives a local collection's maximum from the bounds, and fits the answers of a full
-account")): its name and description at 40 and 100 characters JSON escapes to six bytes each, its language the longest
-supported, its tag at the tag-name bound with the URL encoding each byte in three, 25 accepted items (its 25 retired
-ones are not shown), an owner's username at its bound and an instance domain of 253 octets; the fill measures within 2
-bytes of it (`local` and `discoverable` true). A remote one's, the larger, is `COLLECTION_JSON_MAX`, 29,701 bytes
-(`test/collections.test.ts` ("derives COLLECTION_JSON_MAX from a remote collection's bounds")): its name and
-description at 256 and 2,048 characters at six bytes each, and its stored uri and url at 2,048 bytes of printable ASCII,
-each byte past the scheme at two, with the same language, tag and 25 shown items; the fill measures within 1 byte of it
-(`discoverable` true). Its `CollectionWithAccounts` adds at most 26 accounts (the owner and the members) at the account
-occurrence's conservative JSON, within `ANSWER_BYTES`, and the presenter admits accounts within what the collection
-leaves of it. An account's list holds at most its 50 stored collections (10 made through the API, 10 a remote account's
-read, each within `COLLECTION_JSON_MAX`). A collection notification (`added_to_collection`, `collection_update`)
-presents its owner's account, its collection for its recipient and its fallback: at most 208,847 bytes, and 208,999 as
-a group, under a warning notification's and a warning group's conservative JSON, so it adds no shape
-(`test/collection-notifications.test.ts`, "presents within a warning notification's maximum, so it adds no shape").
-Its collection is read by key, with at most `MAX_STORED_ITEMS` (50) item rows (`notifiedCollection` in
+account")): its name and description at their CHECKs' widest decoding, as a restored row may hold them (39 and 99
+characters JSON escapes to six bytes each, then a lead byte and continuation bytes up to the CHECK's 160 and 400 bytes,
+which it counts as one character and the read decodes to a U+FFFD each, three JSON bytes: 597 and 1,497 bytes, where 40
+and 100 well-formed characters give 240 and 600), its language the longest supported, its tag at the tag-name bound with
+the URL encoding each byte in three, 25 accepted items (its 25 retired ones are not shown), its uri under its owner's
+actor id at `ACTOR_URI_LIMIT` as JSON (2,048 bytes and the id's own 31: a longer one gives no id, as the account
+presenter shows none) and its url on an instance domain of 253 octets; the fill measures within 2 bytes of it (`local`
+and `discoverable` true). A remote one's, the larger, is `COLLECTION_JSON_MAX`, 29,701 bytes (`test/collections.test.ts`
+("derives COLLECTION_JSON_MAX from a remote collection's bounds")): its name and description at 256 and 2,048 characters
+at six bytes each, and its stored uri and url at 2,048 bytes of printable ASCII, each byte past the scheme at two, with
+the same language, tag and 25 shown items; the fill measures within 1 byte of it (`discoverable` true). Its
+`CollectionWithAccounts` adds at most 26 accounts (the owner and the members) at the
+account occurrence's conservative JSON, within `ANSWER_BYTES`, and the presenter admits accounts within what the
+collection leaves of it. An account's list holds at most its 50 stored collections (10 made through the API, 10 a remote
+account's read, each within `COLLECTION_JSON_MAX`). A collection notification (`added_to_collection`,
+`collection_update`) presents its owner's account, its collection for its recipient and its fallback: at most 208,847
+bytes, and 208,999 as a group, under a warning notification's and a warning group's conservative JSON, so it adds no
+shape (`test/collection-notifications.test.ts`, "presents within a warning notification's maximum, so it adds no
+shape"). Its collection is read by key, with at most `MAX_STORED_ITEMS` (50) item rows (`notifiedCollection` in
 `src/domain/collection-presenter.ts`), as a report notification reads its report.
 
 A scheduled status's maximum is derived from its caps (`test/scheduled-statuses.test.ts`, "a scheduled status at its
@@ -5736,33 +5857,38 @@ A Note shows what the Status entity shows: its hashtags and mentions are read th
 and attachments as stored, and its card as a `Link` where the API shows the card (`statusFacts` in
 `src/domain/activities.ts`), so a converted row's hashtag past its bound is left out of both. The card's URL is at most
 2,048 bytes of printable ASCII, which JSON does not escape (`cardUrlPastSql`), so the `Link` adds at most 2,074 bytes
-with its frame. A Note's addressing (to, cc) keeps every recipient, and the Create repeats it: a local status
-addresses at most `MAX_LOCAL_ADDRESSED` (1,000) accounts, which a post's 500 characters (about 170 mentions) never reach
-and the cutover's conversion refuses past, naming the status (`src/platform/identity-bounds.ts`). With every part at its
-bound and 1,000 actor ids of 2,048 bytes, the Create is 75% of `OUTBOX_BYTES`; five such Notes are not within 8 MiB, so
-the featured collection shows its Notes within `OUTBOX_BYTES` and the pins past them by uri (4.46 MB with one Note
-whole, `test/status-bounds.test.ts`). A group's status is the owner's own (favourites and boosts group), so it is at
-most a quote. A report's statuses after the first stop at 2 MiB, so a report is at most its accounts, its first status
-(a quote) and nothing more, or a small first status and 2 MiB; its staff accounts are local, and its reporter (a remote
-one, from a `Flag`) and its comment are at their bounds: the comment's CHECK (migration `0054_remote_reports`) holds
-20,000 bytes, which a stored NUL followed by U+0001 makes about 120 KB of JSON (Kopje's writers make about 30 KB: 5,000
-code points). Every shape stays within 86% of an answer of 8 MiB with filter results included, measured and conservative
-alike, so an answer that admits whole items always fits its first. The 86% ceiling accommodates the conversation's 14
+with its frame. The collections it tags are `FeaturedCollection` tags of their ids alone, at most four, each at most
+38 bytes and its id of `COLLECTION_URI_BYTES` JSON-escaped (16,452 bytes for four ids of `"`), and its context gains
+the `featured_collections` terms once. A Note's addressing (to, cc) keeps every recipient, and the Create repeats it: a
+local status addresses at most `MAX_LOCAL_ADDRESSED` (1,000) accounts, which a post's 500 characters (about 170
+mentions) never reach and the cutover's conversion refuses past, naming the status (`src/platform/identity-bounds.ts`).
+With every part at its bound and 1,000 actor ids of 2,048 bytes, the Create is 75% of `OUTBOX_BYTES`; five such Notes
+are not within 8 MiB, so the featured collection shows its Notes within `OUTBOX_BYTES` and the pins past them by uri
+(4.49 MB with one Note whole, `test/status-bounds.test.ts`). A group's status is the owner's own (favourites and boosts
+group), so it is at most a quote. A report's statuses after the first stop at 2 MiB, so a report is at most its
+accounts, its first status (a quote) and nothing more, or a small first status and 2 MiB; its staff accounts are local,
+and its reporter (a remote one, from a `Flag`) and its comment are at their bounds: the comment's CHECK (migration
+`0054_remote_reports`) holds 20,000 bytes, which a stored NUL followed by U+0001 makes about 120 KB of JSON (Kopje's
+writers make about 30 KB: 5,000 code points). Every shape stays within 89% of an answer of 8 MiB with filter results
+included, measured and conservative alike, and so within `STATUS_ANSWER_BYTES`, 93.5% of 8 MiB: 89% of 8 MiB is 95.2% of
+it, and the largest shape, the conversation's conservative JSON, 94.32%. So an answer that admits whole items always
+fits its first. The 89% ceiling accommodates the conversation's 14
 account arrays and four status/poll arrays, allowing 40 typical emoji per status and 20 per profile. Through the real
 Store RPC, maximal answers of plain notifications, grouped notifications, conversations, admin reports and the directory
 return 7.83, 7.82, 7.83, 7.14 and 8.30 MB of JSON (`test/rpc-budgets.test.ts`).
 
-Heap at 8 MiB per answer. Assumptions: one request at a time per isolate; the answer's JSON is at most 8 MiB, since
-every item is below it. The model:
+Heap at 8 MiB per answer. Assumptions: one request at a time per isolate; the answer's JSON is at most 8 MiB, and an
+answer that presents statuses at most `STATUS_ANSWER_BYTES` (RES-3), since every item is below them. The model:
 
 - Rows. SQLite bytes are UTF-8 bytes; a JavaScript string with any character above U+00FF stores two bytes per code
   unit, so text counts at twice its UTF-8 bytes (at least twice its UTF-16 code units), and each row adds 64 B for its
   object and 32 B per value. Peaks add 25% headroom to rows.
 - Presented objects take at most three times their JSON bytes (a string takes no more than its JSON bytes, since JSON
   only adds escapes, and the rest is per-object overhead; an assumption, as workerd exposes no heap to measure): the
-  admitted answer's 25.2 MB, the first rejected item's three times its JSON. Every string field counts on its own,
-  even one that repeats another's string (an attachment's `remote_url` is its `url`), and rows and presented objects
-  often share the same string instances, which the model does not credit either.
+  admitted answer's 25.2 MB (23.52 MB at `STATUS_ANSWER_BYTES`), the first rejected item's three times its JSON.
+  Every string field counts on its own, even one that repeats another's string (an attachment's `remote_url` is its
+  `url`), and rows and presented objects often share the same string instances, which the model does not credit
+  either.
 - An item is measured without building its JSON (`jsonBytes` in `src/domain/answer-budget.ts`), and a stream payload
   without encoding it twice (`encodedTwiceBytes`): a string of several MB, which takes up to two bytes a character once
   one character is wider than Latin-1, is never made.
@@ -5782,27 +5908,29 @@ shown it. Each status row whose author has a stored move also counts the moved-t
 moved). An item with a local author, or an author moved to a local account, also counts the OAuth admin's lookup whole
 (the `admin_email` row and, while it is set, the scan of the operator-sized `local_accounts`, each account sought by
 key: `OAUTH_ADMIN_HEAP_SQL` in `src/domain/admin-authority.ts`), which a local account's Owner role reads at most once
-per operation, in whichever chunk first shows one; R reads neither for an answer without one. A chunk holds
-statuses while their R sums to at most its target, at most 80 and at least one: 392 KiB of heap for pages, contexts,
-search, histories and lookups (`PAGE_CHUNKS`), and 1 MiB for grouped notifications and admin reports
-(`LARGE_ITEM_CHUNKS`). A chunk of several is read through a `RowMeter` (`src/db/sql.ts`), which adds each
-row's heap under the model as the cursor returns it (workerd's cursor runs the statement lazily, one row ahead of the
-one it returns) and throws past its cap, which equals the target, so only a term R misses passes it. The chunk is then
-dropped, `kopje.presenter.row-cap-exceeded` is logged with its ids, and its statuses are read one at a time. A status
-alone is not capped: its rows are bounded as a unit (the maxima above). The meter bounds the row objects and strings a
-chunk's queries return, past the cap by at most the row that passed it (at most 1.20 MB, measured: a poll of 100 choices
-of 1,000 characters JSON escapes to six bytes, read as ASCII); it does not bound SQLite's page cache, statement and
-sorter scratch, the parsing buffers of `json_each` and the `json_*` functions, the conversion of the current row, or
-garbage awaiting collection. No hydrate query sorts a chunk's payload: media, mentions and hashtags are put in order in
-JavaScript, and a temporary B-tree holds only ids (own votes, sorted by id, carry ids and choices only), the two host
-names of one account in the visibility rule, or one row's value (an actor document's attachment entries, at most 2 MiB
-fetched and 16 kept; a poll's at most 100 choices). `test/status-rows.test.ts` ("steps lazily, one row ahead", "is at
-least the meter's count of each status alone and of each chunk, for mixed sizes", "plans 40 boosts of statuses with 200
-mentions and 70 hashtags without the backstop", "take their columns from the registered maps", "sort no chunk-wide
-payload", "reads a chunk past its cap again one status at a time, with the same answer") and
-`test/status-bounds.test.ts` ("bounds the rows each shape reads by R") pin these. R counts a value's UTF-8 bytes twice
-where the meter counts its UTF-16 code units twice, so it overstates text that is not ASCII (up to three times for CJK)
-and plans such chunks smaller than the cap; it never understates.
+per operation, in whichever chunk first shows one; R reads neither for an answer without one. A status that tags a
+collection also counts the instance's domain setting (`INSTANCE_DOMAIN_COLUMNS` in `src/domain/instance-domain.ts`),
+which the tagged collections' decision reads at most once a chunk, for a remote collection (`test/status-rows.test.ts`
+("count the instance's domain in R for a status that tags a collection")). A chunk holds statuses while their R sums to
+at most its target, at most 80 and at least one: 392 KiB of heap for pages, contexts, search, histories and lookups
+(`PAGE_CHUNKS`), and 1 MiB for grouped notifications and admin reports (`LARGE_ITEM_CHUNKS`). A chunk of several is read
+through a `RowMeter` (`src/db/sql.ts`), which adds each row's heap under the model as the cursor returns it (workerd's
+cursor runs the statement lazily, one row ahead of the one it returns) and throws past its cap, which equals the target,
+so only a term R misses passes it. The chunk is then dropped, `kopje.presenter.row-cap-exceeded` is logged with its ids,
+and its statuses are read one at a time. A status alone is not capped: its rows are bounded as a unit (the maxima
+above). The meter bounds the row objects and strings a chunk's queries return, past the cap by at most the row that
+passed it (at most 1.20 MB, measured: a poll of 100 choices of 1,000 characters JSON escapes to six bytes, read as
+ASCII); it does not bound SQLite's page cache, statement and sorter scratch, the parsing buffers of `json_each` and the
+`json_*` functions, the conversion of the current row, or garbage awaiting collection. No hydrate query sorts a chunk's
+payload: media, mentions and hashtags are put in order in JavaScript, and a temporary B-tree holds only ids (own votes,
+sorted by id, carry ids and choices only), the two host names of one account in the visibility rule, or one row's value
+(an actor document's attachment entries, at most 2 MiB fetched and 16 kept; a poll's at most 100 choices).
+`test/status-rows.test.ts` ("steps lazily, one row ahead", "is at least the meter's count of each status alone and of
+each chunk, for mixed sizes", "plans 40 boosts of statuses with 200 mentions and 70 hashtags without the backstop",
+"take their columns from the registered maps", "sort no chunk-wide payload", "reads a chunk past its cap again one
+status at a time, with the same answer") and `test/status-bounds.test.ts` ("bounds the rows each shape reads by R") pin
+these. R counts a value's UTF-8 bytes twice where the meter counts its UTF-16 code units twice, so it overstates text
+that is not ASCII (up to three times for CJK) and plans such chunks smaller than the cap; it never understates.
 
 A page of 40 statuses, each with 3 Misskey-shaped emoji and its author with 2, presented through `presentation` and
 `presentStatusesWithin`, mean of two sets of 20 runs at a load average of 6 (measured at a 768 KiB target, where the
@@ -5846,11 +5974,14 @@ constant terms count rows that may not exist), 2.4 for the realistic one (Japane
 short mentions and 70 hashtags, and 1.15 at the maxima.
 
 Peaks, as `test/status-bounds.test.ts` ("keeps the peaks of the heap model within their bounds, from the maxima per
-column") computes them, per column: an item's rows are, for each query and column its read returns, the most heap
-any fill gives that column under the model, summed (so poll choices count as escaped and the other text as raw), with
-25% headroom; the largest single row sums each column's largest value the same way (1.20 MB, the escaped
-poll row, which is at least RowMeter's count); the rejected item is three times the item's conservative JSON (above);
-the admitted answer three times 8 MiB (25.17 MB). The test measures its own maxima, whatever runs before it, and
+column") computes them, per column: an item's rows are, for each query and column its read returns, the most heap any
+fill gives that column under the model, summed (so poll choices count as escaped and the other text as raw), with 25%
+headroom, each original tagging four distinct collections at their bounds, their owner's actor id included,
+which the read returns with each collection (as restored text in the raw fill, at its decoded width); the largest
+single row sums each column's largest value the same way (1.20 MB, the escaped poll row, which is at least RowMeter's
+count); the rejected item is three times the item's
+conservative JSON (above); the admitted answer three times its budget, `STATUS_ANSWER_BYTES` for each answer below
+(23.52 MB). The test measures its own maxima, whatever runs before it, and
 asserts the timelines' peaks within half of the Store isolate's 128 MB with at least 4,096 bytes to spare, and the
 groups' and reports' within the whole. The peaks follow from the fills and the constants, which the test pins, so it
 asserts them exactly too (`HEAP_PEAKS` in `test/presented-maxima.ts`): `test-node/presented-maxima.test.ts` compares the
@@ -5858,9 +5989,9 @@ two Store tables below (the rows, the rejected items and the answers' peaks) and
 
 | Item                                           | Rows, with 25% headroom | Rejected-item objects |
 | ---------------------------------------------- | ----------------------- | --------------------- |
-| Boost of a quote (the largest timeline item)   | 19.34 MB                | 17.46 MB              |
-| Group: its status (a quote), 8 sample accounts | 21.40 MB                | 19.72 MB              |
-| Report: its status and 4 accounts              | 19.57 MB                | 18.05 MB              |
+| Boost of a quote (the largest timeline item)   | 20.27 MB                | 18.17 MB              |
+| Group: its status (a quote), 8 sample accounts | 22.33 MB                | 20.43 MB              |
+| Report: its status and 4 accounts              | 20.50 MB                | 18.76 MB              |
 
 Groups and reports also keep the presentation's state: the compiled filters (50 filters of 20 keywords, about
 0.5 MB) and the filter results cached by status (at most 50 results of about 1.2 KB each, 60 KB a status) for the
@@ -5871,16 +6002,17 @@ pass, and the passes are at most four), 200 for a page of reports (its at most 1
 
 | Answer (Store isolate)                      | Normal   | Backstop fired, the dropped chunk still live | A single item |
 | ------------------------------------------- | -------- | -------------------------------------------- | ------------- |
-| Timelines (largest item a boost of a quote) | 61.99 MB | 63.99 MB                                     | 61.99 MB      |
+| Timelines (largest item a boost of a quote) | 61.98 MB | 63.99 MB                                     | 61.98 MB      |
 | Groups                                      | 76.40 MB | 79.22 MB                                     | 76.40 MB      |
 | Reports                                     | 75.30 MB | 78.12 MB                                     | 75.30 MB      |
 
 A chunk of several takes at most its target of heap: 392 KiB (0.40 MB) for timelines, 1 MiB (1.05 MB) for groups and
 reports. Normal: the rows are the larger of 1.25 × the target and the item's rows, plus the admitted answer, the
 rejected item and, for groups and reports, their state. With the backstop fired, 1.25 × (the target + 1.20 MB) of
-dropped rows more. The 392 KiB timeline cap, the largest multiple of 8 KiB that does, keeps the fallback below half
-the isolate's memory even while the dropped chunk remains live, with at least 4,096 bytes to
-spare under 64 MB (asserted, as above, and exact in `HEAP_PEAKS`; the conversation's JSON keeps 57,185 under its
+dropped rows more. The 392 KiB timeline cap and `STATUS_ANSWER_BYTES`, the largest multiple of 8 KiB that does with that
+cap (each byte of budget is three of heap, so 8 KiB more would pass half by 15,567.5 bytes), keep the fallback below
+half the isolate's memory even while the dropped chunk remains live, with at least 4,096 bytes to spare under 64 MB
+(asserted, as above, and exact in `HEAP_PEAKS`; the conversation's JSON keeps 71,182 under its
 ceiling): each remote account row's and moved-to account's cached profile images (two rows at their caps, MEDIA-7),
 each status, account and moved-to account row's cached emoji (its first 16 entries, read with the row: `emojiCacheSql`;
 the emoji-cache fill caches every entry of snapshots at their most entries, and a moved-to account counts its at their
@@ -5902,7 +6034,7 @@ a timeline's largest item pass half at a chunk of one; it shows none.
 | ------------------------------------------------- | ------------- | -------------- |
 | RPC copy (serialized; deserialized in the Worker) | 8.4 MB        | 25.2 MB        |
 | The Worker's JSON string and the body             |               | 25.2 MB        |
-| Peak, normal                                      | 61.99 MB      | 50 MB          |
+| Peak, normal                                      | 61.98 MB      | 50 MB          |
 | Peak, the backstop fired                          | 63.99 MB      | 50 MB          |
 
 The Store's peak is the timelines' (the answer table above, normal and with the backstop fired and the dropped chunk
@@ -5931,9 +6063,9 @@ within half of the Store isolate's 128 MB, and pins them (`STREAM_UNIT_PEAKS` an
 
 | Stream unit (Store isolate)                            | Rows, with 25% headroom | Presented objects | Strings and scratch | Peak     |
 | ------------------------------------------------------ | ----------------------- | ----------------- | ------------------- | -------- |
-| Status (`update`, `status.update`: a boost of a quote) | 19.34 MB                | 17.46 MB          | 1.06 MB             | 37.87 MB |
-| Conversation (its last status a quote)                 | 23.03 MB                | 21.47 MB          | 1.06 MB             | 45.56 MB |
-| Notification (its status, report and warning together) | 25.89 MB                | 19.89 MB          | 1.06 MB             | 46.84 MB |
+| Status (`update`, `status.update`: a boost of a quote) | 20.27 MB                | 18.17 MB          | 1.06 MB             | 39.51 MB |
+| Conversation (its last status a quote)                 | 23.96 MB                | 22.18 MB          | 1.06 MB             | 47.21 MB |
+| Notification (its status, report and warning together) | 26.82 MB                | 20.60 MB          | 1.06 MB             | 48.49 MB |
 | Announcement                                           | 7.28 MB                 | 0.75 MB           | 1.92 MB             | 9.95 MB  |
 
 Held stream output (RES-6) is charged within `instanceBytes`, which leaves the measured idle isolate with 25% headroom,

@@ -1,6 +1,6 @@
 {
   "$comment": "Kopje's sources spec/collection-consent/ describes, and their blobs when it was last confirmed to (scripts/collection-consent-coverage.mjs). A null blob is a file the specification describes that Kopje does not have yet. test-node/collection-consent-coverage.test.ts fails once a blob differs.",
-  "confirmed": "2cbbf62ce0e9d98f2f78edca975f943c1a57521d",
+  "confirmed": "37623aca185c9b9088f6d8c395129c6540d76cd8",
   "files": [
     {
       "path": "src/store.ts",
@@ -12,7 +12,7 @@
       "path": "src/domain/inbox.ts",
       "functions": ["receiveActivity", "startActorDeletion", "purgeBatch"],
       "spec": "CollectionConsent.tla RecvRes and Touch: which of CollectionConsentKopje.tla's operators an inbound activity runs, when it is ignored, and that every valid push of R's collections outdates a read under way, a no-op one included; OwnerGone and KPurge: an actor Delete writes R's tombstone and runs the first purge batch in its own transaction, which reaches C or not, and later batches purge the rest",
-      "blob": "d0260656c31b4ea1a9444abc30c52c5eec8b97b4"
+      "blob": "e153d9b9b46f5087802fe3dfc2c3917b36b83cb6"
     },
     {
       "path": "src/federation/inbound.ts",
@@ -24,7 +24,7 @@
       "path": "src/domain/inbound-feature-requests.ts",
       "functions": ["answerFeatureRequest"],
       "spec": "CollectionConsentKopje.tla Decide (K1) and ApplyFetch (K1b): the availability gate, the existing-collection path for a collection stored since the fetch, and the outdated mark when the instrument stores one",
-      "blob": "1bb3cc7db53fcbf336fc71caeaaad61cd59f1c85"
+      "blob": "7ecbaaecc3d11e3db43743ac2fc08947b09e5a02"
     },
     {
       "path": "src/domain/feature-answers.ts",
@@ -51,7 +51,7 @@
         "revokeFeatureAuthorization"
       ],
       "spec": "CollectionConsentKopje.tla AddItem (K2), RemoveItem (K3), UpdateCollection (K4), RemoveCollection (K5), OwnerGone (K6), Revoke (K7), ApplyRead (K14)",
-      "blob": "6736ff2e1b4e9d8ed94e97da51c7b8cbce83983a"
+      "blob": "319cc1d1c9cdbc1118bfa28f7be49cf6dc619a2d"
     },
     {
       "path": "src/domain/remote-collections.ts",
@@ -69,25 +69,25 @@
       "path": "src/domain/collections.ts",
       "functions": ["severCollections", "pruneCollectionItems"],
       "spec": "CollectionConsentKopje.tla Block (K8, an ordinary Block with the row's Delete), Cleanup (K10) and Evict; MemberGone (K9) is model-only",
-      "blob": "2dc72f255bc0b112904ad847d9100a3b622a892d"
+      "blob": "598e402c207fd0d3db3e1a1c1452951c668a9a0a"
     },
     {
       "path": "src/domain/collection-documents.ts",
       "functions": ["featureAuthorizationDocument", "recordItemRemove"],
       "spec": "CollectionConsentKopje.tla AuthorizationServed: GET of an authorization, 200 with interactingObject C and interactionTarget L while the row is accepted and L available, else 404; the Delete an answer records",
-      "blob": "d6e642fc9ddba0ee9fb08c868c96e3050d4ad9af"
+      "blob": "d0b9c29164474321638251c517a98bd588e7f77c"
     },
     {
       "path": "src/domain/activities.ts",
       "functions": ["revocationRejectActivity"],
       "spec": "CollectionConsentKopje.tla Acc, Rej, Del, Blk, DelL: the activities Kopje records",
-      "blob": "fc3e5f060c13c1b905fc2ef0307fe46fd424ad34"
+      "blob": "3e121ecda93cee4ba9a674c33fb57e4f5d8e783e"
     },
     {
       "path": "src/domain/deliveries.ts",
       "functions": ["enqueueActivity", "claimDeliveries", "confirmDelivery", "retryDeliveries"],
       "spec": "CollectionConsent.tla Record (RES-4's refusal at a full backlog) and Coalesced (no retraction answer recorded while one of the same authorization to the same inbox waits), the lane in id order, a corrective answer at its head leased for the POST (KLeaseHead, KDeliver, KDup, KGiveUp, KFail, and KReclaim, the sweep's reclaim under a new lease; Superseded: a leased retraction answer that a later one of the same authorization to the same owner superseded is dropped when its POST fails or its lease is reclaimed), sender refusal by the activity's class at a claim, fresh or the reclaim (Drops, ReclaimDrops), and KRetry's admission re-check and place in the lane",
-      "blob": "991cc26febaf1b698ededfa78b25fe91d7f7aab3"
+      "blob": "00c5c4bfa1d6aab8a2c5b5e9b1733b1d414c7d3b"
     },
     {
       "path": "src/store-rpc.ts",
@@ -118,7 +118,7 @@
       "path": "src/domain/audience.ts",
       "functions": ["collectionItemShownSql", "inCollectionsSql", "availableSql"],
       "spec": "CollectionConsentKopje.tla Shown, MemberDetail, InCollections and LAvail (R45 and L's availability)",
-      "blob": "2b3e6b7d0a2dc41f10890755e3dbf07fe153f09b"
+      "blob": "c5d0daaca73758c3cfcb0677d96ee3ee768e4d6d"
     },
     {
       "path": "src/federation/featured-collections.ts",

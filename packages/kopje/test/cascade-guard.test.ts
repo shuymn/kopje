@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import {
+  COLLECTION_CHILDREN,
   deleteStatusBatch,
   MAX_TRACKED_LIKES,
   PURGE_BATCH,
@@ -50,6 +51,8 @@ const ACCOUNT_EXEMPT: Record<string, string> = {
     "below follows: one row per follow at most (its primary key), which the purge's follow window reserves with the follow (purgeRelationships, three rows a follow)",
   push_deliveries:
     "below notifications: deleted child-first by the purge's sender and report windows (purgeRelationships), so no notification's delete cascades",
+  status_collections:
+    "below collections (and statuses): deleted child-first by the purge's collection window (purgeCollectionRows, COLLECTION_CHILDREN), so no collection's delete cascades",
 };
 
 // Triggers that write. A batched delete or purge counts every row changed (total_changes()), so a trigger its writes
@@ -294,6 +297,17 @@ describe("cascade guard (RES-6)", () => {
       ).toEqual([]);
       expect(Object.keys(ACCOUNT_EXEMPT).filter((table) => !found.includes(table))).toEqual([]);
       expect(PURGED_ACCOUNT_CHILDREN.filter((child) => !found.includes(child.table))).toEqual([]);
+    });
+  });
+
+  // The purge deletes a collection only once none of these names it (purgeCollectionRows), as for a status's children.
+  it("lists every table that cascades from collections", async () => {
+    await runInDurableObject(await migratedStore(), (_instance, state) => {
+      const found = cascadesFrom(foreignKeys(state.storage.sql), "collections", []);
+      expect(
+        found,
+        "these tables cascade from collections: add each to COLLECTION_CHILDREN in src/domain/inbox.ts and empty it in purgeCollectionRows before the collections",
+      ).toEqual([...COLLECTION_CHILDREN].toSorted());
     });
   });
 

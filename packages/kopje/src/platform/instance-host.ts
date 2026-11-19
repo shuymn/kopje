@@ -9,7 +9,7 @@
 // changes later (/admin/config, a restored dump) is not shadowed by an earlier redirect.
 export function offDomain(request: { url: string; method: string }, domain: string): Response | null {
   const url = new URL(request.url);
-  if (url.host === domain) {
+  if (onDomain(url, domain)) {
     return null;
   }
   if (request.method === "GET" || request.method === "HEAD") {
@@ -22,6 +22,12 @@ export function offDomain(request: { url: string; method: string }, domain: stri
     return new Response(null, { status: 301, headers: { location: target.href, "cache-control": "no-store" } });
   }
   return misdirected();
+}
+
+// Whether `url` is on the instance domain, by its host (with any port) alone, whatever its scheme: the routes' test
+// (offDomain), and where a URL names a local collection (#1589's D3, collections.ts) or no remote one's id is.
+export function onDomain(url: URL, domain: string): boolean {
+  return url.host === domain;
 }
 
 export function misdirected(): Response {

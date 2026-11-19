@@ -1,5 +1,6 @@
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { localCollectionKey } from "../platform/collection-address";
 import { sameOrigin } from "../platform/http-url";
 import { railsBlank } from "../platform/rails-blank";
 import {
@@ -17,7 +18,14 @@ import {
   storedTime,
 } from "../platform/stored-bounds";
 import { sanitizeRemoteCodePoints } from "../security/html";
-import { localCollectionUri, recordItemRemove } from "./collection-documents";
+import { recordItemRemove } from "./collection-documents";
+import {
+  type CollectionOwner,
+  collectionOwnerSql,
+  localCollectionUri,
+  storableUrl,
+  validRemoteCollection,
+} from "./collection-presenter";
 import { markCollectionsChanged } from "./collection-requests";
 import { notifyUpdated, remoteCollectionTag } from "./collections";
 import {
@@ -97,15 +105,7 @@ export type FeaturedCollectionInput = {
 
 type Owner = { id: string; uri: string };
 
-const ENCODER = new TextEncoder();
 const LANGUAGES: ReadonlySet<string> = new Set(TREND_LANGUAGES);
-
-// The stored form of a remote URI (stored-bounds.ts httpsUrlWhen): an https URL of printable ASCII within `bytes`.
-export function storableUrl(value: string | null, bytes: number): value is string {
-  return (
-    value !== null && /^https:\/\/[!-~]+$/.test(value) && ENCODER.encode(value).length <= bytes && URL.canParse(value)
-  );
-}
 
 type Values = {
   name: string;
@@ -162,13 +162,11 @@ function collectionValues(input: FeaturedCollectionInput): Values | null {
   };
 }
 
-// Whether `input` is a collection of `owner` the Store may hold at all: its id on the owner's origin, within the
-// stored bound, and attributed to the owner exactly (ProcessFeaturedCollectionService: non_matching_uri_hosts? and
+// Whether `input` is a collection of `owner` the Store may hold at all: a valid id (collection-presenter.ts
+// validRemoteCollection), and attributed to the owner exactly (ProcessFeaturedCollectionService:
 // `attributedTo == @account.uri`).
 function ownedCollection(owner: Owner, input: Pick<FeaturedCollectionInput, "id" | "attributedTo">): boolean {
-  return (
-    storableUrl(input.id, COLLECTION_URI_BYTES) && sameOrigin(input.id, owner.uri) && input.attributedTo === owner.uri
-  );
+  return validRemoteCollection(input.id, owner.uri) && input.attributedTo === owner.uri;
 }
 
 // Whether applyFeaturedCollection keeps `input` as the owner's collection when it holds it already: one of the owner's
@@ -834,7 +832,7 @@ const MEMBER_ROW = `i.id, i.collection_id AS collection, i.state, c.local, i.app
 	i.candidate_approval_uri AS candidate, i.retracted_approval_uri AS retracted`;
 
 // The member's row in the collection `uri`: a stored remote collection's, by collections_uri, else a local
-// collection's, by the id its uri ends with, when the uri is exactly the one Kopje writes for it.
+// collection's, by the id its uri ends with, when the uri is exactly the one Kopje writes for it (localCollectionUri).
 function memberRowIn(db: Db, uri: string, member: string): MemberRow | undefined {
   const remote = db.first<MemberRow>(
     `SELECT ${MEMBER_ROW} FROM collections c INDEXED BY collections_uri
@@ -846,12 +844,12 @@ function memberRowIn(db: Db, uri: string, member: string): MemberRow | undefined
   if (remote !== undefined) {
     return remote;
   }
-  const id = /\/collections\/(\d{18})$/.exec(uri)?.[1];
-  if (id === undefined) {
+  const id = localCollectionKey(uri);
+  if (id === null) {
     return undefined;
   }
-  const local = db.first<MemberRow & { owner_uri: string }>(
-    `SELECT ${MEMBER_ROW}, o.uri AS owner_uri FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
+  const local = db.first<MemberRow & CollectionOwner>(
+    `SELECT ${MEMBER_ROW}, ${collectionOwnerSql("o")} FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
 			CROSS JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id
 			CROSS JOIN collection_items i INDEXED BY collection_items_member ON i.collection_id = c.id AND i.account_id = ?2
 		WHERE c.id = ?1 AND c.local = 1`,
