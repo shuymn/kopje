@@ -8,8 +8,9 @@ import { describe, expect, it } from "vitest";
 import { FIXTURE_DIR, REPLAY_FILE, fixtureText, generateFixtures } from "../collection-consent-fixtures.js";
 import { fixtureFiles, plan, readFixture, tlaTsChecks } from "./checks.js";
 
-// A fresh run of every fixture's goal: about 95 s on a laptop, S2-ReadOverRetraction's about 40 s of it.
-const FIXTURES_TIMEOUT_MS = 300_000;
+// A fresh run of every fixture's goal: about 95 s on a laptop, S2-ReadOverRetraction's about 40 s of it. On CI's
+// runners it took 224.6 s, 226.6 s and 329.4 s, so the timeout leaves it more than twice its slowest time.
+const FIXTURES_TIMEOUT_MS = 900_000;
 const REPLAY_PATH = fileURLToPath(new URL(`../../${REPLAY_FILE}`, import.meta.url));
 
 // Each of Kopje's steps in CollectionConsent.tla, an inbound activity by its envelope: the replay fixtures run each

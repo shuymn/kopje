@@ -5265,9 +5265,12 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   Production's accounting is not open: `bench:held-output` (2026-11-16) found 64 MiB of held output not counted against
   the JavaScript headroom and the object reset at about 208 MiB held; stopped clients being sent output ended together
   at 7,147 s, while clients reading slowly or in bursts were not ended in 4 hours and held output for at least 14,397 s.
-  workerd 1.20261113.1 can count each queued frame against the isolate's memory (behind an autogate), which the bound
-  reserves already, and frees a queue's arrays when its pump ends, which the charges overstate. A reading client is
-  closed after its lifetime allowance, and loses edits and deletions sent while it is away
+  A run on 2026-11-19 agreed on the headroom (64 MiB not detected, a reset at about 206 MiB held) and found the deployed
+  `WebSocket` with a `bufferedAmount` property, which the earlier run did not; what it reports is not yet measured
+  (#1812). The bound does not rest on the absence of such a signal: it charges every frame until its socket leaves
+  `getWebSockets()`. workerd 1.20261113.1 can count each queued frame against the isolate's memory (behind an autogate),
+  which the bound reserves already, and frees a queue's arrays when its pump ends, which the charges overstate. A
+  reading client is closed after its lifetime allowance, and loses edits and deletions sent while it is away
   ([mastodon-deviations.md](mastodon-deviations.md), "Streaming output").
   A custom emoji upload charges two transformations to the instance's monthly budget (429 past it). Disabled emoji
   versions are kept: their storage, a backup copy to every new destination and two rebuild transformations each after
