@@ -67,8 +67,8 @@ catalogs:
       specifier: 4.10.2
       version: 4.10.2
     hono:
-      specifier: 4.13.18
-      version: 4.13.18
+      specifier: 4.13.19
+      version: 4.13.19
     htmlparser2:
       specifier: 12.0.0
       version: 12.0.0
@@ -235,7 +235,7 @@ importers:
         version: 4.10.2
       hono:
         specifier: 'catalog:'
-        version: 4.13.18
+        version: 4.13.19
       htmlparser2:
         specifier: 'catalog:'
         version: 12.0.0
@@ -2008,8 +2008,8 @@ packages:
   get-tsconfig@4.14.3:
     resolution: {integrity: sha512-++QEw4DIY7WGoukz+/+A/8dGYPT9l9yIadnmSgZ8Rjr3YVSVDipQSO9CdnJo9ePqFqUUqh+wk9uIaoiAwsiPkA==}
 
-  hono@4.13.18:
-    resolution: {integrity: sha512-H9q/E1XizaWstJxUW881dmLxEj+t/TrGGnyxINkm4+sK0qUwsMtFdo2BWI9Vs3cIS19MU6b6iCijoUoEf4f3DA==}
+  hono@4.13.19:
+    resolution: {integrity: sha512-KmXvQAXwcAHV+muzbIwoJ23niEB5nMoDVr9WcRkU8mvjUECm/1+7v4Jgp7P7a+H6MLFrh+vXrGonGrGS+RQfkA==}
     engines: {node: '>=16.9.0'}
 
   htmlparser2@12.0.0:
@@ -3918,7 +3918,7 @@ snapshots:
     dependencies:
       resolve-pkg-maps: 1.0.0
 
-  hono@4.13.18: {}
+  hono@4.13.19: {}
 
   htmlparser2@12.0.0:
     dependencies:
