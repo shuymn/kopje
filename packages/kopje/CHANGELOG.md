@@ -217,9 +217,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   tagged per post, and the first 100 posts to tag a collection keep the tag
   ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections"). Migration `0120_tagged_collections`: a
   new table with its index and four triggers, and an index of `collections` built over its rows, reading no other row;
-  as it creates a table, the upgrade checks every reference of the Store (the migration bench's upgrade from 0093, with
-  10,000 remote collections stored, takes 18,333 ms with this file and 18,469 ms without it, medians of three runs: the
-  difference is within run-to-run noise).
+  as it creates a table, the upgrade checks every reference of the Store (the migration bench's upgrade from 0093 takes
+  18,333 ms with this file and 18,469 ms without it, medians of three runs: the difference is within run-to-run
+  noise).
   `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
   back past it needs a point-in-time restore.
 
