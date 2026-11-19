@@ -38,6 +38,11 @@ export type Item = {
   media: number;
   poll: number;
   viewer: boolean;
+  // The collections each of its statuses but a boost tags (status_collections, at most MAX_TAGGED_COLLECTIONS), each a
+  // remote one of its remote author (of an account of its own for a local author, whose stored collections are
+  // capped), with an accepted item of each of the first `mentions` mentioned accounts and a name and description
+  // that grow with `text`.
+  collections?: number;
   // Which of its statuses a local account of the fixture's writes (alice first, the OAuth admin of an admin fixture),
   // each drawn apart; the others share one remote author of the item's. `local`: the top-level status (a boost's own
   // row), `originalLocal`: a boost's original, `quotedLocal`: the quoted status of a quote or of a boost's original.
@@ -245,6 +250,43 @@ export function build(sql: SqlStorage, f: Fixture, item: Item): string {
         new Date(NOW + 86_400_000).toISOString(),
       );
     }
+    for (let i = 0; i < (parts.collections ?? 0); i++) {
+      const collection = nextId();
+      let owner = author;
+      if (f.locals.includes(author)) {
+        owner = nextId();
+        sql.exec(
+          "INSERT INTO accounts (id, uri, username, domain) VALUES (?1, ?2, 'owner' || ?1, 'remote.example')",
+          owner,
+          `https://remote.example/users/${owner}`,
+        );
+      }
+      sql.exec(
+        `INSERT INTO collections (id, account_id, local, name, description, sensitive, discoverable, uri, url,
+					created_at, updated_at)
+				VALUES (?1, ?2, 0, ?3, ?4, 0, 1, ?5, ?6, ?7, ?7)`,
+        collection,
+        owner,
+        `c${(parts.wide ? "名" : "n").repeat(parts.text % 255)}`,
+        "d".repeat(parts.text % 2048),
+        `https://remote.example/users/${owner}/collections/${collection}`,
+        `https://remote.example/c/${collection}`,
+        VIEWER_NOW,
+      );
+      for (const [position, account] of f.mentioned.slice(0, Math.min(parts.mentions, 25)).entries()) {
+        sql.exec(
+          `INSERT INTO collection_items (id, collection_id, account_id, state, position, uri, created_at, updated_at)
+					VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6, ?6)`,
+          nextId(),
+          collection,
+          account,
+          position + 1,
+          `https://remote.example/items/${collection}/${position}`,
+          VIEWER_NOW,
+        );
+      }
+      sql.exec("INSERT INTO status_collections (status_id, collection_id) VALUES (?, ?)", id, collection);
+    }
     if (parts.viewer) {
       sql.exec("INSERT INTO favourites (account_id, status_id, created_at) VALUES (?, ?, ?)", f.viewer, id, VIEWER_NOW);
       sql.exec("INSERT INTO bookmarks (account_id, status_id, created_at) VALUES (?, ?, ?)", f.viewer, id, VIEWER_NOW);
@@ -397,10 +439,16 @@ export function plannedFilterRows(state: DurableObjectState, viewer: string): nu
   return active?.filters.filter((filter) => filter.hasStatuses).length ?? 0;
 }
 
-export function boundsOf(state: DurableObjectState, viewer: string | null, ids: readonly string[], filterRows: number) {
+export function boundsOf(
+  state: DurableObjectState,
+  viewer: string | null,
+  ids: readonly string[],
+  filterRows: number,
+  page = false,
+) {
   const bounds = new Map<string, number>();
   for (const row of state.storage.sql
-    .exec<{ k: number; bytes: number }>(statusRowBoundSql(), JSON.stringify(ids), viewer, filterRows)
+    .exec<{ k: number; bytes: number }>(statusRowBoundSql(), JSON.stringify(ids), viewer, filterRows, page ? 0 : 1)
     .toArray()) {
     bounds.set(ids[row.k]!, row.bytes);
   }

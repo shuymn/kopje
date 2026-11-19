@@ -47,8 +47,9 @@ export function anonymous(site: Site, now: number): PresentOptions {
   return { ...pagePresent(site), viewer: contextOf(null, now) };
 }
 
+// Every page's presentation: its statuses show no tagged_collections (Present.page).
 export function pagePresent(site: Site): Present {
-  return { origin: `https://${site.domain}`, viewerId: null };
+  return { origin: `https://${site.domain}`, viewerId: null, page: true };
 }
 
 // The site facts alone: the gate of the pages that read nothing else of the Store (a 404 for a path no page has,

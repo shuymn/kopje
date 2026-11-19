@@ -2556,6 +2556,13 @@ export const COLLECTION_CHECK_ATTEMPTS = 5;
 // The stored item states, Mastodon's enum (collection_item.rb:24-26).
 export const COLLECTION_ITEM_STATES = { pending: 0, accepted: 1, rejected: 2, revoked: 3 } as const;
 export type CollectionItemState = keyof typeof COLLECTION_ITEM_STATES;
+// The collections a status tags (status_collections, migration 0120_tagged_collections; domain/collections.ts):
+// at most MAX_TAGGED_COLLECTIONS a status and MAX_TAGGING_STATUSES a collection (the triggers
+// status_collections_per_status and status_collections_per_collection), and the links or tag ids a writer resolves for
+// them, in order, at most MAX_TAG_LINK_CANDIDATES (a 500-character text holds no more URLs, each counted as 23).
+export const MAX_TAGGED_COLLECTIONS = 4;
+export const MAX_TAGGING_STATUSES = 100;
+export const MAX_TAG_LINK_CANDIDATES = 20;
 // reports.collection_ids: NULL, or a JSON array of at most REPORT_COLLECTION_IDS 18-digit collection ids.
 export const REPORT_COLLECTION_IDS = 50;
 export const REPORT_COLLECTION_IDS_BYTES = 2 + REPORT_COLLECTION_IDS * (WARNING_STATUS_ID_BYTES + 3) - 1;

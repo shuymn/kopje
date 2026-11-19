@@ -76,6 +76,9 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 //     10,000 accounts;
 //   - 10,000 inbound jobs, status deletions of the first statuses, every other one finished;
 //   - 1,000,000 inbound retractions, one by each of as many remote actors, expiring over the next 30 days;
+//   - 10,000 remote collections (while 0120_tagged_collections is pending, from 0103_collections on), 10 of each of
+//     the first 1,000 remote accounts, in Mastodon's two route shapes on one host, a subdomain of the owner's padded so
+//     that each url (/collections/:id) is 250 bytes and each uri (/ap/users/:account_id/collections/:id) 278;
 //   - a notification policy of each local account (from migration 0020_notification_policies on), every condition at
 //     its default;
 //   - the other job families' rows: 10,000 stamp revocations (from 0033_quotes on), every other one done, by the
@@ -137,9 +140,11 @@ import { BUILD, freshStore, testKernel } from "../helpers";
 // 0109_scheduled_media_cap walks the held uploads (media_attachments_scheduled) and detaches those past each scheduled
 // status's first four (while it is pending: 6,000 scheduled statuses, TOTAL_LIMIT of each local account, holding four
 // uploads each, and the first 100 holding 1,000 more each, not scaled, so it detaches 100,000); 0117_retraction_counts
-// indexes every inbound retraction. A migration that reads another table must add it here before it is measured. The measured time is the whole upgrade, from before the
-// bookmark to after the verification: Date.now() in workerd moves only between I/O events, so the clock is read across
-// an await on each side.
+// indexes every inbound retraction; 0120_tagged_collections scans every collections row for collections_url, sorting
+// the remote rows' (url, uri) keys (SHAPE.collections seeded while it is pending), and as it creates a table its
+// upgrade checks every reference of the Store. A migration that reads another table must add it here before it is
+// measured. The measured time is the whole upgrade, from before the bookmark to after the verification: Date.now() in
+// workerd moves only between I/O events, so the clock is read across an await on each side.
 
 export const UPGRADE_BUDGET_MS = 40_000;
 
@@ -192,6 +197,10 @@ const SHAPE = {
   revocations: 10_000,
   familyJobs: 1_000,
   collectionSyncs: 10_000,
+  // Remote collections while 0120_tagged_collections is pending, collectionsPerAccount of each of the first remote
+  // accounts.
+  collections: 10_000,
+  collectionsPerAccount: 10,
   // Walks of replies while 0106_reply_walk_debts is pending, of the first statuses: MAX_RUNNING_REFRESHES context walks
   // running, the rest create walks waiting.
   replyWalks: 10_000,
@@ -250,6 +259,10 @@ it("applies the migration to the benchmark store within the budget", async () =>
   const featuredTags = Math.min(Math.round(SHAPE.featuredTags * scale), accounts * MAX_FEATURED_TAGS);
   const inboundJobs = Math.min(Math.round(SHAPE.inboundJobs * scale), statuses);
   const retractions = Math.round(SHAPE.retractions * scale);
+  const remoteCollections = Math.min(
+    Math.round(SHAPE.collections * scale),
+    (accounts - SHAPE.local) * SHAPE.collectionsPerAccount,
+  );
   const revocations = Math.round(SHAPE.revocations * scale);
   const familyJobs = Math.min(Math.round(SHAPE.familyJobs * scale), accounts - SHAPE.local);
   const hasTagKeys = at > MIGRATIONS.findIndex((m) => m.name === "0057_trends");
@@ -1084,6 +1097,29 @@ it("applies the migration to the benchmark store within the budget", async () =>
         );
       }
     }
+    // While 0120_tagged_collections is pending (from 0103_collections on): SHAPE.collectionsPerAccount remote
+    // collections of each of the first remote accounts (ids from 880000000000000000), each url
+    // https://<padding>.d<n>.bench/collections/<id> padded to 250 bytes and its uri on the same host,
+    // /ap/users/<account id>/collections/<id>.
+    const collectionsPending = pending("0120_tagged_collections") && has("collections");
+    if (collectionsPending) {
+      run(
+        `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ?1 - 1),
+				c(i, id, account, tail) AS (SELECT i, CAST(880000000000000000 + i AS TEXT), CAST(100000000000000000 + ?2 + i / ?3 AS TEXT),
+					'.d' || ((?2 + i / ?3) % ?4) || '.bench' FROM n WHERE ?1 > 0),
+				h(i, id, account, host) AS (SELECT i, id, account,
+					'https://' || substr(${filler(250, "'c'")}, 1, 229 - length(tail || id)) || tail FROM c)
+				INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, uri, url, created_at, updated_at)
+				SELECT id, account, 0, 'Collection ' || i, 0, 1, host || '/ap/users/' || account || '/collections/' || id,
+					host || '/collections/' || id, ?5, ?5
+				FROM h`,
+        remoteCollections,
+        SHAPE.local,
+        SHAPE.collectionsPerAccount,
+        SHAPE.domains,
+        now,
+      );
+    }
     const count = (table: string) => sql.exec<{ n: number }>(`SELECT count(*) AS n FROM ${table}`).one().n;
     // The held uploads past their scheduled status's first four, which 0109_scheduled_media_cap detaches.
     const heldPast = () =>
@@ -1157,6 +1193,13 @@ it("applies the migration to the benchmark store within the budget", async () =>
       heldPast: capPending ? heldPast() : 0,
       collectionSyncs: handlesPending && has("collection_syncs") ? count("collection_syncs") : 0,
       pendingPins: refreshPending ? count("collection_pins_pending") : 0,
+      // The remote collections, and those whose url is 250 bytes and uri 278.
+      collections: collectionsPending
+        ? [
+            count("collections WHERE local = 0"),
+            count("collections WHERE length(CAST(url AS BLOB)) = 250 AND length(CAST(uri AS BLOB)) = 278"),
+          ]
+        : [0, 0],
       replyWalks: walksPending ? [count("reply_walks"), count("reply_walk_nodes")] : [0, 0],
       // The remote rows sharing an address with a row of lower rowid, and those in the reserved form.
       sharedHandles: handlesPending
@@ -1261,6 +1304,16 @@ it("applies the migration to the benchmark store within the budget", async () =>
         sql: row.sql,
         rows: count("inbound_retractions INDEXED BY inbound_retractions_actor_expires"),
       }))[0];
+    // 0120_tagged_collections: collections_url's definition and the collections it holds, and the new table, empty.
+    const taggedCollections = has("status_collections")
+      ? {
+          sql: sql
+            .exec<{ sql: string }>("SELECT sql FROM sqlite_schema WHERE type = 'index' AND name = 'collections_url'")
+            .one().sql,
+          rows: count("collections INDEXED BY collections_url WHERE local = 0 AND url IS NOT NULL"),
+          references: count("status_collections"),
+        }
+      : undefined;
     // 0092_reject_replays: its table, indexes (the unique key's included) and triggers, made and empty.
     const rejectReplays = has("reject_replays")
       ? {
@@ -1334,6 +1387,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
           quoteBroadcast,
           walkDebts,
           retractionIndex,
+          taggedCollections,
         },
       };
     }
@@ -1375,6 +1429,7 @@ it("applies the migration to the benchmark store within the budget", async () =>
         quoteBroadcast,
         walkDebts,
         retractionIndex,
+        taggedCollections,
       },
     };
   });
@@ -1420,6 +1475,21 @@ it("applies the migration to the benchmark store within the budget", async () =>
       sql: "CREATE INDEX inbound_retractions_actor_expires ON inbound_retractions (actor_uri, expires_at)",
       rows: retractions,
     });
+  }
+  // The remote collections were there to index, the index holds every one, the new table is empty, and the upgrade
+  // checked every reference. A range from before 0103 seeds no collection.
+  if (applied.includes("0120_tagged_collections")) {
+    const collections =
+      at > MIGRATIONS.findIndex((migration) => migration.name === "0103_collections") ? remoteCollections : 0;
+    expect([seeded.collections, measured.taggedCollections]).toEqual([
+      [collections, collections],
+      {
+        sql: "CREATE INDEX collections_url ON collections (url, uri) WHERE local = 0 AND url IS NOT NULL",
+        rows: collections,
+        references: 0,
+      },
+    ]);
+    expect(measured.foreignKeyCheck).toBe("store");
   }
   // The held uploads past four were there to detach, and the upgrade kept four of each scheduled status.
   if (seeded.scheduled > 0) {

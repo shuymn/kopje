@@ -17,6 +17,7 @@ import { availableLocalSql, availableSql, followListsShownSql } from "./audience
 import { type EmojiTag, localEmojiTags } from "./custom-emojis";
 import { taggedUrl } from "./featured-tags";
 import type { FollowerSigner } from "./follower-signer";
+import { instanceDomainOf } from "./instance-domain";
 import { readOperation, writeOperation } from "./operation";
 import { listedTagName, listedTagNameSql } from "./tag-bounds";
 
@@ -62,10 +63,7 @@ const LOCAL_BY_USERNAME = `FROM accounts a INDEXED BY accounts_local_username
 	CROSS JOIN local_accounts l INDEXED BY ${LOCAL_ACCOUNTS_ID_INDEX} ON l.account_id = a.id
 	WHERE a.domain IS NULL AND lower(a.username) = lower(?)`;
 
-// The domain /setup fixed, or null before setup.
-export function instanceDomainOf(db: Db): string | null {
-  return db.first<{ value: string }>("SELECT value FROM instance_settings WHERE name = 'domain'")?.value ?? null;
-}
+export { instanceDomainOf };
 
 export const getInstanceDomain = readOperation<void, string | null>((db) => instanceDomainOf(db));
 

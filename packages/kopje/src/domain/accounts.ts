@@ -96,9 +96,11 @@ import { edgeRangeSql, readWindow, singleWindow, type Window, windowJson, window
 // How an account is presented: on the instance origin, for the viewer (null: none signed in), whose answer
 // feature_approval.current_user is. The Worker sends the origin alone (PresentInput); the Store adds the viewer it
 // judged the token to be, so a caller cannot present for another account.
-export type Present = { origin: string; viewerId: string | null };
+// page: a public page's presentation (web-pages/site.ts pagePresent), whose statuses show no tagged_collections and
+// read none (status-presenter.ts hydrate, status-rows.ts statusRowBoundSql's ?4).
+export type Present = { origin: string; viewerId: string | null; page?: true };
 
-export type PresentInput = Pick<Present, "origin">;
+export type PresentInput = Pick<Present, "origin" | "page">;
 
 // The presentation of `input` for `viewerId`.
 export function presentFor(input: PresentInput, viewerId: string | null): Present {

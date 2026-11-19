@@ -4,7 +4,14 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { accountsOf, ANSWER_CHUNK } from "../src/domain/accounts";
-import { admit, admittedPage, ANSWER_BYTES, encodedTwiceBytes, jsonBytes } from "../src/domain/answer-budget";
+import {
+  admit,
+  admittedPage,
+  ANSWER_BYTES,
+  encodedTwiceBytes,
+  jsonBytes,
+  STATUS_ANSWER_BYTES,
+} from "../src/domain/answer-budget";
 import { type VisibleStatusId } from "../src/domain/audience";
 import { filterTextLimits, MAX_FILTER_REQUEST_TEXT } from "../src/domain/filters";
 import { CACHED_IMAGE_BYTES, CACHED_IMAGE_KINDS } from "../src/domain/remote-media";
@@ -27,20 +34,24 @@ import {
   DAY,
   expectByteCutFirstPage,
   expectByteCutWalk,
+  STATUS_PAGE_SHARE,
+  expectStatusBudgetCut,
   maximalAccounts,
   nextId,
   ORIGIN,
   pageStatus,
+  statusBudgetEdge,
   walk,
   type Walked,
 } from "./budget-helpers";
 import { BUILD } from "./helpers";
 import { observedSql } from "./read-helpers";
 import { act, community, domainBlock, mute, post, remoteAccount, seedStatus } from "./status-helpers";
+import { setTrendSetting } from "./trend-helpers";
 import { olderOf, postsTab } from "./web-helpers";
 
-// RES-3: one answer that presents statuses is within ANSWER_BYTES as serialized, containers included, owned by the
-// Store operation that returns it (docs/response-inventory.md). Items are admitted whole in traversal order, the
+// RES-3: one answer that presents statuses is within STATUS_ANSWER_BYTES as serialized, containers included, owned by
+// the Store operation that returns it (docs/response-inventory.md). Items are admitted whole in traversal order, the
 // first whatever its size; a cut page continues from its last admitted item in both directions; a context keeps the
 // nearest ancestors and history the newest revisions; search, an offset endpoint, returns fewer results.
 
@@ -339,7 +350,7 @@ describe("status pages are answers within ANSWER_BYTES (RES-3)", () => {
     const quoted = await seedStatus(h.store, { accountId: author, visibility: "public", published: NOW - 2 * DAY });
     const quoting: string[] = [];
     for (let i = 0; i < 10; i++) {
-      const id = await bigStatus(h, author, NOW - DAY + i * 60_000);
+      const id = await bigStatus(h, author, NOW - DAY + i * 60_000, {}, STATUS_PAGE_SHARE);
       await acceptQuote(h, id, quoted);
       quoting.push(id);
     }
@@ -430,6 +441,106 @@ async function sqliteBytes(
     return { result, bytes, largest };
   });
 }
+
+describe("status answers within STATUS_ANSWER_BYTES (RES-3)", () => {
+  it("ends the status lists, a lookup, a search, the quotes and the trends where STATUS_ANSWER_BYTES ends", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    await setTrendSetting(h.store, "trends", true);
+    await setTrendSetting(h.store, "trendable_by_default", true);
+    const quoter = await remoteAccount(h.store, "quoted");
+    await sql(h.store, "UPDATE accounts SET discoverable = 1 WHERE id = ?", quoter);
+    const quoted = await seedStatus(h.store, { accountId: quoter, visibility: "public", published: NOW - DAY });
+    const list = nextId();
+    await sql(h.store, "INSERT INTO lists (id, account_id, title) VALUES (?, ?, 'edge')", list, alice.id);
+    // The one account a search for needle finds, which a search of every type admits before the statuses.
+    const needle = await remoteAccount(h.store, "needle");
+    // Each status by its own discoverable author, whom alice follows and lists, so each trends; each bookmarked,
+    // favourited, quoting one small status and trending above the older ones.
+    const { big, edge } = await statusBudgetEdge(async (i, share) => {
+      const author = await remoteAccount(h.store, `edge${i}`);
+      await sql(h.store, "UPDATE accounts SET discoverable = 1 WHERE id = ?", author);
+      const id = await bigStatus(h, author, NOW - (20 - i) * 60_000, { tags: ["edge"] }, share);
+      await sql(h.store, "UPDATE statuses SET language = 'en' WHERE id = ?", id);
+      await acceptQuote(h, id, quoted);
+      await sql(
+        h.store,
+        "INSERT INTO follows (account_id, target_account_id, state) VALUES (?, ?, 'accepted')",
+        alice.id,
+        author,
+      );
+      await sql(h.store, "INSERT INTO list_accounts (list_id, account_id) VALUES (?, ?)", list, author);
+      await sql(h.store, "INSERT INTO bookmarks (account_id, status_id) VALUES (?, ?)", alice.id, id);
+      await sql(h.store, "INSERT INTO favourites (account_id, status_id) VALUES (?, ?)", alice.id, id);
+      await sql(
+        h.store,
+        "INSERT INTO trend_statuses (status_id, account_id, score) VALUES (?, ?, ?)",
+        id,
+        author,
+        i + 1,
+      );
+      return id;
+    });
+    const next = await bytesOf(h, alice.token, edge);
+    const lookup = [...big, edge].map((id) => `id[]=${id}`).join("&");
+    for (const [name, path] of [
+      ["home", "/api/v1/timelines/home?limit=40"],
+      ["public", "/api/v1/timelines/public?limit=40"],
+      ["list", `/api/v1/timelines/list/${list}?limit=40`],
+      ["tag", "/api/v1/timelines/tag/edge?limit=40"],
+      ["bookmarks", "/api/v1/bookmarks?limit=40"],
+      ["favourites", "/api/v1/favourites?limit=40"],
+      ["lookup", `/api/v1/statuses?${lookup}`],
+      ["quotes", `/api/v1/statuses/${quoted}/quotes?limit=40`],
+      ["trends", "/api/v1/trends/statuses?limit=20"],
+    ] as const) {
+      const read = await answer(h, path, alice.token);
+      expect([name, read.body.map((s) => s.id)]).toEqual([name, big]);
+      expectStatusBudgetCut(name, read.bytes, next);
+    }
+    const found = await answer<{ statuses: { id: string }[] }>(
+      h,
+      "/api/v2/search?q=needle&type=statuses&limit=40",
+      alice.token,
+    );
+    expect(found.body.statuses.map((s) => s.id)).toEqual(big);
+    expectStatusBudgetCut("search", found.bytes, next);
+    // A search of every type takes STATUS_ANSWER_BYTES from its first admission, the account it finds first: its
+    // statuses fit what the account leaves, and the first it rejects, which ANSWER_BYTES would have admitted, ends it.
+    const mixed = await answer<{ accounts: { id: string }[]; statuses: { id: string }[] }>(
+      h,
+      "/api/v2/search?q=needle&limit=40",
+      alice.token,
+    );
+    expect(mixed.body.accounts.map((a) => a.id)).toEqual([needle]);
+    const order = [...big, edge];
+    const admitted = mixed.body.statuses.map((s) => s.id);
+    expect(admitted).toEqual(order.slice(0, admitted.length));
+    const items = (list: readonly unknown[]) => list.reduce<number>((sum, item) => sum + jsonBytes(item) + 1, 0);
+    const taken =
+      jsonBytes({ accounts: [], statuses: [], hashtags: [], collections: [] }) +
+      items(mixed.body.accounts) +
+      items(mixed.body.statuses);
+    expectStatusBudgetCut("mixed search", taken, await bytesOf(h, alice.token, order[admitted.length]!));
+  }, 300_000);
+
+  it("ends a context's descendants where STATUS_ANSWER_BYTES ends", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const author = await remoteAccount(h.store, "thread");
+    const root = await seedStatus(h.store, { accountId: author, visibility: "public", published: NOW - DAY });
+    // Eight big replies, then statusBudgetEdge's third-size one: descendants are in id order.
+    const big: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      big.push(await bigStatus(h, author, NOW - (20 - i) * 60_000, { inReplyToId: root }, STATUS_PAGE_SHARE));
+    }
+    const edge = await bigStatus(h, author, NOW - 60_000, { inReplyToId: root }, 3);
+    type Context = { ancestors: unknown[]; descendants: { id: string }[] };
+    const read = await answer<Context>(h, `/api/v1/statuses/${root}/context`, alice.token);
+    expect(read.body.descendants.map((s) => s.id)).toEqual(big);
+    expectStatusBudgetCut("context", read.bytes, await bytesOf(h, alice.token, edge));
+  }, 300_000);
+});
 
 describe("composite answers within ANSWER_BYTES (RES-3)", () => {
   it("keeps the nearest ancestors on half the budget, and the descendants on the rest", async () => {
@@ -556,14 +667,15 @@ describe("composite answers within ANSWER_BYTES (RES-3)", () => {
     expect(found.statuses.map((s) => s.id)).toEqual(w.V.slice(0, found.statuses.length));
     expect(found.statuses.length).toBeGreaterThan(0);
     expect(found.hashtags.map((t) => t.name)).toEqual(["needle"]);
-    expect(jsonBytes(found)).toBeLessThanOrEqual(ANSWER_BYTES);
-    // The next status is the first rejected: with it, the accounts and statuses alone pass the budget.
+    expect(jsonBytes(found)).toBeLessThanOrEqual(STATUS_ANSWER_BYTES);
+    // The next status is the first rejected: with it, the accounts and statuses alone pass the budget, which a search
+    // that may present statuses takes from its first admission.
     const items = (list: readonly unknown[]) => list.reduce<number>((sum, item) => sum + jsonBytes(item) + 1, 0);
     const taken =
       jsonBytes({ accounts: [], statuses: [], hashtags: [], collections: [] }) +
       items(found.accounts) +
       items(found.statuses);
-    expect(taken + (await statusBytes(w, w.V[found.statuses.length]!)) + 1).toBeGreaterThan(ANSWER_BYTES);
+    expect(taken + (await statusBytes(w, w.V[found.statuses.length]!)) + 1).toBeGreaterThan(STATUS_ANSWER_BYTES);
     // A resolved account the viewer may not find is not put first.
     expect((await search(blocked)).accounts[0]?.id).toBe(needles[0]);
   }, 300_000);

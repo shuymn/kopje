@@ -226,6 +226,29 @@ describe("the limit, offset and type of a resolving search", () => {
   });
 });
 
+// #1589's D3: an address a collection route serves on the instance's domain is Kopje's own. The Store answers it
+// (resolvedCollection), deciding by the routes' one parser (platform/collection-address.ts), and the search resolves
+// nothing further, whatever collection it names (none here): the page, over https or http, and the FeaturedCollection,
+// bare, with an extension or with a format in its query.
+describe("a resolving search for a collection route on the instance's domain", () => {
+  it("is answered by the Store's lookup alone, for every address a collection route serves", async () => {
+    const { t } = await world(false);
+    const c = counted(t);
+    const id = "500000000000000099";
+    const route = `${LOCAL}/ap/users/alice/collections/${id}`;
+    const urls = [`${LOCAL}/collections/${id}`, `http://kopje.test/collections/${id}`, route, `${route}.json`];
+    urls.push(`${route}?format=json`);
+    const answers = [];
+    for (const url of urls) {
+      const response = await c.request(`/api/v2/search?resolve=true&type=collections&q=${encodeURIComponent(url)}`);
+      answers.push(await response.json<{ collections: unknown[] }>());
+    }
+    expect(answers.map((answer) => answer.collections)).toEqual(urls.map(() => []));
+    expect(c.calls()).toEqual(urls.flatMap(() => ["instanceDomain", "resolvedCollection"]));
+    expect([t.web.fetched, c.dns]).toEqual([[], []]);
+  });
+});
+
 // The decision of #1458: resolution stops before any signer read, DNS check or fetch while the Store does not accept
 // writes or the env's MAINTENANCE is not off, and the search answers as without resolve=true.
 describe("a resolving search refused before any network work", () => {

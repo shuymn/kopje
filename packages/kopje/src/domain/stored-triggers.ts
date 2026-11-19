@@ -3,6 +3,8 @@ import {
   COLLECTION_MAX_ITEMS,
   MAX_STORED_COLLECTIONS,
   MAX_STORED_ITEMS,
+  MAX_TAGGED_COLLECTIONS,
+  MAX_TAGGING_STATUSES,
   reportCollectionIdsPastBoundSql,
   blurhashPastBoundSql,
   cardImagePastBoundSql,
@@ -140,18 +142,31 @@ function reviewTriggers(table: string, key: "url" | "domain"): string[] {
 const PIN_CAP_REFUSED = "status_pins: more pins than the account may keep";
 const HELD_CAP_REFUSED = "media_attachments: more media than a scheduled status may hold";
 
-// A count trigger of 0103_collections: `<name>` refuses an insert, and `<name>_move` an update of `key` that moves a
-// row to another parent, when the parent holds `max` rows already (rows other than the moved one). The count reads at
-// most `max` entries of the parent's index.
-function countTriggers(name: string, table: string, key: string, max: number, message: string): string[] {
+// A count trigger of 0103_collections and 0120_tagged_collections: `<name>` refuses an insert, and `<name>_move` an
+// update of `key` that moves a row to another parent, when the parent holds `max` rows already. The count reads at most
+// `max` entries of the parent's index. `exclusion`: the move's term leaving the moved row out of the count, which
+// 0103 wrote (` AND id <> OLD.id`) and a table without an `id` column cannot (status_collections: SQLite accepts the
+// trigger, then fails every key-changing update with "no such column: id"); none is needed, since the guard fires the
+// move only when the key changes, and the moved row then still holds OLD's key, outside the counted parent.
+function countTriggers(
+  name: string,
+  table: string,
+  key: string,
+  max: number,
+  message: string,
+  exclusion: string,
+): string[] {
   const held = (row: string) =>
     `(SELECT count(*) FROM (SELECT 1 FROM ${table} WHERE ${key} = NEW.${key}${row}\n    LIMIT ${max})) >= ${max}`;
   const body = `BEGIN\n  SELECT RAISE(ABORT, '${table}: ${message}');\nEND;`;
   return [
     `CREATE TRIGGER ${name} BEFORE INSERT ON ${table}\nWHEN ${held("")}\n${body}`,
-    `CREATE TRIGGER ${name}_move BEFORE UPDATE OF ${key} ON ${table}\nWHEN NEW.${key} IS NOT OLD.${key}\n  AND ${held(" AND id <> OLD.id")}\n${body}`,
+    `CREATE TRIGGER ${name}_move BEFORE UPDATE OF ${key} ON ${table}\nWHEN NEW.${key} IS NOT OLD.${key}\n  AND ${held(exclusion)}\n${body}`,
   ];
 }
+
+// 0103's exclusion of the moved row, as it wrote it.
+const BY_ID = " AND id <> OLD.id";
 
 const LIVE = " AND state IN (0, 1)";
 const LIVE_REFUSED = "collection_items: past the live bound";
@@ -407,6 +422,7 @@ END;`,
     "account_id",
     MAX_STORED_COLLECTIONS,
     "past the per-account bound",
+    BY_ID,
   ),
   ...countTriggers(
     "collection_items_per_collection",
@@ -414,6 +430,7 @@ END;`,
     "collection_id",
     MAX_STORED_ITEMS,
     "past the per-collection bound",
+    BY_ID,
   ),
   `CREATE TRIGGER collection_items_live BEFORE INSERT ON collection_items
 WHEN NEW.state IN (0, 1)
@@ -492,6 +509,25 @@ END;`,
     "focus_given",
     focusGivenPastBoundSql("NEW.focus_given"),
     "media_attachments: focus_given past its stored bound",
+  ),
+  // 0120_tagged_collections: the collections a status tags, at most MAX_TAGGED_COLLECTIONS a status and
+  // MAX_TAGGING_STATUSES a collection, on an insert and on an update moving a reference to another status or
+  // collection.
+  ...countTriggers(
+    "status_collections_per_status",
+    "status_collections",
+    "status_id",
+    MAX_TAGGED_COLLECTIONS,
+    "past the per-status bound",
+    "",
+  ),
+  ...countTriggers(
+    "status_collections_per_collection",
+    "status_collections",
+    "collection_id",
+    MAX_TAGGING_STATUSES,
+    "past the per-collection bound",
+    "",
   ),
 ];
 

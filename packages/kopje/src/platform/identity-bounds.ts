@@ -34,6 +34,11 @@ export function isRemoteUsername(value: string): boolean {
   return value.length <= REMOTE_USERNAME_LIMIT && REMOTE_USERNAME.test(value);
 }
 
+// A local account's username as its collection routes take it (federation/routes.ts): 1 to 64 ASCII letters, digits or
+// underscores. A local collection's address (collection-address.ts, which its route and a lookup by URL both read)
+// takes the same pattern.
+export const ROUTE_USERNAME = "[A-Za-z0-9_]{1,64}";
+
 export function withinIdentityBound(value: string, limit: number): boolean {
   return value.length <= limit && ENCODER.encode(JSON.stringify(value)).length - 2 <= limit;
 }

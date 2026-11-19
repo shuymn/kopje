@@ -23,6 +23,7 @@ import { toStoreUnavailable } from "../src/platform/store-errors";
 import { applyStagedLinks, MAX_LINK_STATEMENT_BYTES } from "../src/platform/store-import";
 import {
   MAX_MEDIA_DESCRIPTION_LENGTH,
+  MAX_TAGGING_STATUSES,
   MAX_UNTRUSTED_COUNT,
   MEDIA_DESCRIPTION_BYTES,
   mediaDescriptionSql,
@@ -1931,6 +1932,81 @@ describe("dump", () => {
       [
         text.replace(report!, report!.replace(`'["730000000000000001"]'`, `'${ids}'`)),
         /reports: collection_ids past its stored bound/,
+      ],
+    ] as const) {
+      expect(changed).not.toBe(text);
+      const target = await migratedStore();
+      await copyConfig(source, target);
+      expect(String(await rejectionOf(importViaRpc(target, changed)))).toMatch(message);
+    }
+  }, 120_000);
+
+  // #1589's D26 (0120_tagged_collections): a status's references to collections round-trip; a dump naming a missing
+  // status or collection, or holding more than MAX_TAGGING_STATUSES references of one collection, never publishes.
+  it("round-trips status references (0120), and refuses an orphan or one past a collection's cap", async () => {
+    const source = await seeded(1);
+    const at = "2026-11-19T00:00:00.000Z";
+    await runInDurableObject(source, (_instance, state) => {
+      const sql = state.storage.sql;
+      const owner = sql
+        .exec<{ id: string }>("SELECT id FROM accounts WHERE domain IS NULL ORDER BY id LIMIT 1")
+        .one().id;
+      sql.exec(
+        `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, created_at, updated_at)
+				VALUES ('750000000000000001', ?1, 1, 'c', 0, 1, ?2, ?2)`,
+        owner,
+        at,
+      );
+      sql.exec(
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ${MAX_TAGGING_STATUSES + 1})
+				INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+				SELECT printf('76%016d', i), 'https://kopje.test/ap/o/r' || i, ?1, 'public', '<p>x</p>', ?2 FROM n`,
+        owner,
+        at,
+      );
+      sql.exec(
+        `INSERT INTO status_collections (status_id, collection_id)
+				SELECT id, '750000000000000001' FROM statuses WHERE id GLOB '76*' AND id <> printf('76%016d', ?1)`,
+        MAX_TAGGING_STATUSES + 1,
+      );
+    });
+    const { text } = await dumpViaRpc(source);
+    const header = splitDump(text).header as { tables: { name: string; key: string[]; order: unknown }[] };
+    const order = header.tables.map((t) => t.name);
+    // The catalog: both parents before the table (an import's reset deletes it before them), keyed by its composite
+    // key.
+    expect(order.indexOf("status_collections")).toBeGreaterThan(order.indexOf("statuses"));
+    expect(order.indexOf("status_collections")).toBeGreaterThan(order.indexOf("collections"));
+    expect(header.tables.find((t) => t.name === "status_collections")).toMatchObject({
+      order: { by: "key", columns: ["status_id", "collection_id"] },
+      key: ["status_id", "collection_id"],
+    });
+    const restored = await migratedStore();
+    await copyConfig(source, restored);
+    expect((await importViaRpc(restored, text)).report).toMatchObject({ ok: true, problems: [] });
+    const rows = (store: StoreStub) =>
+      runInDurableObject(store, (_instance, state) =>
+        state.storage.sql.exec("SELECT * FROM status_collections ORDER BY status_id").toArray(),
+      );
+    expect(await rows(restored)).toHaveLength(MAX_TAGGING_STATUSES);
+    expect(await rows(restored)).toEqual(await rows(source));
+
+    const line = text.split("\n").find((l) => l.startsWith('INSERT INTO "status_collections"'))!;
+    const status = /'(76\d{16})'/.exec(line)![1]!;
+    const extra = (changed: string) => text.replace(line, `${line}\n${changed}`);
+    for (const [changed, message] of [
+      [extra(line.replace(status, "769999999999999999")), /FOREIGN KEY|foreign/i],
+      [
+        extra(
+          line
+            .replace(status, `76${String(MAX_TAGGING_STATUSES + 1).padStart(16, "0")}`)
+            .replace("750000000000000001", "759999999999999999"),
+        ),
+        /FOREIGN KEY|foreign/i,
+      ],
+      [
+        extra(line.replace(status, `76${String(MAX_TAGGING_STATUSES + 1).padStart(16, "0")}`)),
+        /status_collections: past the per-collection bound/,
       ],
     ] as const) {
       expect(changed).not.toBe(text);

@@ -3,7 +3,7 @@ import { notificationCollectionKeysPastBoundSql } from "../platform/stored-bound
 import { type AccountWarning, presentAccountWarning } from "./account-warnings";
 import { type Account, accountsOf, type Page, type PageQuery, presentFor, type PresentInput } from "./accounts";
 import { adminAccountIdOnce } from "./admin-authority";
-import { admit, admittedPage, ARRAY_ANSWER_BYTES, firstUses } from "./answer-budget";
+import { admit, admittedPage, firstUses, STATUS_ARRAY_ANSWER_BYTES } from "./answer-budget";
 import {
   FILTERABLE_TYPES,
   keptFloorSql,
@@ -540,7 +540,7 @@ export const listNotifications = userReadOperation<ListNotificationsInput, Page<
       (traversal) =>
         admit(
           notificationStream(db, traversal, viewer, input.present, fallbackSet(input.fallbackTypes)),
-          ARRAY_ANSWER_BYTES,
+          STATUS_ARRAY_ANSWER_BYTES,
           true,
         ),
     );

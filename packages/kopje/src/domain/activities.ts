@@ -1,4 +1,4 @@
-import { ACCOUNTS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
+import { ACCOUNTS_ID_INDEX, COLLECTIONS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { httpUrl } from "../platform/http-url";
 import { sha256Hex } from "../platform/sha256";
@@ -26,6 +26,7 @@ import {
   requiresMention,
   type Visibility,
 } from "./audience";
+import { collectionUri, taggableCollections } from "./collection-presenter";
 import { type EmojiTag, localEmojiTags } from "./custom-emojis";
 import { type DeliveryEnvelope, enqueueActivity, type OutboundOptions, type ReachOf } from "./deliveries";
 import { readOperation } from "./operation";
@@ -87,6 +88,20 @@ const POLL_CONTEXT = [
   },
 ] as const;
 
+const FEP_7AA9 = "https://w3id.org/fep/7aa9#";
+
+// context_helper.rb's featured_collections extension: collection-documents.ts's documents and activities, and a Note
+// that names a collection it tags (contextOf).
+export const FEATURED_COLLECTIONS_TERMS = {
+  FeaturedCollection: `${FEP_7AA9}FeaturedCollection`,
+  FeaturedItem: `${FEP_7AA9}FeaturedItem`,
+  FeatureRequest: `${FEP_7AA9}FeatureRequest`,
+  FeatureAuthorization: `${FEP_7AA9}FeatureAuthorization`,
+  topic: { "@id": `${FEP_7AA9}topic`, "@type": "@id" },
+  featuredObject: { "@id": `${FEP_7AA9}featuredObject`, "@type": "@id" },
+  featureAuthorization: { "@id": `${FEP_7AA9}featureAuthorization`, "@type": "@id" },
+} as const;
+
 // Mastodon's emoji context extension (app/helpers/context_helper.rb:15), added only when the Note tags an emoji.
 const EMOJI_TERMS = { toot: "http://joinmastodon.org/ns#", Emoji: "toot:Emoji" } as const;
 
@@ -102,6 +117,7 @@ export function contextOf(facts: StatusFacts): readonly [string, Record<string, 
       ...terms,
       ...(facts.emojis.length === 0 ? {} : EMOJI_TERMS),
       ...(attachmentsOf(facts).some((document) => "blurhash" in document) ? BLURHASH_TERMS : {}),
+      ...(facts.collections.length === 0 ? {} : FEATURED_COLLECTIONS_TERMS),
     },
   ];
 }
@@ -165,6 +181,8 @@ export type StatusFacts = {
   poll: PollFacts | null;
   // The URL of the card the status shows (status-presenter.ts shownCardUrl), which the Note lists as a Link.
   cardUrl: string | null;
+  // The ids of the collections the status tags (#1589's D26), in collection-id order, which the Note names.
+  collections: string[];
 };
 
 // A poll as its Question shows it (ActivityPub::NoteSerializer): the choices with their counts (none while hide_totals
@@ -289,6 +307,18 @@ export function statusFacts(
 		FROM status_cards c WHERE c.status_id = ?1 AND c.fetched_at IS NOT NULL`,
     statusId,
   );
+  // The collections the status tags that a status can tag whatever the viewer (taggableCollections, as the REST
+  // presenter and the writer read them), with no viewer (a1: the Note names each by its id alone, so no collection's
+  // content travels in the status's activities): its references by the primary key's prefix (at most
+  // MAX_TAGGED_COLLECTIONS, the trigger's bound), each collection and its owner by key, in collection-id order, each by
+  // its id (collectionUri), so a Note never names a collection its writer would not have stored. The instance's domain
+  // (#1589's D3), not the author's, is read only for a remote one, inside taggableCollections.
+  const collections = taggableCollections(db, {
+    from: `status_collections r CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = r.collection_id
+			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id`,
+    where: "r.status_id = ?1",
+    params: [statusId],
+  }).toSorted((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return {
     id: row.id,
     uri: row.uri,
@@ -313,6 +343,7 @@ export function statusFacts(
     quotePolicy: row.quote_policy,
     quote: readQuote(db, statusId),
     cardUrl: card === undefined ? null : shownCardUrl(row.visibility, card.url, card.title),
+    collections: collections.flatMap((c) => collectionUri(c) ?? []),
   };
 }
 
@@ -377,6 +408,9 @@ export function noteOf(facts: StatusFacts): Record<string, unknown> {
       ...facts.tags.map((t) => ({ type: "Hashtag", href: t.href, name: `#${t.name}` })),
       // After Mentions and Hashtags, as ActivityPub::NoteSerializer#virtual_tags orders them (note_serializer.rb:142).
       ...facts.emojis,
+      // Then the tagged collections (note_serializer.rb:143), each by its id alone, where Mastodon embeds it whole:
+      // Mastodon reads only the id (a1).
+      ...facts.collections.map((id) => ({ type: "FeaturedCollection", id })),
     ],
     ...(facts.poll === null ? {} : questionOf(facts.poll)),
     ...(facts.quote === null ? {} : quoteOf(facts.quote)),

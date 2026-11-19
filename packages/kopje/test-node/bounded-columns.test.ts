@@ -362,6 +362,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "linkReviewSql",
   "listedTrendLinkSql",
   "trendCopySql",
+  // A collection's owner's actor id as actorUriSql reads it (domain/collection-presenter.ts), a bounded value.
+  "collectionOwnerSql",
   "cutSql",
   // Whether a job may run now: a predicate on its retry columns (domain/job-attempts.ts).
   "jobDueSql",
@@ -540,6 +542,9 @@ const MEASURE = "a measure walk's per-candidate judgements and its time (isoTime
 const FOCUS =
   "an attachment's focus x (a number, or NULL where none is shown), compared with an edit's, never presented";
 
+const TAGGED_HEAP = "the heap R counts for a status's tagged collections, a number";
+const COLLECTION_TEXT = "a column of `collections`, bounded as stored, not the bounded column of the same name";
+
 const STAGED =
   "a staged retraction's target (an inbox, or an addressee's identity), sent in an activity, never presented";
 
@@ -620,6 +625,13 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
     count: 2,
     reason: "a number constant (the heap a cached profile image row takes at its caps, in R), naming no column",
   },
+  // R's tagged collections term: the heap of each reference, its collection and owner rows (rowHeapSql of
+  // TAGGED_COLLECTION_COLUMNS, whose owner columns are named here) and its items at MAX_STORED_ITEMS, a number.
+  "src/domain/status-rows.ts interpolation TAG_REFERENCE_COLUMNS.rowHeap": { count: 1, reason: TAGGED_HEAP },
+  "src/domain/status-rows.ts interpolation ITEM_COLUMNS.rowHeap": { count: 1, reason: TAGGED_HEAP },
+  "src/domain/status-rows.ts interpolation MAX_STORED_ITEMS": { count: 1, reason: TAGGED_HEAP },
+  "src/domain/status-rows.ts accounts.username": { count: 1, reason: TAGGED_HEAP },
+  "src/domain/status-rows.ts accounts.uri": { count: 1, reason: TAGGED_HEAP },
   "src/domain/instance.ts interpolation projected.join(' ')": { count: 1, reason: SETTINGS },
   "src/domain/instance.ts interpolation settingProjectionSql('contact_username', 'value')": {
     count: 1,
@@ -712,29 +724,29 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   // The actor documents' row (ACTOR_ROW_COLUMN_MAP), which actors.ts and actor-update.ts select.
   "src/domain/actor-row.ts column a.uri": { count: 1, reason: ACTIVITYPUB },
   "src/domain/actors.ts accounts.uri": { count: 1, reason: ACTIVITYPUB },
-  // A local collection's FEP-7aa9 documents and activities (its FeatureRequest included): its owner's and members' ids,
-  // sent whole as the actor documents send theirs.
+  // A local collection's FEP-7aa9 documents and activities (its FeatureRequest included): its members' ids, sent whole
+  // as the actor documents send theirs. Its owner's id is read through collectionOwnerSql (actorUriSql).
   "src/domain/collection-documents.ts accounts.uri": {
-    count: 14,
-    reason:
-      "an ActivityPub document or activity of a local collection (its owner's and members' ids), not an API answer",
+    count: 5,
+    reason: "an ActivityPub document or activity of a local collection (its members' ids), not an API answer",
   },
   "src/domain/blocks.ts accounts.uri": { count: 2, reason: IDENTITY },
-  // A check's member, compared with the interactionTarget of the authorization it fetches; and a local collection's
-  // owner, whose uri the collection's id it compares with the interactingObject is built from (checkedCollection).
-  "src/domain/collection-checks.ts accounts.uri": { count: 2, reason: IDENTITY },
+  // A check's member, compared with the interactionTarget of the authorization it fetches.
+  "src/domain/collection-checks.ts accounts.uri": { count: 1, reason: IDENTITY },
   // A local owner's uri, which a remote member's FeatureRequest id is built from and stored as (insertItem); a local
   // member's, which its Delete of an authorization in a remote collection is built from (remoteRevocation,
   // severCollections).
   "src/domain/collections.ts accounts.uri": { count: 3, reason: IDENTITY },
+  // A tagged collection as taggedCollectionsOf reads it (TAGGED_COLLECTION_COLUMNS): the collection's own name and id,
+  // columns of `collections` within its CHECK (migration 0103_collections), not the hashtag name and the account and
+  // status ids bounded here.
+  "src/domain/collection-presenter.ts column c.name": { count: 1, reason: COLLECTION_TEXT },
+  "src/domain/collection-presenter.ts column c.uri": { count: 1, reason: COLLECTION_TEXT },
   // A local member's uri, which its authorization and its answers to a remote owner are built from (localRows) and an
   // owner's listing is matched with (localListing), and the request's object matched by its exact uri
   // (answerFeatureRequest).
   "src/domain/feature-answers.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/inbound-feature-requests.ts accounts.uri": { count: 1, reason: IDENTITY },
-  // A local collection's owner, whose uri the collection's id is built from, compared with a member's Delete's
-  // interactingObject (memberRowIn).
-  "src/domain/remote-featured-collections.ts accounts.uri": { count: 1, reason: IDENTITY },
   // The fourth: a staged retraction compares a uri past TARGET_CHUNK_BYTES with the activity's named ones in SQL; the
   // fifth and sixth: a held Reject's prefix, the local actor's uri compared with its id by bytes (HELD_REJECT); the
   // seventh: a signed Delete's staged addressing compared with the signer's followers collection (stagedAddressing);
@@ -777,6 +789,7 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
     reason: `the username an address names as stored (addressRow), bounded by the address it matched and stored only as
 			contact_username, never presented`,
   },
+  // The Note's author.
   "src/domain/activities.ts accounts.username": { count: 1, reason: ACTIVITYPUB },
   "src/domain/actor-row.ts column a.username": { count: 1, reason: ACTIVITYPUB },
   "src/domain/actors.ts accounts.username": { count: 6, reason: LOCAL },

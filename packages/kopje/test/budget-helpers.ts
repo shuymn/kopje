@@ -1,6 +1,6 @@
 import { expect } from "vitest";
 
-import { ANSWER_BYTES } from "../src/domain/answer-budget";
+import { ANSWER_BYTES, STATUS_ANSWER_BYTES } from "../src/domain/answer-budget";
 import { utf8Length } from "../src/platform/dump-format";
 import { PROFILE_DESCRIPTION_LIMIT, PROFILE_URL_LIMIT } from "../src/platform/stored-bounds";
 import { type ApiHarness, setSetting, sql } from "./api-helpers";
@@ -71,6 +71,33 @@ export function pageStatus(
   extra: Partial<Pick<SeedStatus, "tags" | "inReplyToId" | "visibility" | "mentions">> = {},
 ): Promise<string> {
   return bigStatus(h, author, published, extra, 8);
+}
+
+// The share of bigStatus of which eight items of any status answer fit STATUS_ANSWER_BYTES (7.67-7.70 MB) and one more
+// passes ANSWER_BYTES: statusBudgetEdge's big statuses, midway between the budget less an `edge` item (7.50 MB) and
+// the budget, and the walks and passes that take eight a page.
+export const STATUS_PAGE_SHARE = 1.02;
+
+// Nine statuses made by `make` (its `share` that of bigStatus): one of about a third of bigStatus's size (`edge`),
+// then eight big ones (STATUS_PAGE_SHARE), which `big` lists in the reverse order, as an answer that shows them before
+// `edge` does. An answer of the eight leaves less than `edge` within STATUS_ANSWER_BYTES and more than it within
+// ANSWER_BYTES (expectStatusBudgetCut), so it ends after them only where its budget is STATUS_ANSWER_BYTES.
+export async function statusBudgetEdge(
+  make: (i: number, share: number) => Promise<string>,
+): Promise<{ big: string[]; edge: string }> {
+  const edge = await make(0, 3);
+  const big: string[] = [];
+  for (let i = 1; i < 9; i++) {
+    big.push(await make(i, STATUS_PAGE_SHARE));
+  }
+  return { big: big.toReversed(), edge };
+}
+
+// An answer of `bytes` cut before an item of `next` bytes by STATUS_ANSWER_BYTES, which ANSWER_BYTES would have
+// admitted, even in an array (ARRAY_ANSWER_BYTES).
+export function expectStatusBudgetCut(name: string, bytes: number, next: number): void {
+  const cut = [bytes <= STATUS_ANSWER_BYTES, bytes + next + 1 > STATUS_ANSWER_BYTES, bytes + next + 1 < ANSWER_BYTES];
+  expect([name, cut]).toEqual([name, [true, true, true]]);
 }
 
 // `count` admin.report notifications of `admin`, made the OAuth admin, oldest first: each of a report by the local

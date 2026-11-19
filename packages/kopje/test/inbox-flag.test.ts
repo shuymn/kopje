@@ -616,6 +616,47 @@ describe("Flag: bounds (RES-2, RES-7)", () => {
     ]);
   });
 
+  // #1589's D1 and D3: a Flag's objects resolve as a status's links do. A URL on the instance's domain names only a
+  // local collection: its web page, or its route with its owner's username, over http or https; a stored remote row
+  // whose id is a local web page there (restored: no local collection has that id) is not attached, nor is a local
+  // collection named by its route under another account's username.
+  it("names only local collections on the instance's domain, as a status's links do", async () => {
+    const t = await world();
+    const actor = await mastodonInstanceActor(t.web);
+    const at = new Date(NOW).toISOString();
+    await sql(
+      t.store,
+      `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, created_at, updated_at)
+			VALUES ('700000000000000001', ?1, 1, 'c', 0, 0, ?2, ?2), ('700000000000000002', ?1, 1, 'c', 0, 0, ?2, ?2)`,
+      DAVE,
+      at,
+    );
+    const restored = `${LOCAL}/collections/500000000000000099`;
+    await sql(
+      t.store,
+      `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, uri, total_items, created_at,
+				updated_at)
+			VALUES ('500000000000000099', ?, 0, 'c', 0, 0, ?, 0, ?3, ?3)`,
+      DAVE,
+      restored,
+      at,
+    );
+    const flag = mastodonFlag(
+      actor,
+      [
+        DAVE_URI,
+        restored,
+        `http://kopje.test/ap/users/dave/collections/700000000000000001`,
+        `${LOCAL}/ap/users/alice/collections/700000000000000002`,
+      ],
+      "x",
+    );
+    expect(await t.post(actor, flag)).toBe(202);
+    expect(await sql(t.store, "SELECT target_account_id, collection_ids FROM reports")).toEqual([
+      { target_account_id: DAVE, collection_ids: '["700000000000000001"]' },
+    ]);
+  });
+
   it("cuts the comment to 5,000 code points, NUL and astral ones included, and reads anything else as none", async () => {
     const t = await world();
     const actor = await mastodonInstanceActor(t.web);

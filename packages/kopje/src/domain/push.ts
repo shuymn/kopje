@@ -7,6 +7,7 @@ import { adminAccountIdOnce } from "./admin-authority";
 import { availableLocalSql, keptSql, shownNotificationSql, UNFILTERED_SQL } from "./audience";
 import { userReadOperation, userSessionOperation, userWriteOperation } from "./auth";
 import { CLAIM_LIMIT, type DeliveryOutcome, LEASE_MS, MAX_ATTEMPTS, retryDelay } from "./deliveries";
+import { instanceOrigin } from "./instance-domain";
 import { COLLECTION_TITLES } from "./notification-fallback";
 import { pushWantedSql } from "./notifications";
 import { writeOperation } from "./operation";
@@ -269,13 +270,6 @@ function contentOf(db: Db, row: TargetRow, origin: string): PushContent {
     title: TITLES[row.type]?.(name) ?? name,
     body: truncateText(text.trim(), BODY_LENGTH),
   };
-}
-
-// The instance's origin, what the Store presents with where no request gives one (pushes, streamed messages); null
-// before /setup.
-export function instanceOrigin(db: Db): string | null {
-  const domain = db.first<{ value: string }>("SELECT value FROM instance_settings WHERE name = 'domain'")?.value;
-  return domain === undefined ? null : `https://${domain}`;
 }
 
 function dropPush(db: Db, id: string): void {

@@ -102,8 +102,11 @@ export const resolveInteraction = userWriteOperation.atStoreTime("storeNow")<Res
     }
     case "status": {
       const visible = stored.id === undefined ? null : viewableStatusId(db, null, stored.id);
+      // For the /authorize_interaction page, which shows no tagged collections (Present.page).
       const status =
-        visible === null ? null : presentStatus(db, visible, { ...input.present, viewer: contextOf(null, input.now) });
+        visible === null
+          ? null
+          : presentStatus(db, visible, { ...input.present, page: true, viewer: contextOf(null, input.now) });
       return {
         target: status === null ? { kind: "not_found" } : { kind: "status", status },
         quotesDue: stored.quotesDue,

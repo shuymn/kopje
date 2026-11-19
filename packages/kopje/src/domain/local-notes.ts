@@ -11,7 +11,7 @@ import {
   boostAnnounce,
   createActivity,
 } from "./activities";
-import { ANSWER_BYTES } from "./answer-budget";
+import { OUTBOX_BYTES } from "./answer-bytes";
 import { availableLocalSql, availableSql, DISTRIBUTABLE_SQL, type Visibility } from "./audience";
 import { readOperation } from "./operation";
 import { noteQuote } from "./quotes";
@@ -34,10 +34,9 @@ export const getLocalNote = readOperation<{ uri: string }, string | null>((db, {
 
 const OUTBOX_PAGE_SIZE = 20;
 
-// The bytes of an outbox page's serialized activities at most (RES-3): ANSWER_BYTES less a reserve for the
-// collection page around them, which the Worker builds. Activities are admitted newest first while they fit, the first
-// whatever its size (one Create of a local status, a unit); a page cut there continues from its last activity.
-export const OUTBOX_BYTES = ANSWER_BYTES - 64 * 1024;
+// OUTBOX_BYTES (answer-bytes.ts): activities are admitted newest first while they fit, the first whatever its size
+// (one Create of a local status, a unit); a page cut there continues from its last activity.
+export { OUTBOX_BYTES };
 
 // Items are serialized JSON: RPC types cannot carry `unknown`.
 export type OutboxPage = { total: number | null; items: string[]; next: string | null };

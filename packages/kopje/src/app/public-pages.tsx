@@ -9,6 +9,7 @@ import type { StatusTabKind } from "../domain/web-pages/status";
 import { notSetUp } from "../federation/setup-gate";
 import { type ApiDeps, present, storeCall } from "../mastodon/context";
 import { embedHtml } from "../mastodon/oembed";
+import { collectionPageId } from "../platform/collection-address";
 import { serverDomain } from "../platform/domain-name";
 import { decidesHost, offDomain } from "../platform/instance-host";
 import { PACKAGE_VERSION, SOFTWARE_REPOSITORY } from "../platform/package-version";
@@ -326,11 +327,16 @@ export function publicPageRoutes(deps: PublicDeps): Hono<{ Bindings: Env }> {
   });
 
   // A local collection's url (Mastodon's CollectionsController#show): its page, as an anonymous viewer reads it, or
-  // for an ActivityPub client its FeaturedCollection, whose endpoint applies R45 again.
+  // for an ActivityPub client its FeaturedCollection, whose endpoint applies R45 again. The collection is the one
+  // platform/collection-address.ts reads from the URL, as a lookup by URL reads it (the route's pattern is the same).
   pageGet("/collections/:id{[0-9]{1,19}}", async (c) => {
+    const id = collectionPageId(new URL(c.req.url));
+    if (id === null) {
+      return missing(c);
+    }
     const activityPub = wantsActivityPub(c.req.header("accept"));
     const page = await pageCall(c, (s, b) =>
-      s.webCollectionPage(b, { id: c.req.param("id"), ...(activityPub ? { document: true } : {}) }),
+      s.webCollectionPage(b, { id, ...(activityPub ? { document: true } : {}) }),
     );
     switch (page.status) {
       case "not_set_up":

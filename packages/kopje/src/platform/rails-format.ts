@@ -1,5 +1,5 @@
-import type { RailsParam } from "../platform/rails-params";
-import { rubyStrip } from "../platform/strip";
+import type { RailsParam } from "./rails-params";
+import { rubyStrip } from "./strip";
 
 // The representation Mastodon 4.7.5 gives a request, from its format parameter, Accept, X-Requested-With and
 // Content-Type, at a controller that serves both a page and a document (`respond_to { format.html; format.json }`):
@@ -12,7 +12,7 @@ import { rubyStrip } from "../platform/strip";
 export type RailsFormat = "html" | "json" | "none" | "invalid";
 
 // The request's headers, as the Worker reads them (each byte one char, a ByteString), and its format parameter
-// (rails-params.ts railsFormatParam).
+// (rails-format-param.ts railsFormatParam).
 export type RailsRequest = {
   accept: string | undefined;
   requestedWith: string | undefined;

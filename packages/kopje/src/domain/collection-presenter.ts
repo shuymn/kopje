@@ -1,7 +1,18 @@
+import { type ColumnMap, fixedColumns, selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
-import { collectionItemShownSql, collectionShownSql } from "./audience";
-import { usernameSql } from "./profile-bounds";
+import { collectionDocumentAddress } from "../platform/collection-address";
+import { sameOrigin } from "../platform/http-url";
+import { ACTOR_URI_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
+import {
+  COLLECTION_DESCRIPTION_LENGTH,
+  COLLECTION_NAME_LENGTH,
+  COLLECTION_URI_BYTES,
+  COLLECTION_URL_BYTES,
+} from "../platform/stored-bounds";
+import { collectionFoundSql, collectionItemShownSql, collectionShownSql, collectionViewerSql } from "./audience";
+import { type ConfiguredDomain, configuredDomain, onConfiguredDomain } from "./instance-domain";
+import { actorUriSql } from "./profile-bounds";
 import { withinTagNameBound } from "./tag-bounds";
 import { normalizeTag } from "./tag-name";
 
@@ -10,6 +21,139 @@ import { normalizeTag } from "./tag-name";
 // a collection notification's collection without a cycle.
 
 const STATE_NAMES = ["pending", "accepted", "rejected", "revoked"] as const;
+
+const ENCODER = new TextEncoder();
+
+// The stored form of a remote URI (stored-bounds.ts httpsUrlWhen): an https URL of printable ASCII within `bytes`.
+export function storableUrl(value: string | null, bytes: number): value is string {
+  return (
+    value !== null && /^https:\/\/[!-~]+$/.test(value) && ENCODER.encode(value).length <= bytes && URL.canParse(value)
+  );
+}
+
+// Whether a remote collection's id `uri` is one remote-featured-collections.ts stores for the owner of id `ownerUri`:
+// within the stored bound and on the owner's origin (ProcessFeaturedCollectionService's non_matching_uri_hosts?). Every
+// reader that resolves or shows a stored remote collection by its uri (a status's tags, #1589's D26) judges it alike,
+// so a restored row no writer would store is neither referenced nor shown.
+export function validRemoteCollection(uri: string | null, ownerUri: string | null): boolean {
+  return storableUrl(uri, COLLECTION_URI_BYTES) && sameOrigin(uri, ownerUri);
+}
+
+// A collection's owner as every read that names a local collection's id takes it: its stored actor id, as actorUriSql
+// reads it ('' past ACTOR_URI_LIMIT), under alias `a`.
+export function collectionOwnerSql(a: string): string {
+  return `${actorUriSql(`${a}.uri`)} AS owner_uri`;
+}
+
+// A collection's owner as collectionOwnerSql reads it.
+export type CollectionOwner = { owner_uri: string | null };
+
+// A local collection's ID (ActivityPub::TagManager#uri_for, #1589's D1): its owner's stored actor id and the collection
+// id, built here alone, in TypeScript (no SQL builds it), for every surface that emits or compares it: REST's uri and
+// tagged_collections, a Note's tag, the FeaturedCollection, featured_collections, a FeaturedItem and a local member's
+// FeatureAuthorization, the page's alternate, the collection's activities, a Flag, and the authorizations checked
+// against it, and the lookups that find a local collection by it (collections.ts namesLocalCollection;
+// test-node/tagged-collection-reads holds that no other code spells the path). Nothing compares it with the request's
+// host or the configured one: it resolves exactly when its owner's actor id does, so an account whose actor id was kept
+// from an earlier domain or restored under another name has collections no more and no less reachable than itself.
+// null only where the account presenter shows no actor id either (accounts.ts, its `uri`): none, past ACTOR_URI_LIMIT
+// as actorUriSql reads it or as JSON (withinIdentityBound, so the id's JSON is within ACTOR_URI_LIMIT and its own 31
+// bytes: LOCAL_COLLECTION_JSON_MAX), or not a URL.
+export function localCollectionUri(ownerUri: string | null, id: string): string | null {
+  return ownerUri === null || !withinIdentityBound(ownerUri, ACTOR_URI_LIMIT) || !URL.canParse(ownerUri)
+    ? null
+    : `${ownerUri}/collections/${id}`;
+}
+
+// Whether a local collection's id is a path the collection route takes, on any host (#1589's D2): its
+// FeaturedCollection's address (platform/collection-address.ts, the route's own parser), with no extension, query or
+// fragment.
+function routedPath(id: string): boolean {
+  if (!URL.canParse(id)) {
+    return false;
+  }
+  const url = new URL(id);
+  const address = collectionDocumentAddress(url);
+  return url.search === "" && url.hash === "" && address !== null && address.extension === undefined;
+}
+
+// A tagged collection as a tag reads it (TAGGED_COLLECTION_COLUMNS).
+export type TaggedCollection = CollectionRow & { text_replacements: number; owner_local: number };
+
+// The U+FFFD in a text as read.
+function replacements(text: string | null): number {
+  return text === null ? 0 : text.split("\uFFFD").length - 1;
+}
+
+// Whether a tagged collection's presented text (name, description and tag) is well-formed UTF-8 as stored. Decoding
+// gives one U+FFFD for each malformed sequence and decodes well-formed bytes exactly, each stored EF BF BD to one
+// U+FFFD (EF starts a sequence, so no malformed one takes it in), so a text read with more U+FFFD than it stores
+// (text_replacements) is malformed, a replacement of the same width included: no JSON carries a value decoding
+// replaced.
+function wellFormed(row: TaggedCollection): boolean {
+  return replacements(row.name) + replacements(row.description) + replacements(row.tag) === row.text_replacements;
+}
+
+// Whether a remote collection's name and description, as read, are within the code points its writer stores
+// (COLLECTION_NAME_LENGTH and COLLECTION_DESCRIPTION_LENGTH's remote bounds), which COLLECTION_JSON_MAX charges at six
+// JSON bytes each. A restored row's malformed UTF-8 passes the CHECK, which counts a lead byte and its continuation
+// bytes as one character, yet is read as a U+FFFD for each byte, three JSON bytes: a description of 2,048 such
+// characters of four bytes presents 24,576 bytes, twice its charge.
+function withinRemoteText(row: { name: string; description: string | null }): boolean {
+  return (
+    [...row.name].length <= COLLECTION_NAME_LENGTH.remote &&
+    (row.description === null || [...row.description].length <= COLLECTION_DESCRIPTION_LENGTH.remote)
+  );
+}
+
+// Whether a status can tag the collection `row`, as stored (#1589's D2): its text well-formed (wellFormed); a local one
+// owned by a local account, its id (localCollectionUri) on a path the collection route takes (routedPath); a remote one
+// valid (validRemoteCollection) with its text within its writer's bounds (withinRemoteText), its id not on the
+// instance's domain (onConfiguredDomain; `domain` read only for a remote row), where only a local collection is.
+function taggable(row: TaggedCollection, domain: () => ConfiguredDomain): boolean {
+  if (!wellFormed(row)) {
+    return false;
+  }
+  if (row.local === 1) {
+    const id = localCollectionUri(row.owner_uri, row.id);
+    return row.owner_local === 1 && id !== null && routedPath(id);
+  }
+  if (!validRemoteCollection(row.uri, row.owner_uri) || !withinRemoteText(row)) {
+    return false;
+  }
+  return !onConfiguredDomain(new URL(row.uri!), domain());
+}
+
+// A read taggableCollections decides: `from` joins `collections c` and its owner `accounts a`, `where` picks the rows,
+// with `params`; `domain` the instance's, when the caller has read it for a whole resolution (the writer). One object
+// whose domain only configuredDomain makes, so no request's origin can reach the decision.
+export type TaggableRead = {
+  from: string;
+  where: string;
+  params: readonly SqlStorageValue[];
+  domain?: ConfiguredDomain;
+};
+
+// The collections `read` names that a status can tag whatever the viewer (#1589's D26, D2): its owner available
+// (collectionFoundSql: not suspended, deleted or covered) and taggable. The writer (collections.ts) resolves a status's
+// links and tags through it before it takes the first MAX_TAGGED_COLLECTIONS, and the REST presenter
+// (taggedCollectionsOf, adding R45's part that depends on the viewer) and the Note (activities.ts statusFacts) read a
+// status's references through it, which leaves out a row restored, written before a rule was, or whose owner became
+// unavailable since: one decision, so a collection takes a slot only when every surface would show it to some viewer.
+// Each row with TAGGED_COLLECTION_COLUMNS, which R's term charges. The instance's domain (configuredDomain, never a
+// request's host) is the read's, else read here, once at most and only for a remote row; R charges that read too
+// (status-rows.ts).
+export function taggableCollections(db: Db, read: TaggableRead): TaggedCollection[] {
+  const { from, where, params } = read;
+  let instance = read.domain;
+  const instanceOf = () => (instance ??= configuredDomain(db));
+  return db
+    .all<TaggedCollection>(
+      `SELECT ${selectSql(TAGGED_COLLECTION_COLUMNS)} FROM ${from} WHERE ${collectionFoundSql("c")} AND ${where}`,
+      ...params,
+    )
+    .filter((row) => taggable(row, instanceOf));
+}
 
 type CollectionItemStateName = (typeof STATE_NAMES)[number];
 
@@ -38,11 +182,10 @@ export type Collection = {
   items: CollectionItem[];
 };
 
-// A stored collection with its owner's username (the local uri names it).
-export type CollectionRow = {
+// A stored collection with its owner (a local one's id names it: localCollectionUri).
+export type CollectionRow = CollectionOwner & {
   id: string;
   account_id: string;
-  username: string;
   local: number;
   name: string;
   description: string | null;
@@ -56,19 +199,74 @@ export type CollectionRow = {
   updated_at: string;
 };
 
-export const COLLECTION_COLUMNS = `c.id, c.account_id, ${usernameSql("a.username")} AS username, c.local, c.name, c.description, c.language, c.sensitive,
-	c.discoverable, c.tag, c.uri, c.url, c.created_at, c.updated_at`;
+export const COLLECTION_COLUMNS = `c.id, c.account_id, ${collectionOwnerSql("a")}, c.local, c.name, c.description,
+	c.language, c.sensitive, c.discoverable, c.tag, c.uri, c.url, c.created_at, c.updated_at`;
 
 type ItemRow = {
   collection_id: string;
   id: string;
   state: number;
+  position: number;
   account_id: string | null;
   created_at: string;
 };
 
+// The columns of ItemRow as shownItems reads them, each within its CHECK (migration 0103_collections): ids of 18
+// digits, the state and position, a 24-byte ISO time.
+export const ITEM_COLUMNS = fixedColumns(
+  {
+    collection_id: "i.collection_id",
+    id: "i.id",
+    state: "i.state",
+    position: "i.position",
+    account_id: "i.account_id",
+    created_at: "i.created_at",
+  },
+  { collection_id: 18, id: 18, state: 0, position: 0, account_id: 18, created_at: 24 },
+);
+
+// A status's references to the collections it tags (status_collections, migration 0120_tagged_collections), as
+// taggedCollectionsOf reads them.
+export const TAG_REFERENCE_COLUMNS = fixedColumns(
+  { status_id: "r.status_id", collection_id: "r.collection_id" },
+  { status_id: 18, collection_id: 18 },
+);
+
+// The U+FFFD a stored text holds as bytes (EF BF BD), 0 for NULL. replace() compares bytes and returns text, whose
+// length counts characters, so both lengths are of bytes.
+function storedReplacementsSql(column: string): string {
+  const bytes = (text: string) => `length(CAST(${text} AS BLOB))`;
+  return `coalesce((${bytes(column)} - ${bytes(`replace(CAST(${column} AS BLOB), X'EFBFBD', X'')`)}) / 3, 0)`;
+}
+
+// A tagged collection as taggedCollectionsOf reads it, every text column within a bound of stored bytes before it
+// reaches JavaScript: its columns as stored, each within its CHECK, imports included (migration 0103_collections: the
+// name, description and tag by stored bytes, the uri, url, language and times ASCII); whether its owner is a local
+// account, and its owner's actor id (collectionOwnerSql), against which a remote one's id is judged
+// (validRemoteCollection: '' past ACTOR_URI_LIMIT is invalid) and from which a local one's is built
+// (localCollectionUri); and the U+FFFD the name, description and tag store, which wellFormed compares. R's term charges
+// these columns, and every read of them is taggableCollections'.
+export const TAGGED_COLLECTION_COLUMNS: ColumnMap = {
+  id: "c.id",
+  account_id: "c.account_id",
+  owner_local: "a.domain IS NULL",
+  text_replacements: ["c.name", "c.description", "c.tag"].map(storedReplacementsSql).join(" + "),
+  local: "c.local",
+  name: "c.name",
+  description: "c.description",
+  language: "c.language",
+  sensitive: "c.sensitive",
+  discoverable: "c.discoverable",
+  tag: "c.tag",
+  uri: "c.uri",
+  url: "c.url",
+  created_at: "c.created_at",
+  updated_at: "c.updated_at",
+  owner_uri: actorUriSql("a.uri"),
+};
+
 // Collection#to_param's page: a local collection's url (collection_url, the page of web-pages/collection.ts).
-function collectionUrl(origin: string, id: string): string {
+export function collectionUrl(origin: string, id: string): string {
   return `${origin}/collections/${id}`;
 }
 
@@ -80,7 +278,7 @@ function stateName(state: number): CollectionItemStateName {
   return name;
 }
 
-export function presentItem(row: ItemRow): CollectionItem {
+export function presentItem(row: Omit<ItemRow, "position">): CollectionItem {
   const state = stateName(row.state);
   return {
     id: row.id,
@@ -100,18 +298,21 @@ function shallowTag(tag: string | null, origin: string): ShallowTag | null {
   return name === "" || !withinTagNameBound(name) ? null : { name, url: `${origin}/tags/${encodeURIComponent(name)}` };
 }
 
-// Collection's ActivityPub id (ActivityPub::TagManager#uri_for): a local one's under its owner's actor, a remote one's
-// as stored.
-export function collectionUri(row: Pick<CollectionRow, "id" | "local" | "username" | "uri">, origin: string): string {
-  return row.local === 1 ? `${origin}/ap/users/${row.username}/collections/${row.id}` : (row.uri ?? "");
+// Collection's ActivityPub id (ActivityPub::TagManager#uri_for): a local one's as localCollectionUri builds it (null for
+// an actor id it does not read), a remote one's as stored.
+export function collectionUri(row: CollectionOwner & Pick<CollectionRow, "id" | "local" | "uri">): string | null {
+  return row.local === 1 ? localCollectionUri(row.owner_uri, row.id) : (row.uri ?? "");
 }
 
+// The Collection `row` presents with `items`: its uri '' where collectionUri gives none, as a remote one's is without
+// a stored id; `origin` the request's, for its url and its tag's, as Mastodon's url helpers take the request's host.
 export function presentCollection(row: CollectionRow, items: readonly ItemRow[], origin: string): Collection {
+  const uri = collectionUri(row) ?? "";
   const presented = items.map(presentItem);
   const local = row.local === 1;
   return {
     id: row.id,
-    uri: collectionUri(row, origin),
+    uri,
     name: row.name,
     description: row.description,
     language: row.language,
@@ -128,26 +329,84 @@ export function presentCollection(row: CollectionRow, items: readonly ItemRow[],
   };
 }
 
+// Ids of 18 digits, whose text order is their numeric order.
+function compareIds(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 // The items of `collections` R45 shows `viewer`, by collection, each in position order: at most MAX_STORED_ITEMS rows
-// read per collection through collection_items_order.
+// read per collection through collection_items_order, put in order here, so no query sorts the payload of several
+// collections (the status presenter reads a chunk's at once).
 export function shownItems(db: Db, collections: readonly string[], viewer: string | null): Map<string, ItemRow[]> {
   const byCollection = new Map<string, ItemRow[]>(collections.map((id) => [id, []]));
   if (collections.length === 0) {
     return byCollection;
   }
   const rows = db.all<ItemRow>(
-    `SELECT i.collection_id, i.id, i.state, i.account_id, i.created_at
+    `SELECT ${selectSql(ITEM_COLUMNS.columns)}
 		FROM json_each(?1) w CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = w.value
 			CROSS JOIN collection_items i INDEXED BY collection_items_order ON i.collection_id = c.id
-		WHERE ${collectionItemShownSql("i", "c", "?2")}
-		ORDER BY w.key, i.position, i.id`,
+		WHERE ${collectionItemShownSql("i", "c", "?2")}`,
     JSON.stringify(collections),
     viewer,
   );
-  for (const row of rows) {
+  for (const row of rows.toSorted((a, b) => a.position - b.position || compareIds(a.id, b.id))) {
     byCollection.get(row.collection_id)?.push(row);
   }
   return byCollection;
+}
+
+// The collections each status of `statuses` (ids of statuses that are not boosts) tags that R45 shows `viewer`, by
+// status, each status's in collection-id order with the items R45 shows the viewer (#1589's D26): the references by
+// the primary key's prefix (at most MAX_TAGGED_COLLECTIONS a status, the trigger's bound), each collection once by key
+// with its owner, then shownItems once for them, so a collection several statuses tag is read once. A collection is
+// shown only while a status can tag it (taggable), and a remote one's url only when its writer would store it
+// (storableUrl), else its uri (presentCollection), so a restored row shows nothing a writer would not have admitted and
+// each stays within COLLECTION_JSON_MAX.
+export function taggedCollectionsOf(
+  db: Db,
+  statuses: readonly string[],
+  viewer: string | null,
+  origin: string,
+): Map<string, Collection[]> {
+  const tagged = new Map<string, Collection[]>();
+  const references =
+    statuses.length === 0
+      ? []
+      : db.all<{ status_id: string; collection_id: string }>(
+          `SELECT ${selectSql(TAG_REFERENCE_COLUMNS.columns)} FROM (SELECT DISTINCT value FROM json_each(?1)) j
+					CROSS JOIN status_collections r ON r.status_id = j.value`,
+          JSON.stringify(statuses),
+        );
+  if (references.length === 0) {
+    return tagged;
+  }
+  const shown = taggableCollections(db, {
+    from: `json_each(?1) w CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = w.value
+			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id`,
+    where: collectionViewerSql("c", "?2"),
+    params: [JSON.stringify([...new Set(references.map((reference) => reference.collection_id))]), viewer],
+  });
+  const items = shownItems(
+    db,
+    shown.map((row) => row.id),
+    viewer,
+  );
+  const presented = new Map(
+    shown.map((row) => {
+      const url = row.local === 1 || storableUrl(row.url, COLLECTION_URL_BYTES) ? row.url : null;
+      return [row.id, presentCollection({ ...row, url }, items.get(row.id) ?? [], origin)];
+    }),
+  );
+  for (const { status_id, collection_id } of references.toSorted((a, b) =>
+    compareIds(a.collection_id, b.collection_id),
+  )) {
+    const collection = presented.get(collection_id);
+    if (collection !== undefined) {
+      tagged.set(status_id, [...(tagged.get(status_id) ?? []), collection]);
+    }
+  }
+  return tagged;
 }
 
 export function presentCollections(db: Db, rows: readonly CollectionRow[], viewer: string | null, origin: string) {
