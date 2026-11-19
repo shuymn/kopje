@@ -19,6 +19,7 @@ import { webInteractTarget } from "../src/domain/web-pages/interact";
 import { webProfilePage } from "../src/domain/web-pages/profile";
 import { embeddedStatus, webStatusPage } from "../src/domain/web-pages/status";
 import { webTagPage } from "../src/domain/web-pages/tags";
+import { endPolls } from "../src/jobs/scheduled";
 import type { StoreStub } from "../src/platform/store-client";
 import { COLLECTION_ITEM_STATES, MAX_TAG_LINK_CANDIDATES, MAX_TAGGING_STATUSES } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
@@ -40,7 +41,7 @@ import {
   update,
 } from "./inbox-status-helpers";
 import { measuredRead, measuredStatements, type PlannedStatement, plannedSql, staleStatistics } from "./read-helpers";
-import { act, block, community, getJson, post, remoteAccount, seedStatus } from "./status-helpers";
+import { act, block, community, getJson, outbound, post, remoteAccount, seedStatus } from "./status-helpers";
 import { postsTab } from "./web-helpers";
 
 // The collections a status tags (#1589's D26, src/domain/collections.ts, migration 0120_tagged_collections): a local
@@ -697,6 +698,109 @@ describe("a status's tagged_collections (7-T5)", () => {
   });
 });
 
+// ---- ActivityPub (7-T1, 7-T10): every surface of a local status names the collections it tags by their ids alone.
+
+const AP_GET = { headers: { accept: "application/activity+json" } };
+const pathOf = (uri: string) => {
+  const url = new URL(uri);
+  return `${url.pathname}${url.search}`;
+};
+
+// context_helper.rb's featured_collections terms, written out.
+const FEATURED_COLLECTIONS_TERMS = {
+  FeaturedCollection: "https://w3id.org/fep/7aa9#FeaturedCollection",
+  FeaturedItem: "https://w3id.org/fep/7aa9#FeaturedItem",
+  FeatureRequest: "https://w3id.org/fep/7aa9#FeatureRequest",
+  FeatureAuthorization: "https://w3id.org/fep/7aa9#FeatureAuthorization",
+  topic: { "@id": "https://w3id.org/fep/7aa9#topic", "@type": "@id" },
+  featuredObject: { "@id": "https://w3id.org/fep/7aa9#featuredObject", "@type": "@id" },
+  featureAuthorization: { "@id": "https://w3id.org/fep/7aa9#featureAuthorization", "@type": "@id" },
+};
+
+describe("the ActivityPub surfaces of a status that tags collections (7-T1, 7-T10)", () => {
+  // dave's public P with a hashtag and a poll, linking alice's L and a valid remote M, quoting bob's Note (a remote
+  // status, so a QuoteRequest follows the Create), then pinned and edited, and its poll ended.
+  it("names each collection by its id alone, after the other tags, under the featured_collections terms", async () => {
+    const t = await setup();
+    const L = await localCollection(t, ALICE, 1);
+    const owner = await remoteOwner(t, 1, `${MASTODON}/users/m`);
+    await remoteCollection(t, owner, 2, `${MASTODON}/users/m/collections/2`);
+    const bob = await mastodonActor(t.web, "bob");
+    await followed(t, bob);
+    // Quotable by anyone with bob's approval: dave's quote waits for it.
+    const quotedNote = mastodonNote(bob, {
+      interactionPolicy: { canQuote: { manualApproval: ["https://www.w3.org/ns/activitystreams#Public"] } },
+    });
+    expect(await t.post(bob, create(bob, quotedNote))).toBe(202);
+    const [quoted] = await sql<{ id: string }>(t.store, "SELECT id FROM statuses WHERE uri = ?", quotedNote.id);
+    const body = {
+      status: `#walks ${LOCAL}/collections/${L}\n${MASTODON}/users/m/collections/2`,
+      poll: { options: ["a", "b"], expires_in: 300 },
+      quoted_status_id: quoted!.id,
+    };
+    const dave = { authorization: `Bearer ${t.tokens.dave}`, "content-type": "application/json" };
+    const posted = await t.request("/api/v1/statuses", { method: "POST", headers: dave, body: JSON.stringify(body) });
+    expect(posted.status).toBe(200);
+    const P = await posted.json<{ id: string; uri: string }>();
+    expect((await t.request(`/api/v1/statuses/${P.id}/pin`, { method: "POST", headers: dave })).status).toBe(200);
+    const edited = await t.request(`/api/v1/statuses/${P.id}`, {
+      method: "PUT",
+      headers: dave,
+      body: JSON.stringify({ ...body, status: `${body.status} edited` }),
+    });
+    expect(edited.status).toBe(200);
+    // The edit's Update, read before the poll's Update supersedes it in the lane.
+    const recordedOf = async () => (await outbound(t.store)).map((row) => row.activity as Record<string, unknown>);
+    const [edit] = (await recordedOf()).filter(
+      (activity) => activity.type === "Update" && (activity.object as { id?: string }).id === P.uri,
+    );
+    await endPolls(t.env, { build: () => BUILD, now: () => NOW + 2 * 60 * 60 * 1000, store: () => t.store });
+    // Each surface: the object, and the context its document carries.
+    const surfaces: [string, unknown, Record<string, unknown>][] = [];
+    const served = await (await t.request(pathOf(P.uri), AP_GET)).json<Record<string, unknown>>();
+    surfaces.push(["the Question at its id", served["@context"], served]);
+    const outbox = await (await t.request("/ap/users/dave/outbox", AP_GET)).json<{ first: string }>();
+    const page = await (await t.request(pathOf(outbox.first), AP_GET)).json<Record<string, unknown>>();
+    // A page's items keep the contexts the Store built, nested in Fedify's page (§7.2, J-6).
+    const [inOutbox] = (page.orderedItems as { "@context": unknown; object: Record<string, unknown> }[]).filter(
+      (item) => item.object.id === P.uri,
+    );
+    surfaces.push(["the outbox page's Create", inOutbox!["@context"], inOutbox!.object]);
+    const featured = await (
+      await t.request("/ap/users/dave/collections/featured", AP_GET)
+    ).json<Record<string, unknown>>();
+    const [pinned] = featured.orderedItems as Record<string, unknown>[];
+    surfaces.push(["featured", pinned!["@context"], pinned!]);
+    const recorded = await recordedOf();
+    const about = (type: string) =>
+      recorded.filter((activity) => activity.type === type && (activity.object as { id?: string }).id === P.uri);
+    const [creation] = about("Create");
+    surfaces.push(["the recorded Create", creation!["@context"], creation!.object as Record<string, unknown>]);
+    const [ended] = about("Update");
+    surfaces.push(["the edit's Update", edit!["@context"], edit!.object as Record<string, unknown>]);
+    surfaces.push(["the poll's Update", ended!["@context"], ended!.object as Record<string, unknown>]);
+    const [request] = recorded.filter((activity) => activity.type === "QuoteRequest");
+    surfaces.push([
+      "the QuoteRequest's instrument",
+      request!["@context"],
+      request!.instrument as Record<string, unknown>,
+    ]);
+    for (const [name, context, object] of surfaces) {
+      expect(object.type, name).toBe("Question");
+      const tags = object.tag as Record<string, unknown>[];
+      expect(tags.slice(-2), name).toEqual([
+        { type: "FeaturedCollection", id: "https://kopje.test/ap/users/alice/collections/500000000000000001" },
+        { type: "FeaturedCollection", id: "https://mastodon.example/users/m/collections/2" },
+      ]);
+      expect(
+        tags.slice(0, -2).map((tag) => tag.type),
+        name,
+      ).toEqual(["Hashtag"]);
+      expect([context].flat(), name).toContainEqual(expect.objectContaining(FEATURED_COLLECTIONS_TERMS));
+    }
+  });
+});
+
 // ---- Deletion (7-T6, 7-T7): every path deleting a status or a collection deletes its references within its budget.
 
 // Runs `batch` (one purge or removal batch in a transaction) until it reports no more work, each batch's rows changed
@@ -1122,6 +1226,34 @@ describe("rows no writer produces (7-T9)", () => {
     }
     const { body } = await t.api<Status>(`/api/v1/statuses/${S}`, "dave");
     expect(body.tagged_collections.map(({ id }) => id)).toEqual([V]);
+  });
+
+  it("lets S's Note name Y alone, by its id", async () => {
+    const { t, S, uriOf } = await restored();
+    const [row] = await sql<{ uri: string }>(t.store, "SELECT uri FROM statuses WHERE id = ?", S);
+    const note = await (await t.request(pathOf(row!.uri), AP_GET)).json<{ tag: Record<string, unknown>[] }>();
+    expect(note.tag.filter((tag) => tag.type === "FeaturedCollection")).toEqual([
+      { type: "FeaturedCollection", id: uriOf.Y },
+    ]);
+  });
+
+  // U's owner deleted, V's available: S's Note names V alone (collectionFoundSql), as the API presents it.
+  it("lets a Note name no collection whose owner is unavailable", async () => {
+    const t = await setup();
+    const gone = await remoteOwner(t, 1, `${MASTODON}/users/x`);
+    const U = await remoteCollection(t, gone, 1, `${MASTODON}/users/x/collections/1`);
+    const owner = await remoteOwner(t, 2, `https://m.example/users/z`);
+    const V = await remoteCollection(t, owner, 2, `https://m.example/users/z/collections/2`);
+    const S = await posted(t, "S");
+    for (const id of [U, V]) {
+      await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", S, id);
+    }
+    await sql(t.store, "UPDATE accounts SET deleted_at = ? WHERE id = ?", new Date(NOW).toISOString(), gone);
+    const [row] = await sql<{ uri: string }>(t.store, "SELECT uri FROM statuses WHERE id = ?", S);
+    const note = await (await t.request(pathOf(row!.uri), AP_GET)).json<{ tag: Record<string, unknown>[] }>();
+    expect(note.tag.filter((tag) => tag.type === "FeaturedCollection")).toEqual([
+      { type: "FeaturedCollection", id: `https://m.example/users/z/collections/2` },
+    ]);
   });
 
   it("lets a remote Note's tag reference none of them", async () => {

@@ -716,7 +716,9 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   // CARD_COLUMN_MAP, the stored text within its bound, else NULL), judged again by shownCardUrl.
   "src/domain/activities.ts interpolation CARD_COLUMN_MAP.url": { count: 1, reason: ACTIVITYPUB },
   "src/domain/activities.ts interpolation CARD_COLUMN_MAP.title": { count: 1, reason: ACTIVITYPUB },
-  "src/domain/activities.ts accounts.uri": { count: 3, reason: ACTIVITYPUB },
+  // The fourth: a tagged collection's owner, against which a remote collection's id is judged before its Note names it
+  // (statusFacts, validRemoteCollection).
+  "src/domain/activities.ts accounts.uri": { count: 4, reason: ACTIVITYPUB },
   "src/domain/local-notes.ts statuses.uri": { count: 3, reason: ACTIVITYPUB },
   "src/domain/local-notes.ts accounts.uri": { count: 2, reason: ACTIVITYPUB },
   // The actor documents' row (ACTOR_ROW_COLUMN_MAP), which actors.ts and actor-update.ts select.

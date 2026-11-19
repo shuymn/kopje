@@ -2,6 +2,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { Db } from "../../src/db/sql";
+import { postStatus } from "../../src/domain/scheduled-statuses";
 import { MAX_MEDIA_DESCRIPTION_LENGTH, MAX_STATUS_MEDIA } from "../../src/domain/status-bounds";
 import { statusLength } from "../../src/domain/status-text";
 import { streamDelete } from "../../src/domain/streaming";
@@ -10,6 +11,7 @@ import { sha256Hex } from "../../src/security/tokens";
 import { STREAM_LIMITS } from "../../src/stream-hub";
 import { type ApiHarness, bearer, json, sql } from "../api-helpers";
 import { NOW } from "../app-helpers";
+import { maximalCollectionRows } from "../collection-maxima";
 import { accountAtCap, statusAtCap } from "../emoji-fixtures";
 import { BUILD } from "../helpers";
 import {
@@ -618,7 +620,7 @@ describe("feeds at the caps", () => {
 // MAX_MEDIA_DESCRIPTION_LENGTH code points takes 10,000 bytes of ASCII, 40,000 of emoji and 70,000 of U+0001.
 describe("payloads with descriptions at their length (D8)", () => {
   // R of the plain fill's S2 update and of carol's boost of S2 (pinned by "sends ... beside plain text").
-  const PLAIN_R = { quote: 141_177, boost: 179_389 };
+  const PLAIN_R = { quote: 141_229, boost: 179_467 };
 
   // A world: alice and carol with the fill's profile, bob following carol, on public:local and user; console.warn
   // spied for the hub's skips.
@@ -717,8 +719,8 @@ describe("payloads with descriptions at their length (D8)", () => {
   // each status (links), then also each profile field and poll choice (every). R past 260,096 less the descriptions'
   // 80,000 bytes.
   it.each([
-    ["links", FILLS.links, { quote: 281_347, boost: 319_559 }],
-    ["every", FILLS.every, { quote: 327_385, boost: 388_420 }],
+    ["links", FILLS.links, { quote: 281_399, boost: 319_637 }],
+    ["every", FILLS.every, { quote: 327_437, boost: 388_498 }],
   ] as const)(
     "skips a status and its quote, and its boost, whose %s fill takes the rest past it",
     async (_name, fill, rests) => {
@@ -898,7 +900,89 @@ describe("payloads with descriptions at their length (D8)", () => {
         status: [shown.status.rest, shown.status.payload],
         boost: [shown.boost.rest, shown.boost.payload],
         controlled: [shown.controlled.rest, shown.controlled.payload],
-      }).toEqual({ status: [70_410, 230_410], boost: [108_622, 268_622], controlled: [70_410, 350_410] });
+      }).toEqual({ status: [70_436, 230_436], boost: [108_674, 268_674], controlled: [70_436, 350_436] });
+    } finally {
+      warn.mockRestore();
+    }
+  }, 120_000);
+});
+
+// #1589's D26 (7-T10): a status's tagged_collections stream with it. Four remote collections at their maxima add
+// about 119 KB to an original's JSON and twice that once encoded again: an original with them and 500 characters is
+// sent, and a quote whose two originals carry them passes STREAM_LIMITS.payloadBytes and is skipped and logged; the
+// same quote untagged is sent, so the skip is the tags'.
+describe("payloads with tagged collections at their maxima (D26)", () => {
+  // alice's public status of 500 characters, quoting `quoted` when given, tagging `collections`, posted by the Store's
+  // own operation with its references written in the same call, so its turn presents them.
+  async function postTagged(h: ApiHarness, token: string, collections: readonly string[], quoted?: string) {
+    const tokenHash = await sha256Hex(token);
+    return runInDurableObject(h.store, (_instance, state) => {
+      const result = postStatus.run(state.storage.sql, {
+        credential: { tokenHash, scope: "write:statuses", now: NOW },
+        text: "a".repeat(500),
+        spoilerText: "",
+        visibility: "public",
+        mediaIds: [],
+        ...(quoted === undefined ? {} : { quotedStatusId: quoted }),
+        objectId: crypto.randomUUID(),
+        now: NOW,
+        present: { origin: "https://kopje.test" },
+      });
+      const posted = result.status === "ok" ? result.value : result;
+      if (posted.status !== "ok" || !("value" in posted) || !("id" in posted.value)) {
+        throw new Error(`not posted: ${JSON.stringify(posted)}`);
+      }
+      for (const collection of collections) {
+        state.storage.sql.exec(
+          "INSERT INTO status_collections (status_id, collection_id) VALUES (?, ?)",
+          posted.value.id,
+          collection,
+        );
+      }
+      return posted.value.id;
+    });
+  }
+
+  it("sends an original with four, skips a quote whose originals both carry them, and sends it untagged", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const inbox = await subscribed(h, bob.token, "public:local");
+    await takeAll(inbox);
+    const C = "\u0001";
+    const collections = await maximalCollectionRows(h.store, C, 8);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const original = await postTagged(h, alice.token, collections.slice(0, 4));
+      await h.store.streamTick(BUILD);
+      await drained(h, inbox);
+      const quote = await postTagged(h, alice.token, collections.slice(4), original);
+      await h.store.streamTick(BUILD);
+      await drained(h, inbox);
+      const untaggedOriginal = await postTagged(h, alice.token, []);
+      const untaggedQuote = await postTagged(h, alice.token, [], untaggedOriginal);
+      await h.store.streamTick(BUILD);
+      await drained(h, inbox);
+      const sent = new Map(
+        inbox
+          .rest()
+          .filter((m) => m.event === "update")
+          .map((m) => [idOf(m), m]),
+      );
+      expect([...sent.keys()]).toEqual([original, untaggedOriginal, untaggedQuote]);
+      const payload = sent.get(original)!.payload!;
+      expect(
+        (JSON.parse(payload) as { tagged_collections: { id: string }[] }).tagged_collections.map((c) => c.id),
+      ).toEqual(collections.slice(0, 4));
+      // Its payload as measured: within the limit with all four.
+      expect(payloadBytes(payload)).toBe(163_550);
+      const skipped = warn.mock.calls.filter(
+        ([entry]) => (entry as { event?: string })?.event === "kopje.stream.payload-skipped",
+      );
+      expect(skipped).toHaveLength(1);
+      // The quote is the unit skipped: as REST shows it, with its own four and its original's, it passes the limit.
+      const { body: shown } = await getJson<Status>(h, `/api/v1/statuses/${quote}`, bob.token);
+      expect(shown.tagged_collections).toHaveLength(4);
+      expect(payloadBytes(JSON.stringify(shown))).toBeGreaterThan(STREAM_LIMITS.payloadBytes);
     } finally {
       warn.mockRestore();
     }

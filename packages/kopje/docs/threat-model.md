@@ -1980,11 +1980,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   collection job after it, each after the item's `Add`; a suspension sends none. A status's `tagged_collections`
   (migration `0120_tagged_collections`, #1589's D26) are the collections it tags that are shown to the viewer, each with
   the members shown to the viewer, on an original and a quoted status (a boost presents none, its original them); a
-  remote one only while its id is a valid id on its owner's origin, and its `url` only as its writer would store it.
-  No public page presents them or reads a reference: the status page and its thread, the profile's tabs and pins, the
-  hashtag page, the interact handoff, oEmbed and the `/authorize_interaction` result present `[]`.
+  remote one only while its id is a valid id on its owner's origin and its name and description are within its
+  writer's bounds, and its `url` only as its writer would store it. No public page presents them or reads a reference:
+  the status page and its thread, the profile's tabs and pins, the hashtag page, the interact handoff, oEmbed and the
+  `/authorize_interaction` result present `[]`. A local status's ActivityPub forms (its Note or Question as served, in
+  the outbox and in `featured`, its `Create` and `Update`s and a `QuoteRequest`'s instrument) name each collection it
+  tags whose owner is available by its id alone, a remote one only while valid, under the `featured_collections`
+  terms, so no collection's name, description or members travel in the post's activities.
   _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`, `collectionItemShownSql`,
-  `featureApprovalSql`, `featureApprovalReads`, `mayFeatureSql` and `inCollectionsSql` in `src/domain/audience.ts`, the
+  `featureApprovalSql`, `featureApprovalReads`, `mayFeatureSql` and `inCollectionsSql` in `src/domain/audience.ts`,
+  `statusFacts`, `noteOf` and `contextOf` (`src/domain/activities.ts`), the
   account presenter and `presentFor` (`src/domain/accounts.ts`), `src/domain/collections.ts`, `notifiedCollection`,
   `taggedCollectionsOf` (read by the status presenter's `hydrate` unless `Present.page`, which `pagePresent` in
   `src/domain/web-pages/site.ts`, oEmbed and `/authorize_interaction` set) and `shownItems`
@@ -2004,7 +2009,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `featureApproval`, `mayFeature` and `inCollections` in `test/policy-model.ts`), `test-node/policy-boundary.test.ts`,
   `test/tagged-collections.test.ts` ("shows each viewer the collection and the items R45 shows them", "presents a
   boost's original and a quote's own and quoted collections", "reads no reference for a page, which presents none,
-  while the API presents them", "presents Y alone, with its uri for the url no writer would store").
+  while the API presents them", "presents Y alone, with its uri for the url no writer would store", "leaves out a
+  restored collection whose text reads past its writer's bounds", "names each collection by its id alone, after the
+  other tags, under the featured_collections terms", "lets S's Note name Y alone, by its id").
 
 ### Authorization (AUTH)
 
@@ -5622,8 +5629,8 @@ logs (5.77 MB escaped, 4.66 MB raw, the fill of the largest SQLite read) are mea
 | A moderation_warning notification, its local account at bounds   | 134,434           | 294,570         | 364,965           | 8         | 694   | 4.4%           |
 | Its notification group                                           | 134,434           | 294,759         | 365,154           | 8         | 701   | 4.4%           |
 | A filtered favourite of the quote, as include_filtered lists it  | 7,101,455         | 5,768,003       | 5,786,933         | 2,174     | 6,786 | 69.0%          |
-| ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,700,089         | 4,245,597       |                   | 1,338     | 3,172 | 50.6%          |
-| Its Create (the Note and its addressing again)                   |                   | 6,301,685       |                   |           |       | 75.1%          |
+| ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,708,489         | 4,262,049       |                   | 1,342     | 3,184 | 50.8%          |
+| Its Create (the Note and its addressing again)                   |                   | 6,318,633       |                   |           |       | 75.3%          |
 | Profile, derived from its caps                                   |                   | 326,185         | 372,038           |           |       | 4.4%           |
 | Announcement: each part derived from its caps                    |                   | 121,774         | 248,997           |           |       | 3.0%           |
 | Trending hashtag (Tag with history), derived from its caps       |                   | 4,508           | 4,572             |           |       | 0.1%           |
@@ -5749,19 +5756,21 @@ A Note shows what the Status entity shows: its hashtags and mentions are read th
 and attachments as stored, and its card as a `Link` where the API shows the card (`statusFacts` in
 `src/domain/activities.ts`), so a converted row's hashtag past its bound is left out of both. The card's URL is at most
 2,048 bytes of printable ASCII, which JSON does not escape (`cardUrlPastSql`), so the `Link` adds at most 2,074 bytes
-with its frame. A Note's addressing (to, cc) keeps every recipient, and the Create repeats it: a local status
-addresses at most `MAX_LOCAL_ADDRESSED` (1,000) accounts, which a post's 500 characters (about 170 mentions) never reach
-and the cutover's conversion refuses past, naming the status (`src/platform/identity-bounds.ts`). With every part at its
-bound and 1,000 actor ids of 2,048 bytes, the Create is 75% of `OUTBOX_BYTES`; five such Notes are not within 8 MiB, so
-the featured collection shows its Notes within `OUTBOX_BYTES` and the pins past them by uri (4.46 MB with one Note
-whole, `test/status-bounds.test.ts`). A group's status is the owner's own (favourites and boosts group), so it is at
-most a quote. A report's statuses after the first stop at 2 MiB, so a report is at most its accounts, its first status
-(a quote) and nothing more, or a small first status and 2 MiB; its staff accounts are local, and its reporter (a remote
-one, from a `Flag`) and its comment are at their bounds: the comment's CHECK (migration `0054_remote_reports`) holds
-20,000 bytes, which a stored NUL followed by U+0001 makes about 120 KB of JSON (Kopje's writers make about 30 KB: 5,000
-code points). Every shape stays within 89% of an answer of 8 MiB with filter results included, measured and conservative
-alike, and so within `STATUS_ANSWER_BYTES` (95.5% of it), so an answer that admits whole items always fits its first.
-The 89% ceiling accommodates the conversation's 14
+with its frame. The collections it tags are `FeaturedCollection` tags of their ids alone, at most four, each at most
+38 bytes and its id of `COLLECTION_URI_BYTES` JSON-escaped (16,452 bytes for four ids of `"`), and its context gains
+the `featured_collections` terms once. A Note's addressing (to, cc) keeps every recipient, and the Create repeats it: a
+local status addresses at most `MAX_LOCAL_ADDRESSED` (1,000) accounts, which a post's 500 characters (about 170
+mentions) never reach and the cutover's conversion refuses past, naming the status (`src/platform/identity-bounds.ts`).
+With every part at its bound and 1,000 actor ids of 2,048 bytes, the Create is 75% of `OUTBOX_BYTES`; five such Notes
+are not within 8 MiB, so the featured collection shows its Notes within `OUTBOX_BYTES` and the pins past them by uri
+(4.49 MB with one Note whole, `test/status-bounds.test.ts`). A group's status is the owner's own (favourites and boosts
+group), so it is at most a quote. A report's statuses after the first stop at 2 MiB, so a report is at most its
+accounts, its first status (a quote) and nothing more, or a small first status and 2 MiB; its staff accounts are local,
+and its reporter (a remote one, from a `Flag`) and its comment are at their bounds: the comment's CHECK (migration
+`0054_remote_reports`) holds 20,000 bytes, which a stored NUL followed by U+0001 makes about 120 KB of JSON (Kopje's
+writers make about 30 KB: 5,000 code points). Every shape stays within 89% of an answer of 8 MiB with filter results
+included, measured and conservative alike, and so within `STATUS_ANSWER_BYTES` (95.5% of it), so an answer that admits
+whole items always fits its first. The 89% ceiling accommodates the conversation's 14
 account arrays and four status/poll arrays, allowing 40 typical emoji per status and 20 per profile. Through the real
 Store RPC, maximal answers of plain notifications, grouped notifications, conversations, admin reports and the directory
 return 7.83, 7.82, 7.83, 7.14 and 8.30 MB of JSON (`test/rpc-budgets.test.ts`).

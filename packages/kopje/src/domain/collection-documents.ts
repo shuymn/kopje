@@ -1,7 +1,7 @@
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { MAX_STORED_COLLECTIONS } from "../platform/stored-bounds";
-import { followersUri, recordOutbound } from "./activities";
+import { FEATURED_COLLECTIONS_TERMS, followersUri, recordOutbound } from "./activities";
 import { availableSql, blockedSql, collectionItemShownSql, collectionShownSql, PUBLIC_COLLECTION } from "./audience";
 import { beginFollowerStaging, type DeliveryEnvelope } from "./deliveries";
 import { allocateLocalId } from "./ids";
@@ -23,17 +23,6 @@ import { normalizeTag } from "./tag-name";
 const AS_CONTEXT = "https://www.w3.org/ns/activitystreams";
 
 const FEP_7AA9 = "https://w3id.org/fep/7aa9#";
-
-// context_helper.rb's featured_collections extension.
-const FEATURED_COLLECTIONS_TERMS = {
-  FeaturedCollection: `${FEP_7AA9}FeaturedCollection`,
-  FeaturedItem: `${FEP_7AA9}FeaturedItem`,
-  FeatureRequest: `${FEP_7AA9}FeatureRequest`,
-  FeatureAuthorization: `${FEP_7AA9}FeatureAuthorization`,
-  topic: { "@id": `${FEP_7AA9}topic`, "@type": "@id" },
-  featuredObject: { "@id": `${FEP_7AA9}featuredObject`, "@type": "@id" },
-  featureAuthorization: { "@id": `${FEP_7AA9}featureAuthorization`, "@type": "@id" },
-} as const;
 
 // The context of a document or activity holding a FeaturedCollection: FeaturedCollectionSerializer's extensions
 // (discoverable, featured_collections, hashtag, sensitive), merged in their order.

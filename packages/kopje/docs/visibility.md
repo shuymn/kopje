@@ -756,10 +756,14 @@ A status's `tagged_collections` (#1589's D26) are the collections it tags (`stat
 for the viewer, on an original and a quoted status: a boost presents `[]` and its `reblog` the original's. They are read
 once a chunk of statuses presented (`taggedCollectionsOf` in `collection-presenter.ts`, from the status presenter's
 `hydrate`), a collection several statuses tag once. A remote collection is shown only while its id is a valid id on its
-owner's origin (`validRemoteCollection`), so a restored row no writer would store shows nothing. No page presents them
+owner's origin (`validRemoteCollection`) and its name and description are within its writer's bounds
+(`withinRemoteText`), so a restored row no writer would store shows nothing. No page presents them
 or reads a reference: the status page and its thread, the profile's tabs and pins, the hashtag page, the interact
 handoff, oEmbed and the `/authorize_interaction` result present `[]` (`Present.page`, set by `pagePresent`, which
-`anonymous()` spreads, and by oEmbed and `/authorize_interaction`; the chunk planner's term is 0 under it).
+`anonymous()` spreads, and by oEmbed and `/authorize_interaction`; the chunk planner's term is 0 under it). A local
+status's ActivityPub forms name each collection it tags whose owner is available (`collectionFoundSql`) by its id
+alone, a remote one only while valid (`statusFacts` and `noteOf` in `activities.ts`): with no viewer, the id is all
+they send, so the collection's content reaches only those R45 shows it to when they fetch it.
 A local account's collections are served over ActivityPub (FEP-7aa9, `src/domain/collection-documents.ts`): the
 `featured_collections` collection and its pages, a `FeaturedCollection`, a `FeaturedItem` and a member's
 `FeatureAuthorization`. Each reads R45 with the fetcher as its viewer: the remote account whose stored key the

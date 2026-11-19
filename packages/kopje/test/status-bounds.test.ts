@@ -73,7 +73,6 @@ import { STATUS_COLUMN_MAP, STATUS_FROM, statusRowBoundSql } from "../src/domain
 import { renderFieldValue } from "../src/domain/status-text";
 import { getStatus, getStatuses, recordEdit, statusHistory } from "../src/domain/statuses";
 import { STREAM_EVENT_NAMES, streamUnit } from "../src/domain/streaming";
-import { TREND_LANGUAGES } from "../src/domain/trend-languages";
 import {
   LINK_ACCT_JSON_BYTES,
   LINK_URL_JSON_BYTES,
@@ -100,10 +99,6 @@ import {
   CARD_OPTIONAL_URL_LIMIT,
   CARD_TEXTS,
   CARD_URL_LIMIT,
-  COLLECTION_DESCRIPTION_LENGTH,
-  COLLECTION_NAME_LENGTH,
-  COLLECTION_URI_BYTES,
-  COLLECTION_URL_BYTES,
   MAX_TAGGED_COLLECTIONS,
   MEDIA_DESCRIPTION_BYTES,
   MEDIA_META_BYTES,
@@ -144,6 +139,7 @@ import { STREAM_LIMITS, TURN_BUDGET, UNIT_WORST } from "../src/stream-hub";
 import { setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { acceptQuote } from "./budget-helpers";
+import { maximalCollections } from "./collection-maxima";
 import {
   ACCOUNT_EMOJIS_FULL,
   accountAtCap,
@@ -1402,7 +1398,7 @@ async function maximalStatuses(fill: Fill) {
   const quote = await storedStatus(t, quoter, await maximalParts(t, fill));
   await acceptQuote(t, quote, quoted);
   const boost = await storedStatus(t, booster, { ...(await maximalParts(t, fill)), reblogOf: quote });
-  await maximalCollections(t, fill, [quoted, quote]);
+  await maximalCollections(t.store, fill === "raw" ? W : C, [quoted, quote]);
   // A card on each, the boost's own row too (an imported row: the presenter never reads a boost's).
   for (const id of [quoted, quote, boost]) {
     await maximalCard(t, id, fill);
@@ -1491,69 +1487,6 @@ async function maximalCard(t: Setup, statusId: string, fill: Fill): Promise<void
     text(CARD_IMAGE_DESCRIPTION_JSON_BYTES),
     "222222222222222222",
   );
-}
-
-// Four remote collections for each of `statuses` to tag (#1589's D26), its own, at their maxima as a sync stores them: their
-// owner on o.example, each id and web address on its origin with the rest of its bound in `"` (escaped to two bytes),
-// its name and description at their bounds in characters JSON escapes to six bytes (four-byte characters in the raw
-// fill), the longest language, a hashtag at its bound, and the 25 accepted items of 25 members a listing stores (each
-// with its uri, so R45 shows it). Presented, each is COLLECTION_JSON_MAX less its origin's bytes in its id and url.
-async function maximalCollections(t: Setup, fill: Fill, statuses: readonly string[]): Promise<void> {
-  const origin = "https://o.example";
-  const owner = nextId();
-  await sql(
-    t.store,
-    "INSERT INTO accounts (id, uri, username, domain) VALUES (?, ?, 'o', 'o.example')",
-    owner,
-    `${origin}/users/o`,
-  );
-  const members = Array.from({ length: 25 }, () => nextId());
-  for (const [i, member] of members.entries()) {
-    await sql(
-      t.store,
-      "INSERT INTO accounts (id, uri, username, domain) VALUES (?, ?, ?, 'm.example')",
-      member,
-      `https://m.example/users/m${i}`,
-      `m${i}`,
-    );
-  }
-  const text = (length: number) => (fill === "raw" ? W : C).repeat(length);
-  const quoted = (path: string, bytes: number) => `${origin}/${path}/`.padEnd(bytes, '"');
-  const language = [...TREND_LANGUAGES].reduce((a, b) => (b.length > a.length ? b : a));
-  const at = new Date(NOW).toISOString();
-  for (let n = 0; n < MAX_TAGGED_COLLECTIONS * statuses.length; n++) {
-    const id = nextId();
-    await sql(
-      t.store,
-      `INSERT INTO collections (id, account_id, local, name, description, language, sensitive, discoverable, tag, uri,
-				url, total_items, created_at, updated_at)
-			VALUES (?, ?, 0, ?, ?, ?, 0, 0, ?, ?, ?, 25, ?9, ?9)`,
-      id,
-      owner,
-      text(COLLECTION_NAME_LENGTH.remote),
-      text(COLLECTION_DESCRIPTION_LENGTH.remote),
-      language,
-      "\u{20000}".repeat(MAX_TAG_LENGTH),
-      quoted(`c${n}`, COLLECTION_URI_BYTES),
-      quoted(`w${n}`, COLLECTION_URL_BYTES),
-      at,
-    );
-    for (const [i, member] of members.entries()) {
-      await sql(
-        t.store,
-        `INSERT INTO collection_items (id, collection_id, account_id, state, position, uri, created_at, updated_at)
-				VALUES (?, ?, ?, 1, ?, ?, ?6, ?6)`,
-        nextId(),
-        id,
-        member,
-        i + 1,
-        `${origin}/items/${n}/${i}`,
-        at,
-      );
-    }
-    const status = statuses[Math.floor(n / MAX_TAGGED_COLLECTIONS)]!;
-    await sql(t.store, "INSERT INTO status_collections (status_id, collection_id) VALUES (?, ?)", status, id);
-  }
 }
 
 // What each fill measures: the table of maxima, and for each item of the heap model its rows by query and column (its
@@ -3500,7 +3433,8 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
   // whose url (CARD_URL_LIMIT bytes of ASCII, which JSON does not escape) and title (CARD_TEXTS.title less its quotes,
   // in ASCII: the most bytes its projection reads) are at their bounds,
   // built as statusFacts and noteOf build the object endpoint's Note, the outbox's Create and the featured
-  // collection's Notes. docs/threat-model.md "Maxima of presented units" states the Note and the Create.
+  // collection's Notes; each status tags four valid remote collections whose ids are COLLECTION_URI_BYTES of characters
+  // JSON escapes (maximalCollections). docs/threat-model.md "Maxima of presented units" states the Note and the Create.
   it("measures the Note and the Create, within OUTBOX_BYTES, and five Notes of the featured collection", async () => {
     const t = await setup();
     const parts = await maximalParts(t);
@@ -3531,6 +3465,7 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
       await sql(t.store, "INSERT INTO status_pins (account_id, status_id) VALUES (?, ?)", ALICE, id);
       ids.push(id);
     }
+    await maximalCollections(t.store, W, ids);
     const measuredNote = await runInDurableObject(t.store, (_instance, state) => {
       let sqlite = 0;
       let rows = 0;
@@ -3556,6 +3491,7 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
         media: facts.media.length,
         emojis: facts.emojis.length,
         emojiTags: jsonBytes(facts.emojis),
+        collections: facts.collections.length,
         link: jsonBytes(note.attachment) - jsonBytes((note.attachment as unknown[]).slice(0, -1)),
       };
     });
@@ -3600,9 +3536,10 @@ describe("ActivityPub Notes of a local status at its bounds (RES-3)", () => {
       media: 4,
       emojis: 61,
       emojiTags: 14_850,
+      collections: MAX_TAGGED_COLLECTIONS,
       // The Link and its comma: `,{"type":"Link","href":""}` and the url.
       link: 26 + CARD_URL_LIMIT,
-      featured: 4_456_650,
+      featured: 4_489_880,
       whole: 1,
     });
   }, 300_000);
