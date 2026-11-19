@@ -4,7 +4,14 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { accountsOf, ANSWER_CHUNK } from "../src/domain/accounts";
-import { admit, admittedPage, ANSWER_BYTES, encodedTwiceBytes, jsonBytes } from "../src/domain/answer-budget";
+import {
+  admit,
+  admittedPage,
+  ANSWER_BYTES,
+  encodedTwiceBytes,
+  jsonBytes,
+  STATUS_ANSWER_BYTES,
+} from "../src/domain/answer-budget";
 import { type VisibleStatusId } from "../src/domain/audience";
 import { filterTextLimits, MAX_FILTER_REQUEST_TEXT } from "../src/domain/filters";
 import { CACHED_IMAGE_BYTES, CACHED_IMAGE_KINDS } from "../src/domain/remote-media";
@@ -445,6 +452,8 @@ describe("status answers within STATUS_ANSWER_BYTES (RES-3)", () => {
     const quoted = await seedStatus(h.store, { accountId: quoter, visibility: "public", published: NOW - DAY });
     const list = nextId();
     await sql(h.store, "INSERT INTO lists (id, account_id, title) VALUES (?, ?, 'edge')", list, alice.id);
+    // The one account a search for needle finds, which a search of every type admits before the statuses.
+    const needle = await remoteAccount(h.store, "needle");
     // Each status by its own discoverable author, whom alice follows and lists, so each trends; each bookmarked,
     // favourited, quoting one small status and trending above the older ones.
     const { big, edge } = await statusBudgetEdge(async (i, share) => {
@@ -495,6 +504,23 @@ describe("status answers within STATUS_ANSWER_BYTES (RES-3)", () => {
     );
     expect(found.body.statuses.map((s) => s.id)).toEqual(big);
     expectStatusBudgetCut("search", found.bytes, next);
+    // A search of every type takes STATUS_ANSWER_BYTES from its first admission, the account it finds first: its
+    // statuses fit what the account leaves, and the first it rejects, which ANSWER_BYTES would have admitted, ends it.
+    const mixed = await answer<{ accounts: { id: string }[]; statuses: { id: string }[] }>(
+      h,
+      "/api/v2/search?q=needle&limit=40",
+      alice.token,
+    );
+    expect(mixed.body.accounts.map((a) => a.id)).toEqual([needle]);
+    const order = [...big, edge];
+    const admitted = mixed.body.statuses.map((s) => s.id);
+    expect(admitted).toEqual(order.slice(0, admitted.length));
+    const items = (list: readonly unknown[]) => list.reduce<number>((sum, item) => sum + jsonBytes(item) + 1, 0);
+    const taken =
+      jsonBytes({ accounts: [], statuses: [], hashtags: [], collections: [] }) +
+      items(mixed.body.accounts) +
+      items(mixed.body.statuses);
+    expectStatusBudgetCut("mixed search", taken, await bytesOf(h, alice.token, order[admitted.length]!));
   }, 300_000);
 
   it("ends a context's descendants where STATUS_ANSWER_BYTES ends", async () => {
@@ -640,14 +666,15 @@ describe("composite answers within ANSWER_BYTES (RES-3)", () => {
     expect(found.statuses.map((s) => s.id)).toEqual(w.V.slice(0, found.statuses.length));
     expect(found.statuses.length).toBeGreaterThan(0);
     expect(found.hashtags.map((t) => t.name)).toEqual(["needle"]);
-    expect(jsonBytes(found)).toBeLessThanOrEqual(ANSWER_BYTES);
-    // The next status is the first rejected: with it, the accounts and statuses alone pass the budget.
+    expect(jsonBytes(found)).toBeLessThanOrEqual(STATUS_ANSWER_BYTES);
+    // The next status is the first rejected: with it, the accounts and statuses alone pass the budget, which a search
+    // that may present statuses takes from its first admission.
     const items = (list: readonly unknown[]) => list.reduce<number>((sum, item) => sum + jsonBytes(item) + 1, 0);
     const taken =
       jsonBytes({ accounts: [], statuses: [], hashtags: [], collections: [] }) +
       items(found.accounts) +
       items(found.statuses);
-    expect(taken + (await statusBytes(w, w.V[found.statuses.length]!)) + 1).toBeGreaterThan(ANSWER_BYTES);
+    expect(taken + (await statusBytes(w, w.V[found.statuses.length]!)) + 1).toBeGreaterThan(STATUS_ANSWER_BYTES);
     // A resolved account the viewer may not find is not put first.
     expect((await search(blocked)).accounts[0]?.id).toBe(needles[0]);
   }, 300_000);
