@@ -1,4 +1,3 @@
-import { selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, COLLECTIONS_ID_INDEX, LOCAL_ACCOUNTS_ID_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { httpUrl } from "../platform/http-url";
@@ -18,7 +17,6 @@ import {
   type Audience,
   audienceOf,
   availableLocalSql,
-  collectionFoundSql,
   DISTRIBUTABLE_SQL,
   isDistributable,
   PUBLIC_COLLECTION,
@@ -28,7 +26,7 @@ import {
   requiresMention,
   type Visibility,
 } from "./audience";
-import { collectionUri, TAGGED_COLLECTION_COLUMNS, taggable, type TaggedRow } from "./collection-presenter";
+import { collectionUri, taggableCollections } from "./collection-presenter";
 import { type EmojiTag, localEmojiTags } from "./custom-emojis";
 import { type DeliveryEnvelope, enqueueActivity, type OutboundOptions, type ReachOf } from "./deliveries";
 import { readOperation } from "./operation";
@@ -309,20 +307,19 @@ export function statusFacts(
 		FROM status_cards c WHERE c.status_id = ?1 AND c.fetched_at IS NOT NULL`,
     statusId,
   );
-  // The collections the status tags whose owner is available (collectionFoundSql), with no viewer (a1: the Note names
-  // each by its id alone, so no collection's content travels in the status's activities): its references by the
-  // primary key's prefix (at most MAX_TAGGED_COLLECTIONS, the trigger's bound), each collection and its owner by key,
-  // as the REST presenter reads them. Only those a status can tag (taggable, the presenter's test), a local one by its
-  // owner's route and a remote one by its id as stored, so a Note never names an id its writer would not have stored.
-  const collections = db.all<TaggedRow>(
-    `SELECT ${selectSql(TAGGED_COLLECTION_COLUMNS)}
-		FROM status_collections r
-			CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = r.collection_id
-			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
-		WHERE r.status_id = ?1 AND ${collectionFoundSql("c")}
-		ORDER BY r.collection_id`,
+  // The collections the status tags that a status can tag whatever the viewer (taggableCollections, as the REST
+  // presenter and the writer read them), with no viewer (a1: the Note names each by its id alone, so no collection's
+  // content travels in the status's activities): its references by the primary key's prefix (at most
+  // MAX_TAGGED_COLLECTIONS, the trigger's bound), each collection and its owner by key, in collection-id order, each by
+  // its id (collectionUri), so a Note never names an id its writer would not have stored or no route serves.
+  const collections = taggableCollections(
+    db,
+    origin,
+    `status_collections r CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = r.collection_id
+			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id`,
+    "r.status_id = ?1",
     statusId,
-  );
+  ).toSorted((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return {
     id: row.id,
     uri: row.uri,
@@ -347,7 +344,7 @@ export function statusFacts(
     quotePolicy: row.quote_policy,
     quote: readQuote(db, statusId),
     cardUrl: card === undefined ? null : shownCardUrl(row.visibility, card.url, card.title),
-    collections: collections.filter(taggable).map((c) => collectionUri({ ...c, username: c.username ?? "" }, origin)),
+    collections: collections.flatMap((c) => collectionUri(c, origin) ?? []),
   };
 }
 

@@ -755,26 +755,33 @@ A status's `tagged_collections` (#1589's D26) are the collections it tags (`stat
 `collections.ts`) that `collectionShownSql` admits for the viewer, each with the items `collectionItemShownSql` admits
 for the viewer, on an original and a quoted status: a boost presents `[]` and its `reblog` the original's. They are read
 once a chunk of statuses presented (`taggedCollectionsOf` in `collection-presenter.ts`, from the status presenter's
-`hydrate`), a collection several statuses tag once. A collection is shown only while a status can tag it (`taggable`):
-its name, description and tag well-formed UTF-8 as stored, read with no more U+FFFD than their stored bytes hold as EF
-BF BD, since decoding adds one for each malformed sequence (`wellFormed`); a local one only while its owner is a local
-account whose username, read whole within `USERNAME_LIMIT` bytes, is one the collection routes take (`tagNamesOwner`,
-`isRouteUsername`: `ROUTE_USERNAME`, the routes' own pattern); a remote one only while its id is a valid id on its
-owner's origin (`validRemoteCollection`, against the owner's id as `actorUriSql` reads it: '' past `ACTOR_URI_LIMIT`)
-and its name and description are within its writer's bounds (`withinRemoteText`). So a restored dump's malformed UTF-8
-is presented nowhere, no collection id names a route that does not serve it, and a restored row no writer would store
-shows nothing. The writer (`collections.ts`) resolves a post's links and a Note's tags to such collections alone, before
-it takes the first four, so a collection no surface shows takes no slot. No page presents them or reads a reference: the
-status page and its thread, the profile's tabs and pins, the hashtag page, the interact handoff, oEmbed and the
+`hydrate`), a collection several statuses tag once. A collection is shown only while a status can tag it, whatever the
+viewer (`taggableCollections`: its owner available, `collectionFoundSql`, and `taggable`; `collectionViewerSql`, the
+rest of `collectionShownSql`, is per viewer): its name, description and tag well-formed UTF-8 as stored, read with no
+more U+FFFD than their stored bytes hold as EF BF BD, since decoding adds one for each malformed sequence
+(`wellFormed`); a local one only while its owner is a local account whose username, read whole within `USERNAME_LIMIT`
+bytes, is one the collection routes take and whose actor id is that username's route on the instance's origin
+(`collectionOwnerRoute`, `isRouteUsername`: `ROUTE_USERNAME`, the routes' own pattern); a remote one only while its id
+is a valid id on its owner's origin (`validRemoteCollection`, against the owner's id as `actorUriSql` reads it: '' past
+`ACTOR_URI_LIMIT`) and its name and description are within its writer's bounds (`withinRemoteText`). One function builds
+a local collection's id from its owner's columns (`localCollectionUri`, read through `collectionOwnerColumns`): the
+API's `uri`, `url` and `tagged_collections`, the Note's tag, the collection's documents (its items' and its local
+members' authorizations' included), activities and page, and the route that serves it, so a collection whose owner's
+actor id is not that route is left out everywhere. So a restored dump's malformed UTF-8 is presented nowhere, no
+collection id names a route that does not serve it or a document of another id, and a restored row no writer would store
+shows nothing. The writer (`collections.ts`) applies the same `taggableCollections` to a post's links and a Note's tags
+before it takes the first four, so a collection no surface shows takes no slot; a collection that stops being available
+after the post is written is left out as the readers read it. No page presents them or reads a reference: the status
+page and its thread, the profile's tabs and pins, the hashtag page, the interact handoff, oEmbed and the
 `/authorize_interaction` result present `[]` (`Present.page`, set by `pagePresent`, which `anonymous()` spreads, and by
 oEmbed and `/authorize_interaction`; the chunk planner's term is 0 under it). A local status's ActivityPub forms name
-each collection it tags whose owner is available (`collectionFoundSql`) and that a status can tag (`taggable`, as the
-API presents it) by its id alone (`statusFacts` and `noteOf` in `activities.ts`): with no viewer, the id is all they
-send, so no collection's name, description or members travel in the post's activities. That bounds the wire's content,
-not who learns of the collection: a local collection's id is its owner's route, which names the owner, and a fetch of it
-is judged by R45 for the fetcher, the remote account whose stored key the signature names (a key Kopje does not store
-names none, and the fetch is anonymous), so a server whose user the owner blocks may still read it with another key, its
-instance actor's included unless the owner blocks that account or its domain, or show a copy it holds to that user.
+each collection it tags that a status can tag (`taggableCollections`, as the API decides it before R45) by its id alone
+(`statusFacts` and `noteOf` in `activities.ts`): with no viewer, the id is all they send, so no collection's name,
+description or members travel in the post's activities. That bounds the wire's content, not who learns of the
+collection: a local collection's id is its owner's route, which names the owner, and a fetch of it is judged by R45 for
+the fetcher, the remote account whose stored key the signature names (a key Kopje does not store names none, and the
+fetch is anonymous), so a server whose user the owner blocks may still read it with another key, its instance actor's
+included unless the owner blocks that account or its domain, or show a copy it holds to that user.
 A local account's collections are served over ActivityPub (FEP-7aa9, `src/domain/collection-documents.ts`): the
 `featured_collections` collection and its pages, a `FeaturedCollection`, a `FeaturedItem` and a member's
 `FeatureAuthorization`. Each reads R45 with the fetcher as its viewer: the remote account whose stored key the

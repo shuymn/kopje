@@ -30,7 +30,7 @@ export type CollectionPage =
 // applies R45 (federation/routes.ts).
 export const webCollectionPage = pageRead<{ id: string; document?: true }, CollectionPage>((db, input, site) => {
   if (input.document === true) {
-    const path = localCollectionPath(db, input.id);
+    const path = localCollectionPath(db, input.id, `https://${site.domain}`);
     return path === null ? { status: "not_found" } : { status: "document", path };
   }
   const present = pagePresent(site);

@@ -957,6 +957,18 @@ describe("collections: maxima", () => {
     for (const [i, member] of retired.entries()) {
       await seedItem(h, collectionId(0), 50 + i, { account_id: member, object_uri: null, state: 3 });
     }
+    // The list at limit=100, on the API's origin: the account's 10 collections.
+    const listed = await call(h, "GET", `/api/v1/accounts/${owner}/collections?limit=100`, alice.token);
+    expect(listed.body.collections).toHaveLength(10);
+    expect(jsonBytes(listed.body)).toBeLessThanOrEqual(10 * (COLLECTION_JSON_MAX + 1) + jsonBytes({ collections: [] }));
+    // Its actor id on LONG_ORIGIN, where the answer is presented: a local collection's id is under it while it is its
+    // username's route there (localCollectionUri).
+    await sql(
+      h.store,
+      "UPDATE accounts SET uri = ? WHERE id = ?",
+      `${LONG_ORIGIN}/ap/users/${"o".repeat(LOCAL_USERNAME_BYTES)}`,
+      owner,
+    );
     const { collection, accounts } = await shownAtLongOrigin(h, collectionId(0));
     expect(collection.items).toHaveLength(25);
     expect(accounts).toHaveLength(26);
@@ -976,10 +988,6 @@ describe("collections: maxima", () => {
     // CollectionWithAccounts: the collection and 26 accounts at the account occurrence's conservative bound.
     const frame = jsonBytes({ collection: {}, accounts: [] }) - 2;
     expect(COLLECTION_JSON_MAX + frame + 26 * (CONSERVATIVE_JSON.account + 1)).toBeLessThan(ANSWER_BYTES);
-    // The list at limit=100: the account's 10 collections.
-    const listed = await call(h, "GET", `/api/v1/accounts/${owner}/collections?limit=100`, alice.token);
-    expect(listed.body.collections).toHaveLength(10);
-    expect(jsonBytes(listed.body)).toBeLessThanOrEqual(10 * (COLLECTION_JSON_MAX + 1) + jsonBytes({ collections: [] }));
   });
 
   // 5-T8: a remote collection's longer name and description, and its uri and url as stored (https and printable ASCII,

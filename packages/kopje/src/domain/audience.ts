@@ -1293,10 +1293,16 @@ export function collectionFoundSql(c: string): string {
 }
 
 // R45 (CollectionPolicy#show?, AccountPolicy#index_collections?): whether `viewer` is shown the collection `c`: it is
-// found, and its owner neither blocks the viewer nor blocks the viewer's domain. A found collection not shown answers
-// 403 by its id; every other read leaves it out.
+// found, and its owner neither blocks the viewer nor blocks the viewer's domain (collectionViewerSql). A found
+// collection not shown answers 403 by its id; every other read leaves it out.
 export function collectionShownSql(c: string, viewer: string): string {
-  return `(${collectionFoundSql(c)} AND (${viewer} IS NULL OR NOT ${blockedSql(`${c}.account_id`, viewer)}))`;
+  return `(${collectionFoundSql(c)} AND ${collectionViewerSql(c, viewer)})`;
+}
+
+// R45's part that depends on the viewer: the owner of the collection `c` neither blocks `viewer` nor blocks its domain.
+// A read that applies the rest itself (collection-presenter.ts taggableCollections) adds this part alone.
+export function collectionViewerSql(c: string, viewer: string): string {
+  return `(${viewer} IS NULL OR NOT ${blockedSql(`${c}.account_id`, viewer)})`;
 }
 
 // R45 (CollectionsController#set_collections): whether the collection `c` is listed among its owner's to `viewer`:

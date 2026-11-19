@@ -1,7 +1,9 @@
+import { selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { COLLECTION_CHECK_ATTEMPTS, COLLECTION_ITEM_STATES } from "../platform/stored-bounds";
-import { localCollectionUri, recordItemAdd } from "./collection-documents";
+import { instanceOrigin, recordItemAdd } from "./collection-documents";
+import { type CollectionOwner, collectionOwnerColumns, localCollectionUri } from "./collection-presenter";
 import { writeOperation } from "./operation";
 
 // Checks of remote members' feature authorizations (#1589's D22, Mastodon 4.7.5's ActivityPub::VerifyFeaturedItemService):
@@ -57,7 +59,7 @@ export type ItemCheck = { item: string; token: string; authorization: string; co
 // the fetch may pass later.
 export type ItemCheckOutcome = "match" | "gone" | "mismatch" | "transient";
 
-type Candidate = {
+type Candidate = CollectionOwner & {
   id: string;
   attempts: number;
   candidate: string | null;
@@ -65,7 +67,6 @@ type Candidate = {
   local: number | null;
   collection_id: string;
   collection: string | null;
-  owner_uri: string | null;
   member: string | null;
   member_local: number | null;
 };
@@ -73,7 +74,8 @@ type Candidate = {
 // The due items, oldest due first, with what a claim reads of each by key: its collection and that collection's owner,
 // and its member. ?1 now, ?2 the most read.
 const DUE = `SELECT i.id, i.check_attempts AS attempts, i.candidate_approval_uri AS candidate, c.account_id AS owner,
-		c.local, i.collection_id, c.uri AS collection, o.uri AS owner_uri, a.uri AS member, a.domain IS NULL AS member_local
+		c.local, i.collection_id, c.uri AS collection, ${selectSql(collectionOwnerColumns("c.local", "o"))}, a.uri AS member,
+		a.domain IS NULL AS member_local
 	FROM (SELECT id FROM collection_items INDEXED BY collection_items_check
 		WHERE check_due_at >= 0 AND check_due_at <= ?1 ORDER BY check_due_at, id LIMIT ?2) w
 	CROSS JOIN collection_items i INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} ON i.id = w.id
@@ -83,10 +85,11 @@ const DUE = `SELECT i.id, i.check_attempts AS attempts, i.candidate_approval_uri
 	ORDER BY i.check_due_at, i.id`;
 
 // The id of the collection a candidate's authorization must name: a remote collection's uri, a local one's as Kopje
-// writes it; null for neither.
-function checkedCollection(row: Candidate): string | null {
+// writes it (localCollectionUri, on the instance's `origin`); null for neither, and for a local one whose id no route
+// serves.
+function checkedCollection(row: Candidate, origin: string | null): string | null {
   if (row.local === 1) {
-    return row.owner_uri === null ? null : localCollectionUri(row.owner_uri, row.collection_id);
+    return origin === null ? null : localCollectionUri(row, row.collection_id, origin);
   }
   return row.local === 0 ? row.collection : null;
 }
@@ -123,11 +126,12 @@ export const claimItemChecks = writeOperation<{ now: number }, { checks: ItemChe
   (db, { now }) => {
     const today = dayOf(now);
     const checks: ItemCheck[] = [];
+    const origin = instanceOrigin(db);
     for (const row of db.all<Candidate>(DUE, now, ITEM_CHECK_CANDIDATES)) {
       if (checks.length >= ITEM_CHECKS_PER_ROUND) {
         break;
       }
-      const collection = checkedCollection(row);
+      const collection = checkedCollection(row, origin);
       if (
         row.owner === null ||
         collection === null ||

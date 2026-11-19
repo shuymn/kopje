@@ -1517,6 +1517,145 @@ describe("rows no writer produces (7-T9)", () => {
     expect(await served(t, [d])).toEqual([{ status: 200, id: d }]);
   });
 
+  // alice's actor id restored as /ap/users/old_alice, her username still alice (the dump round-trip admits it): her
+  // collection L's id, built from her actor id, is no route's, since /ap/users/old_alice names no account and
+  // /ap/users/alice serves a document whose id is under old_alice. So no surface emits it or serves it: REST's status
+  // and collection, the Note, the FeaturedCollection at either path, the page, and a post's link, which references
+  // none. With her actor id her route again, every surface emits the one id, and each dereferences to a document that
+  // declares it.
+  it("builds a local collection's id in one place, and leaves it out wherever its route would not serve it", async () => {
+    const t = await setup();
+    const L = await localCollection(t, ALICE, 1);
+    await item(t.store, L, DAVE, 1, 1);
+    const I = String(600000000000000000n + BigInt(items));
+    const owner = await remoteOwner(t, 2, `${MASTODON}/users/x`);
+    const V = await remoteCollection(t, owner, 2, `${MASTODON}/users/x/collections/2`);
+    const S = await posted(t, "S");
+    for (const id of [L, V]) {
+      await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", S, id);
+    }
+    const v = `${MASTODON}/users/x/collections/2`;
+    const surfaces = async () => {
+      const status = (await t.api<Status>(`/api/v1/statuses/${S}`, "dave")).body;
+      const shown = await t.request(`/api/v1/collections/${L}`, {
+        headers: { authorization: `Bearer ${t.tokens.dave}` },
+      });
+      const uris = status.tagged_collections.map(({ uri }) => uri);
+      const shownUri = shown.ok ? (await shown.json<{ collection: { uri: string } }>()).collection.uri : null;
+      const named = await noted(t, S);
+      return {
+        uris,
+        shown: shownUri,
+        named,
+        served: await served(t, [...uris, ...(shownUri === null ? [] : [shownUri]), ...named]),
+        page: (await t.request(`/collections/${L}`)).status,
+        linked: await tagged(
+          t,
+          await posted(t, `${LOCAL}/collections/${L}`, `${LOCAL}/ap/users/alice/collections/${L}`),
+        ),
+      };
+    };
+    await sql(t.store, "UPDATE accounts SET uri = ? WHERE id = ?", `${LOCAL}/ap/users/old_alice`, ALICE);
+    const routes = async () =>
+      Promise.all(
+        ["alice", "old_alice"].map(
+          async (name) => (await t.request(`/ap/users/${name}/collections/${L}`, AP_GET)).status,
+        ),
+      );
+    // The documents under the collection: its item's FeaturedItem and its local member's FeatureAuthorization.
+    const items_ = async () =>
+      Promise.all(
+        [`/ap/users/alice/collection_items/${I}`, `/ap/users/dave/feature_authorizations/${I}`].map(async (path) => {
+          const response = await t.request(path, AP_GET);
+          const body = response.ok ? await response.json<{ id: string; interactingObject?: string }>() : null;
+          return { status: response.status, id: body?.interactingObject ?? body?.id ?? null };
+        }),
+      );
+    // The owner's writes that would emit the id: its listing, a new collection's and an update's.
+    const writes = async () => {
+      const alice = { authorization: `Bearer ${t.tokens.alice}`, "content-type": "application/json" };
+      const write = async (method: string, path: string) =>
+        (
+          await t.request(path, {
+            method,
+            headers: alice,
+            body: JSON.stringify({ name: "c", sensitive: false, discoverable: true }),
+          })
+        ).status;
+      return {
+        featured: (await t.request("/ap/users/alice/featured_collections", AP_GET)).status,
+        created: await write("POST", "/api/v1/collections"),
+        updated: await write("PATCH", `/api/v1/collections/${L}`),
+      };
+    };
+    expect({ ...(await surfaces()), routes: await routes(), items: await items_(), writes: await writes() }).toEqual({
+      uris: [v],
+      shown: null,
+      named: [v],
+      served: [],
+      page: 404,
+      linked: [],
+      routes: [404, 404],
+      items: [
+        { status: 404, id: null },
+        { status: 404, id: null },
+      ],
+      writes: { featured: 404, created: 403, updated: 404 },
+    });
+    await sql(t.store, "UPDATE accounts SET uri = ? WHERE id = ?", `${LOCAL}/ap/users/alice`, ALICE);
+    const l = `${LOCAL}/ap/users/alice/collections/${L}`;
+    expect(await surfaces()).toEqual({
+      uris: [l, v],
+      shown: l,
+      named: [l, v],
+      served: [{ status: 200, id: l }],
+      page: 200,
+      linked: [L],
+    });
+    expect(await items_()).toEqual([
+      { status: 200, id: `${LOCAL}/ap/users/alice/collection_items/${I}` },
+      { status: 200, id: l },
+    ]);
+    expect(await writes()).toEqual({ featured: 200, created: 200, updated: 200 });
+  });
+
+  // Four collections of x, then suspended, and then y's: a post linking the four and then y's, and a remote Note
+  // tagging them in that order, give y's a slot, since the writer decides as the readers do (taggableCollections), with
+  // no viewer: the four, which no surface shows anyone, take none.
+  it("gives a post's slots only to collections whose owner is available, before it takes the first four", async () => {
+    const t = await setup();
+    const x = await remoteOwner(t, 1, `${MASTODON}/users/x`);
+    const y = await remoteOwner(t, 2, `${MASTODON}/users/y`);
+    const unavailable: string[] = [];
+    for (let n = 1; n <= MAX_TAGGED_COLLECTIONS; n++) {
+      unavailable.push(await remoteCollection(t, x, n, `${MASTODON}/users/x/collections/${n}`));
+    }
+    const Y = await remoteCollection(t, y, 9, `${MASTODON}/users/y/collections/9`);
+    await sql(t.store, "UPDATE accounts SET suspended_at = ?, suspension_source = 'account' WHERE id = ?", T, x);
+    const links = [
+      ...unavailable.map((_, i) => `${MASTODON}/users/x/collections/${i + 1}`),
+      `${MASTODON}/users/y/collections/9`,
+    ];
+    const S = await posted(t, ...links);
+    expect(await tagged(t, S)).toEqual([Y]);
+    const { body } = await t.api<Status>(`/api/v1/statuses/${S}`, "dave");
+    expect(body.tagged_collections.map(({ id }) => id)).toEqual([Y]);
+    expect(await noted(t, S)).toEqual([`${MASTODON}/users/y/collections/9`]);
+  });
+
+  // A remote collection whose restored name is F0 90 80, a sequence cut short that decodes to one U+FFFD of the same
+  // three bytes, beside a well-formed one: a post linking both references the second alone, as the readers would show
+  // it alone (the U+FFFD comparison of taggableCollections).
+  it("gives no slot to a collection whose restored text is malformed", async () => {
+    const t = await setup();
+    const owner = await remoteOwner(t, 1, `${MASTODON}/users/x`);
+    const M = await remoteCollection(t, owner, 1, `${MASTODON}/users/x/collections/1`);
+    const W = await remoteCollection(t, owner, 2, `${MASTODON}/users/x/collections/2`);
+    await sql(t.store, "UPDATE collections SET name = CAST(unhex('F09080') AS TEXT) WHERE id = ?", M);
+    const S = await posted(t, `${MASTODON}/users/x/collections/1`, `${MASTODON}/users/x/collections/2`);
+    expect({ malformed: M, tagged: await tagged(t, S) }).toEqual({ malformed: M, tagged: [W] });
+  });
+
   it("lets S's Note name Y alone, by its id", async () => {
     const { t, S, uriOf } = await restored();
     const [row] = await sql<{ uri: string }>(t.store, "SELECT uri FROM statuses WHERE id = ?", S);

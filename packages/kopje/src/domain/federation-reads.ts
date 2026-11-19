@@ -57,17 +57,17 @@ const serialized = (document: Record<string, unknown> | null) => ({
 });
 
 export const apFeaturedCollections = federationRead<DocumentRequest & { page: string | null }, CollectionDocument>(
-  (db, input) => serialized(featuredCollectionsDocument(db, input)),
+  (db, input, domain) => serialized(featuredCollectionsDocument(db, input, `https://${domain}`)),
 );
 
-export const apFeaturedCollection = federationRead<DocumentRequest & { id: string }, CollectionDocument>((db, input) =>
-  serialized(featuredCollectionDocument(db, input)),
+export const apFeaturedCollection = federationRead<DocumentRequest & { id: string }, CollectionDocument>(
+  (db, input, domain) => serialized(featuredCollectionDocument(db, input, `https://${domain}`)),
 );
 
-export const apFeaturedItem = federationRead<DocumentRequest & { id: string }, CollectionDocument>((db, input) =>
-  serialized(featuredItemDocument(db, input)),
+export const apFeaturedItem = federationRead<DocumentRequest & { id: string }, CollectionDocument>(
+  (db, input, domain) => serialized(featuredItemDocument(db, input, `https://${domain}`)),
 );
 
 export const apFeatureAuthorization = federationRead<DocumentRequest & { id: string }, CollectionDocument>(
-  (db, input) => serialized(featureAuthorizationDocument(db, input)),
+  (db, input, domain) => serialized(featureAuthorizationDocument(db, input, `https://${domain}`)),
 );

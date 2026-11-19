@@ -847,9 +847,10 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   its operator wrote `WEB_DOMAIN`) is not tagged by a link to it, whatever the spelling of the link itself. A link to a
   local collection's ActivityPub id tags it only with its owner's username. At most 4 collections are tagged per post,
   a collection already tagged by 100 posts keeping its slot among the 4 untagged, and only the first 100 posts to tag a
-  collection keep the tag (Mastodon has no number). `tagged_collections` leaves out a collection the viewer may not
-  see (its owner blocks the viewer or is unavailable), where Mastodon shows it. Kopje's Notes name a tagged collection
-  by its id alone, where Mastodon's embed it whole; Mastodon reads only the id. Accepted, 2026-11-19.
+  collection keep the tag (Mastodon has no number), and a collection whose owner is unavailable takes none of them.
+  `tagged_collections` leaves out a collection the viewer may not see (its owner blocks the viewer or is unavailable),
+  where Mastodon shows it. Kopje's Notes name a tagged collection by its id alone, where Mastodon's embed it whole;
+  Mastodon reads only the id. Accepted, 2026-11-19.
 - An account's `feature_approval.current_user` is `denied` when either account blocks the other or the account is
   unavailable, where Mastodon may answer `automatic` (or `manual`) and then refuse the add; every other answer is
   Mastodon's. The instance's contact account answers `denied` (no viewer), where Mastodon's cached instance answer

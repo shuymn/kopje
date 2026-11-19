@@ -53,21 +53,22 @@ import {
   type Collection,
   COLLECTION_COLUMNS,
   type CollectionItem,
+  type CollectionOwner,
   type CollectionRow,
   collectionUri,
   presentCollection,
   presentCollections,
   presentItem,
   shownItems,
-  TAGGED_COLLECTION_COLUMNS,
-  taggable,
-  type TaggedRow,
+  collectionOwnerColumns,
+  collectionOwnerRoute,
+  localCollectionUri,
+  taggableCollections,
 } from "./collection-presenter";
 import { requestCollectionSync } from "./collection-requests";
 import { allocateLocalId, insertWithFreshId, requestedId, storedIdOf } from "./ids";
 import { notify } from "./notifications";
 import { writeOperation } from "./operation";
-import { usernameSql } from "./profile-bounds";
 import { RowBudget } from "./row-budget";
 import { isHashtagName, parseStatusText } from "./status-text";
 import { TAG_NAME_TOO_LONG, withinTagNameBound } from "./tag-bounds";
@@ -260,9 +261,18 @@ export type ShowResult =
 
 // The collection with its accounts as CollectionWithAccountsSerializer presents it: the owner, then each shown item's
 // account in item order (the owner again when it features itself), within ANSWER_BYTES.
-function withAccounts(db: Db, row: CollectionRow, viewer: string | null, present: Present): CollectionWithAccounts {
+// null for a local one whose id no route serves (presentCollection), which the answer leaves out.
+function withAccounts(
+  db: Db,
+  row: CollectionRow,
+  viewer: string | null,
+  present: Present,
+): CollectionWithAccounts | null {
   const items = shownItems(db, [row.id], viewer).get(row.id) ?? [];
   const collection = presentCollection(row, items, present.origin);
+  if (collection === null) {
+    return null;
+  }
   const ids = [row.account_id, ...items.flatMap((item) => (item.account_id === null ? [] : [item.account_id]))];
   // The answer's frame around the accounts array: {"collection":…,"accounts":[…]}.
   const frame = jsonBytes({ collection, accounts: [] });
@@ -281,7 +291,7 @@ function shown(db: Db, id: string, viewer: string | null): boolean {
   );
 }
 
-// GET /api/v1/collections/:id: 404 unless R45 finds it, 403 unless it shows it to the viewer.
+// GET /api/v1/collections/:id: 404 unless R45 finds it and a route serves its id, 403 unless it shows it to the viewer.
 export const showCollection = optionalUserReadOperation<{ id: string; present: PresentInput }, ShowResult>(
   (db, input, { accountId: viewer }) => {
     const row = foundCollection(db, input.id);
@@ -291,7 +301,8 @@ export const showCollection = optionalUserReadOperation<{ id: string; present: P
     if (!shown(db, row.id, viewer)) {
       return { status: "forbidden" };
     }
-    return { status: "ok", value: withAccounts(db, row, viewer, presentFor(input.present, viewer)) };
+    const value = withAccounts(db, row, viewer, presentFor(input.present, viewer));
+    return value === null ? { status: "not_found" } : { status: "ok", value };
   },
 );
 
@@ -419,13 +430,15 @@ const NONE: CollectionValues = {
   tag: null,
 };
 
-// The collection `id` as its owner sees it, after a write.
+// The collection `id` as its owner sees it, after a write, which only an owner whose collections' ids a route serves
+// makes (createCollection, ownCollection).
 function ownView(db: Db, id: string, owner: string, origin: string): Collection {
   const row = foundCollection(db, id);
-  if (row === undefined) {
+  const [collection] = row === undefined ? [] : presentCollections(db, [row], owner, origin);
+  if (collection === undefined) {
     throw new Error("the collection was not written");
   }
-  return presentCollections(db, [row], owner, origin)[0]!;
+  return collection;
 }
 
 // POST /api/v1/collections (CreateCollectionService), in its order: account_ids[] (duplicates dropped; an unknown or
@@ -458,6 +471,15 @@ export const createCollection = userWriteOperation<
     return { status: "invalid", problems: tag };
   }
   if (members.some((member) => !mayFeature(db, owner, member))) {
+    return { status: "forbidden" };
+  }
+  // A collection is only written where a route serves its id (localCollectionUri), since every surface leaves out one
+  // that none does: an owner whose actor id is not its username's route on this origin (a restored row) makes none.
+  const route = db.first<CollectionOwner>(
+    `SELECT ${selectSql(collectionOwnerColumns("1", "a"))} FROM accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE a.id = ?`,
+    owner,
+  );
+  if (route === undefined || collectionOwnerRoute(route, input.present.origin) === null) {
     return { status: "forbidden" };
   }
   const problems = valueProblems(values);
@@ -593,7 +615,9 @@ export const updateCollection = userWriteOperation<
   CollectionFields & { id: string; now: number; present: PresentInput },
   CollectionResult
 >((db, input, { accountId: viewer }) => {
-  const row = ownCollection(db, input.id, viewer);
+  const owned = ownCollection(db, input.id, viewer);
+  // Its owner's view is the answer, so a collection whose id no route serves is not found (ownView).
+  const row = typeof owned !== "string" && collectionUri(owned, input.present.origin) === null ? "not_found" : owned;
   if (typeof row === "string") {
     return { status: row };
   }
@@ -1073,17 +1097,17 @@ export function reportedCollectionIds(db: Db, target: string, raw: readonly stri
 }
 
 // The ActivityPub ids of the collections `ids`, in that order (ActivityPub::FlagSerializer#collection_uris), each read
-// by key.
+// by key; a local one whose id no route serves is left out (collectionUri).
 export function collectionUris(db: Db, ids: readonly string[], origin: string): string[] {
   return db
-    .all<Pick<CollectionRow, "id" | "local" | "username" | "uri">>(
-      `SELECT c.id, c.local, ${usernameSql("a.username")} AS username, c.uri FROM json_each(?1) w
+    .all<CollectionOwner & Pick<CollectionRow, "id" | "local" | "uri">>(
+      `SELECT c.id, c.local, ${selectSql(collectionOwnerColumns("c.local", "a"))}, c.uri FROM json_each(?1) w
 				CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = w.value
 				CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
 			ORDER BY w.key`,
       JSON.stringify(ids),
     )
-    .map((row) => collectionUri(row, origin));
+    .flatMap((row) => collectionUri(row, origin) ?? []);
 }
 
 // The collections an inbound Flag names among its objects (ActivityPub::Activity::Flag#perform's collection_from_uri,
@@ -1126,61 +1150,58 @@ export function flaggedCollections(
 // does not store references nothing, and nothing of a tag but its id is read (docs/mastodon-deviations.md,
 // "Collections"). No R45 test applies to the author: the presenters apply R45 to each viewer.
 
-// The id of `row`, a collection the writer resolved, when a status can tag it (taggable, the presenters' test); null
-// otherwise, so a collection no surface would show takes no slot.
-function taggableId(row: TaggedRow | undefined): string | null {
-  return row !== undefined && taggable(row) ? row.id : null;
+// The collection `where` picks, by key, when a status can tag it whatever the viewer (taggableCollections, the readers'
+// decision: its owner available, its id served or its validity, its text), so one no surface would show takes no
+// slot; null otherwise.
+function taggableId(db: Db, origin: string, where: string, ...params: SqlStorageValue[]): string | null {
+  return (
+    taggableCollections(
+      db,
+      origin,
+      `collections c INDEXED BY ${COLLECTIONS_ID_INDEX} CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
+				ON a.id = c.account_id`,
+      where,
+      ...params,
+    )[0]?.id ?? null
+  );
 }
 
 // The collection a local route on `origin` names: the row by key, local, and for the uri form owned by the username
 // given, compared byte for byte (Mastodon's route lookup takes the id alone), with its owner by key (taggableId).
 function routedCollection(db: Db, url: string, origin: string): string | null {
   const route = localCollectionRoute(url, origin);
-  if (route === null) {
-    return null;
-  }
-  return taggableId(
-    db.first<TaggedRow>(
-      `SELECT ${selectSql(TAGGED_COLLECTION_COLUMNS)} FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
-				CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
-			WHERE c.id = ?1 AND c.local = 1 AND (?2 IS NULL OR a.username = ?2)`,
-      route.id,
-      route.username,
-    ),
-  );
+  return route === null
+    ? null
+    : taggableId(db, origin, "c.id = ?1 AND c.local = 1 AND (?2 IS NULL OR a.username = ?2)", route.id, route.username);
 }
 
-// The remote collection stored under the id `uri`, byte for byte (collections_uri), with its owner read by key
-// (taggableId: a restored owner id past ACTOR_URI_LIMIT, as actorUriSql reads it, makes it invalid).
-function collectionByStoredUri(db: Db, uri: string): string | null {
-  return taggableId(
-    db.first<TaggedRow>(
-      `SELECT ${selectSql(TAGGED_COLLECTION_COLUMNS)} FROM collections c INDEXED BY collections_uri
-				LEFT JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
-			WHERE c.uri = ?1 AND c.local = 0`,
-      uri,
-    ),
+// The remote collection stored under the id `uri`, byte for byte (collections_uri, one entry), read by key with its
+// owner (taggableId: a restored owner id past ACTOR_URI_LIMIT, as actorUriSql reads it, makes it invalid). `origin`:
+// the instance's.
+function collectionByStoredUri(db: Db, uri: string, origin: string): string | null {
+  const row = db.first<{ id: string }>(
+    "SELECT id FROM collections INDEXED BY collections_uri WHERE uri = ?1 AND local = 0",
+    uri,
   );
+  return row === undefined ? null : taggableId(db, origin, "c.id = ?1", row.id);
 }
 
-// The remote collection whose stored url is `url` byte for byte and whose stored uri begins with `origin` (the link's,
-// as WHATWG serializes it) and `/`, when it is the only one of the first two such rows and a status can tag it
-// (taggableId; #1589's D26, c2a): the prefix puts its id, and validity its owner, on the link's origin, so no other
-// server claims the URL. collections_url walks at most 2 entries (the LIMIT inside the subquery, before any test), each
-// read by key with its owner. `local = 0` is a literal: the partial index serves only a statement whose terms imply its
-// condition.
-function collectionByStoredUrl(db: Db, url: string, origin: string): string | null {
-  const rows = db.all<TaggedRow>(
-    `SELECT ${selectSql(TAGGED_COLLECTION_COLUMNS)}
-		FROM (SELECT id FROM collections INDEXED BY collections_url
-			WHERE url = ?1 AND uri >= ?2 AND uri < ?3 AND local = 0 LIMIT 2) w
-		CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = w.id
-		LEFT JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id`,
+// The remote collection whose stored url is `url` byte for byte and whose stored uri begins with `linked` (the link's
+// origin, as WHATWG serializes it) and `/`, when it is the only one of the first two such rows and a status can tag
+// it (taggableId; #1589's D26, c2a): the prefix puts its id, and validity its owner, on the link's origin, so no other
+// server claims the URL. collections_url walks at most 2 entries (the LIMIT, before any test, so a row no status can
+// tag still makes the URL ambiguous), and the one is read by key with its owner. `local = 0` is a literal: the partial
+// index serves only a statement whose terms imply its condition. `origin`: the instance's.
+function collectionByStoredUrl(db: Db, url: string, linked: string, origin: string): string | null {
+  const rows = db.all<{ id: string }>(
+    `SELECT id FROM collections INDEXED BY collections_url
+		WHERE url = ?1 AND uri >= ?2 AND uri < ?3 AND local = 0 LIMIT 2`,
     url,
-    `${origin}/`,
-    `${origin}0`,
+    `${linked}/`,
+    `${linked}0`,
   );
-  return rows.length === 1 ? taggableId(rows[0]) : null;
+  const [row] = rows;
+  return rows.length === 1 && row !== undefined ? taggableId(db, origin, "c.id = ?1", row.id) : null;
 }
 
 // The ids of the first MAX_TAGGED_COLLECTIONS distinct collections `candidates` name, in their order, each resolved by
@@ -1221,7 +1242,7 @@ export function linkedCollections(db: Db, source: string, origin: string): strin
   return distinctCollections(links.slice(0, MAX_TAG_LINK_CANDIDATES), ({ href, origin: linked }) =>
     href.startsWith(`${origin}/`)
       ? routedCollection(db, href, origin)
-      : (collectionByStoredUri(db, href) ?? collectionByStoredUrl(db, href, linked)),
+      : (collectionByStoredUri(db, href, origin) ?? collectionByStoredUrl(db, href, linked, origin)),
   );
 }
 
@@ -1231,7 +1252,9 @@ export function linkedCollections(db: Db, source: string, origin: string): strin
 // fetched, stored or notified from it.
 export function taggedCollections(db: Db, ids: readonly string[], origin: string): string[] {
   return distinctCollections(ids, (id) =>
-    id.startsWith(`${origin}/`) ? routedCollection(db, id, origin) : collectionByStoredUri(db, id.split("#")[0]!),
+    id.startsWith(`${origin}/`)
+      ? routedCollection(db, id, origin)
+      : collectionByStoredUri(db, id.split("#")[0]!, origin),
   );
 }
 
@@ -1264,15 +1287,17 @@ export function writeTaggedCollections(db: Db, statusId: string, slots: readonly
 
 // ---- The public page of a local collection (web-pages/collection.ts).
 
-// The path of the local collection `id`'s FeaturedCollection (collection-documents.ts), by key; null for any other.
-export function localCollectionPath(db: Db, id: string): string | null {
-  const row = db.first<{ username: string }>(
-    `SELECT a.username FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
+// The path of the local collection `id`'s FeaturedCollection (collection-documents.ts), its id as localCollectionUri
+// builds it on `origin`, by key; null for any other, and for one whose id no route serves.
+export function localCollectionPath(db: Db, id: string, origin: string): string | null {
+  const owner = db.first<CollectionOwner>(
+    `SELECT ${selectSql(collectionOwnerColumns("c.local", "a"))} FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
 			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
 		WHERE c.id = ? AND c.local = 1`,
     id,
   );
-  return row === undefined ? null : `/ap/users/${encodeURIComponent(row.username)}/collections/${id}`;
+  const uri = owner === undefined ? null : localCollectionUri(owner, id, origin);
+  return uri === null ? null : new URL(uri).pathname;
 }
 
 type PageOwner = { id: string; account: Account } | { status: "not_found" } | { status: "suspended" };

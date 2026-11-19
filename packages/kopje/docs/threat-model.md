@@ -1980,52 +1980,64 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   collection job after it, each after the item's `Add`; a suspension sends none. A status's `tagged_collections`
   (migration `0120_tagged_collections`, #1589's D26) are the collections it tags that are shown to the viewer, each with
   the members shown to the viewer, on an original and a quoted status (a boost presents none, its original them), each
-  only while a status can tag it (one predicate, `taggable`): its name, description and tag well-formed UTF-8 as stored;
-  a local one only while its owner is a local account whose username, read whole within `USERNAME_LIMIT` bytes, is one
-  the collection routes take (`ROUTE_USERNAME`, 1 to 64 ASCII letters, digits or underscores, the routes' own pattern);
-  a remote one only while its id is a valid id on its owner's origin, that owner's id read within `ACTOR_URI_LIMIT`
-  (`actorUriSql`), and its name and description are within its writer's bounds, and its `url` only as its writer would
-  store it. So a restored dump's malformed text is presented nowhere and no collection id names a route that does not
-  serve it. The writer resolves a post's links and a Note's tags to such collections alone, before it takes the first
-  four, so a collection no surface shows takes no slot. No public page presents them or reads a reference: the status
-  page and its thread, the profile's tabs and pins, the hashtag page, the interact handoff, oEmbed and the
-  `/authorize_interaction` result present `[]`. A local status's ActivityPub forms (its Note or Question as served, in
-  the outbox and in `featured`, its `Create` and `Update`s and a `QuoteRequest`'s instrument) name each collection it
-  tags whose owner is available and that a status can tag by its id alone, under the `featured_collections` terms, so no
-  collection's name, description or members travel in the post's activities. This bounds the wire's content, not who
-  learns of the collection: a local collection's id is its owner's route, which names the owner, and a fetch of it is
-  judged by R45 for the fetcher, the remote account whose stored key the signature names (a key Kopje does not store
-  names none, and the fetch is anonymous), so a server whose user the owner blocks may still read it with another key,
-  its instance actor's included unless the owner blocks that account or its domain, or show its copy to that user.
-  _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`, `collectionItemShownSql`,
-  `featureApprovalSql`, `featureApprovalReads`, `mayFeatureSql` and `inCollectionsSql` in `src/domain/audience.ts`,
-  `statusFacts`, `noteOf` and `contextOf` (`src/domain/activities.ts`), the account presenter and `presentFor`
-  (`src/domain/accounts.ts`), `src/domain/collections.ts`, `notifiedCollection`, `taggedCollectionsOf` (read by the
-  status presenter's `hydrate` unless `Present.page`, which `pagePresent` in `src/domain/web-pages/site.ts`, oEmbed and
-  `/authorize_interaction` set) and `shownItems` (`src/domain/collection-presenter.ts`), `severCollections`
-  (`src/domain/collections.ts`, run by a local block in `src/domain/blocks.ts`), the documents and activities in
-  `src/domain/collection-documents.ts` (served by `src/federation/routes.ts`); `test/collections.test.ts` ("shows a
-  collection and its items only as R45 allows", "asks the member's consent: discoverable, and unlocked or followed, no
-  block either way, local", "lets only the item's account revoke it, which keeps the row and the membership listed"),
-  `test/blocks.test.ts` ("revokes and deletes the collection memberships a block severs", "delivers a block's collection
-  Removes to every follower in bounded rounds (RES-6)"), `test/collection-notifications.test.ts` ("presents the
-  collection to its recipient, with the items R45 shows the recipient, on v1 and v2"), `test/feature-approval.test.ts`,
-  `test/federation-collections.test.ts` ("refuses a fetcher the owner blocks or domain-blocks, and an authorization to
-  one its member blocks", "leaves a suspended member out of every document, and its FeaturedItem 404, as REST and the
-  page do", "sends a collection's Add, Update and Remove and its items' Add and Remove to followers and members", "sends
-  the owner's Remove of an item a block or its member's revoke takes out", "keeps an item's Add before the Removes a
-  block and its owner record around it"), `test/policy-oracle.test.ts` (against `collectionFound`, `collectionShown`,
-  `collectionListed`, `collectionItemShown`, `featureApproval`, `mayFeature` and `inCollections` in
-  `test/policy-model.ts`), `test-node/policy-boundary.test.ts`, `test/tagged-collections.test.ts` ("shows each viewer
-  the collection and the items R45 shows them", "presents a boost's original and a quote's own and quoted collections",
-  "reads no reference for a page, which presents none, while the API presents them", "presents Y alone, with its uri for
-  the url no writer would store", "leaves out a restored collection whose text reads past its writer's bounds", "leaves
-  out a restored collection whose text is malformed, however wide it decodes", "reads a local owner's restored username
-  within USERNAME_LIMIT bytes, and leaves its collection out", "names a local owner's collection only by a username, as
-  read, that its routes take", "leaves out a local collection whose owner is not a local account", "gives a post's slots
-  only to collections a status can tag, before it takes the first four", "names each collection by its id alone, after
+  only while a status can tag it, whatever the viewer (one decision, `taggableCollections`: its owner available, and
+  `taggable`): its name, description and tag well-formed UTF-8 as stored; a local one only while its owner is a local
+  account whose username, read whole within `USERNAME_LIMIT` bytes, is one the collection routes take (`ROUTE_USERNAME`,
+  1 to 64 ASCII letters, digits or underscores, the routes' own pattern) and whose actor id is that username's route on
+  the instance's origin; a remote one only while its id is a valid id on its owner's origin, that owner's id read within
+  `ACTOR_URI_LIMIT` (`actorUriSql`), and its name and description are within its writer's bounds, and its `url` only as
+  its writer would store it. One function builds a local collection's id from its owner's columns
+  (`localCollectionUri`), and every surface that emits it (the API's `uri`, `url` and `tagged_collections`, the Note's
+  tag, the collection's documents and activities, a local member's authorization, its page) and the route that serves it
+  take it from there, so a collection whose owner's actor id is not that route is left out everywhere: its routes, its
+  items' and its members' authorizations', its page and its owner's `featured_collections` answer 404, its activities
+  are not sent, and the API refuses to create one for such an owner (403) or to update one (404). So a restored dump's
+  malformed text is presented nowhere and no collection id names a route that does not serve it, or a document of
+  another id. The writer applies the same decision to a post's links and a Note's tags before it takes the first four,
+  so a collection no surface shows takes no slot; R45, the part that depends on the viewer, is the readers' alone, and a
+  collection that stops being available after the post is written is left out as they read it. No public page presents
+  them or reads a reference: the status page and its thread, the profile's tabs and pins, the hashtag page, the interact
+  handoff, oEmbed and the `/authorize_interaction` result present `[]`. A local status's ActivityPub forms (its Note or
+  Question as served, in the outbox and in `featured`, its `Create` and `Update`s and a `QuoteRequest`'s instrument)
+  name each collection it tags that a status can tag (`taggableCollections`) by its id alone, under the
+  `featured_collections` terms, so no collection's name, description or members travel in the post's activities. This
+  bounds the wire's content, not who learns of the collection: a local collection's id is its owner's route, which names
+  the owner, and a fetch of it is judged by R45 for the fetcher, the remote account whose stored key the signature names
+  (a key Kopje does not store names none, and the fetch is anonymous), so a server whose user the owner blocks may still
+  read it with another key, its instance actor's included unless the owner blocks that account or its domain, or show
+  its copy to that user. _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`,
+  `collectionItemShownSql`, `featureApprovalSql`, `featureApprovalReads`, `mayFeatureSql` and `inCollectionsSql` in
+  `src/domain/audience.ts`, `statusFacts`, `noteOf` and `contextOf` (`src/domain/activities.ts`), the account presenter
+  and `presentFor` (`src/domain/accounts.ts`), `src/domain/collections.ts`, `notifiedCollection`, `taggedCollectionsOf`
+  (read by the status presenter's `hydrate` unless `Present.page`, which `pagePresent` in
+  `src/domain/web-pages/site.ts`, oEmbed and `/authorize_interaction` set), `taggableCollections`, `localCollectionUri`
+  and `shownItems` (`src/domain/collection-presenter.ts`), `severCollections` (`src/domain/collections.ts`, run by a
+  local block in `src/domain/blocks.ts`), the documents and activities in `src/domain/collection-documents.ts` (served
+  by `src/federation/routes.ts`); `test/collections.test.ts` ("shows a collection and its items only as R45 allows",
+  "asks the member's consent: discoverable, and unlocked or followed, no block either way, local", "lets only the item's
+  account revoke it, which keeps the row and the membership listed"), `test/blocks.test.ts` ("revokes and deletes the
+  collection memberships a block severs", "delivers a block's collection Removes to every follower in bounded rounds
+  (RES-6)"), `test/collection-notifications.test.ts` ("presents the collection to its recipient, with the items R45
+  shows the recipient, on v1 and v2"), `test/feature-approval.test.ts`, `test/federation-collections.test.ts` ("refuses
+  a fetcher the owner blocks or domain-blocks, and an authorization to one its member blocks", "leaves a suspended
+  member out of every document, and its FeaturedItem 404, as REST and the page do", "sends a collection's Add, Update
+  and Remove and its items' Add and Remove to followers and members", "sends the owner's Remove of an item a block or
+  its member's revoke takes out", "keeps an item's Add before the Removes a block and its owner record around it"),
+  `test/policy-oracle.test.ts` (against `collectionFound`, `collectionShown`, `collectionListed`, `collectionItemShown`,
+  `featureApproval`, `mayFeature` and `inCollections` in `test/policy-model.ts`), `test-node/policy-boundary.test.ts`,
+  `test/tagged-collections.test.ts` ("shows each viewer the collection and the items R45 shows them", "presents a
+  boost's original and a quote's own and quoted collections", "reads no reference for a page, which presents none, while
+  the API presents them", "presents Y alone, with its uri for the url no writer would store", "leaves out a restored
+  collection whose text reads past its writer's bounds", "leaves out a restored collection whose text is malformed,
+  however wide it decodes", "reads a local owner's restored username within USERNAME_LIMIT bytes, and leaves its
+  collection out", "names a local owner's collection only by a username, as read, that its routes take", "leaves out a
+  local collection whose owner is not a local account", "gives a post's slots only to collections a status can tag,
+  before it takes the first four", "builds a local collection's id in one place, and leaves it out wherever its route
+  would not serve it", "gives a post's slots only to collections whose owner is available, before it takes the first
+  four", "gives no slot to a collection whose restored text is malformed", "names each collection by its id alone, after
   the other tags, under the featured_collections terms", "lets S's Note name Y alone, by its id", "leaves out a
-  collection whose owner's id is past ACTOR_URI_LIMIT, and references none").
+  collection whose owner's id is past ACTOR_URI_LIMIT, and references none"),
+  `test-node/tagged-collection-reads.test.ts`.
 
 ### Authorization (AUTH)
 
@@ -5632,12 +5644,14 @@ times their count, and the heap model counts each column at that width (`malform
 `test/tagged-collections.test.ts` ("reads a restored collection's every text at three times the bytes the read takes of
 it")). The presenter leaves out a collection whose name, description or tag is malformed, read with more U+FFFD than its
 stored bytes hold as EF BF BD (a stored EF BF BD is one U+FFFD, and each malformed sequence adds one, a replacement of
-the same width such as F0 90 80 included), and a local one whose owner is not a local account or whose username, read
-whole, is not one its routes take (`taggable`, `wellFormed` and `tagNamesOwner` in
-`src/domain/collection-presenter.ts`), so no answer presents a value decoding replaced
+the same width such as F0 90 80 included), and a local one whose owner is not a local account, whose username, read
+whole, is not one its routes take, or whose actor id is not that username's route (`taggable`, `wellFormed` and
+`collectionOwnerRoute` in `src/domain/collection-presenter.ts`), so no answer presents a value decoding replaced
 (`test/tagged-collections.test.ts` ("leaves out a restored collection whose text is malformed, however wide it decodes",
 "reads a local owner's restored username within USERNAME_LIMIT bytes, and leaves its collection out", "names a local
-owner's collection only by a username, as read, that its routes take")).
+owner's collection only by a username, as read, that its routes take", "gives no slot to a collection whose restored
+text is malformed", "builds a local collection's id in one place, and leaves it out wherever its route would not serve
+it")).
 A local account also shows `noindex` and `roles`, at most the Owner's
 badge: the account occurrence's conservative JSON adds those keys (63 bytes) to the remote one measured, and what a
 local account's four fields at their derived most (37,677 bytes: names of six-byte escapes, each value at 7,822 and
