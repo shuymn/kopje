@@ -1,6 +1,6 @@
 {
   "$comment": "Kopje's sources spec/collection-consent/ describes, and their blobs when it was last confirmed to (scripts/collection-consent-coverage.mjs). A null blob is a file the specification describes that Kopje does not have yet. test-node/collection-consent-coverage.test.ts fails once a blob differs.",
-  "confirmed": "f7e4c1a2e5d9c5ab38bd980441c0a2dbabc28f2f",
+  "confirmed": "c1ff652b6ee08c438fedfd8f8da977fb4f0ff408",
   "files": [
     {
       "path": "src/store.ts",
@@ -69,13 +69,13 @@
       "path": "src/domain/collections.ts",
       "functions": ["severCollections", "pruneCollectionItems"],
       "spec": "CollectionConsentKopje.tla Block (K8, an ordinary Block with the row's Delete), Cleanup (K10) and Evict; MemberGone (K9) is model-only",
-      "blob": "104aa20ce7e2259777c62fcb02a108eb69b706cb"
+      "blob": "99b7e5f3dce14112da65c97a8fe4c80c4cf5f73c"
     },
     {
       "path": "src/domain/collection-documents.ts",
       "functions": ["featureAuthorizationDocument", "recordItemRemove"],
       "spec": "CollectionConsentKopje.tla AuthorizationServed: GET of an authorization, 200 with interactingObject C and interactionTarget L while the row is accepted and L available, else 404; the Delete an answer records",
-      "blob": "b409b7740949921fe37be4838eb4fdae8ab03208"
+      "blob": "d0b9c29164474321638251c517a98bd588e7f77c"
     },
     {
       "path": "src/domain/activities.ts",
