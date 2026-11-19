@@ -22,7 +22,7 @@ export function accessToken(team: AccessTeam, claims: Claims = {}, key?: JsonWeb
 }
 
 export const adminClaims = (): Claims => ({ email: ADMIN_EMAIL, sub: "user-1" });
-// A service token carries common_name and no email.
+// A service token as Cloudflare documents it: common_name, an empty sub and no email.
 export const serviceClaims = (): Claims => ({ email: undefined, common_name: SERVICE_CLIENT_ID, sub: "" });
 
 // Writes the Access settings of the /admin application for this team.
