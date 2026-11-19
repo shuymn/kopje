@@ -39,6 +39,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   images carry none refused the upload and `POST /api/v1/media` answered 500 "Error processing uploaded media". Kopje
   now strips the metadata from Images' PNG and WebP output, for uploads, profile images, custom emoji and link card
   images, and checks it after; Images still reads the whole upload, so its EXIF orientation and colour space apply.
+- An image that its EXIF turns (Orientation 5 to 8, as a phone photo taken upright) and whose long edge is past 3,840
+  pixels is served at full size, turned. Kopje asked Images for a box from the unturned size, and Images turns the
+  image before it resizes, so a 4,000 × 1,000 image came out at 240 × 960. The box is now a square that bounds the
+  long edge whichever way the image turns, for uploads and for link card images.
 - PNG colour signalling is kept: an image's `cICP`, `mDCV` and `cLLI` chunks (a colour space such as Display P3, and HDR
   levels) are no longer counted as metadata, in uploads and in cached remote images.
 

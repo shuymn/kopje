@@ -484,9 +484,11 @@ Link previews (a status's `card`, Mastodon's `FetchLinkCardService`):
   Images to a still WebP without any metadata, ICC profile included, of at most 512 KiB (a larger output is no image).
   Mastodon keeps a small image that is not a GIF as fetched, resizes a larger one in its own format keeping the ICC
   profile, and turns a GIF into JPEG.
-- An image of more than 230,400 pixels is resized to fit `floor(sqrt(230400 × W / H))` by `floor(sqrt(230400 × H /
-  W))`: Mastodon rounds, so Kopje's box is at most one pixel smaller an edge (1,200 × 500 asks for 743 × 309, where
-  Mastodon's 744 × 310 is 230,640 pixels). A `link` card with an image takes the image's size, as Mastodon's does.
+- An image of more than 230,400 pixels is resized to fit a square of `floor(sqrt(230400 × L / S))` for its long edge L
+  and short edge S, its aspect kept: Images turns the image by its Exif orientation before it resizes, and a square
+  bounds the long edge either way. Mastodon rounds each edge, so Kopje's long edge is at most one pixel shorter
+  (1,200 × 500 asks for 743 × 743 and is stored at 743 × 310, where Mastodon's is 744 × 310). A `link` card with an
+  image takes the image's size, as Mastodon's does.
 - The blurhash (4 × 4 components, alpha dropped) is computed from the image fitted within 100 pixels by area
   averaging, where vips resamples; when Images' RGBA output of it fails or is not of the image's size, or the month's
   share ran out between its two outputs, the card keeps its image without a blurhash (null), where Mastodon drops the

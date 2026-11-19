@@ -405,8 +405,9 @@ export async function processImage(
   }
   const format = OUTPUT[type];
   try {
-    const target = fit(original, FULL_EDGE);
-    const resize = target.width === original.width && target.height === original.height ? {} : target;
+    // Images applies the input's Exif orientation before it resizes, so the box is a FULL_EDGE square, which bounds the
+    // long edge whichever way the image turns (scale-down keeps the aspect); `full` has the size Images served.
+    const resize = Math.max(original.width, original.height) > FULL_EDGE ? { width: FULL_EDGE, height: FULL_EDGE } : {};
     const full = await encodeChecked(codec, bytes, { ...resize, format });
     // The preview is made from the re-encoded image, so it starts without metadata and in the served orientation. It
     // is a still, so an animated image's preview serves as its account's avatar_static or header_static (media.ts).

@@ -28,6 +28,7 @@ import {
   type Attachment,
   bytes,
   DESCRIPTION_TOO_LONG,
+  jpegWithSegment,
   mediaForm,
   multipartForm,
   OVERLONG_DESCRIPTIONS,
@@ -276,6 +277,35 @@ describe("POST /api/v2/media", () => {
     expect(retainedMetadata(inputs[0]!, "image/png")).toBe("exif");
     const served = new Uint8Array(await (await h.request(pathOf(media.url))).arrayBuffer());
     expect(await h.codec.real.info(served)).toMatchObject({ width: 10, height: 40 });
+  });
+
+  it("serves a large Exif-rotated PNG and JPEG at full resolution, turned, with meta to match", async () => {
+    const h = await users();
+    h.codec.encodeOutput = keepsExif;
+    // 4,000 x 1,000, turned 90 degrees clockwise for display (Orientation 6): 1,000 x 4,000 as shown.
+    const png = pngWithChunk(bytes(WIDE_PNG), "eXIf", exifOrientation(6).subarray(6));
+    const jpeg = jpegWithSegment(
+      await h.codec.real.encode(bytes(WIDE_PNG), { format: "image/jpeg" as "image/png" }),
+      0xe1,
+      exifOrientation(6),
+    );
+    for (const [file, name, type] of [
+      [png, "a.png", "image/png"],
+      [jpeg, "a.jpg", "image/jpeg"],
+    ] as const) {
+      const media = await uploaded(h, h.users.alice, mediaForm(file, {}, name, type));
+      expect(media.meta, name).toMatchObject({
+        original: { width: 960, height: 3840 },
+        small: { width: 160, height: 640 },
+      });
+      for (const [url, size] of [
+        [media.url, { width: 960, height: 3840 }],
+        [media.preview_url, { width: 160, height: 640 }],
+      ] as const) {
+        const served = new Uint8Array(await (await h.request(pathOf(url))).arrayBuffer());
+        expect(await h.codec.real.info(served), `${name} ${url}`).toMatchObject(size);
+      }
+    }
   });
 
   it("keeps a PNG output's colour signalling: cICP, mDCV and cLLI (MEDIA-3)", async () => {

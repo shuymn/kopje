@@ -137,7 +137,7 @@ describe("the card image round", () => {
       ["user-agent", expect.stringMatching(/^Kopje\/\S+ \(\+https:\/\/kopje\.test\/\) Bot$/)],
     ]);
     const [row] = await w.images();
-    expect(row).toMatchObject({ source_url: IMAGE, due_at: null, attempts: 0, stored_at: NOW, height: 309 });
+    expect(row).toMatchObject({ source_url: IMAGE, due_at: null, attempts: 0, stored_at: NOW, height: 310 });
     expect(row!.width).toBeLessThanOrEqual(743);
     expect(row!.blurhash).toHaveLength(36);
     expect(await w.orphans()).toEqual([]);
