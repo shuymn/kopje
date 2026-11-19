@@ -662,7 +662,7 @@ against their own instance. TLS is assumed between all parties.
   accepted while the grant stands), corrective revocation (every `Add`, and every covering read, naming an authorization
   Kopje does not serve is answered with the member's `Delete`) and observed visibility hold with the exceptions F3 (its
   PR 6 form), F7 and F8 (Accepted risks): the TLA+ specification `spec/collection-consent/` checks them in every order
-  of its scenarios (`test-node/collection-consent-spec.test.ts`), and its fixtures are replayed against the Store
+  of its scenarios (`test-node/collection-consent-spec/`), and its fixtures are replayed against the Store
   (`test/collection-consent-replay.test.ts`).
 - **ID-7: replay changes nothing twice.** A repeated activity creates no second relationship, counter change,
   notification, push or outbound intent (natural keys), except the answers each copy is owed: a repeated

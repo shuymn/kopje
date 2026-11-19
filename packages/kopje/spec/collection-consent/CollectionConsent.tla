@@ -3,7 +3,7 @@
 (* A local account L's consent to membership in a remote owner R's         *)
 (* collection C (#1589), with R running Mastodon v4.7.5: the oracle        *)
 (* Kopje's implementation is held to                                       *)
-(* (test-node/collection-consent-spec.test.ts checks it with tla-ts;       *)
+(* (test-node/collection-consent-spec/ checks it with tla-ts;              *)
 (* scripts/tlc-check.mjs with TLC).                                        *)
 (*                                                                         *)
 (* Kopje's rules are CollectionConsentKopje.tla's operators, each with its *)

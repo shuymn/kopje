@@ -20,7 +20,7 @@ The code is in `packages/kopje`, and `deploy/` is the instance template operator
 - `cli/` is the `kopje-admin` operations CLI.
 - `test/` runs in workerd (`vitest.config.ts`, plus `vitest.streaming.config.ts` for `test/streaming/`), and
   `test-node/` runs in Node (`vitest.node.config.ts`), including the checks that read the source tree and the docs,
-  except `test-node/collection-consent-spec.test.ts`, the TLA+ specification's checks, which runs alone
+  except `test-node/collection-consent-spec/`, the TLA+ specification's checks, which run alone
   (`vitest.spec.config.ts`).
 - `docs/` is the design and operator documentation.
 
@@ -29,7 +29,7 @@ The code is in `packages/kopje`, and `deploy/` is the instance template operator
 - `mise install` installs the pinned tools the hooks use, and `pnpm install` installs the workspace.
 - `pnpm --filter kopje test` runs every suite. For one file, run
   `pnpm --filter kopje exec vitest run test/<name>.test.ts`, adding `-c vitest.node.config.ts` for a file in
-  `test-node/` (`-c vitest.spec.config.ts` for `test-node/collection-consent-spec.test.ts`) or
+  `test-node/` (`-c vitest.spec.config.ts` for a file in `test-node/collection-consent-spec/`) or
   `-c vitest.streaming.config.ts` for a file in `test/streaming/`.
 - `pnpm --filter kopje typecheck` checks types. `pnpm run lint` lints the repository with oxlint (`.oxlintrc.json`),
   `pnpm run pretty` checks formatting with oxfmt, and `pnpm exec oxfmt` fixes it.

@@ -34,7 +34,7 @@ move the record forward. A change to `spec/collection-consent/` itself always ne
 
 | Check | Command |
 |---|---|
-| tla-ts: every check of `checks.json`, the fixtures, the comparison (about 5 min, the fixtures' fresh run 1.5 min and the induction 1 min of it) | `pnpm exec vitest run -c vitest.spec.config.ts --max-workers=2` |
+| tla-ts: every check of `checks.json`, the fixtures, the comparison, split over the files of `test-node/collection-consent-spec/` (`checks.ts` says which runs what; about 4 min on two workers, the fixtures' fresh run 2 min of it) | `pnpm exec vitest run -c vitest.spec.config.ts --max-workers=2` |
 | official TLC: the same checks (about 4 min, one JVM at a time) | `MISE_ENV=spec mise exec -- node scripts/tlc-check.mjs` |
 | one check's TLC trace, every variable at every step | `MISE_ENV=spec mise exec -- node scripts/tlc-check.mjs --only <name> --trace` |
 | rewrite the replay fixtures after a spec change | `pnpm run spec:fixtures` |
@@ -44,7 +44,8 @@ move the record forward. A change to `spec/collection-consent/` itself always ne
 `tlc-check.mjs` downloads TLC's pinned jar into `node_modules/.cache/` once and checks its SHA-256. The JDK is the one
 `mise.spec.toml` pins, apart from `mise.toml` so that only these checks install it: `MISE_ENV=spec mise install java`.
 CI runs it in `.github/workflows/spec.yml` with `MISE_ENV=spec`, and runs the tla-ts checks as the `kopje-spec`
-project only for a change they read (`scripts/test-affected.sh`, `kopje_spec`).
+project only for a change they read (`scripts/test-affected.sh`, `kopje_spec`), each of its files in a test shard of its
+own.
 
 ## The replay
 
@@ -52,8 +53,8 @@ project only for a change they read (`scripts/test-affected.sh`, `kopje_spec`).
 (`test/fixtures/collection-consent/<name>.json`), titled by the fixture's name, that takes its steps through the paths
 Kopje takes them (the inbox, a sync's collections part, the delivery rounds, the API, the cron's and the operator's
 operations) and compares `compareObservation` (`test/collection-consent-observe.ts`) after each one.
-`collection-consent-spec.test.ts` fails for a fixture the replay does not name, and for a skipped test;
-`collection-consent-coverage.mjs forward` fails unless every fixture's test ran and passed. No fixture takes
+The spec test (`test-node/collection-consent-spec/`) fails for a fixture the replay does not name, and for a skipped
+test; `collection-consent-coverage.mjs forward` fails unless every fixture's test ran and passed. No fixture takes
 `KMemberGone` (Kopje deletes no local account), and the spec test checks that.
 
 One fixture: `pnpm exec vitest run --max-workers=1 test/collection-consent-replay.test.ts -t <name>`. A failure names

@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 
 const PACKAGE = fileURLToPath(new URL("..", import.meta.url));
 const RECORD = fileURLToPath(new URL("../spec/collection-consent/coverage.json", import.meta.url));
-const SPEC_TEST = "test-node/collection-consent-spec.test.ts";
+const SPEC_TESTS = "test-node/collection-consent-spec/";
 const REPLAY_TEST = "test/collection-consent-replay.test.ts";
 const FIXTURE_DIR = fileURLToPath(new URL("../test/fixtures/collection-consent/", import.meta.url));
 
@@ -103,7 +103,7 @@ function moveForward(mode) {
   const paths = record.files.map((f) => f.path);
   const dirty = execFileSync("git", ["status", "--porcelain", "--", ...paths], { cwd: PACKAGE, encoding: "utf8" });
   if (dirty.trim() !== "") throw new Error(`commit the covered files first:\n${dirty}`);
-  run("pnpm", ["exec", "vitest", "run", "-c", "vitest.spec.config.ts", "--max-workers=1", SPEC_TEST]);
+  run("pnpm", ["exec", "vitest", "run", "-c", "vitest.spec.config.ts", "--max-workers=1", SPEC_TESTS]);
   if (replay) runReplay();
   const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: PACKAGE, encoding: "utf8" }).trim();
   const files = record.files.map((f) => ({ ...f, blob: blobOf(f.path) }));
