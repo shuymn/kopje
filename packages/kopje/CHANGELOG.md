@@ -8,6 +8,44 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-19
+
+A minor release, published under the npm dist-tag `latest`. `kopje-admin` works again: since Cloudflare Access began
+leaving the `sub` claim out of a service token's JWT in November 2026, `/admin` refused the admin CLI's token and every
+call answered 403. Kopje now follows the client API of Mastodon 4.7.5, where it followed 4.5.11, and adds collections,
+annual reports and Mastodon 4.6's and 4.7's profile, notification and federation changes; the breaking ones are marked
+under Changed. It adds 27 Store migrations, and an instance must add a CPU limit to its `wrangler.jsonc` before it
+upgrades. Upgrading is recommended.
+
+### Instance changes
+
+- `wrangler.jsonc`: add `"limits": { "cpu_ms": 60000 }` at the top level of the instance's `wrangler.jsonc`, as the
+  template now has it, on the pull request that updates `kopje` and before you merge it. Without it this release's
+  upgrade can need more than the platform's default 30 seconds of CPU and stop part way, and until an attempt finishes
+  the Store refuses every request. If the upgrade was deployed without the line, add it and deploy again: the upgrade
+  resumes ([docs/upgrade.md](docs/upgrade.md)). The limit needs Workers Paid, which Kopje already requires. The
+  compatibility date (`2026-10-11`), the compatibility flags and the bindings are unchanged.
+- Store schema: adds 27 migrations (0093 through 0119), applied on the first request after the deploy. Until they are
+  applied the Store refuses every request, reads and sign-ins included, and the inbox spools; it stays readonly until
+  they are verified ([docs/upgrade.md](docs/upgrade.md), "What the Store serves in each state"). A rollback to an
+  earlier version needs the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md). On the representative
+  store defined in `test/bench/migration-cost.ts` they took 17,693–18,319 ms (median 17,829 ms) together in three runs
+  of the migration bench workflow on a GitHub-hosted runner, in workerd's local Durable Object SQLite, including the
+  Store-wide foreign-key check that the tables they create require.
+- `kopje-admin`: with 0.5.2 or an earlier version every call answers 403 "this service token is not the admin CLI
+  token", so the `kopje-admin health` check before merging ([docs/upgrade.md](docs/upgrade.md)) cannot run. Run it
+  after the deploy and write down `lastBookmark`, the bookmark a rollback across this upgrade restores. The service
+  token and the CLI's environment variables stay as they are.
+- Cloudflare Access: the `/admin` application must admit only the admin's email and the admin CLI's service token, as
+  the policies setup creates do. Remove any client certificate (mTLS) rule from it: the Worker tells the CLI's token
+  from a certificate only by the claims Access sends (AUTH-5 in [docs/threat-model.md](docs/threat-model.md)).
+- Reload any settings page left open across the upgrade, or across a rollback past it: one loaded before saves its
+  ticked boxes as unticked ([docs/upgrade.md](docs/upgrade.md), Rolling back).
+- Unavailable delivery hosts are counted from the upgrade on: stop a host already gone with
+  `kopje-admin hosts stop <host>`.
+- The annual reports campaign runs from December 10 to 31 (UTC) unless it is turned off with
+  `kopje-admin instance wrapstodon=false`.
+
 ### Added
 
 - A stamp's revocation, the approval of a local account's quote and
@@ -296,10 +334,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   header descriptions there. From 10 clients show collections: the official Android and iOS apps, Ice Cubes and Phanpy
   list an account's collections, a remote account's included, the Android app and Phanpy open them and let a member
   revoke its item, Ice Cubes and Phanpy take the two collection notification types, and Phanpy finds a collection by
-  its URL. From 11 Tuba edits the profile's display settings through `/api/v1/profile`. A remote account cannot be
-  featured yet, a local account is not featured in a remote collection, and statuses carry no `tagged_collections`
-  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "What Kopje follows" and "Collections"). No Store
-  migration and no `wrangler.jsonc` change.
+  its URL. From 11 Tuba edits the profile's display settings through `/api/v1/profile`. Statuses carry no
+  `tagged_collections` ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "What Kopje follows" and
+  "Collections"). No Store migration and no `wrangler.jsonc` change.
 - `GET /api/v1/annual_reports/:id` takes a token with `read:accounts`, as Mastodon 4.7.5 does; it asked for
   `write:accounts`.
 - A mention that a remote server tags but leaves out of the status's audience (Mastodon 4.6 and later do so for
