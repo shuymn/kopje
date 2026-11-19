@@ -96,10 +96,11 @@ export function accessRefusal(settings: AccessSettings, authority: AdminIdentity
   return adminRefusal(settings, authority);
 }
 
-// The admin policy: the admin's email by the sign-in's rule (sameLoginEmail: ASCII case only, AUTH-9), or, for a token without email, the admin CLI's service
-// token client id. The Worker applies it when it authenticates a request, and the Store again, against its saved
-// configuration, inside the transaction that writes: an admin revoked meanwhile cannot finish a write. The Worker also
-// requires the empty sub of a service token (app/admin.ts), which the Store does not see.
+// The admin policy: the admin's email by the sign-in's rule (sameLoginEmail: ASCII case only, AUTH-9), or, for a
+// token without email, the admin CLI's service token client id. The Worker applies it when it authenticates a request,
+// and the Store again, against its saved configuration, inside the transaction that writes: an admin revoked meanwhile
+// cannot finish a write. The Worker also requires the empty or absent sub of a service token (app/admin.ts), which
+// the Store does not see.
 export function adminRefusal(settings: AccessSettings, identity: AdminIdentity): string | null {
   if (identity.email !== null) {
     const admin = settings.adminEmail !== null && sameLoginEmail(identity.email, settings.adminEmail);

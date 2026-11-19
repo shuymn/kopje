@@ -499,6 +499,12 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- `/admin` accepts the admin CLI's service token again. Since November 2026 Cloudflare Access leaves the `sub` claim
+  out of a service token's JWT, where Cloudflare documents an empty `sub`, and every `kopje-admin` call answered 403
+  "this service token is not the admin CLI token". A token without email is the admin CLI's when its `common_name` is
+  the configured client ID and its `sub` is empty or absent; one with a non-empty `sub` (a person, an mTLS client
+  certificate) stays refused (AUTH-5 in [docs/threat-model.md](docs/threat-model.md)). No Store migration and no
+  `wrangler.jsonc` change.
 - A remote post's quote policy is read as Mastodon reads it. When it names the public collection under more than one
   spelling (`as:Public`, `Public`, the full IRI), only the first spelling found counts as public and any other is an
   unsupported entry, so `quote_approval` lists `unsupported_policy` too, where Kopje read every spelling as public
