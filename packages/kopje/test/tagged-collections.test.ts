@@ -31,6 +31,7 @@ import {
   COLLECTION_DESCRIPTION_LENGTH,
   COLLECTION_ITEM_STATES,
   COLLECTION_NAME_LENGTH,
+  COLLECTION_URI_BYTES,
   MAX_TAG_LINK_CANDIDATES,
   MAX_TAGGED_COLLECTIONS,
   MAX_TAGGING_STATUSES,
@@ -541,6 +542,20 @@ describe("a remote Note's tags (7-T4)", () => {
     expect({ created, updated }).toEqual({
       created: [[L], [L]],
       updated: aliases.map((_, i) => ({ tagged: [L], version: new Date(v2 + i * 60_000).toISOString() })),
+    });
+  });
+
+  // A tag's id is capped at COLLECTION_URI_BYTES (a remote collection's stored id) without its fragment, which no lookup
+  // compares: L's id padded by its fragment alone to COLLECTION_URI_BYTES + 1 bytes references L.
+  it("references a local collection by its id padded past COLLECTION_URI_BYTES by its fragment alone", async () => {
+    const { t, bob, L } = await world();
+    const id = `${localUri(L)}#`;
+    const padded = id + "f".repeat(COLLECTION_URI_BYTES + 1 - utf8Length(id));
+    const note = mastodonNote(bob, tags(padded));
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    expect({ bytes: utf8Length(padded), tagged: await tagged(t, await statusId(t, note)) }).toEqual({
+      bytes: COLLECTION_URI_BYTES + 1,
+      tagged: [L],
     });
   });
 

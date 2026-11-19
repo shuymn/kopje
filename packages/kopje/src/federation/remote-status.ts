@@ -315,11 +315,12 @@ function tagsOf(object: Json): { mentions: string[]; tags: string[] } {
 }
 
 // The ids of the Note's FeaturedCollection tags (create.rb's process_tags: a tag whose type is or includes
-// FeaturedCollection, as typeIs reads Hashtag; Mastodon reads only its id), each a URL of at most COLLECTION_URI_BYTES
-// UTF-8 bytes, distinct, the first MAX_TAG_LINK_CANDIDATES in tag order (#1589's D26). Each goes to the Store's one
-// resolver (domain/collections.ts namedCollection), which names a local collection by any address its routes serve,
-// http included, and applies a remote collection's stored form (https) only to what names a remote one. Nothing of an
-// embedded collection is read: a tag only references a collection Kopje stores.
+// FeaturedCollection, as typeIs reads Hashtag; Mastodon reads only its id), each a URL without its fragment, which no
+// lookup compares, of at most COLLECTION_URI_BYTES UTF-8 bytes (a remote collection's stored id: the cap reads what a
+// lookup compares, so a fragment pads nothing out), distinct, the first MAX_TAG_LINK_CANDIDATES in tag order (#1589's
+// D26). Each goes to the Store's one resolver (domain/collections.ts namedCollection), which names a local collection
+// by any address its routes serve, http included, and applies a remote collection's stored form (https) only to what
+// names a remote one. Nothing of an embedded collection is read: a tag only references a collection Kopje stores.
 function collectionTags(object: Json): string[] {
   const ids = new Set<string>();
   for (const tag of asArray(object.tag)) {
@@ -327,7 +328,7 @@ function collectionTags(object: Json): string[] {
       break;
     }
     if (isObject(tag) && typeIs(tag.type, ["FeaturedCollection"])) {
-      const id = typeof tag.id === "string" ? tag.id : null;
+      const id = typeof tag.id === "string" ? tag.id.split("#", 1)[0]! : null;
       if (id !== null && utf8Length(id) <= COLLECTION_URI_BYTES && URL.canParse(id)) {
         ids.add(id);
       }
