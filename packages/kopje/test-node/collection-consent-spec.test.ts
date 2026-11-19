@@ -53,6 +53,7 @@ const KOPJE_STEPS = [
   "KRetry",
   "KLeaseHead",
   "KFail",
+  "KReclaim",
 ];
 
 // Steps the real Store cannot take: Kopje deletes no local account (src/domain/delivery-hosts.ts, hostCaused).

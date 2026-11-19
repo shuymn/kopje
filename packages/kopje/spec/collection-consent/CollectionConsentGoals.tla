@@ -57,6 +57,13 @@ StateGoals ==
    LeaseFailedBesideX |->
      /\ Acted("KDeliver") /\ last.arg.msg.ty = "Delete" /\ last.arg.msg.why = "answer" /\ last.arg.msg.to = "R"
      /\ g.waitedAgain = "otherInbox",
+   \* A leased ordinary answer fails while another ordinary answer of its authorization to its inbox waits behind it: an
+   \* ordinary answer supersedes nothing, so the leased one waits again and is delivered.
+   LeaseFailedOrdinary |->
+     Acted("KDeliver") /\ Answer(last.arg.msg) /\ last.arg.msg.cls = "ord" /\ g.waitedAgain = "ordinary",
+   \* A listing records a retraction answer while the leased one is in flight under a reclaimed lease (it does not wait,
+   \* so the listing does not coalesce into it), then the sweep reclaims that lease again and drops it as superseded.
+   ReclaimSuperseded |-> Acted("KReclaim") /\ last.arg.val = "superseded" /\ g.overReclaim,
    \* A read lists the accepted row under an item R's Remove retracted: the row takes it (K14).
    ReadOverRetraction |-> Acted("KApply") /\ k.row.st = "acc" /\ k.row.uri # NONE /\ k.row.uri \in k.ret,
    \* The revoke's Delete is delivered after the retired row's cleanup (K10 leaves the lane as it is).
