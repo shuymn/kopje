@@ -164,8 +164,9 @@ describe("POST /api/v2/media", () => {
     const wide = await uploaded(h, h.users.alice, mediaForm(bytes(WIDE_PNG), {}, "wide.png", "image/png"));
     expect(wide.meta).toMatchObject({ original: { width: 3840, height: 960 }, small: { width: 640, height: 160 } });
     expect(wide.url).toMatch(/\/full\.png$/);
+    // A FULL_EDGE square bounds the long edge whichever way the image turns; meta takes the size Images served.
     expect(h.codec.encodeCalls).toEqual([
-      { width: 3840, height: 960, format: "image/png" },
+      { width: 3840, height: 3840, format: "image/png" },
       { width: 640, height: 160, format: "image/png", still: true },
       { width: 640, height: 160, format: "rgba", limit: 4 * 640 * 160, guard: expect.any(Function) },
     ]);
