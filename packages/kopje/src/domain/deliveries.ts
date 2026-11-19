@@ -592,9 +592,10 @@ export function outboundSince(db: Db, before: OutboundMark): boolean {
 // Recording and expansion
 // ---------------------------------------------------------------------------------------------------------------
 
-// The latest retraction answer of a subject (an authorization to one owner): each supersedes the earlier ones of its
-// subject, so the subject's unsuperseded range (outbound_activities_unsuperseded) holds it alone, one probe.
-const LATEST_ANSWER = `outbound_activities o INDEXED BY outbound_activities_unsuperseded
+// The latest retraction answer of a subject (an authorization to one owner): each supersedes the earlier activities of
+// its subject, so the subject's unsuperseded retractions (outbound_activities_unsuperseded_retractions, migration
+// 0119_answer_retractions) hold it alone, one probe, whatever ordinary answers of the subject are unsuperseded (RES-7).
+const LATEST_ANSWER = `outbound_activities o INDEXED BY outbound_activities_unsuperseded_retractions
 	WHERE o.account_id = ?1 AND o.object_uri = ?2 AND o.superseded = 0 AND o.retracts = 1`;
 
 // Whether the latest retraction answer of the subject is still to be sent to one of `inboxes`, the new answer's

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { type DeliveryOutcome, LEASE_MS, MAX_BACKLOG, MAX_LANE_BACKLOG } from "../src/domain/deliveries";
+import { answerUnserved, localListing } from "../src/domain/feature-answers";
 import { ourFeatureRequest } from "../src/domain/feature-requests";
 import { SWEEP_BATCH } from "../src/domain/remote-actors";
 import { parseActivity } from "../src/federation/inbound";
@@ -46,7 +47,7 @@ import {
 } from "./inbox-status-helpers";
 import { storeReceive } from "./inbox-store-helpers";
 import { contexts } from "./quote-helpers";
-import { watchedCursor } from "./read-helpers";
+import { type PlannedStatement, plannedSql, watchedCursor } from "./read-helpers";
 
 // Remote members of local collections (#1589's D23, Mastodon 4.7.5's AddAccountToCollectionService, FeatureRequest,
 // Accept#accept_feature_request!, Reject#reject_feature_request!, Delete#delete_feature_authorization!): a consenting
@@ -1818,6 +1819,68 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
     expect(await sql(w.t.store, "SELECT 1 FROM outbound_targets WHERE activity_id = ?", first!.id)).toEqual([]);
     expect((await answerCopies(w.t, a)).map((c) => [c.inbox, c.state])).toEqual([[inbox, "pending"]]);
   });
+
+  // Code review r3 (RES-7): the latest retraction answer of a subject is one probe of
+  // outbound_activities_unsuperseded_retractions (migration 0119_answer_retractions), at the coalescing gate and at the
+  // cancellation's lookup, however many ordinary answers of the subject are unsuperseded below it, with statistics taken
+  // before they were added. Fails if either lookup walks the subject's unsuperseded range, reading those answers.
+  it("reads the latest retraction answer of a subject in one probe, beside any number of its ordinary answers", async () => {
+    const lookups = async (ordinary: number) => {
+      const w = await owned();
+      expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
+      const [row] = await localRows(w.t, ALICE);
+      expect(await revokeAs(w.t, await collectionIdOf(w.t, w.listed.id), row!.id)).toBe(200);
+      await deliverAll(w.t);
+      const a = authorization(row!.id);
+      // The answer, recorded above the ids the ordinary ones take below it, then claimed: in flight, it stands for no
+      // listing, so the next answer is looked up at the gate and then at the cancellation.
+      await sql(w.t.store, "UPDATE sqlite_sequence SET seq = seq + 100000 WHERE name = 'outbound_activities'");
+      expect(await w.t.post(w.owner, itemActivity(w, "Add", localItem(w.owner, ALICE_URI, a)))).toBe(202);
+      const [latest] = await sql<{ id: string }>(
+        w.t.store,
+        `SELECT CAST(id AS TEXT) AS id FROM outbound_activities
+				WHERE retracts = 1 AND superseded = 0 AND instr(object_uri, 'answer ') = 1`,
+      );
+      expect((await w.t.store.claimDeliveries(BUILD, { now: NOW, leaseToken: "in-flight" })).deliveries).toHaveLength(
+        1,
+      );
+      await sql(w.t.store, "ANALYZE");
+      await sql(
+        w.t.store,
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?2)
+				INSERT INTO outbound_activities (id, account_id, body, object_uri, retracts, created_at)
+				SELECT CAST(?1 AS INTEGER) - 50000 + i, o.account_id, o.body, o.object_uri, 0, o.created_at
+				FROM n, outbound_activities o WHERE o.id = CAST(?1 AS INTEGER)`,
+        latest!.id,
+        ordinary,
+      );
+      const ownerId = (await sql<{ id: string }>(w.t.store, "SELECT id FROM accounts WHERE uri = ?", w.owner.uri))[0]!
+        .id;
+      const plans: PlannedStatement[] = [];
+      await runInDurableObject(w.t.store, (_instance, state) => {
+        const db = new Db(plannedSql(state.storage.sql, /o\.superseded = 0 AND o\.retracts = 1/, plans), (fn) =>
+          state.storage.transactionSync(fn),
+        );
+        state.storage.transactionSync(() => {
+          expect(answerUnserved(db, { id: ownerId }, w.listed.id, localListing(db, ALICE_URI, a)!, NOW)).toBe(true);
+        });
+      });
+      // A new answer recorded, superseding the one in flight and the ordinary ones.
+      expect(
+        await sql(
+          w.t.store,
+          `SELECT retracts, count(*) AS n FROM outbound_activities
+					WHERE superseded = 0 AND instr(object_uri, 'answer ') = 1 GROUP BY retracts`,
+        ),
+      ).toEqual([{ retracts: 1, n: 1 }]);
+      return plans.map(({ plan, rows }) => ({ probe: plan[0], rows }));
+    };
+    const few = await lookups(2);
+    const probe =
+      "SEARCH o USING COVERING INDEX outbound_activities_unsuperseded_retractions (account_id=? AND object_uri=?)";
+    expect(few.map((lookup) => lookup.probe)).toEqual([probe, probe]);
+    expect(await lookups(1_000)).toEqual(few);
+  }, 60_000);
 
   it("refuses an answer of no row when the Store's backlog is full, with this owner's lane empty", async () => {
     const w = await owned();
