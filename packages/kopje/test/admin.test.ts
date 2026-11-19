@@ -63,7 +63,9 @@ describe("admin authentication", () => {
   it("refuses identities that are not the admin with 403", async () => {
     const { as } = adminHarness(await configuredStore(), team);
     expect((await as({ email: "someone@kopje.test" }, "/admin/version")).status).toBe(403);
-    expect((await as({ email: undefined, common_name: "other-client.access" }, "/admin/version")).status).toBe(403);
+    expect(
+      (await as({ email: undefined, sub: undefined, common_name: "other-client.access" }, "/admin/version")).status,
+    ).toBe(403);
     expect((await as({ email: undefined }, "/admin/version")).status).toBe(403);
   });
 

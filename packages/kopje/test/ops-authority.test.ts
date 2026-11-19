@@ -5,7 +5,15 @@ import { MIGRATIONS } from "../src/db/migrations";
 import { StoreAdmin } from "../src/platform/store-admin";
 import type { StoreStub } from "../src/platform/store-client";
 import { constantTimeEqual } from "../src/security/tokens";
-import { type AccessTeam, adminClaims, adminHarness, adminTeam, serviceClaims, setTeamAccess } from "./access-helpers";
+import {
+  type AccessTeam,
+  adminClaims,
+  adminHarness,
+  adminTeam,
+  type Claims,
+  serviceClaims,
+  setTeamAccess,
+} from "./access-helpers";
 import { BUILD, migratedStore, testKernel } from "./helpers";
 import {
   ACCESS,
@@ -14,6 +22,7 @@ import {
   ensureAdmin,
   importChunks,
   importViaRpc,
+  SERVICE_CLIENT_ID,
   seedStore,
   setAccess,
   splitDump,
@@ -264,12 +273,34 @@ describe("import completion receipt", () => {
 });
 
 describe("service tokens", () => {
-  it("requires the empty subject of a service token, not only a matching common_name", async () => {
+  const USER_ID = "7335d417-61da-459d-899c-0a01c76a2f94";
+  const NOT_THE_TOKEN = "this service token is not the admin CLI token";
+  // The claim sets Access issues (AUTH-5): a service token as documented (empty sub) and as issued since 2026-11 (no
+  // sub, a policy_id); a person, with or without an email; an mTLS certificate, its common name as common_name and (as
+  // reported) sub. A matching common_name admits only a token without email and with an empty or absent sub.
+  it.each<[string, Claims, string | null]>([
+    ["a service token with an empty sub", { ...serviceClaims(), type: "app" }, null],
+    ["a service token without sub", { ...serviceClaims(), sub: undefined, type: "app", policy_id: "policy-1" }, null],
+    ["the admin", { ...adminClaims(), sub: USER_ID, type: "app" }, null],
+    ["a person without email", { email: undefined, sub: USER_ID, type: "app" }, NOT_THE_TOKEN],
+    ["a token without email, sub or common_name", { email: undefined, sub: undefined, type: "app" }, NOT_THE_TOKEN],
+    [
+      "an mTLS certificate named as the client id",
+      { email: undefined, common_name: SERVICE_CLIENT_ID, sub: SERVICE_CLIENT_ID, type: "app" },
+      NOT_THE_TOKEN,
+    ],
+    ["a service token whose sub is not a string", { ...serviceClaims(), sub: null, type: "app" }, NOT_THE_TOKEN],
+  ])("%s", async (_name, claims, refusal) => {
     const store = await migratedStore();
     await setTeamAccess(store, team);
     const { as } = adminHarness(store, team);
-    expect((await as(serviceClaims(), "/admin/version")).status).toBe(200);
-    expect((await as({ ...serviceClaims(), sub: "mtls-certificate" }, "/admin/version")).status).toBe(403);
+    const response = await as(claims, "/admin/version");
+    if (refusal === null) {
+      expect(response.status).toBe(200);
+    } else {
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: refusal });
+    }
   });
 });
 

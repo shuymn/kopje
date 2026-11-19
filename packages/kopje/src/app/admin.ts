@@ -222,10 +222,10 @@ function parseTime(value: string): number | null {
 }
 
 // The admin policy over a verified Access token (platform/access-settings.ts), plus the shape of a service token:
-// no email and an empty sub. common_name alone is not enough: Access also uses it for the name on an mTLS client
-// certificate.
+// no email, and a sub that is empty or absent. common_name alone is not enough: Access also uses it for the name on an
+// mTLS client certificate (AUTH-5 says what tells the two apart).
 function adminAllowed(identity: AccessIdentity, access: AccessSettings): string | null {
-  if (identity.email === null && identity.subject !== "") {
+  if (identity.email === null && identity.subject !== undefined && identity.subject !== "") {
     return "this service token is not the admin CLI token";
   }
   return adminRefusal(access, identity);
