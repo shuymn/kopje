@@ -80,8 +80,10 @@ const NAMES = [
   "S2-F8",
   "S2-F8ThenF7",
   "S2-LeaseFailed",
+  "S2-LeaseFailedOrdinary",
   "S2-LeaseSuperseded",
   "S2-ReadOverRetraction",
+  "S2-ReclaimSuperseded",
   "S2-RetractionAdmitted",
   "S3-OV2Shown",
   "S4-AnsweredX",
@@ -718,16 +720,17 @@ async function complete(w: World, stale: boolean): Promise<void> {
 }
 
 // A delivery round's answer to the head of Kopje's lane to R's server: 202, a lost response (the POST reached R), a
-// refusal for good (403: delivery.ts classifyStatus, which resends a 400 at once), or a transient failure (503). Of
-// KFail's two forms (a failed POST, or a lease that runs out for the sweep), the replay takes the failed POST.
+// refusal for good (403: delivery.ts classifyStatus, which resends a 400 at once), or a transient failure (503, KFail's
+// failed POST; a lease that runs out is KReclaim).
 type Outcome = "delivered" | "lost" | "refused" | "failed";
 const STATUS = { delivered: 202, refused: 403, failed: 503 } as const;
 
 type Head = { id: number; state: string; due: number; inbox: string; retracts: number; body: string };
 
-// A delivery round under way, its POSTs recorded and each held until the step that answers it.
+// A delivery round under way, its POSTs recorded and each held until the step that answers it; token: its lease.
 type Flight = {
   head: Head;
+  token: string;
   sent: { url: string; body: Record<string, unknown> }[];
   posted: Deferred;
   answer: (outcome: Outcome) => void;
@@ -768,7 +771,8 @@ function fly(w: World, head: Head): Flight {
   }
   let answer!: (outcome: Outcome) => void;
   const outcome = new Promise<Outcome>((resolve) => (answer = resolve));
-  const flight: Flight = { head, sent: [], posted: deferred(), answer, done: Promise.resolve() };
+  const prefix = `replay-${++leases}`;
+  const flight: Flight = { head, token: `${prefix}-1`, sent: [], posted: deferred(), answer, done: Promise.resolve() };
   const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(input, init);
     flight.sent.push({ url: request.url, body: await request.json() });
@@ -787,31 +791,87 @@ function fly(w: World, head: Head): Flight {
       () => w.t.store,
       fetch,
       () => w.clock.now,
-      `replay-${++leases}`,
+      prefix,
     ),
   );
   return flight;
 }
 let leases = 0;
 
-// KLeaseHead: a round claims the head and holds its POST in flight until the step that answers it.
-async function lease(w: World, expected: Activity): Promise<void> {
-  const flight = fly(w, await laneHead(w, expected));
+// The round's POST to R's server, reached and held.
+async function posted(flight: Flight): Promise<void> {
   await Promise.race([
     flight.posted.promise,
     flight.done.then(() => {
       throw new Error("the round sent nothing to R's server");
     }),
   ]);
+}
+
+// KLeaseHead: a round claims the head and holds its POST in flight until the step that answers it.
+async function lease(w: World, expected: Activity): Promise<void> {
+  const flight = fly(w, await laneHead(w, expected));
+  await posted(flight);
   w.flight = flight;
 }
 
-// A step that answers the head's POST: the one KLeaseHead holds, or that of a round claiming the waiting head. Checks
-// that the head before the step is the activity the step names and that the round POSTs exactly it there, an Accept
-// with its result. Then, by the step's input: "dropped", that nothing is sent and the head's delivery is gone (deleted,
-// not given up); "superseded", that it is gone and exactly one later answer of the same recorded form waits in the
-// lane, in the state its place there gives it (KFail drops the head: the lane's first row is pending, any other
-// queued); else, after a failed or lost POST, that the head waits again.
+// The head's delivery in any state: one deleted is in none (a given-up one is not gone).
+const deliveryOf = (w: World, head: Head) =>
+  sql<{ state: string; lease_token: string | null }>(
+    w.t.store,
+    "SELECT state, lease_token FROM deliveries WHERE id = ?",
+    head.id,
+  );
+
+// After a superseded head is dropped: it is gone, and exactly one later answer of its recorded form waits in the lane,
+// in the state its place there gives it (the drop takes the head out: the lane's first row is pending, any other
+// queued).
+async function supersededBy(w: World, head: Head, want: Omit<Activity, "reason">): Promise<void> {
+  expect(await deliveryOf(w, head), "a superseded answer's delivery is gone").toEqual([]);
+  const rows = await laneRows(w, '["queued", "pending", "leased"]');
+  const form = (recorded: object) =>
+    JSON.stringify(Object.entries(recorded).toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  const later = rows.flatMap((row, at) =>
+    form(recordedAs(w, row)) === form(want) ? [{ state: row.state, place: at === 0 ? "pending" : "queued" }] : [],
+  );
+  expect(later.length, "one later answer waits").toBe(1);
+  expect(later[0]!.state, "the later answer, in the state of its place in the lane").toBe(later[0]!.place);
+}
+
+// KReclaim: the held POST's lease runs out, and a delivery round at its expiry (claimDeliveries, after LEASE_MS)
+// reclaims the head: under a new lease, its POST to R's server in flight again (the head leased, never waiting), or,
+// "superseded", dropped, the round sending R's server nothing. The old POST is then answered 503, too late: its
+// completion is stale and changes nothing.
+async function reclaim(w: World, expected: Activity, value: string | undefined): Promise<void> {
+  const head = await laneHead(w, expected);
+  const held = w.flight;
+  expect(held?.head.id, "the head's POST held in flight").toBe(head.id);
+  expect(await deliveryOf(w, head), "the head is leased").toEqual([{ state: "leased", lease_token: held!.token }]);
+  w.flight = null;
+  const flight = fly(w, head);
+  const { reason: _reason, ...want } = expected;
+  if (value === "superseded") {
+    await flight.done;
+    expect(
+      flight.sent.map((s) => s.url),
+      "a reclaimed superseded answer is not sent",
+    ).toEqual([]);
+    await supersededBy(w, head, want);
+  } else {
+    await posted(flight);
+    expect(await deliveryOf(w, head), "the head leased again, under the new lease").toEqual([
+      { state: "leased", lease_token: flight.token },
+    ]);
+    w.flight = flight;
+  }
+  held!.answer("failed");
+  expect(((await held!.done) as { settled: string[] }).settled, "the expired lease's completion").toEqual(["stale"]);
+}
+
+// A step that answers the head's POST: the one KLeaseHead or KReclaim holds, or that of a round claiming the waiting
+// head. Checks that the head before the step is the activity the step names and that the round POSTs exactly it there,
+// an Accept with its result. Then, by the step's input: "dropped", that nothing is sent and the head's delivery is gone
+// (deleted, not given up); "superseded", supersededBy; else, after a failed or lost POST, that the head waits again.
 async function deliver(w: World, outcome: Outcome, expected: Activity, value: string | undefined) {
   const head = await laneHead(w, expected);
   const flight = w.flight ?? fly(w, head);
@@ -826,11 +886,9 @@ async function deliver(w: World, outcome: Outcome, expected: Activity, value: st
     flight.sent.filter((s) => new URL(s.url).origin !== lane && !offR(w, s.body).includes(s.url)).map((s) => s.url),
     "the round's POSTs off R's server",
   ).toEqual([]);
-  // The head's delivery in any state: one deleted is in none (a given-up one is not gone).
-  const left = () => sql(w.t.store, "SELECT state FROM deliveries WHERE id = ?", head.id);
   if (value === "dropped") {
     expect(toR, "a dropped activity is not sent").toEqual([]);
-    expect(await left(), "a dropped activity's delivery is gone").toEqual([]);
+    expect(await deliveryOf(w, head), "a dropped activity's delivery is gone").toEqual([]);
     return;
   }
   const { reason: _reason, ...want } = expected;
@@ -840,17 +898,12 @@ async function deliver(w: World, outcome: Outcome, expected: Activity, value: st
     "the lane's head, as sent",
   ).toEqual([want]);
   if (value === "superseded") {
-    expect(await left(), "a superseded answer's delivery is gone").toEqual([]);
-    const rows = await laneRows(w, '["queued", "pending", "leased"]');
-    const form = (recorded: object) =>
-      JSON.stringify(Object.entries(recorded).toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
-    const later = rows.flatMap((row, at) =>
-      form(recordedAs(w, row)) === form(want) ? [{ state: row.state, place: at === 0 ? "pending" : "queued" }] : [],
-    );
-    expect(later.length, "one later answer waits").toBe(1);
-    expect(later[0]!.state, "the later answer, in the state of its place in the lane").toBe(later[0]!.place);
+    await supersededBy(w, head, want);
   } else if (outcome === "failed" || outcome === "lost") {
-    expect(await left(), "the head waits again").toEqual([{ state: "pending" }]);
+    expect(
+      (await deliveryOf(w, head)).map((d) => d.state),
+      "the head waits again",
+    ).toEqual(["pending"]);
   }
 }
 
@@ -964,6 +1017,9 @@ async function step(w: World, s: Step): Promise<202 | 503 | "fetch" | null> {
       return null;
     case "KFail":
       await deliver(w, "failed", s.input.activity!, value);
+      return null;
+    case "KReclaim":
+      await reclaim(w, s.input.activity!, value);
       return null;
     case "KRetry":
       await inDurableObject(w, (_db, storage) =>
