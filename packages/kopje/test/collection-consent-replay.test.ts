@@ -328,23 +328,17 @@ function authorization(w: World, name: string): string {
 
 // RGuess: R lists the authorization Kopje issues next before Kopje issues it, which only an owner that guesses its URI
 // does. R's Add reaches Kopje at a later KRecv; here the replay picks the id, a local id of a time a year ahead, which no
-// allocation reaches by the clock, and the request that issues the authorization is made to take it (receiveRequest).
-function guess(w: World, name: string): void {
-  w.guessed[name] = (BigInt(w.clock.now + 365 * 86_400_000) << 16n).toString();
-}
-
-// Before a request that issues a guessed authorization: Kopje's last local id set just below it, so the row the request
-// inserts takes it (ids.ts allocateLocalId: one past the last while the last is ahead of the clock); observe checks the
-// row it issued.
-async function issueAsGuessed(w: World): Promise<void> {
-  const guessed = w.guessed[`a${w.rows.length + 1}`];
-  if (guessed !== undefined) {
-    await sql(
-      w.t.store,
-      "INSERT OR REPLACE INTO kopje_state (name, value) VALUES ('last_local_id', ?)",
-      (BigInt(guessed) - 1n).toString(),
-    );
-  }
+// allocation reaches by the clock, and sets Kopje's last local id just below it, so the next local id Kopje allocates is
+// the guessed one (ids.ts allocateLocalId: one past the last while the last is ahead of the clock). observe checks that
+// the row the issuing request inserts takes it, so an allocation in a step between shows there.
+async function guess(w: World, name: string): Promise<void> {
+  const id = BigInt(w.clock.now + 365 * 86_400_000) << 16n;
+  w.guessed[name] = id.toString();
+  await sql(
+    w.t.store,
+    "INSERT OR REPLACE INTO kopje_state (name, value) VALUES ('last_local_id', ?)",
+    (id - 1n).toString(),
+  );
 }
 
 const itemId = (w: World, name: string) =>
@@ -526,7 +520,6 @@ const expect202 = (status: number, what: string) => {
 // A FeatureRequest: answered at once for a collection Kopje stores, else held at its instrument's fetch ("fetch").
 async function receiveRequest(w: World, name: string): Promise<202 | 503 | "fetch"> {
   const body = featureRequest(w.owner, ALICE_URI, w.c.id, requestId(w, name));
-  await issueAsGuessed(w);
   if ((await collectionId(w)) !== undefined) {
     return (await post(w, w.owner, body)) as 202 | 503;
   }
@@ -1074,7 +1067,7 @@ async function step(w: World, s: Step): Promise<202 | 503 | "fetch" | null> {
       }
       return null;
     case "RGuess":
-      guess(w, value!);
+      await guess(w, value!);
       return null;
     case "Env":
       await applyEnvironment(w, s.environment);
