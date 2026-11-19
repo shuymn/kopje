@@ -211,7 +211,7 @@ function jpegMetadata(bytes: Uint8Array): RetainedMetadata | null {
 // mDCV and cLLI), pixel density and animation (APNG). Anything else counts as metadata. Colour signalling describes
 // how to display the pixels (a colour space, a display's mastering volume, light levels), not who made the image or
 // where, and PNG 3 gives cICP precedence over iCCP and sRGB, so dropping it would change the colours shown.
-export const PNG_CHUNKS: ReadonlySet<string> = new Set([
+const PNG_CHUNKS: ReadonlySet<string> = new Set([
   "IHDR",
   "PLTE",
   "IDAT",
@@ -229,6 +229,20 @@ export const PNG_CHUNKS: ReadonlySet<string> = new Set([
   "fcTL",
   "fdAT",
 ]);
+
+// PNG 3's colour chunks have fixed lengths (cICP 4 bytes, mDCV 24, cLLI 8); one of another length is not kept, so
+// no extra bytes ride past the strip and the check in a chunk they let through.
+const PNG_CHUNK_LENGTHS: ReadonlyMap<string, number> = new Map([
+  ["cICP", 4],
+  ["mDCV", 24],
+  ["cLLI", 8],
+]);
+
+// Whether a re-encoded or stripped PNG may keep a chunk of `type` with `length` data bytes (PNG_CHUNKS).
+export function pngChunkKept(type: string, length: number): boolean {
+  const fixed = PNG_CHUNK_LENGTHS.get(type);
+  return PNG_CHUNKS.has(type) && (fixed === undefined || fixed === length);
+}
 
 // Walks a PNG's chunks after its signature, calling `visit` with each chunk's type, data offset and data length, and
 // stops with the first value it returns. MALFORMED when a chunk passes the file's end, when anything follows IEND, or
@@ -260,14 +274,14 @@ export function walkPng<T>(bytes: Uint8Array, visit: (type: string, start: numbe
 }
 
 function pngMetadata(bytes: Uint8Array): RetainedMetadata | null {
-  const found = walkPng<RetainedMetadata>(bytes, (type) => {
+  const found = walkPng<RetainedMetadata>(bytes, (type, _start, length) => {
     if (type === "eXIf") {
       return "exif";
     }
     if (type === "tEXt" || type === "zTXt" || type === "iTXt") {
       return "text";
     }
-    return PNG_CHUNKS.has(type) ? undefined : "segment";
+    return pngChunkKept(type, length) ? undefined : "segment";
   });
   return found === MALFORMED ? "unreadable" : (found ?? null);
 }

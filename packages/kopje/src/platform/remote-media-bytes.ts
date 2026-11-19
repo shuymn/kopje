@@ -4,7 +4,7 @@ import {
   type ImageType,
   jpegSegmentMetadata,
   MALFORMED,
-  PNG_CHUNKS,
+  pngChunkKept,
   type RetainedMetadata,
   retainedMetadata,
   sniffImageType,
@@ -218,7 +218,7 @@ function pngFacts(bytes: Uint8Array, orientation: Orientation = "refuse"): Facts
     if (type === "eXIf" && orientation === "refuse" && orientationRefused(bytes.subarray(start, start + length))) {
       return "orientation";
     }
-    if (!PNG_CHUNKS.has(type)) {
+    if (!pngChunkKept(type, length)) {
       return ((bytes[start - 4] ?? 0) & 0x20) === 0 ? "malformed" : undefined;
     }
     bytes.copyWithin(write, start - 8, start + length + 4);

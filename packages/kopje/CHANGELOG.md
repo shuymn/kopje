@@ -44,7 +44,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   image before it resizes, so a 4,000 × 1,000 image came out at 240 × 960. The box is now a square that bounds the
   long edge whichever way the image turns, for uploads and for link card images.
 - PNG colour signalling is kept: an image's `cICP`, `mDCV` and `cLLI` chunks (a colour space such as Display P3, and HDR
-  levels) are no longer counted as metadata, in uploads and in cached remote images.
+  levels), at their specified lengths of 4, 24 and 8 bytes, are no longer counted as metadata, in uploads and in cached
+  remote images; one of another length is dropped.
 
 ## [0.6.0] - 2026-11-19
 

@@ -3225,7 +3225,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   XMP, IPTC, comment, text chunk or unknown JPEG application segment, and refuses the upload otherwise (500, as Mastodon
   answers a failed transformation). Colour signalling is kept: ICC profiles and PNG 3's `cICP`, `mDCV` and `cLLI` say
   how to display the pixels (a colour space, a display's mastering volume, light levels), not who made the image or
-  where. `test/image-bytes.test.ts` ("refuses every EXIF block", "refuses XMP, IPTC, comments"),
+  where, and are kept only at their specified lengths (4, 24 and 8 bytes, `pngChunkKept`), so they carry nothing else.
+  `test/image-bytes.test.ts` ("refuses every EXIF block", "refuses XMP, IPTC, comments"),
   `test/remote-media-bytes.test.ts` ("stripImageOutput"), `test/media.test.ts` ("re-encodes an image without its
   location", "refuses a failed transformation", "strips … from an output", "refuses an output that does not walk",
   "uploads a screenshot", "a PNG's Exif orientation is applied", "keeps a PNG output's colour signalling"),

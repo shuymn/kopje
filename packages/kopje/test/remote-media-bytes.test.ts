@@ -767,6 +767,24 @@ describe("stripImageOutput (MEDIA-3)", () => {
     expect(remote.ok && pngTypes(remote.bytes)).toEqual(expect.arrayContaining(["cICP", "mDCV", "cLLI"]));
   });
 
+  it("keeps cICP, mDCV and cLLI only at their specified lengths, in the strip and in the check", () => {
+    for (const [type, length] of [
+      ["cICP", 4],
+      ["mDCV", 24],
+      ["cLLI", 8],
+    ] as const) {
+      for (const size of [length - 1, length + 1]) {
+        const output = pngWithChunk(bytes(PNG_ICC), type, new Uint8Array(size));
+        expect(retainedMetadata(output, "image/png"), `${type} ${size}`).toBe("segment");
+        expect(stripImageOutput(output.slice(), "image/png"), `${type} ${size}`).toEqual(bytes(PNG_ICC));
+        const remote = verifyRemoteImage(output.slice(), ["image/png"]);
+        expect(remote.ok && remote.bytes, `${type} ${size}`).toEqual(bytes(PNG_ICC));
+      }
+      const exact = pngWithChunk(bytes(PNG_ICC), type, new Uint8Array(length));
+      expect(retainedMetadata(exact, "image/png"), type).toBeNull();
+    }
+  });
+
   it("refuses a PNG output with a byte after IEND rather than keep what follows it", () => {
     const output = new Uint8Array([...pngWithChunk(bytes(PNG_PLAIN), "eXIf", exifOrientation(1).subarray(6)), 0]);
     expect(stripImageOutput(output, "image/png")).toBeNull();
