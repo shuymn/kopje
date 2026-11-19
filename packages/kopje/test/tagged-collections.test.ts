@@ -744,6 +744,24 @@ const pathOf = (uri: string) => {
   return `${url.pathname}${url.search}`;
 };
 
+// The ids the Note of the local status `id` names in its FeaturedCollection tags.
+async function noted(t: Setup, id: string): Promise<string[]> {
+  const [row] = await sql<{ uri: string }>(t.store, "SELECT uri FROM statuses WHERE id = ?", id);
+  const note = await (await t.request(pathOf(row!.uri), AP_GET)).json<{ tag: Record<string, unknown>[] }>();
+  return note.tag.filter((tag) => tag.type === "FeaturedCollection").map((tag) => tag.id as string);
+}
+
+// Each distinct local id of `ids` dereferenced: its status and, when served, the id its document declares.
+async function served(t: Setup, ids: readonly string[]): Promise<{ status: number; id: string | null }[]> {
+  const local = [...new Set(ids)].filter((id) => id.startsWith(`${LOCAL}/`));
+  return Promise.all(
+    local.map(async (id) => {
+      const response = await t.request(pathOf(id), AP_GET);
+      return { status: response.status, id: response.ok ? (await response.json<{ id: string }>()).id : null };
+    }),
+  );
+}
+
 // context_helper.rb's featured_collections terms, written out.
 const FEATURED_COLLECTIONS_TERMS = {
   FeaturedCollection: "https://w3id.org/fep/7aa9#FeaturedCollection",
@@ -1304,9 +1322,10 @@ describe("rows no writer produces (7-T9)", () => {
     expect([await shown(S), await shown(S2)]).toEqual([[ids[1], ids[3]], []]);
   });
 
-  // Each text of a restored collection (maximalCollections' restored shape) as the tag read returns it: three times the
-  // bytes the read takes of it, which no stored bytes decode past (collection-maxima.ts, `malformed`), so the fill the
-  // heap model measures is the widest. None of the four is presented or named.
+  // Each text of a restored collection (maximalCollections' restored shape) as the tag reads return it, the REST one's
+  // and then the Note's: three times the bytes the read takes of it, which no stored bytes decode past
+  // (collection-maxima.ts, `malformed`), so the fill the heap model measures is the widest. None of the four is
+  // presented or named.
   it("reads a restored collection's every text at three times the bytes the read takes of it", async () => {
     const t = await setup();
     const S = await posted(t, "S");
@@ -1341,7 +1360,7 @@ describe("rows no writer produces (7-T9)", () => {
       description: 3 * 4 * COLLECTION_DESCRIPTION_LENGTH.remote,
       tag: 3 * 4 * MAX_TAG_LENGTH,
     };
-    expect(read.widths).toEqual(Array.from({ length: MAX_TAGGED_COLLECTIONS }, () => widest));
+    expect(read.widths).toEqual(Array.from({ length: 2 * MAX_TAGGED_COLLECTIONS }, () => widest));
     expect({ presented: read.presented, named: read.named }).toEqual({ presented: 0, named: [] });
   });
 
@@ -1387,9 +1406,10 @@ describe("rows no writer produces (7-T9)", () => {
   // alice's username restored within USERNAME_LIMIT bytes, which the read returns: 0xC0 and 254 continuation bytes,
   // read as 255 U+FFFD; F0 90 80, a sequence cut short read as one U+FFFD of the same three bytes; 45 letters and an é,
   // which usernameSql's fallback cuts to 42 letters, not hers; and a-b, a.b and 65 letters, usernames of Mastodon's
-  // grammar that the collection routes do not take, so L's id answers 404. None names her at a route, so neither the
-  // REST read nor the Note's presents or names L; V, beside it, is. 64 letters, the most the routes take, names her: L
-  // is presented and named, and its id answers 200.
+  // grammar that the collection routes do not take, so L's id answers 404 (#1811). None names her at a route, so
+  // neither the REST read nor the Note's presents or names L; V, beside it, is. 64 letters, the most the routes take,
+  // names her: L is presented and named, and its id, dereferenced, is a document of that id. Each ASCII username comes
+  // with her actor id, which the document's id is built from, as a rename leaves them.
   it("names a local owner's collection only by a username, as read, that its routes take", async () => {
     const t = await setup();
     const L = await localCollection(t, ALICE, 1);
@@ -1409,6 +1429,9 @@ describe("rows no writer produces (7-T9)", () => {
     const seen: unknown[] = [];
     for (const [username, name] of restored) {
       await sql(t.store, "UPDATE accounts SET username = CAST(? AS TEXT) WHERE id = ?", username, ALICE);
+      if (name !== null) {
+        await sql(t.store, "UPDATE accounts SET uri = ? WHERE id = ?", `${LOCAL}/ap/users/${name}`, ALICE);
+      }
       const read = await runInDurableObject(t.store, (_instance, state) => {
         const lengths: (number | undefined)[] = [];
         const db = new Db(
@@ -1420,12 +1443,13 @@ describe("rows no writer produces (7-T9)", () => {
             }
           }),
         );
-        const presented = (taggedCollectionsOf(db, [S], null, LOCAL).get(S) ?? []).map(({ id }) => id);
+        const shown = taggedCollectionsOf(db, [S], null, LOCAL).get(S) ?? [];
         const named = statusFacts(db, S, () => null)?.collections ?? [];
-        return { read: lengths, presented, named };
+        return { read: lengths, presented: shown.map(({ id }) => id), uris: shown.map(({ uri }) => uri), named };
       });
+      const { uris, ...rest } = read;
       const route = name === null ? null : (await t.request(`/ap/users/${name}/collections/${L}`, AP_GET)).status;
-      seen.push({ ...read, route });
+      seen.push({ ...rest, route, served: await served(t, [...uris, ...rest.named]) });
     }
     const v = `${MASTODON}/users/x/collections/2`;
     const left = (length: number, route: number | null = null) => ({
@@ -1433,8 +1457,9 @@ describe("rows no writer produces (7-T9)", () => {
       presented: [V],
       named: [v],
       route,
+      served: [],
     });
-    const a64 = "a".repeat(64);
+    const l64 = `${LOCAL}/ap/users/${"a".repeat(64)}/collections/${L}`;
     expect(seen).toEqual([
       left(USERNAME_LIMIT),
       left(1),
@@ -1442,8 +1467,54 @@ describe("rows no writer produces (7-T9)", () => {
       left(3, 404),
       left(3, 404),
       left(65, 404),
-      { read: [64, 64], presented: [L, V], named: [`${LOCAL}/ap/users/${a64}/collections/${L}`, v], route: 200 },
+      { read: [64, 64], presented: [L, V], named: [l64, v], route: 200, served: [{ status: 200, id: l64 }] },
     ]);
+  });
+
+  // A local collection owned by o2, a remote account (a restored row the import admits): the collection routes serve
+  // a local account's alone, so its id, /ap/users/o2/collections/…, answers 404. Neither the REST read nor the Note
+  // presents or names it, and a link to it by either local form references none; V, beside it, is.
+  it("leaves out a local collection whose owner is not a local account", async () => {
+    const t = await setup();
+    const owner = await remoteOwner(t, 2, `${MASTODON}/users/x`);
+    const O = await localCollection(t, owner, 1);
+    const V = await remoteCollection(t, owner, 2, `${MASTODON}/users/x/collections/2`);
+    const S = await posted(t, "S");
+    for (const id of [O, V]) {
+      await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", S, id);
+    }
+    const v = `${MASTODON}/users/x/collections/2`;
+    const { body } = await t.api<Status>(`/api/v1/statuses/${S}`, "dave");
+    expect(body.tagged_collections.map(({ id, uri }) => ({ id, uri }))).toEqual([{ id: V, uri: v }]);
+    expect(await noted(t, S)).toEqual([v]);
+    expect((await t.request(`/ap/users/o2/collections/${O}`, AP_GET)).status).toBe(404);
+    const links = [`${LOCAL}/ap/users/o2/collections/${O}`, `${LOCAL}/collections/${O}`];
+    expect(await tagged(t, await posted(t, ...links))).toEqual([]);
+  });
+
+  // alice's username restored as a-b, of Mastodon's grammar but not the routes' (#1811): a post linking four of her
+  // collections by their ids and then dave's own D gives D a slot, which the API presents, the Note names and the
+  // route serves; the four, which no surface shows, take none, so they do not crowd D out of the first
+  // MAX_TAGGED_COLLECTIONS.
+  it("gives a post's slots only to collections a status can tag, before it takes the first four", async () => {
+    const t = await setup();
+    const unroutable: string[] = [];
+    for (let n = 1; n <= MAX_TAGGED_COLLECTIONS; n++) {
+      unroutable.push(await localCollection(t, ALICE, n));
+    }
+    const D = await localCollection(t, DAVE, 9);
+    await sql(t.store, "UPDATE accounts SET username = 'a-b', uri = ? WHERE id = ?", `${LOCAL}/ap/users/a-b`, ALICE);
+    const S = await posted(
+      t,
+      ...unroutable.map((id) => `${LOCAL}/ap/users/a-b/collections/${id}`),
+      `${LOCAL}/collections/${D}`,
+    );
+    expect(await tagged(t, S)).toEqual([D]);
+    const d = `${LOCAL}/ap/users/dave/collections/${D}`;
+    const { body } = await t.api<Status>(`/api/v1/statuses/${S}`, "dave");
+    expect(body.tagged_collections.map(({ id, uri }) => ({ id, uri }))).toEqual([{ id: D, uri: d }]);
+    expect(await noted(t, S)).toEqual([d]);
+    expect(await served(t, [d])).toEqual([{ status: 200, id: d }]);
   });
 
   it("lets S's Note name Y alone, by its id", async () => {

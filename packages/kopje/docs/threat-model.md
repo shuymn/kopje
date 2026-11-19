@@ -1980,23 +1980,23 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   collection job after it, each after the item's `Add`; a suspension sends none. A status's `tagged_collections`
   (migration `0120_tagged_collections`, #1589's D26) are the collections it tags that are shown to the viewer, each with
   the members shown to the viewer, on an original and a quoted status (a boost presents none, its original them), each
-  only while its name, description and tag are well-formed UTF-8 as stored, and a local one only while its owner's
-  username, read whole within `USERNAME_LIMIT` bytes, is one the collection routes take (`ROUTE_USERNAME`, 1 to 64 ASCII
-  letters, digits or underscores, the routes' own pattern), so a restored dump's malformed text is presented nowhere and
-  no collection id names a route that does not serve it; a remote one only while its id is a valid id on its owner's
-  origin, that owner's id read within `ACTOR_URI_LIMIT` (`actorUriSql`, which the writers' lookups read it through too),
-  and its name and description are within its writer's bounds, and its `url` only as its writer would store it. No
-  public page presents them or reads a reference: the status page and its thread, the profile's tabs and pins, the
-  hashtag page, the interact handoff, oEmbed and the `/authorize_interaction` result present `[]`. A local status's
-  ActivityPub forms (its Note or Question as served, in the outbox and in `featured`, its `Create` and `Update`s and a
-  `QuoteRequest`'s instrument) name each collection it tags whose owner is available by its id alone, a local one only
-  while its owner's username is one the routes take and a remote one only while valid, under the `featured_collections`
-  terms, so no collection's name, description or members travel in the post's activities. This bounds the wire's
-  content, not who learns of the collection: a local collection's id is its owner's route, which names the owner, and a
-  fetch of it is judged by R45 for the fetcher, the remote account whose stored key the signature names (a key Kopje
-  does not store names none, and the fetch is anonymous), so a server whose user the owner blocks may still read it with
-  another key, its instance actor's included unless the owner blocks that account or its domain, or show its copy to
-  that user.
+  only while a status can tag it (one predicate, `taggable`): its name, description and tag well-formed UTF-8 as stored;
+  a local one only while its owner is a local account whose username, read whole within `USERNAME_LIMIT` bytes, is one
+  the collection routes take (`ROUTE_USERNAME`, 1 to 64 ASCII letters, digits or underscores, the routes' own pattern);
+  a remote one only while its id is a valid id on its owner's origin, that owner's id read within `ACTOR_URI_LIMIT`
+  (`actorUriSql`), and its name and description are within its writer's bounds, and its `url` only as its writer would
+  store it. So a restored dump's malformed text is presented nowhere and no collection id names a route that does not
+  serve it. The writer resolves a post's links and a Note's tags to such collections alone, before it takes the first
+  four, so a collection no surface shows takes no slot. No public page presents them or reads a reference: the status
+  page and its thread, the profile's tabs and pins, the hashtag page, the interact handoff, oEmbed and the
+  `/authorize_interaction` result present `[]`. A local status's ActivityPub forms (its Note or Question as served, in
+  the outbox and in `featured`, its `Create` and `Update`s and a `QuoteRequest`'s instrument) name each collection it
+  tags whose owner is available and that a status can tag by its id alone, under the `featured_collections` terms, so no
+  collection's name, description or members travel in the post's activities. This bounds the wire's content, not who
+  learns of the collection: a local collection's id is its owner's route, which names the owner, and a fetch of it is
+  judged by R45 for the fetcher, the remote account whose stored key the signature names (a key Kopje does not store
+  names none, and the fetch is anonymous), so a server whose user the owner blocks may still read it with another key,
+  its instance actor's included unless the owner blocks that account or its domain, or show its copy to that user.
   _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`, `collectionItemShownSql`,
   `featureApprovalSql`, `featureApprovalReads`, `mayFeatureSql` and `inCollectionsSql` in `src/domain/audience.ts`,
   `statusFacts`, `noteOf` and `contextOf` (`src/domain/activities.ts`), the account presenter and `presentFor`
@@ -2022,9 +2022,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   the url no writer would store", "leaves out a restored collection whose text reads past its writer's bounds", "leaves
   out a restored collection whose text is malformed, however wide it decodes", "reads a local owner's restored username
   within USERNAME_LIMIT bytes, and leaves its collection out", "names a local owner's collection only by a username, as
-  read, that its routes take", "names each collection by its id alone, after the other tags, under the
-  featured_collections terms", "lets S's Note name Y alone, by its id", "leaves out a collection whose owner's id is
-  past ACTOR_URI_LIMIT, and references none").
+  read, that its routes take", "leaves out a local collection whose owner is not a local account", "gives a post's slots
+  only to collections a status can tag, before it takes the first four", "names each collection by its id alone, after
+  the other tags, under the featured_collections terms", "lets S's Note name Y alone, by its id", "leaves out a
+  collection whose owner's id is past ACTOR_URI_LIMIT, and references none").
 
 ### Authorization (AUTH)
 
@@ -5631,11 +5632,12 @@ times their count, and the heap model counts each column at that width (`malform
 `test/tagged-collections.test.ts` ("reads a restored collection's every text at three times the bytes the read takes of
 it")). The presenter leaves out a collection whose name, description or tag is malformed, read with more U+FFFD than its
 stored bytes hold as EF BF BD (a stored EF BF BD is one U+FFFD, and each malformed sequence adds one, a replacement of
-the same width such as F0 90 80 included), and a local one whose owner's username, read whole, is not one its routes
-take (`wellFormed` and `tagNamesOwner` in `src/domain/collection-presenter.ts`), so no answer presents a value decoding
-replaced (`test/tagged-collections.test.ts` ("leaves out a restored collection whose text is malformed, however wide it
-decodes", "reads a local owner's restored username within USERNAME_LIMIT bytes, and leaves its collection out", "names a
-local owner's collection only by a username, as read, that its routes take")).
+the same width such as F0 90 80 included), and a local one whose owner is not a local account or whose username, read
+whole, is not one its routes take (`taggable`, `wellFormed` and `tagNamesOwner` in
+`src/domain/collection-presenter.ts`), so no answer presents a value decoding replaced
+(`test/tagged-collections.test.ts` ("leaves out a restored collection whose text is malformed, however wide it decodes",
+"reads a local owner's restored username within USERNAME_LIMIT bytes, and leaves its collection out", "names a local
+owner's collection only by a username, as read, that its routes take")).
 A local account also shows `noindex` and `roles`, at most the Owner's
 badge: the account occurrence's conservative JSON adds those keys (63 bytes) to the remote one measured, and what a
 local account's four fields at their derived most (37,677 bytes: names of six-byte escapes, each value at 7,822 and
@@ -5678,7 +5680,7 @@ logs (6.01 MB escaped, 4.64 MB raw, the fill of the largest SQLite read) are mea
 | A moderation_warning notification, its local account at bounds   | 134,434           | 294,570         | 364,965           | 8         | 694   | 4.4%           |
 | Its notification group                                           | 134,434           | 294,759         | 365,154           | 8         | 701   | 4.4%           |
 | A filtered favourite of the quote, as include_filtered lists it  | 7,301,687         | 5,768,003       | 5,786,933         | 2,162     | 6,786 | 69.0%          |
-| ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,717,629         | 4,262,049       |                   | 1,342     | 3,184 | 50.8%          |
+| ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,767,169         | 4,262,049       |                   | 1,342     | 3,184 | 50.8%          |
 | Its Create (the Note and its addressing again)                   |                   | 6,318,633       |                   |           |       | 75.3%          |
 | Profile, derived from its caps                                   |                   | 326,185         | 372,038           |           |       | 4.4%           |
 | Announcement: each part derived from its caps                    |                   | 121,774         | 248,997           |           |       | 3.0%           |

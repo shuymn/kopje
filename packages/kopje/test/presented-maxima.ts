@@ -128,7 +128,7 @@ export const PROFILE_MAXIMA = { json: 326_185, conservative: 372_038 };
 
 // The ActivityPub Note of a local status at its bounds, its card's Link included, addressed to MAX_LOCAL_ADDRESSED
 // accounts: what its read takes out of SQLite, the rows and nodes, and the JSON of the Note and of its Create.
-export const NOTE_MAXIMA = { sqlite: 3_717_629, rows: 1_342, nodes: 3_184, note: 4_262_049, create: 6_318_633 };
+export const NOTE_MAXIMA = { sqlite: 3_767_169, rows: 1_342, nodes: 3_184, note: 4_262_049, create: 6_318_633 };
 
 // The peaks of the heap model (status-bounds.test.ts peaks), in bytes, for answers whose largest item is a timeline's
 // item, a group or a report: the item's rows with 25% headroom, the largest single row, the rejected item's objects,

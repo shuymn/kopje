@@ -1,4 +1,5 @@
 import { writeEach } from "../db/by-ids";
+import { selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { railsBlank } from "../platform/rails-blank";
@@ -58,13 +59,15 @@ import {
   presentCollections,
   presentItem,
   shownItems,
-  validRemoteCollection,
+  TAGGED_COLLECTION_COLUMNS,
+  taggable,
+  type TaggedRow,
 } from "./collection-presenter";
 import { requestCollectionSync } from "./collection-requests";
 import { allocateLocalId, insertWithFreshId, requestedId, storedIdOf } from "./ids";
 import { notify } from "./notifications";
 import { writeOperation } from "./operation";
-import { actorUriSql, usernameSql } from "./profile-bounds";
+import { usernameSql } from "./profile-bounds";
 import { RowBudget } from "./row-budget";
 import { isHashtagName, parseStatusText } from "./status-text";
 import { TAG_NAME_TOO_LONG, withinTagNameBound } from "./tag-bounds";
@@ -1123,57 +1126,66 @@ export function flaggedCollections(
 // does not store references nothing, and nothing of a tag but its id is read (docs/mastodon-deviations.md,
 // "Collections"). No R45 test applies to the author: the presenters apply R45 to each viewer.
 
+// The id of `row`, a collection the writer resolved, when a status can tag it (taggable, the presenters' test); null
+// otherwise, so a collection no surface would show takes no slot.
+function taggableId(row: TaggedRow | undefined): string | null {
+  return row !== undefined && taggable(row) ? row.id : null;
+}
+
 // The collection a local route on `origin` names: the row by key, local, and for the uri form owned by the username
-// given, compared byte for byte (Mastodon's route lookup takes the id alone).
+// given, compared byte for byte (Mastodon's route lookup takes the id alone), with its owner by key (taggableId).
 function routedCollection(db: Db, url: string, origin: string): string | null {
   const route = localCollectionRoute(url, origin);
   if (route === null) {
     return null;
   }
-  return (
-    db.first<{ id: string }>(
-      `SELECT c.id FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
+  return taggableId(
+    db.first<TaggedRow>(
+      `SELECT ${selectSql(TAGGED_COLLECTION_COLUMNS)} FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
 				CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
 			WHERE c.id = ?1 AND c.local = 1 AND (?2 IS NULL OR a.username = ?2)`,
       route.id,
       route.username,
-    )?.id ?? null
+    ),
   );
 }
 
-// The valid remote collection stored under the id `uri`, byte for byte (collections_uri), with its owner's id read by
-// key for the validity test, as actorUriSql reads it (a restored id past ACTOR_URI_LIMIT makes it invalid).
+// The remote collection stored under the id `uri`, byte for byte (collections_uri), with its owner read by key
+// (taggableId: a restored owner id past ACTOR_URI_LIMIT, as actorUriSql reads it, makes it invalid).
 function collectionByStoredUri(db: Db, uri: string): string | null {
-  const row = db.first<{ id: string; uri: string; owner_uri: string | null }>(
-    `SELECT c.id, c.uri, ${actorUriSql("o.uri")} AS owner_uri FROM collections c INDEXED BY collections_uri
-			LEFT JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id
-		WHERE c.uri = ?1 AND c.local = 0`,
-    uri,
+  return taggableId(
+    db.first<TaggedRow>(
+      `SELECT ${selectSql(TAGGED_COLLECTION_COLUMNS)} FROM collections c INDEXED BY collections_uri
+				LEFT JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
+			WHERE c.uri = ?1 AND c.local = 0`,
+      uri,
+    ),
   );
-  return row !== undefined && validRemoteCollection(row.uri, row.owner_uri) ? row.id : null;
 }
 
 // The remote collection whose stored url is `url` byte for byte and whose stored uri begins with `origin` (the link's,
-// as WHATWG serializes it) and `/`, when it is the only one of the first two such rows and valid (#1589's D26, c2a):
-// the prefix puts its id, and validity its owner, on the link's origin, so no other server claims the URL.
-// collections_url walks at most 2 entries (the LIMIT inside the subquery, before any test), each read by rowid with its
-// owner by key. `local = 0` is a literal: the partial index serves only a statement whose terms imply its condition.
+// as WHATWG serializes it) and `/`, when it is the only one of the first two such rows and a status can tag it
+// (taggableId; #1589's D26, c2a): the prefix puts its id, and validity its owner, on the link's origin, so no other
+// server claims the URL. collections_url walks at most 2 entries (the LIMIT inside the subquery, before any test), each
+// read by key with its owner. `local = 0` is a literal: the partial index serves only a statement whose terms imply its
+// condition.
 function collectionByStoredUrl(db: Db, url: string, origin: string): string | null {
-  const rows = db.all<{ id: string; uri: string; owner_uri: string | null }>(
-    `SELECT c.id, c.uri, ${actorUriSql("o.uri")} AS owner_uri
-		FROM (SELECT id, account_id, uri FROM collections INDEXED BY collections_url
-			WHERE url = ?1 AND uri >= ?2 AND uri < ?3 AND local = 0 LIMIT 2) c
-		LEFT JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id`,
+  const rows = db.all<TaggedRow>(
+    `SELECT ${selectSql(TAGGED_COLLECTION_COLUMNS)}
+		FROM (SELECT id FROM collections INDEXED BY collections_url
+			WHERE url = ?1 AND uri >= ?2 AND uri < ?3 AND local = 0 LIMIT 2) w
+		CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = w.id
+		LEFT JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id`,
     url,
     `${origin}/`,
     `${origin}0`,
   );
-  const [row] = rows;
-  return rows.length === 1 && row !== undefined && validRemoteCollection(row.uri, row.owner_uri) ? row.id : null;
+  return rows.length === 1 ? taggableId(rows[0]) : null;
 }
 
 // The ids of the first MAX_TAGGED_COLLECTIONS distinct collections `candidates` name, in their order, each resolved by
-// `resolve` (null: none); resolution stops once the slots are taken.
+// `resolve` (null: none, a collection no status can tag included, so it takes no slot); resolution stops once the
+// slots are taken.
 function distinctCollections<T>(candidates: readonly T[], resolve: (candidate: T) => string | null): string[] {
   const ids: string[] = [];
   for (const candidate of candidates) {
