@@ -34,6 +34,7 @@ import {
   DAY,
   expectByteCutFirstPage,
   expectByteCutWalk,
+  EDGE_BIG_SHARE,
   expectStatusBudgetCut,
   maximalAccounts,
   nextId,
@@ -531,7 +532,7 @@ describe("status answers within STATUS_ANSWER_BYTES (RES-3)", () => {
     // Eight big replies, then statusBudgetEdge's third-size one: descendants are in id order.
     const big: string[] = [];
     for (let i = 0; i < 8; i++) {
-      big.push(await bigStatus(h, author, NOW - (20 - i) * 60_000, { inReplyToId: root }));
+      big.push(await bigStatus(h, author, NOW - (20 - i) * 60_000, { inReplyToId: root }, EDGE_BIG_SHARE));
     }
     const edge = await bigStatus(h, author, NOW - 60_000, { inReplyToId: root }, 3);
     type Context = { ancestors: unknown[]; descendants: { id: string }[] };

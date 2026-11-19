@@ -1372,7 +1372,8 @@ async function maximalFilters(t: Setup, fill: Fill, statuses: readonly string[])
 // bounds, filled as `fill`, with alice's profile and filters at their bounds, the filters naming all three, her votes
 // in every choice of both polls shown, and every flag of hers on each. The boost's own row holds every part its CHECK
 // and triggers accept (all but content), and attachments, mentions, hashtags and a poll of its own, which the presenter
-// neither reads nor shows. Each original tags four remote collections at their maxima (maximalCollections).
+// neither reads nor shows. Each original tags four remote collections at their maxima (maximalCollections), in the
+// raw fill as a restored dump may hold them, malformed at their stored byte bounds, which a tag reads and leaves out.
 async function maximalStatuses(fill: Fill) {
   const t = await setup();
   await sql(
@@ -1398,7 +1399,7 @@ async function maximalStatuses(fill: Fill) {
   const quote = await storedStatus(t, quoter, await maximalParts(t, fill));
   await acceptQuote(t, quote, quoted);
   const boost = await storedStatus(t, booster, { ...(await maximalParts(t, fill)), reblogOf: quote });
-  await maximalCollections(t.store, fill === "raw" ? W : C, [quoted, quote]);
+  await maximalCollections(t.store, fill === "raw" ? W : C, [quoted, quote], fill === "raw");
   // A card on each, the boost's own row too (an imported row: the presenter never reads a boost's).
   for (const id of [quoted, quote, boost]) {
     await maximalCard(t, id, fill);

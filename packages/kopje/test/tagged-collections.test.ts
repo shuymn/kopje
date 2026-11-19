@@ -2,14 +2,17 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
+import { statusFacts } from "../src/domain/activities";
 import { jsonBytes } from "../src/domain/answer-budget";
 import type { VisibleStatusId } from "../src/domain/audience";
 import { contextOf } from "../src/domain/auth";
+import { taggedCollectionsOf } from "../src/domain/collection-presenter";
 import { writeTaggedCollections } from "../src/domain/collections";
 import { deleteStatusBatch, PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
 import { resolveInteraction } from "../src/domain/interaction";
 import { MAX_PUSH_BACKLOG } from "../src/domain/notifications";
 import { readOperation } from "../src/domain/operation";
+import { USERNAME_LIMIT } from "../src/domain/profile-bounds";
 import { ALL_PARTS, completeCollectionRead } from "../src/domain/remote-collections";
 import { removeFeaturedCollection } from "../src/domain/remote-featured-collections";
 import { startRemoval } from "../src/domain/remote-removal";
@@ -44,6 +47,7 @@ import { seedEmojiRow } from "./local-emoji-helpers";
 import {
   measuredRead,
   measuredStatements,
+  observedSql,
   plannedRun,
   type PlannedStatement,
   plannedSql,
@@ -1253,6 +1257,72 @@ describe("rows no writer produces (7-T9)", () => {
     }
     const { body } = await t.api<Status>(`/api/v1/statuses/${S}`, "dave");
     expect(body.tagged_collections.map(({ id }) => id)).toEqual([V]);
+  });
+
+  // U's tag is 256 characters of 0xC0 and three continuation bytes (1,024 bytes, within its CHECK), and W's name 10 of
+  // 0xC0 and one (20 bytes, read as 20 U+FFFD, within withinRemoteText's bound): each decodes past its stored bytes, so
+  // neither is presented; V, beside them, is.
+  it("leaves out a restored collection whose text decodes past its stored bytes", async () => {
+    const t = await setup();
+    const owner = await remoteOwner(t, 1, `${MASTODON}/users/x`);
+    const U = await remoteCollection(t, owner, 1, `${MASTODON}/users/x/collections/1`);
+    const V = await remoteCollection(t, owner, 2, `${MASTODON}/users/x/collections/2`);
+    const W = await remoteCollection(t, owner, 3, `${MASTODON}/users/x/collections/3`);
+    const malformed = (column: string, count: number, character: string, id: string) =>
+      sql(
+        t.store,
+        `UPDATE collections SET ${column} = CAST(unhex(replace(hex(zeroblob(?)), '00', ?)) AS TEXT) WHERE id = ?`,
+        count,
+        character,
+        id,
+      );
+    await malformed("tag", 256, "C0808080", U);
+    await malformed("name", 10, "C080", W);
+    const S = await posted(t, "S");
+    for (const id of [U, V, W]) {
+      await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", S, id);
+    }
+    const { body } = await t.api<Status>(`/api/v1/statuses/${S}`, "dave");
+    expect(body.tagged_collections.map(({ id }) => id)).toEqual([V]);
+  });
+
+  // alice's username restored as 0xC0 and 8,191 continuation bytes, one character to usernameSql's fallback cut: the
+  // REST tag read and the Note's read take it within USERNAME_LIMIT stored bytes (NULL past them), and neither presents
+  // nor names L, whose id would carry it; V, beside it, is presented and named.
+  it("reads a local owner's restored username within USERNAME_LIMIT bytes, and leaves its collection out", async () => {
+    const t = await setup();
+    const L = await localCollection(t, ALICE, 1);
+    const owner = await remoteOwner(t, 2, `${MASTODON}/users/x`);
+    const V = await remoteCollection(t, owner, 2, `${MASTODON}/users/x/collections/2`);
+    const S = await posted(t, "S");
+    for (const id of [L, V]) {
+      await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", S, id);
+    }
+    await sql(
+      t.store,
+      "UPDATE accounts SET username = CAST(unhex('C0' || replace(hex(zeroblob(8191)), '00', '80')) AS TEXT) WHERE id = ?",
+      ALICE,
+    );
+    const read = await runInDurableObject(t.store, (_instance, state) => {
+      let longest = 0;
+      const db = new Db(
+        observedSql(state.storage.sql, (rows, query) => {
+          for (const row of rows) {
+            if (query.includes("CROSS JOIN collections c") && typeof row.username === "string") {
+              longest = Math.max(longest, row.username.length);
+            }
+          }
+        }),
+      );
+      const presented = (taggedCollectionsOf(db, [S], null, LOCAL).get(S) ?? []).map((collection) => collection.id);
+      const named = statusFacts(db, S, () => null)?.collections ?? [];
+      return { longest, presented, named };
+    });
+    expect(read.longest).toBeLessThanOrEqual(USERNAME_LIMIT);
+    expect({ presented: read.presented, named: read.named }).toEqual({
+      presented: [V],
+      named: [`${MASTODON}/users/x/collections/2`],
+    });
   });
 
   it("lets S's Note name Y alone, by its id", async () => {

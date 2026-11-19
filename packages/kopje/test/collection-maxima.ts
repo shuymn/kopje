@@ -21,16 +21,25 @@ const nextId = () => String(sequence++);
 // bound in `"` (escaped to two bytes), its name and description at their bounds in `unit` (a character JSON escapes
 // to six bytes, or one of four UTF-8 bytes), the longest language, a hashtag at its bound, and the 25 accepted items of
 // 25 members a listing stores (each with its uri, so R45 shows it). Presented, each is COLLECTION_JSON_MAX less its
-// origin's bytes in its id and url.
-export async function maximalCollectionRows(store: StoreStub, unit: string, count: number): Promise<string[]> {
+// origin's bytes in its id and url. `restored`: as a restored dump may hold them, each text a tag reads that can be
+// malformed (the owner's actor id and username past their ASCII heads, the name, description and tag) at its stored
+// byte bound in characters of 0xC0 and three continuation bytes, each byte of which decodes to a U+FFFD; none is shown.
+export async function maximalCollectionRows(
+  store: StoreStub,
+  unit: string,
+  count: number,
+  restored = false,
+): Promise<string[]> {
   const origin = "https://o.example";
   const owner = nextId();
   await sql(
     store,
-    "INSERT INTO accounts (id, uri, username, domain) VALUES (?, ?, ?, 'o.example')",
+    "INSERT INTO accounts (id, uri, username, domain) VALUES (?, CAST(?2 AS TEXT), CAST(?3 AS TEXT), 'o.example')",
     owner,
-    `${origin}/users/${owner}/`.padEnd(ACTOR_URI_LIMIT, "a"),
-    `o${owner}`.padEnd(REMOTE_USERNAME_LIMIT, "o"),
+    restored
+      ? malformed(`${origin}/users/${owner}/`, ACTOR_URI_LIMIT)
+      : `${origin}/users/${owner}/`.padEnd(ACTOR_URI_LIMIT, "a"),
+    restored ? malformed(`o${owner}`, REMOTE_USERNAME_LIMIT) : `o${owner}`.padEnd(REMOTE_USERNAME_LIMIT, "o"),
   );
   const members = Array.from({ length: 25 }, () => nextId());
   for (const [i, member] of members.entries()) {
@@ -53,13 +62,13 @@ export async function maximalCollectionRows(store: StoreStub, unit: string, coun
       store,
       `INSERT INTO collections (id, account_id, local, name, description, language, sensitive, discoverable, tag, uri,
 				url, total_items, created_at, updated_at)
-			VALUES (?, ?, 0, ?, ?, ?, 0, 0, ?, ?, ?, 25, ?9, ?9)`,
+			VALUES (?, ?, 0, CAST(?3 AS TEXT), CAST(?4 AS TEXT), ?, 0, 0, CAST(?6 AS TEXT), ?, ?, 25, ?9, ?9)`,
       id,
       owner,
-      text(COLLECTION_NAME_LENGTH.remote),
-      text(COLLECTION_DESCRIPTION_LENGTH.remote),
+      restored ? malformed("", 4 * COLLECTION_NAME_LENGTH.remote) : text(COLLECTION_NAME_LENGTH.remote),
+      restored ? malformed("", 4 * COLLECTION_DESCRIPTION_LENGTH.remote) : text(COLLECTION_DESCRIPTION_LENGTH.remote),
       language,
-      "\u{20000}".repeat(MAX_TAG_LENGTH),
+      restored ? malformed("", 4 * MAX_TAG_LENGTH) : "\u{20000}".repeat(MAX_TAG_LENGTH),
       quoted(`c${n}`, COLLECTION_URI_BYTES),
       quoted(`w${n}`, COLLECTION_URL_BYTES),
       at,
@@ -82,9 +91,25 @@ export async function maximalCollectionRows(store: StoreStub, unit: string, coun
   return ids;
 }
 
+// `bytes` bytes: `head` in UTF-8, then characters of 0xC0 and three continuation bytes (SQLite counts each as one).
+function malformed(head: string, bytes: number): ArrayBuffer {
+  const out = new Uint8Array(bytes).fill(0x80);
+  const ascii = new TextEncoder().encode(head);
+  out.set(ascii);
+  for (let i = ascii.length; i < bytes; i += 4) {
+    out[i] = 0xc0;
+  }
+  return out.buffer;
+}
+
 // MAX_TAGGED_COLLECTIONS of maximalCollectionRows' collections tagged by each of `statuses`, each status its own.
-export async function maximalCollections(store: StoreStub, unit: string, statuses: readonly string[]): Promise<void> {
-  const ids = await maximalCollectionRows(store, unit, MAX_TAGGED_COLLECTIONS * statuses.length);
+export async function maximalCollections(
+  store: StoreStub,
+  unit: string,
+  statuses: readonly string[],
+  restored = false,
+): Promise<void> {
+  const ids = await maximalCollectionRows(store, unit, MAX_TAGGED_COLLECTIONS * statuses.length, restored);
   for (const [n, id] of ids.entries()) {
     const status = statuses[Math.floor(n / MAX_TAGGED_COLLECTIONS)]!;
     await sql(store, "INSERT INTO status_collections (status_id, collection_id) VALUES (?, ?)", status, id);

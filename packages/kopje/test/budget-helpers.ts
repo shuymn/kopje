@@ -73,17 +73,21 @@ export function pageStatus(
   return bigStatus(h, author, published, extra, 8);
 }
 
+// The share of bigStatus that statusBudgetEdge's eight big statuses take: eight such items come to 7.67-7.70 MB in
+// every answer it is used for, midway between STATUS_ANSWER_BYTES less an `edge` item (7.50 MB) and the budget.
+export const EDGE_BIG_SHARE = 1.02;
+
 // Nine statuses made by `make` (its `share` that of bigStatus): one of about a third of bigStatus's size (`edge`),
-// then eight big ones, which `big` lists in the reverse order, as an answer that shows them before `edge` does. An
-// answer of the eight leaves less than `edge` within STATUS_ANSWER_BYTES and more than it within ANSWER_BYTES
-// (expectStatusBudgetCut), so it ends after them only where its budget is STATUS_ANSWER_BYTES.
+// then eight big ones (EDGE_BIG_SHARE), which `big` lists in the reverse order, as an answer that shows them before
+// `edge` does. An answer of the eight leaves less than `edge` within STATUS_ANSWER_BYTES and more than it within
+// ANSWER_BYTES (expectStatusBudgetCut), so it ends after them only where its budget is STATUS_ANSWER_BYTES.
 export async function statusBudgetEdge(
   make: (i: number, share: number) => Promise<string>,
 ): Promise<{ big: string[]; edge: string }> {
   const edge = await make(0, 3);
   const big: string[] = [];
   for (let i = 1; i < 9; i++) {
-    big.push(await make(i, 1));
+    big.push(await make(i, EDGE_BIG_SHARE));
   }
   return { big: big.toReversed(), edge };
 }

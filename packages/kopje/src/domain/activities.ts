@@ -27,7 +27,13 @@ import {
   requiresMention,
   type Visibility,
 } from "./audience";
-import { collectionUri, validRemoteCollection } from "./collection-presenter";
+import {
+  collectionUri,
+  TAG_OWNER_USERNAME,
+  TAG_OWNER_USERNAME_BYTES,
+  tagNamesOwner,
+  validRemoteCollection,
+} from "./collection-presenter";
 import { type EmojiTag, localEmojiTags } from "./custom-emojis";
 import { type DeliveryEnvelope, enqueueActivity, type OutboundOptions, type ReachOf } from "./deliveries";
 import { readOperation } from "./operation";
@@ -311,10 +317,19 @@ export function statusFacts(
   // The collections the status tags whose owner is available (collectionFoundSql), with no viewer (a1: the Note names
   // each by its id alone, so no collection's content travels in the status's activities): its references by the
   // primary key's prefix (at most MAX_TAGGED_COLLECTIONS, the trigger's bound), each collection and its owner by key. A
-  // local one's id is its owner's route; a remote one's as stored, only while valid (validRemoteCollection, against its
-  // owner's id as actorUriSql reads it), so a Note never names an id its writer would not have stored.
-  const collections = db.all<{ id: string; local: number; uri: string | null; username: string; owner_uri: string }>(
-    `SELECT c.id, c.local, c.uri, ${usernameSql("a.username")} AS username, ${actorUriSql("a.uri")} AS owner_uri
+  // local one's id is its owner's route, only while it names the owner as stored (tagNamesOwner, of the username as a
+  // tag reads it); a remote one's as stored, only while valid (validRemoteCollection, against its owner's id as
+  // actorUriSql reads it), so a Note never names an id its writer would not have stored.
+  const collections = db.all<{
+    id: string;
+    local: number;
+    uri: string | null;
+    username: string | null;
+    username_bytes: number;
+    owner_uri: string;
+  }>(
+    `SELECT c.id, c.local, c.uri, ${TAG_OWNER_USERNAME} AS username, ${TAG_OWNER_USERNAME_BYTES} AS username_bytes,
+			${actorUriSql("a.uri")} AS owner_uri
 		FROM status_collections r
 			CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = r.collection_id
 			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
@@ -347,7 +362,13 @@ export function statusFacts(
     quote: readQuote(db, statusId),
     cardUrl: card === undefined ? null : shownCardUrl(row.visibility, card.url, card.title),
     collections: collections.flatMap((c) =>
-      c.local === 1 ? [collectionUri(c, origin)] : validRemoteCollection(c.uri, c.owner_uri) ? [c.uri!] : [],
+      c.local === 1
+        ? tagNamesOwner(c)
+          ? [collectionUri(c, origin)]
+          : []
+        : validRemoteCollection(c.uri, c.owner_uri)
+          ? [c.uri!]
+          : [],
     ),
   };
 }

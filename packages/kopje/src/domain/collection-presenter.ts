@@ -1,15 +1,17 @@
 import { type ColumnMap, fixedColumns, selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { utf8Length } from "../platform/dump-format";
 import { sameOrigin } from "../platform/http-url";
 import {
+  byteBoundSql,
   COLLECTION_DESCRIPTION_LENGTH,
   COLLECTION_NAME_LENGTH,
   COLLECTION_URI_BYTES,
   COLLECTION_URL_BYTES,
 } from "../platform/stored-bounds";
 import { collectionItemShownSql, collectionShownSql } from "./audience";
-import { actorUriSql, usernameSql } from "./profile-bounds";
+import { actorUriSql, USERNAME_LIMIT, usernameSql } from "./profile-bounds";
 import { withinTagNameBound } from "./tag-bounds";
 import { normalizeTag } from "./tag-name";
 
@@ -34,6 +36,33 @@ export function storableUrl(value: string | null, bytes: number): value is strin
 // so a restored row no writer would store is neither referenced nor shown.
 export function validRemoteCollection(uri: string | null, ownerUri: string | null): boolean {
   return storableUrl(uri, COLLECTION_URI_BYTES) && sameOrigin(uri, ownerUri);
+}
+
+// A tagged collection as a tag reads it: its owner's username may be NULL (TAG_OWNER_USERNAME).
+type TaggedRow = Omit<CollectionRow, "username"> & {
+  username: string | null;
+  username_bytes: number;
+  text_bytes: number;
+  owner_uri: string | null;
+};
+
+// Whether a local collection's id can name its owner as stored: the username read within USERNAME_LIMIT bytes and
+// decoded to as many bytes as it stores. A restored owner's malformed username decodes each bad byte to a U+FFFD of
+// three bytes, so its count differs and the collection, whose id would carry it, is left out.
+export function tagNamesOwner<T extends { username: string | null; username_bytes: number }>(
+  row: T,
+): row is T & { username: string } {
+  return row.username !== null && utf8Length(row.username) === row.username_bytes;
+}
+
+// Whether a tagged collection's presented text decodes to as many bytes as it stores (name, description, tag and, for
+// a local one, its owner's username): a restored row of malformed UTF-8 within the CHECKs decodes each bad byte to a
+// U+FFFD of three bytes, so it is left out before it is presented and no JSON carries a value grown by decoding.
+function decodedAsStored(row: TaggedRow): boolean {
+  return (
+    utf8Length(row.name) + utf8Length(row.description ?? "") + utf8Length(row.tag ?? "") === row.text_bytes &&
+    (row.local !== 1 || tagNamesOwner(row))
+  );
 }
 
 // Whether a remote collection's name and description, as read, are within the code points its writer stores
@@ -126,14 +155,25 @@ export const TAG_REFERENCE_COLUMNS = fixedColumns(
   { status_id: 18, collection_id: 18 },
 );
 
-// A tagged collection as taggedCollectionsOf reads it: its columns as stored, each within its CHECK (migration
-// 0103_collections), its owner's username (a local collection's uri names it) and its owner's uri as actorUriSql reads
-// it ('' past ACTOR_URI_LIMIT, so such a remote one is invalid), against which a remote one's id is judged
-// (validRemoteCollection). The status presenter and R read these same columns.
+// A tagged collection's owner username as a tag reads it, which a local collection's id names: usernameSql's
+// projection, NULL past USERNAME_LIMIT stored bytes, since usernameSql's fallback cuts by SQLite's characters, of which
+// a restored lead byte and any number of continuation bytes are one. Its stored bytes, which tagNamesOwner compares.
+export const TAG_OWNER_USERNAME = byteBoundSql(usernameSql("a.username"), USERNAME_LIMIT);
+export const TAG_OWNER_USERNAME_BYTES = "length(CAST(a.username AS BLOB))";
+
+// A tagged collection as taggedCollectionsOf reads it, every text column within a bound of stored bytes before it
+// reaches JavaScript: its columns as stored, each within its CHECK, imports included (migration 0103_collections: the
+// name, description and tag by stored bytes, the uri, url, language and times ASCII); its owner's username
+// (TAG_OWNER_USERNAME) with its stored bytes; its owner's uri as actorUriSql reads it ('' past ACTOR_URI_LIMIT, so such
+// a remote one is invalid), against which a remote one's id is judged (validRemoteCollection); and the stored bytes of
+// the name, description and tag, which decodedAsStored compares. The status presenter and R read these same columns.
 export const TAGGED_COLLECTION_COLUMNS: ColumnMap = {
   id: "c.id",
   account_id: "c.account_id",
-  username: usernameSql("a.username"),
+  username: TAG_OWNER_USERNAME,
+  username_bytes: TAG_OWNER_USERNAME_BYTES,
+  text_bytes:
+    "length(CAST(c.name AS BLOB)) + coalesce(length(CAST(c.description AS BLOB)), 0) + coalesce(length(CAST(c.tag AS BLOB)), 0)",
   local: "c.local",
   name: "c.name",
   description: "c.description",
@@ -239,10 +279,11 @@ export function shownItems(db: Db, collections: readonly string[], viewer: strin
 // The collections each status of `statuses` (ids of statuses that are not boosts) tags that R45 shows `viewer`, by
 // status, each status's in collection-id order with the items R45 shows the viewer (#1589's D26): the references by
 // the primary key's prefix (at most MAX_TAGGED_COLLECTIONS a status, the trigger's bound), each collection once by key
-// with its owner, then shownItems once for them, so a collection several statuses tag is read once. A remote
-// collection is shown only while valid (validRemoteCollection) with its text within its writer's bounds
-// (withinRemoteText), and its url only when its writer would store it (storableUrl), else its uri (presentCollection),
-// so a restored row shows nothing a writer would not have admitted and each stays within COLLECTION_JSON_MAX.
+// with its owner, then shownItems once for them, so a collection several statuses tag is read once. A collection is
+// shown only while its text decodes as stored (decodedAsStored), and a remote one only while valid
+// (validRemoteCollection) with its text within its writer's bounds (withinRemoteText), and its url only when its writer
+// would store it (storableUrl), else its uri (presentCollection), so a restored row shows nothing a writer would not
+// have admitted and each stays within COLLECTION_JSON_MAX.
 export function taggedCollectionsOf(
   db: Db,
   statuses: readonly string[],
@@ -261,7 +302,7 @@ export function taggedCollectionsOf(
   if (references.length === 0) {
     return tagged;
   }
-  const rows = db.all<CollectionRow & { owner_uri: string | null }>(
+  const rows = db.all<TaggedRow>(
     `SELECT ${selectSql(TAGGED_COLLECTION_COLUMNS)} FROM json_each(?1) w
 			CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = w.value
 			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
@@ -270,7 +311,9 @@ export function taggedCollectionsOf(
     viewer,
   );
   const shown = rows.filter(
-    (row) => row.local === 1 || (validRemoteCollection(row.uri, row.owner_uri) && withinRemoteText(row)),
+    (row) =>
+      decodedAsStored(row) &&
+      (row.local === 1 || (validRemoteCollection(row.uri, row.owner_uri) && withinRemoteText(row))),
   );
   const items = shownItems(
     db,
@@ -280,7 +323,10 @@ export function taggedCollectionsOf(
   const presented = new Map(
     shown.map((row) => {
       const url = row.local === 1 || storableUrl(row.url, COLLECTION_URL_BYTES) ? row.url : null;
-      return [row.id, presentCollection({ ...row, url }, items.get(row.id) ?? [], origin)];
+      return [
+        row.id,
+        presentCollection({ ...row, username: row.username ?? "", url }, items.get(row.id) ?? [], origin),
+      ];
     }),
   );
   for (const { status_id, collection_id } of references.toSorted((a, b) =>

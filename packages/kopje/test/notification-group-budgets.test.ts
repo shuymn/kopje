@@ -331,14 +331,14 @@ describe("grouped notifications within STATUS_ANSWER_BYTES (RES-3)", () => {
     const { alice } = h.users;
     const fan = await remoteAccount(h.store, "fan");
     const [x, y] = await maximalAccounts(h, "promoted", 2);
-    // Walked oldest first: G1 (x, then y: y shown whole, x partial), eight groups of about 0.97 MB, a group T whose
+    // Walked oldest first: G1 (x, then y: y shown whole, x partial), eight groups of about 0.92 MB, a group T whose
     // poll tunes the answer's size (its content emptied and its media removed, so that the page starts within
     // STATUS_ANSWER_BYTES), and G2 (x alone), which shows x whole in place of its partial account.
     const s1 = await seedStatus(h.store, { accountId: alice.id, visibility: "public" });
     await favourite(h, alice.id, x!, s1);
     await favourite(h, alice.id, y!, s1);
     for (let i = 0; i < 8; i++) {
-      await favourite(h, alice.id, fan, await bigStatus(h, alice.id, NOW - 120_000));
+      await favourite(h, alice.id, fan, await bigStatus(h, alice.id, NOW - 120_000, {}, 1.06));
     }
     const tuner = await bigStatus(h, alice.id, NOW - 120_000);
     const options = (texts: string[]) =>

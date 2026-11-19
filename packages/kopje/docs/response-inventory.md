@@ -14,8 +14,8 @@ Mechanisms:
   (`admit`, `presentStatusesWithin`, `presentAccountsWithin`, `admitAccounts`). An atomic item counts with everything
   it embeds: a notification with its account, status and report; a group with the accounts and statuses it adds; a
   conversation with its participants and last status; a report with its accounts and statuses.
-- **Status budget**: an answer that presents statuses is within `STATUS_ANSWER_BYTES` (8,003,584 bytes, 8 MiB less
-  376 KiB) instead, admitted as Budget: the timelines, `accountStatuses` (pinned too), `bookmarksList`,
+- **Status budget**: an answer that presents statuses is within `STATUS_ANSWER_BYTES` (7,839,744 bytes, 8 MiB less
+  536 KiB) instead, admitted as Budget: the timelines, `accountStatuses` (pinned too), `bookmarksList`,
   `favouritesList`, `statusQuotes`, `statusContext`, `getStatuses`, `trendingStatuses`, `listConversations`,
   `adminReports`, `listNotifications`, `listGroupedNotifications`, `listNotificationRequests` and `annualReports`, and
   `search` from its first admission when its types include statuses. `statusHistory` (status edits) and the answers

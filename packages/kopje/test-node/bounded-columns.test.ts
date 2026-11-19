@@ -792,7 +792,10 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
     reason: `the username an address names as stored (addressRow), bounded by the address it matched and stored only as
 			contact_username, never presented`,
   },
-  "src/domain/activities.ts accounts.username": { count: 1, reason: ACTIVITYPUB },
+  // The Note's author, and a tagged collection's owner as its stored byte length (statusFacts), which the owner's
+  // username (TAG_OWNER_USERNAME, usernameSql within USERNAME_LIMIT raw bytes) must decode to.
+  "src/domain/activities.ts accounts.username": { count: 2, reason: ACTIVITYPUB },
+  "src/domain/activities.ts interpolation TAG_OWNER_USERNAME": { count: 1, reason: ACTIVITYPUB },
   "src/domain/actor-row.ts column a.username": { count: 1, reason: ACTIVITYPUB },
   "src/domain/actors.ts accounts.username": { count: 6, reason: LOCAL },
   "src/domain/admin-accounts.ts accounts.username": { count: 2, reason: LOCAL },

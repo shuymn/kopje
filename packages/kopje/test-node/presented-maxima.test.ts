@@ -100,12 +100,13 @@ function compare(rows: readonly Row[], expected: ReadonlyMap<string, string[]>):
   }
 }
 
-// The table of maxima's measured cells: each column the most any fill gives, which is COLUMN_FILL's fill.
+// The table of maxima's measured cells: each column the most any fill gives, which is COLUMN_FILL's fill where it
+// names one.
 function measured(name: ShapeName): Record<keyof Shape, number> {
   return {
     sqlite: FILL_SHAPES[COLUMN_FILL.sqlite][name].sqlite,
     json: FILL_SHAPES[COLUMN_FILL.json][name].json,
-    rows: FILL_SHAPES[COLUMN_FILL.rows][name].rows,
+    rows: Math.max(...FILLS.map((fill) => FILL_SHAPES[fill][name].rows)),
     nodes: FILL_SHAPES[COLUMN_FILL.nodes][name].nodes,
   };
 }
@@ -199,7 +200,7 @@ const ANSWERS: [string, keyof typeof HEAP_PEAKS][] = [
 
 describe("the table of maxima (RES-3)", () => {
   it("takes each measured column from the fill that gives every shape's most", () => {
-    for (const column of Object.keys(COLUMN_FILL) as (keyof Shape)[]) {
+    for (const column of Object.keys(COLUMN_FILL) as (keyof typeof COLUMN_FILL)[]) {
       for (const name of Object.keys(CONSERVATIVE_JSON) as ShapeName[]) {
         const most = Math.max(...FILLS.map((fill) => FILL_SHAPES[fill][name][column]));
         expect(FILL_SHAPES[COLUMN_FILL[column]][name][column], `${column} of ${name}`).toBe(most);
