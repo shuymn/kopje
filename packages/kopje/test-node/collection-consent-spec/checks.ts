@@ -61,8 +61,9 @@ const partOf = (title: string): number =>
   PLACED.get(title) ?? createHash("sha256").update(title).digest().readUInt32BE(0) % PARTS;
 
 export const plan = readPlan();
-// The largest check, the induction, takes about 30 s under tla-ts on a laptop.
-export const CHECK_TIMEOUT_MS = 120_000;
+// The largest check, goal S2-ReadOverRetraction (656,913 distinct states), took 88.7 s and 130.6 s on CI's runners
+// with the same states, so the timeout leaves it more than twice its slower time.
+export const CHECK_TIMEOUT_MS = 300_000;
 
 export const fixtureFiles = () =>
   readdirSync(FIXTURE_DIR)
