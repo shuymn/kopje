@@ -3,7 +3,7 @@ import type { Db } from "../db/sql";
 import { sameOrigin } from "../platform/http-url";
 import { COLLECTION_ITEM_STATES, COLLECTION_URI_BYTES } from "../platform/stored-bounds";
 import { recordItemAdd } from "./collection-documents";
-import { storableUrl } from "./remote-featured-collections";
+import { storableUrl } from "./collection-presenter";
 import { isRetracted } from "./retractions";
 
 // A remote member's answer to Kopje's FeatureRequest (#1589's D23, Mastodon 4.7.5's Accept#accept_feature_request! and

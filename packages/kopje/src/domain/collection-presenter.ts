@@ -1,5 +1,7 @@
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
+import { sameOrigin } from "../platform/http-url";
+import { COLLECTION_URI_BYTES } from "../platform/stored-bounds";
 import { collectionItemShownSql, collectionShownSql } from "./audience";
 import { usernameSql } from "./profile-bounds";
 import { withinTagNameBound } from "./tag-bounds";
@@ -10,6 +12,23 @@ import { normalizeTag } from "./tag-name";
 // a collection notification's collection without a cycle.
 
 const STATE_NAMES = ["pending", "accepted", "rejected", "revoked"] as const;
+
+const ENCODER = new TextEncoder();
+
+// The stored form of a remote URI (stored-bounds.ts httpsUrlWhen): an https URL of printable ASCII within `bytes`.
+export function storableUrl(value: string | null, bytes: number): value is string {
+  return (
+    value !== null && /^https:\/\/[!-~]+$/.test(value) && ENCODER.encode(value).length <= bytes && URL.canParse(value)
+  );
+}
+
+// Whether a remote collection's id `uri` is one remote-featured-collections.ts stores for the owner of id `ownerUri`:
+// within the stored bound and on the owner's origin (ProcessFeaturedCollectionService's non_matching_uri_hosts?). Every
+// reader that resolves or shows a stored remote collection by its uri (a status's tags, #1589's D26) judges it alike,
+// so a restored row no writer would store is neither referenced nor shown.
+export function validRemoteCollection(uri: string | null, ownerUri: string | null): boolean {
+  return storableUrl(uri, COLLECTION_URI_BYTES) && sameOrigin(uri, ownerUri);
+}
 
 type CollectionItemStateName = (typeof STATE_NAMES)[number];
 

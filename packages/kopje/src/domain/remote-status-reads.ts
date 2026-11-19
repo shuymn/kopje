@@ -47,6 +47,9 @@ export type RemoteStatusInput = {
   // hrefs of Mention tags, and normalized names of Hashtag tags.
   mentions: string[];
   tags: string[];
+  // The ids of FeaturedCollection tags (federation/remote-status.ts collectionTags), in tag order; undefined from an
+  // earlier build, which leaves a stored status's references as they are (remote-statuses.ts).
+  collectionTags?: string[];
   // Emoji tags as read (federation/remote-emoji.ts); the snapshot is chosen when the status is written.
   emojiTags: EmojiCandidate[];
   media: RemoteMediaInput[];

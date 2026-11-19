@@ -1,6 +1,7 @@
 import { type DocumentLoader, FetchError } from "@fedify/fedify";
 
 import { isPublicCollection } from "../domain/audience";
+import { storableUrl } from "../domain/collection-presenter";
 import { isConversationId } from "../domain/conversation-rows";
 import { languageOf } from "../domain/language";
 import { CARD_CANDIDATES, CARD_RAW_HREF_LIMIT, type CardCandidate, type CardLink } from "../domain/link-cards";
@@ -31,6 +32,8 @@ import { railsBlank } from "../platform/rails-blank";
 import { railsBoolean } from "../platform/rails-boolean";
 import {
   CARD_URL_LIMIT,
+  COLLECTION_URI_BYTES,
+  MAX_TAG_LINK_CANDIDATES,
   storedBlurhash,
   storedCount,
   storedMediaDescription,
@@ -311,6 +314,26 @@ function tagsOf(object: Json): { mentions: string[]; tags: string[] } {
   return { mentions: [...mentions], tags: [...tags] };
 }
 
+// The ids of the Note's FeaturedCollection tags (create.rb's process_tags: a tag whose type is or includes
+// FeaturedCollection, as typeIs reads Hashtag; Mastodon reads only its id), each a string within the stored form of a
+// collection's id (storableUrl), distinct, the first MAX_TAG_LINK_CANDIDATES in tag order (#1589's D26). Nothing of an
+// embedded collection is read: a tag only references a collection Kopje stores (domain/collections.ts).
+function collectionTags(object: Json): string[] {
+  const ids = new Set<string>();
+  for (const tag of asArray(object.tag)) {
+    if (ids.size >= MAX_TAG_LINK_CANDIDATES) {
+      break;
+    }
+    if (isObject(tag) && typeIs(tag.type, ["FeaturedCollection"])) {
+      const id = typeof tag.id === "string" ? tag.id : null;
+      if (storableUrl(id, COLLECTION_URI_BYTES)) {
+        ids.add(id);
+      }
+    }
+  }
+  return [...ids];
+}
+
 function isoOf(value: unknown): string | null {
   const parsed = typeof value === "string" ? Date.parse(value) : NaN;
   return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
@@ -587,6 +610,7 @@ export function parseRemoteStatus(
     cc: audience(object, "cc", activity),
     mentions,
     tags,
+    collectionTags: collectionTags(object),
     emojiTags: emojiCandidates(object.tag),
     media: mediaOf(object),
     // A Note's name: in reply to a local poll, a vote (ActivityPub::Activity::Create#poll_vote?).

@@ -430,9 +430,9 @@ describe("the triggers in force", () => {
     await runInDurableObject(store, (_instance, state) => {
       const sql = state.storage.sql;
       expect(triggerMismatches(sql, emitRegistered)).toEqual([]);
-      expect(STORED_TRIGGERS.size).toBe(98);
+      expect(STORED_TRIGGERS.size).toBe(102);
       expect(sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'trigger'").toArray()).toHaveLength(
-        98 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
+        102 + HAND_WRITTEN_TRIGGERS.flatMap((group) => group.names).length,
       );
     });
   });
@@ -15625,6 +15625,146 @@ describe("0117_retraction_counts", () => {
           // The actor's 200 live entries and the read that finds their end.
           rows: 201,
         },
+      ]);
+    });
+  });
+});
+
+describe("0120_tagged_collections", () => {
+  const NAME = "0120_tagged_collections";
+  const at = NAMES.indexOf(NAME);
+  const T = "2026-11-19T00:00:00.000Z";
+  const [OWNER, AUTHOR] = ["100000000000000001", "100000000000000002"];
+  const collection = (n: number) => String(200000000000000000n + BigInt(n));
+  const status = (n: number) => String(300000000000000000n + BigInt(n));
+  const statements = (text: string) =>
+    text
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  const TRIGGERS = [
+    "status_collections_per_status",
+    "status_collections_per_status_move",
+    "status_collections_per_collection",
+    "status_collections_per_collection_move",
+  ];
+  const SCHEMA = `CREATE TABLE status_collections (
+  status_id TEXT NOT NULL REFERENCES statuses (id) ON DELETE CASCADE,
+  collection_id TEXT NOT NULL REFERENCES collections (id) ON DELETE CASCADE,
+  PRIMARY KEY (status_id, collection_id)
+) WITHOUT ROWID;
+
+CREATE INDEX status_collections_collection ON status_collections (collection_id, status_id);
+
+CREATE INDEX collections_url ON collections (url, uri) WHERE local = 0 AND url IS NOT NULL;`;
+
+  it("follows 0119, checks every reference, and writes the table, its indexes and emitTriggers' triggers", () => {
+    expect(NAMES[at - 1]).toBe("0119_answer_retractions");
+    // A new table: the upgrade checks every reference of the Store.
+    expect(MIGRATIONS[at]?.foreignKeys).toBeUndefined();
+    expect(statements(MIGRATIONS[at]?.sql ?? "")).toBe(statements(`${SCHEMA}\n\n${emitTriggers(TRIGGERS)}`));
+    // 0103's count triggers keep their exclusion of the moved row; status_collections, without an id, has none.
+    expect(STORED_TRIGGERS.get("collections_per_account_move")).toContain("AND id <> OLD.id");
+    expect(STORED_TRIGGERS.get("collection_items_per_collection_move")).toContain("AND id <> OLD.id");
+    for (const name of TRIGGERS) {
+      expect(STORED_TRIGGERS.get(name)).not.toContain(" id ");
+    }
+  });
+
+  // A Store at 0120 with an owner of 6 collections and an author of 110 statuses.
+  async function migrated(run: (sql: SqlStorage) => void) {
+    await runInDurableObject(newStore(), async (_instance, state) => {
+      const sql = state.storage.sql;
+      expect(await kernel(state, MIGRATIONS.slice(0, at + 1)).upgrade()).toMatchObject({ ok: true });
+      sql.exec(
+        `INSERT INTO accounts (id, uri, username, domain) VALUES
+					(?1, 'https://remote.example/users/o', 'o', 'remote.example'),
+					(?2, 'https://remote.example/users/a', 'a', 'remote.example')`,
+        OWNER,
+        AUTHOR,
+      );
+      for (let n = 1; n <= 6; n++) {
+        sql.exec(
+          `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, uri, created_at, updated_at)
+					VALUES (?, ?, 0, 'c', 0, 1, ?, ?, ?)`,
+          collection(n),
+          OWNER,
+          `https://remote.example/collections/${n}`,
+          T,
+          T,
+        );
+      }
+      sql.exec(
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 110)
+				INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+				SELECT CAST(300000000000000000 + i AS TEXT), 'https://remote.example/s/' || i, ?1, 'public', '', ?2 FROM n`,
+        AUTHOR,
+        T,
+      );
+      run(sql);
+    });
+  }
+  const tag = (sql: SqlStorage, s: number, c: number) =>
+    sql.exec("INSERT INTO status_collections (status_id, collection_id) VALUES (?, ?)", status(s), collection(c));
+  const held = (sql: SqlStorage, column: "status_id" | "collection_id", value: string) =>
+    sql.exec<{ n: number }>(`SELECT count(*) AS n FROM status_collections WHERE ${column} = ?`, value).one().n;
+  const PER_STATUS = "status_collections: past the per-status bound";
+  const PER_COLLECTION = "status_collections: past the per-collection bound";
+
+  it("holds a status to MAX_TAGGED_COLLECTIONS references, on an insert and on a move to it", async () => {
+    await migrated((sql) => {
+      for (const c of [1, 2, 3, 4]) {
+        tag(sql, 1, c);
+      }
+      expect(() => tag(sql, 1, 5)).toThrow(PER_STATUS);
+      // A move to a status holding 3 succeeds, to its fourth; the next is refused.
+      for (const c of [1, 2, 3]) {
+        tag(sql, 2, c);
+      }
+      tag(sql, 3, 4);
+      tag(sql, 4, 5);
+      sql.exec("UPDATE status_collections SET status_id = ?1 WHERE status_id = ?2", status(2), status(3));
+      expect(held(sql, "status_id", status(2))).toBe(4);
+      expect(() =>
+        sql.exec("UPDATE status_collections SET status_id = ?1 WHERE status_id = ?2", status(2), status(4)),
+      ).toThrow(PER_STATUS);
+      // At saturation, writing a full status's key unchanged moves nothing and passes (the move's guard).
+      sql.exec("UPDATE status_collections SET status_id = status_id WHERE status_id = ?", status(1));
+      expect(held(sql, "status_id", status(1))).toBe(4);
+    });
+  });
+
+  it("holds a collection to MAX_TAGGING_STATUSES references, on an insert and on a move to it", async () => {
+    await migrated((sql) => {
+      for (let s = 1; s <= 99; s++) {
+        tag(sql, s, 6);
+      }
+      tag(sql, 100, 1);
+      tag(sql, 101, 2);
+      // A move to a collection holding 99 succeeds, to its 100th; the next, and a 101st insert, are refused.
+      sql.exec("UPDATE status_collections SET collection_id = ?1 WHERE status_id = ?2", collection(6), status(100));
+      expect(held(sql, "collection_id", collection(6))).toBe(100);
+      expect(() =>
+        sql.exec("UPDATE status_collections SET collection_id = ?1 WHERE status_id = ?2", collection(6), status(101)),
+      ).toThrow(PER_COLLECTION);
+      expect(() => tag(sql, 102, 6)).toThrow(PER_COLLECTION);
+      sql.exec("UPDATE status_collections SET collection_id = collection_id WHERE collection_id = ?", collection(6));
+      expect(held(sql, "collection_id", collection(6))).toBe(100);
+    });
+  });
+
+  it("indexes the remote collections by url, then uri", async () => {
+    await migrated((sql) => {
+      expect(
+        sql
+          .exec(`SELECT "unique", partial FROM pragma_index_list('collections') WHERE name = 'collections_url'`)
+          .toArray(),
+      ).toEqual([{ unique: 0, partial: 1 }]);
+      expect(sql.exec("SELECT name FROM pragma_index_info('collections_url') ORDER BY seqno").toArray()).toEqual([
+        { name: "url" },
+        { name: "uri" },
       ]);
     });
   });

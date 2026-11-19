@@ -18,6 +18,7 @@ import {
 } from "../platform/stored-bounds";
 import { sanitizeRemoteCodePoints } from "../security/html";
 import { localCollectionUri, recordItemRemove } from "./collection-documents";
+import { storableUrl, validRemoteCollection } from "./collection-presenter";
 import { markCollectionsChanged } from "./collection-requests";
 import { notifyUpdated, remoteCollectionTag } from "./collections";
 import {
@@ -97,15 +98,7 @@ export type FeaturedCollectionInput = {
 
 type Owner = { id: string; uri: string };
 
-const ENCODER = new TextEncoder();
 const LANGUAGES: ReadonlySet<string> = new Set(TREND_LANGUAGES);
-
-// The stored form of a remote URI (stored-bounds.ts httpsUrlWhen): an https URL of printable ASCII within `bytes`.
-export function storableUrl(value: string | null, bytes: number): value is string {
-  return (
-    value !== null && /^https:\/\/[!-~]+$/.test(value) && ENCODER.encode(value).length <= bytes && URL.canParse(value)
-  );
-}
 
 type Values = {
   name: string;
@@ -162,13 +155,11 @@ function collectionValues(input: FeaturedCollectionInput): Values | null {
   };
 }
 
-// Whether `input` is a collection of `owner` the Store may hold at all: its id on the owner's origin, within the
-// stored bound, and attributed to the owner exactly (ProcessFeaturedCollectionService: non_matching_uri_hosts? and
+// Whether `input` is a collection of `owner` the Store may hold at all: a valid id (collection-presenter.ts
+// validRemoteCollection), and attributed to the owner exactly (ProcessFeaturedCollectionService:
 // `attributedTo == @account.uri`).
 function ownedCollection(owner: Owner, input: Pick<FeaturedCollectionInput, "id" | "attributedTo">): boolean {
-  return (
-    storableUrl(input.id, COLLECTION_URI_BYTES) && sameOrigin(input.id, owner.uri) && input.attributedTo === owner.uri
-  );
+  return validRemoteCollection(input.id, owner.uri) && input.attributedTo === owner.uri;
 }
 
 // Whether applyFeaturedCollection keeps `input` as the owner's collection when it holds it already: one of the owner's

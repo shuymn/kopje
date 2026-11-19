@@ -725,8 +725,9 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/collection-checks.ts accounts.uri": { count: 2, reason: IDENTITY },
   // A local owner's uri, which a remote member's FeatureRequest id is built from and stored as (insertItem); a local
   // member's, which its Delete of an authorization in a remote collection is built from (remoteRevocation,
-  // severCollections).
-  "src/domain/collections.ts accounts.uri": { count: 3, reason: IDENTITY },
+  // severCollections); and a remote collection's owner's, against which a tagged collection's id is judged as its
+  // writer judged it (validRemoteCollection: collectionByStoredUri, collectionByStoredUrl).
+  "src/domain/collections.ts accounts.uri": { count: 5, reason: IDENTITY },
   // A local member's uri, which its authorization and its answers to a remote owner are built from (localRows) and an
   // owner's listing is matched with (localListing), and the request's object matched by its exact uri
   // (answerFeatureRequest).
