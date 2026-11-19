@@ -75,6 +75,9 @@ const NAMES = [
   "S16-DroppedAnswer",
   "S16-LeasedSentSuspended",
   "S16-ReclaimRefused",
+  "S16-ReclaimRetraction",
+  "S16-RetractionSentSuspended",
+  "S17-OrdinaryOverRetraction",
   "S2-AnswerCoalesced",
   "S2-Answered",
   "S2-CleanupThenDelete",
@@ -165,6 +168,8 @@ type World = {
   c: ReturnType<typeof collection>;
   requests: Record<string, string>;
   rows: string[];
+  // The authorizations R listed before Kopje issued them (RGuess), by name: the row id each names.
+  guessed: Record<string, string>;
   aliceToken: string;
   adminToken: string;
   rounds: Round[];
@@ -263,6 +268,7 @@ async function init(environment: Environment, stored: boolean): Promise<World> {
     c,
     requests: {},
     rows: [],
+    guessed: {},
     aliceToken: await aliceCredential(t, 0),
     adminToken: admin,
     rounds: [],
@@ -314,10 +320,31 @@ const outboundKeys = async (t: Setup) => (await outbound(t)).map(keyOf);
 const collectionId = async (w: World): Promise<string | undefined> =>
   (await sql<{ id: string }>(w.t.store, "SELECT id FROM collections WHERE uri = ?", w.c.id))[0]?.id;
 
-// L's authorization `a` (a1, a2: the rows Kopje issued, in order).
+// L's authorization `a` (a1, a2: the rows Kopje issued, in order; before its issuance, the row R guessed).
 function authorization(w: World, name: string): string {
-  const row = w.rows[Number(name.slice(1)) - 1];
+  const row = w.rows[Number(name.slice(1)) - 1] ?? w.guessed[name];
   return `${ALICE_URI}/feature_authorizations/${row ?? "0"}`;
+}
+
+// RGuess: R lists the authorization Kopje issues next before Kopje issues it, which only an owner that guesses its URI
+// does. R's Add reaches Kopje at a later KRecv; here the replay picks the id, a local id of a time a year ahead, which no
+// allocation reaches by the clock, and the request that issues the authorization is made to take it (receiveRequest).
+function guess(w: World, name: string): void {
+  w.guessed[name] = (BigInt(w.clock.now + 365 * 86_400_000) << 16n).toString();
+}
+
+// Before a request that issues a guessed authorization: Kopje's last local id set just below it, so the row the request
+// inserts takes it (ids.ts allocateLocalId: one past the last while the last is ahead of the clock); observe checks the
+// row it issued.
+async function issueAsGuessed(w: World): Promise<void> {
+  const guessed = w.guessed[`a${w.rows.length + 1}`];
+  if (guessed !== undefined) {
+    await sql(
+      w.t.store,
+      "INSERT OR REPLACE INTO kopje_state (name, value) VALUES ('last_local_id', ?)",
+      (BigInt(guessed) - 1n).toString(),
+    );
+  }
 }
 
 const itemId = (w: World, name: string) =>
@@ -499,6 +526,7 @@ const expect202 = (status: number, what: string) => {
 // A FeatureRequest: answered at once for a collection Kopje stores, else held at its instrument's fetch ("fetch").
 async function receiveRequest(w: World, name: string): Promise<202 | 503 | "fetch"> {
   const body = featureRequest(w.owner, ALICE_URI, w.c.id, requestId(w, name));
+  await issueAsGuessed(w);
   if ((await collectionId(w)) !== undefined) {
     return (await post(w, w.owner, body)) as 202 | 503;
   }
@@ -1045,6 +1073,9 @@ async function step(w: World, s: Step): Promise<202 | 503 | "fetch" | null> {
         requestId(w, value!);
       }
       return null;
+    case "RGuess":
+      guess(w, value!);
+      return null;
     case "Env":
       await applyEnvironment(w, s.environment);
       return null;
@@ -1165,7 +1196,8 @@ function named(w: World, type: string, activity: Record<string, unknown>): strin
       return "L";
     }
     const at = w.rows.findIndex((row) => id === `${ALICE_URI}/feature_authorizations/${row}`);
-    return at < 0 ? id : `a${at + 1}`;
+    const guessed = Object.entries(w.guessed).find(([, row]) => id === `${ALICE_URI}/feature_authorizations/${row}`);
+    return at >= 0 ? `a${at + 1}` : (guessed?.[0] ?? id);
   }
   return id;
 }
@@ -1279,6 +1311,10 @@ async function observe(w: World, response: Actual["response"]): Promise<Actual> 
           ALICE,
         );
   if (stored !== undefined && !w.rows.includes(stored.id)) {
+    const guessed = w.guessed[`a${w.rows.length + 1}`];
+    if (guessed !== undefined) {
+      expect(stored.id, "the authorization Kopje issued, as R listed it before").toBe(guessed);
+    }
     w.rows.push(stored.id);
   }
   const row: Row | null =
