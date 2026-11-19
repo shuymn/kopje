@@ -44,20 +44,21 @@
 (*    severCollections, src/domain/collections.ts:812; the account's       *)
 (*    changes; pruneCollectionItems, src/store-rpc.ts:463; the eviction in *)
 (*    the insert that needs the place; one later batch of R's purge).      *)
-(*  - KLeaseHead / KDeliver / KDup / KGiveUp / KFail / KRetry: the claim   *)
-(*    of the head of Kopje's lane to R's server, which leases it for its   *)
-(*    POST (claimDeliveries, src/store-rpc.ts:654; a lane is the sender    *)
-(*    and the inbox's origin, delivered in id order, deliveries.ts:71),    *)
-(*    and the POST's outcomes (confirmDelivery, :655): delivered,          *)
-(*    delivered with its response lost, given up after the last attempt,   *)
-(*    and a transient failure or the lease running out (the sweep's        *)
-(*    reclaim); and an operator's retry (retryDeliveries,                  *)
-(*    src/store-rpc.ts:658), admitted again only if it fits                *)
-(*    (deliveries.ts:3525). While leased, the head is in flight and no     *)
-(*    longer waits. KDeliver, KDup and KGiveUp also take a waiting head:   *)
-(*    the lease and its outcome with no step between them. R's inbox       *)
-(*    answers 202 and queues a job; RJob is one Sidekiq job, and jobs run  *)
-(*    in any order.                                                        *)
+(*  - KLeaseHead / KDeliver / KDup / KGiveUp / KFail / KReclaim / KRetry:  *)
+(*    the claim of the head of Kopje's lane to R's server, which leases it *)
+(*    for its POST (claimDeliveries, src/store-rpc.ts:654; a lane is the   *)
+(*    sender and the inbox's origin, delivered in id order,                *)
+(*    deliveries.ts:71), and the POST's outcomes (confirmDelivery, :655):  *)
+(*    delivered, delivered with its response lost, given up after the last *)
+(*    attempt, and a transient failure; the sweep's reclaim of a lease     *)
+(*    that ran out, which leases the head again under a new token; and an  *)
+(*    operator's retry (retryDeliveries, src/store-rpc.ts:658), admitted   *)
+(*    again only if it fits (deliveries.ts:3525). Only a corrective answer *)
+(*    is leased apart from its outcome: while leased it is in flight and   *)
+(*    no longer waits. KDeliver, KDup and KGiveUp also take a waiting      *)
+(*    head, any head: the lease and its outcome with no step between them. *)
+(*    R's inbox answers 202 and queues a job; RJob is one Sidekiq job, and *)
+(*    jobs run in any order.                                               *)
 (*  - RAdd, RRemove, RDeleteC, RCleanup, RDeleteSelf, RPurge, RUpdate: one *)
 (*    request or service call of R. A distribution job's delay is a        *)
 (*    delivery delay, and a job that reaches no one or finds its item gone *)
@@ -68,11 +69,11 @@
 (* requests r1, r2 (items I1, I2), two authorizations a1, a2; every other  *)
 (* count is a per-scenario budget (Bud). R's envelopes in flight are a     *)
 (* set, so equal envelopes merge; duplicates come from KRecv's lost        *)
-(* response. Kopje's lane is a sequence, with at most its head in flight,  *)
-(* and R's jobs a bag. Steps that would need a third authorization or a    *)
-(* second instrument fetch are disabled. R's purge batches reach C at once *)
-(* or later, never part of it. No fairness: any message may wait for ever  *)
-(* or be dropped.                                                          *)
+(* response. Kopje's lane is a sequence, with at most its head, an         *)
+(* answer, in flight, and R's jobs a bag. Steps that would need a third    *)
+(* authorization or a second instrument fetch are disabled. R's purge      *)
+(* batches reach C at once or later, never part of it. No fairness: any    *)
+(* message may wait for ever or be dropped.                                *)
 (*                                                                         *)
 (* INVARIANTS:                                                             *)
 (*  - GrantPreservation GP1 /\ GP2: while L's committed Accept of a has no *)
@@ -91,8 +92,8 @@
 (*    an unserved a only if every Delete of a in flight when R applied its *)
 (*    acceptance, or recorded since, was refused at a full backlog or      *)
 (*    given up (F7): a processed Delete that left R holding a counts       *)
-(*    against it, and so does one dropped after a failed POST unless a     *)
-(*    later answer to its inbox superseded it.                             *)
+(*    against it, and so does a leased one dropped unless a later          *)
+(*    retraction answer to its inbox superseded it.                        *)
 (*  - ObservedVisibility OV1 /\ OV2 /\ OV3: only an eligible untruncated   *)
 (*    read, an exact item Remove, a re-accept by another request, the      *)
 (*    row's end or a loss of availability hides it; at quiescence after    *)
@@ -117,7 +118,7 @@
 (*    RES-4 never refuses a retraction, so its count is bounded by Kopje's *)
 (*    own rows alone. A leased head does not wait: a listing while it is   *)
 (*    in flight records another answer, and the leased one, if its POST    *)
-(*    fails, is dropped as superseded.                                     *)
+(*    fails or its lease is reclaimed, is dropped as superseded.           *)
 (*                                                                         *)
 (* GRANT PRESERVATION IS INDUCTIVE (CollectionConsentInd.tla checks it).   *)
 (* Per action: Decide and ApplyFetch create a row only with its Accept,    *)
@@ -199,11 +200,11 @@ Can(f) == spent[f] < Bud(f)
 Spend(f) == spent' = [spent EXCEPT ![f] = @ + 1]
 
 \* The scenario checks fingerprint states without `last`, which records how a state was reached, not what it is,
-\* without the given-up deliveries once no operator retry is left to send them again, and without g.overLease and
-\* g.waitedAgain, which only goals read. No action or invariant reads any of them.
+\* without the given-up deliveries once no operator retry is left to send them again, and without g.overLease,
+\* g.waitedAgain, g.reclaimed and g.overReclaim, which only goals read. No action or invariant reads any of them.
 View ==
   <<k, env, kq, kl, IF Can("retry") THEN kg ELSE {}, toK, rs, rin, rd, sr, fe, spent,
-    [g EXCEPT !.overLease = FALSE, !.waitedAgain = NONE]>>
+    [g EXCEPT !.overLease = FALSE, !.waitedAgain = NONE, !.reclaimed = FALSE, !.overReclaim = FALSE]>>
 
 (***************************************************************************)
 (* Messages and records.                                                   *)
@@ -254,8 +255,8 @@ RServes == rs.c /\ ~rs.gone
 Refused(m) == env.bl /\ (m.cls = "ord" \/ (Variant = "V9" /\ m.ty = "Delete"))
 \* A retraction answer of a: L's Delete of a answering a listing, never refused.
 RetractionAnswer(m, a) == m.ty = "Delete" /\ m.why = "answer" /\ m.cls = "ret" /\ m.obj = a
-\* The places in Kopje's lane that wait to be sent: all but a leased head, whose POST is in flight. A head stays waiting
-\* after a lost response, or after a failure unless superseded (KFail).
+\* The places in Kopje's lane that wait to be sent: all but a leased head, whose POST is in flight (a reclaimed lease
+\* included). A head waits again after a lost response or a failed POST, unless superseded (KDup, KFail).
 Waiting == (IF kl THEN 2 ELSE 1)..Len(kq)
 \* A retraction answer of a to inbox `to` waits to be sent.
 AnswerWaits(a, to) == \E i \in Waiting : RetractionAnswer(kq[i], a) /\ kq[i].to = to
@@ -296,7 +297,7 @@ Init ==
           nue |-> FALSE, nueLive |-> FALSE, rot |-> FALSE, avail |-> FALSE, rejected |-> {}, accAfterRem |-> FALSE,
           remLive |-> FALSE, afterGone |-> FALSE, unexcused |-> [a \in Auths |-> 0], tick |-> FALSE, held503 |-> FALSE,
           o7 |-> FALSE, lastRd |-> NoLastRead, ign |-> FALSE, lrMoved |-> FALSE, fo |-> FALSE, overLease |-> FALSE,
-          waitedAgain |-> NONE]
+          waitedAgain |-> NONE, reclaimed |-> FALSE, overReclaim |-> FALSE]
   /\ last = [act |-> "Init", arg |-> NoArg, rec |-> {}, resp |-> 0, ev |-> {}]
 
 (***************************************************************************)
@@ -360,6 +361,7 @@ GhostK(res, evid, opp, mayHide, allowedHide, mayShow, lr, remC, ev) ==
         !.held503 = @ \/ "held503" \in ev,
         !.o7 = @ \/ "o7" \in ev,
         !.overLease = @ \/ "overLease" \in ev,
+        !.overReclaim = @ \/ (g.reclaimed /\ \E m \in res.rec : OverLease(m)),
         !.fo = @ \/ "outdRead" \in ev,
         !.lastRd = [lr EXCEPT !.kshow = @ \/ (mayShow /\ Shown(k2) /\ ~Shown(k)),
                              !.khide = @ \/ (allowedHide /\ ~Shown(k2))]]
@@ -840,48 +842,72 @@ SenderDrops(m) == k.lx /\ k.ls /\ m.ty \notin {"Delete", "DeleteActor"}
 Drops(m) == SenderDrops(m) /\ Variant # "V25"
 \* MemberAvailability's delivery part: an activity R receives from L while L is suspended is a retraction.
 SentSuspended(m) == [g EXCEPT !.avail = @ \/ SenderDrops(m)]
+\* The history once the head leaves flight: g.reclaimed (goals only) holds only while a reclaimed lease lasts.
+Landed(gg) == [gg EXCEPT !.reclaimed = FALSE]
 
-\* The leased head is a corrective answer: L's Delete answering a listing.
-LeasedAnswer == kl /\ Head(kq).ty = "Delete" /\ Head(kq).why = "answer"
-\* A later answer of the leased head's authorization waits behind it: to the head's inbox (sameInbox), or to any.
-LaterAnswer(sameInbox) ==
+\* A corrective answer: L's Delete answering a listing. Only such a head is leased apart from its outcome (KLeaseHead),
+\* since only its time in flight changes what Kopje decides: a listing then records another answer (Coalesced), which
+\* supersedes it. Any other head is claimed and completed in one step (KDeliver, KDup, KGiveUp): a suspension does not
+\* recall a POST that has left, so a POST in flight across it ends as one of those steps taken before it, or, if R
+\* received nothing, as the suspended member's drop after it (KDeliver "dropped").
+Answer(m) == m.ty = "Delete" /\ m.why = "answer"
+\* An answer of the leased head's authorization waits behind it: a retraction answer, or one of any class (retraction
+\* FALSE); to the head's inbox, or to any (sameInbox FALSE).
+LaterAnswer(retraction, sameInbox) ==
   \E i \in 2..Len(kq) :
-    /\ kq[i].ty = "Delete" /\ kq[i].why = "answer" /\ kq[i].obj = Head(kq).obj
+    /\ Answer(kq[i]) /\ kq[i].obj = Head(kq).obj
+    /\ (kq[i].cls = "ret" \/ ~retraction)
     /\ (kq[i].to = Head(kq).to \/ ~sameInbox)
-\* A leased answer that a later one superseded: an answer of the same authorization to the same inbox recorded while it
-\* was in flight (Coalesced does not count a leased one), which waits behind it and answers that inbox's listing too.
-\* The stale-answer drop (deliveries.ts) drops it when its POST fails or its lease is reclaimed, and the later one is
-\* sent. VARIANT V30: an answer of the same authorization to any inbox supersedes it.
-Superseded == LeasedAnswer /\ LaterAnswer(Variant # "V30")
-\* A failed POST drops the leased head if superseded. VARIANT V28: never. VARIANT V29: any leased answer.
-FailDrops == CASE Variant = "V28" -> FALSE [] Variant = "V29" -> LeasedAnswer [] OTHER -> Superseded
-\* CR3's count after a failed POST that drops the head: the head leaves it only when a later answer to its inbox
-\* carries its correction (an answer to another inbox does not answer this inbox's listing).
-FailCount == IF FailDrops /\ LaterAnswer(TRUE) THEN CountHead(Head(kq), FALSE) ELSE g
-\* A failed POST: the head waits again, or is dropped as superseded (its input "superseded").
+\* A leased answer that a later one superseded: a retraction answer of the same authorization to the same inbox,
+\* recorded while it was in flight (Coalesced does not count a leased one), which waits behind it and answers that
+\* inbox's listing too. The stale-answer drop (deliveries.ts) drops it when its POST fails or the sweep reclaims its
+\* lease, and the later one is sent. An ordinary answer supersedes nothing: each listing's is its own, so a leased head
+\* with only ordinary answers behind it is retried. VARIANT V30: an answer of the same authorization supersedes it,
+\* whatever its class and inbox. VARIANT V31: one of any class to the same inbox.
+Superseded == kl /\ LaterAnswer(Variant \notin {"V30", "V31"}, Variant # "V30")
+\* A failed POST or a reclaimed lease drops the leased head if superseded. VARIANT V28: never. VARIANT V29: always.
+FailDrops == CASE Variant = "V28" -> FALSE [] Variant = "V29" -> kl [] OTHER -> Superseded
+\* CR3's count after the leased head is dropped: it leaves the count only when a later retraction answer to its inbox
+\* waits behind it, the one the stale-answer drop sends in its place. Any other drop is a lost correction, which F7
+\* does not excuse (neither refused nor given up).
+FailCount == IF FailDrops /\ LaterAnswer(TRUE, TRUE) THEN CountHead(Head(kq), FALSE) ELSE g
+\* A failed POST or a reclaim: the head is dropped as superseded (its input "superseded"), or kept.
 FailStep(act, m) ==
   last' = [act |-> act, arg |-> Arg(NoEnvelope, m, IF FailDrops THEN "superseded" ELSE NONE), rec |-> {},
            resp |-> 0, ev |-> {}]
 
-\* The head is claimed for its POST (claimDeliveries leases it), which is then in flight: it no longer waits, so a
-\* listing of its authorization records another answer (Coalesced). A suspended L's ordinary head is dropped at its
-\* claim, which KDeliver's "dropped" covers.
+\* The head, a corrective answer, is claimed for its POST (claimDeliveries leases it), which is then in flight: it no
+\* longer waits, so a listing of its authorization records another answer (Coalesced).
 KLeaseHead ==
-  /\ kq # <<>> /\ ~kl /\ ~Drops(Head(kq))
+  /\ kq # <<>> /\ ~kl /\ Answer(Head(kq))
   /\ kl' = TRUE
   /\ DeliveryStep("KLeaseHead", Head(kq))
   /\ UNCHANGED <<k, env, kq, kg, toK, rs, rin, rd, sr, fe, spent, g>>
 
-\* The leased head's POST failed short of its last attempt (an error, a timeout, a 5xx), or its lease ran out and the
-\* sweep reclaimed it: R received nothing, and the head waits again, or is dropped as superseded.
+\* The leased head's POST failed short of its last attempt (an error, a 5xx): R received nothing, and the head waits
+\* again, or is dropped as superseded.
 KFail ==
-  /\ kl /\ ~Drops(Head(kq))
+  /\ kl
   /\ kl' = FALSE
   /\ kq' = IF FailDrops THEN Tail(kq) ELSE kq
-  \* A leased answer that waits again: alone, or beside an answer of its authorization to another inbox (goals only).
-  /\ g' = [FailCount EXCEPT !.waitedAgain = IF LeasedAnswer /\ ~FailDrops
-                                             THEN (IF LaterAnswer(FALSE) THEN "otherInbox" ELSE "alone") ELSE @]
+  \* A leased answer that waits again: beside an ordinary answer to its inbox, beside one to another inbox, or alone
+  \* (goals only).
+  /\ g' = [FailCount EXCEPT !.reclaimed = FALSE, !.waitedAgain = IF FailDrops THEN @
+                                                                ELSE IF LaterAnswer(FALSE, TRUE) THEN "ordinary"
+                                                                ELSE IF LaterAnswer(FALSE, FALSE) THEN "otherInbox"
+                                                                ELSE "alone"]
   /\ FailStep("KFail", Head(kq))
+  /\ UNCHANGED <<k, env, kg, toK, rs, rin, rd, sr, fe, spent>>
+
+\* The leased head's lease ran out with its POST never completed, and the sweep reclaimed it: dropped as superseded, or
+\* leased again under a new token, still in flight and never waiting, so a listing before its next outcome records
+\* another answer. R receives nothing at this step; an expired POST that reached R is KDup's copy, then KLeaseHead.
+KReclaim ==
+  /\ kl
+  /\ kl' = ~FailDrops
+  /\ kq' = IF FailDrops THEN Tail(kq) ELSE kq
+  /\ g' = [FailCount EXCEPT !.reclaimed = ~FailDrops]
+  /\ FailStep("KReclaim", Head(kq))
   /\ UNCHANGED <<k, env, kg, toK, rs, rin, rd, sr, fe, spent>>
 
 \* The head's POST, from the lane (claimed and sent in one step) or leased.
@@ -891,7 +917,7 @@ KDeliver ==
      THEN /\ rin' = rin /\ g' = g
           /\ last' = [act |-> "KDeliver", arg |-> Arg(NoEnvelope, Head(kq), "dropped"), rec |-> {}, resp |-> 0,
                       ev |-> {"dropped"}]
-     ELSE /\ rin' = BagAdd(rin, Head(kq)) /\ g' = SentSuspended(Head(kq))
+     ELSE /\ rin' = BagAdd(rin, Head(kq)) /\ g' = Landed(SentSuspended(Head(kq)))
           /\ DeliveryStep("KDeliver", Head(kq))
   /\ UNCHANGED <<k, env, kg, toK, rs, rd, sr, fe, spent>>
 
@@ -902,15 +928,15 @@ KDup ==
   /\ rin' = BagAdd(rin, Head(kq))
   /\ kl' = FALSE
   /\ kq' = IF FailDrops THEN Tail(kq) ELSE kq
-  /\ g' = [(IF FailDrops THEN g ELSE CountHead(Head(kq), TRUE)) EXCEPT !.avail = @ \/ SenderDrops(Head(kq))]
+  /\ g' = Landed([(IF FailDrops THEN g ELSE CountHead(Head(kq), TRUE)) EXCEPT !.avail = @ \/ SenderDrops(Head(kq))])
   /\ FailStep("KDup", Head(kq))
   /\ UNCHANGED <<k, env, kg, toK, rs, rd, sr, fe>>
 
-\* The head given up after its last attempt; one a failure drops is dropped instead (KFail).
+\* The head given up after its last attempt; a superseded one is dropped instead (KFail).
 KGiveUp ==
   /\ kq # <<>> /\ ~Drops(Head(kq)) /\ ~FailDrops
   /\ kq' = Tail(kq) /\ kl' = FALSE /\ kg' = kg \cup {Head(kq)}
-  /\ g' = CountHead(Head(kq), FALSE)
+  /\ g' = Landed(CountHead(Head(kq), FALSE))
   /\ DeliveryStep("KGiveUp", Head(kq))
   /\ UNCHANGED <<k, env, toK, rs, rin, rd, sr, fe, spent>>
 
@@ -938,7 +964,7 @@ Next ==
   \/ IF Variant = "V16" /\ HeadDelete THEN KCleanupV16 ELSE KCleanup
   \/ EnvStep
   \/ KClaim \/ KFetch \/ KFetch1 \/ KFetch2 \/ KApply \/ KLease \/ KStale \/ KExpire
-  \/ KDeliver \/ KGiveUp \/ KDup \/ KRetry \/ KLeaseHead \/ KFail
+  \/ KDeliver \/ KGiveUp \/ KDup \/ KRetry \/ KLeaseHead \/ KFail \/ KReclaim
   \/ RAdd \/ RRemove \/ RDeleteC \/ RCleanup \/ RDeleteSelf \/ RPurge \/ RUpdate \/ RShift \/ RCrowd \/ XAdd \/ RJob
   \/ Drop
 

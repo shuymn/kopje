@@ -59,8 +59,8 @@ it: no run under the variant's rules takes the fixture's steps as recorded (acti
 observations the replay accepts (`reproduces` in `collection-consent-fixtures.ts`). The difference is an observation, or
 a step the variant cannot take as recorded (V16: at `S2-CleanupThenDelete`'s last delivery the revoke's `Delete` is no
 longer the lane's head; V25: at `S12-DroppedDelivery` the suspended member's `Accept` is sent, not dropped; V28: at
-`S2-LeaseSuperseded`'s `KFail` the superseded answer waits again, not dropped; V29 and V30: at `S2-LeaseFailed`'s and
-`S4-LeaseFailedBesideX`'s `KFail` the answer is dropped, not waiting again). A variant that changes only what an
+`S2-LeaseSuperseded`'s `KFail` the superseded answer waits again, not dropped; V29, V30 and V31: at `S2-LeaseFailed`'s,
+`S4-LeaseFailedBesideX`'s and `S2-LeaseFailedOrdinary`'s `KFail` the answer is dropped, not waiting again). A variant that changes only what an
 invariant counts (V8, V23) is listed there as exempt, with its reason, and must reproduce every fixture. A variant with
 neither fails the test.
 
@@ -88,20 +88,23 @@ cites the code):
   `refused`; the row itself is still compared. `KUnsuspend` has the input `newCredential`: the suspension's
   credentials stay refused after the lifting, so the replay reads L's views after it with a credential issued since.
   The suspension and its lifting also record L's actor Update, which the spec leaves out of `recorded`.
-- `KLeaseHead`, `KDeliver`, `KDup`, `KGiveUp`, `KFail`, `KRetry`: Kopje's lane to R's server. `KLeaseHead` claims its
-  head for the POST, which is then in flight (`kl`) and no longer waits. `KDeliver` is the POST delivered, `KDup`
-  delivered with its response lost, `KGiveUp` the head given up after its last attempt, and `KFail` a transient failure
-  or the lease running out: each completes the leased head, and the first three also take a waiting head, claim and
-  outcome in one step. After `KDup` or `KFail` the head waits again, unless an answer of the same authorization to the
-  same inbox was recorded while it was in flight (`Superseded`; one to another inbox does not supersede it): it is then
-  dropped (input `superseded`). `KRetry` is an operator's retry (admitted again, then behind the head). While L is
-  suspended the Store drops its ordinary activities when it claims them (only a `Delete` is still sent): `KDeliver` then
-  has the input `dropped` and sends nothing, and the head is neither leased, duplicated nor given up. `RJob` is one of
-  R's jobs, which run in any order.
+- `KLeaseHead`, `KDeliver`, `KDup`, `KGiveUp`, `KFail`, `KReclaim`, `KRetry`: Kopje's lane to R's server.
+  `KLeaseHead` claims a head that is a corrective answer (L's `Delete` answering a listing) for its POST, which is then
+  in flight (`kl`) and no longer waits; any other head is claimed and completed in one step. `KDeliver` is the POST
+  delivered, `KDup` delivered with its response lost and `KGiveUp` the head given up after its last attempt: each
+  completes the leased head, or takes a waiting head, claim and outcome in one step. `KFail` is the leased POST's
+  transient failure, after which the head waits again. `KReclaim` is its lease running out and the sweep reclaiming it:
+  the head stays in flight under a new lease and never waits. After `KDup`, `KFail` or `KReclaim` a leased head is
+  dropped instead (input `superseded`) when a retraction answer of its authorization to its inbox was recorded while it
+  was in flight (`Superseded`); an ordinary answer, or one to another inbox, supersedes nothing. `KRetry` is an
+  operator's retry (admitted again, then behind the head). While L is suspended the Store drops its ordinary activities
+  when it claims them (only a `Delete` is still sent): `KDeliver` then has the input `dropped` and sends nothing, and
+  the head is neither duplicated nor given up. `RJob` is one of R's jobs, which run in any order.
 - An answer to a listing of an authorization L's row no longer serves is a retraction only to R while Kopje holds the
   row; X's, or any once the row is gone, is ordinary and refused at a full backlog. A retraction answer is not
   recorded while one of the same authorization to the same inbox still waits in the lane (`Coalesced`), so the
-  listing step then records nothing; a leased one does not wait, so the listing records another, which supersedes it.
+  listing step then records nothing; a leased one (its lease reclaimed or not) does not wait, so the listing records
+  another, which supersedes it.
 - `R*` and `XAdd` are R's requests and services; `Drop` loses an envelope; `Env` changes L's policy, the backlog, the
   retraction cap, C's slots or how many of R's collections Kopje holds.
 

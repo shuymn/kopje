@@ -3,77 +3,77 @@
   "scenarios": [
     {
       "name": "S1",
-      "distinct": 15082,
+      "distinct": 11090,
       "depth": 17
     },
     {
       "name": "S2",
-      "distinct": 170301,
+      "distinct": 150604,
       "depth": 23
     },
     {
       "name": "S3",
-      "distinct": 1783,
+      "distinct": 1571,
       "depth": 16
     },
     {
       "name": "S4",
-      "distinct": 24296,
+      "distinct": 21416,
       "depth": 20
     },
     {
       "name": "S5",
-      "distinct": 23051,
+      "distinct": 20680,
       "depth": 17
     },
     {
       "name": "S6",
-      "distinct": 54591,
+      "distinct": 44111,
       "depth": 22
     },
     {
       "name": "S7",
-      "distinct": 206,
+      "distinct": 180,
       "depth": 11
     },
     {
       "name": "S8",
-      "distinct": 15407,
+      "distinct": 13839,
       "depth": 19
     },
     {
       "name": "S9",
-      "distinct": 22072,
+      "distinct": 20083,
       "depth": 15
     },
     {
       "name": "S10",
-      "distinct": 246,
+      "distinct": 191,
       "depth": 11
     },
     {
       "name": "S11",
-      "distinct": 11256,
+      "distinct": 9865,
       "depth": 19
     },
     {
       "name": "S12",
-      "distinct": 8595,
+      "distinct": 6858,
       "depth": 14
     },
     {
       "name": "S13",
-      "distinct": 530,
+      "distinct": 416,
       "depth": 13
     },
     {
       "name": "S14",
-      "distinct": 6057,
+      "distinct": 4936,
       "depth": 16
     },
     {
       "name": "S15",
-      "distinct": 9341,
+      "distinct": 8318,
       "depth": 18
     }
   ],
@@ -327,6 +327,13 @@
       "variant": "V30",
       "invariant": "CR3",
       "trace": 13
+    },
+    {
+      "name": "V31",
+      "scenario": "S2",
+      "variant": "V31",
+      "invariant": "CR3",
+      "trace": 15
     }
   ],
   "findings": [],
@@ -792,6 +799,20 @@
       "goal": "LeaseFailedBesideX",
       "trace": 13,
       "fixture": true
+    },
+    {
+      "name": "S2-LeaseFailedOrdinary",
+      "scenario": "S2",
+      "goal": "LeaseFailedOrdinary",
+      "trace": 13,
+      "fixture": true
+    },
+    {
+      "name": "S2-ReclaimSuperseded",
+      "scenario": "S2",
+      "goal": "ReclaimSuperseded",
+      "trace": 12,
+      "fixture": true
     }
   ],
   "replay": {
@@ -919,6 +940,10 @@
       {
         "variant": "V30",
         "fixture": "S4-LeaseFailedBesideX"
+      },
+      {
+        "variant": "V31",
+        "fixture": "S2-LeaseFailedOrdinary"
       }
     ],
     "exempt": [

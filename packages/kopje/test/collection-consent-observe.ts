@@ -121,15 +121,17 @@ export interface Step {
    * value: a step's other input (the request R adds, the environment field changed, ...); a claim's "sameTime" when it
    * is made in the same millisecond as the row's last change; a lifting's "newCredential": L's views after it are read
    * with a credential issued after it, since the suspension's are still refused; a delivery's "dropped" when the Store
-   * drops a suspended L's ordinary activity instead of sending it; a failed POST's "superseded" when the Store drops
-   * the leased head because an answer of the same authorization to the same inbox was recorded while it was in flight.
+   * drops a suspended L's ordinary activity instead of sending it; a failed POST's or a reclaim's "superseded" when the
+   * Store drops the leased head because a retraction answer of the same authorization to the same inbox was recorded
+   * while it was in flight.
    *
-   * activity: for KLeaseHead, KDeliver, KDup, KGiveUp and KFail, the head of Kopje's lane to R's server, which the
-   * replay checks is the head before it acts. KLeaseHead claims it for its POST; KDeliver, KDup and KGiveUp complete a
-   * claimed head, or claim a waiting one and complete it; KFail fails the claimed head's POST transiently, or lets its
-   * lease run out for the sweep to reclaim (either one). With "dropped", the replay checks that the Store sends nothing
-   * and the head is gone after it; with "superseded", that the head is gone and the later answer waits; after any other
-   * KFail or KDup, that the head waits again.
+   * activity: for KLeaseHead, KDeliver, KDup, KGiveUp, KFail and KReclaim, the head of Kopje's lane to R's server,
+   * which the replay checks is the head before it acts. KLeaseHead claims it, a corrective answer, for its POST;
+   * KDeliver, KDup and KGiveUp complete a claimed head, or claim a waiting one and complete it; KFail fails the claimed
+   * head's POST transiently; KReclaim lets its lease run out and the sweep reclaim it. With "dropped", the replay checks
+   * that the Store sends nothing and the head is gone after it; with "superseded", that the head is gone and the later
+   * answer waits; after any other KFail or KDup, that the head waits again; after any other KReclaim, that the head is
+   * leased again under a new token and does not wait.
    */
   input: { envelope?: Envelope; activity?: Activity; value?: string };
   environment: Environment;
