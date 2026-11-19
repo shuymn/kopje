@@ -1,11 +1,14 @@
+import { env } from "cloudflare:workers";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import { IMAGE_MATRIX_LIMIT, type ImageType, retainedMetadata } from "../src/platform/image-bytes";
+import { IMAGE_MATRIX_LIMIT, type ImageType, retainedMetadata, webpSize } from "../src/platform/image-bytes";
+import { imagesCodec } from "../src/platform/images";
 import {
   RECOGNITION_PREFIX_BYTES,
   recognizeMedia,
   remoteImageMetadata,
+  stripImageOutput,
   verifyRemoteImage,
   type VerifiedImage,
 } from "../src/platform/remote-media-bytes";
@@ -27,7 +30,7 @@ import {
   WEBP_XMP,
   WIDE_PNG,
 } from "./fixtures/images";
-import { bytes } from "./media-helpers";
+import { bytes, pngWithChunk } from "./media-helpers";
 import {
   animatedWebp,
   box,
@@ -684,21 +687,28 @@ describe("verifyRemoteImage: AVIF allowlists", () => {
 });
 
 describe("verifyRemoteImage: WebP frames", () => {
-  it("refuses metadata or another chunk inside a later frame, and frame chunks out of order", async () => {
+  it("drops metadata or another chunk inside a later frame, and refuses frame chunks out of order", async () => {
     const first = await encodeWebp(16, 12);
     const second = await encodeWebp(16, 12, { fill: "flat" });
     const size = { width: 16, height: 12 };
-    expect(refusal(animatedWebp([first, second], size))).toBe("accepted");
+    const plain = animatedWebp([first, second], size);
+    expect(refusal(plain)).toBe("accepted");
     for (const [name, extra] of [
       ["EXIF", webpChunk("EXIF", exifOrientation(1).subarray(6))],
       ["XMP", webpChunk("XMP ", text("<x:xmpmeta/>"))],
       ["unknown", webpChunk("ABCD", new Uint8Array(3))],
+      // One byte and its padding, the frame's last chunk.
+      ["JUNK", webpChunk("JUNK", new Uint8Array(1))],
     ] as const) {
       const file = animatedWebp([first, second], size, {
         frameChunks: (chunks, i) => (i === 1 ? [...chunks, extra] : chunks),
       });
       expect(remoteImageMetadata(file, "image/webp"), name).toBe("segment");
-      expect(refusal(file), name).toBe("metadata");
+      const verified = verifyRemoteImage(file.slice(), ["image/webp"]);
+      expect(verified.ok && verified.bytes, name).toEqual(plain);
+      const stripped = stripImageOutput(file, "image/webp");
+      expect(stripped, name).toEqual(plain);
+      expect(stripped?.buffer, name).toBe(file.buffer);
     }
     // The first frame has ALPH then VP8; reversed in the second frame.
     const reversed = animatedWebp([first, first], size, {
@@ -716,5 +726,111 @@ describe("recognizeMedia: hostile WebM", () => {
     // webm padded with NULs is webm.
     const padded = concat(text("webm"), new Uint8Array(300 * 1024));
     expect(recognize(webm({ docTypeBytes: padded }))).toMatchObject({ ok: true, type: "video/webm" });
+  });
+});
+
+// Images' output stripped before its check (platform/images.ts encodeChecked): production Images keeps a PNG's Exif
+// and XMP.
+describe("stripImageOutput (MEDIA-3)", () => {
+  const pngTypes = (png: Uint8Array) => {
+    const types: string[] = [];
+    const view = new DataView(png.buffer, png.byteOffset, png.byteLength);
+    for (let i = 8; i + 12 <= png.length; i += 12 + view.getUint32(i)) {
+      types.push(String.fromCharCode(...png.subarray(i + 4, i + 8)));
+    }
+    return types;
+  };
+
+  it("drops a PNG's Exif whatever its orientation, its text and unknown ancillary chunks, in place", () => {
+    for (const orientation of [1, 6]) {
+      const output = pngWithChunk(
+        pngWithChunk(
+          pngWithChunk(bytes(PNG_ICC), "eXIf", exifOrientation(orientation).subarray(6)),
+          "iDOT",
+          "\0\0\0\x02",
+        ),
+        "iTXt",
+        "XML:com.adobe.xmp\0\0\0\0\0<x/>",
+      );
+      expect(retainedMetadata(output, "image/png")).not.toBeNull();
+      const stripped = stripImageOutput(output, "image/png");
+      expect(stripped?.buffer).toBe(output.buffer);
+      expect(stripped).toEqual(bytes(PNG_ICC));
+    }
+  });
+
+  it("keeps colour signalling: iCCP, and PNG 3's cICP, mDCV and cLLI", () => {
+    // cICP for Display P3 (primaries 12, transfer 13, matrix 0, full range).
+    const output = pngWithChunk(
+      pngWithChunk(pngWithChunk(bytes(PNG_ICC), "cICP", new Uint8Array([12, 13, 0, 1])), "mDCV", new Uint8Array(24)),
+      "cLLI",
+      new Uint8Array(8),
+    );
+    expect(retainedMetadata(output, "image/png")).toBeNull();
+    const stripped = stripImageOutput(output.slice(), "image/png");
+    expect(stripped).toEqual(output);
+    expect(pngTypes(stripped!)).toEqual(expect.arrayContaining(["iCCP", "cICP", "mDCV", "cLLI"]));
+    // A cached remote image keeps them too (NET-3).
+    const remote = verifyRemoteImage(output.slice(), ["image/png"]);
+    expect(remote.ok && pngTypes(remote.bytes)).toEqual(expect.arrayContaining(["cICP", "mDCV", "cLLI"]));
+  });
+
+  it("keeps cICP, mDCV and cLLI only at their specified lengths, in the strip and in the check", () => {
+    for (const [type, length] of [
+      ["cICP", 4],
+      ["mDCV", 24],
+      ["cLLI", 8],
+    ] as const) {
+      for (const size of [length - 1, length + 1]) {
+        const output = pngWithChunk(bytes(PNG_ICC), type, new Uint8Array(size));
+        expect(retainedMetadata(output, "image/png"), `${type} ${size}`).toBe("segment");
+        expect(stripImageOutput(output.slice(), "image/png"), `${type} ${size}`).toEqual(bytes(PNG_ICC));
+        const remote = verifyRemoteImage(output.slice(), ["image/png"]);
+        expect(remote.ok && remote.bytes, `${type} ${size}`).toEqual(bytes(PNG_ICC));
+      }
+      const exact = pngWithChunk(bytes(PNG_ICC), type, new Uint8Array(length));
+      expect(retainedMetadata(exact, "image/png"), type).toBeNull();
+    }
+  });
+
+  it("refuses a PNG output with a byte after IEND rather than keep what follows it", () => {
+    const output = new Uint8Array([...pngWithChunk(bytes(PNG_PLAIN), "eXIf", exifOrientation(1).subarray(6)), 0]);
+    expect(stripImageOutput(output, "image/png")).toBeNull();
+  });
+
+  it("drops a WebP's EXIF and XMP chunks, clears their VP8X flags and rewrites the RIFF size", () => {
+    for (const fixture of [WEBP_WITH_GPS, WEBP_XMP]) {
+      const output = bytes(fixture);
+      expect(retainedMetadata(output, "image/webp")).not.toBeNull();
+      const stripped = stripImageOutput(output, "image/webp")!;
+      expect(stripped.buffer).toBe(output.buffer);
+      expect(retainedMetadata(stripped, "image/webp")).toBeNull();
+      expect(webpChunks(stripped).map(([type]) => type)).not.toContain("EXIF");
+      expect(webpChunks(stripped).map(([type]) => type)).not.toContain("XMP ");
+      expect((stripped[20] ?? 0) & 0x0c).toBe(0);
+      expect(new DataView(stripped.buffer, stripped.byteOffset).getUint32(4, true)).toBe(stripped.length - 8);
+    }
+  });
+
+  it("leaves a decodable WebP when EXIF and XMP were its VP8X's only features", async () => {
+    const plain = webpChunks(bytes(WEBP_PLAIN));
+    const bitstream = plain.filter(([type]) => type === "VP8 " || type === "VP8L");
+    const size = webpSize(bytes(WEBP_PLAIN))!;
+    const vp8x = new Uint8Array(10);
+    vp8x[0] = 0x0c;
+    const w = size.width - 1;
+    const h = size.height - 1;
+    vp8x.set([w & 0xff, (w >> 8) & 0xff, (w >> 16) & 0xff, h & 0xff, (h >> 8) & 0xff, (h >> 16) & 0xff], 4);
+    const output = riff([
+      webpChunk("VP8X", vp8x),
+      ...bitstream.map(([type, data]) => webpChunk(type, data)),
+      webpChunk("EXIF", exifOrientation(1).subarray(6)),
+      webpChunk("XMP ", new TextEncoder().encode("<x/>")),
+    ]);
+    const stripped = stripImageOutput(output, "image/webp")!;
+    expect(webpChunks(stripped).map(([type]) => type)).toEqual(["VP8X", ...bitstream.map(([type]) => type)]);
+    expect(stripped[20]).toBe(0);
+    const info = await imagesCodec(env.IMAGES).info(stripped.slice());
+    expect(info).toMatchObject({ format: "image/webp", width: size.width, height: size.height });
   });
 });

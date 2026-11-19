@@ -32,6 +32,26 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   `Link` (or offset, or `more`) continues after it, and realistic content does not reach it. No Store migration and no
   `wrangler.jsonc` change.
 
+### Fixed
+
+- A PNG image that carries EXIF or XMP, such as a macOS screenshot, can be uploaded again. Cloudflare Images documents
+  that PNG output has no metadata, but it keeps a PNG's EXIF block when the block holds more than the orientation (a
+  macOS screenshot's does) and its XMP `iTXt` chunk, with or without a resize, so the check that served images carry
+  none refused the upload and `POST /api/v1/media` answered 500 "Error processing uploaded media". Kopje now strips
+  the metadata from Images' PNG and WebP output, for uploads, profile images, custom emoji and link card images, and
+  checks it after; Images still reads the whole upload, so its EXIF orientation applies.
+- An image that its EXIF turns (Orientation 5 to 8, as a phone photo taken upright) and whose long edge is past 3,840
+  pixels is served at full size, turned. Kopje asked Images for a box from the unturned size, and Images turns the
+  image before it resizes, so a 4,000 × 1,000 image came out at 240 × 960. The box is now a square that bounds the
+  long edge whichever way the image turns, for uploads and for link card images.
+- An animated WebP whose frame holds a chunk beside its image data (EXIF, XMP or an unknown chunk, which the format
+  allows there) is stored without it: the strip of Images' output and of cached remote images drops it and rewrites the
+  frame's size, where an upload answered 500 and a remote image was not cached.
+- PNG colour signalling is no longer counted as metadata: an image's `cICP`, `mDCV` and `cLLI` chunks (a colour space
+  such as Display P3, and HDR levels), at their specified lengths of 4, 24 and 8 bytes, are kept in cached remote
+  images, and one of another length is dropped. Uploads are unchanged: Cloudflare Images converts a PNG to sRGB and
+  writes neither `iCCP` nor `cICP`, so an upload is served in sRGB.
+
 ## [0.6.0] - 2026-11-19
 
 A minor release, published under the npm dist-tag `latest`. `kopje-admin` works again: since Cloudflare Access began

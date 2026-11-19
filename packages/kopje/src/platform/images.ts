@@ -2,6 +2,7 @@ import { imageBlurhash, type Rgba } from "./blurhash";
 import { readBodyPrefix } from "./body";
 import { DeadlinePassed, within } from "./deadline";
 import { IMAGE_MATRIX_LIMIT, type ImageType, isAnimated, retainedMetadata, sniffImageType } from "./image-bytes";
+import { stripImageOutput } from "./remote-media-bytes";
 
 // Re-encoding of uploaded images (MEDIA-3). The Images binding is reached only through ImageCodec, a narrow
 // interface, so tests can substitute a codec that keeps EXIF or fails; production uses imagesCodec(env.IMAGES).
@@ -32,6 +33,7 @@ export type EncodeOptions = {
   guard?: CallGuard;
 };
 
+// encode's output is the caller's: a buffer nothing else holds, which encodeChecked strips in place.
 export type ImageCodec = {
   info(bytes: Uint8Array): Promise<ImageInfo>;
   encode(bytes: Uint8Array, options: EncodeOptions): Promise<Uint8Array>;
@@ -176,12 +178,16 @@ export const RGBA_MIN_CALL_MS = 2_000;
 export const RGBA_CALL_MS = 5_000;
 
 // Only PNG and WebP are produced. The Images binding has no metadata option (its output() takes format, quality and
-// anim: https://developers.cloudflare.com/images/transform-images/bindings/), and Images discards all metadata for
-// WebP and PNG output but keeps the EXIF copyright tag in JPEG by default ("For all other output formats (e.g. WebP or
-// PNG), all metadata will always be discarded":
-// https://developers.cloudflare.com/images/transform-images/transform-via-url/#metadata). So metadata is stripped at
-// the source, and retainedMetadata is the safety net. PNG keeps PNG (lossless, transparency); JPEG, GIF, WebP and AVIF
-// become WebP (it keeps transparency and animation).
+// anim: https://developers.cloudflare.com/images/transform-images/bindings/), and Images documents that it discards
+// all metadata for WebP and PNG output but keeps the EXIF copyright tag in JPEG by default ("For all other output
+// formats (e.g. WebP or PNG), all metadata will always be discarded":
+// https://developers.cloudflare.com/images/transform-images/transform-via-url/#metadata). Production Images does not
+// (measured on a staging instance in November 2026): from a PNG it drops an Exif block that holds only the orientation,
+// which it applies, but keeps one with any other field (a macOS screenshot's resolution, user comment and pixel size)
+// and an XMP iTXt chunk, with or without a resize. So encodeChecked strips each output (stripImageOutput) before
+// retainedMetadata, the safety net, checks it. The input goes to Images whole, so Images applies its Exif orientation.
+// Images also converts a PNG's colours to sRGB and writes neither iCCP nor cICP in its PNG output. PNG keeps PNG
+// (lossless, transparency); JPEG, GIF, WebP and AVIF become WebP (it keeps transparency and animation).
 type OutputType = "image/png" | "image/webp";
 
 const OUTPUT: Record<ImageType, OutputType> = {
@@ -273,16 +279,21 @@ export function encodeBounded(
   return encodeChecked(codec, bytes, { ...options, limit, guard });
 }
 
-// Re-encodes one output and checks it: the declared type, real dimensions from info(), no location or identity
-// metadata, and one frame when `still` asks for it. Original bytes are never returned in place of an output.
+// Re-encodes one output, strips its metadata in place (stripImageOutput) and checks it: the declared type, real
+// dimensions from info(), no location or identity metadata left, and one frame when `still` asks for it. Original
+// bytes are never returned in place of an output; one that does not walk is refused.
 async function encodeChecked(
   codec: ImageCodec,
   bytes: Uint8Array,
   options: EncodeOptions & { format: OutputType },
 ): Promise<EncodedImage> {
-  const output = await codec.encode(bytes, options);
-  if (sniffImageType(output) !== options.format) {
+  const encoded = await codec.encode(bytes, options);
+  if (sniffImageType(encoded) !== options.format) {
     throw new ImageOutputError("output is not of the requested type");
+  }
+  const output = stripImageOutput(encoded, options.format);
+  if (output === null) {
+    throw new ImageOutputError("output is malformed");
   }
   const kept = retainedMetadata(output, options.format);
   if (kept !== null) {
@@ -396,8 +407,9 @@ export async function processImage(
   }
   const format = OUTPUT[type];
   try {
-    const target = fit(original, FULL_EDGE);
-    const resize = target.width === original.width && target.height === original.height ? {} : target;
+    // Images applies the input's Exif orientation before it resizes, so the box is a FULL_EDGE square, which bounds the
+    // long edge whichever way the image turns (scale-down keeps the aspect); `full` has the size Images served.
+    const resize = Math.max(original.width, original.height) > FULL_EDGE ? { width: FULL_EDGE, height: FULL_EDGE } : {};
     const full = await encodeChecked(codec, bytes, { ...resize, format });
     // The preview is made from the re-encoded image, so it starts without metadata and in the served orientation. It
     // is a still, so an animated image's preview serves as its account's avatar_static or header_static (media.ts).

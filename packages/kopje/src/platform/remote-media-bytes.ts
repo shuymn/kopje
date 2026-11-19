@@ -4,7 +4,7 @@ import {
   type ImageType,
   jpegSegmentMetadata,
   MALFORMED,
-  PNG_CHUNKS,
+  pngChunkKept,
   type RetainedMetadata,
   retainedMetadata,
   sniffImageType,
@@ -23,6 +23,7 @@ import {
 //     container, the pixel limit read from its headers, a non-identity orientation refused, and its metadata stripped
 //     losslessly in place, the output checked again by remoteImageMetadata;
 //   - remoteImageMetadata: what a walkable image of each accepted type carries, failing closed on anything else;
+//   - stripImageOutput: the same in-place strip of an Images output (PNG or WebP) before its own check (MEDIA-3);
 //   - recognizeMedia: a video or audio file's container and category from its first RECOGNITION_PREFIX_BYTES bytes.
 // Every walk reads lengths and tags only and visits each byte a bounded number of times, so its work is linear in its
 // input (RES-2), and no output is larger than its input.
@@ -146,6 +147,10 @@ function isSof(marker: number): boolean {
 
 type Refused = { refusal: ImageRefusal };
 
+// What a strip does with an Exif block whose orientation is not the identity: refuse the image (a remote file, which
+// the Worker never rotates), or drop the block with the rest (an Images output, which Images has already rotated).
+type Orientation = "refuse" | "drop";
+
 // A JPEG's facts, stripped in place: every segment jpegSegmentMetadata flags, the fill bytes and anything after EOI are
 // dropped by moving what is kept towards the start (the walk never reads behind what it has visited).
 function jpegFacts(bytes: Uint8Array): Facts | Refused {
@@ -192,7 +197,8 @@ function jpegFacts(bytes: Uint8Array): Facts | Refused {
 
 // PNG chunks the strip drops are every ancillary chunk retainedMetadata does not keep (eXIf, tEXt, zTXt, iTXt and
 // tIME among them); an unknown critical chunk (its first letter upper case) cannot be dropped and is refused.
-function pngFacts(bytes: Uint8Array): Facts | Refused {
+// `orientation` 'drop': an eXIf is dropped whatever its orientation (stripImageOutput).
+function pngFacts(bytes: Uint8Array, orientation: Orientation = "refuse"): Facts | Refused {
   let width = 0;
   let height = 0;
   let animated = false;
@@ -209,10 +215,10 @@ function pngFacts(bytes: Uint8Array): Facts | Refused {
     if (type === "acTL") {
       animated = true;
     }
-    if (type === "eXIf" && orientationRefused(bytes.subarray(start, start + length))) {
+    if (type === "eXIf" && orientation === "refuse" && orientationRefused(bytes.subarray(start, start + length))) {
       return "orientation";
     }
-    if (!PNG_CHUNKS.has(type)) {
+    if (!pngChunkKept(type, length)) {
       return ((bytes[start - 4] ?? 0) & 0x20) === 0 ? "malformed" : undefined;
     }
     bytes.copyWithin(write, start - 8, start + length + 4);
@@ -235,33 +241,50 @@ function pngFacts(bytes: Uint8Array): Facts | Refused {
 const VP8X_EXIF = 0x08;
 const VP8X_XMP = 0x04;
 
-// The frame data of an ANMF chunk (its payload past the 16-byte frame header, [start, end)), as RFC 9649 section
-// 2.7.1.1 orders it: an optional ALPH then VP8, or VP8L alone. Any other chunk counts as metadata (frames are kept
-// whole, never rewritten); a chunk past the frame's end or another order is malformed.
-function webpFrameProblem(bytes: Uint8Array, start: number, end: number): "malformed" | "metadata" | null {
+// The frame data of an ANMF chunk (its payload past the 16-byte frame header, [start, end)): its image chunks, as RFC
+// 9649 section 2.7.1.1 orders them (an optional ALPH then VP8, or VP8L alone), each with its padding, and whether it
+// also holds other chunks, which the format allows after the image data and which count as metadata. MALFORMED for a
+// chunk past the frame's end or image chunks in another order. At most three ranges are kept, so the bookkeeping does
+// not grow with the frame's chunk count.
+function webpFrame(
+  bytes: Uint8Array,
+  start: number,
+  end: number,
+): { image: [number, number][]; other: boolean } | typeof MALFORMED {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const image: [number, number][] = [];
   const order: string[] = [];
+  let other = false;
   for (let i = start; i < end;) {
     if (i + 8 > end) {
-      return "malformed";
+      return MALFORMED;
     }
     const type = ascii(bytes, i, 4);
     const length = view.getUint32(i + 4, true);
     const next = i + 8 + length + (length % 2);
     if (next > end) {
-      return "malformed";
+      return MALFORMED;
     }
     if (type !== "ALPH" && type !== "VP8 " && type !== "VP8L") {
-      return "metadata";
+      other = true;
+    } else {
+      if (order.length === 2) {
+        return MALFORMED;
+      }
+      order.push(type);
+      image.push([i, next]);
     }
-    if (order.length === 2) {
-      return "malformed";
-    }
-    order.push(type);
     i = next;
   }
   const shape = order.join();
-  return shape === "VP8 " || shape === "VP8L" || shape === "ALPH,VP8 " ? null : "malformed";
+  return shape === "VP8 " || shape === "VP8L" || shape === "ALPH,VP8 " ? { image, other } : MALFORMED;
+}
+
+// What the frame data of an ANMF chunk carries (webpFrame): 'malformed', 'metadata' for a chunk beside its image
+// data, or null.
+function webpFrameProblem(bytes: Uint8Array, start: number, end: number): "malformed" | "metadata" | null {
+  const frame = webpFrame(bytes, start, end);
+  return frame === MALFORMED ? "malformed" : frame.other ? "metadata" : null;
 }
 
 // What an animated WebP's frames carry: the first problem webpFrameProblem finds in any ANMF, or null.
@@ -278,8 +301,8 @@ function webpFramesProblem(bytes: Uint8Array): "malformed" | "metadata" | null {
 
 // A WebP's facts, stripped in place: every chunk retainedMetadata does not keep (EXIF, XMP and unknown chunks) is
 // dropped, the VP8X flags for Exif and XMP are cleared and the RIFF size rewritten. An animation frame (ANMF) must lie
-// within the canvas and hold only its image data (webpFrameProblem).
-function webpFacts(bytes: Uint8Array): Facts | Refused {
+// within the canvas, and keeps only its image data (webpFrame). `orientation` as pngFacts takes it.
+function webpFacts(bytes: Uint8Array, orientation: Orientation = "refuse"): Facts | Refused {
   const size = webpSize(bytes);
   if (size === null) {
     return { refusal: "malformed" };
@@ -310,12 +333,22 @@ function webpFacts(bytes: Uint8Array): Facts | Refused {
       if (x + w > size.width || y + h > size.height) {
         return "malformed";
       }
-      const problem = webpFrameProblem(bytes, start + 16, start + length);
-      if (problem !== null) {
-        return problem;
+      const frame = webpFrame(bytes, start + 16, start + length);
+      if (frame === MALFORMED) {
+        return "malformed";
       }
+      // The frame's header, then its image chunks only, its other chunks dropped and its size rewritten.
+      bytes.copyWithin(write, start - 8, start + 16);
+      let at = write + 24;
+      for (const [from, to] of frame.image) {
+        bytes.copyWithin(at, from, to);
+        at += to - from;
+      }
+      new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint32(write + 4, at - write - 8, true);
+      write = at;
+      return undefined;
     }
-    if (type === "EXIF" && orientationRefused(bytes.subarray(start, start + length))) {
+    if (type === "EXIF" && orientation === "refuse" && orientationRefused(bytes.subarray(start, start + length))) {
       return "orientation";
     }
     if (!WEBP_CHUNKS.has(type)) {
@@ -770,6 +803,16 @@ export function verifyRemoteImage(
     return { ok: false, refusal: "metadata" };
   }
   return { ok: true, type, bytes: out, width: facts.width, height: facts.height, animated: facts.animated };
+}
+
+// Images' output of `type` stripped in place as verifyRemoteImage strips a remote image (pngFacts, webpFacts), its Exif
+// dropped whatever its orientation (Images has applied the input's orientation, so a kept tag would rotate the image
+// twice): a view of the same buffer, which the caller owns (ImageCodec's encode), or null when the output does not
+// walk (a byte after its end included) or holds an unknown critical chunk or a frame with metadata, the buffer then
+// partly rewritten and to be refused. No allocation: the strip only moves kept bytes towards the start.
+export function stripImageOutput(bytes: Uint8Array, type: "image/png" | "image/webp"): Uint8Array | null {
+  const facts = type === "image/png" ? pngFacts(bytes, "drop") : webpFacts(bytes, "drop");
+  return "refusal" in facts ? null : bytes.subarray(0, facts.end);
 }
 
 export type MediaType =

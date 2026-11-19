@@ -93,8 +93,11 @@ import {
 //        claim is lost; refused at the share, the image is kept without a blurhash and the round stopped; the RGBA
 //        output failing with another Images error, longer than 4 × w × h of I14's size (refused while it is read),
 //        shorter, or the blurhash failing keeps the image without a blurhash.
-// The target (cardImageTarget): an image of more than CARD_IMAGE_PIXELS is resized to fit floor(sqrt(P × W / H)) by
-// floor(sqrt(P × H / W)), each edge from 1 to the original's (Mastodon rounds, at most 1 pixel more an edge);
+// The target (cardImageTarget): an image of more than CARD_IMAGE_PIXELS is resized to fit a square of floor(sqrt(P × L /
+// S)) for its long edge L and short edge S, from 1 to L (Mastodon rounds, at most 1 pixel more an edge). Images
+// applies the input's Exif orientation before it resizes, and a square bounds the long edge whichever way the image
+// turns; scale-down keeps the aspect, so the short edge is at most S × side / L rounded, and the output at most the
+// box plus one line of its long edge (CARD_DECODE_PIXELS);
 // the stored output is always a still WebP without metadata (platform/images.ts), and the blurhash's pixels are
 // Images' raw RGBA of the same transformation (encodeRgba): the Worker decodes no image (NET-3).
 
@@ -104,9 +107,10 @@ export function cardImageTarget(size: Size): Size | null {
   if (width * height <= CARD_IMAGE_PIXELS) {
     return null;
   }
-  const edge = (a: number, b: number, limit: number) =>
-    Math.min(limit, Math.max(1, Math.floor(Math.sqrt((CARD_IMAGE_PIXELS * a) / b))));
-  return { width: edge(width, height, width), height: edge(height, width, height) };
+  const long = Math.max(width, height);
+  const short = Math.min(width, height);
+  const side = Math.min(long, Math.max(1, Math.floor(Math.sqrt((CARD_IMAGE_PIXELS * long) / short))));
+  return { width: side, height: side };
 }
 
 // What processCardImage made of one claim's bytes.

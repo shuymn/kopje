@@ -7,6 +7,7 @@ import { sweepMedia, THUMBNAIL_MUST_BE_BLANK, UPLOAD_SAVE_RESERVE_MS } from "../
 import { accountMonthlyTransforms, readConfig } from "../src/platform/config";
 import { retainedMetadata } from "../src/platform/image-bytes";
 import { RGBA_CALL_MS, RGBA_MIN_CALL_MS } from "../src/platform/images";
+import { remoteImageMetadata } from "../src/platform/remote-media-bytes";
 import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
 import { bearer, json, login, settle, sql } from "./api-helpers";
@@ -15,6 +16,7 @@ import { deleteSignature } from "./delete-job-helpers";
 import {
   GIF,
   JPEG_WITH_GPS,
+  PNG_ICC,
   PNG_PLAIN,
   PNG_WITH_GPS,
   WEBP_ICC,
@@ -27,6 +29,7 @@ import {
   type Attachment,
   bytes,
   DESCRIPTION_TOO_LONG,
+  jpegWithSegment,
   mediaForm,
   multipartForm,
   OVERLONG_DESCRIPTIONS,
@@ -37,6 +40,7 @@ import {
   upload,
   uploaded,
 } from "./media-helpers";
+import { animatedWebp, exifOrientation, webpChunk } from "./remote-media-fixtures";
 import {
   community,
   getJson,
@@ -48,6 +52,7 @@ import {
   remoteFollows,
   type Status,
 } from "./status-helpers";
+import { encodeWebp } from "./webp-fixtures";
 
 const HOUR = 60 * 60 * 1000;
 
@@ -159,8 +164,9 @@ describe("POST /api/v2/media", () => {
     const wide = await uploaded(h, h.users.alice, mediaForm(bytes(WIDE_PNG), {}, "wide.png", "image/png"));
     expect(wide.meta).toMatchObject({ original: { width: 3840, height: 960 }, small: { width: 640, height: 160 } });
     expect(wide.url).toMatch(/\/full\.png$/);
+    // A FULL_EDGE square bounds the long edge whichever way the image turns; meta takes the size Images served.
     expect(h.codec.encodeCalls).toEqual([
-      { width: 3840, height: 960, format: "image/png" },
+      { width: 3840, height: 3840, format: "image/png" },
       { width: 640, height: 160, format: "image/png", still: true },
       { width: 640, height: 160, format: "rgba", limit: 4 * 640 * 160, guard: expect.any(Function) },
     ]);
@@ -199,7 +205,7 @@ describe("POST /api/v2/media", () => {
     expect(await row(h, id)).toBeUndefined();
   });
 
-  // The codec stands in for an Images output that kept metadata; each is refused and nothing stays in R2.
+  // The codec stands in for an Images output that kept metadata; each is stripped before the check (MEDIA-3).
   const KEPT: [string, string, Uint8Array][] = [
     ["a WebP EXIF chunk with a serial number and no GPS", "jpeg", bytes(WEBP_SERIAL)],
     ["WebP XMP", "jpeg", bytes(WEBP_XMP)],
@@ -208,17 +214,153 @@ describe("POST /api/v2/media", () => {
     ["PNG iTXt", "png", pngWithChunk(bytes(PNG_PLAIN), "iTXt", "XML:com.adobe.xmp\0\0\0\0\0<x/>")],
   ];
   for (const [name, input, output] of KEPT) {
-    it(`refuses an output that keeps ${name}, and deletes what it wrote (MEDIA-3, retained EXIF)`, async () => {
+    it(`strips ${name} from an output and serves the image without it (MEDIA-3)`, async () => {
       const h = await users();
       h.codec.encodeResult = output;
       const file =
         input === "jpeg" ? mediaForm(bytes(JPEG_WITH_GPS)) : mediaForm(bytes(WIDE_PNG), {}, "a.png", "image/png");
-      const response = await upload(h, h.users.alice, file);
-      expect(response.status).toBe(500);
-      const [media] = await sql<{ id: string }>(h.store, "SELECT id FROM media_attachments");
-      expect(await stored(await keysOf(h, (media as { id: string }).id))).toEqual([]);
+      const media = await uploaded(h, h.users.alice, file);
+      const type = input === "jpeg" ? "image/webp" : "image/png";
+      expect(retainedMetadata(output, type)).not.toBeNull();
+      for (const url of [media.url, media.preview_url]) {
+        const served = new Uint8Array(await (await h.request(pathOf(url))).arrayBuffer());
+        expect(retainedMetadata(served, type)).toBeNull();
+      }
     });
   }
+
+  it("refuses an output that does not walk, and deletes what it wrote (MEDIA-3)", async () => {
+    const h = await users();
+    // A plain PNG whose only defect is a byte after IEND: the strip refuses it rather than keep what follows the image.
+    h.codec.encodeResult = new Uint8Array([...bytes(PNG_PLAIN), 0]);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const response = await upload(h, h.users.alice, mediaForm(bytes(WIDE_PNG), {}, "a.png", "image/png"));
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "Error processing uploaded media" });
+    // The strip's refusal, not the metadata check's.
+    expect(errors.mock.calls).toContainEqual([
+      { event: "kopje.media.transform_failed", detail: "output is malformed" },
+    ]);
+    errors.mockRestore();
+    const [media] = await sql<{ id: string }>(h.store, "SELECT id FROM media_attachments");
+    expect(await stored(await keysOf(h, (media as { id: string }).id))).toEqual([]);
+  });
+
+  it("drops another chunk inside an animated WebP output's frame, and serves the animation (MEDIA-3)", async () => {
+    const h = await users();
+    const first = await encodeWebp(16, 12);
+    const second = await encodeWebp(16, 12, { fill: "flat" });
+    // A one-byte JUNK chunk after the second frame's image data, which the format allows there.
+    const output = animatedWebp(
+      [first, second],
+      { width: 16, height: 12 },
+      {
+        frameChunks: (chunks, i) => (i === 1 ? [...chunks, webpChunk("JUNK", new Uint8Array(1))] : chunks),
+      },
+    );
+    h.codec.encodeResponder = (_options, index) => (index === 0 ? output : null);
+    const media = await uploaded(h, h.users.alice, mediaForm(bytes(GIF), {}, "a.gif", "image/gif"));
+    const served = new Uint8Array(await (await h.request(pathOf(media.url))).arrayBuffer());
+    expect(served).toEqual(animatedWebp([first, second], { width: 16, height: 12 }));
+    expect(remoteImageMetadata(served, "image/webp")).toBeNull();
+  });
+
+  // Production Images keeps a macOS screenshot's eXIf and XMP iTXt in its PNG output (platform/images.ts): the codec
+  // adds an eXIf to each PNG output of the local binding.
+  const keepsExif = (output: Uint8Array, options: { format: string }) =>
+    options.format === "image/png" ? pngWithChunk(output, "eXIf", exifOrientation(1).subarray(6)) : output;
+
+  it("uploads a screenshot whose Images output keeps its eXIf, and serves it without (MEDIA-3)", async () => {
+    const h = await users();
+    h.codec.encodeOutput = keepsExif;
+    const screenshot = pngWithChunk(
+      pngWithChunk(
+        pngWithChunk(bytes(PNG_ICC), "eXIf", exifOrientation(1).subarray(6)),
+        "iTXt",
+        "XML:com.adobe.xmp\0\0\0\0\0<x/>",
+      ),
+      "iDOT",
+      "\0\0\0\x02",
+    );
+    const media = await uploaded(h, h.users.alice, mediaForm(screenshot, {}, "a.png", "image/png"));
+    for (const url of [media.url, media.preview_url]) {
+      const served = await h.request(pathOf(url));
+      expect(served.headers.get("content-type")).toBe("image/png");
+      expect(retainedMetadata(new Uint8Array(await served.arrayBuffer()), "image/png")).toBeNull();
+    }
+  });
+
+  it("gives Images the upload whole, so a PNG's Exif orientation is applied (MEDIA-3)", async () => {
+    const h = await users();
+    h.codec.encodeOutput = keepsExif;
+    const inputs: Uint8Array[] = [];
+    h.codec.encodeResponder = (_options, _index, input) => {
+      inputs.push(input);
+      return null;
+    };
+    // 40 x 10, turned 90 degrees clockwise for display (Orientation 6).
+    const wide = await h.codec.real.encode(bytes(WIDE_PNG), { width: 40, height: 10, format: "image/png" });
+    const rotated = pngWithChunk(wide, "eXIf", exifOrientation(6).subarray(6));
+    const media = await uploaded(h, h.users.alice, mediaForm(rotated, {}, "a.png", "image/png"));
+    expect(retainedMetadata(inputs[0]!, "image/png")).toBe("exif");
+    const served = new Uint8Array(await (await h.request(pathOf(media.url))).arrayBuffer());
+    expect(await h.codec.real.info(served)).toMatchObject({ width: 10, height: 40 });
+  });
+
+  it("serves a large Exif-rotated PNG and JPEG at full resolution, turned, with meta to match", async () => {
+    const h = await users();
+    h.codec.encodeOutput = keepsExif;
+    // 4,000 x 1,000, turned 90 degrees clockwise for display (Orientation 6): 1,000 x 4,000 as shown.
+    const png = pngWithChunk(bytes(WIDE_PNG), "eXIf", exifOrientation(6).subarray(6));
+    const jpeg = jpegWithSegment(
+      await h.codec.real.encode(bytes(WIDE_PNG), { format: "image/jpeg" as "image/png" }),
+      0xe1,
+      exifOrientation(6),
+    );
+    for (const [file, name, type] of [
+      [png, "a.png", "image/png"],
+      [jpeg, "a.jpg", "image/jpeg"],
+    ] as const) {
+      const media = await uploaded(h, h.users.alice, mediaForm(file, {}, name, type));
+      expect(media.meta, name).toMatchObject({
+        original: { width: 960, height: 3840 },
+        small: { width: 160, height: 640 },
+      });
+      for (const [url, size] of [
+        [media.url, { width: 960, height: 3840 }],
+        [media.preview_url, { width: 160, height: 640 }],
+      ] as const) {
+        const served = new Uint8Array(await (await h.request(pathOf(url))).arrayBuffer());
+        expect(await h.codec.real.info(served), `${name} ${url}`).toMatchObject(size);
+      }
+    }
+  });
+
+  it("keeps a PNG output's colour signalling: cICP, mDCV and cLLI (MEDIA-3)", async () => {
+    const h = await users();
+    // Display P3 (primaries 12, transfer 13, matrix 0, full range), from a codec that writes them: production Images
+    // converts to sRGB and writes none (platform/images.ts), so this is Kopje's strip and check keeping them.
+    const colour = (output: Uint8Array, options: { format: string }) =>
+      options.format === "image/png"
+        ? pngWithChunk(
+            pngWithChunk(
+              pngWithChunk(keepsExif(output, options), "cICP", new Uint8Array([12, 13, 0, 1])),
+              "mDCV",
+              new Uint8Array(24),
+            ),
+            "cLLI",
+            new Uint8Array(8),
+          )
+        : output;
+    h.codec.encodeOutput = colour;
+    const media = await uploaded(h, h.users.alice, mediaForm(bytes(PNG_ICC), {}, "a.png", "image/png"));
+    const served = new Uint8Array(await (await h.request(pathOf(media.url))).arrayBuffer());
+    expect(retainedMetadata(served, "image/png")).toBeNull();
+    const text = new TextDecoder("latin1").decode(served);
+    for (const chunk of ["cICP", "mDCV", "cLLI"]) {
+      expect(text).toContain(chunk);
+    }
+  });
 
   it("accepts an output that keeps only a colour profile", async () => {
     const h = await users();

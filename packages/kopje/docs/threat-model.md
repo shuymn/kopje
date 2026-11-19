@@ -3215,17 +3215,30 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 - **MEDIA-3: served images are re-encoded.** An uploaded image, and a card image, is served only as Images output with
   location metadata removed; if transformation fails, the upload is refused and original bytes are never served.
   Cached remote files are not transformed; MEDIA-6 holds for them.
-  _Enforced (main):_ outputs are PNG or WebP only, for which Images discards all metadata (the binding has no
-  metadata option, and JPEG output would keep the EXIF copyright tag); `processImage` in `src/platform/images.ts` then
-  checks every output with `retainedMetadata` (`src/platform/image-bytes.ts`), which refuses any EXIF, XMP, IPTC,
-  comment, text chunk or unknown JPEG application segment and keeps only colour profiles, and refuses the upload
-  otherwise; `test/image-bytes.test.ts` ("refuses every EXIF block", "refuses XMP, IPTC, comments"),
-  `test/media.test.ts` ("re-encodes an image without its location", "refuses a failed transformation", "refuses an
-  output that keeps …"). Tests use Miniflare's local Images binding (sharp); the production binding's output is
-  verified on a deployed instance. The media rebuild, which makes the served files of restored or moved
-  media from their originals, goes through the same `processImage` and writes nothing for an original that fails, and
-  never serves an original instead; it refuses an original whose served type differs from the row's (its URLs name that
-  type). `test/media-rebuild.test.ts` ("makes both files … and corrects meta", "reports a missing original and a type
+  _Enforced (main):_ outputs are PNG or WebP only, for which Images documents that it discards all metadata (the binding
+  has no metadata option, and JPEG output would keep the EXIF copyright tag); production Images does not: from a PNG it
+  drops an Exif block that holds only the orientation, which it applies, but keeps one with any other field and an XMP
+  `iTXt` chunk, with or without a resize (measured on a staging instance, November 2026). Images reads the upload whole,
+  so it applies the upload's Exif orientation, and `encodeChecked` in `src/platform/images.ts`, which every upload,
+  profile image, custom emoji, media rebuild and card image passes, strips each output in place (`stripImageOutput` in
+  `src/platform/remote-media-bytes.ts`, the strip of remote images, its Exif dropped whatever its orientation) and
+  refuses one that does not walk, a byte after its end included; it then checks every output with `retainedMetadata`
+  (`src/platform/image-bytes.ts`), which refuses any EXIF, XMP, IPTC, comment, text chunk or unknown JPEG application
+  segment, and refuses the upload otherwise (500, as Mastodon answers a failed transformation). Kopje does not count
+  colour signalling as metadata: ICC profiles and PNG 3's `cICP`, `mDCV` and `cLLI` say how to display the pixels (a
+  colour space, a display's mastering volume, light levels), not who made the image or where, and are kept only at their
+  specified lengths (4, 24 and 8 bytes, `pngChunkKept`), so they carry nothing else. Production Images converts a PNG to
+  sRGB and writes neither `iCCP` nor `cICP` in its PNG output, so an upload is served in sRGB; the allowance keeps them
+  in cached remote images (NET-3) and in the output of a codec that writes them. `test/image-bytes.test.ts` ("refuses
+  every EXIF block", "refuses XMP, IPTC, comments"), `test/remote-media-bytes.test.ts` ("stripImageOutput"),
+  `test/media.test.ts` ("re-encodes an image without its location", "refuses a failed transformation", "strips … from an
+  output", "refuses an output that does not walk", "uploads a screenshot", "a PNG's Exif orientation is applied", "keeps
+  a PNG output's colour signalling"), `test/card-image-process.test.ts` ("stores a WebP output whose EXIF Images kept").
+  Tests use Miniflare's local Images binding (sharp); the production binding's output is verified on a deployed
+  instance. The media rebuild, which makes the served files of restored or moved media from their originals, goes
+  through the same `processImage` and writes nothing for an original that fails, and never serves an original instead;
+  it refuses an original whose served type differs from the row's (its URLs name that type).
+  `test/media-rebuild.test.ts` ("makes both files … and corrects meta", "reports a missing original and a type
   mismatch"). The RGBA output of an upload's preview, from which its blurhash is computed, is only hashed: it is never
   stored or served.
   Custom emoji (`src/platform/emoji-image.ts`): an input is PNG, GIF or WebP by signature, below 262,144 bytes, with

@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { type CardImageHooks, cardImageTarget, processCardImage } from "../src/federation/card-images";
 import { fitRgba, imageBlurhash } from "../src/platform/blurhash";
 import { DeadlinePassed } from "../src/platform/deadline";
-import { webpSize } from "../src/platform/image-bytes";
+import { retainedMetadata, webpSize } from "../src/platform/image-bytes";
 import { type CodecInput, encodeRgba, type ImageCodec, imagesCodec } from "../src/platform/images";
 import {
   CARD_DECODE_PIXELS,
@@ -12,9 +12,10 @@ import {
   CARD_IMAGE_PIXELS,
   storedBlurhash,
 } from "../src/platform/stored-bounds";
-import { GIF, PNG_PLAIN } from "./fixtures/images";
+import { GIF, PNG_PLAIN, WEBP_SERIAL } from "./fixtures/images";
 import { fakeBinding, localRgba, type OutputCall } from "./images-binding";
-import { bytes } from "./media-helpers";
+import { bytes, pngWithChunk } from "./media-helpers";
+import { exifOrientation } from "./remote-media-fixtures";
 import { decodeFixture, encodeWebp, rgba } from "./webp-fixtures";
 
 // One claim's steps after its fetch (federation/card-images.ts processCardImage, I4-I15), over the local Images
@@ -44,9 +45,11 @@ const hooks = (
 const formats = (binding: { outputs: OutputCall[] }) => binding.outputs.map((call) => call.options.format);
 
 describe("the target size", () => {
-  it("keeps an image of at most CARD_IMAGE_PIXELS, and floors a larger one into the box", () => {
+  it("keeps an image of at most CARD_IMAGE_PIXELS, and floors a larger one into a square box", () => {
     expect(cardImageTarget({ width: 480, height: 480 })).toBeNull();
-    expect(cardImageTarget({ width: 1200, height: 500 })).toEqual({ width: 743, height: 309 });
+    // A square, whichever way the image turns: Images applies Exif orientation before it resizes.
+    expect(cardImageTarget({ width: 1200, height: 500 })).toEqual({ width: 743, height: 743 });
+    expect(cardImageTarget({ width: 500, height: 1200 })).toEqual({ width: 743, height: 743 });
     // Mastodon's round would ask for 744 × 310 = 230,640 pixels.
     expect(Math.round(Math.sqrt(230_400 * 2.4)) * Math.round(Math.sqrt(230_400 / 2.4))).toBe(230_640);
     for (const [w, h] of [
@@ -58,10 +61,12 @@ describe("the target size", () => {
       [100_000, 3],
     ]) {
       const target = cardImageTarget({ width: w!, height: h! })!;
-      expect(target.width * target.height, `${w}x${h}`).toBeLessThanOrEqual(CARD_IMAGE_PIXELS);
-      expect(target.width).toBeLessThanOrEqual(w!);
-      expect(target.height).toBeLessThanOrEqual(h!);
-      expect(Math.min(target.width, target.height)).toBeGreaterThanOrEqual(1);
+      const [long, short] = [Math.max(w!, h!), Math.min(w!, h!)];
+      expect(target.width, `${w}x${h}`).toBe(target.height);
+      // Scaled to the square, the image's own pixels: its long edge at the side, its short edge in proportion.
+      expect((target.width * target.width * short) / long, `${w}x${h}`).toBeLessThanOrEqual(CARD_IMAGE_PIXELS);
+      expect(target.width).toBeLessThanOrEqual(long);
+      expect(target.width).toBeGreaterThanOrEqual(1);
     }
     // The decode bound: the box plus one line of the longer edge Images may round up, for edges up to 31,744.
     expect(CARD_IMAGE_PIXELS + 31_744).toBe(CARD_DECODE_PIXELS);
@@ -70,7 +75,7 @@ describe("the target size", () => {
 });
 
 describe("processCardImage over the local binding", () => {
-  it("asks for 743 × 309 for a 1,200 × 500 image and stores what fits it, reading its input without a copy", async () => {
+  it("asks for 743 × 743 for a 1,200 × 500 image and stores what fits it, reading its input without a copy", async () => {
     const input = await encodeWebp(1200, 500);
     const before = input.byteLength;
     // The local binding, its transforms recorded.
@@ -96,8 +101,8 @@ describe("processCardImage over the local binding", () => {
     const result = await processCardImage(imagesCodec(local.binding), box, h);
     // Both outputs: the same original bytes and transformation, one charge right before each.
     expect(transforms).toEqual([
-      { width: 743, height: 309, fit: "scale-down" },
-      { width: 743, height: 309, fit: "scale-down" },
+      { width: 743, height: 743, fit: "scale-down" },
+      { width: 743, height: 743, fit: "scale-down" },
     ]);
     expect(local.outputs.map((call) => call.options)).toEqual([
       { format: "image/webp", anim: false },
@@ -110,7 +115,7 @@ describe("processCardImage over the local binding", () => {
     if (result.kind !== "encoded") {
       throw new Error(`not encoded: ${JSON.stringify(result)}`);
     }
-    // The local binding fits 742 × 309 in the box; Images may round the other edge up by one (CARD_DECODE_PIXELS).
+    // The local binding fits 743 × 310 in the box; Images may round the short edge up by one (CARD_DECODE_PIXELS).
     expect(result.width).toBeLessThanOrEqual(743);
     expect(result.height).toBeLessThanOrEqual(310);
     expect(result.width * result.height).toBeLessThanOrEqual(CARD_DECODE_PIXELS);
@@ -142,6 +147,30 @@ describe("processCardImage over the local binding", () => {
       const result = await processCardImage(imagesCodec(localRgba().binding), { bytes: bytes(fixture) }, hooks());
       expect(result).toMatchObject({ kind: "encoded", stop: false, blurhash: expect.stringMatching(/^.{36}$/) });
     }
+  });
+
+  it("stores an Exif-rotated image at its full card size, turned", async () => {
+    // 1,200 x 500, turned 90 degrees clockwise for display (Orientation 6): 500 x 1,200 as shown.
+    const wide = await imagesCodec(env.IMAGES).encode(await encodeWebp(1200, 500), { format: "image/png" });
+    const rotated = pngWithChunk(wide, "eXIf", exifOrientation(6).subarray(6));
+    const result = await processCardImage(imagesCodec(localRgba().binding), { bytes: rotated }, hooks());
+    expect(result).toMatchObject({ kind: "encoded", height: 743 });
+    expect(result.kind === "encoded" && result.width).toBeGreaterThanOrEqual(309);
+    expect(result.kind === "encoded" && result.width * result.height).toBeLessThanOrEqual(CARD_DECODE_PIXELS);
+  });
+
+  // Card images share the upload's output strip (platform/images.ts encodeChecked, MEDIA-3).
+  it("stores a WebP output whose EXIF Images kept, without it", async () => {
+    const real = imagesCodec(localRgba().binding);
+    const codec: ImageCodec = {
+      info: (input) => real.info(input),
+      encode: (input, options) =>
+        options.format === "image/webp" ? Promise.resolve(bytes(WEBP_SERIAL)) : real.encode(input, options),
+    };
+    expect(retainedMetadata(bytes(WEBP_SERIAL), "image/webp")).toBe("exif");
+    const result = await processCardImage(codec, { bytes: bytes(PNG_PLAIN) }, hooks());
+    expect(result).toMatchObject({ kind: "encoded", stop: false });
+    expect(result.kind === "encoded" && retainedMetadata(result.bytes, "image/webp")).toBeNull();
   });
 
   it("keeps the image without a blurhash where the binding refuses the RGBA output (the local one: 9520)", async () => {
@@ -370,8 +399,8 @@ describe("the transitions of processCardImage", () => {
     expect(result).toMatchObject({ kind: "encoded", width: 200, height: 100, stop: false });
     expect(result.kind === "encoded" && result.blurhash).toBe(imageBlurhash({ data: pixels, width: 200, height: 100 }));
     expect(binding.outputs.map((call) => [call.options, call.transforms])).toEqual([
-      [{ format: "image/webp", anim: false }, [{ width: 743, height: 309, fit: "scale-down" }]],
-      [{ format: "rgba", anim: false }, [{ width: 743, height: 309, fit: "scale-down" }]],
+      [{ format: "image/webp", anim: false }, [{ width: 743, height: 743, fit: "scale-down" }]],
+      [{ format: "rgba", anim: false }, [{ width: 743, height: 743, fit: "scale-down" }]],
     ]);
     expect(binding.outputs[1]!.input).toEqual(input);
     expect(binding.outputs[0]!.input).toEqual(input);
