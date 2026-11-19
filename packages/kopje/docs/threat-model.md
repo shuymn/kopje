@@ -1986,7 +1986,10 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `/authorize_interaction` result present `[]`. A local status's ActivityPub forms (its Note or Question as served, in
   the outbox and in `featured`, its `Create` and `Update`s and a `QuoteRequest`'s instrument) name each collection it
   tags whose owner is available by its id alone, a remote one only while valid, under the `featured_collections`
-  terms, so no collection's name, description or members travel in the post's activities.
+  terms, so no collection's name, description or members travel in the post's activities. This bounds the wire's
+  content, not who learns of the collection: a local collection's id is its owner's route, which names the owner, and a
+  fetch of it is judged by R45 for the fetcher, so a server whose user the owner blocks may still read it signed by its
+  instance actor (refused only when the owner blocks that server's domain) or show its copy to that user.
   _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`, `collectionItemShownSql`,
   `featureApprovalSql`, `featureApprovalReads`, `mayFeatureSql` and `inCollectionsSql` in `src/domain/audience.ts`,
   `statusFacts`, `noteOf` and `contextOf` (`src/domain/activities.ts`), the
