@@ -72,8 +72,8 @@ refused one (`dropped`), the expired lease's POST then answered 503 and its comp
 rows new since the last step, each with its full destination set: its one inbox on R's server, which names its `to`, and
 off R's server exactly the inboxes `offR` states (L's followers for her revocation, none for anything else), so an extra
 copy anywhere shows in its `to`; a delivery round POSTs nothing else off R's server, and to R's server exactly the head
-the step names, at its inbox, checked when each POST is held (`KLeaseHead`, `KReclaim`) as well as when it is answered;
-and after each delivery step the head's delivery is read in any state: one the step drops (`dropped`, `superseded`) is
+the step names, at its inbox and under the top-level `id` of the activity the head stores, checked when each POST is
+held (`KLeaseHead`, `KReclaim`) as well as when it is answered; and after each delivery step the head's delivery is read in any state: one the step drops (`dropped`, `superseded`) is
 deleted, not given up, a `dropped` one is absent from the delivery ids the round's claim returned (`claimDeliveries`, at
 a fresh claim and at the reclaim: refused by the claim, never leased), a `superseded` one leaves exactly one later
 answer of its recorded form in the lane (pending as its first row, queued behind another), a 202 deletes it and the

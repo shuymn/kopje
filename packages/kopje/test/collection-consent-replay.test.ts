@@ -840,7 +840,8 @@ async function posted(flight: Flight): Promise<void> {
 }
 
 // The round's POSTs: to R's server exactly the head, as the step names it (an Accept with its result), at its inbox,
-// and off R's server only L's revocations to her followers (offR).
+// under the top-level id of the activity the head stores (which the recorded form leaves out), and off R's server only
+// L's revocations to her followers (offR).
 function expectSent(w: World, flight: Flight, head: Head, expected: Activity): void {
   const lane = laneOf(w);
   expect(
@@ -849,12 +850,16 @@ function expectSent(w: World, flight: Flight, head: Head, expected: Activity): v
   ).toEqual([]);
   const { reason: _reason, ...want } = expected;
   const envelope = JSON.parse(head.body) as Parameters<typeof asRecorded>[1];
+  const toR = flight.sent.filter((s) => new URL(s.url).origin === lane);
   expect(
-    flight.sent
-      .filter((s) => new URL(s.url).origin === lane)
-      .map((s) => asRecorded(w, { ...envelope, activity: s.body }, [s.url], head.retracts)),
+    toR.map((s) => asRecorded(w, { ...envelope, activity: s.body }, [s.url], head.retracts)),
     "the lane's head, as sent",
   ).toEqual([want]);
+  expect(typeof envelope.activity.id, "the stored activity's id").toBe("string");
+  expect(
+    toR.map((s) => s.body.id),
+    "the lane's head, sent under its stored id",
+  ).toEqual([envelope.activity.id]);
 }
 
 // A head the send-time check refuses (a suspended L's ordinary activity) is dropped by the round's claim, which never
