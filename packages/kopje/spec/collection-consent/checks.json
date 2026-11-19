@@ -1,5 +1,5 @@
 {
-  "$comment": "Expected outcomes of the checks of spec/collection-consent/ (scripts/collection-consent-plan.mjs explains each kind). Both tla-ts (test-node/collection-consent-spec.test.ts) and TLC (scripts/tlc-check.mjs) must give them. A change of a count is a change of the state space: rerun both checkers and explain it in the commit. replay names, for each calibration variant, a fixture the variant no longer reproduces, so that the replay of that fixture fails against a Store that makes the variant's change, or, for a variant that changes only what an invariant counts, why it is exempt; the spec test checks both.",
+  "$comment": "Expected outcomes of the checks of spec/collection-consent/ (scripts/collection-consent-plan.mjs explains each kind). Both tla-ts (test-node/collection-consent-spec/) and TLC (scripts/tlc-check.mjs) must give them. A change of a count is a change of the state space: rerun both checkers and explain it in the commit. replay names, for each calibration variant, a fixture the variant no longer reproduces, so that the replay of that fixture fails against a Store that makes the variant's change, or, for a variant that changes only what an invariant counts, why it is exempt; the spec test checks both.",
   "scenarios": [
     {
       "name": "S1",

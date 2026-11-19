@@ -33,7 +33,7 @@ suites() {
 		esac
 		case $path in
 			packages/kopje/spec/* | packages/kopje/test/fixtures/collection-consent/* | \
-				packages/kopje/test-node/collection-consent-spec.test.ts | \
+				packages/kopje/test-node/collection-consent-spec/* | \
 				packages/kopje/test-node/collection-consent-fixtures.ts | packages/kopje/scripts/collection-consent-plan.mjs | \
 				packages/kopje/test/collection-consent-observe.ts | packages/kopje/test/collection-consent-replay.test.ts | \
 				package.json | packages/kopje/package.json | pnpm-lock.yaml | pnpm-workspace.yaml | mise.toml | mise.lock | \

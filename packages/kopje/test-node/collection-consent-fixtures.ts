@@ -3,7 +3,7 @@
 // state. The projection renames: the spec's NONE ("-") becomes null and is left out of a step's input and a 404's body,
 // a response of 0 (no inbound activity) becomes null and FETCH (1) "fetch", an empty function {} and an activity's
 // class its long name. It also narrows Unspecified: a retired row's listedAs stays open at a step only while no later
-// step of the trace is an item Remove, the one step whose effect reads it. test-node/collection-consent-spec.test.ts
+// step of the trace is an item Remove, the one step whose effect reads it. test-node/collection-consent-spec/
 // checks that the files equal a fresh run, so a change of the spec that changes a witness needs this run.
 //
 //   pnpm --filter kopje spec:fixtures

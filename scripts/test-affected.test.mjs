@@ -103,7 +103,8 @@ describe("suites", () => {
       "packages/kopje/spec/collection-consent/CollectionConsent.tla",
       "packages/kopje/spec/collection-consent/coverage.json",
       "packages/kopje/test/fixtures/collection-consent/S1-Accepted.json",
-      "packages/kopje/test-node/collection-consent-spec.test.ts",
+      "packages/kopje/test-node/collection-consent-spec/checks.ts",
+      "packages/kopje/test-node/collection-consent-spec/0.test.ts",
       "packages/kopje/test-node/collection-consent-fixtures.ts",
       "packages/kopje/scripts/collection-consent-plan.mjs",
       "packages/kopje/test/collection-consent-observe.ts",
@@ -119,6 +120,7 @@ describe("suites", () => {
     for (const path of [
       "packages/kopje/src/domain/collections.ts",
       "packages/kopje/test-node/collection-consent-coverage.test.ts",
+      "packages/kopje/test-node/collection-consent-spec-parts.test.ts",
     ]) {
       assert.deepEqual(suites(path), B(true, true, false), path);
     }
