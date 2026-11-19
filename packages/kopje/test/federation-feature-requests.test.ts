@@ -1820,11 +1820,13 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
     expect((await answerCopies(w.t, a)).map((c) => [c.inbox, c.state])).toEqual([[inbox, "pending"]]);
   });
 
-  // Code review r3 (RES-7): the latest retraction answer of a subject is one probe of
-  // outbound_activities_unsuperseded_retractions (migration 0119_answer_retractions), at the coalescing gate and at the
-  // cancellation's lookup, however many ordinary answers of the subject are unsuperseded below it, with statistics taken
-  // before they were added. Fails if either lookup walks the subject's unsuperseded range, reading those answers.
-  it("reads the latest retraction answer of a subject in one probe, beside any number of its ordinary answers", async () => {
+  // Code reviews r3 and r4 (RES-7): the latest retraction answer of a subject is one probe of
+  // outbound_activities_unsuperseded_retractions (migration 0119_answer_retractions), at the coalescing gate, at the
+  // cancellation's lookup and at its supersession by the new answer, however many ordinary answers of the subject are
+  // unsuperseded below it, with statistics taken before they were added. Fails if any of the three walks the subject's
+  // unsuperseded range, reading those answers (the supersession through outbound_activities_unsuperseded, as for every
+  // other retraction, read and wrote each of them).
+  it("reads and supersedes the latest retraction answer of a subject in one probe, beside any number of its ordinary answers", async () => {
     const lookups = async (ordinary: number) => {
       const w = await owned();
       expect(await w.t.post(w.owner, requestFor(w))).toBe(202);
@@ -1858,27 +1860,34 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
         .id;
       const plans: PlannedStatement[] = [];
       await runInDurableObject(w.t.store, (_instance, state) => {
-        const db = new Db(plannedSql(state.storage.sql, /o\.superseded = 0 AND o\.retracts = 1/, plans), (fn) =>
-          state.storage.transactionSync(fn),
+        const db = new Db(
+          plannedSql(state.storage.sql, /o\.superseded = 0 AND o\.retracts = 1|SET superseded = 1/, plans),
+          (fn) => state.storage.transactionSync(fn),
         );
         state.storage.transactionSync(() => {
           expect(answerUnserved(db, { id: ownerId }, w.listed.id, localListing(db, ALICE_URI, a)!, NOW)).toBe(true);
         });
       });
-      // A new answer recorded, superseding the one in flight and the ordinary ones.
+      // A new answer recorded, superseding the one in flight; the ordinary ones keep their course.
       expect(
         await sql(
           w.t.store,
           `SELECT retracts, count(*) AS n FROM outbound_activities
-					WHERE superseded = 0 AND instr(object_uri, 'answer ') = 1 GROUP BY retracts`,
+					WHERE superseded = 0 AND instr(object_uri, 'answer ') = 1 GROUP BY retracts ORDER BY retracts`,
         ),
-      ).toEqual([{ retracts: 1, n: 1 }]);
+      ).toEqual([
+        { retracts: 0, n: ordinary },
+        { retracts: 1, n: 1 },
+      ]);
+      expect(await sql(w.t.store, "SELECT superseded FROM outbound_activities WHERE id = ?", latest!.id)).toEqual([
+        { superseded: 1 },
+      ]);
       return plans.map(({ plan, rows }) => ({ probe: plan[0], rows }));
     };
     const few = await lookups(2);
     const probe =
       "SEARCH o USING COVERING INDEX outbound_activities_unsuperseded_retractions (account_id=? AND object_uri=?)";
-    expect(few.map((lookup) => lookup.probe)).toEqual([probe, probe]);
+    expect(few.map((lookup) => lookup.probe)).toEqual([probe, probe, probe]);
     expect(await lookups(1_000)).toEqual(few);
   }, 60_000);
 
