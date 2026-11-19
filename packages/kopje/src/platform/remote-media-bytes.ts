@@ -23,6 +23,7 @@ import {
 //     container, the pixel limit read from its headers, a non-identity orientation refused, and its metadata stripped
 //     losslessly in place, the output checked again by remoteImageMetadata;
 //   - remoteImageMetadata: what a walkable image of each accepted type carries, failing closed on anything else;
+//   - stripImageOutput: the same in-place strip of an Images output (PNG or WebP) before its own check (MEDIA-3);
 //   - recognizeMedia: a video or audio file's container and category from its first RECOGNITION_PREFIX_BYTES bytes.
 // Every walk reads lengths and tags only and visits each byte a bounded number of times, so its work is linear in its
 // input (RES-2), and no output is larger than its input.
@@ -146,6 +147,10 @@ function isSof(marker: number): boolean {
 
 type Refused = { refusal: ImageRefusal };
 
+// What a strip does with an Exif block whose orientation is not the identity: refuse the image (a remote file, which
+// the Worker never rotates), or drop the block with the rest (an Images output, which Images has already rotated).
+type Orientation = "refuse" | "drop";
+
 // A JPEG's facts, stripped in place: every segment jpegSegmentMetadata flags, the fill bytes and anything after EOI are
 // dropped by moving what is kept towards the start (the walk never reads behind what it has visited).
 function jpegFacts(bytes: Uint8Array): Facts | Refused {
@@ -192,7 +197,8 @@ function jpegFacts(bytes: Uint8Array): Facts | Refused {
 
 // PNG chunks the strip drops are every ancillary chunk retainedMetadata does not keep (eXIf, tEXt, zTXt, iTXt and
 // tIME among them); an unknown critical chunk (its first letter upper case) cannot be dropped and is refused.
-function pngFacts(bytes: Uint8Array): Facts | Refused {
+// `orientation` 'drop': an eXIf is dropped whatever its orientation (stripImageOutput).
+function pngFacts(bytes: Uint8Array, orientation: Orientation = "refuse"): Facts | Refused {
   let width = 0;
   let height = 0;
   let animated = false;
@@ -209,7 +215,7 @@ function pngFacts(bytes: Uint8Array): Facts | Refused {
     if (type === "acTL") {
       animated = true;
     }
-    if (type === "eXIf" && orientationRefused(bytes.subarray(start, start + length))) {
+    if (type === "eXIf" && orientation === "refuse" && orientationRefused(bytes.subarray(start, start + length))) {
       return "orientation";
     }
     if (!PNG_CHUNKS.has(type)) {
@@ -278,8 +284,8 @@ function webpFramesProblem(bytes: Uint8Array): "malformed" | "metadata" | null {
 
 // A WebP's facts, stripped in place: every chunk retainedMetadata does not keep (EXIF, XMP and unknown chunks) is
 // dropped, the VP8X flags for Exif and XMP are cleared and the RIFF size rewritten. An animation frame (ANMF) must lie
-// within the canvas and hold only its image data (webpFrameProblem).
-function webpFacts(bytes: Uint8Array): Facts | Refused {
+// within the canvas and hold only its image data (webpFrameProblem). `orientation` as pngFacts takes it.
+function webpFacts(bytes: Uint8Array, orientation: Orientation = "refuse"): Facts | Refused {
   const size = webpSize(bytes);
   if (size === null) {
     return { refusal: "malformed" };
@@ -315,7 +321,7 @@ function webpFacts(bytes: Uint8Array): Facts | Refused {
         return problem;
       }
     }
-    if (type === "EXIF" && orientationRefused(bytes.subarray(start, start + length))) {
+    if (type === "EXIF" && orientation === "refuse" && orientationRefused(bytes.subarray(start, start + length))) {
       return "orientation";
     }
     if (!WEBP_CHUNKS.has(type)) {
@@ -770,6 +776,16 @@ export function verifyRemoteImage(
     return { ok: false, refusal: "metadata" };
   }
   return { ok: true, type, bytes: out, width: facts.width, height: facts.height, animated: facts.animated };
+}
+
+// Images' output of `type` stripped in place as verifyRemoteImage strips a remote image (pngFacts, webpFacts), its Exif
+// dropped whatever its orientation (Images has applied the input's orientation, so a kept tag would rotate the image
+// twice): a view of the same buffer, which the caller owns (ImageCodec's encode), or null when the output does not
+// walk (a byte after its end included) or holds an unknown critical chunk or a frame with metadata, the buffer then
+// partly rewritten and to be refused. No allocation: the strip only moves kept bytes towards the start.
+export function stripImageOutput(bytes: Uint8Array, type: "image/png" | "image/webp"): Uint8Array | null {
+  const facts = type === "image/png" ? pngFacts(bytes, "drop") : webpFacts(bytes, "drop");
+  return "refusal" in facts ? null : bytes.subarray(0, facts.end);
 }
 
 export type MediaType =

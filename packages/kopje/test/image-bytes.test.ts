@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isAnimated, pngWithoutMetadata, retainedMetadata, sniffImageType } from "../src/platform/image-bytes";
+import { isAnimated, retainedMetadata, sniffImageType } from "../src/platform/image-bytes";
 import { keyOfPath, mediaKeys, originalKey } from "../src/platform/media-files";
 import {
   ANIMATED_WEBP,
@@ -122,40 +122,6 @@ describe("retainedMetadata (MEDIA-3)", () => {
     const start = performance.now();
     expect(retainedMetadata(worst, "image/jpeg")).toBe("unreadable");
     expect(performance.now() - start).toBeLessThan(2000);
-  });
-});
-
-describe("pngWithoutMetadata (MEDIA-3)", () => {
-  const chunks = (png: Uint8Array) => {
-    const types: string[] = [];
-    for (let i = 8; i < png.length;) {
-      const length = new DataView(png.buffer, png.byteOffset).getUint32(i);
-      types.push(String.fromCharCode(...png.subarray(i + 4, i + 8)));
-      i += 12 + length;
-    }
-    return types;
-  };
-
-  it("drops every chunk retainedMetadata counts and keeps the rest byte for byte", () => {
-    const input = pngWithChunk(
-      pngWithChunk(pngWithChunk(bytes(PNG_ICC), "tEXt", "Author\0alice"), "iDOT", "\0\0\0\x02"),
-      "zTXt",
-      "c\0\0x",
-    );
-    const withExif = pngWithChunk(input, "eXIf", "MM\0*\0\0\0\x08\0\0");
-    const out = pngWithoutMetadata(withExif);
-    expect(retainedMetadata(withExif, "image/png")).toBe("exif");
-    expect(retainedMetadata(out, "image/png")).toBeNull();
-    expect(chunks(out)).toEqual(chunks(bytes(PNG_ICC)));
-    expect(out).toEqual(bytes(PNG_ICC));
-    expect(retainedMetadata(pngWithoutMetadata(bytes(PNG_WITH_GPS)), "image/png")).toBeNull();
-  });
-
-  it("answers its input itself when there is nothing to drop or the file does not walk", () => {
-    const plain = bytes(PNG_ICC);
-    expect(pngWithoutMetadata(plain)).toBe(plain);
-    const truncated = bytes(PNG_WITH_GPS).subarray(0, 40);
-    expect(pngWithoutMetadata(truncated)).toBe(truncated);
   });
 });
 

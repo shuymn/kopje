@@ -15,6 +15,7 @@ import { deleteSignature } from "./delete-job-helpers";
 import {
   GIF,
   JPEG_WITH_GPS,
+  PNG_ICC,
   PNG_PLAIN,
   PNG_WITH_GPS,
   WEBP_ICC,
@@ -37,6 +38,7 @@ import {
   upload,
   uploaded,
 } from "./media-helpers";
+import { exifOrientation } from "./remote-media-fixtures";
 import {
   community,
   getJson,
@@ -199,7 +201,7 @@ describe("POST /api/v2/media", () => {
     expect(await row(h, id)).toBeUndefined();
   });
 
-  // The codec stands in for an Images output that kept metadata; each is refused and nothing stays in R2.
+  // The codec stands in for an Images output that kept metadata; each is stripped before the check (MEDIA-3).
   const KEPT: [string, string, Uint8Array][] = [
     ["a WebP EXIF chunk with a serial number and no GPS", "jpeg", bytes(WEBP_SERIAL)],
     ["WebP XMP", "jpeg", bytes(WEBP_XMP)],
@@ -208,42 +210,97 @@ describe("POST /api/v2/media", () => {
     ["PNG iTXt", "png", pngWithChunk(bytes(PNG_PLAIN), "iTXt", "XML:com.adobe.xmp\0\0\0\0\0<x/>")],
   ];
   for (const [name, input, output] of KEPT) {
-    it(`refuses an output that keeps ${name}, and deletes what it wrote (MEDIA-3, retained EXIF)`, async () => {
+    it(`strips ${name} from an output and serves the image without it (MEDIA-3)`, async () => {
       const h = await users();
       h.codec.encodeResult = output;
       const file =
         input === "jpeg" ? mediaForm(bytes(JPEG_WITH_GPS)) : mediaForm(bytes(WIDE_PNG), {}, "a.png", "image/png");
-      const response = await upload(h, h.users.alice, file);
-      expect(response.status).toBe(500);
-      const [media] = await sql<{ id: string }>(h.store, "SELECT id FROM media_attachments");
-      expect(await stored(await keysOf(h, (media as { id: string }).id))).toEqual([]);
+      const media = await uploaded(h, h.users.alice, file);
+      const type = input === "jpeg" ? "image/webp" : "image/png";
+      expect(retainedMetadata(output, type)).not.toBeNull();
+      for (const url of [media.url, media.preview_url]) {
+        const served = new Uint8Array(await (await h.request(pathOf(url))).arrayBuffer());
+        expect(retainedMetadata(served, type)).toBeNull();
+      }
     });
   }
 
-  // Production Images keeps a PNG's eXIf chunk in its PNG output (platform/images.ts); the codec stands in by echoing
-  // its input. A macOS screenshot carries eXIf, an XMP iTXt and Apple's iDOT.
-  it("strips a PNG's metadata before Images reads it, so a screenshot uploads (MEDIA-3)", async () => {
+  it("refuses an output that does not walk, and deletes what it wrote (MEDIA-3)", async () => {
     const h = await users();
-    const inputs: Uint8Array[] = [];
-    h.codec.encodeResponder = (options, _index, input) => {
-      inputs.push(input);
-      return options.format === "image/png" ? input : null;
-    };
+    // A byte after IEND: the strip refuses it rather than keep what follows the image.
+    h.codec.encodeResult = new Uint8Array([...bytes(PNG_WITH_GPS), 0]);
+    const response = await upload(h, h.users.alice, mediaForm(bytes(WIDE_PNG), {}, "a.png", "image/png"));
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: "Error processing uploaded media" });
+    const [media] = await sql<{ id: string }>(h.store, "SELECT id FROM media_attachments");
+    expect(await stored(await keysOf(h, (media as { id: string }).id))).toEqual([]);
+  });
+
+  // Production Images keeps a PNG's eXIf chunk in its PNG output (platform/images.ts), as den did with every macOS
+  // screenshot: the codec adds one to each PNG output of the local binding.
+  const keepsExif = (output: Uint8Array, options: { format: string }) =>
+    options.format === "image/png" ? pngWithChunk(output, "eXIf", exifOrientation(1).subarray(6)) : output;
+
+  it("uploads a screenshot whose Images output keeps its eXIf, and serves it without (MEDIA-3)", async () => {
+    const h = await users();
+    h.codec.encodeOutput = keepsExif;
     const screenshot = pngWithChunk(
-      pngWithChunk(bytes(PNG_WITH_GPS), "iTXt", "XML:com.adobe.xmp\0\0\0\0\0<x/>"),
+      pngWithChunk(
+        pngWithChunk(bytes(PNG_ICC), "eXIf", exifOrientation(1).subarray(6)),
+        "iTXt",
+        "XML:com.adobe.xmp\0\0\0\0\0<x/>",
+      ),
       "iDOT",
       "\0\0\0\x02",
     );
-    expect(retainedMetadata(screenshot, "image/png")).toBe("segment");
     const media = await uploaded(h, h.users.alice, mediaForm(screenshot, {}, "a.png", "image/png"));
-    // The full image, its preview and the preview's RGBA.
-    expect(inputs.length).toBe(3);
-    for (const input of inputs) {
-      expect(retainedMetadata(input, "image/png")).toBeNull();
+    for (const url of [media.url, media.preview_url]) {
+      const served = await h.request(pathOf(url));
+      expect(served.headers.get("content-type")).toBe("image/png");
+      expect(retainedMetadata(new Uint8Array(await served.arrayBuffer()), "image/png")).toBeNull();
     }
-    const served = await h.request(pathOf(media.url));
-    expect(served.headers.get("content-type")).toBe("image/png");
-    expect(retainedMetadata(new Uint8Array(await served.arrayBuffer()), "image/png")).toBeNull();
+  });
+
+  it("gives Images the upload whole, so a PNG's Exif orientation is applied (MEDIA-3)", async () => {
+    const h = await users();
+    h.codec.encodeOutput = keepsExif;
+    const inputs: Uint8Array[] = [];
+    h.codec.encodeResponder = (_options, _index, input) => {
+      inputs.push(input);
+      return null;
+    };
+    // 40 x 10, turned 90 degrees clockwise for display (Orientation 6).
+    const wide = await h.codec.real.encode(bytes(WIDE_PNG), { width: 40, height: 10, format: "image/png" });
+    const rotated = pngWithChunk(wide, "eXIf", exifOrientation(6).subarray(6));
+    const media = await uploaded(h, h.users.alice, mediaForm(rotated, {}, "a.png", "image/png"));
+    expect(retainedMetadata(inputs[0]!, "image/png")).toBe("exif");
+    const served = new Uint8Array(await (await h.request(pathOf(media.url))).arrayBuffer());
+    expect(await h.codec.real.info(served)).toMatchObject({ width: 10, height: 40 });
+  });
+
+  it("keeps a PNG output's colour signalling: cICP, mDCV and cLLI (MEDIA-3)", async () => {
+    const h = await users();
+    // Display P3 (primaries 12, transfer 13, matrix 0, full range), as Images would carry it over.
+    const colour = (output: Uint8Array, options: { format: string }) =>
+      options.format === "image/png"
+        ? pngWithChunk(
+            pngWithChunk(
+              pngWithChunk(keepsExif(output, options), "cICP", new Uint8Array([12, 13, 0, 1])),
+              "mDCV",
+              new Uint8Array(24),
+            ),
+            "cLLI",
+            new Uint8Array(8),
+          )
+        : output;
+    h.codec.encodeOutput = colour;
+    const media = await uploaded(h, h.users.alice, mediaForm(bytes(PNG_ICC), {}, "a.png", "image/png"));
+    const served = new Uint8Array(await (await h.request(pathOf(media.url))).arrayBuffer());
+    expect(retainedMetadata(served, "image/png")).toBeNull();
+    const text = new TextDecoder("latin1").decode(served);
+    for (const chunk of ["cICP", "mDCV", "cLLI"]) {
+      expect(text).toContain(chunk);
+    }
   });
 
   it("accepts an output that keeps only a colour profile", async () => {

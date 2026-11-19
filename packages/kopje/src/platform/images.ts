@@ -1,14 +1,8 @@
 import { imageBlurhash, type Rgba } from "./blurhash";
 import { readBodyPrefix } from "./body";
 import { DeadlinePassed, within } from "./deadline";
-import {
-  IMAGE_MATRIX_LIMIT,
-  type ImageType,
-  isAnimated,
-  pngWithoutMetadata,
-  retainedMetadata,
-  sniffImageType,
-} from "./image-bytes";
+import { IMAGE_MATRIX_LIMIT, type ImageType, isAnimated, retainedMetadata, sniffImageType } from "./image-bytes";
+import { stripImageOutput } from "./remote-media-bytes";
 
 // Re-encoding of uploaded images (MEDIA-3). The Images binding is reached only through ImageCodec, a narrow
 // interface, so tests can substitute a codec that keeps EXIF or fails; production uses imagesCodec(env.IMAGES).
@@ -39,6 +33,7 @@ export type EncodeOptions = {
   guard?: CallGuard;
 };
 
+// encode's output is the caller's: a buffer nothing else holds, which encodeChecked strips in place.
 export type ImageCodec = {
   info(bytes: Uint8Array): Promise<ImageInfo>;
   encode(bytes: Uint8Array, options: EncodeOptions): Promise<Uint8Array>;
@@ -142,9 +137,9 @@ export function imagesCodec(binding: ImagesBinding, { input = "stream" }: { inpu
 
 // Mastodon's limits for images: 16 MB (MediaAttachment::IMAGE_LIMIT) and 16,777,216 pixels (IMAGE_MATRIX_LIMIT, kept
 // in platform/image-bytes.ts with the byte-level checks). Workers accept request bodies up to 100 MB and have 128 MB
-// of memory; one upload holds the body, the file, a PNG's copy without its metadata (pngWithoutMetadata, when it has
-// any), two outputs and the preview's RGBA (at most PREVIEW_RGBA_LIMIT bytes, its blurhash's fit at most 40,000), so
-// 16 MB stays well inside both. No test models an upload's peak (the card image's is test/cron-memory.test.ts).
+// of memory; one upload holds the body, the file, two outputs and the preview's RGBA (at most PREVIEW_RGBA_LIMIT
+// bytes, its blurhash's fit at most 40,000), so 16 MB stays well inside both. No test models an upload's peak (the
+// card image's is test/cron-memory.test.ts).
 export const IMAGE_SIZE_LIMIT = 16 * 1024 * 1024;
 export { IMAGE_MATRIX_LIMIT };
 
@@ -187,9 +182,9 @@ export const RGBA_CALL_MS = 5_000;
 // WebP and PNG output but keeps the EXIF copyright tag in JPEG by default ("For all other output formats (e.g. WebP or
 // PNG), all metadata will always be discarded":
 // https://developers.cloudflare.com/images/transform-images/transform-via-url/#metadata). Production Images keeps a
-// PNG's eXIf chunk in PNG output all the same (seen in November 2026 on macOS screenshots, which carry one), so
-// processImage strips a PNG's metadata chunks before Images reads it, and retainedMetadata is the safety net for every
-// output. PNG keeps PNG (lossless, transparency); JPEG, GIF, WebP and AVIF become WebP (it keeps transparency and
+// PNG's eXIf chunk in PNG output all the same (seen in November 2026 on macOS screenshots, which carry one). The input
+// goes to Images whole, since Images applies its Exif orientation and its colour (iCCP, cICP), and encodeChecked
+// strips each output (stripImageOutput) before retainedMetadata, the safety net, checks it. PNG keeps PNG (lossless, transparency); JPEG, GIF, WebP and AVIF become WebP (it keeps transparency and
 // animation).
 type OutputType = "image/png" | "image/webp";
 
@@ -282,16 +277,21 @@ export function encodeBounded(
   return encodeChecked(codec, bytes, { ...options, limit, guard });
 }
 
-// Re-encodes one output and checks it: the declared type, real dimensions from info(), no location or identity
-// metadata, and one frame when `still` asks for it. Original bytes are never returned in place of an output.
+// Re-encodes one output, strips its metadata in place (stripImageOutput) and checks it: the declared type, real
+// dimensions from info(), no location or identity metadata left, and one frame when `still` asks for it. Original
+// bytes are never returned in place of an output; one that does not walk is refused.
 async function encodeChecked(
   codec: ImageCodec,
   bytes: Uint8Array,
   options: EncodeOptions & { format: OutputType },
 ): Promise<EncodedImage> {
-  const output = await codec.encode(bytes, options);
-  if (sniffImageType(output) !== options.format) {
+  const encoded = await codec.encode(bytes, options);
+  if (sniffImageType(encoded) !== options.format) {
     throw new ImageOutputError("output is not of the requested type");
+  }
+  const output = stripImageOutput(encoded, options.format);
+  if (output === null) {
+    throw new ImageOutputError("output is malformed");
   }
   const kept = retainedMetadata(output, options.format);
   if (kept !== null) {
@@ -407,9 +407,7 @@ export async function processImage(
   try {
     const target = fit(original, FULL_EDGE);
     const resize = target.width === original.width && target.height === original.height ? {} : target;
-    // A PNG goes to Images without its metadata chunks (pngWithoutMetadata).
-    const source = type === "image/png" ? pngWithoutMetadata(bytes) : bytes;
-    const full = await encodeChecked(codec, source, { ...resize, format });
+    const full = await encodeChecked(codec, bytes, { ...resize, format });
     // The preview is made from the re-encoded image, so it starts without metadata and in the served orientation. It
     // is a still, so an animated image's preview serves as its account's avatar_static or header_static (media.ts).
     const preview = fit(full, SMALL_EDGE);

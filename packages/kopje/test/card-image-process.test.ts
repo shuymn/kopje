@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { type CardImageHooks, cardImageTarget, processCardImage } from "../src/federation/card-images";
 import { fitRgba, imageBlurhash } from "../src/platform/blurhash";
 import { DeadlinePassed } from "../src/platform/deadline";
-import { webpSize } from "../src/platform/image-bytes";
+import { retainedMetadata, webpSize } from "../src/platform/image-bytes";
 import { type CodecInput, encodeRgba, type ImageCodec, imagesCodec } from "../src/platform/images";
 import {
   CARD_DECODE_PIXELS,
@@ -12,7 +12,7 @@ import {
   CARD_IMAGE_PIXELS,
   storedBlurhash,
 } from "../src/platform/stored-bounds";
-import { GIF, PNG_PLAIN } from "./fixtures/images";
+import { GIF, PNG_PLAIN, WEBP_SERIAL } from "./fixtures/images";
 import { fakeBinding, localRgba, type OutputCall } from "./images-binding";
 import { bytes } from "./media-helpers";
 import { decodeFixture, encodeWebp, rgba } from "./webp-fixtures";
@@ -142,6 +142,20 @@ describe("processCardImage over the local binding", () => {
       const result = await processCardImage(imagesCodec(localRgba().binding), { bytes: bytes(fixture) }, hooks());
       expect(result).toMatchObject({ kind: "encoded", stop: false, blurhash: expect.stringMatching(/^.{36}$/) });
     }
+  });
+
+  // Card images share the upload's output strip (platform/images.ts encodeChecked, MEDIA-3).
+  it("stores a WebP output whose EXIF Images kept, without it", async () => {
+    const real = imagesCodec(localRgba().binding);
+    const codec: ImageCodec = {
+      info: (input) => real.info(input),
+      encode: (input, options) =>
+        options.format === "image/webp" ? Promise.resolve(bytes(WEBP_SERIAL)) : real.encode(input, options),
+    };
+    expect(retainedMetadata(bytes(WEBP_SERIAL), "image/webp")).toBe("exif");
+    const result = await processCardImage(codec, { bytes: bytes(PNG_PLAIN) }, hooks());
+    expect(result).toMatchObject({ kind: "encoded", stop: false });
+    expect(result.kind === "encoded" && retainedMetadata(result.bytes, "image/webp")).toBeNull();
   });
 
   it("keeps the image without a blurhash where the binding refuses the RGBA output (the local one: 9520)", async () => {

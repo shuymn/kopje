@@ -98,10 +98,12 @@ export function pathOf(url: string | null): string {
 
 // A codec over the local Images binding (Miniflare's, backed by sharp) with Images' 'rgba' output stood in for
 // (images-binding.ts localRgba, whose output() calls are in `outputs`), that records calls and can be told to
-// misbehave: fail with an Images error code, or return given bytes instead of a re-encoding (to inject EXIF), for
-// every call (encodeResult) or per call (encodeResponder, given the call's options, its 0-based index and its input;
-// null falls through to the real binding); the 'rgba' output by RgbaControl. Miniflare's binding decodes only the first frame and
-// ignores anim, so an animated output is stood in for through these.
+// misbehave: fail with an Images error code, return given bytes instead of a re-encoding (to inject EXIF), for every
+// call (encodeResult) or per call (encodeResponder, given the call's options, its 0-based index and its input; null
+// falls through to the real binding), or rewrite the real binding's output (encodeOutput, given the output, the call's
+// options and its input: Images keeping metadata, as production does); the 'rgba' output by RgbaControl. Given bytes
+// are answered as a copy, since an output is the caller's to strip in place (ImageCodec). Miniflare's binding decodes
+// only the first frame and ignores anim, so an animated output is stood in for through these.
 export class TestCodec implements ImageCodec, RgbaControl {
   failRgba: number | null = null;
   stallRgba: "output" | "read" | null = null;
@@ -114,6 +116,7 @@ export class TestCodec implements ImageCodec, RgbaControl {
   failEncode: number | null = null;
   encodeResult: Uint8Array | null = null;
   encodeResponder: ((options: EncodeOptions, index: number, input: Uint8Array) => Uint8Array | null) | null = null;
+  encodeOutput: ((output: Uint8Array, options: EncodeOptions, input: Uint8Array) => Uint8Array) | null = null;
   infoResult: ImageInfo | null = null;
 
   info(bytes: Uint8Array): Promise<ImageInfo> {
@@ -133,13 +136,15 @@ export class TestCodec implements ImageCodec, RgbaControl {
       return Promise.reject(new ImageCodecError(this.failEncode, "injected"));
     }
     if (this.encodeResult !== null) {
-      return Promise.resolve(this.encodeResult);
+      return Promise.resolve(this.encodeResult.slice());
     }
     const given = this.encodeResponder?.(options, this.encodeCalls.length - 1, bytes) ?? null;
     if (given !== null) {
-      return Promise.resolve(given);
+      return Promise.resolve(given.slice());
     }
-    return this.real.encode(bytes, options);
+    const rewrite = this.encodeOutput;
+    const encoded = this.real.encode(bytes, options);
+    return rewrite === null ? encoded : encoded.then((output) => rewrite(output, options, bytes));
   }
 
   get calls(): number {
@@ -193,14 +198,39 @@ export function jpegWithSegment(jpeg: Uint8Array, marker: number, payload: Uint8
   ]);
 }
 
-// A PNG with one more chunk after IHDR (CRC left zero: decoders are not involved).
-export function pngWithChunk(png: Uint8Array, type: string, payload: string): Uint8Array {
-  const data = ascii(payload);
-  const header = new Uint8Array(8);
-  new DataView(header.buffer).setUint32(0, data.length);
-  header.set(ascii(type), 4);
+// The CRC-32 of PNG chunks (ISO 3309).
+const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) {
+    c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  }
+  return c >>> 0;
+});
+
+export function crc32(bytes: Uint8Array): number {
+  let c = 0xffffffff;
+  for (const byte of bytes) {
+    c = CRC_TABLE[(c ^ byte) & 0xff]! ^ (c >>> 8);
+  }
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+// A PNG's chunk with its CRC (ISO/IEC 15948 section 5.3), so a real decoder reads it.
+export function pngChunk(type: string, data: Uint8Array): Uint8Array {
+  const out = new Uint8Array(12 + data.length);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, data.length);
+  out.set(ascii(type), 4);
+  out.set(data, 8);
+  view.setUint32(8 + data.length, crc32(out.subarray(4, 8 + data.length)));
+  return out;
+}
+
+// `png` with a chunk inserted right after IHDR.
+export function pngWithChunk(png: Uint8Array, type: string, payload: string | Uint8Array): Uint8Array {
   const ihdrEnd = 8 + 25;
-  return new Uint8Array([...png.subarray(0, ihdrEnd), ...header, ...data, 0, 0, 0, 0, ...png.subarray(ihdrEnd)]);
+  const data = typeof payload === "string" ? ascii(payload) : payload;
+  return new Uint8Array([...png.subarray(0, ihdrEnd), ...pngChunk(type, data), ...png.subarray(ihdrEnd)]);
 }
 
 // A minimal little-endian TIFF block for an EXIF segment holding one ASCII tag in IFD0 (no GPS IFD).

@@ -8,27 +8,11 @@ import type { StoreStub } from "../src/platform/store-client";
 import { randomToken } from "../src/security/tokens";
 import { seedAccount } from "./api-helpers";
 import { BUILD, completeSetup, migratedStore } from "./helpers";
-import { TestCodec } from "./media-helpers";
+import { crc32, TestCodec } from "./media-helpers";
 import { ACCESS, ADMIN_EMAIL, setAccess } from "./ops-helpers";
 
 // Local custom emoji fixtures (migration 0055_local_custom_emojis, domain/local-emojis.ts): PNGs of exact edges and
 // bytes, a Store with Access and an OAuth admin, and the production upload path.
-
-const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
-  let c = n;
-  for (let k = 0; k < 8; k++) {
-    c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  }
-  return c >>> 0;
-});
-
-function crc32(bytes: Uint8Array): number {
-  let c = 0xffffffff;
-  for (const byte of bytes) {
-    c = CRC_TABLE[(c ^ byte) & 0xff]! ^ (c >>> 8);
-  }
-  return (c ^ 0xffffffff) >>> 0;
-}
 
 function adler32(bytes: Uint8Array): number {
   let a = 1;

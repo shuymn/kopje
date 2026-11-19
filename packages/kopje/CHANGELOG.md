@@ -13,7 +13,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - A PNG image that carries EXIF, such as a macOS screenshot, can be uploaded again. Cloudflare Images keeps a PNG's
   `eXIf` chunk in its PNG output, although it documents that PNG output has no metadata, so the check that served
   images carry none refused the upload and `POST /api/v1/media` answered 500 "Error processing uploaded media". Kopje
-  now removes a PNG's metadata chunks before Images reads it; the check stays.
+  now strips the metadata from Images' PNG and WebP output, for uploads, profile images, custom emoji and link card
+  images, and checks it after; Images still reads the whole upload, so its EXIF orientation and colour space apply.
+- PNG colour signalling is kept: an image's `cICP`, `mDCV` and `cLLI` chunks (a colour space such as Display P3, and HDR
+  levels) are no longer counted as metadata, in uploads and in cached remote images.
 
 ## [0.6.0] - 2026-11-19
 

@@ -207,8 +207,10 @@ function jpegMetadata(bytes: Uint8Array): RetainedMetadata | null {
   return typeof found === "number" ? (found === bytes.length ? null : "unreadable") : found;
 }
 
-// PNG chunks a re-encoded image may keep: structure, transparency, colour (gAMA, cHRM, sRGB, iCCP), pixel density and
-// animation (APNG). Anything else counts as metadata.
+// PNG chunks a re-encoded image may keep: structure, transparency, colour (gAMA, cHRM, sRGB, iCCP, and PNG 3's cICP,
+// mDCV and cLLI), pixel density and animation (APNG). Anything else counts as metadata. Colour signalling describes
+// how to display the pixels (a colour space, a display's mastering volume, light levels), not who made the image or
+// where, and PNG 3 gives cICP precedence over iCCP and sRGB, so dropping it would change the colours shown.
 export const PNG_CHUNKS: ReadonlySet<string> = new Set([
   "IHDR",
   "PLTE",
@@ -219,39 +221,14 @@ export const PNG_CHUNKS: ReadonlySet<string> = new Set([
   "cHRM",
   "sRGB",
   "iCCP",
+  "cICP",
+  "mDCV",
+  "cLLI",
   "pHYs",
   "acTL",
   "fcTL",
   "fdAT",
 ]);
-
-// `bytes`, a PNG, without the chunks retainedMetadata counts as metadata (any outside PNG_CHUNKS), in a new buffer;
-// `bytes` itself when it has none or does not walk (the output check then judges what Images makes of it). Images
-// keeps a PNG's eXIf chunk in its PNG output, against its documentation (platform/images.ts), so an upload is
-// stripped before it is re-encoded (MEDIA-3). Two walks and one copy, linear in the input (RES-2).
-export function pngWithoutMetadata(bytes: Uint8Array): Uint8Array {
-  let total = 8;
-  const walked = walkPng(bytes, (type, _start, length) => {
-    if (PNG_CHUNKS.has(type)) {
-      total += length + 12;
-    }
-    return undefined;
-  });
-  if (walked === MALFORMED || total === bytes.length) {
-    return bytes;
-  }
-  const out = new Uint8Array(total);
-  out.set(bytes.subarray(0, 8));
-  let at = 8;
-  walkPng(bytes, (type, start, length) => {
-    if (PNG_CHUNKS.has(type)) {
-      out.set(bytes.subarray(start - 8, start + length + 4), at);
-      at += length + 12;
-    }
-    return undefined;
-  });
-  return out;
-}
 
 // Walks a PNG's chunks after its signature, calling `visit` with each chunk's type, data offset and data length, and
 // stops with the first value it returns. MALFORMED when a chunk passes the file's end, when anything follows IEND, or
