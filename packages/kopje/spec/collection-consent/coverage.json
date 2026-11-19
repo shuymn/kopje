@@ -1,6 +1,6 @@
 {
   "$comment": "Kopje's sources spec/collection-consent/ describes, and their blobs when it was last confirmed to (scripts/collection-consent-coverage.mjs). A null blob is a file the specification describes that Kopje does not have yet. test-node/collection-consent-coverage.test.ts fails once a blob differs.",
-  "confirmed": "52432501006e454f2ed5ff9baebb7951c84e3a70",
+  "confirmed": "ed016eb1b80819ebed934223c01b37aade906ba2",
   "files": [
     {
       "path": "src/store.ts",
@@ -12,7 +12,7 @@
       "path": "src/domain/inbox.ts",
       "functions": ["receiveActivity", "startActorDeletion", "purgeBatch"],
       "spec": "CollectionConsent.tla RecvRes and Touch: which of CollectionConsentKopje.tla's operators an inbound activity runs, when it is ignored, and that every valid push of R's collections outdates a read under way, a no-op one included; OwnerGone and KPurge: an actor Delete writes R's tombstone and runs the first purge batch in its own transaction, which reaches C or not, and later batches purge the rest",
-      "blob": "d0260656c31b4ea1a9444abc30c52c5eec8b97b4"
+      "blob": "e153d9b9b46f5087802fe3dfc2c3917b36b83cb6"
     },
     {
       "path": "src/federation/inbound.ts",
@@ -24,7 +24,7 @@
       "path": "src/domain/inbound-feature-requests.ts",
       "functions": ["answerFeatureRequest"],
       "spec": "CollectionConsentKopje.tla Decide (K1) and ApplyFetch (K1b): the availability gate, the existing-collection path for a collection stored since the fetch, and the outdated mark when the instrument stores one",
-      "blob": "1bb3cc7db53fcbf336fc71caeaaad61cd59f1c85"
+      "blob": "7ecbaaecc3d11e3db43743ac2fc08947b09e5a02"
     },
     {
       "path": "src/domain/feature-answers.ts",
@@ -51,7 +51,7 @@
         "revokeFeatureAuthorization"
       ],
       "spec": "CollectionConsentKopje.tla AddItem (K2), RemoveItem (K3), UpdateCollection (K4), RemoveCollection (K5), OwnerGone (K6), Revoke (K7), ApplyRead (K14)",
-      "blob": "229bdf7b18b1f22d0ce76aa999eb014285e53e1a"
+      "blob": "a5d7b1dfdc8c1c6f34634ba0d1c79e3f6753d9b2"
     },
     {
       "path": "src/domain/remote-collections.ts",
@@ -69,19 +69,19 @@
       "path": "src/domain/collections.ts",
       "functions": ["severCollections", "pruneCollectionItems"],
       "spec": "CollectionConsentKopje.tla Block (K8, an ordinary Block with the row's Delete), Cleanup (K10) and Evict; MemberGone (K9) is model-only",
-      "blob": "2dc72f255bc0b112904ad847d9100a3b622a892d"
+      "blob": "65a9918181524006044c7d685eb4cc47c76348c2"
     },
     {
       "path": "src/domain/collection-documents.ts",
       "functions": ["featureAuthorizationDocument", "recordItemRemove"],
       "spec": "CollectionConsentKopje.tla AuthorizationServed: GET of an authorization, 200 with interactingObject C and interactionTarget L while the row is accepted and L available, else 404; the Delete an answer records",
-      "blob": "d6e642fc9ddba0ee9fb08c868c96e3050d4ad9af"
+      "blob": "901da6d5283097b79e95da1445b7a16cc664c6c6"
     },
     {
       "path": "src/domain/activities.ts",
       "functions": ["revocationRejectActivity"],
       "spec": "CollectionConsentKopje.tla Acc, Rej, Del, Blk, DelL: the activities Kopje records",
-      "blob": "fc3e5f060c13c1b905fc2ef0307fe46fd424ad34"
+      "blob": "59a73e3341925b8576951753dea7a8f52f2ca343"
     },
     {
       "path": "src/domain/deliveries.ts",
