@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import { ANSWER_BYTES, OUTBOX_BYTES, STATUS_ANSWER_BYTES } from "../src/domain/answer-bytes.js";
+import { MAX_LIVE_ANNOUNCEMENTS } from "../src/platform/stored-bounds.js";
 import {
+  ANNOUNCEMENT_JSON,
   CAP_STEP,
   COLUMN_FILL,
   CONSERVATIVE_JSON,
@@ -28,11 +30,13 @@ import {
 // docs/threat-model.md "Maxima of presented units" and "Heap at 8 MiB per answer" (RES-3) state the figures
 // test/status-bounds.test.ts asserts from test/presented-maxima.ts: each cell of their tables equals the module's
 // figure, written as the document writes it, and so do the stream unit's figures in its prose and RES-6, and every
-// figure the documents give of the answer budgets (src/domain/answer-bytes.ts, whose values this reads), in RES-3, the
-// maxima and heap prose and docs/response-inventory.md.
+// figure the documents give of the answer budgets (src/domain/answer-bytes.ts, whose values this reads), of an
+// announcement's maximum (ANNOUNCEMENT_JSON) and of the largest row, in RES-3, the maxima and heap prose,
+// docs/response-inventory.md and docs/mastodon-deviations.md.
 
 const DOCUMENT = readFileSync(new URL("../docs/threat-model.md", import.meta.url), "utf8");
 const INVENTORY = readFileSync(new URL("../docs/response-inventory.md", import.meta.url), "utf8");
+const DEVIATIONS = readFileSync(new URL("../docs/mastodon-deviations.md", import.meta.url), "utf8");
 
 /** A whole number of MiB as the documents write it. */
 function mib(n: number): string {
@@ -228,6 +232,9 @@ describe("the table of maxima (RES-3)", () => {
     const expected = maximaRows();
     expect(rows.map((row) => row.label)).toEqual([...expected.keys(), ...OTHER_ROWS]);
     compare(rows, expected);
+    // The announcement's row is another suite's, but its conservative JSON and share are ANNOUNCEMENT_JSON's.
+    const announcement = rows.find((row) => row.label === OTHER_ROWS[0])?.cells;
+    expect([announcement?.[2], announcement?.[5]]).toEqual([count(ANNOUNCEMENT_JSON), share(ANNOUNCEMENT_JSON)]);
   });
 });
 
@@ -270,8 +277,9 @@ describe("the heap tables (RES-3)", () => {
   });
 
   // Every place the documents give ANSWER_BYTES or a figure that follows from it: its MiB where they name it, the
-  // ceiling of every shape (SHAPE_CEILING_PERCENT of it) and the conversation's spare under it, an announcement's share
-  // of it, the admitted answer's heap at it (three times it) and a limit=0 list's bound.
+  // ceiling of every shape (SHAPE_CEILING_PERCENT of it) and the conversation's spare under it, an announcement's
+  // maximum with its share of it and the list's and the stream payload's that follow from it, the admitted answer's
+  // heap at it (three times it) and a limit=0 list's bound.
   it("states the answer budget as the code gives it", () => {
     const document = DOCUMENT.replace(/\s+/g, " ");
     const answer = mib(ANSWER_BYTES);
@@ -293,8 +301,16 @@ JSON is at most ${answer},`.replace(/\s+/g, " "),
     expect(document).toContain(
       `the least whole percent that keeps it at least the ${count(SPARE_FLOOR)} bytes a change may not cross`,
     );
-    const announcement = /One announcement is at most ([\d,]+) bytes \(([\d.]+%) of (\d+ MiB)\)/.exec(document);
-    expect(announcement?.slice(2)).toEqual([share(Number(announcement![1]!.replaceAll(",", ""))), answer]);
+    const stream = count(2 * ANNOUNCEMENT_JSON + 2);
+    expect(document).toContain(
+      `One announcement is at most ${count(ANNOUNCEMENT_JSON)} bytes (${share(ANNOUNCEMENT_JSON)} of ${answer}), ` +
+        `the list at most ${count(MAX_LIVE_ANNOUNCEMENTS * ANNOUNCEMENT_JSON + MAX_LIVE_ANNOUNCEMENTS + 1)}, ` +
+        `a stream payload double-encoded at most ${stream},`,
+    );
+    expect(document).toContain(
+      `each within its derived conservative maximum of ${count(ANNOUNCEMENT_JSON)} JSON bytes`,
+    );
+    expect(DEVIATIONS.replace(/\s+/g, " ")).toContain(`an announcement near its derived maximum (${stream})`);
     expect(document).toContain(`the admitted answer's ${((3 * ANSWER_BYTES) / 1e6).toFixed(1)} MB (`);
     expect(document).toContain(`at most ${answer} of accounts, linking \`next\` to the rest`);
     expect(document).toContain(`1,000 and ${answer} keep it well within the isolate's 128 MB`);
@@ -302,8 +318,8 @@ JSON is at most ${answer},`.replace(/\s+/g, " "),
 
   // Every place the documents give STATUS_ANSWER_BYTES: its bytes and what it leaves of ANSWER_BYTES, its share of
   // ANSWER_BYTES and the shares of it the shape ceiling and the largest shape's conservative JSON take, the admitted
-  // answer's heap at it (three times the budget) and how far one 8 KiB step more would pass half the isolate (64 MB),
-  // each from the code's figure.
+  // answer's heap at it (three times the budget), how far one 8 KiB step more would pass half the isolate (64 MB) and
+  // the largest row the backstop adds, each from the code's figure.
   it("states the status budget, its heap and its next step as the code gives them", () => {
     const flat = (text: string) => text.replace(/\s+/g, " ");
     const answer = mib(ANSWER_BYTES);
@@ -340,6 +356,14 @@ JSON is at most ${answer},`.replace(/\s+/g, " "),
       `A chunk of several takes at most its target of heap: ${chunk(TIMELINE_CHUNK_BYTES)} for timelines, ` +
         `${chunk(LARGE_ITEM_CHUNK_BYTES)} for groups and reports.`,
     );
+    // The largest single row, the one RowMeter passes its cap by at most: the same for every kind of answer.
+    const largestRow = mb(HEAP_PEAKS.timelines.largestRow);
+    expect(Object.values(HEAP_PEAKS).map((p) => mb(p.largestRow))).toEqual([largestRow, largestRow, largestRow]);
+    expect(flat(DOCUMENT)).toContain(
+      `past the cap by at most the row that passed it (at most ${largestRow}, measured:`,
+    );
+    expect(flat(DOCUMENT)).toContain(`each column's largest value the same way (${largestRow}, the escaped poll row`);
+    expect(flat(DOCUMENT)).toContain(`With the backstop fired, 1.25 × (the target + ${largestRow}) of dropped rows`);
     const past = HEAP_PEAKS.timelines.backstop + 3 * CAP_STEP - HALF;
     expect(flat(DOCUMENT)).toContain(
       `The ${TIMELINE_CHUNK_BYTES / 1024} KiB timeline cap and \`STATUS_ANSWER_BYTES\`, the largest multiple of ` +

@@ -153,6 +153,7 @@ import { ALICE, setup, type Setup } from "./inbox-status-helpers";
 import { localSnapshotAtCap } from "./local-emoji-helpers";
 import { LOCAL_FIELD_VALUE_JSON_MAX, LOCAL_FIELDS_JSON_MAX, localLinkValue } from "./local-field-maxima";
 import {
+  ANNOUNCEMENT_JSON,
   CONSERVATIVE_JSON,
   type Fill,
   FILL_SHAPES,
@@ -2299,7 +2300,6 @@ async function conservativeJson(): Promise<Record<string, number>> {
 // boost); `notification` its account, its status and a report and a warning together (their conservative figures
 // count a fallback each, which a streamed notification does not carry); an announcement, at its derived maximum
 // (test/announcement-bounds.test.ts).
-const ANNOUNCEMENT_JSON = 248_997;
 async function streamedKinds(): Promise<Record<"status" | "conversation" | "notification" | "announcement", number>> {
   const c = await conservativeJson();
   return {

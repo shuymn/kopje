@@ -195,6 +195,11 @@ export const HEAP_PEAKS: Record<"timelines" | "groups" | "reports", Peaks> = {
   },
 };
 
+// An announcement's conservative JSON, in bytes: derivedAnnouncementMaxima's entity (test/announcement-helpers.ts),
+// derived from the caps, which test/announcement-bounds.test.ts asserts. The list holds MAX_LIVE_ANNOUNCEMENTS of them
+// and a stream payload one, double-encoded.
+export const ANNOUNCEMENT_JSON = 248_997;
+
 // The largest frame a stream socket is sent (stream-hub.ts envelope): STREAM_LIMITS.payloadBytes, the envelope's keys,
 // the longest event and the longest stream. And a stream unit's isolate peak for each streamed kind, in bytes
 // (status-bounds.test.ts "bounds a stream unit's isolate peak by the most a subject presents", RES-6): its rows with

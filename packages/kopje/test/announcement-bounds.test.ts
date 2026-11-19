@@ -31,6 +31,7 @@ import {
 import { seedAccount, sql } from "./api-helpers";
 import { BUILD } from "./helpers";
 import { localSnapshotAtCap, seedEmojiRow } from "./local-emoji-helpers";
+import { ANNOUNCEMENT_JSON } from "./presented-maxima";
 import { getJson } from "./status-helpers";
 
 // RES-3: derive conservative maxima from column and presentation caps; fills witness reachable sizes.
@@ -45,7 +46,7 @@ const DERIVED_MENTIONS = 107_329;
 const DERIVED_TAGS = 53_761;
 const DERIVED_REACTIONS = 9801;
 const DERIVED_REST = 282;
-const DERIVED_ENTITY = 248_997;
+const DERIVED_ENTITY = ANNOUNCEMENT_JSON;
 
 type Entity = Record<string, unknown> & {
   id: string;
