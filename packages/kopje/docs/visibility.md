@@ -760,19 +760,20 @@ owner's origin (`validRemoteCollection`, against the owner's id as `actorUriSql`
 and its name and description are within its writer's bounds (`withinRemoteText`), so a restored row no writer would
 store shows nothing. Any collection is shown only while its name, description and tag are well-formed UTF-8 as stored:
 read with no more U+FFFD than their stored bytes hold as EF BF BD, since decoding adds one for each malformed sequence
-(`wellFormed`); and a local one only while its owner's username, read whole within `USERNAME_LIMIT` bytes, is a username
-of Mastodon's grammar (`tagNamesOwner`, `isRemoteUsername`), so a restored dump's malformed UTF-8 is presented nowhere.
-No page presents them or reads a reference: the status page and its thread, the profile's tabs and pins, the hashtag
-page, the interact handoff, oEmbed and the `/authorize_interaction` result present `[]` (`Present.page`, set by
-`pagePresent`, which `anonymous()` spreads, and by oEmbed and `/authorize_interaction`; the chunk planner's term is 0
-under it). A local status's ActivityPub forms name each collection it tags whose owner is available
-(`collectionFoundSql`) by its id alone, a local one only while its owner's username is such a username (`tagNamesOwner`)
-and a remote one only while valid (`statusFacts` and `noteOf` in `activities.ts`): with no viewer, the id is all they
-send, so no collection's name, description or members travel in the post's activities. That bounds the wire's content,
-not who learns of the collection: a local collection's id is its owner's route, which names the owner, and a fetch of it
-is judged by R45 for the fetcher, the remote account whose stored key the signature names (a key Kopje does not store
-names none, and the fetch is anonymous), so a server whose user the owner blocks may still read it with another key, its
-instance actor's included unless the owner blocks that account or its domain, or show a copy it holds to that user.
+(`wellFormed`); and a local one only while its owner's username, read whole within `USERNAME_LIMIT` bytes, is one the
+collection routes take (`tagNamesOwner`, `isRouteUsername`: `ROUTE_USERNAME`, the routes' own pattern), so a restored
+dump's malformed UTF-8 is presented nowhere and no collection id names a route that does not serve it. No page presents
+them or reads a reference: the status page and its thread, the profile's tabs and pins, the hashtag page, the interact
+handoff, oEmbed and the `/authorize_interaction` result present `[]` (`Present.page`, set by `pagePresent`, which
+`anonymous()` spreads, and by oEmbed and `/authorize_interaction`; the chunk planner's term is 0 under it). A local
+status's ActivityPub forms name each collection it tags whose owner is available (`collectionFoundSql`) by its id alone,
+a local one only while its owner's username is one the routes take (`tagNamesOwner`) and a remote one only while valid
+(`statusFacts` and `noteOf` in `activities.ts`): with no viewer, the id is all they send, so no collection's name,
+description or members travel in the post's activities. That bounds the wire's content, not who learns of the
+collection: a local collection's id is its owner's route, which names the owner, and a fetch of it is judged by R45 for
+the fetcher, the remote account whose stored key the signature names (a key Kopje does not store names none, and the
+fetch is anonymous), so a server whose user the owner blocks may still read it with another key, its instance actor's
+included unless the owner blocks that account or its domain, or show a copy it holds to that user.
 A local account's collections are served over ActivityPub (FEP-7aa9, `src/domain/collection-documents.ts`): the
 `featured_collections` collection and its pages, a `FeaturedCollection`, a `FeaturedItem` and a member's
 `FeatureAuthorization`. Each reads R45 with the fetcher as its viewer: the remote account whose stored key the

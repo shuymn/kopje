@@ -7,6 +7,7 @@ import type { EmojiTag } from "../domain/custom-emojis";
 import type { QuoteAuthorization } from "../domain/quotes";
 import type { SnapshotSource } from "../domain/snapshot";
 import { readConfig, userKek } from "../platform/config";
+import { ROUTE_USERNAME } from "../platform/identity-bounds";
 import { offDomain } from "../platform/instance-host";
 import { callStore, type StoreResolver, type StoreStub } from "../platform/store-client";
 import type { KeyGen } from "../security/key-wrap";
@@ -344,7 +345,7 @@ function collectionAnswer(
 
 const NO_STORE = { "cache-control": "no-store" };
 
-const USERNAME = "([A-Za-z0-9_]{1,64})";
+const USERNAME = `(${ROUTE_USERNAME})`;
 const FEATURED_COLLECTIONS = new RegExp(`^/ap/users/${USERNAME}/featured_collections$`);
 // Mastodon's `(.:format)`: an extension of anything but `/`, `.` and `?`, percent-decoded (rails-params.ts).
 const COLLECTION = new RegExp(`^/ap/users/${USERNAME}/collections/(\\d{18})(?:\\.([^/.?]+))?$`);

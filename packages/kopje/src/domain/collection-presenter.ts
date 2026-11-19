@@ -2,7 +2,7 @@ import { type ColumnMap, fixedColumns, selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { sameOrigin } from "../platform/http-url";
-import { isRemoteUsername } from "../platform/identity-bounds";
+import { isRouteUsername } from "../platform/identity-bounds";
 import {
   byteBoundSql,
   COLLECTION_DESCRIPTION_LENGTH,
@@ -46,15 +46,15 @@ type TaggedRow = Omit<CollectionRow, "username"> & {
   owner_uri: string | null;
 };
 
-// Whether a local collection's id names its owner as stored: the username, read within USERNAME_LIMIT bytes, is one
-// of Mastodon's grammar (isRemoteUsername, which every LOCAL_USERNAME and every username a cutover brings is), so it is
-// ASCII, and has as many characters as it stores bytes, so it was read whole. A restored username of malformed UTF-8
-// decodes to a U+FFFD for each bad sequence, which is no ASCII, whatever its width (F0 90 80 to the same three bytes),
-// so the collection, whose id would carry it, is left out.
+// Whether a local collection's id names its owner as stored, at a route that serves it: the username, read within
+// USERNAME_LIMIT bytes, is one the collection routes take (isRouteUsername, their own pattern), so it is ASCII, and has
+// as many characters as it stores bytes, so it was read whole. A restored username of malformed UTF-8 decodes to a
+// U+FFFD for each bad sequence, which is no ASCII, whatever its width (F0 90 80 to the same three bytes), and one the
+// routes do not take (a-b, or 65 letters) has an id no route serves, so either collection is left out.
 export function tagNamesOwner<T extends { username: string | null; username_bytes: number }>(
   row: T,
 ): row is T & { username: string } {
-  return row.username !== null && isRemoteUsername(row.username) && row.username.length === row.username_bytes;
+  return row.username !== null && isRouteUsername(row.username) && row.username.length === row.username_bytes;
 }
 
 // The U+FFFD in a text as read.

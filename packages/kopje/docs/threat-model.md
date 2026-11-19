@@ -1981,20 +1981,22 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (migration `0120_tagged_collections`, #1589's D26) are the collections it tags that are shown to the viewer, each with
   the members shown to the viewer, on an original and a quoted status (a boost presents none, its original them), each
   only while its name, description and tag are well-formed UTF-8 as stored, and a local one only while its owner's
-  username, read whole within `USERNAME_LIMIT` bytes, is a username of Mastodon's grammar, so a restored dump's
-  malformed text is presented nowhere; a remote one only while its id is a valid id on its owner's origin, that owner's
-  id read within `ACTOR_URI_LIMIT` (`actorUriSql`, which the writers' lookups read it through too), and its name and
-  description are within its writer's bounds, and its `url` only as its writer would store it. No public page presents
-  them or reads a reference: the status page and its thread, the profile's tabs and pins, the hashtag page, the interact
-  handoff, oEmbed and the `/authorize_interaction` result present `[]`. A local status's ActivityPub forms (its Note or
-  Question as served, in the outbox and in `featured`, its `Create` and `Update`s and a `QuoteRequest`'s instrument)
-  name each collection it tags whose owner is available by its id alone, a local one only while its owner's username is
-  such a username and a remote one only while valid, under the `featured_collections` terms, so no collection's name,
-  description or members travel in the post's activities. This bounds the wire's content, not who learns of the
-  collection: a local collection's id is its owner's route, which names the owner, and a fetch of it is judged by R45
-  for the fetcher, the remote account whose stored key the signature names (a key Kopje does not store names none, and
-  the fetch is anonymous), so a server whose user the owner blocks may still read it with another key, its instance
-  actor's included unless the owner blocks that account or its domain, or show its copy to that user.
+  username, read whole within `USERNAME_LIMIT` bytes, is one the collection routes take (`ROUTE_USERNAME`, 1 to 64 ASCII
+  letters, digits or underscores, the routes' own pattern), so a restored dump's malformed text is presented nowhere and
+  no collection id names a route that does not serve it; a remote one only while its id is a valid id on its owner's
+  origin, that owner's id read within `ACTOR_URI_LIMIT` (`actorUriSql`, which the writers' lookups read it through too),
+  and its name and description are within its writer's bounds, and its `url` only as its writer would store it. No
+  public page presents them or reads a reference: the status page and its thread, the profile's tabs and pins, the
+  hashtag page, the interact handoff, oEmbed and the `/authorize_interaction` result present `[]`. A local status's
+  ActivityPub forms (its Note or Question as served, in the outbox and in `featured`, its `Create` and `Update`s and a
+  `QuoteRequest`'s instrument) name each collection it tags whose owner is available by its id alone, a local one only
+  while its owner's username is one the routes take and a remote one only while valid, under the `featured_collections`
+  terms, so no collection's name, description or members travel in the post's activities. This bounds the wire's
+  content, not who learns of the collection: a local collection's id is its owner's route, which names the owner, and a
+  fetch of it is judged by R45 for the fetcher, the remote account whose stored key the signature names (a key Kopje
+  does not store names none, and the fetch is anonymous), so a server whose user the owner blocks may still read it with
+  another key, its instance actor's included unless the owner blocks that account or its domain, or show its copy to
+  that user.
   _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`, `collectionItemShownSql`,
   `featureApprovalSql`, `featureApprovalReads`, `mayFeatureSql` and `inCollectionsSql` in `src/domain/audience.ts`,
   `statusFacts`, `noteOf` and `contextOf` (`src/domain/activities.ts`), the account presenter and `presentFor`
@@ -2019,8 +2021,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   "reads no reference for a page, which presents none, while the API presents them", "presents Y alone, with its uri for
   the url no writer would store", "leaves out a restored collection whose text reads past its writer's bounds", "leaves
   out a restored collection whose text is malformed, however wide it decodes", "reads a local owner's restored username
-  within USERNAME_LIMIT bytes, and leaves its collection out", "leaves out a local owner's collection whose username,
-  as read, is not hers", "names each collection by its id alone, after the other tags, under the
+  within USERNAME_LIMIT bytes, and leaves its collection out", "names a local owner's collection only by a username, as
+  read, that its routes take", "names each collection by its id alone, after the other tags, under the
   featured_collections terms", "lets S's Note name Y alone, by its id", "leaves out a collection whose owner's id is
   past ACTOR_URI_LIMIT, and references none").
 
@@ -5629,11 +5631,11 @@ times their count, and the heap model counts each column at that width (`malform
 `test/tagged-collections.test.ts` ("reads a restored collection's every text at three times the bytes the read takes of
 it")). The presenter leaves out a collection whose name, description or tag is malformed, read with more U+FFFD than its
 stored bytes hold as EF BF BD (a stored EF BF BD is one U+FFFD, and each malformed sequence adds one, a replacement of
-the same width such as F0 90 80 included), and a local one whose owner's username is no username of Mastodon's grammar
-read whole (`wellFormed` and `tagNamesOwner` in `src/domain/collection-presenter.ts`), so no answer presents a value
-decoding replaced (`test/tagged-collections.test.ts` ("leaves out a restored collection whose text is malformed, however
-wide it decodes", "reads a local owner's restored username within USERNAME_LIMIT bytes, and leaves its collection out",
-"leaves out a local owner's collection whose username, as read, is not hers")).
+the same width such as F0 90 80 included), and a local one whose owner's username, read whole, is not one its routes
+take (`wellFormed` and `tagNamesOwner` in `src/domain/collection-presenter.ts`), so no answer presents a value decoding
+replaced (`test/tagged-collections.test.ts` ("leaves out a restored collection whose text is malformed, however wide it
+decodes", "reads a local owner's restored username within USERNAME_LIMIT bytes, and leaves its collection out", "names a
+local owner's collection only by a username, as read, that its routes take")).
 A local account also shows `noindex` and `roles`, at most the Owner's
 badge: the account occurrence's conservative JSON adds those keys (63 bytes) to the remote one measured, and what a
 local account's four fields at their derived most (37,677 bytes: names of six-byte escapes, each value at 7,822 and

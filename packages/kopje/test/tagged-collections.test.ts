@@ -1271,14 +1271,15 @@ describe("rows no writer produces (7-T9)", () => {
   });
 
   // The first's tag is 256 characters of 0xC0 and three continuation bytes (1,024 bytes, within its CHECK, read as 1,024
-  // U+FFFD), and the third's name F0 90 80, a sequence cut short that decodes to one U+FFFD of the same three bytes:
-  // each is malformed, so neither is presented. The fourth's description stores a U+FFFD, well-formed, so it is
-  // presented beside the second.
+  // U+FFFD), the third's name F0 90 80, a sequence cut short that decodes to one U+FFFD of the same three bytes, and the
+  // fifth's description C0 80, read as two U+FFFD (within withinRemoteText's bound): each is malformed in one column
+  // alone, so none is presented. The fourth's description stores a U+FFFD, well-formed, so it is presented beside the
+  // second. S tags the first four, S2 the fifth.
   it("leaves out a restored collection whose text is malformed, however wide it decodes", async () => {
     const t = await setup();
     const owner = await remoteOwner(t, 1, `${MASTODON}/users/x`);
     const ids: string[] = [];
-    for (let n = 1; n <= 4; n++) {
+    for (let n = 1; n <= 5; n++) {
       ids.push(await remoteCollection(t, owner, n, `${MASTODON}/users/x/collections/${n}`));
     }
     const restore = (column: string, count: number, character: string, id: string) =>
@@ -1292,12 +1293,15 @@ describe("rows no writer produces (7-T9)", () => {
     await restore("tag", 256, "C0808080", ids[0]!);
     await restore("name", 1, "F09080", ids[2]!);
     await sql(t.store, "UPDATE collections SET description = ? WHERE id = ?", "a\uFFFDb", ids[3]!);
+    await restore("description", 1, "C080", ids[4]!);
     const S = await posted(t, "S");
-    for (const id of ids) {
-      await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", S, id);
+    const S2 = await posted(t, "S2");
+    for (const [n, id] of ids.entries()) {
+      await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", n < 4 ? S : S2, id);
     }
-    const { body } = await t.api<Status>(`/api/v1/statuses/${S}`, "dave");
-    expect(body.tagged_collections.map(({ id }) => id)).toEqual([ids[1], ids[3]]);
+    const shown = async (status: string) =>
+      (await t.api<Status>(`/api/v1/statuses/${status}`, "dave")).body.tagged_collections.map(({ id }) => id);
+    expect([await shown(S), await shown(S2)]).toEqual([[ids[1], ids[3]], []]);
   });
 
   // Each text of a restored collection (maximalCollections' restored shape) as the tag read returns it: three times the
@@ -1381,10 +1385,12 @@ describe("rows no writer produces (7-T9)", () => {
   });
 
   // alice's username restored within USERNAME_LIMIT bytes, which the read returns: 0xC0 and 254 continuation bytes,
-  // read as 255 U+FFFD; F0 90 80, a sequence cut short read as one U+FFFD of the same three bytes; and 45 letters and
-  // an é, which usernameSql's fallback cuts to 42 letters, a username but not hers. None names her, so neither the REST
-  // read nor the Note's presents or names L, whose id would carry it; V, beside it, is.
-  it("leaves out a local owner's collection whose username, as read, is not hers", async () => {
+  // read as 255 U+FFFD; F0 90 80, a sequence cut short read as one U+FFFD of the same three bytes; 45 letters and an é,
+  // which usernameSql's fallback cuts to 42 letters, not hers; and a-b, a.b and 65 letters, usernames of Mastodon's
+  // grammar that the collection routes do not take, so L's id answers 404. None names her at a route, so neither the
+  // REST read nor the Note's presents or names L; V, beside it, is. 64 letters, the most the routes take, names her: L
+  // is presented and named, and its id answers 200.
+  it("names a local owner's collection only by a username, as read, that its routes take", async () => {
     const t = await setup();
     const L = await localCollection(t, ALICE, 1);
     const owner = await remoteOwner(t, 2, `${MASTODON}/users/x`);
@@ -1393,38 +1399,51 @@ describe("rows no writer produces (7-T9)", () => {
     for (const id of [L, V]) {
       await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", S, id);
     }
-    const seen: unknown[] = [];
-    const restored = [
-      malformed(USERNAME_LIMIT),
-      Uint8Array.from([0xf0, 0x90, 0x80]).buffer,
-      Uint8Array.from(new TextEncoder().encode(`${"a".repeat(45)}é`)).buffer,
+    const ascii = (text: string) => Uint8Array.from(new TextEncoder().encode(text)).buffer;
+    const restored: [ArrayBuffer, string | null][] = [
+      [malformed(USERNAME_LIMIT), null],
+      [Uint8Array.from([0xf0, 0x90, 0x80]).buffer, null],
+      [ascii(`${"a".repeat(45)}é`), null],
+      ...["a-b", "a.b", "a".repeat(65), "a".repeat(64)].map((name): [ArrayBuffer, string] => [ascii(name), name]),
     ];
-    for (const username of restored) {
+    const seen: unknown[] = [];
+    for (const [username, name] of restored) {
       await sql(t.store, "UPDATE accounts SET username = CAST(? AS TEXT) WHERE id = ?", username, ALICE);
-      seen.push(
-        await runInDurableObject(t.store, (_instance, state) => {
-          const read: (string | null)[] = [];
-          const db = new Db(
-            observedSql(state.storage.sql, (rows) => {
-              for (const row of rows) {
-                if ("username_bytes" in row && row.id === L) {
-                  read.push(row.username as string | null);
-                }
+      const read = await runInDurableObject(t.store, (_instance, state) => {
+        const lengths: (number | undefined)[] = [];
+        const db = new Db(
+          observedSql(state.storage.sql, (rows) => {
+            for (const row of rows) {
+              if ("username_bytes" in row && row.id === L) {
+                lengths.push((row.username as string | null)?.length);
               }
-            }),
-          );
-          const presented = (taggedCollectionsOf(db, [S], null, LOCAL).get(S) ?? []).map(({ id }) => id);
-          const named = statusFacts(db, S, () => null)?.collections ?? [];
-          return { read: read.map((value) => value?.length), presented, named };
-        }),
-      );
+            }
+          }),
+        );
+        const presented = (taggedCollectionsOf(db, [S], null, LOCAL).get(S) ?? []).map(({ id }) => id);
+        const named = statusFacts(db, S, () => null)?.collections ?? [];
+        return { read: lengths, presented, named };
+      });
+      const route = name === null ? null : (await t.request(`/ap/users/${name}/collections/${L}`, AP_GET)).status;
+      seen.push({ ...read, route });
     }
-    const left = (length: number) => ({
+    const v = `${MASTODON}/users/x/collections/2`;
+    const left = (length: number, route: number | null = null) => ({
       read: [length, length],
       presented: [V],
-      named: [`${MASTODON}/users/x/collections/2`],
+      named: [v],
+      route,
     });
-    expect(seen).toEqual([left(USERNAME_LIMIT), left(1), left(42)]);
+    const a64 = "a".repeat(64);
+    expect(seen).toEqual([
+      left(USERNAME_LIMIT),
+      left(1),
+      left(42),
+      left(3, 404),
+      left(3, 404),
+      left(65, 404),
+      { read: [64, 64], presented: [L, V], named: [`${LOCAL}/ap/users/${a64}/collections/${L}`, v], route: 200 },
+    ]);
   });
 
   it("lets S's Note name Y alone, by its id", async () => {
