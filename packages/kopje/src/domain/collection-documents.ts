@@ -1,19 +1,11 @@
-import { selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { MAX_STORED_COLLECTIONS } from "../platform/stored-bounds";
 import { FEATURED_COLLECTIONS_TERMS, followersUri, recordOutbound } from "./activities";
 import { availableSql, blockedSql, collectionItemShownSql, collectionShownSql, PUBLIC_COLLECTION } from "./audience";
-import {
-  type CollectionOwner,
-  collectionOwnerColumns,
-  collectionUrl,
-  collectionOwnerRoute,
-  localCollectionUri,
-} from "./collection-presenter";
+import { type CollectionOwner, collectionOwnerSql, collectionUrl, localCollectionUri } from "./collection-presenter";
 import { beginFollowerStaging, type DeliveryEnvelope } from "./deliveries";
 import { allocateLocalId } from "./ids";
-import { instanceDomainOf } from "./instance-domain";
 import { withinTagNameBound } from "./tag-bounds";
 import { normalizeTag } from "./tag-name";
 
@@ -128,13 +120,6 @@ function featuredCollectionsUri(actorUri: string): string {
   return `${actorUri}/featured_collections`;
 }
 
-// The instance's origin, on the domain /setup fixed (null before it), on which a local collection's id is served: the
-// activities of a local collection, and the checks against it, build its id on it (localCollectionUri).
-export function instanceOrigin(db: Db): string | null {
-  const domain = instanceDomainOf(db);
-  return domain === null ? null : `https://${domain}`;
-}
-
 function collectionItemUri(ownerUri: string, itemId: string): string {
   return `${ownerUri}/collection_items/${itemId}`;
 }
@@ -191,8 +176,8 @@ type CollectionDocumentRow = CollectionOwner & {
   updated_at: string;
 };
 
-const DOCUMENT_COLUMNS = `c.id, ${selectSql(collectionOwnerColumns("c.local", "o"))}, c.name, c.description,
-	c.language, c.sensitive, c.discoverable, c.tag, c.created_at, c.updated_at`;
+const DOCUMENT_COLUMNS = `c.id, ${collectionOwnerSql("o")}, c.name, c.description, c.language, c.sensitive,
+	c.discoverable, c.tag, c.created_at, c.updated_at`;
 
 type ItemDocumentRow = {
   collection_id: string;
@@ -255,18 +240,18 @@ function topicOf(tag: string | null, origin: string): Record<string, unknown> | 
 }
 
 // FeaturedCollectionSerializer, without its context: `summary` the description, or `summaryMap` by the language when
-// one is set; `url` the collection's page (collections.ts collectionUrl). Its id is localCollectionUri's on `origin`,
-// so null for a collection whose id no route serves, which every document leaves out.
+// one is set; `url` the collection's page (collection-presenter.ts collectionUrl) and the topic's on its owner's origin.
+// Its id is localCollectionUri's, from its owner's stored actor id (#1589's D1); null for an owner with none.
 function collectionDocument(
   row: CollectionDocumentRow,
   items: readonly ItemDocumentRow[],
-  origin: string,
 ): Record<string, unknown> | null {
-  const id = localCollectionUri(row, row.id, origin);
-  const owner = collectionOwnerRoute(row, origin);
-  if (id === null || owner === null) {
+  const owner = row.owner_uri;
+  const id = localCollectionUri(owner, row.id);
+  if (owner === null || id === null) {
     return null;
   }
+  const origin = new URL(owner).origin;
   const topic = topicOf(row.tag, origin);
   const summary =
     row.description === null
@@ -291,13 +276,13 @@ function collectionDocument(
   };
 }
 
-function documentsOf(db: Db, rows: readonly CollectionDocumentRow[], origin: string): Record<string, unknown>[] {
+function documentsOf(db: Db, rows: readonly CollectionDocumentRow[]): Record<string, unknown>[] {
   const items = projectedItems(
     db,
     rows.map((row) => row.id),
   );
   return rows.flatMap((row) => {
-    const document = collectionDocument(row, items.get(row.id) ?? [], origin);
+    const document = collectionDocument(row, items.get(row.id) ?? []);
     return document === null ? [] : [document];
   });
 }
@@ -339,12 +324,12 @@ export type DocumentRequest = { username: string; keyId: string | null };
 // the FeaturedCollections at its place, newest first, FEATURED_COLLECTIONS_PER_PAGE a page, through
 // collections_account (at most MAX_STORED_COLLECTIONS entries whatever the page), and `next` and `prev` as Kaminari
 // gives them (none past the last page). Not found unless the account is available and shows its collections to the
-// fetcher (AccountPolicy#index_collections?), and its actor id is its route on `origin` (collectionOwnerRoute), under
-// which this id and every collection's are built.
+// fetcher (AccountPolicy#index_collections?). It lists the account's local collections alone (`local = 1`, #1589's
+// D4), as the collection route serves them; its id and each collection's are under the account's stored actor id
+// (localCollectionUri, D1), whatever the route the actor document advertises it at (actorCollectionTerms).
 export function featuredCollectionsDocument(
   db: Db,
   input: DocumentRequest & { page: string | null },
-  origin: string,
 ): Record<string, unknown> | null {
   const owner = localAccountId(db, input.username);
   if (owner === null) {
@@ -352,15 +337,16 @@ export function featuredCollectionsDocument(
   }
   const fetcher = fetcherOf(db, input.keyId);
   const head = db.first<CollectionOwner & { total: number }>(
-    `SELECT ${selectSql(collectionOwnerColumns("1", "a"))},
-			(SELECT count(*) FROM collections c INDEXED BY collections_account WHERE c.account_id = a.id) AS total
+    `SELECT ${collectionOwnerSql("a")},
+			(SELECT count(*) FROM collections c INDEXED BY collections_account WHERE c.account_id = a.id AND c.local = 1)
+				AS total
 		FROM accounts a INDEXED BY ${ACCOUNTS_ID_INDEX}
 		WHERE a.id = ?1 AND ${availableSql("a.id")} AND (?2 IS NULL OR NOT ${blockedSql("a.id", "?2")})`,
     owner,
     fetcher,
   );
-  const actor = head === undefined ? null : collectionOwnerRoute(head, origin);
-  if (head === undefined || actor === null) {
+  const actor = head?.owner_uri ?? null;
+  if (head === undefined || actor === null || !URL.canParse(actor)) {
     return null;
   }
   const id = featuredCollectionsUri(actor);
@@ -381,7 +367,7 @@ export function featuredCollectionsDocument(
     : db.all<CollectionDocumentRow>(
         `SELECT ${DOCUMENT_COLUMNS} FROM collections c INDEXED BY collections_account
 				CROSS JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id
-			WHERE c.account_id = ?1 ORDER BY c.created_at DESC, c.id DESC LIMIT ?2 OFFSET ?3`,
+			WHERE c.account_id = ?1 AND c.local = 1 ORDER BY c.created_at DESC, c.id DESC LIMIT ?2 OFFSET ?3`,
         owner,
         FEATURED_COLLECTIONS_PER_PAGE,
         (page - 1) * FEATURED_COLLECTIONS_PER_PAGE,
@@ -394,19 +380,17 @@ export function featuredCollectionsDocument(
     ...(inRange && page < pages ? { next: `${id}?page=${page + 1}` } : {}),
     ...(inRange && page > 1 ? { prev: `${id}?page=${page - 1}` } : {}),
     partOf: id,
-    items: documentsOf(db, rows, origin),
+    items: documentsOf(db, rows),
   };
 }
 
 // /ap/users/:username/collections/:id (CollectionsController#show): the FeaturedCollection of the local collection
 // `id` of `username`, which R45 shows the fetcher (collectionShownSql). A non-discoverable collection is served:
-// discoverable governs listings only. Its id is localCollectionUri's on `origin`, the instance's, so the document
-// served at a path declares that path's id, and one whose id no route serves is not found (an owner whose actor id is
-// another username's route, which this username names).
+// discoverable governs listings only. Its id is localCollectionUri's, under the owner's stored actor id (#1589's D1),
+// as the actor route serves the account under it.
 export function featuredCollectionDocument(
   db: Db,
   input: DocumentRequest & { id: string },
-  origin: string,
 ): Record<string, unknown> | null {
   const owner = localAccountId(db, input.username);
   if (owner === null) {
@@ -420,25 +404,20 @@ export function featuredCollectionDocument(
     owner,
     fetcherOf(db, input.keyId),
   );
-  const [document] = row === undefined ? [] : documentsOf(db, [row], origin);
+  const [document] = row === undefined ? [] : documentsOf(db, [row]);
   return document === undefined ? null : { "@context": FEATURED_COLLECTION_CONTEXT, ...document };
 }
 
 // /ap/users/:username/collection_items/:id (CollectionItemsController#show): the FeaturedItem of an item of a local
 // collection of `username` that R45 shows the fetcher, in any state, as Mastodon serves it, while its member is
-// available and a route serves the collection's id on `origin` (collectionOwnerRoute, under which the item's id is).
-export function featuredItemDocument(
-  db: Db,
-  input: DocumentRequest & { id: string },
-  origin: string,
-): Record<string, unknown> | null {
+// available; its id under the owner's stored actor id, as the collection's is.
+export function featuredItemDocument(db: Db, input: DocumentRequest & { id: string }): Record<string, unknown> | null {
   const owner = localAccountId(db, input.username);
   if (owner === null) {
     return null;
   }
   const row = db.first<ItemDocumentRow & CollectionOwner>(
-    `SELECT ${ITEM_COLUMNS}, ${selectSql(collectionOwnerColumns("1", "o"))}
-		FROM collection_items i INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
+    `SELECT ${ITEM_COLUMNS}, ${collectionOwnerSql("o")} FROM collection_items i INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
 			CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = i.collection_id
 			CROSS JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id
 			CROSS JOIN accounts m INDEXED BY ${ACCOUNTS_ID_INDEX} ON m.id = i.account_id
@@ -448,16 +427,16 @@ export function featuredItemDocument(
     owner,
     fetcherOf(db, input.keyId),
   );
-  const ownerUri = row === undefined ? null : collectionOwnerRoute(row, origin);
-  return row === undefined || ownerUri === null
+  const ownerUri = row?.owner_uri ?? null;
+  return row === undefined || ownerUri === null || localCollectionUri(ownerUri, row.collection_id) === null
     ? null
     : { "@context": FEATURED_ITEM_CONTEXT, ...itemDocument(row, ownerUri) };
 }
 
 // /ap/users/:username/feature_authorizations/:id (FeatureAuthorizationsController#show): the FeatureAuthorization of
 // the item `id` of the local member `username`, only while it is accepted, the member available and not blocking the
-// fetcher or its domain. Its collection is a local one's id on `origin` (none while no route serves it), or a remote
-// one's as stored.
+// fetcher or its domain. Its collection is a local one's id (localCollectionUri), or a remote one's as stored while it
+// is not on `origin`, the instance's, where only a local collection is (#1589's D2: a restored row).
 export function featureAuthorizationDocument(
   db: Db,
   input: DocumentRequest & { id: string },
@@ -470,7 +449,7 @@ export function featureAuthorizationDocument(
   const row = db.first<
     CollectionOwner & { id: string; collection_id: string; local: number; member_uri: string; uri: string | null }
   >(
-    `SELECT i.id, i.collection_id, c.local, c.uri, m.uri AS member_uri, ${selectSql(collectionOwnerColumns("c.local", "o"))}
+    `SELECT i.id, i.collection_id, c.local, c.uri, m.uri AS member_uri, ${collectionOwnerSql("o")}
 		FROM collection_items i INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
 			CROSS JOIN accounts m INDEXED BY ${ACCOUNTS_ID_INDEX} ON m.id = i.account_id
 			CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = i.collection_id
@@ -482,7 +461,13 @@ export function featureAuthorizationDocument(
     fetcherOf(db, input.keyId),
   );
   const collection =
-    row === undefined ? null : row.local === 1 ? localCollectionUri(row, row.collection_id, origin) : row.uri;
+    row === undefined
+      ? null
+      : row.local === 1
+        ? localCollectionUri(row.owner_uri, row.collection_id)
+        : row.uri !== null && URL.canParse(row.uri) && new URL(row.uri).origin !== origin
+          ? row.uri
+          : null;
   if (row === undefined || collection === null) {
     return null;
   }
@@ -506,20 +491,19 @@ export function featureAuthorizationDocument(
 // member out.
 
 // The FeaturedCollection of the local collection `id` as an activity embeds it (no context), whatever its owner's
-// state: the activities are recorded by the owner, who is available then. null for any other, and for one whose id no
-// route serves on `origin`.
-function embeddedCollection(db: Db, id: string, origin: string): Record<string, unknown> | null {
+// state: the activities are recorded by the owner, who is available then. null for any other.
+function embeddedCollection(db: Db, id: string): Record<string, unknown> | null {
   const row = db.first<CollectionDocumentRow>(
     `SELECT ${DOCUMENT_COLUMNS} FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
 			CROSS JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id
 		WHERE c.id = ? AND c.local = 1`,
     id,
   );
-  return row === undefined ? null : (documentsOf(db, [row], origin)[0] ?? null);
+  return row === undefined ? null : (documentsOf(db, [row])[0] ?? null);
 }
 
 // The FeaturedItem of the item `id` as an activity embeds it (no context): an item of a local collection with a member,
-// under the owner's route its reach gives (reachOf).
+// under the owner's actor id its reach gives (reachOf).
 function embeddedItem(db: Db, id: string, ownerUri: string): Record<string, unknown> | null {
   const row = db.first<ItemDocumentRow>(
     `SELECT ${ITEM_COLUMNS} FROM collection_items i INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
@@ -531,24 +515,22 @@ function embeddedItem(db: Db, id: string, ownerUri: string): Record<string, unkn
   return row === undefined ? null : itemDocument(row, ownerUri);
 }
 
-type Reach = { owner: string; ownerUri: string; uri: string; origin: string; members: string[] };
+type Reach = { owner: string; ownerUri: string; uri: string; members: string[] };
 
-// The local collection `id`'s owner and uri (localCollectionUri, on the instance's origin), and the remote accounts its
-// activities reach besides the owner's followers: its pending and accepted members (Collection#accounts), through
-// collection_items_order (at most MAX_STORED_ITEMS rows). null for any other collection, and for one whose id no route
-// serves, whose activities are not sent: every surface leaves it out.
+// The local collection `id`'s owner and uri (localCollectionUri, under the owner's stored actor id), and the remote
+// accounts its activities reach besides the owner's followers: its pending and accepted members (Collection#accounts),
+// through collection_items_order (at most MAX_STORED_ITEMS rows). null for any other collection, and for an owner with
+// no actor id actorUriSql reads.
 function reachOf(db: Db, id: string): Reach | null {
   const head = db.first<CollectionOwner & { owner: string }>(
-    `SELECT c.account_id AS owner, ${selectSql(collectionOwnerColumns("c.local", "o"))}
-		FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
+    `SELECT c.account_id AS owner, ${collectionOwnerSql("o")} FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
 			CROSS JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id
 		WHERE c.id = ? AND c.local = 1`,
     id,
   );
-  const origin = head === undefined ? null : instanceOrigin(db);
-  const uri = head === undefined || origin === null ? null : localCollectionUri(head, id, origin);
-  const ownerUri = head === undefined || origin === null ? null : collectionOwnerRoute(head, origin);
-  if (head === undefined || origin === null || uri === null || ownerUri === null) {
+  const ownerUri = head?.owner_uri ?? null;
+  const uri = localCollectionUri(ownerUri, id);
+  if (head === undefined || ownerUri === null || uri === null) {
     return null;
   }
   const members = db.all<{ id: string }>(
@@ -557,7 +539,7 @@ function reachOf(db: Db, id: string): Reach | null {
 		WHERE i.collection_id = ? AND i.state IN (0, 1) AND m.domain IS NOT NULL`,
     id,
   );
-  return { owner: head.owner, ownerUri, uri, origin, members: members.map((member) => member.id) };
+  return { owner: head.owner, ownerUri, uri, members: members.map((member) => member.id) };
 }
 
 const ID_KINDS = { Add: "adds", Remove: "removes", Update: "updates" } as const;
@@ -598,7 +580,7 @@ function deliver(db: Db, reach: Reach, now: number, activity: CollectionActivity
 // CreateCollectionService: the collection's Add to the owner's featured_collections, its accepted items embedded.
 export function recordCollectionAdd(db: Db, id: string, now: number): void {
   const reach = reachOf(db, id);
-  const object = reach === null ? null : embeddedCollection(db, id, reach.origin);
+  const object = reach === null ? null : embeddedCollection(db, id);
   if (reach !== null && object !== null) {
     const target = featuredCollectionsUri(reach.ownerUri);
     deliver(db, reach, now, { type: "Add", context: FEATURED_COLLECTION_CONTEXT, target, object });
@@ -608,7 +590,7 @@ export function recordCollectionAdd(db: Db, id: string, now: number): void {
 // UpdateCollectionService, when a field it federates changed: the collection as it now is.
 export function recordCollectionUpdate(db: Db, id: string, now: number): void {
   const reach = reachOf(db, id);
-  const object = reach === null ? null : embeddedCollection(db, id, reach.origin);
+  const object = reach === null ? null : embeddedCollection(db, id);
   if (reach !== null && object !== null) {
     deliver(db, reach, now, { type: "Update", context: FEATURED_COLLECTION_CONTEXT, object });
   }
@@ -638,14 +620,14 @@ export function recordItemAdd(db: Db, item: { id: string; collection: string }, 
 // pending item `item` of a local collection, its id the item's activity_uri, which the member's Accept or Reject names
 // (feature-requests.ts). Signed by the owner and sent to the member's personal inbox alone (inbox_url). Mastodon's
 // carries no actor; Kopje's names the owner, its signer, which Mastodon's receiver takes as it is
-// (process_activity_service.rb:83-84). Nothing for any other item, nor for a collection whose id no route serves
+// (process_activity_service.rb:83-84). Nothing for any other item, nor for an owner with no actor id
 // (localCollectionUri).
 export function recordFeatureRequest(db: Db, item: string, now: number): void {
   const row = db.first<
     CollectionOwner & { request: string; collection: string; owner: string; member: string; member_uri: string }
   >(
     `SELECT i.activity_uri AS request, i.collection_id AS collection, c.account_id AS owner,
-				${selectSql(collectionOwnerColumns("c.local", "o"))}, i.account_id AS member, m.uri AS member_uri
+				${collectionOwnerSql("o")}, i.account_id AS member, m.uri AS member_uri
 			FROM collection_items i INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
 			CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = i.collection_id
 			CROSS JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id
@@ -653,10 +635,9 @@ export function recordFeatureRequest(db: Db, item: string, now: number): void {
 		WHERE i.id = ? AND i.state = 0 AND i.activity_uri IS NOT NULL AND c.local = 1 AND m.domain IS NOT NULL`,
     item,
   );
-  const origin = row === undefined ? null : instanceOrigin(db);
-  const instrument = row === undefined || origin === null ? null : localCollectionUri(row, row.collection, origin);
-  const actor = row === undefined || origin === null ? null : collectionOwnerRoute(row, origin);
-  if (row === undefined || instrument === null || actor === null) {
+  const actor = row?.owner_uri ?? null;
+  const instrument = row === undefined ? null : localCollectionUri(actor, row.collection);
+  if (row === undefined || actor === null || instrument === null) {
     return;
   }
   recordOutbound(

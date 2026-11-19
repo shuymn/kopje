@@ -710,7 +710,7 @@ export function writePost(
   // PostStatusService#postprocess_status!'s LinkCrawlWorker.
   enqueueCard(db, id, localCardLink(composed.source, new URL(author.uri).host), input.now);
   // ProcessLinksService: the collections the text links (collections.ts), before the Create reads them.
-  writeTaggedCollections(db, id, linkedCollections(db, composed.source, origin));
+  writeTaggedCollections(db, id, linkedCollections(db, composed.source));
   recountStatuses(db, accountId);
   recountStatus(db, parent?.id ?? null);
   for (const mention of composed.mentions) {
@@ -1180,7 +1180,7 @@ export const editStatus = userWriteOperation<EditStatusInput, Acted<Status>>((db
     enqueueCard(db, current.id, localCardLink(composed.source, new URL(author.uri).host), input.now);
   }
   // ProcessLinksService again: the set the edited text links, before the Update reads it.
-  writeTaggedCollections(db, current.id, linkedCollections(db, composed.source, new URL(author.uri).origin));
+  writeTaggedCollections(db, current.id, linkedCollections(db, composed.source));
   const editId = recordEdit(db, current.id, editedAt);
   // UpdateStatusService#broadcast_updates!.
   notifyEdited(db, current.id, accountId, input.now);

@@ -2,16 +2,16 @@ import { type ColumnMap, fixedColumns, selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { sameOrigin } from "../platform/http-url";
-import { isRouteUsername } from "../platform/identity-bounds";
+import { ROUTE_USERNAME } from "../platform/identity-bounds";
 import {
-  byteBoundSql,
   COLLECTION_DESCRIPTION_LENGTH,
   COLLECTION_NAME_LENGTH,
   COLLECTION_URI_BYTES,
   COLLECTION_URL_BYTES,
 } from "../platform/stored-bounds";
 import { collectionFoundSql, collectionItemShownSql, collectionShownSql, collectionViewerSql } from "./audience";
-import { actorUriSql, USERNAME_LIMIT, usernameSql } from "./profile-bounds";
+import { instanceOrigin } from "./instance-domain";
+import { actorUriSql } from "./profile-bounds";
 import { withinTagNameBound } from "./tag-bounds";
 import { normalizeTag } from "./tag-name";
 
@@ -38,57 +38,41 @@ export function validRemoteCollection(uri: string | null, ownerUri: string | nul
   return storableUrl(uri, COLLECTION_URI_BYTES) && sameOrigin(uri, ownerUri);
 }
 
-// A collection's owner as every read that names a local collection's id takes it, `local` the collection's locality (an
-// expression: c.local, or 1 for one about to be written) and `a` its owner: its username as the collection routes
-// compare it, usernameSql's projection within USERNAME_LIMIT stored bytes (NULL past them, since usernameSql's fallback
-// cuts by SQLite's characters, of which a restored lead byte and any number of continuation bytes are one), NULL too for
-// a local collection whose owner is not a local account (a restored row: the routes serve a local account's alone,
-// collection-documents.ts localAccountId); its stored bytes; and its actor id as actorUriSql reads it ('' past
-// ACTOR_URI_LIMIT).
-export function collectionOwnerColumns(
-  local: string,
-  a: string,
-): { username: string; username_bytes: string; owner_uri: string } {
-  return {
-    username: `CASE WHEN ${local} = 0 OR ${a}.domain IS NULL
-	THEN ${byteBoundSql(usernameSql(`${a}.username`), USERNAME_LIMIT)} END`,
-    username_bytes: `length(CAST(${a}.username AS BLOB))`,
-    owner_uri: actorUriSql(`${a}.uri`),
-  };
+// A collection's owner as every read that names a local collection's id takes it: its stored actor id, as actorUriSql
+// reads it ('' past ACTOR_URI_LIMIT), under alias `a`.
+export function collectionOwnerSql(a: string): string {
+  return `${actorUriSql(`${a}.uri`)} AS owner_uri`;
 }
 
-// A collection's owner as collectionOwnerColumns reads it.
-export type CollectionOwner = { username: string | null; username_bytes: number; owner_uri: string | null };
+// A collection's owner as collectionOwnerSql reads it.
+export type CollectionOwner = { owner_uri: string | null };
 
-// A local collection's ID (ActivityPub::TagManager#uri_for), built here alone for every surface that emits or compares
-// it: REST's uri and tagged_collections, a Note's tag, the FeaturedCollection, its FeaturedItems (under the same owner
-// route) and a local member's FeatureAuthorization and the routes that serve them, its page's alternate, the
-// collection's activities, a Flag, and the authorizations checked against it (test-node/tagged-collection-reads holds
-// that no other code spells the path). It is under the owner's actor id while that is the route of the owner's username
-// on `origin` (/ap/users/:username, a username the collection routes take, isRouteUsername, read whole: as many
-// characters as it stores bytes), so a GET of the id reaches this owner and the document there declares the same id.
-// null for any other owner: an actor id restored under another username or host, a username the routes do not take or
-// malformed (decoded to U+FFFD, no ASCII, whatever its width), an owner that is not local. Every surface leaves such a
-// collection out.
-export function localCollectionUri(owner: CollectionOwner, id: string, origin: string): string | null {
-  const actor = collectionOwnerRoute(owner, origin);
-  return actor === null ? null : `${actor}/collections/${id}`;
+// A local collection's ID (ActivityPub::TagManager#uri_for, #1589's D1): its owner's stored actor id and the collection
+// id, built here alone, in TypeScript (no SQL builds it), for every surface that emits or compares it: REST's uri and
+// tagged_collections, a Note's tag, the FeaturedCollection, featured_collections, a FeaturedItem and a local member's
+// FeatureAuthorization, the page's alternate, the collection's activities, a Flag, and the authorizations checked
+// against it (test-node/tagged-collection-reads holds that no other code spells the path). Nothing compares it with the
+// request's host or the configured one: it resolves exactly when its owner's actor id does, so an account whose actor
+// id was kept from an earlier domain or restored under another name has collections no more and no less reachable
+// than itself. null only for no actor id: none, past ACTOR_URI_LIMIT as actorUriSql reads it, or not a URL.
+export function localCollectionUri(ownerUri: string | null, id: string): string | null {
+  return ownerUri === null || !URL.canParse(ownerUri) ? null : `${ownerUri}/collections/${id}`;
 }
 
-// The actor id of `owner` when it is the route of the owner's username on `origin` (localCollectionUri's test, which a
-// collection about to be written is held to); null otherwise.
-export function collectionOwnerRoute(owner: CollectionOwner, origin: string): string | null {
-  const { username, owner_uri: actor } = owner;
-  return username !== null &&
-    isRouteUsername(username) &&
-    username.length === owner.username_bytes &&
-    actor === `${origin}/ap/users/${username}`
-    ? actor
-    : null;
+// The path of a local collection's id that the collection route takes (federation/routes.ts COLLECTION: a
+// ROUTE_USERNAME under /ap/users/ and the id's 18 digits), with no query or fragment, on any host (#1589's D2).
+const ROUTED_ID_PATH = new RegExp(`^/ap/users/${ROUTE_USERNAME}/collections/\\d{18}$`);
+
+function routedPath(id: string): boolean {
+  if (!URL.canParse(id)) {
+    return false;
+  }
+  const url = new URL(id);
+  return url.search === "" && url.hash === "" && ROUTED_ID_PATH.test(url.pathname);
 }
 
 // A tagged collection as a tag reads it (TAGGED_COLLECTION_COLUMNS).
-type TaggedRow = CollectionRow & { text_replacements: number };
+type TaggedRow = CollectionRow & { text_replacements: number; owner_local: number };
 
 // The U+FFFD in a text as read.
 function replacements(text: string | null): number {
@@ -116,39 +100,47 @@ function withinRemoteText(row: { name: string; description: string | null }): bo
   );
 }
 
-// Whether a status can tag the collection `row`, as stored: its text well-formed (wellFormed); a local one's id served
-// by its route (localCollectionUri); a remote one valid (validRemoteCollection) with its text within its writer's
-// bounds (withinRemoteText).
-function taggable(row: TaggedRow, origin: string): boolean {
+// Whether a status can tag the collection `row`, as stored (#1589's D2): its text well-formed (wellFormed); a local one
+// owned by a local account, its id (localCollectionUri) on a path the collection route takes (routedPath); a remote one
+// valid (validRemoteCollection) with its text within its writer's bounds (withinRemoteText), its id not on the
+// instance's origin (`instance`, read only for a remote row), where only a local collection is.
+function taggable(row: TaggedRow, instance: () => string | null): boolean {
+  if (!wellFormed(row)) {
+    return false;
+  }
+  if (row.local === 1) {
+    const id = localCollectionUri(row.owner_uri, row.id);
+    return row.owner_local === 1 && id !== null && routedPath(id);
+  }
   return (
-    wellFormed(row) &&
-    (row.local === 1
-      ? localCollectionUri(row, row.id, origin) !== null
-      : validRemoteCollection(row.uri, row.owner_uri) && withinRemoteText(row))
+    validRemoteCollection(row.uri, row.owner_uri) && withinRemoteText(row) && new URL(row.uri!).origin !== instance()
   );
 }
 
 // The collections a read names (`from` joins `collections c` and its owner `accounts a`; `where` picks them, with
-// `params`) that a status can tag whatever the viewer (#1589's D26): its owner available (collectionFoundSql: not
+// `params`) that a status can tag whatever the viewer (#1589's D26, D2): its owner available (collectionFoundSql: not
 // suspended, deleted or covered) and taggable. The writer (collections.ts) resolves a status's links and tags through it
 // before it takes the first MAX_TAGGED_COLLECTIONS, and the REST presenter (taggedCollectionsOf, adding R45's part
 // that depends on the viewer) and the Note (activities.ts statusFacts) read a status's references through it, which
 // leaves out a row restored, written before a rule was, or whose owner became unavailable since: one decision, so a
 // collection takes a slot only when every surface would show it to some viewer. Each row with
-// TAGGED_COLLECTION_COLUMNS, which R's term charges.
+// TAGGED_COLLECTION_COLUMNS, which R's term charges. `origin`: the instance's (instanceOrigin), read once at most, and
+// only for a remote row; the writer, which has read it, passes it.
 export function taggableCollections(
   db: Db,
-  origin: string,
+  origin: string | null | undefined,
   from: string,
   where: string,
   ...params: SqlStorageValue[]
 ): TaggedRow[] {
+  let instance = origin;
+  const instanceOf = () => (instance === undefined ? (instance = instanceOrigin(db)) : instance);
   return db
     .all<TaggedRow>(
       `SELECT ${selectSql(TAGGED_COLLECTION_COLUMNS)} FROM ${from} WHERE ${collectionFoundSql("c")} AND ${where}`,
       ...params,
     )
-    .filter((row) => taggable(row, origin));
+    .filter((row) => taggable(row, instanceOf));
 }
 
 type CollectionItemStateName = (typeof STATE_NAMES)[number];
@@ -195,8 +187,8 @@ export type CollectionRow = CollectionOwner & {
   updated_at: string;
 };
 
-export const COLLECTION_COLUMNS = `c.id, c.account_id, ${selectSql(collectionOwnerColumns("c.local", "a"))}, c.local, c.name,
-	c.description, c.language, c.sensitive, c.discoverable, c.tag, c.uri, c.url, c.created_at, c.updated_at`;
+export const COLLECTION_COLUMNS = `c.id, c.account_id, ${collectionOwnerSql("a")}, c.local, c.name, c.description,
+	c.language, c.sensitive, c.discoverable, c.tag, c.uri, c.url, c.created_at, c.updated_at`;
 
 type ItemRow = {
   collection_id: string;
@@ -235,19 +227,17 @@ function storedReplacementsSql(column: string): string {
   return `coalesce((${bytes(column)} - ${bytes(`replace(CAST(${column} AS BLOB), X'EFBFBD', X'')`)}) / 3, 0)`;
 }
 
-const TAG_OWNER = collectionOwnerColumns("c.local", "a");
-
 // A tagged collection as taggedCollectionsOf reads it, every text column within a bound of stored bytes before it
 // reaches JavaScript: its columns as stored, each within its CHECK, imports included (migration 0103_collections: the
-// name, description and tag by stored bytes, the uri, url, language and times ASCII); its owner
-// (collectionOwnerColumns), against whose actor id a remote one's id is judged (validRemoteCollection: '' past
-// ACTOR_URI_LIMIT is invalid) and a local one's built (localCollectionUri); and the U+FFFD the name, description and
-// tag store, which wellFormed compares. R's term charges these columns, and every read of them is taggableCollections'.
+// name, description and tag by stored bytes, the uri, url, language and times ASCII); whether its owner is a local
+// account, and its owner's actor id (collectionOwnerSql), against which a remote one's id is judged
+// (validRemoteCollection: '' past ACTOR_URI_LIMIT is invalid) and from which a local one's is built
+// (localCollectionUri); and the U+FFFD the name, description and tag store, which wellFormed compares. R's term charges
+// these columns, and every read of them is taggableCollections'.
 export const TAGGED_COLLECTION_COLUMNS: ColumnMap = {
   id: "c.id",
   account_id: "c.account_id",
-  username: TAG_OWNER.username,
-  username_bytes: TAG_OWNER.username_bytes,
+  owner_local: "a.domain IS NULL",
   text_replacements: ["c.name", "c.description", "c.tag"].map(storedReplacementsSql).join(" + "),
   local: "c.local",
   name: "c.name",
@@ -260,7 +250,7 @@ export const TAGGED_COLLECTION_COLUMNS: ColumnMap = {
   url: "c.url",
   created_at: "c.created_at",
   updated_at: "c.updated_at",
-  owner_uri: TAG_OWNER.owner_uri,
+  owner_uri: actorUriSql("a.uri"),
 };
 
 // Collection#to_param's page: a local collection's url (collection_url, the page of web-pages/collection.ts).
@@ -296,22 +286,16 @@ function shallowTag(tag: string | null, origin: string): ShallowTag | null {
   return name === "" || !withinTagNameBound(name) ? null : { name, url: `${origin}/tags/${encodeURIComponent(name)}` };
 }
 
-// Collection's ActivityPub id (ActivityPub::TagManager#uri_for): a local one's as localCollectionUri builds it (null
-// while no route serves it), a remote one's as stored.
-export function collectionUri(
-  row: CollectionOwner & Pick<CollectionRow, "id" | "local" | "uri">,
-  origin: string,
-): string | null {
-  return row.local === 1 ? localCollectionUri(row, row.id, origin) : (row.uri ?? "");
+// Collection's ActivityPub id (ActivityPub::TagManager#uri_for): a local one's as localCollectionUri builds it (null for
+// an actor id it does not read), a remote one's as stored.
+export function collectionUri(row: CollectionOwner & Pick<CollectionRow, "id" | "local" | "uri">): string | null {
+  return row.local === 1 ? localCollectionUri(row.owner_uri, row.id) : (row.uri ?? "");
 }
 
-// The Collection `row` presents with `items`; null for a local one whose id no route serves (localCollectionUri), which
-// every answer leaves out.
-export function presentCollection(row: CollectionRow, items: readonly ItemRow[], origin: string): Collection | null {
-  const uri = collectionUri(row, origin);
-  if (uri === null) {
-    return null;
-  }
+// The Collection `row` presents with `items`: its uri '' where collectionUri gives none, as a remote one's is without
+// a stored id; `origin` the request's, for its url and its tag's, as Mastodon's url helpers take the request's host.
+export function presentCollection(row: CollectionRow, items: readonly ItemRow[], origin: string): Collection {
+  const uri = collectionUri(row) ?? "";
   const presented = items.map(presentItem);
   const local = row.local === 1;
   return {
@@ -387,7 +371,7 @@ export function taggedCollectionsOf(
   }
   const shown = taggableCollections(
     db,
-    origin,
+    undefined,
     `json_each(?1) w CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = w.value
 			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id`,
     collectionViewerSql("c", "?2"),
@@ -400,10 +384,9 @@ export function taggedCollectionsOf(
     viewer,
   );
   const presented = new Map(
-    shown.flatMap((row) => {
+    shown.map((row) => {
       const url = row.local === 1 || storableUrl(row.url, COLLECTION_URL_BYTES) ? row.url : null;
-      const collection = presentCollection({ ...row, url }, items.get(row.id) ?? [], origin);
-      return collection === null ? [] : [[row.id, collection] as const];
+      return [row.id, presentCollection({ ...row, url }, items.get(row.id) ?? [], origin)];
     }),
   );
   for (const { status_id, collection_id } of references.toSorted((a, b) =>
@@ -423,7 +406,7 @@ export function presentCollections(db: Db, rows: readonly CollectionRow[], viewe
     rows.map((row) => row.id),
     viewer,
   );
-  return rows.flatMap((row) => presentCollection(row, items.get(row.id) ?? [], origin) ?? []);
+  return rows.map((row) => presentCollection(row, items.get(row.id) ?? [], origin));
 }
 
 // The collection the notification `id` of `recipient` is about (Notification#target_collection: an

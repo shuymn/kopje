@@ -311,10 +311,11 @@ export function statusFacts(
   // presenter and the writer read them), with no viewer (a1: the Note names each by its id alone, so no collection's
   // content travels in the status's activities): its references by the primary key's prefix (at most
   // MAX_TAGGED_COLLECTIONS, the trigger's bound), each collection and its owner by key, in collection-id order, each by
-  // its id (collectionUri), so a Note never names an id its writer would not have stored or no route serves.
+  // its id (collectionUri), so a Note never names a collection its writer would not have stored. The instance's origin
+  // (#1589's D3), not the author's, is read only for a remote one (taggableCollections).
   const collections = taggableCollections(
     db,
-    origin,
+    undefined,
     `status_collections r CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = r.collection_id
 			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id`,
     "r.status_id = ?1",
@@ -344,7 +345,7 @@ export function statusFacts(
     quotePolicy: row.quote_policy,
     quote: readQuote(db, statusId),
     cardUrl: card === undefined ? null : shownCardUrl(row.visibility, card.url, card.title),
-    collections: collections.flatMap((c) => collectionUri(c, origin) ?? []),
+    collections: collections.flatMap((c) => collectionUri(c) ?? []),
   };
 }
 

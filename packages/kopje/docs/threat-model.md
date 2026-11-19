@@ -1981,59 +1981,64 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   (migration `0120_tagged_collections`, #1589's D26) are the collections it tags that are shown to the viewer, each with
   the members shown to the viewer, on an original and a quoted status (a boost presents none, its original them), each
   only while a status can tag it, whatever the viewer (one decision, `taggableCollections`: its owner available, and
-  `taggable`): its name, description and tag well-formed UTF-8 as stored; a local one only while its owner is a local
-  account whose username, read whole within `USERNAME_LIMIT` bytes, is one the collection routes take (`ROUTE_USERNAME`,
-  1 to 64 ASCII letters, digits or underscores, the routes' own pattern) and whose actor id is that username's route on
-  the instance's origin; a remote one only while its id is a valid id on its owner's origin, that owner's id read within
-  `ACTOR_URI_LIMIT` (`actorUriSql`), and its name and description are within its writer's bounds, and its `url` only as
-  its writer would store it. One function builds a local collection's id from its owner's columns
-  (`localCollectionUri`), and every surface that emits it (the API's `uri`, `url` and `tagged_collections`, the Note's
-  tag, the collection's documents and activities, a local member's authorization, its page) and the route that serves it
-  take it from there, so a collection whose owner's actor id is not that route is left out everywhere: its routes, its
-  items' and its members' authorizations', its page and its owner's `featured_collections` answer 404, its activities
-  are not sent, and the API refuses to create one for such an owner (403) or to update one (404). So a restored dump's
-  malformed text is presented nowhere and no collection id names a route that does not serve it, or a document of
-  another id. The writer applies the same decision to a post's links and a Note's tags before it takes the first four,
-  so a collection no surface shows takes no slot; R45, the part that depends on the viewer, is the readers' alone, and a
-  collection that stops being available after the post is written is left out as they read it. No public page presents
-  them or reads a reference: the status page and its thread, the profile's tabs and pins, the hashtag page, the interact
-  handoff, oEmbed and the `/authorize_interaction` result present `[]`. A local status's ActivityPub forms (its Note or
-  Question as served, in the outbox and in `featured`, its `Create` and `Update`s and a `QuoteRequest`'s instrument)
-  name each collection it tags that a status can tag (`taggableCollections`) by its id alone, under the
-  `featured_collections` terms, so no collection's name, description or members travel in the post's activities. This
-  bounds the wire's content, not who learns of the collection: a local collection's id is its owner's route, which names
-  the owner, and a fetch of it is judged by R45 for the fetcher, the remote account whose stored key the signature names
-  (a key Kopje does not store names none, and the fetch is anonymous), so a server whose user the owner blocks may still
-  read it with another key, its instance actor's included unless the owner blocks that account or its domain, or show
-  its copy to that user. _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`,
-  `collectionItemShownSql`, `featureApprovalSql`, `featureApprovalReads`, `mayFeatureSql` and `inCollectionsSql` in
-  `src/domain/audience.ts`, `statusFacts`, `noteOf` and `contextOf` (`src/domain/activities.ts`), the account presenter
-  and `presentFor` (`src/domain/accounts.ts`), `src/domain/collections.ts`, `notifiedCollection`, `taggedCollectionsOf`
-  (read by the status presenter's `hydrate` unless `Present.page`, which `pagePresent` in
-  `src/domain/web-pages/site.ts`, oEmbed and `/authorize_interaction` set), `taggableCollections`, `localCollectionUri`
-  and `shownItems` (`src/domain/collection-presenter.ts`), `severCollections` (`src/domain/collections.ts`, run by a
-  local block in `src/domain/blocks.ts`), the documents and activities in `src/domain/collection-documents.ts` (served
-  by `src/federation/routes.ts`); `test/collections.test.ts` ("shows a collection and its items only as R45 allows",
-  "asks the member's consent: discoverable, and unlocked or followed, no block either way, local", "lets only the item's
-  account revoke it, which keeps the row and the membership listed"), `test/blocks.test.ts` ("revokes and deletes the
-  collection memberships a block severs", "delivers a block's collection Removes to every follower in bounded rounds
-  (RES-6)"), `test/collection-notifications.test.ts` ("presents the collection to its recipient, with the items R45
-  shows the recipient, on v1 and v2"), `test/feature-approval.test.ts`, `test/federation-collections.test.ts` ("refuses
-  a fetcher the owner blocks or domain-blocks, and an authorization to one its member blocks", "leaves a suspended
-  member out of every document, and its FeaturedItem 404, as REST and the page do", "sends a collection's Add, Update
-  and Remove and its items' Add and Remove to followers and members", "sends the owner's Remove of an item a block or
-  its member's revoke takes out", "keeps an item's Add before the Removes a block and its owner record around it"),
-  `test/policy-oracle.test.ts` (against `collectionFound`, `collectionShown`, `collectionListed`, `collectionItemShown`,
-  `featureApproval`, `mayFeature` and `inCollections` in `test/policy-model.ts`), `test-node/policy-boundary.test.ts`,
-  `test/tagged-collections.test.ts` ("shows each viewer the collection and the items R45 shows them", "presents a
-  boost's original and a quote's own and quoted collections", "reads no reference for a page, which presents none, while
-  the API presents them", "presents Y alone, with its uri for the url no writer would store", "leaves out a restored
-  collection whose text reads past its writer's bounds", "leaves out a restored collection whose text is malformed,
-  however wide it decodes", "reads a local owner's restored username within USERNAME_LIMIT bytes, and leaves its
-  collection out", "names a local owner's collection only by a username, as read, that its routes take", "leaves out a
-  local collection whose owner is not a local account", "gives a post's slots only to collections a status can tag,
-  before it takes the first four", "builds a local collection's id in one place, and leaves it out wherever its route
-  would not serve it", "gives a post's slots only to collections whose owner is available, before it takes the first
+  `taggable`): its name, description and tag well-formed UTF-8 as stored; a local one only while it is stored as local,
+  its owner is a local account, and its id has the path the collection route takes (`ROUTE_USERNAME`, 1 to 64 ASCII
+  letters, digits or underscores, the routes' own pattern), on any host; a remote one only while it is stored as remote,
+  its id is a valid id on its owner's origin, that owner's id read within `ACTOR_URI_LIMIT` (`actorUriSql`), and not on
+  the instance's origin (`instanceOrigin`, the configured domain the routes answer on), its name and description are
+  within its writer's bounds, and its `url` only as its writer would store it. One function builds a local collection's
+  id from its owner's stored actor id, `<actor id>/collections/<id>` (`localCollectionUri`), and every surface that
+  emits it (the API's `uri` and `tagged_collections`, the Note's tag, the collection's documents and activities, its
+  `FeaturedItem`s, a local member's authorization, the owner's `featured_collections`, its page's alternate) takes it
+  from there, comparing it with neither the request's host nor the configured one: a collection's id resolves exactly
+  when its owner's actor id does, so an account whose actor id does not (restored inconsistently, or kept from an
+  earlier domain) has collections no more and no less reachable than itself, and the API creates and updates its
+  collections as any owner's. The owner's `featured_collections` lists its local collections alone, under its stored
+  actor id, wherever the actor route serves the owner. So a restored dump's malformed text is presented nowhere, and a
+  restored row stored as remote under a local id is neither listed, tagged nor authorized. The writer applies the same
+  decision to a post's links and a Note's tags before it takes the first four, so a collection no surface shows takes no
+  slot, and a link names a local collection when it is on the instance's origin, whatever the author's actor id or the
+  request's host; R45, the part that depends on the viewer, is the readers' alone, and a collection that stops being
+  available after the post is written is left out as they read it. No public page presents them or reads a reference:
+  the status page and its thread, the profile's tabs and pins, the hashtag page, the interact handoff, oEmbed and the
+  `/authorize_interaction` result present `[]`. A local status's ActivityPub forms (its Note or Question as served, in
+  the outbox and in `featured`, its `Create` and `Update`s and a `QuoteRequest`'s instrument) name each collection it
+  tags that a status can tag (`taggableCollections`) by its id alone, under the `featured_collections` terms, so no
+  collection's name, description or members travel in the post's activities. This bounds the wire's content, not who
+  learns of the collection: a local collection's id is under its owner's actor id, which names the owner, and a fetch of
+  it is judged by R45 for the fetcher, the remote account whose stored key the signature names (a key Kopje does not
+  store names none, and the fetch is anonymous), so a server whose user the owner blocks may still read it with another
+  key, its instance actor's included unless the owner blocks that account or its domain, or show its copy to that user.
+  _Enforced (main):_ `collectionFoundSql`, `collectionShownSql`, `collectionListedSql`, `collectionItemShownSql`,
+  `featureApprovalSql`, `featureApprovalReads`, `mayFeatureSql` and `inCollectionsSql` in `src/domain/audience.ts`,
+  `statusFacts`, `noteOf` and `contextOf` (`src/domain/activities.ts`), the account presenter and `presentFor`
+  (`src/domain/accounts.ts`), `src/domain/collections.ts`, `notifiedCollection`, `taggedCollectionsOf` (read by the
+  status presenter's `hydrate` unless `Present.page`, which `pagePresent` in `src/domain/web-pages/site.ts`, oEmbed and
+  `/authorize_interaction` set), `taggableCollections`, `localCollectionUri` and `shownItems`
+  (`src/domain/collection-presenter.ts`), `instanceOrigin` (`src/domain/instance-domain.ts`), `severCollections`
+  (`src/domain/collections.ts`, run by a local block in `src/domain/blocks.ts`), the documents and activities in
+  `src/domain/collection-documents.ts` (served by `src/federation/routes.ts`); `test/collections.test.ts` ("shows a
+  collection and its items only as R45 allows", "asks the member's consent: discoverable, and unlocked or followed, no
+  block either way, local", "lets only the item's account revoke it, which keeps the row and the membership listed"),
+  `test/blocks.test.ts` ("revokes and deletes the collection memberships a block severs", "delivers a block's collection
+  Removes to every follower in bounded rounds (RES-6)"), `test/collection-notifications.test.ts` ("presents the
+  collection to its recipient, with the items R45 shows the recipient, on v1 and v2"), `test/feature-approval.test.ts`,
+  `test/federation-collections.test.ts` ("refuses a fetcher the owner blocks or domain-blocks, and an authorization to
+  one its member blocks", "leaves a suspended member out of every document, and its FeaturedItem 404, as REST and the
+  page do", "sends a collection's Add, Update and Remove and its items' Add and Remove to followers and members", "sends
+  the owner's Remove of an item a block or its member's revoke takes out", "keeps an item's Add before the Removes a
+  block and its owner record around it"), `test/policy-oracle.test.ts` (against `collectionFound`, `collectionShown`,
+  `collectionListed`, `collectionItemShown`, `featureApproval`, `mayFeature` and `inCollections` in
+  `test/policy-model.ts`), `test-node/policy-boundary.test.ts`, `test/tagged-collections.test.ts` ("shows each viewer
+  the collection and the items R45 shows them", "presents a boost's original and a quote's own and quoted collections",
+  "reads no reference for a page, which presents none, while the API presents them", "presents Y alone, with its uri for
+  the url no writer would store", "leaves out a restored collection whose text reads past its writer's bounds", "leaves
+  out a restored collection whose text is malformed, however wide it decodes", "decides a local collection by its
+  owner's actor id's path, on any host, whatever the username", "leaves out a local collection whose owner is not a
+  local account", "gives a post's slots only to collections a status can tag, before it takes the first four", "builds a
+  local collection's id from its owner's stored actor id on every surface, whatever the host", "names a local collection
+  by the instance's origin, whatever the author's actor id's", "neither lists nor tags a remote row whose id is on the
+  instance's origin", "gives a post's slots only to collections whose owner is available, before it takes the first
   four", "gives no slot to a collection whose restored text is malformed", "names each collection by its id alone, after
   the other tags, under the featured_collections terms", "lets S's Note name Y alone, by its id", "leaves out a
   collection whose owner's id is past ACTOR_URI_LIMIT, and references none"),
@@ -3925,7 +3930,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   notifications: the Store operation that returns it owns one budget of `ANSWER_BYTES` (8 MiB of the answer's JSON,
   containers included) or a stated unit or count bound, and admits items whole in traversal order, the first whatever
   its size, so what is held past the admitted answer is one chunk of rows and one item at their maxima ("Heap at 8 MiB
-  per answer"). An answer that presents statuses owns `STATUS_ANSWER_BYTES` instead (7,831,552 bytes, 8 MiB less 544
+  per answer"). An answer that presents statuses owns `STATUS_ANSWER_BYTES` instead (7,839,744 bytes, 8 MiB less 536
   KiB), a composite one (search with statuses among its types) from its first admission: the timelines and status
   lists, a context, quotes, statuses by id, trending statuses, notifications, grouped notifications, notification
   requests, conversations, admin reports and annual reports. Each byte an answer admits is held three times in the
@@ -5169,7 +5174,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   measure of the 254 KiB past which it is skipped and logged with no string made (254 KiB keeps the largest frame and
   its terminating byte within 256 KiB). A unit within it is encoded once and
   sent one stream's envelope at a time, so a unit's isolate peak is its rows, its presented object and four frames of
-  the largest at most, 48,502,314.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
+  the largest at most, 48,486,839.5 bytes ("Heap at 8 MiB per answer", the stream unit's table). A unit is charged its
   whole payload once presented, sent or skipped, so 4 MiB of payload is the threshold past which a turn starts no unit:
   a turn presents at most 18,723,568 bytes, 4 MiB less 254 KiB plus 2S + 2 for the unit that crosses it (encoding the
   JSON again at most doubles it), S = 7,394,679 being the most JSON a streamed subject presents, the quote
@@ -5636,23 +5641,19 @@ An imported attachment description of malformed UTF-8 at its stored bound (0xFF 
 such attachments reads within R (`test/status-bounds.test.ts` ("an attachment of malformed imported text")).
 A status's tagged collections are read before any is judged, so the raw fill holds them as a restored dump may, each
 text the read takes at its widest decoded: the name, description and tag at their CHECKs' bytes (1,024, 8,192 and
-1,024), the owner's actor id at `ACTOR_URI_LIMIT` (`actorUriSql`) and its username at `USERNAME_LIMIT` (NULL past it),
-each a byte 0xC0 and continuation bytes, which SQLite counts as one character (so `usernameSql`'s cut of 42 keeps it
-whole) and which decode to a U+FFFD a byte, three bytes. Decoding gives one code point for each well-formed sequence, of
-as many bytes, and one U+FFFD for each malformed sequence of at least one byte, so no stored bytes decode past three
-times their count, and the heap model counts each column at that width (`malformed` in `test/collection-maxima.ts`;
+1,024), and the owner's actor id at `ACTOR_URI_LIMIT` (`actorUriSql`), each a byte 0xC0 and continuation bytes, which
+decode to a U+FFFD a byte, three bytes. Decoding gives one code point for each well-formed sequence, of as many bytes,
+and one U+FFFD for each malformed sequence of at least one byte, so no stored bytes decode past three times their count,
+and the heap model counts each column at that width (`malformed` in `test/collection-maxima.ts`;
 `test/tagged-collections.test.ts` ("reads a restored collection's every text at three times the bytes the read takes of
 it")). The presenter leaves out a collection whose name, description or tag is malformed, read with more U+FFFD than its
 stored bytes hold as EF BF BD (a stored EF BF BD is one U+FFFD, and each malformed sequence adds one, a replacement of
-the same width such as F0 90 80 included), and a local one whose owner is not a local account, whose username, read
-whole, is not one its routes take, or whose actor id is not that username's route (`taggable`, `wellFormed` and
-`collectionOwnerRoute` in `src/domain/collection-presenter.ts`), so no answer presents a value decoding replaced
+the same width such as F0 90 80 included), and a local one whose owner is not a local account or whose id, under its
+owner's actor id, is not on the collection route's path (`taggable`, `wellFormed` and `localCollectionUri` in
+`src/domain/collection-presenter.ts`), so no answer presents a value decoding replaced
 (`test/tagged-collections.test.ts` ("leaves out a restored collection whose text is malformed, however wide it decodes",
-"reads a local owner's restored username within USERNAME_LIMIT bytes, and leaves its collection out", "names a local
-owner's collection only by a username, as read, that its routes take", "gives no slot to a collection whose restored
-text is malformed", "builds a local collection's id in one place, and leaves it out wherever its route would not serve
-it")).
-A local account also shows `noindex` and `roles`, at most the Owner's
+"decides a local collection by its owner's actor id's path, on any host, whatever the username", "gives no slot to a
+collection whose restored text is malformed")). A local account also shows `noindex` and `roles`, at most the Owner's
 badge: the account occurrence's conservative JSON adds those keys (63 bytes) to the remote one measured, and what a
 local account's four fields at their derived most (37,677 bytes: names of six-byte escapes, each value at 7,822 and
 verified) present past the remote one's fields. Every presented account but the viewer's moved to an account of its own
@@ -5684,17 +5685,17 @@ logs (6.01 MB escaped, 4.64 MB raw, the fill of the largest SQLite read) are mea
 | ---------------------------------------------------------------- | ----------------- | --------------- | ----------------- | --------- | ----- | -------------- |
 | Account occurrence, with the account it moved to                 | 124,499           | 142,608         | 150,428           | 1         | 216   | 1.8%           |
 | Moved-to account (nested), derived from its caps                 | 12,464            |                 | 11,340            | 1         |       | 0.1%           |
-| Status                                                           | 4,622,481         | 2,817,458       | 2,825,262         | 1,596     | 3,292 | 33.7%          |
-| Quote (the status and its quoted status)                         | 7,166,350         | 5,625,269       | 5,640,634         | 2,139     | 6,566 | 67.2%          |
-| Boost of a quote                                                 | 7,462,659         | 6,036,405       | 6,057,734         | 2,198     | 7,650 | 72.2%          |
-| Conversation: 12 participants presented, its last status a quote | 8,865,533         | 7,336,534       | 7,394,679         | 2,190     | 9,149 | 88.2%          |
-| Notification group: 8 sample accounts, its status a quote        | 8,241,744         | 6,766,557       | 6,810,442         | 2,190     | 8,306 | 81.2%          |
-| Report: its first status a quote past the 2 MiB allowance        | 7,551,900         | 6,230,100       | 6,252,835         | 2,157     | 7,599 | 74.5%          |
+| Status                                                           | 4,619,421         | 2,817,458       | 2,825,262         | 1,597     | 3,292 | 33.7%          |
+| Quote (the status and its quoted status)                         | 7,160,230         | 5,625,269       | 5,640,634         | 2,140     | 6,566 | 67.2%          |
+| Boost of a quote                                                 | 7,456,539         | 6,036,405       | 6,057,734         | 2,199     | 7,650 | 72.2%          |
+| Conversation: 12 participants presented, its last status a quote | 8,859,413         | 7,336,534       | 7,394,679         | 2,191     | 9,149 | 88.2%          |
+| Notification group: 8 sample accounts, its status a quote        | 8,235,624         | 6,766,557       | 6,810,442         | 2,191     | 8,306 | 81.2%          |
+| Report: its first status a quote past the 2 MiB allowance        | 7,545,780         | 6,230,100       | 6,252,835         | 2,158     | 7,599 | 74.5%          |
 | An admin.report notification of that report                      | 2,374,225         | 411,542         | 444,352           | 1,074     | 596   | 5.3%           |
 | A moderation_warning notification, its local account at bounds   | 134,434           | 294,570         | 364,965           | 8         | 694   | 4.4%           |
 | Its notification group                                           | 134,434           | 294,759         | 365,154           | 8         | 701   | 4.4%           |
-| A filtered favourite of the quote, as include_filtered lists it  | 7,301,687         | 5,768,003       | 5,786,933         | 2,162     | 6,786 | 69.0%          |
-| ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,810,046         | 4,262,049       |                   | 1,342     | 3,184 | 50.8%          |
+| A filtered favourite of the quote, as include_filtered lists it  | 7,295,567         | 5,768,003       | 5,786,933         | 2,163     | 6,786 | 69.0%          |
+| ActivityPub Note: a local status at its bounds, 1,000 addressed  | 3,809,036         | 4,262,049       |                   | 1,343     | 3,184 | 50.8%          |
 | Its Create (the Note and its addressing again)                   |                   | 6,318,633       |                   |           |       | 75.3%          |
 | Profile, derived from its caps                                   |                   | 326,185         | 372,038           |           |       | 4.4%           |
 | Announcement: each part derived from its caps                    |                   | 121,774         | 248,997           |           |       | 3.0%           |
@@ -5834,8 +5835,8 @@ accounts, its first status (a quote) and nothing more, or a small first status a
 and its reporter (a remote one, from a `Flag`) and its comment are at their bounds: the comment's CHECK (migration
 `0054_remote_reports`) holds 20,000 bytes, which a stored NUL followed by U+0001 makes about 120 KB of JSON (Kopje's
 writers make about 30 KB: 5,000 code points). Every shape stays within 89% of an answer of 8 MiB with filter results
-included, measured and conservative alike, and so within `STATUS_ANSWER_BYTES`, 93.4% of 8 MiB: 89% of 8 MiB is 95.3% of
-it, and the largest shape, the conversation's conservative JSON, 94.42%. So an answer that admits whole items always
+included, measured and conservative alike, and so within `STATUS_ANSWER_BYTES`, 93.5% of 8 MiB: 89% of 8 MiB is 95.2% of
+it, and the largest shape, the conversation's conservative JSON, 94.32%. So an answer that admits whole items always
 fits its first. The 89% ceiling accommodates the conversation's 14
 account arrays and four status/poll arrays, allowing 40 typical emoji per status and 20 per profile. Through the real
 Store RPC, maximal answers of plain notifications, grouped notifications, conversations, admin reports and the directory
@@ -5849,7 +5850,7 @@ answer that presents statuses at most `STATUS_ANSWER_BYTES` (RES-3), since every
   object and 32 B per value. Peaks add 25% headroom to rows.
 - Presented objects take at most three times their JSON bytes (a string takes no more than its JSON bytes, since JSON
   only adds escapes, and the rest is per-object overhead; an assumption, as workerd exposes no heap to measure): the
-  admitted answer's 25.2 MB (23.49 MB at `STATUS_ANSWER_BYTES`), the first rejected item's three times its JSON.
+  admitted answer's 25.2 MB (23.52 MB at `STATUS_ANSWER_BYTES`), the first rejected item's three times its JSON.
   Every string field counts on its own, even one that repeats another's string (an attachment's `remote_url` is its
   `url`), and rows and presented objects often share the same string instances, which the model does not credit
   either.
@@ -5938,12 +5939,12 @@ short mentions and 70 hashtags, and 1.15 at the maxima.
 Peaks, as `test/status-bounds.test.ts` ("keeps the peaks of the heap model within their bounds, from the maxima per
 column") computes them, per column: an item's rows are, for each query and column its read returns, the most heap any
 fill gives that column under the model, summed (so poll choices count as escaped and the other text as raw), with 25%
-headroom, each original tagging four distinct collections at their bounds, their owner's actor id and username included,
+headroom, each original tagging four distinct collections at their bounds, their owner's actor id included,
 which the read returns with each collection (as restored text in the raw fill, at its decoded width); the largest
 single row sums each column's largest value the same way (1.20 MB, the escaped poll row, which is at least RowMeter's
 count); the rejected item is three times the item's
 conservative JSON (above); the admitted answer three times its budget, `STATUS_ANSWER_BYTES` for each answer below
-(23.49 MB). The test measures its own maxima, whatever runs before it, and
+(23.52 MB). The test measures its own maxima, whatever runs before it, and
 asserts the timelines' peaks within half of the Store isolate's 128 MB with at least 4,096 bytes to spare, and the
 groups' and reports' within the whole. The peaks follow from the fills and the constants, which the test pins, so it
 asserts them exactly too (`HEAP_PEAKS` in `test/presented-maxima.ts`): `test-node/presented-maxima.test.ts` compares the
@@ -5951,9 +5952,9 @@ two Store tables below (the rows, the rejected items and the answers' peaks) and
 
 | Item                                           | Rows, with 25% headroom | Rejected-item objects |
 | ---------------------------------------------- | ----------------------- | --------------------- |
-| Boost of a quote (the largest timeline item)   | 20.29 MB                | 18.17 MB              |
-| Group: its status (a quote), 8 sample accounts | 22.35 MB                | 20.43 MB              |
-| Report: its status and 4 accounts              | 20.52 MB                | 18.76 MB              |
+| Boost of a quote (the largest timeline item)   | 20.27 MB                | 18.17 MB              |
+| Group: its status (a quote), 8 sample accounts | 22.33 MB                | 20.43 MB              |
+| Report: its status and 4 accounts              | 20.50 MB                | 18.76 MB              |
 
 Groups and reports also keep the presentation's state: the compiled filters (50 filters of 20 keywords, about
 0.5 MB) and the filter results cached by status (at most 50 results of about 1.2 KB each, 60 KB a status) for the
@@ -5964,15 +5965,15 @@ pass, and the passes are at most four), 200 for a page of reports (its at most 1
 
 | Answer (Store isolate)                      | Normal   | Backstop fired, the dropped chunk still live | A single item |
 | ------------------------------------------- | -------- | -------------------------------------------- | ------------- |
-| Timelines (largest item a boost of a quote) | 61.97 MB | 63.98 MB                                     | 61.97 MB      |
-| Groups                                      | 76.39 MB | 79.21 MB                                     | 76.39 MB      |
-| Reports                                     | 75.29 MB | 78.11 MB                                     | 75.29 MB      |
+| Timelines (largest item a boost of a quote) | 61.98 MB | 63.99 MB                                     | 61.98 MB      |
+| Groups                                      | 76.40 MB | 79.22 MB                                     | 76.40 MB      |
+| Reports                                     | 75.30 MB | 78.12 MB                                     | 75.30 MB      |
 
 A chunk of several takes at most its target of heap: 392 KiB (0.40 MB) for timelines, 1 MiB (1.05 MB) for groups and
 reports. Normal: the rows are the larger of 1.25 × the target and the item's rows, plus the admitted answer, the
 rejected item and, for groups and reports, their state. With the backstop fired, 1.25 × (the target + 1.20 MB) of
 dropped rows more. The 392 KiB timeline cap and `STATUS_ANSWER_BYTES`, the largest multiple of 8 KiB that does with that
-cap (each byte of budget is three of heap, so 8 KiB more would pass half by 6,466.5 bytes), keep the fallback below
+cap (each byte of budget is three of heap, so 8 KiB more would pass half by 15,567.5 bytes), keep the fallback below
 half the isolate's memory even while the dropped chunk remains live, with at least 4,096 bytes to spare under 64 MB
 (asserted, as above, and exact in `HEAP_PEAKS`; the conversation's JSON keeps 71,182 under its
 ceiling): each remote account row's and moved-to account's cached profile images (two rows at their caps, MEDIA-7),
@@ -5996,8 +5997,8 @@ a timeline's largest item pass half at a chunk of one; it shows none.
 | ------------------------------------------------- | ------------- | -------------- |
 | RPC copy (serialized; deserialized in the Worker) | 8.4 MB        | 25.2 MB        |
 | The Worker's JSON string and the body             |               | 25.2 MB        |
-| Peak, normal                                      | 61.97 MB      | 50 MB          |
-| Peak, the backstop fired                          | 63.98 MB      | 50 MB          |
+| Peak, normal                                      | 61.98 MB      | 50 MB          |
+| Peak, the backstop fired                          | 63.99 MB      | 50 MB          |
 
 The Store's peak is the timelines' (the answer table above, normal and with the backstop fired and the dropped chunk
 still live), while an item is admitted; the RPC copy comes after it. The Worker's JSON string is counted at two bytes
@@ -6025,9 +6026,9 @@ within half of the Store isolate's 128 MB, and pins them (`STREAM_UNIT_PEAKS` an
 
 | Stream unit (Store isolate)                            | Rows, with 25% headroom | Presented objects | Strings and scratch | Peak     |
 | ------------------------------------------------------ | ----------------------- | ----------------- | ------------------- | -------- |
-| Status (`update`, `status.update`: a boost of a quote) | 20.29 MB                | 18.17 MB          | 1.06 MB             | 39.53 MB |
-| Conversation (its last status a quote)                 | 23.97 MB                | 22.18 MB          | 1.06 MB             | 47.22 MB |
-| Notification (its status, report and warning together) | 26.84 MB                | 20.60 MB          | 1.06 MB             | 48.50 MB |
+| Status (`update`, `status.update`: a boost of a quote) | 20.27 MB                | 18.17 MB          | 1.06 MB             | 39.51 MB |
+| Conversation (its last status a quote)                 | 23.96 MB                | 22.18 MB          | 1.06 MB             | 47.21 MB |
+| Notification (its status, report and warning together) | 26.82 MB                | 20.60 MB          | 1.06 MB             | 48.49 MB |
 | Announcement                                           | 7.28 MB                 | 0.75 MB           | 1.92 MB             | 9.95 MB  |
 
 Held stream output (RES-6) is charged within `instanceBytes`, which leaves the measured idle isolate with 25% headroom,

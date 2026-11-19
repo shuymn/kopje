@@ -1,4 +1,3 @@
-import { selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { sameOrigin } from "../platform/http-url";
@@ -18,10 +17,10 @@ import {
   storedTime,
 } from "../platform/stored-bounds";
 import { sanitizeRemoteCodePoints } from "../security/html";
-import { instanceOrigin, recordItemRemove } from "./collection-documents";
+import { recordItemRemove } from "./collection-documents";
 import {
   type CollectionOwner,
-  collectionOwnerColumns,
+  collectionOwnerSql,
   localCollectionUri,
   storableUrl,
   validRemoteCollection,
@@ -832,8 +831,7 @@ const MEMBER_ROW = `i.id, i.collection_id AS collection, i.state, c.local, i.app
 	i.candidate_approval_uri AS candidate, i.retracted_approval_uri AS retracted`;
 
 // The member's row in the collection `uri`: a stored remote collection's, by collections_uri, else a local
-// collection's, by the id its uri ends with, when the uri is exactly the one Kopje writes for it (localCollectionUri,
-// on the instance's origin: none for a collection whose id no route serves).
+// collection's, by the id its uri ends with, when the uri is exactly the one Kopje writes for it (localCollectionUri).
 function memberRowIn(db: Db, uri: string, member: string): MemberRow | undefined {
   const remote = db.first<MemberRow>(
     `SELECT ${MEMBER_ROW} FROM collections c INDEXED BY collections_uri
@@ -850,16 +848,12 @@ function memberRowIn(db: Db, uri: string, member: string): MemberRow | undefined
     return undefined;
   }
   const local = db.first<MemberRow & CollectionOwner>(
-    `SELECT ${MEMBER_ROW}, ${selectSql(collectionOwnerColumns("c.local", "o"))} FROM collections c
-			INDEXED BY ${COLLECTIONS_ID_INDEX}
+    `SELECT ${MEMBER_ROW}, ${collectionOwnerSql("o")} FROM collections c INDEXED BY ${COLLECTIONS_ID_INDEX}
 			CROSS JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id
 			CROSS JOIN collection_items i INDEXED BY collection_items_member ON i.collection_id = c.id AND i.account_id = ?2
 		WHERE c.id = ?1 AND c.local = 1`,
     id,
     member,
   );
-  const origin = local === undefined ? null : instanceOrigin(db);
-  return local !== undefined && origin !== null && localCollectionUri(local, local.collection, origin) === uri
-    ? local
-    : undefined;
+  return local !== undefined && localCollectionUri(local.owner_uri, local.collection) === uri ? local : undefined;
 }

@@ -17,15 +17,15 @@ let sequence = 840_000_000_000_000_000n;
 const nextId = () => String(sequence++);
 
 // `count` remote collections at their maxima as a sync stores them (#1589's D26), and their ids: their owner on
-// o.example with its actor id and username at their bounds in ASCII (ACTOR_URI_LIMIT bytes, REMOTE_USERNAME_LIMIT
-// characters; the reads take both with each collection), each id and web address on its origin with the rest of its
+// o.example with its actor id and username at their bounds in ASCII (ACTOR_URI_LIMIT bytes, which the reads take with
+// each collection, and REMOTE_USERNAME_LIMIT characters), each id and web address on its origin with the rest of its
 // bound in `"` (escaped to two bytes), its name and description at their bounds in `unit` (a character JSON escapes
 // to six bytes, or one of four UTF-8 bytes), the longest language, a hashtag at its bound, and the 25 accepted items of
 // 25 members a listing stores (each with its uri, so R45 shows it). Presented, each is COLLECTION_JSON_MAX less its
 // origin's bytes in its id and url. `restored`: as a restored dump may hold them, each text a tag reads that can be
 // malformed at the most the read takes of it, decoded at its widest (`malformed`): the owner's actor id at
-// ACTOR_URI_LIMIT bytes (actorUriSql), its username at USERNAME_LIMIT (TAG_OWNER_USERNAME), and the name, description
-// and tag at their CHECKs' bytes. The other columns the read takes are ASCII or digits by their CHECKs. None is shown.
+// ACTOR_URI_LIMIT bytes (actorUriSql), and the name, description and tag at their CHECKs' bytes; its username, which no
+// read takes, at USERNAME_LIMIT. The other columns the read takes are ASCII or digits by their CHECKs. None is shown.
 export async function maximalCollectionRows(
   store: StoreStub,
   unit: string,

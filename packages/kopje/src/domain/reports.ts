@@ -181,7 +181,7 @@ export const createReport = userWriteOperation<ReportInput, ReportResult>((db, i
           actorUri: instanceActorUri(domain),
           targetUri: account.uri,
           statusUris: statuses.map((status) => status.uri),
-          collectionUris: collectionUris(db, collectionIds, `https://${domain}`),
+          collectionUris: collectionUris(db, collectionIds),
           comment,
           recipients,
         }),

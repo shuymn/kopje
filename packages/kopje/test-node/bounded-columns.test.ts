@@ -362,6 +362,8 @@ const SAFE_INTERPOLATIONS = new Set([
   "linkReviewSql",
   "listedTrendLinkSql",
   "trendCopySql",
+  // A collection's owner's actor id as actorUriSql reads it (domain/collection-presenter.ts), a bounded value.
+  "collectionOwnerSql",
   "cutSql",
   // Whether a job may run now: a predicate on its retry columns (domain/job-attempts.ts).
   "jobDueSql",
@@ -723,7 +725,7 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/actor-row.ts column a.uri": { count: 1, reason: ACTIVITYPUB },
   "src/domain/actors.ts accounts.uri": { count: 1, reason: ACTIVITYPUB },
   // A local collection's FEP-7aa9 documents and activities (its FeatureRequest included): its members' ids, sent whole
-  // as the actor documents send theirs. Its owner's id is read through collectionOwnerColumns (actorUriSql).
+  // as the actor documents send theirs. Its owner's id is read through collectionOwnerSql (actorUriSql).
   "src/domain/collection-documents.ts accounts.uri": {
     count: 5,
     reason: "an ActivityPub document or activity of a local collection (its members' ids), not an API answer",
@@ -795,6 +797,10 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/collections.ts interpolation COLLECTION_ITEM_STATES.accepted": {
     count: 1,
     reason: "a number constant (the accepted state, ANNOUNCED_SQL), naming no column",
+  },
+  "src/domain/collections.ts accounts.username": {
+    count: 1,
+    reason: `the owner of a local collection whose document an ActivityPub client asks for (${LOCAL})`,
   },
   "src/domain/admin-authority.ts column a.username": { count: 1, reason: LOCAL },
   "src/domain/deliveries.ts accounts.username": {

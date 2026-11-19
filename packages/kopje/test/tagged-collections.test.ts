@@ -1,4 +1,4 @@
-import { runInDurableObject } from "cloudflare:test";
+import { createExecutionContext, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
@@ -36,7 +36,7 @@ import {
   MAX_TAGGING_STATUSES,
 } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
-import { type ApiHarness, bearer, sql } from "./api-helpers";
+import { type ApiHarness, bearer, setSetting, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { acceptQuote } from "./budget-helpers";
 import { malformed, maximalCollections } from "./collection-maxima";
@@ -1336,11 +1336,10 @@ describe("rows no writer produces (7-T9)", () => {
         observedSql(state.storage.sql, (rows) => {
           for (const row of rows) {
             if ("owner_uri" in row && "name" in row) {
-              const { owner_uri, username, name, description, tag } = row as Record<string, string>;
+              const { owner_uri, name, description, tag } = row as Record<string, string>;
               const width = (value: string) => utf8Length(value);
               widths.push({
                 owner_uri: width(owner_uri!),
-                username: width(username!),
                 name: width(name!),
                 description: width(description!),
                 tag: width(tag!),
@@ -1355,7 +1354,6 @@ describe("rows no writer produces (7-T9)", () => {
     });
     const widest = {
       owner_uri: 3 * ACTOR_URI_LIMIT,
-      username: 3 * USERNAME_LIMIT,
       name: 3 * 4 * COLLECTION_NAME_LENGTH.remote,
       description: 3 * 4 * COLLECTION_DESCRIPTION_LENGTH.remote,
       tag: 3 * 4 * MAX_TAG_LENGTH,
@@ -1364,10 +1362,12 @@ describe("rows no writer produces (7-T9)", () => {
     expect({ presented: read.presented, named: read.named }).toEqual({ presented: 0, named: [] });
   });
 
-  // alice's username restored as 0xC0 and 8,191 continuation bytes, one character to usernameSql's fallback cut: the
-  // REST tag read and the Note's read take it within USERNAME_LIMIT stored bytes (NULL past them), and neither presents
-  // nor names L, whose id would carry it; V, beside it, is presented and named.
-  it("reads a local owner's restored username within USERNAME_LIMIT bytes, and leaves its collection out", async () => {
+  // #1589's D2: a local collection can be tagged while its owner is a local account and its id (its owner's stored actor
+  // id and its own) has a path the collection route takes (ROUTE_USERNAME under /ap/users/, no query), on any host; the
+  // username plays no part. alice's actor id is restored as her route, the same path on another host (kept from an
+  // earlier domain), 64 letters, and her route beside a malformed username: L is tagged, presented and named under that
+  // actor id. As a-b, 65 letters, a path off /ap/users and her route with a query, it is not; V, beside it, always is.
+  it("decides a local collection by its owner's actor id's path, on any host, whatever the username", async () => {
     const t = await setup();
     const L = await localCollection(t, ALICE, 1);
     const owner = await remoteOwner(t, 2, `${MASTODON}/users/x`);
@@ -1376,114 +1376,53 @@ describe("rows no writer produces (7-T9)", () => {
     for (const id of [L, V]) {
       await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", S, id);
     }
-    await sql(
-      t.store,
-      "UPDATE accounts SET username = CAST(unhex('C0' || replace(hex(zeroblob(8191)), '00', '80')) AS TEXT) WHERE id = ?",
-      ALICE,
-    );
-    const read = await runInDurableObject(t.store, (_instance, state) => {
-      let longest = 0;
-      const db = new Db(
-        observedSql(state.storage.sql, (rows, query) => {
-          for (const row of rows) {
-            if (query.includes("CROSS JOIN collections c") && typeof row.username === "string") {
-              longest = Math.max(longest, row.username.length);
-            }
-          }
-        }),
-      );
-      const presented = (taggedCollectionsOf(db, [S], null, LOCAL).get(S) ?? []).map((collection) => collection.id);
-      const named = statusFacts(db, S, () => null)?.collections ?? [];
-      return { longest, presented, named };
-    });
-    expect(read.longest).toBeLessThanOrEqual(USERNAME_LIMIT);
-    expect({ presented: read.presented, named: read.named }).toEqual({
-      presented: [V],
-      named: [`${MASTODON}/users/x/collections/2`],
-    });
-  });
-
-  // alice's username restored within USERNAME_LIMIT bytes, which the read returns: 0xC0 and 254 continuation bytes,
-  // read as 255 U+FFFD; F0 90 80, a sequence cut short read as one U+FFFD of the same three bytes; 45 letters and an é,
-  // which usernameSql's fallback cuts to 42 letters, not hers; and a-b, a.b and 65 letters, usernames of Mastodon's
-  // grammar that the collection routes do not take, so L's id answers 404 (#1811). None names her at a route, so
-  // neither the REST read nor the Note's presents or names L; V, beside it, is. 64 letters, the most the routes take,
-  // names her: L is presented and named, and its id, dereferenced, is a document of that id. Each ASCII username comes
-  // with her actor id, which the document's id is built from, as a rename leaves them.
-  it("names a local owner's collection only by a username, as read, that its routes take", async () => {
-    const t = await setup();
-    const L = await localCollection(t, ALICE, 1);
-    const owner = await remoteOwner(t, 2, `${MASTODON}/users/x`);
-    const V = await remoteCollection(t, owner, 2, `${MASTODON}/users/x/collections/2`);
-    const S = await posted(t, "S");
-    for (const id of [L, V]) {
-      await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", S, id);
-    }
-    const ascii = (text: string) => Uint8Array.from(new TextEncoder().encode(text)).buffer;
-    const restored: [ArrayBuffer, string | null][] = [
-      [malformed(USERNAME_LIMIT), null],
-      [Uint8Array.from([0xf0, 0x90, 0x80]).buffer, null],
-      [ascii(`${"a".repeat(45)}é`), null],
-      ...["a-b", "a.b", "a".repeat(65), "a".repeat(64)].map((name): [ArrayBuffer, string] => [ascii(name), name]),
+    const alice = Uint8Array.from(new TextEncoder().encode("alice")).buffer;
+    const cases: [string, ArrayBuffer][] = [
+      [`${LOCAL}/ap/users/alice`, alice],
+      ["https://old.example/ap/users/alice", alice],
+      [`${LOCAL}/ap/users/${"a".repeat(64)}`, alice],
+      [`${LOCAL}/ap/users/alice`, malformed(USERNAME_LIMIT)],
+      [`${LOCAL}/ap/users/a-b`, alice],
+      [`${LOCAL}/ap/users/${"a".repeat(65)}`, alice],
+      [`${LOCAL}/users/alice`, alice],
+      [`${LOCAL}/ap/users/alice?x=1`, alice],
     ];
     const seen: unknown[] = [];
-    for (const [username, name] of restored) {
-      await sql(t.store, "UPDATE accounts SET username = CAST(? AS TEXT) WHERE id = ?", username, ALICE);
-      if (name !== null) {
-        await sql(t.store, "UPDATE accounts SET uri = ? WHERE id = ?", `${LOCAL}/ap/users/${name}`, ALICE);
-      }
+    for (const [uri, username] of cases) {
+      await sql(t.store, "UPDATE accounts SET uri = ?, username = CAST(? AS TEXT) WHERE id = ?", uri, username, ALICE);
       const read = await runInDurableObject(t.store, (_instance, state) => {
-        const lengths: (number | undefined)[] = [];
-        const db = new Db(
-          observedSql(state.storage.sql, (rows) => {
-            for (const row of rows) {
-              if ("username_bytes" in row && row.id === L) {
-                lengths.push((row.username as string | null)?.length);
-              }
-            }
-          }),
-        );
-        const shown = taggedCollectionsOf(db, [S], null, LOCAL).get(S) ?? [];
-        const named = statusFacts(db, S, () => null)?.collections ?? [];
-        return { read: lengths, presented: shown.map(({ id }) => id), uris: shown.map(({ uri }) => uri), named };
+        const db = new Db(state.storage.sql);
+        return {
+          presented: (taggedCollectionsOf(db, [S], null, LOCAL).get(S) ?? []).map(({ uri: id }) => id),
+          named: statusFacts(db, S, () => null)?.collections ?? [],
+        };
       });
-      const { uris, ...rest } = read;
-      const route = name === null ? null : (await t.request(`/ap/users/${name}/collections/${L}`, AP_GET)).status;
-      seen.push({ ...rest, route, served: await served(t, [...uris, ...rest.named]) });
+      seen.push({ ...read, linked: await tagged(t, await posted(t, `${LOCAL}/collections/${L}`)) });
     }
     const v = `${MASTODON}/users/x/collections/2`;
-    const left = (length: number, route: number | null = null) => ({
-      read: [length, length],
-      presented: [V],
-      named: [v],
-      route,
-      served: [],
+    const tags = (actor: string) => ({
+      presented: [`${actor}/collections/${L}`, v],
+      named: [`${actor}/collections/${L}`, v],
+      linked: [L],
     });
-    const l64 = `${LOCAL}/ap/users/${"a".repeat(64)}/collections/${L}`;
-    expect(seen).toEqual([
-      left(USERNAME_LIMIT),
-      left(1),
-      left(42),
-      left(3, 404),
-      left(3, 404),
-      left(65, 404),
-      { read: [64, 64], presented: [L, V], named: [l64, v], route: 200, served: [{ status: 200, id: l64 }] },
-    ]);
+    const left = { presented: [v], named: [v], linked: [] };
+    expect(seen).toEqual([...cases.slice(0, 4).map(([uri]) => tags(uri)), left, left, left, left]);
   });
 
-  // A local collection owned by o2, a remote account (a restored row the import admits): the collection routes serve
-  // a local account's alone, so its id, /ap/users/o2/collections/…, answers 404. Neither the REST read nor the Note
-  // presents or names it, and a link to it by either local form references none; V, beside it, is.
+  // A local collection owned by o2, a remote account (a restored row the import admits) whose actor id has the path the
+  // collection route takes: only its owner's locality (#1589's D2) leaves it out. The routes serve a local account's
+  // alone, so /ap/users/o2/collections/… answers 404; neither the REST read nor the Note presents or names it, and a
+  // link to it by either local form references none; V, beside it, is.
   it("leaves out a local collection whose owner is not a local account", async () => {
     const t = await setup();
-    const owner = await remoteOwner(t, 2, `${MASTODON}/users/x`);
+    const owner = await remoteOwner(t, 2, `${MASTODON}/ap/users/o2`);
     const O = await localCollection(t, owner, 1);
-    const V = await remoteCollection(t, owner, 2, `${MASTODON}/users/x/collections/2`);
+    const V = await remoteCollection(t, owner, 2, `${MASTODON}/ap/users/o2/collections/2`);
     const S = await posted(t, "S");
     for (const id of [O, V]) {
       await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", S, id);
     }
-    const v = `${MASTODON}/users/x/collections/2`;
+    const v = `${MASTODON}/ap/users/o2/collections/2`;
     const { body } = await t.api<Status>(`/api/v1/statuses/${S}`, "dave");
     expect(body.tagged_collections.map(({ id, uri }) => ({ id, uri }))).toEqual([{ id: V, uri: v }]);
     expect(await noted(t, S)).toEqual([v]);
@@ -1517,13 +1456,15 @@ describe("rows no writer produces (7-T9)", () => {
     expect(await served(t, [d])).toEqual([{ status: 200, id: d }]);
   });
 
-  // alice's actor id restored as /ap/users/old_alice, her username still alice (the dump round-trip admits it): her
-  // collection L's id, built from her actor id, is no route's, since /ap/users/old_alice names no account and
-  // /ap/users/alice serves a document whose id is under old_alice. So no surface emits it or serves it: REST's status
-  // and collection, the Note, the FeaturedCollection at either path, the page, and a post's link, which references
-  // none. With her actor id her route again, every surface emits the one id, and each dereferences to a document that
-  // declares it.
-  it("builds a local collection's id in one place, and leaves it out wherever its route would not serve it", async () => {
+  // #1589's D1: a local collection's id is its owner's stored actor id and its own, on every surface, whatever the host a
+  // request came on: the API's status and collection, the Note, the owner's listing, the FeaturedCollection at the
+  // owner's route, a FeaturedItem (under the same actor id), dave's FeatureAuthorization and the page's alternate. Over
+  // HTTPS and HTTP each emitted id dereferences to a document of that id, and the owner's writes answer 200 with ids
+  // under the actor id. After a domain change (/admin/config) the ids stay under the stored actor id, which then
+  // resolves no more than alice's actor id does. With alice's actor id restored as /ap/users/old_alice, every surface
+  // emits the old_alice id, which, as her actor id, answers 404; her actor document at her route advertises its
+  // listing there, and that listing is served (D4).
+  it("builds a local collection's id from its owner's stored actor id on every surface, whatever the host", async () => {
     const t = await setup();
     const L = await localCollection(t, ALICE, 1);
     await item(t.store, L, DAVE, 1, 1);
@@ -1534,89 +1475,177 @@ describe("rows no writer produces (7-T9)", () => {
     for (const id of [L, V]) {
       await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", S, id);
     }
-    const v = `${MASTODON}/users/x/collections/2`;
-    const surfaces = async () => {
-      const status = (await t.api<Status>(`/api/v1/statuses/${S}`, "dave")).body;
-      const shown = await t.request(`/api/v1/collections/${L}`, {
-        headers: { authorization: `Bearer ${t.tokens.dave}` },
-      });
-      const uris = status.tagged_collections.map(({ uri }) => uri);
-      const shownUri = shown.ok ? (await shown.json<{ collection: { uri: string } }>()).collection.uri : null;
-      const named = await noted(t, S);
-      return {
-        uris,
-        shown: shownUri,
+    // A request to any URL, through the app as t.request sends one to the instance's.
+    const fetched = async (url: string, init: RequestInit = {}) => {
+      const ctx = createExecutionContext();
+      const response = await t.app.fetch(new Request(url, init), t.env, ctx);
+      await waitOnExecutionContext(ctx);
+      return response;
+    };
+    const on = (origin: string, path: string, init: RequestInit = {}) => fetched(`${origin}${path}`, init);
+    const as = (who: "alice" | "dave") => ({ authorization: `Bearer ${t.tokens[who]}` });
+    // Every id a surface emits for L, read on `origin`, and the ids beside it.
+    const emitted = async (origin: string) => {
+      const json = async <T>(path: string, init?: RequestInit) => (await on(origin, path, init)).json<T>();
+      const status = await json<Status>(`/api/v1/statuses/${S}`, { headers: as("dave") });
+      const got = await on(origin, `/api/v1/collections/${L}`, { headers: as("dave") });
+      const shown = got.ok ? await got.json<{ collection: { uri: string } }>() : null;
+      const listing = await json<{ partOf: string; items: { id: string }[] }>(
+        "/ap/users/alice/featured_collections?page=1",
+        AP_GET,
+      );
+      const document = await json<{ id: string; attributedTo: string }>(`/ap/users/alice/collections/${L}`, AP_GET);
+      const featuredItem = await json<{ id: string }>(`/ap/users/alice/collection_items/${I}`, AP_GET);
+      const authorization = await json<{ interactingObject: string }>(
+        `/ap/users/dave/feature_authorizations/${I}`,
+        AP_GET,
+      );
+      const page = await (await on(origin, `/collections/${L}`)).text();
+      const [named] = await runInDurableObject(
+        t.store,
+        (_instance, state) => statusFacts(new Db(state.storage.sql), S, () => null)?.collections ?? [],
+      );
+      const ids = [
+        status.tagged_collections[0]?.uri,
+        shown?.collection.uri,
         named,
-        served: await served(t, [...uris, ...(shownUri === null ? [] : [shownUri]), ...named]),
-        page: (await t.request(`/collections/${L}`)).status,
-        linked: await tagged(
-          t,
-          await posted(t, `${LOCAL}/collections/${L}`, `${LOCAL}/ap/users/alice/collections/${L}`),
-        ),
+        listing.items[0]?.id,
+        document.id,
+        authorization.interactingObject,
+        /<link rel="alternate" type="application\/activity\+json" href="([^"]+)"/.exec(page)?.[1],
+      ];
+      return {
+        get: got.status,
+        ids: [...new Set(ids)],
+        listing: listing.partOf,
+        attributedTo: document.attributedTo,
+        item: featuredItem.id,
       };
     };
-    await sql(t.store, "UPDATE accounts SET uri = ? WHERE id = ?", `${LOCAL}/ap/users/old_alice`, ALICE);
-    const routes = async () =>
+    // The owner's writes on `origin`: a new collection and an update of L, each its status and its id's actor part.
+    const writes = async (origin: string) =>
       Promise.all(
-        ["alice", "old_alice"].map(
-          async (name) => (await t.request(`/ap/users/${name}/collections/${L}`, AP_GET)).status,
-        ),
-      );
-    // The documents under the collection: its item's FeaturedItem and its local member's FeatureAuthorization.
-    const items_ = async () =>
-      Promise.all(
-        [`/ap/users/alice/collection_items/${I}`, `/ap/users/dave/feature_authorizations/${I}`].map(async (path) => {
-          const response = await t.request(path, AP_GET);
-          const body = response.ok ? await response.json<{ id: string; interactingObject?: string }>() : null;
-          return { status: response.status, id: body?.interactingObject ?? body?.id ?? null };
+        (
+          [
+            ["POST", "/api/v1/collections"],
+            ["PATCH", `/api/v1/collections/${L}`],
+          ] as const
+        ).map(async ([method, path]) => {
+          const response = await on(origin, path, {
+            method,
+            headers: { ...as("alice"), "content-type": "application/json" },
+            body: JSON.stringify({ name: "c", sensitive: false, discoverable: true }),
+          });
+          const body = response.ok ? await response.json<{ collection: { uri: string } }>() : null;
+          return [response.status, body?.collection.uri.replace(/\/collections\/\d+$/, "") ?? null];
         }),
       );
-    // The owner's writes that would emit the id: its listing, a new collection's and an update's.
-    const writes = async () => {
-      const alice = { authorization: `Bearer ${t.tokens.alice}`, "content-type": "application/json" };
-      const write = async (method: string, path: string) =>
-        (
-          await t.request(path, {
-            method,
-            headers: alice,
-            body: JSON.stringify({ name: "c", sensitive: false, discoverable: true }),
-          })
-        ).status;
-      return {
-        featured: (await t.request("/ap/users/alice/featured_collections", AP_GET)).status,
-        created: await write("POST", "/api/v1/collections"),
-        updated: await write("PATCH", `/api/v1/collections/${L}`),
-      };
+    // An id fetched as itself, and on http: its status and the id its document declares.
+    const dereferenced = async (id: string) =>
+      Promise.all(
+        [id, id.replace(/^https:/, "http:")].map(async (url) => {
+          const response = await fetched(url, AP_GET);
+          return [response.status, response.ok ? (await response.json<{ id: string }>()).id : null];
+        }),
+      );
+    const actor = `${LOCAL}/ap/users/alice`;
+    const l = `${actor}/collections/${L}`;
+    const ordinary = {
+      get: 200,
+      ids: [l],
+      listing: `${actor}/featured_collections`,
+      attributedTo: actor,
+      item: `${actor}/collection_items/${I}`,
     };
-    expect({ ...(await surfaces()), routes: await routes(), items: await items_(), writes: await writes() }).toEqual({
-      uris: [v],
-      shown: null,
-      named: [v],
-      served: [],
-      page: 404,
-      linked: [],
-      routes: [404, 404],
-      items: [
-        { status: 404, id: null },
-        { status: 404, id: null },
-      ],
-      writes: { featured: 404, created: 403, updated: 404 },
-    });
-    await sql(t.store, "UPDATE accounts SET uri = ? WHERE id = ?", `${LOCAL}/ap/users/alice`, ALICE);
-    const l = `${LOCAL}/ap/users/alice/collections/${L}`;
-    expect(await surfaces()).toEqual({
-      uris: [l, v],
-      shown: l,
-      named: [l, v],
-      served: [{ status: 200, id: l }],
-      page: 200,
-      linked: [L],
-    });
-    expect(await items_()).toEqual([
-      { status: 200, id: `${LOCAL}/ap/users/alice/collection_items/${I}` },
-      { status: 200, id: l },
+    for (const origin of [LOCAL, "http://kopje.test"]) {
+      expect({ ...(await emitted(origin)), writes: await writes(origin) }).toEqual({
+        ...ordinary,
+        writes: [
+          [200, actor],
+          [200, actor],
+        ],
+      });
+    }
+    expect(await dereferenced(l)).toEqual([
+      [200, l],
+      [200, l],
     ]);
-    expect(await writes()).toEqual({ featured: 200, created: 200, updated: 200 });
+    await setSetting(t.store, "domain", "other.test");
+    expect({ ...(await emitted("https://other.test")), writes: await writes("https://other.test") }).toEqual({
+      ...ordinary,
+      writes: [
+        [200, actor],
+        [200, actor],
+      ],
+    });
+    const statusOf = async (url: string) => (await fetched(url, AP_GET)).status;
+    expect([await statusOf(l), await statusOf(actor)]).toEqual([301, 301]);
+    await setSetting(t.store, "domain", "kopje.test");
+    const old = `${LOCAL}/ap/users/old_alice`;
+    await sql(t.store, "UPDATE accounts SET uri = ? WHERE id = ?", old, ALICE);
+    expect(await emitted(LOCAL)).toEqual({
+      get: 200,
+      ids: [`${old}/collections/${L}`],
+      listing: `${old}/featured_collections`,
+      attributedTo: old,
+      item: `${old}/collection_items/${I}`,
+    });
+    expect([await statusOf(`${old}/collections/${L}`), await statusOf(old)]).toEqual([404, 404]);
+    const advertised = (await (await t.request("/ap/users/alice", AP_GET)).json<{ featuredCollections: string }>())
+      .featuredCollections;
+    expect([advertised, await statusOf(advertised)]).toEqual([`${actor}/featured_collections`, 200]);
+  });
+
+  // #1589's D3: whether a link names a local collection is decided by the instance's origin, not by its author's actor
+  // id: dave's actor id kept on an earlier domain, his post linking L's url on this one references L, which the API
+  // presents and the Note names.
+  it("names a local collection by the instance's origin, whatever the author's actor id's", async () => {
+    const t = await setup();
+    const L = await localCollection(t, ALICE, 1);
+    await sql(t.store, "UPDATE accounts SET uri = ? WHERE id = ?", "https://old.example/ap/users/dave", DAVE);
+    const S = await posted(t, `${LOCAL}/collections/${L}`);
+    const l = `${LOCAL}/ap/users/alice/collections/${L}`;
+    const { body } = await t.api<Status>(`/api/v1/statuses/${S}`, "dave");
+    const named = await runInDurableObject(
+      t.store,
+      (_instance, state) => statusFacts(new Db(state.storage.sql), S, () => null)?.collections ?? [],
+    );
+    expect({ tagged: await tagged(t, S), presented: body.tagged_collections.map(({ uri }) => uri), named }).toEqual({
+      tagged: [L],
+      presented: [l],
+      named: [l],
+    });
+  });
+
+  // #1589's D2 and D4: a restored row of alice's, `local = 0` with an id on the instance's origin (validRemoteCollection
+  // admits it: on its owner's origin), with dave's accepted item. Only a local collection is on that origin, so S's
+  // reference to it is neither presented nor named, a link to its id references none, alice's listing holds her local
+  // L alone, and dave's FeatureAuthorization of the item answers 404; L, beside it, is listed and tagged.
+  it("neither lists nor tags a remote row whose id is on the instance's origin", async () => {
+    const t = await setup();
+    const L = await localCollection(t, ALICE, 1);
+    const R = await remoteCollection(t, ALICE, 2, `${LOCAL}/ap/users/alice/collections/${collectionId(2)}`);
+    await item(t.store, R, DAVE, 1, 1);
+    const I = String(600000000000000000n + BigInt(items));
+    const S = await posted(t, "S");
+    for (const id of [L, R]) {
+      await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", S, id);
+    }
+    const l = `${LOCAL}/ap/users/alice/collections/${L}`;
+    const { body } = await t.api<Status>(`/api/v1/statuses/${S}`, "dave");
+    const listing = await (
+      await t.request("/ap/users/alice/featured_collections?page=1", AP_GET)
+    ).json<{
+      totalItems: number;
+      items: { id: string }[];
+    }>();
+    expect({
+      presented: body.tagged_collections.map(({ id }) => id),
+      named: await noted(t, S),
+      linked: await tagged(t, await posted(t, `${LOCAL}/ap/users/alice/collections/${R}`)),
+      listed: [listing.totalItems, listing.items.map(({ id }) => id)],
+      authorization: (await t.request(`/ap/users/dave/feature_authorizations/${I}`, AP_GET)).status,
+    }).toEqual({ presented: [L], named: [l], linked: [], listed: [1, [l]], authorization: 404 });
   });
 
   // Four collections of x, then suspended, and then y's: a post linking the four and then y's, and a remote Note

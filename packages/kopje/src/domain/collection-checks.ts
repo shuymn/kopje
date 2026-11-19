@@ -1,9 +1,8 @@
-import { selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { COLLECTION_CHECK_ATTEMPTS, COLLECTION_ITEM_STATES } from "../platform/stored-bounds";
-import { instanceOrigin, recordItemAdd } from "./collection-documents";
-import { type CollectionOwner, collectionOwnerColumns, localCollectionUri } from "./collection-presenter";
+import { recordItemAdd } from "./collection-documents";
+import { type CollectionOwner, collectionOwnerSql, localCollectionUri } from "./collection-presenter";
 import { writeOperation } from "./operation";
 
 // Checks of remote members' feature authorizations (#1589's D22, Mastodon 4.7.5's ActivityPub::VerifyFeaturedItemService):
@@ -74,7 +73,7 @@ type Candidate = CollectionOwner & {
 // The due items, oldest due first, with what a claim reads of each by key: its collection and that collection's owner,
 // and its member. ?1 now, ?2 the most read.
 const DUE = `SELECT i.id, i.check_attempts AS attempts, i.candidate_approval_uri AS candidate, c.account_id AS owner,
-		c.local, i.collection_id, c.uri AS collection, ${selectSql(collectionOwnerColumns("c.local", "o"))}, a.uri AS member,
+		c.local, i.collection_id, c.uri AS collection, ${collectionOwnerSql("o")}, a.uri AS member,
 		a.domain IS NULL AS member_local
 	FROM (SELECT id FROM collection_items INDEXED BY collection_items_check
 		WHERE check_due_at >= 0 AND check_due_at <= ?1 ORDER BY check_due_at, id LIMIT ?2) w
@@ -85,11 +84,10 @@ const DUE = `SELECT i.id, i.check_attempts AS attempts, i.candidate_approval_uri
 	ORDER BY i.check_due_at, i.id`;
 
 // The id of the collection a candidate's authorization must name: a remote collection's uri, a local one's as Kopje
-// writes it (localCollectionUri, on the instance's `origin`); null for neither, and for a local one whose id no route
-// serves.
-function checkedCollection(row: Candidate, origin: string | null): string | null {
+// writes it (localCollectionUri); null for neither.
+function checkedCollection(row: Candidate): string | null {
   if (row.local === 1) {
-    return origin === null ? null : localCollectionUri(row, row.collection_id, origin);
+    return localCollectionUri(row.owner_uri, row.collection_id);
   }
   return row.local === 0 ? row.collection : null;
 }
@@ -126,12 +124,11 @@ export const claimItemChecks = writeOperation<{ now: number }, { checks: ItemChe
   (db, { now }) => {
     const today = dayOf(now);
     const checks: ItemCheck[] = [];
-    const origin = instanceOrigin(db);
     for (const row of db.all<Candidate>(DUE, now, ITEM_CHECK_CANDIDATES)) {
       if (checks.length >= ITEM_CHECKS_PER_ROUND) {
         break;
       }
-      const collection = checkedCollection(row, origin);
+      const collection = checkedCollection(row);
       if (
         row.owner === null ||
         collection === null ||
