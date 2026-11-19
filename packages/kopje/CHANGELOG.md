@@ -8,6 +8,24 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-20
+
+A minor release, published under the npm dist-tag `latest`. Uploading an image that carries EXIF or XMP, such as a
+macOS screenshot, works again: `POST /api/v1/media` answered 500 "Error processing uploaded media" because Cloudflare
+Images kept the metadata in its PNG output. A post can also tag collections, and Mastodon shows the tag. It adds one
+Store migration. Upgrading is recommended.
+
+### Instance changes
+
+- Store schema: adds one migration (0120), applied on the first request after the deploy. Until it is applied the
+  Store refuses every request, and it stays readonly until it is verified ([docs/upgrade.md](docs/upgrade.md), "What
+  the Store serves in each state"). A rollback to an earlier version needs the point-in-time restore described in
+  [docs/upgrade.md](docs/upgrade.md). On the representative store defined in `test/bench/migration-cost.ts` it took
+  8,258–8,381 ms (median 8,345 ms) in three runs of the migration bench workflow on a GitHub-hosted runner, in
+  workerd's local Durable Object SQLite, including the Store-wide foreign-key check that its new table requires.
+- `wrangler.jsonc`: no change. The compatibility date (`2026-10-11`), the compatibility flags and the bindings are
+  unchanged.
+
 ### Added
 
 - A post that links a collection presents it in `tagged_collections` to those who may see it, and its ActivityPub
