@@ -40,6 +40,7 @@ import {
   type Setup,
   update,
 } from "./inbox-status-helpers";
+import { seedEmojiRow } from "./local-emoji-helpers";
 import {
   measuredRead,
   measuredStatements,
@@ -451,11 +452,18 @@ describe("a remote Note's tags (7-T4)", () => {
   });
 
   it("reads the first MAX_TAG_LINK_CANDIDATES distinct tag ids", async () => {
-    const { t, bob, uriOf } = await world();
+    const { t, bob, M, uriOf } = await world();
     const unknown = Array.from({ length: MAX_TAG_LINK_CANDIDATES }, (_, i) => `${MASTODON}/users/x/collections/${i}`);
     const note = mastodonNote(bob, tags(...unknown, uriOf.M));
     expect(await t.post(bob, create(bob, note))).toBe(202);
     expect(await tagged(t, await statusId(t, note))).toEqual([]);
+    // MAX_TAG_LINK_CANDIDATES copies of one id are one candidate, so M, after them, is read.
+    const repeated = mastodonNote(
+      bob,
+      tags(...Array.from({ length: MAX_TAG_LINK_CANDIDATES }, () => unknown[0]!), uriOf.M),
+    );
+    expect(await t.post(bob, create(bob, repeated))).toBe(202);
+    expect(await tagged(t, await statusId(t, repeated))).toEqual([M]);
   });
 
   it("replaces the set only with a version newer than the watermark", async () => {
@@ -733,10 +741,12 @@ const FEATURED_COLLECTIONS_TERMS = {
 };
 
 describe("the ActivityPub surfaces of a status that tags collections (7-T1, 7-T10)", () => {
-  // dave's public P with a hashtag and a poll, linking alice's L and a valid remote M, quoting bob's Note (a remote
-  // status, so a QuoteRequest follows the Create), then pinned and edited, and its poll ended.
+  // dave's public P mentioning alice, with a hashtag, a custom emoji and a poll, linking alice's L and a valid remote
+  // M, quoting bob's Note (a remote status, so a QuoteRequest follows the Create), then pinned and edited, and its poll
+  // ended.
   it("names each collection by its id alone, after the other tags, under the featured_collections terms", async () => {
     const t = await setup();
+    await seedEmojiRow(t.store, { id: "190000000000000001", shortcode: "walking", owner: ALICE });
     const L = await localCollection(t, ALICE, 1);
     const owner = await remoteOwner(t, 1, `${MASTODON}/users/m`);
     await remoteCollection(t, owner, 2, `${MASTODON}/users/m/collections/2`);
@@ -749,7 +759,7 @@ describe("the ActivityPub surfaces of a status that tags collections (7-T1, 7-T1
     expect(await t.post(bob, create(bob, quotedNote))).toBe(202);
     const [quoted] = await sql<{ id: string }>(t.store, "SELECT id FROM statuses WHERE uri = ?", quotedNote.id);
     const body = {
-      status: `#walks ${LOCAL}/collections/${L}\n${MASTODON}/users/m/collections/2`,
+      status: `@alice #walks :walking: ${LOCAL}/collections/${L}\n${MASTODON}/users/m/collections/2`,
       poll: { options: ["a", "b"], expires_in: 300 },
       quoted_status_id: quoted!.id,
     };
@@ -791,7 +801,9 @@ describe("the ActivityPub surfaces of a status that tags collections (7-T1, 7-T1
       recorded.filter((activity) => activity.type === type && (activity.object as { id?: string }).id === P.uri);
     const [creation] = about("Create");
     surfaces.push(["the recorded Create", creation!["@context"], creation!.object as Record<string, unknown>]);
-    const [ended] = about("Update");
+    // The poll's Update by its id, which names it after the time it is recorded, and its end.
+    const [ended] = about("Update").filter((activity) => String(activity.id).startsWith(`${P.uri}#updates/poll-`));
+    expect((ended!.object as { closed?: unknown }).closed).toEqual(expect.any(String));
     surfaces.push(["the edit's Update", edit!["@context"], edit!.object as Record<string, unknown>]);
     surfaces.push(["the poll's Update", ended!["@context"], ended!.object as Record<string, unknown>]);
     const [request] = recorded.filter((activity) => activity.type === "QuoteRequest");
@@ -810,7 +822,7 @@ describe("the ActivityPub surfaces of a status that tags collections (7-T1, 7-T1
       expect(
         tags.slice(0, -2).map((tag) => tag.type),
         name,
-      ).toEqual(["Hashtag"]);
+      ).toEqual(["Mention", "Hashtag", "Emoji"]);
       expect([context].flat(), name).toContainEqual(expect.objectContaining(FEATURED_COLLECTIONS_TERMS));
     }
   });
