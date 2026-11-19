@@ -1,7 +1,6 @@
 import { type DocumentLoader, FetchError } from "@fedify/fedify";
 
 import { isPublicCollection } from "../domain/audience";
-import { storableUrl } from "../domain/collection-presenter";
 import { isConversationId } from "../domain/conversation-rows";
 import { languageOf } from "../domain/language";
 import { CARD_CANDIDATES, CARD_RAW_HREF_LIMIT, type CardCandidate, type CardLink } from "../domain/link-cards";
@@ -25,6 +24,7 @@ import {
 import { CREATE_WALK_ITEMS } from "../domain/reply-walk-create";
 import { MAX_URL_LENGTH } from "../domain/status-text";
 import { hashtagObjectName } from "../domain/tag-name";
+import { utf8Length } from "../platform/dump-format";
 import { httpUrl } from "../platform/http-url";
 import { STATUS_URI_LIMIT, withinIdentityBound } from "../platform/identity-bounds";
 import { withinJsonBounds } from "../platform/json-bounds";
@@ -315,9 +315,11 @@ function tagsOf(object: Json): { mentions: string[]; tags: string[] } {
 }
 
 // The ids of the Note's FeaturedCollection tags (create.rb's process_tags: a tag whose type is or includes
-// FeaturedCollection, as typeIs reads Hashtag; Mastodon reads only its id), each a string within the stored form of a
-// collection's id (storableUrl), distinct, the first MAX_TAG_LINK_CANDIDATES in tag order (#1589's D26). Nothing of an
-// embedded collection is read: a tag only references a collection Kopje stores (domain/collections.ts).
+// FeaturedCollection, as typeIs reads Hashtag; Mastodon reads only its id), each a URL of at most COLLECTION_URI_BYTES
+// UTF-8 bytes, distinct, the first MAX_TAG_LINK_CANDIDATES in tag order (#1589's D26). Each goes to the Store's one
+// resolver (domain/collections.ts namedCollection), which names a local collection by any address its routes serve,
+// http included, and applies a remote collection's stored form (https) only to what names a remote one. Nothing of an
+// embedded collection is read: a tag only references a collection Kopje stores.
 function collectionTags(object: Json): string[] {
   const ids = new Set<string>();
   for (const tag of asArray(object.tag)) {
@@ -326,7 +328,7 @@ function collectionTags(object: Json): string[] {
     }
     if (isObject(tag) && typeIs(tag.type, ["FeaturedCollection"])) {
       const id = typeof tag.id === "string" ? tag.id : null;
-      if (storableUrl(id, COLLECTION_URI_BYTES)) {
+      if (id !== null && utf8Length(id) <= COLLECTION_URI_BYTES && URL.canParse(id)) {
         ids.add(id);
       }
     }

@@ -510,6 +510,40 @@ describe("a remote Note's tags (7-T4)", () => {
     expect(references).toEqual([[L], [L]]);
   });
 
+  // #1589's D1 and D3: every tag goes to the one resolver, which names a local collection by any address its routes
+  // serve, http included, as a post's link does (only a remote collection's id is https, as stored). A Create naming L
+  // by its route or its web page over http references L, and so does an Update replacing the https tag with either,
+  // which moves the version.
+  it("references a local collection by its route or web page over http, from a Create and an Update", async () => {
+    const { t, bob, L } = await world();
+    const aliases = [`http://kopje.test/ap/users/alice/collections/${L}`, `http://kopje.test/collections/${L}`];
+    const created: string[][] = [];
+    for (const alias of aliases) {
+      const note = mastodonNote(bob, tags(alias));
+      expect(await t.post(bob, create(bob, note))).toBe(202);
+      created.push(await tagged(t, await statusId(t, note)));
+    }
+    const note = mastodonNote(bob, tags(localUri(L)));
+    expect(await t.post(bob, create(bob, note))).toBe(202);
+    const id = await statusId(t, note);
+    const v2 = Date.parse(note.published as string) + 60 * 60 * 1000;
+    const updated: { tagged: string[]; version: string }[] = [];
+    for (const [i, alias] of aliases.entries()) {
+      const activity = update(bob, { ...note, ...tags(alias) }, new Date(v2 + i * 60_000).toISOString());
+      expect(await t.post(bob, { ...activity, id: `${activity.id}/${i}` })).toBe(202);
+      const [row] = await sql<{ version: string }>(
+        t.store,
+        "SELECT remote_version AS version FROM statuses WHERE id = ?",
+        id,
+      );
+      updated.push({ tagged: await tagged(t, id), version: row!.version });
+    }
+    expect({ created, updated }).toEqual({
+      created: [[L], [L]],
+      updated: aliases.map((_, i) => ({ tagged: [L], version: new Date(v2 + i * 60_000).toISOString() })),
+    });
+  });
+
   it("reads the first MAX_TAG_LINK_CANDIDATES distinct tag ids", async () => {
     const { t, bob, M, uriOf } = await world();
     const unknown = Array.from({ length: MAX_TAG_LINK_CANDIDATES }, (_, i) => `${MASTODON}/users/x/collections/${i}`);
