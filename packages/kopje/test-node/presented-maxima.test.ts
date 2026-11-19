@@ -20,9 +20,17 @@ import {
 
 // docs/threat-model.md "Maxima of presented units" and "Heap at 8 MiB per answer" (RES-3) state the figures
 // test/status-bounds.test.ts asserts from test/presented-maxima.ts: each cell of their tables equals the module's
-// figure, written as the document writes it, and so do the stream unit's figures in its prose and RES-6.
+// figure, written as the document writes it, and so do the stream unit's figures in its prose and RES-6, and the status
+// budget's in RES-3, the heap prose and docs/response-inventory.md.
 
 const DOCUMENT = readFileSync(new URL("../docs/threat-model.md", import.meta.url), "utf8");
+const INVENTORY = readFileSync(new URL("../docs/response-inventory.md", import.meta.url), "utf8");
+// STATUS_ANSWER_BYTES as src/domain/answer-budget.ts writes it, read from its source (the module is not Node's).
+const STATUS_ANSWER_BYTES = Number(
+  /export const STATUS_ANSWER_BYTES = ([\d_]+);/
+    .exec(readFileSync(new URL("../src/domain/answer-budget.ts", import.meta.url), "utf8"))![1]!
+    .replaceAll("_", ""),
+);
 const ANSWER_BYTES = 8 * 1024 * 1024;
 
 type Row = { label: string; cells: string[] };
@@ -243,6 +251,23 @@ describe("the heap tables (RES-3)", () => {
       mb(HEAP_PEAKS.timelines.normal),
       mb(HEAP_PEAKS.timelines.backstop),
     ]);
+  });
+
+  // Every place the documents give STATUS_ANSWER_BYTES, the admitted answer's heap at it (three times the budget) or
+  // how far one 8 KiB step more would pass half the isolate (64 MB), each from the code's figure.
+  it("states the status budget, its heap and its next step as the code gives them", () => {
+    const flat = (text: string) => text.replace(/\s+/g, " ");
+    const budget = `${count(STATUS_ANSWER_BYTES)} bytes, 8 MiB less ${(ANSWER_BYTES - STATUS_ANSWER_BYTES) / 1024} KiB`;
+    expect(flat(DOCUMENT)).toContain(`\`STATUS_ANSWER_BYTES\` instead (${budget})`);
+    expect(flat(INVENTORY)).toContain(`\`STATUS_ANSWER_BYTES\` (${budget})`);
+    const heaps = [
+      ...flat(DOCUMENT).matchAll(
+        /([\d.]+ MB) at `STATUS_ANSWER_BYTES`|`STATUS_ANSWER_BYTES` for each answer below \(([\d.]+ MB)\)/g,
+      ),
+    ].map((match) => match[1] ?? match[2]);
+    expect(heaps).toEqual([mb(3 * STATUS_ANSWER_BYTES), mb(3 * STATUS_ANSWER_BYTES)]);
+    const past = HEAP_PEAKS.timelines.backstop + 3 * 8 * 1024 - 64_000_000;
+    expect(flat(DOCUMENT)).toContain(`8 KiB more would pass half by ${count(past)} bytes`);
   });
 });
 

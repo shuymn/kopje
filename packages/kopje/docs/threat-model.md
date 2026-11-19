@@ -5832,7 +5832,7 @@ answer that presents statuses at most `STATUS_ANSWER_BYTES` (RES-3), since every
   object and 32 B per value. Peaks add 25% headroom to rows.
 - Presented objects take at most three times their JSON bytes (a string takes no more than its JSON bytes, since JSON
   only adds escapes, and the rest is per-object overhead; an assumption, as workerd exposes no heap to measure): the
-  admitted answer's 25.2 MB (24.0 MB at `STATUS_ANSWER_BYTES`), the first rejected item's three times its JSON.
+  admitted answer's 25.2 MB (23.49 MB at `STATUS_ANSWER_BYTES`), the first rejected item's three times its JSON.
   Every string field counts on its own, even one that repeats another's string (an attachment's `remote_url` is its
   `url`), and rows and presented objects often share the same string instances, which the model does not credit
   either.
