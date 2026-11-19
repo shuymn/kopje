@@ -723,7 +723,7 @@ async function complete(w: World, stale: boolean): Promise<void> {
 type Outcome = "delivered" | "lost" | "refused" | "failed";
 const STATUS = { delivered: 202, refused: 403, failed: 503 } as const;
 
-type Head = { id: number; due: number; inbox: string; retracts: number; body: string };
+type Head = { id: number; state: string; due: number; inbox: string; retracts: number; body: string };
 
 // A delivery round under way, its POSTs recorded and each held until the step that answers it.
 type Flight = {
@@ -740,7 +740,7 @@ const laneOf = (w: World): string => new URL(w.owner.uri).origin;
 const laneRows = (w: World, states: string) =>
   sql<Head>(
     w.t.store,
-    `SELECT d.id, d.next_attempt_at AS due, d.inbox_url AS inbox, o.retracts, o.body FROM deliveries d
+    `SELECT d.id, d.state, d.next_attempt_at AS due, d.inbox_url AS inbox, o.retracts, o.body FROM deliveries d
 			JOIN outbound_activities o ON o.id = d.activity_id
 			WHERE d.account_id = ? AND d.lane = ? AND d.state IN (SELECT value FROM json_each(?)) ORDER BY d.id`,
     ALICE,
@@ -808,9 +808,10 @@ async function lease(w: World, expected: Activity): Promise<void> {
 
 // A step that answers the head's POST: the one KLeaseHead holds, or that of a round claiming the waiting head. Checks
 // that the head before the step is the activity the step names and that the round POSTs exactly it there, an Accept
-// with its result. Then, by the step's input: "dropped", that nothing is sent and the head is gone; "superseded", that
-// the head is gone and a later answer of its authorization to its inbox waits; else, after a failed or lost POST, that
-// the head waits again.
+// with its result. Then, by the step's input: "dropped", that nothing is sent and the head's delivery is gone (deleted,
+// not given up); "superseded", that it is gone and exactly one later answer of the same recorded form waits in the
+// lane, in the state its place there gives it (KFail drops the head: the lane's first row is pending, any other
+// queued); else, after a failed or lost POST, that the head waits again.
 async function deliver(w: World, outcome: Outcome, expected: Activity, value: string | undefined) {
   const head = await laneHead(w, expected);
   const flight = w.flight ?? fly(w, head);
@@ -825,8 +826,8 @@ async function deliver(w: World, outcome: Outcome, expected: Activity, value: st
     flight.sent.filter((s) => new URL(s.url).origin !== lane && !offR(w, s.body).includes(s.url)).map((s) => s.url),
     "the round's POSTs off R's server",
   ).toEqual([]);
-  const left = () =>
-    sql(w.t.store, "SELECT state FROM deliveries WHERE id = ? AND state IN ('queued', 'pending', 'leased')", head.id);
+  // The head's delivery in any state: one deleted is in none (a given-up one is not gone).
+  const left = () => sql(w.t.store, "SELECT state FROM deliveries WHERE id = ?", head.id);
   if (value === "dropped") {
     expect(toR, "a dropped activity is not sent").toEqual([]);
     expect(await left(), "a dropped activity's delivery is gone").toEqual([]);
@@ -840,10 +841,14 @@ async function deliver(w: World, outcome: Outcome, expected: Activity, value: st
   ).toEqual([want]);
   if (value === "superseded") {
     expect(await left(), "a superseded answer's delivery is gone").toEqual([]);
-    expect(
-      (await laneRows(w, '["queued", "pending"]')).map((row) => recordedAs(w, row)),
-      "the later answer waits",
-    ).toContainEqual(want);
+    const rows = await laneRows(w, '["queued", "pending", "leased"]');
+    const form = (recorded: object) =>
+      JSON.stringify(Object.entries(recorded).toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+    const later = rows.flatMap((row, at) =>
+      form(recordedAs(w, row)) === form(want) ? [{ state: row.state, place: at === 0 ? "pending" : "queued" }] : [],
+    );
+    expect(later.length, "one later answer waits").toBe(1);
+    expect(later[0]!.state, "the later answer, in the state of its place in the lane").toBe(later[0]!.place);
   } else if (outcome === "failed" || outcome === "lost") {
     expect(await left(), "the head waits again").toEqual([{ state: "pending" }]);
   }
