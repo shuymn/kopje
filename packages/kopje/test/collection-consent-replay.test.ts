@@ -8,7 +8,7 @@ import { purgeBatch } from "../src/domain/inbox";
 import { SYNC_LEASE_MS } from "../src/domain/remote-collections";
 import { MAX_REMOTE_ITEMS } from "../src/domain/remote-featured-collections";
 import { syncCollections } from "../src/federation/collections";
-import { deliveryRound } from "../src/jobs/deliver";
+import { deliveryRound, type RoundResult } from "../src/jobs/deliver";
 import { sha256Hex } from "../src/security/tokens";
 import { bearer, form, setSetting, sql } from "./api-helpers";
 import { inboxDeps, NOW } from "./app-helpers";
@@ -168,6 +168,9 @@ type World = {
   fetching: { posting: Promise<number>; release: () => void } | null;
   // The delivery round KLeaseHead holds at its POST to R's server.
   flight: Flight | null;
+  // Every delivery round a step started: each is answered and awaited when the replay ends, so a POST an assertion
+  // left held never outlives the test.
+  flights: Flight[];
   environment: Environment;
   // The outbound rows seen by the last observation (an id is reused once its row is deleted, so a row is keyed by
   // its id, its time and its body).
@@ -261,6 +264,7 @@ async function init(environment: Environment, stored: boolean): Promise<World> {
     instrument: null,
     fetching: null,
     flight: null,
+    flights: [],
     environment: { consent: true, slotsFull: false, held: "lt10", backlogFull: false, retractionCapFull: false },
     seen: new Set(await outboundKeys(t)),
     notified: 0,
@@ -734,7 +738,7 @@ type Flight = {
   sent: { url: string; body: Record<string, unknown> }[];
   posted: Deferred;
   answer: (outcome: Outcome) => void;
-  done: Promise<unknown>;
+  done: Promise<RoundResult>;
 };
 
 const laneOf = (w: World): string => new URL(w.owner.uri).origin;
@@ -772,12 +776,13 @@ function fly(w: World, head: Head): Flight {
   let answer!: (outcome: Outcome) => void;
   const outcome = new Promise<Outcome>((resolve) => (answer = resolve));
   const prefix = `replay-${++leases}`;
-  const flight: Flight = { head, token: `${prefix}-1`, sent: [], posted: deferred(), answer, done: Promise.resolve() };
+  const sent: Flight["sent"] = [];
+  const posted = deferred();
   const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(input, init);
-    flight.sent.push({ url: request.url, body: await request.json() });
+    sent.push({ url: request.url, body: await request.json() });
     if (new URL(request.url).origin === laneOf(w)) {
-      flight.posted.resolve();
+      posted.resolve();
     }
     const answered = await outcome;
     if (answered === "lost") {
@@ -785,7 +790,7 @@ function fly(w: World, head: Head): Flight {
     }
     return new Response(null, { status: STATUS[answered] });
   }) as typeof globalThis.fetch;
-  flight.done = deliveryRound(
+  const done = deliveryRound(
     w.t.env,
     deliveryDeps(
       () => w.t.store,
@@ -794,6 +799,8 @@ function fly(w: World, head: Head): Flight {
       prefix,
     ),
   );
+  const flight: Flight = { head, token: `${prefix}-1`, sent, posted, answer, done };
+  w.flights.push(flight);
   return flight;
 }
 let leases = 0;
@@ -808,10 +815,30 @@ async function posted(flight: Flight): Promise<void> {
   ]);
 }
 
+// The round's POSTs: to R's server exactly the head, as the step names it (an Accept with its result), at its inbox,
+// and off R's server only L's revocations to her followers (offR).
+function expectSent(w: World, flight: Flight, head: Head, expected: Activity): void {
+  const lane = laneOf(w);
+  expect(
+    flight.sent.filter((s) => new URL(s.url).origin !== lane && !offR(w, s.body).includes(s.url)).map((s) => s.url),
+    "the round's POSTs off R's server",
+  ).toEqual([]);
+  const { reason: _reason, ...want } = expected;
+  const envelope = JSON.parse(head.body) as Parameters<typeof asRecorded>[1];
+  expect(
+    flight.sent
+      .filter((s) => new URL(s.url).origin === lane)
+      .map((s) => asRecorded(w, { ...envelope, activity: s.body }, [s.url], head.retracts)),
+    "the lane's head, as sent",
+  ).toEqual([want]);
+}
+
 // KLeaseHead: a round claims the head and holds its POST in flight until the step that answers it.
 async function lease(w: World, expected: Activity): Promise<void> {
-  const flight = fly(w, await laneHead(w, expected));
+  const head = await laneHead(w, expected);
+  const flight = fly(w, head);
   await posted(flight);
+  expectSent(w, flight, head, expected);
   w.flight = flight;
 }
 
@@ -840,8 +867,8 @@ async function supersededBy(w: World, head: Head, want: Omit<Activity, "reason">
 
 // KReclaim: the held POST's lease runs out, and a delivery round at its expiry (claimDeliveries, after LEASE_MS)
 // reclaims the head: under a new lease, its POST to R's server in flight again (the head leased, never waiting), or,
-// "superseded", dropped, the round sending R's server nothing. The old POST is then answered 503, too late: its
-// completion is stale and changes nothing.
+// "superseded", dropped, the round sending R's server nothing (its POSTs answered before it is awaited, so one it makes
+// fails the step at once). The old POST is then answered 503, too late: its completion is stale and changes nothing.
 async function reclaim(w: World, expected: Activity, value: string | undefined): Promise<void> {
   const head = await laneHead(w, expected);
   const held = w.flight;
@@ -851,6 +878,7 @@ async function reclaim(w: World, expected: Activity, value: string | undefined):
   const flight = fly(w, head);
   const { reason: _reason, ...want } = expected;
   if (value === "superseded") {
+    flight.answer("failed");
     await flight.done;
     expect(
       flight.sent.map((s) => s.url),
@@ -859,46 +887,43 @@ async function reclaim(w: World, expected: Activity, value: string | undefined):
     await supersededBy(w, head, want);
   } else {
     await posted(flight);
+    expectSent(w, flight, head, expected);
     expect(await deliveryOf(w, head), "the head leased again, under the new lease").toEqual([
       { state: "leased", lease_token: flight.token },
     ]);
     w.flight = flight;
   }
   held!.answer("failed");
-  expect(((await held!.done) as { settled: string[] }).settled, "the expired lease's completion").toEqual(["stale"]);
+  expect((await held!.done).settled, "the expired lease's completion").toEqual(["stale"]);
 }
 
 // A step that answers the head's POST: the one KLeaseHead or KReclaim holds, or that of a round claiming the waiting
 // head. Checks that the head before the step is the activity the step names and that the round POSTs exactly it there,
-// an Accept with its result. Then, by the step's input: "dropped", that nothing is sent and the head's delivery is gone
-// (deleted, not given up); "superseded", supersededBy; else, after a failed or lost POST, that the head waits again.
+// an Accept with its result (expectSent). Then, by the step's input: "dropped", that nothing is sent and the head's
+// delivery is gone (deleted, not given up); "superseded", supersededBy; else, after a 202, that the round delivered it
+// and its delivery is gone, and after a failed or lost POST, that the head waits again.
 async function deliver(w: World, outcome: Outcome, expected: Activity, value: string | undefined) {
   const head = await laneHead(w, expected);
   const flight = w.flight ?? fly(w, head);
   expect(flight.head.id, "the head in flight").toBe(head.id);
   w.flight = null;
   flight.answer(outcome);
-  await flight.done;
-  const lane = laneOf(w);
-  const toR = flight.sent.filter((s) => new URL(s.url).origin === lane);
-  // Off R's server, a round sends only L's revocations to her followers (offR).
-  expect(
-    flight.sent.filter((s) => new URL(s.url).origin !== lane && !offR(w, s.body).includes(s.url)).map((s) => s.url),
-    "the round's POSTs off R's server",
-  ).toEqual([]);
+  const { settled } = await flight.done;
   if (value === "dropped") {
-    expect(toR, "a dropped activity is not sent").toEqual([]);
+    expect(
+      flight.sent.filter((s) => !offR(w, s.body).includes(s.url)).map((s) => s.url),
+      "a dropped activity is not sent",
+    ).toEqual([]);
     expect(await deliveryOf(w, head), "a dropped activity's delivery is gone").toEqual([]);
     return;
   }
+  expectSent(w, flight, head, expected);
   const { reason: _reason, ...want } = expected;
-  const envelope = JSON.parse(head.body) as Parameters<typeof asRecorded>[1];
-  expect(
-    toR.map((s) => asRecorded(w, { ...envelope, activity: s.body }, [s.url], head.retracts)),
-    "the lane's head, as sent",
-  ).toEqual([want]);
   if (value === "superseded") {
     await supersededBy(w, head, want);
+  } else if (outcome === "delivered") {
+    expect(settled, "the round's completions").toContain("delivered");
+    expect(await deliveryOf(w, head), "a delivered activity's delivery is gone").toEqual([]);
   } else if (outcome === "failed" || outcome === "lost") {
     expect(
       (await deliveryOf(w, head)).map((d) => d.state),
@@ -1304,28 +1329,34 @@ async function replay(name: string): Promise<void> {
       disagreements.push(`step ${index} ${s.action} ${JSON.stringify(s.input)}: ${differences.join("; ")}`);
     }
   };
-  await check(0, first!, null);
-  for (const [k, s] of rest.entries()) {
-    w.clock.now += 1000;
-    let response: Actual["response"];
-    try {
-      response = await step(w, s);
-    } catch (error) {
-      disagreements.push(`step ${k + 1} ${s.action}: ${error instanceof Error ? error.message : String(error)}`);
-      break;
+  try {
+    await check(0, first!, null);
+    for (const [k, s] of rest.entries()) {
+      w.clock.now += 1000;
+      let response: Actual["response"];
+      try {
+        response = await step(w, s);
+      } catch (error) {
+        disagreements.push(`step ${k + 1} ${s.action}: ${error instanceof Error ? error.message : String(error)}`);
+        break;
+      }
+      await check(k + 1, s, response);
+      if (disagreements.length > 0) {
+        break;
+      }
     }
-    await check(k + 1, s, response);
-    if (disagreements.length > 0) {
-      break;
+  } finally {
+    w.fetching?.release();
+    for (const round of w.rounds) {
+      round.fetches.resolve();
+      round.secondPage.resolve();
+      round.completion.resolve();
     }
+    for (const flight of w.flights) {
+      flight.answer("failed");
+    }
+    await Promise.allSettled([...w.rounds.map((round) => round.done), ...w.flights.map((flight) => flight.done)]);
   }
-  w.fetching?.release();
-  for (const round of w.rounds) {
-    round.fetches.resolve();
-    round.secondPage.resolve();
-    round.completion.resolve();
-  }
-  await Promise.allSettled(w.rounds.map((round) => round.done));
   expect(disagreements).toEqual([]);
 }
 
