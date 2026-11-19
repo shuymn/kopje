@@ -160,7 +160,8 @@ reclaim). `OV3` fails when a read that does not cover the row replaces the cover
 fails when two retraction answers of one authorization wait in Kopje's lane (a leased head does not wait): one to an
 account other than R, a second to R recorded while the first waited, or a superseded one waiting again after its POST
 failed. `Supersession` fails when a leased answer is dropped as superseded that is not a retraction answer, or that has
-no later retraction answer to its inbox behind it to be sent in its place.
+no later retraction answer to the same owner behind it to be sent in its place (each owner has one fixed inbox in the
+model, so the same inbox is the same owner; the Store sends the later answer to the owner's current inbox).
 
 Tell the two kinds of failure apart by the step that breaks the invariant:
 

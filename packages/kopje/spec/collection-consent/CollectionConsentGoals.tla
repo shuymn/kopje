@@ -85,11 +85,12 @@ StateGoals ==
    RetractionSentSuspended |->
      /\ Acted("KDeliver") /\ "dropped" \notin last.ev /\ k.lx /\ k.ls
      /\ last.arg.msg.cls = "ret" /\ ~Answer(last.arg.msg),
-   \* L's ordinary answer to R's listing of an authorization before Kopje issued it, leased, fails while a retraction
-   \* answer of that authorization to R waits behind it: it does not supersede the ordinary one, which waits again and
-   \* is delivered.
+   \* L's ordinary answer to R's listing of an authorization before Kopje issued it is leased; a retraction answer of
+   \* that authorization to R is recorded while it is leased, and its POST fails: the retraction answer supersedes
+   \* nothing, so the ordinary one waits again and is delivered.
    OrdinaryOverRetraction |->
-     Acted("KDeliver") /\ Answer(last.arg.msg) /\ last.arg.msg.cls = "ord" /\ g.waitedAgain = "retraction",
+     /\ Acted("KDeliver") /\ Answer(last.arg.msg) /\ last.arg.msg.cls = "ord" /\ g.waitedAgain = "retraction"
+     /\ g.overOrd,
    \* A read lists the accepted row under an item R's Remove retracted: the row takes it (K14).
    ReadOverRetraction |-> Acted("KApply") /\ k.row.st = "acc" /\ k.row.uri # NONE /\ k.row.uri \in k.ret,
    \* The revoke's Delete is delivered after the retired row's cleanup (K10 leaves the lane as it is).

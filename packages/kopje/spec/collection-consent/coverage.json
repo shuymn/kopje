@@ -86,7 +86,7 @@
     {
       "path": "src/domain/deliveries.ts",
       "functions": ["enqueueActivity", "claimDeliveries", "confirmDelivery", "retryDeliveries"],
-      "spec": "CollectionConsent.tla Record (RES-4's refusal at a full backlog) and Coalesced (no retraction answer recorded while one of the same authorization to the same inbox waits), the lane in id order, a corrective answer at its head leased for the POST (KLeaseHead, KDeliver, KDup, KGiveUp, KFail, and KReclaim, the sweep's reclaim under a new lease; Superseded: a leased retraction answer that a later one of the same authorization to the same inbox superseded is dropped when its POST fails or its lease is reclaimed), sender refusal by the activity's class at a claim, fresh or the reclaim (Drops, ReclaimDrops), and KRetry's admission re-check and place in the lane",
+      "spec": "CollectionConsent.tla Record (RES-4's refusal at a full backlog) and Coalesced (no retraction answer recorded while one of the same authorization to the same inbox waits), the lane in id order, a corrective answer at its head leased for the POST (KLeaseHead, KDeliver, KDup, KGiveUp, KFail, and KReclaim, the sweep's reclaim under a new lease; Superseded: a leased retraction answer that a later one of the same authorization to the same owner superseded is dropped when its POST fails or its lease is reclaimed), sender refusal by the activity's class at a claim, fresh or the reclaim (Drops, ReclaimDrops), and KRetry's admission re-check and place in the lane",
       "blob": "991cc26febaf1b698ededfa78b25fe91d7f7aab3"
     },
     {

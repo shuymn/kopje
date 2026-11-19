@@ -219,6 +219,50 @@
       }
     },
     {
+      "action": "KLeaseHead",
+      "input": {
+        "activity": {
+          "type": "Delete",
+          "object": "a1",
+          "result": null,
+          "to": "R",
+          "class": "ordinary",
+          "reason": "answer"
+        }
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": {
+          "name": "row1",
+          "state": "retired",
+          "authorization": "a1",
+          "request": "r1",
+          "listedAs": null
+        },
+        "collection": "stored",
+        "authorizationGet": {
+          "a1": {
+            "status": 404
+          }
+        },
+        "publicShows": false,
+        "memberDetail": false,
+        "inCollections": true,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": ["row.listedAs"]
+      }
+    },
+    {
       "action": "KRecv",
       "input": {
         "envelope": {
@@ -263,50 +307,6 @@
             "outcome": "queued"
           }
         ],
-        "mayAlsoRecord": [],
-        "readRequested": false,
-        "unspecified": ["row.listedAs"]
-      }
-    },
-    {
-      "action": "KLeaseHead",
-      "input": {
-        "activity": {
-          "type": "Delete",
-          "object": "a1",
-          "result": null,
-          "to": "R",
-          "class": "ordinary",
-          "reason": "answer"
-        }
-      },
-      "environment": {
-        "consent": true,
-        "slotsFull": false,
-        "held": "lt10",
-        "backlogFull": false,
-        "retractionCapFull": false
-      },
-      "observation": {
-        "row": {
-          "name": "row1",
-          "state": "retired",
-          "authorization": "a1",
-          "request": "r1",
-          "listedAs": null
-        },
-        "collection": "stored",
-        "authorizationGet": {
-          "a1": {
-            "status": 404
-          }
-        },
-        "publicShows": false,
-        "memberDetail": false,
-        "inCollections": true,
-        "notified": false,
-        "response": null,
-        "recorded": [],
         "mayAlsoRecord": [],
         "readRequested": false,
         "unspecified": ["row.listedAs"]
