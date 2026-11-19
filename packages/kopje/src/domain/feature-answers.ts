@@ -104,9 +104,9 @@ export function serves(row: Pick<LocalRow, "id" | "account_id" | "state">, listi
 // The owner's item `uri` (an Add's or a listing's, one of its collection's: remote-featured-collections.ts isItemOf)
 // named the row's authorization: its uri becomes the item's, and a listing gives it its `position`; whether it did.
 // An item uri another row holds (another collection's item, or one this collection keeps) names no row of a local
-// member: the row is left as it is, so the listing has not listed it (it may hide it, applyListing). updated_at moves
-// only when the uri does, so a read claimed before a change of who is shown keeps the row (its fence), and a listing
-// that names the row as it is listed already fences nothing.
+// member: the row is left as it is, so that item has not listed it (a later item of the listing may, else a read may
+// hide it, applyListing). updated_at moves only when the uri does, so a read claimed before a change of who is shown
+// keeps the row (its fence), and a listing that names the row as it is listed already fences nothing.
 export function markListed(db: Db, row: string, uri: string, now: number, position: number | null = null): boolean {
   return (
     db.first(

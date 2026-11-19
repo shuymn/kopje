@@ -64,6 +64,20 @@ StateGoals ==
    \* A listing records a retraction answer while the leased one is in flight under a reclaimed lease (it does not wait,
    \* so the listing does not coalesce into it), then the sweep reclaims that lease again and drops it as superseded.
    ReclaimSuperseded |-> Acted("KReclaim") /\ last.arg.val = "superseded" /\ g.overReclaim,
+   \* A leased answer's POST reaches R with its response lost while a retraction answer of its authorization to its
+   \* inbox, recorded while it was in flight, waits behind it: it is dropped as superseded (KDup).
+   LeaseDupSuperseded |-> Acted("KDup") /\ last.arg.val = "superseded",
+   \* The sweep reclaims a leased answer with only ordinary answers of its authorization to its inbox behind it: they
+   \* supersede nothing, so it stays leased (KReclaim).
+   ReclaimOrdinary |->
+     Acted("KReclaim") /\ last.arg.val = NONE /\ LaterAnswer(FALSE, TRUE) /\ ~LaterAnswer(TRUE, TRUE),
+   \* L's ordinary answer, leased before L's suspension, is dropped when the sweep reclaims its lease (sender refusal).
+   ReclaimRefused |-> Acted("KReclaim") /\ last.arg.val = "dropped",
+   \* A suspended L's ordinary answer, waiting, is dropped at its claim (sender refusal by class).
+   DroppedAnswer |-> Acted("KDeliver") /\ "dropped" \in last.ev /\ Answer(last.arg.msg),
+   \* L's ordinary answer, leased before L's suspension, is delivered during it: a POST claimed before the suspension
+   \* completes (a fresh claim would drop it).
+   LeasedSentSuspended |-> Acted("KDeliver") /\ "dropped" \notin last.ev /\ SenderDrops(last.arg.msg),
    \* A read lists the accepted row under an item R's Remove retracted: the row takes it (K14).
    ReadOverRetraction |-> Acted("KApply") /\ k.row.st = "acc" /\ k.row.uri # NONE /\ k.row.uri \in k.ret,
    \* The revoke's Delete is delivered after the retired row's cleanup (K10 leaves the lane as it is).

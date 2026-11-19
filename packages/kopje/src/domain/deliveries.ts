@@ -592,11 +592,12 @@ export function outboundSince(db: Db, before: OutboundMark): boolean {
 // Recording and expansion
 // ---------------------------------------------------------------------------------------------------------------
 
-// The latest retraction answer of a subject (an authorization to one owner): each supersedes the earlier activities of
-// its subject, so the subject's unsuperseded retractions (outbound_activities_unsuperseded_retractions, migration
+// The latest retraction answer of a subject (an authorization to one owner): each supersedes the one before it
+// (supersedeAnswer), so the subject's unsuperseded retractions (outbound_activities_unsuperseded_retractions, migration
 // 0119_answer_retractions) hold it alone, one probe, whatever ordinary answers of the subject are unsuperseded (RES-7).
+const LATEST_ANSWER_WHERE = "o.account_id = ?1 AND o.object_uri = ?2 AND o.superseded = 0 AND o.retracts = 1";
 const LATEST_ANSWER = `outbound_activities o INDEXED BY outbound_activities_unsuperseded_retractions
-	WHERE o.account_id = ?1 AND o.object_uri = ?2 AND o.superseded = 0 AND o.retracts = 1`;
+	WHERE ${LATEST_ANSWER_WHERE}`;
 
 // Whether the latest retraction answer of the subject is still to be sent to one of `inboxes`, the new answer's
 // destination: a target there not yet expanded, or a delivery there queued or pending (a pending one is POSTed again,
@@ -649,6 +650,21 @@ function cancelWaitingAnswer(db: Db, signerId: string, object: string, now: numb
   );
 }
 
+// A new retraction answer supersedes the subject's latest one alone, through LATEST_ANSWER's index: the subject's
+// ordinary answers (the owner's listings of the authorization before Kopje issued it, the only ones a retraction answer
+// can follow) keep their course under RES-4's caps, which admitted them, so recording reads none of them (RES-7).
+function supersedeAnswer(db: Db, signerId: string, object: string): void {
+  const stopped = db.all<{ id: string }>(
+    `UPDATE outbound_activities AS o INDEXED BY outbound_activities_unsuperseded_retractions
+			SET superseded = 1, staged = NULL WHERE ${LATEST_ANSWER_WHERE} RETURNING CAST(id AS TEXT) AS id`,
+    signerId,
+    object,
+  );
+  for (const { id } of stopped) {
+    dropSettledActivity(db, id);
+  }
+}
+
 // Records the intent with its targets, and expands what the step allows. A retraction supersedes every earlier
 // activity about its object and drops the object's receipts (its own targets now hold that evidence); an Update
 // supersedes earlier Updates only. An Update of a status goes alone to servers known to have it (a receipt, or its
@@ -665,11 +681,11 @@ function cancelWaitingAnswer(db: Db, signerId: string, object: string, now: numb
 // Mastodon's reject_remote_follows! sends it to inbox_url.
 // options.answer: a member's Delete of a feature authorization that answers an owner's listing (#1589's D24,
 // feature-answers.ts), about the authorization and that owner under a subject of its own (ANSWER_SUBJECT), so it
-// supersedes only an earlier answer of it to that owner, never the member's own revocation; 'retraction' for an
-// authorization of a row Kopje holds (never refused, not recorded while an earlier one to that owner is still to be
-// sent to the owner's current inbox, answerOutstanding, and replacing one waiting for another inbox,
-// cancelWaitingAnswer: at most one waiting a subject), 'ordinary' for any other (admitted under RES-4's caps like new
-// work).
+// never supersedes the member's own revocation; 'retraction' for an authorization of a row Kopje holds (never refused,
+// not recorded while an earlier one to that owner is still to be sent to the owner's current inbox, answerOutstanding,
+// and replacing one waiting for another inbox, cancelWaitingAnswer: at most one waiting a subject; it supersedes the
+// subject's latest retraction answer alone, supersedeAnswer), 'ordinary' for any other (admitted under RES-4's caps
+// like new work, superseding nothing).
 // Returns whether this call inserted an intent with at least one target (a chunk); the expansion it runs, which may
 // expand other intents, does not count. A handshake replay ends its hold only then (handshake-replays.ts).
 export type OutboundOptions = {
@@ -726,9 +742,10 @@ export function enqueueActivity(
       return false;
     }
     cancelWaitingAnswer(db, signerId, object, now);
+    supersedeAnswer(db, signerId, object);
   }
   const types = supersededTypes(envelope.activity);
-  if (object !== null && (retracts || types.length > 0)) {
+  if (object !== null && options.answer === undefined && (retracts || types.length > 0)) {
     supersede(db, signerId, object, retracts, types);
   }
   if (object !== null && retracts) {

@@ -638,6 +638,41 @@ describe("a local member's row and the reads of its owner's collections", () => 
     expect(await localRows(w.t, ALICE)).toMatchObject([{ id: w.row, state: ACCEPTED, uri: null, position: 1 }]);
   });
 
+  // Code review r4: an entry naming the row's authorization under an item uri another row holds lists no one, so the
+  // row is listed by the first entry naming its authorization that it can take, in either order. Fails if the member's
+  // first entry decides alone (the held one first hides the row).
+  it("lists the row by the first entry naming it whose item uri no other row holds, in either order", async () => {
+    for (const heldFirst of [true, false]) {
+      const w = await featuring();
+      const held = item(w.owner, { uri: `${OTHER}/users/held` });
+      const other = collection(w.owner, [held]);
+      const read = async (entries: unknown[], at: number) => {
+        w.listed.orderedItems = entries;
+        w.listed.totalItems = entries.length;
+        serveListing(w.t.web, w.owner, w.listed);
+        serveCollections(w.t.web, w.owner, [[w.listed, other]]);
+        await requestSync(w.t, w.ownerId);
+        await syncAll(w.t, w.t.web.loader, at);
+      };
+      const served = servedItem(w);
+      await read([served], NOW + 60_000);
+      expect(await localRows(w.t, ALICE)).toMatchObject([{ id: w.row, uri: served.id, position: 1 }]);
+      const ghost = item(w.owner, { uri: `${OTHER}/users/ghost` });
+      const colliding = { ...servedItem(w), id: held.id };
+      await read(heldFirst ? [ghost, colliding, served] : [ghost, served, colliding], NOW + 120_000);
+      expect(
+        await sql(
+          w.t.store,
+          "SELECT c.uri FROM collection_items i JOIN collections c ON c.id = i.collection_id WHERE i.uri = ?",
+          held.id,
+        ),
+      ).toEqual([{ uri: other.id }]);
+      expect(await localRows(w.t, ALICE), heldFirst ? "held first" : "held last").toMatchObject([
+        { id: w.row, state: ACCEPTED, uri: served.id, position: heldFirst ? 3 : 2 },
+      ]);
+    }
+  });
+
   // Fails if a read hides a row changed at or after its claim (its listing may predate the change), the same
   // millisecond included, or hides a revoked row.
   it("keeps a row changed at or after the read's claim shown, and leaves a revoked row to the cleanup", async () => {

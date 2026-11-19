@@ -54,8 +54,9 @@ jobs:
           fi
 
   test:
-    # The slowest shard has taken up to 10.3 minutes on a hosted runner.
-    timeout-minutes: 15
+    # The slowest shard has taken up to 15.2 minutes on a hosted runner (14.8 on main). The shard names are required
+    # checks, so the count stays at four and the limit leaves room instead.
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     needs: changes
     permissions:
@@ -74,7 +75,7 @@ jobs:
           base=$(jq --exit-status --raw-output .base packages/kopje/test/main-runtime/recorded.json)
           git fetch --quiet --no-tags --depth=1 origin "$base"
       # node and pnpm at the versions mise.lock pins; the hooks' tools are not needed here.
-      - uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785 # v5.2.8
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           install_args: node pnpm
 
@@ -104,7 +105,7 @@ jobs:
           # release (packages/kopje/scripts/build-assets.mjs), and the migration check reads every release tag.
           fetch-depth: 0
       # node and pnpm at the versions mise.lock pins; the hooks' tools are not needed here.
-      - uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785 # v5.2.8
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         with:
           install_args: node pnpm
 
@@ -169,7 +170,7 @@ jobs:
         with:
           persist-credentials: false
       # node and pnpm at the versions mise.lock pins; the hooks' tools are not needed here.
-      - uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785 # v5.2.8
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
         if: env.RUN == 'true'
         with:
           install_args: node pnpm

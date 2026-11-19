@@ -4,10 +4,10 @@
 --   outbound_activities_unsuperseded_retractions   outbound_activities by (account_id, object_uri, id), only the rows
 --                                                  neither superseded nor anything but a retraction: the latest
 --                                                  retraction answer of a feature authorization to one owner
---                                                  (src/domain/deliveries.ts LATEST_ANSWER: the coalescing gate and
---                                                  the cancellation's lookup) is one probe of it, since each retraction
---                                                  answer supersedes the earlier activities of its subject. Through
---                                                  outbound_activities_unsuperseded the probe also walked the subject's
+--                                                  (src/domain/deliveries.ts LATEST_ANSWER: the coalescing gate, the
+--                                                  cancellation's lookup and supersedeAnswer) is one probe of it, since
+--                                                  each retraction answer supersedes the one before it. Through
+--                                                  outbound_activities_unsuperseded these also walked the subject's
 --                                                  unsuperseded ordinary answers, which no cap bounds.
 --
 -- No row is rewritten and no trigger changes. Cost: one pass over outbound_activities to build the index, which holds

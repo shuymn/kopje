@@ -75,6 +75,11 @@
       "name": "S15",
       "distinct": 8318,
       "depth": 18
+    },
+    {
+      "name": "S16",
+      "distinct": 176251,
+      "depth": 24
     }
   ],
   "induction": {
@@ -334,6 +339,27 @@
       "variant": "V31",
       "invariant": "CR3",
       "trace": 15
+    },
+    {
+      "name": "V32",
+      "scenario": "S16",
+      "variant": "V32",
+      "invariant": "MemberAvailability",
+      "trace": 12
+    },
+    {
+      "name": "V33",
+      "scenario": "S16",
+      "variant": "V33",
+      "invariant": "MemberAvailability",
+      "trace": 11
+    },
+    {
+      "name": "V34",
+      "scenario": "S16",
+      "variant": "V34",
+      "invariant": "CR3",
+      "trace": 14
     }
   ],
   "findings": [],
@@ -813,6 +839,41 @@
       "goal": "ReclaimSuperseded",
       "trace": 12,
       "fixture": true
+    },
+    {
+      "name": "S2-LeaseDupSuperseded",
+      "scenario": "S2",
+      "goal": "LeaseDupSuperseded",
+      "trace": 13,
+      "fixture": true
+    },
+    {
+      "name": "S2-ReclaimOrdinary",
+      "scenario": "S2",
+      "goal": "ReclaimOrdinary",
+      "trace": 12,
+      "fixture": true
+    },
+    {
+      "name": "S16-ReclaimRefused",
+      "scenario": "S16",
+      "goal": "ReclaimRefused",
+      "trace": 12,
+      "fixture": true
+    },
+    {
+      "name": "S16-DroppedAnswer",
+      "scenario": "S16",
+      "goal": "DroppedAnswer",
+      "trace": 11,
+      "fixture": true
+    },
+    {
+      "name": "S16-LeasedSentSuspended",
+      "scenario": "S16",
+      "goal": "LeasedSentSuspended",
+      "trace": 12,
+      "fixture": true
     }
   ],
   "replay": {
@@ -944,6 +1005,14 @@
       {
         "variant": "V31",
         "fixture": "S2-LeaseFailedOrdinary"
+      },
+      {
+        "variant": "V32",
+        "fixture": "S16-ReclaimRefused"
+      },
+      {
+        "variant": "V33",
+        "fixture": "S16-DroppedAnswer"
       }
     ],
     "exempt": [
@@ -954,6 +1023,10 @@
       {
         "variant": "V23",
         "why": "An ignored read records its own snapshot as the covering read OV2 compares: it changes what an invariant counts, no step of Kopje's."
+      },
+      {
+        "variant": "V34",
+        "why": "It counts a correction a suspended member's claim dropped against CR3 (F7 without its suspension excuse): it changes what an invariant counts, no step of Kopje's."
       }
     ]
   }

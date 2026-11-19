@@ -364,14 +364,15 @@ function itemByUri(db: Db, uri: string): StoredItem | undefined {
 // listed one processed): the first MAX_REMOTE_ITEMS entries, each it may hold (itemOf) in listed order, one a member
 // and an item whose uri another collection or a local member's row holds skipped. An entry naming a local account,
 // whose item may be one of the collection's (isItemOf, else it is skipped, naming no one), is matched to that member's
-// row by its authorization (feature-answers.ts, #1589's D21 and D24):
-// a row that serves it takes the item's uri and position, unless another row the listing leaves holds that uri, and is
-// then not named (markListed); any other authorization of the member is answered with the member's Delete of it,
-// nothing stored; a member unavailable to every read is skipped (localListing). Every local
-// member's row is kept, listed or not, in any state: no listing deletes one (threat-model.md ID-9). `hides`:
-// a read's claim, for an untruncated listing of a read (null for any other listing, which only shows): a local
-// member's accepted row it does not name, whose member is available and which did not change at or after the claim,
-// is hidden (its uri cleared, R45). The local rows hold their slots first: the remote members' items fill only the
+// row by its authorization (feature-answers.ts, #1589's D21 and D24), the member's first such entry deciding. If it
+// names the authorization of a row that serves it, the row takes the uri and position of the first entry naming that
+// authorization whose uri no other row the listing leaves holds, and is not named if each is held (markListed); any
+// other authorization is answered with the member's Delete of it, nothing stored. Of the member's later entries, only
+// those naming the served authorization its first entry named count; a member unavailable to every read is skipped
+// (localListing). Every local member's row is kept, listed or not, in any state: no listing deletes one
+// (threat-model.md ID-9). `hides`: a read's claim, for an untruncated listing of a read (null for any other listing,
+// which only shows): a local member's accepted row it does not name, whose member is available and which did not
+// change at or after the claim, is hidden (its uri cleared, R45). The local rows hold their slots first: the remote members' items fill only the
 // slots left of COLLECTION_MAX_ITEMS live (and MAX_STORED_ITEMS stored) rows, in listed order, the rest skipped as past
 // the 25 (D4). Every other row of the collection (not listed, not applied, whatever its state) is deleted first, so the
 // live and stored triggers never see more than the listing, then each listed item applied by the revision rule.
@@ -386,21 +387,31 @@ function applyListing(
   hides: number | null,
 ): boolean {
   const locals = localRows(db, collection.id, hides ?? now);
-  // A local member's row the listing names, with the listed item's uri and position.
-  const listed = new Map<string, { uri: string; position: number }>();
+  // A local member's row the listing names: the items naming its authorization, with their positions, in listed order.
+  const listed = new Map<string, { uri: string; position: number }[]>();
   const answers: LocalListing[] = [];
   const planned: Planned[] = [];
   const members = new Set<string>();
   items.slice(0, MAX_REMOTE_ITEMS).forEach((input, index) => {
     if (input !== null && sameOrigin(input.object, origin)) {
       const listing = isItemOf(collection, input.id) ? localListing(db, input.object, input.authorization) : null;
-      if (listing === null || members.has(listing.member.id)) {
+      if (listing === null) {
+        return;
+      }
+      const row = locals.find((local) => local.account_id === listing.member.id);
+      const served = row !== undefined && serves(row, listing);
+      const named = served ? listed.get(row.id) : undefined;
+      if (named !== undefined) {
+        // A later item naming the row's authorization: the row's if the earlier ones cannot be (markListed).
+        named.push({ uri: input.id, position: index + 1 });
+        return;
+      }
+      if (members.has(listing.member.id)) {
         return;
       }
       members.add(listing.member.id);
-      const row = locals.find((local) => local.account_id === listing.member.id);
-      if (row !== undefined && serves(row, listing)) {
-        listed.set(row.id, { uri: input.id, position: index + 1 });
+      if (served) {
+        listed.set(row.id, [{ uri: input.id, position: index + 1 }]);
       } else {
         answers.push(listing);
       }
@@ -448,8 +459,8 @@ function applyListing(
       (item.existing === undefined ? insertItem(db, collection.id, item, now) : reviseItem(db, item, now)) || queued;
   }
   for (const row of locals) {
-    const named = listed.get(row.id);
-    if (named !== undefined && markListed(db, row.id, named.uri, now, named.position)) {
+    // The first item naming the row that no other row holds lists it, after the writes above that may free a uri.
+    if (listed.get(row.id)?.some((item) => markListed(db, row.id, item.uri, now, item.position)) === true) {
       continue;
     }
     if (hides !== null && !keptUnlisted(row)) {
