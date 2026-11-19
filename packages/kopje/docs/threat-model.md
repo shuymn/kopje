@@ -2088,12 +2088,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   `test/admin.test.ts`, `test/dump-import.test.ts`. - Configuration is every name `/admin/config` accepts: `domain`,
   `access_aud`, `access_team_domain`, `access_admin_aud`, `admin_email`, `access_service_token_client_id`. A verified
   import restores the target's values exactly; an imported value never replaces them and an absent name stays absent. -
-  An admin is an identity whose email matches the configured `admin_email` by the sign-in's rule (AUTH-9), or a
-  service token with no email, a `sub` that is `""` or absent, and `common_name` equal to the configured client id.
-  Cloudflare documents a service token's `sub` as `""` and a person's as their id; since 2026-11 Access leaves it out
-  of a service token's JWT. Access also names an mTLS client certificate in `common_name`, and a certificate's JWT is
-  reported (not documented) to carry that name in `sub` as well, so a non-empty `sub` is refused whatever the
-  `common_name`. No claim marks a service token positively. - `IMPORT_TOKEN` only
+  An admin is an identity whose email matches the configured `admin_email` by the sign-in's rule (AUTH-9), or a service
+  token with no email, a `sub` that is `""` or absent, and `common_name` equal to the configured client id. Cloudflare
+  documents a service token's `sub` as `""` and a person's as their id; Access has been observed (2026-11) to leave it
+  out of a service token's JWT. Access also names an mTLS client certificate in `common_name`, and a certificate's JWT
+  is reported (not documented) to carry that name in `sub` as well, so a non-empty `sub` is refused whatever the
+  `common_name`. No claim marks a service token positively, so the admin application's policies admit only the admin's
+  email and that service token (setup creates them so); a certificate rule under the admin AUD would rest on the
+  reported claim alone. - `IMPORT_TOKEN` only
   begins an import into an empty Store without usable admin access, or configures the Store while admin access is not
   usable. The Store checks this, not only the Worker. - A token import continues only with the one-time session
   credential `begin` returned; the Store keeps its SHA-256 only. An unverified token import idle for 15 minutes may be

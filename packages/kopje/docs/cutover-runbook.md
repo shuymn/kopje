@@ -186,8 +186,9 @@ None of this affects the legacy instance.
      `SETUP_TOKEN` and never run `/setup`, which would create an account and make the Store non-empty;
    - its Queue's dead-letter queue (`wrangler queues create <kopje-queue>-dlq`);
    - a custom domain `<admin-host>` on the Worker, and an Access application for `<admin-host>/admin` with your admin
-     policy and a service token for the CLI (as [setup.md](setup.md#before-you-start) step 5). Add `<domain>/admin`
-     to the same application later, at step 7, so its AUD does not change;
+     policy and a service token for the CLI (as [setup.md](setup.md#before-you-start) step 5), and no other rule: no
+     certificate rule, since the Worker tells the CLI's token from a certificate only by Access's claims (AUTH-5). Add
+     `<domain>/admin` to the same application later, at step 7, so its AUD does not change;
    - for a rollback: Queue producer bindings `LEGACY_QUEUE` to `<legacy-queue>` and `LEGACY_DLQ` to
      `<legacy-queue>-dlq` in the instance's `wrangler.jsonc`, and the legacy instance's `VAPID_JWK` as the secret
      `LEGACY_VAPID_JWK`. Only `kopje-admin cutover drain` uses them: it sends to `LEGACY_QUEUE`, and reads the backlog
