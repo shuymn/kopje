@@ -311,10 +311,10 @@ export function statusFacts(
   // The collections the status tags whose owner is available (collectionFoundSql), with no viewer (a1: the Note names
   // each by its id alone, so no collection's content travels in the status's activities): its references by the
   // primary key's prefix (at most MAX_TAGGED_COLLECTIONS, the trigger's bound), each collection and its owner by key. A
-  // local one's id is its owner's route; a remote one's as stored, only while valid (validRemoteCollection), so a Note
-  // never names an id its writer would not have stored.
+  // local one's id is its owner's route; a remote one's as stored, only while valid (validRemoteCollection, against its
+  // owner's id as actorUriSql reads it), so a Note never names an id its writer would not have stored.
   const collections = db.all<{ id: string; local: number; uri: string | null; username: string; owner_uri: string }>(
-    `SELECT c.id, c.local, c.uri, ${usernameSql("a.username")} AS username, a.uri AS owner_uri
+    `SELECT c.id, c.local, c.uri, ${usernameSql("a.username")} AS username, ${actorUriSql("a.uri")} AS owner_uri
 		FROM status_collections r
 			CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = r.collection_id
 			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id

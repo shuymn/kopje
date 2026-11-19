@@ -1256,6 +1256,31 @@ describe("rows no writer produces (7-T9)", () => {
     ]);
   });
 
+  // W's owner holds a restored actor id of 8,192 bytes on W's origin, past ACTOR_URI_LIMIT, which accounts.uri admits and
+  // every read takes as '' (actorUriSql): W is not valid, so the API and the Note leave out S's reference to it, and a
+  // link to its id or to its web page references nothing. V, beside it, is shown.
+  it("leaves out a collection whose owner's id is past ACTOR_URI_LIMIT, and references none", async () => {
+    const t = await setup();
+    const M = "https://m.example";
+    const long = await remoteOwner(t, 1, `${M}/users/w/`.padEnd(8_192, "a"));
+    const W = await remoteCollection(t, long, 1, `${M}/users/w/collections/1`, `${M}/collections/1`);
+    const owner = await remoteOwner(t, 2, `${MASTODON}/users/x`);
+    const V = await remoteCollection(t, owner, 2, `${MASTODON}/users/x/collections/2`);
+    const S = await posted(t, "S");
+    for (const id of [W, V]) {
+      await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", S, id);
+    }
+    const { body } = await t.api<Status>(`/api/v1/statuses/${S}`, "dave");
+    expect(body.tagged_collections.map(({ id }) => id)).toEqual([V]);
+    const [row] = await sql<{ uri: string }>(t.store, "SELECT uri FROM statuses WHERE id = ?", S);
+    const note = await (await t.request(pathOf(row!.uri), AP_GET)).json<{ tag: Record<string, unknown>[] }>();
+    expect(note.tag.filter((tag) => tag.type === "FeaturedCollection")).toEqual([
+      { type: "FeaturedCollection", id: `${MASTODON}/users/x/collections/2` },
+    ]);
+    expect(await tagged(t, await posted(t, `${M}/users/w/collections/1`))).toEqual([]);
+    expect(await tagged(t, await posted(t, `${M}/collections/1`))).toEqual([]);
+  });
+
   it("lets a remote Note's tag reference none of them", async () => {
     const { t, uriOf } = await restored();
     const bob = await mastodonActor(t.web, "bob");

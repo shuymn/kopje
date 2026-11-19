@@ -1980,7 +1980,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   collection job after it, each after the item's `Add`; a suspension sends none. A status's `tagged_collections`
   (migration `0120_tagged_collections`, #1589's D26) are the collections it tags that are shown to the viewer, each with
   the members shown to the viewer, on an original and a quoted status (a boost presents none, its original them); a
-  remote one only while its id is a valid id on its owner's origin and its name and description are within its
+  remote one only while its id is a valid id on its owner's origin, that owner's id read within `ACTOR_URI_LIMIT`
+  (`actorUriSql`, which the writers' lookups read it through too), and its name and description are within its
   writer's bounds, and its `url` only as its writer would store it. No public page presents them or reads a reference:
   the status page and its thread, the profile's tabs and pins, the hashtag page, the interact handoff, oEmbed and the
   `/authorize_interaction` result present `[]`. A local status's ActivityPub forms (its Note or Question as served, in
@@ -2014,7 +2015,8 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   boost's original and a quote's own and quoted collections", "reads no reference for a page, which presents none,
   while the API presents them", "presents Y alone, with its uri for the url no writer would store", "leaves out a
   restored collection whose text reads past its writer's bounds", "names each collection by its id alone, after the
-  other tags, under the featured_collections terms", "lets S's Note name Y alone, by its id").
+  other tags, under the featured_collections terms", "lets S's Note name Y alone, by its id", "leaves out a collection
+  whose owner's id is past ACTOR_URI_LIMIT, and references none").
 
 ### Authorization (AUTH)
 

@@ -9,7 +9,7 @@ import {
   COLLECTION_URL_BYTES,
 } from "../platform/stored-bounds";
 import { collectionItemShownSql, collectionShownSql } from "./audience";
-import { usernameSql } from "./profile-bounds";
+import { actorUriSql, usernameSql } from "./profile-bounds";
 import { withinTagNameBound } from "./tag-bounds";
 import { normalizeTag } from "./tag-name";
 
@@ -127,8 +127,9 @@ export const TAG_REFERENCE_COLUMNS = fixedColumns(
 );
 
 // A tagged collection as taggedCollectionsOf reads it: its columns as stored, each within its CHECK (migration
-// 0103_collections), its owner's username (a local collection's uri names it) and its owner's uri, against which a
-// remote one's id is judged (validRemoteCollection).
+// 0103_collections), its owner's username (a local collection's uri names it) and its owner's uri as actorUriSql reads
+// it ('' past ACTOR_URI_LIMIT, so such a remote one is invalid), against which a remote one's id is judged
+// (validRemoteCollection). The status presenter and R read these same columns.
 export const TAGGED_COLLECTION_COLUMNS: ColumnMap = {
   id: "c.id",
   account_id: "c.account_id",
@@ -144,7 +145,7 @@ export const TAGGED_COLLECTION_COLUMNS: ColumnMap = {
   url: "c.url",
   created_at: "c.created_at",
   updated_at: "c.updated_at",
-  owner_uri: "a.uri",
+  owner_uri: actorUriSql("a.uri"),
 };
 
 // Collection#to_param's page: a local collection's url (collection_url, the page of web-pages/collection.ts).

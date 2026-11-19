@@ -716,9 +716,7 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   // CARD_COLUMN_MAP, the stored text within its bound, else NULL), judged again by shownCardUrl.
   "src/domain/activities.ts interpolation CARD_COLUMN_MAP.url": { count: 1, reason: ACTIVITYPUB },
   "src/domain/activities.ts interpolation CARD_COLUMN_MAP.title": { count: 1, reason: ACTIVITYPUB },
-  // The fourth: a tagged collection's owner, against which a remote collection's id is judged before its Note names it
-  // (statusFacts, validRemoteCollection).
-  "src/domain/activities.ts accounts.uri": { count: 4, reason: ACTIVITYPUB },
+  "src/domain/activities.ts accounts.uri": { count: 3, reason: ACTIVITYPUB },
   "src/domain/local-notes.ts statuses.uri": { count: 3, reason: ACTIVITYPUB },
   "src/domain/local-notes.ts accounts.uri": { count: 2, reason: ACTIVITYPUB },
   // The actor documents' row (ACTOR_ROW_COLUMN_MAP), which actors.ts and actor-update.ts select.
@@ -737,13 +735,11 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/collection-checks.ts accounts.uri": { count: 2, reason: IDENTITY },
   // A local owner's uri, which a remote member's FeatureRequest id is built from and stored as (insertItem); a local
   // member's, which its Delete of an authorization in a remote collection is built from (remoteRevocation,
-  // severCollections); and a remote collection's owner's, against which a tagged collection's id is judged as its
-  // writer judged it (validRemoteCollection: collectionByStoredUri, collectionByStoredUrl).
-  "src/domain/collections.ts accounts.uri": { count: 5, reason: IDENTITY },
-  // A tagged collection as taggedCollectionsOf reads it (TAGGED_COLLECTION_COLUMNS): its owner's uri, against which a
-  // remote one's id is judged (validRemoteCollection), and the collection's own name and id, columns of `collections`
-  // within its CHECK (migration 0103_collections), not the hashtag name and the account and status ids bounded here.
-  "src/domain/collection-presenter.ts column a.uri": { count: 1, reason: IDENTITY },
+  // severCollections).
+  "src/domain/collections.ts accounts.uri": { count: 3, reason: IDENTITY },
+  // A tagged collection as taggedCollectionsOf reads it (TAGGED_COLLECTION_COLUMNS): the collection's own name and id,
+  // columns of `collections` within its CHECK (migration 0103_collections), not the hashtag name and the account and
+  // status ids bounded here.
   "src/domain/collection-presenter.ts column c.name": { count: 1, reason: COLLECTION_TEXT },
   "src/domain/collection-presenter.ts column c.uri": { count: 1, reason: COLLECTION_TEXT },
   // A local member's uri, which its authorization and its answers to a remote owner are built from (localRows) and an

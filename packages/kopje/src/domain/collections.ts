@@ -64,7 +64,7 @@ import { requestCollectionSync } from "./collection-requests";
 import { allocateLocalId, insertWithFreshId, requestedId, storedIdOf } from "./ids";
 import { notify } from "./notifications";
 import { writeOperation } from "./operation";
-import { usernameSql } from "./profile-bounds";
+import { actorUriSql, usernameSql } from "./profile-bounds";
 import { RowBudget } from "./row-budget";
 import { isHashtagName, parseStatusText } from "./status-text";
 import { TAG_NAME_TOO_LONG, withinTagNameBound } from "./tag-bounds";
@@ -1142,10 +1142,10 @@ function routedCollection(db: Db, url: string, origin: string): string | null {
 }
 
 // The valid remote collection stored under the id `uri`, byte for byte (collections_uri), with its owner's id read by
-// key for the validity test.
+// key for the validity test, as actorUriSql reads it (a restored id past ACTOR_URI_LIMIT makes it invalid).
 function collectionByStoredUri(db: Db, uri: string): string | null {
   const row = db.first<{ id: string; uri: string; owner_uri: string | null }>(
-    `SELECT c.id, c.uri, o.uri AS owner_uri FROM collections c INDEXED BY collections_uri
+    `SELECT c.id, c.uri, ${actorUriSql("o.uri")} AS owner_uri FROM collections c INDEXED BY collections_uri
 			LEFT JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id
 		WHERE c.uri = ?1 AND c.local = 0`,
     uri,
@@ -1160,7 +1160,7 @@ function collectionByStoredUri(db: Db, uri: string): string | null {
 // owner by key. `local = 0` is a literal: the partial index serves only a statement whose terms imply its condition.
 function collectionByStoredUrl(db: Db, url: string, origin: string): string | null {
   const rows = db.all<{ id: string; uri: string; owner_uri: string | null }>(
-    `SELECT c.id, c.uri, o.uri AS owner_uri
+    `SELECT c.id, c.uri, ${actorUriSql("o.uri")} AS owner_uri
 		FROM (SELECT id, account_id, uri FROM collections INDEXED BY collections_url
 			WHERE url = ?1 AND uri >= ?2 AND uri < ?3 AND local = 0 LIMIT 2) c
 		LEFT JOIN accounts o INDEXED BY ${ACCOUNTS_ID_INDEX} ON o.id = c.account_id`,
