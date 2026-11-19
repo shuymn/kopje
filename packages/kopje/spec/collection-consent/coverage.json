@@ -1,6 +1,6 @@
 {
   "$comment": "Kopje's sources spec/collection-consent/ describes, and their blobs when it was last confirmed to (scripts/collection-consent-coverage.mjs). A null blob is a file the specification describes that Kopje does not have yet. test-node/collection-consent-coverage.test.ts fails once a blob differs.",
-  "confirmed": "3489111fee4ad85bbecf53849803f489041bdf8e",
+  "confirmed": "575df4b385bbc98dfdc6d4a7a7fde91237d5eaa9",
   "files": [
     {
       "path": "src/store.ts",
@@ -69,7 +69,7 @@
       "path": "src/domain/collections.ts",
       "functions": ["severCollections", "pruneCollectionItems"],
       "spec": "CollectionConsentKopje.tla Block (K8, an ordinary Block with the row's Delete), Cleanup (K10) and Evict; MemberGone (K9) is model-only",
-      "blob": "65a9918181524006044c7d685eb4cc47c76348c2"
+      "blob": "23b0ee8aedd28f144465484c477d1b07ce7e8f7a"
     },
     {
       "path": "src/domain/collection-documents.ts",
@@ -81,7 +81,7 @@
       "path": "src/domain/activities.ts",
       "functions": ["revocationRejectActivity"],
       "spec": "CollectionConsentKopje.tla Acc, Rej, Del, Blk, DelL: the activities Kopje records",
-      "blob": "59a73e3341925b8576951753dea7a8f52f2ca343"
+      "blob": "355a081524e63a44de74b8aff0b1b60fbc1745a8"
     },
     {
       "path": "src/domain/deliveries.ts",
