@@ -2,18 +2,29 @@ import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
+import { jsonBytes } from "../src/domain/answer-budget";
+import type { VisibleStatusId } from "../src/domain/audience";
+import { contextOf } from "../src/domain/auth";
 import { writeTaggedCollections } from "../src/domain/collections";
 import { deleteStatusBatch, PURGE_BATCH, purgeBatch } from "../src/domain/inbox";
+import { resolveInteraction } from "../src/domain/interaction";
 import { MAX_PUSH_BACKLOG } from "../src/domain/notifications";
+import { readOperation } from "../src/domain/operation";
 import { ALL_PARTS, completeCollectionRead } from "../src/domain/remote-collections";
 import { removeFeaturedCollection } from "../src/domain/remote-featured-collections";
 import { startRemoval } from "../src/domain/remote-removal";
 import { postStatus, publishScheduled } from "../src/domain/scheduled-statuses";
+import { presentation, type Quote, type Status, statusStream } from "../src/domain/status-presenter";
+import { webInteractTarget } from "../src/domain/web-pages/interact";
+import { webProfilePage } from "../src/domain/web-pages/profile";
+import { embeddedStatus, webStatusPage } from "../src/domain/web-pages/status";
+import { webTagPage } from "../src/domain/web-pages/tags";
 import type { StoreStub } from "../src/platform/store-client";
-import { MAX_TAG_LINK_CANDIDATES, MAX_TAGGING_STATUSES } from "../src/platform/stored-bounds";
+import { COLLECTION_ITEM_STATES, MAX_TAG_LINK_CANDIDATES, MAX_TAGGING_STATUSES } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
 import { type ApiHarness, bearer, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { acceptQuote } from "./budget-helpers";
 import { BUILD } from "./helpers";
 import { MASTODON, mastodonActor } from "./inbox-helpers";
 import {
@@ -28,8 +39,9 @@ import {
   type Setup,
   update,
 } from "./inbox-status-helpers";
-import { measuredStatements, type PlannedStatement, plannedSql, staleStatistics } from "./read-helpers";
-import { community, remoteAccount, seedStatus } from "./status-helpers";
+import { measuredRead, measuredStatements, type PlannedStatement, plannedSql, staleStatistics } from "./read-helpers";
+import { act, block, community, getJson, post, remoteAccount, seedStatus } from "./status-helpers";
+import { postsTab } from "./web-helpers";
 
 // The collections a status tags (#1589's D26, src/domain/collections.ts, migration 0120_tagged_collections): a local
 // post's links and a remote Note's FeaturedCollection tags, resolved without a fetch to collections Kopje stores, at
@@ -146,7 +158,12 @@ describe("a local post's links (7-T1)", () => {
     const L = await localCollection(t, ALICE, 1);
     const owner = await remoteOwner(t, 1, `${MASTODON}/users/bob`);
     const R = await remoteCollection(t, owner, 2, `${MASTODON}/users/bob/collections/2`);
-    expect(await tagged(t, await posted(t, `${LOCAL}/collections/${L}`))).toEqual([L]);
+    const byUrl = await posted(t, `${LOCAL}/collections/${L}`);
+    expect(await tagged(t, byUrl)).toEqual([L]);
+    const { body } = await t.api<Status>(`/api/v1/statuses/${byUrl}`, "dave");
+    expect(body.tagged_collections.map(({ id, uri, url }) => ({ id, uri, url }))).toEqual([
+      { id: L, uri: `${LOCAL}/ap/users/alice/collections/${L}`, url: `${LOCAL}/collections/${L}` },
+    ]);
     expect(await tagged(t, await posted(t, `${LOCAL}/ap/users/alice/collections/${L}`))).toEqual([L]);
     // Another username, a stored remote collection's id under the local route, and an unknown id: none.
     expect(await tagged(t, await posted(t, `${LOCAL}/ap/users/dave/collections/${L}`))).toEqual([]);
@@ -474,6 +491,209 @@ describe("a remote Note's tags (7-T4)", () => {
     t.web.serve(note.id, { "@context": "https://www.w3.org/ns/activitystreams", ...note, updated });
     expect((await search()).status).toBe(200);
     expect(await tagged(t, id)).toEqual([M2]);
+  });
+});
+
+// ---- Presentation (7-T5): R45 decides what a status's tagged_collections shows, a chunk reads a collection once, and
+// no page reads a reference.
+
+// The local collection `n` of `owner`, written directly: listed among its owner's only when `discoverable`.
+async function ownedCollection(store: StoreStub, owner: string, n: number, discoverable: boolean): Promise<string> {
+  await sql(
+    store,
+    `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, created_at, updated_at)
+		VALUES (?, ?, 1, ?, 0, ?, ?, ?)`,
+    collectionId(n),
+    owner,
+    `local ${n}`,
+    discoverable ? 1 : 0,
+    T,
+    T,
+  );
+  return collectionId(n);
+}
+
+let items = 0;
+// `member`'s item of the collection `collection` at `position`, in `state`.
+const item = (store: StoreStub, collection: string, member: string, position: number, state: number) =>
+  sql(
+    store,
+    `INSERT INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    String(600000000000000000n + BigInt(++items)),
+    collection,
+    member,
+    state,
+    position,
+    T,
+    T,
+  );
+
+// A presented status's collections, each with its items' accounts.
+const shown = (status: Pick<Status, "tagged_collections">) =>
+  status.tagged_collections.map(({ id, items }) => ({ id, members: items.map((i) => i.account_id) }));
+
+describe("a status's tagged_collections (7-T5)", () => {
+  // carol's public post P linking alice's non-discoverable collection C, which holds bob's accepted item and erin's
+  // pending one; alice blocks victor.
+  async function world() {
+    const h = await community(["alice", "carol", "victor", "wendy"]);
+    const { alice, carol, victor } = h.users;
+    const C = await ownedCollection(h.store, alice.id, 1, false);
+    const [bob, erin] = [await remoteAccount(h.store, "bob"), await remoteAccount(h.store, "erin")];
+    await item(h.store, C, bob, 1, COLLECTION_ITEM_STATES.accepted);
+    await item(h.store, C, erin, 2, COLLECTION_ITEM_STATES.pending);
+    const P = (await post(h, carol, { status: `${LOCAL}/collections/${C}` })).id;
+    await block(h.store, alice.id, victor.id);
+    return { h, C, P, bob, erin };
+  }
+  const read = async (h: ApiHarness, id: string, token?: string) => {
+    const { status, body } = await getJson<Status>(h, `/api/v1/statuses/${id}`, token);
+    expect(status).toBe(200);
+    return body;
+  };
+
+  it("shows each viewer the collection and the items R45 shows them", async () => {
+    const { h, C, P, bob, erin } = await world();
+    const { alice, victor, wendy } = h.users;
+    expect(shown(await read(h, P, victor.token))).toEqual([]);
+    expect(shown(await read(h, P, wendy.token))).toEqual([{ id: C, members: [bob] }]);
+    expect(shown(await read(h, P, alice.token))).toEqual([{ id: C, members: [bob, erin] }]);
+    const timeline = await getJson<Status[]>(h, "/api/v1/timelines/public");
+    expect(timeline.status).toBe(200);
+    expect(timeline.body.map((status) => [status.id, shown(status)])).toEqual([[P, [{ id: C, members: [bob] }]]]);
+    // While its owner is suspended, no viewer is shown it.
+    await sql(h.store, "UPDATE local_accounts SET suspended_at = ? WHERE account_id = ?", T, alice.id);
+    expect(shown(await read(h, P, wendy.token))).toEqual([]);
+    expect(shown(await read(h, P))).toEqual([]);
+  });
+
+  it("presents a boost's original and a quote's own and quoted collections", async () => {
+    const { h, C, P, bob } = await world();
+    const { alice, wendy } = h.users;
+    const boosted = await act(h, wendy, `/api/v1/statuses/${P}/reblog`);
+    expect(boosted.status).toBe(200);
+    const boost = await read(h, (await boosted.json<{ id: string }>()).id, wendy.token);
+    expect(shown(boost)).toEqual([]);
+    expect(shown(boost.reblog!)).toEqual([{ id: C, members: [bob] }]);
+    const D = await ownedCollection(h.store, alice.id, 2, true);
+    const Q = (await post(h, wendy, { status: `${LOCAL}/collections/${D}` })).id;
+    await acceptQuote(h, Q, P);
+    const quote = await read(h, Q, wendy.token);
+    expect(shown(quote)).toEqual([{ id: D, members: [] }]);
+    expect(shown((quote.quote as Quote).quoted_status!)).toEqual([{ id: C, members: [bob] }]);
+  });
+
+  // 20 statuses each tagging one collection of 25 accepted items of distinct members, presented as one chunk: the
+  // collection and its items are read once, so the statements reading the references, collections and items grow by
+  // a status's reference and its json_each entry alone (at most 3 a status), where a read per status adds at least 26.
+  it("reads a collection the statuses of a chunk share once", async () => {
+    const h = await community(["alice", "carol"]);
+    const { alice, carol } = h.users;
+    const C = await ownedCollection(h.store, alice.id, 1, true);
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 25)
+			INSERT INTO accounts (id, uri, username, domain) SELECT printf('71%016d', i), 'https://m.example/users/m' || i,
+				'm' || i, 'm.example' FROM n`,
+    );
+    await sql(
+      h.store,
+      `INSERT INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
+			SELECT '61' || substr(id, 3), ?1, id, 1, CAST(substr(id, 3) AS INTEGER), ?2, ?2 FROM accounts WHERE id GLOB '71*'`,
+      C,
+      T,
+    );
+    await sql(
+      h.store,
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 20)
+			INSERT INTO statuses (id, uri, account_id, visibility, content, published_at)
+			SELECT printf('9%017d', i), 'https://kopje.test/ap/o/t' || i, ?1, 'public', '', ?2 FROM n`,
+      carol.id,
+      T,
+    );
+    await sql(h.store, "INSERT INTO status_collections SELECT id, ? FROM statuses WHERE id GLOB '9*'", C);
+    const chunk = readOperation<{ ids: string[] }, Status[]>((db, { ids }) => {
+      const visible = ids as VisibleStatusId[];
+      const shared = presentation(db, visible, { origin: LOCAL, viewer: contextOf(alice.id, NOW) });
+      return [...statusStream(db, shared, visible, 20)].filter((status) => status !== undefined);
+    });
+    const measured = async (n: number) => {
+      const ids = Array.from({ length: n }, (_, i) => `9${String(i + 1).padStart(17, "0")}`);
+      const { output, statements } = await measuredStatements(h, chunk, { ids });
+      const rows = statements
+        .filter(({ query }) => /status_collections|\bcollections\b|collection_items/.test(query))
+        .reduce((sum, { rows }) => sum + rows, 0);
+      return { rows, members: output.map((status) => shown(status)[0]?.members.length) };
+    };
+    const [one, twenty] = [await measured(1), await measured(20)];
+    expect(twenty.rows - one.rows, `${one.rows} → ${twenty.rows}`).toBeLessThanOrEqual(3 * 19);
+    expect([one.members, twenty.members]).toEqual([[25], Array.from({ length: 20 }, () => 25)]);
+  });
+
+  // bob's public post P with a hashtag, pinned, linking four of alice's collections, and bob's reply R to P: each page
+  // reads as many rows as with P's references deleted, and presents P's tagged_collections empty.
+  it("reads no reference for a page, which presents none, while the API presents them", async () => {
+    const h = await community(["alice", "bob"]);
+    const { alice, bob } = h.users;
+    const collections = [];
+    for (const n of [1, 2, 3, 4]) {
+      collections.push(await ownedCollection(h.store, alice.id, n, true));
+      await item(h.store, collectionId(n), alice.id, 1, COLLECTION_ITEM_STATES.accepted);
+    }
+    const links = collections.map((id) => `${LOCAL}/collections/${id}`);
+    const P = (await post(h, bob, { status: ["#walks", ...links].join("\n") })).id;
+    expect((await sql(h.store, "SELECT count(*) AS n FROM status_collections WHERE status_id = ?", P))[0]).toEqual({
+      n: 4,
+    });
+    expect((await act(h, bob, `/api/v1/statuses/${P}/pin`)).status).toBe(200);
+    const R = (await post(h, bob, { status: "a reply", in_reply_to_id: P })).id;
+    const url = `${LOCAL}/@bob/${P}`;
+    // Each status page with its thread: R's holds P among its ancestors.
+    const replies = { kind: "replies", cursor: null } as const;
+    const credential = { tokenHash: await sha256Hex(bob.token), scope: "write:follows", now: NOW } as const;
+    const reads: [string, () => Promise<{ output: unknown; rows: number }>][] = [
+      ["P's page", () => measuredRead(h, webStatusPage, { handle: "bob", id: P, now: NOW, tab: replies })],
+      ["R's page", () => measuredRead(h, webStatusPage, { handle: "bob", id: R, now: NOW, tab: replies })],
+      ["the profile's posts", () => measuredRead(h, webProfilePage, postsTab("bob", null, NOW))],
+      ["the hashtag page", () => measuredRead(h, webTagPage, { name: "walks", cursor: null, now: NOW })],
+      ["the interact handoff", () => measuredRead(h, webInteractTarget, { handle: "bob", id: P, now: NOW })],
+      ["oEmbed", () => measuredRead(h, embeddedStatus, { url, present: { origin: LOCAL }, now: NOW })],
+      [
+        "/authorize_interaction",
+        () =>
+          measuredRead(h, resolveInteraction, {
+            credential,
+            query: url,
+            resolved: { kind: "local" },
+            now: NOW,
+            storeNow: NOW,
+            origin: LOCAL,
+            present: { origin: LOCAL },
+          }),
+      ],
+    ];
+    const measure = async () => {
+      const measured: { name: string; rows: number; json: string }[] = [];
+      for (const [name, run] of reads) {
+        const { output, rows } = await run();
+        measured.push({ name, rows, json: JSON.stringify(output) });
+      }
+      return measured;
+    };
+    const tagged = await measure();
+    for (const { name, json } of tagged) {
+      expect(json, name).toContain(`"id":"${P}"`);
+      expect(json, name).toContain('"tagged_collections":[]');
+      expect(json.match(/"tagged_collections":\[[^\]]/g), name).toBeNull();
+    }
+    const statuses = await getJson<Status[]>(h, `/api/v1/accounts/${bob.id}/statuses`, alice.token);
+    expect(statuses.body.find((status) => status.id === P)?.tagged_collections.map(({ id }) => id)).toEqual(
+      collections,
+    );
+    await sql(h.store, "DELETE FROM status_collections WHERE status_id = ?", P);
+    const untagged = await measure();
+    expect(tagged.map(({ name, rows }) => [name, rows])).toEqual(untagged.map(({ name, rows }) => [name, rows]));
   });
 });
 
@@ -870,8 +1090,39 @@ describe("rows no writer produces (7-T9)", () => {
     for (const id of [X, Y, Z]) {
       await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", S, id);
     }
-    return { t, X, Y, Z, S, uriOf: { Z: `${M}/users/z/collections/3` } };
+    return { t, X, Y, Z, S, uriOf: { Y: `${MASTODON}/users/x/collections/2`, Z: `${M}/users/z/collections/3` } };
   }
+
+  it("presents Y alone, with its uri for the url no writer would store", async () => {
+    const { t, Y, S, uriOf } = await restored();
+    const { body } = await t.api<Status>(`/api/v1/statuses/${S}`, "dave");
+    expect(body.tagged_collections.map(({ id, uri, url }) => ({ id, uri, url }))).toEqual([
+      { id: Y, uri: uriOf.Y, url: uriOf.Y },
+    ]);
+  });
+
+  // A restored description of 2,048 characters of four bytes each, a lead byte 0xC0 and three continuation bytes, which
+  // the CHECK admits (2,048 characters, 8,192 bytes) and which are read as 8,192 U+FFFD: 24,576 JSON bytes, twice what
+  // COLLECTION_JSON_MAX charges a description. Its collection is left out; V, beside it, is shown.
+  it("leaves out a restored collection whose text reads past its writer's bounds", async () => {
+    const t = await setup();
+    const owner = await remoteOwner(t, 1, `${MASTODON}/users/x`);
+    const U = await remoteCollection(t, owner, 1, `${MASTODON}/users/x/collections/1`);
+    const V = await remoteCollection(t, owner, 2, `${MASTODON}/users/x/collections/2`);
+    await sql(
+      t.store,
+      "UPDATE collections SET description = CAST(unhex(replace(hex(zeroblob(2048)), '00', 'C0808080')) AS TEXT) WHERE id = ?",
+      U,
+    );
+    const [read] = await sql<{ description: string }>(t.store, "SELECT description FROM collections WHERE id = ?", U);
+    expect(jsonBytes(read!.description)).toBe(24_576 + 2);
+    const S = await posted(t, "S");
+    for (const id of [U, V]) {
+      await sql(t.store, "INSERT INTO status_collections VALUES (?, ?)", S, id);
+    }
+    const { body } = await t.api<Status>(`/api/v1/statuses/${S}`, "dave");
+    expect(body.tagged_collections.map(({ id }) => id)).toEqual([V]);
+  });
 
   it("lets a remote Note's tag reference none of them", async () => {
     const { t, uriOf } = await restored();

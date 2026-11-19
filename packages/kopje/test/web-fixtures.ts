@@ -75,6 +75,7 @@ export function status(id: string, fields: Partial<Status> = {}): Status {
     mentions: [],
     tags: [],
     emojis: [],
+    tagged_collections: [],
     quote: null,
     quote_approval: { automatic: ["public"], manual: [], current_user: "unknown" },
     card: null,

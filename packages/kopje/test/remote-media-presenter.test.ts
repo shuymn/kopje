@@ -193,7 +193,7 @@ describe("the status row bound (status-rows.ts statusRowBoundSql)", () => {
       new Date(w.clock.now).toISOString(),
     );
     const bound = async () =>
-      (await sql<{ bytes: number }>(w.t.store, statusRowBoundSql(), JSON.stringify([status]), null, 0))[0]!.bytes;
+      (await sql<{ bytes: number }>(w.t.store, statusRowBoundSql(), JSON.stringify([status]), null, 0, 1))[0]!.bytes;
     const avatarOnly = await bound();
     const header = "https://files.example/h.gif";
     await sql(w.t.store, "UPDATE accounts SET header_url = ? WHERE id = ?", header, author.id);

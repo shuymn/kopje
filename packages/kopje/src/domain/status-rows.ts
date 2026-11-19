@@ -1,6 +1,7 @@
 import { balancedSum, type ColumnMap, fixedColumns, type FixedColumns, rowHeapSql } from "../db/columns";
 import {
   ACCOUNTS_ID_INDEX,
+  COLLECTIONS_ID_INDEX,
   MEDIA_ID_INDEX,
   OAUTH_CLIENTS_ID_INDEX,
   POLL_VOTES_KEY_INDEX,
@@ -26,6 +27,7 @@ import {
   CARD_TYPES,
   CARD_URL_LIMIT,
   isoTimeSql,
+  MAX_STORED_ITEMS,
   MAX_UNTRUSTED_COUNT,
   spoilerReadSql,
   statusEditedSql,
@@ -35,6 +37,7 @@ import {
 import { ACCOUNT_COLUMN_MAP, LOCAL_ROW_JOIN, MOVED_ACCOUNT_COLUMNS } from "./account-columns";
 import { ADMIN_EMAIL_COLUMNS, LOCAL_EMAIL_COLUMNS, OAUTH_ADMIN_HEAP_SQL } from "./admin-authority";
 import { FEATURE_APPROVAL_COLUMNS, QUOTE_APPROVAL_COLUMNS, QUOTE_READ_COLUMNS, quotedStatusIdSql } from "./audience";
+import { ITEM_COLUMNS, TAG_REFERENCE_COLUMNS, TAGGED_COLLECTION_COLUMNS } from "./collection-presenter";
 import { actorUriSql, usernameSql } from "./profile-bounds";
 import { CACHED_IMAGE_COLUMNS, CACHED_IMAGE_KINDS } from "./remote-media";
 import {
@@ -285,6 +288,9 @@ export function hydrateQueries(): Readonly<Record<HydrateQuery, ColumnMap>> {
     polls: POLL_COLUMN_MAP,
     votes: OWN_VOTE_COLUMNS.columns,
     filters: FILTER_MATCH_COLUMNS.columns,
+    references: TAG_REFERENCE_COLUMNS.columns,
+    collections: TAGGED_COLLECTION_COLUMNS,
+    items: ITEM_COLUMNS.columns,
     adminEmail: ADMIN_EMAIL_COLUMNS,
     localEmails: LOCAL_EMAIL_COLUMNS,
   };
@@ -306,6 +312,9 @@ export type HydrateQuery =
   | "polls"
   | "votes"
   | "filters"
+  | "references"
+  | "collections"
+  | "items"
   | "adminEmail"
   | "localEmails";
 
@@ -323,8 +332,11 @@ export const PER_ROW_SORTS: readonly { query: HydrateQuery; column: string }[] =
 // hydrateQueries() returns for it, each row by its map (rowHeapSql), or a FixedColumns constant times the rows. Its
 // author's account counts once per status row, though a chunk reads it once, and so does the account it moved to
 // (MOVED_ACCOUNT_COLUMNS), whether or not the author is available. A boost's own attachments, mentions,
-// hashtags, poll, votes and card are not read (hydrate in status-presenter.ts), so they count for another status only.
-function statusRowTerms(viewer: string, filterRows: string): string {
+// hashtags, poll, votes and card are not read (hydrate in status-presenter.ts), so they count for another status only;
+// nor are its tagged collections, which a page (`tags` 0) reads for no status: each of a status's references
+// (MAX_TAGGED_COLLECTIONS at most, the triggers' bound) counts with its collection and owner as stored and
+// MAX_STORED_ITEMS item rows, though a chunk reads a collection several statuses tag once and its shown items only.
+function statusRowTerms(viewer: string, filterRows: string, tags: string): string {
   const cachedImage = CACHED_IMAGE_COLUMNS.rowHeap;
   const movedHeap = MOVED_ACCOUNT_COLUMNS.rowHeap + CACHED_IMAGE_KINDS.length * cachedImage;
   const fixed = (columns: FixedColumns, rows: string) => `(${rows}) * ${columns.rowHeap}`;
@@ -343,6 +355,13 @@ function statusRowTerms(viewer: string, filterRows: string): string {
     one(`SELECT ${rowHeapSql(CARD_COLUMN_MAP)} FROM (SELECT x.id AS value) j ${SHOWN_CARD_JOIN}
 			WHERE ${SHOWN_CARD_SQL}`),
     `CASE WHEN ${viewer} IS NULL THEN 0 ELSE ${fixed(OWN_VOTE_COLUMNS, ownVoteCountSql("x.id", viewer))} END`,
+    `CASE WHEN ${tags} THEN ${one(
+      `SELECT sum(${TAG_REFERENCE_COLUMNS.rowHeap} + ${rowHeapSql(TAGGED_COLLECTION_COLUMNS)}
+					+ ${MAX_STORED_ITEMS} * ${ITEM_COLUMNS.rowHeap})
+				FROM status_collections r CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = r.collection_id
+				CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
+				WHERE r.status_id = x.id`,
+    )} ELSE 0 END`,
   ]);
   return balancedSum([
     one(`SELECT ${rowHeapSql(STATUS_COLUMN_MAP)} FROM ${STATUS_FROM} WHERE s.id = x.id`),
@@ -370,7 +389,8 @@ function statusRowTerms(viewer: string, filterRows: string): string {
 let boundSql: string | undefined;
 
 // R of each status of ?1 (a JSON list of top-level ids, one item each), for the viewer ?2 (NULL: anonymous), ?3 of
-// whose active filters name statuses: one row per position (`k`, json_each's key) with `bytes`. An item reads at
+// whose active filters name statuses, ?4 1 unless a page presents them (0: no tagged collection is read, nor counted,
+// and the term's subquery runs no loop): one row per position (`k`, json_each's key) with `bytes`. An item reads at
 // most these status rows: the status, its boosted original, and the quoted status of the status or, for a boost, of
 // its original (a boost has no quote of its own: R35); each counted whether or not the viewer is shown it. Every
 // subquery is a search by key or through the index the presenter's query uses, but M: an item with a local author, or
@@ -384,7 +404,7 @@ export function statusRowBoundSql(): string {
 				WHERE b.reblog_of_id IS NOT NULL
 			UNION ALL SELECT k, id FROM (SELECT t.k, ${quotedStatusIdSql("coalesce(b.reblog_of_id, b.id)")} AS id
 				FROM t CROSS JOIN statuses b INDEXED BY ${STATUSES_ID_INDEX} ON b.id = t.id) WHERE id IS NOT NULL)
-		SELECT x.k, sum(${statusRowTerms("?2", "?3")})
+		SELECT x.k, sum(${statusRowTerms("?2", "?3", "?4")})
 			+ max(CASE WHEN (SELECT a.domain IS NULL OR coalesce((SELECT m.domain IS NULL
 						FROM accounts m INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE m.id = a.moved_to_account_id), 0)
 					FROM statuses w INDEXED BY ${STATUSES_ID_INDEX}

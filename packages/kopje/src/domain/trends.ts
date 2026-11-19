@@ -39,7 +39,7 @@ import {
 import { cutCodeUnits, remotePlainText } from "../security/html";
 import { acctOf, type PresentInput } from "./accounts";
 import { accessAdmin } from "./admin-authority";
-import { ARRAY_ANSWER_BYTES } from "./answer-budget";
+import { STATUS_ARRAY_ANSWER_BYTES } from "./answer-budget";
 import { availableSql, statusReads, trendableStatusSql } from "./audience";
 import { optionalUserReadOperation } from "./auth";
 import { logAction } from "./moderation-log";
@@ -846,9 +846,9 @@ const LISTED_STATUSES = `SELECT t.status_id, t.score FROM trend_statuses t CROSS
 export type TrendStatusPage = { items: Status[]; read: number; consumed: number; cut: boolean };
 
 // GET /api/v1/trends/statuses (Api::V1::Trends::StatusesController): of the allowed trending statuses, those the list
-// rule passes for the viewer (R8; R2 with no viewer), `language` first, then by score; within ARRAY_ANSWER_BYTES, the
-// first status always admitted (RES-3). `consumed` is how many of the ids read the answer took, so a page cut by its
-// bytes continues after its last status.
+// rule passes for the viewer (R8; R2 with no viewer), `language` first, then by score; within
+// STATUS_ARRAY_ANSWER_BYTES, the first status always admitted (RES-3). `consumed` is how many of the ids read the
+// answer took, so a page cut by its bytes continues after its last status.
 export const trendingStatuses = optionalUserReadOperation<
   { offset: number; limit: number; language: string; now: number; present: PresentInput },
   TrendStatusPage
@@ -879,7 +879,7 @@ export const trendingStatuses = optionalUserReadOperation<
     db,
     presentation(db, ids, { ...present, viewer }),
     ids,
-    ARRAY_ANSWER_BYTES,
+    STATUS_ARRAY_ANSWER_BYTES,
     true,
   );
   return { items: admitted.items, read: ids.length, consumed: admitted.consumed, cut: admitted.cut };

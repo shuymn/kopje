@@ -45,6 +45,7 @@ import {
   type VisibleStatusId,
   visibleSql,
 } from "./audience";
+import { type Collection, taggedCollectionsOf } from "./collection-presenter";
 import { type CustomEmoji, emojiCacheOf, presentEmojis } from "./custom-emojis";
 import {
   type ActiveFilters,
@@ -202,6 +203,9 @@ export type Status = {
   mentions: Mention[];
   tags: Tag[];
   emojis: CustomEmoji[];
+  // The collections the status tags that R45 shows the viewer (#1589's D26, collection-presenter.ts
+  // taggedCollectionsOf); [] on a boost wrapper (its reblog shows its original's) and on every page.
+  tagged_collections: Collection[];
   quote: Quote | ShallowQuote | null;
   quote_approval: QuoteApproval;
   card: PreviewCard | null;
@@ -568,7 +572,7 @@ function* plannedChunks(db: Db, shared: Presentation, ids: readonly string[], ta
   const filterRows = shared.filters?.filters.filter((filter) => filter.hasStatuses).length ?? 0;
   for (let next = 0; next < ids.length; next += R_WINDOW) {
     const window = ids.slice(next, next + R_WINDOW);
-    const bounds = statusRowBounds(db, window, shared.options.viewer.accountId, filterRows);
+    const bounds = statusRowBounds(db, window, shared.options, filterRows);
     let chunk: string[] = [];
     let sum = 0;
     for (const [i, id] of window.entries()) {
@@ -587,13 +591,14 @@ function* plannedChunks(db: Db, shared: Presentation, ids: readonly string[], ta
   }
 }
 
-function statusRowBounds(db: Db, ids: readonly string[], viewer: string | null, filterRows: number): number[] {
+function statusRowBounds(db: Db, ids: readonly string[], options: PresentOwnOptions, filterRows: number): number[] {
   const bounds = Array.from(ids, () => 0);
   for (const row of db.all<{ k: number; bytes: number }>(
     statusRowBoundSql(),
     JSON.stringify(ids),
-    viewer,
+    options.viewer.accountId,
     filterRows,
+    options.page === true ? 0 : 1,
   )) {
     bounds[row.k] = row.bytes;
   }
@@ -722,6 +727,12 @@ function hydrate(
   // R36 for the viewer, of every status presented by its own row (a boost answers denied: its original's is shown).
   const approvals = quoteApprovalReads(options.viewer).of(db, [...byId.keys()]);
   const polls = presentPolls(db, notBoosts, viewerId, options.viewer.now);
+  // The collections each status but a boost tags, for the viewer; none on a page, which never shows them
+  // (PresentInput.page), and none read for it.
+  const tagged =
+    options.page === true
+      ? new Map<string, Collection[]>()
+      : taggedCollectionsOf(db, notBoosts, viewerId, options.origin);
   const statusMatches =
     filters === null ? new Map<string, Set<string>>() : filterStatusMatches(db, filters, [...byId.keys()]);
   // The text each status is matched on, cut at the presentation's level (filterTextLimits) and within what is left of
@@ -880,6 +891,7 @@ function hydrate(
         url: `${options.origin}/tags/${encodeURIComponent(t.name)}`,
       })),
       emojis,
+      tagged_collections: row.reblog_of_id === null ? (tagged.get(row.id) ?? []) : [],
       quote,
       quote_approval: {
         automatic: quotePolicyFlags(policy, "automatic"),

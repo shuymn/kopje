@@ -1,14 +1,23 @@
 import { describe, expect, it } from "vitest";
 
-import { ANSWER_BYTES } from "../src/domain/answer-budget";
+import { jsonBytes, STATUS_ANSWER_BYTES } from "../src/domain/answer-budget";
 import { type ApiHarness, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
-import { answer, bigStatus, expectByteCutFirstPage, expectByteCutWalk, fallbackReports, walk } from "./budget-helpers";
+import {
+  answer,
+  bigStatus,
+  expectByteCutFirstPage,
+  expectByteCutWalk,
+  expectStatusBudgetCut,
+  fallbackReports,
+  statusBudgetEdge,
+  walk,
+} from "./budget-helpers";
 import { community, mute, remoteAccount, seedStatus } from "./status-helpers";
 
-// RES-3: the notification lists and the notification requests are id-cursor answers within ANSWER_BYTES: each
-// notification or request is admitted whole, with its account and status, in traversal order, and a page cut by bytes
-// continues from its last admitted item in both directions, before a candidate window's continuation too.
+// RES-3: the notification lists and the notification requests are id-cursor answers within STATUS_ANSWER_BYTES:
+// each notification or request is admitted whole, with its account and status, in traversal order, and a page cut by
+// bytes continues from its last admitted item in both directions, before a candidate window's continuation too.
 
 const run = (kind: "V" | "M", n: number) => Array.from({ length: n }, () => kind);
 // A page of 10 reads a window of 40 candidates: from either end, 10 shown and 30 hidden, so the window is cut
@@ -29,7 +38,7 @@ async function notification(h: ApiHarness, recipient: string, type: string, from
   return row!.id;
 }
 
-describe("notification lists within ANSWER_BYTES (RES-3)", () => {
+describe("notification lists within STATUS_ANSWER_BYTES (RES-3)", () => {
   it("walk every notification once in both directions, each cut by bytes, before a window continuation too", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
@@ -71,7 +80,7 @@ describe("notification lists within ANSWER_BYTES (RES-3)", () => {
   }, 300_000);
 });
 
-describe("notification fallbacks within ANSWER_BYTES (RES-3)", () => {
+describe("notification fallbacks within STATUS_ANSWER_BYTES (RES-3)", () => {
   it("admits each notification with its fallback: a page that fits without them is cut with them", async () => {
     const h = await community(["owner", "alice"]);
     const { owner, alice } = h.users;
@@ -90,7 +99,7 @@ describe("notification fallbacks within ANSWER_BYTES (RES-3)", () => {
     // A page of `k` mentions above the reports, as an array (the oldest ids are shorter by a digit or more).
     const page = (k: number, item: number) => 1 + k * (big + 1) + reports * (item + 1);
     const k = Array.from({ length: 80 - reports }, (_, i) => i + 1).find(
-      (n) => page(n, plain) <= ANSWER_BYTES && page(n, shown) > ANSWER_BYTES,
+      (n) => page(n, plain) <= STATUS_ANSWER_BYTES && page(n, shown) > STATUS_ANSWER_BYTES,
     );
     expect(k).toBeDefined();
     for (let i = 1; i < k!; i++) {
@@ -99,21 +108,21 @@ describe("notification fallbacks within ANSWER_BYTES (RES-3)", () => {
     const path = `/api/v1/notifications?limit=${k! + reports}`;
     const whole = await answer<{ id: string }[]>(h, path, owner.token);
     expect(whole.body.length).toBe(k! + reports);
-    expect(whole.bytes).toBeLessThanOrEqual(ANSWER_BYTES);
+    expect(whole.bytes).toBeLessThanOrEqual(STATUS_ANSWER_BYTES);
     const cut = await answer<{ id: string; type: string; fallback?: unknown }[]>(
       h,
       `${path}&supported_types[]=mention`,
       owner.token,
     );
-    expect(cut.bytes).toBeLessThanOrEqual(ANSWER_BYTES);
+    expect(cut.bytes).toBeLessThanOrEqual(STATUS_ANSWER_BYTES);
     expect(cut.body.length).toBeLessThan(k! + reports);
-    expect(cut.bytes + shown + 1).toBeGreaterThan(ANSWER_BYTES);
+    expect(cut.bytes + shown + 1).toBeGreaterThan(STATUS_ANSWER_BYTES);
     expect(cut.body.filter((n) => n.type === "admin.report").every((n) => n.fallback !== undefined)).toBe(true);
     expect(new URL(cut.next!, "https://kopje.test").searchParams.get("max_id")).toBe(cut.body.at(-1)!.id);
   }, 300_000);
 });
 
-describe("notification requests within ANSWER_BYTES (RES-3)", () => {
+describe("notification requests within STATUS_ANSWER_BYTES (RES-3)", () => {
   it("walk every request once in both directions, each cut by bytes, before a window continuation too", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
@@ -151,7 +160,51 @@ describe("notification requests within ANSWER_BYTES (RES-3)", () => {
     expect(older.pages[0]!.shown.length).toBeLessThan(10);
     expect(newer.pages[0]!.shown.length).toBeLessThan(10);
     for (const page of [...older.pages, ...newer.pages]) {
-      expect(page.bytes).toBeLessThanOrEqual(ANSWER_BYTES);
+      expect(page.bytes).toBeLessThanOrEqual(STATUS_ANSWER_BYTES);
     }
+  }, 300_000);
+});
+
+describe("notification answers at STATUS_ANSWER_BYTES (RES-3)", () => {
+  it("ends the notifications, the grouped notifications and the requests where STATUS_ANSWER_BYTES ends", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    // Each status mentions alice from its own sender, who also has a request with it as its last status.
+    const notified = new Map<string, string>();
+    const requested = new Map<string, string>();
+    const { big, edge } = await statusBudgetEdge(async (i, share) => {
+      const sender = await remoteAccount(h.store, `sender${i}`);
+      const status = await bigStatus(h, sender, NOW - (20 - i) * 60_000, {}, share);
+      notified.set(status, await notification(h, alice.id, "mention", sender, status));
+      const [row] = await sql<{ id: string }>(
+        h.store,
+        `INSERT INTO notification_requests (account_id, from_account_id, last_status_id, notifications_count,
+					created_at, updated_at)
+				VALUES (?1, ?2, ?3, 1, ?4, ?4) RETURNING CAST(id AS TEXT) AS id`,
+        alice.id,
+        sender,
+        status,
+        new Date(NOW).toISOString(),
+      );
+      requested.set(status, row!.id);
+      return status;
+    });
+    const edgeNotification = notified.get(edge)!;
+    const listed = await answer(h, "/api/v1/notifications?limit=40", alice.token);
+    expect(listed.body.map((n) => n.id)).toEqual(big.map((id) => notified.get(id)));
+    const one = await answer<unknown>(h, `/api/v1/notifications/${edgeNotification}`, alice.token);
+    expectStatusBudgetCut("notifications", listed.bytes, one.bytes);
+    type Grouped = { notification_groups: { group_key: string }[] };
+    const grouped = await answer<Grouped>(h, "/api/v2/notifications?limit=40", alice.token);
+    expect(grouped.body.notification_groups.map((group) => group.group_key)).toEqual(
+      big.map((id) => `ungrouped-${notified.get(id)!}`),
+    );
+    const group = await answer<unknown>(h, `/api/v2/notifications/ungrouped-${edgeNotification}`, alice.token);
+    const frame = jsonBytes({ accounts: [], statuses: [], notification_groups: [] });
+    expectStatusBudgetCut("grouped", grouped.bytes, group.bytes - frame);
+    const requests = await answer(h, "/api/v1/notifications/requests?limit=40", alice.token);
+    expect(requests.body.map((r) => r.id)).toEqual(big.map((id) => requested.get(id)));
+    const request = await answer<unknown>(h, `/api/v1/notifications/requests/${requested.get(edge)!}`, alice.token);
+    expectStatusBudgetCut("requests", requests.bytes, request.bytes);
   }, 300_000);
 });

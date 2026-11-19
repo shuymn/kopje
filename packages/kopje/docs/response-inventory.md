@@ -14,6 +14,16 @@ Mechanisms:
   (`admit`, `presentStatusesWithin`, `presentAccountsWithin`, `admitAccounts`). An atomic item counts with everything
   it embeds: a notification with its account, status and report; a group with the accounts and statuses it adds; a
   conversation with its participants and last status; a report with its accounts and statuses.
+- **Status budget**: an answer that presents statuses is within `STATUS_ANSWER_BYTES` (8,011,776 bytes, 8 MiB less
+  368 KiB) instead, admitted as Budget: the timelines, `accountStatuses` (pinned too), `bookmarksList`,
+  `favouritesList`, `statusQuotes`, `statusContext`, `getStatuses`, `trendingStatuses`, `listConversations`,
+  `adminReports`, `listNotifications`, `listGroupedNotifications`, `listNotificationRequests` and `annualReports`, and
+  `search` from its first admission when its types include statuses. `statusHistory` (status edits) and the answers
+  of accounts keep `ANSWER_BYTES`, and the public pages their page budget. The heap model holds each admitted byte
+  three times, so this lower budget keeps a timeline's peak within half of the Store isolate with a status's
+  `tagged_collections` at their maxima ("Heap at 8 MiB per answer" in `threat-model.md`). Every atomic status item
+  fits it, and a page it cuts continues as the operation's continuation below says, so a byte-heavy page ends sooner
+  and the next one shows the rest.
 - **Unit**: one presented unit, at most its maximum ("Maxima of presented units" in `threat-model.md`).
 - **Count**: a fixed number of units whose maxima together stay within `ANSWER_BYTES`.
 
@@ -27,7 +37,7 @@ Continuations:
 - **More**: the admin lists end a cut page at its last admitted item and set `more`, which links the next page.
 - **Offset**: the answer holds fewer results. A client that advances its offset by the number received (Tusky,
   Ivory) continues after them. Mastodon's web client takes a short answer for the last one and shows no more. This
-  happens only past 8 MiB, which realistic content does not reach.
+  happens only past the answer's budget, which realistic content does not reach.
 - **None**: the answer has no paging; what is left out is a Kopje bound. Pinned statuses are one: a status-id cursor
   cannot follow pin order.
 
@@ -245,12 +255,12 @@ derived maximum, so a full page of 200 is within the budget (`test/tag-history-b
 
 ## Trends
 
-| Operation            | Mechanism                                                                        | Continuation                 |
-| -------------------- | -------------------------------------------------------------------------------- | ---------------------------- |
-| `trendingTags`       | Count: 20 hashtags, each with its trends history (200 entries)                   | Offset (`offset + limit`)    |
-| `trendingStatuses`   | Budget: up to 40 statuses within `ARRAY_ANSWER_BYTES`, the first always admitted | Offset (`offset + consumed`) |
-| `adminTrendTags`     | Count: 20 hashtags                                                               | Offset                       |
-| `adminTrendStatuses` | Count: 40 statuses, each field through its bounded projection                    | Offset                       |
+| Operation            | Mechanism                                                                         | Continuation                 |
+| -------------------- | --------------------------------------------------------------------------------- | ---------------------------- |
+| `trendingTags`       | Count: 20 hashtags, each with its trends history (200 entries)                    | Offset (`offset + limit`)    |
+| `trendingStatuses`   | Budget: up to 40 statuses within `STATUS_ANSWER_BYTES`, the first always admitted | Offset (`offset + consumed`) |
+| `adminTrendTags`     | Count: 20 hashtags                                                                | Offset                       |
+| `adminTrendStatuses` | Count: 40 statuses, each field through its bounded projection                     | Offset                       |
 
 Public lists end at the top 200 currently allowed trends (MD-5). Access admin lists page through up to 250 stored
 entries per table, allowed or not. Each unit is within its derived maximum (docs/threat-model.md

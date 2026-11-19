@@ -56,7 +56,16 @@ import {
   updateActivity,
 } from "./activities";
 import { accountKey, type StoredKey } from "./actors";
-import { admit, type Admitted, admittedPage, ANSWER_BYTES, ARRAY_ANSWER_BYTES, jsonBytes } from "./answer-budget";
+import {
+  admit,
+  type Admitted,
+  admittedPage,
+  ANSWER_BYTES,
+  ARRAY_ANSWER_BYTES,
+  jsonBytes,
+  STATUS_ANSWER_BYTES,
+  STATUS_ARRAY_ANSWER_BYTES,
+} from "./answer-budget";
 import {
   type ApiVisibility,
   apiVisibility,
@@ -1493,8 +1502,8 @@ export const MAX_STATUSES_BY_ID = 20;
 // GET /api/v1/statuses?id[]= (StatusesController#index, Status.permitted_statuses_from_ids): of the statuses with the
 // ids, those the list rule passes for the viewer (R8, StatusFilter: viewable, and the viewer filters neither the
 // author nor a boosted original's), each as getStatus shows it, in one read, in the order of the ids; an id with no
-// status, or with one the rule refuses, is left out. Within ANSWER_BYTES (RES-3), the ids past the first status that
-// does not fit are left out as unknown ones are.
+// status, or with one the rule refuses, is left out. Within STATUS_ANSWER_BYTES (RES-3), the ids past the first
+// status that does not fit are left out as unknown ones are.
 export const getStatuses = optionalUserReadOperation<{ ids: readonly string[]; present: PresentInput }, Status[]>(
   (db, { ids, present }, viewer) => {
     const resolved = [...new Set(ids.slice(0, MAX_STATUSES_BY_ID).flatMap((id) => resolveStatusId(db, id) ?? []))];
@@ -1512,7 +1521,8 @@ export const getStatuses = optionalUserReadOperation<{ ids: readonly string[]; p
     );
     const visible = rows.map((row) => row.id).toSorted((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
     const options = { ...present, viewer, proper: true as const };
-    return presentStatusesWithin(db, presentation(db, visible, options), visible, ARRAY_ANSWER_BYTES, true).items;
+    return presentStatusesWithin(db, presentation(db, visible, options), visible, STATUS_ARRAY_ANSWER_BYTES, true)
+      .items;
   },
 );
 
@@ -1535,9 +1545,9 @@ const CONTEXT_FRAME_BYTES = jsonBytes({ ancestors: [], descendants: [] } satisfi
 
 // Ancestors oldest first and descendants depth first, as Mastodon orders them. Every member passes the list rule
 // (visible, and not filtered by the viewer's blocks, mutes and domain blocks); the thread continues past members
-// that do not. One answer within ANSWER_BYTES (RES-3), under one presentation: the ancestors take half of it, nearest
-// first, and the descendants the rest with what the ancestors left, in their order; each list keeps its order, and
-// the farthest ancestors and the last descendants past it are left out (no paging, as Mastodon's context has none).
+// that do not. One answer within STATUS_ANSWER_BYTES (RES-3), under one presentation: the ancestors take half of it,
+// nearest first, and the descendants the rest with what the ancestors left, in their order; each list keeps its order,
+// and the farthest ancestors and the last descendants past it are left out (no paging, as Mastodon's context has none).
 // Each member is sought by id from the traversal (RES-7). The refresh of its replies (reply-walk-reads.ts) is read at
 // the viewer's time.
 export const statusContext = optionalUserReadOperation<{ id: string; present: PresentInput }, Viewed<ContextRead>>(
@@ -1566,7 +1576,7 @@ export const statusContext = optionalUserReadOperation<{ id: string; present: Pr
     );
     const down = descendants.map((row) => row.id);
     const shared = presentation(db, [...up, ...down], { ...present, viewer });
-    const budget = ANSWER_BYTES - CONTEXT_FRAME_BYTES;
+    const budget = STATUS_ANSWER_BYTES - CONTEXT_FRAME_BYTES;
     const near = presentStatusesWithin(db, shared, up.toReversed(), Math.floor(budget / 2), true);
     const after = presentStatusesWithin(db, shared, down, budget - near.bytes, near.items.length === 0);
     const at = Date.parse(now);
@@ -2360,14 +2370,14 @@ export const statusQuotes = optionalUserReadOperation<StatusQuotesInput, Viewed<
 // empty pages still advance. For anyone but the quoted author, a quoting status their audience hides is never a
 // candidate, so its id is never a cursor: Kopje's rule, stricter than Mastodon's QuotesController, which paginates
 // every accepted quote before StatusFilter. A page is admitted by `admission`: by default one API answer within
-// ANSWER_BYTES (RES-3, admittedPage); a status page's tab shares its page budget (domain/web-pages/status.ts).
+// STATUS_ANSWER_BYTES (RES-3, admittedPage); a status page's tab shares its page budget (domain/web-pages/status.ts).
 export function statusQuotesWithin(
   db: Db,
   { id, page, present }: StatusQuotesInput,
   viewer: ViewerContext,
   own: boolean,
   admission: (entries: Iterable<Status | undefined>) => Admitted<Status> = (entries) =>
-    admit(entries, ARRAY_ANSWER_BYTES, true),
+    admit(entries, STATUS_ARRAY_ANSWER_BYTES, true),
 ): QuotesPage {
   const { accountId } = viewer;
   const ascending = page.minId !== undefined;
@@ -2522,6 +2532,7 @@ function redactedStatus(db: Db, quotingId: string, state: QuoteState, present: P
     mentions: [],
     tags: [],
     emojis: [],
+    tagged_collections: [],
     quote: { state, quoted_status: null },
     quote_approval: null,
     card: null,

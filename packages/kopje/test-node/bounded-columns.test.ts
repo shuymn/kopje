@@ -540,6 +540,9 @@ const MEASURE = "a measure walk's per-candidate judgements and its time (isoTime
 const FOCUS =
   "an attachment's focus x (a number, or NULL where none is shown), compared with an edit's, never presented";
 
+const TAGGED_HEAP = "the heap R counts for a status's tagged collections, a number";
+const COLLECTION_TEXT = "a column of `collections`, bounded as stored, not the bounded column of the same name";
+
 const STAGED =
   "a staged retraction's target (an inbox, or an addressee's identity), sent in an activity, never presented";
 
@@ -620,6 +623,13 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
     count: 2,
     reason: "a number constant (the heap a cached profile image row takes at its caps, in R), naming no column",
   },
+  // R's tagged collections term: the heap of each reference, its collection and owner rows (rowHeapSql of
+  // TAGGED_COLLECTION_COLUMNS, whose owner columns are named here) and its items at MAX_STORED_ITEMS, a number.
+  "src/domain/status-rows.ts interpolation TAG_REFERENCE_COLUMNS.rowHeap": { count: 1, reason: TAGGED_HEAP },
+  "src/domain/status-rows.ts interpolation ITEM_COLUMNS.rowHeap": { count: 1, reason: TAGGED_HEAP },
+  "src/domain/status-rows.ts interpolation MAX_STORED_ITEMS": { count: 1, reason: TAGGED_HEAP },
+  "src/domain/status-rows.ts accounts.username": { count: 1, reason: TAGGED_HEAP },
+  "src/domain/status-rows.ts accounts.uri": { count: 1, reason: TAGGED_HEAP },
   "src/domain/instance.ts interpolation projected.join(' ')": { count: 1, reason: SETTINGS },
   "src/domain/instance.ts interpolation settingProjectionSql('contact_username', 'value')": {
     count: 1,
@@ -728,6 +738,12 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   // severCollections); and a remote collection's owner's, against which a tagged collection's id is judged as its
   // writer judged it (validRemoteCollection: collectionByStoredUri, collectionByStoredUrl).
   "src/domain/collections.ts accounts.uri": { count: 5, reason: IDENTITY },
+  // A tagged collection as taggedCollectionsOf reads it (TAGGED_COLLECTION_COLUMNS): its owner's uri, against which a
+  // remote one's id is judged (validRemoteCollection), and the collection's own name and id, columns of `collections`
+  // within its CHECK (migration 0103_collections), not the hashtag name and the account and status ids bounded here.
+  "src/domain/collection-presenter.ts column a.uri": { count: 1, reason: IDENTITY },
+  "src/domain/collection-presenter.ts column c.name": { count: 1, reason: COLLECTION_TEXT },
+  "src/domain/collection-presenter.ts column c.uri": { count: 1, reason: COLLECTION_TEXT },
   // A local member's uri, which its authorization and its answers to a remote owner are built from (localRows) and an
   // owner's listing is matched with (localListing), and the request's object matched by its exact uri
   // (answerFeatureRequest).

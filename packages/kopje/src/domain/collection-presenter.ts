@@ -1,7 +1,13 @@
+import { type ColumnMap, fixedColumns, selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, COLLECTION_ITEMS_ID_INDEX, COLLECTIONS_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { sameOrigin } from "../platform/http-url";
-import { COLLECTION_URI_BYTES } from "../platform/stored-bounds";
+import {
+  COLLECTION_DESCRIPTION_LENGTH,
+  COLLECTION_NAME_LENGTH,
+  COLLECTION_URI_BYTES,
+  COLLECTION_URL_BYTES,
+} from "../platform/stored-bounds";
 import { collectionItemShownSql, collectionShownSql } from "./audience";
 import { usernameSql } from "./profile-bounds";
 import { withinTagNameBound } from "./tag-bounds";
@@ -28,6 +34,18 @@ export function storableUrl(value: string | null, bytes: number): value is strin
 // so a restored row no writer would store is neither referenced nor shown.
 export function validRemoteCollection(uri: string | null, ownerUri: string | null): boolean {
   return storableUrl(uri, COLLECTION_URI_BYTES) && sameOrigin(uri, ownerUri);
+}
+
+// Whether a remote collection's name and description, as read, are within the code points its writer stores
+// (COLLECTION_NAME_LENGTH and COLLECTION_DESCRIPTION_LENGTH's remote bounds), which COLLECTION_JSON_MAX charges at six
+// JSON bytes each. A restored row's malformed UTF-8 passes the CHECK, which counts a lead byte and its continuation
+// bytes as one character, yet is read as a U+FFFD for each byte, three JSON bytes: a description of 2,048 such
+// characters of four bytes presents 24,576 bytes, twice its charge.
+function withinRemoteText(row: { name: string; description: string | null }): boolean {
+  return (
+    [...row.name].length <= COLLECTION_NAME_LENGTH.remote &&
+    (row.description === null || [...row.description].length <= COLLECTION_DESCRIPTION_LENGTH.remote)
+  );
 }
 
 type CollectionItemStateName = (typeof STATE_NAMES)[number];
@@ -82,8 +100,51 @@ type ItemRow = {
   collection_id: string;
   id: string;
   state: number;
+  position: number;
   account_id: string | null;
   created_at: string;
+};
+
+// The columns of ItemRow as shownItems reads them, each within its CHECK (migration 0103_collections): ids of 18
+// digits, the state and position, a 24-byte ISO time.
+export const ITEM_COLUMNS = fixedColumns(
+  {
+    collection_id: "i.collection_id",
+    id: "i.id",
+    state: "i.state",
+    position: "i.position",
+    account_id: "i.account_id",
+    created_at: "i.created_at",
+  },
+  { collection_id: 18, id: 18, state: 0, position: 0, account_id: 18, created_at: 24 },
+);
+
+// A status's references to the collections it tags (status_collections, migration 0120_tagged_collections), as
+// taggedCollectionsOf reads them.
+export const TAG_REFERENCE_COLUMNS = fixedColumns(
+  { status_id: "r.status_id", collection_id: "r.collection_id" },
+  { status_id: 18, collection_id: 18 },
+);
+
+// A tagged collection as taggedCollectionsOf reads it: its columns as stored, each within its CHECK (migration
+// 0103_collections), its owner's username (a local collection's uri names it) and its owner's uri, against which a
+// remote one's id is judged (validRemoteCollection).
+export const TAGGED_COLLECTION_COLUMNS: ColumnMap = {
+  id: "c.id",
+  account_id: "c.account_id",
+  username: usernameSql("a.username"),
+  local: "c.local",
+  name: "c.name",
+  description: "c.description",
+  language: "c.language",
+  sensitive: "c.sensitive",
+  discoverable: "c.discoverable",
+  tag: "c.tag",
+  uri: "c.uri",
+  url: "c.url",
+  created_at: "c.created_at",
+  updated_at: "c.updated_at",
+  owner_uri: "a.uri",
 };
 
 // Collection#to_param's page: a local collection's url (collection_url, the page of web-pages/collection.ts).
@@ -99,7 +160,7 @@ function stateName(state: number): CollectionItemStateName {
   return name;
 }
 
-export function presentItem(row: ItemRow): CollectionItem {
+export function presentItem(row: Omit<ItemRow, "position">): CollectionItem {
   const state = stateName(row.state);
   return {
     id: row.id,
@@ -147,26 +208,89 @@ export function presentCollection(row: CollectionRow, items: readonly ItemRow[],
   };
 }
 
+// Ids of 18 digits, whose text order is their numeric order.
+function compareIds(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 // The items of `collections` R45 shows `viewer`, by collection, each in position order: at most MAX_STORED_ITEMS rows
-// read per collection through collection_items_order.
+// read per collection through collection_items_order, put in order here, so no query sorts the payload of several
+// collections (the status presenter reads a chunk's at once).
 export function shownItems(db: Db, collections: readonly string[], viewer: string | null): Map<string, ItemRow[]> {
   const byCollection = new Map<string, ItemRow[]>(collections.map((id) => [id, []]));
   if (collections.length === 0) {
     return byCollection;
   }
   const rows = db.all<ItemRow>(
-    `SELECT i.collection_id, i.id, i.state, i.account_id, i.created_at
+    `SELECT ${selectSql(ITEM_COLUMNS.columns)}
 		FROM json_each(?1) w CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = w.value
 			CROSS JOIN collection_items i INDEXED BY collection_items_order ON i.collection_id = c.id
-		WHERE ${collectionItemShownSql("i", "c", "?2")}
-		ORDER BY w.key, i.position, i.id`,
+		WHERE ${collectionItemShownSql("i", "c", "?2")}`,
     JSON.stringify(collections),
     viewer,
   );
-  for (const row of rows) {
+  for (const row of rows.toSorted((a, b) => a.position - b.position || compareIds(a.id, b.id))) {
     byCollection.get(row.collection_id)?.push(row);
   }
   return byCollection;
+}
+
+// The collections each status of `statuses` (ids of statuses that are not boosts) tags that R45 shows `viewer`, by
+// status, each status's in collection-id order with the items R45 shows the viewer (#1589's D26): the references by
+// the primary key's prefix (at most MAX_TAGGED_COLLECTIONS a status, the trigger's bound), each collection once by key
+// with its owner, then shownItems once for them, so a collection several statuses tag is read once. A remote
+// collection is shown only while valid (validRemoteCollection) with its text within its writer's bounds
+// (withinRemoteText), and its url only when its writer would store it (storableUrl), else its uri (presentCollection),
+// so a restored row shows nothing a writer would not have admitted and each stays within COLLECTION_JSON_MAX.
+export function taggedCollectionsOf(
+  db: Db,
+  statuses: readonly string[],
+  viewer: string | null,
+  origin: string,
+): Map<string, Collection[]> {
+  const tagged = new Map<string, Collection[]>();
+  const references =
+    statuses.length === 0
+      ? []
+      : db.all<{ status_id: string; collection_id: string }>(
+          `SELECT ${selectSql(TAG_REFERENCE_COLUMNS.columns)} FROM (SELECT DISTINCT value FROM json_each(?1)) j
+					CROSS JOIN status_collections r ON r.status_id = j.value`,
+          JSON.stringify(statuses),
+        );
+  if (references.length === 0) {
+    return tagged;
+  }
+  const rows = db.all<CollectionRow & { owner_uri: string | null }>(
+    `SELECT ${selectSql(TAGGED_COLLECTION_COLUMNS)} FROM json_each(?1) w
+			CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = w.value
+			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = c.account_id
+		WHERE ${collectionShownSql("c", "?2")}`,
+    JSON.stringify([...new Set(references.map((reference) => reference.collection_id))]),
+    viewer,
+  );
+  const shown = rows.filter(
+    (row) => row.local === 1 || (validRemoteCollection(row.uri, row.owner_uri) && withinRemoteText(row)),
+  );
+  const items = shownItems(
+    db,
+    shown.map((row) => row.id),
+    viewer,
+  );
+  const presented = new Map(
+    shown.map((row) => {
+      const url = row.local === 1 || storableUrl(row.url, COLLECTION_URL_BYTES) ? row.url : null;
+      return [row.id, presentCollection({ ...row, url }, items.get(row.id) ?? [], origin)];
+    }),
+  );
+  for (const { status_id, collection_id } of references.toSorted((a, b) =>
+    compareIds(a.collection_id, b.collection_id),
+  )) {
+    const collection = presented.get(collection_id);
+    if (collection !== undefined) {
+      tagged.set(status_id, [...(tagged.get(status_id) ?? []), collection]);
+    }
+  }
+  return tagged;
 }
 
 export function presentCollections(db: Db, rows: readonly CollectionRow[], viewer: string | null, origin: string) {

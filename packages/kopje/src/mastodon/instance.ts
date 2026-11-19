@@ -35,7 +35,7 @@ import { LANGUAGES } from "./languages";
 //     a profile and filters the two collection notification types, and Phanpy lists and opens them, resolves one by
 //     its URL, and asks for those types; 11 the avatar and header descriptions of update_credentials, and Tuba shows
 //     the display settings and writes them with PATCH /api/v1/profile. What collections lack (remote members, local
-//     accounts in remote collections, tagged_collections) clients get past: docs/mastodon-deviations.md, "Collections".
+//     accounts in remote collections) clients get past: docs/mastodon-deviations.md, "Collections".
 //   - version is 4.6.1, the first release to advertise api_versions 11 (4.6.0 advertised 10). Ice Cubes reads it and
 //     switches on at 4.3 grouped notifications, the notification policy and the link timeline, all served, and nothing
 //     above 4.3; the official apps read only its major number; Phanpy reads it only when NodeInfo names the software

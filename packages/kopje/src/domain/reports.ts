@@ -17,7 +17,7 @@ import {
 import { flagActivity, instanceActorUri, recordOutbound } from "./activities";
 import { type AdminAccount, adminAccountStream } from "./admin-account-presenter";
 import { accessAdminRefusal, adminAccountIdOnce } from "./admin-authority";
-import { admit, ARRAY_ANSWER_BYTES, jsonBytes } from "./answer-budget";
+import { admit, jsonBytes, STATUS_ARRAY_ANSWER_BYTES } from "./answer-budget";
 import { availableSql, type ReachedAccount, reachAccount, remoteReportStatusIds, reportForwardees } from "./audience";
 import {
   ADMIN_PERMISSION,
@@ -575,9 +575,9 @@ export const listAdminReports = adminReadOperation<
     kept.push(row);
     statuses += count;
   }
-  // Within ANSWER_BYTES (RES-3), cut at a report: the page ends at its last admitted report, and `more` offers the
-  // next.
-  const admitted = admit(adminReportStream(db, kept, admin, present), ARRAY_ANSWER_BYTES, true);
+  // Within STATUS_ANSWER_BYTES (RES-3: a report presents statuses), cut at a report: the page ends at its last admitted
+  // report, and `more` offers the next.
+  const admitted = admit(adminReportStream(db, kept, admin, present), STATUS_ARRAY_ANSWER_BYTES, true);
   const shown = kept.slice(0, admitted.consumed);
   if (ascending) {
     shown.reverse();

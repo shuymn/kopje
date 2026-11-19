@@ -27,9 +27,15 @@ import {
 } from "../src/domain/accounts";
 import { createActivity, getLegacyObject, noteOf, PIN_LIMIT, statusFacts } from "../src/domain/activities";
 import { ANNOUNCEMENT_CONTENT_BYTES, ANNOUNCEMENT_ROW_CAPS } from "../src/domain/announcements";
-import { ANSWER_BYTES, encodedTwiceBytes } from "../src/domain/answer-budget";
+import {
+  ANSWER_BYTES,
+  encodedTwiceBytes,
+  STATUS_ANSWER_BYTES,
+  STATUS_ARRAY_ANSWER_BYTES,
+} from "../src/domain/answer-budget";
 import { type VisibleStatusId } from "../src/domain/audience";
 import { OWNER_ROLE } from "../src/domain/auth";
+import { COLLECTION_JSON_MAX } from "../src/domain/collections";
 import { listConversations, MAX_PRESENTED_PARTICIPANTS } from "../src/domain/conversations";
 import { MAX_FILTER_KEYWORD, MAX_FILTER_KEYWORDS, MAX_FILTER_TITLE, MAX_FILTERS } from "../src/domain/filters";
 import { getFeatured, OUTBOX_BYTES } from "../src/domain/local-notes";
@@ -67,6 +73,7 @@ import { STATUS_COLUMN_MAP, STATUS_FROM, statusRowBoundSql } from "../src/domain
 import { renderFieldValue } from "../src/domain/status-text";
 import { getStatus, getStatuses, recordEdit, statusHistory } from "../src/domain/statuses";
 import { STREAM_EVENT_NAMES, streamUnit } from "../src/domain/streaming";
+import { TREND_LANGUAGES } from "../src/domain/trend-languages";
 import {
   LINK_ACCT_JSON_BYTES,
   LINK_URL_JSON_BYTES,
@@ -93,6 +100,11 @@ import {
   CARD_OPTIONAL_URL_LIMIT,
   CARD_TEXTS,
   CARD_URL_LIMIT,
+  COLLECTION_DESCRIPTION_LENGTH,
+  COLLECTION_NAME_LENGTH,
+  COLLECTION_URI_BYTES,
+  COLLECTION_URL_BYTES,
+  MAX_TAGGED_COLLECTIONS,
   MEDIA_DESCRIPTION_BYTES,
   MEDIA_META_BYTES,
   mediaCategorySql,
@@ -1364,7 +1376,7 @@ async function maximalFilters(t: Setup, fill: Fill, statuses: readonly string[])
 // bounds, filled as `fill`, with alice's profile and filters at their bounds, the filters naming all three, her votes
 // in every choice of both polls shown, and every flag of hers on each. The boost's own row holds every part its CHECK
 // and triggers accept (all but content), and attachments, mentions, hashtags and a poll of its own, which the presenter
-// neither reads nor shows.
+// neither reads nor shows. Each original tags four remote collections at their maxima (maximalCollections).
 async function maximalStatuses(fill: Fill) {
   const t = await setup();
   await sql(
@@ -1390,6 +1402,7 @@ async function maximalStatuses(fill: Fill) {
   const quote = await storedStatus(t, quoter, await maximalParts(t, fill));
   await acceptQuote(t, quote, quoted);
   const boost = await storedStatus(t, booster, { ...(await maximalParts(t, fill)), reblogOf: quote });
+  await maximalCollections(t, fill, [quoted, quote]);
   // A card on each, the boost's own row too (an imported row: the presenter never reads a boost's).
   for (const id of [quoted, quote, boost]) {
     await maximalCard(t, id, fill);
@@ -1480,6 +1493,69 @@ async function maximalCard(t: Setup, statusId: string, fill: Fill): Promise<void
   );
 }
 
+// Four remote collections for each of `statuses` to tag (#1589's D26), its own, at their maxima as a sync stores them: their
+// owner on o.example, each id and web address on its origin with the rest of its bound in `"` (escaped to two bytes),
+// its name and description at their bounds in characters JSON escapes to six bytes (four-byte characters in the raw
+// fill), the longest language, a hashtag at its bound, and the 25 accepted items of 25 members a listing stores (each
+// with its uri, so R45 shows it). Presented, each is COLLECTION_JSON_MAX less its origin's bytes in its id and url.
+async function maximalCollections(t: Setup, fill: Fill, statuses: readonly string[]): Promise<void> {
+  const origin = "https://o.example";
+  const owner = nextId();
+  await sql(
+    t.store,
+    "INSERT INTO accounts (id, uri, username, domain) VALUES (?, ?, 'o', 'o.example')",
+    owner,
+    `${origin}/users/o`,
+  );
+  const members = Array.from({ length: 25 }, () => nextId());
+  for (const [i, member] of members.entries()) {
+    await sql(
+      t.store,
+      "INSERT INTO accounts (id, uri, username, domain) VALUES (?, ?, ?, 'm.example')",
+      member,
+      `https://m.example/users/m${i}`,
+      `m${i}`,
+    );
+  }
+  const text = (length: number) => (fill === "raw" ? W : C).repeat(length);
+  const quoted = (path: string, bytes: number) => `${origin}/${path}/`.padEnd(bytes, '"');
+  const language = [...TREND_LANGUAGES].reduce((a, b) => (b.length > a.length ? b : a));
+  const at = new Date(NOW).toISOString();
+  for (let n = 0; n < MAX_TAGGED_COLLECTIONS * statuses.length; n++) {
+    const id = nextId();
+    await sql(
+      t.store,
+      `INSERT INTO collections (id, account_id, local, name, description, language, sensitive, discoverable, tag, uri,
+				url, total_items, created_at, updated_at)
+			VALUES (?, ?, 0, ?, ?, ?, 0, 0, ?, ?, ?, 25, ?9, ?9)`,
+      id,
+      owner,
+      text(COLLECTION_NAME_LENGTH.remote),
+      text(COLLECTION_DESCRIPTION_LENGTH.remote),
+      language,
+      "\u{20000}".repeat(MAX_TAG_LENGTH),
+      quoted(`c${n}`, COLLECTION_URI_BYTES),
+      quoted(`w${n}`, COLLECTION_URL_BYTES),
+      at,
+    );
+    for (const [i, member] of members.entries()) {
+      await sql(
+        t.store,
+        `INSERT INTO collection_items (id, collection_id, account_id, state, position, uri, created_at, updated_at)
+				VALUES (?, ?, ?, 1, ?, ?, ?6, ?6)`,
+        nextId(),
+        id,
+        member,
+        i + 1,
+        `${origin}/items/${n}/${i}`,
+        at,
+      );
+    }
+    const status = statuses[Math.floor(n / MAX_TAGGED_COLLECTIONS)]!;
+    await sql(t.store, "INSERT INTO status_collections (status_id, collection_id) VALUES (?, ?)", status, id);
+  }
+}
+
 // What each fill measures: the table of maxima, and for each item of the heap model its rows by query and column (its
 // JSON is the table's). Measured once per fill, by whichever test asks first.
 type FillMeasure = {
@@ -1494,6 +1570,9 @@ type FillMeasure = {
   cards: Record<string, { count: number; deficit: number }>;
   // The attachments each shape shows: how many, and what their URLs and blurhash lack of their maxima.
   media: Record<string, { count: number; deficit: number }>;
+  // The statuses each shape shows that may tag collections (all but a boost): how many, and what their
+  // tagged_collections lack of TAGGED_COLLECTIONS_JSON_MAX.
+  collections: Record<string, { count: number; deficit: number }>;
   // The verified local fields each shape shows: how many, and what their values lack of LOCAL_FIELD_VALUE_JSON_MAX.
   localFields: Record<string, { count: number; deficit: number }>;
   // The remote accounts each shape shows: how many, and what their fields' JSON lacks of REMOTE_FIELDS_JSON_MAX.
@@ -1987,6 +2066,22 @@ async function measureShapes(fill: Fill): Promise<FillMeasure> {
         return [name, { count: shown.length, deficit }];
       }),
     ),
+    collections: Object.fromEntries(
+      Object.entries(answers).map(([name, answer]) => {
+        const all = presentedStatuses(answer);
+        // A boost shows none: its original shows them.
+        const shown = all.filter((status) => status.reblog === null);
+        for (const status of all) {
+          const tagged = jsonBytes(status.tagged_collections);
+          expect(tagged).toBeLessThanOrEqual(shown.includes(status) ? TAGGED_COLLECTIONS_JSON_MAX : 2);
+        }
+        const deficit = shown.reduce(
+          (sum: number, status) => sum + TAGGED_COLLECTIONS_JSON_MAX - jsonBytes(status.tagged_collections),
+          0,
+        );
+        return [name, { count: shown.length, deficit }];
+      }),
+    ),
     media: Object.fromEntries(
       Object.entries(answers).map(([name, answer]) => {
         const shown = presentedMedia(answer);
@@ -2202,6 +2297,10 @@ const POLLS_SHOWN: Record<string, number> = {
 };
 const POLL_EMOJIS_JSON = STATUS_EMOJIS_BYTES - 2;
 
+// A status's tagged_collections at its most: MAX_TAGGED_COLLECTIONS collections at COLLECTION_JSON_MAX, their commas
+// and brackets.
+const TAGGED_COLLECTIONS_JSON_MAX = MAX_TAGGED_COLLECTIONS * (COLLECTION_JSON_MAX + 1) + 1;
+
 // What a local account adds that the fills' remote account occurrence does not carry: noindex and roles with the
 // Owner's badge (the largest role list a local account shows), each with its separator.
 const LOCAL_ACCOUNT_KEYS_JSON =
@@ -2218,11 +2317,23 @@ const LOCAL_ACCOUNT_KEYS_JSON =
 // MEDIA_URL_JSON_BYTES and its blurhash at BLURHASH_JSON_MAX, and each verified local field's value at
 // LOCAL_FIELD_VALUE_JSON_MAX. Every remote account shown but the account occurrence counts its fields at
 // REMOTE_FIELDS_JSON_MAX (verified remote fields); the account occurrence keeps the larger of the local and remote
-// fields' maxima. Each notification's or group's fallback counts at FALLBACK_JSON_MAX, and each account's
-// feature_approval at FEATURE_APPROVAL_JSON_MAX.
+// fields' maxima. Each notification's or group's fallback counts at FALLBACK_JSON_MAX, each account's
+// feature_approval at FEATURE_APPROVAL_JSON_MAX, and each status's tagged_collections, but a boost's, at
+// TAGGED_COLLECTIONS_JSON_MAX.
 async function conservativeJson(): Promise<Record<string, number>> {
-  const { shapes, moved, applications, cards, media, localFields, remoteFields, fallbacks, approvals, accountFields } =
-    await measureFill("escaped");
+  const {
+    shapes,
+    moved,
+    applications,
+    cards,
+    media,
+    collections,
+    localFields,
+    remoteFields,
+    fallbacks,
+    approvals,
+    accountFields,
+  } = await measureFill("escaped");
   return Object.fromEntries(
     Object.entries(shapes).map(([name, shape]) => [
       name,
@@ -2236,6 +2347,7 @@ async function conservativeJson(): Promise<Record<string, number>> {
         applications[name]!.deficit +
         cards[name]!.deficit +
         media[name]!.deficit +
+        collections[name]!.deficit +
         localFields[name]!.deficit +
         fallbacks[name]!.deficit +
         approvals[name]!.deficit,
@@ -2261,7 +2373,8 @@ async function streamedKinds(): Promise<Record<"status" | "conversation" | "noti
 
 // The peaks of "Heap at 8 MiB per answer" (docs/threat-model.md, its model and terms) for answers whose largest item
 // is one of `items`, with that item's rows and largest row at their per-column maxima, and its rejected item's JSON at
-// its conservative bound. A single item is read alone, in no chunk.
+// its conservative bound. A single item is read alone, in no chunk. Each is an answer that presents statuses, admitted
+// within STATUS_ANSWER_BYTES.
 async function peaks(items: readonly string[], chunks: ChunkPlan, state: number): Promise<Peaks> {
   const measures = await Promise.all(FILLS.map(measureFill));
   const each = items.map((item) => perColumn(measures.map((m) => m.heaps[item]!)));
@@ -2269,7 +2382,7 @@ async function peaks(items: readonly string[], chunks: ChunkPlan, state: number)
   const largestRow = Math.max(...each.map((e) => e.largestRow));
   const conservative = await conservativeJson();
   const json = Math.max(...items.map((item) => conservative[item]!));
-  const rest = 3 * ANSWER_BYTES + 3 * json + MOVED_EMOJI_SCRATCH + state;
+  const rest = 3 * STATUS_ANSWER_BYTES + 3 * json + MOVED_EMOJI_SCRATCH + state;
   return {
     rows,
     largestRow,
@@ -2977,7 +3090,7 @@ describe("an attachment of malformed imported text (RES-3)", () => {
       });
       presentStatusesWithin(new Db(counting), shared, visible, Infinity, true, 1);
       const [bound] = real
-        .exec<{ bytes: number }>(statusRowBoundSql(), JSON.stringify(visible), ALICE, MAX_FILTERS)
+        .exec<{ bytes: number }>(statusRowBoundSql(), JSON.stringify(visible), ALICE, MAX_FILTERS, 1)
         .toArray();
       return { bytes, bound: bound!.bytes };
     });
@@ -3101,10 +3214,14 @@ describe("the table of maxima (RES-3)", () => {
     // The conversation's spare under the ceiling (one card in that shape): at least SPARE_FLOOR (#1142), and
     // SHAPE_CEILING_PERCENT is the least whole percent that keeps it.
     const spare = LIMIT - conservative.conversation!;
-    expect(spare).toBe(57_185);
+    expect(spare).toBe(71_182);
     expect(spare).toBeGreaterThanOrEqual(SPARE_FLOOR);
     expect(ceiling(SHAPE_CEILING_PERCENT - 1) - conservative.conversation!).toBeLessThan(SPARE_FLOOR);
     expect(conservative).toEqual(CONSERVATIVE_JSON);
+    // Every atomic item of an answer that presents statuses fits STATUS_ANSWER_BYTES with its array's brackets, so such
+    // an answer always admits its first item.
+    const { account: _account, ...statusShapes } = conservative;
+    expect(Math.max(...Object.values(statusShapes)) + 1).toBeLessThanOrEqual(STATUS_ARRAY_ANSWER_BYTES);
   }, 600_000);
 
   // A moderation_warning is streamed as its notification's JSON encoded again as a string (stream-hub.ts), which
@@ -3171,15 +3288,15 @@ describe("the table of maxima (RES-3)", () => {
     const kinds = await streamedKinds();
     const most = Math.max(...Object.values(kinds));
     expect({ ...kinds, most }).toEqual({
-      status: 5_820_048,
-      conversation: 7_157_017,
-      notification: 6_629_365,
+      status: 6_057_734,
+      conversation: 7_394_679,
+      notification: 6_867_051,
       announcement: ANNOUNCEMENT_JSON,
-      most: 7_157_017,
+      most: 7_394_679,
     });
-    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(18_248_244);
+    expect(TURN_BUDGET.bytes - UNIT_WORST.bytes + 2 * most + 2).toBe(18_723_568);
     const { streamed } = await measureFill("escaped");
-    expect(streamed).toEqual({ conversation: 7_076_822, conversationPayload: 7_838_386, notification: 5_919_387 });
+    expect(streamed).toEqual({ conversation: 7_312_332, conversationPayload: 8_160_844, notification: 6_154_921 });
     expect(streamed!.conversation).toBeLessThanOrEqual(kinds.conversation);
     expect(streamed!.conversationPayload).toBeLessThanOrEqual(2 * most + 2);
     expect(streamed!.notification).toBeLessThanOrEqual(kinds.notification);
@@ -3213,11 +3330,15 @@ describe("the table of maxima (RES-3)", () => {
     expect(timelines.backstop).toBeLessThanOrEqual(HALF);
     // The spare a later change may spend: below SPARE_FLOOR, it stops for a review.
     expect(HALF - timelines.backstop).toBeGreaterThanOrEqual(SPARE_FLOOR);
-    // PAGE_CHUNKS is the largest cap in steps of 8 KiB that keeps it: the backstop grows by 1.25 bytes a byte of cap.
-    expect(PAGE_CHUNKS.cap % CAP_STEP).toBe(0);
-    expect(HALF - (timelines.backstop + 1.25 * CAP_STEP)).toBeLessThan(SPARE_FLOOR);
+    // With PAGE_CHUNKS at 392 KiB, STATUS_ANSWER_BYTES is the largest budget in steps of 8 KiB that keeps it: every
+    // peak grows by 3 bytes a byte of the budget (the admitted answer, its RPC copy and its JSON), and a status's
+    // tagged_collections at their maxima (#1589's D26) would pass it at ANSWER_BYTES.
+    expect(PAGE_CHUNKS.cap).toBe(392 * 1024);
+    expect(STATUS_ANSWER_BYTES % CAP_STEP).toBe(0);
+    expect(HALF - (timelines.backstop + 3 * CAP_STEP)).toBeLessThan(SPARE_FLOOR);
+    expect(HALF - (timelines.backstop + 3 * (ANSWER_BYTES - STATUS_ANSWER_BYTES))).toBeLessThan(SPARE_FLOOR);
     for (const p of [groups, reports]) {
-      expect(p.backstop).toBeLessThanOrEqual(2 * HALF);
+      expect(2 * HALF - p.backstop).toBeGreaterThanOrEqual(SPARE_FLOOR);
     }
   }, 900_000);
 
@@ -3332,7 +3453,7 @@ describe("the table of maxima (RES-3)", () => {
         });
         presentStatusesWithin(new Db(counting), shared, visible, Infinity, true, 1);
         const [bound] = real
-          .exec<{ bytes: number }>(statusRowBoundSql(), JSON.stringify(visible), ALICE, MAX_FILTERS)
+          .exec<{ bytes: number }>(statusRowBoundSql(), JSON.stringify(visible), ALICE, MAX_FILTERS, 1)
           .toArray();
         return { bytes, rows, bound: bound!.bytes };
       });

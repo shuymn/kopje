@@ -210,9 +210,25 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   lookup of a membership's latest answer reads one row, rewriting no row (building it reads every outbound activity
   once). The upgrades check no reference. `wrangler.jsonc`: unchanged. This adds Store migrations, so the release is at
   least a minor version, and rolling back past them needs a point-in-time restore.
+- A post that links a collection presents it in `tagged_collections` to those who may see it, and its ActivityPub
+  `Note` names the collection in `tag`, so Mastodon shows it too; a link to a remote collection's web page tags it when
+  Kopje stores that collection under that address; a remote post's collection tag is shown when Kopje stores that
+  collection. At most 4 collections are tagged per post, and the first 100 posts to tag a collection keep the tag
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Collections"). Migration `0120_tagged_collections`: a
+  new table with its index and four triggers, and an index of `collections` built over its rows, reading no other row;
+  as it creates a table, the upgrade checks every reference of the Store (the migration bench's upgrade, with 10,000
+  remote collections stored, takes <bench> ms with this file and <bench> ms without it, medians of three runs).
+  `wrangler.jsonc`: unchanged. This adds a Store migration, so the release is at least a minor version, and rolling
+  back past it needs a point-in-time restore.
 
 ### Changed
 
+- Answers that present statuses (the timelines and status lists, a context, quotes, statuses by id, search with
+  statuses, trending statuses, notifications, grouped notifications, notification requests, conversations, admin
+  reports and annual reports) stop at 8,011,776 bytes of JSON, 368 KiB short of 8 MiB, so that the Store's heap holds a
+  page of posts each tagging four collections at their bounds; a page that reaches it ends at a whole item and its
+  `Link` (or offset, or `more`) continues after it, and realistic content does not reach it. No Store migration and no
+  `wrangler.jsonc` change.
 - Breaking: the query and a urlencoded or multipart body are each read in Rack order, as Mastodon reads them
   (#1734), also by `/oauth/authorize` and `/authorize_interaction`: a name sent as two kinds (`limit=1&limit[]=2`)
   answers 400, a later plain name replaces what an earlier one sent under it (`limit[]=2&limit=1` reads 1), a name
@@ -296,10 +312,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   header descriptions there. From 10 clients show collections: the official Android and iOS apps, Ice Cubes and Phanpy
   list an account's collections, a remote account's included, the Android app and Phanpy open them and let a member
   revoke its item, Ice Cubes and Phanpy take the two collection notification types, and Phanpy finds a collection by
-  its URL. From 11 Tuba edits the profile's display settings through `/api/v1/profile`. A remote account cannot be
-  featured yet, a local account is not featured in a remote collection, and statuses carry no `tagged_collections`
-  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "What Kopje follows" and "Collections"). No Store
-  migration and no `wrangler.jsonc` change.
+  its URL. From 11 Tuba edits the profile's display settings through `/api/v1/profile`. No Store migration and no
+  `wrangler.jsonc` change.
 - `GET /api/v1/annual_reports/:id` takes a token with `read:accounts`, as Mastodon 4.7.5 does; it asked for
   `write:accounts`.
 - A mention that a remote server tags but leaves out of the status's audience (Mastodon 4.6 and later do so for

@@ -272,7 +272,9 @@ export const embeddedStatus = readOperation<{ url: string; present: PresentInput
       return { status: "not_found" };
     }
     const row = targetStatus(db, target);
-    const status = row === undefined ? null : presentStatus(db, row.id, { ...present, viewer: contextOf(null, now) });
+    // An embed renders the post's text, never its tagged collections (Present.page).
+    const status =
+      row === undefined ? null : presentStatus(db, row.id, { ...present, page: true, viewer: contextOf(null, now) });
     return status === null ? { status: "not_found" } : { status: "ok", value: status, domain };
   },
 );

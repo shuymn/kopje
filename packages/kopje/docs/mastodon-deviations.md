@@ -171,7 +171,7 @@ A pull request that fixes a gap removes the exceptions that cite it.
   one) never trends. Reviews are made by the Access admin, take effect at once and send no e-mail. While trends are off,
   public lists are empty; the next cron round clears stored trends and leaves the Access admin lists empty too. Posts
   are ordered by the `Accept-Language` language among ISO 639-1 codes (no user locale, chosen languages or `lang`).
-  `limit=0` answers `[]` without a Link, and a page cut by the 8 MiB budget continues after its last post. Links are
+  `limit=0` answers `[]` without a Link, and a page cut by its byte budget continues after its last post. Links are
   counted from the same window by publication day: its public originals with a public card, and at most 4,000 public
   boosts of them from yesterday 00:00 UTC, at most 100 per post (boosts of older posts are not counted); the 400 links
   with the most accounts today are scored. A link is its card's URL after redirects: no canonical URL is read, a final
@@ -834,8 +834,22 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   authorization waits for a check of its own against the member's server before the membership is shown. Kopje's
   `FeatureRequest` names the owner as its `actor`, where Mastodon's carries none, and the removal of a remote member
   still pending sends no `Remove`, where Mastodon sends one that no server holds an item for. Accepted, 2026-11-18.
-- Statuses have no `tagged_collections` (Mastodon: the collections a post links). Clients read the field as optional,
-  so a post shows no linked collection. Tracked by #1589.
+- A post tags only collections Kopje stores: a link to a remote collection Kopje has not stored, and a remote post's
+  tag naming one, are neither resolved nor fetched, where Mastodon fetches them, and a remote post's tag never stores
+  the collection it embeds, the author's own included; such a post shows the tag only after its author edits it once
+  Kopje stores the collection, and so does a post whose remote collection was deleted and stored again: an unchanged
+  refetch of the post leaves its tags as they are (a refetch of a newer version applies them, as an edit does). A
+  remote collection's tags go when Kopje deletes it, a complete read of its owner no longer listing it among them,
+  where Mastodon keeps the collection until a `Remove`. A link to a remote collection's web page tags it only when the
+  link, normalized, is the `url` Kopje stored, as the remote server spelled it, the collection's id and its owner are
+  on the link's origin, and no other stored collection of that origin gives the same `url`: where Mastodon fetches the
+  page, a collection whose server spells its `url` or id otherwise (capitals in the host, an explicit default port, as
+  its operator wrote `WEB_DOMAIN`) is not tagged by a link to it, whatever the spelling of the link itself. A link to a
+  local collection's ActivityPub id tags it only with its owner's username. At most 4 collections are tagged per post,
+  a collection already tagged by 100 posts keeping its slot among the 4 untagged, and only the first 100 posts to tag a
+  collection keep the tag (Mastodon has no number). `tagged_collections` leaves out a collection the viewer may not
+  see (its owner blocks the viewer or is unavailable), where Mastodon shows it. Kopje's Notes name a tagged collection
+  by its id alone, where Mastodon's embed it whole; Mastodon reads only the id. Accepted, 2026-11-19.
 - An account's `feature_approval.current_user` is `denied` when either account blocks the other or the account is
   unavailable, where Mastodon may answer `automatic` (or `manual`) and then refuse the add; every other answer is
   Mastodon's. The instance's contact account answers `denied` (no viewer), where Mastodon's cached instance answer
@@ -2221,7 +2235,10 @@ ID-7 in `docs/threat-model.md`):
   any other `sensitive` Mastodon applies its content, which Kopje leaves. Mastodon moves `edited_at` only on a
   significant edit (`process_status_update_service.rb`), so after a newer metadata-only `Update` it applies an older
   content `Update`: an author editing A, then B, then A again, whose final A arrives before B, ends at B there.
-  Mastodon's behaviour is an ordering bug.
+  Mastodon's behaviour is an ordering bug. A tag-only `Update` is such a metadata-only one: it replaces the post's
+  collection tags and moves the stored version, so a replayed `Update` of that version naming other collections, or
+  an older one arriving after it, changes no tag, where Mastodon, whose `edited_at` the tag-only `Update` did not move,
+  replaces them again.
 - A remote status's `favourites_count` and `reblogs_count` are, as in Mastodon, the untrusted counts its server gives
   as `likes.totalItems` and `shares.totalItems`, read as Mastodon stores them (an object's `totalItems`, cast and
   clamped to 0 to 100,000,000, on a `Create` and on every `Update`, a refetch and a poll's refresh included; `""`

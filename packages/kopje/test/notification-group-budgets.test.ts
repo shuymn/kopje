@@ -1,7 +1,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { ANSWER_BYTES, jsonBytes } from "../src/domain/answer-budget";
+import { jsonBytes, STATUS_ANSWER_BYTES } from "../src/domain/answer-budget";
 import {
   GROUP_ADMISSION_CANDIDATES,
   GROUP_ADMISSION_VISITS,
@@ -27,10 +27,10 @@ import {
 import { observedSql, remoteAccounts, watchedCursor } from "./read-helpers";
 import { community, mute, remoteAccount, seedStatus, type User } from "./status-helpers";
 
-// RES-3: a page of grouped notifications is within ANSWER_BYTES. Groups are admitted in discovery order, each with
-// the accounts and statuses it adds; a page cut by bytes continues from its last admitted group's discovery position
-// (never a group's member range), its range fields and cursors those of the groups kept, and a walk's continuation
-// at GROUP_WALK is kept only when no group was left out by bytes before it.
+// RES-3: a page of grouped notifications is within STATUS_ANSWER_BYTES. Groups are admitted in discovery order, each
+// with the accounts and statuses it adds; a page cut by bytes continues from its last admitted group's discovery
+// position (never a group's member range), its range fields and cursors those of the groups kept, and a walk's
+// continuation at GROUP_WALK is kept only when no group was left out by bytes before it.
 
 type Group = {
   group_key: string;
@@ -100,7 +100,7 @@ async function markers(h: ApiHarness, user: User) {
   return (await answer<unknown>(h, "/api/v1/markers?timeline[]=notifications", user.token)).body;
 }
 
-describe("grouped notifications within ANSWER_BYTES (RES-3)", () => {
+describe("grouped notifications within STATUS_ANSWER_BYTES (RES-3)", () => {
   it("walk every group once in both directions, cut by bytes before a walk continuation too", async () => {
     const h = await community(["alice"]);
     const { alice } = h.users;
@@ -174,7 +174,7 @@ describe("grouped notifications within ANSWER_BYTES (RES-3)", () => {
     const shown = await groupOf("?supported_types[]=mention");
     const fallbacks = reports * (jsonBytes(shown) - jsonBytes(await groupOf("")));
     const k = Array.from({ length: 80 - reports - 1 }, (_, i) => i + 2).find(
-      (n) => one + (n - 1) * big <= ANSWER_BYTES && one + (n - 1) * big + fallbacks > ANSWER_BYTES,
+      (n) => one + (n - 1) * big <= STATUS_ANSWER_BYTES && one + (n - 1) * big + fallbacks > STATUS_ANSWER_BYTES,
     );
     expect(k).toBeDefined();
     while (added < k!) {
@@ -182,11 +182,11 @@ describe("grouped notifications within ANSWER_BYTES (RES-3)", () => {
     }
     const whole = await pageOf("");
     expect(whole.body.notification_groups).toHaveLength(k! + reports);
-    expect(whole.bytes).toBeLessThanOrEqual(ANSWER_BYTES);
+    expect(whole.bytes).toBeLessThanOrEqual(STATUS_ANSWER_BYTES);
     for (const expandAccounts of ["full", "partial_avatars"]) {
       const cut = await pageOf(`&expand_accounts=${expandAccounts}&supported_types[]=mention`);
       const groups = cut.body.notification_groups;
-      expect(cut.bytes, expandAccounts).toBeLessThanOrEqual(ANSWER_BYTES);
+      expect(cut.bytes, expandAccounts).toBeLessThanOrEqual(STATUS_ANSWER_BYTES);
       expect(groups.length, expandAccounts).toBeLessThan(k! + reports);
       // The groups the passes kept within the shared work budget (RES-7): the newest of the whole page's.
       expect(groups.map((group) => group.group_key)).toEqual(
@@ -247,7 +247,7 @@ describe("grouped notifications within ANSWER_BYTES (RES-3)", () => {
     expect(groupOf(above.body, b)).toMatchObject({ page_max_id: b95 });
     expect(groupOf(above.body, a)).toMatchObject({ notifications_count: 2, page_max_id: a100 });
     for (const page of [down, below, up, above]) {
-      expect(page.bytes).toBeLessThanOrEqual(ANSWER_BYTES);
+      expect(page.bytes).toBeLessThanOrEqual(STATUS_ANSWER_BYTES);
     }
   }, 300_000);
 
@@ -281,7 +281,7 @@ describe("grouped notifications within ANSWER_BYTES (RES-3)", () => {
       pads.toReversed(),
     );
     expect(up.prev).toContain(`min_id=${pads.at(-1)!}`);
-    expect(up.bytes).toBeLessThanOrEqual(ANSWER_BYTES);
+    expect(up.bytes).toBeLessThanOrEqual(STATUS_ANSWER_BYTES);
   }, 300_000);
 
   it("answers its first group alone after two passes over the kept groups still do not fit", async () => {
@@ -332,7 +332,8 @@ describe("grouped notifications within ANSWER_BYTES (RES-3)", () => {
     const fan = await remoteAccount(h.store, "fan");
     const [x, y] = await maximalAccounts(h, "promoted", 2);
     // Walked oldest first: G1 (x, then y: y shown whole, x partial), eight groups of about 0.97 MB, a group T whose
-    // poll tunes the answer's size, and G2 (x alone), which shows x whole in place of its partial account.
+    // poll tunes the answer's size (its content emptied and its media removed, so that the page starts within
+    // STATUS_ANSWER_BYTES), and G2 (x alone), which shows x whole in place of its partial account.
     const s1 = await seedStatus(h.store, { accountId: alice.id, visibility: "public" });
     await favourite(h, alice.id, x!, s1);
     await favourite(h, alice.id, y!, s1);
@@ -343,6 +344,8 @@ describe("grouped notifications within ANSWER_BYTES (RES-3)", () => {
     const options = (texts: string[]) =>
       sql(h.store, "UPDATE polls SET options = ? WHERE status_id = ?", JSON.stringify(texts), tuner);
     await options(Array.from({ length: 100 }, () => ""));
+    await sql(h.store, "UPDATE statuses SET content = '<p>t</p>' WHERE id = ?", tuner);
+    await sql(h.store, "DELETE FROM media_attachments WHERE status_id = ?", tuner);
     await favourite(h, alice.id, fan, tuner);
     const s2 = await seedStatus(h.store, { accountId: alice.id, visibility: "public" });
     await favourite(h, alice.id, x!, s2);
@@ -360,18 +363,18 @@ describe("grouped notifications within ANSWER_BYTES (RES-3)", () => {
       alice.token,
     );
     const partial = jsonBytes(alone.body.partial_accounts!.find((account) => account.id === x));
-    // Grow T's poll until the answer is within 100 bytes of ANSWER_BYTES: each choice's title adds its JSON bytes
-    // (six for a control character, one for ASCII).
-    const delta = ANSWER_BYTES - 100 - before.bytes;
+    // Grow T's poll until the answer is within 100 bytes of STATUS_ANSWER_BYTES: each choice's title adds its JSON
+    // bytes (six for a control character, one for ASCII).
+    const delta = STATUS_ANSWER_BYTES - 100 - before.bytes;
     expect(delta).toBeGreaterThan(0);
     expect(delta).toBeLessThan(100 * 6 * 1_000);
     const each = Math.floor(delta / 100);
     const title = (bytes: number) => "\u0001".repeat(Math.floor(bytes / 6)) + "x".repeat(bytes % 6);
     await options(Array.from({ length: 100 }, (_, i) => title(each + (i === 0 ? delta - 100 * each : 0))));
     const after = await answer<Grouped>(h, path, alice.token);
-    expect(after.bytes).toBe(ANSWER_BYTES - 100);
+    expect(after.bytes).toBe(STATUS_ANSWER_BYTES - 100);
     // Counted without the refund, x's partial account would pass the budget and leave G2 out.
-    expect(after.bytes + partial + 1).toBeGreaterThan(ANSWER_BYTES);
+    expect(after.bytes + partial + 1).toBeGreaterThan(STATUS_ANSWER_BYTES);
     expect(groupsOf(after)).toEqual(groupsOf(before));
     expect(after.body.accounts.map((account) => account.id)).toContain(x);
     expect(after.body.partial_accounts!.map((account) => account.id)).not.toContain(x);
