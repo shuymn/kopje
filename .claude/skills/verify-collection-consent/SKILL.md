@@ -15,7 +15,7 @@ oracle the implementation is held to. Commands below run from `packages/kopje/`.
 | `CollectionConsent.tla` | the protocol: Kopje's steps, R's (cited to Mastodon file:line), the network; the invariants and goals |
 | `CollectionConsentInd.tla`, `Ind.cfg` | the induction check of Grant preservation, from every state of the core's type |
 | `CollectionConsentGoals.tla`, `CollectionConsentFixtures.tla` | reachability traps, and the projection the replay fixtures are written from |
-| `S1.cfg`-`S16.cfg` | the focused scenarios (`CollectionConsent.tla`, "Scenarios", says what each enables) |
+| `S1.cfg`-`S17.cfg` | the focused scenarios (`CollectionConsent.tla`, "Scenarios", says what each enables) |
 | `checks.json` | every check's expected outcome, which both checkers must give |
 | `coverage.json` | the Kopje files and functions the spec describes, with their blobs when last confirmed |
 
@@ -62,9 +62,11 @@ longer the lane's head; V25: at `S12-DroppedDelivery` the suspended member's `Ac
 `S2-LeaseSuperseded`'s `KFail` the superseded answer waits again, not dropped; V29, V30 and V31: at `S2-LeaseFailed`'s,
 `S4-LeaseFailedBesideX`'s and `S2-LeaseFailedOrdinary`'s `KFail` the answer is dropped, not waiting again; V32: at
 `S16-ReclaimRefused`'s `KReclaim` the suspended member's ordinary answer stays leased, not dropped; V33: at
-`S16-DroppedAnswer`'s last delivery it is sent, not dropped). A variant that changes only what an invariant counts (V8,
-V23, V34) is listed there as exempt, with its reason, and must reproduce every fixture. A variant with neither fails the
-test.
+`S16-DroppedAnswer`'s last delivery it is sent, not dropped; V35: at `S16-ReclaimRetraction`'s `KReclaim` the suspended
+member's retraction answer is dropped, not leased again; V36: at `S16-RetractionSentSuspended`'s last delivery the
+revoke's `Delete` is dropped, not sent; V37: at `S17-OrdinaryOverRetraction`'s `KFail` the ordinary answer is dropped
+as superseded, not waiting again). A variant that changes only what an invariant counts (V8, V23, V34) is listed there
+as exempt, with its reason, and must reproduce every fixture. A variant with neither fails the test.
 
 ## Reading a violation
 
@@ -97,20 +99,24 @@ cites the code):
   completes the leased head, or takes a waiting head, claim and outcome in one step. `KFail` is the leased POST's
   transient failure, after which the head waits again. `KReclaim` is its lease running out and the sweep reclaiming it,
   a claim of its own: the head stays in flight under a new lease and never waits. After `KDup`, `KFail` or `KReclaim` a
-  leased head is dropped instead (input `superseded`) when a retraction answer of its authorization to its inbox was
-  recorded while it was in flight (`Superseded`); an ordinary answer, or one to another inbox, supersedes nothing.
+  leased retraction answer is dropped instead (input `superseded`) when a retraction answer of its authorization to its
+  inbox was recorded while it was in flight (`Superseded`); an ordinary answer, or one to another inbox, supersedes
+  nothing, and a leased ordinary answer (one to a listing made before Kopje issued the authorization) keeps its course
+  whatever waits behind it.
   `KRetry` is an operator's retry (admitted again, then behind the head). While L is suspended the Store drops its
-  ordinary activities when it claims them, by their class: a retraction is still sent, and an answer once Kopje holds
-  no row, or to X, is ordinary. A waiting head is then `KDeliver` with the input `dropped`, which sends nothing, and is
-  neither duplicated nor given up; a leased one is `KReclaim` with the input `dropped`. A POST claimed before the
-  suspension may still complete. `RJob` is one of R's jobs, which run in any order.
+  ordinary activities when it claims them, by their class: a retraction is still sent, a fresh claim and the reclaim of
+  its lease alike, and an answer once Kopje holds no row, or to X, is ordinary. A waiting head is then `KDeliver` with
+  the input `dropped`, which sends nothing, and is neither duplicated nor given up; a leased one is `KReclaim` with the
+  input `dropped`. A POST claimed before the suspension may still complete. `RJob` is one of R's jobs, which run in
+  any order.
 - An answer to a listing of an authorization L's row no longer serves is a retraction only to R while Kopje holds the
   row; X's, or any once the row is gone, is ordinary and refused at a full backlog. A retraction answer is not
   recorded while one of the same authorization to the same inbox still waits in the lane (`Coalesced`), so the
   listing step then records nothing; a leased one (its lease reclaimed or not) does not wait, so the listing records
   another, which supersedes it.
-- `R*` and `XAdd` are R's requests and services; `Drop` loses an envelope; `Env` changes L's policy, the backlog, the
-  retraction cap, C's slots or how many of R's collections Kopje holds.
+- `R*` and `XAdd` are R's requests and services; `RGuess` (S17) is R's `Add` of the authorization Kopje issues next,
+  before Kopje issues it, which only an owner that guesses its URI sends; `Drop` loses an envelope; `Env` changes L's
+  policy, the backlog, the retraction cap, C's slots or how many of R's collections Kopje holds.
 
 `last` in each state names the step, its input, what it recorded and its response; `k` is Kopje's core (`row`, its
 `uri` listing), `rs` is R's server, `g` the history the invariants read (`obl` the obligation Grant preservation
@@ -120,7 +126,8 @@ changes the row at all, or Kopje claims an activity of L's other than a retracti
 reclaim). `OV3` fails when a read that does not cover the row replaces the covering read OV2 compares. `AnswerBound`
 fails when two retraction answers of one authorization wait in Kopje's lane (a leased head does not wait): one to an
 account other than R, a second to R recorded while the first waited, or a superseded one waiting again after its POST
-failed.
+failed. `Supersession` fails when a leased answer is dropped as superseded that is not a retraction answer, or that has
+no later retraction answer to its inbox behind it to be sent in its place.
 
 Tell the two kinds of failure apart by the step that breaks the invariant:
 

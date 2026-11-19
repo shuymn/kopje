@@ -80,6 +80,11 @@
       "name": "S16",
       "distinct": 176251,
       "depth": 24
+    },
+    {
+      "name": "S17",
+      "distinct": 21013,
+      "depth": 21
     }
   ],
   "induction": {
@@ -360,6 +365,27 @@
       "variant": "V34",
       "invariant": "CR3",
       "trace": 14
+    },
+    {
+      "name": "V35",
+      "scenario": "S16",
+      "variant": "V35",
+      "invariant": "CR3",
+      "trace": 11
+    },
+    {
+      "name": "V36",
+      "scenario": "S16",
+      "variant": "V36",
+      "invariant": "CR3",
+      "trace": 9
+    },
+    {
+      "name": "V37",
+      "scenario": "S17",
+      "variant": "V37",
+      "invariant": "Supersession",
+      "trace": 9
     }
   ],
   "findings": [],
@@ -874,6 +900,27 @@
       "goal": "LeasedSentSuspended",
       "trace": 12,
       "fixture": true
+    },
+    {
+      "name": "S16-ReclaimRetraction",
+      "scenario": "S16",
+      "goal": "ReclaimRetraction",
+      "trace": 12,
+      "fixture": true
+    },
+    {
+      "name": "S16-RetractionSentSuspended",
+      "scenario": "S16",
+      "goal": "RetractionSentSuspended",
+      "trace": 7,
+      "fixture": true
+    },
+    {
+      "name": "S17-OrdinaryOverRetraction",
+      "scenario": "S17",
+      "goal": "OrdinaryOverRetraction",
+      "trace": 10,
+      "fixture": true
     }
   ],
   "replay": {
@@ -1013,6 +1060,18 @@
       {
         "variant": "V33",
         "fixture": "S16-DroppedAnswer"
+      },
+      {
+        "variant": "V35",
+        "fixture": "S16-ReclaimRetraction"
+      },
+      {
+        "variant": "V36",
+        "fixture": "S16-RetractionSentSuspended"
+      },
+      {
+        "variant": "V37",
+        "fixture": "S17-OrdinaryOverRetraction"
       }
     ],
     "exempt": [
@@ -1026,7 +1085,7 @@
       },
       {
         "variant": "V34",
-        "why": "It counts a correction a suspended member's claim dropped against CR3 (F7 without its suspension excuse): it changes what an invariant counts, no step of Kopje's."
+        "why": "It counts an ordinary correction a suspended member's claim dropped against CR3 (F7 without its suspension excuse): it changes what an invariant counts, no step of Kopje's."
       }
     ]
   }

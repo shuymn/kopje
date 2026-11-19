@@ -78,6 +78,18 @@ StateGoals ==
    \* L's ordinary answer, leased before L's suspension, is delivered during it: a POST claimed before the suspension
    \* completes (a fresh claim would drop it).
    LeasedSentSuspended |-> Acted("KDeliver") /\ "dropped" \notin last.ev /\ SenderDrops(last.arg.msg),
+   \* L's retraction answer, leased, is taken again by the sweep's reclaim while L is suspended, under a new lease, and
+   \* its POST is sent (sender refusal spares a retraction).
+   ReclaimRetraction |-> Acted("KDeliver") /\ "reclaimedSent" \in last.ev /\ last.arg.msg.cls = "ret",
+   \* A suspended L's retraction, a revoke's or a block's Delete, is sent at a fresh claim.
+   RetractionSentSuspended |->
+     /\ Acted("KDeliver") /\ "dropped" \notin last.ev /\ k.lx /\ k.ls
+     /\ last.arg.msg.cls = "ret" /\ ~Answer(last.arg.msg),
+   \* L's ordinary answer to R's listing of an authorization before Kopje issued it, leased, fails while a retraction
+   \* answer of that authorization to R waits behind it: it does not supersede the ordinary one, which waits again and
+   \* is delivered.
+   OrdinaryOverRetraction |->
+     Acted("KDeliver") /\ Answer(last.arg.msg) /\ last.arg.msg.cls = "ord" /\ g.waitedAgain = "retraction",
    \* A read lists the accepted row under an item R's Remove retracted: the row takes it (K14).
    ReadOverRetraction |-> Acted("KApply") /\ k.row.st = "acc" /\ k.row.uri # NONE /\ k.row.uri \in k.ret,
    \* The revoke's Delete is delivered after the retired row's cleanup (K10 leaves the lane as it is).
