@@ -230,11 +230,17 @@ describe("POST /api/v2/media", () => {
 
   it("refuses an output that does not walk, and deletes what it wrote (MEDIA-3)", async () => {
     const h = await users();
-    // A byte after IEND: the strip refuses it rather than keep what follows the image.
-    h.codec.encodeResult = new Uint8Array([...bytes(PNG_WITH_GPS), 0]);
+    // A plain PNG whose only defect is a byte after IEND: the strip refuses it rather than keep what follows the image.
+    h.codec.encodeResult = new Uint8Array([...bytes(PNG_PLAIN), 0]);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const response = await upload(h, h.users.alice, mediaForm(bytes(WIDE_PNG), {}, "a.png", "image/png"));
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: "Error processing uploaded media" });
+    // The strip's refusal, not the metadata check's.
+    expect(errors.mock.calls).toContainEqual([
+      { event: "kopje.media.transform_failed", detail: "output is malformed" },
+    ]);
+    errors.mockRestore();
     const [media] = await sql<{ id: string }>(h.store, "SELECT id FROM media_attachments");
     expect(await stored(await keysOf(h, (media as { id: string }).id))).toEqual([]);
   });
