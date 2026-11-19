@@ -241,33 +241,50 @@ function pngFacts(bytes: Uint8Array, orientation: Orientation = "refuse"): Facts
 const VP8X_EXIF = 0x08;
 const VP8X_XMP = 0x04;
 
-// The frame data of an ANMF chunk (its payload past the 16-byte frame header, [start, end)), as RFC 9649 section
-// 2.7.1.1 orders it: an optional ALPH then VP8, or VP8L alone. Any other chunk counts as metadata (frames are kept
-// whole, never rewritten); a chunk past the frame's end or another order is malformed.
-function webpFrameProblem(bytes: Uint8Array, start: number, end: number): "malformed" | "metadata" | null {
+// The frame data of an ANMF chunk (its payload past the 16-byte frame header, [start, end)): its image chunks, as RFC
+// 9649 section 2.7.1.1 orders them (an optional ALPH then VP8, or VP8L alone), each with its padding, and whether it
+// also holds other chunks, which the format allows after the image data and which count as metadata. MALFORMED for a
+// chunk past the frame's end or image chunks in another order. At most three ranges are kept, so the bookkeeping does
+// not grow with the frame's chunk count.
+function webpFrame(
+  bytes: Uint8Array,
+  start: number,
+  end: number,
+): { image: [number, number][]; other: boolean } | typeof MALFORMED {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const image: [number, number][] = [];
   const order: string[] = [];
+  let other = false;
   for (let i = start; i < end;) {
     if (i + 8 > end) {
-      return "malformed";
+      return MALFORMED;
     }
     const type = ascii(bytes, i, 4);
     const length = view.getUint32(i + 4, true);
     const next = i + 8 + length + (length % 2);
     if (next > end) {
-      return "malformed";
+      return MALFORMED;
     }
     if (type !== "ALPH" && type !== "VP8 " && type !== "VP8L") {
-      return "metadata";
+      other = true;
+    } else {
+      if (order.length === 2) {
+        return MALFORMED;
+      }
+      order.push(type);
+      image.push([i, next]);
     }
-    if (order.length === 2) {
-      return "malformed";
-    }
-    order.push(type);
     i = next;
   }
   const shape = order.join();
-  return shape === "VP8 " || shape === "VP8L" || shape === "ALPH,VP8 " ? null : "malformed";
+  return shape === "VP8 " || shape === "VP8L" || shape === "ALPH,VP8 " ? { image, other } : MALFORMED;
+}
+
+// What the frame data of an ANMF chunk carries (webpFrame): 'malformed', 'metadata' for a chunk beside its image
+// data, or null.
+function webpFrameProblem(bytes: Uint8Array, start: number, end: number): "malformed" | "metadata" | null {
+  const frame = webpFrame(bytes, start, end);
+  return frame === MALFORMED ? "malformed" : frame.other ? "metadata" : null;
 }
 
 // What an animated WebP's frames carry: the first problem webpFrameProblem finds in any ANMF, or null.
@@ -284,7 +301,7 @@ function webpFramesProblem(bytes: Uint8Array): "malformed" | "metadata" | null {
 
 // A WebP's facts, stripped in place: every chunk retainedMetadata does not keep (EXIF, XMP and unknown chunks) is
 // dropped, the VP8X flags for Exif and XMP are cleared and the RIFF size rewritten. An animation frame (ANMF) must lie
-// within the canvas and hold only its image data (webpFrameProblem). `orientation` as pngFacts takes it.
+// within the canvas, and keeps only its image data (webpFrame). `orientation` as pngFacts takes it.
 function webpFacts(bytes: Uint8Array, orientation: Orientation = "refuse"): Facts | Refused {
   const size = webpSize(bytes);
   if (size === null) {
@@ -316,10 +333,20 @@ function webpFacts(bytes: Uint8Array, orientation: Orientation = "refuse"): Fact
       if (x + w > size.width || y + h > size.height) {
         return "malformed";
       }
-      const problem = webpFrameProblem(bytes, start + 16, start + length);
-      if (problem !== null) {
-        return problem;
+      const frame = webpFrame(bytes, start + 16, start + length);
+      if (frame === MALFORMED) {
+        return "malformed";
       }
+      // The frame's header, then its image chunks only, its other chunks dropped and its size rewritten.
+      bytes.copyWithin(write, start - 8, start + 16);
+      let at = write + 24;
+      for (const [from, to] of frame.image) {
+        bytes.copyWithin(at, from, to);
+        at += to - from;
+      }
+      new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).setUint32(write + 4, at - write - 8, true);
+      write = at;
+      return undefined;
     }
     if (type === "EXIF" && orientation === "refuse" && orientationRefused(bytes.subarray(start, start + length))) {
       return "orientation";

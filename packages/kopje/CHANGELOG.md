@@ -43,6 +43,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   pixels is served at full size, turned. Kopje asked Images for a box from the unturned size, and Images turns the
   image before it resizes, so a 4,000 × 1,000 image came out at 240 × 960. The box is now a square that bounds the
   long edge whichever way the image turns, for uploads and for link card images.
+- An animated WebP whose frame holds a chunk beside its image data (EXIF, XMP or an unknown chunk, which the format
+  allows there) is stored without it: the strip of Images' output and of cached remote images drops it and rewrites the
+  frame's size, where an upload answered 500 and a remote image was not cached.
 - PNG colour signalling is kept: an image's `cICP`, `mDCV` and `cLLI` chunks (a colour space such as Display P3, and HDR
   levels), at their specified lengths of 4, 24 and 8 bytes, are no longer counted as metadata, in uploads and in cached
   remote images; one of another length is dropped.

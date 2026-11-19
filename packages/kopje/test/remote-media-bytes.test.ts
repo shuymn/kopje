@@ -687,21 +687,28 @@ describe("verifyRemoteImage: AVIF allowlists", () => {
 });
 
 describe("verifyRemoteImage: WebP frames", () => {
-  it("refuses metadata or another chunk inside a later frame, and frame chunks out of order", async () => {
+  it("drops metadata or another chunk inside a later frame, and refuses frame chunks out of order", async () => {
     const first = await encodeWebp(16, 12);
     const second = await encodeWebp(16, 12, { fill: "flat" });
     const size = { width: 16, height: 12 };
-    expect(refusal(animatedWebp([first, second], size))).toBe("accepted");
+    const plain = animatedWebp([first, second], size);
+    expect(refusal(plain)).toBe("accepted");
     for (const [name, extra] of [
       ["EXIF", webpChunk("EXIF", exifOrientation(1).subarray(6))],
       ["XMP", webpChunk("XMP ", text("<x:xmpmeta/>"))],
       ["unknown", webpChunk("ABCD", new Uint8Array(3))],
+      // One byte and its padding, the frame's last chunk.
+      ["JUNK", webpChunk("JUNK", new Uint8Array(1))],
     ] as const) {
       const file = animatedWebp([first, second], size, {
         frameChunks: (chunks, i) => (i === 1 ? [...chunks, extra] : chunks),
       });
       expect(remoteImageMetadata(file, "image/webp"), name).toBe("segment");
-      expect(refusal(file), name).toBe("metadata");
+      const verified = verifyRemoteImage(file.slice(), ["image/webp"]);
+      expect(verified.ok && verified.bytes, name).toEqual(plain);
+      const stripped = stripImageOutput(file, "image/webp");
+      expect(stripped, name).toEqual(plain);
+      expect(stripped?.buffer, name).toBe(file.buffer);
     }
     // The first frame has ALPH then VP8; reversed in the second frame.
     const reversed = animatedWebp([first, first], size, {

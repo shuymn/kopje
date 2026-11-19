@@ -7,6 +7,7 @@ import { sweepMedia, THUMBNAIL_MUST_BE_BLANK, UPLOAD_SAVE_RESERVE_MS } from "../
 import { accountMonthlyTransforms, readConfig } from "../src/platform/config";
 import { retainedMetadata } from "../src/platform/image-bytes";
 import { RGBA_CALL_MS, RGBA_MIN_CALL_MS } from "../src/platform/images";
+import { remoteImageMetadata } from "../src/platform/remote-media-bytes";
 import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
 import { bearer, json, login, settle, sql } from "./api-helpers";
@@ -39,7 +40,7 @@ import {
   upload,
   uploaded,
 } from "./media-helpers";
-import { exifOrientation } from "./remote-media-fixtures";
+import { animatedWebp, exifOrientation, webpChunk } from "./remote-media-fixtures";
 import {
   community,
   getJson,
@@ -51,6 +52,7 @@ import {
   remoteFollows,
   type Status,
 } from "./status-helpers";
+import { encodeWebp } from "./webp-fixtures";
 
 const HOUR = 60 * 60 * 1000;
 
@@ -235,6 +237,25 @@ describe("POST /api/v2/media", () => {
     expect(await response.json()).toEqual({ error: "Error processing uploaded media" });
     const [media] = await sql<{ id: string }>(h.store, "SELECT id FROM media_attachments");
     expect(await stored(await keysOf(h, (media as { id: string }).id))).toEqual([]);
+  });
+
+  it("drops another chunk inside an animated WebP output's frame, and serves the animation (MEDIA-3)", async () => {
+    const h = await users();
+    const first = await encodeWebp(16, 12);
+    const second = await encodeWebp(16, 12, { fill: "flat" });
+    // A one-byte JUNK chunk after the second frame's image data, which the format allows there.
+    const output = animatedWebp(
+      [first, second],
+      { width: 16, height: 12 },
+      {
+        frameChunks: (chunks, i) => (i === 1 ? [...chunks, webpChunk("JUNK", new Uint8Array(1))] : chunks),
+      },
+    );
+    h.codec.encodeResponder = (_options, index) => (index === 0 ? output : null);
+    const media = await uploaded(h, h.users.alice, mediaForm(bytes(GIF), {}, "a.gif", "image/gif"));
+    const served = new Uint8Array(await (await h.request(pathOf(media.url))).arrayBuffer());
+    expect(served).toEqual(animatedWebp([first, second], { width: 16, height: 12 }));
+    expect(remoteImageMetadata(served, "image/webp")).toBeNull();
   });
 
   // Production Images keeps a PNG's eXIf chunk in its PNG output (platform/images.ts), as den did with every macOS
