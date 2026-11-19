@@ -28,9 +28,9 @@ upgrades. Upgrading is recommended.
 - Store schema: adds 27 migrations (0093 through 0119), applied on the first request after the deploy. Until they are
   applied the Store refuses every request, reads and sign-ins included, and the inbox spools; it stays readonly until
   they are verified ([docs/upgrade.md](docs/upgrade.md), "What the Store serves in each state"). A rollback to an
-  earlier version needs the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md). On the
-  representative store defined in `test/bench/migration-cost.ts` they took <bench> together in three runs of the
-  migration bench workflow on a GitHub-hosted runner, in workerd's local Durable Object SQLite, including the
+  earlier version needs the point-in-time restore described in [docs/upgrade.md](docs/upgrade.md). On the representative
+  store defined in `test/bench/migration-cost.ts` they took 17,693–18,319 ms (median 17,829 ms) together in three runs
+  of the migration bench workflow on a GitHub-hosted runner, in workerd's local Durable Object SQLite, including the
   Store-wide foreign-key check that the tables they create require.
 - `kopje-admin`: with 0.5.2 or an earlier version every call answers 403 "this service token is not the admin CLI
   token", so the `kopje-admin health` check before merging ([docs/upgrade.md](docs/upgrade.md)) cannot run. Run it
