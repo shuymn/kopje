@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { Db } from "../src/db/sql";
 import { pruneCollectionItems } from "../src/domain/collections";
-import { expandPending, MAX_BACKLOG, MAX_LANE_BACKLOG, retryDeliveries } from "../src/domain/deliveries";
+import { type Claim, expandPending, MAX_BACKLOG, MAX_LANE_BACKLOG, retryDeliveries } from "../src/domain/deliveries";
 import { purgeBatch } from "../src/domain/inbox";
 import { SYNC_LEASE_MS } from "../src/domain/remote-collections";
 import { MAX_REMOTE_ITEMS } from "../src/domain/remote-featured-collections";
@@ -736,10 +736,12 @@ const STATUS = { delivered: 202, refused: 403, failed: 503 } as const;
 
 type Head = { id: number; state: string; due: number; inbox: string; retracts: number; body: string };
 
-// A delivery round under way, its POSTs recorded and each held until the step that answers it; token: its lease.
+// A delivery round under way, its POSTs recorded and each held until the step that answers it; token: its lease;
+// claims: the delivery ids each of its claims returned (claimDeliveries: those it leased to send).
 type Flight = {
   head: Head;
   token: string;
+  claims: string[][];
   sent: { url: string; body: Record<string, unknown> }[];
   posted: Deferred;
   answer: (outcome: Outcome) => void;
@@ -781,6 +783,23 @@ function fly(w: World, head: Head): Flight {
   let answer!: (outcome: Outcome) => void;
   const outcome = new Promise<Outcome>((resolve) => (answer = resolve));
   const prefix = `replay-${++leases}`;
+  const claims: Flight["claims"] = [];
+  const stub = w.t.store as unknown as Record<string, (...args: unknown[]) => unknown>;
+  const store = new Proxy(w.t.store, {
+    get(_target, property) {
+      if (typeof property !== "string") {
+        return undefined;
+      }
+      if (property === "claimDeliveries") {
+        return async (...args: unknown[]) => {
+          const claim = (await stub.claimDeliveries!(...args)) as Claim;
+          claims.push(claim.deliveries.map((d) => d.id));
+          return claim;
+        };
+      }
+      return (...args: unknown[]) => stub[property]!(...args);
+    },
+  });
   const sent: Flight["sent"] = [];
   const posted = deferred();
   const fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -798,13 +817,13 @@ function fly(w: World, head: Head): Flight {
   const done = deliveryRound(
     w.t.env,
     deliveryDeps(
-      () => w.t.store,
+      () => store,
       fetch,
       () => w.clock.now,
       prefix,
     ),
   );
-  const flight: Flight = { head, token: `${prefix}-1`, sent, posted, answer, done };
+  const flight: Flight = { head, token: `${prefix}-1`, claims, sent, posted, answer, done };
   w.flights.push(flight);
   return flight;
 }
@@ -836,6 +855,13 @@ function expectSent(w: World, flight: Flight, head: Head, expected: Activity): v
       .map((s) => asRecorded(w, { ...envelope, activity: s.body }, [s.url], head.retracts)),
     "the lane's head, as sent",
   ).toEqual([want]);
+}
+
+// A head the send-time check refuses (a suspended L's ordinary activity) is dropped by the round's claim, which never
+// leases it: absent from the delivery ids the claim returned, not leased and then dropped at its confirmation.
+function expectRefusedAtClaim(flight: Flight, head: Head): void {
+  expect(flight.claims.length, "the round's one claim").toBe(1);
+  expect(flight.claims[0], "the claim's deliveries, without the refused head").not.toContain(String(head.id));
 }
 
 // KLeaseHead: a round claims the head and holds its POST in flight until the step that answers it.
@@ -873,8 +899,9 @@ async function supersededBy(w: World, head: Head, want: Omit<Activity, "reason">
 // KReclaim: the held POST's lease runs out, and a delivery round at its expiry (claimDeliveries, after LEASE_MS)
 // reclaims the head: under a new lease, its POST to R's server in flight again (the head leased, never waiting), or
 // dropped, the round sending nothing (its POSTs answered before it is awaited, so one it makes fails the step at once):
-// "superseded", as supersededBy states; "dropped", a suspended L's ordinary activity refused at the reclaim, its delivery
-// deleted, not given up. The old POST is then answered 503, too late: its completion is stale and changes nothing.
+// "superseded", as supersededBy states; "dropped", a suspended L's ordinary activity refused by the reclaim's claim
+// (expectRefusedAtClaim), its delivery deleted, not given up. The old POST is then answered 503, too late: its
+// completion is stale and changes nothing.
 async function reclaim(w: World, expected: Activity, value: string | undefined): Promise<void> {
   const head = await laneHead(w, expected);
   const held = w.flight;
@@ -893,6 +920,7 @@ async function reclaim(w: World, expected: Activity, value: string | undefined):
     if (value === "superseded") {
       await supersededBy(w, head, want);
     } else {
+      expectRefusedAtClaim(flight, head);
       expect(await deliveryOf(w, head), "a dropped activity's delivery is gone").toEqual([]);
     }
   } else {
@@ -909,9 +937,10 @@ async function reclaim(w: World, expected: Activity, value: string | undefined):
 
 // A step that answers the head's POST: the one KLeaseHead or KReclaim holds, or that of a round claiming the waiting
 // head. Checks that the head before the step is the activity the step names and that the round POSTs exactly it there,
-// an Accept with its result (expectSent). Then, by the step's input: "dropped", that nothing is sent and the head's
-// delivery is gone (deleted, not given up); "superseded", supersededBy; else, after a 202, that the round delivered it
-// and its delivery is gone, and after a failed or lost POST, that the head waits again.
+// an Accept with its result (expectSent). Then, by the step's input: "dropped", that the round's claim refused the
+// waiting head (expectRefusedAtClaim), nothing is sent and the head's delivery is gone (deleted, not given up);
+// "superseded", supersededBy; else, after a 202, that the round delivered it and its delivery is gone, and after a
+// failed or lost POST, that the head waits again.
 async function deliver(w: World, outcome: Outcome, expected: Activity, value: string | undefined) {
   const head = await laneHead(w, expected);
   const flight = w.flight ?? fly(w, head);
@@ -920,6 +949,7 @@ async function deliver(w: World, outcome: Outcome, expected: Activity, value: st
   flight.answer(outcome);
   const { settled } = await flight.done;
   if (value === "dropped") {
+    expectRefusedAtClaim(flight, head);
     expect(
       flight.sent.filter((s) => !offR(w, s.body).includes(s.url)).map((s) => s.url),
       "a dropped activity is not sent",
