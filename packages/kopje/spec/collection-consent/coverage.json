@@ -1,6 +1,6 @@
 {
   "$comment": "Kopje's sources spec/collection-consent/ describes, and their blobs when it was last confirmed to (scripts/collection-consent-coverage.mjs). A null blob is a file the specification describes that Kopje does not have yet. test-node/collection-consent-coverage.test.ts fails once a blob differs.",
-  "confirmed": "52432501006e454f2ed5ff9baebb7951c84e3a70",
+  "confirmed": "1110eeacc4bac513c1ae415c41cb628be9a66d62",
   "files": [
     {
       "path": "src/store.ts",
@@ -38,7 +38,7 @@
         "answerRequest"
       ],
       "spec": "CollectionConsentKopje.tla Served, Shown, AnswerClass, AddItem (K2, with the listing gate), ApplyRead (K14) and KeptByRow",
-      "blob": "31702f72db9459a6ebd9ce070c11cb6d5c43511d"
+      "blob": "5ac0137dd89a52114b457c9afbd7a4fde2ddf3a5"
     },
     {
       "path": "src/domain/remote-featured-collections.ts",
@@ -51,7 +51,7 @@
         "revokeFeatureAuthorization"
       ],
       "spec": "CollectionConsentKopje.tla AddItem (K2), RemoveItem (K3), UpdateCollection (K4), RemoveCollection (K5), OwnerGone (K6), Revoke (K7), ApplyRead (K14)",
-      "blob": "229bdf7b18b1f22d0ce76aa999eb014285e53e1a"
+      "blob": "6736ff2e1b4e9d8ed94e97da51c7b8cbce83983a"
     },
     {
       "path": "src/domain/remote-collections.ts",
@@ -87,7 +87,7 @@
       "path": "src/domain/deliveries.ts",
       "functions": ["enqueueActivity", "claimDeliveries", "confirmDelivery", "retryDeliveries"],
       "spec": "CollectionConsent.tla Record (RES-4's refusal at a full backlog) and Coalesced (no retraction answer recorded while one of the same authorization to the same inbox waits), the lane in id order, a corrective answer at its head leased for the POST (KLeaseHead, KDeliver, KDup, KGiveUp, KFail, and KReclaim, the sweep's reclaim under a new lease; Superseded: a leased answer that a later retraction answer of the same authorization to the same inbox superseded is dropped when its POST fails or its lease is reclaimed) and KRetry's admission re-check and place in the lane",
-      "blob": "c58933cf2a083d3a6e216d4147f0081b4e316be3"
+      "blob": "991cc26febaf1b698ededfa78b25fe91d7f7aab3"
     },
     {
       "path": "src/store-rpc.ts",
