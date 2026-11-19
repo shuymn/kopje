@@ -5779,17 +5779,20 @@ past the name bound are refused, and lists leave out stored names past it or not
 `test/tag-names.test.ts`); v2 search shows a malformed name decoded, identified by its stored bytes, at most 12,750
 bytes (a 1,024-byte key of U+FFFD, nine bytes each in the url).
 
-A collection's maximum is derived from its bounds. A local one's is 10,912 bytes (`LOCAL_COLLECTION_JSON_MAX`;
+A collection's maximum is derived from its bounds. A local one's is 12,166 bytes (`LOCAL_COLLECTION_JSON_MAX`;
 `test/collections.test.ts` ("derives a local collection's maximum from the bounds, and fits the answers of a full
-account")): its name and description at 40 and 100 characters JSON escapes to six bytes each, its language the longest
-supported, its tag at the tag-name bound with the URL encoding each byte in three, 25 accepted items (its 25 retired
-ones are not shown), its uri under its owner's actor id at `ACTOR_URI_LIMIT` as JSON (2,048 bytes and the id's own 31: a
-longer one gives no id, as the account presenter shows none) and its url on an instance domain of 253 octets; the fill
-measures within 2 bytes of it (`local` and `discoverable` true). A remote one's, the larger, is `COLLECTION_JSON_MAX`,
-29,701 bytes (`test/collections.test.ts` ("derives COLLECTION_JSON_MAX from a remote collection's bounds")): its name
-and description at 256 and 2,048 characters at six bytes each, and its stored uri and url at 2,048 bytes of printable
-ASCII, each byte past the scheme at two, with the same language, tag and 25 shown items; the fill measures within 1 byte
-of it (`discoverable` true). Its `CollectionWithAccounts` adds at most 26 accounts (the owner and the members) at the
+account")): its name and description at their CHECKs' widest decoding, as a restored row may hold them (39 and 99
+characters JSON escapes to six bytes each, then a lead byte and continuation bytes up to the CHECK's 160 and 400 bytes,
+which it counts as one character and the read decodes to a U+FFFD each, three JSON bytes: 597 and 1,497 bytes, where 40
+and 100 well-formed characters give 240 and 600), its language the longest supported, its tag at the tag-name bound with
+the URL encoding each byte in three, 25 accepted items (its 25 retired ones are not shown), its uri under its owner's
+actor id at `ACTOR_URI_LIMIT` as JSON (2,048 bytes and the id's own 31: a longer one gives no id, as the account
+presenter shows none) and its url on an instance domain of 253 octets; the fill measures within 2 bytes of it (`local`
+and `discoverable` true). A remote one's, the larger, is `COLLECTION_JSON_MAX`, 29,701 bytes (`test/collections.test.ts`
+("derives COLLECTION_JSON_MAX from a remote collection's bounds")): its name and description at 256 and 2,048 characters
+at six bytes each, and its stored uri and url at 2,048 bytes of printable ASCII, each byte past the scheme at two, with
+the same language, tag and 25 shown items; the fill measures within 1 byte of it (`discoverable` true). Its
+`CollectionWithAccounts` adds at most 26 accounts (the owner and the members) at the
 account occurrence's conservative JSON, within `ANSWER_BYTES`, and the presenter admits accounts within what the
 collection leaves of it. An account's list holds at most its 50 stored collections (10 made through the API, 10 a remote
 account's read, each within `COLLECTION_JSON_MAX`). A collection notification (`added_to_collection`,

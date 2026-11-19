@@ -105,12 +105,14 @@ export const RETIRED_ROWS_PER_ROUND = 500;
 const COLLECTION_LIMIT_MESSAGE = `Collections are too many, no more than ${COLLECTION_LIMIT} are allowed`;
 
 // The most JSON a Collection presents (RES-3), each derived from the bounds and measured by test/collections.test.ts: a
-// local one's name and description at their bounds in characters JSON escapes to six bytes, its tag at the tag-name
-// bound (its URL encoding each byte in three), 25 accepted items, its url on an instance domain of 253 octets and its
-// uri under its owner's actor id at ACTOR_URI_LIMIT as JSON (localCollectionUri); a remote one's longer name and
-// description likewise, and its stored uri and url at their bounds of printable ASCII, which JSON escapes to two bytes
-// at most. COLLECTION_JSON_MAX is the larger, a remote one's.
-export const LOCAL_COLLECTION_JSON_MAX = 10_912;
+// local one's name and description at their CHECKs' widest decoding, as a restored row may hold them (all characters
+// but one JSON escapes to six bytes, then a lead byte and continuation bytes up to the CHECK's four bytes a character,
+// which it counts as one character and the read decodes to a U+FFFD each, three bytes: 15 bytes a character of the
+// bound, less 3), its tag at the tag-name bound (its URL encoding each byte in three), 25 accepted items, its url on an
+// instance domain of 253 octets and its uri under its owner's actor id at ACTOR_URI_LIMIT as JSON (localCollectionUri);
+// a remote one's longer name and description at six bytes a character, and its stored uri and url at their bounds of
+// printable ASCII, which JSON escapes to two bytes at most. COLLECTION_JSON_MAX is the larger, a remote one's.
+export const LOCAL_COLLECTION_JSON_MAX = 12_166;
 export const COLLECTION_JSON_MAX = 29_701;
 
 // REST::CollectionWithAccountsSerializer.
