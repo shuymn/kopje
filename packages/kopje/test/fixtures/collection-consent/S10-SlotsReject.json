@@ -1,0 +1,126 @@
+{
+  "name": "S10-SlotsReject",
+  "scenario": "S10",
+  "goal": "SlotsReject",
+  "replayedBy": "test/collection-consent-replay.test.ts::S10-SlotsReject",
+  "steps": [
+    {
+      "action": "Init",
+      "input": {},
+      "environment": {
+        "consent": true,
+        "slotsFull": false,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "stored",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "Env",
+      "input": {
+        "value": "slots"
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": true,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "stored",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "RAdd",
+      "input": {
+        "value": "r1"
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": true,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "stored",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
+        "response": null,
+        "recorded": [],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    },
+    {
+      "action": "KRecv",
+      "input": {
+        "envelope": {
+          "type": "FR",
+          "request": "r1"
+        }
+      },
+      "environment": {
+        "consent": true,
+        "slotsFull": true,
+        "held": "lt10",
+        "backlogFull": false,
+        "retractionCapFull": false
+      },
+      "observation": {
+        "row": null,
+        "collection": "stored",
+        "authorizationGet": {},
+        "publicShows": false,
+        "memberDetail": false,
+        "inCollections": false,
+        "notified": false,
+        "response": 202,
+        "recorded": [
+          {
+            "type": "Reject",
+            "object": "r1",
+            "result": null,
+            "to": "R",
+            "class": "ordinary",
+            "outcome": "queued"
+          }
+        ],
+        "mayAlsoRecord": [],
+        "readRequested": false,
+        "unspecified": []
+      }
+    }
+  ]
+}

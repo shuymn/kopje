@@ -199,6 +199,17 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   column of `accounts` and its two triggers, reading no row; the upgrade checks no reference. `wrangler.jsonc`:
   unchanged. This adds a Store migration, so the release is at least a minor version, and rolling back past it needs a
   point-in-time restore.
+- Remote servers can feature local accounts, which accept or refuse by their discoverability and follow settings; an
+  accepted membership lasts until the account revokes it or blocks the owner, or the collection or either account is
+  removed, and others see it while the owner lists it ([docs/mastodon-deviations.md](docs/mastodon-deviations.md),
+  "Collections"). Kopje now keeps up to 50 of a remote account's collections, where it kept 10: a read no longer
+  deletes one that holds a local member, and a feature request may name a new one. Migration
+  `0118_feature_grant_guard`: two triggers, on `collection_items` and `collections`, that refuse a delete of a local
+  member's accepted membership without the evidence that ends it, reading and rewriting no row. Migration
+  `0119_answer_retractions`: an index of the outbound activities that are unsuperseded retractions, so that the
+  lookup of a membership's latest answer reads one row, rewriting no row (building it reads every outbound activity
+  once). The upgrades check no reference. `wrangler.jsonc`: unchanged. This adds Store migrations, so the release is at
+  least a minor version, and rolling back past them needs a point-in-time restore.
 
 ### Changed
 

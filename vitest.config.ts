@@ -12,6 +12,7 @@ export default defineConfig({
       "packages/kopje/vitest.streaming.config.ts",
       "packages/kopje/vitest.main-runtime.config.ts",
       "packages/kopje/vitest.node.config.ts",
+      "packages/kopje/vitest.spec.config.ts",
     ],
     // `--coverage`, run by hand to find code no test reaches, writes a summary and coverage/index.html. CI does not
     // collect it. V8 coverage reaches workerd through @cloudflare/vitest-plugin's inspector session and counts blocks

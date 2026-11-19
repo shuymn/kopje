@@ -820,6 +820,41 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
     expect(r.legacy.pending.map((m) => (m.body as LegacyInboxMessage).activity)).toEqual([add]);
   });
 
+  // #1589's D24 (code review r2): the drain reads a FeatureRequest that names no actor, as Mastodon v4.7.5 sends it, as
+  // the inbox does: its actor is the one its signature's key id names, which must own the key. Fails if the drain
+  // reads it without the signature's key id (it would set the request aside as incomplete), or hands on one signed by
+  // a key whose owner is another actor.
+  it("hands on Mastodon's actor-less FeatureRequest as its signer's, and keeps one whose key another actor owns", async () => {
+    const store = await importedStore();
+    const r = await rollback(store);
+    const path = "/ap/users/alice/inbox";
+    const request = (actor: string) => ({
+      "@context": [ctx, { FeatureRequest: "https://w3id.org/fep/7aa9#FeatureRequest" }],
+      id: `${actor}#feature_requests/1`,
+      type: "FeatureRequest",
+      object: alice,
+      instrument: `${actor}/collections/1`,
+    });
+    // A key whose id is a document of its own (GoToSocial's form): the actor its id names is not its owner.
+    const gts = await mastodonActor(r.web, "gts");
+    const keyId = `${gts.uri}/main-key`;
+    const key = { id: keyId, type: "CryptographicKey", owner: gts.uri, publicKeyPem: gts.pem };
+    r.web.serve(gts.uri, { ...gts.document, publicKey: key });
+    r.web.serve(keyId, { "@context": "https://w3id.org/security/v1", ...key });
+    await r.post(path, await signedInit(gts, path, request(keyId), { keyId }));
+    await r.spool(path, request(r.carol.uri));
+    await r.consume();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect((await r.drain()).body).toMatchObject({ sent: 1, unverified: 1 });
+      expect(warn).toHaveBeenCalledWith({ event: "kopje.cutover.drain.unverified", reason: "not-key-owner" });
+    } finally {
+      warn.mockRestore();
+    }
+    r.ackLegacy();
+    expect(r.handed.map((m) => [m.signerId, m.activity])).toEqual([[r.carol.uri, request(r.carol.uri)]]);
+  });
+
   // #1718: a body or a key document holding an unpaired surrogate is JSON that does not parse, as on the inbox.
   it("keeps an activity holding an unpaired surrogate or bytes not UTF-8 as invalid JSON", async () => {
     const store = await importedStore();

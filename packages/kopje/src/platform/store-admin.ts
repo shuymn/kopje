@@ -160,6 +160,9 @@ const RECEIPT = "handoff:";
 // journal is still in that state.
 const FULL_STOP = "cutover_full_stop";
 const MAX_DRAIN_SKIP = 100;
+// In kopje_state for the length of one reset step's deletes, and never committed: the mark the grant guard admits a
+// reset's deletes by (migration 0118_feature_grant_guard names it).
+const IMPORT_RESET_STEP = "import_reset_step";
 
 export type JournalCounts = {
   pending: number;
@@ -1090,11 +1093,19 @@ export class StoreAdmin {
         return "unlinked";
       }
     }
-    for (const spec of [...record.header.tables].toReversed()) {
-      if (deleteRows(this.#sql, spec, this.#resetBatchRows) > 0) {
-        this.#touch(record);
-        return "more";
+    // The grant guard (migration 0118_feature_grant_guard) admits these deletes of imported rows, an accepted local
+    // member's row in a remote collection among them, by a mark this transaction writes before them and removes after
+    // them: no other transaction ever reads it.
+    this.#sql.exec("INSERT INTO kopje_state (name, value) VALUES (?, ?)", IMPORT_RESET_STEP, id);
+    try {
+      for (const spec of [...record.header.tables].toReversed()) {
+        if (deleteRows(this.#sql, spec, this.#resetBatchRows) > 0) {
+          this.#touch(record);
+          return "more";
+        }
       }
+    } finally {
+      this.#sql.exec("DELETE FROM kopje_state WHERE name = ?", IMPORT_RESET_STEP);
     }
     replaceBootstrapRows(this.#sql, record.bootstrap ?? []);
     writeFlag(this.#sql, "import", null);

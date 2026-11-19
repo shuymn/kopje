@@ -100,6 +100,59 @@ describe("reset steps are bounded", () => {
   });
 });
 
+// threat-model.md ID-9: migration 0118_feature_grant_guard refuses the delete of a local member's accepted row in a
+// remote collection without evidence, and the reset of an unpublished import is that evidence for the rows it staged.
+// Fails if a reset step deletes such a row without its mark (each call would then fail at the same row), or if the
+// mark outlives its step.
+describe("a reset of an imported grant", () => {
+  it("deletes a local member's accepted row in a remote collection across repeated calls, leaving no mark", async () => {
+    const { store, id: importId } = await importing();
+    await runInDurableObject(store, async (_instance, state) => {
+      const sql = state.storage.sql;
+      const now = "2026-10-12T00:00:00.000Z";
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?, 'https://kopje.test/u/a', 'a', NULL)",
+        id(1),
+      );
+      sql.exec(
+        "INSERT INTO accounts (id, uri, username, domain) VALUES (?, 'https://r.test/u/o', 'o', 'r.test')",
+        id(2),
+      );
+      sql.exec(
+        `INSERT INTO collections (id, account_id, local, name, sensitive, discoverable, uri, created_at, updated_at)
+				VALUES (?, ?, 0, 'c', 0, 1, 'https://r.test/u/o/collections/1', ?3, ?3)`,
+        id(3),
+        id(2),
+        now,
+      );
+      sql.exec(
+        `INSERT INTO collection_items (id, collection_id, account_id, state, position, created_at, updated_at)
+				VALUES (?, ?, ?, 1, 1, ?4, ?4)`,
+        id(4),
+        id(3),
+        id(1),
+        now,
+      );
+      const admin = new StoreAdmin(state, testKernel(state, MIGRATIONS), {
+        source: { build: BUILD, version: "t" },
+        log: () => {},
+        resetBatchRows: 1,
+      });
+      // One step a call, as calls that each ran out of time would leave it.
+      let calls = 0;
+      for (let done = false; !done; calls++) {
+        const step = await admin.importReset(BUILD, ACCESS, importId, false, 1);
+        expect(step, `call ${calls}`).toMatchObject({ ok: true });
+        done = step.ok && step.done;
+        expect(sql.exec("SELECT count(*) AS n FROM kopje_state WHERE name = 'import_reset_step'").one().n).toBe(0);
+      }
+      expect(calls).toBeGreaterThan(4);
+      expect(sql.exec("SELECT count(*) AS n FROM collection_items").one().n).toBe(0);
+      expect(sql.exec("SELECT count(*) AS n FROM collections").one().n).toBe(0);
+    });
+  });
+});
+
 // RES-6: unlinking rewrites each row whole, so a reset call that unlinks stops after the row that brings its rewritten
 // bytes to the step budget (1 MiB), however few rows that is.
 describe("a reset call that unlinks large rows", () => {

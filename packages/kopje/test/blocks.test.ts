@@ -448,8 +448,11 @@ describe("blocks", () => {
     });
     // The two statements' 14 rows (with what they return), the target's own row (whether its items were announced),
     // and the two Removes' with their jobs' 21, each Remove reading its collection with its owner, its members, an id
-    // and its addressed accounts, and no follower (the jobs read them, collection-jobs.ts). None is carol's.
-    expect(read).toBe(36);
+    // and its addressed accounts, and no follower (the jobs read them, collection-jobs.ts); and the grant guard's 3 at
+    // the delete of bob's accepted item (migration 0118: the row read again, a trigger leaving no one-pass delete, then
+    // its member probed by primary key, a local account, and its collection, a local one, which ends the check). None
+    // is carol's.
+    expect(read).toBe(39);
   });
 
   // `count` remote followers of `accountId`, each on a host of its own with its own inbox, ids from `base`.

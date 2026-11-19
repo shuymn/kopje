@@ -87,7 +87,7 @@ export async function processInbox(
   const store = () => deps.store(env);
   const recipient = inboxRecipient(new URL(request.url).pathname);
   const headers = new Headers(request.headers);
-  const parsed = await parseActivity(request.body);
+  const parsed = await parseActivity(request.body, {}, signatureKeyId(headers));
   const actor = parsed.actor ?? null;
   const gate = await readInboxGate(store, build, {
     username: recipient,

@@ -21,6 +21,8 @@ import {
   type PresentInput,
   routeAccountId,
 } from "./accounts";
+import { recordOutbound, signedAs } from "./activities";
+import { accountKey, type StoredKey } from "./actors";
 import { ANSWER_BYTES, jsonBytes } from "./answer-budget";
 import {
   availableSql,
@@ -32,6 +34,8 @@ import {
 } from "./audience";
 import { COLLECTION_LIMIT, optionalUserReadOperation, userReadOperation, userWriteOperation } from "./auth";
 import {
+  featureAuthorizationUri,
+  featureDeleteActivity,
   recordCollectionAdd,
   recordCollectionRemove,
   recordCollectionUpdate,
@@ -52,6 +56,7 @@ import {
   presentItem,
   shownItems,
 } from "./collection-presenter";
+import { requestCollectionSync } from "./collection-requests";
 import { allocateLocalId, insertWithFreshId, requestedId, storedIdOf } from "./ids";
 import { notify } from "./notifications";
 import { writeOperation } from "./operation";
@@ -502,8 +507,9 @@ export const createCollection = userWriteOperation<
 });
 
 // CreateCollectionService and AddAccountToCollectionService notify a local member of its new item
-// (LocalNotificationWorker, added_to_collection); notify writes it for a local recipient other than the owner (R15).
-function notifyAdded(db: Db, owner: string, member: string, item: string, now: number): void {
+// (LocalNotificationWorker, added_to_collection), and so does a remote owner's FeatureRequest the member accepts
+// (inbound-feature-requests.ts); notify writes it for a local recipient other than the owner (R15).
+export function notifyAdded(db: Db, owner: string, member: string, item: string, now: number): void {
   notify(db, {
     recipientId: member,
     type: "added_to_collection",
@@ -771,12 +777,64 @@ export const removeCollectionItem = userWriteOperation<
   return "ok";
 });
 
+// The member's Delete of its authorization for a remote collection's item it has not revoked yet (#1589's D24,
+// RevokeCollectionItemService), as the Worker LD-signs it with the member's key, or null for any other item.
+function remoteRevocation(
+  db: Db,
+  found: NonNullable<ReturnType<typeof collectionItem>>,
+  member: string,
+): { activity: Record<string, unknown>; keyId: string } | null {
+  if (found.row.local !== 0 || found.row.uri === null || found.item.state === COLLECTION_ITEM_STATES.revoked) {
+    return null;
+  }
+  const uri = db.first<{ uri: string }>(
+    `SELECT uri FROM accounts INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE id = ? AND domain IS NULL`,
+    member,
+  )?.uri;
+  return uri === undefined
+    ? null
+    : {
+        activity: featureDeleteActivity(uri, featureAuthorizationUri(uri, found.item.id), found.row.uri),
+        keyId: `${uri}#main-key`,
+      };
+}
+
+// What the Worker signs before a revoke is recorded: the member's Delete of its authorization in a remote collection
+// (remoteRevocation) with the member's key, or null; 'unsignable' when the member has no key. Signing once, before
+// recording, keeps the Store free of keys (DATA-1) and gives every destination one body.
+export type ItemRevokePreparation =
+  | { refused: null; sign: { activity: Record<string, unknown>; keyId: string; key: StoredKey } | null }
+  | { refused: "not_found" | "forbidden" | "unsignable" };
+
+// The first step of a revoke, a read (revokeCollectionItem records it).
+export const prepareItemRevoke = userReadOperation<{ collection: string; item: string }, ItemRevokePreparation>(
+  (db, input, { accountId: viewer }) => {
+    const found = collectionItem(db, input.collection, input.item);
+    if (found === null) {
+      return { refused: "not_found" };
+    }
+    if (found.item.account_id !== viewer) {
+      return { refused: "forbidden" };
+    }
+    const signable = remoteRevocation(db, found, viewer);
+    if (signable === null) {
+      return { refused: null, sign: null };
+    }
+    const key = accountKey(db, viewer);
+    return key === null ? { refused: "unsignable" } : { refused: null, sign: { ...signable, key } };
+  },
+);
+
 // POST /api/v1/collections/:collection_id/items/:id/revoke (RevokeCollectionItemService): the item's own account
 // revokes it, in any state (CollectionItemPolicy#revoke?); the row stays, revoked, for RETIRED_ITEM_TTL_MS. In a local
-// collection its owner's Remove of the item is recorded, once.
+// collection its owner's Remove of the item is recorded, once. In a remote collection (#1589's D24) the member's
+// Delete of its authorization, `signed` by the Worker from prepareItemRevoke and checked to be that activity
+// (signedAs), is recorded once, immutable, to the owner's personal inbox and the member's followers (Mastodon: the
+// owner's inbox and the collection's reach; Kopje has no reach of a remote collection); a revoke needing one without
+// it is 'unsigned' and changes nothing.
 export const revokeCollectionItem = userWriteOperation<
-  { collection: string; item: string; now: number },
-  "ok" | "not_found" | "forbidden"
+  { collection: string; item: string; now: number; signed?: Record<string, unknown> | null },
+  "ok" | "not_found" | "forbidden" | "unsigned"
 >((db, input, { accountId: viewer }) => {
   const found = collectionItem(db, input.collection, input.item);
   if (found === null) {
@@ -784,6 +842,11 @@ export const revokeCollectionItem = userWriteOperation<
   }
   if (found.item.account_id !== viewer) {
     return "forbidden";
+  }
+  const signable = remoteRevocation(db, found, viewer);
+  const signed = input.signed ?? null;
+  if (signable !== null && (signed === null || !signedAs(signed, signable.activity, signable.keyId))) {
+    return "unsigned";
   }
   const revoked = db.run(
     `UPDATE collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX}
@@ -794,7 +857,15 @@ export const revokeCollectionItem = userWriteOperation<
     found.item.id,
     COLLECTION_ITEM_STATES.revoked,
   );
-  if (revoked > 0) {
+  if (revoked > 0 && signable !== null && signed !== null) {
+    recordOutbound(
+      db,
+      viewer,
+      { activity: signed, audience: { followers: true, accounts: [found.row.account_id] }, immutable: true },
+      input.now,
+      { personalInbox: true },
+    );
+  } else if (revoked > 0) {
     recordItemRemove(db, { id: found.item.id, collection: found.row.id, account: viewer }, input.now);
   }
   return "ok";
@@ -821,6 +892,40 @@ export function severCollections(db: Db, blocker: string, target: string, now: n
     COLLECTION_ITEM_STATES.revoked,
     new Date(now).toISOString(),
   );
+  const remote =
+    db.first<{ remote: number }>(
+      `SELECT domain IS NOT NULL AS remote FROM accounts INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE id = ?`,
+      target,
+    )?.remote === 1;
+  // A local blocker's items in a remote target's collections (#1589's D24 and D25): the member's Delete of each
+  // authorization, as its revoke sends it but not LD-signed (no key is unwrapped in the Store, DATA-1): Mastodon
+  // applies a Delete of a feature authorization by its HTTP signer (delete.rb:6, :68-81), so it goes to the owner's
+  // personal inbox alone, never where it could be relayed, immutable as the revoke's is. At most one a collection
+  // (MAX_STORED_COLLECTIONS).
+  const severed = !remote
+    ? []
+    : db.all<{ id: string; collection: string; member: string; owner: string }>(
+        `SELECT i.id, c.uri AS collection, m.uri AS member, c.account_id AS owner
+		FROM (SELECT value AS id FROM json_each(?1)) r
+			CROSS JOIN collection_items i INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} ON i.id = r.id
+			CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = i.collection_id
+			CROSS JOIN accounts m INDEXED BY ${ACCOUNTS_ID_INDEX} ON m.id = i.account_id
+		WHERE c.local = 0 AND c.uri IS NOT NULL AND m.domain IS NULL`,
+        JSON.stringify(revoked.map((item) => item.id)),
+      );
+  for (const item of severed) {
+    recordOutbound(
+      db,
+      blocker,
+      {
+        activity: featureDeleteActivity(item.member, featureAuthorizationUri(item.member, item.id), item.collection),
+        audience: { followers: false, accounts: [item.owner] },
+        immutable: true,
+      },
+      now,
+      { audienceOnly: true, personalInbox: true },
+    );
+  }
   const removes: { owner: string; intent: string }[] = [];
   const stage = (item: { id: string; collection_id: string }, account: string) => {
     const staged = stageItemRemove(db, { id: item.id, collection: item.collection_id, account }, now);
@@ -831,11 +936,6 @@ export function severCollections(db: Db, blocker: string, target: string, now: n
   for (const item of revoked) {
     stage(item, blocker);
   }
-  const remote =
-    db.first<{ remote: number }>(
-      `SELECT domain IS NOT NULL AS remote FROM accounts INDEXED BY ${ACCOUNTS_ID_INDEX} WHERE id = ?`,
-      target,
-    )?.remote === 1;
   const deleted = db.all<{ id: string; collection_id: string; state: number; approval_uri: string | null }>(
     `DELETE FROM collection_items INDEXED BY collection_items_member
 		WHERE collection_id IN (SELECT id FROM collections INDEXED BY collections_account WHERE account_id = ?1)
@@ -863,7 +963,11 @@ const RETIRED_WINDOW = `SELECT id FROM collection_items INDEXED BY collection_it
 // (RETIRED_WINDOW), the pushes of their notifications (pending or leased: a leased push whose row is gone completes as
 // nothing), then the notifications left without one, then the items left without a notification. Each statement reads
 // only the window and takes what the round has left, so a round writes at most RETIRED_ROWS_PER_ROUND rows, and the
-// next one continues from the oldest left. `deleted`: the rows written.
+// next one continues from the oldest left. A local member's retired row in a remote collection also asks for a read of
+// the collection's owner (requestCollectionSync: one pending per owner), which deletes the collection if it no longer
+// lists it and no local member's row is left (#1589's D21, threat-model.md ID-9: remote-featured-collections.ts
+// deleteUnlisted keeps it while one is); such a row takes two writes (the round's budget counts the request), so it is
+// deleted only while two are left. `deleted`: the rows written.
 export const pruneCollectionItems = writeOperation<{ now: number }, { deleted: number }>((db, { now }) => {
   const budget = new RowBudget(db, RETIRED_ROWS_PER_ROUND);
   const cutoff = new Date(now - RETIRED_ITEM_TTL_MS).toISOString();
@@ -881,16 +985,33 @@ export const pruneCollectionItems = writeOperation<{ now: number }, { deleted: n
 				WHERE d.notification_id = n.id) LIMIT ?2`,
       each: "DELETE FROM notifications WHERE id = CAST(?1 AS INTEGER)",
     },
-    {
-      ids: `SELECT w.id FROM (${RETIRED_WINDOW}) w
-			WHERE NOT EXISTS (SELECT 1 FROM notifications n INDEXED BY notifications_collection_item
-				WHERE n.collection_item_id = w.id) LIMIT ?2`,
-      each: `DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id = ?1`,
-    },
   ];
   for (const write of writes) {
     if (budget.left() > 0) {
       writeEach(db, write, cutoff, budget.left());
+    }
+  }
+  const rows =
+    budget.left() === 0
+      ? []
+      : db.all<{ id: string; owner: string | null }>(
+          `SELECT w.id, CASE WHEN c.local = 0 AND m.id IS NOT NULL AND m.domain IS NULL THEN c.account_id END AS owner
+				FROM (${RETIRED_WINDOW}) w
+					CROSS JOIN collection_items i INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} ON i.id = w.id
+					CROSS JOIN collections c INDEXED BY ${COLLECTIONS_ID_INDEX} ON c.id = i.collection_id
+					LEFT JOIN accounts m INDEXED BY ${ACCOUNTS_ID_INDEX} ON m.id = i.account_id
+				WHERE NOT EXISTS (SELECT 1 FROM notifications n INDEXED BY notifications_collection_item
+					WHERE n.collection_item_id = w.id)`,
+          cutoff,
+          budget.left(),
+        );
+  for (const row of rows) {
+    if (budget.left() < (row.owner === null ? 1 : 2)) {
+      break;
+    }
+    db.run(`DELETE FROM collection_items INDEXED BY ${COLLECTION_ITEMS_ID_INDEX} WHERE id = ?`, row.id);
+    if (row.owner !== null) {
+      requestCollectionSync(db, row.owner, now);
     }
   }
   return { deleted: budget.spent() };

@@ -12,10 +12,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Decides which suites a change can affect, so a change that is all Kopje Markdown runs only the Node suite. A
-  # pull request is compared with its base. A push to main is compared with the commit of the last main run that
-  # passed, so what a failed or cancelled run did not check is checked by the next one; when there is no such run,
-  # or its commit cannot be fetched, everything runs.
+  # Decides which suites a change can affect, so a change that is all Kopje Markdown runs only the Node suite, and the
+  # TLA+ specification's checks run only for a change they read. A pull request is compared with its base. A push to
+  # main is compared with the commit of the last main run that passed, so what a failed or cancelled run did not check
+  # is checked by the next one; when there is no such run, or its commit cannot be fetched, everything runs.
   changes:
     timeout-minutes: 5
     runs-on: ubuntu-latest
@@ -25,6 +25,7 @@ jobs:
     outputs:
       kopje: ${{ steps.suites.outputs.kopje }}
       kopje_code: ${{ steps.suites.outputs.kopje_code }}
+      kopje_spec: ${{ steps.suites.outputs.kopje_spec }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,7 +50,7 @@ jobs:
             echo "compared with $passed, the last main run that passed"
             git diff --no-renames --name-only "$passed" HEAD | bash scripts/test-affected.sh suites | tee -a "$GITHUB_OUTPUT"
           else
-            printf 'kopje=true\nkopje_code=true\n' | tee -a "$GITHUB_OUTPUT"
+            printf 'kopje=true\nkopje_code=true\nkopje_spec=true\n' | tee -a "$GITHUB_OUTPUT"
           fi
 
   test:
@@ -85,6 +86,7 @@ jobs:
         env:
           KOPJE: ${{ needs.changes.outputs.kopje }}
           KOPJE_CODE: ${{ needs.changes.outputs.kopje_code }}
+          KOPJE_SPEC: ${{ needs.changes.outputs.kopje_spec }}
           SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
         run: bash scripts/test-affected.sh --shard "$SHARD"
 

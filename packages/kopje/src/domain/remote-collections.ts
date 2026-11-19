@@ -3,6 +3,7 @@ import { sameOrigin } from "../platform/http-url";
 import { storedCount } from "../platform/stored-bounds";
 import { availableSql, requiresMention, type Visibility } from "./audience";
 import { actorCollections, type ActorCollections } from "./collection-requests";
+import { outboundMark, outboundSince } from "./deliveries";
 import {
   displayName,
   featurableName,
@@ -442,62 +443,78 @@ export type CollectionCounts = { statuses: number | null; following: number | nu
 // FetchFeaturedTagsCollectionService#process_items, ProcessAccountService#set_fetchable_attributes!): what was read is
 // applied, and the parts read are recorded for the generation the round claimed (not for a newer request, whose parts
 // start over); once every part is, the request is read through. The round progressed when it read a part not read
-// before. Returns whether a sync is due.
+// before. Returns whether a sync is due (pending), and whether the read recorded deliveries (delivers: a local member's
+// Delete answering a listing, feature-answers.ts answerUnserved), for the jobs round's doorbell.
 // hide_collections and the counts are written only while the round's generation is the sync's (`before`): a round
 // that read an older document never overwrites what a newer one learns. The pins and hashtags are applied whatever
 // the generation: a stale round may still write them, and the newer generation's round, due at once (endRound),
 // writes them again. The collections are applied whatever the generation too, unless an inbound change of them
 // committed since the round's claim (collections_changed, markCollectionsChanged): the round's listing is then older
 // than the stored collections, so it is not applied and the part is left to a later round, which reads it again.
-export const completeCollectionRead = writeOperation<CollectionReadInput, boolean>((db, input) => {
-  const account = roundAccount(db, input);
-  if (account === null) {
-    return claimable(db, input.now) !== undefined;
-  }
-  if (input.pins !== null) {
-    replacePins(db, account, input.pins.uris, input.now);
-  }
-  if (input.tags !== null) {
-    replaceFeaturedTags(db, account.id, input.tags, input.now);
-  }
-  const outdated =
-    input.collections !== null &&
-    db.first<{ changed: number }>(
-      "SELECT collections_changed AS changed FROM collection_syncs WHERE account_id = ?",
-      account.id,
-    )?.changed === 1;
-  if (input.collections !== null && !outdated) {
-    replaceCollections(db, account, input.collections, input.origin, input.now);
-  }
-  const before = isIntegerText(input.generation)
-    ? db.first<{ parts_read: number }>(
-        `SELECT parts_read | (collections_read << 3) AS parts_read FROM collection_syncs
-				WHERE account_id = ? AND generation = CAST(? AS INTEGER)`,
-        account.id,
-        input.generation,
-      )
-    : undefined;
-  const parts = (before?.parts_read ?? 0) | (input.parts & (outdated ? ALL_PARTS & ~PART_COLLECTIONS : ALL_PARTS));
-  if (before !== undefined) {
-    if (input.hideCollections !== null) {
-      db.run("UPDATE accounts SET hide_collections = ? WHERE id = ?", input.hideCollections ? 1 : 0, account.id);
+export const completeCollectionRead = writeOperation<CollectionReadInput, { pending: boolean; delivers: boolean }>(
+  (db, input) => {
+    const account = roundAccount(db, input);
+    if (account === null) {
+      return { pending: claimable(db, input.now) !== undefined, delivers: false };
     }
-    writeCounts(db, account.id, input.counts);
-    db.run(
-      `UPDATE collection_syncs SET parts_read = CASE WHEN ?1 = ?3 THEN 0 ELSE ?1 & ?4 END,
+    const mark = outboundMark(db);
+    if (input.pins !== null) {
+      replacePins(db, account, input.pins.uris, input.now);
+    }
+    if (input.tags !== null) {
+      replaceFeaturedTags(db, account.id, input.tags, input.now);
+    }
+    const outdated =
+      input.collections !== null &&
+      db.first<{ changed: number }>(
+        "SELECT collections_changed AS changed FROM collection_syncs WHERE account_id = ?",
+        account.id,
+      )?.changed === 1;
+    if (input.collections !== null && !outdated) {
+      // The round's claim (claimCollectionSync: due SYNC_LEASE_MS after it, which nothing moves while the token holds,
+      // requestCollectionSync), before which the documents read cannot be older: a local member's row changed at or
+      // after it is not hidden (remote-featured-collections.ts applyListing).
+      const claimed = db.first<{ at: number }>(
+        "SELECT due_at - ?3 AS at FROM collection_syncs WHERE account_id = ?1 AND token = ?2",
+        account.id,
+        input.token,
+        SYNC_LEASE_MS,
+      );
+      replaceCollections(db, account, input.collections, input.origin, input.now, claimed?.at ?? input.now);
+    }
+    const before = isIntegerText(input.generation)
+      ? db.first<{ parts_read: number }>(
+          `SELECT parts_read | (collections_read << 3) AS parts_read FROM collection_syncs
+				WHERE account_id = ? AND generation = CAST(? AS INTEGER)`,
+          account.id,
+          input.generation,
+        )
+      : undefined;
+    const parts = (before?.parts_read ?? 0) | (input.parts & (outdated ? ALL_PARTS & ~PART_COLLECTIONS : ALL_PARTS));
+    if (before !== undefined) {
+      if (input.hideCollections !== null) {
+        db.run("UPDATE accounts SET hide_collections = ? WHERE id = ?", input.hideCollections ? 1 : 0, account.id);
+      }
+      writeCounts(db, account.id, input.counts);
+      db.run(
+        `UPDATE collection_syncs SET parts_read = CASE WHEN ?1 = ?3 THEN 0 ELSE ?1 & ?4 END,
 				collections_read = CASE WHEN ?1 = ?3 THEN 0 ELSE (?1 & ?5) >> 3 END,
 				read_through = CASE WHEN ?1 = ?3 THEN max(read_through, generation) ELSE read_through END
 			WHERE account_id = ?2`,
-      parts,
-      account.id,
-      ALL_PARTS,
-      STORED_PARTS,
-      PART_COLLECTIONS,
-    );
-  }
-  const progressed = before !== undefined && parts !== before.parts_read;
-  return endRound(db, account.id, input.generation, progressed, input.now);
-});
+        parts,
+        account.id,
+        ALL_PARTS,
+        STORED_PARTS,
+        PART_COLLECTIONS,
+      );
+    }
+    const progressed = before !== undefined && parts !== before.parts_read;
+    return {
+      pending: endRound(db, account.id, input.generation, progressed, input.now),
+      delivers: outboundSince(db, mark),
+    };
+  },
+);
 
 // ProcessAccountService#set_fetchable_attributes!: a remote account's counts become the totalItems learned, each that
 // storedCount keeps (the others, and those not learned, stay as stored; Mastodon keeps a count it is not given). Local
@@ -666,15 +683,17 @@ function replacePins(db: Db, account: { id: string; uri: string }, uris: readonl
 }
 
 // The account's collections become those the read listed (ProcessFeaturedCollectionService for each), the first
-// MAX_REMOTE_COLLECTIONS of them. A complete read first deletes the stored ones it does not list as collections the
-// account may hold (deleteUnlisted), so the slots they held under MAX_REMOTE_COLLECTIONS are free for the new ones it
-// lists.
+// MAX_REMOTE_COLLECTIONS of them, a new one admitted while the account holds fewer than MAX_STORED_COLLECTIONS. A
+// complete read first deletes the stored ones it does not list as collections the account may hold, except one holding
+// a local member's row (deleteUnlisted), so the slots they held are free for the new ones it lists. `since`: the
+// round's claim, which fences the hides of its listings (applyListing).
 function replaceCollections(
   db: Db,
   account: { id: string; uri: string },
   read: NonNullable<CollectionReadInput["collections"]>,
   origin: string,
   now: number,
+  since: number,
 ): void {
   const listed = read.listed.slice(0, MAX_REMOTE_COLLECTIONS);
   if (read.complete) {
@@ -685,7 +704,7 @@ function replaceCollections(
     );
   }
   for (const input of listed) {
-    applyFeaturedCollection(db, account, input, origin, now);
+    applyFeaturedCollection(db, account, input, origin, now, { kind: "read", since });
   }
 }
 

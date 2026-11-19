@@ -246,11 +246,29 @@ export function forwardSubject(object: string): string {
   return `${FORWARD_SUBJECT}${object}`;
 }
 
+// The subject of a feature answer (OutboundOptions.answer): its authorization's id and the owner it answers (its
+// audience's account), behind a prefix no URI starts with, so that it is about no other writer's subject, the member's
+// own revocation of that authorization included, and an answer to one owner never stands for an answer to another.
+const ANSWER_SUBJECT = "answer ";
+
 // The local object an activity is about, and whether it retracts it (outboundKind in audience.ts).
 // retracts: the activity withdraws work already sent, so it supersedes what it names and admission never refuses it.
 // A Reject withdraws only when it ends a follow we had accepted (withdraws); a Reject of a request never accepted (a
-// refused or blocked Follow) is new work and is admitted like any other.
-function subjectOf(activity: Activity, withdraws: boolean): { object: string | null; retracts: boolean } {
+// refused or blocked Follow) is new work and is admitted like any other. A feature answer (`answer`) retracts only for
+// an authorization of a row Kopje holds.
+function subjectOf(
+  activity: Activity,
+  withdraws: boolean,
+  answer?: OutboundOptions["answer"],
+  audience?: DeliveryAudience,
+): { object: string | null; retracts: boolean } {
+  if (answer !== undefined) {
+    const object = idOf(activity.object);
+    return {
+      object: object === null ? null : `${ANSWER_SUBJECT}${object} ${(audience?.accounts ?? []).join(" ")}`,
+      retracts: answer === "retraction",
+    };
+  }
   const retracts = outboundKind(activity, withdraws) === "retraction";
   switch (activity.type) {
     // An Accept of a QuoteRequest is about the stamp it grants (its result), so the stamp's Delete supersedes it
@@ -410,6 +428,7 @@ function targetsOf(
   reachOf: readonly ReachOf[],
   earlierReceivers = true,
   personalInbox = false,
+  answer?: OutboundOptions["answer"],
 ): { targets: Target[]; voters: Set<string> } {
   // Neutral copies by inbox; personal copies by recipient, kept apart so one never replaces the other.
   const neutral = new Map<string, Behind>();
@@ -452,7 +471,7 @@ function targetsOf(
   };
   const recipients = recipientsFor(db, signerId, activity, audience, withdraws);
   reach(recipients);
-  const { object, retracts } = subjectOf(activity, withdraws);
+  const { object, retracts } = subjectOf(activity, withdraws, answer, audience);
   // A forward reaches its references' receivers (below), never the earlier receivers of its object's id, which is not
   // the signer's.
   if (retracts && object !== null && earlierReceivers && audience.shares === undefined) {
@@ -535,9 +554,116 @@ function receiversOf(db: Db, signerId: string, object: string): string[] {
   return [...receipts, ...outstanding, ...unexpanded].map((r) => r.inbox);
 }
 
+// The doorbell's mark (inbox.ts receiveActivity and runInboundJobs, remote-collections.ts completeCollectionRead):
+// what moves whenever a delivery, an outbound intent or a chunk of an intent's targets is recorded: the deliveries id
+// sequence (AUTOINCREMENT, so a row deleted since still counts), the newest intent (one recorded without its deliveries
+// yet, which a delivery round expands) and the newest target chunk (a later staging call of an intent recorded
+// earlier, which a delivery round expands too); and the pushes' id sequence (push_deliveries, AUTOINCREMENT too). Each
+// is read as TEXT and compared in SQL (DATA-6), so an advance past 2^53 still counts. m's SELECT without FROM always
+// yields its one row.
+const OUTBOUND_MARK = `WITH m(deliveries, intents, targets, pushes) AS (SELECT
+		IFNULL((SELECT seq FROM sqlite_sequence WHERE name = 'deliveries'), 0),
+		IFNULL((SELECT max(id) FROM outbound_activities), 0),
+		IFNULL((SELECT max(id) FROM outbound_targets), 0),
+		IFNULL((SELECT seq FROM sqlite_sequence WHERE name = 'push_deliveries'), 0))`;
+
+export type OutboundMark = { mark: string };
+
+export function outboundMark(db: Db): OutboundMark {
+  return db.first<OutboundMark>(
+    `${OUTBOUND_MARK} SELECT json_array(CAST(deliveries AS TEXT), CAST(intents AS TEXT), CAST(targets AS TEXT),
+			CAST(pushes AS TEXT)) AS mark FROM m`,
+  )!;
+}
+
+// Whether anything for the doorbell was recorded since `before`.
+export function outboundSince(db: Db, before: OutboundMark): boolean {
+  return (
+    db.first<{ moved: number }>(
+      `${OUTBOUND_MARK} SELECT (deliveries > CAST(json_extract(?1, '$[0]') AS INTEGER)
+				OR intents > CAST(json_extract(?1, '$[1]') AS INTEGER) OR targets > CAST(json_extract(?1, '$[2]') AS INTEGER)
+				OR pushes > CAST(json_extract(?1, '$[3]') AS INTEGER)) AS moved FROM m`,
+      before.mark,
+    )!.moved === 1
+  );
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Recording and expansion
 // ---------------------------------------------------------------------------------------------------------------
+
+// The latest retraction answer of a subject (an authorization to one owner): each supersedes the one before it
+// (supersedeAnswer), so the subject's unsuperseded retractions (outbound_activities_unsuperseded_retractions, migration
+// 0119_answer_retractions) hold it alone, one probe, whatever ordinary answers of the subject are unsuperseded (RES-7).
+const LATEST_ANSWER_WHERE = "o.account_id = ?1 AND o.object_uri = ?2 AND o.superseded = 0 AND o.retracts = 1";
+const LATEST_ANSWER = `outbound_activities o INDEXED BY outbound_activities_unsuperseded_retractions
+	WHERE ${LATEST_ANSWER_WHERE}`;
+
+// Whether the latest retraction answer of the subject is still to be sent to one of `inboxes`, the new answer's
+// destination: a target there not yet expanded, or a delivery there queued or pending (a pending one is POSTed again,
+// after anything the owner sent since). A leased one is not: its POST may have reached the owner before the listing
+// being answered, so a new answer goes after it. One waiting for another inbox (the owner's before a refresh of its
+// actor) is not either: the new answer replaces it (cancelWaitingAnswer). The answer has one target, so one row or one
+// chunk of one target.
+function answerOutstanding(db: Db, signerId: string, object: string, inboxes: readonly string[]): boolean {
+  return (
+    db.first(
+      `SELECT 1 AS x FROM ${LATEST_ANSWER}
+				AND (EXISTS (SELECT 1 FROM outbound_targets c INDEXED BY outbound_targets_activity, json_each(c.targets) t
+						WHERE c.activity_id = o.id AND t.key >= c.next
+							AND json_extract(t.value, '$.inbox') IN (SELECT value FROM json_each(?3)))
+					OR EXISTS (SELECT 1 FROM deliveries d INDEXED BY deliveries_activity
+						WHERE d.activity_id = o.id AND d.state IN ('queued', 'pending')
+							AND d.inbox_url IN (SELECT value FROM json_each(?3))))
+			LIMIT 1`,
+      signerId,
+      object,
+      JSON.stringify(inboxes),
+    ) !== undefined
+  );
+}
+
+// The waiting work of the latest retraction answer of the subject (its queued and pending deliveries, its targets not
+// yet expanded), which a new answer to another inbox replaces, so that at most one answer of an authorization waits.
+// A leased one is left to its lease: superseded by the new answer, it is dropped at its confirmation, its failure or
+// its lease's expiry (STALE_ANSWER).
+function cancelWaitingAnswer(db: Db, signerId: string, object: string, now: number): void {
+  const latest = db.first<{ id: string }>(
+    `SELECT CAST(o.id AS TEXT) AS id FROM ${LATEST_ANSWER} LIMIT 1`,
+    signerId,
+    object,
+  );
+  if (latest === undefined) {
+    return;
+  }
+  const removed = db.all<{ lane: string }>(
+    `DELETE FROM deliveries INDEXED BY deliveries_activity WHERE activity_id = CAST(? AS INTEGER)
+			AND state IN ('queued', 'pending') RETURNING lane`,
+    latest.id,
+  );
+  for (const lane of new Set(removed.map((r) => r.lane))) {
+    promoteLane(db, signerId, lane, now);
+  }
+  db.run(
+    "DELETE FROM outbound_targets INDEXED BY outbound_targets_activity WHERE activity_id = CAST(? AS INTEGER)",
+    latest.id,
+  );
+}
+
+// A new retraction answer supersedes the subject's latest one alone, through LATEST_ANSWER's index: the subject's
+// ordinary answers (the owner's listings of the authorization before Kopje issued it, the only ones a retraction answer
+// can follow) keep their course under RES-4's caps, which admitted them, so recording reads none of them (RES-7).
+function supersedeAnswer(db: Db, signerId: string, object: string): void {
+  const stopped = db.all<{ id: string }>(
+    `UPDATE outbound_activities AS o INDEXED BY outbound_activities_unsuperseded_retractions
+			SET superseded = 1, staged = NULL WHERE ${LATEST_ANSWER_WHERE} RETURNING CAST(id AS TEXT) AS id`,
+    signerId,
+    object,
+  );
+  for (const { id } of stopped) {
+    dropSettledActivity(db, id);
+  }
+}
 
 // Records the intent with its targets, and expands what the step allows. A retraction supersedes every earlier
 // activity about its object and drops the object's receipts (its own targets now hold that evidence); an Update
@@ -553,9 +679,21 @@ function receiversOf(db: Db, signerId: string, object: string): string[] {
 // neutral copy to each addressed account at its personal inbox, never its shared one. R38's severing Reject takes both
 // (blocks.ts endFollow): a Follow's Reject matters to the follower's server only, at its current personal inbox, as
 // Mastodon's reject_remote_follows! sends it to inbox_url.
+// options.answer: a member's Delete of a feature authorization that answers an owner's listing (#1589's D24,
+// feature-answers.ts), about the authorization and that owner under a subject of its own (ANSWER_SUBJECT), so it
+// never supersedes the member's own revocation; 'retraction' for an authorization of a row Kopje holds (never refused,
+// not recorded while an earlier one to that owner is still to be sent to the owner's current inbox, answerOutstanding,
+// and replacing one waiting for another inbox, cancelWaitingAnswer: at most one waiting a subject; it supersedes the
+// subject's latest retraction answer alone, supersedeAnswer), 'ordinary' for any other (admitted under RES-4's caps
+// like new work, superseding nothing).
 // Returns whether this call inserted an intent with at least one target (a chunk); the expansion it runs, which may
 // expand other intents, does not count. A handshake replay ends its hold only then (handshake-replays.ts).
-export type OutboundOptions = { withdraws?: boolean; audienceOnly?: boolean; personalInbox?: boolean };
+export type OutboundOptions = {
+  withdraws?: boolean;
+  audienceOnly?: boolean;
+  personalInbox?: boolean;
+  answer?: "retraction" | "ordinary";
+};
 
 export function enqueueActivity(
   db: Db,
@@ -573,6 +711,7 @@ export function enqueueActivity(
     envelope.reachOf ?? [],
     options.audienceOnly !== true,
     options.personalInbox === true,
+    options.answer,
   );
   const { voters } = found;
   let targets = found.targets;
@@ -589,9 +728,24 @@ export function enqueueActivity(
       return [shared === undefined ? t : { inbox: t.inbox, addressee: t.addressee, ...mergedProvenance(t, shared) }];
     });
   }
-  const { object, retracts } = subjectOf(envelope.activity, options.withdraws === true);
+  const { object, retracts } = subjectOf(
+    envelope.activity,
+    options.withdraws === true,
+    options.answer,
+    envelope.audience,
+  );
+  // The destination is resolved first: an answer waiting for the owner's current inbox stands for this one, and one
+  // with no destination (no owner) records nothing and supersedes nothing.
+  if (options.answer === "retraction" && object !== null) {
+    const inboxes = targets.map((t) => t.inbox);
+    if (inboxes.length === 0 || answerOutstanding(db, signerId, object, inboxes)) {
+      return false;
+    }
+    cancelWaitingAnswer(db, signerId, object, now);
+    supersedeAnswer(db, signerId, object);
+  }
   const types = supersededTypes(envelope.activity);
-  if (object !== null && (retracts || types.length > 0)) {
+  if (object !== null && options.answer === undefined && (retracts || types.length > 0)) {
     supersede(db, signerId, object, retracts, types);
   }
   if (object !== null && retracts) {
@@ -723,7 +877,7 @@ function supersedeIntent(db: Db, id: string): void {
 // it, the Follow type only: the inbox's Undo of the target's Accept of it (inbox.ts undoAccept), after which Mastodon
 // never sends that Follow again. A superseded Follow is no owed handshake (OWED_HANDSHAKE), so a copy the send-time
 // check drops is not held for a replay, and a given-up one may not be sent again (retryDeliveries); a copy still queued
-// is sent as it would have been (STALE_ANSWER is a follow answer's). Its seek is outbound_activities_unsuperseded's
+// is sent as it would have been (STALE_ANSWER is an answer's). Its seek is outbound_activities_unsuperseded's
 // (account_id, object_uri): the Follows of the one generation still queued, one per send of it (the follow, each
 // handshake replay).
 export function retireFollow(db: Db, followerId: string, followUri: string): void {
@@ -2796,13 +2950,28 @@ const REFUSED_SENDER = `EXISTS (SELECT 1 FROM local_accounts l
 			AND json_extract(o.body, '$.activity.object.suspended') IS 1
 			AND json_extract(o.body, '$.activity.object.id') = json_extract(o.body, '$.activity.actor')))`;
 
-// 1 for a follow answer whose intent a later Follow of its pair, an Undo of its generation, or a block's withdrawing
-// Reject superseded (NET-2), else 0 (also with no activity row). It reads only the two stored columns, never the
-// activity's JSON, which an imported row may lack. Read with the row, and judged apart from sendRefused, so VIS-30's
-// retraction exemption does not cover it: a withdrawing Reject is stale too once a newer Follow supersedes it.
-// superseded is never cleared, and the row is read under its lease token, so the check needs no caller time. Its
-// activity is `o`.
-const STALE_ANSWER = `(o.follow_pair IS NOT NULL AND o.superseded = 1)`;
+// 'follow' for a follow answer whose intent a later Follow of its pair, an Undo of its generation, or a block's
+// withdrawing Reject superseded (NET-2); 'feature' for a feature answer (ANSWER_SUBJECT, its prefix compared as bytes)
+// a later answer of its subject superseded, which stands for it (a Delete of the same authorization to the same owner,
+// at the owner's current inbox: enqueueActivity), so a copy leased when it was recorded is not sent or retried after
+// it (#1589's D24); else null (also with no activity row). It reads only stored columns, never the activity's JSON,
+// which an imported row may lack. Read with the row, and judged apart from sendRefused, so VIS-30's retraction
+// exemption does not cover it: a withdrawing Reject is stale too once a newer Follow supersedes it, and so is a
+// retraction answer once a newer one supersedes it. superseded is never cleared, and the row is read under its lease
+// token, so the check needs no caller time. Its activity is `o`.
+type StaleAnswer = "follow" | "feature" | null;
+const STALE_ANSWER = `CASE WHEN o.superseded IS NOT 1 THEN NULL WHEN o.follow_pair IS NOT NULL THEN 'follow'
+	WHEN instr(CAST(o.object_uri AS BLOB), CAST('${ANSWER_SUBJECT}' AS BLOB)) = 1 THEN 'feature' END`;
+
+// A stale answer dropped at `at`: logged for a follow answer only (staleAnswer); a feature answer's successor is sent.
+function droppedAnswer(
+  row: { stale_answer: StaleAnswer; answer_type: string },
+  at: "claim" | "confirm" | "failure",
+): void {
+  if (row.stale_answer === "follow") {
+    staleAnswer(row.answer_type, at);
+  }
+}
 
 // DATA-5: the answer's type (ANSWER_TYPE) and where it was caught, nothing else. `cancel`: a Follow or an Undo deleted
 // a row a claim had taken; `claim`, `confirm`, `failure`: a leased one was dropped instead of being leased again, sent,
@@ -2824,7 +2993,7 @@ type DueRow = LaneRow & {
   signed_by: string | null;
   // An Announce's boosted original (its object), null for any other activity.
   boosted: string | null;
-  stale_answer: number;
+  stale_answer: StaleAnswer;
   answer_type: string;
   // 1 for a Follow, which an unavailable host does not stop (Mastodon's bypass_availability).
   follow: number;
@@ -3013,8 +3182,8 @@ function dropRow(db: Db, row: LaneRow, now: number): void {
 // Runs one drain step and one expansion step, the two sharing EXPANSION_STEP rows read, the drain first, then leases up
 // to `limit` due lane heads (RES-6: a claim reads and returns a bounded number of rows). An expired lease is due
 // again; one that has used up its attempts is given up instead of claimed; one the send-time check refuses
-// (sendRefused), and a superseded follow answer (STALE_ANSWER), are dropped; one to an unavailable host, but a Follow,
-// is given up HOST_UNAVAILABLE without an attempt. What to send is read by confirmDelivery.
+// (sendRefused), and a superseded follow or feature answer (STALE_ANSWER), are dropped; one to an unavailable host,
+// but a Follow, is given up HOST_UNAVAILABLE without an attempt. What to send is read by confirmDelivery.
 export const claimDeliveries = writeOperation<{ now: number; leaseToken: string; limit?: number }, Claim>(
   (db, { now, leaseToken, limit }) => {
     expandPending(db, now, EXPANSION_STEP - drainStep(db, now, EXPANSION_STEP).read);
@@ -3034,9 +3203,9 @@ export const claimDeliveries = writeOperation<{ now: number; leaseToken: string;
         dropRow(db, row, now);
         continue;
       }
-      if (row.stale_answer === 1) {
+      if (row.stale_answer !== null) {
         dropRow(db, row, now);
-        staleAnswer(row.answer_type, "claim");
+        droppedAnswer(row, "claim");
         continue;
       }
       if (row.found === 1 && row.follow !== 1 && hostUnavailable(db, deliveryHost(row.inbox_url))) {
@@ -3091,7 +3260,7 @@ export const claimDeliveries = writeOperation<{ now: number; leaseToken: string;
 
 export type Confirmation =
   | { status: "send"; body: string }
-  // The send-time check refused the row, or it is a superseded follow answer: it is deleted and its lane promoted.
+  // The send-time check refused the row, or it is a superseded answer (STALE_ANSWER): deleted, its lane promoted.
   | { status: "dropped"; nextDueAt: number | null }
   // The lease is no longer this one's: send nothing.
   | { status: "stale" };
@@ -3111,16 +3280,14 @@ export const confirmDelivery = writeOperation<{ id: string; leaseToken: string; 
     if (row === undefined) {
       return { status: "stale" };
     }
-    const gone = row.found === 0 || row.activity === null || row.stale_answer === 1;
+    const gone = row.found === 0 || row.activity === null || row.stale_answer !== null;
     const refused = !gone && sendRefused(db, row);
     if (refused) {
       holdHandshake(db, row, now);
     }
     if (gone || refused || row.activity === null) {
       dropRow(db, row, now);
-      if (row.stale_answer === 1) {
-        staleAnswer(row.answer_type, "confirm");
-      }
+      droppedAnswer(row, "confirm");
       return { status: "dropped", nextDueAt: nextDueAt(db, now, leaseToken) };
     }
     return { status: "send", body: bodyFor(row.activity, row.addressee, row.immutable === 1) };
@@ -3137,7 +3304,7 @@ export type Completion = (
   | { status: "delivered" }
   | { status: "retry"; retryAt: number }
   | { status: "gave_up" }
-  // A superseded follow answer (STALE_ANSWER) that failed: deleted, never retried or given up, its lane promoted.
+  // A superseded answer (STALE_ANSWER) that failed: deleted, never retried or given up, its lane promoted.
   | { status: "dropped" }
   // The lease is no longer this one's: the row was claimed again, settled, or deleted.
   | { status: "stale" }
@@ -3153,7 +3320,7 @@ export const completeDelivery = writeOperation.atStoreTime("storeNow")<
   { id: string; leaseToken: string; now: number; outcome: DeliveryOutcome; storeNow: number },
   Completion
 >((db, { id, leaseToken, now, outcome, storeNow }) => {
-  const row = db.first<LaneRow & { stale_answer: number; answer_type: string; follow: number }>(
+  const row = db.first<LaneRow & { stale_answer: StaleAnswer; answer_type: string; follow: number }>(
     `SELECT CAST(d.id AS TEXT) AS id, CAST(d.activity_id AS TEXT) AS activity_id, d.account_id, d.lane, d.inbox_url,
 			d.attempts, ${STALE_ANSWER} AS stale_answer, ${ANSWER_TYPE} AS answer_type, ${FOLLOW} AS follow
 		FROM ${DUE_FROM} WHERE d.id = CAST(? AS INTEGER) AND d.state = 'leased' AND d.lease_token = ?`,
@@ -3185,23 +3352,25 @@ export const completeDelivery = writeOperation.atStoreTime("storeNow")<
       now,
     );
     dropRow(db, row, now);
-    if (row.stale_answer === 1) {
+    if (row.stale_answer === "follow") {
       staleAnswer(row.answer_type, "sent_in_flight");
     }
     clearHost(db, deliveryHost(row.inbox_url), "delivered");
     return { status: "delivered", nextDueAt: nextDueAt(db, now, leaseToken) };
   }
-  // Before every failure exit (the personal inbox, giving up, a retry): a superseded answer gets no further attempt.
-  if (row.stale_answer === 1) {
-    dropRow(db, row, now);
-    staleAnswer(row.answer_type, "failure");
-    return { status: "dropped", nextDueAt: nextDueAt(db, now, leaseToken) };
-  }
-  const error = outcome.error.slice(0, MAX_ERROR_LENGTH);
+  // A failure the host caused counts its day whatever becomes of the row, a superseded answer's included.
   const host = deliveryHost(row.inbox_url);
   if (host !== null && hostCaused(outcome.failure, outcome.permanent)) {
     recordHostFailure(db, host, storeNow);
   }
+  // Before every other failure exit (the personal inbox, giving up, a retry): a superseded answer gets no further
+  // attempt.
+  if (row.stale_answer !== null) {
+    dropRow(db, row, now);
+    droppedAnswer(row, "failure");
+    return { status: "dropped", nextDueAt: nextDueAt(db, now, leaseToken) };
+  }
+  const error = outcome.error.slice(0, MAX_ERROR_LENGTH);
   if (row.follow !== 1 && hostUnavailable(db, host)) {
     giveUp(db, row, now, outcome.status, HOST_UNAVAILABLE);
     return { status: "gave_up", nextDueAt: nextDueAt(db, now, leaseToken) };

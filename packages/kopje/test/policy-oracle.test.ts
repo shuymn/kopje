@@ -313,6 +313,8 @@ describe("the policy fragments agree with the model of their rules", () => {
   // accounts' discoverable and locked flags drawn from their index.
   const collectionId = (o: number) => String(300000000000000000n + BigInt(o));
   const itemState = (o: number, x: number) => (o + 2 * x) % 4;
+  // Whether a remote owner's collection lists the item (its uri set), each way for each state and member.
+  const itemListed = (o: number, x: number) => (o + x) % 3 !== 0;
   const memberDiscoverable = (x: number) => x % 3 !== 2;
   const memberLocked = (x: number) => x % 2 === 1;
   // A remote account's stored canFeature (accounts.feature_policy), one of these by its index and the world's number
@@ -352,10 +354,13 @@ describe("the policy fragments agree with the model of their rules", () => {
           x === null ? null : accountId(x),
           x === null ? `https://remote.example/u/${o}` : null,
           x === null ? 0 : itemState(o, x),
+          !account.local && x !== null && itemListed(o, x) ? `https://remote.example/c/${o}/items/${n}` : null,
         ]);
         db.run(
-          `INSERT INTO collection_items (id, collection_id, account_id, object_uri, state, position, created_at, updated_at)
-					SELECT value ->> 0, value ->> 1, value ->> 2, value ->> 3, value ->> 4, 1, ?2, ?2 FROM json_each(?1)`,
+          `INSERT INTO collection_items (id, collection_id, account_id, object_uri, state, position, uri, created_at,
+						updated_at)
+					SELECT value ->> 0, value ->> 1, value ->> 2, value ->> 3, value ->> 4, 1, value ->> 5, ?2, ?2
+					FROM json_each(?1)`,
           JSON.stringify(items),
           T,
         );
@@ -425,7 +430,7 @@ describe("the policy fragments agree with the model of their rules", () => {
 
   it("collectionItemShownSql (R45)", () =>
     viewerItems(collectionItemShownSql, (m, owner, x, state, viewer) =>
-      m.collectionItemShown(owner, x, state, viewer),
+      m.collectionItemShown(owner, x, state, viewer, x !== null && itemListed(owner, x)),
     ));
 
   it("inCollectionsSql (R45)", () =>

@@ -54,6 +54,10 @@ catalog:
   parse5: 8.1.1
   vite: 8.3.8
   vitest: 5.1.0
+  # The model checker Kopje's TLA+ specifications run under in the Node suite (packages/kopje/spec/,
+  # test-node/collection-consent-spec.test.ts); packages/kopje/scripts/tlc-check.mjs checks the same with the official
+  # TLC.
+  tla-ts: 0.0.10
 
   # Lint, format, unused files, dependencies and exports (knip.json), and the Git hooks.
   knip: 6.45.1

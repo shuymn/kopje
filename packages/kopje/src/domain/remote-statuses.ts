@@ -1156,7 +1156,7 @@ export function storeResolved(
       }
       let id = ownCollectionByUri(db, owner.id, collection.id)?.id ?? null;
       if (id === null) {
-        id = applyFeaturedCollection(db, owner, collection, origin, now).collection;
+        id = applyFeaturedCollection(db, owner, collection, origin, now, { kind: "push" }).collection;
         if (id !== null) {
           markCollectionsChanged(db, owner.id);
         }

@@ -451,17 +451,22 @@ async function refetchDocument(
   return { document: checked.outcome === "transient" ? "transient" : checked.input, jobsPending: false };
 }
 
-// One round: up to COLLECTION_SYNCS_PER_ROUND syncs, each claimed, its phase run and handed back. Returns whether another
+// One round: up to COLLECTION_SYNCS_PER_ROUND syncs, each claimed, its phase run and handed back. pending: another
 // waits, or a purge a document part started (refetchDocument) or a removal a pin fetch started (completePinFetches)
-// has a batch left.
-// A Store refusal (maintenance) surfaces as StoreUnavailableError for the caller; a claimed sync whose round died is
-// claimed again after its lease.
-export async function syncCollections(env: Env, deps: InboxDeps): Promise<boolean> {
+// has a batch left; delivers: a read recorded deliveries (completeCollectionRead), which the jobs round rings for.
+// `progress.delivers` is set as each such read commits, so a later call of the round that throws loses none of it
+// (queue.ts runFamilies reads it at the family's error boundary). A Store refusal (maintenance) surfaces as
+// StoreUnavailableError for the caller; a claimed sync whose round died is claimed again after its lease.
+export async function syncCollectionsRound(
+  env: Env,
+  deps: InboxDeps,
+  progress: { delivers: boolean } = { delivers: false },
+): Promise<{ pending: boolean; delivers: boolean }> {
   const build = deps.build(env);
   const store = () => deps.store(env);
   const domain = await callStore(() => store().instanceDomain(build));
   if (domain === null) {
-    return false;
+    return { pending: false, delivers: false };
   }
   const origin = `https://${domain}`;
   const config = readConfig(env);
@@ -473,7 +478,7 @@ export async function syncCollections(env: Env, deps: InboxDeps): Promise<boolea
       store().claimCollectionSync(build, { now: deps.now() }),
     );
     if (sync === null) {
-      return goneJobs;
+      return { pending: goneJobs, delivers: progress.delivers };
     }
     if (sync === "more") {
       // The claim spent its allowance dropping syncs; more are due.
@@ -515,7 +520,11 @@ export async function syncCollections(env: Env, deps: InboxDeps): Promise<boolea
       if (state.storeError !== null) {
         throw state.storeError;
       }
-      pending = await callStore(() => store().completeCollectionRead(build, { ...round, now: deps.now(), ...read }));
+      const ended = await callStore(() =>
+        store().completeCollectionRead(build, { ...round, now: deps.now(), ...read }),
+      );
+      pending = ended.pending;
+      progress.delivers ||= ended.delivers;
     } else {
       const fetched = await fetchPending(sync.uris, loaders.document);
       if (state.storeError !== null) {
@@ -526,5 +535,10 @@ export async function syncCollections(env: Env, deps: InboxDeps): Promise<boolea
       goneJobs ||= ended.jobsPending;
     }
   }
-  return pending || goneJobs;
+  return { pending: pending || goneJobs, delivers: progress.delivers };
+}
+
+// A round of syncCollectionsRound: whether another waits.
+export async function syncCollections(env: Env, deps: InboxDeps): Promise<boolean> {
+  return (await syncCollectionsRound(env, deps)).pending;
 }

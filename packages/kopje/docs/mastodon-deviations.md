@@ -834,11 +834,6 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   authorization waits for a check of its own against the member's server before the membership is shown. Kopje's
   `FeatureRequest` names the owner as its `actor`, where Mastodon's carries none, and the removal of a remote member
   still pending sends no `Remove`, where Mastodon sends one that no server holds an item for. Accepted, 2026-11-18.
-- A local account is not featured in a remote collection yet: Kopje refuses the `FeatureRequest` a Mastodon owner sends
-  (it carries no `actor`) and answers none, so that owner's server keeps the item pending, which only the owner sees.
-  The account's `GET /api/v1/accounts/:id/in_collections` lists no remote collection, it gets no `added_to_collection`
-  from one, a remote collection Kopje reads leaves it out of its members, and a client has no item of it there to
-  revoke. Tracked by #1589.
 - Statuses have no `tagged_collections` (Mastodon: the collections a post links). Clients read the field as optional,
   so a post shows no linked collection. Tracked by #1589.
 - An account's `feature_approval.current_user` is `denied` when either account blocks the other or the account is
@@ -881,9 +876,11 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
 - A remote account's collections are read from at most 2 pages of at most 512 KiB each, 10 collections of 25 members
   each (Mastodon: 10 pages, 50 collections, 150 members); a page past that size, or served through a redirect, ends
   the list; a collection or member given only as a URI, not embedded, is skipped (Mastodon fetches it); one no longer
-  listed by a complete read is deleted (Mastodon keeps it until a `Remove`); a member Kopje does not know is not
-  fetched and stays unshown until Kopje learns of the account; a member that is a local account is left out (above).
-  Accepted, 2026-11-17.
+  listed by a complete read is deleted (Mastodon keeps it until a `Remove`), unless a local account is a member of it,
+  which keeps it whole, so Kopje may hold up to 50 collections of an account: those a read lists or a feature request
+  names; a feature request naming a new collection past those 50 is refused; a member Kopje does not know is not
+  fetched and stays unshown until Kopje learns of the account; a member that is a local account is shown as described
+  below. Accepted, 2026-11-18.
 - A remote collection whose `totalItems` is not a whole number from 0 to 2^31 − 1 (a negative or fractional number,
   or a string) is not stored; Mastodon 4.7.5 refuses only one that is not a number, and stores the others (a fraction
   cut to its whole part, a numeric string read as its number). Its language, the first key of its `summaryMap`, is
@@ -905,6 +902,36 @@ Collections (`/api/v1/collections`, `/api/v1/accounts/:id/collections` and `/in_
   for 30 days, so the check of a membership the owner lists with that authorization later (for the first time, or
   again after changing it) ends it as revoked, though the member's server may still serve the authorization from its
   cache. Accepted, 2026-11-17.
+- A local member's revocation in a remote collection is sent to the collection's owner and the member's followers,
+  where Mastodon sends it to the owner and the collection's reach. A revocation by a block, and the `Delete` answering
+  an owner's listing (below), are sent to the owner's personal inbox alone without an LD signature: Mastodon applies
+  such a `Delete` from its HTTP signer (`delete.rb:6`, `:68-81`), and LD-signs it only in
+  `RevokeCollectionItemService`. A `FeatureRequest` that names no actor (as Mastodon sends it) is taken as its
+  signer's only when the signature's key id, without its fragment, is the signer's actor id. A feature request for a
+  member already in the collection is answered, naming that request: while the membership stands, an `Accept` with its
+  authorization, whatever the member's policy is then; for a revoked membership, a `Reject`. Mastodon answers nothing
+  while an item exists, unless its policy refuses: it re-checks its policy at every copy of a request
+  (`feature_request.rb:14-18`). A request when local members already fill 25 places is refused. Accepted, 2026-11-18.
+- A local account's membership of a remote collection is shown to the member at once, and to others once the owner
+  lists it: by its `Add`, or in a read of its collections. An owner's `Remove` of the member's item, or a read that no
+  longer lists it, hides the membership instead of ending it, and its authorization is still served until the member
+  revokes it or blocks the owner, or the collection or either account is removed. Mastodon shows the membership to
+  everyone at once, and deletes it on the `Remove` or when a listing drops it. What others see follows the owner's
+  activities and Kopje's reads of the owner's collections, with no time bound:
+  - a member the owner lists may stay hidden until a read covers it, when the owner's `Add` never reached Kopje, or
+    named an item URI the owner had removed before, or when a retried copy of an earlier request of the owner's is
+    answered after the current one;
+  - a member the owner removed may stay shown until a read covers it, when the `Remove` never reached Kopje, or when a
+    delayed `Add`, or a delayed collection `Add` or `Update`, names it again;
+  - past the first 10 collections a read applies, what others see stays as last observed; in a collection listing
+    more than 25 members, a read shows the members its first 25 entries name and hides no one.
+
+  An owner's `Add`, or a listing, that names a local member's authorization Kopje no longer serves is answered with
+  the member's `Delete` of it, where Mastodon sends nothing. Once the row of that authorization is gone (the 24-hour
+  cleanup, or the oldest retired row removed at the 50-row bound), that answer is an ordinary delivery: refused at a
+  full backlog, it leaves the owner showing the member until a later `Add`, or a read that covers the item, once the
+  backlog has room. When no such `Delete` reaches the owner and the item lies past what a read covers, the owner keeps
+  showing the member until it removes or re-adds it. Accepted, 2026-11-18.
 
 Hosts (Mastodon's `config.hosts`, `config/initializers/1_hosts.rb`; threat model WEB-6):
 
