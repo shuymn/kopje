@@ -1444,7 +1444,7 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
     expect(await authorizationStatus(w.t, row!.id)).toBe(200);
   });
 
-  // Code review r2: an Add whose item cannot be one of the collection's (an item on another origin) names no one: it
+  // An Add whose item cannot be one of the collection's (an item on another origin) names no one: it
   // moves no row's uri and is answered with nothing. Fails if such an Add takes the row (its uri becomes the foreign
   // item) or is answered with alice's Delete.
   it("takes no Add of an item on another origin naming the member, its authorization served or not", async () => {
@@ -1464,7 +1464,7 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
     expect((await aliceAnswers(w.t)).map(({ activity }) => activity.type)).toEqual(["Accept"]);
   });
 
-  // Code review r3: an Add naming the served authorization under an item uri another row holds (here a remote member's
+  // An Add naming the served authorization under an item uri another row holds (here a remote member's
   // item of the same collection) names no row of a local member: nothing is applied and the row keeps its item. Fails if
   // the Add is taken as listing the row ('item-listed').
   it("takes no Add naming the member under an item uri another row holds", async () => {
@@ -1597,9 +1597,9 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
     expect((await sendable()).map((d) => d.state)).toEqual(["leased", "queued"]);
   });
 
-  // Challenge 1589-pr6-9 (code review r2): an answer leased when the next listing records another is superseded by
+  // An answer leased when the next listing records another is superseded by
   // it, and is dropped instead of being POSTed again, at its failure, at its lease's expiry and at its confirmation;
-  // the later answer, behind it in the lane, is promoted; a failed POST counts toward its host first (code review r3).
+  // the later answer, behind it in the lane, is promoted; a failed POST counts toward its host first.
   // Fails if a superseded answer is retried, claimed again or sent (two copies of one answer to send), or if its
   // 503 leaves the host's day uncounted.
   for (const end of ["failure", "lease expiry", "confirmation"] as const) {
@@ -1648,7 +1648,7 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
     });
   }
 
-  // Code review r2: a read of the owner's collections that answers a listing with alice's Delete rings for its
+  // A read of the owner's collections that answers a listing with alice's Delete rings for its
   // delivery in the same jobs round (jobsRound rings for the Worker families' deliveries after them). Fails if the
   // answer waits for the delivery cron.
   it("rings for the Delete a read of the owner's collections records", async () => {
@@ -1673,7 +1673,7 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
     expect(w.t.queue.pending.map((m) => m.body)).toContainEqual({ kind: "deliver" });
   });
 
-  // Code review r3: the read's Delete commits before the family's next claim, which throws; the jobs round still rings
+  // The read's Delete commits before the family's next claim, which throws; the jobs round still rings
   // for it, and a Store refusal still ends the round (no jobs message). Fails if the family's error boundary drops what
   // its committed calls recorded (the answer waits for the delivery cron).
   for (const failure of ["an error", "a Store refusal"] as const) {
@@ -1719,7 +1719,7 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
     });
   }
 
-  // Code review r2: an answer goes to the owner's inbox as the owner's account names it when the listing is answered.
+  // An answer goes to the owner's inbox as the owner's account names it when the listing is answered.
   // Fails if an answer waiting for the inbox the owner had before a refresh of its actor stands for the answer to the
   // new one (nothing reaches the new inbox), or if both wait (two copies of one answer to send).
   it("answers at the owner's new inbox after a refresh, replacing the answer waiting for the old one", async () => {
@@ -1756,7 +1756,7 @@ describe("the answers to an owner's listing of a local member (D24)", () => {
     expect(await answerCopies(w.t, a)).toEqual(fresh);
   });
 
-  // Code review r2: an answer whose target is not expanded yet (still in its intent's chunk) waits as a queued one
+  // An answer whose target is not expanded yet (still in its intent's chunk) waits as a queued one
   // does: it stands for the next listing's answer to the same inbox, and an answer to the owner's new inbox replaces
   // it. Fails if the gate ignores a waiting target (two answers to send), or if the replacement leaves it (a copy to
   // the old inbox).

@@ -820,7 +820,7 @@ describe("the drain lane holds under timing faults (OPS-9)", () => {
     expect(r.legacy.pending.map((m) => (m.body as LegacyInboxMessage).activity)).toEqual([add]);
   });
 
-  // #1589's D24 (code review r2): the drain reads a FeatureRequest that names no actor, as Mastodon v4.7.5 sends it, as
+  // #1589's D24: the drain reads a FeatureRequest that names no actor, as Mastodon v4.7.5 sends it, as
   // the inbox does: its actor is the one its signature's key id names, which must own the key. Fails if the drain
   // reads it without the signature's key id (it would set the request aside as incomplete), or hands on one signed by
   // a key whose owner is another actor.

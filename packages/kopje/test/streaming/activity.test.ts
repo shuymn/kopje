@@ -8,7 +8,7 @@ import { appToken } from "../read-helpers";
 import { community } from "../status-helpers";
 import { drained, subscribed } from "./stream-helpers";
 
-// Activity recording (domain/auth.ts noteActivity) starts no stream turn (stream-hub.ts written), whether it writes the
+// Activity recording (domain/instance-activity.ts noteActivity) starts no stream turn (stream-hub.ts written), whether it writes the
 // day or not. Called on the Store directly, so the Worker's memo cannot make the no-op case vacuous.
 describe("activity and the streams", () => {
   it("asks for no turn with a socket open, written or not, while another commit does", async () => {

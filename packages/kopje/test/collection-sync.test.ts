@@ -591,7 +591,7 @@ describe("a local member's row and the reads of its owner's collections", () => 
     expect(await localRows(w.t, ALICE)).toMatchObject([{ id: w.row, state: ACCEPTED, uri: served.id }]);
   });
 
-  // Code review r2: an entry whose item cannot be one of the collection's (an item on another origin) lists no one, so
+  // An entry whose item cannot be one of the collection's (an item on another origin) lists no one, so
   // a read whose only entry naming the row's authorization is one hides the row, at its place. Fails if the read takes
   // that entry for the row's (the row kept shown under its old item, moved to the entry's position, or shown under the
   // foreign item).
@@ -606,7 +606,7 @@ describe("a local member's row and the reads of its owner's collections", () => 
     expect(await localRows(w.t, ALICE)).toMatchObject([{ id: w.row, state: ACCEPTED, uri: null, position: 1 }]);
   });
 
-  // Code review r3: an entry whose item uri another row holds (here another collection's item, on the owner's origin)
+  // An entry whose item uri another row holds (here another collection's item, on the owner's origin)
   // names no row of a local member either, so a read whose only entry naming the row's authorization is one hides the
   // row, at its place. Fails if the read takes that entry for the row's (the row kept shown under its old item and moved
   // to the entry's position).
@@ -638,7 +638,7 @@ describe("a local member's row and the reads of its owner's collections", () => 
     expect(await localRows(w.t, ALICE)).toMatchObject([{ id: w.row, state: ACCEPTED, uri: null, position: 1 }]);
   });
 
-  // Code review r4: an entry naming the row's authorization under an item uri another row holds lists no one, so the
+  // An entry naming the row's authorization under an item uri another row holds lists no one, so the
   // row is listed by the first entry naming its authorization that it can take, in either order. Fails if the member's
   // first entry decides alone (the held one first hides the row).
   it("lists the row by the first entry naming it whose item uri no other row holds, in either order", async () => {

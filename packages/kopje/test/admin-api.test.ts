@@ -64,7 +64,7 @@ const expire = async (h: ApiHarness, token: string) =>
 const matchOf = (store: StoreStub) =>
   runInDurableObject(store, (_instance, state) => oauthAdmin(new Db(state.storage.sql)));
 
-// Admin operations as a route with manage_reports would declare them, with that bit granted (as a later PR grants it)
+// Admin operations as a route with manage_reports would declare them, with that bit granted (as a role grants it)
 // or not.
 const granted = adminGuarded(readOperation, ADMIN_PERMISSION.manageReports);
 const reportsRead = granted(ADMIN_PERMISSION.manageReports, (_db, _input: object, admin) => admin);

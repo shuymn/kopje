@@ -516,7 +516,7 @@ describe("a walk completion's rows at the caps (D12, Bounds: a walk completion's
     return Array.from({ length: count }, (_, i) => `${OTHER_ORIGIN}/users/m${from + i}`);
   }
 
-  // bob's collection i of version k, which Kopje stores (storedCollections).
+  // bob's collection i of version k, which Kopje stores.
   const collectionUri = (bob: TestActor, k: number, i: number) => `${bob.uri}/collections/v${k}c${i}`;
 
   // Version k of bob's reply S at every cap updateRemoteStatus writes, all of it new at each version:
