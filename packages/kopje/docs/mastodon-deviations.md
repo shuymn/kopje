@@ -1895,7 +1895,7 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   non-http(s) IRI (one whose http(s) scheme is upper-case or not followed by `//` included), a number or a boolean where
   an IRI is expected (`cc: true`), a type naming `id` or `type`, a language map given as an array or of another shape, a
   body whose compaction stays within the limit where the count of three per value passes it), such an activity applies
-  less than Mastodon's: a retraction so typed is missed (an `Undo` of a block leaves the block), as #1717 tracks. A
+  less than Mastodon's: a retraction so typed is missed (an `Undo` of a block leaves the block; #1717). A
   retraction, a `Reject`, `Undo`, `Block` or `Delete` by the name its type is read as, is read as the compaction names
   it in some of these too, each where Mastodon's library compacts it (`test/fixtures/ld-signed/forms.json`) and
   jsonld.js compacts it alike: under an inline context of definitions Mastodon or Fedify write (below), each value of a
@@ -1964,7 +1964,7 @@ and `:66-72`; ID-1, VIS-1 and RES-2 in [threat-model.md](threat-model.md)):
   library keeps where jsonld.js drops it (an empty type list, a `@set` under `@nest`, a language map holding an array in
   an array), one whose proof names a context a body may not, or an inline one the rules refuse (a keyword alias), one
   whose body and proof give more than 32 contexts, types and values under keys whose definition carries a context (each
-  node of a language map's array counted), and one with a proof elsewhere than at the top, as #1717 tracks. Otherwise
+  node of a language map's array counted), and one with a proof elsewhere than at the top (#1717). Otherwise
   the readings differ only for forms none of these writes, and Kopje reads each as written: a status's or a mention's
   `type` given as
   an IRI is read as given, so such a status is refused and such a mention read as absent, where Mastodon reads the type
