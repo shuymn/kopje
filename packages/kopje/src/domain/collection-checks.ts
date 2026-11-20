@@ -118,8 +118,8 @@ function endCheck(db: Db, id: string): void {
 }
 
 // The claims of a round (see the module's header): at most ITEM_CHECKS_PER_ROUND, and whether another item is due now.
-// A queued item this release does not check (a local member's, #1589's PR 6; one without its collection, its member's
-// account or its candidate, which only an import writes) ends its check without a fetch.
+// A queued item no fetch decides (a local member's, whose consent Kopje holds itself; one without its collection, its
+// member's account or its candidate, which only an import writes) ends its check without a fetch.
 export const claimItemChecks = writeOperation<{ now: number }, { checks: ItemCheck[]; pending: boolean }>(
   (db, { now }) => {
     const today = dayOf(now);
