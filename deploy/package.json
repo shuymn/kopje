@@ -8,7 +8,7 @@
     "dev": "wrangler dev"
   },
   "dependencies": {
-    "kopje": "0.6.0"
+    "kopje": "0.7.0"
   },
   "devDependencies": {
     "wrangler": "4.162.0"
