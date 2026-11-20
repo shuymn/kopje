@@ -356,7 +356,7 @@ describe("public and tag timelines", () => {
 });
 
 describe("account statuses", () => {
-  it("filters replies, boosts, media and tags; pinned is empty for now", async () => {
+  it("filters replies, boosts, media and tags; pinned is empty with nothing pinned", async () => {
     const h = await community(["alice", "bob"]);
     const { alice, bob } = h.users;
     const bobs = await post(h, bob, { status: "bob" });
