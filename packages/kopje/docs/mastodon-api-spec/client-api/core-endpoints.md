@@ -1317,8 +1317,9 @@ Content-Type: application/json
 }
 ```
 
-**Response:** [Status entity](entities.md#status) or [ScheduledStatus entity](entities.md#scheduledstatus) if
-`scheduled_at` is provided.
+**Response:** [Status entity](entities.md#status) or ScheduledStatus entity
+([`scheduled_status_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/scheduled_status_serializer.rb))
+if `scheduled_at` is provided.
 
 **Rate Limiting:** This endpoint has enhanced rate limiting under the `statuses` family.
 

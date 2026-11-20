@@ -405,7 +405,7 @@ Lines beginning with `:` MUST be ignored by parsers.
 
 A new status has appeared in the timeline.
 
-**Payload**: JSON-encoded [Status](../entities/status.md) entity
+**Payload**: JSON-encoded [Status](../client-api/entities.md#status) entity
 
 **Available on**: `user`, `public`, `public:local`, `public:remote`, `public:media`, `public:local:media`,
 `public:remote:media`, `hashtag`, `hashtag:local`, `list`
@@ -423,7 +423,7 @@ Example:
 
 A status has been edited.
 
-**Payload**: JSON-encoded [Status](../entities/status.md) entity with updated content
+**Payload**: JSON-encoded [Status](../client-api/entities.md#status) entity with updated content
 
 **Available on**: `user`, `public`, `public:local`, `public:remote`, `public:media`, `public:local:media`,
 `public:remote:media`, `hashtag`, `hashtag:local`, `list`
@@ -461,7 +461,7 @@ Example:
 
 A new notification has been received.
 
-**Payload**: JSON-encoded [Notification](../entities/notification.md) entity
+**Payload**: JSON-encoded [Notification](../client-api/entities.md#notification) entity
 
 **Available on**: `user`, `user:notification`
 
@@ -488,7 +488,8 @@ Notification requests have finished merging and the notifications list should be
 
 A direct message conversation has been updated.
 
-**Payload**: JSON-encoded [Conversation](../entities/conversation.md) entity
+**Payload**: JSON-encoded Conversation entity
+([`conversation_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/conversation_serializer.rb))
 
 **Available on**: `direct`
 
@@ -532,7 +533,8 @@ data: undefined
 
 A new instance announcement has been published.
 
-**Payload**: JSON-encoded [Announcement](../entities/announcement.md) entity
+**Payload**: JSON-encoded Announcement entity
+([`announcement_serializer.rb`](https://github.com/mastodon/mastodon/blob/v4.5.11/app/serializers/rest/announcement_serializer.rb))
 
 **Available on**: `user`
 
