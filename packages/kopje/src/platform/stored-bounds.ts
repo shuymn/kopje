@@ -2762,7 +2762,7 @@ ALTER TABLE reports ADD COLUMN collection_ids TEXT;
 
 // True when `column` is no stored reports.collection_ids: NULL is one; else a JSON array of at most
 // REPORT_COLLECTION_IDS 18-digit ids as TEXT, judged in order (the storage class, the bytes, NUL, the JSON, the array,
-// its length, each element). The triggers of 0100 and the writer (collectionIdsOf) share it.
+// its length, each element). The triggers of 0100 and its writer twin (reportCollectionIdsOf) share it.
 export function reportCollectionIdsPastBoundSql(column: string): string {
   return `CASE WHEN ${column} IS NULL THEN 0
 	WHEN typeof(${column}) <> 'text' THEN 1

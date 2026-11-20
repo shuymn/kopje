@@ -967,7 +967,7 @@ export class Run {
   }
 
   /**
-   * The workerd process's resident memory, sampled after `settleMs` (local only).
+   * The workerd process's resident memory, sampled after 2 s (local only).
    * @param {string} stage
    * @param {number} attempt
    */

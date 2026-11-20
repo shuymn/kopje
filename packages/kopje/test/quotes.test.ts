@@ -1669,8 +1669,8 @@ describe("deleting a quoted or quoting status", () => {
     const mine = await localStatus(t, { status: "quotable", visibility: "public" });
     const theirs = mastodonNote(bob);
     expect(await t.post(bob, create(bob, theirs))).toBe(202);
-    // bob's accepted quote of alice's status (as a later PR's QuoteRequest would accept it), and a pending one; and
-    // alice's status quoting bob's (as a later PR's authoring would write it), accepted.
+    // bob's accepted quote of alice's status (as a QuoteRequest's acceptance writes it), and a pending one; and
+    // alice's status quoting bob's (as authoring writes it), accepted.
     const accepted = quoting(bob, mine.uri, null);
     const pending = quoting(bob, mine.uri, null);
     expect(await t.post(bob, create(bob, accepted))).toBe(202);

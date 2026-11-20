@@ -1292,7 +1292,7 @@ function deletable(db: Db, accountId: string, id: string): OwnStatus | null {
   return current;
 }
 
-// The first step of a DELETE, a read: for an original whose Delete is signed (activities.ts signableDeleteActivity),
+// The first step of a DELETE, a read: for an original whose Delete is signed (activities.ts deleteSigning),
 // that Delete and the author's wrapped key, which the Worker LD-signs with (federation/ld-sign.ts) before deleteStatus
 // records it. Signing once, before recording, keeps the Store free of keys (DATA-1) and gives every destination one
 // body. not_found exactly where deleteStatus answers it.

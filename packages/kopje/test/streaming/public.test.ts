@@ -82,7 +82,7 @@ async function feeds(h: ApiHarness, token: string, tags: string[] = ["#Cats"]): 
   return inbox;
 }
 
-// A remote public status written straight to the Store (no turn), arrived `arrivedAgo` before NOW and published
+// A remote public status written straight to the Store (no turn), arrived at NOW and published
 // `publishedAgo` before it arrived, with #cats, and with a shown media attachment when `media`.
 let nextRemote = 900000000000000000n;
 async function remoteStatus(

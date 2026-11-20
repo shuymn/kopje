@@ -297,7 +297,7 @@ export const editStatus: ApiHandler = withParams(async (c, deps, p) => {
     });
   }
   const mediaAttributes = [...merged.values()];
-  // Mastodon 4.5.5 (#37436) takes quote_approval_policy on an edit only when it is sent.
+  // Mastodon 4.5.5 (mastodon#37436) takes quote_approval_policy on an edit only when it is sent.
   const quotePolicy = quotePolicyOf(p);
   const problem =
     quotePolicy === null

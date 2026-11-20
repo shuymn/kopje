@@ -69,7 +69,7 @@ export type RemoteStatusInput = {
   replies?: RemoteRepliesInput | null;
   // Its likes and shares totalItems as Mastodon stores them (platform/untrusted-count.ts): undefined when not given
   // (from an earlier build too), which leaves a stored count as it is, null to store none, else the count. Never read
-  // with `??`: undefined and null differ (remote-statuses.ts untrustedCountsSql).
+  // with `??`: undefined and null differ (remote-statuses.ts untrustedCounts).
   untrustedFavourites?: number | null | undefined;
   untrustedReblogs?: number | null | undefined;
   // The object as received.

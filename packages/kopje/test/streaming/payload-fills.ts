@@ -128,7 +128,7 @@ export async function describedMedia(h: ApiHarness, user: User, descriptions: re
 
 // A public status of `user`'s with `media`, the fill's text and warning, quoting `quoted` when given, posted by the
 // Store's own operation (postStatus), and its poll written by the poll writer in the same call: no turn starts until
-// both are written, so the event presents both. (The API refuses media with a poll until #1584's PR A.)
+// both are written, so the event presents both.
 export async function writeFilled(
   h: ApiHarness,
   user: User,

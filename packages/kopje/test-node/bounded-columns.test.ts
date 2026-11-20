@@ -662,7 +662,7 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/audience.ts status_tags.name": { count: 1, reason: PREDICATE },
   "src/domain/audience.ts accounts.uri": { count: 1, reason: IDENTITY },
   "src/domain/audience.ts statuses.uri": { count: 1, reason: IDENTITY },
-  // A staged retraction's sources (stagedAccounts and the other paged readers): each account's uri and inboxes, cut at
+  // A staged retraction's sources (stagedAccount and the other paged readers): each account's uri and inboxes, cut at
   // TARGET_CHUNK_BYTES (projectedSql), and whether it is left out (leavesOutSql, a predicate).
   "src/domain/audience.ts interpolation stagedAccountSql(kind, '?3', '?2')": { count: 2, reason: STAGED },
   "src/domain/audience.ts interpolation stagedAccountSql(kind, '?5', '?4')": { count: 3, reason: STAGED },

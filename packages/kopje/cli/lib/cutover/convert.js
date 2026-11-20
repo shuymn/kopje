@@ -1440,7 +1440,7 @@ export function convertLegacy(
     }
   }
   // Avatars and headers become what Kopje makes of a profile image: a media row of the account with neither a status
-  // nor gc_at, whose full file the account's avatar_url or header_url names (src/domain/media.ts, setProfileImage).
+  // nor gc_at, whose full file the account's avatar_url or header_url names (src/domain/media.ts).
   for (const { accountId, uri, kind, image } of profileImages) {
     if (image.kind !== "mapped") {
       continue;
