@@ -43,7 +43,7 @@ catalog:
   "@axe-core/playwright": 4.14.0
   "@jsquash/webp": 1.5.0
   "@playwright/test": 1.65.1
-  "@vitest/coverage-v8": 5.1.0
+  "@vitest/coverage-v8": 5.1.1
   css-tree: 3.2.1
   fast-check: 4.10.2
   jsonld: 9.0.0
@@ -53,7 +53,7 @@ catalog:
   oxc-parser: 0.158.0
   parse5: 8.1.1
   vite: 8.3.8
-  vitest: 5.1.0
+  vitest: 5.1.1
   # The model checker Kopje's TLA+ specifications run under in the Node suite (packages/kopje/spec/,
   # test-node/collection-consent-spec/); packages/kopje/scripts/tlc-check.mjs checks the same with the official TLC.
   tla-ts: 0.0.10
