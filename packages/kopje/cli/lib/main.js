@@ -3,7 +3,7 @@ import { AdminError, createClient } from "./client.js";
 import { dumpToFile, formatBytes, importFromFile, verifyBackup } from "./commands.js";
 
 // The media processor's execution profiles (src/platform/media-transcoder.ts PROBE_PROFILES).
-const PROBE_PROFILES = ["normalize@standard-3", "normalize@standard-4", "still@standard-1"];
+const PROBE_PROFILES = ["normalize@standard-4", "still@standard-1"];
 
 const USAGE = `Usage: kopje-admin <command> [options]
 
@@ -56,7 +56,7 @@ Commands
                                 stopped it, or the Store is not readonly (run it again later: made files are skipped)
   media-processor probe [<profile>...]
                                 start the media processor's container for each profile (default: all of
-                                normalize@standard-3, normalize@standard-4 and still@standard-1), run its operation on
+                                normalize@standard-4 and still@standard-1), run its operation on
                                 the packaged fixture and destroy it; prints each report. A smoke check of the deploy
                                 path: the output is not verified. Exits 1 when a probe failed, 3 when the instance has
                                 no MediaProcessor binding (deploy/README.md, "Video and audio")

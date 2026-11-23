@@ -192,13 +192,17 @@ func TestVideoArgsConvertOtherPrimaries(t *testing.T) {
 
 // The threading options Kopje runs with (P27 pins the measured choice here) and the bench's alternatives.
 func TestThreadingOptions(t *testing.T) {
-	args := videoArgs(videoPlan(false, 1), threadsDefault, "in", "out")
+	// The default is P27's choice: all threads at 4.
+	if threadsDefault != (threading{filters: 4, encoder: 4}) {
+		t.Fatalf("default %+v", threadsDefault)
+	}
+	args := videoArgs(videoPlan(false, 1), threading{}, "in", "out")
 	for _, flag := range []string{"-threads", "-threads:v", "-filter_threads", "-filter_complex_threads"} {
 		if slices.Contains(args, flag) {
-			t.Fatalf("default sets %s: %v", flag, args)
+			t.Fatalf("ffmpeg's own threading sets %s: %v", flag, args)
 		}
 	}
-	cases := map[string]threading{"": threadsDefault, "default": threadsDefault, "filters:2": {filters: 2},
+	cases := map[string]threading{"": threadsDefault, "default": threadsDefault, "ffmpeg": {}, "filters:2": {filters: 2},
 		"all:4": {filters: 4, encoder: 4}}
 	for in, want := range cases {
 		got, err := parseThreading(in)
@@ -211,7 +215,7 @@ func TestThreadingOptions(t *testing.T) {
 			t.Fatalf("%q accepted", bad)
 		}
 	}
-	all := videoArgs(videoPlan(false, 1), threading{filters: 4, encoder: 4}, "in", "out")
+	all := videoArgs(videoPlan(false, 1), threadsDefault, "in", "out")
 	if !hasPair(all, "-filter_threads", "4") || !hasPair(all, "-filter_complex_threads", "4") ||
 		!hasPair(all, "-threads:v", "4") || slices.Index(all, "-filter_threads") > slices.Index(all, "-i") {
 		t.Fatalf("all:4: %v", all)

@@ -257,7 +257,7 @@ describe("smoke probe", () => {
           }),
       }),
     );
-    const report = await smokeProbe(fake.container, "normalize@standard-3", clock());
+    const report = await smokeProbe(fake.container, "normalize@standard-4", clock());
     expect(report).toMatchObject({ ok: false, failure: "normalize:envelope", destroyed: true, outputBytes: null });
     expect(JSON.stringify(report)).not.toContain("ffmpeg");
     // A code outside the server's shape is not repeated.
@@ -317,7 +317,7 @@ describe("smoke probe", () => {
           }),
       }),
     );
-    expect((await smokeProbe(huge.container, "normalize@standard-3", clock())).failure).toBe("normalize-length");
+    expect((await smokeProbe(huge.container, "normalize@standard-4", clock())).failure).toBe("normalize-length");
   });
 
   // The reader stops at the first chunk past the declared length, however much more the container sends.
@@ -346,11 +346,11 @@ describe("smoke probe", () => {
 
   it("refuses a normalize without its video still", async () => {
     const audio = fakeContainer(server({ "/normalize": () => ok(MP4, "video/mp4", { "kopje-kind": "audio" }) }));
-    expect((await smokeProbe(audio.container, "normalize@standard-3", clock())).failure).toBe("normalize-kind");
+    expect((await smokeProbe(audio.container, "normalize@standard-4", clock())).failure).toBe("normalize-kind");
     const noStill = fakeContainer(
       server({ "/normalize/still": () => new Response(null, { status: 404, headers: { "kopje-error": "no_still" } }) }),
     );
-    expect((await smokeProbe(noStill.container, "normalize@standard-3", clock())).failure).toBe(
+    expect((await smokeProbe(noStill.container, "normalize@standard-4", clock())).failure).toBe(
       "normalize-still:no_still",
     );
   });
@@ -725,8 +725,8 @@ describe("processorClient", () => {
     const client = processorClient({ ...env, MEDIA_PROCESSOR: namespace } as never, "v1");
     expect((await client?.probeNow("still@standard-1"))?.ok).toBe(true);
     expect((await client?.probeNow("still@standard-1"))?.ok).toBe(true);
-    expect((await client?.probeNow("normalize@standard-3"))?.ok).toBe(true);
-    expect(names).toEqual(["p:v1:still@standard-1", "p:v1:still@standard-1", "p:v1:normalize@standard-3"]);
+    expect((await client?.probeNow("normalize@standard-4"))?.ok).toBe(true);
+    expect(names).toEqual(["p:v1:still@standard-1", "p:v1:still@standard-1", "p:v1:normalize@standard-4"]);
   });
 });
 
@@ -826,8 +826,10 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
     expect(passed.out).toContain('"profile": "still@standard-1"');
 
     const one = await harness((profile) => Promise.resolve(report(profile, profile !== "normalize@standard-4")));
-    expect((await one.cli(["media-processor", "probe", "normalize@standard-3"])).code).toBe(0);
+    expect((await one.cli(["media-processor", "probe", "still@standard-1"])).code).toBe(0);
     expect((await one.cli(["media-processor", "probe", "normalize@standard-4"])).code).toBe(1);
+    // A type P27 did not choose is no profile.
+    expect((await one.cli(["media-processor", "probe", "normalize@standard-3"])).code).toBe(2);
     expect((await one.cli(["media-processor", "probe", "normalize@standard-2"])).code).toBe(2);
     expect((await one.cli(["media-processor"])).code).toBe(2);
 

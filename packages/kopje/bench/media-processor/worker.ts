@@ -34,7 +34,7 @@ const READY_MS = 180_000;
 const INPUT_LIMIT = 94_371_840;
 const INSTANCES = ["standard-1", "standard-3", "standard-4"] as const;
 type Instance = (typeof INSTANCES)[number];
-const THREADS = /^(default|filters:\d{1,2}|all:\d{1,2})$/;
+const THREADS = /^(default|ffmpeg|filters:\d{1,2}|all:\d{1,2})$/;
 const KEY = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/;
 
 type RunResult = {

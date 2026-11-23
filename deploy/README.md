@@ -95,8 +95,9 @@ pushes the image, which takes a few minutes. Then check it:
 npm run admin -- media-processor probe
 ```
 
-It starts the container on each instance type Kopje uses, runs one operation on a 2-second clip that ships in the
-package, destroys the container, and prints what it saw. Each image Kopje builds is about 300 MB in your account's
+It starts the container on each instance type Kopje uses (normalize on standard-4 with ffmpeg's threads at 4, the
+choice measured for #1828; stills on standard-1), runs one operation on a 2-second clip that ships in the package,
+destroys the container, and prints what it saw. Each image Kopje builds is about 300 MB in your account's
 container registry; delete the images of versions you no longer deploy (`npx wrangler containers images list`). To take
 the processor out again, remove the block and the binding and add a migration that deletes the class
 (`{ "tag": "v3-remove-media-processor", "deleted_classes": ["MediaProcessor"] }`); never edit the migrations already

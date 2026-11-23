@@ -34,24 +34,29 @@ var stripMetadata = []string{"-map_metadata", "-1", "-map_chapters", "-1", "-ffl
 const tonemap = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0," +
 	"zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
 
-// Threading options under measurement (P27): the environment variable MEDIASRV_THREADS selects them at start, so a
-// bench can compare them on one image. Kopje's Durable Object never sets it, so production runs with threadsDefault.
+// Threading: threadsDefault is all threads at 4, the choice the P27 measurement made for NORMALIZE_INSTANCE
+// (standard-4; the results are on #1828). The environment variable MEDIASRV_THREADS selects another at start, so a
+// bench can compare them on one image; Kopje's Durable Object never sets it, so production runs with threadsDefault.
 type threading struct {
 	filters int // -filter_threads and -filter_complex_threads; 0 leaves ffmpeg's default
 	encoder int // -threads for the video encoder (x264's threads); 0 leaves ffmpeg's default
 }
 
-var threadsDefault = threading{}
+var threadsDefault = threading{filters: 4, encoder: 4}
 
-// parseThreading reads MEDIASRV_THREADS: "" or "default", "filters:<n>" or "all:<n>" with n in 1..16.
+// parseThreading reads MEDIASRV_THREADS: "" or "default" (threadsDefault), "ffmpeg" (ffmpeg's own threading),
+// "filters:<n>" or "all:<n>" with n in 1..16.
 func parseThreading(s string) (threading, error) {
-	if s == "" || s == "default" {
+	switch s {
+	case "", "default":
 		return threadsDefault, nil
+	case "ffmpeg":
+		return threading{}, nil
 	}
 	mode, count, ok := strings.Cut(s, ":")
 	n, err := strconv.Atoi(count)
 	if !ok || err != nil || n < 1 || n > 16 {
-		return threading{}, fmt.Errorf("MEDIASRV_THREADS %q: want default, filters:<1-16> or all:<1-16>", s)
+		return threading{}, fmt.Errorf("MEDIASRV_THREADS %q: want default, ffmpeg, filters:<1-16> or all:<1-16>", s)
 	}
 	switch mode {
 	case "filters":
@@ -59,7 +64,7 @@ func parseThreading(s string) (threading, error) {
 	case "all":
 		return threading{filters: n, encoder: n}, nil
 	}
-	return threading{}, fmt.Errorf("MEDIASRV_THREADS %q: want default, filters:<1-16> or all:<1-16>", s)
+	return threading{}, fmt.Errorf("MEDIASRV_THREADS %q: want default, ffmpeg, filters:<1-16> or all:<1-16>", s)
 }
 
 func (t threading) filterArgs() []string {
@@ -195,11 +200,12 @@ func probeArgs(path string, discover bool) []string {
 }
 
 // frameProbeArgs decodes the first packet of the stream at index, and no other stream (no stream discovery), for what
-// only a frame carries (an image codec's ICC profile). It runs only after the header probe's limits passed, and the decoder refuses a frame over
-// maxSourcePixels as well. Only the first frame's profile is read: one that appears only on a later frame (a
-// keyframe at 1 s, say) is dropped like any profile, without its colour being used.
+// only a frame carries (an image codec's ICC profile). It runs only after the header probe's limits passed, and the
+// decoder refuses a frame over maxSourcePixels as well. Only the first frame's profile is read: one that appears only
+// on a later frame (a keyframe at 1 s, say) is dropped like any profile, without its colour being used.
 func frameProbeArgs(path string, index int) []string {
 	return cat([]string{"-v", "error"}, inputGuards,
-		[]string{"-max_pixels", strconv.Itoa(maxSourcePixels), "-nofind_stream_info", "-select_streams", strconv.Itoa(index),
-			"-read_intervals", "%+#1", "-print_format", "json", "-show_frames", "file:" + path})
+		[]string{"-max_pixels", strconv.Itoa(maxSourcePixels), "-nofind_stream_info",
+			"-select_streams", strconv.Itoa(index), "-read_intervals", "%+#1", "-print_format", "json", "-show_frames",
+			"file:" + path})
 }

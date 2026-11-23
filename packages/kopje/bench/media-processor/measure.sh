@@ -7,7 +7,8 @@
 #
 # Optional:
 #   INSTANCES="standard-3 standard-4"        the types normalize runs on
-#   THREADS="default filters:4 all:4"        MEDIASRV_THREADS values (container/server/args.go parseThreading)
+#   THREADS="ffmpeg filters:4 all:4"         MEDIASRV_THREADS values (container/server/args.go parseThreading; default
+#                                            is Kopje's, all:4)
 #   RUNS=3        normalize runs per fixture, type and threading (9 for the chosen type's p95, G13)
 #   STILL_RUNS=9  still runs per video fixture on standard-1
 #   DISPATCH_RUNS=20, HOLD="90 110 130"     the alarm dispatch samples, and the header holds tried (seconds)
@@ -25,7 +26,7 @@ set -euo pipefail
 dir="$(cd "${1:?usage: measure.sh <fixtures dir>}" && pwd)"
 BENCH_URL="${BENCH_URL%/}"
 INSTANCES="${INSTANCES:-standard-3 standard-4}"
-THREADS="${THREADS:-default filters:4 all:4}"
+THREADS="${THREADS:-ffmpeg filters:4 all:4}"
 RUNS="${RUNS:-3}"
 STILL_RUNS="${STILL_RUNS:-9}"
 DISPATCH_RUNS="${DISPATCH_RUNS:-20}"
