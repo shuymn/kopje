@@ -15,9 +15,10 @@ import {
   ProcessorUnit,
   READY_MS,
   smokeProbe,
+  STILL_CALL_MS,
   type UnitState,
 } from "../src/media-processor";
-import { PROBE_PROFILES, type ProbeProfile, type ProbeReport } from "../src/platform/media-transcoder";
+import { PROBE_PROFILES, type ProbeProfile, type ProbeReport, type StillMaker } from "../src/platform/media-transcoder";
 import { accessToken, adminClaims, adminTeam, serviceClaims, setTeamAccess } from "./access-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD, migratedStore } from "./helpers";
@@ -91,6 +92,13 @@ function fakeContainer(
     stop: () => container.stop(),
   };
 }
+
+// The probe route never makes a still.
+const unusedStills: StillMaker = {
+  still: () => Promise.reject(new Error("unused")),
+  probe: () => Promise.reject(new Error("unused")),
+  probeInput: new Uint8Array(),
+};
 
 const MP4 = new Uint8Array(1000).fill(7);
 const PNG = new Uint8Array(300).fill(9);
@@ -729,7 +737,126 @@ describe("MediaProcessor", () => {
   });
 });
 
+describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
+  // The media bucket with its reads counted.
+  function bucket() {
+    const reads: string[] = [];
+    return {
+      reads,
+      get: async (key: string) => {
+        reads.push(key);
+        return env.MEDIA.get(key);
+      },
+    };
+  }
+
+  it("streams its one input key into /still on standard-1 without Internet, and answers the PNG once destroyed", async () => {
+    const input = new Uint8Array(5000).fill(3);
+    await env.MEDIA.put("originals/140000000000000001", input);
+    const fake = counted();
+    const media = bucket();
+    const state = fakeState(fake.container);
+    const object = unit({ ...state.ctx, bucket: media });
+    const outcome = await object.stillNow("originals/140000000000000001", 75_000);
+    expect(outcome).toEqual({ ok: true, png: PNG, image: "registry.cloudflare.com/acct/media@sha256:abc-running" });
+    expect(media.reads).toEqual(["originals/140000000000000001"]);
+    expect(fake.bodies).toEqual([input]);
+    expect(fake.started()).toMatchObject({ instance: "standard-1", enableInternet: false });
+    expect(fake.calls).toEqual(["start", "GET /healthz", "POST /still", "destroy"]);
+    expect(fake.container.running).toBe(false);
+    expect(state.alarm()).toBeNull();
+  });
+
+  it("answers input-missing for a key the bucket lacks, and destroys the container", async () => {
+    const fake = counted();
+    const object = unit({ ...fakeState(fake.container).ctx, bucket: bucket() });
+    expect(await object.stillNow("originals/140000000000000002", 75_000)).toMatchObject({
+      ok: false,
+      failure: "input-missing",
+    });
+    expect(fake.calls.at(-1)).toBe("destroy");
+    expect(fake.container.running).toBe(false);
+  });
+
+  it("is busy while a probe runs on its object, and the probe is busy while a still runs: one container", async () => {
+    await env.MEDIA.put("incoming/probe-0123456789abcdef0123456789abcdef", new Uint8Array([1, 2, 3]));
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const fake = counted(undefined, {
+      "/still": async () => {
+        await held;
+        return ok(PNG, "image/png");
+      },
+    });
+    const object = unit({ ...fakeState(fake.container).ctx, bucket: bucket() });
+    const first = object.stillNow("incoming/probe-0123456789abcdef0123456789abcdef", 60_000);
+    await vi.waitFor(() => expect(fake.starts()).toBe(1));
+    expect(await object.probeNow("still@standard-1")).toMatchObject({ ok: false, failure: "busy" });
+    expect(await object.stillNow("incoming/probe-0123456789abcdef0123456789abcdef", 60_000)).toMatchObject({
+      ok: false,
+      failure: "busy",
+    });
+    release();
+    expect((await first).ok).toBe(true);
+    expect(fake.starts()).toBe(1);
+  });
+
+  it("is not ok when the destroy fails, and leaves the alarm to clean up", async () => {
+    await env.MEDIA.put("originals/140000000000000003", new Uint8Array([1]));
+    const fake = counted(() => Promise.reject(new Error("destroy failed")));
+    const state = fakeState(fake.container);
+    const outcome = await unit({ ...state.ctx, bucket: bucket() }).stillNow("originals/140000000000000003", 75_000);
+    expect(outcome).toMatchObject({ ok: false, failure: "destroy" });
+    expect(state.alarm()).not.toBeNull();
+  });
+
+  it("is bounded by STILL_CALL_MS whatever the caller asks", async () => {
+    await env.MEDIA.put("originals/140000000000000004", new Uint8Array([1]));
+    const time = frozen(1_000_000);
+    const state = fakeState(counted().container);
+    const alarms: number[] = [];
+    const storage = {
+      ...state.ctx.storage,
+      setAlarm: (at: number) => {
+        alarms.push(at);
+        return state.ctx.storage.setAlarm(at);
+      },
+    };
+    const object = unit({ container: state.ctx.container, storage, bucket: bucket() }, time.deps);
+    await object.stillNow("originals/140000000000000004", 10 * STILL_CALL_MS);
+    // The alarm set before the start is the call's bound and the destroy's.
+    expect(alarms[0]).toBe(1_000_000 + STILL_CALL_MS + DESTROY_MS);
+  });
+});
+
 describe("processorClient", () => {
+  it("makes rebuild stills on fresh objects and the still probe on the profile's object, and a failed RPC is unavailable", async () => {
+    await env.MEDIA.put("originals/140000000000000005", new Uint8Array([1]));
+    const names: string[] = [];
+    const namespace = {
+      getByName(name: string) {
+        names.push(name);
+        if (name.startsWith("rb:") && names.length > 2) {
+          return { stillNow: () => Promise.reject(new Error("object reset")) };
+        }
+        return unit({ ...fakeState(fakeContainer(server()).container).ctx, bucket: env.MEDIA });
+      },
+    };
+    const client = processorClient({ ...env, MEDIA_PROCESSOR: namespace } as never, "v1")!;
+    expect((await client.stills.still("originals/140000000000000005", 75_000)).ok).toBe(true);
+    expect((await client.stills.probe("originals/140000000000000005", 60_000)).ok).toBe(true);
+    expect(await client.stills.still("originals/140000000000000005", 75_000)).toEqual({
+      ok: false,
+      failure: "unavailable",
+      image: null,
+    });
+    expect(names[0]).toMatch(/^rb:[0-9a-f-]{36}$/);
+    expect(names[1]).toBe("p:v1:still@standard-1");
+    expect(names[2]).toMatch(/^rb:/);
+    expect(names[2]).not.toBe(names[0]);
+    expect(client.stills.probeInput).toEqual(fixtureBytes());
+  });
+
   it("is null without the binding", () => {
     expect("MEDIA_PROCESSOR" in env).toBe(false);
     expect(processorClient(env, "build")).toBeNull();
@@ -782,7 +909,7 @@ describe("POST /admin/media-processor/probe and kopje-admin media-processor prob
       now: () => NOW,
       store: () => store,
       fetch: team.fetch,
-      mediaProcessor: () => (probe === null ? null : { probeNow: probe }),
+      mediaProcessor: () => (probe === null ? null : { probeNow: probe, stills: unusedStills }),
     });
     const call = (request: Request) => app.fetch(request, env, createExecutionContext());
     const post = async (profile: unknown) =>
