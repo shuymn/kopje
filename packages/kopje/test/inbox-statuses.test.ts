@@ -188,7 +188,8 @@ describe("Create (Mastodon and Misskey)", () => {
       },
       {
         url: `${MASTODON}/system/media/2.mp4`,
-        preview_url: `${MASTODON}/system/media/2.mp4`,
+        // A video without an icon: the plain poster, never the video itself (presentedPreview).
+        preview_url: "https://kopje.test/assets/video-poster.png",
         remote_url: `${MASTODON}/system/media/2.mp4`,
         preview_remote_url: null,
         text_url: null,

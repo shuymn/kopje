@@ -957,15 +957,52 @@ describe("the presented attachment (presentMedia)", () => {
     });
   });
 
-  it("shows a cached video without an icon as its own preview, its remote icon first when it has one", () => {
+  it("never shows a video or audio file as its own preview: a video gets the plain poster, audio none", () => {
     const file = `${token("V")}:mp4:`;
-    expect(presentMedia(row({ type: "video", cached: file, preview_url: null }), ORIGIN)).toMatchObject({
-      url: `${ORIGIN}/media/r/${token("V")}/full.mp4`,
-      preview_url: `${ORIGIN}/media/r/${token("V")}/full.mp4`,
-      preview_remote_url: null,
-    });
+    const poster = `${ORIGIN}/assets/video-poster.png`;
+    for (const type of ["video", "gifv"]) {
+      expect(presentMedia(row({ type, cached: file, preview_url: null }), ORIGIN)).toMatchObject({
+        url: `${ORIGIN}/media/r/${token("V")}/full.mp4`,
+        preview_url: poster,
+        preview_remote_url: null,
+      });
+      // Not cached, and an icon that is the file itself: the poster too.
+      expect(
+        presentMedia(row({ type, url: "https://files.example/m/1.mp4", preview_url: null }), ORIGIN).preview_url,
+      ).toBe(poster);
+      expect(
+        presentMedia(
+          row({
+            type,
+            cached: file,
+            url: "https://files.example/m/1.mp4",
+            preview_url: "https://files.example/m/1.mp4",
+          }),
+          ORIGIN,
+        ).preview_url,
+      ).toBe(poster);
+      // An icon naming a part of the file (a fragment) is the file too.
+      const part = { type, url: "https://files.example/m/1.mp4", preview_url: "https://files.example/m/1.mp4#t=0.1" };
+      expect(presentMedia(row(part), ORIGIN).preview_url).toBe(poster);
+      // Without an origin (a scheduled post, an edit's snapshot as recorded): none.
+      expect(presentMedia(row({ type, preview_url: null })).preview_url).toBeNull();
+    }
+    expect(
+      presentMedia(row({ type: "audio", cached: `${token("A")}:mp3:`, preview_url: null }), ORIGIN).preview_url,
+    ).toBeNull();
+    const audio = { type: "audio", url: "https://files.example/a.mp3", preview_url: "https://files.example/a.mp3#x" };
+    expect(presentMedia(row(audio), ORIGIN).preview_url).toBeNull();
+    // An icon of its own is shown, remote or cached.
     expect(presentMedia(row({ type: "video", cached: file }), ORIGIN).preview_url).toBe(
       "https://files.example/p/1.png",
+    );
+    expect(
+      presentMedia(row({ type: "audio", cached: `${token("A")}:mp3:`, cached_preview: `${token("I")}:png:` }), ORIGIN)
+        .preview_url,
+    ).toBe(`${ORIGIN}/media/r/${token("I")}/full.png`);
+    // An unknown file keeps its url as its preview, as clients read it as the file itself.
+    expect(presentMedia(row({ type: "unknown", preview_url: null }), ORIGIN).preview_url).toBe(
+      "https://files.example/m/1.png",
     );
   });
 

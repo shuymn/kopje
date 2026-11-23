@@ -6,6 +6,7 @@ import { type StatusInput, webStatusPage } from "../src/domain/web-pages/status"
 import { STATUS_CONTENT_BYTES } from "../src/security/html";
 import { HistoryList } from "../src/web/components/history";
 import type { SafeHtml } from "../src/web/safe-html";
+import { mediaView } from "../src/web/view/media";
 import { bearer, json, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD } from "./helpers";
@@ -199,6 +200,62 @@ describe("the edit history on a status page", () => {
     expect(emoji(current)).toEqual([":cur:"]);
     // The attachment whose URL is not http(s) is not shown at all.
     expect(query(dialog, "div", "media-grid")).toEqual([]);
+  });
+});
+
+describe("a video without a preview image of its own", () => {
+  it("is given the plain poster through the API, its file never, and no poster on a page", async () => {
+    const h = await community(["alice"]);
+    const { alice } = h.users;
+    const status = await post(h, alice, { status: "now" });
+    await sql(h.store, "UPDATE statuses SET edited_at = ? WHERE id = ?", new Date(NOW).toISOString(), status.id);
+    // A version recorded by an earlier release, which gave the video and the audio file themselves as their previews.
+    const video = "https://files.example/v.mp4";
+    const audio = "https://files.example/a.mp3";
+    await sql(
+      h.store,
+      `INSERT INTO status_edits (status_id, content, spoiler_text, sensitive, media_json, created_at, emojis)
+			VALUES (?1, '<p>old</p>', '', 0, ?2, ?3, NULL), (?1, '<p>now</p>', '', 0, '[]', ?4, NULL)`,
+      status.id,
+      JSON.stringify([
+        { id: "1", type: "video", url: video, preview_url: video, remote_url: video },
+        { id: "2", type: "audio", url: audio, preview_url: audio, remote_url: audio },
+      ]),
+      new Date(NOW - 60_000).toISOString(),
+      new Date(NOW).toISOString(),
+    );
+    const history = await h.request(`/api/v1/statuses/${status.id}/history`, bearer(alice.token));
+    const [old] = await history.json<{ media_attachments: { preview_url: string | null }[] }[]>();
+    const origin = new URL(String(status.url)).origin;
+    expect(old!.media_attachments.map((m) => m.preview_url)).toEqual([`${origin}/assets/video-poster.png`, null]);
+
+    const { doc } = await page(h, pathOf(String(status.url)));
+    const [player] = query(byId(doc, "history")!, "video");
+    expect(attr(player!, "src")).toBe(video);
+    expect(attr(player!, "poster")).toBeNull();
+  });
+
+  it("shows no poster on a page for this server's plain poster, but a remote icon of the same path", () => {
+    const media = (preview_url: string) =>
+      mediaView(
+        {
+          id: "1",
+          type: "video",
+          url: "https://files.example/v.mp4",
+          preview_url,
+          remote_url: null,
+          preview_remote_url: null,
+          text_url: null,
+          meta: null,
+          description: null,
+          blurhash: null,
+        },
+        "kopje.test",
+      )!.preview;
+    expect(media("https://kopje.test/assets/video-poster.png")).toBeNull();
+    expect(media("https://files.example/assets/video-poster.png")).toBe(
+      "https://files.example/assets/video-poster.png",
+    );
   });
 });
 

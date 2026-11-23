@@ -228,7 +228,8 @@ const LONGEST_HISTORY_FRAME: PageHistory = { versions: [], leftOut: Number.MAX_S
 // page budget leaves and WEB_HISTORY_BYTES; the first that does not ends them, and it and every older one are counted
 // as left out. No version is ever cut or admitted past its share.
 function pageHistory(db: Db, statusId: string, budget: PageBudget): PageHistory | null {
-  const versions = editVersions(db, statusId);
+  // No origin: the pages show a video without a preview image of its own with no poster (web/view/media.ts).
+  const versions = editVersions(db, statusId, null);
   if (versions.count === 0) {
     return null;
   }

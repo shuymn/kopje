@@ -18,7 +18,8 @@ states the rules every page follows.
   5 KiB gzip applies to the served file (`test-node/stylesheet.test.ts`). Comments explaining a rule stay in the source.
 - **Icons and default images under `/assets`.** Every page head links the favicon (`favicon.ico`, 16, 32 and 48 px),
   `favicon-192.png` and `apple-touch-icon.png`, named in `src/platform/brand-assets.ts` with the default avatar,
-  header and thumbnail. There is no web manifest, since the pages' CSP has no `manifest-src`. These files keep stable
+  header and thumbnail and the plain poster the client API gives a video without a preview image (which the pages do
+  not show). There is no web manifest, since the pages' CSP has no `manifest-src`. These files keep stable
   names and are revalidated rather than immutable, so new bytes are seen on the next request; a changed icon takes a
   new file name, because browsers keep favicons in a cache of their own. They ship without metadata
   (`test-node/static-assets.test.ts`).
