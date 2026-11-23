@@ -21,6 +21,10 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 - Local media URLs serve the processor's video (`full.mp4`) and audio (`full.mp3`) as cached remote media is served:
   HEAD, one byte range with 206, an unsatisfiable one with 416, several with the whole file, and 304 to a matching
   `If-None-Match`, so players can seek. Nothing writes such files yet; image URLs answer as before.
+- The backup copies an original larger than 16 MiB by streaming it through age into a multipart upload, so originals
+  up to 64 MiB (video and audio files) are backed up without being held in memory; each invocation now also aborts
+  stray multipart uploads under `media/`. The bucket's lifecycle rule that aborts incomplete multipart uploads
+  ([docs/backup.md](docs/backup.md), "Storage") now covers these copies too.
 
 ### Fixed
 

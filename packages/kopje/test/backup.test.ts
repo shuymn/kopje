@@ -10,10 +10,12 @@ import {
   type BackupDeps,
   type BackupFaultPoint,
   type BackupManifest,
+  MAX_MEDIA_BYTES,
   MAX_MEDIA_PER_RUN,
   MIN_PART_BYTES,
   runBackup,
   scheduledBackup,
+  STREAM_COPY_BYTES,
   WORK_BYTES,
 } from "../src/jobs/backup";
 import { readBackupConfig } from "../src/platform/backup-config";
@@ -829,6 +831,150 @@ describe("backup deadline", () => {
     expect((await backupState(h.store)).lastFailure?.reason).toBe("s3-upload-part-timeout");
     expect(await frozen(h.store)).toBe(false);
   }, 30_000);
+});
+
+describe("backup of large originals (#1828 P24)", () => {
+  // Bytes that differ along the file, so a part out of place changes the digest.
+  function patterned(size: number): Uint8Array {
+    const out = new Uint8Array(size);
+    for (let i = 0; i < size; i++) {
+      out[i] = (i * 2654435761) >>> 24;
+    }
+    return out;
+  }
+
+  // The media bucket with every original read counted, and the media copies' bytes sent to S3 counted as each request
+  // arrives: the largest difference is what the job held of an original (plaintext read, not yet sent as ciphertext).
+  function witness(h: Harness) {
+    let read = 0;
+    let sent = 0;
+    let held = 0;
+    const counted = {
+      get: async (key: string) => {
+        const object = await env.MEDIA.get(key);
+        if (object === null) {
+          return null;
+        }
+        const body = object.body.pipeThrough(
+          new TransformStream<Uint8Array, Uint8Array>({
+            transform(chunk, controller) {
+              read += chunk.byteLength;
+              controller.enqueue(chunk);
+            },
+          }),
+        );
+        return {
+          size: object.size,
+          body,
+          arrayBuffer: () => new Response(body).arrayBuffer(),
+        };
+      },
+    };
+    h.env = { ...h.env, MEDIA: counted } as unknown as Env;
+    const media = (key: string | null) => key?.startsWith(`${PREFIX}media/`) === true;
+    // The bodies S3 received before the first media request (the dump's), not counted as sent.
+    let baseline: number | null = null;
+    const received = () => h.s3.received.reduce((n, b) => n + b.byteLength, 0);
+    h.s3.before = (op, key) => {
+      if (!media(key)) {
+        return;
+      }
+      baseline ??= received();
+      if (op === "upload-part" || op === "put") {
+        // Sent before this request (its own body is still held); age adds 16 bytes per 64 KiB chunk, so the
+        // ciphertext slightly overcounts the plaintext sent.
+        sent = received() - baseline;
+        held = Math.max(held, read - sent);
+      }
+    };
+    return { held: () => held, read: () => read };
+  }
+
+  it("copies an original of exactly MAX_MEDIA_BYTES by streaming, holding a part's worth of it", async () => {
+    expect(MAX_MEDIA_BYTES).toBe(64 * 1024 * 1024);
+    const h = await harness();
+    const original = patterned(MAX_MEDIA_BYTES);
+    const source = await addMedia(h.store, snowflake(NOW - DAY, 1), original);
+    const seen = witness(h);
+    expect(await h.run()).toBe("done");
+    expect(seen.read()).toBe(MAX_MEDIA_BYTES);
+    // Several parts of a multipart upload, each of the run's part size (MIN_PART_BYTES in this harness).
+    const parts = h.s3.requests.filter((r) => r.op === "upload-part" && r.key?.includes("/media/") === true);
+    expect(parts.length).toBeGreaterThan(MAX_MEDIA_BYTES / MIN_PART_BYTES - 1);
+    // Held: at most one part and a few chunks, against the 64 MiB a whole read would hold.
+    expect(seen.held()).toBeLessThanOrEqual(MIN_PART_BYTES + 1024 * 1024);
+    const { index } = await restore(h);
+    const entry = index.find((e) => e.source === source)!;
+    expect(entry.plaintext).toEqual({ size: MAX_MEDIA_BYTES, sha256: await sha256Hex(original) });
+    expect(h.s3.uploads.size).toBe(0);
+  }, 120_000);
+
+  it("refuses an original one byte past MAX_MEDIA_BYTES before reading it", async () => {
+    const h = await harness();
+    await addMedia(h.store, snowflake(NOW - DAY, 1), new Uint8Array(MAX_MEDIA_BYTES + 1));
+    const seen = witness(h);
+    expect(await h.run()).toBe("failed");
+    expect((await backupState(h.store)).lastFailure?.reason).toBe("media-too-large");
+    expect(seen.read()).toBe(0);
+  }, 60_000);
+
+  it("copies an original of STREAM_COPY_BYTES whole and one byte more by streaming", async () => {
+    const h = await harness();
+    await addMedia(h.store, snowflake(NOW - DAY, 1), patterned(STREAM_COPY_BYTES));
+    await addMedia(h.store, snowflake(NOW - DAY, 2), patterned(STREAM_COPY_BYTES + 1));
+    expect(await h.run()).toBe("done");
+    const media = (op: string) => h.s3.requests.filter((r) => r.op === op && r.key?.includes("/media/") === true);
+    expect(media("put")).toHaveLength(1);
+    expect(media("create-upload")).toHaveLength(1);
+    expect((await restore(h)).index.map((e) => e.plaintext?.size)).toEqual([STREAM_COPY_BYTES, STREAM_COPY_BYTES + 1]);
+  }, 60_000);
+
+  it("aborts the multipart upload of an original whose part fails, and copies it at the next run", async () => {
+    const h = await harness();
+    await addMedia(h.store, snowflake(NOW - DAY, 1), patterned(STREAM_COPY_BYTES + 1));
+    let parts = 0;
+    h.s3.fail = (op, key) =>
+      op === "upload-part" && key?.includes("/media/") === true && ++parts === 2 ? 403 : undefined;
+    expect(await h.run()).toBe("failed");
+    expect(h.s3.count("abort-upload")).toBeGreaterThan(0);
+    expect(h.s3.uploads.size).toBe(0);
+    expect(keysUnder(h, `${PREFIX}media/`)).toEqual([]);
+    h.s3.fail = undefined;
+    h.clock.now += DAY;
+    expect(await h.run()).toBe("done");
+    expect((await restore(h)).index.map((e) => e.state)).toEqual(["copied"]);
+  }, 60_000);
+
+  it("aborts the upload of an original whose stream breaks off, as media-changed", async () => {
+    const h = await harness();
+    const source = await addMedia(h.store, snowflake(NOW - DAY, 1), patterned(STREAM_COPY_BYTES + 1));
+    h.env = {
+      ...h.env,
+      MEDIA: {
+        get: async (key: string) => {
+          const object = await env.MEDIA.get(key);
+          // The object states one byte more than its body holds.
+          return object === null ? null : { size: object.size + 1, body: object.body };
+        },
+      },
+    } as unknown as Env;
+    expect(source).toBeDefined();
+    expect(await h.run()).toBe("failed");
+    expect((await backupState(h.store)).lastFailure?.reason).toBe("media-changed");
+    expect(h.s3.uploads.size).toBe(0);
+  }, 60_000);
+
+  it("a Worker that dies mid-upload leaves an upload the next run aborts before it copies again", async () => {
+    const h = await harness();
+    await addMedia(h.store, snowflake(NOW - DAY, 1), patterned(STREAM_COPY_BYTES + 1));
+    h.faults.set("media-part", 0);
+    await expect(h.run()).rejects.toThrow("crash at media-part");
+    expect([...h.s3.uploads.values()].map((u) => u.key.includes("/media/"))).toEqual([true]);
+    h.clock.now += 16 * MINUTE;
+    expect(await h.run()).toBe("done");
+    expect(h.s3.uploads.size).toBe(0);
+    expect((await restore(h)).index.map((e) => e.state)).toEqual(["copied"]);
+  }, 60_000);
 });
 
 describe("backup destination and recipients", () => {
