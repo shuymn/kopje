@@ -210,6 +210,20 @@ describe("the shipped image's outputs", () => {
     expect(editMoov(file, () => {})).toEqual(file);
     expect(await rule("audio/mpeg", refreshXing(await avFixture("m4a.mp3")))).toBe("accepted");
   });
+
+  it("accept a tkhd one tick over its edit list, as the muxer rounds a jittered AAC track", async () => {
+    // The audio track is the longest here, so mvhd follows it.
+    const file = editMoov(await avFixture("r1-av.mp4"), (m) => {
+      for (const [path, at] of [
+        ["trak#1/tkhd", 20],
+        ["mvhd", 16],
+      ] as const) {
+        const node = find(m, path);
+        setBody(node, at, u32(u32At(node.body as Uint8Array, at) + 1));
+      }
+    });
+    expect(await rule("video/mp4", file)).toBe("accepted");
+  });
 });
 
 type Mutation = { name: string; rule: AvRule; make: () => Promise<Uint8Array>; length?: (n: number) => number };
@@ -482,12 +496,27 @@ const MP4_MUTATIONS: Mutation[] = [
   },
   // The presentation timeline: elst against the composition span, tkhd against elst, mvhd against tkhd.
   {
-    name: "tkhd duration off its edit list",
+    // mvhd following it, so only the edit list refuses it.
+    name: "an audio tkhd two ticks over its edit list",
     rule: "presentation",
     make: () =>
       mp4((m) => {
-        const tkhd = find(m, "trak/tkhd");
-        setBody(tkhd, 20, u32(u32At(tkhd.body as Uint8Array, 20) + 1));
+        for (const [path, at] of [
+          ["trak#1/tkhd", 20],
+          ["mvhd", 16],
+        ] as const) {
+          const node = find(m, path);
+          setBody(node, at, u32(u32At(node.body as Uint8Array, at) + 2));
+        }
+      }),
+  },
+  {
+    name: "an audio tkhd one tick under its edit list",
+    rule: "presentation",
+    make: () =>
+      mp4((m) => {
+        const tkhd = find(m, "trak#1/tkhd");
+        setBody(tkhd, 20, u32(u32At(tkhd.body as Uint8Array, 20) - 1));
       }),
   },
   {

@@ -29,8 +29,9 @@
 //              and that average.
 //   durations  each track's stts sums to its mdhd duration; one media edit (after at most one empty edit) inside the
 //              track's composition span, starting at video's first composition time and after at most one AAC frame
-//              of audio priming; tkhd = the edit list's total; mvhd = the longest tkhd; mvhd, every tkhd and every
-//              track's presented samples (mdhd less the media edit's media time) within VIDEO_DURATION_LIMIT.
+//              of audio priming; tkhd = the edit list's total (or one tick more, rounding); mvhd = the longest tkhd;
+//              mvhd, every tkhd and every track's presented samples (mdhd less the media edit's media time) within
+//              VIDEO_DURATION_LIMIT.
 //   tables     equal sample counts; at most VIDEO_SAMPLE_LIMIT video samples; chunk offsets inside the mdat, the
 //              samples tiling it exactly; frame rate within FRAME_RATE_LIMIT.
 //   payload    each video sample is length-prefixed NAL units of types 1 and 5 filling it. AAC and MP3 frame data are
@@ -962,7 +963,8 @@ function parseTrak(
   }
 
   // The edit list: at most one empty edit, first, then one media edit at rate 1 inside the composition span; tkhd's
-  // duration is their total.
+  // duration is their total, or one tick more: the muxer rounds the track's duration up and a media edit's span may
+  // round down (an AAC track whose timestamps follow a source's jitter).
   const edts = parts.get("edts");
   let presented = 0;
   let skipped = 0;
@@ -995,7 +997,7 @@ function parseTrak(
       check((span - 1) * timescale <= (compEnd - mediaTime) * MOVIE_TIMESCALE, "presentation");
     }
   }
-  check(tkhdDuration === presented, "presentation");
+  check(tkhdDuration === presented || tkhdDuration === presented + 1, "presentation");
 
   return {
     video,
