@@ -17,11 +17,14 @@ import (
 	"time"
 )
 
-// The fake ffprobe prints the probe JSON in the file $FAKE_PROBE; the fake ffmpeg appends its arguments to $FAKE_LOG,
+// The fake ffprobe appends its arguments to $FAKE_PROBE_LOG and prints the probe JSON in the file $FAKE_PROBE (for the
+// frame probe, the file $FAKE_FRAMES); the fake ffmpeg appends its arguments to $FAKE_LOG,
 // fails when they contain $FAKE_FAIL_ON, copies the file $FAKE_OUT (for a PNG still, $FAKE_PNG) to its last argument
 // (file:<path>), prints a marker on stderr, and exits $FAKE_EXIT (sleeping $FAKE_SLEEP seconds first).
 const fakeProbe = `#!/bin/sh
 echo "SECRET-PROBE-STDERR" >&2
+[ -n "$FAKE_PROBE_LOG" ] && echo "$*" >> "$FAKE_PROBE_LOG"
+case "$*" in *-show_frames*) cat "${FAKE_FRAMES:-/dev/null}"; exit 0 ;; esac
 cat "$FAKE_PROBE"
 `
 
@@ -57,6 +60,8 @@ func fakeTools(t *testing.T, probe *probeResult) {
 	t.Setenv("FAKE_SLEEP", "")
 	t.Setenv("FAKE_LOG", "")
 	t.Setenv("FAKE_FAIL_ON", "")
+	t.Setenv("FAKE_PROBE_LOG", "")
+	t.Setenv("FAKE_FRAMES", "")
 	oldProbe, oldFF, oldWork, oldStill := probeBin, ffmpegBin, workRoot, stillPath
 	probeBin, ffmpegBin = write("ffprobe", fakeProbe), write("ffmpeg", fakeFFmpeg)
 	workRoot = filepath.Join(dir, "work")
@@ -420,12 +425,12 @@ func TestStalledSocketsEndTheJob(t *testing.T) {
 // A frame whose ICC profile iccdetect cannot use (a grayscale one) is encoded and stilled as before, its profile
 // dropped, rather than failing.
 func TestAnUnusableProfileFallsBackToDroppingIt(t *testing.T) {
-	probe := videoProbe()
-	probe.Frames = append(probe.Frames, struct {
-		StreamIndex  int        `json:"stream_index"`
-		SideDataList []sideData `json:"side_data_list"`
-	}{0, []sideData{{"ICC profile"}}})
-	fakeTools(t, probe)
+	fakeTools(t, videoProbe())
+	frames := filepath.Join(t.TempDir(), "frames.json")
+	if err := os.WriteFile(frames, []byte(`{"frames":[{"stream_index":0,"side_data_list":[{"side_data_type":"ICC profile"}]}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_FRAMES", frames)
 	t.Setenv("FAKE_OUT", fakeMP4(t))
 	t.Setenv("FAKE_FAIL_ON", "iccdetect")
 	log := filepath.Join(t.TempDir(), "ffmpeg.log")
@@ -474,5 +479,43 @@ func TestUnconvertiblePrimariesFallBack(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(string(runs)), "\n")
 	if len(lines) < 2 || !strings.Contains(lines[0], toBT709) || strings.Contains(lines[1], toBT709) {
 		t.Fatalf("runs: %q", lines)
+	}
+}
+
+// The header probe's limits come first: an input over maxSourcePixels is refused before any frame is decoded. One
+// within them gets the frame probe, with the decoder's own pixel limit.
+func TestTheFrameProbeRunsOnlyWithinTheLimits(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		w, h, code int
+		frames     bool
+	}{{"oversized", 16384, 16384, 422, false}, {"within", 320, 240, 200, true}} {
+		fakeTools(t, probeOf("2", stream("video", "hevc", c.w, c.h, "15/1", "2")))
+		t.Setenv("FAKE_OUT", fakeMP4(t))
+		log := filepath.Join(t.TempDir(), "ffprobe.log")
+		t.Setenv("FAKE_PROBE_LOG", log)
+		mux := newMux(threadsDefault)
+		for _, path := range []string{normalizeURL, "/still"} {
+			if rec := do(t, mux, "POST", path, []byte("input")); rec.Code != c.code ||
+				c.code == 422 && rec.Header().Get("Kopje-Error") != "pixels" {
+				t.Fatalf("%s %s: %d %q", c.name, path, rec.Code, rec.Body.String())
+			}
+		}
+		runs, err := os.ReadFile(log)
+		if err != nil {
+			t.Fatal(err)
+		}
+		framed := 0
+		for _, line := range strings.Split(strings.TrimSpace(string(runs)), "\n") {
+			if strings.Contains(line, "-show_frames") {
+				framed++
+				if !strings.Contains(line, "-max_pixels "+itoa(maxSourcePixels)) {
+					t.Fatalf("frame probe without a pixel limit: %q", line)
+				}
+			}
+		}
+		if (framed == 2) != c.frames || (framed != 0) != c.frames {
+			t.Fatalf("%s: %d frame probes in %q", c.name, framed, runs)
+		}
 	}
 }

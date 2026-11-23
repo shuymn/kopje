@@ -58,9 +58,15 @@ func TestEveryCommandGuardsItsInputAndStripsMetadata(t *testing.T) {
 	if !hasPair(probe, "-protocol_whitelist", "file") || !hasPair(probe, "-format_whitelist", formatWhitelist) {
 		t.Fatalf("probe: %v", probe)
 	}
-	// The first frames too: an image codec's ICC profile is on its frames only (hasICC).
-	if !slices.Contains(probe, "-show_frames") || !hasPair(probe, "-read_intervals", "%+#1") {
-		t.Fatalf("probe reads no frame: %v", probe)
+	// The header probe decodes no frame; the frame probe, run after the limits passed, refuses a frame over them too.
+	if slices.Contains(probe, "-show_frames") || slices.Contains(probe, "-read_intervals") {
+		t.Fatalf("header probe decodes: %v", probe)
+	}
+	frames := frameProbeArgs("in", 2)
+	if !hasPair(frames, "-max_pixels", itoa(maxSourcePixels)) || !hasPair(frames, "-select_streams", "2") ||
+		!hasPair(frames, "-read_intervals", "%+#1") || !hasPair(frames, "-format_whitelist", formatWhitelist) ||
+		slices.Index(frames, "-max_pixels") > slices.Index(frames, "file:in") {
+		t.Fatalf("frame probe: %v", frames)
 	}
 	for _, d := range strings.Split(formatWhitelist, ",") {
 		found := false

@@ -184,6 +184,14 @@ func stillArgs(videoIndex int, hdr, icc bool, seek float64, in, out string) []st
 
 func probeArgs(path string) []string {
 	return cat([]string{"-v", "error"}, inputGuards,
-		[]string{"-print_format", "json", "-show_format", "-show_streams", "-show_frames", "-read_intervals", "%+#1",
-			"file:" + path})
+		[]string{"-print_format", "json", "-show_format", "-show_streams", "file:" + path})
+}
+
+// frameProbeArgs decodes the first packet of the stream at index, for what only a frame carries (an image codec's ICC
+// profile). It runs only after the header probe's limits passed, and the decoder refuses a frame over
+// maxSourcePixels as well.
+func frameProbeArgs(path string, index int) []string {
+	return cat([]string{"-v", "error"}, inputGuards,
+		[]string{"-max_pixels", strconv.Itoa(maxSourcePixels), "-select_streams", strconv.Itoa(index),
+			"-read_intervals", "%+#1", "-print_format", "json", "-show_frames", "file:" + path})
 }

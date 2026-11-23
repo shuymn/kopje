@@ -232,22 +232,12 @@ func TestPlanReadsTheColourTags(t *testing.T) {
 	}
 	onStream := video("", "")
 	onStream.Streams[0].SideDataList = []sideData{{"ICC Profile"}}
-	onFrame := video("", "")
-	onFrame.Frames = append(onFrame.Frames, struct {
-		StreamIndex  int        `json:"stream_index"`
-		SideDataList []sideData `json:"side_data_list"`
-	}{0, []sideData{{"ICC profile"}}})
-	otherStream := video("", "")
-	otherStream.Frames = append(otherStream.Frames, struct {
-		StreamIndex  int        `json:"stream_index"`
-		SideDataList []sideData `json:"side_data_list"`
-	}{1, []sideData{{"ICC profile"}}})
-	for name, c := range map[string]struct {
-		p    *probeResult
-		want bool
-	}{"stream": {onStream, true}, "frame": {onFrame, true}, "another stream's frame": {otherStream, false}} {
-		if pl, _ := planNormalize(c.p, roomy); pl.icc != c.want {
-			t.Fatalf("%s: icc %v", name, pl.icc)
-		}
+	if pl, _ := planNormalize(onStream, roomy); !pl.icc {
+		t.Fatal("a profile on the stream is not seen")
+	}
+	// The frame probe's answer: a profile on a frame of the stream, not of another.
+	frames := `{"frames":[{"stream_index":1,"side_data_list":[{"side_data_type":"ICC profile"}]}]}`
+	if !framesICC([]byte(frames), 1) || framesICC([]byte(frames), 0) || framesICC([]byte("not json"), 1) {
+		t.Fatal("frame probe misread")
 	}
 }

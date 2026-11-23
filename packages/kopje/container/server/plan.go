@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"math"
 	"strconv"
 	"strings"
@@ -76,7 +77,10 @@ type probeResult struct {
 		Duration   string `json:"duration"`
 	} `json:"format"`
 	Streams []probeStream `json:"streams"`
-	// The first decoded frames (probeArgs reads one packet), for what only a frame carries.
+}
+
+// The frame probe's answer (frameProbeArgs): the first decoded frames, for what only a frame carries.
+type frameProbe struct {
 	Frames []struct {
 		StreamIndex  int        `json:"stream_index"`
 		SideDataList []sideData `json:"side_data_list"`
@@ -96,14 +100,20 @@ func iccIn(list []sideData) bool {
 	return false
 }
 
-// hasICC: the video stream carries an ICC profile, on the stream (a MOV colr box) or on its first frame (an image
-// codec's own, such as a PNG's iCCP).
-func hasICC(p *probeResult, video *probeStream) bool {
-	if iccIn(video.SideDataList) {
-		return true
+// streamICC: the video stream carries an ICC profile on the stream (a MOV colr box). An image codec's own (a PNG's
+// iCCP) is on its frames only: framesICC reads the frame probe for it.
+func streamICC(video *probeStream) bool {
+	return iccIn(video.SideDataList)
+}
+
+// framesICC: the frame probe's answer shows an ICC profile on a frame of the stream at index.
+func framesICC(out []byte, index int) bool {
+	var p frameProbe
+	if json.Unmarshal(out, &p) != nil {
+		return false
 	}
 	for _, f := range p.Frames {
-		if f.StreamIndex == video.Index && iccIn(f.SideDataList) {
+		if f.StreamIndex == index && iccIn(f.SideDataList) {
 			return true
 		}
 	}
@@ -303,7 +313,7 @@ func planVideo(p *probeResult, video, audio *probeStream, encodeMs float64) (*pl
 		audioIndex: audioIndex,
 		duration:   duration,
 		hdr:        hdr,
-		icc:        hasICC(p, video),
+		icc:        streamICC(video),
 		primaries:  otherPrimaries(video),
 		rung:       r,
 		maxrate:    videoMaxrate(duration, audioBitrate),

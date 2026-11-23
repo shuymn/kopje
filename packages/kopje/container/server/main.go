@@ -222,6 +222,9 @@ func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) 
 		return
 	}
 	w.Header().Set("Kopje-Estimate-Ms", strconv.FormatInt(int64(pl.estimateMs), 10))
+	if pl.kind == "video" && !pl.icc {
+		pl.icc = frameICC(r.Context(), probeTime, in, pl.videoIndex)
+	}
 
 	encodeCtx, cancel := context.WithTimeout(r.Context(), encodeTime)
 	defer cancel()
@@ -313,7 +316,8 @@ func handleStill(w http.ResponseWriter, r *http.Request) {
 	}
 	out := filepath.Join(dir, "still.png")
 	start = time.Now()
-	err = runStill(ctx, video.Index, isHDR(video), hasICC(p, video), stillSeek(boundedDuration(p, video)), in, out)
+	icc := streamICC(video) || frameICC(ctx, stillTimeout, in, video.Index)
+	err = runStill(ctx, video.Index, isHDR(video), icc, stillSeek(boundedDuration(p, video)), in, out)
 	t.set("Encode", start)
 	if err == nil {
 		err = stripPNG(out)
@@ -436,6 +440,23 @@ func probe(ctx context.Context, limit time.Duration, path string) (*probeResult,
 		return nil, refuse(refuseFormat)
 	}
 	return &p, nil
+}
+
+// frameICC runs the frame probe, after the header probe's limits passed: whether the stream at index has an ICC
+// profile on its first frame. A probe that fails or times out answers false (the still and the encode run without
+// the profile then, as for a frame without one).
+func frameICC(ctx context.Context, limit time.Duration, path string, index int) bool {
+	ctx, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, probeBin, frameProbeArgs(path, index)...)
+	killGroup(cmd)
+	var stdout limitedBuffer
+	stdout.limit = 1 << 20
+	cmd.Stdout = &stdout
+	if cmd.Run() != nil || stdout.over {
+		return false
+	}
+	return framesICC(stdout.buf, index)
 }
 
 // runFFmpeg runs ffmpeg until it exits or ctx ends, when its whole process group is killed. It returns the CPU time
