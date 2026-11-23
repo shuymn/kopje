@@ -53,17 +53,19 @@ var (
 )
 
 type probeStream struct {
-	Index         int    `json:"index"`
-	CodecType     string `json:"codec_type"`
-	CodecName     string `json:"codec_name"`
-	Width         int    `json:"width"`
-	Height        int    `json:"height"`
-	ColorTransfer string `json:"color_transfer"`
-	RFrameRate    string `json:"r_frame_rate"`
-	AvgFrameRate  string `json:"avg_frame_rate"`
-	NbFrames      string `json:"nb_frames"`
-	Duration      string `json:"duration"`
-	Disposition   struct {
+	Index          int        `json:"index"`
+	CodecType      string     `json:"codec_type"`
+	CodecName      string     `json:"codec_name"`
+	Width          int        `json:"width"`
+	Height         int        `json:"height"`
+	ColorTransfer  string     `json:"color_transfer"`
+	ColorPrimaries string     `json:"color_primaries"`
+	SideDataList   []sideData `json:"side_data_list"`
+	RFrameRate     string     `json:"r_frame_rate"`
+	AvgFrameRate   string     `json:"avg_frame_rate"`
+	NbFrames       string     `json:"nb_frames"`
+	Duration       string     `json:"duration"`
+	Disposition    struct {
 		AttachedPic int `json:"attached_pic"`
 	} `json:"disposition"`
 }
@@ -74,6 +76,45 @@ type probeResult struct {
 		Duration   string `json:"duration"`
 	} `json:"format"`
 	Streams []probeStream `json:"streams"`
+	// The first decoded frames (probeArgs reads one packet), for what only a frame carries.
+	Frames []struct {
+		StreamIndex  int        `json:"stream_index"`
+		SideDataList []sideData `json:"side_data_list"`
+	} `json:"frames"`
+}
+
+type sideData struct {
+	SideDataType string `json:"side_data_type"`
+}
+
+func iccIn(list []sideData) bool {
+	for _, d := range list {
+		if strings.EqualFold(d.SideDataType, "ICC profile") {
+			return true
+		}
+	}
+	return false
+}
+
+// hasICC: the video stream carries an ICC profile, on the stream (a MOV colr box) or on its first frame (an image
+// codec's own, such as a PNG's iCCP).
+func hasICC(p *probeResult, video *probeStream) bool {
+	if iccIn(video.SideDataList) {
+		return true
+	}
+	for _, f := range p.Frames {
+		if f.StreamIndex == video.Index && iccIn(f.SideDataList) {
+			return true
+		}
+	}
+	return false
+}
+
+// otherPrimaries: SDR video tagged with primaries other than BT.709 and a known transfer, which normalize converts
+// to BT.709 before labelling the output BT.709.
+func otherPrimaries(s *probeStream) bool {
+	known := func(v string) bool { return v != "" && v != "unknown" }
+	return !isHDR(s) && known(s.ColorPrimaries) && s.ColorPrimaries != "bt709" && known(s.ColorTransfer)
 }
 
 // A refusal of the input: the code the Worker records. Codes only, never ffmpeg's words.
@@ -99,6 +140,10 @@ type plan struct {
 	audioIndex int    // -1 for a video without audio
 	duration   float64
 	hdr        bool
+	// icc: the video carries an ICC profile, which normalize reads (iccdetect) for its primaries and transfer;
+	// primaries: it is tagged with primaries other than BT.709. Either converts the primaries to BT.709 (SDR only).
+	icc        bool
+	primaries  bool
 	rung       rung
 	maxrate    int
 	estimateMs float64
@@ -258,6 +303,8 @@ func planVideo(p *probeResult, video, audio *probeStream, encodeMs float64) (*pl
 		audioIndex: audioIndex,
 		duration:   duration,
 		hdr:        hdr,
+		icc:        hasICC(p, video),
+		primaries:  otherPrimaries(video),
 		rung:       r,
 		maxrate:    videoMaxrate(duration, audioBitrate),
 		estimateMs: estimate,

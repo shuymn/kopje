@@ -77,8 +77,11 @@ func (t threading) encoderArgs() []string {
 	return []string{"-threads:v", strconv.Itoa(t.encoder)}
 }
 
-// iccDrop removes a frame's ICC profile.
-const iccDrop = "sidedata=mode=delete:type=ICC_PROFILE"
+// iccDrop removes a frame's ICC profile; toBT709 converts a frame's primaries to BT.709 from its colour tags.
+const (
+	iccDrop = "sidedata=mode=delete:type=ICC_PROFILE"
+	toBT709 = "zscale=p=bt709"
+)
 
 func cat(parts ...[]string) []string {
 	var out []string
@@ -90,13 +93,22 @@ func cat(parts ...[]string) []string {
 
 // videoArgs encodes the plan's video (and audio) stream as H.264/AAC MP4 within its rung: libx264 veryfast CRF 23
 // under a bitrate cap, yuv420p BT.709 limited range, rotation applied to pixels, no SEI (x264 writes its version
-// there), empty encoder tags (they reach the avc1 compressor name) and the moov ahead of mdat. A frame's ICC profile
-// is dropped (the MP4 muxer writes it into a colr box otherwise).
+// there), empty encoder tags (they reach the avc1 compressor name) and the moov ahead of mdat. HDR is tone mapped to
+// BT.709. SDR whose primaries are not BT.709, by its tags or by its ICC profile (iccdetect), is converted to BT.709
+// primaries first, keeping its transfer; BT.709 and untagged SDR pass as they are. A frame's ICC profile is dropped
+// after it is read (the MP4 muxer writes it into a colr box otherwise).
 func videoArgs(p *plan, t threading, in, out string) []string {
 	r := p.rung
-	vf := []string{iccDrop}
-	if p.hdr {
-		vf = append(vf, tonemap)
+	var vf []string
+	switch {
+	case p.hdr:
+		vf = []string{iccDrop, tonemap}
+	case p.icc:
+		vf = []string{"iccdetect", toBT709, iccDrop}
+	case p.primaries:
+		vf = []string{toBT709, iccDrop}
+	default:
+		vf = []string{iccDrop}
 	}
 	fit := fmt.Sprintf("min(1,min(%d/max(iw,ih),%d/min(iw,ih)))", r.longEdge, r.shortEdge)
 	vf = append(vf,
@@ -146,14 +158,18 @@ func stillSeek(duration float64) float64 {
 }
 
 // stillArgs writes one PNG of the keyframe at or before seek, long edge at most stillLongEdge, scaled before any tone
-// mapping so the float chain runs on the small frame. Only keyframes are decoded. A frame's ICC profile (a PNG or
-// other image codec in MOV can carry one) is read for its primaries and transfer (iccdetect), and the still's profile
-// is generated from those (iccgen=force=1) rather than copied, so the still keeps its colour without the source's
-// profile bytes; for a frame without one the generated profile renders as the untagged frame does. A profile that
-// cannot be parsed fails the still.
-func stillArgs(videoIndex int, hdr bool, seek float64, in, out string) []string {
+// mapping so the float chain runs on the small frame. Only keyframes are decoded. With icc, a frame's ICC profile (a
+// PNG or other image codec in MOV can carry one) is read for its primaries and transfer (iccdetect); without, it is
+// dropped. The still's profile is generated from the frame's colour tags (iccgen=force=1), never copied, so the still
+// keeps its colour without the source's profile bytes; for an untagged or BT.709 frame it renders as the frame does.
+// iccdetect refuses a profile it cannot use (a grayscale one, a malformed one): the caller runs again without icc.
+func stillArgs(videoIndex int, hdr, icc bool, seek float64, in, out string) []string {
 	fit := fmt.Sprintf("min(1,%d/max(iw,ih))", stillLongEdge)
-	vf := []string{"iccdetect", fmt.Sprintf("scale=w='max(2,trunc(iw*%s))':h='max(2,trunc(ih*%s))'", fit, fit)}
+	first := iccDrop
+	if icc {
+		first = "iccdetect"
+	}
+	vf := []string{first, fmt.Sprintf("scale=w='max(2,trunc(iw*%s))':h='max(2,trunc(ih*%s))'", fit, fit)}
 	if hdr {
 		vf = append(vf, tonemap)
 	}
@@ -168,5 +184,6 @@ func stillArgs(videoIndex int, hdr bool, seek float64, in, out string) []string 
 
 func probeArgs(path string) []string {
 	return cat([]string{"-v", "error"}, inputGuards,
-		[]string{"-print_format", "json", "-show_format", "-show_streams", "file:" + path})
+		[]string{"-print_format", "json", "-show_format", "-show_streams", "-show_frames", "-read_intervals", "%+#1",
+			"file:" + path})
 }

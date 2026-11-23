@@ -209,3 +209,45 @@ func TestStillSeek(t *testing.T) {
 		t.Fatal("still seek")
 	}
 }
+
+// Which colour work a video needs, from the probe: a profile on the stream or on its first frame, and primaries other
+// than BT.709 with a known transfer on SDR.
+func TestPlanReadsTheColourTags(t *testing.T) {
+	video := func(primaries, transfer string) *probeResult {
+		s := stream("video", "h264", 320, 240, "30/1", "2")
+		s.ColorPrimaries, s.ColorTransfer = primaries, transfer
+		return probeOf("2", s)
+	}
+	for _, c := range []struct {
+		primaries, transfer string
+		want                bool
+	}{
+		{"smpte432", "bt709", true}, {"bt2020", "bt709", true}, {"bt709", "bt709", false}, {"", "", false},
+		{"unknown", "bt709", false}, {"smpte432", "unknown", false}, {"bt2020", "smpte2084", false},
+	} {
+		pl, r := planNormalize(video(c.primaries, c.transfer), roomy)
+		if r != "" || pl.primaries != c.want || pl.icc {
+			t.Fatalf("%s/%s: %+v %q", c.primaries, c.transfer, pl, r)
+		}
+	}
+	onStream := video("", "")
+	onStream.Streams[0].SideDataList = []sideData{{"ICC Profile"}}
+	onFrame := video("", "")
+	onFrame.Frames = append(onFrame.Frames, struct {
+		StreamIndex  int        `json:"stream_index"`
+		SideDataList []sideData `json:"side_data_list"`
+	}{0, []sideData{{"ICC profile"}}})
+	otherStream := video("", "")
+	otherStream.Frames = append(otherStream.Frames, struct {
+		StreamIndex  int        `json:"stream_index"`
+		SideDataList []sideData `json:"side_data_list"`
+	}{1, []sideData{{"ICC profile"}}})
+	for name, c := range map[string]struct {
+		p    *probeResult
+		want bool
+	}{"stream": {onStream, true}, "frame": {onFrame, true}, "another stream's frame": {otherStream, false}} {
+		if pl, _ := planNormalize(c.p, roomy); pl.icc != c.want {
+			t.Fatalf("%s: icc %v", name, pl.icc)
+		}
+	}
+}

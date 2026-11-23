@@ -35,7 +35,7 @@ func TestEveryCommandGuardsItsInputAndStripsMetadata(t *testing.T) {
 	commands := map[string][]string{
 		"video": videoArgs(videoPlan(false, 1), threadsDefault, "in", "out"),
 		"audio": audioArgs(&plan{kind: "audio", videoIndex: -1, audioIndex: 0}, "in", "out"),
-		"still": stillArgs(0, false, 1, "in", "out"),
+		"still": stillArgs(0, false, true, 1, "in", "out"),
 	}
 	for name, args := range commands {
 		if !hasPair(args, "-protocol_whitelist", "file") || !hasPair(args, "-format_whitelist", formatWhitelist) {
@@ -57,6 +57,10 @@ func TestEveryCommandGuardsItsInputAndStripsMetadata(t *testing.T) {
 	probe := probeArgs("in")
 	if !hasPair(probe, "-protocol_whitelist", "file") || !hasPair(probe, "-format_whitelist", formatWhitelist) {
 		t.Fatalf("probe: %v", probe)
+	}
+	// The first frames too: an image codec's ICC profile is on its frames only (hasICC).
+	if !slices.Contains(probe, "-show_frames") || !hasPair(probe, "-read_intervals", "%+#1") {
+		t.Fatalf("probe reads no frame: %v", probe)
 	}
 	for _, d := range strings.Split(formatWhitelist, ",") {
 		found := false
@@ -124,7 +128,7 @@ func TestAudioArgsPinTheEncoding(t *testing.T) {
 }
 
 func TestStillArgs(t *testing.T) {
-	args := stillArgs(3, true, 6, "in", "out")
+	args := stillArgs(3, true, true, 6, "in", "out")
 	for _, p := range [][2]string{{"-skip_frame", "nokey"}, {"-ss", "6.000"}, {"-map", "0:3"}, {"-frames:v", "1"},
 		{"-c:v", "png"}, {"-flags:v", "+bitexact"}} {
 		if !hasPair(args, p[0], p[1]) {
@@ -139,6 +143,33 @@ func TestStillArgs(t *testing.T) {
 	// -ss before -i: an input seek, which -skip_frame nokey turns into the keyframe at or before it.
 	if slices.Index(args, "-ss") > slices.Index(args, "-i") {
 		t.Fatalf("output seek: %v", args)
+	}
+	// Without icc (the run after iccdetect refused a profile), the profile is dropped and the still's own generated.
+	plain := valueOf(stillArgs(3, false, false, 6, "in", "out"), "-vf")
+	if !strings.HasPrefix(plain, iccDrop+",scale=") || !strings.HasSuffix(plain, ",format=rgb24,iccgen=force=1") {
+		t.Fatalf("filter without icc %q", plain)
+	}
+}
+
+// SDR with other primaries, by tag or by ICC profile, is converted to BT.709 before the output is labelled BT.709;
+// BT.709 or untagged SDR and HDR (tone mapped to BT.709) are not.
+func TestVideoArgsConvertOtherPrimaries(t *testing.T) {
+	cases := []struct {
+		name   string
+		plan   func(*plan)
+		prefix string
+	}{
+		{"bt709 or untagged", func(*plan) {}, iccDrop + ",scale="},
+		{"icc", func(p *plan) { p.icc = true }, "iccdetect,zscale=p=bt709," + iccDrop + ",scale="},
+		{"tagged", func(p *plan) { p.primaries = true }, "zscale=p=bt709," + iccDrop + ",scale="},
+		{"hdr", func(p *plan) { p.hdr, p.icc, p.primaries = true, true, true }, iccDrop + "," + tonemap + ",scale="},
+	}
+	for _, c := range cases {
+		p := videoPlan(false, 1)
+		c.plan(p)
+		if vf := valueOf(videoArgs(p, threadsDefault, "in", "out"), "-vf"); !strings.HasPrefix(vf, c.prefix) {
+			t.Fatalf("%s: %q", c.name, vf)
+		}
 	}
 }
 

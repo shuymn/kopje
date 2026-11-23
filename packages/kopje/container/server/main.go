@@ -53,11 +53,11 @@ var (
 	// instant), the probe, the frame and the answer all end by then, so an upload of AV_UPLOAD_LIMIT must arrive faster
 	// than 1.5 MiB/s.
 	stillTimeout = 60 * time.Second
-	workRoot      = envOr("MEDIASRV_WORK", "/tmp/work")
-	stillPath     = filepath.Join(workRoot, "normalize-still.png")
-	ffmpegBin     = envOr("FFMPEG", "/usr/local/bin/ffmpeg")
-	probeBin      = envOr("FFPROBE", "/usr/local/bin/ffprobe")
-	bootID        = newID()
+	workRoot     = envOr("MEDIASRV_WORK", "/tmp/work")
+	stillPath    = filepath.Join(workRoot, "normalize-still.png")
+	ffmpegBin    = envOr("FFMPEG", "/usr/local/bin/ffmpeg")
+	probeBin     = envOr("FFPROBE", "/usr/local/bin/ffprobe")
+	bootID       = newID()
 	// One job at a time per process.
 	busy = make(chan struct{}, 1)
 )
@@ -236,6 +236,13 @@ func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) 
 		args = audioArgs(pl, in, out)
 	}
 	cpu, err := runFFmpeg(encodeCtx, args)
+	if err != nil && pl.kind == "video" && (pl.icc || pl.primaries) && encodeCtx.Err() == nil {
+		// A profile iccdetect cannot use, or tags zscale cannot convert from: the video is encoded as before, with no
+		// conversion and its profile dropped.
+		pl.icc, pl.primaries = false, false
+		more, retried := runFFmpeg(encodeCtx, videoArgs(pl, threads, in, out))
+		cpu, err = cpu+more, retried
+	}
 	t.set("Encode", start)
 	w.Header().Set("Kopje-Encode-Cpu-Ms", strconv.FormatInt(cpu.Milliseconds(), 10))
 	if err != nil {
@@ -306,7 +313,7 @@ func handleStill(w http.ResponseWriter, r *http.Request) {
 	}
 	out := filepath.Join(dir, "still.png")
 	start = time.Now()
-	_, err = runFFmpeg(ctx, stillArgs(video.Index, isHDR(video), stillSeek(boundedDuration(p, video)), in, out))
+	err = runStill(ctx, video.Index, isHDR(video), hasICC(p, video), stillSeek(boundedDuration(p, video)), in, out)
 	t.set("Encode", start)
 	if err == nil {
 		err = stripPNG(out)
@@ -323,7 +330,7 @@ func handleStill(w http.ResponseWriter, r *http.Request) {
 func makeStill(ctx context.Context, pl *plan, in string) bool {
 	tmp := stillPath + ".tmp"
 	defer os.Remove(tmp)
-	if _, err := runFFmpeg(ctx, stillArgs(pl.videoIndex, pl.hdr, stillSeek(pl.duration), in, tmp)); err != nil {
+	if runStill(ctx, pl.videoIndex, pl.hdr, pl.icc, stillSeek(pl.duration), in, tmp) != nil {
 		return false
 	}
 	if stripPNG(tmp) != nil {
@@ -334,6 +341,16 @@ func makeStill(ctx context.Context, pl *plan, in string) bool {
 		return false
 	}
 	return os.Rename(tmp, stillPath) == nil
+}
+
+// runStill writes the still, reading the frame's ICC profile when it has one, and runs again without it when ffmpeg
+// fails then (a profile iccdetect cannot use): the still is made as before, its profile dropped.
+func runStill(ctx context.Context, videoIndex int, hdr, icc bool, seek float64, in, out string) error {
+	_, err := runFFmpeg(ctx, stillArgs(videoIndex, hdr, icc, seek, in, out))
+	if err != nil && icc && ctx.Err() == nil {
+		_, err = runFFmpeg(ctx, stillArgs(videoIndex, hdr, false, seek, in, out))
+	}
+	return err
 }
 
 func ffmpegFailure(ctx context.Context, code string) *failure {

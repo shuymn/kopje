@@ -17,9 +17,9 @@ import (
 	"time"
 )
 
-// The fake ffprobe prints the probe JSON in the file $FAKE_PROBE; the fake ffmpeg copies the file $FAKE_OUT (for a PNG
-// still, $FAKE_PNG) to its last argument (file:<path>), prints a marker on stderr, and exits $FAKE_EXIT (sleeping
-// $FAKE_SLEEP seconds first).
+// The fake ffprobe prints the probe JSON in the file $FAKE_PROBE; the fake ffmpeg appends its arguments to $FAKE_LOG,
+// fails when they contain $FAKE_FAIL_ON, copies the file $FAKE_OUT (for a PNG still, $FAKE_PNG) to its last argument
+// (file:<path>), prints a marker on stderr, and exits $FAKE_EXIT (sleeping $FAKE_SLEEP seconds first).
 const fakeProbe = `#!/bin/sh
 echo "SECRET-PROBE-STDERR" >&2
 cat "$FAKE_PROBE"
@@ -27,6 +27,8 @@ cat "$FAKE_PROBE"
 
 const fakeFFmpeg = `#!/bin/sh
 echo "SECRET-FFMPEG-STDERR" >&2
+[ -n "$FAKE_LOG" ] && echo "$*" >> "$FAKE_LOG"
+[ -n "$FAKE_FAIL_ON" ] && case "$*" in *"$FAKE_FAIL_ON"*) exit 1 ;; esac
 [ -n "$FAKE_SLEEP" ] && sleep "$FAKE_SLEEP"
 for last; do :; done
 case "$*" in *"-c:v png"*) src="$FAKE_PNG" ;; *) src="$FAKE_OUT" ;; esac
@@ -53,6 +55,8 @@ func fakeTools(t *testing.T, probe *probeResult) {
 	t.Setenv("FAKE_PNG", write("still.png", string(seededPNG(t))))
 	t.Setenv("FAKE_EXIT", "0")
 	t.Setenv("FAKE_SLEEP", "")
+	t.Setenv("FAKE_LOG", "")
+	t.Setenv("FAKE_FAIL_ON", "")
 	oldProbe, oldFF, oldWork, oldStill := probeBin, ffmpegBin, workRoot, stillPath
 	probeBin, ffmpegBin = write("ffprobe", fakeProbe), write("ffmpeg", fakeFFmpeg)
 	workRoot = filepath.Join(dir, "work")
@@ -410,5 +414,65 @@ func TestStalledSocketsEndTheJob(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if !slotFreed(5 * time.Second) {
 		t.Fatal("job slot held by a peer that does not read")
+	}
+}
+
+// A frame whose ICC profile iccdetect cannot use (a grayscale one) is encoded and stilled as before, its profile
+// dropped, rather than failing.
+func TestAnUnusableProfileFallsBackToDroppingIt(t *testing.T) {
+	probe := videoProbe()
+	probe.Frames = append(probe.Frames, struct {
+		StreamIndex  int        `json:"stream_index"`
+		SideDataList []sideData `json:"side_data_list"`
+	}{0, []sideData{{"ICC profile"}}})
+	fakeTools(t, probe)
+	t.Setenv("FAKE_OUT", fakeMP4(t))
+	t.Setenv("FAKE_FAIL_ON", "iccdetect")
+	log := filepath.Join(t.TempDir(), "ffmpeg.log")
+	t.Setenv("FAKE_LOG", log)
+	mux := newMux(threadsDefault)
+	if rec := do(t, mux, "POST", normalizeURL, []byte("input")); rec.Code != 200 || rec.Header().Get("Kopje-Still") != "true" {
+		t.Fatalf("normalize %d %v", rec.Code, rec.Header())
+	}
+	if rec := do(t, mux, "POST", "/still", []byte("input")); rec.Code != 200 {
+		t.Fatalf("still %d %v", rec.Code, rec.Header())
+	}
+	runs, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The encode and /still each tried with the profile, then without it; normalize's still, after its encode found
+	// the profile unusable, without it at once.
+	lines := strings.Split(strings.TrimSpace(string(runs)), "\n")
+	want := []bool{true, false, false, true, false}
+	if len(lines) != len(want) {
+		t.Fatalf("runs: %q", lines)
+	}
+	for i, detect := range want {
+		if strings.Contains(lines[i], "iccdetect") != detect || !detect && !strings.Contains(lines[i], iccDrop) {
+			t.Fatalf("run %d (iccdetect %v): %q", i, detect, lines[i])
+		}
+	}
+}
+
+// Tags zscale cannot convert from (an unknown range, say) end in the encode as before, not a failure.
+func TestUnconvertiblePrimariesFallBack(t *testing.T) {
+	probe := videoProbe()
+	probe.Streams[0].ColorPrimaries, probe.Streams[0].ColorTransfer = "smpte432", "bt709"
+	fakeTools(t, probe)
+	t.Setenv("FAKE_OUT", fakeMP4(t))
+	t.Setenv("FAKE_FAIL_ON", toBT709)
+	log := filepath.Join(t.TempDir(), "ffmpeg.log")
+	t.Setenv("FAKE_LOG", log)
+	if rec := do(t, newMux(threadsDefault), "POST", normalizeURL, []byte("input")); rec.Code != 200 {
+		t.Fatalf("normalize %d %v", rec.Code, rec.Header())
+	}
+	runs, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(runs)), "\n")
+	if len(lines) < 2 || !strings.Contains(lines[0], toBT709) || strings.Contains(lines[1], toBT709) {
+		t.Fatalf("runs: %q", lines)
 	}
 }
