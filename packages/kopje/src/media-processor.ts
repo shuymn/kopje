@@ -3,20 +3,18 @@
 // as MEDIA_PROCESSOR and builds its image from the kopje package's container/. Without the block the class is exported
 // and never instantiated, and processorClient answers null.
 //
-// Each unit of work runs on a fresh object under a name used once (a probe: p:<version>:<profile>:<nonce>). The object
-// starts its container with Internet access disabled on the profile's instance type, waits for /healthz, gives the
-// container its one input as the request body of the one operation, reads the output as the response body within its
-// limit, and destroys the container before it answers. Readiness (the healthz polls and the image inspection) and the
-// operation (its request and both bodies) each end at one absolute deadline, however a call stalls. Before the
-// container starts, the object stores a cleanup watchdog: an alarm WATCHDOG_MS later, past both deadlines, so an
-// invocation that dies or a write that fails after the start still leaves an alarm that destroys the container. The
-// watchdog is cleared only once teardown is confirmed; until then the alarm retries the destroy every
-// CLEANUP_RETRY_MS and then deletes the object's storage. An object restarted while its container runs destroys it
-// before anything else.
-//
-// At most one probe of a profile runs at a time: the client takes the profile's lease (an object of the same class
-// named lease:<profile>) before it names a fresh unit of work, and gives it back once the probe reports its container
-// destroyed; a probe that ends otherwise keeps the lease until LEASE_MS, which outlasts the watchdog's first retry.
+// A profile's probe runs on one object per profile and Worker version (p:<version>:<profile>), so at most one container
+// of that profile runs by construction: a probe while another runs on the object, or while a container it cannot
+// destroy is still running, answers "busy" and starts nothing. The object starts its container with Internet access
+// disabled on the profile's instance type, waits for /healthz, gives the container its one input as the request body
+// of the one operation, reads the output as the response body within its limit, and destroys the container before it
+// answers. Before the start it computes one absolute deadline (PROBE_MS on) and stores it once, as the object's alarm;
+// every stage (the healthz polls, the image inspection, the operation and both bodies) ends at that same instant
+// however a call stalls, and a result that settles after it is refused. The alarm is the watchdog: an invocation that
+// dies after the start still leaves an alarm that destroys the container at the deadline. When the deadline cannot be
+// stored nothing starts. After a confirmed teardown the alarm and the storage are deleted; when that fails, the alarm
+// finds nothing running and deletes them then. A destroy that fails is retried by the alarm every CLEANUP_RETRY_MS. An
+// object restarted while its container runs destroys it before anything else.
 //
 // This release has the smoke probe only (probeNow): the packaged fixture through the operation, no verifier.
 import { DurableObject } from "cloudflare:workers";
@@ -38,11 +36,8 @@ const OPERATION_MS = 120_000;
 export const AV_OUTPUT_LIMIT = 63 * 1024 * 1024;
 const STILL_OUTPUT_LIMIT = 2 * 1024 * 1024;
 export const CLEANUP_RETRY_MS = 60_000;
-const CLEANUP_KEY = "cleanup";
-// Past the probe's own bounds: readiness, the operation and a minute for the destroy.
-export const WATCHDOG_MS = READY_MS + OPERATION_MS + 60_000;
-export const LEASE_MS = WATCHDOG_MS + 2 * CLEANUP_RETRY_MS;
-const LEASE_KEY = "lease";
+// The probe's one deadline, from before the start: readiness, then the operation.
+export const PROBE_MS = READY_MS + OPERATION_MS;
 
 const OPERATIONS = {
   normalize: { path: `/normalize?probe_ms=${PROBE_STAGE_MS}&encode_ms=${PROBE_ENCODE_MS}`, type: "video/mp4" },
@@ -69,7 +64,8 @@ function decodeFixture(): Uint8Array<ArrayBuffer> {
 
 const TIMED_OUT: unique symbol = Symbol("timed out");
 
-// Settles with the promise, or with TIMED_OUT once the deadline (on deps' clock) passes; aborts `controller` then.
+// Settles with the promise, or with TIMED_OUT once the deadline (on deps' clock) passes, including a result that
+// settles at or after the deadline before the timer does; aborts `controller` then.
 async function before<T>(
   promise: Promise<T>,
   deadline: number,
@@ -78,8 +74,9 @@ async function before<T>(
 ): Promise<T | typeof TIMED_OUT> {
   promise.catch(() => {});
   const left = deadline - deps.now();
-  const result: T | typeof TIMED_OUT =
+  const settled: T | typeof TIMED_OUT =
     left <= 0 ? TIMED_OUT : await Promise.race([promise, deps.wait(left).then((): typeof TIMED_OUT => TIMED_OUT)]);
+  const result = deps.now() >= deadline ? TIMED_OUT : settled;
   if (result === TIMED_OUT) {
     controller?.abort();
   }
@@ -142,12 +139,13 @@ function stageTimes(headers: Headers): Record<string, number> {
 }
 
 // The smoke probe of one profile on a container that is not running: start, readiness, the operation on the fixture,
-// and destroy. It never throws; destroy() is attempted whatever happened before it, and its failure is reported as
-// `destroyed: false` for the caller to clean up.
+// and destroy, every stage ending at `deadline`. It never throws; destroy() is attempted whatever happened before it,
+// and its failure is reported as `destroyed: false` for the caller to clean up.
 export async function smokeProbe(
   container: Container,
   profile: ProbeProfile,
   deps: ProbeDeps = defaultDeps,
+  deadline: number = deps.now() + PROBE_MS,
 ): Promise<ProbeReport> {
   const started = deps.now();
   const [operation, instance] = profile.split("@") as [
@@ -178,7 +176,7 @@ export async function smokeProbe(
       labels: { app: "kopje-media", operation, instance },
     });
     const port = container.getTcpPort(PORT);
-    const readyBy = started + READY_MS;
+    const readyBy = Math.min(started + READY_MS, deadline);
     for (;;) {
       const poll = new AbortController();
       const ready = await before(
@@ -211,7 +209,6 @@ export async function smokeProbe(
 
     const fixture = decodeFixture();
     const begun = deps.now();
-    const operationBy = begun + OPERATION_MS;
     const spec = OPERATIONS[operation];
     const aborted = new AbortController();
     const run = async () => {
@@ -236,7 +233,7 @@ export async function smokeProbe(
         report.stillBytes = await expectOutput(still, "image/png", STILL_OUTPUT_LIMIT, "normalize-still");
       }
     };
-    if ((await before(run(), operationBy, deps, aborted)) === TIMED_OUT) {
+    if ((await before(run(), deadline, deps, aborted)) === TIMED_OUT) {
       throw new ProbeFailure("operation-deadline");
     }
     report.operationMs = deps.now() - begun;
@@ -286,13 +283,19 @@ function unstarted(profile: ProbeProfile, failure: string): ProbeReport {
 // The parts of a Durable Object's state a unit of work uses.
 export type UnitState = {
   readonly container?: Container | undefined;
-  readonly storage: Pick<DurableObjectStorage, "get" | "put" | "delete" | "setAlarm" | "deleteAlarm" | "deleteAll">;
+  readonly storage: Pick<DurableObjectStorage, "setAlarm" | "deleteAlarm" | "deleteAll">;
   blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T>;
 };
 
 // What MediaProcessor does, over the parts of its state it uses.
 export class ProcessorUnit {
-  constructor(private readonly state: UnitState) {}
+  // A probe is running on this object (set and checked with no await between, so two calls cannot both pass).
+  #probing = false;
+
+  constructor(
+    private readonly state: UnitState,
+    private readonly deps: ProbeDeps = defaultDeps,
+  ) {}
 
   // A restart while the container runs: nothing the earlier object read is used; the container goes first.
   start(): void {
@@ -300,7 +303,7 @@ export class ProcessorUnit {
     if (container?.running === true) {
       void this.state.blockConcurrencyWhile(async () => {
         if (!(await destroyContainer(container))) {
-          await this.keepCleaning(CLEANUP_RETRY_MS);
+          await this.retryCleanup();
         }
       });
     }
@@ -311,59 +314,61 @@ export class ProcessorUnit {
     if (container === undefined) {
       return unstarted(profile, "no-container");
     }
-    if (container.running && !(await destroyContainer(container))) {
-      await this.keepCleaning(CLEANUP_RETRY_MS);
-      throw new Error("a container from an earlier start could not be destroyed");
+    if (this.#probing) {
+      return unstarted(profile, "busy");
     }
-    // The watchdog, before the start: if it cannot be stored, nothing starts.
-    await this.keepCleaning(WATCHDOG_MS);
-    const report = await smokeProbe(container, profile);
-    if (report.destroyed) {
-      await this.state.storage.deleteAlarm();
-      await this.state.storage.deleteAll();
-    } else {
-      // The watchdog stays set whether or not this sooner retry can be written.
-      await this.state.storage.setAlarm(Date.now() + CLEANUP_RETRY_MS).catch((error: unknown) => {
+    this.#probing = true;
+    try {
+      // A container an earlier probe could not destroy: this probe tries once more, and is busy while it runs.
+      if (container.running && !(await destroyContainer(container))) {
+        await this.retryCleanup();
+        return { ...unstarted(profile, "busy"), destroyed: false };
+      }
+      const deadline = this.deps.now() + PROBE_MS;
+      try {
+        await this.state.storage.setAlarm(deadline);
+      } catch (error) {
         console.warn({ event: "kopje.media.cleanup.failed", ...errorFields(error) });
-      });
-    }
-    return report;
-  }
-
-  // The profile lease, on the object named lease:<profile>: taken when it is free or past its time, given back only by
-  // its holder.
-  async acquireLease(holder: string): Promise<boolean> {
-    const now = Date.now();
-    const lease = await this.state.storage.get<{ holder: string; until: number }>(LEASE_KEY);
-    if (lease !== undefined && lease.until > now && lease.holder !== holder) {
-      return false;
-    }
-    await this.state.storage.put(LEASE_KEY, { holder, until: now + LEASE_MS });
-    return true;
-  }
-
-  async releaseLease(holder: string): Promise<void> {
-    const lease = await this.state.storage.get<{ holder: string; until: number }>(LEASE_KEY);
-    if (lease?.holder === holder) {
-      await this.state.storage.delete(LEASE_KEY);
+        return unstarted(profile, "storage");
+      }
+      const report = await smokeProbe(container, profile, this.deps, deadline);
+      if (report.destroyed) {
+        await this.clear();
+      } else {
+        await this.retryCleanup();
+      }
+      return report;
+    } finally {
+      this.#probing = false;
     }
   }
 
-  // The cleanup alarm: destroy the container, then delete the object's storage (a SQLite object is billed for its
-  // stored data until it is removed).
+  // The alarm: the probe's deadline or a cleanup retry. Destroys the container, then deletes the alarm and the storage
+  // (a SQLite object is billed for its stored data until it is removed).
   async alarm(): Promise<void> {
     const container = this.state.container;
     if (container !== undefined && !(await destroyContainer(container))) {
-      await this.state.storage.setAlarm(Date.now() + CLEANUP_RETRY_MS);
+      await this.state.storage.setAlarm(this.deps.now() + CLEANUP_RETRY_MS);
       return;
     }
-    await this.state.storage.deleteAlarm();
-    await this.state.storage.deleteAll();
+    await this.clear();
   }
 
-  private async keepCleaning(after: number): Promise<void> {
-    await this.state.storage.put(CLEANUP_KEY, true);
-    await this.state.storage.setAlarm(Date.now() + after);
+  // After a confirmed teardown. A failure leaves the alarm, which finds nothing running and clears again.
+  private async clear(): Promise<void> {
+    try {
+      await this.state.storage.deleteAll();
+      await this.state.storage.deleteAlarm();
+    } catch (error) {
+      console.warn({ event: "kopje.media.cleanup.failed", ...errorFields(error) });
+    }
+  }
+
+  // A sooner destroy than the deadline's alarm; when it cannot be written, the deadline's alarm still stands.
+  private async retryCleanup(): Promise<void> {
+    await this.state.storage.setAlarm(this.deps.now() + CLEANUP_RETRY_MS).catch((error: unknown) => {
+      console.warn({ event: "kopje.media.cleanup.failed", ...errorFields(error) });
+    });
   }
 }
 
@@ -380,37 +385,20 @@ export class MediaProcessor extends DurableObject<Env> {
     return this.#unit.probeNow(profile);
   }
 
-  acquireLease(holder: string): Promise<boolean> {
-    return this.#unit.acquireLease(holder);
-  }
-
-  releaseLease(holder: string): Promise<void> {
-    return this.#unit.releaseLease(holder);
-  }
-
   override alarm(): Promise<void> {
     return this.#unit.alarm();
   }
 }
 
 // The processor through the MEDIA_PROCESSOR binding, or null when the instance has not added the block.
-export function processorClient(env: Env, build: string, nonce: () => string = () => crypto.randomUUID()) {
+export function processorClient(env: Env, build: string) {
   const namespace = (env as ProcessorEnv).MEDIA_PROCESSOR;
   if (namespace === undefined) {
     return null;
   }
   return {
-    async probeNow(profile: ProbeProfile): Promise<ProbeReport> {
-      const holder = nonce();
-      const lease = namespace.getByName(`lease:${profile}`);
-      if (!(await lease.acquireLease(holder))) {
-        return { ...unstarted(profile, "busy"), destroyed: true };
-      }
-      const report = await namespace.getByName(`p:${build}:${profile}:${holder}`).probeNow(profile);
-      if (report.destroyed) {
-        await lease.releaseLease(holder);
-      }
-      return report;
+    probeNow(profile: ProbeProfile): Promise<ProbeReport> {
+      return namespace.getByName(`p:${build}:${profile}`).probeNow(profile);
     },
   } satisfies MediaProcessorClient;
 }
