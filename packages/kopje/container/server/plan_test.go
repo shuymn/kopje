@@ -288,10 +288,10 @@ func TestPlanReadsTheColourTags(t *testing.T) {
 // measured. The expected estimate is derived here from A1's coefficients and the encode time from design 4.7's
 // starting stage times, never copied from the plan, so a changed coefficient, rung or allocation fails this test.
 func TestTheEnvelopeAtTheBoundaries(t *testing.T) {
-	// The coefficients (A1's, the tone map's from the boundary bench, A8; ns per pixel, ms per second of audio), fixed
-	// work and safety factor.
+	// The coefficients (A1's, the tone map's and the encode's from the boundary bench, A8; ns per pixel, ms per second
+	// of audio), fixed work and safety factor.
 	decode := map[string]float64{"h264": 1.0, "hevc": 1.5, "vp9": 3.5}
-	const tonemap, encode, audioMs, fixedMs, safety = 11.0, 9.0, 40.0, 1500.0, 0.7
+	const tonemap, encode, audioMs, fixedMs, safety = 11.0, 21.0, 40.0, 1500.0, 0.7
 	// Design 4.7's starting stage times (s): dispatch, start, probe, still and Images, commit, v1's reply; an assumed
 	// input streaming time and, for v1, ingress.
 	const dispatch, start, probeS, still, commit, reply, input, ingress = 2.0, 5.0, 3.0, 8.0, 6.0, 2.0, 3.2, 10.0
@@ -379,15 +379,18 @@ func TestTheEnvelopeAtTheBoundaries(t *testing.T) {
 			t.Fatalf("%s admitted under its edge %.0f ms: %q", in.name, edge, refused)
 		}
 	}
-	// The comparisons A1 states, with A8's tone map: 30 s 1080p VP9 HLG with audio estimates 46.6 s; 600 s 4K HEVC SDR
-	// 315.7 s, admitted on v2's 452.8 s of encode time; a 60 s 1080p H.264 clip (41.2 s) refused on v1 at 90 s.
+	// A1's comparisons under A8's coefficients: 30 s 1080p VP9 HLG with audio estimates 69.0 s; 600 s 4K HEVC SDR 404.0 s,
+	// now refused on v2's 452.8 s of encode time, where 470 s is the edge (471 s refused); a 60 s 1080p H.264 clip
+	// (86.0 s) refused on v1 at 90 s.
 	vp9 := expected(1920, 1080, 30, 30, "vp9", true, true)
 	hevc := expected(3840, 2160, 30, 600, "hevc", false, true)
 	h264 := expected(1920, 1080, 30, 60, "h264", false, true)
-	if math.Round(vp9/100) != 466 || math.Round(hevc/100) != 3157 || math.Round(h264/100) != 412 {
+	if math.Round(vp9/100) != 690 || math.Round(hevc/100) != 4040 || math.Round(h264/100) != 860 {
 		t.Fatalf("estimates %v %v %v", vp9, hevc, h264)
 	}
-	if !(hevc <= safety*endpoints[0].encodeMs) || h264 <= safety*endpoints[1].encodeMs {
-		t.Fatal("A1's stated decisions do not hold")
+	v2 := safety * endpoints[0].encodeMs
+	edge, past := expected(3840, 2160, 30, 470, "hevc", false, true), expected(3840, 2160, 30, 471, "hevc", false, true)
+	if hevc <= v2 || edge > v2 || past <= v2 || h264 <= safety*endpoints[1].encodeMs {
+		t.Fatal("A8's stated decisions do not hold")
 	}
 }

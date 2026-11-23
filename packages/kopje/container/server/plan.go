@@ -41,15 +41,19 @@ var ladder = []rung{
 }
 
 // Coefficients of the conservative estimate, in nanoseconds of wall time per pixel (decode and encode) and milliseconds
-// per second of audio. Set from the PR2 boundary bench on standard-4 (all:4; #1828 A8): encode time over estimate at
-// most 0.97 across the synthetic boundary fixtures and real phone clips. The codecs the bench did not measure (VP8,
-// AV1, MPEG-4, the default) and VP9 keep the spike's values.
+// per second of audio. Set from the PR2 boundary bench on standard-4 (all:4; #1828 A8) as an upper bound of every
+// measured run: the tone map from the synthetic 4K HDR fixtures, the encode from a real 1080p Android clip whose
+// detailed content x264 takes 1.7 times as long a frame as a phone's test clip of the same format. x264's cost depends
+// on the content, which no header field predicts, so encodeNsPerPixel is the heavy clip's (encode time over estimate
+// at most 0.98 across the bench, every other run at most 0.82), and estimateSafety stays the margin for footage
+// heavier still. The codecs the bench did not measure (VP8, AV1, MPEG-4, the default) and VP9 keep the spike's
+// values.
 var (
 	decodeNsPerPixel = map[string]float64{"h264": 1.0, "hevc": 1.5, "vp9": 3.5, "vp8": 3, "av1": 8, "mpeg4": 2.5}
 	// A codec outside the map counts as the slowest listed.
 	decodeNsDefault   = 8.0
 	tonemapNsPerPixel = 11.0
-	encodeNsPerPixel  = 9.0
+	encodeNsPerPixel  = 21.0
 	audioMsPerSecond  = 40.0
 	// Fixed work around the encode: ffmpeg's start, the moov rewrite and the still.
 	fixedEstimateMs = 1500.0

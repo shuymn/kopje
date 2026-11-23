@@ -207,7 +207,7 @@ describe("the boundary matrix", () => {
       "estimateSafety",
     ].map(constant) as [number, number, number, number, number];
     expect([decode("h264"), decode("hevc"), tonemap, encode, audio, fixed, safety]).toEqual([
-      1, 1.5, 11, 9, 40, 1500, 0.7,
+      1, 1.5, 11, 21, 40, 1500, 0.7,
     ]);
     // The ladder (A2) and planNormalize's estimate, for a 30 fps source with audio.
     const ladder = [
