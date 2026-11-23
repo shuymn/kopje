@@ -41,15 +41,14 @@ var ladder = []rung{
 }
 
 // Coefficients of the conservative estimate, in nanoseconds of wall time per pixel (decode and encode) and milliseconds
-// per second of audio. Provisional upper bounds against P27's published wall times (standard-4, all:4; the aggregates
-// on #1828), chosen so the estimate is at least the whole measured wall time of every published run with margin left
-// for camera footage; to be replaced by the boundary bench's per-run encode times (#1828 PR2, A3). The codecs P27 did
-// not measure (VP8, AV1, MPEG-4, the default) and VP9 (measured below its value) keep the spike's values.
+// per second of audio. Set from the PR2 boundary bench on standard-4 (all:4; #1828 A8): encode time over estimate at
+// most 0.97 across the synthetic boundary fixtures and real phone clips. The codecs the bench did not measure (VP8,
+// AV1, MPEG-4, the default) and VP9 keep the spike's values.
 var (
 	decodeNsPerPixel = map[string]float64{"h264": 1.0, "hevc": 1.5, "vp9": 3.5, "vp8": 3, "av1": 8, "mpeg4": 2.5}
 	// A codec outside the map counts as the slowest listed.
 	decodeNsDefault   = 8.0
-	tonemapNsPerPixel = 10.0
+	tonemapNsPerPixel = 11.0
 	encodeNsPerPixel  = 9.0
 	audioMsPerSecond  = 40.0
 	// Fixed work around the encode: ffmpeg's start, the moov rewrite and the still.

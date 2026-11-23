@@ -115,37 +115,37 @@
       "expect": { "v1-90": "refused" }
     },
     {
+      "name": "hlg-46.mp4",
+      "codec": "hevc",
+      "size": "3840x2160",
+      "seconds": 46,
+      "transfer": "arib-std-b67",
+      "rate": "10M",
+      "expect": { "v1-300": "admitted" }
+    },
+    {
       "name": "hlg-50.mp4",
       "codec": "hevc",
       "size": "3840x2160",
       "seconds": 50,
       "transfer": "arib-std-b67",
       "rate": "10M",
-      "expect": { "v1-300": "admitted" }
-    },
-    {
-      "name": "hlg-54.mp4",
-      "codec": "hevc",
-      "size": "3840x2160",
-      "seconds": 54,
-      "transfer": "arib-std-b67",
-      "rate": "10M",
       "expect": { "v1-300": "refused" }
     },
     {
-      "name": "hlg-89.mp4",
+      "name": "hlg-83.mp4",
       "codec": "hevc",
       "size": "3840x2160",
-      "seconds": 89,
+      "seconds": 83,
       "transfer": "arib-std-b67",
       "rate": "6M",
       "expect": { "v2": "admitted" }
     },
     {
-      "name": "hlg-93.mp4",
+      "name": "hlg-87.mp4",
       "codec": "hevc",
       "size": "3840x2160",
-      "seconds": 93,
+      "seconds": 87,
       "transfer": "arib-std-b67",
       "rate": "6M",
       "expect": { "v2": "refused" }
@@ -169,37 +169,37 @@
       "expect": { "v1-90": "refused" }
     },
     {
+      "name": "pq-46.mp4",
+      "codec": "hevc",
+      "size": "3840x2160",
+      "seconds": 46,
+      "transfer": "smpte2084",
+      "rate": "10M",
+      "expect": { "v1-300": "admitted" }
+    },
+    {
       "name": "pq-50.mp4",
       "codec": "hevc",
       "size": "3840x2160",
       "seconds": 50,
       "transfer": "smpte2084",
       "rate": "10M",
-      "expect": { "v1-300": "admitted" }
-    },
-    {
-      "name": "pq-54.mp4",
-      "codec": "hevc",
-      "size": "3840x2160",
-      "seconds": 54,
-      "transfer": "smpte2084",
-      "rate": "10M",
       "expect": { "v1-300": "refused" }
     },
     {
-      "name": "pq-89.mp4",
+      "name": "pq-83.mp4",
       "codec": "hevc",
       "size": "3840x2160",
-      "seconds": 89,
+      "seconds": 83,
       "transfer": "smpte2084",
       "rate": "6M",
       "expect": { "v2": "admitted" }
     },
     {
-      "name": "pq-93.mp4",
+      "name": "pq-87.mp4",
       "codec": "hevc",
       "size": "3840x2160",
-      "seconds": 93,
+      "seconds": 87,
       "transfer": "smpte2084",
       "rate": "6M",
       "expect": { "v2": "refused" }

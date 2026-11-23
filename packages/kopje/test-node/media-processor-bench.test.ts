@@ -186,7 +186,7 @@ describe("the boundary matrix", () => {
     expect(timings(records).join("\n")).not.toContain("h264-50.mp4");
   });
 
-  it("expects of each fixture the verdict A1's coefficients in plan.go give at each endpoint", () => {
+  it("expects of each fixture the verdict plan.go's coefficients (A1, A8) give at each endpoint", () => {
     type Fixture = { name: string; codec: string; size: string; seconds: number; transfer: string; rate: string };
     type Matrix = {
       stages: Record<"dispatch" | "start" | "probe" | "still" | "commit" | "input", number>;
@@ -207,7 +207,7 @@ describe("the boundary matrix", () => {
       "estimateSafety",
     ].map(constant) as [number, number, number, number, number];
     expect([decode("h264"), decode("hevc"), tonemap, encode, audio, fixed, safety]).toEqual([
-      1, 1.5, 10, 9, 40, 1500, 0.7,
+      1, 1.5, 11, 9, 40, 1500, 0.7,
     ]);
     // The ladder (A2) and planNormalize's estimate, for a 30 fps source with audio.
     const ladder = [
