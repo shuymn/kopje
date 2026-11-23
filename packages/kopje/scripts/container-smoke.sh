@@ -241,7 +241,7 @@ srgb_pixel() { # <dir> <file>
 # The top-left pixel of a normalized video's first frame as sRGB "r g b": its BT.709 YUV through BT.709's transfer.
 video_pixel() { # <dir> <file>
   local v
-  v="$(pixel "$1" "$2" 'zscale=pin=bt709:tin=bt709:min=bt709:rin=limited:p=bt709:t=iec61966-2-1:m=gbr:r=full,format=rgb24')"
+  v="$(pixel "$1" "$2" 'zscale=pin=bt709:tin=bt709:min=bt709:rin=limited:p=bt709:t=iec61966-2-1:m=gbr:r=full,format=gbrp,format=rgb24')"
   echo $v
 }
 # Whether two "r g b" samples are within <tolerance> (default 2) in each channel.
@@ -473,7 +473,7 @@ for turn in "90 transpose=clock" "180 hflip,vflip" "270 transpose=cclock"; do
     "rotated$degrees.mp4: $got, want 128,72 with the marker top left"
   echo "| rotated$degrees.mp4 | normalize | $got | | | | | | | | |"
   made="$(stills "rotated$degrees.mp4")"
-  check "$([ "$(wc -w <<<"$made")" = 2 ] && echo true)" "rotated$degrees.mp4: stills $made, want both"
+  check "$([ "$(wc -w <<<"$made")" -eq 2 ] && echo true)" "rotated$degrees.mp4: stills $made, want both"
   for still in $made; do
     dims="$(ffprobe -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "/o/$still")"
     marks="$(block "$work/out" "$still" 0 0) $(block "$work/out" "$still" 120 0)"
@@ -516,7 +516,7 @@ for hdr in "arib-std-b67 721 hlg" "smpte2084 573 pq" "arib-std-b67 721 hlg-vui" 
     "$label.mp4: $got, want black <= 24 and white 150-235 in luma, its chroma within 12 of 128"
   echo "| $label.mp4 | normalize | $got | | | | | | | | |"
   made="$(stills "$label.mp4")"
-  check "$([ "$(wc -w <<<"$made")" = 2 ] && echo true)" "$label.mp4: stills $made, want both"
+  check "$([ "$(wc -w <<<"$made")" -eq 2 ] && echo true)" "$label.mp4: stills $made, want both"
   for still in $made; do
     black="$(block "$work/out" "$still" 24 32)"
     patch="$(block "$work/out" "$still" 96 32 yuv)"
