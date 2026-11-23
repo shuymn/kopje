@@ -122,6 +122,10 @@ func TestNormalizeAnswersTheOutputAndKeepsTheStill(t *testing.T) {
 		rec.Header().Get("Kopje-Still") != "true" {
 		t.Fatalf("%d %v", rec.Code, rec.Header())
 	}
+	// The plan's duration, for the Worker's verifier.
+	if rec.Header().Get("Kopje-Duration-Ms") != "2000" {
+		t.Fatalf("Kopje-Duration-Ms %q", rec.Header().Get("Kopje-Duration-Ms"))
+	}
 	if rec.Header().Get("Content-Length") != itoa(rec.Body.Len()) || bytes.Contains(rec.Body.Bytes(), []byte("udta")) {
 		t.Fatalf("body %d bytes, Content-Length %s", rec.Body.Len(), rec.Header().Get("Content-Length"))
 	}
@@ -695,6 +699,26 @@ func TestNormalizeRefusesAShortOutput(t *testing.T) {
 			}
 		})
 	}
+	// An output the probe cannot read after the decoder refused a frame over the pixel limit is that refusal too.
+	fakeTools(t, probeOf("10", stream("video", "h264", 320, 240, "30/1", "10")))
+	t.Setenv("FAKE_OUT", fakeMP4(t))
+	unreadable := filepath.Join(t.TempDir(), "output.json")
+	if err := os.WriteFile(unreadable, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_OUTPUT_PROBE", unreadable)
+	for _, c := range []struct {
+		oversized string
+		code      int
+		refusal   string
+	}{{"1", 422, "pixels"}, {"", 500, "encode_failed"}} {
+		t.Setenv("FAKE_OVERSIZE", c.oversized)
+		if rec := do(t, newMux(threadsDefault), "POST", normalizeURL, []byte("input")); rec.Code != c.code ||
+			rec.Header().Get("Kopje-Error") != c.refusal {
+			t.Fatalf("unreadable output, oversized %q: %d %q", c.oversized, rec.Code, rec.Header().Get("Kopje-Error"))
+		}
+	}
+	t.Setenv("FAKE_OVERSIZE", "")
 	// An audio output (MP3) is held to its source too.
 	fakeTools(t, probeOf("10", stream("audio", "flac", 0, 0, "0/0", "10")))
 	short := probeOf("5", stream("audio", "mp3", 0, 0, "0/0", "5"))
@@ -708,6 +732,59 @@ func TestNormalizeRefusesAShortOutput(t *testing.T) {
 	if rec := do(t, newMux(threadsDefault), "POST", normalizeURL, []byte("input")); rec.Code != 422 ||
 		rec.Header().Get("Kopje-Error") != "truncated" {
 		t.Fatalf("audio: %d %q", rec.Code, rec.Header().Get("Kopje-Error"))
+	}
+}
+
+// The output's video is held to the plan's frames (plannedFrames: the source's, at most the rung's rate, a lower bound
+// for VFR) within a second of the rung's frames or 10 %, and a video whose source declared no duration to the plan's.
+func TestNormalizeCountsTheOutputsFrames(t *testing.T) {
+	cfr := func(rate, duration string) probeStream { return stream("video", "h264", 320, 240, rate, duration) }
+	vfr := cfr("60/1", "150")
+	vfr.AvgFrameRate, vfr.NbFrames = "40/1", ""
+	undeclared := cfr("30/1", "")
+	undeclared.NbFrames = ""
+	frames := func(s probeStream, n string) probeStream { s.NbFrames = n; return s }
+	cases := []struct {
+		name    string
+		source  probeStream
+		output  probeStream
+		code    int
+		refusal string
+	}{
+		{"every frame", cfr("30/1", "10"), cfr("30/1", "10"), 200, ""},
+		{"within a second of frames", cfr("30/1", "10"), frames(cfr("30/1", "10"), "271"), 200, ""},
+		{"a second and more of frames short", cfr("30/1", "10"), frames(cfr("30/1", "10"), "269"), 422, "truncated"},
+		// 150 s is the 30 fps rung: 60 fps keeps half its frames.
+		{"at the rung's rate", cfr("60/1", "150"), cfr("30/1", "150"), 200, ""},
+		{"short of the rung's rate", cfr("60/1", "150"), frames(cfr("30/1", "150"), "4000"), 422, "truncated"},
+		// 40 fps on average, up to 60: at most 30 fps keeps at least 3000 (as 60 fps half the time and 20 the rest
+		// gives 3750); the rung's 4500 would refuse it.
+		{"VFR above the rung's rate", vfr, frames(cfr("30/1", "150"), "3750"), 200, ""},
+		{"VFR short", vfr, frames(cfr("30/1", "150"), "2600"), 422, "truncated"},
+		// The video declares no duration: held to the plan's 10 s, though the audio covers it.
+		{"no declared duration, whole", undeclared, cfr("30/1", "10"), 200, ""},
+		{"no declared duration, short", undeclared, frames(cfr("30/1", "8"), "300"), 422, "truncated"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			// The container's duration: the source video's, or 10 s for the one that declares none.
+			duration := c.source.Duration
+			if duration == "" {
+				duration = "10"
+			}
+			fakeTools(t, probeOf(duration, c.source, stream("audio", "aac", 0, 0, "0/0", duration)))
+			t.Setenv("FAKE_OUT", fakeMP4(t))
+			encoded, _ := json.Marshal(probeOf(duration, c.output, stream("audio", "aac", 0, 0, "0/0", duration)))
+			path := filepath.Join(t.TempDir(), "output.json")
+			if err := os.WriteFile(path, encoded, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("FAKE_OUTPUT_PROBE", path)
+			rec := do(t, newMux(threadsDefault), "POST", "/normalize?probe_ms=5000&encode_ms=600000", []byte("input"))
+			if rec.Code != c.code || rec.Header().Get("Kopje-Error") != c.refusal {
+				t.Fatalf("%d %q", rec.Code, rec.Header().Get("Kopje-Error"))
+			}
+		})
 	}
 }
 

@@ -23,7 +23,7 @@
 //          100 s, design #1828 F1)
 import { DurableObject } from "cloudflare:workers";
 
-import { avVerifier, verifyStill } from "../../src/platform/av-bytes";
+import { avVerifier, plannedDuration, verifyStill } from "../../src/platform/av-bytes";
 import { endToEnd } from "./outcome.mjs";
 
 interface Env {
@@ -179,8 +179,14 @@ export class BenchUnit extends DurableObject<Env> {
       }
       const t2 = Date.now();
       if (op === "normalize") {
-        // The output reaches R2 only through the verifier, which errors the stream at a refusal.
-        const verifier = avVerifier(expect === "video" ? "video/mp4" : "audio/mpeg", length);
+        // The output reaches R2 only through the verifier, which errors the stream at a refusal; it holds the output to
+        // the plan's duration the container answered.
+        const expectedDuration = plannedDuration(res.headers.get("kopje-duration-ms"));
+        if (expectedDuration === undefined) {
+          await res.body.cancel();
+          throw new Error("verifier: no planned duration");
+        }
+        const verifier = avVerifier(expect === "video" ? "video/mp4" : "audio/mpeg", length, { expectedDuration });
         const put = this.env.BUCKET.put(`out/${runId}/output`, sized(res.body.pipeThrough(verifier.stream), length));
         const written = await put.then(
           () => true,

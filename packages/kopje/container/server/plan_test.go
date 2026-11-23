@@ -12,6 +12,10 @@ func stream(codecType, codec string, w, h int, rate, duration string) probeStrea
 		Duration: duration}
 	if codecType == "video" {
 		s.ColorTransfer, s.ColorPrimaries = "bt709", "bt709"
+		// The frames a CFR stream of that duration has, as an MP4's header declares them (an output's too).
+		if frames := parsePositive(duration) * parseRate(rate); frames > 0 {
+			s.NbFrames = strconv.Itoa(int(math.Round(frames)))
+		}
 	}
 	return s
 }

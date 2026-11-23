@@ -169,6 +169,15 @@ export type AvVerifyOptions = {
   expectedDuration?: number;
 };
 
+// The planned duration a container answers in Kopje-Duration-Ms, in seconds for expectedDuration: a whole number of
+// milliseconds within AUDIO_DURATION_LIMIT, else none.
+export function plannedDuration(header: string | null): number | undefined {
+  if (header === null || !/^[1-9][0-9]{0,6}$/.test(header) || Number(header) > AUDIO_DURATION_LIMIT * 1000) {
+    return undefined;
+  }
+  return Number(header) / 1000;
+}
+
 export type AvType = "video/mp4" | "audio/mpeg";
 
 export class AvRefusal extends Error {

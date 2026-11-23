@@ -14,6 +14,7 @@ import {
   OUTPUT_LADDER,
   OUTPUT_LONG_EDGE,
   OUTPUT_SHORT_EDGE,
+  plannedDuration,
   RUNG_SLACK_MS,
   sniffAvUpload,
   STILL_LONG_EDGE,
@@ -704,6 +705,14 @@ describe("an MP4 changed in one field", () => {
     const long = await avFixture("r3-silent.mp4");
     expect(await rule("video/mp4", long, { expectedDuration: 301.9 })).toBe("accepted");
     expect(await rule("video/mp4", long, { expectedDuration: 302.1 })).toBe("short_output");
+  });
+
+  it("takes the plan's duration from the container's Kopje-Duration-Ms, a whole number of milliseconds in the limit", () => {
+    expect(plannedDuration("4400")).toBe(4.4);
+    expect(plannedDuration(String(AUDIO_DURATION_LIMIT * 1000))).toBe(AUDIO_DURATION_LIMIT);
+    for (const bad of [null, "", "0", "-1", "4.4", "1e3", " 4400", "04400", String(AUDIO_DURATION_LIMIT * 1000 + 1)]) {
+      expect(plannedDuration(bad), String(bad)).toBeUndefined();
+    }
   });
 });
 
