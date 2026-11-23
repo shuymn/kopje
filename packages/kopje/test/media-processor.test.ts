@@ -375,27 +375,15 @@ describe("smoke probe", () => {
 });
 
 // A Durable Object state with the parts MediaProcessor uses. `setAlarm` fails on the calls numbered in `failAlarmOn`
-// (from 1), `deleteAll` on those in `failDeleteAllOn`; `sync` waits for `sync()` when given (a delayed commit).
+// (from 1); `sync` waits for `sync()` when given (a delayed commit). `fire` runs the alarm as the runtime does: the
+// alarm is consumed, and stays set only if the handler sets it again.
 function fakeState(
   container: Container | undefined,
-  options: { failAlarmOn?: number[]; failDeleteAllOn?: number[]; sync?: () => Promise<void> } = {},
+  options: { failAlarmOn?: number[]; failDeleteAlarm?: boolean; sync?: () => Promise<void> } = {},
 ) {
-  const stored = new Map<string, unknown>();
   let alarm: number | null = null;
   let alarms = 0;
-  let deletes = 0;
-  const blocked: Promise<unknown>[] = [];
   const storage = {
-    get: (key: string) => Promise.resolve(stored.get(key)),
-    put: (key: string, value: unknown) => Promise.resolve(void stored.set(key, value)),
-    deleteAll: () => {
-      deletes++;
-      if (options.failDeleteAllOn?.includes(deletes) === true) {
-        return Promise.reject(new Error("storage unavailable"));
-      }
-      return Promise.resolve(stored.clear());
-    },
-    getAlarm: () => Promise.resolve(alarm),
     setAlarm: (at: number) => {
       alarms++;
       if (options.failAlarmOn?.includes(alarms) === true) {
@@ -404,23 +392,19 @@ function fakeState(
       alarm = at;
       return Promise.resolve();
     },
-    deleteAlarm: () => Promise.resolve(void (alarm = null)),
+    deleteAlarm: () =>
+      options.failDeleteAlarm === true
+        ? Promise.reject(new Error("storage unavailable"))
+        : Promise.resolve(void (alarm = null)),
     sync: () => options.sync?.() ?? Promise.resolve(),
   };
-  const ctx = {
-    container,
-    storage,
-    blockConcurrencyWhile: (fn: () => Promise<unknown>) => {
-      const p = fn();
-      blocked.push(p);
-      return p;
-    },
-  };
   return {
-    ctx: ctx as UnitState,
-    stored,
+    ctx: { container, storage } as UnitState,
     alarm: () => alarm,
-    settled: () => Promise.all(blocked),
+    fire: async (object: ProcessorUnit) => {
+      alarm = null;
+      await object.alarm();
+    },
   };
 }
 
@@ -446,6 +430,15 @@ function flaky(failing: () => boolean, overrides: Partial<Record<string, Handler
   return counted(() => (failing() ? Promise.reject(new Error("destroy failed")) : Promise.resolve()), overrides);
 }
 
+// A clock whose timers never fire, at a time the test sets.
+function frozen(at: number): { t: number; deps: ProbeDeps } {
+  const time: { t: number; deps: ProbeDeps } = {
+    t: at,
+    deps: { now: () => time.t, wait: () => new Promise<void>(() => {}) },
+  };
+  return time;
+}
+
 describe("MediaProcessor", () => {
   it("answers no-container when the class runs without a container", async () => {
     const state = fakeState(undefined);
@@ -453,37 +446,33 @@ describe("MediaProcessor", () => {
     expect(report).toMatchObject({ ok: false, failure: "no-container" });
   });
 
-  it("leaves no storage and no alarm after a probe whose container was destroyed", async () => {
+  it("leaves no alarm after a probe whose container was destroyed", async () => {
     const fake = fakeContainer(server());
     const state = fakeState(fake.container);
-    state.stored.set("leftover", 1);
     const report = await unit(state.ctx).probeNow("still@standard-1");
     expect(report.ok).toBe(true);
-    expect(state.stored.size).toBe(0);
     expect(state.alarm()).toBeNull();
   });
 
-  // The deadline is computed once before the start and stored, with the alarm at it; the operation ends at it.
-  it("stores the watchdog with the alarm at the probe's one deadline before the start, and ends there", async () => {
+  // One deadline from before the start ends every stage; the alarm, set before the start, is past it and the
+  // destroy's bound.
+  it("sets the alarm past the probe's deadline and destroy before the start, and ends the stages at the deadline", async () => {
     const time = clock();
-    let atStart: { alarm: number | null; watch: unknown } | undefined;
+    let atStart: number | null = null;
     const fake = fakeContainer(server({ "/still": () => new Promise<Response>(() => {}) }), {
-      onStart: () => (atStart = { alarm: state.alarm(), watch: state.stored.get("watch") }),
+      onStart: () => (atStart = state.alarm()),
     });
     const state = fakeState(fake.container);
     const begun = time.now();
     const report = await unit(state.ctx, time).probeNow("still@standard-1");
-    expect(atStart?.alarm).toBe(begun + PROBE_MS);
-    expect(atStart?.watch).toMatchObject({ deadline: begun + PROBE_MS });
+    expect(atStart).toBe(begun + PROBE_MS + DESTROY_MS);
     expect(report).toMatchObject({ ok: false, failure: "operation-deadline", destroyed: true });
-    // The operation gave up at the alarm's instant, not before and not after it.
-    expect(begun + report.wallMs).toBe(atStart?.alarm);
+    expect(report.wallMs).toBe(PROBE_MS);
     expect(state.alarm()).toBeNull();
-    expect(state.stored.size).toBe(0);
   });
 
   // A commit confirmed only later: the container starts after it, and not at all when it fails.
-  it("starts the container only after the watchdog's write is confirmed", async () => {
+  it("starts the container only after the alarm's write is confirmed", async () => {
     let confirm: (ok: boolean) => void = () => {};
     const fake = counted();
     const state = fakeState(fake.container, {
@@ -503,7 +492,29 @@ describe("MediaProcessor", () => {
     confirm(false);
     expect(await failed).toMatchObject({ ok: false, failure: "storage", destroyed: true });
     expect(fake.starts()).toBe(1);
-    expect(state.stored.size).toBe(0);
+    const retried = object.probeNow("still@standard-1");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    confirm(true);
+    expect((await retried).ok).toBe(true);
+  });
+
+  // The review's schedule: an alarm arrives while probe B awaits its commit. It changes nothing of B's: B's container
+  // keeps its alarm, which comes after B's bound.
+  it("leaves a probe in flight alone when an alarm arrives during its commit", async () => {
+    const time = frozen(9_000_000);
+    let confirm = () => {};
+    let atStart: number | null = null;
+    const fake = fakeContainer(server(), { onStart: () => (atStart = state.alarm()) });
+    const state = fakeState(fake.container, { sync: () => new Promise<void>((resolve) => (confirm = resolve)) });
+    const object = unit(state.ctx, time.deps);
+    const b = object.probeNow("still@standard-1");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await state.fire(object);
+    expect(fake.calls).toEqual([]);
+    expect(state.alarm()).toBe(9_000_000 + PROBE_MS + DESTROY_MS);
+    confirm();
+    expect((await b).ok).toBe(true);
+    expect(atStart).toBe(9_000_000 + PROBE_MS + DESTROY_MS);
   });
 
   // An output that settles at the deadline, before the deadline's timer runs, is refused; one just before it is not.
@@ -512,20 +523,32 @@ describe("MediaProcessor", () => {
       [0, "operation-deadline"],
       [-1, null],
     ] as const) {
-      let t = 5_000_000;
-      const deps: ProbeDeps = { now: () => t, wait: () => new Promise(() => {}) };
+      const time = frozen(5_000_000);
       const fake = fakeContainer(
         server({
           "/still": () => {
-            t = 5_000_000 + PROBE_MS + late;
+            time.t = 5_000_000 + PROBE_MS + late;
             return ok(PNG, "image/png");
           },
         }),
       );
-      const report = await unit(fakeState(fake.container).ctx, deps).probeNow("still@standard-1");
+      const report = await unit(fakeState(fake.container).ctx, time.deps).probeNow("still@standard-1");
       expect(report.failure, `late by ${late}`).toBe(failure);
       expect(report.destroyed).toBe(true);
     }
+  });
+
+  // Two calls in the same turn: the flag is set before any await, so the second is busy.
+  it("answers busy to a second call made in the same turn", async () => {
+    const fake = counted();
+    const object = unit(fakeState(fake.container).ctx);
+    const [first, second] = await Promise.all([
+      object.probeNow("still@standard-1"),
+      object.probeNow("still@standard-1"),
+    ]);
+    expect(first.ok).toBe(true);
+    expect(second).toMatchObject({ failure: "busy" });
+    expect(fake.starts()).toBe(1);
   });
 
   it("starts one container for concurrent probes of its profile, and the next probe after it starts cleanly", async () => {
@@ -549,7 +572,7 @@ describe("MediaProcessor", () => {
   });
 
   // However long the destroy keeps failing, the object's one container is the only one: every probe meanwhile is busy.
-  it("starts no second container while one it could not destroy runs, and probes again once it is gone", async () => {
+  it("starts no second container while an orphan runs, and probes again once the alarm destroyed it", async () => {
     let failing = true;
     const fake = flaky(() => failing);
     const state = fakeState(fake.container);
@@ -558,7 +581,9 @@ describe("MediaProcessor", () => {
     expect(await object.probeNow("still@standard-1")).toMatchObject({ failure: null, destroyed: false });
     expect(state.alarm()).toBeGreaterThanOrEqual(before + CLEANUP_RETRY_MS);
     for (let i = 0; i < 10; i++) {
-      await object.alarm();
+      await state.fire(object);
+      // The alarm that failed set itself again.
+      expect(state.alarm()).not.toBeNull();
       expect(await object.probeNow("still@standard-1")).toMatchObject({ failure: "busy", destroyed: false });
     }
     expect(fake.starts()).toBe(1);
@@ -566,64 +591,24 @@ describe("MediaProcessor", () => {
     expect(state.alarm()).not.toBeNull();
 
     failing = false;
-    await object.alarm();
+    await state.fire(object);
     expect(fake.container.running).toBe(false);
-    expect(state.alarm()).toBeNull();
     expect((await object.probeNow("still@standard-1")).ok).toBe(true);
     expect(fake.starts()).toBe(2);
   });
 
-  // The review's schedule: the alarm is in its destroy when the container stops; a probe arrives before the destroy's
-  // reply. The probe is busy (the record is the alarm's), so the alarm never meets a newer container or its deadline.
-  it("answers busy while the alarm is still destroying, and the next probe's deadline stays its own", async () => {
+  // The alarm's destroy: the container stops at once and the reply comes later. A probe meanwhile is busy, so no
+  // container starts that the late reply could meet.
+  it("answers busy while the alarm is still destroying an orphan", async () => {
     let failing = true;
     let reply = () => {};
     let deferred = true;
-    // A clock whose timers never fire: the destroy's reply, not its bound, ends the alarm's wait.
-    const time: ProbeDeps = { now: () => 7_000_000, wait: () => new Promise(() => {}) };
-    let atStart: number | null = null;
+    const time = frozen(7_000_000);
     const fake = fakeContainer(server(), {
       destroy: () => {
         if (failing) {
           return Promise.reject(new Error("destroy failed"));
         }
-        // The alarm's destroy: the container stops at once, the reply comes later. Later destroys answer at once.
-        stop();
-        if (deferred) {
-          deferred = false;
-          return new Promise<void>((resolve) => (reply = resolve));
-        }
-        return Promise.resolve();
-      },
-      onStart: () => (atStart = state.alarm()),
-    });
-    const stop = () => fake.stop();
-    const state = fakeState(fake.container);
-    const object = unit(state.ctx, time);
-    expect((await object.probeNow("still@standard-1")).destroyed).toBe(false);
-    failing = false;
-    const alarming = object.alarm();
-    await vi.waitFor(() => expect(fake.container.running).toBe(false));
-    expect(await object.probeNow("still@standard-1")).toMatchObject({ failure: "busy", destroyed: true });
-    reply();
-    await alarming;
-    expect(state.stored.size).toBe(0);
-    expect(state.alarm()).toBeNull();
-    const begun = time.now();
-    expect((await object.probeNow("still@standard-1")).ok).toBe(true);
-    expect(atStart).toBe(begun + PROBE_MS);
-  });
-
-  // The alarm fires at a probe's deadline while the probe still runs; the probe confirms its own teardown and clears its
-  // record, and a new probe starts before the alarm's destroy replies. The alarm leaves the new probe's record alone.
-  it("leaves a newer probe's record and deadline alone when its destroy replies late", async () => {
-    let t = 8_000_000;
-    const time: ProbeDeps = { now: () => t, wait: () => new Promise(() => {}) };
-    const gates: (() => void)[] = [];
-    let reply = () => {};
-    let deferred = true;
-    const fake = counted(
-      () => {
         fake.stop();
         if (deferred) {
           deferred = false;
@@ -631,52 +616,40 @@ describe("MediaProcessor", () => {
         }
         return Promise.resolve();
       },
-      { "/still": () => new Promise<Response>((resolve) => gates.push(() => resolve(ok(PNG, "image/png")))) },
-    );
+    });
     const state = fakeState(fake.container);
-    const object = unit(state.ctx, time);
-    const first = object.probeNow("still@standard-1");
-    await vi.waitFor(() => expect(gates).toHaveLength(1));
-    const alarming = object.alarm();
+    const object = unit(state.ctx, time.deps);
+    expect((await object.probeNow("still@standard-1")).destroyed).toBe(false);
+    failing = false;
+    const alarming = state.fire(object);
     await vi.waitFor(() => expect(fake.container.running).toBe(false));
-    gates[0]?.();
-    expect(await first).toMatchObject({ destroyed: true });
-
-    t += 1_000;
-    const second = object.probeNow("still@standard-1");
-    await vi.waitFor(() => expect(gates).toHaveLength(2));
-    expect(fake.starts()).toBe(2);
+    expect(await object.probeNow("still@standard-1")).toMatchObject({ failure: "busy" });
     reply();
     await alarming;
-    expect(state.alarm()).toBe(t + PROBE_MS);
-    expect(fake.container.running).toBe(true);
-    gates[1]?.();
-    expect((await second).ok).toBe(true);
+    expect((await object.probeNow("still@standard-1")).ok).toBe(true);
   });
 
   // A destroy that never settles counts as failed after DESTROY_MS: the probe answers, and the alarm owns the rest.
-  it("bounds a stalled destroy, and the alarm clears the record once the container is gone", async () => {
+  it("bounds a stalled destroy, and the alarm destroys the orphan once it can", async () => {
     let stalled = true;
     const time = clock();
     const fake = counted(() => (stalled ? new Promise<void>(() => {}) : Promise.resolve()));
     const state = fakeState(fake.container);
     const object = unit(state.ctx, time);
-    const begun = time.now();
     const report = await object.probeNow("still@standard-1");
     expect(report).toMatchObject({ ok: false, destroyed: false });
     expect(report.wallMs).toBeGreaterThanOrEqual(DESTROY_MS);
-    expect(time.now() - begun).toBeLessThan(PROBE_MS);
     expect(await object.probeNow("still@standard-1")).toMatchObject({ failure: "busy", destroyed: false });
-    await object.alarm();
-    expect(state.stored.get("watch")).toBeDefined();
+    await state.fire(object);
+    expect(fake.container.running).toBe(true);
     stalled = false;
-    await object.alarm();
-    expect(state.stored.size).toBe(0);
+    await state.fire(object);
+    expect(fake.container.running).toBe(false);
     expect((await object.probeNow("still@standard-1")).ok).toBe(true);
     expect(fake.starts()).toBe(2);
   });
 
-  it("keeps the deadline's alarm when destroy throws and the sooner retry cannot be written", async () => {
+  it("keeps the alarm set before the start when destroy throws and the sooner retry cannot be written", async () => {
     const time = clock();
     const fake = flaky(() => true);
     const state = fakeState(fake.container, { failAlarmOn: [2] });
@@ -684,12 +657,11 @@ describe("MediaProcessor", () => {
     const report = await unit(state.ctx, time).probeNow("still@standard-1");
     expect(report.destroyed).toBe(false);
     expect(fake.container.running).toBe(true);
-    expect(state.alarm()).toBe(begun + PROBE_MS);
-    expect(state.stored.get("watch")).toBeDefined();
+    expect(state.alarm()).toBe(begun + PROBE_MS + DESTROY_MS);
   });
 
   // A storage write that fails leaves no busy profile behind: an immediate retry starts cleanly.
-  it("starts nothing when the deadline cannot be stored, and a retry right after starts cleanly", async () => {
+  it("starts nothing when the alarm cannot be stored, and a retry right after starts cleanly", async () => {
     const fake = flaky(() => false);
     const state = fakeState(fake.container, { failAlarmOn: [1] });
     const object = unit(state.ctx);
@@ -699,41 +671,37 @@ describe("MediaProcessor", () => {
     expect(fake.starts()).toBe(1);
   });
 
-  // The record stays when the storage cannot be deleted after a teardown; the next probe hands it to an alarm now,
-  // which finds nothing running and clears it.
-  it("hands a record left after a confirmed teardown to an alarm now, and probes again after it", async () => {
-    const time = clock();
+  // An alarm left after a confirmed teardown finds nothing to do; the next probe starts at once.
+  it("starts the next probe at once when the alarm cannot be deleted after a teardown", async () => {
     const fake = flaky(() => false);
-    const state = fakeState(fake.container, { failDeleteAllOn: [1] });
-    const object = unit(state.ctx, time);
+    const state = fakeState(fake.container, { failDeleteAlarm: true });
+    const object = unit(state.ctx);
     expect(await object.probeNow("still@standard-1")).toMatchObject({ ok: true, destroyed: true });
-    expect(state.stored.get("watch")).toBeDefined();
-    expect(await object.probeNow("still@standard-1")).toMatchObject({ failure: "busy", destroyed: true });
-    expect(state.alarm()).toBe(time.now());
-    await object.alarm();
-    expect(state.stored.size).toBe(0);
+    expect(state.alarm()).not.toBeNull();
+    await state.fire(object);
+    expect(fake.calls.filter((c) => c === "destroy")).toHaveLength(1);
     expect((await object.probeNow("still@standard-1")).ok).toBe(true);
     expect(fake.starts()).toBe(2);
   });
 
-  it("destroys a container it finds running when it starts, and the alarm owns one it cannot", async () => {
-    const fake = fakeContainer(server());
+  // The constructor holds no gate: it sets the alarm for now, and the alarm destroys the orphan, however long a
+  // destroy takes.
+  it("leaves an orphan it finds at construction to the alarm, set for now", async () => {
+    let stalled = true;
+    const time = clock();
+    const fake = counted(() => (stalled ? new Promise<void>(() => {}) : Promise.resolve()));
     fake.container.start({ image: "x" });
     const state = fakeState(fake.container);
-    unit(state.ctx);
-    await state.settled();
-    expect(fake.calls).toEqual(["start", "destroy"]);
-    expect(fake.container.running).toBe(false);
-
-    const stuck = flaky(() => true);
-    stuck.container.start({ image: "x" });
-    const stuckState = fakeState(stuck.container);
-    const object = unit(stuckState.ctx);
-    await stuckState.settled();
-    expect(stuckState.stored.get("watch")).toBeDefined();
-    expect(stuckState.alarm()).not.toBeNull();
+    const object = unit(state.ctx, time);
+    await vi.waitFor(() => expect(state.alarm()).toBe(time.now()));
+    expect(fake.calls).toEqual(["start"]);
     expect(await object.probeNow("still@standard-1")).toMatchObject({ failure: "busy", destroyed: false });
-    expect(stuck.starts()).toBe(1);
+    await state.fire(object);
+    expect(fake.container.running).toBe(true);
+    stalled = false;
+    await state.fire(object);
+    expect(fake.container.running).toBe(false);
+    expect((await object.probeNow("still@standard-1")).ok).toBe(true);
   });
 });
 

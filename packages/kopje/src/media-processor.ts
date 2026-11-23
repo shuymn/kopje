@@ -5,20 +5,21 @@
 //
 // A profile's probe runs on one object per profile and Worker version (p:<version>:<profile>), so at most one container
 // of that profile and version runs by construction. (Across a rollout the previous version's object may still hold
-// its container; that object's own watchdog ends it, at its deadline.) The object starts its container with Internet
-// access disabled on the profile's instance type, waits for /healthz, gives the container its one input as the
-// request body of the one operation, reads the output as the response body within its limit, and destroys the
-// container before it answers. Every stage (the healthz polls, the image inspection, the operation and both bodies)
-// ends at one absolute deadline (PROBE_MS from before the start), however a call stalls, and a result that settles
-// after it is refused; every destroy is bounded by DESTROY_MS.
+// its container; that object's own alarm ends it.) The object starts its container with Internet access disabled on
+// the profile's instance type, waits for /healthz, gives the container its one input as the request body of the one
+// operation, reads the output as the response body within its limit, and destroys the container before it answers.
 //
-// The watchdog is a stored record (the probe's id and deadline) with the object's alarm at that deadline. It is
-// written and confirmed durable (storage.sync) before the container starts; when that fails nothing starts. While a
-// record exists the alarm owns the container: a probe arriving then answers "busy", so no start happens while an
-// earlier container may still run. The record is deleted only after a confirmed teardown, by the probe or by the
-// alarm; a destroy that fails leaves it, and the alarm retries every CLEANUP_RETRY_MS. The alarm acts on the record it
-// read at entry only: once its destroy settles it re-arms or deletes that record only if it is still the stored one.
-// An object restarted while its container runs destroys it before anything else, and stores a record when it cannot.
+// The rule, in one place: a probe call owns its container for its whole life and bounds every stage itself. Every
+// stage (the healthz polls, the image inspection, the operation and both bodies) ends at one deadline, PROBE_MS from
+// before the start, and a result that settles after it is refused; the destroy is bounded by DESTROY_MS after it.
+// Before the start the call sets the object's alarm past both (deadline + DESTROY_MS) and confirms it durable
+// (storage.sync), so an alarm exists before a container does even if the instance dies; when that fails nothing
+// starts. The alarm acts only when no probe call is in flight in this instance (a flag set at the call's entry,
+// before any await): then any running container is an orphan, whose call died with an earlier instance or returned
+// after a destroy that failed, and the alarm destroys it (bounded), or tries again every CLEANUP_RETRY_MS. With a call
+// in flight the alarm only sets itself again for after that call's own bound. A probe that finds an orphan running,
+// or the alarm destroying one, answers "busy" (setting the alarm for now in the first case); a constructor that finds
+// one sets the alarm for now and does nothing else. The object stores nothing but its alarm.
 //
 // This release has the smoke probe only (probeNow): the packaged fixture through the operation, no verifier.
 import { DurableObject } from "cloudflare:workers";
@@ -42,7 +43,6 @@ const STILL_OUTPUT_LIMIT = 2 * 1024 * 1024;
 export const CLEANUP_RETRY_MS = 60_000;
 // The most a destroy is awaited; one that has not settled by then counts as failed.
 export const DESTROY_MS = 30_000;
-const WATCH_KEY = "watch";
 // The probe's one deadline, from before the start: readiness, then the operation.
 export const PROBE_MS = READY_MS + OPERATION_MS;
 
@@ -295,39 +295,26 @@ function unstarted(profile: ProbeProfile, failure: string): ProbeReport {
 // The parts of a Durable Object's state a unit of work uses.
 export type UnitState = {
   readonly container?: Container | undefined;
-  readonly storage: Pick<
-    DurableObjectStorage,
-    "get" | "put" | "getAlarm" | "setAlarm" | "deleteAlarm" | "deleteAll" | "sync"
-  >;
-  blockConcurrencyWhile<T>(callback: () => Promise<T>): Promise<T>;
+  readonly storage: Pick<DurableObjectStorage, "setAlarm" | "deleteAlarm" | "sync">;
 };
-
-// The watchdog's record: whose container the alarm owns, and when it ends it.
-type Watch = { id: string; deadline: number };
 
 // What MediaProcessor does, over the parts of its state it uses.
 export class ProcessorUnit {
-  // A probe call is past its entry (set with no await before it, so two calls cannot both pass).
-  #probing = false;
+  // The deadline of the probe call in flight in this instance, or null. Set at the call's entry, before any await.
+  #inFlight: number | null = null;
+  // The alarm is destroying an orphan: a probe call answers busy meanwhile (the container may stop before the
+  // destroy's reply).
+  #cleaning = false;
 
   constructor(
     private readonly state: UnitState,
     private readonly deps: ProbeDeps = defaultDeps,
-    private readonly newId: () => string = () => crypto.randomUUID(),
   ) {}
 
-  // A restart while the container runs: nothing the earlier object read is used; the container goes first, and when
-  // it cannot be destroyed the alarm owns it.
+  // A restart while a container runs: its call died with the earlier instance, so it is an orphan for the alarm.
   start(): void {
-    const container = this.state.container;
-    if (container?.running === true) {
-      void this.state.blockConcurrencyWhile(async () => {
-        if (!(await destroyContainer(container, this.deps))) {
-          const now = this.deps.now();
-          await this.state.storage.put(WATCH_KEY, { id: this.newId(), deadline: now } satisfies Watch);
-          await this.state.storage.setAlarm(now + CLEANUP_RETRY_MS);
-        }
-      });
+    if (this.state.container?.running === true) {
+      void this.alarmNow();
     }
   }
 
@@ -336,79 +323,63 @@ export class ProcessorUnit {
     if (container === undefined) {
       return unstarted(profile, "no-container");
     }
-    if (this.#probing) {
+    if (this.#inFlight !== null || this.#cleaning) {
       return unstarted(profile, "busy");
     }
-    this.#probing = true;
+    if (container.running) {
+      // An orphan; the alarm owns it.
+      await this.alarmNow();
+      return { ...unstarted(profile, "busy"), destroyed: false };
+    }
+    // No await since the checks above: two calls cannot both pass.
+    const deadline = this.deps.now() + PROBE_MS;
+    this.#inFlight = deadline;
     try {
-      const pending = await this.state.storage.get<Watch>(WATCH_KEY);
-      if (pending !== undefined) {
-        // The alarm owns an earlier container until it clears the record. A record with no alarm, or with nothing
-        // running, is handed to an alarm now, which clears it once it confirms nothing runs.
-        const now = this.deps.now();
-        const alarm = await this.state.storage.getAlarm();
-        if (alarm === null || (!container.running && alarm > now)) {
-          await this.state.storage.setAlarm(now);
-        }
-        return { ...unstarted(profile, "busy"), destroyed: !container.running };
-      }
-      const watch: Watch = { id: this.newId(), deadline: this.deps.now() + PROBE_MS };
       try {
-        await this.state.storage.put(WATCH_KEY, watch);
-        await this.state.storage.setAlarm(watch.deadline);
+        await this.state.storage.setAlarm(deadline + DESTROY_MS);
         await this.state.storage.sync();
       } catch (error) {
         console.warn({ event: "kopje.media.cleanup.failed", ...errorFields(error) });
-        await this.forget(watch.id);
         return unstarted(profile, "storage");
       }
-      const report = await smokeProbe(container, profile, this.deps, watch.deadline);
-      if (report.destroyed) {
-        await this.forget(watch.id);
-      } else {
-        // The record stays with the alarm, sooner than the deadline when that can be written.
-        await this.state.storage.setAlarm(this.deps.now() + CLEANUP_RETRY_MS).catch((error: unknown) => {
-          console.warn({ event: "kopje.media.cleanup.failed", ...errorFields(error) });
-        });
-      }
+      const report = await smokeProbe(container, profile, this.deps, deadline);
+      // Nothing to clean up once the container is gone; otherwise the alarm comes sooner than its bound when it can.
+      const after = report.destroyed
+        ? this.state.storage.deleteAlarm()
+        : this.state.storage.setAlarm(this.deps.now() + CLEANUP_RETRY_MS);
+      await after.catch((error: unknown) => {
+        console.warn({ event: "kopje.media.cleanup.failed", ...errorFields(error) });
+      });
       return report;
     } finally {
-      this.#probing = false;
+      this.#inFlight = null;
     }
   }
 
-  // The alarm: a probe's deadline or a cleanup retry, for the record stored when it fired.
+  // The alarm: with a probe call in flight, again after its bound; otherwise any running container is an orphan.
   async alarm(): Promise<void> {
-    const watch = await this.state.storage.get<Watch>(WATCH_KEY);
-    if (watch === undefined) {
+    if (this.#inFlight !== null) {
+      await this.state.storage.setAlarm(Math.max(this.#inFlight + DESTROY_MS, this.deps.now() + 1_000));
       return;
     }
     const container = this.state.container;
-    const destroyed = container === undefined || (await destroyContainer(container, this.deps));
-    // A probe may have cleared this record meanwhile and started its own: that one is not this alarm's.
-    if ((await this.state.storage.get<Watch>(WATCH_KEY))?.id !== watch.id) {
+    if (container?.running !== true || this.#cleaning) {
       return;
     }
-    if (destroyed) {
-      await this.forget(watch.id);
-    } else {
-      await this.state.storage.setAlarm(this.deps.now() + CLEANUP_RETRY_MS);
+    this.#cleaning = true;
+    try {
+      if (!(await destroyContainer(container, this.deps))) {
+        await this.state.storage.setAlarm(this.deps.now() + CLEANUP_RETRY_MS);
+      }
+    } finally {
+      this.#cleaning = false;
     }
   }
 
-  // When the stored record is still `id`'s: deletes the record with the rest of the storage (a SQLite object is billed
-  // for its stored data until it is removed), then its alarm. A failure leaves the record and its alarm, which clears
-  // later. The read and the writes are storage operations only, so no other call runs between them (input gates).
-  private async forget(id: string): Promise<void> {
-    try {
-      if ((await this.state.storage.get<Watch>(WATCH_KEY))?.id !== id) {
-        return;
-      }
-      await this.state.storage.deleteAll();
-      await this.state.storage.deleteAlarm();
-    } catch (error) {
+  private async alarmNow(): Promise<void> {
+    await this.state.storage.setAlarm(this.deps.now()).catch((error: unknown) => {
       console.warn({ event: "kopje.media.cleanup.failed", ...errorFields(error) });
-    }
+    });
   }
 }
 
