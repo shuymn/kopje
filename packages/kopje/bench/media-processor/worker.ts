@@ -1,25 +1,29 @@
 // The media processor bench (#1828, P27): a standalone Worker that runs the package's container image
 // (container/Dockerfile, wrangler.jsonc beside this file) on any input the operator puts in its bucket, on a chosen
-// instance type and ffmpeg threading option, and reports the stages the design's allocation is made of. It has no
-// Kopje code and no Store; measure.sh drives it. Every route needs `Authorization: Bearer <BENCH_TOKEN>`.
+// instance type and ffmpeg threading option, and reports the stages the design's allocation is made of. Of Kopje's code
+// it runs only the output verifier (src/platform/av-bytes.ts), and it has no Store; measure.sh drives it. Every route
+// needs `Authorization: Bearer <BENCH_TOKEN>`.
 //
 //   PUT    /object/<key>   stream an input into R2 (Content-Length required); answers the time it took (ingress)
 //   DELETE /object/<key>   delete one object
 //   POST   /run?op=normalize|still&key=<key>&expect=video|audio&instance=standard-1|standard-3|standard-4
 //                         [&threads=default|filters:N|all:N][&encode_ms=<ms>]
 //          one unit of work on a fresh object, as Kopje's MediaProcessor runs it: start with no Internet, /healthz,
-//          the input read once from R2 and streamed as the request body, the output streamed into R2 under out/,
-//          for a video normalize the still too, then the still through Images (WebP, long edge 640, and its RGBA
-//          output), then destroy. `expect` is the fixture's kind (measure.sh's table): a video normalize fetches its
-//          still whatever the server's Kopje-Kind says. Answers JSON with each stage's time; spaces are sent every
-//          10 s before it. `ok` is true only when the run succeeded end to end (outcome.mjs); `run` is the id the
-//          container carries as its `run` label, which billing.sh joins the billed usage on.
+//          the input read once from R2 and streamed as the request body, the output streamed into R2 under out/
+//          through the output verifier (verifyMp4 or verifyMp3 for the fixture's kind, its Content-Length checked),
+//          for a video normalize the still too, every still checked as design 4.10 checks it (verifyStill) before
+//          Images takes it (WebP, long edge 640, and its RGBA output), then destroy. `expect` is the fixture's kind
+//          (measure.sh's table): a video normalize fetches its still whatever the server's Kopje-Kind says. Answers
+//          JSON with each stage's time; spaces are sent every 10 s before it. `ok` is true only when the run
+//          succeeded end to end (outcome.mjs), the verifier's acceptance of the exact bytes written included; `run`
+//          is the id the container carries as its `run` label, which billing.sh joins the billed usage on.
 //   POST   /dispatch       how long an alarm set for now takes to run (the upload dispatch)
 //   GET    /hold?seconds=<n>
 //          answers 200 only after n seconds with no byte sent before (whether a Worker may hold its headers past
 //          100 s, design #1828 F1)
 import { DurableObject } from "cloudflare:workers";
 
+import { avVerifier, verifyStill } from "../../src/platform/av-bytes";
 import { endToEnd } from "./outcome.mjs";
 
 interface Env {
@@ -52,6 +56,10 @@ type RunResult = {
   error: string | null;
   mediaKind: string | null; // the server's Kopje-Kind
   contentType: string | null;
+  // The output verifier's verdict on the bytes written ("ok" or its rule), and the still's checks ("ok" or the
+  // refusal); null when not reached.
+  verdict: string | null;
+  stillCheck: string | null;
   // Times in milliseconds: the object's clock, then the server's stage headers.
   startToReadyMs: number | null;
   operationMs: number | null; // the POST until its response headers (input streaming, probe, encode, still)
@@ -107,6 +115,8 @@ export class BenchUnit extends DurableObject<Env> {
       error: null,
       mediaKind: null,
       contentType: null,
+      verdict: null,
+      stillCheck: null,
       startToReadyMs: null,
       operationMs: null,
       outputToR2Ms: null,
@@ -168,7 +178,25 @@ export class BenchUnit extends DurableObject<Env> {
         return r;
       }
       const t2 = Date.now();
-      await this.env.BUCKET.put(`out/${runId}/output`, sized(res.body, length));
+      if (op === "normalize") {
+        // The output reaches R2 only through the verifier, which errors the stream at a refusal.
+        const verifier = avVerifier(expect === "video" ? "video/mp4" : "audio/mpeg", length);
+        const put = this.env.BUCKET.put(`out/${runId}/output`, sized(res.body.pipeThrough(verifier.stream), length));
+        const written = await put.then(
+          () => true,
+          () => false,
+        );
+        if (!written) {
+          verifier.abort();
+        }
+        const verdict = await verifier.verdict;
+        r.verdict = verdict.ok ? "ok" : verdict.rule;
+        if (!verdict.ok || !written) {
+          throw new Error(`verifier: ${r.verdict}`);
+        }
+      } else {
+        await this.env.BUCKET.put(`out/${runId}/output`, sized(res.body, length));
+      }
       r.outputToR2Ms = Date.now() - t2;
       r.outputBytes = length;
       let still: Uint8Array | null = null;
@@ -187,6 +215,11 @@ export class BenchUnit extends DurableObject<Env> {
       }
       if (still !== null) {
         r.stillBytes = still.byteLength;
+        const refused = verifyStill(still);
+        r.stillCheck = refused ?? "ok";
+        if (refused !== null) {
+          throw new Error(`still: ${refused}`);
+        }
         const t4 = Date.now();
         const webp = await this.env.IMAGES.input(new Response(still).body as ReadableStream<Uint8Array>)
           .transform({ width: 640, height: 640, fit: "scale-down" })

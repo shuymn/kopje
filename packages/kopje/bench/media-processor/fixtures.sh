@@ -6,6 +6,9 @@
 #
 #   bash packages/kopje/bench/media-processor/fixtures.sh <dir>     (makes what <dir> lacks; the 4K ten-minute clip
 #                                                                     takes the longest, tens of minutes)
+#   bash packages/kopje/bench/media-processor/fixtures.sh --matrix <dir>
+#                         the boundary matrix's inputs instead (#1828 PR2, A3): every fixture of matrix.json, just below
+#                         and above each rung boundary and each envelope edge (measure.sh MATRIX=1). Needs jq.
 #
 #   sdr-h264.mp4          60 s 1080p30 H.264/AAC with metadata keys
 #   hdr-hevc-rotated.mov  60 s 1080p30 10-bit HEVC HLG, rotation 90, Apple keys
@@ -16,9 +19,17 @@
 #   sdr-1080p-5min.mp4    300 s 1080p30 H.264      sdr-1080p-10min.mp4   600 s 1080p30 H.264
 #   sdr-4k-5min.mp4       300 s 2160p30 HEVC       sdr-4k-10min.mp4      600 s 2160p30 HEVC
 #   tagged.m4a, tagged.flac, tagged.ogg            60 s audio with tags (and cover art for M4A and FLAC)
+#
+# HDR inputs carry their transfer in the frames and in a colr box, as a camera's file does: the server's header probe
+# reads the transfer from the container, and an HDR file without colr would be planned and encoded as SDR.
 set -euo pipefail
 
-out="$(cd "${1:?usage: fixtures.sh <dir>}" && pwd)"
+matrix=""
+if [ "${1:-}" = --matrix ]; then
+  matrix="$(dirname "$0")/matrix.json"
+  shift
+fi
+out="$(cd "${1:?usage: fixtures.sh [--matrix] <dir>}" && pwd)"
 pkg="$(cd "$(dirname "$0")/../.." && pwd)"
 ffmpeg_image="$(sed -n 's/^FROM \(mwader\/static-ffmpeg[^ ]*\) AS ffmpeg$/\1/p' "$pkg/container/Dockerfile")"
 ff() { docker run --rm --network none -v "$out:/w" -w /w --entrypoint /ffmpeg "$ffmpeg_image" -hide_banner -loglevel error -y "$@"; }
@@ -51,21 +62,43 @@ h264() { # <file> <seconds> <size> <bitrate> [args...]
     "${TAGS[@]}" "$@"
 }
 
-# HEVC 10-bit, HDR when a transfer is given.
+# HEVC 10-bit, HDR when a transfer is given. An HDR file's -movflags gain +write_colr (one -movflags takes effect).
 hevc() { # <file> <seconds> <size> <bitrate> <transfer|sdr> [args...]
-  local file=$1 t=$2 size=$3 rate=$4 trc=$5 color=()
+  local file=$1 t=$2 size=$3 rate=$4 trc=$5 color=() tag="" flags="" rest=()
   shift 5
+  while [ $# -gt 0 ]; do
+    if [ "$1" = -movflags ]; then
+      flags="$flags+${2#+}"
+      shift 2
+    else
+      rest+=("$1")
+      shift
+    fi
+  done
   if [ "$trc" != sdr ]; then
-    color=(-x265-params "log-level=error:colorprim=bt2020:transfer=$trc:colormatrix=bt2020nc"
-      -color_primaries bt2020 -color_trc "$trc" -colorspace bt2020nc)
+    # ffmpeg takes the tags from the frames (setparams), and the MP4 muxer writes colr only with +write_colr.
+    tag=",setparams=color_primaries=bt2020:color_trc=$trc:colorspace=bt2020nc"
+    color=(-x265-params "log-level=error:colorprim=bt2020:transfer=$trc:colormatrix=bt2020nc")
+    flags="+write_colr$flags"
   else
     color=(-x265-params log-level=error)
   fi
-  make "$file" -f lavfi -t "$t" -i "$(src "$size"),format=yuv420p10le" -f lavfi -t "$t" -i "$AUDIO" -map 0:v -map 1:a \
+  [ -z "$flags" ] || rest+=(-movflags "$flags")
+  set -- ${rest[@]+"${rest[@]}"}
+  make "$file" -f lavfi -t "$t" -i "$(src "$size"),format=yuv420p10le$tag" -f lavfi -t "$t" -i "$AUDIO" -map 0:v -map 1:a \
     -c:v libx265 -preset superfast -b:v "$rate" -pix_fmt yuv420p10le -tag:v hvc1 "${color[@]}" -c:a aac -b:a 128k \
     "${TAGS[@]}" "$@"
 }
 
+if [ -n "$matrix" ]; then
+  while read -r name codec size seconds transfer rate; do
+    if [ "$codec" = h264 ]; then
+      h264 "$name" "$seconds" "$size" "$rate" -movflags +faststart
+    else
+      hevc "$name" "$seconds" "$size" "$rate" "$transfer" -movflags +faststart
+    fi
+  done < <(jq -r '.fixtures[] | [.name, .codec, .size, .seconds, .transfer, .rate] | @tsv' "$matrix")
+else
 h264 sdr-h264.mp4 60 1920x1080 8M -movflags +faststart+use_metadata_tags
 h264 near-cap.mp4 60 1920x1080 11500k -x264-params nal-hrd=cbr -movflags +faststart
 hevc .work/hdr-plain.mov 60 1920x1080 6M arib-std-b67
@@ -85,6 +118,7 @@ make tagged.m4a -f lavfi -t 60 -i "$AUDIO" -i .work/cover.png -map 0:a -map 1:v 
 make tagged.flac -f lavfi -t 60 -i "$AUDIO" -i .work/cover.png -map 0:a -map 1:v -c:a flac -c:v png \
   -disposition:v attached_pic "${TAGS[@]}"
 make tagged.ogg -f lavfi -t 60 -i "$AUDIO" -c:a libvorbis -q:a 5 "${TAGS[@]}"
+fi
 
 for f in "$out"/*.*; do
   size=$(wc -c <"$f")

@@ -1,10 +1,14 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import { endToEnd, type Outcome } from "../bench/media-processor/outcome.mjs";
-import { billing, parseLines, timings } from "../bench/media-processor/report.mjs";
+import { billing, matrix, parseLines, timings } from "../bench/media-processor/report.mjs";
 
 // The media processor bench (bench/media-processor/, #1828 P27): a run succeeds only end to end against the fixture's
-// expected kind, every run the driver made is in the denominator, and billed usage is priced per fixture by run id.
+// expected kind, its output accepted by the output verifier and its stills by design 4.10's checks (PR2 A4), every
+// run the driver made is in the denominator, and billed usage is priced per fixture by run id. The boundary matrix
+// (PR2 A3) expects of each fixture the verdict the planner's coefficients give, and reports estimate against encode.
 const run = (fields: Record<string, unknown>) =>
   JSON.stringify({
     kind: "run",
@@ -31,6 +35,8 @@ describe("a bench run's outcome", () => {
     stillBytes: 300,
     imagesWebpMs: 20,
     imagesRgbaMs: 10,
+    verdict: "ok",
+    stillCheck: "ok",
   };
   const audio: Outcome = {
     ...video,
@@ -39,6 +45,7 @@ describe("a bench run's outcome", () => {
     contentType: "audio/mpeg",
     stillBytes: null,
     imagesWebpMs: null,
+    stillCheck: null,
   };
 
   it("is a success only when every step ran for the fixture's kind", () => {
@@ -62,6 +69,18 @@ describe("a bench run's outcome", () => {
     expect(endToEnd({ ...audio, contentType: "text/plain" })).toBe(false);
     expect(endToEnd({ ...video, contentType: null })).toBe(false);
     expect(endToEnd({ ...video, op: "still", mediaKind: null, contentType: "video/mp4" })).toBe(false);
+  });
+
+  it("is a failure for an output the verifier refused or a still that failed its checks", () => {
+    expect(endToEnd({ ...video, verdict: "duration_limit" })).toBe(false);
+    expect(endToEnd({ ...video, verdict: null })).toBe(false);
+    expect(endToEnd({ ...audio, verdict: "xing" })).toBe(false);
+    expect(endToEnd({ ...video, stillCheck: "malformed" })).toBe(false);
+    expect(endToEnd({ ...video, stillCheck: null })).toBe(false);
+    // A still's own output is checked as a still, not by the AV verifier.
+    const still = { ...video, op: "still" as const, mediaKind: null, contentType: "image/png", verdict: null };
+    expect(endToEnd(still)).toBe(true);
+    expect(endToEnd({ ...still, stillCheck: "long_edge" })).toBe(false);
   });
 });
 
@@ -134,5 +153,104 @@ describe("the media processor bench report", () => {
       "| long.mp4 | normalize | standard-3 | default | 2 | 1 | 1000.0 | 2.00 | 2000 | 0 | 0.0250 | 0.0125 |",
     );
     expect(lines).toContain("| (runs not in the results) | | | | 1 | | 5.0 | - | 0 | 0 | 0.0001 | 0.0001 |");
+  });
+});
+
+describe("the boundary matrix", () => {
+  const at = (fields: Record<string, unknown>, endpoint = "v1-90", expectVerdict = "admitted") =>
+    run({ instance: "standard-4", threads: "all:4", matrix: { endpoint, encodeMs: 50_800, expectVerdict }, ...fields });
+
+  it("reports each admitted run's estimate against its encode time, and the expected refusals apart", () => {
+    const records = parseLines(
+      [
+        at({ fixture: "h264-50.mp4", ok: true, server: { estimate: 34_600, encode: 30_000 } }),
+        at({ fixture: "h264-50.mp4", ok: true, server: { estimate: 34_600, encode: 36_330 } }),
+        at({ fixture: "h264-53.mp4", ok: false, status: 422, error: "envelope", server: {} }, "v1-90", "refused"),
+        // Wrong verdicts and a failure are listed, never in the ratio.
+        at({ fixture: "hevc-36.mp4", ok: true, server: { estimate: 36_000, encode: 1_000 } }, "v1-90", "refused"),
+        at({ fixture: "hevc-34.mp4", ok: false, status: 422, error: "envelope", server: {} }),
+        at({ fixture: "hlg-9.mp4", ok: false, status: 500, error: "encode_failed", server: { estimate: 30_000 } }),
+        run({ fixture: "other.mp4", ok: true }),
+      ].join("\n"),
+    );
+    const lines = matrix(records);
+    expect(lines).toContain("| h264-50.mp4 | v1-90 | 50.8 | admitted | 34.6 | 30.0 | 0.867 |");
+    expect(lines).toContain("| h264-50.mp4 | v1-90 | 50.8 | admitted | 34.6 | 36.3 | 1.050 |");
+    expect(lines).toContain("Largest encode / estimate: 1.050 over 3 runs.");
+    expect(lines).toContain("- h264-53.mp4 at v1-90 (50.8 s): refused at the probe, as expected");
+    expect(lines).toContain("- hevc-36.mp4 at v1-90 (50.8 s): admitted, expected refused (estimate 36.0 s)");
+    expect(lines).toContain("- hevc-34.mp4 at v1-90 (50.8 s): refused at the probe, expected admitted");
+    expect(lines).toContain("- hlg-9.mp4 at v1-90 (50.8 s): failed, status 500 encode_failed");
+    expect(lines.join("\n")).not.toContain("other.mp4");
+    // The matrix's runs stay out of the timing tables.
+    expect(timings(records).join("\n")).not.toContain("h264-50.mp4");
+  });
+
+  it("expects of each fixture the verdict A1's coefficients in plan.go give at each endpoint", () => {
+    type Fixture = { name: string; codec: string; size: string; seconds: number; transfer: string; rate: string };
+    type Matrix = {
+      stages: Record<"dispatch" | "start" | "probe" | "still" | "commit" | "input", number>;
+      endpoints: Record<string, { seconds: number; ingress: number; reply: number }>;
+      fixtures: (Fixture & { expect: Record<string, string> })[];
+    };
+    const m = JSON.parse(
+      readFileSync(new URL("../bench/media-processor/matrix.json", import.meta.url), "utf8"),
+    ) as Matrix;
+    const plan = readFileSync(new URL("../container/server/plan.go", import.meta.url), "utf8");
+    const constant = (name: string) => Number(new RegExp(`\\b${name}\\s*=\\s*([0-9.]+)`).exec(plan)?.[1]);
+    const decode = (codec: string) => Number(new RegExp(`"${codec}": ([0-9.]+)`).exec(plan)?.[1]);
+    const [tonemap, encode, audio, fixed, safety] = [
+      "tonemapNsPerPixel",
+      "encodeNsPerPixel",
+      "audioMsPerSecond",
+      "fixedEstimateMs",
+      "estimateSafety",
+    ].map(constant) as [number, number, number, number, number];
+    expect([decode("h264"), decode("hevc"), tonemap, encode, audio, fixed, safety]).toEqual([
+      1, 1.5, 10, 9, 40, 1500, 0.7,
+    ]);
+    // The ladder (A2) and planNormalize's estimate, for a 30 fps source with audio.
+    const ladder = [
+      [120, 1920, 1080, 60],
+      [300, 1280, 720, 30],
+      [600, 854, 480, 30],
+    ] as const;
+    const estimate = (f: Fixture) => {
+      const [w, h] = f.size.split("x").map(Number) as [number, number];
+      const [, long, short, fps] = ladder.find(([upTo]) => f.seconds <= upTo) ?? ladder[2];
+      const fit = Math.min(1, long / Math.max(w, h), short / Math.min(w, h));
+      const out = Math.trunc((w * fit) / 2) * 2 * Math.trunc((h * fit) / 2) * 2;
+      const perPixel = decode(f.codec) + (f.transfer === "sdr" ? 0 : tonemap);
+      return (
+        fixed +
+        (w * h * 30 * f.seconds * perPixel) / 1e6 +
+        (out * Math.min(30, fps) * f.seconds * encode) / 1e6 +
+        f.seconds * audio
+      );
+    };
+    const s = m.stages;
+    const stageTimes = s.dispatch + s.start + s.probe + s.still + s.commit;
+    for (const f of m.fixtures) {
+      for (const [endpoint, verdict] of Object.entries(f.expect)) {
+        const e = m.endpoints[endpoint];
+        expect(e, endpoint).toBeDefined();
+        const encodeMs = ((e?.seconds ?? 0) - (e?.ingress ?? 0) - s.input - stageTimes - (e?.reply ?? 0)) * 1000;
+        expect(estimate(f) <= safety * encodeMs ? "admitted" : "refused", `${f.name} at ${endpoint}`).toBe(verdict);
+      }
+      // Within AV_UPLOAD_LIMIT at the fixture's video bitrate and fixtures.sh's audio (160 kb/s H.264, 128 kb/s HEVC).
+      const rate = Number(f.rate.replace("M", "e6")) + (f.codec === "h264" ? 160e3 : 128e3);
+      expect((rate * f.seconds) / 8, f.name).toBeLessThan(94_371_840 * 0.95);
+    }
+    // Each edge is straddled: a fixture just below it admitted and one just above it refused, per class and endpoint.
+    const verdicts = new Map<string, Set<string>>();
+    for (const f of m.fixtures) {
+      for (const [endpoint, verdict] of Object.entries(f.expect)) {
+        const key = `${f.codec} ${f.size} ${f.transfer === "sdr" ? "sdr" : "hdr"} ${endpoint}`;
+        verdicts.set(key, (verdicts.get(key) ?? new Set()).add(verdict));
+      }
+    }
+    for (const key of ["hevc 3840x2160 sdr v1-90", "hevc 3840x2160 sdr v1-300", "hevc 3840x2160 hdr v2"]) {
+      expect([...(verdicts.get(key) ?? [])].toSorted(), key).toEqual(["admitted", "refused"]);
+    }
   });
 });

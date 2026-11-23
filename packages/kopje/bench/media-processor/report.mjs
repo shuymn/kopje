@@ -4,7 +4,10 @@
 // made is in the denominator, a request that failed before the bench answered included (the driver records its
 // operation, fixture, type and threading). Billed usage is joined to the runs by the run id each container carries
 // as its `run` label, so each fixture is priced on its own runs, never pooled with another fixture's on the same type
-// and threading; its billed utilisation is the vCPU-s over the joined runs' wall time.
+// and threading; its billed utilisation is the vCPU-s over the joined runs' wall time. The boundary matrix's runs
+// (measure.sh MATRIX=1, #1828 PR2 A3) are reported apart: per run the server's estimate (Kopje-Estimate-Ms) against
+// its encode time (Kopje-Encode-Ms) and their ratio, the largest ratio being what the coefficients are set from; the
+// refusals the matrix expected listed apart from the runs that failed or got a verdict other than the expected one.
 //
 //   node bench/media-processor/report.mjs <results.jsonl>                 the timing tables, as Markdown
 //   node bench/media-processor/report.mjs <results.jsonl> <usage.json>    billed usage per fixture (billing.sh)
@@ -13,10 +16,12 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /**
+ * @typedef {{ endpoint: string, encodeMs: number, expectVerdict: "admitted" | "refused" | "measured" }} MatrixFields
  * @typedef {{ kind: "run", fixture: string, op: string, expect?: string, instance: string, threads: string, run?: string,
  *   ok?: boolean, status?: number | null, error?: string | null, wallMs?: number, operationMs?: number | null,
  *   startToReadyMs?: number | null, outputToR2Ms?: number | null, imagesWebpMs?: number | null,
- *   imagesRgbaMs?: number | null, destroyMs?: number | null, server?: Record<string, number> }} RunRecord
+ *   imagesRgbaMs?: number | null, destroyMs?: number | null, server?: Record<string, number>,
+ *   matrix?: MatrixFields }} RunRecord
  * @typedef {{ kind: "ingress", fixture: string, bytes: number, ingressMs: number }} IngressRecord
  * @typedef {{ kind: "dispatch", dispatchMs: number }} DispatchRecord
  * @typedef {{ kind: "hold", seconds: number, status: string }} HoldRecord
@@ -73,7 +78,7 @@ function groupBy(items, key) {
 
 /** The timing tables. @param {BenchRecord[]} records @returns {string[]} */
 export function timings(records) {
-  const runs = records.filter((r) => r.kind === "run");
+  const runs = records.filter((r) => r.kind === "run").filter((r) => r.matrix === undefined);
   const lines = [
     "| fixture | instance | threads | ok/runs | wall p95 | encode p95 | ffmpeg CPU s (mean) | utilisation (mean) | operation p95 |",
     "|---|---|---|---|---|---|---|---|---|",
@@ -192,6 +197,76 @@ export function timings(records) {
 }
 
 /**
+ * The boundary matrix: each run admitted and ok with the server's estimate, its encode time and their ratio; the
+ * expected refusals (422 envelope at the probe); then every run that failed or whose verdict was not the expected one.
+ * @param {BenchRecord[]} records
+ * @returns {string[]}
+ */
+export function matrix(records) {
+  const runs = /** @type {(RunRecord & { matrix: MatrixFields })[]} */ (
+    records.filter((r) => r.kind === "run" && r.matrix !== undefined)
+  );
+  if (runs.length === 0) {
+    return [];
+  }
+  /** @param {RunRecord} r */
+  const refused = (r) => r.status === 422 && r.error === "envelope";
+  const lines = [
+    "## Boundary matrix (standard-4, all:4)",
+    "",
+    "| fixture | endpoint | encode time given | expected | estimate | encode | encode / estimate |",
+    "|---|---|---|---|---|---|---|",
+  ];
+  /** @type {number[]} */
+  const ratios = [];
+  /** @type {string[]} */
+  const expectedRefusals = [];
+  /** @type {string[]} */
+  const failures = [];
+  for (const r of runs) {
+    const m = r.matrix;
+    const at = `${r.fixture} at ${m.endpoint} (${seconds(m.encodeMs, 1)} s)`;
+    if (refused(r)) {
+      if (m.expectVerdict === "admitted") {
+        failures.push(`- ${at}: refused at the probe, expected admitted`);
+      } else {
+        expectedRefusals.push(`- ${at}: refused at the probe${m.expectVerdict === "measured" ? "" : ", as expected"}`);
+      }
+      continue;
+    }
+    const estimate = r.server?.estimate;
+    const encode = r.server?.encode;
+    if (r.ok !== true || estimate === undefined || encode === undefined) {
+      failures.push(`- ${at}: failed, status ${r.status ?? "-"} ${r.error ?? ""}`.trimEnd());
+      continue;
+    }
+    if (m.expectVerdict === "refused") {
+      failures.push(`- ${at}: admitted, expected refused (estimate ${seconds(estimate, 1)} s)`);
+    }
+    const ratio = encode / estimate;
+    ratios.push(ratio);
+    lines.push(
+      `| ${r.fixture} | ${m.endpoint} | ${seconds(m.encodeMs, 1)} | ${m.expectVerdict} | ${seconds(estimate, 1)} | ${seconds(encode, 1)} | ${ratio.toFixed(3)} |`,
+    );
+  }
+  lines.push(
+    "",
+    ratios.length === 0
+      ? "No run was admitted and ok."
+      : `Largest encode / estimate: ${Math.max(...ratios).toFixed(3)} over ${ratios.length} runs.`,
+    "",
+    "Refused at the probe (envelope):",
+    "",
+    ...(expectedRefusals.length === 0 ? ["- none"] : expectedRefusals),
+    "",
+    "Failed, or a verdict other than the expected one:",
+    "",
+    ...(failures.length === 0 ? ["- none"] : failures),
+  );
+  return lines;
+}
+
+/**
  * Billed usage per fixture, operation, type and threading: each usage group joined to the run whose id its `run`
  * label carries. Usage whose run is not in the results (a run the driver lost, or another bench in the window) is
  * listed apart, never added to a fixture.
@@ -247,7 +322,7 @@ if (import.meta.url === pathToFileURL(resolve(process.argv[1] ?? "")).href) {
   const records = parseLines(readFileSync(results, "utf8"));
   const lines =
     usageFile === undefined
-      ? timings(records)
+      ? [...timings(records), "", ...matrix(records)]
       : billing(records, /** @type {Usage[]} */ (JSON.parse(readFileSync(usageFile, "utf8"))));
   console.log(lines.join("\n"));
 }

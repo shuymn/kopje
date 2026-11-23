@@ -14,11 +14,18 @@
 #   DISPATCH_RUNS=20, HOLD="90 110 130"     the alarm dispatch samples, and the header holds tried (seconds)
 #   FIXTURES="..."   the files of <fixtures dir> to run (default: every file fixtures.sh makes there)
 #   SKIP_UPLOAD=1    the fixtures are in the bucket already
+#   MATRIX=1         the boundary matrix instead (#1828 PR2, A3; fixtures.sh --matrix): on standard-4 with all:4 only,
+#                    each matrix.json fixture normalized at each endpoint it lists, with the encode time that endpoint
+#                    leaves passed as encode_ms (the endpoint's seconds less the assumed ingress, the input streaming,
+#                    design 4.7's starting stage times and v1's reply), and the verdict expected there (admitted, or
+#                    refused at the probe for the envelope). No stills, dispatch or holds.
+#   MATRIX_EXTRA="clip.mp4 ..."   files of <fixtures dir> run at every endpoint too, with no verdict expected (the
+#                    real camera clips)
 #
 # Writes bench-media-<time>/results.jsonl (one line per run) and results.md (report.mjs): per fixture, type and
 # threading the runs that succeeded end to end out of all, and over those only the wall p95, encode p95, ffmpeg's CPU
 # seconds and utilisation (ffmpeg's CPU time over the encode's wall time, measured in the container), and the stage
-# p95s. Billed usage per fixture, type and threading comes from billing.sh, which joins it to these runs by run id; the
+# p95s; with MATRIX=1, per run the server's estimate against its encode time (report.mjs matrix). Billed usage per fixture, type and threading comes from billing.sh, which joins it to these runs by run id; the
 # script prints its command at the end. Needs curl, jq and node.
 set -euo pipefail
 
@@ -31,6 +38,20 @@ RUNS="${RUNS:-3}"
 STILL_RUNS="${STILL_RUNS:-9}"
 DISPATCH_RUNS="${DISPATCH_RUNS:-20}"
 HOLD="${HOLD:-90 110 130}"
+matrix_file="$(dirname "$0")/matrix.json"
+# The matrix's rows: fixture, endpoint, encode_ms, expected verdict.
+matrix_rows() {
+  jq -r --arg extra "${MATRIX_EXTRA:-}" '
+    (.stages | .dispatch + .start + .probe + .still + .commit) as $fixed | .stages.input as $input | .endpoints as $e
+    | def encode($n): (($e[$n].seconds - $e[$n].ingress - $input - $fixed - $e[$n].reply) * 1000 | round);
+      (.fixtures[] | .name as $f | .expect | to_entries[] | [$f, .key, encode(.key), .value]),
+      ($extra | split(" ")[] | select(. != "") as $f | $e | keys[] | [$f, ., encode(.), "measured"])
+    | @tsv' "$matrix_file"
+}
+if [ -n "${MATRIX:-}" ]; then
+  INSTANCES=standard-4 THREADS=all:4
+  FIXTURES="$(matrix_rows | cut -f1 | sort -u | tr '\n' ' ')"
+fi
 FIXTURES="${FIXTURES:-sdr-h264.mp4 hdr-hevc-rotated.mov vp9-90s.webm near-cap.mp4 hlg-4k.mov pq-4k.mp4 sdr-1080p-5min.mp4 sdr-1080p-10min.mp4 sdr-4k-5min.mp4 sdr-4k-10min.mp4 tagged.m4a tagged.flac tagged.ogg}"
 
 out="bench-media-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -59,18 +80,30 @@ fi
 # A fixture's kind, which the bench checks the server's answer against (never the answer's own Kopje-Kind).
 expect_of() { case $1 in *.m4a | *.flac | *.ogg | *.mp3 | *.wav | *.opus) echo audio ;; *) echo video ;; esac; }
 
-run() { # <op> <fixture> <instance> <threads>
-  local r expect
+run() { # <op> <fixture> <instance> <threads> [<encode ms> <endpoint> <expected verdict>]
+  local r expect query
   expect="$(expect_of "$2")"
-  r="$(api -X POST "$BENCH_URL/run?op=$1&key=fixtures/$2&expect=$expect&instance=$3&threads=$4" || true)"
+  query="op=$1&key=fixtures/$2&expect=$expect&instance=$3&threads=$4"
+  [ -z "${5:-}" ] || query="$query&encode_ms=$5"
+  r="$(api -X POST "$BENCH_URL/run?$query" || true)"
   jq -e 'type == "object"' <<<"$r" >/dev/null 2>&1 || r='{"error":"request failed"}'
   # The driver's own fields: a run that failed before the bench answered still counts in its group, as a failure.
-  jq -c --arg op "$1" --arg f "$2" --arg e "$expect" --arg i "$3" --arg t "$4" \
-    '. + {kind: "run", op: $op, fixture: $f, expect: $e, instance: $i, threads: $t}' <<<"$r" >>"$jsonl"
+  jq -c --arg op "$1" --arg f "$2" --arg e "$expect" --arg i "$3" --arg t "$4" --arg ms "${5:-}" --arg ep "${6:-}" \
+    --arg v "${7:-}" '. + {kind: "run", op: $op, fixture: $f, expect: $e, instance: $i, threads: $t}
+      + (if $ep == "" then {} else {matrix: {endpoint: $ep, encodeMs: ($ms | tonumber), expectVerdict: $v}} end)' \
+    <<<"$r" >>"$jsonl"
   log "$(jq -r '"\(.op) \(.fixture) \(.instance) \(.threads): ok \(.ok // false) status \(.status) wall \(.wallMs) ms ready \(.startToReadyMs) encode \(.server.encode // "-") cpu \(.server["encode-cpu"] // "-") \(.error // "")"' <<<"$(tail -1 "$jsonl")")"
 }
 
+if [ -n "${MATRIX:-}" ]; then
+  while IFS=$'\t' read -r f endpoint encode verdict; do
+    for _ in $(seq 1 "$RUNS"); do run normalize "$f" standard-4 all:4 "$encode" "$endpoint" "$verdict"; done
+  done < <(matrix_rows)
+  DISPATCH_RUNS=0 HOLD=""
+fi
+
 for f in $FIXTURES; do
+  [ -z "${MATRIX:-}" ] || break
   for inst in $INSTANCES; do
     for th in $THREADS; do
       for _ in $(seq 1 "$RUNS"); do run normalize "$f" "$inst" "$th"; done
@@ -82,6 +115,7 @@ for f in $FIXTURES; do
 done
 
 for _ in $(seq 1 "$DISPATCH_RUNS"); do
+  [ "$DISPATCH_RUNS" -gt 0 ] || break
   api -X POST "$BENCH_URL/dispatch" | jq -c '{kind: "dispatch"} + .' >>"$jsonl"
 done
 
