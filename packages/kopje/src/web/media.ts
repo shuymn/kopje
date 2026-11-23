@@ -1,16 +1,26 @@
 import type { Context } from "hono";
 
-import { keyOfPath, keyOfRemotePath, REMOTE_SERVED_TYPES, SERVED_TYPES } from "../platform/media-files";
+import {
+  keyOfPath,
+  keyOfRemotePath,
+  REMOTE_SERVED_TYPES,
+  SERVED_AV_TYPES,
+  SERVED_TYPES,
+  VARIANT_TYPES,
+} from "../platform/media-files";
 
-// GET /media/<token>/<full|small>.<ext>: the re-encoded files of local uploads, from R2.
+// GET and HEAD /media/<token>/<full|small>.<ext>: the files of local uploads, from R2.
 //
 //   - The URL is a capability: the token is 32 random bytes the Store holds (accepted risk "non-public media is
 //     readable by anyone who holds its unguessable URL"). Media of private and direct statuses is served the same way;
 //     the URL is shown only to viewers who may see the status (VIS-1), and deleting the media deletes the files.
 //   - Only files/<token>/<variant> keys can be read; originals are never served (MEDIA-2).
-//   - The type comes from the stored object and must be one of SERVED_TYPES (raster images only); anything else is
-//     refused, never sent as stored. nosniff and a sandboxing CSP keep a file from running as instance content
-//     (MEDIA-4).
+//   - The type comes from the stored object and must be the one the extension names, among the types its variant is
+//     served as (VARIANT_TYPES: raster images, and for `full` the processor's MP4 and MP3); anything else is refused,
+//     never sent as stored. nosniff and a sandboxing CSP keep a file from running as instance content (MEDIA-4).
+//   - An image answers as it always has. A video or audio file answers as the remote route does (serveObject): HEAD
+//     from the object's head, one range with 206 (416 when unsatisfiable), several with the whole file, and 304 to a
+//     matching If-None-Match, which players' seeking needs.
 //
 // The Store is not consulted, so serving works in maintenance and does not load the Store.
 
@@ -27,6 +37,14 @@ export async function serveMedia(c: Context<{ Bindings: Env }>): Promise<Respons
   if (path === null) {
     return NOT_FOUND();
   }
+  if ([...SERVED_AV_TYPES.values()].includes(path.extension)) {
+    return serveObject(
+      c,
+      path.key,
+      (object) => VARIANT_TYPES.full.get(object.httpMetadata?.contentType ?? "") === path.extension,
+      () => console.error({ event: "kopje.media.type_refused" }),
+    );
+  }
   const object = await c.env.MEDIA.get(path.key);
   if (object === null) {
     return NOT_FOUND();
@@ -37,18 +55,22 @@ export async function serveMedia(c: Context<{ Bindings: Env }>): Promise<Respons
     console.error({ event: "kopje.media.type_refused" });
     return NOT_FOUND();
   }
-  return new Response(object.body, {
-    headers: {
-      "content-type": type,
-      "content-length": String(object.size),
-      etag: object.httpEtag,
-      // A token names one set of files for good: they are replaced only by a new upload with a new token.
-      "cache-control": "public, max-age=31536000, immutable",
-      "x-content-type-options": "nosniff",
-      "content-security-policy": "default-src 'none'; sandbox",
-      "cross-origin-resource-policy": "cross-origin",
-      "access-control-allow-origin": "*",
-    },
+  const headers = mediaHeaders(object, type);
+  headers.set("content-length", String(object.size));
+  return new Response(object.body, { headers });
+}
+
+// The headers every media answer carries. A token names one set of files for good: they are replaced only by a new
+// upload with a new token, so a file is cached as immutable.
+function mediaHeaders(object: R2Object, type: string): Headers {
+  return new Headers({
+    "content-type": type,
+    etag: object.httpEtag,
+    "cache-control": "public, max-age=31536000, immutable",
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "default-src 'none'; sandbox",
+    "cross-origin-resource-policy": "cross-origin",
+    "access-control-allow-origin": "*",
   });
 }
 
@@ -88,17 +110,10 @@ export function byteRange(header: string | null): ByteRange | null {
   return end < offset ? null : { offset, length: end - offset + 1 };
 }
 
-function remoteHeaders(object: R2Object, type: string): Headers {
-  return new Headers({
-    "content-type": type,
-    etag: object.httpEtag,
-    "accept-ranges": "bytes",
-    "cache-control": "public, max-age=31536000, immutable",
-    "x-content-type-options": "nosniff",
-    "content-security-policy": "default-src 'none'; sandbox",
-    "cross-origin-resource-policy": "cross-origin",
-    "access-control-allow-origin": "*",
-  });
+function rangedHeaders(object: R2Object, type: string): Headers {
+  const headers = mediaHeaders(object, type);
+  headers.set("accept-ranges", "bytes");
+  return headers;
 }
 
 // Whether `range` selects no byte of an object of `size` bytes (RFC 9110 §14.1.1): an empty suffix, or a first byte
@@ -125,6 +140,22 @@ export async function serveRemoteMedia(c: Context<{ Bindings: Env }>): Promise<R
   if (path === null) {
     return NOT_FOUND();
   }
+  return serveObject(
+    c,
+    path.key,
+    (object) => typeAllowed(object, path.extension),
+    () => console.warn({ event: "kopje.remote_media.type_refused" }),
+  );
+}
+
+// An object of the bucket with HEAD, ranges and conditional answers, as the remote route describes; `allowed` decides
+// whether its stored type may be served under the requested extension (refused: 404, its body cancelled).
+async function serveObject(
+  c: Context<{ Bindings: Env }>,
+  key: string,
+  allowed: (object: R2Object) => boolean,
+  refused: () => void,
+): Promise<Response> {
   const bucket = c.env.MEDIA;
   const head = c.req.method === "HEAD";
   const etag = c.req.header("if-none-match");
@@ -135,8 +166,8 @@ export async function serveRemoteMedia(c: Context<{ Bindings: Env }>): Promise<R
       throw new RangeError("an empty suffix range");
     }
     object = head
-      ? await bucket.head(path.key)
-      : await bucket.get(path.key, {
+      ? await bucket.head(key)
+      : await bucket.get(key, {
           ...(range === null ? {} : { range }),
           ...(etag === undefined ? {} : { onlyIf: new Headers({ "if-none-match": etag }) }),
         });
@@ -146,14 +177,18 @@ export async function serveRemoteMedia(c: Context<{ Bindings: Env }>): Promise<R
     if (range === null) {
       throw error;
     }
-    const found = await bucket.head(path.key);
-    if (found === null || !typeAllowed(found, path.extension)) {
+    const found = await bucket.head(key);
+    if (found === null || !allowed(found)) {
       return NOT_FOUND();
     }
     if (!unsatisfiable(range, found.size)) {
       throw error;
     }
-    const headers = remoteHeaders(found, found.httpMetadata?.contentType ?? "");
+    const headers = rangedHeaders(found, found.httpMetadata?.contentType ?? "");
+    // A matching If-None-Match is evaluated before Range (RFC 9110 13.2.2): 304, whatever the range.
+    if (etag !== undefined && noneMatchHolds(etag, found.httpEtag)) {
+      return new Response(null, { status: 304, headers });
+    }
     headers.set("content-range", `bytes */${found.size}`);
     return new Response(null, { status: 416, headers });
   }
@@ -161,12 +196,12 @@ export async function serveRemoteMedia(c: Context<{ Bindings: Env }>): Promise<R
     return NOT_FOUND();
   }
   const body = hasBody(object) ? object.body : null;
-  if (!typeAllowed(object, path.extension)) {
+  if (!allowed(object)) {
     await body?.cancel();
-    console.warn({ event: "kopje.remote_media.type_refused" });
+    refused();
     return NOT_FOUND();
   }
-  const headers = remoteHeaders(object, object.httpMetadata?.contentType ?? "");
+  const headers = rangedHeaders(object, object.httpMetadata?.contentType ?? "");
   // A GET whose If-None-Match matched gets no body back (onlyIf); a HEAD compares the tag itself, as R2 does.
   if (body === null && etag !== undefined && (!head || noneMatchHolds(etag, object.httpEtag))) {
     return new Response(null, { status: 304, headers });

@@ -2,12 +2,18 @@ package main
 
 import (
 	"math"
+	"strconv"
 	"testing"
 )
 
+// A stream as the header probe reads it; a video tagged BT.709 (colour known, so no discovery for it).
 func stream(codecType, codec string, w, h int, rate, duration string) probeStream {
-	return probeStream{CodecType: codecType, CodecName: codec, Width: w, Height: h, RFrameRate: rate, AvgFrameRate: rate,
+	s := probeStream{CodecType: codecType, CodecName: codec, Width: w, Height: h, RFrameRate: rate, AvgFrameRate: rate,
 		Duration: duration}
+	if codecType == "video" {
+		s.ColorTransfer, s.ColorPrimaries = "bt709", "bt709"
+	}
+	return s
 }
 
 func probeOf(format string, streams ...probeStream) *probeResult {
@@ -236,6 +242,36 @@ func TestPlanReadsTheColourTags(t *testing.T) {
 			t.Fatalf("%s/%s: %+v %q", c.primaries, c.transfer, pl, r)
 		}
 	}
+	// A transfer of another curve than BT.709's is converted; BT.601's and BT.2020's are BT.709's curve.
+	for _, c := range []struct {
+		transfer string
+		want     bool
+	}{
+		{"iec61966-2-1", true}, {"gamma22", true}, {"gamma28", true}, {"linear", true},
+		{"bt709", false}, {"smpte170m", false}, {"bt2020-10", false}, {"bt2020-12", false},
+		{"unknown", false}, {"", false}, {"arib-std-b67", false}, {"smpte2084", false},
+	} {
+		pl, r := planNormalize(video("bt709", c.transfer), roomy)
+		if r != "" || pl.transfer != c.want {
+			t.Fatalf("bt709/%s: %+v %q", c.transfer, pl, r)
+		}
+	}
+	// A conversion of a video that leaves its matrix unspecified reads it with BT.709 above 576 lines, else BT.601's.
+	for _, c := range []struct {
+		transfer, space string
+		height          int
+		want            string
+	}{
+		{"iec61966-2-1", "", 1080, "bt709"}, {"iec61966-2-1", "unknown", 720, "bt709"},
+		{"iec61966-2-1", "", 576, "smpte170m"}, {"gamma22", "", 480, "smpte170m"},
+		{"iec61966-2-1", "bt470bg", 1080, ""}, {"bt709", "", 1080, ""},
+	} {
+		p := video("bt709", c.transfer)
+		p.Streams[0].ColorSpace, p.Streams[0].Height = c.space, c.height
+		if pl, r := planNormalize(p, roomy); r != "" || pl.matrix != c.want {
+			t.Fatalf("%s/%s/%d: matrix %q %q", c.transfer, c.space, c.height, pl.matrix, r)
+		}
+	}
 	onStream := video("", "")
 	onStream.Streams[0].SideDataList = []sideData{{"ICC Profile"}}
 	if pl, _ := planNormalize(onStream, roomy); !pl.icc {
@@ -245,5 +281,116 @@ func TestPlanReadsTheColourTags(t *testing.T) {
 	frames := `{"frames":[{"stream_index":1,"side_data_list":[{"side_data_type":"ICC profile"}]}]}`
 	if !framesICC([]byte(frames), 1) || framesICC([]byte(frames), 0) || framesICC([]byte("not json"), 1) {
 		t.Fatal("frame probe misread")
+	}
+}
+
+// The envelope's decisions (#1828 PR2, A1) at the rungs' boundaries and at each endpoint's edge, for the inputs P27
+// measured. The expected estimate is derived here from A1's coefficients and the encode time from design 4.7's
+// starting stage times, never copied from the plan, so a changed coefficient, rung or allocation fails this test.
+func TestTheEnvelopeAtTheBoundaries(t *testing.T) {
+	// The coefficients (A1's, the tone map's and the encode's from the boundary bench, A8; ns per pixel, ms per second
+	// of audio), fixed work and safety factor.
+	decode := map[string]float64{"h264": 1.0, "hevc": 1.5, "vp9": 3.5}
+	const tonemap, encode, audioMs, fixedMs, safety = 11.0, 21.0, 40.0, 1500.0, 0.7
+	// Design 4.7's starting stage times (s): dispatch, start, probe, still and Images, commit, v1's reply; an assumed
+	// input streaming time and, for v1, ingress.
+	const dispatch, start, probeS, still, commit, reply, input, ingress = 2.0, 5.0, 3.0, 8.0, 6.0, 2.0, 3.2, 10.0
+	fixed := dispatch + start + probeS + still + commit
+	endpoints := []struct {
+		name     string
+		encodeMs float64
+	}{
+		{"v2 (480 s)", (480 - fixed - input) * 1000},
+		{"v1 at 90 s", (90 - ingress - input - fixed - reply) * 1000},
+		{"v1 at 300 s", (300 - ingress - input - fixed - reply) * 1000},
+	}
+	// The ladder as A2 keeps it: the duration each rung takes, its geometry and frame rate.
+	rungs := []struct{ upTo, long, short, fps float64 }{{120, 1920, 1080, 60}, {300, 1280, 720, 30}, {600, 854, 480, 30}}
+	expected := func(w, h, fps, d float64, codec string, hdr, audio bool) float64 {
+		r := rungs[len(rungs)-1]
+		for _, c := range rungs {
+			if d <= c.upTo {
+				r = c
+				break
+			}
+		}
+		ow, oh := fitWithin(int(w), int(h), int(r.long), int(r.short))
+		perPixel := decode[codec]
+		if hdr {
+			perPixel += tonemap
+		}
+		est := fixedMs + w*h*d*fps*perPixel/1e6 + float64(ow*oh)*math.Min(d*fps, math.Ceil(d*r.fps))*encode/1e6
+		if audio {
+			est += d * audioMs
+		}
+		return est
+	}
+	inputs := []struct {
+		name      string
+		codec     string
+		w, h, fps float64
+		transfer  string
+		audio     bool
+		duration  float64
+	}{
+		{"1080p H.264 below 120 s", "h264", 1920, 1080, 30, "", true, 119.9},
+		{"1080p H.264 above 120 s", "h264", 1920, 1080, 30, "", true, 120.1},
+		{"1080p H.264 below 300 s", "h264", 1920, 1080, 30, "", true, 299.9},
+		{"1080p H.264 above 300 s", "h264", 1920, 1080, 30, "", true, 300.1},
+		{"1080p H.264 60 s", "h264", 1920, 1080, 30, "", true, 60},
+		{"4K HEVC SDR below 120 s", "hevc", 3840, 2160, 30, "", true, 119.9},
+		{"4K HEVC SDR above 120 s", "hevc", 3840, 2160, 30, "", true, 120.1},
+		{"4K HEVC SDR below 300 s", "hevc", 3840, 2160, 30, "", true, 299.9},
+		{"4K HEVC SDR above 300 s", "hevc", 3840, 2160, 30, "", true, 300.1},
+		{"4K HEVC SDR 600 s", "hevc", 3840, 2160, 30, "", true, 600},
+		{"4K HEVC HLG 30 s", "hevc", 3840, 2160, 30, "arib-std-b67", true, 30},
+		{"4K HEVC PQ 30 s", "hevc", 3840, 2160, 30, "smpte2084", true, 30},
+		{"4K HEVC HLG below 120 s", "hevc", 3840, 2160, 30, "arib-std-b67", true, 119.9},
+		{"4K HEVC PQ above 120 s", "hevc", 3840, 2160, 30, "smpte2084", true, 120.1},
+		// Not HEVC: HDR costs the tone map over the codec's own decode (A1).
+		{"1080p VP9 HLG 30 s", "vp9", 1920, 1080, 30, "arib-std-b67", true, 30},
+	}
+	for _, in := range inputs {
+		d := strconv.FormatFloat(in.duration, 'f', -1, 64)
+		v := stream("video", in.codec, int(in.w), int(in.h), strconv.FormatFloat(in.fps, 'f', -1, 64)+"/1", d)
+		v.ColorTransfer = in.transfer
+		streams := []probeStream{v}
+		if in.audio {
+			streams = append(streams, stream("audio", "aac", 0, 0, "0/0", d))
+		}
+		probe := probeOf(d, streams...)
+		want := expected(in.w, in.h, in.fps, in.duration, in.codec, in.transfer != "", in.audio)
+		for _, e := range endpoints {
+			pl, refused := planNormalize(probe, e.encodeMs)
+			admitted := want <= safety*e.encodeMs
+			if admitted != (refused == "") || (!admitted && refused != refuseEnvelope) {
+				t.Fatalf("%s on %s: estimate %.0f ms against %.0f ms, got %q", in.name, e.name, want, e.encodeMs, refused)
+			}
+			if admitted && math.Abs(pl.estimateMs-want) > 1e-6 {
+				t.Fatalf("%s: estimate %v, want %v", in.name, pl.estimateMs, want)
+			}
+		}
+		// Each input's own edge: admitted with the encode time its estimate needs, refused a millisecond under it.
+		edge := want / safety
+		if _, refused := planNormalize(probe, math.Ceil(edge)); refused != "" {
+			t.Fatalf("%s refused at its edge %.0f ms: %q", in.name, edge, refused)
+		}
+		if _, refused := planNormalize(probe, math.Floor(edge)-1); refused != refuseEnvelope {
+			t.Fatalf("%s admitted under its edge %.0f ms: %q", in.name, edge, refused)
+		}
+	}
+	// A1's comparisons under A8's coefficients: 30 s 1080p VP9 HLG with audio estimates 69.0 s; 600 s 4K HEVC SDR 404.0 s,
+	// now refused on v2's 452.8 s of encode time, where 470 s is the edge (471 s refused); a 60 s 1080p H.264 clip
+	// (86.0 s) refused on v1 at 90 s.
+	vp9 := expected(1920, 1080, 30, 30, "vp9", true, true)
+	hevc := expected(3840, 2160, 30, 600, "hevc", false, true)
+	h264 := expected(1920, 1080, 30, 60, "h264", false, true)
+	if math.Round(vp9/100) != 690 || math.Round(hevc/100) != 4040 || math.Round(h264/100) != 860 {
+		t.Fatalf("estimates %v %v %v", vp9, hevc, h264)
+	}
+	v2 := safety * endpoints[0].encodeMs
+	edge, past := expected(3840, 2160, 30, 470, "hevc", false, true), expected(3840, 2160, 30, 471, "hevc", false, true)
+	if hevc <= v2 || edge > v2 || past <= v2 || h264 <= safety*endpoints[1].encodeMs {
+		t.Fatal("A8's stated decisions do not hold")
 	}
 }

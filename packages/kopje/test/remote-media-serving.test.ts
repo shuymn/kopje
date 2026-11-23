@@ -123,6 +123,19 @@ describe("serveRemoteMedia", () => {
     expect((await served(undefined, { headers: { "if-none-match": etag } })).status).toBe(304);
     expect((await served(undefined, { method: "HEAD", headers: { "if-none-match": etag } })).status).toBe(304);
     expect((await served(undefined, { headers: { "if-none-match": '"other"' } })).status).toBe(200);
+    // If-None-Match before Range (RFC 9110 13.2.2): a matching tag answers 304 even with an unsatisfiable range, a
+    // tag that does not match leaves the range's 416 or 206.
+    for (const [range, tag, status] of [
+      ["bytes=-0", etag, 304],
+      ["bytes=100-", etag, 304],
+      ["bytes=0-9", etag, 304],
+      ["bytes=-0", '"other"', 416],
+      ["bytes=0-9", '"other"', 206],
+    ] as const) {
+      const response = await served(undefined, { headers: { range, "if-none-match": tag } });
+      expect(response.status, `${range} ${tag}`).toBe(status);
+      expect(response.headers.get("cache-control"), `${range} ${tag}`).toBe("public, max-age=31536000, immutable");
+    }
   });
   it("answers a bucket failure as one, never as 416, with a range or without", async () => {
     await env.MEDIA.put(`remote/${TOKEN}/full`, BODY, { httpMetadata: { contentType: "image/png" } });

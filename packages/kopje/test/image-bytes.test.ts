@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { isAnimated, retainedMetadata, sniffImageType } from "../src/platform/image-bytes";
-import { keyOfPath, mediaKeys, originalKey } from "../src/platform/media-files";
+import { keyOfPath, mediaKeys, mediaPath, originalKey } from "../src/platform/media-files";
 import {
   ANIMATED_WEBP,
   APNG,
@@ -213,9 +213,19 @@ describe("media keys (MEDIA-2)", () => {
     expect(() => originalKey("../x")).toThrow("media id is not a server id");
   });
 
+  it("builds the paths of video and audio as full only", () => {
+    expect(mediaPath(token, "full", "video/mp4")).toBe(`/media/${token}/full.mp4`);
+    expect(mediaPath(token, "full", "audio/mpeg")).toBe(`/media/${token}/full.mp3`);
+    expect(mediaPath(token, "small", "image/webp")).toBe(`/media/${token}/small.webp`);
+    expect(() => mediaPath(token, "small", "video/mp4")).toThrow("not a served media type: video/mp4");
+    expect(() => mediaPath(token, "full", "video/webm")).toThrow("not a served media type: video/webm");
+  });
+
   it("maps only served files of a well-formed token to a key", () => {
     expect(keyOfPath(token, "full.jpg")).toEqual({ key: `files/${token}/full`, extension: "jpg" });
     expect(keyOfPath(token, "small.webp")).toEqual({ key: `files/${token}/small`, extension: "webp" });
+    expect(keyOfPath(token, "full.mp4")).toEqual({ key: `files/${token}/full`, extension: "mp4" });
+    expect(keyOfPath(token, "full.mp3")).toEqual({ key: `files/${token}/full`, extension: "mp3" });
     for (const [t, file] of [
       [token, "original.jpg"],
       [token, "full.html"],
@@ -226,6 +236,11 @@ describe("media keys (MEDIA-2)", () => {
       [`${token}/..`, "full.jpg"],
       ["originals%2F100000000000000001", "full.jpg"],
       ["short", "full.jpg"],
+      // Video and audio are served as `full` only (#1828).
+      [token, "small.mp4"],
+      [token, "small.mp3"],
+      [token, "full.m4a"],
+      [token, "full.webm"],
     ] as const) {
       expect(keyOfPath(t, file), `${t} ${file}`).toBeNull();
     }

@@ -3252,9 +3252,16 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
 - **MEDIA-4: media cannot run as instance content.** Uploads are accepted by detected type from an allowlist and served
   with their stored type and `nosniff`; HTML, SVG and other active types are never served from the instance origin.
   _Enforced (main):_ `sniffImageType` (JPEG, PNG, GIF, WebP, AVIF by signature, and Images
-  must read the same type); `SERVED_TYPES` and `src/web/media.ts` (JPEG, PNG and WebP only, `nosniff`, `sandbox` CSP);
-  video and audio are refused; `test/media.test.ts` ("refuses active and unsupported types by their bytes", "never
-  serves a stored object of another type"). A card image is only ever stored re-encoded, as a still WebP without
+  must read the same type); `SERVED_TYPES` and `src/web/media.ts` (JPEG, PNG and WebP, `nosniff`, `sandbox` CSP);
+  video and audio uploads are refused; `test/media.test.ts` ("refuses active and unsupported types by their bytes",
+  "never serves a stored object of another type"). A local file is served only under the extension its stored type
+  names among its variant's types (`VARIANT_TYPES` in `src/platform/media-files.ts`): `small` an image, `full` an image
+  or the processor's MP4 or MP3 (`SERVED_AV_TYPES`). Video and audio answer as a cached remote file does (`serveObject`
+  in `src/web/media.ts`): HEAD from the object's head, one range with 206, an unsatisfiable one with 416, several with
+  the whole file and a matching `If-None-Match` with 304, with `nosniff` and the `sandbox` CSP on each; another variant,
+  another extension or another stored type answers 404 (`test/media.test.ts` ("serves ranges of a local video"),
+  `test/image-bytes.test.ts` ("builds the paths of video and audio as full only", "maps only served files of a
+  well-formed token to a key")). A card image is only ever stored re-encoded, as a still WebP without
   metadata that Images made from a source of an accepted signature, its output checked before it is written
   (`src/federation/card-images.ts`; `test/card-image-process.test.ts` ("refuses a signature that is not JPEG, PNG,
   GIF or WebP", "refuses an output of CARD_IMAGE_OUTPUT_LIMIT + 1 bytes while it is read")). A cached remote file

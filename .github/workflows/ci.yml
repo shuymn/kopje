@@ -148,12 +148,14 @@ jobs:
         run: pnpm run test:scripts
 
   # The media processor's image (packages/kopje/container): the server's Go tests in the Go image its Dockerfile builds
-  # with, then the image built and its operations run with no network on the probe fixture and the WAV, EXIF-tagged MOV
-  # and Display P3 MOV inputs the script makes, each answer checked against the input's expected kind for its status,
-  # media type, length, codec, full decode, the absence of seeded metadata and, for the P3 stills, their colour
-  # (packages/kopje/scripts/container-smoke.sh). Instances build the same Dockerfile in Workers Builds.
+  # with, then the image built and its operations run with no network on the probe fixture and the inputs the script
+  # makes (every rung of the output ladder, the audio types, metadata, colour, rotation, HDR and duration cases), each
+  # answer checked for its status, media type, length, codec, full decode, the absence of seeded metadata, geometry,
+  # decoded content and 480p30 quality, and every output then verified by Kopje's own verifier
+  # (packages/kopje/scripts/container-smoke.sh). Instances build the same Dockerfile in Workers Builds. The limit holds
+  # the image build, the 121 s and 600 s inputs' encodes and the install.
   container:
-    timeout-minutes: 15
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.kopje_code == 'true'
@@ -170,6 +172,14 @@ jobs:
           go_image=$(sed -n "s/^FROM --platform=[^ ]* \(golang:[^ ]*\) AS build\$/\1/p" Dockerfile)
           docker run --rm --network none -v "$PWD/server:/src" -w /src -e CGO_ENABLED=0 "$go_image" \
             sh -c 'go vet ./... && go test ./...'
+
+      # node and pnpm at the versions mise.lock pins, for the verifier the script runs on the outputs.
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
+        with:
+          install_args: node pnpm
+
+      - name: Install
+        run: pnpm install
 
       - name: Build the image and run its operations
         run: bash packages/kopje/scripts/container-smoke.sh --build kopje-media:ci

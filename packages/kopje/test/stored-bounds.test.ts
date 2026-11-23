@@ -12,7 +12,7 @@ import { MAX_RAW_LENGTH, parseStatusText, renderFieldValue, renderStatusHtml } f
 import { remoteActorInput } from "../src/federation/remote-actor";
 import { parseRemoteStatus } from "../src/federation/remote-status";
 import { ACTOR_URI_LIMIT, REMOTE_USERNAME_LIMIT, STATUS_URI_LIMIT } from "../src/platform/identity-bounds";
-import { mediaUrl, SERVED_TYPES } from "../src/platform/media-files";
+import { mediaUrl, SERVED_TYPES, VARIANT_TYPES } from "../src/platform/media-files";
 import {
   COLLECTION_URI_BYTES,
   APP_ID_BYTES,
@@ -489,9 +489,10 @@ describe("stored bounds (RES-2)", () => {
     const host = [63, 63, 63, 61].map((n, i) => String.fromCharCode(97 + i).repeat(n)).join(".");
     expect(host).toHaveLength(253);
     const token = "T".repeat(64);
-    const urls = [...SERVED_TYPES.keys()].flatMap((type) =>
-      (["full", "small"] as const).map((variant) => mediaUrl(`https://${host}`, token, variant, type)),
+    const urls = (["full", "small"] as const).flatMap((variant) =>
+      [...VARIANT_TYPES[variant].keys()].map((type) => mediaUrl(`https://${host}`, token, variant, type)),
     );
+    expect(urls).toHaveLength(SERVED_TYPES.size * 2 + 2);
     await runInDurableObject(freshStore(), (_instance, state) => {
       for (const url of urls) {
         expect(ENCODER.encode(url).length).toBeLessThanOrEqual(MEDIA_URL_LIMIT);

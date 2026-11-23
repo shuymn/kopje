@@ -11,6 +11,15 @@
 // are killed at the times the Worker passes (ffmpeg's process group SIGKILLed); /still at stillTimeout. ffmpeg reads
 // only local files of the allowed demuxers. A failure answers a code (an "error" field and the Kopje-Error header),
 // never ffmpeg's output. The container has no network: Kopje starts it with Internet access disabled.
+//
+// Every answer with a JSON code is an outcome of that input, a 500 (encode_failed, strip_failed, still_failed,
+// no_output, output_size) included: the input could not be processed. Only no answer, a failed connection or an answer
+// outside this contract means the processor is unavailable. A 422 is a refusal of the input: its limits, its format,
+// a frame the decoder dropped over the pixel limit (pixels, whatever the output, as A5 of #1828 PR2 decides: an
+// oversizeMarkers diagnostic on the encode's stderr), or an output shorter than the plan (truncated; checkOutput).
+// The limit of A5: a decoder that drops an oversized later frame without a diagnostic recognised here can leave a
+// shorter video track, published when the longest stream still passes checkOutput's duration check. That affects only
+// the uploader's own over-limit file, never another user's data, and its cost stays bounded by -max_pixels.
 package main
 
 import (
@@ -21,11 +30,13 @@ import (
 	"errors"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"syscall"
 	"time"
@@ -226,6 +237,8 @@ func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) 
 		return
 	}
 	w.Header().Set("Kopje-Estimate-Ms", strconv.FormatInt(int64(pl.estimateMs), 10))
+	// The plan's duration, which the Worker's verifier holds the output to (short_output).
+	w.Header().Set("Kopje-Duration-Ms", strconv.FormatInt(int64(math.Round(pl.duration*1000)), 10))
 	if pl.kind == "video" && !pl.icc {
 		pl.icc = frameICC(probeCtx, in, pl.videoIndex)
 	}
@@ -243,16 +256,28 @@ func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) 
 		out, contentType = filepath.Join(dir, "output.mp3"), "audio/mpeg"
 		args = audioArgs(pl, in, out)
 	}
-	cpu, err := runFFmpeg(encodeCtx, args)
-	if err != nil && pl.kind == "video" && (pl.icc || pl.primaries) && encodeCtx.Err() == nil {
-		// A profile iccdetect cannot use, or tags zscale cannot convert from: the video is encoded as before, with no
-		// conversion and its profile dropped.
-		pl.icc, pl.primaries = false, false
-		more, retried := runFFmpeg(encodeCtx, videoArgs(pl, threads, in, out))
-		cpu, err = cpu+more, retried
+	run, err := runEncode(encodeCtx, args)
+	if err != nil && !run.oversized && pl.kind == "video" && (pl.icc || pl.primaries || pl.transfer) && encodeCtx.Err() == nil {
+		// A profile iccdetect cannot use, or tags zscale still cannot convert from (the matrix supplied by matrixFor):
+		// the last resort encodes the video as before, with no conversion and its profile dropped, under the BT.709
+		// label. That is a colour-rendering detail, not a content one (design section 6, residual 5).
+		pl.icc, pl.primaries, pl.transfer = false, false, false
+		var more encodeRun
+		more, err = runEncode(encodeCtx, videoArgs(pl, threads, in, out))
+		run = encodeRun{cpu: run.cpu + more.cpu, oversized: more.oversized}
 	}
 	t.set("Encode", start)
-	w.Header().Set("Kopje-Encode-Cpu-Ms", strconv.FormatInt(cpu.Milliseconds(), 10))
+	w.Header().Set("Kopje-Encode-Cpu-Ms", strconv.FormatInt(run.cpu.Milliseconds(), 10))
+	// A frame dropped over the pixel limit refuses the input whatever the output, before the output is rewritten or
+	// probed; an expired deadline answers its timeout first.
+	if run.oversized {
+		if encodeCtx.Err() != nil {
+			writeFailure(w, ffmpegFailure(encodeCtx, "encode_failed"))
+		} else {
+			writeFailure(w, refuse(refusePixels))
+		}
+		return
+	}
 	if err != nil {
 		writeFailure(w, ffmpegFailure(encodeCtx, "encode_failed"))
 		return
@@ -262,6 +287,12 @@ func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) 
 			writeFailure(w, fail(http.StatusInternalServerError, "strip_failed"))
 			return
 		}
+	}
+	if f := checkOutput(encodeCtx, p, pl, out); f != nil {
+		writeFailure(w, f)
+		return
+	}
+	if pl.kind == "video" {
 		// The still is best effort within the encode time left: a video without one is still an output.
 		start = time.Now()
 		w.Header().Set("Kopje-Still", strconv.FormatBool(makeStill(encodeCtx, pl, in)))
@@ -447,15 +478,21 @@ func receive(r *http.Request, path string) (int64, *failure) {
 }
 
 // probe reads the input's streams and format from its headers, decoding nothing (probeArgs). Only when the headers
-// leave a limit unknown (needsDiscovery: no duration, as a raw ADTS AAC; a video with no dimensions or frame rate)
-// does it read again with stream discovery, which may decode, within the decoder's pixel limit; the limits are checked
-// on the answer as on any other.
+// leave a limit unknown (limitsUnknown: no duration, as a raw ADTS AAC; a video with no dimensions or frame rate) or
+// the video's colour unknown (colourUnknown: no colr box) does it read again with stream discovery, which may decode,
+// within the decoder's pixel limit and the same budget; the limits are checked on the answer as on any other. A
+// discovery run only for the colour that fails other than by the budget (a frame over the pixel limit, say) leaves the
+// header probe's answer, untagged: the encode then meets that frame and refuses the input as it would have.
 func probe(ctx context.Context, path string) (*probeResult, *failure) {
 	p, f := runProbe(ctx, probeArgs(path, false))
-	if f == nil && needsDiscovery(p) {
-		return runProbe(ctx, probeArgs(path, true))
+	if f != nil || (!limitsUnknown(p) && !colourUnknown(p)) {
+		return p, f
 	}
-	return p, f
+	found, f := runProbe(ctx, probeArgs(path, true))
+	if f != nil && !limitsUnknown(p) && f.code != "timeout" {
+		return p, nil
+	}
+	return found, f
 }
 
 func runProbe(ctx context.Context, args []string) (*probeResult, *failure) {
@@ -495,11 +532,109 @@ func frameICC(ctx context.Context, path string, index int) bool {
 	return framesICC(stdout.buf, index)
 }
 
+// checkOutput refuses a short output (A5 of #1828 PR2) as truncated: a mapped source stream missing from the output,
+// a mapped output stream short of its source stream's own declared duration, or the longest mapped output stream short
+// of the plan's duration (boundedDuration). A stream without a declared duration of its own (a WebM's) is held only
+// through that longest stream. Short means by more than a second or by more than 10 %. A probe that fails to read the
+// output is the encode's failure.
+func checkOutput(ctx context.Context, p *probeResult, pl *plan, out string) *failure {
+	got, f := probe(ctx, out)
+	if f != nil {
+		return ffmpegFailure(ctx, "encode_failed")
+	}
+	short := func(planned, have float64) bool {
+		return planned-have > 1 || planned-have > planned*0.1
+	}
+	video, audio := selectStreams(p)
+	var outVideo, outAudio *probeStream
+	for i := range got.Streams {
+		s := &got.Streams[i]
+		switch {
+		case s.CodecType == "video" && outVideo == nil:
+			outVideo = s
+		case s.CodecType == "audio" && outAudio == nil:
+			outAudio = s
+		}
+	}
+	var pairs [][2]*probeStream
+	if audio != nil && (pl.kind != "video" || pl.audioIndex >= 0) {
+		pairs = append(pairs, [2]*probeStream{audio, outAudio})
+	}
+	if pl.kind == "video" && video != nil {
+		pairs = append(pairs, [2]*probeStream{video, outVideo})
+	}
+	longest := 0.0
+	for _, pair := range pairs {
+		source, output := pair[0], pair[1]
+		if output == nil {
+			return refuse(refuseTruncated)
+		}
+		have := parsePositive(output.Duration)
+		longest = math.Max(longest, have)
+		if own := parsePositive(source.Duration); own > 0 && short(own, have) {
+			return refuse(refuseTruncated)
+		}
+	}
+	if short(pl.duration, longest) {
+		return refuse(refuseTruncated)
+	}
+	return nil
+}
+
+// An encode's CPU time (user and system) and whether the decoder refused a frame over the pixel limit.
+type encodeRun struct {
+	cpu       time.Duration
+	oversized bool
+}
+
+// oversizeMarkers match what the pinned ffmpeg prints when -max_pixels refuses a frame: its image utilities' (imgutils.c,
+// the native decoders) and libdav1d's frame size diagnostic, which takes max_pixels as its limit ("Frame size WxH exceeds
+// limit N", obu.c). Only that diagnostic: the AAC decoder's "Number of bands (…) exceeds limit (…)" is an audio error.
+var oversizeMarkers = []*regexp.Regexp{
+	regexp.MustCompile(`exceeds specified max pixel count`),
+	regexp.MustCompile(`Frame size [0-9]+x[0-9]+ exceeds limit`),
+}
+
+// markerSpan bounds a marker's match (the dav1d diagnostic's numbers are at most 10 digits each): the bytes markerWriter
+// keeps from one write to the next, so a marker split across writes is matched.
+const markerSpan = 128
+
+// markerWriter records whether a stream of bytes matches any of oversizeMarkers, keeping only the last markerSpan-1
+// bytes: ffmpeg's stderr is scanned for them, never stored, answered or logged.
+type markerWriter struct {
+	tail  []byte
+	found bool
+}
+
+func (m *markerWriter) Write(p []byte) (int, error) {
+	if !m.found {
+		window := append(m.tail, p...)
+		for _, marker := range oversizeMarkers {
+			m.found = m.found || marker.Match(window)
+		}
+		keep := min(len(window), markerSpan-1)
+		m.tail = append(m.tail[:0], window[len(window)-keep:]...)
+	}
+	return len(p), nil
+}
+
+// runEncode runs an encode as runFFmpeg does, watching its stderr for the pixel limit's refusal.
+func runEncode(ctx context.Context, args []string) (encodeRun, error) {
+	watch := &markerWriter{}
+	cpu, err := runFFmpegTo(ctx, args, watch)
+	return encodeRun{cpu: cpu, oversized: watch.found}, err
+}
+
 // runFFmpeg runs ffmpeg until it exits or ctx ends, when its whole process group is killed. It returns the CPU time
 // ffmpeg used (user and system).
 func runFFmpeg(ctx context.Context, args []string) (time.Duration, error) {
+	return runFFmpegTo(ctx, args, nil)
+}
+
+func runFFmpegTo(ctx context.Context, args []string, stderr io.Writer) (time.Duration, error) {
 	cmd := exec.CommandContext(ctx, ffmpegBin, args...)
 	killGroup(cmd)
+	cmd.Stderr = stderr
 	err := cmd.Run()
 	var cpu time.Duration
 	if cmd.ProcessState != nil {
@@ -512,7 +647,7 @@ func runFFmpeg(ctx context.Context, args []string) (time.Duration, error) {
 }
 
 // killGroup runs the command in its own process group and kills the group when its context ends. Its stderr is
-// discarded (nil), so no ffmpeg output reaches a response or a log.
+// discarded unless a caller scans it (runEncode), so no ffmpeg output reaches a response or a log.
 func killGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }

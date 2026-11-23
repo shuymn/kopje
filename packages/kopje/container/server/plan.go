@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -40,14 +41,19 @@ var ladder = []rung{
 }
 
 // Coefficients of the conservative estimate, in nanoseconds of wall time per pixel (decode and encode) and milliseconds
-// per second of audio. Starting values from the spike's standard-3 run (60 s 1080p30 in 43-81 s); P27's measurement
-// replaces them.
+// per second of audio. Set from the PR2 boundary bench on standard-4 (all:4; #1828 A8) as an upper bound of every
+// measured run: the tone map from the synthetic 4K HDR fixtures, the encode from a real 1080p Android clip whose
+// detailed content x264 takes 1.7 times as long a frame as a phone's test clip of the same format. x264's cost depends
+// on the content, which no header field predicts, so encodeNsPerPixel is the heavy clip's (encode time over estimate
+// at most 0.98 across the bench, every other run at most 0.82), and estimateSafety stays the margin for footage
+// heavier still. The codecs the bench did not measure (VP8, AV1, MPEG-4, the default) and VP9 keep the spike's
+// values.
 var (
-	decodeNsPerPixel = map[string]float64{"h264": 2.5, "hevc": 6, "vp9": 3.5, "vp8": 3, "av1": 8, "mpeg4": 2.5}
+	decodeNsPerPixel = map[string]float64{"h264": 1.0, "hevc": 1.5, "vp9": 3.5, "vp8": 3, "av1": 8, "mpeg4": 2.5}
 	// A codec outside the map counts as the slowest listed.
 	decodeNsDefault   = 8.0
-	tonemapNsPerPixel = 6.0
-	encodeNsPerPixel  = 9.0
+	tonemapNsPerPixel = 11.0
+	encodeNsPerPixel  = 21.0
 	audioMsPerSecond  = 40.0
 	// Fixed work around the encode: ffmpeg's start, the moov rewrite and the still.
 	fixedEstimateMs = 1500.0
@@ -61,10 +67,12 @@ type probeStream struct {
 	Height         int        `json:"height"`
 	ColorTransfer  string     `json:"color_transfer"`
 	ColorPrimaries string     `json:"color_primaries"`
+	ColorSpace     string     `json:"color_space"`
 	SideDataList   []sideData `json:"side_data_list"`
 	RFrameRate     string     `json:"r_frame_rate"`
 	AvgFrameRate   string     `json:"avg_frame_rate"`
 	NbFrames       string     `json:"nb_frames"`
+	SampleRate     string     `json:"sample_rate"`
 	Duration       string     `json:"duration"`
 	Disposition    struct {
 		AttachedPic int `json:"attached_pic"`
@@ -100,17 +108,28 @@ func iccIn(list []sideData) bool {
 	return false
 }
 
-// needsDiscovery: the headers leave a limit unknown, so the probe runs again with stream discovery and the limits apply
-// to what it found: no duration is declared, or the video stream declares no dimensions or no r_frame_rate (the
+// limitsUnknown: the headers leave a limit unknown, so the probe runs again with stream discovery and the limits
+// apply to what it found: no duration is declared, or the video stream declares no dimensions or no r_frame_rate (the
 // highest rate a stream can reach; avg_frame_rate can hide a VFR peak, so it does not stand in). An input that still
 // leaves one unknown is refused by planVideo, planAudio or the still's checks.
-func needsDiscovery(p *probeResult) bool {
+func limitsUnknown(p *probeResult) bool {
 	if !declaresDuration(p) {
 		return true
 	}
 	video, _ := selectStreams(p)
 	return video != nil && (video.Width <= 0 || video.Height <= 0 || parseRate(video.RFrameRate) == 0)
 }
+
+// colourUnknown: the video stream declares no transfer or no primaries. The header probe reads colour from the
+// container's colr box only; a file without one (a phone's HLG or PQ clip remuxed, say) carries it in the bitstream's
+// VUI, which discovery decodes, and planned without it an HDR video would be neither tone mapped nor estimated as HDR.
+// A video discovery still leaves untagged is untagged SDR.
+func colourUnknown(p *probeResult) bool {
+	video, _ := selectStreams(p)
+	return video != nil && (!knownColour(video.ColorTransfer) || !knownColour(video.ColorPrimaries))
+}
+
+func knownColour(v string) bool { return v != "" && v != "unknown" }
 
 // frameRate is the larger of the stream's declared rates (VFR and contradictory headers count at their largest); 0
 // when it declares no r_frame_rate, which the limit needs.
@@ -155,10 +174,19 @@ func framesICC(out []byte, index int) bool {
 }
 
 // otherPrimaries: SDR video tagged with primaries other than BT.709 and a known transfer, which normalize converts
-// to BT.709 before labelling the output BT.709.
+// to BT.709 (primaries and transfer) before labelling the output BT.709.
 func otherPrimaries(s *probeStream) bool {
-	known := func(v string) bool { return v != "" && v != "unknown" }
-	return !isHDR(s) && known(s.ColorPrimaries) && s.ColorPrimaries != "bt709" && known(s.ColorTransfer)
+	return !isHDR(s) && knownColour(s.ColorPrimaries) && s.ColorPrimaries != "bt709" && knownColour(s.ColorTransfer)
+}
+
+// bt709Curves: the transfers whose curve is BT.709's (BT.601's and BT.2020's at 10 and 12 bits), which the output's
+// BT.709 label holds as they are.
+var bt709Curves = []string{"bt709", "smpte170m", "bt2020-10", "bt2020-12"}
+
+// otherTransfer: SDR video tagged with a known transfer of another curve (sRGB, gamma 2.2 or 2.8, linear), which
+// normalize converts to BT.709's before labelling the output BT.709.
+func otherTransfer(s *probeStream) bool {
+	return !isHDR(s) && knownColour(s.ColorTransfer) && !slices.Contains(bt709Curves, s.ColorTransfer)
 }
 
 // A refusal of the input: the code the Worker records. Codes only, never ffmpeg's words.
@@ -175,6 +203,8 @@ const (
 	refuseDuration   refusal = "duration"
 	refuseUnbounded  refusal = "unbounded"
 	refuseEnvelope   refusal = "envelope"
+	// An output shorter than the plan (checkOutput); a 400 "truncated" is a request body shorter than its length.
+	refuseTruncated refusal = "truncated"
 )
 
 // What normalize does with an input, decided from the probe before any decoding.
@@ -182,12 +212,18 @@ type plan struct {
 	kind       string // "video" or "audio"
 	videoIndex int    // -1 for audio
 	audioIndex int    // -1 for a video without audio
+	audioRate  int    // the audio stream's declared sample rate, 0 when unknown
 	duration   float64
 	hdr        bool
 	// icc: the video carries an ICC profile, which normalize reads (iccdetect) for its primaries and transfer;
-	// primaries: it is tagged with primaries other than BT.709. Either converts the primaries to BT.709 (SDR only).
-	icc        bool
-	primaries  bool
+	// primaries: it is tagged with primaries other than BT.709. Either converts the primaries and the transfer to
+	// BT.709 (SDR only). transfer: it is tagged with a transfer of a curve other than BT.709's, which is converted.
+	icc       bool
+	primaries bool
+	transfer  bool
+	// matrix: the YUV matrix a conversion reads an SDR video with that does not declare one (matrixFor), "" when it
+	// does.
+	matrix     string
 	rung       rung
 	maxrate    int
 	estimateMs float64
@@ -253,6 +289,19 @@ func boundedDuration(p *probeResult, streams ...*probeStream) float64 {
 		longest = math.Max(longest, d)
 	}
 	return longest
+}
+
+// matrixFor is the matrix a conversion of an SDR video to BT.709 (otherPrimaries, otherTransfer) reads it with when its
+// tags leave the matrix unspecified, as players assume one: BT.709 above 576 lines, else BT.601's (smpte170m). Without
+// one, zscale finds no path from the frame's colour and the conversion would fall back.
+func matrixFor(video *probeStream) string {
+	if knownColour(video.ColorSpace) || !(otherPrimaries(video) || otherTransfer(video)) {
+		return ""
+	}
+	if video.Height > 576 {
+		return "bt709"
+	}
+	return "smpte170m"
 }
 
 func rungFor(duration float64) rung {
@@ -332,10 +381,10 @@ func planVideo(p *probeResult, video, audio *probeStream, encodeMs float64) (*pl
 	estimate := fixedEstimateMs +
 		float64(video.Width*video.Height)*frames*decode/1e6 +
 		float64(outW*outH)*outFrames*encodeNsPerPixel/1e6
-	audioIndex := -1
+	audioIndex, audioRate := -1, 0
 	if audio != nil {
 		estimate += duration * audioMsPerSecond
-		audioIndex = audio.Index
+		audioIndex, audioRate = audio.Index, int(parsePositive(audio.SampleRate))
 	}
 	if estimate > estimateSafety*encodeMs {
 		return nil, refuseEnvelope
@@ -344,10 +393,13 @@ func planVideo(p *probeResult, video, audio *probeStream, encodeMs float64) (*pl
 		kind:       "video",
 		videoIndex: video.Index,
 		audioIndex: audioIndex,
+		audioRate:  audioRate,
 		duration:   duration,
 		hdr:        hdr,
 		icc:        streamICC(video),
 		primaries:  otherPrimaries(video),
+		transfer:   otherTransfer(video),
+		matrix:     matrixFor(video),
 		rung:       r,
 		maxrate:    videoMaxrate(duration, audioBitrate),
 		estimateMs: estimate,
@@ -366,5 +418,6 @@ func planAudio(p *probeResult, audio *probeStream, encodeMs float64) (*plan, ref
 	if estimate > estimateSafety*encodeMs {
 		return nil, refuseEnvelope
 	}
-	return &plan{kind: "audio", videoIndex: -1, audioIndex: audio.Index, duration: duration, estimateMs: estimate}, ""
+	return &plan{kind: "audio", videoIndex: -1, audioIndex: audio.Index, audioRate: int(parsePositive(audio.SampleRate)),
+		duration: duration, estimateMs: estimate}, ""
 }
