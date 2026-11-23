@@ -17,9 +17,10 @@ pre-commit:
     - name: pretty
       run: pnpm exec oxfmt --no-error-on-unmatched-pattern {staged_files}
       stage_fixed: true
-    # Blocks commits that stage secrets; CI scans the whole history (security.yml).
+    # Blocks commits that stage secrets; CI scans the whole history (security.yml). betterleaks reads
+    # .betterleaks.toml only when given --config.
     - name: secrets
-      run: mise exec -- betterleaks git --pre-commit --staged --redact --no-banner --verbose
+      run: mise exec -- betterleaks git --pre-commit --staged --config .betterleaks.toml --redact --no-banner --verbose
     # The workflow checks CI runs through the shared gha.yml.
     - name: actionlint
       glob: ".github/workflows/*.{yml,yaml}"

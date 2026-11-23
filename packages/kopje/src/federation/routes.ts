@@ -452,7 +452,43 @@ export async function fetchFederation(
     // Only a page of a hidden followers or following collection is refused.
     onUnauthorized: () => new Response("Forbidden", { status: 403 }),
   });
-  return { response, state };
+  return {
+    response: FEATURED.test(url.pathname) && response.status === 200 ? await featuredUris(response) : response,
+    state,
+  };
+}
+
+const FEATURED = new RegExp(`^/ap/users/${USERNAME}/collections/featured$`);
+
+// The featured collection with each pin served by its uri as the bare string it is. When an item carries its own
+// @context (a public pin's Note), @fedify/vocab 2.4.6 also gives every other item one, writing a uri as
+// {"@context": {"id": "@id"}, "id": uri}, and defines orderedItems with "@type": "@id" in the collection's @context, under
+// which the string means the same IRI. Mastodon's FetchFeaturedCollectionService reads a pin only from a string or a
+// Note (fetch_featured_collection_service.rb process_note_items), as federation/collections.ts readFeatured does, so
+// the object would drop every pin that is not public or unlisted.
+async function featuredUris(response: Response): Promise<Response> {
+  if (response.body === null) {
+    return response;
+  }
+  const text = await response.text();
+  const json = JSON.parse(text) as Record<string, unknown>;
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  if (!Array.isArray(json.orderedItems)) {
+    return new Response(text, { status: response.status, headers });
+  }
+  const items = json.orderedItems.map((item: unknown) => {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      return item;
+    }
+    const { "@context": context, id, ...rest } = item as Record<string, unknown>;
+    return typeof id === "string" &&
+      Object.keys(rest).length === 0 &&
+      JSON.stringify(context) === JSON.stringify({ id: "@id" })
+      ? id
+      : item;
+  });
+  return new Response(JSON.stringify({ ...json, orderedItems: items }), { status: response.status, headers });
 }
 
 function canonicalWebFinger(url: URL, domain: string, username: string | null): boolean {

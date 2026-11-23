@@ -660,21 +660,11 @@ function gzipKiB(output) {
   return Number(match[1]);
 }
 
-/**
- * The fields of a raw wrangler config this check reads (wrangler's own type is not installed with it).
- * @typedef {Record<string, unknown>} Entry
- * @typedef {Record<string, unknown> & {
- *   queues?: { producers?: Entry[], consumers?: Entry[] },
- *   ratelimits?: Entry[],
- *   r2_buckets?: Entry[],
- * }} RawConfig
- */
-
 // The template may name its Worker and resources as it likes, but everything the code depends on must be as in the
 // package's own config.
 function compareConfigs() {
   /** @param {string} dir */
-  const read = (dir) => /** @type {RawConfig} */ (readRawConfig({ config: join(dir, "wrangler.jsonc") }).rawConfig);
+  const read = (dir) => readRawConfig({ config: join(dir, "wrangler.jsonc") }).rawConfig;
   const source = read(pkg);
   const target = read(template);
   const queues = new Set(

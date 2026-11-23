@@ -169,7 +169,8 @@ describe("scanHtml collection", () => {
 
   it("takes the first HTML title whose end tag was seen, untrimmed", async () => {
     expect((await scan("<title> Page </title><title>Second</title>")).title).toBe(" Page ");
-    // lol-html reports an SVG title as XHTML: no title after an svg or math start tag is taken.
+    // lol-html can report a foreign title as HTML where its foreign-content model differs from the spec's: no title
+    // after an svg or math start tag is taken.
     expect((await scan("<svg><title>icon</title></svg><title>Page</title>")).title).toBeNull();
     expect((await scan("<math></math><title>Page</title>")).title).toBeNull();
     expect((await scan("<title>never closed")).title).toBeNull();
@@ -223,6 +224,7 @@ describe("scanHtml against a scripting-off parser", () => {
     ["svg a", "<svg><a rel=me href=x></a></svg>"],
     ["svg CDATA", "<svg><![CDATA[<a rel=me href=x>]]></svg>"],
     ["math mi a", "<math><mi><a rel=me href=x></a></mi></math>"],
+    ["an HTML title in mtext after a stray end tag", "<math><mtext></mi><title><head><a rel=me href=x>"],
     ["svg foreignObject a", "<svg><foreignObject><a rel=me href=x></a></foreignObject></svg>"],
     ["mismatched </svg>", "<svg><g></svg><a rel=me href=x>"],
     ["an HTML start tag breaking out of svg", "<svg><g><p><a rel=me href=x>"],
@@ -255,7 +257,6 @@ describe("scanHtml against a scripting-off parser", () => {
   it.each([
     ["<select><template></select></template><a rel=me href=x>", "relMeAfterSelect"],
     ["<select><template></select></template><link rel=me href=x>", "relMeAfterSelect"],
-    ["<math><mtext></mi><title><head><a rel=me href=x>", "relMeAfterForeign"],
     ["<svg><template><foreignObject></template><a rel=me href=x>", "relMeAfterForeign"],
   ])("refuses the counterexample %s", async (page, flag) => {
     expect(parse5RelMe(page)).toEqual([]);

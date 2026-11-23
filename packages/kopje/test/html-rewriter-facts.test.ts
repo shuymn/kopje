@@ -127,7 +127,7 @@ describe("HTMLRewriter facts", () => {
     ]);
   });
 
-  it("gives an integration point element itself the XHTML namespace (unlike the spec)", async () => {
+  it("gives an integration point element itself its foreign namespace, as the spec does", async () => {
     const events = await rewrite(
       "<svg><title></title><desc></desc><foreignObject></foreignObject><g></g></svg>" +
         '<math><mi></mi><annotation-xml encoding="text/html"></annotation-xml></math>',
@@ -138,13 +138,13 @@ describe("HTMLRewriter facts", () => {
       elements(events).map((event) => (event.kind === "element" ? `${event.tag} ${event.ns.split("/").pop()}` : "")),
     ).toEqual([
       "svg svg",
-      "title xhtml",
-      "desc xhtml",
-      "foreignobject xhtml",
+      "title svg",
+      "desc svg",
+      "foreignobject svg",
       "g svg",
       "math MathML",
-      "mi xhtml",
-      "annotation-xml xhtml",
+      "mi MathML",
+      "annotation-xml MathML",
     ]);
   });
 

@@ -655,7 +655,7 @@ const CREATED = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 
 // Whether `signed` is `signable` with an RsaSignature2017 signature by `keyId` as federation/ld-sign.ts writes it
-// (Fedify's createSignature: the identity context, creator, created, type and signatureValue, nothing else): the
+// (Fedify 2.4.6's createSignature: the security context, creator, created, type and signatureValue, nothing else): the
 // activity compared in full, its signature alone removed, so what is recorded is what the snapshot says and stays
 // within its derived bound (RES-6).
 export function signedAs(signed: Record<string, unknown>, signable: Record<string, unknown>, keyId: string): boolean {
@@ -669,7 +669,7 @@ export function signedAs(signed: Record<string, unknown>, signable: Record<strin
   const s = signature as Record<string, unknown>;
   return (
     Object.keys(s).toSorted().join() === "@context,created,creator,signatureValue,type" &&
-    s["@context"] === "https://w3id.org/identity/v1" &&
+    s["@context"] === "https://w3id.org/security/v1" &&
     s.type === "RsaSignature2017" &&
     s.creator === keyId &&
     typeof s.created === "string" &&

@@ -822,7 +822,7 @@ describe("a Kopje holder of a boost forwards a Kopje author's signed Delete (VIS
     );
     // The holder: kopje.test, where alice follows ann and carol follows alice.
     const { t } = await world();
-    const document = (await (await author.request("/ap/users/ann", AP)).json()) as Json;
+    const document = await (await author.request("/ap/users/ann", AP)).json<Json>();
     t.web.serve(ANN_URI, document);
     serveOwnHandle(t.web, document);
     const ann = {
