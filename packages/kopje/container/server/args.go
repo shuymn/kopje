@@ -182,16 +182,24 @@ func stillArgs(videoIndex int, hdr, icc bool, seek float64, in, out string) []st
 			"-frames:v", "1", "-c:v", "png", "-flags:v", "+bitexact", "-update", "1", "-f", "image2", "file:" + out})
 }
 
-func probeArgs(path string) []string {
-	return cat([]string{"-v", "error"}, inputGuards,
-		[]string{"-print_format", "json", "-show_format", "-show_streams", "file:" + path})
+// probeArgs reads streams and format. Without discover, from the headers only (-nofind_stream_info): no packet is
+// decoded, so an image stream or a cover is not decoded before the limits are checked. With discover, stream
+// discovery reads and may decode packets, for an input whose headers declare no duration. Either way the decoder
+// refuses a frame over maxSourcePixels.
+func probeArgs(path string, discover bool) []string {
+	args := cat([]string{"-v", "error"}, inputGuards, []string{"-max_pixels", strconv.Itoa(maxSourcePixels)})
+	if !discover {
+		args = append(args, "-nofind_stream_info")
+	}
+	return append(args, "-print_format", "json", "-show_format", "-show_streams", "file:"+path)
 }
 
-// frameProbeArgs decodes the first packet of the stream at index, for what only a frame carries (an image codec's ICC
-// profile). It runs only after the header probe's limits passed, and the decoder refuses a frame over
-// maxSourcePixels as well.
+// frameProbeArgs decodes the first packet of the stream at index, and no other stream (no stream discovery), for what
+// only a frame carries (an image codec's ICC profile). It runs only after the header probe's limits passed, and the decoder refuses a frame over
+// maxSourcePixels as well. Only the first frame's profile is read: one that appears only on a later frame (a
+// keyframe at 1 s, say) is dropped like any profile, without its colour being used.
 func frameProbeArgs(path string, index int) []string {
 	return cat([]string{"-v", "error"}, inputGuards,
-		[]string{"-max_pixels", strconv.Itoa(maxSourcePixels), "-select_streams", strconv.Itoa(index),
+		[]string{"-max_pixels", strconv.Itoa(maxSourcePixels), "-nofind_stream_info", "-select_streams", strconv.Itoa(index),
 			"-read_intervals", "%+#1", "-print_format", "json", "-show_frames", "file:" + path})
 }

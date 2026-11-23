@@ -12,19 +12,24 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
 // The fake ffprobe appends its arguments to $FAKE_PROBE_LOG and prints the probe JSON in the file $FAKE_PROBE (for the
-// frame probe, the file $FAKE_FRAMES); the fake ffmpeg appends its arguments to $FAKE_LOG,
-// fails when they contain $FAKE_FAIL_ON, copies the file $FAKE_OUT (for a PNG still, $FAKE_PNG) to its last argument
-// (file:<path>), prints a marker on stderr, and exits $FAKE_EXIT (sleeping $FAKE_SLEEP seconds first).
+// header probe, $FAKE_HEADERS when set; for the frame probe, $FAKE_FRAMES), sleeping $FAKE_PROBE_SLEEP (frame probe:
+// $FAKE_FRAME_SLEEP) seconds first. The fake ffmpeg appends its arguments to $FAKE_LOG, fails when they contain
+// $FAKE_FAIL_ON, succeeds writing nothing when they contain $FAKE_EMPTY_ON, copies the file $FAKE_OUT (for a PNG
+// still, $FAKE_PNG) to its last argument (file:<path>), prints a marker on stderr, and exits $FAKE_EXIT (sleeping
+// $FAKE_SLEEP seconds first).
 const fakeProbe = `#!/bin/sh
 echo "SECRET-PROBE-STDERR" >&2
 [ -n "$FAKE_PROBE_LOG" ] && echo "$*" >> "$FAKE_PROBE_LOG"
-case "$*" in *-show_frames*) cat "${FAKE_FRAMES:-/dev/null}"; exit 0 ;; esac
+case "$*" in *-show_frames*) [ -n "$FAKE_FRAME_SLEEP" ] && sleep "$FAKE_FRAME_SLEEP"; cat "${FAKE_FRAMES:-/dev/null}"; exit 0 ;; esac
+[ -n "$FAKE_PROBE_SLEEP" ] && sleep "$FAKE_PROBE_SLEEP"
+case "$*" in *-nofind_stream_info*) [ -n "$FAKE_HEADERS" ] && { cat "$FAKE_HEADERS"; exit 0; } ;; esac
 cat "$FAKE_PROBE"
 `
 
@@ -32,6 +37,7 @@ const fakeFFmpeg = `#!/bin/sh
 echo "SECRET-FFMPEG-STDERR" >&2
 [ -n "$FAKE_LOG" ] && echo "$*" >> "$FAKE_LOG"
 [ -n "$FAKE_FAIL_ON" ] && case "$*" in *"$FAKE_FAIL_ON"*) exit 1 ;; esac
+[ -n "$FAKE_EMPTY_ON" ] && case "$*" in *"$FAKE_EMPTY_ON"*) exit 0 ;; esac
 [ -n "$FAKE_SLEEP" ] && sleep "$FAKE_SLEEP"
 for last; do :; done
 case "$*" in *"-c:v png"*) src="$FAKE_PNG" ;; *) src="$FAKE_OUT" ;; esac
@@ -60,8 +66,12 @@ func fakeTools(t *testing.T, probe *probeResult) {
 	t.Setenv("FAKE_SLEEP", "")
 	t.Setenv("FAKE_LOG", "")
 	t.Setenv("FAKE_FAIL_ON", "")
+	t.Setenv("FAKE_EMPTY_ON", "")
 	t.Setenv("FAKE_PROBE_LOG", "")
 	t.Setenv("FAKE_FRAMES", "")
+	t.Setenv("FAKE_HEADERS", "")
+	t.Setenv("FAKE_PROBE_SLEEP", "")
+	t.Setenv("FAKE_FRAME_SLEEP", "")
 	oldProbe, oldFF, oldWork, oldStill := probeBin, ffmpegBin, workRoot, stillPath
 	probeBin, ffmpegBin = write("ffprobe", fakeProbe), write("ffmpeg", fakeFFmpeg)
 	workRoot = filepath.Join(dir, "work")
@@ -517,5 +527,60 @@ func TestTheFrameProbeRunsOnlyWithinTheLimits(t *testing.T) {
 		if (framed == 2) != c.frames || (framed != 0) != c.frames {
 			t.Fatalf("%s: %d frame probes in %q", c.name, framed, runs)
 		}
+	}
+}
+
+// Headers that declare no duration (a raw ADTS AAC) are read again with stream discovery; otherwise the header probe
+// is the only one before the limits.
+func TestTheProbeDiscoversOnlyWithoutADeclaredDuration(t *testing.T) {
+	fakeTools(t, probeOf("3", stream("audio", "aac", 0, 0, "0/0", "3")))
+	headers := probeOf("", stream("audio", "aac", 0, 0, "0/0", ""))
+	encoded, err := json.Marshal(headers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "headers.json")
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_HEADERS", path)
+	log := filepath.Join(t.TempDir(), "ffprobe.log")
+	t.Setenv("FAKE_PROBE_LOG", log)
+	if rec := do(t, newMux(threadsDefault), "POST", normalizeURL, []byte("input")); rec.Code != 200 {
+		t.Fatalf("normalize %d %q", rec.Code, rec.Body.String())
+	}
+	runs, _ := os.ReadFile(log)
+	lines := strings.Split(strings.TrimSpace(string(runs)), "\n")
+	if len(lines) != 2 || !strings.Contains(lines[0], "-nofind_stream_info") ||
+		strings.Contains(lines[1], "-nofind_stream_info") || !strings.Contains(lines[1], "-max_pixels") {
+		t.Fatalf("probes: %q", lines)
+	}
+}
+
+// probe_ms bounds the header and frame probes together, and Kopje-Probe-Ms reports both.
+func TestOneProbeBudgetForBothProbes(t *testing.T) {
+	fakeTools(t, videoProbe())
+	t.Setenv("FAKE_OUT", fakeMP4(t))
+	t.Setenv("FAKE_PROBE_SLEEP", "0.45")
+	t.Setenv("FAKE_FRAME_SLEEP", "0.45")
+	rec := do(t, newMux(threadsDefault), "POST", "/normalize?probe_ms=600&encode_ms=60000", []byte("input"))
+	ms, _ := strconv.Atoi(rec.Header().Get("Kopje-Probe-Ms"))
+	if rec.Code != 200 || ms < 550 || ms > 800 {
+		t.Fatalf("normalize %d, probe %d ms", rec.Code, ms)
+	}
+}
+
+// ffmpeg can succeed with no frame written when the seek lands past the video's only keyframe (another stream in the
+// file moved it): the still is taken at 0 then, on both still paths.
+func TestAStillWithNothingAtItsSeekIsTakenAtZero(t *testing.T) {
+	fakeTools(t, videoProbe())
+	t.Setenv("FAKE_OUT", fakeMP4(t))
+	t.Setenv("FAKE_EMPTY_ON", "-ss 0.200")
+	mux := newMux(threadsDefault)
+	if rec := do(t, mux, "POST", normalizeURL, []byte("input")); rec.Code != 200 || rec.Header().Get("Kopje-Still") != "true" {
+		t.Fatalf("normalize %d %v", rec.Code, rec.Header())
+	}
+	if rec := do(t, mux, "POST", "/still", []byte("input")); rec.Code != 200 {
+		t.Fatalf("still %d %q", rec.Code, rec.Body.String())
 	}
 }

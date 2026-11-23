@@ -209,22 +209,27 @@ func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) 
 		return
 	}
 
+	// One probe_ms for every probe call: the header probe and, once the limits passed, the frame probe.
 	start = time.Now()
-	p, f := probe(r.Context(), probeTime, in)
-	t.set("Probe", start)
+	probeCtx, cancelProbe := context.WithTimeout(r.Context(), probeTime)
+	defer cancelProbe()
+	p, f := probe(probeCtx, in)
 	if f != nil {
+		t.set("Probe", start)
 		writeFailure(w, f)
 		return
 	}
 	pl, refused := planNormalize(p, float64(encodeTime.Milliseconds()))
 	if refused != "" {
+		t.set("Probe", start)
 		writeFailure(w, refuse(refused))
 		return
 	}
 	w.Header().Set("Kopje-Estimate-Ms", strconv.FormatInt(int64(pl.estimateMs), 10))
 	if pl.kind == "video" && !pl.icc {
-		pl.icc = frameICC(r.Context(), probeTime, in, pl.videoIndex)
+		pl.icc = frameICC(probeCtx, in, pl.videoIndex)
 	}
+	t.set("Probe", start)
 
 	encodeCtx, cancel := context.WithTimeout(r.Context(), encodeTime)
 	defer cancel()
@@ -299,7 +304,7 @@ func handleStill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start = time.Now()
-	p, f := probe(ctx, stillTimeout, in)
+	p, f := probe(ctx, in)
 	t.set("Probe", start)
 	if f != nil {
 		writeFailure(w, f)
@@ -316,7 +321,7 @@ func handleStill(w http.ResponseWriter, r *http.Request) {
 	}
 	out := filepath.Join(dir, "still.png")
 	start = time.Now()
-	icc := streamICC(video) || frameICC(ctx, stillTimeout, in, video.Index)
+	icc := streamICC(video) || frameICC(ctx, in, video.Index)
 	err = runStill(ctx, video.Index, isHDR(video), icc, stillSeek(boundedDuration(p, video)), in, out)
 	t.set("Encode", start)
 	if err == nil {
@@ -349,12 +354,35 @@ func makeStill(ctx context.Context, pl *plan, in string) bool {
 
 // runStill writes the still, reading the frame's ICC profile when it has one, and runs again without it when ffmpeg
 // fails then (a profile iccdetect cannot use): the still is made as before, its profile dropped.
+//
+// ffmpeg can succeed with no frame written: with another stream in the file, the seek can land past the video's only
+// keyframe. The still is then taken at 0.
 func runStill(ctx context.Context, videoIndex int, hdr, icc bool, seek float64, in, out string) error {
-	_, err := runFFmpeg(ctx, stillArgs(videoIndex, hdr, icc, seek, in, out))
-	if err != nil && icc && ctx.Err() == nil {
-		_, err = runFFmpeg(ctx, stillArgs(videoIndex, hdr, false, seek, in, out))
+	attempt := func(icc bool) error {
+		err := writeStill(ctx, stillArgs(videoIndex, hdr, icc, seek, in, out), out)
+		if errors.Is(err, errNoFrame) && seek > 0 && ctx.Err() == nil {
+			err = writeStill(ctx, stillArgs(videoIndex, hdr, icc, 0, in, out), out)
+		}
+		return err
+	}
+	err := attempt(icc)
+	if err != nil && !errors.Is(err, errNoFrame) && icc && ctx.Err() == nil {
+		err = attempt(false)
 	}
 	return err
+}
+
+var errNoFrame = errors.New("no frame written")
+
+func writeStill(ctx context.Context, args []string, out string) error {
+	_ = os.Remove(out)
+	if _, err := runFFmpeg(ctx, args); err != nil {
+		return err
+	}
+	if st, err := os.Stat(out); err != nil || st.Size() == 0 {
+		return errNoFrame
+	}
+	return nil
 }
 
 func ffmpegFailure(ctx context.Context, code string) *failure {
@@ -418,10 +446,19 @@ func receive(r *http.Request, path string) (int64, *failure) {
 	return n, nil
 }
 
-func probe(ctx context.Context, limit time.Duration, path string) (*probeResult, *failure) {
-	ctx, cancel := context.WithTimeout(ctx, limit)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, probeBin, probeArgs(path)...)
+// probe reads the input's streams and format from its headers, decoding nothing (probeArgs). Only when the headers
+// give no duration at all (a raw ADTS AAC, say) does it read again with stream discovery, which may decode, within
+// the decoder's pixel limit; the limits are checked on the answer as on any other.
+func probe(ctx context.Context, path string) (*probeResult, *failure) {
+	p, f := runProbe(ctx, probeArgs(path, false))
+	if f == nil && !declaresDuration(p) {
+		return runProbe(ctx, probeArgs(path, true))
+	}
+	return p, f
+}
+
+func runProbe(ctx context.Context, args []string) (*probeResult, *failure) {
+	cmd := exec.CommandContext(ctx, probeBin, args...)
 	killGroup(cmd)
 	var stdout limitedBuffer
 	stdout.limit = 1 << 20
@@ -445,9 +482,7 @@ func probe(ctx context.Context, limit time.Duration, path string) (*probeResult,
 // frameICC runs the frame probe, after the header probe's limits passed: whether the stream at index has an ICC
 // profile on its first frame. A probe that fails or times out answers false (the still and the encode run without
 // the profile then, as for a frame without one).
-func frameICC(ctx context.Context, limit time.Duration, path string, index int) bool {
-	ctx, cancel := context.WithTimeout(ctx, limit)
-	defer cancel()
+func frameICC(ctx context.Context, path string, index int) bool {
 	cmd := exec.CommandContext(ctx, probeBin, frameProbeArgs(path, index)...)
 	killGroup(cmd)
 	var stdout limitedBuffer

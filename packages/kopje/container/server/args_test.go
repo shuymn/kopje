@@ -54,16 +54,27 @@ func TestEveryCommandGuardsItsInputAndStripsMetadata(t *testing.T) {
 			}
 		}
 	}
-	probe := probeArgs("in")
+	probe := probeArgs("in", false)
 	if !hasPair(probe, "-protocol_whitelist", "file") || !hasPair(probe, "-format_whitelist", formatWhitelist) {
 		t.Fatalf("probe: %v", probe)
 	}
-	// The header probe decodes no frame; the frame probe, run after the limits passed, refuses a frame over them too.
-	if slices.Contains(probe, "-show_frames") || slices.Contains(probe, "-read_intervals") {
+	// The header probe decodes nothing (no stream discovery, no frames); every probe refuses a frame over the limit.
+	if slices.Contains(probe, "-show_frames") || slices.Contains(probe, "-read_intervals") ||
+		!slices.Contains(probe, "-nofind_stream_info") || !hasPair(probe, "-max_pixels", itoa(maxSourcePixels)) {
 		t.Fatalf("header probe decodes: %v", probe)
+	}
+	discover := probeArgs("in", true)
+	if slices.Contains(discover, "-nofind_stream_info") || !hasPair(discover, "-max_pixels", itoa(maxSourcePixels)) {
+		t.Fatalf("discovery probe: %v", discover)
+	}
+	for _, args := range [][]string{probe, discover} {
+		if slices.Index(args, "-max_pixels") > slices.Index(args, "file:in") {
+			t.Fatalf("pixel limit after the input: %v", args)
+		}
 	}
 	frames := frameProbeArgs("in", 2)
 	if !hasPair(frames, "-max_pixels", itoa(maxSourcePixels)) || !hasPair(frames, "-select_streams", "2") ||
+		!slices.Contains(frames, "-nofind_stream_info") ||
 		!hasPair(frames, "-read_intervals", "%+#1") || !hasPair(frames, "-format_whitelist", formatWhitelist) ||
 		slices.Index(frames, "-max_pixels") > slices.Index(frames, "file:in") {
 		t.Fatalf("frame probe: %v", frames)

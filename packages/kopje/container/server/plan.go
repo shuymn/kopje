@@ -100,6 +100,19 @@ func iccIn(list []sideData) bool {
 	return false
 }
 
+// declaresDuration: the container or a stream declares a duration.
+func declaresDuration(p *probeResult) bool {
+	if parsePositive(p.Format.Duration) > 0 {
+		return true
+	}
+	for _, s := range p.Streams {
+		if parsePositive(s.Duration) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // streamICC: the video stream carries an ICC profile on the stream (a MOV colr box). An image codec's own (a PNG's
 // iCCP) is on its frames only: framesICC reads the frame probe for it.
 func streamICC(video *probeStream) bool {
