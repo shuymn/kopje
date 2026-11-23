@@ -8,7 +8,7 @@
 # a MOV of H.264 then PNG; raw AAC; one input per rung of the output ladder (3 s of 1080p60, 121 s of 1080p60 and
 # 600 s of 720p30, each with audio, scaled to 1920x1080 at 60 fps, 1280x720 at 30 fps and 852x480 at 30 fps); one at
 # each rung's last duration (exactly 120 s of 320x180 at 60 fps and 300 s of 720p30, with audio, kept at 60 fps and at
-# 1280x720), and the 120 s one again with its audio starting 500 ms late, which the verifier must hold to the same rung;
+# 1280x720), and 119.9 s of the first with its audio starting 500 ms late, which the verifier must hold to the same rung;
 # and M4A, FLAC, Ogg, MP3 and Opus-only WebM audio.
 # One more input, an MP4 whose headers declare 320x240 but whose frames after the first are 4096x2160, is checked
 # apart: normalize refuses it (422 pixels: the decoder dropped the frames over the limit, so the output would be short
@@ -179,8 +179,9 @@ ffm -f lavfi -i testsrc2=s=320x180:r=60:d=120 -f lavfi -i sine=d=120:sample_rate
   -preset ultrafast -c:a aac edge120.mp4
 ffm -f lavfi -i testsrc2=s=1280x720:r=30:d=300 -f lavfi -i sine=d=300:sample_rate=44100 -ac 2 -c:v libx264 \
   -preset ultrafast -b:v 1M -maxrate 1M -bufsize 2M -c:a aac edge300.mp4
-# The audio starts 500 ms late: an empty edit makes the movie 120.5 s, while the streams last 120 s each.
-ffm -f lavfi -i testsrc2=s=320x180:r=60:d=120 -itsoffset 0.5 -f lavfi -i sine=d=120:sample_rate=44100 -ac 2 \
+# The audio starts 500 ms late: an empty edit makes the output's movie about 120.4 s, while each stream lasts under
+# 120 s (119.9 s; at 120 s the AAC track's rounding already takes the source past the first rung).
+ffm -f lavfi -i testsrc2=s=320x180:r=60:d=119.9 -itsoffset 0.5 -f lavfi -i sine=d=119.9:sample_rate=44100 -ac 2 \
   -c:v libx264 -preset ultrafast -c:a aac delay120.mp4
 ffm -f lavfi -i sine=d=3 -c:a aac tone.m4a
 ffm -f lavfi -i sine=d=3 -ac 2 -c:a flac tone.flac
