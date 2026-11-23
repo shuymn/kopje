@@ -329,9 +329,14 @@ func TestARefusedNormalizeRemovesTheEarlierStill(t *testing.T) {
 
 func TestOtherRoutesAnswerCodes(t *testing.T) {
 	mux := newMux(threadsDefault)
-	missing := do(t, mux, "GET", "/missing", nil)
-	if missing.Code != 404 || missing.Body.String() != `{"error":"not_found"}`+"\n" {
-		t.Fatalf("missing: %d %q", missing.Code, missing.Body.String())
+	for _, path := range []string{"/missing", "//healthz", "/healthz/", "/./healthz", "/normalize/../healthz"} {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.URL.Path = path
+		missing := httptest.NewRecorder()
+		mux.ServeHTTP(missing, r)
+		if missing.Code != 404 || missing.Body.String() != `{"error":"not_found"}`+"\n" {
+			t.Fatalf("%s: %d %q", path, missing.Code, missing.Body.String())
+		}
 	}
 	wrong := do(t, mux, "POST", "/healthz", nil)
 	if wrong.Code != 405 || wrong.Header().Get("Allow") != "GET" ||
@@ -364,23 +369,34 @@ func TestStalledSocketsEndTheJob(t *testing.T) {
 		return false
 	}
 
-	// Ingress: one byte of the two declared, then nothing.
-	in, err := net.Dial("tcp", addr)
-	if err != nil {
-		t.Fatal(err)
+	// Ingress: one byte of the two declared, then nothing; normalize's body ends at inputTimeout.
+	stalledBody := func(path string) {
+		t.Helper()
+		in, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer in.Close()
+		if _, err := io.WriteString(in, "POST "+path+" HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nx"); err != nil {
+			t.Fatal(err)
+		}
+		_ = in.SetReadDeadline(time.Now().Add(5 * time.Second))
+		answer, _ := io.ReadAll(io.LimitReader(in, 4096))
+		if !bytes.HasPrefix(answer, []byte("HTTP/1.1 408")) || !bytes.Contains(answer, []byte(`"input_timeout"`)) {
+			t.Fatalf("%s stalled body: %q", path, answer)
+		}
+		if !slotFreed(2 * time.Second) {
+			t.Fatalf("%s: job slot held after a stalled body", path)
+		}
 	}
-	defer in.Close()
-	if _, err := io.WriteString(in, "POST /still HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nx"); err != nil {
-		t.Fatal(err)
-	}
-	_ = in.SetReadDeadline(time.Now().Add(5 * time.Second))
-	answer, _ := io.ReadAll(io.LimitReader(in, 4096))
-	if !bytes.HasPrefix(answer, []byte("HTTP/1.1 408")) || !bytes.Contains(answer, []byte(`"input_timeout"`)) {
-		t.Fatalf("stalled body: %q", answer)
-	}
-	if !slotFreed(2 * time.Second) {
-		t.Fatal("job slot held after a stalled body")
-	}
+	stalledBody(normalizeURL)
+
+	// A /still's body ends with its job at stillTimeout, however long normalize's socket deadlines are.
+	oldStill := stillTimeout
+	inputTimeout, outputTimeout, stillTimeout = time.Minute, time.Minute, 300*time.Millisecond
+	t.Cleanup(func() { stillTimeout = oldStill })
+	stalledBody("/still")
+	inputTimeout, outputTimeout = 300*time.Millisecond, 300*time.Millisecond
 
 	// Egress: the whole request, then the response never read.
 	out, err := net.Dial("tcp", addr)

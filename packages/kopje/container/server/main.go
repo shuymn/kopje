@@ -37,17 +37,22 @@ const (
 	// AV_OUTPUT_LIMIT and STILL_OUTPUT_LIMIT: Kopje's readers refuse more; the server refuses first.
 	avOutputLimit    = 63 << 20
 	stillOutputLimit = 2 << 20
-	stillTimeout     = 60 * time.Second
 	// Bounds on the stage times a request may pass.
 	minStageMs = 100
 	maxStageMs = 60 * 60 * 1000
 )
 
 var (
-	// The socket deadlines of a job's request body and of its response: a peer that stops sending or reading ends the
-	// job instead of holding the server's one job slot. 90 MiB at 1 MiB/s in, 63 MiB out, with room.
+	// The socket deadlines of a normalize's request body and of its response: a peer that stops sending or reading ends
+	// the job instead of holding the server's one job slot. They are absolute, not idle: a steady transfer slower than
+	// 0.75 MiB/s in (AV_UPLOAD_LIMIT, 90 MiB) or 0.52 MiB/s out (AV_OUTPUT_LIMIT, 63 MiB) is cut at them. The Durable
+	// Object streams the input from R2 and the output into R2 inside Cloudflare's network (P27 measures that rate).
 	inputTimeout  = 120 * time.Second
 	outputTimeout = 120 * time.Second
+	// The whole of a /still, from its request to the end of its response: its body (a socket deadline at the same
+	// instant), the probe, the frame and the answer all end by then, so an upload of AV_UPLOAD_LIMIT must arrive faster
+	// than 1.5 MiB/s.
+	stillTimeout = 60 * time.Second
 	workRoot      = envOr("MEDIASRV_WORK", "/tmp/work")
 	stillPath     = filepath.Join(workRoot, "normalize-still.png")
 	ffmpegBin     = envOr("FFMPEG", "/usr/local/bin/ffmpeg")
@@ -97,28 +102,34 @@ func newMux(threads threading) http.Handler {
 	}))
 	mux.HandleFunc("GET /normalize/still", handleNormalizeStill)
 	mux.HandleFunc("POST /still", exclusive(handleStill))
+	// Only the exact paths reach the mux (it would redirect a path it cleans, such as //healthz, with an HTML body);
+	// anything else answers a code.
 	methods := map[string]string{"/healthz": "GET", "/normalize": "POST", "/normalize/still": "GET", "/still": "POST"}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, pattern := mux.Handler(r); pattern != "" {
-			mux.ServeHTTP(w, r)
-			return
-		}
-		if method, ok := methods[r.URL.Path]; ok {
+		method, ok := methods[r.URL.Path]
+		switch {
+		case !ok:
+			writeFailure(w, fail(http.StatusNotFound, "not_found"))
+		case r.Method != method && (method != "GET" || r.Method != "HEAD"):
 			w.Header().Set("Allow", method)
 			writeFailure(w, fail(http.StatusMethodNotAllowed, "method_not_allowed"))
-			return
+		default:
+			mux.ServeHTTP(w, r)
 		}
-		writeFailure(w, fail(http.StatusNotFound, "not_found"))
 	})
 }
 
-// deadlines sets the socket deadlines of a job's request: reading its body by inputTimeout from now, and writing its
-// response by outputTimeout after the response starts (setWrite). A server without them (a test's recorder) runs
-// without.
-func deadlines(w http.ResponseWriter) (setWrite func()) {
+// deadlines sets the socket deadlines of a job's request: reading its body by `read`, and writing its response by
+// what `write` answers when the response starts (setWrite). A server without them (a test's recorder) runs without.
+func deadlines(w http.ResponseWriter, read time.Time, write func() time.Time) (setWrite func()) {
 	rc := http.NewResponseController(w)
-	_ = rc.SetReadDeadline(time.Now().Add(inputTimeout))
-	return func() { _ = rc.SetWriteDeadline(time.Now().Add(outputTimeout)) }
+	_ = rc.SetReadDeadline(read)
+	return func() { _ = rc.SetWriteDeadline(write()) }
+}
+
+// normalizeDeadlines: the body by inputTimeout from now, the response by outputTimeout from its start.
+func normalizeDeadlines(w http.ResponseWriter) (setWrite func()) {
+	return deadlines(w, time.Now().Add(inputTimeout), func() time.Time { return time.Now().Add(outputTimeout) })
 }
 
 // A failure: the status and the code answered.
@@ -173,7 +184,7 @@ func (t timings) set(name string, start time.Time) {
 func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) {
 	// The still of an earlier normalize is never answered after this one, refused or not.
 	_ = os.Remove(stillPath)
-	setWrite := deadlines(w)
+	setWrite := normalizeDeadlines(w)
 	probeTime, okProbe := stageMs(r, "probe_ms")
 	encodeTime, okEncode := stageMs(r, "encode_ms")
 	if !okProbe || !okEncode {
@@ -250,12 +261,14 @@ func handleNormalizeStill(w http.ResponseWriter, _ *http.Request) {
 		writeFailure(w, fail(http.StatusNotFound, "no_still"))
 		return
 	}
-	deadlines(w)()
+	normalizeDeadlines(w)()
 	serveFile(w, stillPath, "image/png", stillOutputLimit, "")
 }
 
 func handleStill(w http.ResponseWriter, r *http.Request) {
-	setWrite := deadlines(w)
+	// One deadline for the whole job: the body, the work and the response.
+	job := time.Now().Add(stillTimeout)
+	setWrite := deadlines(w, job, func() time.Time { return job })
 	dir, err := os.MkdirTemp(workRoot, "job-")
 	if err != nil {
 		writeFailure(w, fail(http.StatusInternalServerError, "internal"))
@@ -264,7 +277,7 @@ func handleStill(w http.ResponseWriter, r *http.Request) {
 	defer os.RemoveAll(dir)
 	t := timings{w.Header()}
 	in := filepath.Join(dir, "input")
-	ctx, cancel := context.WithTimeout(r.Context(), stillTimeout)
+	ctx, cancel := context.WithDeadline(r.Context(), job)
 	defer cancel()
 
 	start := time.Now()
