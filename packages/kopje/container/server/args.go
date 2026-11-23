@@ -148,9 +148,10 @@ func videoArgs(p *plan, t threading, in, out string) []string {
 }
 
 // audioArgs encodes the plan's audio stream as MP3 (libmp3lame -q:a 2, as Mastodon) with no ID3 tags and no encoder
-// string in the Xing frame.
+// string in the Xing frame. The input is opened without stream discovery, which would decode an attached cover (a
+// BMP or PNG in an M4A or MP3) that the encode never maps; the probe already read the audio stream's parameters.
 func audioArgs(p *plan, in, out string) []string {
-	return cat(commonArgs, []string{"-i", "file:" + in, "-map", fmt.Sprintf("0:%d", p.audioIndex)}, stripMetadata,
+	return cat(commonArgs, pixelGuard, []string{"-nofind_stream_info", "-i", "file:" + in, "-map", fmt.Sprintf("0:%d", p.audioIndex)}, stripMetadata,
 		[]string{
 			"-vn", "-sn", "-dn",
 			"-c:a", "libmp3lame", "-q:a", "2", "-flags:a", "+bitexact", "-metadata:s:a", "encoder=",

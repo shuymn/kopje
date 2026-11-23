@@ -4,7 +4,8 @@
 # /healthz, then for each input normalize (with the still it keeps) and still, and two refusals (an input over the cap,
 # and text). Inputs made here always follow the given ones: a WAV tone; a MOV of PNG frames that carry EXIF and text
 # chunks; a MOV of Display P3 PNG frames whose only colour tag is an ICC profile carrying a seeded marker; a MOV of
-# grayscale PNG frames with a gray ICC profile; an M4A with a 4096x4096 cover; a MOV of H.264 then PNG; and raw AAC.
+# grayscale PNG frames with a gray ICC profile; an M4A with a 4096x4096 PNG cover and one with a 4096x4096 BMP cover;
+# a MOV of H.264 then PNG; and raw AAC.
 # One more input, an MP4 whose headers declare 320x240 but whose frames after the first are 4096x2160, is checked
 # apart: the decoder must refuse those frames (normalize keeps at most the first frame, and a still is the first
 # frame's 320x240), or the operation must fail.
@@ -127,11 +128,14 @@ open(sys.argv[1], "wb").write(png)
 PY
 docker run --rm --network none -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error -framerate 1 \
   -loop 1 -t 3 -i /f/gray.png -c:v copy -f mov /f/gray.mov
-# cover.m4a: AAC with a 4096x4096 PNG cover (over the pixel limit; it is not the video and is never decoded);
+# cover.m4a and cover-bmp.m4a: AAC with a 4096x4096 PNG or BMP cover (over the pixel limit; it is not the video and is
+# never decoded);
 # twostream.mov: H.264 then a PNG stream; tone.aac: raw ADTS AAC, whose headers declare no duration.
 ffm() { docker run --rm --network none -v "$work/fixture:/f" -w /f --entrypoint /ffmpeg "$ffmpeg_image" -v error "$@"; }
 ffm -f lavfi -i color=c=red:s=4096x4096:d=1 -frames:v 1 -c:v png cover.png
 ffm -f lavfi -i sine=d=3 -i cover.png -map 0 -map 1 -c:a aac -c:v copy -disposition:v attached_pic cover.m4a
+ffm -f lavfi -i color=c=red:s=4096x4096:d=1 -frames:v 1 -c:v bmp cover.bmp
+ffm -f lavfi -i sine=d=3 -i cover.bmp -map 0 -map 1 -c:a aac -c:v copy -disposition:v attached_pic cover-bmp.m4a
 ffm -f lavfi -i testsrc2=s=320x240:d=2 -f lavfi -i color=c=blue:s=64x48:d=2:r=1 -map 0 -map 1 -c:v:0 libx264 \
   -c:v:1 png twostream.mov
 ffm -f lavfi -i sine=d=3 -c:a aac tone.aac
@@ -142,7 +146,7 @@ ffm -f lavfi -i testsrc2=s=4096x2160:d=1:r=25 -c:v libx264 -preset ultrafast -f 
 cat "$work/fixture/small.h264" "$work/fixture/big.h264" >"$work/fixture/lie.h264"
 ffm -r 25 -f h264 -i lie.h264 -c copy lie.mp4
 inputs+=("audio:$work/fixture/tone.wav" "video:$work/fixture/exif.mov" "video:$work/fixture/p3.mov"
-  "video:$work/fixture/gray.mov" "audio:$work/fixture/cover.m4a" "video:$work/fixture/twostream.mov"
+  "video:$work/fixture/gray.mov" "audio:$work/fixture/cover.m4a" "audio:$work/fixture/cover-bmp.m4a" "video:$work/fixture/twostream.mov"
   "audio:$work/fixture/tone.aac")
 # curl: -o <out> -D - prints the headers; the curl image runs as a user that writes to /out.
 chmod 777 "$work/out"

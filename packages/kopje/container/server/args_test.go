@@ -50,7 +50,7 @@ func TestEveryCommandGuardsItsInputAndStripsMetadata(t *testing.T) {
 		}
 		// The decoder refuses a frame over the pixel limit, whatever the headers declared.
 		guard := slices.Index(args, "-max_pixels")
-		if name != "audio" && (guard < 0 || guard > slices.Index(args, "-i") || args[guard+1] != "8294400") {
+		if guard < 0 || guard > slices.Index(args, "-i") || args[guard+1] != "8294400" {
 			t.Fatalf("%s: no input pixel limit: %v", name, args)
 		}
 		for _, a := range args {
@@ -146,6 +146,10 @@ func TestAudioArgsPinTheEncoding(t *testing.T) {
 	}
 	if !slices.Contains(args, "-vn") {
 		t.Fatalf("video kept: %v", args)
+	}
+	// No stream discovery, which would decode an attached cover the encode never maps.
+	if i := slices.Index(args, "-nofind_stream_info"); i < 0 || i > slices.Index(args, "-i") {
+		t.Fatalf("discovery on: %v", args)
 	}
 }
 
