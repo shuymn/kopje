@@ -131,7 +131,9 @@ func TestVideoArgsPinTheEncoding(t *testing.T) {
 		t.Fatalf("HDR filter %q", hdr)
 	}
 	for _, f := range []string{vf, hdr} {
-		if !strings.HasSuffix(f, ",format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv") {
+		// The source's HDR metadata goes after the tone map (it reads it), before the encoder would write it.
+		if !strings.HasSuffix(f, ","+hdrDrop+",format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv") ||
+			strings.Index(f, hdrDrop) < strings.Index(f, "scale=w=") {
 			t.Fatalf("frames not tagged BT.709: %q", f)
 		}
 	}
@@ -174,7 +176,7 @@ func TestStillArgs(t *testing.T) {
 	}
 	vf := valueOf(args, "-vf")
 	if !strings.HasPrefix(vf, "iccdetect,scale=") || !strings.Contains(vf, "640/max(iw,ih)") ||
-		!strings.Contains(vf, tonemap) || !strings.HasSuffix(vf, ",format=rgb24,iccgen=force=1") {
+		!strings.Contains(vf, tonemap) || !strings.HasSuffix(vf, tonemap+","+hdrDrop+",format=rgb24,iccgen=force=1") {
 		t.Fatalf("filter %q", vf)
 	}
 	// -ss before -i: an input seek, which -skip_frame nokey turns into the keyframe at or before it.

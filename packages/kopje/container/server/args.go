@@ -95,6 +95,13 @@ const (
 	iccDrop  = "sidedata=mode=delete:type=ICC_PROFILE"
 	toBT709  = "zscale=p=bt709"
 	label709 = "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"
+	// A frame's HDR and viewing metadata (mastering display, content light level, HDR10+, Dolby Vision, HDR Vivid,
+	// the ambient viewing environment), which the tone map may read and the encoder would carry into the output (mdcv,
+	// clli and amve boxes, PNG mDCv and cLLi chunks): the output is SDR, and the values are the source's.
+	hdrDrop = "sidedata=mode=delete:type=MASTERING_DISPLAY_METADATA,sidedata=mode=delete:type=CONTENT_LIGHT_LEVEL," +
+		"sidedata=mode=delete:type=DYNAMIC_HDR_PLUS,sidedata=mode=delete:type=DOVI_RPU_BUFFER," +
+		"sidedata=mode=delete:type=DOVI_METADATA,sidedata=mode=delete:type=DYNAMIC_HDR_VIVID," +
+		"sidedata=mode=delete:type=AMBIENT_VIEWING_ENVIRONMENT"
 )
 
 // The sample rates an output's audio may have (the output verifier's, src/platform/av-bytes.ts): the AAC track's 44.1
@@ -152,7 +159,7 @@ func videoArgs(p *plan, t threading, in, out string) []string {
 	fit := fmt.Sprintf("min(1,min(%d/max(iw,ih),%d/min(iw,ih)))", r.longEdge, r.shortEdge)
 	vf = append(vf,
 		fmt.Sprintf("scale=w='trunc(iw*%s/2)*2':h='trunc(ih*%s/2)*2':out_color_matrix=bt709:out_range=tv", fit, fit),
-		"setsar=1", "format=yuv420p", label709)
+		"setsar=1", hdrDrop, "format=yuv420p", label709)
 	maxrate := strconv.Itoa(p.maxrate)
 	args := cat(commonArgs, pixelGuard, t.filterArgs(), []string{"-i", "file:" + in, "-map", fmt.Sprintf("0:%d", p.videoIndex)})
 	if p.audioIndex >= 0 {
@@ -216,7 +223,7 @@ func stillArgs(videoIndex int, hdr, icc bool, seek float64, in, out string) []st
 	if hdr {
 		vf = append(vf, tonemap)
 	}
-	vf = append(vf, "format=rgb24", "iccgen=force=1")
+	vf = append(vf, hdrDrop, "format=rgb24", "iccgen=force=1")
 	return cat(commonArgs, pixelGuard,
 		[]string{"-skip_frame", "nokey", "-noaccurate_seek", "-ss", strconv.FormatFloat(seek, 'f', 3, 64),
 			"-i", "file:" + in, "-map", fmt.Sprintf("0:%d", videoIndex)},

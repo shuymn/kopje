@@ -451,13 +451,15 @@ for turn in "90 transpose=clock" "180 hflip,vflip" "270 transpose=cclock"; do
   echo "| rotated$degrees.mp4 | normalize | $got | | | | | | | | |"
 done
 # HLG and PQ: left half black (code 64), right half reference white (HLG 75 %: 721; PQ 203 cd/m2: 573), 10-bit
-# BT.2020, the tags on the frames and in a colr box, as a camera writes them; and the same file with its colr box
-# renamed free (<label>-vui.mp4), so the tags are only in the HEVC VUI, which the header probe does not read: it must
-# read unknown there, and discovery must find the transfer, so both are tone mapped alike.
+# BT.2020 with HDR10 mastering display and light level metadata (which the output must not keep: the verifier refuses
+# an mdcv or clli box), the tags on the frames and in a colr box, as a camera writes them; and the same file with its
+# colr box renamed free (<label>-vui.mp4), so the tags are only in the HEVC VUI, which the header probe does not read:
+# it must read unknown there, and discovery must find the transfer, so both are tone mapped alike.
 for hdr in "arib-std-b67 721 hlg" "smpte2084 573 pq" "arib-std-b67 721 hlg-vui" "smpte2084 573 pq-vui"; do
   read -r trc white label <<<"$hdr"
   ffm -f lavfi -i "nullsrc=s=128x72:r=30:d=2,format=yuv420p10le,geq=lum='if(lt(X,64),64,$white)':cb=512:cr=512,setparams=color_primaries=bt2020:color_trc=$trc:colorspace=bt2020nc" \
-    -c:v libx265 -preset superfast -pix_fmt yuv420p10le -x265-params log-level=error -tag:v hvc1 -movflags +write_colr \
+    -c:v libx265 -preset superfast -pix_fmt yuv420p10le -tag:v hvc1 -movflags +write_colr \
+    -x265-params "log-level=error:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,50):max-cll=1000,400" \
     "$label.mp4"
   if [ "${label%-vui}" != "$label" ]; then
     python3 -c 'import sys; p = sys.argv[1]; b = open(p, "rb").read(); assert b.count(b"colr") == 1; open(p, "wb").write(b.replace(b"colr", b"free"))' \
