@@ -188,6 +188,10 @@ async function serveObject(
       throw error;
     }
     const headers = rangedHeaders(found, found.httpMetadata?.contentType ?? "");
+    // A matching If-None-Match is evaluated before Range (RFC 9110 13.2.2): 304, whatever the range.
+    if (etag !== undefined && noneMatchHolds(etag, found.httpEtag)) {
+      return new Response(null, { status: 304, headers });
+    }
     headers.set("content-range", `bytes */${found.size}`);
     return new Response(null, { status: 416, headers });
   }

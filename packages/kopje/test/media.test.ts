@@ -1107,6 +1107,16 @@ describe("GET /media/:token/:file", () => {
       expect(response.status, method).toBe(304);
       expect(response.headers.get("cache-control"), method).toBe(fixed["cache-control"]);
     }
+    // If-None-Match before Range (RFC 9110 13.2.2): a matching tag is 304 whatever the range.
+    for (const [range, tag, status] of [
+      ["bytes=-0", etag, 304],
+      [`bytes=${size}-`, etag, 304],
+      ["bytes=0-9", etag, 304],
+      ["bytes=-0", '"other"', 416],
+    ] as const) {
+      const response = await h.request(url, { headers: { range, "if-none-match": tag } });
+      expect(response.status, `${range} ${tag}`).toBe(status);
+    }
 
     // Only as full, and only under its own type's extension.
     await env.MEDIA.put(`files/${token}/small`, video, { httpMetadata: { contentType: "video/mp4" } });
