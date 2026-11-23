@@ -126,7 +126,7 @@ describe("collections over ActivityPub: the actor (D19)", () => {
         state.storage.sql.exec("UPDATE accounts SET discoverable = ?, locked = ?", discoverable, locked);
       });
     const read = async () => {
-      const document = (await (await h.request("/ap/users/Alice", { headers: AP })).json()) as Record<string, unknown>;
+      const document = await (await h.request("/ap/users/Alice", { headers: AP })).json<Record<string, unknown>>();
       // What a JSON-LD processor reads: canFeature's automaticApproval under FEP-7aa9's and GoToSocial's IRIs.
       const [expanded] = await jsonld.expand(document, { documentLoader: contexts });
       const policy = expanded?.["https://gotosocial.org/ns#interactionPolicy"] as Record<string, unknown>[] | undefined;
@@ -174,7 +174,7 @@ describe("collections over ActivityPub: the actor (D19)", () => {
     });
     expect((await read()).expanded).toEqual([PUBLIC]);
     // The instance actor has neither.
-    const instance = (await (await h.request("/actor", { headers: AP })).json()) as Record<string, unknown>;
+    const instance = await (await h.request("/actor", { headers: AP })).json<Record<string, unknown>>();
     expect(instance).not.toHaveProperty("featuredCollections");
     expect(instance).not.toHaveProperty("interactionPolicy");
   });
@@ -476,9 +476,7 @@ describe("collections over ActivityPub: the documents (D18)", () => {
     expect((await get(h, `/ap/users/alice/collection_items/${items.bob}`)).status).toBe(404);
     expect((await get(h, `/ap/users/bob/feature_authorizations/${items.bob}`)).status).toBe(404);
     // REST and the page show the same members.
-    const rest = (await (await h.request(`/api/v1/collections/${id}`)).json()) as {
-      collection: { item_count: number };
-    };
+    const rest = await (await h.request(`/api/v1/collections/${id}`)).json<{ collection: { item_count: number } }>();
     expect(rest.collection.item_count).toBe(1);
     const html = await (await h.request(`/collections/${id}`)).text();
     expect([html.includes("/@bob"), html.includes("/@erin")]).toEqual([false, true]);
