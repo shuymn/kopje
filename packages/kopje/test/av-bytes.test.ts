@@ -131,6 +131,26 @@ describe("the shipped image's outputs", () => {
     }
   });
 
+  it("are accepted cut inside an MPEG-1 file's first header and Xing frame", async () => {
+    // A short prefix and the rest: cuts in the first frame's 4-byte header, the Xing and LAME fields, at the Xing
+    // frame's last byte and in the first audio frame's header.
+    const f = await mp3("aac.mp3");
+    expect(((f[1] ?? 0) >> 3) & 3).toBe(3);
+    const { frame, xing, lame } = xingLayout(f);
+    const sha = (await avManifest()).find((m) => m.name === "aac.mp3")?.sha256;
+    for (const at of [1, 2, 3, xing + 2, xing + 9, lame + 3, lame + 22, frame - 1, frame + 1, frame + 3]) {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(f.slice(0, at));
+          controller.enqueue(f.slice(at));
+          controller.close();
+        },
+      });
+      const v = await verifyStream("audio/mpeg", stream, f.length);
+      expect(v.ok ? v.facts.sha256 : v.rule, `cut at ${at}`).toBe(sha);
+    }
+  });
+
   it("give the facts of their tables", async () => {
     const facts = async (name: string) => {
       const v = await verifyBytes(name.endsWith(".mp4") ? "video/mp4" : "audio/mpeg", await avFixture(name));
