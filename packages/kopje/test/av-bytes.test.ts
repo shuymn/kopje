@@ -11,8 +11,10 @@ import {
   type AvType,
   FRAME_RATE_LIMIT,
   MOOV_LIMIT,
+  OUTPUT_LADDER,
   OUTPUT_LONG_EDGE,
   OUTPUT_SHORT_EDGE,
+  RUNG_SLACK_MS,
   sniffAvUpload,
   STILL_LONG_EDGE,
   STILL_OUTPUT_LIMIT,
@@ -419,6 +421,21 @@ const MP4_MUTATIONS: Mutation[] = [
       }),
   },
   {
+    name: "a video edit past x264's reorder delay (three frames)",
+    rule: "elst",
+    make: () =>
+      mp4((m) => {
+        // Every composition offset one frame (256 ticks) later, and the edit with them: only the delay changes.
+        const ctts = find(m, "trak/mdia/minf/stbl/ctts");
+        const body = ctts.body as Uint8Array;
+        for (let i = 0; i < u32At(body, 4); i++) {
+          setBody(ctts, 12 + i * 8, u32(u32At(body, 12 + i * 8) + 256));
+        }
+        const elst = find(m, "trak/edts/elst");
+        setBody(elst, 12, u32(u32At(elst.body as Uint8Array, 12) + 256));
+      }),
+  },
+  {
     name: "1936x1088, past the top rung",
     rule: "geometry",
     make: async () =>
@@ -691,8 +708,8 @@ describe("an MP4 changed in one field", () => {
 });
 
 describe("a synthetic MP4", () => {
-  const verify = async (shape: Parameters<typeof syntheticMp4>[1]) => {
-    const s = syntheticMp4(await avFixture("r1-silent.mp4"), shape);
+  const verify = async (shape: Parameters<typeof syntheticMp4>[1], template?: Uint8Array) => {
+    const s = syntheticMp4(template ?? (await avFixture("r1-silent.mp4")), shape);
     const v = await verifyStream("video/mp4", s.stream(), s.length);
     return v.ok ? "accepted" : v.rule;
   };
@@ -708,6 +725,22 @@ describe("a synthetic MP4", () => {
     expect(await verify({ samples: 18_015, size: 6, delta: 512 })).toBe("duration_limit");
     // 36,001 samples at 61 fps (590 s): the sample cap before the frame rate.
     expect(await verify({ samples: 36_001, size: 6, delta: 256, timescale: 61 * 256 })).toBe("sample_cap");
+  });
+
+  it("is held to the caps of the ladder's rung for its duration, RUNG_SLACK_MS past the rung's", async () => {
+    expect(OUTPUT_LADDER.map((r) => [r.durationMs, r.longEdge, r.shortEdge, r.fps])).toEqual([
+      [120_000, 1920, 1080, 60],
+      [300_000, 1280, 720, 30],
+      [600_000, 854, 480, 30],
+    ]);
+    expect(RUNG_SLACK_MS).toBe(100);
+    // 60 fps (7206 samples of 256 ticks) is 120,100 ms, the top rung's; 59.8 fps (7178 of 257) is 120,101 ms, past it.
+    expect(await verify({ samples: 7206, size: 6, delta: 256 })).toBe("accepted");
+    expect(await verify({ samples: 7178, size: 6, delta: 257 })).toBe("frame_rate");
+    // 1280x720 at 30 fps: 300,100 ms (9003 samples of 512) is the second rung's; 300,101 ms (8968 of 514) the third's.
+    const hd = withSps(await avFixture("r1-silent.mp4"), sps({ widthMbs: 80, heightMbs: 45, level: 40 }), 1280, 720);
+    expect(await verify({ samples: 9003, size: 6, delta: 512 }, hd)).toBe("accepted");
+    expect(await verify({ samples: 8968, size: 6, delta: 514 }, hd)).toBe("geometry");
   });
 
   it("is refused at a small moov declaring a huge sample count, before its tables are expanded", async () => {

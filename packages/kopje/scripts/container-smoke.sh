@@ -6,8 +6,9 @@
 # chunks; a MOV of Display P3 PNG frames whose only colour tag is an ICC profile carrying a seeded marker; a MOV of
 # grayscale PNG frames with a gray ICC profile; an M4A with a 4096x4096 PNG cover and one with a 4096x4096 BMP cover;
 # a MOV of H.264 then PNG; raw AAC; one input per rung of the output ladder (3 s of 1080p60, 121 s of 1080p60 and
-# 600 s of 720p30, each with audio, scaled to 1920x1080 at 60 fps, 1280x720 at 30 fps and 852x480 at 30 fps); and
-# M4A, FLAC, Ogg, MP3 and Opus-only WebM audio.
+# 600 s of 720p30, each with audio, scaled to 1920x1080 at 60 fps, 1280x720 at 30 fps and 852x480 at 30 fps); one at
+# each rung's last duration (exactly 120 s of 320x180 at 60 fps and 300 s of 720p30, with audio, kept at 60 fps and at
+# 1280x720), which the verifier must hold to the same rung; and M4A, FLAC, Ogg, MP3 and Opus-only WebM audio.
 # One more input, an MP4 whose headers declare 320x240 but whose frames after the first are 4096x2160, is checked
 # apart: normalize refuses it (422 pixels: the decoder dropped the frames over the limit, so the output would be short
 # of the plan), and a still is the first frame's 320x240 or the operation fails.
@@ -169,6 +170,11 @@ ffm -f lavfi -i "$(noisy 1920x1080 60 121)" -f lavfi -i sine=d=121:sample_rate=4
   -b:v 1M -maxrate 1M -bufsize 2M -c:a aac rung2.mp4
 ffm -f lavfi -i "$(noisy 1280x720 30 600)" -f lavfi -i sine=d=600:sample_rate=44100 -ac 2 -c:v libx264 -preset ultrafast \
   -b:v 1M -maxrate 1M -bufsize 2M -c:a aac rung3.mp4
+# Each rung's last duration: plan.go's rung by the source's, the verifier's by the output's (RUNG_SLACK_MS).
+ffm -f lavfi -i testsrc2=s=320x180:r=60:d=120 -f lavfi -i sine=d=120:sample_rate=44100 -ac 2 -c:v libx264 \
+  -preset ultrafast -c:a aac edge120.mp4
+ffm -f lavfi -i testsrc2=s=1280x720:r=30:d=300 -f lavfi -i sine=d=300:sample_rate=44100 -ac 2 -c:v libx264 \
+  -preset ultrafast -b:v 1M -maxrate 1M -bufsize 2M -c:a aac edge300.mp4
 ffm -f lavfi -i sine=d=3 -c:a aac tone.m4a
 ffm -f lavfi -i sine=d=3 -ac 2 -c:a flac tone.flac
 ffm -f lavfi -i sine=d=3:sample_rate=48000 -ac 2 -c:a libvorbis tone.ogg
@@ -176,7 +182,8 @@ ffm -f lavfi -i sine=d=3 -c:a libmp3lame tone.mp3
 ffm -f lavfi -i sine=d=3:sample_rate=48000 -c:a libopus tone.webm
 # Exactly AUDIO_DURATION_LIMIT: the MP3 holds LAME's delay and padding past it, which are not presented (#1828 A7).
 ffm -f lavfi -i sine=d=1200 -c:a libmp3lame cap1200.mp3
-inputs+=("$work/fixture/rung1.mp4" "$work/fixture/rung2.mp4" "$work/fixture/rung3.mp4" "audio:$work/fixture/tone.m4a"
+inputs+=("$work/fixture/rung1.mp4" "$work/fixture/rung2.mp4" "$work/fixture/rung3.mp4" "$work/fixture/edge120.mp4"
+  "$work/fixture/edge300.mp4" "audio:$work/fixture/tone.m4a"
   "audio:$work/fixture/tone.flac" "audio:$work/fixture/tone.ogg" "audio:$work/fixture/tone.mp3"
   "audio:$work/fixture/tone.webm" "audio:$work/fixture/cap1200.mp3")
 inputs+=("audio:$work/fixture/tone.wav" "video:$work/fixture/exif.mov" "video:$work/fixture/p3.mov"
@@ -364,6 +371,8 @@ for entry in "${inputs[@]}"; do
       rung1.mp4) rung="1920,1080,60/1" ;;
       rung2.mp4) rung="1280,720,30/1" ;;
       rung3.mp4) rung="852,480,30/1" ;;
+      edge120.mp4) rung="320,180,60/1" ;;
+      edge300.mp4) rung="1280,720,30/1" ;;
     esac
     if [ -n "$rung" ]; then
       geometry="$(ffprobe -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 \

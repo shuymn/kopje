@@ -28,12 +28,13 @@
 //              derived from the track (as the muxer computes it) and the maximum the larger of a ladder's audio rate
 //              and that average.
 //   durations  each track's stts sums to its mdhd duration; one media edit (after at most one empty edit) inside the
-//              track's composition span, starting at video's first composition time and after at most one AAC frame
-//              of audio priming; tkhd = the edit list's total (or one tick more, rounding); mvhd = the longest tkhd;
+//              track's composition span, starting at video's first composition time (at most REORDER_FRAMES of its
+//              longest sample duration) and after at most one AAC frame of audio priming; tkhd = the edit list's total (or one tick more, rounding); mvhd = the longest tkhd;
 //              mvhd, every tkhd and every track's presented samples (mdhd less the media edit's media time) within
 //              VIDEO_DURATION_LIMIT.
 //   tables     equal sample counts; at most VIDEO_SAMPLE_LIMIT video samples; chunk offsets inside the mdat, the
-//              samples tiling it exactly; frame rate within FRAME_RATE_LIMIT.
+//              samples tiling it exactly; frame rate and geometry within the caps of the ladder's rung for mvhd's
+//              duration (OUTPUT_LADDER, with RUNG_SLACK_MS).
 //   payload    each video sample is length-prefixed NAL units of types 1 and 5 filling it. AAC and MP3 frame data are
 //              not parsed (design section 6, residual 1).
 // MP3: no ID3v2, ID3v1, APE, Lyrics3 or VBRI; a first Xing/Info frame whose LAME fields are fixed or derived (its frame
@@ -64,6 +65,18 @@ export const AUDIO_SAMPLE_LIMIT = Math.ceil((VIDEO_DURATION_LIMIT * 48_000 + AAC
 export const FRAME_RATE_LIMIT = 60;
 export const OUTPUT_LONG_EDGE = 1920;
 export const OUTPUT_SHORT_EDGE = 1080;
+// plan.go's ladder: the first rung whose duration takes the output's gives its caps. plan.go picks it by the source's
+// duration, which the output may run past by a 30 fps frame and an AAC frame (at 44.1 kHz): RUNG_SLACK_MS, that
+// rounded up to 100 ms, lets an output that long still take its source's rung.
+export const OUTPUT_LADDER = [
+  { durationMs: 120_000, longEdge: OUTPUT_LONG_EDGE, shortEdge: OUTPUT_SHORT_EDGE, fps: FRAME_RATE_LIMIT },
+  { durationMs: 300_000, longEdge: 1280, shortEdge: 720, fps: 30 },
+  { durationMs: VIDEO_DURATION_LIMIT * 1000, longEdge: 854, shortEdge: 480, fps: 30 },
+] as const;
+export const RUNG_SLACK_MS = Math.ceil((1000 / 30 + (1024 * 1000) / 44_100) / 100) * 100;
+// x264's reorder delay at the pinned veryfast preset (3 B-frames, normal B-pyramid): the frames the first composition
+// time may follow the first decode time by, so a video edit's media time.
+const REORDER_FRAMES = 2;
 export const STILL_LONG_EDGE = 640;
 // The ladder's AAC bitrates (plan.go), the only maxima an esds may state.
 const AAC_BITRATES: ReadonlySet<number> = new Set([128_000, 192_000]);
@@ -686,7 +699,13 @@ function parseMoov(b: Uint8Array, moovStart: number, moovEnd: number, fileEnd: n
   for (const t of tracks) {
     check(t.mediaDuration - t.mediaTime <= VIDEO_DURATION_LIMIT * t.timescale, "duration_limit");
   }
-  check(video.minDelta * FRAME_RATE_LIMIT >= video.timescale, "frame_rate");
+  // The caps of the rung for this duration (the last rung takes every duration within the limit, checked above).
+  const rung = OUTPUT_LADDER.find((r) => movieDuration <= r.durationMs + RUNG_SLACK_MS) ?? OUTPUT_LADDER[2];
+  check(video.minDelta * rung.fps >= video.timescale, "frame_rate");
+  check(
+    Math.max(video.width, video.height) <= rung.longEdge && Math.min(video.width, video.height) <= rung.shortEdge,
+    "geometry",
+  );
 
   // The samples of all tracks in file order tile the mdat exactly: each track's offsets increase, and merged they
   // follow one another from the mdat's first byte to the file's end.
@@ -828,7 +847,6 @@ function parseTrak(
     width = sps.width;
     height = sps.height;
     check(tkhdWidth === width * 0x10000 && tkhdHeight === height * 0x10000, "tkhd");
-    check(Math.max(width, height) <= OUTPUT_LONG_EDGE && Math.min(width, height) <= OUTPUT_SHORT_EDGE, "geometry");
   } else {
     check(tkhdWidth === 0 && tkhdHeight === 0, "tkhd");
   }
@@ -841,6 +859,7 @@ function parseTrak(
   let samples = 0;
   let sampleTime = 0;
   let minDelta = Number.POSITIVE_INFINITY;
+  let maxDelta = 0;
   const deltas: number[] = [];
   for (let i = 0; i < sttsEntries; i++) {
     const count = view.getUint32(stts.start + 8 + i * 8);
@@ -851,6 +870,7 @@ function parseTrak(
     check(samples <= (video ? VIDEO_SAMPLE_LIMIT : AUDIO_SAMPLE_LIMIT), "sample_cap");
     sampleTime += count * delta;
     minDelta = Math.min(minDelta, delta);
+    maxDelta = Math.max(maxDelta, delta);
     deltas.push(count, delta);
   }
   check(sampleTime === mediaDuration, "sample_time");
@@ -1001,9 +1021,12 @@ function parseTrak(
         continue;
       }
       check(mediaTime >= 0, "elst");
-      // What the image writes (#1828 A7): video starts at its first composition time (the reorder delay), audio skips
-      // at most one AAC frame of priming.
-      check(video ? mediaTime === compStart : mediaTime <= AAC_PRIMING_LIMIT, "elst");
+      // What the image writes (#1828 A7): video starts at its first composition time, the encoder's reorder delay of
+      // at most REORDER_FRAMES; audio skips at most one AAC frame of priming.
+      check(
+        video ? mediaTime === compStart && mediaTime <= REORDER_FRAMES * maxDelta : mediaTime <= AAC_PRIMING_LIMIT,
+        "elst",
+      );
       skipped = mediaTime;
       // In the media timescale, within one movie tick of rounding.
       check(mediaTime >= compStart, "presentation");
