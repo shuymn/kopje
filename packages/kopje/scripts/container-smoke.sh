@@ -11,8 +11,8 @@
 # 1280x720), and 119.9 s of the first with its audio starting 500 ms late, which the verifier must hold to the same rung;
 # and M4A, FLAC, Ogg, MP3 and Opus-only WebM audio.
 # One more input, an MP4 whose headers declare 320x240 but whose frames after the first are 4096x2160, is checked
-# apart: normalize refuses it (422 pixels: the decoder dropped the frames over the limit, so the output would be short
-# of the plan), and a still is the first frame's 320x240 or the operation fails. Its AV1 counterpart (a second of
+# apart: normalize refuses it (422 pixels: the decoder's diagnostic for the frames it dropped over the limit refuses it,
+# whatever the output's length), and a still is the first frame's 320x240 or the operation fails. Its AV1 counterpart (a second of
 # 320x240, then one of 4096x2160, which libdav1d refuses with its own diagnostic) is refused 422 pixels as well.
 # Each input's kind (video or audio) is the fixture table's, never the server's Kopje-Kind: a given input's is its
 # `video:` or `audio:` prefix, else its extension's. Each operation is checked on its own: HTTP 200, Kopje-Kind equal
@@ -77,9 +77,10 @@ docker run -d --name "$name" --network none --cpus "$CPUS" --memory "$MEMORY" --
   --tmpfs /tmp:rw,size=4g "$image" >/dev/null
 
 mkdir -p "$work/in" "$work/out" "$work/fixture"
+# ffm runs the pinned ffmpeg on $work/fixture, mounted as /f and its working directory.
+ffm() { docker run --rm --network none "${as_me[@]}" -v "$work/fixture:/f" -w /f --entrypoint /ffmpeg "$ffmpeg_image" -v error "$@"; }
 # tone.wav: three seconds of a sine, the audio input, tagged with a seeded title.
-docker run --rm --network none "${as_me[@]}" -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error \
-  -f lavfi -i sine=frequency=440:duration=3 -metadata title=KOPJEMARK_WAV_TITLE /f/tone.wav
+ffm -f lavfi -i sine=frequency=440:duration=3 -metadata title=KOPJEMARK_WAV_TITLE /f/tone.wav
 # exif.mov: three seconds of one 64x48 PNG frame carrying an eXIf chunk (a TIFF whose Make is KOPJEMARK_EXIF_MAKE) and
 # a tEXt chunk, copied into MOV unchanged, so the frames the still is made from carry both.
 python3 -I - "$work/fixture/frame.png" <<'PY'
@@ -94,14 +95,12 @@ png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 48, 8, 2
 png += chunk(b"eXIf", tiff) + chunk(b"tEXt", b"Comment\0KOPJEMARK_PNG_TEXT") + chunk(b"IDAT", zlib.compress(rows))
 open(sys.argv[1], "wb").write(png + chunk(b"IEND", b""))
 PY
-docker run --rm --network none "${as_me[@]}" -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error -framerate 1 \
-  -loop 1 -t 3 -i /f/frame.png -c:v copy -f mov /f/exif.mov
+ffm -framerate 1 -loop 1 -t 3 -i /f/frame.png -c:v copy -f mov /f/exif.mov
 # p3.mov: three seconds of one 64x48 frame of (210,70,40) in Display P3, its PNG tagged only by an ICC profile (the
 # pinned ffmpeg's for P3, with KOPJEMARK_ICC appended inside the profile), copied into MOV unchanged.
 p3_frame='color=c=0xD24628:s=64x48:d=1,format=rgb24'
 p3_frame+=',setparams=color_primaries=smpte432:color_trc=iec61966-2-1,iccgen=force=1'
-docker run --rm --network none "${as_me[@]}" -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error -f lavfi \
-  -i "$p3_frame" -frames:v 1 -c:v png /f/p3-generated.png
+ffm -f lavfi -i "$p3_frame" -frames:v 1 -c:v png /f/p3-generated.png
 python3 -I - "$work/fixture/p3-generated.png" "$work/fixture/p3.png" <<'PY'
 import struct, sys, zlib
 def chunk(t, data):
@@ -119,8 +118,7 @@ while p < len(b):
     p += 12 + n
 open(sys.argv[2], "wb").write(b[:8] + out)
 PY
-docker run --rm --network none "${as_me[@]}" -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error -framerate 1 \
-  -loop 1 -t 3 -i /f/p3.png -c:v copy -f mov /f/p3.mov
+ffm -framerate 1 -loop 1 -t 3 -i /f/p3.png -c:v copy -f mov /f/p3.mov
 # gray.mov: three seconds of one 64x48 grayscale PNG frame with a gray-gamma-2.2 ICC profile, which iccdetect cannot
 # use (it needs an RGB transform): normalize and both stills must still answer, the profile dropped.
 python3 -I - "$work/fixture/gray.png" <<'PY'
@@ -149,12 +147,10 @@ png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 48, 8, 0
 png += chunk(b"iCCP", b"Gray\0\0" + zlib.compress(icc)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 open(sys.argv[1], "wb").write(png)
 PY
-docker run --rm --network none "${as_me[@]}" -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error -framerate 1 \
-  -loop 1 -t 3 -i /f/gray.png -c:v copy -f mov /f/gray.mov
+ffm -framerate 1 -loop 1 -t 3 -i /f/gray.png -c:v copy -f mov /f/gray.mov
 # cover.m4a and cover-bmp.m4a: AAC with a 4096x4096 PNG or BMP cover (over the pixel limit; it is not the video and is
 # never decoded);
 # twostream.mov: H.264 then a PNG stream; tone.aac: raw ADTS AAC, whose headers declare no duration.
-ffm() { docker run --rm --network none "${as_me[@]}" -v "$work/fixture:/f" -w /f --entrypoint /ffmpeg "$ffmpeg_image" -v error "$@"; }
 ffm -f lavfi -i color=c=red:s=4096x4096:d=1 -frames:v 1 -c:v png cover.png
 ffm -f lavfi -i sine=d=3 -i cover.png -map 0 -map 1 -c:a aac -c:v copy -disposition:v attached_pic cover.m4a
 ffm -f lavfi -i color=c=red:s=4096x4096:d=1 -frames:v 1 -c:v bmp cover.bmp
@@ -216,6 +212,15 @@ req() { # <output file> <curl args...>
 }
 header() { sed -n "s/^$1: //Ip" <<<"$2" | head -1; }
 status() { sed -n '1s/^HTTP\/[0-9.]* \([0-9]*\).*/\1/p' <<<"$1"; }
+# The headers of a normalize of <input in $work/in>, its output written to <output file>.
+post_normalize() { # <input> <output file>
+  req "$2" -X POST --data-binary "@/in/$1" -H 'Content-Type: application/octet-stream' \
+    "http://127.0.0.1:8080/normalize?probe_ms=10000&encode_ms=$ENCODE_MS"
+}
+# The headers of a /still of <input in $work/in>, its output written to <output file>.
+post_still() { # <input> <output file>
+  req "$2" -X POST --data-binary "@/in/$1" -H 'Content-Type: application/octet-stream' http://127.0.0.1:8080/still
+}
 ffprobe() { docker run --rm --network none -v "$work/out:/o:ro" --entrypoint /ffprobe "$ffmpeg_image" -v error "$@"; }
 decodes() { docker run --rm --network none -v "$work/out:/o:ro" --entrypoint /ffmpeg "$ffmpeg_image" -v error -xerror \
   -i "/o/$1" -f null - >/dev/null 2>&1; }
@@ -364,8 +369,7 @@ for entry in "${inputs[@]}"; do
     -show_entries format=duration -of csv=p=0 "/i/$base")"
 
   t0="$(now_ms)"
-  h="$(req "$base.normalized" -X POST --data-binary "@/in/$base" -H 'Content-Type: application/octet-stream' \
-    "http://127.0.0.1:8080/normalize?probe_ms=10000&encode_ms=$ENCODE_MS")"
+  h="$(post_normalize "$base" "$base.normalized")"
   wall=$(($(now_ms) - t0))
   kind="$(header Kopje-Kind "$h")"
   type=video/mp4 codec=h264
@@ -417,8 +421,7 @@ for entry in "${inputs[@]}"; do
     row "$base" "normalize/still" "$(status "$h")" 0 "$h" "$(size "$base.still.png")" "$checks"
 
     t0="$(now_ms)"
-    h="$(req "$base.png" -X POST --data-binary "@/in/$base" -H 'Content-Type: application/octet-stream' \
-      http://127.0.0.1:8080/still)"
+    h="$(post_still "$base" "$base.png")"
     wall=$(($(now_ms) - t0))
     verify "$base still" "$base.png" "$h" image/png png
     [ "$(status "$h")" = 200 ] && keep "$base.png" "$base.png" image/png
@@ -450,8 +453,7 @@ done
 # Decoded content (design #1828 4.11). normalize <input in $work/in> <output name>: the status, keeping a 200's output.
 normalize() {
   local h
-  h="$(req "$2" -X POST --data-binary "@/in/$1" -H 'Content-Type: application/octet-stream' \
-    "http://127.0.0.1:8080/normalize?probe_ms=10000&encode_ms=$ENCODE_MS")"
+  h="$(post_normalize "$1" "$2")"
   echo "$(status "$h") $(header Kopje-Error "$h")"
 }
 # A normalize's still and a /still of <input>, as <input>.still.png and <input>.png, kept for the verifier; sets made to
@@ -461,8 +463,7 @@ stills() { # <input>
   made=""
   h="$(req "$1.still.png" http://127.0.0.1:8080/normalize/still)"
   [ "$(status "$h")" = 200 ] && keep "$1.still.png" "$1.still.png" image/png && made="$1.still.png"
-  h="$(req "$1.png" -X POST --data-binary "@/in/$1" -H 'Content-Type: application/octet-stream' \
-    http://127.0.0.1:8080/still)"
+  h="$(post_still "$1" "$1.png")"
   [ "$(status "$h")" = 200 ] && keep "$1.png" "$1.png" image/png && made="$made $1.png"
   return 0
 }
@@ -471,6 +472,17 @@ both_listed() { # <input>
   local entries="${fresh_list[*]}"
   [[ $entries == *"\"file\": \"$1.still.png\""* && $entries == *"\"file\": \"$1.png\""* ]] && echo true
   return 0
+}
+# The dimensions and the luma of the four corners of <file in $work/out>, as dims and marks.
+corners() { # <file>
+  dims="$(ffprobe -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "/o/$1")"
+  marks="$(block "$work/out" "$1" 0 0) $(block "$work/out" "$1" 120 0)"
+  marks="$marks $(block "$work/out" "$1" 0 64) $(block "$work/out" "$1" 120 64)"
+}
+# Whether dims and marks are 128x72 with the white marker top left and the other corners black.
+upright() {
+  awk -v m="$marks" -v d="$dims" 'BEGIN{n = split(m, c, " ");
+    print (d == "128,72" && n == 4 && c[1] > 180 && c[2] < 60 && c[3] < 60 && c[4] < 60) ? "true" : "false"}'
 }
 # The marker: 128x72 black with a white 16x16 square top left, stored rotated with the matrix that shows it upright.
 ffm -f lavfi -i "color=c=black:s=128x72:r=30:d=2,drawbox=x=0:y=0:w=16:h=16:c=white:t=fill" -c:v libx264 upright.mp4
@@ -483,25 +495,17 @@ for turn in "90 transpose=clock" "180 hflip,vflip" "270 transpose=cclock"; do
   got="$(normalize "rotated$degrees.mp4" "rotated$degrees.out")"
   marks="-"
   if [ "${got% *}" = 200 ]; then
-    dims="$(ffprobe -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "/o/rotated$degrees.out")"
-    marks="$(block "$work/out" "rotated$degrees.out" 0 0) $(block "$work/out" "rotated$degrees.out" 120 0)"
-    marks="$marks $(block "$work/out" "rotated$degrees.out" 0 64) $(block "$work/out" "rotated$degrees.out" 120 64)"
+    corners "rotated$degrees.out"
     keep "rotated$degrees.out" "rotated$degrees.mp4" video/mp4 2
     got="$got, $dims, corners $marks"
   fi
-  check "$(awk -v m="$marks" -v d="${dims:-}" 'BEGIN{n = split(m, c, " ");
-    print (d == "128,72" && n == 4 && c[1] > 180 && c[2] < 60 && c[3] < 60 && c[4] < 60) ? "true" : "false"}')" \
-    "rotated$degrees.mp4: $got, want 128,72 with the marker top left"
+  check "$(upright)" "rotated$degrees.mp4: $got, want 128,72 with the marker top left"
   echo "| rotated$degrees.mp4 | normalize | $got | | | | | | | | |"
   stills "rotated$degrees.mp4"
   check "$(both_listed "rotated$degrees.mp4")" "rotated$degrees.mp4: stills $made, want both, listed for the verifier"
   for still in $made; do
-    dims="$(ffprobe -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "/o/$still")"
-    marks="$(block "$work/out" "$still" 0 0) $(block "$work/out" "$still" 120 0)"
-    marks="$marks $(block "$work/out" "$still" 0 64) $(block "$work/out" "$still" 120 64)"
-    check "$(awk -v m="$marks" -v d="$dims" 'BEGIN{n = split(m, c, " ");
-      print (d == "128,72" && n == 4 && c[1] > 180 && c[2] < 60 && c[3] < 60 && c[4] < 60) ? "true" : "false"}')" \
-      "$still: $dims, corners $marks, want 128,72 with the marker top left"
+    corners "$still"
+    check "$(upright)" "$still: $dims, corners $marks, want 128,72 with the marker top left"
     echo "| rotated$degrees.mp4 | $still | $dims, corners $marks | | | | | | | | |"
   done
 done
@@ -603,12 +607,13 @@ for case in vfr.mp4 longaudio.mp4 header-short.mp4 header-long.mp4; do
     ok=true
     for stream in v a; do
       want="$(decoded "$work/in" "$case" "$stream")"
+      [ "$stream" = v ] && video_length="$want"
       have="$(decoded "$work/out" "$case.out" "$stream")"
       [ "$want" = 0.000 ] && [ "$have" = 0.000 ] && continue
       [ "$(within "$have" "$want" 0.15)" = true ] || ok=false
       got="$got, $stream $have s (input $want s)"
     done
-    keep "$case.out" "$case" video/mp4 "$(decoded "$work/in" "$case" v)"
+    keep "$case.out" "$case" video/mp4 "$video_length"
   fi
   check "$ok" "$case: $got, want 200 with each stream as long as the input's"
   echo "| $case | normalize | $got | | | | | | | | |"
@@ -624,8 +629,7 @@ cp "$work/fixture/lie.mp4" "$work/in/lie.mp4"
 got="$(normalize lie.mp4 lie.normalized)"
 check "$([ "$got" = "422 pixels" ] && echo true)" "lie.mp4 normalize: $got, want 422 pixels"
 echo "| lie.mp4 | normalize | $got | | | | | | | | |"
-h="$(req lie.png -X POST --data-binary @/in/lie.mp4 -H 'Content-Type: application/octet-stream' \
-  http://127.0.0.1:8080/still)"
+h="$(post_still lie.mp4 lie.png)"
 got="$(status "$h") $(header Kopje-Error "$h")"
 if [ "$(status "$h")" = 200 ]; then
   got="$(status "$h"), $(ffprobe -show_entries stream=width,height -of csv=p=0 /o/lie.png)"

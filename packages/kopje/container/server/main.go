@@ -532,10 +532,11 @@ func frameICC(ctx context.Context, path string, index int) bool {
 	return framesICC(stdout.buf, index)
 }
 
-// checkOutput refuses an output shorter than the plan (A5 of #1828 PR2) as truncated: each output stream whose source stream declared its own duration against that duration, and the
-// longest output stream against the plan's duration (boundedDuration), so a stream whose duration is the container's
-// (a WebM's) is held to the whole. Short means by more than a second or by more than 10 %. A probe that fails to read
-// the output is the encode's failure.
+// checkOutput refuses a short output (A5 of #1828 PR2) as truncated: a mapped source stream missing from the output,
+// a mapped output stream short of its source stream's own declared duration, or the longest mapped output stream short
+// of the plan's duration (boundedDuration). A stream without a declared duration of its own (a WebM's) is held only
+// through that longest stream. Short means by more than a second or by more than 10 %. A probe that fails to read the
+// output is the encode's failure.
 func checkOutput(ctx context.Context, p *probeResult, pl *plan, out string) *failure {
 	got, f := probe(ctx, out)
 	if f != nil {
@@ -555,28 +556,26 @@ func checkOutput(ctx context.Context, p *probeResult, pl *plan, out string) *fai
 			outAudio = s
 		}
 	}
-	longest := 0.0
-	failed := false
-	pairs := [][2]*probeStream{{audio, outAudio}}
-	if pl.kind == "video" {
+	var pairs [][2]*probeStream
+	if audio != nil && (pl.kind != "video" || pl.audioIndex >= 0) {
+		pairs = append(pairs, [2]*probeStream{audio, outAudio})
+	}
+	if pl.kind == "video" && video != nil {
 		pairs = append(pairs, [2]*probeStream{video, outVideo})
 	}
+	longest := 0.0
 	for _, pair := range pairs {
 		source, output := pair[0], pair[1]
-		if source == nil || (pl.kind == "video" && source == audio && pl.audioIndex < 0) {
-			continue
-		}
 		if output == nil {
-			failed = true
-			continue
+			return refuse(refuseTruncated)
 		}
 		have := parsePositive(output.Duration)
 		longest = math.Max(longest, have)
 		if own := parsePositive(source.Duration); own > 0 && short(own, have) {
-			failed = true
+			return refuse(refuseTruncated)
 		}
 	}
-	if failed || short(pl.duration, longest) {
+	if short(pl.duration, longest) {
 		return refuse(refuseTruncated)
 	}
 	return nil
@@ -600,18 +599,17 @@ var oversizeMarkers = []*regexp.Regexp{
 // keeps from one write to the next, so a marker split across writes is matched.
 const markerSpan = 128
 
-// markerWriter records whether a stream of bytes matches any of markers, keeping only the last markerSpan-1 bytes:
-// ffmpeg's stderr is scanned for them, never stored, answered or logged.
+// markerWriter records whether a stream of bytes matches any of oversizeMarkers, keeping only the last markerSpan-1
+// bytes: ffmpeg's stderr is scanned for them, never stored, answered or logged.
 type markerWriter struct {
-	markers []*regexp.Regexp
-	tail    []byte
-	found   bool
+	tail  []byte
+	found bool
 }
 
 func (m *markerWriter) Write(p []byte) (int, error) {
 	if !m.found {
 		window := append(m.tail, p...)
-		for _, marker := range m.markers {
+		for _, marker := range oversizeMarkers {
 			m.found = m.found || marker.Match(window)
 		}
 		keep := min(len(window), markerSpan-1)
@@ -622,7 +620,7 @@ func (m *markerWriter) Write(p []byte) (int, error) {
 
 // runEncode runs an encode as runFFmpeg does, watching its stderr for the pixel limit's refusal.
 func runEncode(ctx context.Context, args []string) (encodeRun, error) {
-	watch := &markerWriter{markers: oversizeMarkers}
+	watch := &markerWriter{}
 	cpu, err := runFFmpegTo(ctx, args, watch)
 	return encodeRun{cpu: cpu, oversized: watch.found}, err
 }

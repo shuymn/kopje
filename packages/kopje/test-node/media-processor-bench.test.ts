@@ -166,7 +166,7 @@ describe("the boundary matrix", () => {
         at({ fixture: "h264-50.mp4", ok: true, server: { estimate: 34_600, encode: 30_000 } }),
         at({ fixture: "h264-50.mp4", ok: true, server: { estimate: 34_600, encode: 36_330 } }),
         at({ fixture: "h264-53.mp4", ok: false, status: 422, error: "envelope", server: {} }, "v1-90", "refused"),
-        // Wrong verdicts and a failure are listed, never in the ratio.
+        // Wrong verdicts and a failure are listed; an unexpectedly admitted run with valid timings is in the ratio too.
         at({ fixture: "hevc-36.mp4", ok: true, server: { estimate: 36_000, encode: 1_000 } }, "v1-90", "refused"),
         at({ fixture: "hevc-34.mp4", ok: false, status: 422, error: "envelope", server: {} }),
         at({ fixture: "hlg-9.mp4", ok: false, status: 500, error: "encode_failed", server: { estimate: 30_000 } }),

@@ -56,20 +56,19 @@ video() { echo "testsrc2=s=$1:r=$2:d=$3"; }
 still() { echo "smptebars=s=$1:r=$2:d=$3"; }
 tone() { echo "sine=f=440:sample_rate=${2:-48000}:d=$1"; }
 silence() { echo "anullsrc=r=48000:cl=stereo:d=$1"; }
-h264() { echo -c:v libx264 -preset veryfast -pix_fmt yuv420p; }
+h264=(-c:v libx264 -preset veryfast -pix_fmt yuv420p)
 
-# shellcheck disable=SC2046
 {
-  ff -f lavfi -i "$(video 160x90 60 4)" -f lavfi -i "$(tone 4),aformat=channel_layouts=stereo" $(h264) -c:a aac r1-av.mp4
-  ff -f lavfi -i "$(video 160x90 30 3)" $(h264) r1-silent.mp4
-  ff -f lavfi -i "$(video 160x90 30 2)" -f lavfi -i "$(tone 2 32000)" $(h264) -c:a aac r1-32k.mp4
-  ff -f lavfi -i "$(still 64x36 60 121)" -f lavfi -i "$(silence 121)" $(h264) -c:a aac r2-av.mp4
-  ff -f lavfi -i "$(still 64x36 60 121)" $(h264) r2-silent.mp4
-  ff -f lavfi -i "$(still 32x18 10 301)" -f lavfi -i "$(silence 301)" $(h264) -c:a aac r3-av.mp4
-  ff -f lavfi -i "$(still 32x18 10 301)" $(h264) r3-silent.mp4
-  ff -f lavfi -i "$(still 16x16 1 600)" -f lavfi -i "anullsrc=r=44100:cl=stereo:d=600" $(h264) -c:a aac -t 600 cap-44k.mp4
-  ff -f lavfi -i "$(still 16x16 1 600)" -f lavfi -i "$(silence 600)" $(h264) -c:a aac -t 600 cap-48k.mp4
-  ff -f lavfi -i "$(video 160x90 30 2)" $(h264) upright.mp4
+  ff -f lavfi -i "$(video 160x90 60 4)" -f lavfi -i "$(tone 4),aformat=channel_layouts=stereo" "${h264[@]}" -c:a aac r1-av.mp4
+  ff -f lavfi -i "$(video 160x90 30 3)" "${h264[@]}" r1-silent.mp4
+  ff -f lavfi -i "$(video 160x90 30 2)" -f lavfi -i "$(tone 2 32000)" "${h264[@]}" -c:a aac r1-32k.mp4
+  ff -f lavfi -i "$(still 64x36 60 121)" -f lavfi -i "$(silence 121)" "${h264[@]}" -c:a aac r2-av.mp4
+  ff -f lavfi -i "$(still 64x36 60 121)" "${h264[@]}" r2-silent.mp4
+  ff -f lavfi -i "$(still 32x18 10 301)" -f lavfi -i "$(silence 301)" "${h264[@]}" -c:a aac r3-av.mp4
+  ff -f lavfi -i "$(still 32x18 10 301)" "${h264[@]}" r3-silent.mp4
+  ff -f lavfi -i "$(still 16x16 1 600)" -f lavfi -i "anullsrc=r=44100:cl=stereo:d=600" "${h264[@]}" -c:a aac -t 600 cap-44k.mp4
+  ff -f lavfi -i "$(still 16x16 1 600)" -f lavfi -i "$(silence 600)" "${h264[@]}" -c:a aac -t 600 cap-48k.mp4
+  ff -f lavfi -i "$(video 160x90 30 2)" "${h264[@]}" upright.mp4
   ff -display_rotation:v:0 90 -i upright.mp4 -c copy rotated.mp4
   # The frames carry the tags (the encoder takes them from the frames, not from -color_*), and the colr box carries
   # them to the header probe, as a camera's file does: without it the transfer is only in the HEVC VUI, which the
@@ -81,7 +80,7 @@ h264() { echo -c:v libx264 -preset veryfast -pix_fmt yuv420p; }
       -c:v libx265 -preset superfast -pix_fmt yuv420p10le -x265-params log-level=error -tag:v hvc1 -movflags +write_colr \
       "$out"
   done
-  ff -f lavfi -i "$(video 160x90 30 3),select='lt(n\,30)+not(mod(n\,3))'" -fps_mode vfr $(h264) vfr.mp4
+  ff -f lavfi -i "$(video 160x90 30 3),select='lt(n\,30)+not(mod(n\,3))'" -fps_mode vfr "${h264[@]}" vfr.mp4
   ff -f lavfi -i "$(tone 3)" -c:a libopus opus.webm
   ff -f lavfi -i "$(tone 3 44100)" -c:a aac m4a.m4a
   ff -f lavfi -i "$(tone 3 24000)" -c:a aac m2.m4a

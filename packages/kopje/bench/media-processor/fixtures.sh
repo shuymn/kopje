@@ -21,7 +21,7 @@
 #   tagged.m4a, tagged.flac, tagged.ogg            60 s audio with tags (and cover art for M4A and FLAC)
 #
 # HDR inputs carry their transfer in the frames and in a colr box, as a camera's file does: the server's header probe
-# reads the transfer from the container, and an HDR file without colr would be planned and encoded as SDR.
+# reads the colr box, and for a file without one, discovery recovers the transfer from the HEVC VUI.
 set -euo pipefail
 
 matrix=""
@@ -63,18 +63,8 @@ h264() { # <file> <seconds> <size> <bitrate> [args...]
 }
 
 # HEVC 10-bit, HDR when a transfer is given. An HDR file's -movflags gain +write_colr (one -movflags takes effect).
-hevc() { # <file> <seconds> <size> <bitrate> <transfer|sdr> [args...]
-  local file=$1 t=$2 size=$3 rate=$4 trc=$5 color=() tag="" flags="" rest=()
-  shift 5
-  while [ $# -gt 0 ]; do
-    if [ "$1" = -movflags ]; then
-      flags="$flags+${2#+}"
-      shift 2
-    else
-      rest+=("$1")
-      shift
-    fi
-  done
+hevc() { # <file> <seconds> <size> <bitrate> <transfer|sdr> [<movflags>]
+  local file=$1 t=$2 size=$3 rate=$4 trc=$5 flags=${6:-} color=() tag="" movflags=()
   if [ "$trc" != sdr ]; then
     # ffmpeg takes the tags from the frames (setparams), and the MP4 muxer writes colr only with +write_colr.
     tag=",setparams=color_primaries=bt2020:color_trc=$trc:colorspace=bt2020nc"
@@ -83,11 +73,10 @@ hevc() { # <file> <seconds> <size> <bitrate> <transfer|sdr> [args...]
   else
     color=(-x265-params log-level=error)
   fi
-  [ -z "$flags" ] || rest+=(-movflags "$flags")
-  set -- ${rest[@]+"${rest[@]}"}
+  [ -z "$flags" ] || movflags=(-movflags "$flags")
   make "$file" -f lavfi -t "$t" -i "$(src "$size"),format=yuv420p10le$tag" -f lavfi -t "$t" -i "$AUDIO" -map 0:v -map 1:a \
     -c:v libx265 -preset superfast -b:v "$rate" -pix_fmt yuv420p10le -tag:v hvc1 "${color[@]}" -c:a aac -b:a 128k \
-    "${TAGS[@]}" "$@"
+    "${TAGS[@]}" ${movflags[@]+"${movflags[@]}"}
 }
 
 if [ -n "$matrix" ]; then
@@ -95,7 +84,7 @@ if [ -n "$matrix" ]; then
     if [ "$codec" = h264 ]; then
       h264 "$name" "$seconds" "$size" "$rate" -movflags +faststart
     else
-      hevc "$name" "$seconds" "$size" "$rate" "$transfer" -movflags +faststart
+      hevc "$name" "$seconds" "$size" "$rate" "$transfer" +faststart
     fi
   done < <(jq -r '.fixtures[] | [.name, .codec, .size, .seconds, .transfer, .rate] | @tsv' "$matrix")
 else
@@ -108,11 +97,11 @@ make vp9-90s.webm -f lavfi -t 90 -i "$(src 1920x1080)" -f lavfi -t 90 -i "$AUDIO
   -cpu-used 8 -row-mt 1 -b:v 4M -pix_fmt yuv420p -c:a libopus -b:a 128k "${TAGS[@]}"
 hevc .work/hlg-plain.mov 30 3840x2160 20M arib-std-b67
 make hlg-4k.mov -display_rotation:v:0 90 -i .work/hlg-plain.mov -map 0 -c copy -f mov
-hevc pq-4k.mp4 30 3840x2160 20M smpte2084 -movflags +faststart
+hevc pq-4k.mp4 30 3840x2160 20M smpte2084 +faststart
 h264 sdr-1080p-5min.mp4 300 1920x1080 2M -movflags +faststart
 h264 sdr-1080p-10min.mp4 600 1920x1080 1M -movflags +faststart
-hevc sdr-4k-5min.mp4 300 3840x2160 2M sdr -movflags +faststart
-hevc sdr-4k-10min.mp4 600 3840x2160 1M sdr -movflags +faststart
+hevc sdr-4k-5min.mp4 300 3840x2160 2M sdr +faststart
+hevc sdr-4k-10min.mp4 600 3840x2160 1M sdr +faststart
 make tagged.m4a -f lavfi -t 60 -i "$AUDIO" -i .work/cover.png -map 0:a -map 1:v -c:a aac -b:a 192k -c:v png \
   -disposition:v attached_pic "${TAGS[@]}"
 make tagged.flac -f lavfi -t 60 -i "$AUDIO" -i .work/cover.png -map 0:a -map 1:v -c:a flac -c:v png \

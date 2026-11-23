@@ -43,6 +43,7 @@
 // version and sample rate and of one channel mode (the Xing frame's is stereo for stereo or joint stereo frames, mono
 // for mono) ending at EOF, whose samples less that delay and padding are at most AUDIO_DURATION_LIMIT.
 
+import { toHex } from "./hex";
 import { ascii, MALFORMED, retainedMetadata, walkPng } from "./image-bytes";
 
 const MIB = 1024 * 1024;
@@ -189,23 +190,6 @@ export class AvRefusal extends Error {
   }
 }
 
-// The SHA-256 of the stream, fed in the same pass.
-function digestStreamHasher(): { write(chunk: Uint8Array): Promise<void>; digest(): Promise<ArrayBuffer> } {
-  const stream = new crypto.DigestStream("SHA-256");
-  const writer = stream.getWriter();
-  return {
-    write: (chunk) => writer.write(chunk),
-    digest: async () => {
-      await writer.close();
-      return stream.digest;
-    },
-  };
-}
-
-function hex(buffer: ArrayBuffer): string {
-  return [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 // What a byte walker reports: null to go on, or a refusal.
 type WalkedFacts = Omit<VideoFacts, "sha256"> | Omit<AudioFacts, "sha256">;
 
@@ -242,7 +226,9 @@ export function avVerifier(
     : type === "video/mp4"
       ? new Mp4Walker(contentLength)
       : new Mp3Walker(contentLength);
-  const hasher = digestStreamHasher();
+  // The SHA-256 of the stream, fed in the same pass.
+  const digest = new crypto.DigestStream("SHA-256");
+  const hasher = digest.getWriter();
   const refuse = (rule: AvRule, controller: TransformStreamDefaultController<Uint8Array>) => {
     done = true;
     settle({ ok: false, rule });
@@ -291,7 +277,8 @@ export function avVerifier(
         return refuse("short_output", controller);
       }
       done = true;
-      settle({ ok: true, facts: { ...facts, sha256: hex(await hasher.digest()) } });
+      await hasher.close();
+      settle({ ok: true, facts: { ...facts, sha256: toHex(await digest.digest) } });
     },
   });
   const abort = () => {
@@ -441,7 +428,6 @@ function exactly(b: Uint8Array, view: DataView, parent: Box, allowed: string[]):
     const types = (optional ? name.slice(0, -1) : name).split("|");
     const box = found[k];
     if (box !== undefined && types.includes(box.type)) {
-      out.set(types.length > 1 ? types.join("|") : box.type, box);
       out.set(box.type, box);
       k++;
     } else {
@@ -476,7 +462,6 @@ function gcd(a: number, b: number): number {
 
 type Track = {
   video: boolean;
-  id: number;
   tkhdDuration: number;
   timescale: number;
   mediaDuration: number;
@@ -680,10 +665,9 @@ function audioSpecificConfig(rate: number): number[] {
   return [0x10 | (index >> 1), ((index & 1) << 7) | (2 << 3), 0x56, 0xe5, 0x00];
 }
 
-function parseMoov(b: Uint8Array, moovStart: number, moovEnd: number, fileEnd: number): Mp4Layout {
+function parseMoov(b: Uint8Array, moovEnd: number, fileEnd: number): Mp4Layout {
   const view = new DataView(b.buffer, b.byteOffset, b.byteLength);
   // Offsets inside `b` are relative to moov's first byte; the mdat follows moov, the free box and its own header.
-  const base = moovStart;
   const mdatStart = moovEnd + 8 + 8;
   const top = children(b, view, 8, b.length);
   check(top[0]?.type === "mvhd" && top.slice(1).every((t) => t.type === "trak") && top.length >= 2, "box");
@@ -701,7 +685,7 @@ function parseMoov(b: Uint8Array, moovStart: number, moovEnd: number, fileEnd: n
   check(traks.length <= 2, "tracks");
   check(view.getUint32(m + 96) === traks.length + 1, "mvhd");
 
-  const tracks = traks.map((trak, index) => parseTrak(b, view, trak, index + 1, base, mdatStart, fileEnd));
+  const tracks = traks.map((trak, index) => parseTrak(b, view, trak, index + 1, mdatStart, fileEnd));
   check(tracks[0]?.video === true && tracks.slice(1).every((t) => !t.video), "tracks");
   const video = tracks[0] as Track;
 
@@ -769,15 +753,7 @@ function parseMoov(b: Uint8Array, moovStart: number, moovEnd: number, fileEnd: n
   };
 }
 
-function parseTrak(
-  b: Uint8Array,
-  view: DataView,
-  trak: Box,
-  id: number,
-  base: number,
-  mdatStart: number,
-  fileEnd: number,
-): Track {
+function parseTrak(b: Uint8Array, view: DataView, trak: Box, id: number, mdatStart: number, fileEnd: number): Track {
   const parts = exactly(b, view, trak, ["tkhd", "edts?", "mdia"]);
   const mdia = exactly(b, view, parts.get("mdia") as Box, ["mdhd", "hdlr", "minf"]);
 
@@ -1058,7 +1034,6 @@ function parseTrak(
 
   return {
     video,
-    id,
     tkhdDuration,
     timescale,
     mediaDuration,
@@ -1167,7 +1142,6 @@ class Mp4Walker implements Walker<Omit<VideoFacts, "sha256">> {
   private body: Uint8Array | null = null;
   private bodyHave = 0;
   private bodyStart = 0;
-  private moovStart = 0;
   private layout: Mp4Layout | null = null;
   private inMdat = false;
   // The sample walk.
@@ -1249,7 +1223,6 @@ class Mp4Walker implements Walker<Omit<VideoFacts, "sha256">> {
         break;
       case 1:
         check(size <= MOOV_LIMIT, "moov_size");
-        this.moovStart = start;
         break;
       case 2:
         check(size === 8, "free");
@@ -1283,7 +1256,7 @@ class Mp4Walker implements Walker<Omit<VideoFacts, "sha256">> {
       this.stage = 1;
       return;
     }
-    this.layout = parseMoov(body, this.bodyStart, this.bodyStart + body.length, this.contentLength);
+    this.layout = parseMoov(body, this.bodyStart + body.length, this.contentLength);
     // The moov and parseMoov's temporaries at once, as it builds them.
     this.most = Math.max(this.most, this.header.byteLength + body.byteLength + this.layout.parsed);
     this.stage = 2;
@@ -1434,7 +1407,6 @@ class Mp3Walker implements Walker<Omit<AudioFacts, "sha256">> {
   private format: FrameHeader | null = null;
   private mode: number | undefined;
   private frames = 0;
-  private samples = 0;
   private musicCrc = 0;
   // The Xing frame's statements, checked at the end: frames, bytes, the TOC and the music CRC.
   private xing: { frames: number; toc: Uint8Array; musicCrc: number; padding: number } | null = null;
@@ -1503,7 +1475,6 @@ class Mp3Walker implements Walker<Omit<AudioFacts, "sha256">> {
       this.musicCrc = crc16(this.musicCrc, this.header);
       this.frameLeft = header.length - 4;
       this.frames++;
-      this.samples += header.samples;
       this.addBag(header.length);
     }
     return 1;
@@ -1626,9 +1597,9 @@ class Mp3Walker implements Walker<Omit<AudioFacts, "sha256">> {
         return "xing";
       }
     }
-    // The presented samples: the audio frames' (the Info frame is none), less the delay and padding the LAME tag
-    // records, which leave some (#1828 A7).
-    const presented = this.samples - LAME_DELAY - xing.padding;
+    // The presented samples: the audio frames' (the Info frame is none; every frame has its version, so its count of
+    // samples), less the delay and padding the LAME tag records, which leave some (#1828 A7).
+    const presented = this.frames * format.samples - LAME_DELAY - xing.padding;
     if (presented <= 0) {
       return "xing";
     }

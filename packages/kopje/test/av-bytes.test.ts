@@ -32,6 +32,7 @@ import {
   chunked,
   concat,
   editMoov,
+  mp3FrameLength,
   find,
   patch,
   refreshXing,
@@ -847,15 +848,7 @@ function withPadding(file: Uint8Array, padding: number): Uint8Array {
 function frameAt(file: Uint8Array, n: number): number {
   let at = xingLayout(file).frame;
   for (let i = 0; i < n; i++) {
-    const h = u32At(file, at);
-    const mpeg1 = ((h >>> 19) & 3) === 3;
-    const rates = mpeg1 ? [44100, 48000, 32000] : [22050, 24000, 16000];
-    const kbps =
-      (mpeg1
-        ? [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320]
-        : [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160]
-      )[(h >>> 12) & 15] ?? 0;
-    at += Math.floor(((mpeg1 ? 144000 : 72000) * kbps) / (rates[(h >>> 10) & 3] ?? 1)) + ((h >>> 9) & 1);
+    at += mp3FrameLength(u32At(file, at));
   }
   return at;
 }
@@ -1026,12 +1019,11 @@ describe("an MP3 changed in one field", () => {
     expect(await rule("audio/mpeg", withPadding(repeatedMp3(f, frames + 1), 575))).toBe("duration_limit");
   });
 
-  it("is refused for a length other than its Content-Length, or over AV_OUTPUT_LIMIT", async () => {
+  // The stream's own length checks (early end, excess bytes, AV_OUTPUT_LIMIT) are the MP4's above: avVerifier's, for
+  // every type.
+  it("is refused for a Content-Length its Xing frame does not state, or when shorter than the plan", async () => {
     const f = await mp3();
     expect(await rule("audio/mpeg", f, { contentLength: f.length + 1 })).toBe("xing");
-    expect(await rule("audio/mpeg", f.slice(0, -1), { contentLength: f.length })).toBe("length");
-    expect(await rule("audio/mpeg", f, { contentLength: f.length - 1 })).toBe("length");
-    expect(await rule("audio/mpeg", f, { contentLength: AV_OUTPUT_LIMIT + 1 })).toBe("over_limit");
     expect(await rule("audio/mpeg", f, { expectedDuration: 5 })).toBe("short_output");
   });
 });

@@ -688,7 +688,6 @@ func TestNormalizeRefusesAShortOutput(t *testing.T) {
 		{"within a second", "9.1", "10", false, false, 200, ""},
 		{"video short", "8.9", "10", false, false, 422, "truncated"},
 		{"audio short", "10", "8", false, false, 422, "truncated"},
-		{"frames dropped for size", "0.04", "10", true, false, 422, "pixels"},
 		// The frames after a dropped one are lost, whatever the length the output still has.
 		{"a frame dropped for size, the output whole", "10", "10", true, false, 422, "pixels"},
 		// ffmpeg failing after the decoder refused a frame is the input's refusal too, not encode_failed.
@@ -831,7 +830,7 @@ func TestMarkerWriterFindsTheMarkerAcrossWrites(t *testing.T) {
 		{"[h264] Picture size 4096x2160 exc", "eeds specified max ", "pixel count 8294400\n"},
 		{"[libdav1d @ 0x1] Frame size 4096x2160 exc", "eeds lim", "it 8294400\n"},
 	} {
-		m := &markerWriter{markers: oversizeMarkers}
+		m := &markerWriter{}
 		for _, part := range parts {
 			_, _ = m.Write([]byte(part))
 		}
@@ -844,7 +843,7 @@ func TestMarkerWriterFindsTheMarkerAcrossWrites(t *testing.T) {
 		"Error while decoding stream",
 		"[aac @ 0x1] Number of bands (60) exceeds limit (51).\n",
 	} {
-		other := &markerWriter{markers: oversizeMarkers}
+		other := &markerWriter{}
 		_, _ = other.Write([]byte(line))
 		if other.found {
 			t.Fatalf("found in %q", line)

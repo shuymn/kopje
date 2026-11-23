@@ -497,18 +497,25 @@ export function crc16(bytes: Uint8Array, crc = 0): number {
   return c;
 }
 
-// The Xing frame's layout in a fixture: its length, the Xing tag's offset and the LAME fields' offset.
-export function xingLayout(file: Uint8Array): { frame: number; xing: number; lame: number } {
-  const h = view(file).getUint32(0);
+// The length of the Layer III frame whose 4-byte header is h, from its version, bitrate, rate and padding: computed
+// here, apart from the verifier's parser.
+export function mp3FrameLength(h: number): number {
   const mpeg1 = ((h >>> 19) & 3) === 3;
-  const mono = ((h >>> 6) & 3) === 3;
   const br =
     (mpeg1
       ? [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320]
       : [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160]
     )[(h >>> 12) & 15] ?? 0;
   const sr = (mpeg1 ? [44100, 48000, 32000] : [22050, 24000, 16000])[(h >>> 10) & 3] ?? 1;
-  const frame = Math.floor(((mpeg1 ? 144000 : 72000) * br) / sr) + ((h >>> 9) & 1);
+  return Math.floor(((mpeg1 ? 144000 : 72000) * br) / sr) + ((h >>> 9) & 1);
+}
+
+// The Xing frame's layout in a fixture: its length, the Xing tag's offset and the LAME fields' offset.
+export function xingLayout(file: Uint8Array): { frame: number; xing: number; lame: number } {
+  const h = view(file).getUint32(0);
+  const mpeg1 = ((h >>> 19) & 3) === 3;
+  const mono = ((h >>> 6) & 3) === 3;
+  const frame = mp3FrameLength(h);
   const xing = 4 + (mpeg1 ? (mono ? 17 : 32) : mono ? 9 : 17);
   return { frame, xing, lame: xing + 120 };
 }
@@ -533,15 +540,7 @@ export function refreshXing(file: Uint8Array, musicCrc?: number): Uint8Array {
 // frame, with the TOC, frame count and CRCs the muxer would write. The frames' music is not changed.
 export function repeatedMp3(fixture: Uint8Array, frames: number): Uint8Array {
   const { frame } = xingLayout(fixture);
-  const h = view(fixture).getUint32(frame);
-  const mpeg1 = ((h >>> 19) & 3) === 3;
-  const br =
-    (mpeg1
-      ? [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320]
-      : [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160]
-    )[(h >>> 12) & 15] ?? 0;
-  const sr = (mpeg1 ? [44100, 48000, 32000] : [22050, 24000, 16000])[(h >>> 10) & 3] ?? 1;
-  const length = Math.floor(((mpeg1 ? 144000 : 72000) * br) / sr) + ((h >>> 9) & 1);
+  const length = mp3FrameLength(view(fixture).getUint32(frame));
   const one = fixture.slice(frame, frame + length);
   const out = new Uint8Array(frame + frames * length);
   out.set(fixture.subarray(0, frame));

@@ -49,7 +49,6 @@ matrix_rows() {
     | @tsv' "$matrix_file"
 }
 if [ -n "${MATRIX:-}" ]; then
-  INSTANCES=standard-4 THREADS=all:4
   FIXTURES="$(matrix_rows | cut -f1 | sort -u | tr '\n' ' ')"
 fi
 FIXTURES="${FIXTURES:-sdr-h264.mp4 hdr-hevc-rotated.mov vp9-90s.webm near-cap.mp4 hlg-4k.mov pq-4k.mp4 sdr-1080p-5min.mp4 sdr-1080p-10min.mp4 sdr-4k-5min.mp4 sdr-4k-10min.mp4 tagged.m4a tagged.flac tagged.ogg}"
@@ -100,19 +99,18 @@ if [ -n "${MATRIX:-}" ]; then
     for _ in $(seq 1 "$RUNS"); do run normalize "$f" standard-4 all:4 "$encode" "$endpoint" "$verdict"; done
   done < <(matrix_rows)
   DISPATCH_RUNS=0 HOLD=""
-fi
-
-for f in $FIXTURES; do
-  [ -z "${MATRIX:-}" ] || break
-  for inst in $INSTANCES; do
-    for th in $THREADS; do
-      for _ in $(seq 1 "$RUNS"); do run normalize "$f" "$inst" "$th"; done
+else
+  for f in $FIXTURES; do
+    for inst in $INSTANCES; do
+      for th in $THREADS; do
+        for _ in $(seq 1 "$RUNS"); do run normalize "$f" "$inst" "$th"; done
+      done
     done
+    if [ "$(expect_of "$f")" = video ]; then
+      for _ in $(seq 1 "$STILL_RUNS"); do run still "$f" standard-1 default; done
+    fi
   done
-  if [ "$(expect_of "$f")" = video ]; then
-    for _ in $(seq 1 "$STILL_RUNS"); do run still "$f" standard-1 default; done
-  fi
-done
+fi
 
 for _ in $(seq 1 "$DISPATCH_RUNS"); do
   [ "$DISPATCH_RUNS" -gt 0 ] || break

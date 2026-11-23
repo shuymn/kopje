@@ -1087,13 +1087,11 @@ describe("GET /media/:token/:file", () => {
     expect(Object.fromEntries(head.headers)).toMatchObject({ ...fixed, "content-length": String(size), etag });
     expect((await head.arrayBuffer()).byteLength).toBe(0);
 
+    // One satisfiable and one unsatisfiable range; the remote route's tests cover the other spellings through the same
+    // serveObject.
     for (const [range, status, contentRange, from, to] of [
       ["bytes=0-99", 206, `bytes 0-99/${size}`, 0, 100],
-      ["bytes=100-", 206, `bytes 100-${size - 1}/${size}`, 100, size],
-      ["bytes=-10", 206, `bytes ${size - 10}-${size - 1}/${size}`, size - 10, size],
       [`bytes=${size}-`, 416, `bytes */${size}`, 0, 0],
-      ["bytes=-0", 416, `bytes */${size}`, 0, 0],
-      ["bytes=0-1, 4-5", 200, null, 0, size],
     ] as const) {
       const response = await h.request(url, { headers: { range } });
       expect(response.status, range).toBe(status);
@@ -1110,7 +1108,6 @@ describe("GET /media/:token/:file", () => {
     // If-None-Match before Range (RFC 9110 13.2.2): a matching tag is 304 whatever the range.
     for (const [range, tag, status] of [
       ["bytes=-0", etag, 304],
-      [`bytes=${size}-`, etag, 304],
       ["bytes=0-9", etag, 304],
       ["bytes=-0", '"other"', 416],
     ] as const) {

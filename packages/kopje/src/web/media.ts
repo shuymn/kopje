@@ -55,18 +55,22 @@ export async function serveMedia(c: Context<{ Bindings: Env }>): Promise<Respons
     console.error({ event: "kopje.media.type_refused" });
     return NOT_FOUND();
   }
-  return new Response(object.body, {
-    headers: {
-      "content-type": type,
-      "content-length": String(object.size),
-      etag: object.httpEtag,
-      // A token names one set of files for good: they are replaced only by a new upload with a new token.
-      "cache-control": "public, max-age=31536000, immutable",
-      "x-content-type-options": "nosniff",
-      "content-security-policy": "default-src 'none'; sandbox",
-      "cross-origin-resource-policy": "cross-origin",
-      "access-control-allow-origin": "*",
-    },
+  const headers = mediaHeaders(object, type);
+  headers.set("content-length", String(object.size));
+  return new Response(object.body, { headers });
+}
+
+// The headers every media answer carries. A token names one set of files for good: they are replaced only by a new
+// upload with a new token, so a file is cached as immutable.
+function mediaHeaders(object: R2Object, type: string): Headers {
+  return new Headers({
+    "content-type": type,
+    etag: object.httpEtag,
+    "cache-control": "public, max-age=31536000, immutable",
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "default-src 'none'; sandbox",
+    "cross-origin-resource-policy": "cross-origin",
+    "access-control-allow-origin": "*",
   });
 }
 
@@ -107,16 +111,9 @@ export function byteRange(header: string | null): ByteRange | null {
 }
 
 function rangedHeaders(object: R2Object, type: string): Headers {
-  return new Headers({
-    "content-type": type,
-    etag: object.httpEtag,
-    "accept-ranges": "bytes",
-    "cache-control": "public, max-age=31536000, immutable",
-    "x-content-type-options": "nosniff",
-    "content-security-policy": "default-src 'none'; sandbox",
-    "cross-origin-resource-policy": "cross-origin",
-    "access-control-allow-origin": "*",
-  });
+  const headers = mediaHeaders(object, type);
+  headers.set("accept-ranges", "bytes");
+  return headers;
 }
 
 // Whether `range` selects no byte of an object of `size` bytes (RFC 9110 §14.1.1): an empty suffix, or a first byte

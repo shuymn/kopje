@@ -148,23 +148,24 @@ var frameCap = "trim=end_frame=" + strconv.Itoa(maxVideoFrames)
 // an audio stream that runs longer.
 func videoArgs(p *plan, t threading, in, out string) []string {
 	r := p.rung
-	var vf []string
+	vf := []string{frameCap}
 	switch {
 	case p.hdr:
-		vf = []string{iccDrop, tonemap}
+		vf = append(vf, iccDrop, tonemap)
 	case p.icc:
-		vf = []string{"iccdetect", toBT709, iccDrop}
-	case p.primaries:
-		vf = []string{toBT709, iccDrop}
-	case p.transfer:
-		vf = []string{trcToBT709, iccDrop}
+		vf = append(vf, "iccdetect", toBT709, iccDrop)
+	case p.primaries || p.transfer:
+		if p.matrix != "" {
+			vf = append(vf, "setparams=colorspace="+p.matrix)
+		}
+		if p.primaries {
+			vf = append(vf, toBT709, iccDrop)
+		} else {
+			vf = append(vf, trcToBT709, iccDrop)
+		}
 	default:
-		vf = []string{iccDrop}
+		vf = append(vf, iccDrop)
 	}
-	if p.matrix != "" && (p.primaries || p.transfer) && !p.hdr && !p.icc {
-		vf = append([]string{"setparams=colorspace=" + p.matrix}, vf...)
-	}
-	vf = append([]string{frameCap}, vf...)
 	fit := fmt.Sprintf("min(1,min(%d/max(iw,ih),%d/min(iw,ih)))", r.longEdge, r.shortEdge)
 	vf = append(vf,
 		fmt.Sprintf("scale=w='trunc(iw*%s/2)*2':h='trunc(ih*%s/2)*2':out_color_matrix=bt709:out_range=tv", fit, fit),
