@@ -5,10 +5,12 @@
 # and text). Inputs made here always follow the given ones: a WAV tone; a MOV of PNG frames that carry EXIF and text
 # chunks; a MOV of Display P3 PNG frames whose only colour tag is an ICC profile carrying a seeded marker; a MOV of
 # grayscale PNG frames with a gray ICC profile; an M4A with a 4096x4096 PNG cover and one with a 4096x4096 BMP cover;
-# a MOV of H.264 then PNG; and raw AAC.
+# a MOV of H.264 then PNG; raw AAC; one input per rung of the output ladder (3 s of 1080p60, 121 s of 1080p60 and
+# 600 s of 720p30, each with audio, scaled to 1920x1080 at 60 fps, 1280x720 at 30 fps and 852x480 at 30 fps); and
+# M4A, FLAC, Ogg, MP3 and Opus-only WebM audio.
 # One more input, an MP4 whose headers declare 320x240 but whose frames after the first are 4096x2160, is checked
-# apart: the decoder must refuse those frames (normalize keeps at most the first frame, and a still is the first
-# frame's 320x240), or the operation must fail.
+# apart: normalize refuses it (422 pixels: the decoder dropped the frames over the limit, so the output would be short
+# of the plan), and a still is the first frame's 320x240 or the operation fails.
 # Each input's kind (video or audio) is the fixture table's, never the server's Kopje-Kind: a given input's is its
 # `video:` or `audio:` prefix, else its extension's. Each operation is checked on its own: HTTP 200, Kopje-Kind equal
 # to the expected kind, the exact Content-Type (video/mp4 or audio/mpeg, image/png for a still), a Content-Length
@@ -17,14 +19,26 @@
 # stills always run. A still has only image chunks (no eXIf, tEXt, iTXt, zTXt or tIME) and no marker in its ICC
 # profile, and the P3 input's stills render (the pinned ffmpeg: iccdetect, then zscale to sRGB; an untagged PNG as
 # sRGB) within 2 of the source frame's rendered sample in each channel, and its normalized video's first frame decoded
-# as BT.709 within 4. Normalize has a duration within 0.5 s of the input's. Prints a Markdown table with the server's
-# stage times and the wall time this script saw, and exits 1 when a check failed. Needs docker, node and python3.
+# as BT.709 within 4. Normalize has a duration within 0.5 s of the input's; each rung's output has the rung's geometry
+# and frame rate, and the 600 s one an SSIM of at least MIN_SSIM_480P against its source scaled to 852x480; a 1200 s
+# MP3 input gives an MP3 at exactly AUDIO_DURATION_LIMIT.
+# Decoded content (design #1828 4.11): a 128x72 frame with a white marker in its top-left corner, stored rotated by
+# 90, 180 and 270 degrees with the display matrix that turns it upright, decodes from normalize upright with the marker
+# top left; HLG and PQ frames of a black and a reference-white patch decode as BT.709 with the black at most 24 and the
+# white within 150-235 in luma, its chroma within 12 of neutral; a VFR input, audio longer than video and an MP4 whose
+# mvhd states 1 s or 10 s over 3 s of streams give an output whose streams decode as long as the input's, within
+# 0.15 s.
+# Every output and still of these runs is kept and then verified by Kopje's own verifier (src/platform/av-bytes.ts,
+# test/av-fresh/), with each output held to its input's duration. Prints a Markdown table with the server's
+# stage times and the wall time this script saw, and exits 1 when a check failed. Needs docker, node, pnpm (the
+# workspace installed) and python3.
 #
 #   bash packages/kopje/scripts/container-smoke.sh [--build] <image tag> [<input>...]
 #     --build  builds packages/kopje/container into the tag first
 #     inputs   [video:|audio:]<path>; default: packages/kopje/container/probe.mp4
 #   CPUS (default 2, standard-3's vCPUs) and MEMORY (default 8g) size the container; ENCODE_MS (default 600000) is
-#   the encode stage time normalize is given.
+#   the encode stage time normalize is given; MIN_SSIM_480P (default 0.95; the noisy input measured 0.990) the
+#   480p30 quality floor.
 set -euo pipefail
 
 pkg="$(cd "$(dirname "$0")/.." && pwd)"
@@ -42,6 +56,7 @@ ffmpeg_image="$(sed -n 's/^FROM \(mwader\/static-ffmpeg[^ ]*\) AS ffmpeg$/\1/p' 
 CPUS="${CPUS:-2}"
 MEMORY="${MEMORY:-8g}"
 ENCODE_MS="${ENCODE_MS:-600000}"
+MIN_SSIM_480P="${MIN_SSIM_480P:-0.95}"
 work="$(mktemp -d "${TMPDIR:-/tmp}/kopje-container-smoke.XXXXXX")"
 name="kopje-media-smoke-$$"
 cleanup() {
@@ -145,6 +160,25 @@ ffm -f lavfi -i testsrc2=s=320x240:d=0.04:r=25 -c:v libx264 -f h264 small.h264
 ffm -f lavfi -i testsrc2=s=4096x2160:d=1:r=25 -c:v libx264 -preset ultrafast -f h264 big.h264
 cat "$work/fixture/small.h264" "$work/fixture/big.h264" >"$work/fixture/lie.h264"
 ffm -r 25 -f h264 -i lie.h264 -c copy lie.mp4
+# One input per rung (testsrc2 with seeded temporal noise, so the encoder has detail to keep) with a stereo tone, and
+# the audio types. The rung inputs are capped at 1 Mbit/s, which keeps the 600 s one under the upload limit (90 MiB).
+noisy() { echo "testsrc2=s=$1:r=$2:d=$3,noise=alls=10:allf=t:all_seed=1"; }
+ffm -f lavfi -i "$(noisy 1920x1080 60 3)" -f lavfi -i sine=d=3:sample_rate=48000 -ac 2 -c:v libx264 -preset ultrafast \
+  -b:v 1M -maxrate 1M -bufsize 2M -c:a aac rung1.mp4
+ffm -f lavfi -i "$(noisy 1920x1080 60 121)" -f lavfi -i sine=d=121:sample_rate=48000 -ac 2 -c:v libx264 -preset ultrafast \
+  -b:v 1M -maxrate 1M -bufsize 2M -c:a aac rung2.mp4
+ffm -f lavfi -i "$(noisy 1280x720 30 600)" -f lavfi -i sine=d=600:sample_rate=44100 -ac 2 -c:v libx264 -preset ultrafast \
+  -b:v 1M -maxrate 1M -bufsize 2M -c:a aac rung3.mp4
+ffm -f lavfi -i sine=d=3 -c:a aac tone.m4a
+ffm -f lavfi -i sine=d=3 -ac 2 -c:a flac tone.flac
+ffm -f lavfi -i sine=d=3:sample_rate=48000 -ac 2 -c:a libvorbis tone.ogg
+ffm -f lavfi -i sine=d=3 -c:a libmp3lame tone.mp3
+ffm -f lavfi -i sine=d=3:sample_rate=48000 -c:a libopus tone.webm
+# Exactly AUDIO_DURATION_LIMIT: the MP3 holds LAME's delay and padding past it, which are not presented (#1828 A7).
+ffm -f lavfi -i sine=d=1200 -c:a libmp3lame cap1200.mp3
+inputs+=("$work/fixture/rung1.mp4" "$work/fixture/rung2.mp4" "$work/fixture/rung3.mp4" "audio:$work/fixture/tone.m4a"
+  "audio:$work/fixture/tone.flac" "audio:$work/fixture/tone.ogg" "audio:$work/fixture/tone.mp3"
+  "audio:$work/fixture/tone.webm" "audio:$work/fixture/cap1200.mp3")
 inputs+=("audio:$work/fixture/tone.wav" "video:$work/fixture/exif.mov" "video:$work/fixture/p3.mov"
   "video:$work/fixture/gray.mov" "audio:$work/fixture/cover.m4a" "audio:$work/fixture/cover-bmp.m4a" "video:$work/fixture/twostream.mov"
   "audio:$work/fixture/tone.aac")
@@ -209,6 +243,29 @@ near() { # <a> <b> [<tolerance>]
   }'
 }
 now_ms() { node -e 'console.log(Date.now())'; }
+# Outputs kept for Kopje's verifier, and its list: keep <output file in $work/out> <name> <type> [<duration>].
+fresh="$work/fresh"
+mkdir -p "$fresh"
+fresh_list=()
+keep() {
+  [ -f "$work/out/$1" ] || return 0
+  cp "$work/out/$1" "$fresh/$2"
+  fresh_list+=("{\"file\": \"$2\", \"type\": \"$3\"${4:+, \"expectedDuration\": $4}}")
+}
+# The luma (and chroma) of an 8x8 block of a file's first frame, decoded as BT.709: "y" or "y u v".
+block() { # <dir> <file> <x> <y> [yuv]
+  local fmt=gray
+  [ "${5:-}" = yuv ] && fmt=yuv444p
+  docker run --rm --network none -v "$1:/p:ro" --entrypoint /ffmpeg "$ffmpeg_image" -v quiet -i "/p/$2" \
+    -vf "crop=8:8:$3:$4,scale=1:1:flags=area,format=$fmt" -frames:v 1 -f rawvideo - | od -An -tu1 | xargs
+}
+# The decoded length of a file's stream (v or a): the end of its last frame.
+decoded() { # <dir> <file> <v|a>
+  docker run --rm --network none -v "$1:/p:ro" --entrypoint /ffprobe "$ffmpeg_image" -v error -select_streams "$3:0" \
+    -show_entries frame=pts_time,duration_time -of csv=p=0 "/p/$2" |
+    awk -F, '$1 != "" { e = $1 + ($2 == "" ? 0 : $2); if (e > m) m = e } END { printf "%.3f", m }'
+}
+within() { awk -v a="$1" -v b="$2" -v t="$3" 'BEGIN{d=a-b; print (d*d <= t*t) ? "true" : "false"}'; }
 
 for _ in $(seq 1 100); do
   if [ "$(status "$(req healthz http://127.0.0.1:8080/healthz 2>/dev/null || true)")" = 200 ]; then
@@ -296,12 +353,41 @@ for entry in "${inputs[@]}"; do
     check "$(awk -v a="$got" -v b="$expected" 'BEGIN{d=a-b; print (a>0 && d*d<0.25) ? "true" : "false"}')" \
       "$base normalize: duration $got, input $expected"
     checks="$checks ${got%.*}s"
+    if [ "$want" = video ]; then
+      keep "$base.normalized" "$base.mp4" video/mp4 "$expected"
+    else
+      keep "$base.normalized" "$base.mp3" audio/mpeg "$expected"
+    fi
+    # Each rung's geometry and frame rate.
+    rung=""
+    case "$base" in
+      rung1.mp4) rung="1920,1080,60/1" ;;
+      rung2.mp4) rung="1280,720,30/1" ;;
+      rung3.mp4) rung="852,480,30/1" ;;
+    esac
+    if [ -n "$rung" ]; then
+      geometry="$(ffprobe -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 \
+        "/o/$base.normalized")"
+      check "$([ "$geometry" = "$rung" ] && echo true)" "$base normalize: $geometry, want $rung"
+      checks="$checks $geometry"
+    fi
+    if [ "$base" = rung3.mp4 ]; then
+      # 480p30 quality at 600 s (design 4.11): SSIM against the source scaled as normalize scales it.
+      ssim="$(docker run --rm --network none -v "$work/out:/o:ro" -v "$work/in:/i:ro" --entrypoint /ffmpeg \
+        "$ffmpeg_image" -nostats -i "/o/$base.normalized" -i "/i/$base" \
+        -lavfi '[1:v]scale=852:480:flags=bicubic,setsar=1[ref];[0:v][ref]ssim' -f null - 2>&1 |
+        sed -n 's/.*SSIM .* All:\([0-9.]*\).*/\1/p')"
+      check "$(awk -v s="$ssim" -v m="$MIN_SSIM_480P" 'BEGIN{print (s != "" && s >= m) ? "true" : "false"}')" \
+        "$base normalize: SSIM $ssim, want at least $MIN_SSIM_480P"
+      checks="$checks SSIM $ssim"
+    fi
   fi
   row "$base" "normalize ($kind)" "$(status "$h")" "$wall" "$h" "$(size "$base.normalized")" "$checks"
 
   if [ "$want" = video ]; then
     h="$(req "$base.still.png" http://127.0.0.1:8080/normalize/still)"
     verify "$base normalize/still" "$base.still.png" "$h" image/png png
+    [ "$(status "$h")" = 200 ] && keep "$base.still.png" "$base.still.png" image/png
     row "$base" "normalize/still" "$(status "$h")" 0 "$h" "$(size "$base.still.png")" "$checks"
 
     t0="$(now_ms)"
@@ -309,6 +395,7 @@ for entry in "${inputs[@]}"; do
       http://127.0.0.1:8080/still)"
     wall=$(($(now_ms) - t0))
     verify "$base still" "$base.png" "$h" image/png png
+    [ "$(status "$h")" = 200 ] && keep "$base.png" "$base.png" image/png
     if [ "$(status "$h")" = 200 ]; then
       dims="$(ffprobe -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "/o/$base.png")"
       check "$(awk -F, '{print ($1 <= 640 && $2 <= 640) ? "true" : "false"}' <<<"$dims")" "$base still: $dims"
@@ -334,22 +421,95 @@ for entry in "${inputs[@]}"; do
   rm -f "$work/in/$base" "$work/out/$base".*
 done
 
-# lie.mp4: no frame over the pixel limit is decoded, whatever its headers declared.
-cp "$work/fixture/lie.mp4" "$work/in/lie.mp4"
-h="$(req lie.normalized -X POST --data-binary @/in/lie.mp4 -H 'Content-Type: application/octet-stream' \
-  "http://127.0.0.1:8080/normalize?probe_ms=10000&encode_ms=$ENCODE_MS")"
-got="$(status "$h") $(header Kopje-Error "$h")"
-if [ "$(status "$h")" = 200 ]; then
-  got="$(status "$h"), $(ffprobe -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 \
-    /o/lie.normalized) frames"
-  check "$([ "$got" = "200, 1 frames" ] && echo true)" "lie.mp4 normalize: $got, want at most the first frame"
-  h="$(req lie.still.png http://127.0.0.1:8080/normalize/still)"
-  if [ "$(status "$h")" = 200 ]; then
-    dims="$(ffprobe -show_entries stream=width,height -of csv=p=0 /o/lie.still.png)"
-    check "$([ "$dims" = 320,240 ] && echo true)" "lie.mp4 normalize/still: $dims, want the first frame's 320,240"
-    got="$got; still $dims"
+# Decoded content (design #1828 4.11). normalize <input in $work/in> <output name>: the status, keeping a 200's output.
+normalize() {
+  local h
+  h="$(req "$2" -X POST --data-binary "@/in/$1" -H 'Content-Type: application/octet-stream' \
+    "http://127.0.0.1:8080/normalize?probe_ms=10000&encode_ms=$ENCODE_MS")"
+  echo "$(status "$h") $(header Kopje-Error "$h")"
+}
+# The marker: 128x72 black with a white 16x16 square top left, stored rotated with the matrix that shows it upright.
+ffm -f lavfi -i "color=c=black:s=128x72:r=30:d=2,drawbox=x=0:y=0:w=16:h=16:c=white:t=fill" -c:v libx264 upright.mp4
+for turn in "90 transpose=clock" "180 hflip,vflip" "270 transpose=cclock"; do
+  read -r degrees filter <<<"$turn"
+  dims=""
+  ffm -i upright.mp4 -vf "$filter" -c:v libx264 "stored$degrees.mp4"
+  ffm -display_rotation:v:0 "$degrees" -i "stored$degrees.mp4" -c copy "/f/rotated$degrees.mp4"
+  cp "$work/fixture/rotated$degrees.mp4" "$work/in/"
+  got="$(normalize "rotated$degrees.mp4" "rotated$degrees.out")"
+  marks="-"
+  if [ "${got% *}" = 200 ]; then
+    dims="$(ffprobe -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "/o/rotated$degrees.out")"
+    marks="$(block "$work/out" "rotated$degrees.out" 0 0) $(block "$work/out" "rotated$degrees.out" 120 0)"
+    marks="$marks $(block "$work/out" "rotated$degrees.out" 0 64) $(block "$work/out" "rotated$degrees.out" 120 64)"
+    keep "rotated$degrees.out" "rotated$degrees.mp4" video/mp4 2
+    got="$got, $dims, corners $marks"
   fi
-fi
+  check "$(awk -v m="$marks" -v d="${dims:-}" 'BEGIN{n = split(m, c, " ");
+    print (d == "128,72" && n == 4 && c[1] > 180 && c[2] < 60 && c[3] < 60 && c[4] < 60) ? "true" : "false"}')" \
+    "rotated$degrees.mp4: $got, want 128,72 with the marker top left"
+  echo "| rotated$degrees.mp4 | normalize | $got | | | | | | | | |"
+done
+# HLG and PQ: left half black (code 64), right half reference white (HLG 75 %: 721; PQ 203 cd/m2: 573), 10-bit
+# BT.2020, the tags on the frames and in a colr box, as a camera writes them.
+for hdr in "arib-std-b67 721 hlg" "smpte2084 573 pq"; do
+  read -r trc white label <<<"$hdr"
+  ffm -f lavfi -i "nullsrc=s=128x72:r=30:d=2,format=yuv420p10le,geq=lum='if(lt(X,64),64,$white)':cb=512:cr=512,setparams=color_primaries=bt2020:color_trc=$trc:colorspace=bt2020nc" \
+    -c:v libx265 -preset superfast -pix_fmt yuv420p10le -x265-params log-level=error -tag:v hvc1 -movflags +write_colr \
+    "$label.mp4"
+  cp "$work/fixture/$label.mp4" "$work/in/"
+  got="$(normalize "$label.mp4" "$label.out")"
+  black="-" patch="- - -"
+  if [ "${got% *}" = 200 ]; then
+    black="$(block "$work/out" "$label.out" 24 32)"
+    patch="$(block "$work/out" "$label.out" 96 32 yuv)"
+    keep "$label.out" "$label.mp4" video/mp4 2
+    got="$got, black $black, white $patch"
+  fi
+  check "$(awk -v b="$black" -v p="$patch" 'BEGIN{split(p, w, " ");
+    print (b <= 24 && w[1] >= 150 && w[1] <= 235 && (w[2]-128)^2 <= 144 && (w[3]-128)^2 <= 144) ? "true" : "false"}')" \
+    "$label.mp4: $got, want black <= 24 and white 150-235 in luma, its chroma within 12 of 128"
+  echo "| $label.mp4 | normalize | $got | | | | | | | | |"
+done
+# Durations: VFR (30 fps for a second, then 10 fps), audio (4 s) longer than video (2 s), and an mvhd of 1 s and of
+# 10 s over 3 s of streams.
+ffm -f lavfi -i "testsrc2=s=128x72:r=30:d=3,select='lt(n\,30)+not(mod(n\,3))'" -fps_mode vfr -c:v libx264 vfr.mp4
+ffm -f lavfi -i testsrc2=s=128x72:r=30:d=2 -f lavfi -i sine=d=4 -c:v libx264 -c:a aac longaudio.mp4
+ffm -f lavfi -i testsrc2=s=128x72:r=30:d=3 -f lavfi -i sine=d=3 -c:v libx264 -c:a aac -movflags +faststart header.mp4
+python3 -I - "$work/fixture/header.mp4" <<'PY'
+import struct, sys
+b = open(sys.argv[1], "rb").read()
+i = b.index(b"mvhd")
+scale = struct.unpack(">I", b[i + 16 : i + 20])[0]
+for name, seconds in (("header-short.mp4", 1), ("header-long.mp4", 10)):
+    out = bytearray(b)
+    out[i + 20 : i + 24] = struct.pack(">I", seconds * scale)
+    open(sys.argv[1].replace("header.mp4", name), "wb").write(out)
+PY
+for case in vfr.mp4 longaudio.mp4 header-short.mp4 header-long.mp4; do
+  cp "$work/fixture/$case" "$work/in/"
+  got="$(normalize "$case" "$case.out")"
+  ok=false
+  if [ "${got% *}" = 200 ]; then
+    ok=true
+    for stream in v a; do
+      want="$(decoded "$work/in" "$case" "$stream")"
+      have="$(decoded "$work/out" "$case.out" "$stream")"
+      [ "$want" = 0.000 ] && [ "$have" = 0.000 ] && continue
+      [ "$(within "$have" "$want" 0.15)" = true ] || ok=false
+      got="$got, $stream $have s (input $want s)"
+    done
+    keep "$case.out" "$case" video/mp4 "$(decoded "$work/in" "$case" v)"
+  fi
+  check "$ok" "$case: $got, want 200 with each stream as long as the input's"
+  echo "| $case | normalize | $got | | | | | | | | |"
+done
+
+# lie.mp4: no frame over the pixel limit is decoded, whatever its headers declared, and the short output that would
+# leave is refused as the input's (422 pixels).
+cp "$work/fixture/lie.mp4" "$work/in/lie.mp4"
+got="$(normalize lie.mp4 lie.normalized)"
+check "$([ "$got" = "422 pixels" ] && echo true)" "lie.mp4 normalize: $got, want 422 pixels"
 echo "| lie.mp4 | normalize | $got | | | | | | | | |"
 h="$(req lie.png -X POST --data-binary @/in/lie.mp4 -H 'Content-Type: application/octet-stream' \
   http://127.0.0.1:8080/still)"
@@ -370,4 +530,13 @@ for case in "over-cap.bin 413 too_large" "text.txt 422 unreadable"; do
   check "$([ "$got" = "$want $code_want" ] && echo true)" "$file: $got, want $want $code_want"
   echo "| $file | normalize | $(status "$h") | | | | | | | | $(header Kopje-Error "$h") |"
 done
+
+# Kopje's verifier on every output and still kept above.
+(IFS=,; printf '[%s]\n' "${fresh_list[*]}") >"$fresh/list.json"
+if ! (cd "$pkg" && AV_FRESH_LIST="$fresh/list.json" pnpm exec vitest run -c vitest.av-fresh.config.ts --max-workers=2 \
+  --silent=false >"$work/verifier.log" 2>&1); then
+  cat "$work/verifier.log" >&2
+  check false "the output verifier refused fresh output (above)"
+fi
+echo "| ${#fresh_list[@]} outputs and stills | verifier | $(grep -cE '^[^ ]+\.(mp4|mp3) \{"kind"' "$work/verifier.log") verified | | | | | | | | |"
 exit "$failed"

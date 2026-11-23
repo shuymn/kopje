@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
+import { avFixtures } from "./test-node/av-fixtures";
 import { imageFacts } from "./test-node/image-facts";
 import { sqlDepthService } from "./test-node/sql-depth";
 import { webPageFixtures } from "./test-node/web-page-fixtures";
@@ -22,7 +23,9 @@ export default defineConfig({
         // Measures the expression depth of the statements a suite ran, on Node (test/sql-depth-setup.ts).
         // Compressed web pages with exact bytes, fetched through workerd (test-node/web-page-fixtures.ts).
         // An independent image reader and fixture maker for the remote media suites (test-node/image-facts.ts).
+        // The media processor's committed outputs (test-node/av-fixtures.ts).
         serviceBindings: {
+          AV_FIXTURES: { node: avFixtures },
           SQL_DEPTH: sqlDepthService,
           WEB_PAGE_FIXTURES: { node: webPageFixtures },
           IMAGE_FACTS: { node: imageFacts },
@@ -42,10 +45,12 @@ export default defineConfig({
     ],
     include: [fileURLToPath(new URL("./test/**/*.test.ts", import.meta.url))],
     // The streaming suites run in a project of their own, in one worker (vitest.streaming.config.ts), and so do the
-    // comparisons with main's statements, on the runtime that prepares them (vitest.main-runtime.config.ts).
+    // comparisons with main's statements, on the runtime that prepares them (vitest.main-runtime.config.ts), and the
+    // output verifier's run on fresh image output, which only the CI container job makes (vitest.av-fresh.config.ts).
     exclude: [
       fileURLToPath(new URL("./test/streaming/**", import.meta.url)),
       fileURLToPath(new URL("./test/main-runtime/**", import.meta.url)),
+      fileURLToPath(new URL("./test/av-fresh/**", import.meta.url)),
     ],
     setupFiles: [
       fileURLToPath(new URL("./test/sql-depth-setup.ts", import.meta.url)),

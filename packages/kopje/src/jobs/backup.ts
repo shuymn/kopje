@@ -69,7 +69,7 @@ export const WORK_BYTES = 512 * MIB;
 const MEDIA_PAGE = 100;
 export const MAX_MEDIA_PER_RUN = 2000;
 // Originals are at most 16 MiB (platform/images.ts); anything far larger is not a Kopje upload.
-const MAX_MEDIA_BYTES = 64 * MIB;
+export const MAX_MEDIA_BYTES = 64 * MIB;
 const RETRY_MS = 60 * 60 * 1000;
 // Invocations that may die holding one run before it is recorded as failed.
 const MAX_ATTEMPTS = 3;
