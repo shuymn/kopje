@@ -24,6 +24,8 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ### Fixed
 
+- Cached remote media answers 304 to a matching `If-None-Match` whatever its `Range`, as RFC 9110 orders them; an
+  unsatisfiable range answered 416.
 - A video or gifv from another server that comes without a preview image is playable in clients such as Elk: its
   `preview_url` was the video file itself, which a client fetched whole as an image poster and could not show. It is
   now `/assets/video-poster.png`, a plain dark image (Kopje cannot take a frame from a video), and an audio file without
