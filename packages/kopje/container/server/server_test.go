@@ -560,6 +560,9 @@ func TestTheProbeDiscoversOnlyWithoutADeclaredDuration(t *testing.T) {
 // Headers that leave the video's dimensions or frame rate unknown (0) send the probe to discovery, and the limits apply
 // to what discovery found: an input it still leaves unknown is refused, one over a limit is refused by that limit.
 func TestUnknownVideoHeadersAreDiscoveredThenLimited(t *testing.T) {
+	// A VFR clip's header: no r_frame_rate, an average under the limit.
+	averageOnly := stream("video", "h264", 320, 240, "0/0", "2")
+	averageOnly.AvgFrameRate = "98/1"
 	cases := []struct {
 		name               string
 		header, discovered probeStream
@@ -570,6 +573,8 @@ func TestUnknownVideoHeadersAreDiscoveredThenLimited(t *testing.T) {
 		{"no frame rate", stream("video", "h264", 320, 240, "0/0", "2"), stream("video", "h264", 320, 240, "15/1", "2"), 200, ""},
 		{"still no dimensions", stream("video", "h264", 0, 0, "15/1", "2"), stream("video", "h264", 0, 0, "15/1", "2"), 422, "no_video"},
 		{"still no frame rate", stream("video", "h264", 320, 240, "0/0", "2"), stream("video", "h264", 320, 240, "0/0", "2"), 422, "fps"},
+		{"an average rate only", averageOnly, stream("video", "h264", 320, 240, "240/1", "2"), 422, "fps"},
+		{"still an average rate only", averageOnly, averageOnly, 422, "fps"},
 		{"larger than declared", stream("video", "h264", 0, 0, "15/1", "2"), stream("video", "h264", 3840, 2161, "15/1", "2"), 422, "pixels"},
 	}
 	for _, c := range cases {

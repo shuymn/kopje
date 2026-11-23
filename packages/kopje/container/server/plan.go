@@ -101,19 +101,23 @@ func iccIn(list []sideData) bool {
 }
 
 // needsDiscovery: the headers leave a limit unknown, so the probe runs again with stream discovery and the limits apply
-// to what it found: no duration is declared, or the video stream declares no dimensions or no frame rate. An input
-// that still leaves one unknown is refused by planVideo, planAudio or the still's checks.
+// to what it found: no duration is declared, or the video stream declares no dimensions or no r_frame_rate (the
+// highest rate a stream can reach; avg_frame_rate can hide a VFR peak, so it does not stand in). An input that still
+// leaves one unknown is refused by planVideo, planAudio or the still's checks.
 func needsDiscovery(p *probeResult) bool {
 	if !declaresDuration(p) {
 		return true
 	}
 	video, _ := selectStreams(p)
-	return video != nil && (video.Width <= 0 || video.Height <= 0 || frameRate(video) == 0)
+	return video != nil && (video.Width <= 0 || video.Height <= 0 || parseRate(video.RFrameRate) == 0)
 }
 
 // frameRate is the larger of the stream's declared rates (VFR and contradictory headers count at their largest); 0
-// when it declares neither.
+// when it declares no r_frame_rate, which the limit needs.
 func frameRate(video *probeStream) float64 {
+	if parseRate(video.RFrameRate) == 0 {
+		return 0
+	}
 	return math.Max(parseRate(video.RFrameRate), parseRate(video.AvgFrameRate))
 }
 

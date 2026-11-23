@@ -74,6 +74,11 @@ func TestPlanRefusesOutsideTheLimits(t *testing.T) {
 		{"over 120 fps", video(640, 480, "121/1", "10", ""), refuseFPS},
 		{"at 120 fps", video(640, 480, "120/1", "10", ""), ""},
 		{"no frame rate", video(640, 480, "0/0", "10", ""), refuseFPS},
+		{"an average rate only", func() *probeResult {
+			p := video(640, 480, "0/0", "10", "")
+			p.Streams[0].AvgFrameRate = "98/1"
+			return p
+		}(), refuseFPS},
 		{"over 600 s", video(640, 480, "24/1", "600.001", ""), refuseDuration},
 		{"at 600 s", video(640, 480, "24/1", "600", ""), ""},
 		{"over 36,000 frames by duration and rate", video(640, 480, "100/1", "400", ""), refuseFrames},
