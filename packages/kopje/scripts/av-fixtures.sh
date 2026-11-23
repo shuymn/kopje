@@ -28,6 +28,7 @@
 #   m4a, flac, ogg, mp3, wav, aac
 #                 3 s audio in each container: mono 44.1 kHz, the FLAC stereo, the Ogg stereo at 48 kHz, the WAV at
 #                 8 kHz (resampled to 48 kHz), the AAC raw ADTS (its priming decoded: a LAME padding over one frame)
+#   m2            3 s mono 24 kHz AAC in M4A: MPEG-2 Layer III, 576 samples a frame
 set -euo pipefail
 
 pkg="$(cd "$(dirname "$0")/.." && pwd)"
@@ -83,6 +84,7 @@ h264() { echo -c:v libx264 -preset veryfast -pix_fmt yuv420p; }
   ff -f lavfi -i "$(video 160x90 30 3),select='lt(n\,30)+not(mod(n\,3))'" -fps_mode vfr $(h264) vfr.mp4
   ff -f lavfi -i "$(tone 3)" -c:a libopus opus.webm
   ff -f lavfi -i "$(tone 3 44100)" -c:a aac m4a.m4a
+  ff -f lavfi -i "$(tone 3 24000)" -c:a aac m2.m4a
   ff -f lavfi -i "$(tone 3 44100),aformat=channel_layouts=stereo" -c:a flac flac.flac
   ff -f lavfi -i "$(tone 3 48000),aformat=channel_layouts=stereo" -c:a libvorbis ogg.ogg
   ff -f lavfi -i "$(tone 3 44100)" -c:a libmp3lame mp3.mp3

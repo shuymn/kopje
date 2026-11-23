@@ -35,6 +35,13 @@
     "sha256": "8932ac60386d79b031b1f1905d641feaefa87b4ffcb3064ed976d3307b67cb32"
   },
   {
+    "name": "m2.mp3",
+    "input": "m2.m4a",
+    "kind": "audio",
+    "bytes": 10272,
+    "sha256": "ce8df3666d46f274baa88a1541ed0e3358530049f65c3ea7d64486476340d513"
+  },
+  {
     "name": "m4a.mp3",
     "input": "m4a.m4a",
     "kind": "audio",

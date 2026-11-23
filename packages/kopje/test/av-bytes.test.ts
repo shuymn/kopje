@@ -97,6 +97,7 @@ describe("the shipped image's outputs", () => {
         "cap-48k.mp4",
         "flac.mp3",
         "hlg.mp4",
+        "m2.mp3",
         "m4a.mp3",
         "mp3.mp3",
         "ogg.mp3",
@@ -837,6 +838,15 @@ const MP3_MUTATIONS: Mutation[] = [
     make: async () => refreshXing(patch(await mp3("flac.mp3"), 36, [0x56, 0x42, 0x52, 0x49])),
   },
   {
+    // An untagged stream states no delay or padding, so no presented duration to hold at the limit.
+    name: "no Xing/Info frame, the audio frames alone",
+    rule: "mp3_frame",
+    make: async () => {
+      const f = await mp3();
+      return f.slice(xingLayout(f).frame);
+    },
+  },
+  {
     name: "a LAME delay other than 576",
     rule: "xing",
     make: async () => {
@@ -953,6 +963,17 @@ describe("an MP3 changed in one field", () => {
     const facts = await verifyBytes("audio/mpeg", atLimit);
     expect(facts.ok && facts.facts.duration).toBe(AUDIO_DURATION_LIMIT);
     expect(await rule("audio/mpeg", withPadding(repeatedMp3(f, frames + 1), 1151))).toBe("duration_limit");
+  });
+
+  it("counts an MPEG-2 Layer III frame as 576 samples of presented time", async () => {
+    // The image's MP3 of 24 kHz audio: MPEG-2, 576 samples a frame. 50,001 frames less the delay 576 and a padding of
+    // 0 present exactly AUDIO_DURATION_LIMIT; one frame more with a padding of 575 is a sample over.
+    const f = await mp3("m2.mp3");
+    expect((f[1] ?? 0) & 0x18).toBe(0x10);
+    const frames = (AUDIO_DURATION_LIMIT * 24_000 + 576) / 576;
+    expect(frames).toBe(50_001);
+    expect(await rule("audio/mpeg", withPadding(repeatedMp3(f, frames), 0))).toBe("accepted");
+    expect(await rule("audio/mpeg", withPadding(repeatedMp3(f, frames + 1), 575))).toBe("duration_limit");
   });
 
   it("is refused for a length other than its Content-Length, or over AV_OUTPUT_LIMIT", async () => {

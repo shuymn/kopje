@@ -1458,6 +1458,7 @@ class Mp3Walker implements Walker<Omit<AudioFacts, "sha256">> {
       return this.firstFrame(chunk, i);
     }
     if (this.frameLeft > 0) {
+      // A frame's contents, ancillary data included, are not parsed: LAME writes its version string there (C2).
       const n = Math.min(chunk.length - i, this.frameLeft);
       this.musicCrc = crc16(this.musicCrc, chunk.subarray(i, i + n));
       this.frameLeft -= n;
