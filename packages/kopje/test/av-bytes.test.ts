@@ -751,6 +751,10 @@ describe("a synthetic MP4", () => {
     const hd = withSps(await avFixture("r1-silent.mp4"), sps({ widthMbs: 80, heightMbs: 45, level: 40 }), 1280, 720);
     expect(await verify({ samples: 9003, size: 6, delta: 512 }, hd)).toBe("accepted");
     expect(await verify({ samples: 8968, size: 6, delta: 514 }, hd)).toBe("geometry");
+    // A track starting 500 ms late: the rung is its presented span's (120,100 ms), not mvhd's 120,600 ms, as plan.go
+    // takes the longest stream's duration without its start.
+    expect(await verify({ samples: 7206, size: 6, delta: 256, delayMs: 500 })).toBe("accepted");
+    expect(await verify({ samples: 7178, size: 6, delta: 257, delayMs: 500 })).toBe("frame_rate");
   });
 
   it("is refused at a small moov declaring a huge sample count, before its tables are expanded", async () => {

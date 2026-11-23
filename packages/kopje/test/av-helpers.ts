@@ -318,11 +318,12 @@ export function withSps(file: Uint8Array, nal: Uint8Array, width: number, height
 // ---- Synthetic MP4
 
 // A video-only MP4 from a silent fixture's moov: `samples` samples of `size` bytes, each one non-IDR slice NAL
-// filling it, `delta` ticks apart at the track's timescale, in one chunk; `fixed` writes one stsz size for all. Its mdat is generated as it is read, so a
+// filling it, `delta` ticks apart at the track's timescale, in one chunk; `fixed` writes one stsz size for all, and
+// `delayMs` a leading empty edit of that many movie ticks (the track starting late). Its mdat is generated as it is read, so a
 // large one is never held. Returns the stream factory and the length.
 export function syntheticMp4(
   template: Uint8Array,
-  shape: { samples: number; size: number; delta: number; timescale?: number; fixed?: boolean },
+  shape: { samples: number; size: number; delta: number; timescale?: number; fixed?: boolean; delayMs?: number },
 ): { length: number; stream: (chunk?: number) => ReadableStream<Uint8Array>; head: Uint8Array } {
   const { samples, size, delta } = shape;
   let head = new Uint8Array();
@@ -337,9 +338,13 @@ export function syntheticMp4(
         const timescale = shape.timescale ?? view(mdhd.body as Uint8Array).getUint32(12);
         setBody(mdhd, 12, [...u32(timescale), ...u32(samples * delta)]);
         const movie = Math.round((samples * delta * 1000) / timescale);
-        setBody(find(moov, "mvhd"), 16, u32(movie));
-        setBody(find(trak, "tkhd"), 20, u32(movie));
-        setBody(find(trak, "edts/elst"), 8, [...u32(movie), ...u32(0), ...u32(0x10000)]);
+        const delay = shape.delayMs ?? 0;
+        setBody(find(moov, "mvhd"), 16, u32(delay + movie));
+        setBody(find(trak, "tkhd"), 20, u32(delay + movie));
+        const empty = delay > 0 ? [...u32(delay), ...u32(0xffffffff), ...u32(0x10000)] : [];
+        find(trak, "edts").children = [
+          box("elst", [...u32(0), ...u32(delay > 0 ? 2 : 1), ...empty, ...u32(movie), ...u32(0), ...u32(0x10000)]),
+        ];
         stbl.children = (stbl.children ?? [])
           .filter((c) => c.type !== "ctts")
           .map((c) => {

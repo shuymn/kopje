@@ -33,8 +33,8 @@
 //              mvhd, every tkhd and every track's presented samples (mdhd less the media edit's media time) within
 //              VIDEO_DURATION_LIMIT.
 //   tables     equal sample counts; at most VIDEO_SAMPLE_LIMIT video samples; chunk offsets inside the mdat, the
-//              samples tiling it exactly; frame rate and geometry within the caps of the ladder's rung for mvhd's
-//              duration (OUTPUT_LADDER, with RUNG_SLACK_MS).
+//              samples tiling it exactly; frame rate and geometry within the caps of the ladder's rung for the longest
+//              track's media edit (OUTPUT_LADDER, with RUNG_SLACK_MS).
 //   payload    each video sample is length-prefixed NAL units of types 1 and 5 filling it. AAC and MP3 frame data are
 //              not parsed (design section 6, residual 1).
 // MP3: no ID3v2, ID3v1, APE, Lyrics3 or VBRI; a first Xing/Info frame whose LAME fields are fixed or derived (its frame
@@ -65,8 +65,9 @@ export const AUDIO_SAMPLE_LIMIT = Math.ceil((VIDEO_DURATION_LIMIT * 48_000 + AAC
 export const FRAME_RATE_LIMIT = 60;
 export const OUTPUT_LONG_EDGE = 1920;
 export const OUTPUT_SHORT_EDGE = 1080;
-// plan.go's ladder: the first rung whose duration takes the output's gives its caps. plan.go picks it by the source's
-// duration, which the output may run past by a 30 fps frame and an AAC frame (at 44.1 kHz): RUNG_SLACK_MS, that
+// plan.go's ladder: the first rung whose duration takes the output's longest track (its media edit, without a start
+// delay, as plan.go reads the longest stream's duration) gives its caps. plan.go picks it by the source's duration,
+// which the output may run past by a 30 fps frame and an AAC frame (at 44.1 kHz): RUNG_SLACK_MS, that
 // rounded up to 100 ms, lets an output that long still take its source's rung.
 export const OUTPUT_LADDER = [
   { durationMs: 120_000, longEdge: OUTPUT_LONG_EDGE, shortEdge: OUTPUT_SHORT_EDGE, fps: FRAME_RATE_LIMIT },
@@ -479,6 +480,8 @@ type Track = {
   mediaDuration: number;
   // The media edit's media time: the samples before it are not presented (AAC's priming, x264's reorder delay).
   mediaTime: number;
+  // The media edit's duration in movie ticks (ms), without a leading empty edit.
+  span: number;
   samples: number;
   sizes: Uint32Array;
   offsets: Float64Array; // each sample's file offset
@@ -708,8 +711,11 @@ function parseMoov(b: Uint8Array, moovStart: number, moovEnd: number, fileEnd: n
   for (const t of tracks) {
     check(t.mediaDuration - t.mediaTime <= VIDEO_DURATION_LIMIT * t.timescale, "duration_limit");
   }
-  // The caps of the rung for this duration (the last rung takes every duration within the limit, checked above).
-  const rung = OUTPUT_LADDER.find((r) => movieDuration <= r.durationMs + RUNG_SLACK_MS) ?? OUTPUT_LADDER[2];
+  // The caps of the rung for the longest track's presented span: its media edit's, without a leading empty edit, as
+  // plan.go takes the longest stream's duration without its start (the last rung takes every duration within the
+  // limit, checked above).
+  const span = Math.max(...tracks.map((t) => t.span));
+  const rung = OUTPUT_LADDER.find((r) => span <= r.durationMs + RUNG_SLACK_MS) ?? OUTPUT_LADDER[2];
   check(video.minDelta * rung.fps >= video.timescale, "frame_rate");
   check(
     Math.max(video.width, video.height) <= rung.longEdge && Math.min(video.width, video.height) <= rung.shortEdge,
@@ -1010,9 +1016,12 @@ function parseTrak(
   const edts = parts.get("edts");
   let presented = 0;
   let skipped = 0;
+  // The media edit's duration in movie ticks: the track's presented span, without a leading empty edit.
+  let mediaSpan = 0;
   if (edts === undefined) {
     check(compStart === 0 && compEnd === mediaDuration, "elst");
     presented = Math.round((mediaDuration * MOVIE_TIMESCALE) / timescale);
+    mediaSpan = presented;
   } else {
     const list = exactly(b, view, edts, ["elst"]);
     const elst = list.get("elst") as Box;
@@ -1037,6 +1046,7 @@ function parseTrak(
         "elst",
       );
       skipped = mediaTime;
+      mediaSpan = span;
       // In the media timescale, within one movie tick of rounding.
       check(mediaTime >= compStart, "presentation");
       check((span - 1) * timescale <= (compEnd - mediaTime) * MOVIE_TIMESCALE, "presentation");
@@ -1051,6 +1061,7 @@ function parseTrak(
     timescale,
     mediaDuration,
     mediaTime: skipped,
+    span: mediaSpan,
     samples,
     sizes,
     offsets,
