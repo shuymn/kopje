@@ -5,19 +5,22 @@
 //
 //   PUT    /object/<key>   stream an input into R2 (Content-Length required); answers the time it took (ingress)
 //   DELETE /object/<key>   delete one object
-//   POST   /run?op=normalize|still&key=<key>&instance=standard-1|standard-3|standard-4[&threads=default|filters:N|all:N]
-//                         [&encode_ms=<ms>]
+//   POST   /run?op=normalize|still&key=<key>&expect=video|audio&instance=standard-1|standard-3|standard-4
+//                         [&threads=default|filters:N|all:N][&encode_ms=<ms>]
 //          one unit of work on a fresh object, as Kopje's MediaProcessor runs it: start with no Internet, /healthz,
 //          the input read once from R2 and streamed as the request body, the output streamed into R2 under out/,
 //          for a video normalize the still too, then the still through Images (WebP, long edge 640, and its RGBA
-//          output), then destroy. Answers JSON with each stage's time; spaces are sent every 10 s before it. `ok` is
-//          true only when every one of those steps succeeded; `run` is the id the container carries as its `run` label,
-//          which billing.sh joins the billed usage on.
+//          output), then destroy. `expect` is the fixture's kind (measure.sh's table): a video normalize fetches its
+//          still whatever the server's Kopje-Kind says. Answers JSON with each stage's time; spaces are sent every
+//          10 s before it. `ok` is true only when the run succeeded end to end (outcome.mjs); `run` is the id the
+//          container carries as its `run` label, which billing.sh joins the billed usage on.
 //   POST   /dispatch       how long an alarm set for now takes to run (the upload dispatch)
 //   GET    /hold?seconds=<n>
 //          answers 200 only after n seconds with no byte sent before (whether a Worker may hold its headers past
 //          100 s, design #1828 F1)
 import { DurableObject } from "cloudflare:workers";
+
+import { endToEnd } from "./outcome.mjs";
 
 interface Env {
   BENCH: DurableObjectNamespace<BenchUnit>;
@@ -35,7 +38,8 @@ const THREADS = /^(default|filters:\d{1,2}|all:\d{1,2})$/;
 const KEY = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,254}$/;
 
 type RunResult = {
-  op: string;
+  op: "normalize" | "still";
+  expect: "video" | "audio";
   instance: Instance;
   threads: string;
   key: string;
@@ -46,7 +50,7 @@ type RunResult = {
   stillBytes: number | null;
   status: number | null;
   error: string | null;
-  kind: string | null;
+  mediaKind: string | null; // the server's Kopje-Kind
   // Times in milliseconds: the object's clock, then the server's stage headers.
   startToReadyMs: number | null;
   operationMs: number | null; // the POST until its response headers (input streaming, probe, encode, still)
@@ -77,11 +81,19 @@ function serverTimes(headers: Headers): Record<string, number> {
 }
 
 export class BenchUnit extends DurableObject<Env> {
-  async run(op: "normalize" | "still", key: string, instance: Instance, threads: string, encodeMs: number) {
+  async run(
+    op: "normalize" | "still",
+    expect: "video" | "audio",
+    key: string,
+    instance: Instance,
+    threads: string,
+    encodeMs: number,
+  ) {
     const t0 = Date.now();
     const runId = this.ctx.id.toString().slice(0, 12);
     const r: RunResult = {
       op,
+      expect,
       instance,
       threads,
       key,
@@ -92,7 +104,7 @@ export class BenchUnit extends DurableObject<Env> {
       stillBytes: null,
       status: null,
       error: null,
-      kind: null,
+      mediaKind: null,
       startToReadyMs: null,
       operationMs: null,
       outputToR2Ms: null,
@@ -145,7 +157,7 @@ export class BenchUnit extends DurableObject<Env> {
       r.operationMs = Date.now() - t1;
       r.status = res.status;
       r.server = serverTimes(res.headers);
-      r.kind = res.headers.get("kopje-kind");
+      r.mediaKind = res.headers.get("kopje-kind");
       const length = Number(res.headers.get("content-length"));
       if (res.status !== 200 || res.body === null || !Number.isSafeInteger(length)) {
         r.error = res.headers.get("kopje-error") ?? `status ${res.status}`;
@@ -159,7 +171,7 @@ export class BenchUnit extends DurableObject<Env> {
       let still: Uint8Array | null = null;
       if (op === "still") {
         still = new Uint8Array(await (await this.env.BUCKET.get(`out/${runId}/output`))!.arrayBuffer());
-      } else if (r.kind === "video") {
+      } else if (expect === "video") {
         const s = await port.fetch("http://container/normalize/still");
         if (s.status !== 200) {
           await s.body?.cancel();
@@ -185,19 +197,18 @@ export class BenchUnit extends DurableObject<Env> {
         await new Response(rgba.image()).arrayBuffer();
         r.imagesRgbaMs = Date.now() - t5;
       }
-      r.ok = true;
     } catch (error) {
       r.error = error instanceof Error ? error.message : String(error);
     } finally {
       const t6 = Date.now();
       if (c?.running === true) {
         await c.destroy().catch((error: unknown) => {
-          r.ok = false;
           r.error ??= `destroy: ${String(error)}`;
         });
       }
       r.destroyMs = Date.now() - t6;
       r.wallMs = Date.now() - t0;
+      r.ok = endToEnd(r);
       await this.ctx.storage.deleteAll();
     }
     return r;
@@ -282,12 +293,14 @@ export default {
     }
     if (url.pathname === "/run" && request.method === "POST") {
       const op = url.searchParams.get("op");
+      const expect = url.searchParams.get("expect");
       const key = url.searchParams.get("key") ?? "";
       const instance = url.searchParams.get("instance") as Instance;
       const threads = url.searchParams.get("threads") ?? "default";
       const encodeMs = Number(url.searchParams.get("encode_ms") ?? 1_800_000);
       if (
         (op !== "normalize" && op !== "still") ||
+        (expect !== "video" && expect !== "audio") ||
         !KEY.test(key) ||
         !INSTANCES.includes(instance) ||
         !THREADS.test(threads) ||
@@ -296,7 +309,7 @@ export default {
         return Response.json({ error: "bad parameters" }, { status: 400 });
       }
       const unit = env.BENCH.getByName(`run:${crypto.randomUUID()}`);
-      return keepAlive(ctx, unit.run(op, key, instance, threads, encodeMs));
+      return keepAlive(ctx, unit.run(op, expect, key, instance, threads, encodeMs));
     }
     if (url.pathname === "/dispatch" && request.method === "POST") {
       return Response.json({ dispatchMs: await env.BENCH.getByName(`dispatch:${crypto.randomUUID()}`).dispatch() });

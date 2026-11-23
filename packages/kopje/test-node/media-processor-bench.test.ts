@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import { endToEnd, type Outcome } from "../bench/media-processor/outcome.mjs";
 import { billing, parseLines, timings } from "../bench/media-processor/report.mjs";
 
-// The media processor bench's report (bench/media-processor/report.mjs, #1828 P27): only end-to-end successes count,
-// and billed usage is priced per fixture by run id.
+// The media processor bench (bench/media-processor/, #1828 P27): a run succeeds only end to end against the fixture's
+// expected kind, every run the driver made is in the denominator, and billed usage is priced per fixture by run id.
 const run = (fields: Record<string, unknown>) =>
   JSON.stringify({
     kind: "run",
@@ -17,6 +18,40 @@ const run = (fields: Record<string, unknown>) =>
     server: { encode: 6_000, "encode-cpu": 12_000 },
     ...fields,
   });
+
+describe("a bench run's outcome", () => {
+  const video: Outcome = {
+    op: "normalize",
+    expect: "video",
+    status: 200,
+    error: null,
+    mediaKind: "video",
+    outputToR2Ms: 500,
+    stillBytes: 300,
+    imagesWebpMs: 20,
+    imagesRgbaMs: 10,
+  };
+  const audio: Outcome = { ...video, expect: "audio", mediaKind: "audio", stillBytes: null, imagesWebpMs: null };
+
+  it("is a success only when every step ran for the fixture's kind", () => {
+    expect(endToEnd(video)).toBe(true);
+    expect(endToEnd(audio)).toBe(true);
+    expect(endToEnd({ ...video, op: "still", mediaKind: null })).toBe(true);
+  });
+
+  it("is a failure for an answer without the expected Kopje-Kind, or a video without its still and Images", () => {
+    expect(endToEnd({ ...video, mediaKind: null })).toBe(false);
+    expect(endToEnd({ ...video, mediaKind: "audio" })).toBe(false);
+    expect(endToEnd({ ...audio, mediaKind: "video" })).toBe(false);
+    expect(endToEnd({ ...video, stillBytes: null })).toBe(false);
+    expect(endToEnd({ ...video, imagesWebpMs: null })).toBe(false);
+    expect(endToEnd({ ...video, imagesRgbaMs: null })).toBe(false);
+    expect(endToEnd({ ...video, outputToR2Ms: null })).toBe(false);
+    expect(endToEnd({ ...video, error: "destroy: failed" })).toBe(false);
+    expect(endToEnd({ ...video, status: 422 })).toBe(false);
+    expect(endToEnd({ ...audio, op: "still" })).toBe(false);
+  });
+});
 
 describe("the media processor bench report", () => {
   it("counts a run whose container answered 200 but whose output failed to reach R2 as a failure", () => {
@@ -32,34 +67,46 @@ describe("the media processor bench report", () => {
     expect(lines).toContain("| b.mp4 | standard-3 | default | 2/2 | 20.0 | 6.0 | 12.0 | 2.00 | 8.0 |");
     // The failed run's times enter no stage either: two samples, from b.mp4's runs.
     expect(lines).toContain("| output into R2 | 2 | 0.50 |");
-    // A run with no `ok` (a request that failed before the bench answered) is not a success.
-    expect(timings(parseLines(run({ fixture: "c.mp4", run: "r4" })))).toContain(
-      "| c.mp4 | standard-3 | default | 0/1 | - | - | - | - | - |",
-    );
   });
 
-  it("prices each fixture on its own runs, joined by run id", () => {
+  // measure.sh records a request that failed before the bench answered with its operation, fixture, type and threading.
+  it("counts a request that failed before the bench answered in its group, as a failure", () => {
+    const failed = JSON.stringify({
+      error: "request failed",
+      kind: "run",
+      op: "normalize",
+      fixture: "b.mp4",
+      expect: "video",
+      instance: "standard-3",
+      threads: "default",
+    });
+    const lines = timings(parseLines([run({ fixture: "b.mp4", run: "r1", ok: true }), failed].join("\n")));
+    expect(lines).toContain("| b.mp4 | standard-3 | default | 1/2 | 10.0 | 6.0 | 12.0 | 2.00 | 8.0 |");
+  });
+
+  it("prices each fixture on its own runs, joined by run id, with its billed utilisation", () => {
     const records = parseLines(
       [
         run({ fixture: "short.mp4", run: "r1", ok: true }),
-        run({ fixture: "long.mp4", run: "r2", ok: true }),
-        run({ fixture: "long.mp4", run: "r3", ok: false }),
+        run({ fixture: "long.mp4", run: "r2", ok: true, wallMs: 300_000 }),
+        run({ fixture: "long.mp4", run: "r3", ok: false, wallMs: 200_000 }),
       ].join("\n"),
     );
     const gib = 1073741824;
     const lines = billing(records, [
-      { run: "r1", cpuTimeSec: 10, allocatedMemory: 200 * gib, allocatedDisk: 0 },
+      { run: "r1", cpuTimeSec: 30, allocatedMemory: 200 * gib, allocatedDisk: 0 },
       { run: "r2", cpuTimeSec: 600, allocatedMemory: 1000 * gib, allocatedDisk: 0 },
       { run: "r3", cpuTimeSec: 400, allocatedMemory: 1000 * gib, allocatedDisk: 0 },
       { run: "stray", cpuTimeSec: 5, allocatedMemory: 0, allocatedDisk: 0 },
     ]);
-    // 10 × 0.00002 + 200 × 0.0000025 = 0.0007; 1000 × 0.00002 + 2000 × 0.0000025 = 0.025.
+    // 30 vCPU-s over 10 s is 3.00; 1000 over 500 s is 2.00.
+    // 30 × 0.00002 + 200 × 0.0000025 = 0.0011; 1000 × 0.00002 + 2000 × 0.0000025 = 0.025.
     expect(lines).toContain(
-      "| short.mp4 | normalize | standard-3 | default | 1 | 1 | 10.0 | 200 | 0 | 0.0007 | 0.0007 |",
+      "| short.mp4 | normalize | standard-3 | default | 1 | 1 | 30.0 | 3.00 | 200 | 0 | 0.0011 | 0.0011 |",
     );
     expect(lines).toContain(
-      "| long.mp4 | normalize | standard-3 | default | 2 | 1 | 1000.0 | 2000 | 0 | 0.0250 | 0.0125 |",
+      "| long.mp4 | normalize | standard-3 | default | 2 | 1 | 1000.0 | 2.00 | 2000 | 0 | 0.0250 | 0.0125 |",
     );
-    expect(lines).toContain("| (runs not in the results) | | | | 1 | | 5.0 | 0 | 0 | 0.0001 | 0.0001 |");
+    expect(lines).toContain("| (runs not in the results) | | | | 1 | | 5.0 | - | 0 | 0 | 0.0001 | 0.0001 |");
   });
 });

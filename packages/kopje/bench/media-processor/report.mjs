@@ -1,8 +1,10 @@
 // The media processor bench's report (#1828, P27) over measure.sh's results.jsonl. Only a run that succeeded end to
-// end counts (`ok`, which worker.ts sets after the output and the still are in R2 and Images has read the still, with
-// the container destroyed): a 200 from the container whose output then failed to reach R2 is a failure, and none of
-// its times enter a p95. Billed usage is joined to the runs by the run id each container carries as its `run` label,
-// so each fixture is priced on its own runs, never pooled with another fixture's on the same type and threading.
+// end counts (`ok`, which worker.ts sets by outcome.mjs): a 200 from the container whose output then failed to reach
+// R2, or a video normalize without its still, is a failure, and none of its times enter a p95. Every run the driver
+// made is in the denominator, a request that failed before the bench answered included (the driver records its
+// operation, fixture, type and threading). Billed usage is joined to the runs by the run id each container carries
+// as its `run` label, so each fixture is priced on its own runs, never pooled with another fixture's on the same type
+// and threading; its billed utilisation is the vCPU-s over the joined runs' wall time.
 //
 //   node bench/media-processor/report.mjs <results.jsonl>                 the timing tables, as Markdown
 //   node bench/media-processor/report.mjs <results.jsonl> <usage.json>    billed usage per fixture (billing.sh)
@@ -11,7 +13,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 /**
- * @typedef {{ kind: "run", fixture: string, op: string, instance: string, threads: string, run: string,
+ * @typedef {{ kind: "run", fixture: string, op: string, expect?: string, instance: string, threads: string, run?: string,
  *   ok?: boolean, status?: number | null, error?: string | null, wallMs?: number, operationMs?: number | null,
  *   startToReadyMs?: number | null, outputToR2Ms?: number | null, imagesWebpMs?: number | null,
  *   imagesRgbaMs?: number | null, destroyMs?: number | null, server?: Record<string, number> }} RunRecord
@@ -189,14 +191,16 @@ export function billing(records, usage) {
   /** @param {Usage[]} rows */
   const sums = (rows) => {
     const cpu = rows.reduce((a, u) => a + u.cpuTimeSec, 0);
+    const wallS = rows.reduce((a, u) => a + (byRun.get(u.run)?.wallMs ?? 0), 0) / 1000;
     const gibs = rows.reduce((a, u) => a + u.allocatedMemory, 0) / 1073741824;
     const gbs = rows.reduce((a, u) => a + u.allocatedDisk, 0) / 1e9;
     const price = cpu * PRICE_VCPU_S + gibs * PRICE_GIB_S + gbs * PRICE_GB_S;
-    return `${cpu.toFixed(1)} | ${gibs.toFixed(0)} | ${gbs.toFixed(0)} | ${price.toFixed(4)} | ${(price / rows.length).toFixed(4)}`;
+    const utilisation = wallS > 0 ? (cpu / wallS).toFixed(2) : "-";
+    return `${cpu.toFixed(1)} | ${utilisation} | ${gibs.toFixed(0)} | ${gbs.toFixed(0)} | ${price.toFixed(4)} | ${(price / rows.length).toFixed(4)}`;
   };
   const lines = [
-    "| fixture | op | instance | threads | runs billed | ok | vCPU-s | GiB-s | GB-s | $ list | $ per run |",
-    "|---|---|---|---|---|---|---|---|---|---|---|",
+    "| fixture | op | instance | threads | runs billed | ok | vCPU-s | billed utilisation | GiB-s | GB-s | $ list | $ per run |",
+    "|---|---|---|---|---|---|---|---|---|---|---|---|",
   ];
   const known = usage.filter((u) => byRun.has(u.run));
   const groups = groupBy(known, (u) => {

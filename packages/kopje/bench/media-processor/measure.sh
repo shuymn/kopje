@@ -55,10 +55,17 @@ if [ -z "${SKIP_UPLOAD:-}" ]; then
   done
 fi
 
+# A fixture's kind, which the bench checks the server's answer against (never the answer's own Kopje-Kind).
+expect_of() { case $1 in *.m4a | *.flac | *.ogg | *.mp3 | *.wav | *.opus) echo audio ;; *) echo video ;; esac; }
+
 run() { # <op> <fixture> <instance> <threads>
-  local r
-  r="$(api -X POST "$BENCH_URL/run?op=$1&key=fixtures/$2&instance=$3&threads=$4" || echo '{"error":"request failed"}')"
-  jq -c --arg f "$2" '. + {kind: "run", fixture: $f}' <<<"$r" >>"$jsonl"
+  local r expect
+  expect="$(expect_of "$2")"
+  r="$(api -X POST "$BENCH_URL/run?op=$1&key=fixtures/$2&expect=$expect&instance=$3&threads=$4" || true)"
+  jq -e 'type == "object"' <<<"$r" >/dev/null 2>&1 || r='{"error":"request failed"}'
+  # The driver's own fields: a run that failed before the bench answered still counts in its group, as a failure.
+  jq -c --arg op "$1" --arg f "$2" --arg e "$expect" --arg i "$3" --arg t "$4" \
+    '. + {kind: "run", op: $op, fixture: $f, expect: $e, instance: $i, threads: $t}' <<<"$r" >>"$jsonl"
   log "$(jq -r '"\(.op) \(.fixture) \(.instance) \(.threads): ok \(.ok // false) status \(.status) wall \(.wallMs) ms ready \(.startToReadyMs) encode \(.server.encode // "-") cpu \(.server["encode-cpu"] // "-") \(.error // "")"' <<<"$(tail -1 "$jsonl")")"
 }
 
@@ -68,10 +75,9 @@ for f in $FIXTURES; do
       for _ in $(seq 1 "$RUNS"); do run normalize "$f" "$inst" "$th"; done
     done
   done
-  case $f in
-    *.m4a | *.flac | *.ogg) ;;
-    *) for _ in $(seq 1 "$STILL_RUNS"); do run still "$f" standard-1 default; done ;;
-  esac
+  if [ "$(expect_of "$f")" = video ]; then
+    for _ in $(seq 1 "$STILL_RUNS"); do run still "$f" standard-1 default; done
+  fi
 done
 
 for _ in $(seq 1 "$DISPATCH_RUNS"); do
