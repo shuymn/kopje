@@ -2,17 +2,22 @@
 # Runs the media processor's image locally with no network (`docker run --network none`, a read-only root and a tmpfs
 # work directory) and drives its operations over HTTP from a curl container that shares only its network namespace:
 # /healthz, then for each input normalize (with the still it keeps) and still, and two refusals (an input over the cap,
-# and text). Two inputs made here always follow the given ones: a WAV tone, and a MOV of PNG frames that carry EXIF
-# and text chunks. Each operation is checked on its own: HTTP 200, the exact Content-Type (video/mp4 or audio/mpeg by
-# Kopje-Kind, image/png for a still), a Content-Length equal to the bytes received, the codec the pinned ffprobe reads
-# (h264, mp3, png), a full decode by the pinned ffmpeg with -xerror, and none of the seeded metadata (KOPJEMARK, the
-# fixture's location) in its bytes; a still has only image chunks (no eXIf, tEXt, iTXt, zTXt or tIME), and normalize
-# a duration within 0.5 s of the input's. Prints a Markdown table with the server's stage times and the wall time this
-# script saw, and exits 1 when a check failed. Needs docker, node and python3.
+# and text). Three inputs made here always follow the given ones: a WAV tone; a MOV of PNG frames that carry EXIF and
+# text chunks; and a MOV of Display P3 PNG frames whose only colour tag is an ICC profile carrying a seeded marker.
+# Each input's kind (video or audio) is the fixture table's, never the server's Kopje-Kind: a given input's is its
+# `video:` or `audio:` prefix, else its extension's. Each operation is checked on its own: HTTP 200, Kopje-Kind equal
+# to the expected kind, the exact Content-Type (video/mp4 or audio/mpeg, image/png for a still), a Content-Length
+# equal to the bytes received, the codec the pinned ffprobe reads (h264, mp3, png), a full decode by the pinned ffmpeg
+# with -xerror, and none of the seeded metadata (KOPJEMARK, the fixture's location) in its bytes; for a video both
+# stills always run. A still has only image chunks (no eXIf, tEXt, iTXt, zTXt or tIME) and no marker in its ICC
+# profile, and the P3 input's stills render (the pinned ffmpeg: iccdetect, then zscale to sRGB; an untagged PNG as
+# sRGB) within 2 of the source frame's rendered sample in each channel. Normalize has a duration within 0.5 s of the
+# input's. Prints a Markdown table with the server's stage times and the wall time this script saw, and exits 1 when
+# a check failed. Needs docker, node and python3.
 #
 #   bash packages/kopje/scripts/container-smoke.sh [--build] <image tag> [<input>...]
 #     --build  builds packages/kopje/container into the tag first
-#     inputs   default: packages/kopje/container/probe.mp4
+#     inputs   [video:|audio:]<path>; default: packages/kopje/container/probe.mp4
 #   CPUS (default 2, standard-3's vCPUs) and MEMORY (default 8g) size the container; ENCODE_MS (default 600000) is
 #   the encode stage time normalize is given.
 set -euo pipefail
@@ -63,7 +68,32 @@ open(sys.argv[1], "wb").write(png + chunk(b"IEND", b""))
 PY
 docker run --rm --network none -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error -framerate 1 \
   -loop 1 -t 3 -i /f/frame.png -c:v copy -f mov /f/exif.mov
-inputs+=("$work/fixture/tone.wav" "$work/fixture/exif.mov")
+# p3.mov: three seconds of one 64x48 frame of (210,70,40) in Display P3, its PNG tagged only by an ICC profile (the
+# pinned ffmpeg's for P3, with KOPJEMARK_ICC appended inside the profile), copied into MOV unchanged.
+p3_frame='color=c=0xD24628:s=64x48:d=1,format=rgb24'
+p3_frame+=',setparams=color_primaries=smpte432:color_trc=iec61966-2-1,iccgen=force=1'
+docker run --rm --network none -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error -f lavfi \
+  -i "$p3_frame" -frames:v 1 -c:v png /f/p3-generated.png
+python3 -I - "$work/fixture/p3-generated.png" "$work/fixture/p3.png" <<'PY'
+import struct, sys, zlib
+def chunk(t, data):
+    return struct.pack(">I", len(data)) + t + data + struct.pack(">I", zlib.crc32(t + data))
+b, p, out = open(sys.argv[1], "rb").read(), 8, b""
+while p < len(b):
+    n, t = struct.unpack(">I4s", b[p : p + 8])
+    data = b[p + 8 : p + 8 + n]
+    if t == b"iCCP":
+        k = data.index(b"\0")
+        icc = zlib.decompress(data[k + 2 :]) + b"KOPJEMARK_ICC" * 4
+        out += chunk(t, b"P3\0\0" + zlib.compress(struct.pack(">I", len(icc)) + icc[4:]))
+    elif t not in (b"cHRM", b"gAMA", b"sRGB", b"cICP", b"pHYs"):
+        out += b[p : p + 12 + n]
+    p += 12 + n
+open(sys.argv[2], "wb").write(b[:8] + out)
+PY
+docker run --rm --network none -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error -framerate 1 \
+  -loop 1 -t 3 -i /f/p3.png -c:v copy -f mov /f/p3.mov
+inputs+=("audio:$work/fixture/tone.wav" "video:$work/fixture/exif.mov" "video:$work/fixture/p3.mov")
 # curl: -o <out> -D - prints the headers; the curl image runs as a user that writes to /out.
 chmod 777 "$work/out"
 req() { # <output file> <curl args...>
@@ -77,20 +107,43 @@ status() { sed -n '1s/^HTTP\/[0-9.]* \([0-9]*\).*/\1/p' <<<"$1"; }
 ffprobe() { docker run --rm --network none -v "$work/out:/o:ro" --entrypoint /ffprobe "$ffmpeg_image" -v error "$@"; }
 decodes() { docker run --rm --network none -v "$work/out:/o:ro" --entrypoint /ffmpeg "$ffmpeg_image" -v error -xerror \
   -i "/o/$1" -f null - >/dev/null 2>&1; }
-# The chunk types of a PNG, space-separated, or "malformed".
+# The chunk types of a PNG, space-separated (an iCCP whose profile holds KOPJEMARK as "iCCP-marked"), or "malformed".
 png_chunks() {
   python3 -I - "$1" <<'PY'
-import struct, sys
+import struct, sys, zlib
 b = open(sys.argv[1], "rb").read()
 if b[:8] != b"\x89PNG\r\n\x1a\n":
     sys.exit(print("malformed"))
 p, types = 8, []
 while p + 12 <= len(b):
     n, t = struct.unpack(">I4s", b[p : p + 8])
-    types.append(t.decode("latin-1"))
+    name = t.decode("latin-1")
+    if name == "iCCP":
+        data = b[p + 8 : p + 8 + n]
+        if b"KOPJEMARK" in zlib.decompress(data[data.index(b"\0") + 2 :]):
+            name = "iCCP-marked"
+    types.append(name)
     p += 12 + n
 print(" ".join(types) if p == len(b) and types[-1:] == ["IEND"] else "malformed")
 PY
+}
+# The top-left pixel of an image as sRGB "r g b": through its colour tags (iccdetect, zscale), or as stored when it has
+# none. <dir> is mounted read-only.
+srgb_pixel() { # <dir> <file>
+  local v
+  pixel() { docker run --rm --network none -v "$1:/p:ro" --entrypoint /ffmpeg "$ffmpeg_image" -v quiet -i "/p/$2" \
+    -vf "$3,crop=1:1:0:0" -frames:v 1 -f rawvideo - | od -An -tu1; }
+  v="$(pixel "$1" "$2" 'iccdetect,zscale=p=bt709:t=iec61966-2-1:m=gbr,format=rgb24' || true)"
+  [ -n "$v" ] || v="$(pixel "$1" "$2" format=rgb24)"
+  echo $v
+}
+# Whether two "r g b" samples are within 2 in each channel.
+near() {
+  awk -v a="$1" -v b="$2" 'BEGIN{
+    n = split(a, x, " "); split(b, y, " "); ok = (n == 3)
+    for (i = 1; i <= 3; i++) { d = x[i] - y[i]; if (d * d > 4) ok = 0 }
+    print ok ? "true" : "false"
+  }'
 }
 now_ms() { node -e 'console.log(Date.now())'; }
 
@@ -132,7 +185,7 @@ verify() {
   check "$(clean "$file" && echo true)" "$label: seeded metadata in the output"
   if [ "$codec" = png ]; then
     chunks="$(png_chunks "$work/out/$file")"
-    check "$([ "$chunks" != malformed ] && ! grep -qE 'eXIf|tEXt|iTXt|zTXt|tIME' <<<"$chunks" && echo true)" \
+    check "$([ "$chunks" != malformed ] && ! grep -qE 'eXIf|tEXt|iTXt|zTXt|tIME|marked' <<<"$chunks" && echo true)" \
       "$label: chunks $chunks"
     chunks="; chunks $chunks"
   fi
@@ -155,7 +208,12 @@ row() { # <input> <operation> <status> <wall ms> <headers> <output> <checks>
     "$(seconds Still "$5")" "$6" "$7"
 }
 
-for input in "${inputs[@]}"; do
+for entry in "${inputs[@]}"; do
+  case "$entry" in
+    video:* | audio:*) want="${entry%%:*}" input="${entry#*:}" ;;
+    *.m4a | *.mp3 | *.flac | *.ogg | *.opus | *.wav | *.aac) want=audio input="$entry" ;;
+    *) want=video input="$entry" ;;
+  esac
   base="$(basename "$input")"
   cp "$input" "$work/in/$base"
   expected="$(docker run --rm --network none -v "$work/in:/i:ro" --entrypoint /ffprobe "$ffmpeg_image" -v error \
@@ -166,13 +224,11 @@ for input in "${inputs[@]}"; do
     "http://127.0.0.1:8080/normalize?probe_ms=10000&encode_ms=$ENCODE_MS")"
   wall=$(($(now_ms) - t0))
   kind="$(header Kopje-Kind "$h")"
-  case "$kind" in
-    video) type=video/mp4 codec=h264 ;;
-    audio) type=audio/mpeg codec=mp3 ;;
-    *) type="a Kopje-Kind" codec=- ;;
-  esac
+  type=video/mp4 codec=h264
+  [ "$want" = audio ] && type=audio/mpeg codec=mp3
   verify "$base normalize" "$base.normalized" "$h" "$type" "$codec"
   if [ "$(status "$h")" = 200 ]; then
+    check "$([ "$kind" = "$want" ] && echo true)" "$base normalize: Kopje-Kind $kind, want $want"
     got="$(ffprobe -show_entries format=duration -of csv=p=0 "/o/$base.normalized")"
     check "$(awk -v a="$got" -v b="$expected" 'BEGIN{d=a-b; print (a>0 && d*d<0.25) ? "true" : "false"}')" \
       "$base normalize: duration $got, input $expected"
@@ -180,7 +236,7 @@ for input in "${inputs[@]}"; do
   fi
   row "$base" "normalize ($kind)" "$(status "$h")" "$wall" "$h" "$(size "$base.normalized")" "$checks"
 
-  if [ "$kind" = video ]; then
+  if [ "$want" = video ]; then
     h="$(req "$base.still.png" http://127.0.0.1:8080/normalize/still)"
     verify "$base normalize/still" "$base.still.png" "$h" image/png png
     row "$base" "normalize/still" "$(status "$h")" 0 "$h" "$(size "$base.still.png")" "$checks"
@@ -195,6 +251,15 @@ for input in "${inputs[@]}"; do
       check "$(awk -F, '{print ($1 <= 640 && $2 <= 640) ? "true" : "false"}' <<<"$dims")" "$base still: $dims"
     fi
     row "$base" still "$(status "$h")" "$wall" "$h" "$(size "$base.png")" "$checks"
+    if [ "$base" = p3.mov ]; then
+      source_px="$(srgb_pixel "$work/fixture" p3.png)"
+      for still in "$base.still.png" "$base.png"; do
+        [ -f "$work/out/$still" ] || continue
+        got_px="$(srgb_pixel "$work/out" "$still")"
+        check "$(near "$got_px" "$source_px")" "$still: sRGB $got_px, source $source_px"
+        echo "| $base | colour of $still | | | | | | | | | sRGB $got_px, source $source_px |"
+      done
+    fi
   fi
   rm -f "$work/in/$base" "$work/out/$base".*
 done
