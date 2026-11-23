@@ -107,7 +107,8 @@ const (
 // The sample rates an output's audio may have (the output verifier's, src/platform/av-bytes.ts): the AAC track's 44.1
 // or 48 kHz, and the MP3's MPEG-1 and MPEG-2 Layer III rates. A source at another rate is resampled to 44.1 kHz when
 // it is of that family, else to 48 kHz (an unknown rate counts as 48 kHz). The rate is set with -ar: given a list
-// (aformat), the AAC encoder's negotiation chose 96 kHz.
+// (aformat), the AAC encoder's negotiation chose 96 kHz. Known behaviour, kept: the header probe reads an MP3's and a
+// FLAC's rate as 0 (their headers are in the frames), so a 44.1 kHz MP3 or FLAC is resampled to 48 kHz.
 var (
 	aacRates = []int{48_000, 44_100}
 	mp3Rates = []int{48_000, 44_100, 32_000, 24_000, 22_050, 16_000}
