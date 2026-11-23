@@ -78,6 +78,30 @@ service token and the variables it needs. Accounts besides the admin's are made 
 (`npm run admin -- invitation add <email> <username>`) together with an Access policy for the person:
 [setup.md](https://github.com/shuymn/kopje/blob/main/packages/kopje/docs/setup.md#adding-accounts).
 
+## Video and audio (optional)
+
+Kopje takes image uploads only. Video and audio need the media processor: a container with a pinned ffmpeg build,
+which Cloudflare runs next to the Worker and bills by use under the Workers Paid plan's container allowance. Its
+Dockerfile ships in the `kopje` package (`node_modules/kopje/container`), so the image always matches the installed
+version, and every deploy builds it: Workers Builds (the button's) needs no Docker on your machine, while
+`npx wrangler deploy` from your own machine needs Docker running there (GitHub's runners have it).
+
+In this release the processor can be added and checked, but nothing uses it yet: uploads stay image-only. To add it,
+follow the comment at the end of `wrangler.jsonc`: uncomment the `"containers"` block, add the binding to
+`durable_objects.bindings` and the migration after `v1` in `"migrations"`, and deploy. The first deploy builds and
+pushes the image, which takes a few minutes. Then check it:
+
+```sh
+npm run admin -- media-processor probe
+```
+
+It starts the container on each instance type Kopje uses, runs one operation on a 2-second clip that ships in the
+package, destroys the container, and prints what it saw. Each image Kopje builds is about 300 MB in your account's
+container registry; delete the images of versions you no longer deploy (`npx wrangler containers images list`). To take
+the processor out again, remove the block and the binding and add a migration that deletes the class
+(`{ "tag": "v3-remove-media-processor", "deleted_classes": ["MediaProcessor"] }`); never edit the migrations already
+deployed.
+
 ## Updates
 
 The `kopje` version in `package.json` is the instance's version. On GitHub,

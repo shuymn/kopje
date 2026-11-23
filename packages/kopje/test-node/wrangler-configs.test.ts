@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
-import { experimental_readRawConfig } from "wrangler";
+import { experimental_readRawConfig, unstable_readConfig } from "wrangler";
 
 // The Worker configs that deploy Kopje: the package's own and the instance template's. maintenance.wrangler.jsonc is
 // not one: it is only bundled, and the Pages project that runs it keeps its own compatibility settings.
@@ -14,7 +14,15 @@ const MAINTENANCE = "../maintenance.wrangler.jsonc";
 // The reader wrangler deploys with (as scripts/check-kopje-package.mjs). Its declared types live in a package this one
 // does not depend on, so the part read here is typed locally.
 const readRawConfig = experimental_readRawConfig as unknown as (args: { config: string }) => {
-  rawConfig: { compatibility_flags?: string[]; limits?: unknown; observability?: unknown; workers_dev?: boolean };
+  rawConfig: {
+    compatibility_flags?: string[];
+    limits?: unknown;
+    observability?: unknown;
+    workers_dev?: boolean;
+    containers?: unknown;
+    durable_objects?: { bindings: { name: string; class_name: string }[] };
+    migrations?: unknown[];
+  };
 };
 
 function read(path: string) {
@@ -29,6 +37,34 @@ function readBlock(block: string): unknown {
     const path = join(directory, "wrangler.jsonc");
     writeFileSync(path, `{\n${block}\n}\n`);
     return readRawConfig({ config: path }).rawConfig.observability;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+// A documented block's parsed value, read as a config file of its own.
+function readBlockAs(block: string): { containers?: unknown } {
+  const directory = mkdtempSync(join(tmpdir(), "kopje-block-"));
+  try {
+    const path = join(directory, "wrangler.jsonc");
+    writeFileSync(path, `{\n${block}\n}\n`);
+    return readRawConfig({ config: path }).rawConfig;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+// The configuration wrangler deploys with: normalized and validated, throwing on what wrangler refuses.
+const readConfig = unstable_readConfig as unknown as (args: { config: string }) => {
+  containers?: unknown[];
+  durable_objects: { bindings: { name: string }[] };
+};
+function validate(config: unknown) {
+  const directory = mkdtempSync(join(tmpdir(), "kopje-config-"));
+  try {
+    const path = join(directory, "wrangler.json");
+    writeFileSync(path, JSON.stringify(config));
+    return readConfig({ config: path });
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -80,6 +116,65 @@ describe("shipped Kopje Worker configs", () => {
   // WEB-6: an instance answers only on its domain, so the template leaves the workers.dev address off.
   it("turns the workers.dev address off in the instance template", () => {
     expect(read("../../../deploy/wrangler.jsonc").workers_dev).toBe(false);
+  });
+
+  // G1 (design #1828): the media processor is opt-in. Neither shipped config has a container or its binding.
+  it.each(SHIPPED)("%s binds no media processor", (path) => {
+    const config = read(path);
+    expect(config.containers).toBeUndefined();
+    expect(config.durable_objects?.bindings.map((b) => b.class_name)).toEqual(["Store"]);
+    expect(config.migrations).toEqual([{ tag: "v1", new_sqlite_classes: ["Store"] }]);
+  });
+
+  // The template's commented "Video and audio" block, uncommented and added as it says, is a configuration wrangler
+  // accepts: the Durable Object-managed container (which takes no max_instances), its binding and its migration.
+  it("documents a media processor block that wrangler validates", () => {
+    const template = readFileSync(new URL("../../../deploy/wrangler.jsonc", import.meta.url), "utf8");
+    const lines = template.split("\n");
+    const first = lines.indexOf('  // "containers": [');
+    const last = lines.indexOf("  // ],", first);
+    expect(first).toBeGreaterThan(0);
+    expect(last).toBeGreaterThan(first);
+    const containers = readBlockAs(
+      lines
+        .slice(first, last + 1)
+        .map((line) => line.replace(/^ {2}\/\/ ?/, ""))
+        .join("\n"),
+    ).containers;
+    const fragment = (label: string) => {
+      const line = lines.find((l) => l.startsWith(`  // ${label}:`)) ?? "";
+      return JSON.parse(line.slice(line.indexOf("{"))) as unknown;
+    };
+    const binding = fragment("binding");
+    const migration = fragment("migration");
+    expect(containers).toEqual([
+      {
+        class_name: "MediaProcessor",
+        scheduling_policy: "durable_object",
+        images: {
+          media: {
+            dockerfile: "./node_modules/kopje/container/Dockerfile",
+            build_context: "./node_modules/kopje/container",
+          },
+        },
+      },
+    ]);
+    expect(binding).toEqual({ name: "MEDIA_PROCESSOR", class_name: "MediaProcessor" });
+    const base = read("../../../deploy/wrangler.jsonc");
+    const enabled = {
+      ...base,
+      containers,
+      durable_objects: { bindings: [...(base.durable_objects?.bindings ?? []), binding] },
+      migrations: [...(base.migrations ?? []), migration],
+    };
+    const validated = validate(enabled);
+    expect(validated.containers).toEqual([expect.objectContaining({ class_name: "MediaProcessor" })]);
+    expect(validated.durable_objects.bindings.map((b) => b.name)).toEqual(["STORE", "MEDIA_PROCESSOR"]);
+    // The validation ran: the same block with max_instances is refused under the durable_object policy.
+    const [container] = containers as Record<string, unknown>[];
+    expect(() => validate({ ...enabled, containers: [{ ...container, max_instances: 2 }] })).toThrow(
+      /Unsupported fields for Durable Object-managed Containers in containers: "max_instances"/,
+    );
   });
 
   // Never deployed as a Worker, so a block there would do nothing.
