@@ -19,14 +19,16 @@ import (
 )
 
 // The fake ffprobe appends its arguments to $FAKE_PROBE_LOG and prints the probe JSON in the file $FAKE_PROBE (for the
-// header probe, $FAKE_HEADERS when set; for the frame probe, $FAKE_FRAMES), sleeping $FAKE_PROBE_SLEEP (frame probe:
+// header probe, $FAKE_HEADERS when set; for the frame probe, $FAKE_FRAMES; for a probe of the output,
+// $FAKE_OUTPUT_PROBE when set), sleeping $FAKE_PROBE_SLEEP (frame probe:
 // $FAKE_FRAME_SLEEP) seconds first. The fake ffmpeg appends its arguments to $FAKE_LOG, fails when they contain
-// $FAKE_FAIL_ON, succeeds writing nothing when they contain $FAKE_EMPTY_ON, copies the file $FAKE_OUT (for a PNG
+// $FAKE_FAIL_ON (printing the pixel limit's refusal first when $FAKE_OVERSIZE is set), succeeds writing nothing when they contain $FAKE_EMPTY_ON, copies the file $FAKE_OUT (for a PNG
 // still, $FAKE_PNG) to its last argument (file:<path>), prints a marker on stderr, and exits $FAKE_EXIT (sleeping
 // $FAKE_SLEEP seconds first).
 const fakeProbe = `#!/bin/sh
 echo "SECRET-PROBE-STDERR" >&2
 [ -n "$FAKE_PROBE_LOG" ] && echo "$*" >> "$FAKE_PROBE_LOG"
+case "$*" in *output.*) [ -n "$FAKE_OUTPUT_PROBE" ] && { cat "$FAKE_OUTPUT_PROBE"; exit 0; } ;; esac
 case "$*" in *-show_frames*) [ -n "$FAKE_FRAME_SLEEP" ] && sleep "$FAKE_FRAME_SLEEP"; cat "${FAKE_FRAMES:-/dev/null}"; exit 0 ;; esac
 [ -n "$FAKE_PROBE_SLEEP" ] && sleep "$FAKE_PROBE_SLEEP"
 case "$*" in *-nofind_stream_info*) [ -n "$FAKE_HEADERS" ] && { cat "$FAKE_HEADERS"; exit 0; } ;; esac
@@ -36,6 +38,7 @@ cat "$FAKE_PROBE"
 const fakeFFmpeg = `#!/bin/sh
 echo "SECRET-FFMPEG-STDERR" >&2
 [ -n "$FAKE_LOG" ] && echo "$*" >> "$FAKE_LOG"
+[ -n "$FAKE_OVERSIZE" ] && echo "[IMGUTILS @ 0x1] Picture size 4096x2160 exceeds specified max pixel count 8294400" >&2
 [ -n "$FAKE_FAIL_ON" ] && case "$*" in *"$FAKE_FAIL_ON"*) exit 1 ;; esac
 [ -n "$FAKE_EMPTY_ON" ] && case "$*" in *"$FAKE_EMPTY_ON"*) exit 0 ;; esac
 [ -n "$FAKE_SLEEP" ] && sleep "$FAKE_SLEEP"
@@ -72,6 +75,8 @@ func fakeTools(t *testing.T, probe *probeResult) {
 	t.Setenv("FAKE_HEADERS", "")
 	t.Setenv("FAKE_PROBE_SLEEP", "")
 	t.Setenv("FAKE_FRAME_SLEEP", "")
+	t.Setenv("FAKE_OUTPUT_PROBE", "")
+	t.Setenv("FAKE_OVERSIZE", "")
 	oldProbe, oldFF, oldWork, oldStill := probeBin, ffmpegBin, workRoot, stillPath
 	probeBin, ffmpegBin = write("ffprobe", fakeProbe), write("ffmpeg", fakeFFmpeg)
 	workRoot = filepath.Join(dir, "work")
@@ -550,7 +555,13 @@ func TestTheProbeDiscoversOnlyWithoutADeclaredDuration(t *testing.T) {
 		t.Fatalf("normalize %d %q", rec.Code, rec.Body.String())
 	}
 	runs, _ := os.ReadFile(log)
-	lines := strings.Split(strings.TrimSpace(string(runs)), "\n")
+	// The probes of the input (the output's own probe, checkOutput, follows them).
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(string(runs)), "\n") {
+		if strings.HasSuffix(line, "/input") {
+			lines = append(lines, line)
+		}
+	}
 	if len(lines) != 2 || !strings.Contains(lines[0], "-nofind_stream_info") ||
 		strings.Contains(lines[1], "-nofind_stream_info") || !strings.Contains(lines[1], "-max_pixels") {
 		t.Fatalf("probes: %q", lines)
@@ -631,5 +642,84 @@ func TestAStillWithNothingAtItsSeekIsTakenAtZero(t *testing.T) {
 	}
 	if rec := do(t, mux, "POST", "/still", []byte("input")); rec.Code != 200 {
 		t.Fatalf("still %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+// An output shorter than the plan is refused as the input's, never answered (#1828 PR2, A5): pixels when the decoder
+// dropped a frame over the pixel limit, truncated otherwise; a stream that keeps its length passes.
+func TestNormalizeRefusesAShortOutput(t *testing.T) {
+	cases := []struct {
+		name      string
+		video     string
+		audio     string
+		oversized bool
+		fail      bool
+		code      int
+		refusal   string
+	}{
+		{"whole", "10", "10", false, false, 200, ""},
+		{"within a second", "9.1", "10", false, false, 200, ""},
+		{"video short", "8.9", "10", false, false, 422, "truncated"},
+		{"audio short", "10", "8", false, false, 422, "truncated"},
+		{"frames dropped for size", "0.04", "10", true, false, 422, "pixels"},
+		// ffmpeg failing after the decoder refused a frame is the input's refusal too, not encode_failed.
+		{"failed after a frame dropped for size", "", "", true, true, 422, "pixels"},
+		{"failed", "", "", false, true, 500, "encode_failed"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fakeTools(t, probeOf("10", stream("video", "h264", 320, 240, "30/1", "10"),
+				stream("audio", "aac", 0, 0, "0/0", "10")))
+			t.Setenv("FAKE_OUT", fakeMP4(t))
+			out := probeOf("10", stream("video", "h264", 320, 240, "30/1", c.video), stream("audio", "aac", 0, 0, "0/0", c.audio))
+			encoded, _ := json.Marshal(out)
+			path := filepath.Join(t.TempDir(), "output.json")
+			if err := os.WriteFile(path, encoded, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("FAKE_OUTPUT_PROBE", path)
+			if c.oversized {
+				t.Setenv("FAKE_OVERSIZE", "1")
+			}
+			if c.fail {
+				t.Setenv("FAKE_FAIL_ON", "libx264")
+			}
+			rec := do(t, newMux(threadsDefault), "POST", normalizeURL, []byte("input"))
+			if rec.Code != c.code || rec.Header().Get("Kopje-Error") != c.refusal {
+				t.Fatalf("%d %q", rec.Code, rec.Header().Get("Kopje-Error"))
+			}
+			if c.code != 200 && strings.Contains(rec.Body.String(), "Picture size") {
+				t.Fatal("ffmpeg's output answered")
+			}
+		})
+	}
+	// An audio output (MP3) is held to its source too.
+	fakeTools(t, probeOf("10", stream("audio", "flac", 0, 0, "0/0", "10")))
+	short := probeOf("5", stream("audio", "mp3", 0, 0, "0/0", "5"))
+	short.Format.FormatName = "mp3"
+	encoded, _ := json.Marshal(short)
+	path := filepath.Join(t.TempDir(), "output.json")
+	if err := os.WriteFile(path, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_OUTPUT_PROBE", path)
+	if rec := do(t, newMux(threadsDefault), "POST", normalizeURL, []byte("input")); rec.Code != 422 ||
+		rec.Header().Get("Kopje-Error") != "truncated" {
+		t.Fatalf("audio: %d %q", rec.Code, rec.Header().Get("Kopje-Error"))
+	}
+}
+
+func TestMarkerWriterFindsTheMarkerAcrossWrites(t *testing.T) {
+	m := &markerWriter{marker: oversizeMarker}
+	for _, part := range []string{"[h264] Picture size 4096x2160 exc", "eeds specified max ", "pixel count 8294400\n"} {
+		_, _ = m.Write([]byte(part))
+	}
+	if !m.found || len(m.tail) > len(oversizeMarker) {
+		t.Fatalf("found %v, tail %d bytes", m.found, len(m.tail))
+	}
+	other := &markerWriter{marker: oversizeMarker}
+	_, _ = other.Write([]byte("Error while decoding stream"))
+	if other.found {
+		t.Fatal("found in another error")
 	}
 }

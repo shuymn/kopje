@@ -40,13 +40,15 @@ var ladder = []rung{
 }
 
 // Coefficients of the conservative estimate, in nanoseconds of wall time per pixel (decode and encode) and milliseconds
-// per second of audio. Starting values from the spike's standard-3 run (60 s 1080p30 in 43-81 s); P27's measurement
-// replaces them.
+// per second of audio. Provisional upper bounds against P27's published wall times (standard-4, all:4; the aggregates
+// on #1828), chosen so the estimate is at least the whole measured wall time of every published run with margin left
+// for camera footage; to be replaced by the boundary bench's per-run encode times (#1828 PR2, A3). The codecs P27 did
+// not measure (VP8, AV1, MPEG-4, the default) and VP9 (measured below its value) keep the spike's values.
 var (
-	decodeNsPerPixel = map[string]float64{"h264": 2.5, "hevc": 6, "vp9": 3.5, "vp8": 3, "av1": 8, "mpeg4": 2.5}
+	decodeNsPerPixel = map[string]float64{"h264": 1.0, "hevc": 1.5, "vp9": 3.5, "vp8": 3, "av1": 8, "mpeg4": 2.5}
 	// A codec outside the map counts as the slowest listed.
 	decodeNsDefault   = 8.0
-	tonemapNsPerPixel = 6.0
+	tonemapNsPerPixel = 10.0
 	encodeNsPerPixel  = 9.0
 	audioMsPerSecond  = 40.0
 	// Fixed work around the encode: ffmpeg's start, the moov rewrite and the still.
@@ -65,6 +67,7 @@ type probeStream struct {
 	RFrameRate     string     `json:"r_frame_rate"`
 	AvgFrameRate   string     `json:"avg_frame_rate"`
 	NbFrames       string     `json:"nb_frames"`
+	SampleRate     string     `json:"sample_rate"`
 	Duration       string     `json:"duration"`
 	Disposition    struct {
 		AttachedPic int `json:"attached_pic"`
@@ -175,6 +178,8 @@ const (
 	refuseDuration   refusal = "duration"
 	refuseUnbounded  refusal = "unbounded"
 	refuseEnvelope   refusal = "envelope"
+	// An output shorter than the plan (checkOutput); a 400 "truncated" is a request body shorter than its length.
+	refuseTruncated refusal = "truncated"
 )
 
 // What normalize does with an input, decided from the probe before any decoding.
@@ -182,6 +187,7 @@ type plan struct {
 	kind       string // "video" or "audio"
 	videoIndex int    // -1 for audio
 	audioIndex int    // -1 for a video without audio
+	audioRate  int    // the audio stream's declared sample rate, 0 when unknown
 	duration   float64
 	hdr        bool
 	// icc: the video carries an ICC profile, which normalize reads (iccdetect) for its primaries and transfer;
@@ -332,10 +338,10 @@ func planVideo(p *probeResult, video, audio *probeStream, encodeMs float64) (*pl
 	estimate := fixedEstimateMs +
 		float64(video.Width*video.Height)*frames*decode/1e6 +
 		float64(outW*outH)*outFrames*encodeNsPerPixel/1e6
-	audioIndex := -1
+	audioIndex, audioRate := -1, 0
 	if audio != nil {
 		estimate += duration * audioMsPerSecond
-		audioIndex = audio.Index
+		audioIndex, audioRate = audio.Index, int(parsePositive(audio.SampleRate))
 	}
 	if estimate > estimateSafety*encodeMs {
 		return nil, refuseEnvelope
@@ -344,6 +350,7 @@ func planVideo(p *probeResult, video, audio *probeStream, encodeMs float64) (*pl
 		kind:       "video",
 		videoIndex: video.Index,
 		audioIndex: audioIndex,
+		audioRate:  audioRate,
 		duration:   duration,
 		hdr:        hdr,
 		icc:        streamICC(video),
@@ -366,5 +373,6 @@ func planAudio(p *probeResult, audio *probeStream, encodeMs float64) (*plan, ref
 	if estimate > estimateSafety*encodeMs {
 		return nil, refuseEnvelope
 	}
-	return &plan{kind: "audio", videoIndex: -1, audioIndex: audio.Index, duration: duration, estimateMs: estimate}, ""
+	return &plan{kind: "audio", videoIndex: -1, audioIndex: audio.Index, audioRate: int(parsePositive(audio.SampleRate)),
+		duration: duration, estimateMs: estimate}, ""
 }

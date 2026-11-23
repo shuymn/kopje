@@ -102,9 +102,12 @@ func TestVideoArgsPinTheEncoding(t *testing.T) {
 		{"-maxrate", "7637367"}, {"-bufsize", "7637367"},
 		{"-color_primaries", "bt709"}, {"-color_trc", "bt709"}, {"-colorspace", "bt709"}, {"-color_range", "tv"},
 		{"-bsf:v", "filter_units=remove_types=6"}, {"-flags:v", "+bitexact"}, {"-metadata:s:v", "encoder="},
-		{"-fpsmax", "60"}, {"-frames:v", "36000"},
+		{"-fpsmax", "60"},
 		{"-c:a", "aac"}, {"-profile:a", "aac_low"}, {"-b:a", "192000"}, {"-ac", "2"}, {"-metadata:s:a", "encoder="},
-		{"-movflags", "+faststart"}, {"-f", "mp4"}, {"-map", "0:0"}, {"-map", "0:1"},
+		{"-f", "mp4"}, {"-map", "0:0"}, {"-map", "0:1"},
+		// What the output verifier allows (src/platform/av-bytes.ts): a colr box, no btrt, the movie timescale 1000,
+		// AAC at 44.1 or 48 kHz (an unknown source rate: 48 kHz).
+		{"-movflags", "+faststart+write_colr"}, {"-write_btrt", "0"}, {"-movie_timescale", "1000"}, {"-ar", "48000"},
 	}
 	for _, p := range pairs {
 		if !hasPair(args, p[0], p[1]) {
@@ -115,14 +118,22 @@ func TestVideoArgsPinTheEncoding(t *testing.T) {
 		t.Fatalf("subtitle or data streams kept: %v", args)
 	}
 	vf := valueOf(args, "-vf")
-	// A frame's ICC profile goes first (the MP4 muxer would write the source's bytes into a colr box).
-	if !strings.HasPrefix(vf, "sidedata=mode=delete:type=ICC_PROFILE,") || strings.Contains(vf, "tonemap") ||
+	// The frame cap, then a frame's ICC profile goes (the MP4 muxer would write the source's bytes into a colr box).
+	// -frames:v would end the audio with the video.
+	if slices.Contains(args, "-frames:v") || !strings.HasPrefix(vf, "trim=end_frame=36000,"+iccDrop+",") || strings.Contains(vf, "tonemap") ||
 		!strings.Contains(vf, "1920/max(iw,ih),1080/min(iw,ih)") {
 		t.Fatalf("filter %q", vf)
 	}
+	// Every frame leaves tagged BT.709 limited range, which the encoder writes to the SPS and the colr box (it takes
+	// the frames' tags over the -color_* options; an untagged source left them unspecified).
 	hdr := valueOf(videoArgs(videoPlan(true, 1), threadsDefault, "in", "out"), "-vf")
-	if !strings.HasPrefix(hdr, iccDrop+","+tonemap) {
+	if !strings.HasPrefix(hdr, frameCap+","+iccDrop+","+tonemap) {
 		t.Fatalf("HDR filter %q", hdr)
+	}
+	for _, f := range []string{vf, hdr} {
+		if !strings.HasSuffix(f, ",format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv") {
+			t.Fatalf("frames not tagged BT.709: %q", f)
+		}
 	}
 	silent := videoArgs(videoPlan(false, -1), threadsDefault, "in", "out")
 	if slices.Contains(silent, "-c:a") || hasPair(silent, "-map", "0:-1") {
@@ -137,7 +148,7 @@ func TestVideoArgsPinTheEncoding(t *testing.T) {
 
 func TestAudioArgsPinTheEncoding(t *testing.T) {
 	args := audioArgs(&plan{kind: "audio", videoIndex: -1, audioIndex: 2}, "in", "out")
-	for _, p := range [][2]string{{"-c:a", "libmp3lame"}, {"-q:a", "2"}, {"-id3v2_version", "0"},
+	for _, p := range [][2]string{{"-c:a", "libmp3lame"}, {"-q:a", "2"}, {"-id3v2_version", "0"}, {"-ar", "48000"},
 		{"-write_id3v1", "0"}, {"-flags:a", "+bitexact"}, {"-metadata:s:a", "encoder="}, {"-f", "mp3"},
 		{"-map", "0:2"}} {
 		if !hasPair(args, p[0], p[1]) {
@@ -193,7 +204,7 @@ func TestVideoArgsConvertOtherPrimaries(t *testing.T) {
 	for _, c := range cases {
 		p := videoPlan(false, 1)
 		c.plan(p)
-		if vf := valueOf(videoArgs(p, threadsDefault, "in", "out"), "-vf"); !strings.HasPrefix(vf, c.prefix) {
+		if vf := valueOf(videoArgs(p, threadsDefault, "in", "out"), "-vf"); !strings.HasPrefix(vf, frameCap+","+c.prefix) {
 			t.Fatalf("%s: %q", c.name, vf)
 		}
 	}
@@ -228,5 +239,35 @@ func TestThreadingOptions(t *testing.T) {
 	if !hasPair(all, "-filter_threads", "4") || !hasPair(all, "-filter_complex_threads", "4") ||
 		!hasPair(all, "-threads:v", "4") || slices.Index(all, "-filter_threads") > slices.Index(all, "-i") {
 		t.Fatalf("all:4: %v", all)
+	}
+}
+
+// The output's audio rate: the source's when the verifier allows it, else 44.1 kHz for that family and 48 kHz for any
+// other (an unknown rate included).
+func TestOutputRate(t *testing.T) {
+	cases := []struct {
+		source int
+		mp3    int
+		aac    int
+	}{
+		{48_000, 48_000, 48_000}, {44_100, 44_100, 44_100}, {32_000, 32_000, 48_000}, {22_050, 22_050, 44_100},
+		{16_000, 16_000, 48_000}, {8_000, 48_000, 48_000}, {11_025, 44_100, 44_100}, {96_000, 48_000, 48_000},
+		{88_200, 44_100, 44_100}, {0, 48_000, 48_000},
+	}
+	for _, c := range cases {
+		if got := outputRate(c.source, mp3Rates); got != c.mp3 {
+			t.Fatalf("MP3 from %d: %d", c.source, got)
+		}
+		if got := outputRate(c.source, aacRates); got != c.aac {
+			t.Fatalf("AAC from %d: %d", c.source, got)
+		}
+	}
+	p := videoPlan(false, 1)
+	p.audioRate = 44_100
+	if a := videoArgs(p, threadsDefault, "in", "out"); !hasPair(a, "-ar", "44100") {
+		t.Fatalf("a 44.1 kHz source resampled: %v", a)
+	}
+	if a := audioArgs(&plan{kind: "audio", videoIndex: -1, audioIndex: 0, audioRate: 32_000}, "in", "out"); !hasPair(a, "-ar", "32000") {
+		t.Fatalf("a 32 kHz source resampled for MP3: %v", a)
 	}
 }
