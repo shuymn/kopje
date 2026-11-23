@@ -1681,15 +1681,20 @@ Media (the `MediaAttachment` entity):
 - A remote attachment's `url` is Kopje's cached copy of its file on the instance's own origin (`/media/r/…`) once the
   cron has fetched it, and its remote URL until then or when no copy can be made; `preview_url` is the cached copy of
   its icon, else for an image the still of its cached file (the file itself when it is still), else its remote icon,
-  else `url`. Mastodon shows its own copy and the `small` style it makes; Kopje makes no `small` style, and a video or
-  audio attachment without an icon shows `url` as its preview. `remote_url` and `preview_remote_url` stay the remote
-  URLs, as in Mastodon. An attachment is cached only when it arrived within `MEDIA_CACHE_RETENTION_DAYS` (default 14; 0
-  keeps every one), and its copy is deleted once stored longer, as Mastodon's media cache retention deletes its copies.
-  Images (JPEG, PNG, GIF, WebP and AVIF) below 16 MiB, at most 16,777,216 pixels, are cached with their metadata
-  stripped, an animated one with a still below 2 MiB; video and audio (MP4, M4A, WebM, MP3, FLAC and WAV) below 40 MiB
-  with a declared length are cached as served; icons below 2 MiB. Ogg, HEIC and HEIF, QuickTime and anything past a cap
-  keep the remote URL (Mastodon takes 16 MB images and 99 MB video). The cache's bytes are capped by
-  `REMOTE_MEDIA_CACHE_BYTES` with the other remote media.
+  else `url` for an image or an unknown file. Mastodon shows its own copy and the `small` style it makes from every
+  image, video and gifv; Kopje makes no `small` style, so a video or gifv without an icon of its own (one that is not
+  the file itself) shows `/assets/video-poster.png`, a plain dark image, where Mastodon shows a frame of the video, and
+  an audio file without one shows `null`, as Mastodon's. An icon that is the file itself (its fragment aside) counts as
+  none. A video's preview is never the video file, which a client would fetch whole as an image, and in a status or its
+  history never `null`, which Mastodon for Android takes as an invalid attachment and drops; edit history applies the
+  same to versions recorded before, and the public pages show such a video without a poster. `remote_url` and
+  `preview_remote_url` stay the remote URLs, as in Mastodon. An attachment is cached only when it arrived within
+  `MEDIA_CACHE_RETENTION_DAYS` (default 14; 0 keeps every one), and its copy is deleted once stored longer, as
+  Mastodon's media cache retention deletes its copies. Images (JPEG, PNG, GIF, WebP and AVIF) below 16 MiB, at most
+  16,777,216 pixels, are cached with their metadata stripped, an animated one with a still below 2 MiB; video and audio
+  (MP4, M4A, WebM, MP3, FLAC and WAV) below 40 MiB with a declared length are cached as served; icons below 2 MiB. Ogg,
+  HEIC and HEIF, QuickTime and anything past a cap keep the remote URL (Mastodon takes 16 MB images and 99 MB video).
+  The cache's bytes are capped by `REMOTE_MEDIA_CACHE_BYTES` with the other remote media.
 - A domain block with `reject_media` caches nothing of the accounts it rules (their profile images and attachments)
   or of the emoji named for its domains, so they keep their remote URLs, where Mastodon shows `missing.png` for a
   profile image and, for an attachment, a link to its media proxy, which fetches nothing for such a domain. Its rule

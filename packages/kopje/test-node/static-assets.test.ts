@@ -173,7 +173,7 @@ function ico(...images: Buffer[]): Buffer {
 }
 
 // The images public/assets ships, with the size and PNG colour type each must have: the icons keep their alpha
-// (colour type 6), and the Apple touch icon is opaque (2), since iOS fills transparency with black.
+// (colour type 6), and the Apple touch icon and the video poster are opaque (2), since iOS fills transparency with black.
 const IMAGES: Record<string, { width: number; height: number; colourType?: number }> = {
   "avatar.jpg": { width: 400, height: 400 },
   "header.jpg": { width: 1500, height: 500 },
@@ -182,6 +182,7 @@ const IMAGES: Record<string, { width: number; height: number; colourType?: numbe
   "favicon-192.png": { width: 192, height: 192, colourType: 6 },
   "favicon-512.png": { width: 512, height: 512, colourType: 6 },
   "apple-touch-icon.png": { width: 180, height: 180, colourType: 2 },
+  "video-poster.png": { width: 640, height: 360, colourType: 2 },
 };
 
 describe("static assets", () => {
