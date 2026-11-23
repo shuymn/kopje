@@ -1,6 +1,7 @@
 import { selectSql } from "../db/columns";
 import { ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX, POLLS_STATUS_INDEX, STATUSES_ID_INDEX } from "../db/indexes";
 import { type Db, RowCapExceeded, RowMeter } from "../db/sql";
+import { VIDEO_POSTER } from "../platform/brand-assets";
 import { boundedHref } from "../platform/http-url";
 import { FILE_TOKEN, mediaUrl } from "../platform/media-files";
 import { railsBlank } from "../platform/rails-blank";
@@ -1116,10 +1117,10 @@ function statusUrl(row: StatusUrlRow): string {
 // meta carries the stored dimensions (Mastodon's original and small) and the focal point. A remote attachment's file
 // and icon are shown from the cache on `origin` when cached (remote-media.ts cachedImageUrls, the one decision): url
 // its cached file, else its remote url; preview_url its cached icon, else, for an image, its cached file's still (or
-// the file itself), else its remote icon, else url. Its remote_url and preview_remote_url are its stored url and icon
-// (null without one), as Mastodon's; a local one's are null, as Mastodon's local? media. Without an origin (an
-// upload's own answers, a scheduled post, an edit's snapshot) nothing is read from the cache. text_url is always null
-// (MD-6). blurhash: what storedBlurhash keeps of the stored value (a local upload's is its preview's,
+// the file itself), else its remote icon, else url for an image or an unknown file (a playable one's as playablePreview
+// judges it). Its remote_url and preview_remote_url are its stored url and icon (null without one), as Mastodon's; a
+// local one's are null, as Mastodon's local? media. Without an origin (an upload's own answers, a scheduled post, an
+// edit's snapshot) nothing is read from the cache. text_url is always null (MD-6). blurhash: what storedBlurhash keeps of the stored value (a local upload's is its preview's,
 // platform/images.ts processImage, or null).
 export function presentMedia(row: MediaRow, origin: string | null = null): MediaAttachment {
   // URLs within MEDIA_URL_LIMIT as serialized, as stored (STORED_COLUMNS in platform/stored-bounds.ts).
@@ -1140,7 +1141,9 @@ export function presentMedia(row: MediaRow, origin: string | null = null): Media
     id: row.id,
     type: row.type,
     url,
-    preview_url: preview ?? url,
+    // An image is its own preview; an unknown file has none in Mastodon, but clients read one equal to the file as the
+    // file itself.
+    preview_url: isPlayable(row.type) ? playablePreview(row.type, url, preview, remoteUrl, origin) : (preview ?? url),
     remote_url: remote ? remoteUrl : null,
     preview_remote_url: remote ? remotePreview : null,
     text_url: null,
@@ -1148,6 +1151,29 @@ export function presentMedia(row: MediaRow, origin: string | null = null): Media
     description: presentedMediaDescription(row.description),
     blurhash: storedBlurhash(row.blurhash),
   };
+}
+
+// A playable attachment: a video, gifv or audio file, whose own file is no image.
+export function isPlayable(type: string): boolean {
+  return type === "video" || type === "gifv" || type === "audio";
+}
+
+// A playable attachment's preview_url from its preview, an image only when it is not the file itself (its url or its
+// remote url, either without its fragment, which names a part of the same file): Mastodon makes an image from every
+// video and gifv, so one without a preview image is given VIDEO_POSTER on `origin` (null without one), and audio
+// without its artwork none, as Mastodon's. Never the file itself, which a client would fetch whole as an image.
+export function playablePreview(
+  type: string,
+  url: string | null,
+  preview: string | null,
+  remoteUrl: string | null,
+  origin: string | null,
+): string | null {
+  const file = (value: string | null) => value?.split("#", 1)[0];
+  if (preview !== null && file(preview) !== file(url) && file(preview) !== file(remoteUrl)) {
+    return preview;
+  }
+  return type === "audio" || origin === null ? null : `${origin}${VIDEO_POSTER}`;
 }
 
 // A media description as presented, live, scheduled, federated or from an edit's snapshot (RES-3): its first

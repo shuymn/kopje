@@ -1,11 +1,13 @@
 import type { MediaAttachment } from "../../domain/status-presenter";
+import { VIDEO_POSTER } from "../../platform/brand-assets";
 import { httpUrl } from "../../platform/http-url";
 import { type Link, linkTo } from "./link";
 
 // A media attachment as the pages show it (HTML-3: http(s) URLs only). `kind` is its Mastodon type; any other stored
 // type is `unknown`, shown as a link, and the type itself is never written. `preview` is the attachment's own preview
-// image, or null when it has none: the presenter stands its url in for a missing preview, which for a video or an audio
-// file is no image, so a preview equal to the url is none. `alt` is its description, or '' when it has none (the page
+// image, or null when it has none: the presenter stands an image's or an unknown file's url in for a missing preview,
+// which for an unknown file need be no image, so a preview equal to the url is none, and gives a video without a
+// preview image this server's VIDEO_POSTER, which a page does not show. `alt` is its description, or '' when it has none (the page
 // shows no marker for that). Sizes come from the small variant when it has them. `link` opens the file itself (through
 // linkTo: another host's is marked).
 type MediaKind = "image" | "video" | "gifv" | "audio" | "unknown";
@@ -27,7 +29,11 @@ export function mediaView(media: MediaAttachment, domain: string): MediaView | n
   if (full === undefined) {
     return null;
   }
-  const preview = httpUrl(media.preview_url)?.href;
+  const previewUrl = httpUrl(media.preview_url);
+  const preview =
+    previewUrl === null || (previewUrl.host === domain && previewUrl.pathname === VIDEO_POSTER)
+      ? undefined
+      : previewUrl.href;
   const size = media.meta?.small;
   return {
     kind: KINDS.includes(media.type) ? (media.type as MediaKind) : "unknown",

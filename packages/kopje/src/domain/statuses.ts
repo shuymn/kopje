@@ -129,9 +129,11 @@ import { type Refresh, refreshDue, runningRefresh } from "./reply-walk-reads";
 import { normalizeSearchText } from "./search-text";
 import { editMediaSql, MAX_STATUS_MENTION_ROWS, MAX_STATUS_TAGS, pollOptionsSql, statusUriSql } from "./status-bounds";
 import {
+  isPlayable,
   type MediaAttachment,
   type MediaRow,
   measureFilterText,
+  playablePreview,
   presentedMediaDescription,
   presentedMediaUrl,
   presentMedia,
@@ -960,17 +962,25 @@ function ownStatus(db: Db, accountId: string, id: string): OwnStatus | null {
 
 // An edit's media as presented: the snapshot as editMediaSql projects its bytes, with each URL, the description and
 // the blurhash judged again as decoded, as live media are (presentedMediaUrl, presentedMediaDescription,
-// storedBlurhash): an imported snapshot may hold any text.
-function snapshotMedia(json: string): MediaAttachment[] {
-  return (JSON.parse(json) as MediaAttachment[]).map((media) => ({
-    ...media,
-    url: presentedMediaUrl(media.url),
-    preview_url: presentedMediaUrl(media.preview_url),
-    remote_url: presentedMediaUrl(media.remote_url),
-    preview_remote_url: presentedMediaUrl(media.preview_remote_url),
-    description: presentedMediaDescription(media.description),
-    blurhash: storedBlurhash(media.blurhash),
-  }));
+// storedBlurhash): an imported snapshot may hold any text. A playable one's preview_url is judged again too
+// (playablePreview, with VIDEO_POSTER on `origin`): a snapshot recorded by an earlier release gave a video or audio file
+// without a preview image the file itself as its preview.
+function snapshotMedia(json: string, origin: string | null): MediaAttachment[] {
+  return (JSON.parse(json) as MediaAttachment[]).map((media) => {
+    const url = presentedMediaUrl(media.url);
+    const remoteUrl = presentedMediaUrl(media.remote_url);
+    return {
+      ...media,
+      url,
+      preview_url: isPlayable(media.type)
+        ? playablePreview(media.type, url, presentedMediaUrl(media.preview_url), remoteUrl, origin)
+        : presentedMediaUrl(media.preview_url),
+      remote_url: remoteUrl,
+      preview_remote_url: presentedMediaUrl(media.preview_remote_url),
+      description: presentedMediaDescription(media.description),
+      blurhash: storedBlurhash(media.blurhash),
+    };
+  });
 }
 
 function mediaSnapshot(db: Db, statusId: string): MediaAttachment[] {
@@ -1681,7 +1691,8 @@ function editPollOf(options: string | null): StatusEdit["poll"] {
 }
 
 // A status's recorded versions (status_edits), newest first: how many there are, and each version as StatusEdit shows
-// it without its account, read only when the walk reaches it. The edit history (statusHistory) and the status page's
+// it without its account, read only when the walk reaches it (a preview_url judged with VIDEO_POSTER on `origin`,
+// snapshotMedia). The edit history (statusHistory) and the status page's
 // history (domain/web-pages/status.ts) admit from it. MAX_STATUS_EDITS bounds what Kopje writes, but a converted
 // history is as long as it was carried, so nothing here holds all of its ids: the count reads the status's range of
 // status_edits_status (its index entries only), and the walk reads EDIT_ID_CHUNK ids at a time below the last, so
@@ -1700,6 +1711,7 @@ const OLDER_EDIT_IDS_SQL = `SELECT CAST(e.id AS TEXT) AS id FROM status_edits e 
 export function editVersions(
   db: Db,
   statusId: string,
+  origin: string | null,
 ): { count: number; newestFirst: Iterable<EditVersion | undefined> } {
   const count = db.first<{ n: number }>(EDIT_COUNT_SQL, statusId)?.n ?? 0;
   function* ids(): Generator<string> {
@@ -1742,7 +1754,7 @@ export function editVersions(
             sensitive: edit.sensitive === 1,
             created_at: edit.created_at,
             poll: editPollOf(edit.poll_options),
-            media_attachments: snapshotMedia(edit.media_json),
+            media_attachments: snapshotMedia(edit.media_json, origin),
             emojis: presentEmojis(edit.emojis, STATUS_EMOJIS_BYTES),
           };
     }
@@ -1761,7 +1773,7 @@ export const statusHistory = optionalUserReadOperation<{ id: string; present: Pr
     if (resolved === null || status === null) {
       return { status: "not_found" };
     }
-    const versions = editVersions(db, resolved);
+    const versions = editVersions(db, resolved, present.origin);
     if (versions.count === 0) {
       return {
         status: "ok",

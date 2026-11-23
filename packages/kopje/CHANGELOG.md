@@ -8,6 +8,14 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Fixed
+
+- A video or gifv from another server that comes without a preview image is playable in clients such as Elk: its
+  `preview_url` was the video file itself, which a client fetched whole as an image poster and could not show. It is
+  now `/assets/video-poster.png`, a plain dark image (Kopje cannot take a frame from a video), and an audio file without
+  artwork shows `null`, as in Mastodon; edit history applies the same to versions recorded before
+  ([docs/mastodon-deviations.md](docs/mastodon-deviations.md), "Media").
+
 ## [0.7.0] - 2026-11-20
 
 A minor release, published under the npm dist-tag `latest`. Uploading an image that carries EXIF or XMP, such as a
