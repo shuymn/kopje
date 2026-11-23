@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# Measures the media processor against a deployed bench (worker.ts) for P27 (design #1828): normalize on each instance
+# type and ffmpeg threading option over every fixture, stills on standard-1, and the stages the allocation is made of.
+#
+#   BENCH_URL=https://kopje-media-bench.<subdomain>.workers.dev BENCH_TOKEN=... \
+#     bash packages/kopje/bench/media-processor/measure.sh <fixtures dir>
+#
+# Optional:
+#   INSTANCES="standard-3 standard-4"        the types normalize runs on
+#   THREADS="default filters:4 all:4"        MEDIASRV_THREADS values (container/server/args.go parseThreading)
+#   RUNS=3        normalize runs per fixture, type and threading (9 for the chosen type's p95, G13)
+#   STILL_RUNS=9  still runs per video fixture on standard-1
+#   DISPATCH_RUNS=20, HOLD="90 110 130"     the alarm dispatch samples, and the header holds tried (seconds)
+#   FIXTURES="..."   the files of <fixtures dir> to run (default: every file fixtures.sh makes there)
+#   SKIP_UPLOAD=1    the fixtures are in the bucket already
+#
+# Writes bench-media-<time>/results.jsonl (one line per run) and results.md: per fixture, type and threading the
+# runs, wall p95, encode p95, ffmpeg's CPU seconds and utilisation (ffmpeg's CPU time over the encode's wall time,
+# measured in the container), and the stage p95s. Billed usage per type and threading comes from billing.sh over the
+# run's window, which the script prints at the end. Needs curl and jq.
+set -euo pipefail
+
+: "${BENCH_URL:?set BENCH_URL}" "${BENCH_TOKEN:?set BENCH_TOKEN}"
+dir="$(cd "${1:?usage: measure.sh <fixtures dir>}" && pwd)"
+BENCH_URL="${BENCH_URL%/}"
+INSTANCES="${INSTANCES:-standard-3 standard-4}"
+THREADS="${THREADS:-default filters:4 all:4}"
+RUNS="${RUNS:-3}"
+STILL_RUNS="${STILL_RUNS:-9}"
+DISPATCH_RUNS="${DISPATCH_RUNS:-20}"
+HOLD="${HOLD:-90 110 130}"
+FIXTURES="${FIXTURES:-sdr-h264.mp4 hdr-hevc-rotated.mov vp9-90s.webm near-cap.mp4 hlg-4k.mov pq-4k.mp4 sdr-1080p-5min.mp4 sdr-1080p-10min.mp4 sdr-4k-5min.mp4 sdr-4k-10min.mp4 tagged.m4a tagged.flac tagged.ogg}"
+
+out="bench-media-$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$out"
+jsonl="$out/results.jsonl"
+: >"$jsonl"
+start="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+auth=(-H "Authorization: Bearer $BENCH_TOKEN")
+api() { curl -sS --fail-with-body "${auth[@]}" "$@"; }
+log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
+
+for f in $FIXTURES; do
+  [ -f "$dir/$f" ] || { echo "missing $dir/$f (fixtures.sh)" >&2; exit 1; }
+done
+
+# Ingress: each fixture streamed into R2 through the Worker, as an upload's body is.
+if [ -z "${SKIP_UPLOAD:-}" ]; then
+  for f in $FIXTURES; do
+    t0=$(date +%s)
+    r="$(api -H 'Expect:' -T "$dir/$f" "$BENCH_URL/object/fixtures/$f")"
+    jq -c --arg f "$f" --argjson client "$(($(date +%s) - t0))" '{kind: "ingress", fixture: $f, bytes, ingressMs, clientS: $client}' <<<"$r" >>"$jsonl"
+    log "uploaded $f: $(jq -r '"\(.bytes) bytes, R2 put \(.ingressMs) ms"' <<<"$r")"
+  done
+fi
+
+run() { # <op> <fixture> <instance> <threads>
+  local r
+  r="$(api -X POST "$BENCH_URL/run?op=$1&key=fixtures/$2&instance=$3&threads=$4" || echo '{"error":"request failed"}')"
+  jq -c --arg f "$2" '. + {kind: "run", fixture: $f}' <<<"$r" >>"$jsonl"
+  log "$(jq -r '"\(.op) \(.fixture) \(.instance) \(.threads): status \(.status) wall \(.wallMs) ms ready \(.startToReadyMs) encode \(.server.encode // "-") cpu \(.server["encode-cpu"] // "-") \(.error // "")"' <<<"$(tail -1 "$jsonl")")"
+}
+
+for f in $FIXTURES; do
+  for inst in $INSTANCES; do
+    for th in $THREADS; do
+      for _ in $(seq 1 "$RUNS"); do run normalize "$f" "$inst" "$th"; done
+    done
+  done
+  case $f in
+    *.m4a | *.flac | *.ogg) ;;
+    *) for _ in $(seq 1 "$STILL_RUNS"); do run still "$f" standard-1 default; done ;;
+  esac
+done
+
+for _ in $(seq 1 "$DISPATCH_RUNS"); do
+  api -X POST "$BENCH_URL/dispatch" | jq -c '{kind: "dispatch"} + .' >>"$jsonl"
+done
+
+# F1: whether a response whose headers wait past 100 s still reaches the client (Cloudflare's 524 would end it).
+for s in $HOLD; do
+  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time $((s + 60)) "${auth[@]}" "$BENCH_URL/hold?seconds=$s" || true)"
+  jq -nc --argjson s "$s" --arg code "$code" '{kind: "hold", seconds: $s, status: $code}' >>"$jsonl"
+  log "held headers $s s: HTTP $code"
+done
+end="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+{
+  echo "# Media processor bench ($start to $end)"
+  echo
+  echo "Target $BENCH_URL. Times in seconds; p95 by nearest rank. Utilisation is ffmpeg's CPU time over the encode's"
+  echo "wall time inside the container (2.0 is two busy vCPUs). Raw: results.jsonl."
+  echo
+  echo '| fixture | instance | threads | ok/runs | wall p95 | encode p95 | ffmpeg CPU s (mean) | utilisation (mean) | operation p95 |'
+  echo '|---|---|---|---|---|---|---|---|---|'
+  jq -rs '
+    def p95: sort | .[((length * 0.95) | ceil) - 1];
+    def s: . / 1000 * 10 | round / 10;
+    [.[] | select(.kind == "run" and .op == "normalize")] | group_by([.fixture, .instance, .threads])[]
+    | (map(select(.status == 200))) as $ok
+    | "| \(.[0].fixture) | \(.[0].instance) | \(.[0].threads) | \($ok | length)/\(length) | "
+      + (if ($ok | length) > 0 then
+          "\([$ok[].wallMs] | p95 | s) | \([$ok[].server.encode] | p95 | s) | \([$ok[].server["encode-cpu"]] | add / length | s) | \([$ok[] | .server["encode-cpu"] / .server.encode] | add / length * 100 | round / 100) | \([$ok[].operationMs] | p95 | s) |"
+        else "- | - | - | - | - |" end)' "$jsonl"
+  echo
+  echo '## Stage p95s (seconds)'
+  echo
+  jq -rs '
+    def p95: sort | .[((length * 0.95) | ceil) - 1];
+    def s: . / 1000 * 100 | round / 100;
+    def stage(name; f): ([.[] | f | select(. != null)]) as $v
+      | "| \(name) | \($v | length) | \(if ($v | length) > 0 then ($v | p95 | s) else "-" end) |";
+    [.[] | select(.kind == "run" and .status == 200)] as $runs
+    | [.[] | select(.kind == "dispatch")] as $dispatch
+    | "| stage | samples | p95 |", "|---|---|---|",
+      ($runs | stage("start to ready, normalize"; select(.op == "normalize") | .startToReadyMs)),
+      ($runs | stage("start to ready, still"; select(.op == "still") | .startToReadyMs)),
+      ($runs | stage("input into the container (server)"; .server.input)),
+      ($runs | stage("probe (server)"; .server.probe)),
+      ($runs | stage("still in normalize (server)"; .server.still)),
+      ($runs | stage("still operation (wall)"; select(.op == "still") | .wallMs)),
+      ($runs | stage("Images WebP"; .imagesWebpMs)),
+      ($runs | stage("Images RGBA"; .imagesRgbaMs)),
+      ($runs | stage("output into R2"; .outputToR2Ms)),
+      ($runs | stage("destroy"; .destroyMs)),
+      ($dispatch | stage("alarm dispatch"; .dispatchMs))' "$jsonl"
+  echo
+  jq -rs '[.[] | select(.kind == "ingress")] | if length > 0 then
+      "Ingress into R2 through the Worker: \((map(.bytes) | add) / (map(.ingressMs) | add) * 1000 / 1048576 * 10 | round / 10) MiB/s over \(length) fixtures (the client link included)."
+    else empty end' "$jsonl"
+  jq -r 'select(.kind == "hold") | "- headers held \(.seconds) s: HTTP \(.status)"' "$jsonl"
+  echo
+  echo "Not measured here: the Store's completion and the v1 reply (PR4's upload path)."
+} >"$out/results.md"
+cat "$out/results.md"
+echo
+echo "Billed usage of this run, per instance type and threading (Account Analytics: Read):"
+echo "  CF_ACCOUNT_ID=... CF_API_TOKEN=... START=$start END=$end bash $(dirname "$0")/billing.sh"
