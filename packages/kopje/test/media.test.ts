@@ -12,6 +12,7 @@ import { MAX_MEDIA_DESCRIPTION_LENGTH } from "../src/platform/stored-bounds";
 import { sha256Hex } from "../src/security/tokens";
 import { bearer, json, login, settle, sql } from "./api-helpers";
 import { NOW } from "./app-helpers";
+import { avFixture } from "./av-helpers";
 import { deleteSignature } from "./delete-job-helpers";
 import {
   GIF,
@@ -1053,6 +1054,83 @@ describe("GET /media/:token/:file", () => {
     const png = await h.request(`/media/${token}/full.png`);
     expect(png.status).toBe(200);
     expect(png.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
+  });
+
+  // P14, MEDIA-4, WEB-5: the processor's output, written to R2 here as PR4's upload will write it.
+  it("serves ranges of a local video", async () => {
+    const h = await users();
+    const token = "V".repeat(43);
+    const video = await avFixture("r1-av.mp4");
+    const audio = await avFixture("m4a.mp3");
+    await env.MEDIA.put(`files/${token}/full`, video, { httpMetadata: { contentType: "video/mp4" } });
+    const size = video.length;
+    const fixed = {
+      "content-type": "video/mp4",
+      "accept-ranges": "bytes",
+      "cache-control": "public, max-age=31536000, immutable",
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "default-src 'none'; sandbox",
+      "cross-origin-resource-policy": "cross-origin",
+      "access-control-allow-origin": "*",
+    };
+    const url = `/media/${token}/full.mp4`;
+    const whole = await h.request(url);
+    expect(whole.status).toBe(200);
+    expect(Object.fromEntries(whole.headers)).toMatchObject({ ...fixed, "content-length": String(size) });
+    expect(new Uint8Array(await whole.arrayBuffer())).toEqual(video);
+    const etag = whole.headers.get("etag") ?? "";
+    expect(etag).not.toBe("");
+
+    // HEAD from the object's head: the length, no body.
+    const head = await h.request(url, { method: "HEAD" });
+    expect(head.status).toBe(200);
+    expect(Object.fromEntries(head.headers)).toMatchObject({ ...fixed, "content-length": String(size), etag });
+    expect((await head.arrayBuffer()).byteLength).toBe(0);
+
+    for (const [range, status, contentRange, from, to] of [
+      ["bytes=0-99", 206, `bytes 0-99/${size}`, 0, 100],
+      ["bytes=100-", 206, `bytes 100-${size - 1}/${size}`, 100, size],
+      ["bytes=-10", 206, `bytes ${size - 10}-${size - 1}/${size}`, size - 10, size],
+      [`bytes=${size}-`, 416, `bytes */${size}`, 0, 0],
+      ["bytes=-0", 416, `bytes */${size}`, 0, 0],
+      ["bytes=0-1, 4-5", 200, null, 0, size],
+    ] as const) {
+      const response = await h.request(url, { headers: { range } });
+      expect(response.status, range).toBe(status);
+      expect(response.headers.get("content-range"), range).toBe(contentRange);
+      expect(response.headers.get("x-content-type-options"), range).toBe("nosniff");
+      expect(response.headers.get("content-security-policy"), range).toBe("default-src 'none'; sandbox");
+      expect(new Uint8Array(await response.arrayBuffer()), range).toEqual(video.slice(from, to));
+    }
+    for (const method of ["GET", "HEAD"]) {
+      const response = await h.request(url, { method, headers: { "if-none-match": etag } });
+      expect(response.status, method).toBe(304);
+      expect(response.headers.get("cache-control"), method).toBe(fixed["cache-control"]);
+    }
+
+    // Only as full, and only under its own type's extension.
+    await env.MEDIA.put(`files/${token}/small`, video, { httpMetadata: { contentType: "video/mp4" } });
+    for (const path of [`/media/${token}/small.mp4`, `/media/${token}/small.mp3`, `/media/${token}/full.mp3`]) {
+      for (const method of ["GET", "HEAD"]) {
+        const response = await h.request(path, { method, headers: { range: "bytes=0-9" } });
+        expect(response.status, `${method} ${path}`).toBe(404);
+        expect(response.headers.get("content-type"), path).not.toMatch(/^video\//);
+      }
+    }
+    // A stored type the extension does not name is refused, whatever its metadata says.
+    await env.MEDIA.put(`files/${token}/full`, "<script>alert(1)</script>", {
+      httpMetadata: { contentType: "text/html" },
+    });
+    expect((await h.request(url)).status).toBe(404);
+    expect((await h.request(url, { headers: { range: `bytes=${size}-` } })).status).toBe(404);
+
+    // MP3 as audio/mpeg.
+    await env.MEDIA.put(`files/${token}/full`, audio, { httpMetadata: { contentType: "audio/mpeg" } });
+    const mp3 = await h.request(`/media/${token}/full.mp3`, { headers: { range: "bytes=0-3" } });
+    expect(mp3.status).toBe(206);
+    expect(mp3.headers.get("content-type")).toBe("audio/mpeg");
+    expect(new Uint8Array(await mp3.arrayBuffer())).toEqual(audio.slice(0, 4));
+    expect((await h.request(url)).status).toBe(404);
   });
 });
 

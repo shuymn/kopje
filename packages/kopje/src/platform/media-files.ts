@@ -1,8 +1,8 @@
 // Where local media lives in R2 and how it is addressed (MEDIA-2, MEDIA-4).
 //
 //   originals/<id>                the uploaded bytes, never served (they may carry EXIF and location)
-//   files/<token>/full            the re-encoded image that is served
-//   files/<token>/small           the re-encoded preview that is served
+//   files/<token>/full            the re-encoded image, or the verified video or audio (#1828), that is served
+//   files/<token>/small           the re-encoded preview (an image) that is served
 //   kopje/pitr-restored/<store>   when that Store last scheduled a PITR restore (restoreMarkerKey), never served
 //   remote/<token>/full           a cached remote file, verified, served (domain/remote-media.ts, MEDIA-7)
 //   remote/<token>/still          the still of a cached animated image, served
@@ -30,13 +30,26 @@ export const FILE_TOKEN = /^[A-Za-z0-9_-]{32,64}$/;
 
 const ID = /^\d{18}$/;
 
-// The only types the instance serves media as. Re-encoding outputs one of these; nothing else (no HTML, no SVG, no
-// script) is ever served from the instance origin, whatever an object's metadata says.
+// The only types the instance serves media as, each under one extension. Re-encoding outputs one of these; nothing
+// else (no HTML, no SVG, no script) is ever served from the instance origin, whatever an object's metadata says.
+// SERVED_TYPES are the images, under either variant; SERVED_AV_TYPES the media processor's verified video and audio,
+// under `full` only (`small` is always an image). VARIANT_TYPES is what each variant may be; mediaPath and keyOfPath
+// derive their extensions from it.
 export const SERVED_TYPES: ReadonlyMap<string, string> = new Map([
   ["image/jpeg", "jpg"],
   ["image/png", "png"],
   ["image/webp", "webp"],
 ]);
+
+export const SERVED_AV_TYPES: ReadonlyMap<string, string> = new Map([
+  ["video/mp4", "mp4"],
+  ["audio/mpeg", "mp3"],
+]);
+
+export const VARIANT_TYPES: Readonly<Record<MediaVariant, ReadonlyMap<string, string>>> = {
+  full: new Map([...SERVED_TYPES, ...SERVED_AV_TYPES]),
+  small: SERVED_TYPES,
+};
 
 export function originalKey(id: string): string {
   if (!ID.test(id)) {
@@ -59,7 +72,7 @@ export function mediaKeys(id: string, token: string): string[] {
 
 // The public path of a served file: /media/<token>/<variant>.<ext>.
 export function mediaPath(token: string, variant: MediaVariant, contentType: string): string {
-  const extension = SERVED_TYPES.get(contentType);
+  const extension = VARIANT_TYPES[variant]?.get(contentType);
   if (extension === undefined) {
     throw new Error(`not a served media type: ${contentType}`);
   }
@@ -76,15 +89,15 @@ export function mediaUrl(origin: string, token: string, variant: MediaVariant, c
 }
 
 // The R2 key a request path names, or null: the token must look like a server token, the variant and extension must
-// be known, and the extension must belong to a served type. Anything else (other segments, encoded separators, dots)
-// does not match.
+// be known, and the extension must belong to a type the variant is served as (VARIANT_TYPES: an AV extension under
+// `small` does not match). Anything else (other segments, encoded separators, dots) does not match.
 export function keyOfPath(token: string, file: string): { key: string; extension: string } | null {
-  const match = /^(full|small)\.([a-z]{3,4})$/.exec(file);
+  const match = /^(full|small)\.([a-z0-9]{3,4})$/.exec(file);
   if (match === null || !FILE_TOKEN.test(token)) {
     return null;
   }
   const [, variant = "", extension = ""] = match;
-  if (![...SERVED_TYPES.values()].includes(extension)) {
+  if (![...VARIANT_TYPES[variant as MediaVariant].values()].includes(extension)) {
     return null;
   }
   return { key: fileKey(token, variant as MediaVariant), extension };

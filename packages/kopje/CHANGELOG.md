@@ -18,6 +18,9 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
   also export `MediaProcessor` from `src/index.ts` (`export { default, MediaProcessor, Store } from "kopje"`), or
   `wrangler deploy` fails; the template's file does. Its `v2-media-processor` migration is permanent: to turn the
   processor off, remove only the `"containers"` entry.
+- Local media URLs serve the processor's video (`full.mp4`) and audio (`full.mp3`) as cached remote media is served:
+  HEAD, one byte range with 206, an unsatisfiable one with 416, several with the whole file, and 304 to a matching
+  `If-None-Match`, so players can seek. Nothing writes such files yet; image URLs answer as before.
 
 ### Fixed
 
