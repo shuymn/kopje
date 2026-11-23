@@ -319,13 +319,24 @@ export function withSps(file: Uint8Array, nal: Uint8Array, width: number, height
 
 // A video-only MP4 from a silent fixture's moov: `samples` samples of `size` bytes, each one non-IDR slice NAL
 // filling it, `delta` ticks apart at the track's timescale, in one chunk; `fixed` writes one stsz size for all, and
-// `delayMs` a leading empty edit of that many movie ticks (the track starting late). Its mdat is generated as it is read, so a
-// large one is never held. Returns the stream factory and the length.
+// `delayMs` a leading empty edit of that many movie ticks (the track starting late). With `audio`, from a fixture with
+// an AAC track (r1-av.mp4): that track's samples of `size` zero bytes, `delta` ticks apart, in one chunk after the
+// video's, its media edit after the fixture's priming. Its mdat is generated as it is read, so a large one is never
+// held. Returns the stream factory and the length.
 export function syntheticMp4(
   template: Uint8Array,
-  shape: { samples: number; size: number; delta: number; timescale?: number; fixed?: boolean; delayMs?: number },
+  shape: {
+    samples: number;
+    size: number;
+    delta: number;
+    timescale?: number;
+    fixed?: boolean;
+    delayMs?: number;
+    audio?: { samples: number; size: number; delta: number };
+  },
 ): { length: number; stream: (chunk?: number) => ReadableStream<Uint8Array>; head: Uint8Array } {
   const { samples, size, delta } = shape;
+  const audioBytes = shape.audio === undefined ? 0 : shape.audio.samples * shape.audio.size;
   let head = new Uint8Array();
   let mdatStart = 0;
   const build = (offset: number) => {
@@ -339,7 +350,11 @@ export function syntheticMp4(
         setBody(mdhd, 12, [...u32(timescale), ...u32(samples * delta)]);
         const movie = Math.round((samples * delta * 1000) / timescale);
         const delay = shape.delayMs ?? 0;
-        setBody(find(moov, "mvhd"), 16, u32(delay + movie));
+        let longest = delay + movie;
+        if (shape.audio !== undefined) {
+          longest = Math.max(longest, syntheticAudio(find(moov, "trak#1"), shape.audio, offset + samples * size));
+        }
+        setBody(find(moov, "mvhd"), 16, u32(longest));
         setBody(find(trak, "tkhd"), 20, u32(delay + movie));
         const empty = delay > 0 ? [...u32(delay), ...u32(0xffffffff), ...u32(0x10000)] : [];
         find(trak, "edts").children = [
@@ -384,8 +399,10 @@ export function syntheticMp4(
   const second = build(first.mdatAt + 8);
   head = second.file.slice(0, second.mdatAt + 8);
   mdatStart = second.mdatAt + 8;
-  const length = mdatStart + samples * size;
-  view(head).setUint32(second.mdatAt, 8 + samples * size);
+  const videoEnd = mdatStart + samples * size;
+  const length = videoEnd + audioBytes;
+  view(head).setUint32(second.mdatAt, 8 + samples * size + audioBytes);
+  const zeros = new Uint8Array(65_536);
   const sample = new Uint8Array(size);
   view(sample).setUint32(0, size - 4);
   sample[4] = 0x41;
@@ -405,7 +422,9 @@ export function syntheticMp4(
             const [from, n] =
               i < mdatStart
                 ? [head.subarray(i), Math.min(end, mdatStart) - i]
-                : [sample.subarray(within), Math.min(end - i, size - within)];
+                : i >= videoEnd
+                  ? [zeros, Math.min(end - i, zeros.length)]
+                  : [sample.subarray(within), Math.min(end - i, size - within)];
             out.set(from.subarray(0, n), i - at);
             i += n;
           }
@@ -417,6 +436,43 @@ export function syntheticMp4(
     );
   };
   return { length, stream, head };
+}
+
+// Rewrites an AAC trak for syntheticMp4: its samples in one chunk at `offset`, its edit, tkhd, roll group and esds
+// average bitrate following them. Returns its tkhd duration.
+function syntheticAudio(trak: BoxNode, a: { samples: number; size: number; delta: number }, offset: number): number {
+  const mdhd = find(trak, "mdia/mdhd");
+  const timescale = view(mdhd.body as Uint8Array).getUint32(12);
+  const duration = a.samples * a.delta;
+  setBody(mdhd, 16, u32(duration));
+  const elst = find(trak, "edts/elst");
+  const mediaTime = view(elst.body as Uint8Array).getUint32(12);
+  const span = Math.floor(((duration - mediaTime) * 1000) / timescale);
+  setBody(elst, 8, [...u32(span), ...u32(mediaTime), ...u32(0x10000)]);
+  setBody(find(trak, "tkhd"), 20, u32(span));
+  const stbl = find(trak, "mdia/minf/stbl");
+  const esds = find(stbl, "stsd/mp4a/esds");
+  const average = Math.floor((a.samples * a.size * 8 * timescale) / duration);
+  const nominal = view(esds.body as Uint8Array).getUint32(22);
+  setBody(esds, 22, [...u32(Math.max(nominal, average)), ...u32(average)]);
+  stbl.children = (stbl.children ?? []).map((c) => {
+    switch (c.type) {
+      case "stts":
+        return box("stts", [...u32(0), ...u32(1), ...u32(a.samples), ...u32(a.delta)]);
+      case "stsc":
+        return box("stsc", [...u32(0), ...u32(1), ...u32(1), ...u32(a.samples), ...u32(1)]);
+      case "stsz":
+        return box("stsz", [...u32(0), ...u32(a.size), ...u32(a.samples)]);
+      case "stco":
+        return box("stco", [...u32(0), ...u32(1), ...u32(offset)]);
+      case "sbgp":
+        setBody(c, 12, u32(a.samples));
+        return c;
+      default:
+        return c;
+    }
+  });
+  return span;
 }
 
 // ---- MP3

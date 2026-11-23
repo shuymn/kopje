@@ -58,9 +58,11 @@ export const AUDIO_DURATION_LIMIT = 20 * 60;
 export const VIDEO_SAMPLE_LIMIT = 36_000;
 // An AAC track's priming: at most one frame (#1828 A7).
 const AAC_PRIMING_LIMIT = 2048;
-// An AAC track's samples (1024 each at at most 48 kHz) within VIDEO_DURATION_LIMIT, its priming besides, and one more
-// for a last frame the rounding splits.
-export const AUDIO_SAMPLE_LIMIT = Math.ceil((VIDEO_DURATION_LIMIT * 48_000 + AAC_PRIMING_LIMIT) / 1024) + 1;
+// A bound on an AAC track's packets, for the work and memory of its tables, not a claim about its cadence: the muxer
+// takes sample durations from packet timestamps, which may drift under the encoder's 1024 samples a frame, so the
+// presented time decides the duration. VIDEO_DURATION_LIMIT at 48 kHz in packets as short as 960 samples, and 3 more
+// (the priming's two frames and one split by rounding).
+export const AUDIO_SAMPLE_LIMIT = Math.ceil((VIDEO_DURATION_LIMIT * 48_000) / 960) + 3;
 // The output ladder's top rung (container/server/plan.go): its frame rate and geometry bound every rung's.
 export const FRAME_RATE_LIMIT = 60;
 export const OUTPUT_LONG_EDGE = 1920;

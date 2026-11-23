@@ -757,6 +757,27 @@ describe("a synthetic MP4", () => {
     expect(await verify({ samples: 7178, size: 6, delta: 257, delayMs: 500 })).toBe("frame_rate");
   });
 
+  it("bounds an AAC track's packets for their work, leaving its duration to the presented time", async () => {
+    expect(AUDIO_SAMPLE_LIMIT).toBe(30_003);
+    // 28,129 packets of 1023 ticks at 48 kHz (599.5 s, timestamps drifting under 1024 a packet) are accepted.
+    const s = syntheticMp4(await avFixture("r1-av.mp4"), {
+      samples: 30,
+      size: 64,
+      delta: 512,
+      audio: { samples: 28_129, size: 6, delta: 1023 },
+    });
+    const v = await verifyStream("video/mp4", s.stream(), s.length);
+    expect(v).toMatchObject({ ok: true });
+    // More than 600 s of them is the duration's refusal, not the count's.
+    const over = syntheticMp4(await avFixture("r1-av.mp4"), {
+      samples: 30,
+      size: 64,
+      delta: 512,
+      audio: { samples: 28_200, size: 6, delta: 1023 },
+    });
+    expect(await verifyStream("video/mp4", over.stream(), over.length)).toMatchObject({ rule: "duration_limit" });
+  });
+
   it("is refused at a small moov declaring a huge sample count, before its tables are expanded", async () => {
     const template = await avFixture("r1-silent.mp4");
     // Four million one-tick 8-byte samples of one stsz size: the moov stays small, the tables would not.
