@@ -424,7 +424,7 @@ describe("the caps (RES-6)", () => {
       EVENT_TABLE_BYTES: 5_242_944,
     });
     const room = ISOLATE - Math.ceil(1.25 * STORE_BASELINE.bytes) - P - TAG_TABLE_BYTES - EVENT_TABLE_BYTES;
-    expect(room).toBe(17_666_002);
+    expect(room).toBe(17_143_751);
     const instanceBytes = Math.floor(room / MIB) * MIB;
     expect(STREAM_OUTPUT.instanceBytes).toBe(instanceBytes);
     expect(STREAM_OUTPUT.socketBytes).toBe(Math.floor(instanceBytes / 3 / MIB) * MIB);

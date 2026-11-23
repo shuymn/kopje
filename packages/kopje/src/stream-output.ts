@@ -54,7 +54,7 @@ export const SOCKET_BYTES = alloc(ATTACHMENT_MAX) + frame(CLOSE_REASON_MAX) + SO
 
 // The idle Store isolate as `pnpm --filter kopje bench:store-baseline` measured it (the largest of three runs), with
 // the workerd it ran on; RELEASING.md re-measures it before a release.
-export const STORE_BASELINE = { bytes: 20_490_906, workerd: "1.20261113.1", date: "2026-11-17" };
+export const STORE_BASELINE = { bytes: 20_908_707, workerd: "1.20261118.1", date: "2026-11-23" };
 
 // The caps (RES-6): `instanceBytes` leaves the baseline with 25% headroom, the largest peak of one request and the
 // runtime's tables at their largest within the isolate's 128 MB (the hibernation manager's tag table at the sockets
