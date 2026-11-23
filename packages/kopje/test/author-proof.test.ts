@@ -99,7 +99,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// An RsaSignature2017 as Fedify's signJsonLd writes it (federation/ld-sign.ts), its own @context identity/v1.
+// An RsaSignature2017 as Fedify's signJsonLd writes it (federation/ld-sign.ts), its own @context security/v1 (2.4.6).
 async function fedifySigned(json: Json, signer: TestActor): Promise<Json> {
   return signJsonLd(json, signer.privateKey, new URL(signer.keyId), { contextLoader: contexts });
 }
@@ -160,7 +160,12 @@ describe("each sender profile passes as its sender builds it", () => {
     if (signing.kind !== "signed") {
       throw new Error("not signable");
     }
-    expect(await proves(await fedifySigned(signing.activity, bob), bob, status)).toBe(true);
+    const signed = await fedifySigned(signing.activity, bob);
+    expect(await proves(signed, bob, status)).toBe(true);
+    // As a Kopje on Fedify before 2.4.6 signs it: the signature's own @context identity/v1, which Fedify's verifier
+    // replaces with identity/v1 whatever it is.
+    const before246 = { ...signed, signature: { ...(signed.signature as Json), "@context": IDENTITY } };
+    expect(await proves(before246, bob, status)).toBe(true);
   });
 
   it("Kopje's stamp Delete (activities.ts stampDeleteActivity, signed as ld-sign.ts signs)", async () => {
@@ -172,7 +177,14 @@ describe("each sender profile passes as its sender builds it", () => {
   it("a Delete Fedify signs with an FEP-8b32 proof (signObject, its default Delete context)", async () => {
     const { fep } = await world();
     const status = `${fep.actor.uri}/statuses/1`;
-    expect(await proves(await fep.fedify(`${status}#delete`, status), fep.actor, status)).toBe(true);
+    const signed = await fep.fedify(`${status}#delete`, status);
+    expect(await proves(signed, fep.actor, status)).toBe(true);
+    // As Fedify before 2.4.6 writes it: identity/v1 and ActivityStreams lead the context, which the proof copies.
+    const context = signed["@context"] as unknown[];
+    expect(context.slice(0, 2)).toEqual([AS, SECURITY]);
+    const { proof: _proof, ...unsigned } = signed;
+    const before246 = await fep.sign({ ...unsigned, "@context": [IDENTITY, AS, ...context.slice(2)] });
+    expect(await proves(before246, fep.actor, status)).toBe(true);
   });
 });
 
@@ -244,11 +256,11 @@ describe("a body outside every profile is refused, its signature valid (ID-1)", 
     await refused(await mastodonSigned(kopje, bob), bob, status);
   });
 
-  it("a Kopje signature whose own @context is not identity/v1, which Fedify ignores", async () => {
+  it("a Kopje signature whose own @context is neither security/v1 nor identity/v1, which Fedify ignores", async () => {
     const { bob, status } = await world();
     const signing = deleteSigning({ uri: status, actorUri: bob.uri, visibility: "public" });
     const signed = await fedifySigned((signing as { activity: Json }).activity, bob);
-    const body = { ...signed, signature: { ...(signed.signature as Json), "@context": SECURITY } };
+    const body = { ...signed, signature: { ...(signed.signature as Json), "@context": AS } };
     await refused(body, bob, status);
   });
 

@@ -81,6 +81,7 @@ const BUILT = {
   "src/domain/activities.ts featuredUri": 1,
   "src/domain/featured-tags.ts recordFeaturedChange": 1,
   "src/domain/actor-update.ts documentOf": 1,
+  "src/federation/routes.ts FEATURED": 1,
 };
 
 // A /collections path segment.

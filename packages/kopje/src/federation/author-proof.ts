@@ -37,7 +37,7 @@ const IDENTITY = "https://w3id.org/identity/v1";
 
 type Profile = {
   // The proof: an RsaSignature2017 signature as Mastodon's LinkedDataSignature#sign! writes it, or as Fedify's
-  // createSignature does (with its own @context, identity/v1), or FEP-8b32 proofs.
+  // createSignature does (with its own @context, FEDIFY_SIGNATURE_CONTEXTS), or FEP-8b32 proofs.
   form: "mastodon" | "fedify" | "proof";
   // The sender's @context, or "forwarded": as Mastodon compacts a body it forwards (isForwardedContext).
   context: readonly unknown[] | "forwarded";
@@ -57,6 +57,33 @@ const FEATURE_AUTHORIZATION = {
   type: "FeatureAuthorization",
   keys: ["id", "type", "interactingObject", "interactionTarget"],
 } as const;
+
+// The tail of the default context @fedify/vocab gives a Delete, the same in 2.4.5 and 2.4.6.
+const FEDIFY_DELETE_CONTEXT = [
+  "https://w3id.org/security/data-integrity/v1",
+  "https://gotosocial.org/ns",
+  {
+    toot: "http://joinmastodon.org/ns#",
+    misskey: "https://misskey-hub.net/ns#",
+    fedibird: "http://fedibird.com/ns#",
+    sensitive: "as:sensitive",
+    votersCount: { "@id": "toot:votersCount", "@type": "http://www.w3.org/2001/XMLSchema#nonNegativeInteger" },
+    Emoji: "toot:Emoji",
+    Hashtag: "as:Hashtag",
+    ChatMessage: "http://litepub.social/ns#ChatMessage",
+    quote: { "@id": "https://w3id.org/fep/044f#quote", "@type": "@id" },
+    quoteUrl: "as:quoteUrl",
+    _misskey_quote: "misskey:_misskey_quote",
+    quoteUri: "fedibird:quoteUri",
+    QuoteAuthorization: "https://w3id.org/fep/044f#QuoteAuthorization",
+    QuoteRequest: "https://w3id.org/fep/044f#QuoteRequest",
+    quoteAuthorization: { "@id": "https://w3id.org/fep/044f#quoteAuthorization", "@type": "@id" },
+  },
+] as const;
+
+// The signature's own @context Fedify's createSignature writes: security/v1 from @fedify/fedify 2.4.6, identity/v1
+// before it (a sender on either still current). Fedify's verifier hashes the options under identity/v1 whatever it is.
+const FEDIFY_SIGNATURE_CONTEXTS: readonly unknown[] = [SECURITY, IDENTITY];
 
 // The accepted forms, each its sender's @context verbatim and the keys its serializer writes.
 export const PROFILES: Readonly<Record<string, Profile>> = {
@@ -132,33 +159,13 @@ export const PROFILES: Readonly<Record<string, Profile>> = {
   kopjeForwardedStatus: { form: "fedify", context: "forwarded", extra: ["to"], object: TOMBSTONE },
   mastodonForwardedStamp: { form: "mastodon", context: "forwarded", extra: ["to"], object: QUOTE_AUTHORIZATION },
   kopjeForwardedStamp: { form: "fedify", context: "forwarded", extra: ["to"], object: "iri" },
-  // A Delete Fedify signs with an FEP-8b32 proof (signObject) under its default Delete context (@fedify/vocab 2.4.5
-  // Delete#toJsonLd docContext), which copies that context into the proof.
-  fedifyProof: {
+  // A Delete Fedify signs with an FEP-8b32 proof (signObject) under its default Delete context (@fedify/vocab
+  // Delete#toJsonLd docContext), which copies that context into the proof: from 2.4.6 ActivityStreams and security/v1
+  // lead it, before 2.4.6 identity/v1 and ActivityStreams, a sender on either still current.
+  fedifyProof: { form: "proof", context: [AS, SECURITY, ...FEDIFY_DELETE_CONTEXT], extra: ["to", "cc"], object: "iri" },
+  fedifyProofBefore246: {
     form: "proof",
-    context: [
-      IDENTITY,
-      AS,
-      "https://w3id.org/security/data-integrity/v1",
-      "https://gotosocial.org/ns",
-      {
-        toot: "http://joinmastodon.org/ns#",
-        misskey: "https://misskey-hub.net/ns#",
-        fedibird: "http://fedibird.com/ns#",
-        sensitive: "as:sensitive",
-        votersCount: { "@id": "toot:votersCount", "@type": "http://www.w3.org/2001/XMLSchema#nonNegativeInteger" },
-        Emoji: "toot:Emoji",
-        Hashtag: "as:Hashtag",
-        ChatMessage: "http://litepub.social/ns#ChatMessage",
-        quote: { "@id": "https://w3id.org/fep/044f#quote", "@type": "@id" },
-        quoteUrl: "as:quoteUrl",
-        _misskey_quote: "misskey:_misskey_quote",
-        quoteUri: "fedibird:quoteUri",
-        QuoteAuthorization: "https://w3id.org/fep/044f#QuoteAuthorization",
-        QuoteRequest: "https://w3id.org/fep/044f#QuoteRequest",
-        quoteAuthorization: { "@id": "https://w3id.org/fep/044f#quoteAuthorization", "@type": "@id" },
-      },
-    ],
+    context: [IDENTITY, AS, ...FEDIFY_DELETE_CONTEXT],
     extra: ["to", "cc"],
     object: "iri",
   },
@@ -259,8 +266,8 @@ function objectId(value: unknown, form: Profile["object"]): string | null {
     : null;
 }
 
-// Fedify's createSignature names identity/v1 as the signature's own @context (@fedify/fedify 2.4.5 ld-*.mjs) and
-// writes no `expires`; Mastodon writes no @context, and `expires` from 4.7.0 (in sign!'s form, a valid instant).
+// Fedify's createSignature names one of FEDIFY_SIGNATURE_CONTEXTS as the signature's own @context and writes no
+// `expires`; Mastodon writes no @context, and `expires` from 4.7.0 (in sign!'s form, a valid instant).
 function isSignature(value: unknown, form: "mastodon" | "fedify"): boolean {
   if (!isJson(value)) {
     return false;
@@ -272,7 +279,7 @@ function isSignature(value: unknown, form: "mastodon" | "fedify"): boolean {
     value.type === "RsaSignature2017" &&
     (form === "mastodon"
       ? value.expires === undefined || (typeof value.expires === "string" && isSignTime(value.expires))
-      : value["@context"] === IDENTITY)
+      : FEDIFY_SIGNATURE_CONTEXTS.includes(value["@context"]))
   );
 }
 

@@ -51,7 +51,7 @@ export function unprovenDeleteSignature(
     : {
         ...sign.activity,
         signature: {
-          "@context": "https://w3id.org/identity/v1",
+          "@context": "https://w3id.org/security/v1",
           creator: sign.keyId,
           created: new Date(NOW).toISOString(),
           type: "RsaSignature2017",

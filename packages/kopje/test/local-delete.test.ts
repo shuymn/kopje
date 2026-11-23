@@ -157,7 +157,7 @@ const SIGNED_SKELETON = (() => {
   const signed = {
     ...signedActivity(deleted),
     signature: {
-      "@context": "https://w3id.org/identity/v1",
+      "@context": "https://w3id.org/security/v1",
       creator: mainKeyId(A),
       created: new Date(NOW).toISOString(),
       type: "RsaSignature2017",
