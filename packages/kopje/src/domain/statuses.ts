@@ -960,21 +960,20 @@ function ownStatus(db: Db, accountId: string, id: string): OwnStatus | null {
   );
 }
 
-// An edit's media as presented: the snapshot as editMediaSql projects its bytes, with each URL, the description and
-// the blurhash judged again as decoded, as live media are (presentedMediaUrl, presentedMediaDescription,
-// storedBlurhash): an imported snapshot may hold any text. A playable one's preview_url is judged again too
-// (playablePreview, with VIDEO_POSTER on `origin`): a snapshot recorded by an earlier release gave a video or audio file
-// without a preview image the file itself as its preview.
+// An edit's media as presented: the snapshot as editMediaSql projects its bytes, with each URL, the description and the
+// blurhash judged again as decoded, as live media are (presentedMediaUrl, presentedMediaDescription, storedBlurhash):
+// an imported snapshot may hold any text. A playable one's preview_url is judged again too (playablePreview, with
+// VIDEO_POSTER on `origin`): a snapshot recorded by an earlier release gave a video or audio file without a preview
+// image the file itself as its preview.
 function snapshotMedia(json: string, origin: string | null): MediaAttachment[] {
   return (JSON.parse(json) as MediaAttachment[]).map((media) => {
     const url = presentedMediaUrl(media.url);
     const remoteUrl = presentedMediaUrl(media.remote_url);
+    const preview = presentedMediaUrl(media.preview_url);
     return {
       ...media,
       url,
-      preview_url: isPlayable(media.type)
-        ? playablePreview(media.type, url, presentedMediaUrl(media.preview_url), remoteUrl, origin)
-        : presentedMediaUrl(media.preview_url),
+      preview_url: isPlayable(media.type) ? playablePreview(media.type, url, preview, remoteUrl, origin) : preview,
       remote_url: remoteUrl,
       preview_remote_url: presentedMediaUrl(media.preview_remote_url),
       description: presentedMediaDescription(media.description),
@@ -1692,11 +1691,11 @@ function editPollOf(options: string | null): StatusEdit["poll"] {
 
 // A status's recorded versions (status_edits), newest first: how many there are, and each version as StatusEdit shows
 // it without its account, read only when the walk reaches it (a preview_url judged with VIDEO_POSTER on `origin`,
-// snapshotMedia). The edit history (statusHistory) and the status page's
-// history (domain/web-pages/status.ts) admit from it. MAX_STATUS_EDITS bounds what Kopje writes, but a converted
-// history is as long as it was carried, so nothing here holds all of its ids: the count reads the status's range of
-// status_edits_status (its index entries only), and the walk reads EDIT_ID_CHUNK ids at a time below the last, so
-// what it holds and reads past the admitted versions is one chunk.
+// snapshotMedia). The edit history (statusHistory) and the status page's history (domain/web-pages/status.ts) admit
+// from it. MAX_STATUS_EDITS bounds what Kopje writes, but a converted history is as long as it was carried, so nothing
+// here holds all of its ids: the count reads the status's range of status_edits_status (its index entries only), and
+// the walk reads EDIT_ID_CHUNK ids at a time below the last, so what it holds and reads past the admitted versions is
+// one chunk.
 export type EditVersion = Omit<StatusEdit, "account">;
 
 const EDIT_ID_CHUNK = 16;

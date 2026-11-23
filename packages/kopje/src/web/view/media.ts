@@ -7,9 +7,9 @@ import { type Link, linkTo } from "./link";
 // type is `unknown`, shown as a link, and the type itself is never written. `preview` is the attachment's own preview
 // image, or null when it has none: the presenter stands an image's or an unknown file's url in for a missing preview,
 // which for an unknown file need be no image, so a preview equal to the url is none, and gives a video without a
-// preview image this server's VIDEO_POSTER, which a page does not show. `alt` is its description, or '' when it has none (the page
-// shows no marker for that). Sizes come from the small variant when it has them. `link` opens the file itself (through
-// linkTo: another host's is marked).
+// preview image this server's VIDEO_POSTER, which a page does not show. `alt` is its description, or '' when it has
+// none (the page shows no marker for that). Sizes come from the small variant when it has them. `link` opens the file
+// itself (through linkTo: another host's is marked).
 type MediaKind = "image" | "video" | "gifv" | "audio" | "unknown";
 
 export type MediaView = {

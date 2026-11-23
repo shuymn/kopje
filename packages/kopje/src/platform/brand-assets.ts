@@ -6,7 +6,7 @@ export const DEFAULT_AVATAR = "/assets/avatar.jpg";
 export const DEFAULT_HEADER = "/assets/header.jpg";
 export const DEFAULT_THUMBNAIL = "/assets/thumbnail.jpg";
 // The preview_url of a video or gifv attachment without a preview image of its own (status-presenter.ts
-// presentedPreview): a plain dark 16:9 image, as Kopje cannot take a frame from a video. Clients give a video an image
+// playablePreview): a plain dark 16:9 image, as Kopje cannot take a frame from a video. Clients give a video an image
 // preview (Mastodon makes one from every video), and some drop a video whose preview_url is null.
 export const VIDEO_POSTER = "/assets/video-poster.png";
 // The thumbnail's alt text, /api/v2/instance's thumbnail.description.

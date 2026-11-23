@@ -1120,8 +1120,8 @@ function statusUrl(row: StatusUrlRow): string {
 // the file itself), else its remote icon, else url for an image or an unknown file (a playable one's as playablePreview
 // judges it). Its remote_url and preview_remote_url are its stored url and icon (null without one), as Mastodon's; a
 // local one's are null, as Mastodon's local? media. Without an origin (an upload's own answers, a scheduled post, an
-// edit's snapshot) nothing is read from the cache. text_url is always null (MD-6). blurhash: what storedBlurhash keeps of the stored value (a local upload's is its preview's,
-// platform/images.ts processImage, or null).
+// edit's snapshot) nothing is read from the cache. text_url is always null (MD-6). blurhash: what storedBlurhash keeps
+// of the stored value (a local upload's is its preview's, platform/images.ts processImage, or null).
 export function presentMedia(row: MediaRow, origin: string | null = null): MediaAttachment {
   // URLs within MEDIA_URL_LIMIT as serialized, as stored (STORED_COLUMNS in platform/stored-bounds.ts).
   const remoteUrl = presentedMediaUrl(row.url);
