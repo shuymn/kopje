@@ -64,6 +64,7 @@ type probeStream struct {
 	Height         int        `json:"height"`
 	ColorTransfer  string     `json:"color_transfer"`
 	ColorPrimaries string     `json:"color_primaries"`
+	ColorSpace     string     `json:"color_space"`
 	SideDataList   []sideData `json:"side_data_list"`
 	RFrameRate     string     `json:"r_frame_rate"`
 	AvgFrameRate   string     `json:"avg_frame_rate"`
@@ -214,9 +215,12 @@ type plan struct {
 	// icc: the video carries an ICC profile, which normalize reads (iccdetect) for its primaries and transfer;
 	// primaries: it is tagged with primaries other than BT.709. Either converts the primaries and the transfer to
 	// BT.709 (SDR only). transfer: it is tagged with a transfer of a curve other than BT.709's, which is converted.
-	icc        bool
-	primaries  bool
-	transfer   bool
+	icc       bool
+	primaries bool
+	transfer  bool
+	// matrix: the YUV matrix a conversion reads an SDR video with that does not declare one (matrixFor), "" when it
+	// does.
+	matrix     string
 	rung       rung
 	maxrate    int
 	estimateMs float64
@@ -282,6 +286,19 @@ func boundedDuration(p *probeResult, streams ...*probeStream) float64 {
 		longest = math.Max(longest, d)
 	}
 	return longest
+}
+
+// matrixFor is the matrix a conversion of an SDR video to BT.709 (otherPrimaries, otherTransfer) reads it with when its
+// tags leave the matrix unspecified, as players assume one: BT.709 above 576 lines, else BT.601's (smpte170m). Without
+// one, zscale finds no path from the frame's colour and the conversion would fall back.
+func matrixFor(video *probeStream) string {
+	if knownColour(video.ColorSpace) || !(otherPrimaries(video) || otherTransfer(video)) {
+		return ""
+	}
+	if video.Height > 576 {
+		return "bt709"
+	}
+	return "smpte170m"
 }
 
 func rungFor(duration float64) rung {
@@ -379,6 +396,7 @@ func planVideo(p *probeResult, video, audio *probeStream, encodeMs float64) (*pl
 		icc:        streamICC(video),
 		primaries:  otherPrimaries(video),
 		transfer:   otherTransfer(video),
+		matrix:     matrixFor(video),
 		rung:       r,
 		maxrate:    videoMaxrate(duration, audioBitrate),
 		estimateMs: estimate,

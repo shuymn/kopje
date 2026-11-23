@@ -203,6 +203,9 @@ func TestVideoArgsConvertOtherPrimaries(t *testing.T) {
 		{"icc", func(p *plan) { p.icc = true }, "iccdetect,zscale=p=bt709:t=bt709," + iccDrop + ",scale="},
 		{"tagged", func(p *plan) { p.primaries, p.transfer = true, true }, "zscale=p=bt709:t=bt709," + iccDrop + ",scale="},
 		{"transfer", func(p *plan) { p.transfer = true }, "zscale=t=bt709," + iccDrop + ",scale="},
+		// An unspecified matrix is supplied to the conversion, which finds no path from the frame without it.
+		{"matrix", func(p *plan) { p.transfer, p.matrix = true, "smpte170m" },
+			"setparams=colorspace=smpte170m,zscale=t=bt709," + iccDrop + ",scale="},
 		{"hdr", func(p *plan) { p.hdr, p.icc, p.primaries, p.transfer = true, true, true, true }, iccDrop + "," + tonemap + ",scale="},
 	}
 	for _, c := range cases {

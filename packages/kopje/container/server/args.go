@@ -161,6 +161,9 @@ func videoArgs(p *plan, t threading, in, out string) []string {
 	default:
 		vf = []string{iccDrop}
 	}
+	if p.matrix != "" && (p.primaries || p.transfer) && !p.hdr && !p.icc {
+		vf = append([]string{"setparams=colorspace=" + p.matrix}, vf...)
+	}
 	vf = append([]string{frameCap}, vf...)
 	fit := fmt.Sprintf("min(1,min(%d/max(iw,ih),%d/min(iw,ih)))", r.longEdge, r.shortEdge)
 	vf = append(vf,

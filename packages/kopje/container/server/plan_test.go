@@ -256,6 +256,22 @@ func TestPlanReadsTheColourTags(t *testing.T) {
 			t.Fatalf("bt709/%s: %+v %q", c.transfer, pl, r)
 		}
 	}
+	// A conversion of a video that leaves its matrix unspecified reads it with BT.709 above 576 lines, else BT.601's.
+	for _, c := range []struct {
+		transfer, space string
+		height          int
+		want            string
+	}{
+		{"iec61966-2-1", "", 1080, "bt709"}, {"iec61966-2-1", "unknown", 720, "bt709"},
+		{"iec61966-2-1", "", 576, "smpte170m"}, {"gamma22", "", 480, "smpte170m"},
+		{"iec61966-2-1", "bt470bg", 1080, ""}, {"bt709", "", 1080, ""},
+	} {
+		p := video("bt709", c.transfer)
+		p.Streams[0].ColorSpace, p.Streams[0].Height = c.space, c.height
+		if pl, r := planNormalize(p, roomy); r != "" || pl.matrix != c.want {
+			t.Fatalf("%s/%s/%d: matrix %q %q", c.transfer, c.space, c.height, pl.matrix, r)
+		}
+	}
 	onStream := video("", "")
 	onStream.Streams[0].SideDataList = []sideData{{"ICC Profile"}}
 	if pl, _ := planNormalize(onStream, roomy); !pl.icc {

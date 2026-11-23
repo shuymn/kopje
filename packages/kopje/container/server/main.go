@@ -255,8 +255,9 @@ func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) 
 	}
 	run, err := runEncode(encodeCtx, args)
 	if err != nil && !run.oversized && pl.kind == "video" && (pl.icc || pl.primaries || pl.transfer) && encodeCtx.Err() == nil {
-		// A profile iccdetect cannot use, or tags zscale cannot convert from: the video is encoded as before, with no
-		// conversion and its profile dropped.
+		// A profile iccdetect cannot use, or tags zscale still cannot convert from (the matrix supplied by matrixFor):
+		// the last resort encodes the video as before, with no conversion and its profile dropped, under the BT.709
+		// label. That is a colour-rendering detail, not a content one (design section 6, residual 5).
 		pl.icc, pl.primaries, pl.transfer = false, false, false
 		var more encodeRun
 		more, err = runEncode(encodeCtx, videoArgs(pl, threads, in, out))

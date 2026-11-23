@@ -30,7 +30,7 @@
 # only in the VUI, decode as BT.709 with the black at most 24 and the white within 150-235 in luma, its chroma within 12
 # of neutral, and their stills with the black at most 24 and the white at least 150 in gray, its chroma within 12 of
 # neutral; a frame of BT.709 primaries tagged with sRGB's transfer decodes, as BT.709 rendered as sRGB, within 4 of the
-# source's sRGB sample; a VFR
+# source's sRGB sample, and so does that frame coded with BT.601's matrix and tagged with none; a VFR
 # input, audio longer than video and an MP4 whose mvhd states 1 s or 10 s over 3 s of streams give an output whose
 # streams decode as long as the input's, within 0.15 s.
 # Every output and still of these runs is kept and then verified by Kopje's own verifier (src/platform/av-bytes.ts,
@@ -547,6 +547,22 @@ if [ "${got% *}" = 200 ]; then
 fi
 check "$(near "$got_px" "$source_px" 4)" "srgb.mp4 normalize: $got, sRGB $got_px, source $source_px"
 echo "| srgb.mp4 | normalize | $got, sRGB $got_px, source $source_px | | | | | | | | |"
+# The same frame coded with BT.601's matrix and tagged with no matrix at all: normalize reads a frame of 576 lines or
+# fewer with BT.601's (matrixFor), as a player would, and converts its transfer as above.
+ffm -f lavfi -i color=c=0xD24628:s=64x48:r=30:d=2 \
+  -vf scale=out_color_matrix=bt601:out_range=tv,format=yuv420p,setparams=color_primaries=bt709:color_trc=iec61966-2-1:colorspace=unknown:range=tv \
+  -c:v libx264 -color_primaries bt709 -color_trc iec61966-2-1 -color_range tv -movflags +write_colr nomatrix.mp4
+cp "$work/fixture/nomatrix.mp4" "$work/in/"
+source_px="$(pixel "$work/fixture" nomatrix.mp4 'scale=in_color_matrix=bt601:in_range=tv,format=rgb24')"
+source_px="$(echo $source_px)"
+got="$(normalize nomatrix.mp4 nomatrix.out)"
+got_px="-"
+if [ "${got% *}" = 200 ]; then
+  got_px="$(video_pixel "$work/out" nomatrix.out)"
+  keep nomatrix.out nomatrix.mp4 video/mp4 2
+fi
+check "$(near "$got_px" "$source_px" 4)" "nomatrix.mp4 normalize: $got, sRGB $got_px, source $source_px"
+echo "| nomatrix.mp4 | normalize | $got, sRGB $got_px, source $source_px | | | | | | | | |"
 # Durations: VFR (30 fps for a second, then 10 fps), audio (4 s) longer than video (2 s), and an mvhd of 1 s and of
 # 10 s over 3 s of streams.
 ffm -f lavfi -i "testsrc2=s=128x72:r=30:d=3,select='lt(n\,30)+not(mod(n\,3))'" -fps_mode vfr -c:v libx264 vfr.mp4
