@@ -731,7 +731,7 @@ describe("collections: paging", () => {
     );
     const read = async (url: string) => {
       const answer = await h.request(url.replace("https://kopje.test", ""), bearer(carol.token));
-      const body = (await answer.json()) as { collections: { id: string }[] };
+      const body = await answer.json<{ collections: { id: string }[] }>();
       const next = /<([^>]*)>; rel="next"/.exec(answer.headers.get("link") ?? "")?.[1] ?? null;
       return { ids: body.collections.map((c) => c.id), next };
     };

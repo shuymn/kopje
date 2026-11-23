@@ -279,7 +279,7 @@ describe("a relayed status Delete with the author's proof (ID-1)", () => {
       ANN,
     );
     const { t, dan } = await world();
-    const document = (await (await author.request("/ap/users/ann", AP)).json()) as Json;
+    const document = await (await author.request("/ap/users/ann", AP)).json<Json>();
     t.web.serve(ANN_URI, document);
     serveOwnHandle(t.web, document);
     const ann: TestActor = {
