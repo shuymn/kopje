@@ -686,6 +686,8 @@ func TestNormalizeRefusesAShortOutput(t *testing.T) {
 		{"video short", "8.9", "10", false, false, 422, "truncated"},
 		{"audio short", "10", "8", false, false, 422, "truncated"},
 		{"frames dropped for size", "0.04", "10", true, false, 422, "pixels"},
+		// The frames after a dropped one are lost, whatever the length the output still has.
+		{"a frame dropped for size, the output whole", "10", "10", true, false, 422, "pixels"},
 		// ffmpeg failing after the decoder refused a frame is the input's refusal too, not encode_failed.
 		{"failed after a frame dropped for size", "", "", true, true, 422, "pixels"},
 		{"failed", "", "", false, true, 500, "encode_failed"},
@@ -753,53 +755,39 @@ func TestNormalizeRefusesAShortOutput(t *testing.T) {
 	}
 }
 
-// The output's video is held to the plan's frames (plannedFrames: the source's, at most the rung's rate, a lower bound
-// for VFR) within a second of the rung's frames or 10 %, and a video whose source declared no duration to the plan's.
-func TestNormalizeCountsTheOutputsFrames(t *testing.T) {
-	cfr := func(rate, duration string) probeStream { return stream("video", "h264", 320, 240, rate, duration) }
-	vfr := cfr("60/1", "150")
-	vfr.AvgFrameRate, vfr.NbFrames = "40/1", ""
-	undeclared := cfr("30/1", "")
-	undeclared.NbFrames = ""
-	frames := func(s probeStream, n string) probeStream { s.NbFrames = n; return s }
-	cases := []struct {
-		name    string
-		source  probeStream
-		output  probeStream
-		code    int
-		refusal string
-	}{
-		{"every frame", cfr("30/1", "10"), cfr("30/1", "10"), 200, ""},
-		{"within a second of frames", cfr("30/1", "10"), frames(cfr("30/1", "10"), "271"), 200, ""},
-		{"a second and more of frames short", cfr("30/1", "10"), frames(cfr("30/1", "10"), "269"), 422, "truncated"},
-		// 150 s is the 30 fps rung: 60 fps keeps half its frames.
-		{"at the rung's rate", cfr("60/1", "150"), cfr("30/1", "150"), 200, ""},
-		{"short of the rung's rate", cfr("60/1", "150"), frames(cfr("30/1", "150"), "4000"), 422, "truncated"},
-		// 40 fps on average, up to 60: at most 30 fps keeps at least 3000 (as 60 fps half the time and 20 the rest
-		// gives 3750); the rung's 4500 would refuse it.
-		{"VFR above the rung's rate", vfr, frames(cfr("30/1", "150"), "3750"), 200, ""},
-		{"VFR short", vfr, frames(cfr("30/1", "150"), "2600"), 422, "truncated"},
-		// The video declares no duration: held to the plan's 10 s, though the audio covers it.
-		{"no declared duration, whole", undeclared, cfr("30/1", "10"), 200, ""},
-		{"no declared duration, short", undeclared, frames(cfr("30/1", "8"), "300"), 422, "truncated"},
+// Complete outputs of inputs whose streams differ in length are accepted: a WebM whose 2 s video declares no duration
+// of its own beside 4 s of audio and a 4 s segment, and an MP4 whose 10 s video track (300 samples, which nb_frames
+// counts before the edits) is edited to present 2 s, encoded as 60 frames.
+func TestNormalizeAcceptsCompleteOutputsOfUnequalStreams(t *testing.T) {
+	webmVideo := stream("video", "vp9", 320, 240, "30/1", "")
+	webmAudio := stream("audio", "opus", 0, 0, "0/0", "")
+	webm := probeOf("4", webmVideo, webmAudio)
+	webm.Format.FormatName = "matroska,webm"
+	edited := stream("video", "h264", 320, 240, "30/1", "2")
+	edited.NbFrames = "300"
+	outVideo := func(duration, frames string) probeStream {
+		s := stream("video", "h264", 320, 240, "30/1", duration)
+		s.NbFrames = frames
+		return s
 	}
-	for _, c := range cases {
+	for _, c := range []struct {
+		name   string
+		source *probeResult
+		output *probeResult
+	}{
+		{"webm", webm, probeOf("4", outVideo("2", "60"), stream("audio", "aac", 0, 0, "0/0", "4"))},
+		{"edited mp4", probeOf("2", edited), probeOf("2", outVideo("2", "60"))},
+	} {
 		t.Run(c.name, func(t *testing.T) {
-			// The container's duration: the source video's, or 10 s for the one that declares none.
-			duration := c.source.Duration
-			if duration == "" {
-				duration = "10"
-			}
-			fakeTools(t, probeOf(duration, c.source, stream("audio", "aac", 0, 0, "0/0", duration)))
+			fakeTools(t, c.source)
 			t.Setenv("FAKE_OUT", fakeMP4(t))
-			encoded, _ := json.Marshal(probeOf(duration, c.output, stream("audio", "aac", 0, 0, "0/0", duration)))
+			encoded, _ := json.Marshal(c.output)
 			path := filepath.Join(t.TempDir(), "output.json")
 			if err := os.WriteFile(path, encoded, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("FAKE_OUTPUT_PROBE", path)
-			rec := do(t, newMux(threadsDefault), "POST", "/normalize?probe_ms=5000&encode_ms=600000", []byte("input"))
-			if rec.Code != c.code || rec.Header().Get("Kopje-Error") != c.refusal {
+			if rec := do(t, newMux(threadsDefault), "POST", normalizeURL, []byte("input")); rec.Code != 200 {
 				t.Fatalf("%d %q", rec.Code, rec.Header().Get("Kopje-Error"))
 			}
 		})

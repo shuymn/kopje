@@ -210,9 +210,7 @@ type plan struct {
 	audioIndex int    // -1 for a video without audio
 	audioRate  int    // the audio stream's declared sample rate, 0 when unknown
 	duration   float64
-	// frames: the fewest video frames a whole output has, the source's at most the rung's rate (checkOutput).
-	frames float64
-	hdr    bool
+	hdr        bool
 	// icc: the video carries an ICC profile, which normalize reads (iccdetect) for its primaries and transfer;
 	// primaries: it is tagged with primaries other than BT.709. Either converts the primaries and the transfer to
 	// BT.709 (SDR only). transfer: it is tagged with a transfer of a curve other than BT.709's, which is converted.
@@ -284,26 +282,6 @@ func boundedDuration(p *probeResult, streams ...*probeStream) float64 {
 		longest = math.Max(longest, d)
 	}
 	return longest
-}
-
-// plannedFrames is the fewest frames a whole output of the video has: its declared frame count, else its duration (the
-// plan's when it declares none) at its average rate, scaled by the rung's rate over the source's highest (fps), as
-// -fpsmax keeps at most one frame of each 1/rung.fps when that is lower. For a VFR source this is a lower bound: a
-// second above the rung's rate loses frames, one below keeps them all.
-func plannedFrames(video *probeStream, duration, fps float64, r rung) float64 {
-	frames := parsePositive(video.NbFrames)
-	if frames == 0 {
-		own := parsePositive(video.Duration)
-		if own == 0 {
-			own = duration
-		}
-		rate := parseRate(video.AvgFrameRate)
-		if rate == 0 {
-			rate = fps
-		}
-		frames = own * rate
-	}
-	return frames * math.Min(1, float64(r.fps)/fps)
 }
 
 func rungFor(duration float64) rung {
@@ -397,7 +375,6 @@ func planVideo(p *probeResult, video, audio *probeStream, encodeMs float64) (*pl
 		audioIndex: audioIndex,
 		audioRate:  audioRate,
 		duration:   duration,
-		frames:     plannedFrames(video, duration, fps, r),
 		hdr:        hdr,
 		icc:        streamICC(video),
 		primaries:  otherPrimaries(video),

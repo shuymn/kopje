@@ -522,25 +522,23 @@ func frameICC(ctx context.Context, path string, index int) bool {
 	return framesICC(stdout.buf, index)
 }
 
-// checkOutput refuses an output shorter than the plan (A5 of #1828 PR2): each output stream whose source stream
-// declared its own duration against that duration, a video whose source declared none against the plan's duration,
-// the longest output stream against the plan's duration (boundedDuration), so a stream whose duration is the
-// container's (a WebM's) is held to the whole, and the video's frame count against the plan's frames (plannedFrames).
-// Short means by more than a second (of the rung's frames) or by more than 10 %. The refusal is pixels when the decoder
-// dropped a frame over the pixel limit (the frames after it are lost), else truncated. A probe that fails to read the
-// output is the encode's failure, or pixels after such a frame.
+// checkOutput refuses an output whose decoder dropped a frame over the pixel limit (A5 of #1828 PR2: the frames after it
+// are lost) as pixels, whatever its length and whether or not the probe reads it; and an output shorter than the plan
+// as truncated: each output stream whose source stream declared its own duration against that duration, and the
+// longest output stream against the plan's duration (boundedDuration), so a stream whose duration is the container's
+// (a WebM's) is held to the whole. Short means by more than a second or by more than 10 %. A probe that fails to read
+// the output is the encode's failure.
 func checkOutput(ctx context.Context, p *probeResult, pl *plan, out string, oversized bool) *failure {
+	if oversized {
+		return refuse(refusePixels)
+	}
 	got, f := probe(ctx, out)
 	if f != nil {
-		if oversized && ctx.Err() == nil {
-			return refuse(refusePixels)
-		}
 		return ffmpegFailure(ctx, "encode_failed")
 	}
-	shortBy := func(planned, have, unit float64) bool {
-		return planned-have > unit || planned-have > planned*0.1
+	short := func(planned, have float64) bool {
+		return planned-have > 1 || planned-have > planned*0.1
 	}
-	short := func(planned, have float64) bool { return shortBy(planned, have, 1) }
 	video, audio := selectStreams(p)
 	var outVideo, outAudio *probeStream
 	for i := range got.Streams {
@@ -569,22 +567,11 @@ func checkOutput(ctx context.Context, p *probeResult, pl *plan, out string, over
 		}
 		have := parsePositive(output.Duration)
 		longest = math.Max(longest, have)
-		own := parsePositive(source.Duration)
-		if own == 0 && source == video {
-			own = pl.duration
-		}
-		if own > 0 && short(own, have) {
+		if own := parsePositive(source.Duration); own > 0 && short(own, have) {
 			failed = true
 		}
 	}
-	if pl.kind == "video" && outVideo != nil &&
-		shortBy(pl.frames, parsePositive(outVideo.NbFrames), float64(pl.rung.fps)) {
-		failed = true
-	}
 	if failed || short(pl.duration, longest) {
-		if oversized {
-			return refuse(refusePixels)
-		}
 		return refuse(refuseTruncated)
 	}
 	return nil
