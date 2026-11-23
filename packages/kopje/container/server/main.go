@@ -15,8 +15,11 @@
 // Every answer with a JSON code is an outcome of that input, a 500 (encode_failed, strip_failed, still_failed,
 // no_output, output_size) included: the input could not be processed. Only no answer, a failed connection or an answer
 // outside this contract means the processor is unavailable. A 422 is a refusal of the input: its limits, its format,
-// or an output shorter than the plan (pixels when the decoder dropped a frame over the pixel limit, else truncated;
-// checkOutput).
+// a frame the decoder dropped over the pixel limit (pixels, whatever the output, as A5 of #1828 PR2 decides: an
+// oversizeMarkers diagnostic on the encode's stderr), or an output shorter than the plan (truncated; checkOutput).
+// The limit of A5: a decoder that drops an oversized later frame without a diagnostic recognised here can leave a
+// shorter video track, published when the longest stream still passes checkOutput's duration check. That affects only
+// the uploader's own over-limit file, never another user's data, and its cost stays bounded by -max_pixels.
 package main
 
 import (
@@ -265,8 +268,14 @@ func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) 
 	}
 	t.set("Encode", start)
 	w.Header().Set("Kopje-Encode-Cpu-Ms", strconv.FormatInt(run.cpu.Milliseconds(), 10))
-	if err != nil && run.oversized && encodeCtx.Err() == nil {
-		writeFailure(w, refuse(refusePixels))
+	// A frame dropped over the pixel limit refuses the input whatever the output, before the output is rewritten or
+	// probed; an expired deadline answers its timeout first.
+	if run.oversized {
+		if encodeCtx.Err() != nil {
+			writeFailure(w, ffmpegFailure(encodeCtx, "encode_failed"))
+		} else {
+			writeFailure(w, refuse(refusePixels))
+		}
 		return
 	}
 	if err != nil {
@@ -279,7 +288,7 @@ func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) 
 			return
 		}
 	}
-	if f := checkOutput(encodeCtx, p, pl, out, run.oversized); f != nil {
+	if f := checkOutput(encodeCtx, p, pl, out); f != nil {
 		writeFailure(w, f)
 		return
 	}
@@ -523,16 +532,11 @@ func frameICC(ctx context.Context, path string, index int) bool {
 	return framesICC(stdout.buf, index)
 }
 
-// checkOutput refuses an output whose decoder dropped a frame over the pixel limit (A5 of #1828 PR2: the frames after it
-// are lost) as pixels, whatever its length and whether or not the probe reads it; and an output shorter than the plan
-// as truncated: each output stream whose source stream declared its own duration against that duration, and the
+// checkOutput refuses an output shorter than the plan (A5 of #1828 PR2) as truncated: each output stream whose source stream declared its own duration against that duration, and the
 // longest output stream against the plan's duration (boundedDuration), so a stream whose duration is the container's
 // (a WebM's) is held to the whole. Short means by more than a second or by more than 10 %. A probe that fails to read
 // the output is the encode's failure.
-func checkOutput(ctx context.Context, p *probeResult, pl *plan, out string, oversized bool) *failure {
-	if oversized {
-		return refuse(refusePixels)
-	}
+func checkOutput(ctx context.Context, p *probeResult, pl *plan, out string) *failure {
 	got, f := probe(ctx, out)
 	if f != nil {
 		return ffmpegFailure(ctx, "encode_failed")
@@ -584,22 +588,28 @@ type encodeRun struct {
 	oversized bool
 }
 
-// oversizeMarker is what the pinned ffmpeg's image utilities print when -max_pixels refuses a frame (imgutils.c).
-const oversizeMarker = "exceeds specified max pixel count"
+// oversizeMarkers are what the pinned ffmpeg prints when -max_pixels refuses a frame: its image utilities' (imgutils.c,
+// the native decoders) and libdav1d's, which takes max_pixels as its frame size limit ("Frame size WxH exceeds limit
+// N", obu.c).
+var oversizeMarkers = []string{"exceeds specified max pixel count", " exceeds limit "}
 
-// markerWriter records whether a stream of bytes contains marker, keeping only the last len(marker)-1 bytes: ffmpeg's
-// stderr is scanned for it, never stored, answered or logged.
+// markerWriter records whether a stream of bytes contains any of markers, keeping only the bytes a marker split across
+// writes needs: ffmpeg's stderr is scanned for them, never stored, answered or logged.
 type markerWriter struct {
-	marker string
-	tail   []byte
-	found  bool
+	markers []string
+	tail    []byte
+	found   bool
 }
 
 func (m *markerWriter) Write(p []byte) (int, error) {
 	if !m.found {
 		window := append(m.tail, p...)
-		m.found = strings.Contains(string(window), m.marker)
-		keep := min(len(window), len(m.marker)-1)
+		longest := 0
+		for _, marker := range m.markers {
+			m.found = m.found || strings.Contains(string(window), marker)
+			longest = max(longest, len(marker))
+		}
+		keep := min(len(window), longest-1)
 		m.tail = append(m.tail[:0], window[len(window)-keep:]...)
 	}
 	return len(p), nil
@@ -607,7 +617,7 @@ func (m *markerWriter) Write(p []byte) (int, error) {
 
 // runEncode runs an encode as runFFmpeg does, watching its stderr for the pixel limit's refusal.
 func runEncode(ctx context.Context, args []string) (encodeRun, error) {
-	watch := &markerWriter{marker: oversizeMarker}
+	watch := &markerWriter{markers: oversizeMarkers}
 	cpu, err := runFFmpegTo(ctx, args, watch)
 	return encodeRun{cpu: cpu, oversized: watch.found}, err
 }

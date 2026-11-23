@@ -39,7 +39,10 @@ cat "$FAKE_PROBE"
 const fakeFFmpeg = `#!/bin/sh
 echo "SECRET-FFMPEG-STDERR" >&2
 [ -n "$FAKE_LOG" ] && echo "$*" >> "$FAKE_LOG"
-[ -n "$FAKE_OVERSIZE" ] && echo "[IMGUTILS @ 0x1] Picture size 4096x2160 exceeds specified max pixel count 8294400" >&2
+case "$FAKE_OVERSIZE" in
+  dav1d) echo "[libdav1d @ 0x1] Frame size 4096x2160 exceeds limit 8294400" >&2 ;;
+  ?*) echo "[IMGUTILS @ 0x1] Picture size 4096x2160 exceeds specified max pixel count 8294400" >&2 ;;
+esac
 [ -n "$FAKE_FAIL_ON" ] && case "$*" in *"$FAKE_FAIL_ON"*) exit 1 ;; esac
 [ -n "$FAKE_EMPTY_ON" ] && case "$*" in *"$FAKE_EMPTY_ON"*) exit 0 ;; esac
 [ -n "$FAKE_SLEEP" ] && sleep "$FAKE_SLEEP"
@@ -794,15 +797,49 @@ func TestNormalizeAcceptsCompleteOutputsOfUnequalStreams(t *testing.T) {
 	}
 }
 
+// The pixel limit's refusal comes before the output is rewritten or probed, whichever decoder reported it: AV1's
+// (libdav1d) with a whole output, and an output the MP4 rewrite cannot read; an expired deadline answers first.
+func TestTheSizeMarkerComesFirst(t *testing.T) {
+	for _, c := range []struct {
+		name, oversize, emptyOn, sleep, url string
+		code                                int
+		refusal                             string
+	}{
+		{"libdav1d's diagnostic, the output whole", "dav1d", "", "", normalizeURL, 422, "pixels"},
+		{"an output the rewrite cannot read", "1", "libx264", "", normalizeURL, 422, "pixels"},
+		{"the same without the marker", "", "libx264", "", normalizeURL, 500, "strip_failed"},
+		{"the deadline expired", "1", "", "3", "/normalize?probe_ms=5000&encode_ms=2500", 504, "timeout"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			// A short AV1 video, its estimate within every case's encode time.
+			fakeTools(t, probeOf("2", stream("video", "av1", 320, 240, "15/1", "2"), stream("audio", "opus", 0, 0, "0/0", "2")))
+			t.Setenv("FAKE_OUT", fakeMP4(t))
+			t.Setenv("FAKE_OVERSIZE", c.oversize)
+			t.Setenv("FAKE_EMPTY_ON", c.emptyOn)
+			t.Setenv("FAKE_SLEEP", c.sleep)
+			rec := do(t, newMux(threadsDefault), "POST", c.url, []byte("input"))
+			if rec.Code != c.code || rec.Header().Get("Kopje-Error") != c.refusal {
+				t.Fatalf("%d %q", rec.Code, rec.Header().Get("Kopje-Error"))
+			}
+		})
+	}
+}
+
 func TestMarkerWriterFindsTheMarkerAcrossWrites(t *testing.T) {
-	m := &markerWriter{marker: oversizeMarker}
-	for _, part := range []string{"[h264] Picture size 4096x2160 exc", "eeds specified max ", "pixel count 8294400\n"} {
-		_, _ = m.Write([]byte(part))
+	// The native decoders' diagnostic (imgutils.c) and libdav1d's (obu.c), each split across writes.
+	for _, parts := range [][]string{
+		{"[h264] Picture size 4096x2160 exc", "eeds specified max ", "pixel count 8294400\n"},
+		{"[libdav1d @ 0x1] Frame size 4096x2160 exc", "eeds lim", "it 8294400\n"},
+	} {
+		m := &markerWriter{markers: oversizeMarkers}
+		for _, part := range parts {
+			_, _ = m.Write([]byte(part))
+		}
+		if !m.found || len(m.tail) > len(oversizeMarkers[0]) {
+			t.Fatalf("%q: found %v, tail %d bytes", parts, m.found, len(m.tail))
+		}
 	}
-	if !m.found || len(m.tail) > len(oversizeMarker) {
-		t.Fatalf("found %v, tail %d bytes", m.found, len(m.tail))
-	}
-	other := &markerWriter{marker: oversizeMarker}
+	other := &markerWriter{markers: oversizeMarkers}
 	_, _ = other.Write([]byte("Error while decoding stream"))
 	if other.found {
 		t.Fatal("found in another error")

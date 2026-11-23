@@ -12,7 +12,8 @@
 # and M4A, FLAC, Ogg, MP3 and Opus-only WebM audio.
 # One more input, an MP4 whose headers declare 320x240 but whose frames after the first are 4096x2160, is checked
 # apart: normalize refuses it (422 pixels: the decoder dropped the frames over the limit, so the output would be short
-# of the plan), and a still is the first frame's 320x240 or the operation fails.
+# of the plan), and a still is the first frame's 320x240 or the operation fails. Its AV1 counterpart (a second of
+# 320x240, then one of 4096x2160, which libdav1d refuses with its own diagnostic) is refused 422 pixels as well.
 # Each input's kind (video or audio) is the fixture table's, never the server's Kopje-Kind: a given input's is its
 # `video:` or `audio:` prefix, else its extension's. Each operation is checked on its own: HTTP 200, Kopje-Kind equal
 # to the expected kind, the exact Content-Type (video/mp4 or audio/mpeg, image/png for a still), a Content-Length
@@ -167,6 +168,12 @@ ffm -f lavfi -i testsrc2=s=320x240:d=0.04:r=25 -c:v libx264 -f h264 small.h264
 ffm -f lavfi -i testsrc2=s=4096x2160:d=1:r=25 -c:v libx264 -preset ultrafast -f h264 big.h264
 cat "$work/fixture/small.h264" "$work/fixture/big.h264" >"$work/fixture/lie.h264"
 ffm -r 25 -f h264 -i lie.h264 -c copy lie.mp4
+# lie-av1.mp4: the same in AV1, a second of each size: libdav1d takes -max_pixels as its frame size limit and reports
+# the later frames as "Frame size ... exceeds limit".
+ffm -f lavfi -i testsrc2=s=320x240:d=1:r=25 -c:v libaom-av1 -cpu-used 8 -f obu small.obu
+ffm -f lavfi -i testsrc2=s=4096x2160:d=1:r=25 -c:v libaom-av1 -cpu-used 8 -row-mt 1 -f obu big.obu
+cat "$work/fixture/small.obu" "$work/fixture/big.obu" >"$work/fixture/lie.obu"
+ffm -r 25 -f obu -i lie.obu -c copy lie-av1.mp4
 # One input per rung (testsrc2 with seeded temporal noise, so the encoder has detail to keep) with a stereo tone, and
 # the audio types. The rung inputs are capped at 1 Mbit/s, which keeps the 600 s one under the upload limit (90 MiB).
 noisy() { echo "testsrc2=s=$1:r=$2:d=$3,noise=alls=10:allf=t:all_seed=1"; }
@@ -607,8 +614,12 @@ for case in vfr.mp4 longaudio.mp4 header-short.mp4 header-long.mp4; do
   echo "| $case | normalize | $got | | | | | | | | |"
 done
 
-# lie.mp4: no frame over the pixel limit is decoded, whatever its headers declared, and the short output that would
-# leave is refused as the input's (422 pixels).
+# lie.mp4 and lie-av1.mp4: no frame over the pixel limit is decoded, whatever its headers declared, and the output
+# that would leave is refused as the input's (422 pixels).
+cp "$work/fixture/lie-av1.mp4" "$work/in/lie-av1.mp4"
+got="$(normalize lie-av1.mp4 lie-av1.normalized)"
+check "$([ "$got" = "422 pixels" ] && echo true)" "lie-av1.mp4 normalize: $got, want 422 pixels"
+echo "| lie-av1.mp4 | normalize | $got | | | | | | | | |"
 cp "$work/fixture/lie.mp4" "$work/in/lie.mp4"
 got="$(normalize lie.mp4 lie.normalized)"
 check "$([ "$got" = "422 pixels" ] && echo true)" "lie.mp4 normalize: $got, want 422 pixels"
