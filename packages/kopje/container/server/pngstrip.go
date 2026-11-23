@@ -10,10 +10,11 @@ import (
 
 // The PNG encoder writes the frame's metadata back: an input whose frames carry EXIF (a PNG in a MOV with an eXIf
 // chunk) yields a still with that eXIf chunk. stripPNG keeps only the chunks that draw the image, so no metadata of a
-// source survives into a still: the critical chunks, transparency, and the colour and pixel-size tags.
+// source survives into a still: the critical chunks, transparency, and the colour and pixel-size tags. The iCCP it
+// keeps is the profile the still's filter chain generated (stillArgs), never the source's bytes.
 var keptPNGChunks = map[string]bool{
 	"IHDR": true, "PLTE": true, "IDAT": true, "IEND": true,
-	"tRNS": true, "sRGB": true, "gAMA": true, "cHRM": true, "cICP": true, "pHYs": true,
+	"tRNS": true, "sRGB": true, "gAMA": true, "cHRM": true, "cICP": true, "iCCP": true, "pHYs": true,
 }
 
 var pngSignature = []byte("\x89PNG\r\n\x1a\n")

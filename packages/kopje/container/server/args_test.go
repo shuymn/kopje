@@ -89,10 +89,13 @@ func TestVideoArgsPinTheEncoding(t *testing.T) {
 		t.Fatalf("subtitle or data streams kept: %v", args)
 	}
 	vf := valueOf(args, "-vf")
-	if strings.Contains(vf, "tonemap") || !strings.Contains(vf, "1920/max(iw,ih),1080/min(iw,ih)") {
+	// A frame's ICC profile goes first (the MP4 muxer would write the source's bytes into a colr box).
+	if !strings.HasPrefix(vf, "sidedata=mode=delete:type=ICC_PROFILE,") || strings.Contains(vf, "tonemap") ||
+		!strings.Contains(vf, "1920/max(iw,ih),1080/min(iw,ih)") {
 		t.Fatalf("filter %q", vf)
 	}
-	if hdr := valueOf(videoArgs(videoPlan(true, 1), threadsDefault, "in", "out"), "-vf"); !strings.HasPrefix(hdr, tonemap) {
+	hdr := valueOf(videoArgs(videoPlan(true, 1), threadsDefault, "in", "out"), "-vf")
+	if !strings.HasPrefix(hdr, iccDrop+","+tonemap) {
 		t.Fatalf("HDR filter %q", hdr)
 	}
 	silent := videoArgs(videoPlan(false, -1), threadsDefault, "in", "out")
@@ -129,7 +132,8 @@ func TestStillArgs(t *testing.T) {
 		}
 	}
 	vf := valueOf(args, "-vf")
-	if !strings.HasPrefix(vf, "scale=") || !strings.Contains(vf, "640/max(iw,ih)") || !strings.Contains(vf, tonemap) {
+	if !strings.HasPrefix(vf, "iccdetect,scale=") || !strings.Contains(vf, "640/max(iw,ih)") ||
+		!strings.Contains(vf, tonemap) || !strings.HasSuffix(vf, ",format=rgb24,iccgen=force=1") {
 		t.Fatalf("filter %q", vf)
 	}
 	// -ss before -i: an input seek, which -skip_frame nokey turns into the keyframe at or before it.

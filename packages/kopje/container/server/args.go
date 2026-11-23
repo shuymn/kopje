@@ -77,6 +77,9 @@ func (t threading) encoderArgs() []string {
 	return []string{"-threads:v", strconv.Itoa(t.encoder)}
 }
 
+// iccDrop removes a frame's ICC profile.
+const iccDrop = "sidedata=mode=delete:type=ICC_PROFILE"
+
 func cat(parts ...[]string) []string {
 	var out []string
 	for _, p := range parts {
@@ -87,10 +90,11 @@ func cat(parts ...[]string) []string {
 
 // videoArgs encodes the plan's video (and audio) stream as H.264/AAC MP4 within its rung: libx264 veryfast CRF 23
 // under a bitrate cap, yuv420p BT.709 limited range, rotation applied to pixels, no SEI (x264 writes its version
-// there), empty encoder tags (they reach the avc1 compressor name) and the moov ahead of mdat.
+// there), empty encoder tags (they reach the avc1 compressor name) and the moov ahead of mdat. A frame's ICC profile
+// is dropped (the MP4 muxer writes it into a colr box otherwise).
 func videoArgs(p *plan, t threading, in, out string) []string {
 	r := p.rung
-	var vf []string
+	vf := []string{iccDrop}
 	if p.hdr {
 		vf = append(vf, tonemap)
 	}
@@ -142,14 +146,18 @@ func stillSeek(duration float64) float64 {
 }
 
 // stillArgs writes one PNG of the keyframe at or before seek, long edge at most stillLongEdge, scaled before any tone
-// mapping so the float chain runs on the small frame. Only keyframes are decoded.
+// mapping so the float chain runs on the small frame. Only keyframes are decoded. A frame's ICC profile (a PNG or
+// other image codec in MOV can carry one) is read for its primaries and transfer (iccdetect), and the still's profile
+// is generated from those (iccgen=force=1) rather than copied, so the still keeps its colour without the source's
+// profile bytes; for a frame without one the generated profile renders as the untagged frame does. A profile that
+// cannot be parsed fails the still.
 func stillArgs(videoIndex int, hdr bool, seek float64, in, out string) []string {
 	fit := fmt.Sprintf("min(1,%d/max(iw,ih))", stillLongEdge)
-	vf := []string{fmt.Sprintf("scale=w='max(2,trunc(iw*%s))':h='max(2,trunc(ih*%s))'", fit, fit)}
+	vf := []string{"iccdetect", fmt.Sprintf("scale=w='max(2,trunc(iw*%s))':h='max(2,trunc(ih*%s))'", fit, fit)}
 	if hdr {
 		vf = append(vf, tonemap)
 	}
-	vf = append(vf, "format=rgb24")
+	vf = append(vf, "format=rgb24", "iccgen=force=1")
 	return cat(commonArgs,
 		[]string{"-skip_frame", "nokey", "-noaccurate_seek", "-ss", strconv.FormatFloat(seek, 'f', 3, 64),
 			"-i", "file:" + in, "-map", fmt.Sprintf("0:%d", videoIndex)},

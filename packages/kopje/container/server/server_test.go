@@ -232,7 +232,7 @@ func pngChunk(typ string, data []byte) []byte {
 }
 
 // A PNG as the encoder writes it from a frame that carries metadata: an eXIf chunk with a camera make, and a tEXt
-// comment, around a 2x2 image.
+// comment, around a 2x2 image with a colour profile (the one the still's chain generates).
 func seededPNG(t *testing.T) []byte {
 	t.Helper()
 	ihdr := binary.BigEndian.AppendUint32(binary.BigEndian.AppendUint32(nil, 2), 2)
@@ -240,6 +240,7 @@ func seededPNG(t *testing.T) []byte {
 	return bytes.Join([][]byte{
 		pngSignature,
 		pngChunk("IHDR", ihdr),
+		pngChunk("iCCP", []byte("icc\x00\x00generated")),
 		pngChunk("sRGB", []byte{0}),
 		pngChunk("eXIf", []byte("II*\x00\x08\x00\x00\x00KOPJEMARK_EXIF_MAKE")),
 		pngChunk("tEXt", []byte("Comment\x00KOPJEMARK_TEXT")),
@@ -274,7 +275,7 @@ func TestStillsCarryNoFrameMetadata(t *testing.T) {
 	}
 	kept := do(t, mux, "GET", "/normalize/still", nil)
 	direct := do(t, mux, "POST", "/still", []byte("input"))
-	want := []string{"IHDR", "sRGB", "IDAT", "IEND"}
+	want := []string{"IHDR", "iCCP", "sRGB", "IDAT", "IEND"}
 	for name, rec := range map[string]*httptest.ResponseRecorder{"normalize": kept, "still": direct} {
 		if rec.Code != 200 || rec.Header().Get("Content-Type") != "image/png" ||
 			rec.Header().Get("Content-Length") != itoa(rec.Body.Len()) {
