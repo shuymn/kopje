@@ -2,7 +2,9 @@
 // measure.sh's table, never the server's answer: the answer's Content-Type must be that kind's (video/mp4 or
 // audio/mpeg; image/png for a still) and a normalize's Kopje-Kind that kind, its output must be in R2,
 // and for a video both the still (in R2 for a normalize, the output itself for a still) and the two Images
-// transforms must have run. A run with an error (a destroy that failed included) is no success.
+// transforms must have run. A run with an error (a destroy that failed included) is no success. The body itself is not
+// checked: a well-labelled answer that is not that media counts as a success here; the output verifier (PR2) is what
+// reads it.
 
 /**
  * @typedef {{ op: "normalize" | "still", expect: "video" | "audio", status: number | null, error: string | null,
