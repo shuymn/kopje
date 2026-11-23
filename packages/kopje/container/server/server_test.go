@@ -2,18 +2,24 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/json"
+	"hash/crc32"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
-// The fake ffprobe prints the probe JSON in the file $FAKE_PROBE; the fake ffmpeg copies the file $FAKE_OUT to its last
-// argument (file:<path>), prints a marker on stderr, and exits $FAKE_EXIT (sleeping $FAKE_SLEEP seconds first).
+// The fake ffprobe prints the probe JSON in the file $FAKE_PROBE; the fake ffmpeg copies the file $FAKE_OUT (for a PNG
+// still, $FAKE_PNG) to its last argument (file:<path>), prints a marker on stderr, and exits $FAKE_EXIT (sleeping
+// $FAKE_SLEEP seconds first).
 const fakeProbe = `#!/bin/sh
 echo "SECRET-PROBE-STDERR" >&2
 cat "$FAKE_PROBE"
@@ -23,7 +29,8 @@ const fakeFFmpeg = `#!/bin/sh
 echo "SECRET-FFMPEG-STDERR" >&2
 [ -n "$FAKE_SLEEP" ] && sleep "$FAKE_SLEEP"
 for last; do :; done
-cat "$FAKE_OUT" > "${last#file:}"
+case "$*" in *"-c:v png"*) src="$FAKE_PNG" ;; *) src="$FAKE_OUT" ;; esac
+cat "$src" > "${last#file:}"
 exit "${FAKE_EXIT:-0}"
 `
 
@@ -43,6 +50,7 @@ func fakeTools(t *testing.T, probe *probeResult) {
 	}
 	t.Setenv("FAKE_PROBE", write("probe.json", string(encoded)))
 	t.Setenv("FAKE_OUT", write("output", "OUTPUT"))
+	t.Setenv("FAKE_PNG", write("still.png", string(seededPNG(t))))
 	t.Setenv("FAKE_EXIT", "0")
 	t.Setenv("FAKE_SLEEP", "")
 	oldProbe, oldFF, oldWork, oldStill := probeBin, ffmpegBin, workRoot, stillPath
@@ -215,4 +223,175 @@ func (zeros) Read(p []byte) (int, error) {
 func itoa(n int) string {
 	b, _ := json.Marshal(n)
 	return string(b)
+}
+
+func pngChunk(typ string, data []byte) []byte {
+	out := binary.BigEndian.AppendUint32(nil, uint32(len(data)))
+	out = append(append(out, typ...), data...)
+	return binary.BigEndian.AppendUint32(out, crc32.ChecksumIEEE(append([]byte(typ), data...)))
+}
+
+// A PNG as the encoder writes it from a frame that carries metadata: an eXIf chunk with a camera make, and a tEXt
+// comment, around a 2x2 image.
+func seededPNG(t *testing.T) []byte {
+	t.Helper()
+	ihdr := binary.BigEndian.AppendUint32(binary.BigEndian.AppendUint32(nil, 2), 2)
+	ihdr = append(ihdr, 8, 2, 0, 0, 0)
+	return bytes.Join([][]byte{
+		pngSignature,
+		pngChunk("IHDR", ihdr),
+		pngChunk("sRGB", []byte{0}),
+		pngChunk("eXIf", []byte("II*\x00\x08\x00\x00\x00KOPJEMARK_EXIF_MAKE")),
+		pngChunk("tEXt", []byte("Comment\x00KOPJEMARK_TEXT")),
+		pngChunk("IDAT", []byte("compressed pixels")),
+		pngChunk("tIME", []byte{7, 232, 5, 1, 12, 0, 0}),
+		pngChunk("IEND", nil),
+	}, nil)
+}
+
+// The chunk types of a PNG, in order.
+func pngChunks(t *testing.T, png []byte) []string {
+	t.Helper()
+	if !bytes.HasPrefix(png, pngSignature) {
+		t.Fatalf("not a PNG: %q", png[:min(len(png), 16)])
+	}
+	var types []string
+	for p := len(pngSignature); p+12 <= len(png); {
+		n := int(binary.BigEndian.Uint32(png[p:]))
+		types = append(types, string(png[p+4:p+8]))
+		p += 12 + n
+	}
+	return types
+}
+
+// A frame's EXIF and text never reach a still, on either still path (the PNG encoder writes them back otherwise).
+func TestStillsCarryNoFrameMetadata(t *testing.T) {
+	fakeTools(t, videoProbe())
+	t.Setenv("FAKE_OUT", fakeMP4(t))
+	mux := newMux(threadsDefault)
+	if rec := do(t, mux, "POST", normalizeURL, []byte("input")); rec.Code != 200 || rec.Header().Get("Kopje-Still") != "true" {
+		t.Fatalf("normalize %d %v", rec.Code, rec.Header())
+	}
+	kept := do(t, mux, "GET", "/normalize/still", nil)
+	direct := do(t, mux, "POST", "/still", []byte("input"))
+	want := []string{"IHDR", "sRGB", "IDAT", "IEND"}
+	for name, rec := range map[string]*httptest.ResponseRecorder{"normalize": kept, "still": direct} {
+		if rec.Code != 200 || rec.Header().Get("Content-Type") != "image/png" ||
+			rec.Header().Get("Content-Length") != itoa(rec.Body.Len()) {
+			t.Fatalf("%s: %d %v", name, rec.Code, rec.Header())
+		}
+		if got := pngChunks(t, rec.Body.Bytes()); !slices.Equal(got, want) || bytes.Contains(rec.Body.Bytes(), []byte("KOPJEMARK")) {
+			t.Fatalf("%s: chunks %v", name, got)
+		}
+	}
+}
+
+func TestStrippedPNGRefusesMalformedFiles(t *testing.T) {
+	good := seededPNG(t)
+	if out, err := strippedPNG(good); err != nil || !bytes.HasSuffix(out, pngChunk("IEND", nil)) {
+		t.Fatalf("good: %v", err)
+	}
+	badCRC := append([]byte{}, good...)
+	badCRC[len(pngSignature)+20] ^= 1
+	ihdrLen := 12 + 13
+	notFirst := append(append([]byte{}, pngSignature...), good[len(pngSignature)+ihdrLen:]...)
+	cases := map[string][]byte{
+		"bad CRC":         badCRC,
+		"no IEND":         good[:len(good)-12],
+		"after IEND":      append(append([]byte{}, good...), 0),
+		"IHDR not first":  notFirst,
+		"not a PNG":       []byte("OUTPUT"),
+		"length past end": append(append([]byte{}, pngSignature...), 0xff, 0xff, 0xff, 0xff, 'I', 'H', 'D', 'R', 0, 0, 0, 0),
+	}
+	for name, in := range cases {
+		if _, err := strippedPNG(in); err == nil {
+			t.Fatalf("%s accepted", name)
+		}
+	}
+}
+
+// A refused normalize also removes the still of the one before it.
+func TestARefusedNormalizeRemovesTheEarlierStill(t *testing.T) {
+	fakeTools(t, videoProbe())
+	t.Setenv("FAKE_OUT", fakeMP4(t))
+	mux := newMux(threadsDefault)
+	if rec := do(t, mux, "POST", normalizeURL, []byte("input")); rec.Code != 200 {
+		t.Fatalf("normalize %d", rec.Code)
+	}
+	if rec := do(t, mux, "POST", "/normalize?probe_ms=99&encode_ms=60000", []byte("input")); rec.Code != 400 {
+		t.Fatalf("refused normalize %d", rec.Code)
+	}
+	if rec := do(t, mux, "GET", "/normalize/still", nil); rec.Code != 404 {
+		t.Fatalf("still after a refused normalize: %d", rec.Code)
+	}
+}
+
+func TestOtherRoutesAnswerCodes(t *testing.T) {
+	mux := newMux(threadsDefault)
+	missing := do(t, mux, "GET", "/missing", nil)
+	if missing.Code != 404 || missing.Body.String() != `{"error":"not_found"}`+"\n" {
+		t.Fatalf("missing: %d %q", missing.Code, missing.Body.String())
+	}
+	wrong := do(t, mux, "POST", "/healthz", nil)
+	if wrong.Code != 405 || wrong.Header().Get("Allow") != "GET" ||
+		wrong.Body.String() != `{"error":"method_not_allowed"}`+"\n" {
+		t.Fatalf("POST /healthz: %d %q", wrong.Code, wrong.Body.String())
+	}
+}
+
+// A peer that stops sending its body, or stops reading the response, ends the job at the socket deadline and frees the
+// job slot.
+func TestStalledSocketsEndTheJob(t *testing.T) {
+	fakeTools(t, probeOf("2", stream("audio", "aac", 0, 0, "0/0", "2")))
+	big := filepath.Join(t.TempDir(), "big.mp3")
+	if err := os.WriteFile(big, bytes.Repeat([]byte{0xff}, 48<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_OUT", big)
+	oldIn, oldOut := inputTimeout, outputTimeout
+	inputTimeout, outputTimeout = 300*time.Millisecond, 300*time.Millisecond
+	t.Cleanup(func() { inputTimeout, outputTimeout = oldIn, oldOut })
+	srv := httptest.NewServer(newMux(threadsDefault))
+	t.Cleanup(srv.Close)
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	slotFreed := func(within time.Duration) bool {
+		for end := time.Now().Add(within); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+			if len(busy) == 0 {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Ingress: one byte of the two declared, then nothing.
+	in, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close()
+	if _, err := io.WriteString(in, "POST /still HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\n\r\nx"); err != nil {
+		t.Fatal(err)
+	}
+	_ = in.SetReadDeadline(time.Now().Add(5 * time.Second))
+	answer, _ := io.ReadAll(io.LimitReader(in, 4096))
+	if !bytes.HasPrefix(answer, []byte("HTTP/1.1 408")) || !bytes.Contains(answer, []byte(`"input_timeout"`)) {
+		t.Fatalf("stalled body: %q", answer)
+	}
+	if !slotFreed(2 * time.Second) {
+		t.Fatal("job slot held after a stalled body")
+	}
+
+	// Egress: the whole request, then the response never read.
+	out, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	if _, err := io.WriteString(out, "POST "+normalizeURL+" HTTP/1.1\r\nHost: x\r\nContent-Length: 1\r\n\r\nx"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if !slotFreed(5 * time.Second) {
+		t.Fatal("job slot held by a peer that does not read")
+	}
 }

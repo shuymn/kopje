@@ -44,11 +44,15 @@ const (
 )
 
 var (
-	workRoot  = envOr("MEDIASRV_WORK", "/tmp/work")
-	stillPath = filepath.Join(workRoot, "normalize-still.png")
-	ffmpegBin = envOr("FFMPEG", "/usr/local/bin/ffmpeg")
-	probeBin  = envOr("FFPROBE", "/usr/local/bin/ffprobe")
-	bootID    = newID()
+	// The socket deadlines of a job's request body and of its response: a peer that stops sending or reading ends the
+	// job instead of holding the server's one job slot. 90 MiB at 1 MiB/s in, 63 MiB out, with room.
+	inputTimeout  = 120 * time.Second
+	outputTimeout = 120 * time.Second
+	workRoot      = envOr("MEDIASRV_WORK", "/tmp/work")
+	stillPath     = filepath.Join(workRoot, "normalize-still.png")
+	ffmpegBin     = envOr("FFMPEG", "/usr/local/bin/ffmpeg")
+	probeBin      = envOr("FFPROBE", "/usr/local/bin/ffprobe")
+	bootID        = newID()
 	// One job at a time per process.
 	busy = make(chan struct{}, 1)
 )
@@ -64,6 +68,7 @@ func main() {
 	srv := &http.Server{
 		Addr:              ":" + envOr("PORT", "8080"),
 		Handler:           newMux(threads),
+		IdleTimeout:       60 * time.Second,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
@@ -80,7 +85,8 @@ func main() {
 	}
 }
 
-func newMux(threads threading) *http.ServeMux {
+// The server's routes. A request for any other path or method answers a code, as every failure does.
+func newMux(threads threading) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -91,7 +97,28 @@ func newMux(threads threading) *http.ServeMux {
 	}))
 	mux.HandleFunc("GET /normalize/still", handleNormalizeStill)
 	mux.HandleFunc("POST /still", exclusive(handleStill))
-	return mux
+	methods := map[string]string{"/healthz": "GET", "/normalize": "POST", "/normalize/still": "GET", "/still": "POST"}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := mux.Handler(r); pattern != "" {
+			mux.ServeHTTP(w, r)
+			return
+		}
+		if method, ok := methods[r.URL.Path]; ok {
+			w.Header().Set("Allow", method)
+			writeFailure(w, fail(http.StatusMethodNotAllowed, "method_not_allowed"))
+			return
+		}
+		writeFailure(w, fail(http.StatusNotFound, "not_found"))
+	})
+}
+
+// deadlines sets the socket deadlines of a job's request: reading its body by inputTimeout from now, and writing its
+// response by outputTimeout after the response starts (setWrite). A server without them (a test's recorder) runs
+// without.
+func deadlines(w http.ResponseWriter) (setWrite func()) {
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(time.Now().Add(inputTimeout))
+	return func() { _ = rc.SetWriteDeadline(time.Now().Add(outputTimeout)) }
 }
 
 // A failure: the status and the code answered.
@@ -144,14 +171,15 @@ func (t timings) set(name string, start time.Time) {
 }
 
 func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) {
+	// The still of an earlier normalize is never answered after this one, refused or not.
+	_ = os.Remove(stillPath)
+	setWrite := deadlines(w)
 	probeTime, okProbe := stageMs(r, "probe_ms")
 	encodeTime, okEncode := stageMs(r, "encode_ms")
 	if !okProbe || !okEncode {
 		writeFailure(w, fail(http.StatusBadRequest, "bad_request"))
 		return
 	}
-	// The still of an earlier normalize is never answered for this one.
-	_ = os.Remove(stillPath)
 	dir, err := os.MkdirTemp(workRoot, "job-")
 	if err != nil {
 		writeFailure(w, fail(http.StatusInternalServerError, "internal"))
@@ -213,6 +241,7 @@ func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) 
 		w.Header().Set("Kopje-Still", strconv.FormatBool(makeStill(encodeCtx, pl, in)))
 		t.set("Still", start)
 	}
+	setWrite()
 	serveFile(w, out, contentType, avOutputLimit, pl.kind)
 }
 
@@ -221,10 +250,12 @@ func handleNormalizeStill(w http.ResponseWriter, _ *http.Request) {
 		writeFailure(w, fail(http.StatusNotFound, "no_still"))
 		return
 	}
+	deadlines(w)()
 	serveFile(w, stillPath, "image/png", stillOutputLimit, "")
 }
 
 func handleStill(w http.ResponseWriter, r *http.Request) {
+	setWrite := deadlines(w)
 	dir, err := os.MkdirTemp(workRoot, "job-")
 	if err != nil {
 		writeFailure(w, fail(http.StatusInternalServerError, "internal"))
@@ -264,10 +295,14 @@ func handleStill(w http.ResponseWriter, r *http.Request) {
 	start = time.Now()
 	_, err = runFFmpeg(ctx, stillArgs(video.Index, isHDR(video), stillSeek(boundedDuration(p, video)), in, out))
 	t.set("Encode", start)
+	if err == nil {
+		err = stripPNG(out)
+	}
 	if err != nil {
 		writeFailure(w, ffmpegFailure(ctx, "still_failed"))
 		return
 	}
+	setWrite()
 	serveFile(w, out, "image/png", stillOutputLimit, "")
 }
 
@@ -276,6 +311,9 @@ func makeStill(ctx context.Context, pl *plan, in string) bool {
 	tmp := stillPath + ".tmp"
 	defer os.Remove(tmp)
 	if _, err := runFFmpeg(ctx, stillArgs(pl.videoIndex, pl.hdr, stillSeek(pl.duration), in, tmp)); err != nil {
+		return false
+	}
+	if stripPNG(tmp) != nil {
 		return false
 	}
 	st, err := os.Stat(tmp)
@@ -318,8 +356,8 @@ func serveFile(w http.ResponseWriter, path, contentType string, limit int64, kin
 	_, _ = io.Copy(w, f)
 }
 
-// receive writes the request body to path, refusing an empty one, more than avUploadLimit bytes, or fewer than its
-// Content-Length declared.
+// receive writes the request body to path, refusing an empty one, more than avUploadLimit bytes, fewer than its
+// Content-Length declared, or one still arriving at the read deadline.
 func receive(r *http.Request, path string) (int64, *failure) {
 	if r.ContentLength > avUploadLimit {
 		return 0, fail(http.StatusRequestEntityTooLarge, "too_large")
@@ -333,6 +371,8 @@ func receive(r *http.Request, path string) (int64, *failure) {
 	switch {
 	case n > avUploadLimit:
 		return n, fail(http.StatusRequestEntityTooLarge, "too_large")
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		return n, fail(http.StatusRequestTimeout, "input_timeout")
 	case err != nil, r.ContentLength >= 0 && n != r.ContentLength:
 		return n, fail(http.StatusBadRequest, "truncated")
 	case n == 0:
