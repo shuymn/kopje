@@ -190,8 +190,9 @@ func TestStillArgs(t *testing.T) {
 	}
 }
 
-// SDR with other primaries, by tag or by ICC profile, is converted to BT.709 before the output is labelled BT.709;
-// BT.709 or untagged SDR and HDR (tone mapped to BT.709) are not.
+// SDR with other primaries, by tag or by ICC profile, is converted to BT.709 primaries and transfer, and SDR with a
+// transfer of another curve to BT.709's, before the output is labelled BT.709; BT.709 or untagged SDR and HDR (tone
+// mapped to BT.709) are not.
 func TestVideoArgsConvertOtherPrimaries(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -199,9 +200,10 @@ func TestVideoArgsConvertOtherPrimaries(t *testing.T) {
 		prefix string
 	}{
 		{"bt709 or untagged", func(*plan) {}, iccDrop + ",scale="},
-		{"icc", func(p *plan) { p.icc = true }, "iccdetect,zscale=p=bt709," + iccDrop + ",scale="},
-		{"tagged", func(p *plan) { p.primaries = true }, "zscale=p=bt709," + iccDrop + ",scale="},
-		{"hdr", func(p *plan) { p.hdr, p.icc, p.primaries = true, true, true }, iccDrop + "," + tonemap + ",scale="},
+		{"icc", func(p *plan) { p.icc = true }, "iccdetect,zscale=p=bt709:t=bt709," + iccDrop + ",scale="},
+		{"tagged", func(p *plan) { p.primaries, p.transfer = true, true }, "zscale=p=bt709:t=bt709," + iccDrop + ",scale="},
+		{"transfer", func(p *plan) { p.transfer = true }, "zscale=t=bt709," + iccDrop + ",scale="},
+		{"hdr", func(p *plan) { p.hdr, p.icc, p.primaries, p.transfer = true, true, true, true }, iccDrop + "," + tonemap + ",scale="},
 	}
 	for _, c := range cases {
 		p := videoPlan(false, 1)

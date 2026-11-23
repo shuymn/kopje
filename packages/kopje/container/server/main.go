@@ -254,10 +254,10 @@ func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) 
 		args = audioArgs(pl, in, out)
 	}
 	run, err := runEncode(encodeCtx, args)
-	if err != nil && !run.oversized && pl.kind == "video" && (pl.icc || pl.primaries) && encodeCtx.Err() == nil {
+	if err != nil && !run.oversized && pl.kind == "video" && (pl.icc || pl.primaries || pl.transfer) && encodeCtx.Err() == nil {
 		// A profile iccdetect cannot use, or tags zscale cannot convert from: the video is encoded as before, with no
 		// conversion and its profile dropped.
-		pl.icc, pl.primaries = false, false
+		pl.icc, pl.primaries, pl.transfer = false, false, false
 		var more encodeRun
 		more, err = runEncode(encodeCtx, videoArgs(pl, threads, in, out))
 		run = encodeRun{cpu: run.cpu + more.cpu, oversized: more.oversized}

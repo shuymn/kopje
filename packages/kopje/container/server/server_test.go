@@ -501,6 +501,24 @@ func TestUnconvertiblePrimariesFallBack(t *testing.T) {
 	if len(lines) < 2 || !strings.Contains(lines[0], toBT709) || strings.Contains(lines[1], toBT709) {
 		t.Fatalf("runs: %q", lines)
 	}
+	// A transfer zscale cannot convert from falls back the same way.
+	probe = videoProbe()
+	probe.Streams[0].ColorTransfer = "log100"
+	fakeTools(t, probe)
+	t.Setenv("FAKE_OUT", fakeMP4(t))
+	t.Setenv("FAKE_FAIL_ON", trcToBT709)
+	t.Setenv("FAKE_LOG", log)
+	if err := os.Remove(log); err != nil {
+		t.Fatal(err)
+	}
+	if rec := do(t, newMux(threadsDefault), "POST", normalizeURL, []byte("input")); rec.Code != 200 {
+		t.Fatalf("transfer normalize %d %v", rec.Code, rec.Header())
+	}
+	runs, _ = os.ReadFile(log)
+	lines = strings.Split(strings.TrimSpace(string(runs)), "\n")
+	if len(lines) < 2 || !strings.Contains(lines[0], trcToBT709) || strings.Contains(lines[1], trcToBT709) {
+		t.Fatalf("transfer runs: %q", lines)
+	}
 }
 
 // The header probe's limits come first: an input over maxSourcePixels is refused before any frame is decoded. One

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -169,9 +170,19 @@ func framesICC(out []byte, index int) bool {
 }
 
 // otherPrimaries: SDR video tagged with primaries other than BT.709 and a known transfer, which normalize converts
-// to BT.709 before labelling the output BT.709.
+// to BT.709 (primaries and transfer) before labelling the output BT.709.
 func otherPrimaries(s *probeStream) bool {
 	return !isHDR(s) && knownColour(s.ColorPrimaries) && s.ColorPrimaries != "bt709" && knownColour(s.ColorTransfer)
+}
+
+// bt709Curves: the transfers whose curve is BT.709's (BT.601's and BT.2020's at 10 and 12 bits), which the output's
+// BT.709 label holds as they are.
+var bt709Curves = []string{"bt709", "smpte170m", "bt2020-10", "bt2020-12"}
+
+// otherTransfer: SDR video tagged with a known transfer of another curve (sRGB, gamma 2.2 or 2.8, linear), which
+// normalize converts to BT.709's before labelling the output BT.709.
+func otherTransfer(s *probeStream) bool {
+	return !isHDR(s) && knownColour(s.ColorTransfer) && !slices.Contains(bt709Curves, s.ColorTransfer)
 }
 
 // A refusal of the input: the code the Worker records. Codes only, never ffmpeg's words.
@@ -203,9 +214,11 @@ type plan struct {
 	frames float64
 	hdr    bool
 	// icc: the video carries an ICC profile, which normalize reads (iccdetect) for its primaries and transfer;
-	// primaries: it is tagged with primaries other than BT.709. Either converts the primaries to BT.709 (SDR only).
+	// primaries: it is tagged with primaries other than BT.709. Either converts the primaries and the transfer to
+	// BT.709 (SDR only). transfer: it is tagged with a transfer of a curve other than BT.709's, which is converted.
 	icc        bool
 	primaries  bool
+	transfer   bool
 	rung       rung
 	maxrate    int
 	estimateMs float64
@@ -388,6 +401,7 @@ func planVideo(p *probeResult, video, audio *probeStream, encodeMs float64) (*pl
 		hdr:        hdr,
 		icc:        streamICC(video),
 		primaries:  otherPrimaries(video),
+		transfer:   otherTransfer(video),
 		rung:       r,
 		maxrate:    videoMaxrate(duration, audioBitrate),
 		estimateMs: estimate,

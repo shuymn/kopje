@@ -20,13 +20,16 @@
 # stills always run. A still has only image chunks (no eXIf, tEXt, iTXt, zTXt or tIME) and no marker in its ICC
 # profile, and the P3 input's stills render (the pinned ffmpeg: iccdetect, then zscale to sRGB; an untagged PNG as
 # sRGB) within 2 of the source frame's rendered sample in each channel, and its normalized video's first frame decoded
-# as BT.709 within 4. Normalize has a duration within 0.5 s of the input's; each rung's output has the rung's geometry
+# as BT.709 and rendered as sRGB within 4. Normalize has a duration within 0.5 s of the input's; each rung's output has the rung's geometry
 # and frame rate, and the 600 s one an SSIM of at least MIN_SSIM_480P against its source scaled to 852x480; a 1200 s
 # MP3 input gives an MP3 at exactly AUDIO_DURATION_LIMIT.
 # Decoded content (design #1828 4.11): a 128x72 frame with a white marker in its top-left corner, stored rotated by
 # 90, 180 and 270 degrees with the display matrix that turns it upright, decodes from normalize upright with the marker
-# top left; HLG and PQ frames of a black and a reference-white patch, tagged by a colr box or only in the VUI, decode
-# as BT.709 with the black at most 24 and the white within 150-235 in luma, its chroma within 12 of neutral; a VFR
+# top left, and so do both its stills; HLG and PQ frames of a black and a reference-white patch, tagged by a colr box or
+# only in the VUI, decode as BT.709 with the black at most 24 and the white within 150-235 in luma, its chroma within 12
+# of neutral, and their stills with the black at most 24 and the white at least 150 in gray, its chroma within 12 of
+# neutral; a frame of BT.709 primaries tagged with sRGB's transfer decodes, as BT.709 rendered as sRGB, within 4 of the
+# source's sRGB sample; a VFR
 # input, audio longer than video and an MP4 whose mvhd states 1 s or 10 s over 3 s of streams give an output whose
 # streams decode as long as the input's, within 0.15 s.
 # Every output and still of these runs is kept and then verified by Kopje's own verifier (src/platform/av-bytes.ts,
@@ -235,10 +238,10 @@ srgb_pixel() { # <dir> <file>
   [ -n "$v" ] || v="$(pixel "$1" "$2" format=rgb24)"
   echo $v
 }
-# The top-left pixel of a normalized video's first frame, its BT.709 YUV as RGB, which a player shows as sRGB.
+# The top-left pixel of a normalized video's first frame as sRGB "r g b": its BT.709 YUV through BT.709's transfer.
 video_pixel() { # <dir> <file>
   local v
-  v="$(pixel "$1" "$2" 'scale=in_color_matrix=bt709:in_range=tv,format=rgb24')"
+  v="$(pixel "$1" "$2" 'zscale=pin=bt709:tin=bt709:min=bt709:rin=limited:p=bt709:t=iec61966-2-1:m=gbr:r=full,format=rgb24')"
   echo $v
 }
 # Whether two "r g b" samples are within <tolerance> (default 2) in each channel.
@@ -437,6 +440,17 @@ normalize() {
     "http://127.0.0.1:8080/normalize?probe_ms=10000&encode_ms=$ENCODE_MS")"
   echo "$(status "$h") $(header Kopje-Error "$h")"
 }
+# A normalize's still and a /still of <input>, as <input>.still.png and <input>.png, kept for the verifier; prints the
+# ones answered 200.
+stills() { # <input>
+  local h
+  h="$(req "$1.still.png" http://127.0.0.1:8080/normalize/still)"
+  [ "$(status "$h")" = 200 ] && keep "$1.still.png" "$1.still.png" image/png && echo "$1.still.png"
+  h="$(req "$1.png" -X POST --data-binary "@/in/$1" -H 'Content-Type: application/octet-stream' \
+    http://127.0.0.1:8080/still)"
+  [ "$(status "$h")" = 200 ] && keep "$1.png" "$1.png" image/png && echo "$1.png"
+  return 0
+}
 # The marker: 128x72 black with a white 16x16 square top left, stored rotated with the matrix that shows it upright.
 ffm -f lavfi -i "color=c=black:s=128x72:r=30:d=2,drawbox=x=0:y=0:w=16:h=16:c=white:t=fill" -c:v libx264 upright.mp4
 for turn in "90 transpose=clock" "180 hflip,vflip" "270 transpose=cclock"; do
@@ -458,6 +472,17 @@ for turn in "90 transpose=clock" "180 hflip,vflip" "270 transpose=cclock"; do
     print (d == "128,72" && n == 4 && c[1] > 180 && c[2] < 60 && c[3] < 60 && c[4] < 60) ? "true" : "false"}')" \
     "rotated$degrees.mp4: $got, want 128,72 with the marker top left"
   echo "| rotated$degrees.mp4 | normalize | $got | | | | | | | | |"
+  made="$(stills "rotated$degrees.mp4")"
+  check "$([ "$(wc -w <<<"$made")" = 2 ] && echo true)" "rotated$degrees.mp4: stills $made, want both"
+  for still in $made; do
+    dims="$(ffprobe -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "/o/$still")"
+    marks="$(block "$work/out" "$still" 0 0) $(block "$work/out" "$still" 120 0)"
+    marks="$marks $(block "$work/out" "$still" 0 64) $(block "$work/out" "$still" 120 64)"
+    check "$(awk -v m="$marks" -v d="$dims" 'BEGIN{n = split(m, c, " ");
+      print (d == "128,72" && n == 4 && c[1] > 180 && c[2] < 60 && c[3] < 60 && c[4] < 60) ? "true" : "false"}')" \
+      "$still: $dims, corners $marks, want 128,72 with the marker top left"
+    echo "| rotated$degrees.mp4 | $still | $dims, corners $marks | | | | | | | | |"
+  done
 done
 # HLG and PQ: left half black (code 64), right half reference white (HLG 75 %: 721; PQ 203 cd/m2: 573), 10-bit
 # BT.2020 with HDR10 mastering display and light level metadata (which the output must not keep: the verifier refuses
@@ -490,7 +515,34 @@ for hdr in "arib-std-b67 721 hlg" "smpte2084 573 pq" "arib-std-b67 721 hlg-vui" 
     print (b <= 24 && w[1] >= 150 && w[1] <= 235 && (w[2]-128)^2 <= 144 && (w[3]-128)^2 <= 144) ? "true" : "false"}')" \
     "$label.mp4: $got, want black <= 24 and white 150-235 in luma, its chroma within 12 of 128"
   echo "| $label.mp4 | normalize | $got | | | | | | | | |"
+  made="$(stills "$label.mp4")"
+  check "$([ "$(wc -w <<<"$made")" = 2 ] && echo true)" "$label.mp4: stills $made, want both"
+  for still in $made; do
+    black="$(block "$work/out" "$still" 24 32)"
+    patch="$(block "$work/out" "$still" 96 32 yuv)"
+    check "$(awk -v b="$black" -v p="$patch" 'BEGIN{split(p, w, " ");
+      print (b <= 24 && w[1] >= 150 && (w[2]-128)^2 <= 144 && (w[3]-128)^2 <= 144) ? "true" : "false"}')" \
+      "$still: black $black, white $patch, want black <= 24 and white at least 150, its chroma within 12 of 128"
+    echo "| $label.mp4 | $still | black $black, white $patch | | | | | | | | |"
+  done
 done
+# sRGB's transfer on BT.709 primaries, tagged as a screen recording is: one 64x48 frame of (210,70,40) coded with that
+# curve, which normalize converts to BT.709's before labelling the output BT.709.
+ffm -f lavfi -i color=c=0xD24628:s=64x48:r=30:d=2 \
+  -vf scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=color_primaries=bt709:color_trc=iec61966-2-1:colorspace=bt709:range=tv \
+  -c:v libx264 -color_primaries bt709 -color_trc iec61966-2-1 -colorspace bt709 -color_range tv -movflags +write_colr \
+  srgb.mp4
+cp "$work/fixture/srgb.mp4" "$work/in/"
+source_px="$(pixel "$work/fixture" srgb.mp4 'scale=in_color_matrix=bt709:in_range=tv,format=rgb24')"
+source_px="$(echo $source_px)"
+got="$(normalize srgb.mp4 srgb.out)"
+got_px="-"
+if [ "${got% *}" = 200 ]; then
+  got_px="$(video_pixel "$work/out" srgb.out)"
+  keep srgb.out srgb.mp4 video/mp4 2
+fi
+check "$(near "$got_px" "$source_px" 4)" "srgb.mp4 normalize: $got, sRGB $got_px, source $source_px"
+echo "| srgb.mp4 | normalize | $got, sRGB $got_px, source $source_px | | | | | | | | |"
 # Durations: VFR (30 fps for a second, then 10 fps), audio (4 s) longer than video (2 s), and an mvhd of 1 s and of
 # 10 s over 3 s of streams.
 ffm -f lavfi -i "testsrc2=s=128x72:r=30:d=3,select='lt(n\,30)+not(mod(n\,3))'" -fps_mode vfr -c:v libx264 vfr.mp4

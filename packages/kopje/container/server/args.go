@@ -88,13 +88,15 @@ func (t threading) encoderArgs() []string {
 	return []string{"-threads:v", strconv.Itoa(t.encoder)}
 }
 
-// iccDrop removes a frame's ICC profile; toBT709 converts a frame's primaries to BT.709 from its colour tags. label709
+// iccDrop removes a frame's ICC profile; toBT709 converts a frame's primaries and transfer to BT.709 from its colour
+// tags, trcToBT709 its transfer only (BT.709 primaries, or none declared). label709
 // tags every output frame BT.709 limited range: the encoder takes its colour description from the frames, not from
 // the -color_* options, so an untagged source would otherwise reach the SPS and the colr box unspecified.
 const (
-	iccDrop  = "sidedata=mode=delete:type=ICC_PROFILE"
-	toBT709  = "zscale=p=bt709"
-	label709 = "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"
+	iccDrop    = "sidedata=mode=delete:type=ICC_PROFILE"
+	toBT709    = "zscale=p=bt709:t=bt709"
+	trcToBT709 = "zscale=t=bt709"
+	label709   = "setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"
 	// A frame's HDR and viewing metadata (mastering display, content light level, HDR10+, Dolby Vision, HDR Vivid,
 	// the ambient viewing environment), which the tone map may read and the encoder would carry into the output (mdcv,
 	// clli and amve boxes, PNG mDCv and cLLi chunks): the output is SDR, and the values are the source's.
@@ -139,7 +141,8 @@ var frameCap = "trim=end_frame=" + strconv.Itoa(maxVideoFrames)
 // under a bitrate cap, yuv420p BT.709 limited range, rotation applied to pixels, no SEI (x264 writes its version
 // there), empty encoder tags (they reach the avc1 compressor name) and the moov ahead of mdat. HDR is tone mapped to
 // BT.709. SDR whose primaries are not BT.709, by its tags or by its ICC profile (iccdetect), is converted to BT.709
-// primaries first, keeping its transfer; BT.709 and untagged SDR pass as they are. A frame's ICC profile is dropped
+// primaries and transfer first, and SDR whose transfer is of another curve than BT.709's (an sRGB or gamma 2.2 tag)
+// to BT.709's transfer; BT.709 and untagged SDR pass as they are. A frame's ICC profile is dropped
 // after it is read (the MP4 muxer writes it into a colr box otherwise). The frame cap is a trim filter on the decoded
 // frames, which the plan bounds by the same count: -frames:v ends the whole output when the video stream ends, cutting
 // an audio stream that runs longer.
@@ -153,6 +156,8 @@ func videoArgs(p *plan, t threading, in, out string) []string {
 		vf = []string{"iccdetect", toBT709, iccDrop}
 	case p.primaries:
 		vf = []string{toBT709, iccDrop}
+	case p.transfer:
+		vf = []string{trcToBT709, iccDrop}
 	default:
 		vf = []string{iccDrop}
 	}

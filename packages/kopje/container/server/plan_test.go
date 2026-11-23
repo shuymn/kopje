@@ -246,6 +246,20 @@ func TestPlanReadsTheColourTags(t *testing.T) {
 			t.Fatalf("%s/%s: %+v %q", c.primaries, c.transfer, pl, r)
 		}
 	}
+	// A transfer of another curve than BT.709's is converted; BT.601's and BT.2020's are BT.709's curve.
+	for _, c := range []struct {
+		transfer string
+		want     bool
+	}{
+		{"iec61966-2-1", true}, {"gamma22", true}, {"gamma28", true}, {"linear", true},
+		{"bt709", false}, {"smpte170m", false}, {"bt2020-10", false}, {"bt2020-12", false},
+		{"unknown", false}, {"", false}, {"arib-std-b67", false}, {"smpte2084", false},
+	} {
+		pl, r := planNormalize(video("bt709", c.transfer), roomy)
+		if r != "" || pl.transfer != c.want {
+			t.Fatalf("bt709/%s: %+v %q", c.transfer, pl, r)
+		}
+	}
 	onStream := video("", "")
 	onStream.Streams[0].SideDataList = []sideData{{"ICC Profile"}}
 	if pl, _ := planNormalize(onStream, roomy); !pl.icc {
