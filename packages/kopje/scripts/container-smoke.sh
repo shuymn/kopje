@@ -63,6 +63,8 @@ MEMORY="${MEMORY:-8g}"
 ENCODE_MS="${ENCODE_MS:-600000}"
 MIN_SSIM_480P="${MIN_SSIM_480P:-0.95}"
 work="$(mktemp -d "${TMPDIR:-/tmp}/kopje-container-smoke.XXXXXX")"
+# The fixtures are written as this user, so the script can rewrite them (the image's user may be root or another uid).
+as_me=(--user "$(id -u):$(id -g)")
 name="kopje-media-smoke-$$"
 cleanup() {
   docker rm -f "$name" >/dev/null 2>&1 || true
@@ -75,7 +77,7 @@ docker run -d --name "$name" --network none --cpus "$CPUS" --memory "$MEMORY" --
 
 mkdir -p "$work/in" "$work/out" "$work/fixture"
 # tone.wav: three seconds of a sine, the audio input, tagged with a seeded title.
-docker run --rm --network none -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error \
+docker run --rm --network none "${as_me[@]}" -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error \
   -f lavfi -i sine=frequency=440:duration=3 -metadata title=KOPJEMARK_WAV_TITLE /f/tone.wav
 # exif.mov: three seconds of one 64x48 PNG frame carrying an eXIf chunk (a TIFF whose Make is KOPJEMARK_EXIF_MAKE) and
 # a tEXt chunk, copied into MOV unchanged, so the frames the still is made from carry both.
@@ -91,13 +93,13 @@ png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 48, 8, 2
 png += chunk(b"eXIf", tiff) + chunk(b"tEXt", b"Comment\0KOPJEMARK_PNG_TEXT") + chunk(b"IDAT", zlib.compress(rows))
 open(sys.argv[1], "wb").write(png + chunk(b"IEND", b""))
 PY
-docker run --rm --network none -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error -framerate 1 \
+docker run --rm --network none "${as_me[@]}" -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error -framerate 1 \
   -loop 1 -t 3 -i /f/frame.png -c:v copy -f mov /f/exif.mov
 # p3.mov: three seconds of one 64x48 frame of (210,70,40) in Display P3, its PNG tagged only by an ICC profile (the
 # pinned ffmpeg's for P3, with KOPJEMARK_ICC appended inside the profile), copied into MOV unchanged.
 p3_frame='color=c=0xD24628:s=64x48:d=1,format=rgb24'
 p3_frame+=',setparams=color_primaries=smpte432:color_trc=iec61966-2-1,iccgen=force=1'
-docker run --rm --network none -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error -f lavfi \
+docker run --rm --network none "${as_me[@]}" -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error -f lavfi \
   -i "$p3_frame" -frames:v 1 -c:v png /f/p3-generated.png
 python3 -I - "$work/fixture/p3-generated.png" "$work/fixture/p3.png" <<'PY'
 import struct, sys, zlib
@@ -116,7 +118,7 @@ while p < len(b):
     p += 12 + n
 open(sys.argv[2], "wb").write(b[:8] + out)
 PY
-docker run --rm --network none -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error -framerate 1 \
+docker run --rm --network none "${as_me[@]}" -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error -framerate 1 \
   -loop 1 -t 3 -i /f/p3.png -c:v copy -f mov /f/p3.mov
 # gray.mov: three seconds of one 64x48 grayscale PNG frame with a gray-gamma-2.2 ICC profile, which iccdetect cannot
 # use (it needs an RGB transform): normalize and both stills must still answer, the profile dropped.
@@ -146,12 +148,12 @@ png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 48, 8, 0
 png += chunk(b"iCCP", b"Gray\0\0" + zlib.compress(icc)) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")
 open(sys.argv[1], "wb").write(png)
 PY
-docker run --rm --network none -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error -framerate 1 \
+docker run --rm --network none "${as_me[@]}" -v "$work/fixture:/f" --entrypoint /ffmpeg "$ffmpeg_image" -v error -framerate 1 \
   -loop 1 -t 3 -i /f/gray.png -c:v copy -f mov /f/gray.mov
 # cover.m4a and cover-bmp.m4a: AAC with a 4096x4096 PNG or BMP cover (over the pixel limit; it is not the video and is
 # never decoded);
 # twostream.mov: H.264 then a PNG stream; tone.aac: raw ADTS AAC, whose headers declare no duration.
-ffm() { docker run --rm --network none -v "$work/fixture:/f" -w /f --entrypoint /ffmpeg "$ffmpeg_image" -v error "$@"; }
+ffm() { docker run --rm --network none "${as_me[@]}" -v "$work/fixture:/f" -w /f --entrypoint /ffmpeg "$ffmpeg_image" -v error "$@"; }
 ffm -f lavfi -i color=c=red:s=4096x4096:d=1 -frames:v 1 -c:v png cover.png
 ffm -f lavfi -i sine=d=3 -i cover.png -map 0 -map 1 -c:a aac -c:v copy -disposition:v attached_pic cover.m4a
 ffm -f lavfi -i color=c=red:s=4096x4096:d=1 -frames:v 1 -c:v bmp cover.bmp
