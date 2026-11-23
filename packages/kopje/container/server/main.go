@@ -36,8 +36,8 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -588,15 +588,22 @@ type encodeRun struct {
 	oversized bool
 }
 
-// oversizeMarkers are what the pinned ffmpeg prints when -max_pixels refuses a frame: its image utilities' (imgutils.c,
-// the native decoders) and libdav1d's, which takes max_pixels as its frame size limit ("Frame size WxH exceeds limit
-// N", obu.c).
-var oversizeMarkers = []string{"exceeds specified max pixel count", " exceeds limit "}
+// oversizeMarkers match what the pinned ffmpeg prints when -max_pixels refuses a frame: its image utilities' (imgutils.c,
+// the native decoders) and libdav1d's frame size diagnostic, which takes max_pixels as its limit ("Frame size WxH exceeds
+// limit N", obu.c). Only that diagnostic: the AAC decoder's "Number of bands (…) exceeds limit (…)" is an audio error.
+var oversizeMarkers = []*regexp.Regexp{
+	regexp.MustCompile(`exceeds specified max pixel count`),
+	regexp.MustCompile(`Frame size [0-9]+x[0-9]+ exceeds limit`),
+}
 
-// markerWriter records whether a stream of bytes contains any of markers, keeping only the bytes a marker split across
-// writes needs: ffmpeg's stderr is scanned for them, never stored, answered or logged.
+// markerSpan bounds a marker's match (the dav1d diagnostic's numbers are at most 10 digits each): the bytes markerWriter
+// keeps from one write to the next, so a marker split across writes is matched.
+const markerSpan = 128
+
+// markerWriter records whether a stream of bytes matches any of markers, keeping only the last markerSpan-1 bytes:
+// ffmpeg's stderr is scanned for them, never stored, answered or logged.
 type markerWriter struct {
-	markers []string
+	markers []*regexp.Regexp
 	tail    []byte
 	found   bool
 }
@@ -604,12 +611,10 @@ type markerWriter struct {
 func (m *markerWriter) Write(p []byte) (int, error) {
 	if !m.found {
 		window := append(m.tail, p...)
-		longest := 0
 		for _, marker := range m.markers {
-			m.found = m.found || strings.Contains(string(window), marker)
-			longest = max(longest, len(marker))
+			m.found = m.found || marker.Match(window)
 		}
-		keep := min(len(window), longest-1)
+		keep := min(len(window), markerSpan-1)
 		m.tail = append(m.tail[:0], window[len(window)-keep:]...)
 	}
 	return len(p), nil

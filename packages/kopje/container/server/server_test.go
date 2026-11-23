@@ -835,13 +835,19 @@ func TestMarkerWriterFindsTheMarkerAcrossWrites(t *testing.T) {
 		for _, part := range parts {
 			_, _ = m.Write([]byte(part))
 		}
-		if !m.found || len(m.tail) > len(oversizeMarkers[0]) {
+		if !m.found || len(m.tail) >= markerSpan {
 			t.Fatalf("%q: found %v, tail %d bytes", parts, m.found, len(m.tail))
 		}
 	}
-	other := &markerWriter{markers: oversizeMarkers}
-	_, _ = other.Write([]byte("Error while decoding stream"))
-	if other.found {
-		t.Fatal("found in another error")
+	// Other errors, the pinned AAC decoder's "exceeds limit" among them, are not the pixel limit's.
+	for _, line := range []string{
+		"Error while decoding stream",
+		"[aac @ 0x1] Number of bands (60) exceeds limit (51).\n",
+	} {
+		other := &markerWriter{markers: oversizeMarkers}
+		_, _ = other.Write([]byte(line))
+		if other.found {
+			t.Fatalf("found in %q", line)
+		}
 	}
 }
