@@ -1,10 +1,19 @@
+import { ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
+import { mediaUrl } from "../platform/media-files";
 import type { ImportAuthority } from "../platform/store-admin";
 import { PITR_RESTORING, PITR_RESTORING_MS, REBUILD_LEASE } from "../platform/store-flags";
-import { storedBlurhash } from "../platform/stored-bounds";
+import { MEDIA_META_BYTES, storedBlurhash } from "../platform/stored-bounds";
 import { accessAdminRefusal } from "./admin-authority";
-import { chargeInstanceTransforms, TRANSFORMS_PER_EMOJI, TRANSFORMS_PER_UPLOAD, uploadMediaMeta } from "./media";
+import {
+  chargeInstanceTransforms,
+  chargeUploadJob,
+  uploadJobFits,
+  TRANSFORMS_PER_EMOJI,
+  TRANSFORMS_PER_UPLOAD,
+  uploadMediaMeta,
+} from "./media";
 import { mediaRebuildOperation, readOperation } from "./operation";
 
 // The media rebuild (mastodon/media-rebuild.ts): local media whose row is complete but whose served files are not in R2
@@ -35,8 +44,27 @@ export const REBUILD_PAGE = 50;
 export const SCAN_WINDOW = 500;
 
 // emoji: the row is a custom emoji's image (migration 0055_local_custom_emojis), which the rebuild holds to the emoji
-// limits too (mastodon/media-rebuild.ts, platform/emoji-image.ts).
-export type RebuildRow = { id: string; token: string; contentType: string | null; emoji: boolean };
+// limits too (mastodon/media-rebuild.ts, platform/emoji-image.ts). av: for a video or audio row (#1828: its served
+// file is the media processor's verified output, content_type video/mp4 or audio/mpeg), its kind, whether it has a
+// preview, the preview's geometry in meta.small (as stored, any JSON value) and its blurhash; null for any other row.
+// A JSON value of meta as json_extract returns it (an object or array comes back as its JSON text).
+type StoredScalar = string | number | null;
+export type RebuildAv = {
+  kind: "video" | "audio";
+  preview: boolean;
+  small: { width: StoredScalar; height: StoredScalar } | null;
+  blurhash: string | null;
+};
+export type RebuildRow = {
+  id: string;
+  token: string;
+  contentType: string | null;
+  emoji: boolean;
+  av: RebuildAv | null;
+};
+
+// A video or audio row by its served type and its kind, which must agree.
+const AV_SQL = `((type = 'video' AND content_type = 'video/mp4') OR (type = 'audio' AND content_type = 'audio/mpeg'))`;
 
 // rows: the candidates; next: the id the listing scanned to (the next listing starts after it); done: nothing is after
 // it.
@@ -58,17 +86,42 @@ export const rebuildCandidates = readOperation.atStoreTime("now")<{ after: strin
   if (last === undefined) {
     return { rows: [], next: after, done: true };
   }
+  type Listed = Omit<RebuildRow, "emoji" | "av"> & {
+    emoji: number;
+    kind: "video" | "audio" | null;
+    preview: number;
+    smallWidth: SqlStorageValue;
+    smallHeight: SqlStorageValue;
+    hasSmall: number;
+    blurhash: string | null;
+  };
   const rows = db
-    .all<Omit<RebuildRow, "emoji"> & { emoji: number }>(
+    .all<Listed>(
       `SELECT id, file_token AS token, content_type AS contentType,
-				EXISTS (SELECT 1 FROM custom_emojis e WHERE e.id = media_attachments.id) AS emoji
+				EXISTS (SELECT 1 FROM custom_emojis e WHERE e.id = media_attachments.id) AS emoji,
+				CASE WHEN ${AV_SQL} THEN type END AS kind, preview_url IS NOT NULL AS preview,
+				json_type(meta, '$.small') IS NOT NULL AS hasSmall,
+				json_extract(meta, '$.small.width') AS smallWidth, json_extract(meta, '$.small.height') AS smallHeight,
+				blurhash
 			FROM media_attachments WHERE ${ELIGIBLE} AND id > ? AND id <= ? ORDER BY id LIMIT ?`,
       iso(now),
       after ?? "",
       last,
       REBUILD_PAGE,
     )
-    .map((row) => ({ ...row, emoji: row.emoji === 1 }));
+    .map(({ emoji, kind, preview, smallWidth, smallHeight, hasSmall, blurhash, ...row }) => ({
+      ...row,
+      emoji: emoji === 1,
+      av:
+        kind === null
+          ? null
+          : {
+              kind,
+              preview: preview === 1,
+              small: hasSmall === 1 ? { width: smallWidth as StoredScalar, height: smallHeight as StoredScalar } : null,
+              blurhash,
+            },
+    }));
   if (rows.length === REBUILD_PAGE) {
     return { rows, next: rows.at(-1)?.id ?? last, done: false };
   }
@@ -196,11 +249,14 @@ export type RebuildCharge =
 
 // Charges one rebuilt row's transformations to the instance's budget of the month `now` is in, before Images is called,
 // as its writer charged them (RES-6): TRANSFORMS_PER_EMOJI for a custom emoji's image, TRANSFORMS_PER_UPLOAD for any
-// other row (its preview's RGBA too). The kind is the Store's (a primary-key probe of custom_emojis), not the caller's.
+// other row (its preview's RGBA too; a video row's still and its RGBA, or the RGBA of an adopted still). The kind is the
+// Store's (a primary-key probe of custom_emojis), not the caller's. With `uploads` (a video row's still made by the
+// media processor, #1828 design 4.12), one upload unit is charged too, against that limit (MEDIA_UPLOAD_MONTHLY_JOBS):
+// both or neither.
 export const chargeRebuild = mediaRebuildOperation.atStoreTime("now")<
-  { authority: ImportAuthority; holder: string; id: string; limit: number; now: number },
+  { authority: ImportAuthority; holder: string; id: string; limit: number; uploads?: number; now: number },
   RebuildCharge
->((db, { authority, holder, id, limit, now }) => {
+>((db, { authority, holder, id, limit, uploads, now }) => {
   const refused = adminRefused(db, authority);
   if (refused !== null) {
     return { status: "denied", reason: refused };
@@ -209,9 +265,18 @@ export const chargeRebuild = mediaRebuildOperation.atStoreTime("now")<
     return { status: "lease-lost" };
   }
   const emoji = db.first("SELECT 1 AS found FROM custom_emojis WHERE id = ?", id) !== undefined;
-  return chargeInstanceTransforms(db, emoji ? TRANSFORMS_PER_EMOJI : TRANSFORMS_PER_UPLOAD, limit, now)
-    ? { status: "ok" }
-    : { status: "budget_exhausted" };
+  const count = emoji ? TRANSFORMS_PER_EMOJI : TRANSFORMS_PER_UPLOAD;
+  // The upload unit is judged first, so a refusal charges neither.
+  if (uploads !== undefined && !uploadJobFits(db, uploads, now)) {
+    return { status: "budget_exhausted" };
+  }
+  if (!chargeInstanceTransforms(db, count, limit, now)) {
+    return { status: "budget_exhausted" };
+  }
+  if (uploads !== undefined) {
+    chargeUploadJob(db, uploads, now);
+  }
+  return { status: "ok" };
 });
 
 type Size = { width: number; height: number };
@@ -260,4 +325,127 @@ export const recordRebuild = mediaRebuildOperation.atStoreTime("now")<
     iso(now),
   );
   return changed === 0 ? { status: "gone" } : { status: "ok" };
+});
+
+// ---- Video and audio rows (#1828 design 4.16, mastodon/media-rebuild-av.ts)
+
+// Records the still of a video row once its `small` exists in R2: meta.small its geometry and the blurhash as given
+// (null is stored as null: the still's metadata says it has none). `publish` (`--stills`) also sets the row's
+// preview_url, on the uploader's origin as completeMedia makes it, in the same update; otherwise the row must still
+// have one, so a row that fell back is not given a preview by a plain rebuild. A meta past MEDIA_META_BYTES is not
+// written (gone).
+export const recordAvStill = mediaRebuildOperation.atStoreTime("now")<
+  {
+    authority: ImportAuthority;
+    holder: string;
+    id: string;
+    token: string;
+    small: Size;
+    blurhash: string | null;
+    publish: boolean;
+    now: number;
+  },
+  RebuildRecord
+>((db, { authority, holder, id, token, small, blurhash, publish, now }) => {
+  const refused = adminRefused(db, authority);
+  if (refused !== null) {
+    return { status: "denied", reason: refused };
+  }
+  if (!holds(db, holder, now)) {
+    return { status: "lease-lost" };
+  }
+  const owner = db.first<{ uri: string }>(
+    `SELECT a.uri FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX}
+			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = m.account_id WHERE m.id = ?`,
+    id,
+  );
+  if (owner === undefined) {
+    return { status: "gone" };
+  }
+  const preview = publish ? mediaUrl(new URL(owner.uri).origin, token, "small", "image/webp") : null;
+  const meta = `json_set(COALESCE(meta, '{}'), '$.small', json(?1))`;
+  const changed = db.run(
+    `UPDATE media_attachments SET meta = ${meta}, blurhash = ?2, preview_url = COALESCE(?3, preview_url)
+		WHERE id = ?4 AND file_token = ?5 AND type = 'video' AND content_type = 'video/mp4'
+			AND (?3 IS NOT NULL OR preview_url IS NOT NULL)
+			AND length(CAST(${meta} AS BLOB)) <= ?6
+			AND ${ELIGIBLE.replace("?", "?7")}`,
+    JSON.stringify({ width: small.width, height: small.height }),
+    storedBlurhash(blurhash),
+    preview,
+    id,
+    token,
+    MEDIA_META_BYTES,
+    iso(now),
+  );
+  return changed === 0 ? { status: "gone" } : { status: "ok" };
+});
+
+// The fallback of a video row whose still cannot be made (the processor unbound or failing, its probe failed, a
+// budget spent): preview_url, meta.small and the blurhash are cleared, so the row is presented with VIDEO_POSTER.
+// Nothing is written to R2. Terminal for a plain rebuild; `--stills` revisits it.
+export const fallbackAvRebuild = mediaRebuildOperation.atStoreTime("now")<
+  { authority: ImportAuthority; holder: string; id: string; token: string; now: number },
+  RebuildRecord
+>((db, { authority, holder, id, token, now }) => {
+  const refused = adminRefused(db, authority);
+  if (refused !== null) {
+    return { status: "denied", reason: refused };
+  }
+  if (!holds(db, holder, now)) {
+    return { status: "lease-lost" };
+  }
+  const changed = db.run(
+    `UPDATE media_attachments SET preview_url = NULL, meta = json_remove(meta, '$.small'), blurhash = NULL
+		WHERE id = ? AND file_token = ? AND type = 'video' AND content_type = 'video/mp4' AND ${ELIGIBLE}`,
+    id,
+    token,
+    iso(now),
+  );
+  return changed === 0 ? { status: "gone" } : { status: "ok" };
+});
+
+// The probe record of an execution profile (design 4.15): which Worker version (the build) it passed or failed for,
+// the image the container reported, and when (Store time). Kept in kopje_state (not dumped). This release records only
+// the rebuild's own probe of `still@standard-1`.
+export type ProbeRecord = { version: string; imageTag: string | null; at: number; ok: boolean };
+
+const PROBE_RECORD = "media_probe:";
+const PROBE_PROFILES = ["still@standard-1"] as const;
+type RecordedProfile = (typeof PROBE_PROFILES)[number];
+
+function probeName(profile: RecordedProfile): string {
+  if (!PROBE_PROFILES.includes(profile)) {
+    throw new Error("not a recorded probe profile");
+  }
+  return `${PROBE_RECORD}${profile}`;
+}
+
+export const probeRecord = readOperation<{ profile: RecordedProfile }, ProbeRecord | null>((db, { profile }) =>
+  flag<ProbeRecord>(db, probeName(profile)),
+);
+
+// Records a probe the rebuild ran under its lease.
+export const recordProbe = mediaRebuildOperation.atStoreTime("now")<
+  {
+    authority: ImportAuthority;
+    holder: string;
+    profile: RecordedProfile;
+    version: string;
+    imageTag: string | null;
+    ok: boolean;
+    now: number;
+  },
+  { status: "ok" } | { status: "lease-lost" } | { status: "denied"; reason: string }
+>((db, { authority, holder, profile, version, imageTag, ok, now }) => {
+  const refused = adminRefused(db, authority);
+  if (refused !== null) {
+    return { status: "denied", reason: refused };
+  }
+  if (!holds(db, holder, now)) {
+    return { status: "lease-lost" };
+  }
+  const record: ProbeRecord = { version, imageTag, at: now, ok };
+  db.run("INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)", probeName(profile), JSON.stringify(record));
+  return { status: "ok" };
 });

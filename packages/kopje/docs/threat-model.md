@@ -3206,6 +3206,23 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   period again from a restore"). Accepted residual risk: a Worker terminated in the middle of an R2 write leaves no
   heartbeat and no record, and that one write may land after the lease expired; it is bounded to a put already in
   flight at termination, and its file lands under the capability URL of a row that existed when the rebuild started.
+  A video or audio row (`src/mastodon/media-rebuild-av.ts`, #1828) is rebuilt under the same lease and fences, one a
+  call, within `REBUILD_AV_MS` (120 s, its stages bounded at 60, 60 and 75 s). Its `files/<token>/full` is the original
+  read once and streamed through the output verifier (`avVerifier`, MEDIA-3) into the put; the last chunk is held until
+  the verifier accepted the whole stream and its kind is the row's, so a refused file never reaches R2 whole and the put
+  fails. A video's `files/<token>/small` is either an existing object adopted only after a bounded read shows a still
+  WebP with no retained metadata and a long edge of at most 640 (never overwritten with other bytes; one that fails is
+  reported and left), or a still made by the media processor through the injected `StillMaker` (its one input key is
+  `originals/<id>`; the PNG passes `verifyStill`, then Images' `encodeChecked`), put with custom metadata `{width,
+  height, blurhash}`. The Store records the still (`recordAvStill`) only after that put, and with `--stills` sets the
+  preview URL in the same call; when no still can be made it clears the preview, `meta.small` and the blurhash
+  (`fallbackAvRebuild`) and writes nothing. The `still@standard-1` probe the call runs first when its record is not a
+  pass for this build writes its input to `incoming/probe-<nonce>` (`probeInputKey`, never served) and deletes it after;
+  a copy left by a Worker that died in between stays until removed by hand (the `incoming/` orphan pass is not built
+  yet). Every one of these R2 writes and deletes starts only after the Store confirms the lease.
+  `test/media-rebuild-av.test.ts` ("publishes nothing the verifier refuses", "a call that loses its lease after `full`",
+  "a call held right after its still's put loses the lease", "a restored row whose preview metadata predates the
+  small", "falls back without the processor"), `test/media-processor.test.ts` ("MediaProcessor stillNow").
   A custom emoji upload (`kopje-admin emoji add`, `src/mastodon/emoji-upload.ts`) builds its keys as every upload's,
   from a reservation the Store records before any write (`reserveEmoji` in `src/domain/local-emojis.ts`); completion
   and promotion are one transaction (`completeEmoji`: the row is kept, gc_at NULL, with its emoji row), and a failure

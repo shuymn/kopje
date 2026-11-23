@@ -48,8 +48,12 @@ Commands
   invitation remove <email>     remove an email's invitation; an account already made is not touched. Logged
   maintenance on|off            enter or leave the Store's readonly maintenance
   upgrade retry                 re-run a failed schema upgrade for the current build
-  media-rebuild [--dry-run]     make the served files of local media whose files are missing (a restore, the
-                                cutover's moved images) from their originals in R2, and correct their sizes. Writes only
+  media-rebuild [--dry-run] [--stills]
+                                make the served files of local media whose files are missing (a restore, the
+                                cutover's moved images) from their originals in R2, and correct their sizes; video and
+                                audio files are copied after their check, a video's still is made by the media
+                                processor or its preview cleared. --stills also gives a still to videos that have none
+                                (the processor bound, MEDIA_UPLOAD_MONTHLY_JOBS left). Writes only
                                 before publish, or 20 minutes after "maintenance on" (the env MAINTENANCE is not
                                 enough), one call at a time. Prints counts and the rows to look at; exits 3 when an original is
                                 missing, a type does not match, re-encoding failed, the Images quota or monthly budget
@@ -938,9 +942,10 @@ export async function run({
       }
       case "media-rebuild": {
         if (rest.length > 0) {
-          throw new UsageError("media-rebuild [--dry-run]");
+          throw new UsageError("media-rebuild [--dry-run] [--stills]");
         }
         const dryRun = flags["dry-run"] === true;
+        const stills = flags.stills === true;
         const pause =
           sleep ?? ((/** @type {number} */ ms) => new Promise((resolve) => globalThis.setTimeout(resolve, ms)));
         /** @type {Record<string, number>} */
@@ -957,7 +962,7 @@ export async function run({
         for (;;) {
           let step;
           try {
-            step = await client.post("/admin/media/rebuild", { after, dryRun });
+            step = await client.post("/admin/media/rebuild", { after, dryRun, stills });
           } catch (error) {
             if (error instanceof AdminError && error.code === "rebuild-needs-readonly") {
               out.info(

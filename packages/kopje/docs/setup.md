@@ -62,6 +62,12 @@ Some things cannot be done from the wizard. Do these in the Cloudflare dashboard
    account that transforms images. The images are stored in the media bucket (R2), whose storage and operations are
    billed apart from Images: at most 512 KiB an image, one write each, and one read per view.
 
+   `MEDIA_UPLOAD_MONTHLY_JOBS` (a plain-text variable, default 0) is how many media processor jobs uploads may start
+   each UTC month. Video and audio uploads are not accepted yet; in this release the budget is spent only by
+   `kopje-admin media-rebuild` when it makes a still for a restored video (one job each, besides three Images
+   transformations from `IMAGES_MONTHLY_TRANSFORMS`). At 0, or without the processor's block, a rebuilt video shows the
+   plain poster instead ([backup.md](backup.md), "Restore").
+
    Remote accounts' avatars and headers, remote custom emoji, and remote posts' attachments are cached in the media
    bucket under `remote/` and served from the instance, so clients do not load them from other servers. Nothing needs
    setting: `REMOTE_MEDIA_CACHE_BYTES` (a plain-text variable, default 4294967296, 4 GiB) caps the bytes the cache

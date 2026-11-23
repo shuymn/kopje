@@ -234,6 +234,38 @@ export function chargeInstanceTransforms(db: Db, count: number, limit: number, n
   return true;
 }
 
+// The media processor's upload units spent per UTC month (#1828 design 4.12, MEDIA_UPLOAD_MONTHLY_JOBS): one per
+// container job that budget pays for. This release charges only the media rebuild's stills (domain/media-rebuild.ts).
+// Kept and pruned as the transformation counters are.
+const UPLOAD_JOBS = "media_upload_jobs:";
+
+function uploadJobsName(now: number): string {
+  return `${UPLOAD_JOBS}${iso(now).slice(0, 7)}`;
+}
+
+// Whether one more upload unit fits `limit` in the month `now` is in (0 admits nothing).
+export function uploadJobFits(db: Db, limit: number, now: number): boolean {
+  return Number(state(db, uploadJobsName(now)) ?? "0") + 1 <= limit;
+}
+
+// Charges one upload unit to the month `now` is in, pruning months before the previous one. False, and nothing
+// charged, when it does not fit `limit`.
+export function chargeUploadJob(db: Db, limit: number, now: number): boolean {
+  const name = uploadJobsName(now);
+  const used = Number(state(db, name) ?? "0");
+  if (used + 1 > limit) {
+    return false;
+  }
+  db.run(
+    "DELETE FROM kopje_state WHERE substr(name, 1, ?1) = ?2 AND substr(name, ?1 + 1, 7) < ?3",
+    UPLOAD_JOBS.length,
+    UPLOAD_JOBS,
+    previousMonth(now),
+  );
+  setState(db, name, String(used + 1));
+  return true;
+}
+
 export type Started =
   | { status: "ok" }
   | { status: "expired" }

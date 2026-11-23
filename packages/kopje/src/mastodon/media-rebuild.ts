@@ -17,8 +17,10 @@ import {
 import { sniffImageType } from "../platform/image-bytes";
 import { type ImageCodec, IMAGE_SIZE_LIMIT, inspectImage, processImage, servedTypeOf } from "../platform/images";
 import { fileKey, MEDIA_VARIANTS, originalKey } from "../platform/media-files";
+import type { StillMaker } from "../platform/media-transcoder";
 import type { ImportAuthority } from "../platform/store-admin";
 import type { StoreStub } from "../platform/store-client";
+import { type AvCall, avComplete, MAX_AV_BUILDS_PER_CALL, rebuildAv } from "./media-rebuild-av";
 
 // Rebuilds the served files of local media from their originals (domain/media-rebuild.ts), one bounded call at a time
 // from /admin/media/rebuild; the CLI (`kopje-admin media-rebuild`) follows the cursor to the end. A row whose two files
@@ -62,9 +64,16 @@ import type { StoreStub } from "../platform/store-client";
 // which stays spent). A dry run is a size and signature preflight only: its would-build certifies neither the edges
 // nor the encoded output.
 //
+// A video or audio row (#1828) is rebuilt by mastodon/media-rebuild-av.ts within this call's lease and fences: its
+// `full` copied from the original through the output verifier, a video's `small` adopted or made by the media
+// processor (the StillMaker the app wiring passes, null without the processor) or the row's preview cleared (the
+// fallback, counted as `fallback`). `stills` (`kopje-admin media-rebuild --stills`) also gives a still to video rows
+// that have none.
+//
 // Bounds per call: one listing (at most SCAN_WINDOW rows scanned, REBUILD_PAGE candidates) and at most
-// MAX_BUILDS_PER_CALL re-encoded, one at a time (an original is at most 16 MB), so a call stays within a request's
-// subrequests and memory.
+// MAX_BUILDS_PER_CALL rows built, one at a time (an image original is at most 16 MB), of which at most
+// MAX_AV_BUILDS_PER_CALL are video or audio rows (each streamed, within REBUILD_AV_MS), so a call stays within a
+// request's subrequests and memory.
 
 export const MAX_BUILDS_PER_CALL = 10;
 
@@ -79,6 +88,7 @@ type RebuildOutcome =
   | "original-missing"
   | "type-mismatch"
   | "failed"
+  | "fallback"
   | "gone";
 
 // Rows an operator has to look at: the original is missing, its type does not match the row, or re-encoding failed.
@@ -113,6 +123,9 @@ export type RebuildDeps = {
   now: () => number;
   authority: ImportAuthority;
   monthlyTransforms: number;
+  // MEDIA_UPLOAD_MONTHLY_JOBS, and the media processor's stills (null without its binding): video rows' stills.
+  monthlyUploads?: number;
+  stills?: StillMaker | null;
   // The lease holder of this call (a fresh id by default), and the heartbeat while a write is pending.
   holder?: string;
   heartbeatMs?: number;
@@ -138,6 +151,7 @@ function emptyCounts(): Record<RebuildOutcome, number> {
     "original-missing": 0,
     "type-mismatch": 0,
     failed: 0,
+    fallback: 0,
     gone: 0,
   };
 }
@@ -147,7 +161,7 @@ const SIGNATURE_BYTES = 16;
 
 export async function rebuildMedia(
   deps: RebuildDeps,
-  input: { after: string | null; dryRun: boolean },
+  input: { after: string | null; dryRun: boolean; stills?: boolean },
 ): Promise<RebuildStep> {
   const { build, store, now } = deps;
   if (input.dryRun) {
@@ -239,7 +253,7 @@ async function existingEmoji(
 
 async function pass(
   deps: RebuildDeps,
-  input: { after: string | null; dryRun: boolean },
+  input: { after: string | null; dryRun: boolean; stills?: boolean },
   control: Lease | null,
 ): Promise<RebuildStep> {
   const { build, store, bucket, now } = deps;
@@ -291,6 +305,8 @@ async function pass(
   const counts = emptyCounts();
   const problems: RebuildProblem[] = [];
   let builds = 0;
+  let avBuilds = 0;
+  const probe: AvCall["probe"] = { state: "unknown" };
   // Images answered 9422 to a row's RGBA output: the call stops once that row is handled.
   let quota = false;
   // The last row handled; a stop leaves the row it stopped at for the next call.
@@ -319,6 +335,72 @@ async function pass(
       const [full, small] = await bounded(() =>
         Promise.all(MEDIA_VARIANTS.map((variant) => bucket.head(fileKey(row.token, variant)))),
       );
+      if (row.av !== null) {
+        const av = row.av;
+        if (avComplete(av, full ?? null, small ?? null, input.stills === true)) {
+          counts["skipped-existing"]++;
+          handled = row.id;
+          continue;
+        }
+        if (control === null) {
+          const original = await bounded(() => bucket.head(originalKey(row.id)));
+          if (original === null) {
+            report({ id: row.id, outcome: "original-missing" });
+          } else {
+            counts["would-build"]++;
+          }
+          handled = row.id;
+          continue;
+        }
+        if (builds >= MAX_BUILDS_PER_CALL || avBuilds >= MAX_AV_BUILDS_PER_CALL) {
+          return step(null, false);
+        }
+        builds++;
+        avBuilds++;
+        const outcome = await rebuildAv(
+          {
+            build,
+            store,
+            bucket,
+            images: deps.images,
+            now,
+            authority: deps.authority,
+            holder: control.holder,
+            monthlyTransforms: deps.monthlyTransforms,
+            monthlyUploads: deps.monthlyUploads ?? 0,
+            stills: deps.stills ?? null,
+            publish: input.stills === true,
+            bounded: (work, end) => within(work, Math.min(end ?? deadline, deadline), now),
+            settled,
+            probe,
+          },
+          row,
+          av,
+          full ?? null,
+          small ?? null,
+        );
+        switch (outcome.kind) {
+          case "refused":
+            throw new Refused(outcome.code, outcome.message);
+          case "budget":
+            return step("budget", false);
+          case "problem":
+            report({
+              id: row.id,
+              outcome: outcome.outcome,
+              ...(outcome.detail === undefined ? {} : { detail: outcome.detail }),
+            });
+            break;
+          default:
+            counts[outcome.kind]++;
+            quota ||= outcome.quota === true;
+        }
+        handled = row.id;
+        if (control.lost) {
+          return step("lease-overrun", false);
+        }
+        continue;
+      }
       if (full !== null && full !== undefined && small !== null && small !== undefined) {
         if (row.emoji) {
           const sizes = { full: full.size, small: small.size };

@@ -427,3 +427,55 @@ export async function processImage(
     return failure(error);
   }
 }
+
+// The preview of a video from the media processor's PNG still (#1828 design 4.10, 4.16), which verifyStill has passed
+// (platform/av-bytes.ts): re-encoded as a still WebP within SMALL_EDGE (encodeChecked: stripped, no metadata left, one
+// frame, its real dimensions), and its blurhash from Images' RGBA output of the same input and transformation, given
+// up as an upload's is (`blurhash`, ProcessOptions). A failure of the WebP is classified as processImage classifies
+// it; any failure of the RGBA output only leaves the blurhash null.
+export async function stillPreview(
+  codec: ImageCodec,
+  png: Uint8Array,
+  size: Size,
+  blurhash: { end: number; now: () => number },
+): Promise<
+  | { ok: true; small: EncodedImage; blurhash: string | null; blurhashStop: "quota" | "deadline" | null }
+  | { ok: false; reason: ImageFailure; detail?: string }
+> {
+  const preview = fit(size, SMALL_EDGE);
+  try {
+    const small = await encodeChecked(codec, png, { ...preview, format: "image/webp", still: true });
+    const hashed = await previewBlurhash(codec, png, preview, small, blurhash);
+    return { ok: true, small, blurhash: hashed.blurhash, blurhashStop: hashed.stop };
+  } catch (error) {
+    if (error instanceof ImageOutputError) {
+      return { ok: false, reason: "failed", detail: error.message };
+    }
+    return failure(error);
+  }
+}
+
+// The blurhash of a still WebP of `size` that is already served (an adopted `small`, design 4.16), from Images' RGBA
+// output of it untransformed; null when that fails or is given up. 9422 is told apart so the caller can stop.
+export async function stillBlurhash(
+  codec: ImageCodec,
+  webp: Uint8Array,
+  size: Size,
+  blurhash: { end: number; now: () => number },
+): Promise<{ blurhash: string | null; stop: "quota" | "deadline" | null }> {
+  return previewBlurhash(codec, webp, {}, size, blurhash);
+}
+
+// Whether Images re-encodes the media processor's PNG `png` of `size` into a checked still WebP within SMALL_EDGE (the
+// `still@standard-1` probe's last step, design 4.15): any failure, 9422 included, is false.
+export async function stillEncodes(codec: ImageCodec, png: Uint8Array, size: Size, guard: CallGuard): Promise<boolean> {
+  try {
+    await encodeChecked(codec, png, { ...fit(size, SMALL_EDGE), format: "image/webp", still: true, guard });
+    return true;
+  } catch (error) {
+    if (error instanceof DeadlinePassed) {
+      throw error;
+    }
+    return false;
+  }
+}

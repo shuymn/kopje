@@ -599,6 +599,10 @@ export const STORE_RPC = {
   mediaRebuildRowLive: mediaRebuild.rebuildRowLive,
   chargeMediaRebuild: mediaRebuild.chargeRebuild,
   recordMediaRebuild: mediaRebuild.recordRebuild,
+  recordMediaRebuildStill: mediaRebuild.recordAvStill,
+  fallbackMediaRebuild: mediaRebuild.fallbackAvRebuild,
+  mediaProbeRecord: mediaRebuild.probeRecord,
+  recordMediaProbe: mediaRebuild.recordProbe,
 
   // Local custom emoji (domain/local-emojis.ts): the Access admin's writes from /admin/emojis, each at the Store's own
   // time, so the writer deadline is judged on one clock; the public list and the Emoji object.

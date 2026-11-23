@@ -89,14 +89,14 @@ request and its retries end in time for a last checkpoint.
    upload of 8 MiB parts with both SHA-256 digests taken in the same pass, so the job holds about one part of it
    whatever its size; any failure aborts that upload, and a copy is recorded only once its upload completed. An
    original larger than 64 MiB fails the run as `media-too-large`, and one whose body does not match its stated size
-   as `media-changed`. When the invocation nears its deadline, or the next original would take it past its byte budget, it stops,
-   and the next cron continues. Nothing is ever deleted from R2.
+   as `media-changed`. When the invocation nears its deadline, or the next original would take it past its byte
+   budget, it stops, and the next cron continues. Nothing is ever deleted from R2.
 3. **Media index**, then **manifest**, then **retention**.
 
 A backup that is interrupted resumes where it stopped. The one exception is an interrupted dump: age's stream state
 cannot be saved, so its upload is aborted and the dump starts again. Each invocation first aborts the multipart uploads
-under `backups/` and `media/` that it can list, since no live invocation is writing them. A failure is recorded with a reason code
-and retried after an hour. A run that dies three times in a row is recorded as `interrupted`.
+under `backups/` and `media/` that it can list, since no live invocation is writing them. A failure is recorded with a
+reason code and retried after an hour. A run that dies three times in a row is recorded as `interrupted`.
 
 A run is tied to the bucket settings (endpoint, bucket, region, prefix) and the recipients it started with. If either
 changes, the run is abandoned and a new one starts. A copy of an original made under other settings counts as missing,
@@ -359,6 +359,14 @@ paths are built only from validated ids. Work in a new, empty directory so nothi
    `original-missing` (the backup did not hold it: `pending` or `absent` in the index), `type-mismatch` (the original
    is not of the type the row's URLs name), `failed` (Images could not re-encode it), or a stop on the Images quota
    (9422) or the monthly budget: run it again once the allowance is back.
+
+   A video or audio row is handled one per call. Its file is the original itself, checked again by the output verifier
+   as it is copied (a file the check refuses is reported as `failed` and never served). A video's still preview is
+   made by the media processor when its block is added and `MEDIA_UPLOAD_MONTHLY_JOBS` has a job left this month (one
+   job and three transformations each; the first call that needs one checks the processor with a short probe clip
+   first); otherwise the row is counted as `fallback` and shows the plain video poster. A still left by an earlier,
+   interrupted run is reused. To give stills to such videos later, once the processor is set up, run
+   `kopje-admin media-rebuild --stills`.
 
 7. **Publish.** The imported Store stays readonly (it accepts no write and delivers nothing) until you publish it, once
    it looks right:

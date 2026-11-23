@@ -101,6 +101,9 @@ const configSchema = v.object(
     // IMAGES_MONTHLY_TRANSFORMS; federation/card-images.ts). 0, the default, fetches and re-encodes none; the sum with
     // IMAGES_MONTHLY_TRANSFORMS is what the account's Images allowance must cover (docs/setup.md).
     IMAGES_CARD_MONTHLY_TRANSFORMS: v.optional(integer(0), 0),
+    // Media processor jobs uploads may start per UTC month (#1828, domain/media.ts chargeUploadJob). 0, the default,
+    // starts none. This release spends it only on the stills `kopje-admin media-rebuild` makes for video rows.
+    MEDIA_UPLOAD_MONTHLY_JOBS: v.optional(integer(0), 0),
     // The bytes the cache of remote media (domain/remote-media.ts, MEDIA-7) may charge in the media bucket under
     // remote/, reservations and files awaiting deletion included; reclamation keeps it below. 4 GiB by default; 0 turns
     // caching off; a positive value below REMOTE_MEDIA_CACHE_MIN_BYTES, which leaves reclamation no room above its
