@@ -8,6 +8,17 @@ Each version says whether it changes the Store's schema (adds migrations) and wh
 
 ## [Unreleased]
 
+### Added
+
+- The first part of video and audio support: the package ships the media processor's container (`container/`, a
+  pinned ffmpeg build and a small server with fixed operations), the `MediaProcessor` Durable Object that runs it, and
+  `kopje-admin media-processor probe`, which starts the container on each instance type and runs one operation on a
+  packaged clip. The instance template gains a commented, optional block that adds it (`deploy/README.md`, "Video and
+  audio"); without the block nothing changes. Uploads stay image-only in this release. An instance that adds it must
+  also export `MediaProcessor` from `src/index.ts` (`export { default, MediaProcessor, Store } from "kopje"`), or
+  `wrangler deploy` fails; the template's file does. Its `v2-media-processor` migration is permanent: to turn the
+  processor off, remove only the `"containers"` entry.
+
 ### Fixed
 
 - A video or gifv from another server that comes without a preview image is playable in clients such as Elk: its

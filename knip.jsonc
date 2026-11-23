@@ -32,6 +32,8 @@
         "browser/fixtures/pages.tsx",
         // The held-output bench's object, which run.mjs deploys from a wrangler config it writes.
         "bench/held-output/worker.ts",
+        // The media processor bench's Worker, deployed from bench/media-processor/wrangler.jsonc.
+        "bench/media-processor/worker.ts",
         // The suites of each vitest config, whose `include` is an absolute path the plugin does not read. No module
         // imports a suite, so these name no shared helper.
         "test/**/*.test.ts",

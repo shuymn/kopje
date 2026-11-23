@@ -1,0 +1,548 @@
+// Command mediasrv is the media processor's HTTP server, run in Kopje's container image (#1828). It offers fixed
+// operations on one input at a time, never a command line:
+//
+//	POST /normalize?probe_ms=<ms>&encode_ms=<ms>  input -> H.264/AAC MP4 or MP3, by its streams
+//	GET  /normalize/still                         the PNG still the last video normalize made
+//	POST /still                                   input video -> one PNG still, long edge <= 640
+//	GET  /healthz                                 readiness
+//
+// The input is the request body, written to the container's disk (an MP4 whose moov is at the end needs the whole
+// file) up to AV_UPLOAD_LIMIT. The output is the response body with its Content-Length. The probe and encode stages
+// are killed at the times the Worker passes (ffmpeg's process group SIGKILLed); /still at stillTimeout. ffmpeg reads
+// only local files of the allowed demuxers. A failure answers a code (an "error" field and the Kopje-Error header),
+// never ffmpeg's output. The container has no network: Kopje starts it with Internet access disabled.
+package main
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"syscall"
+	"time"
+)
+
+const (
+	// AV_UPLOAD_LIMIT: the largest input, the upload cap Kopje advertises.
+	avUploadLimit = 94_371_840
+	// AV_OUTPUT_LIMIT and STILL_OUTPUT_LIMIT: Kopje's readers refuse more; the server refuses first.
+	avOutputLimit    = 63 << 20
+	stillOutputLimit = 2 << 20
+	// Bounds on the stage times a request may pass.
+	minStageMs = 100
+	maxStageMs = 60 * 60 * 1000
+)
+
+var (
+	// The socket deadlines of a normalize's request body and of its response: a peer that stops sending or reading ends
+	// the job instead of holding the server's one job slot. They are absolute, not idle: a steady transfer slower than
+	// 0.75 MiB/s in (AV_UPLOAD_LIMIT, 90 MiB) or 0.52 MiB/s out (AV_OUTPUT_LIMIT, 63 MiB) is cut at them. The Durable
+	// Object streams the input from R2 and the output into R2 inside Cloudflare's network (P27 measures that rate).
+	inputTimeout  = 120 * time.Second
+	outputTimeout = 120 * time.Second
+	// The whole of a /still, from its request to the end of its response: its body (a socket deadline at the same
+	// instant), the probe, the frame and the answer all end by then, so an upload of AV_UPLOAD_LIMIT must arrive faster
+	// than 1.5 MiB/s.
+	stillTimeout = 60 * time.Second
+	workRoot     = envOr("MEDIASRV_WORK", "/tmp/work")
+	stillPath    = filepath.Join(workRoot, "normalize-still.png")
+	ffmpegBin    = envOr("FFMPEG", "/usr/local/bin/ffmpeg")
+	probeBin     = envOr("FFPROBE", "/usr/local/bin/ffprobe")
+	bootID       = newID()
+	// One job at a time per process.
+	busy = make(chan struct{}, 1)
+)
+
+func main() {
+	threads, err := parseThreading(os.Getenv("MEDIASRV_THREADS"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := os.MkdirAll(workRoot, 0o700); err != nil {
+		log.Fatal(err)
+	}
+	srv := &http.Server{
+		Addr:              ":" + envOr("PORT", "8080"),
+		Handler:           newMux(threads),
+		IdleTimeout:       60 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdown)
+	}()
+	log.Printf("mediasrv boot=%s listening on %s", bootID, srv.Addr)
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
+}
+
+// The server's routes. A request for any other path or method answers a code, as every failure does.
+func newMux(threads threading) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "bootId": bootID})
+	})
+	mux.HandleFunc("POST /normalize", exclusive(func(w http.ResponseWriter, r *http.Request) {
+		handleNormalize(w, r, threads)
+	}))
+	mux.HandleFunc("GET /normalize/still", handleNormalizeStill)
+	mux.HandleFunc("POST /still", exclusive(handleStill))
+	// Only the exact paths reach the mux (it would redirect a path it cleans, such as //healthz, with an HTML body);
+	// anything else answers a code.
+	methods := map[string]string{"/healthz": "GET", "/normalize": "POST", "/normalize/still": "GET", "/still": "POST"}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, ok := methods[r.URL.Path]
+		switch {
+		case !ok:
+			writeFailure(w, fail(http.StatusNotFound, "not_found"))
+		case r.Method != method && (method != "GET" || r.Method != "HEAD"):
+			w.Header().Set("Allow", method)
+			writeFailure(w, fail(http.StatusMethodNotAllowed, "method_not_allowed"))
+		default:
+			mux.ServeHTTP(w, r)
+		}
+	})
+}
+
+// deadlines sets the socket deadlines of a job's request: reading its body by `read`, and writing its response by
+// what `write` answers when the response starts (setWrite). A server without them (a test's recorder) runs without.
+func deadlines(w http.ResponseWriter, read time.Time, write func() time.Time) (setWrite func()) {
+	rc := http.NewResponseController(w)
+	_ = rc.SetReadDeadline(read)
+	return func() { _ = rc.SetWriteDeadline(write()) }
+}
+
+// normalizeDeadlines: the body by inputTimeout from now, the response by outputTimeout from its start.
+func normalizeDeadlines(w http.ResponseWriter) (setWrite func()) {
+	return deadlines(w, time.Now().Add(inputTimeout), func() time.Time { return time.Now().Add(outputTimeout) })
+}
+
+// A failure: the status and the code answered.
+type failure struct {
+	status int
+	code   string
+}
+
+func (f *failure) Error() string { return f.code }
+
+func fail(status int, code string) *failure { return &failure{status: status, code: code} }
+
+func refuse(code refusal) *failure { return fail(http.StatusUnprocessableEntity, string(code)) }
+
+func writeFailure(w http.ResponseWriter, f *failure) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Kopje-Error", f.code)
+	w.WriteHeader(f.status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": f.code})
+}
+
+func exclusive(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case busy <- struct{}{}:
+			defer func() { <-busy }()
+			h(w, r)
+		default:
+			writeFailure(w, fail(http.StatusTooManyRequests, "busy"))
+		}
+	}
+}
+
+// stageMs reads a stage time in milliseconds, within minStageMs..maxStageMs.
+func stageMs(r *http.Request, name string) (time.Duration, bool) {
+	v, err := strconv.Atoi(r.URL.Query().Get(name))
+	if err != nil || v < minStageMs || v > maxStageMs {
+		return 0, false
+	}
+	return time.Duration(v) * time.Millisecond, true
+}
+
+// Stage times reported to the Worker in headers, for its measurements.
+type timings struct {
+	header http.Header
+}
+
+func (t timings) set(name string, start time.Time) {
+	t.header.Set("Kopje-"+name+"-Ms", strconv.FormatInt(time.Since(start).Milliseconds(), 10))
+}
+
+func handleNormalize(w http.ResponseWriter, r *http.Request, threads threading) {
+	// The still of an earlier normalize is never answered after this one, refused or not.
+	_ = os.Remove(stillPath)
+	setWrite := normalizeDeadlines(w)
+	probeTime, okProbe := stageMs(r, "probe_ms")
+	encodeTime, okEncode := stageMs(r, "encode_ms")
+	if !okProbe || !okEncode {
+		writeFailure(w, fail(http.StatusBadRequest, "bad_request"))
+		return
+	}
+	dir, err := os.MkdirTemp(workRoot, "job-")
+	if err != nil {
+		writeFailure(w, fail(http.StatusInternalServerError, "internal"))
+		return
+	}
+	defer os.RemoveAll(dir)
+	t := timings{w.Header()}
+	in := filepath.Join(dir, "input")
+
+	start := time.Now()
+	n, f := receive(r, in)
+	t.set("Input", start)
+	w.Header().Set("Kopje-Input-Bytes", strconv.FormatInt(n, 10))
+	if f != nil {
+		writeFailure(w, f)
+		return
+	}
+
+	// One probe_ms for every probe call: the header probe and, once the limits passed, the frame probe.
+	start = time.Now()
+	probeCtx, cancelProbe := context.WithTimeout(r.Context(), probeTime)
+	defer cancelProbe()
+	p, f := probe(probeCtx, in)
+	if f != nil {
+		t.set("Probe", start)
+		writeFailure(w, f)
+		return
+	}
+	pl, refused := planNormalize(p, float64(encodeTime.Milliseconds()))
+	if refused != "" {
+		t.set("Probe", start)
+		writeFailure(w, refuse(refused))
+		return
+	}
+	w.Header().Set("Kopje-Estimate-Ms", strconv.FormatInt(int64(pl.estimateMs), 10))
+	if pl.kind == "video" && !pl.icc {
+		pl.icc = frameICC(probeCtx, in, pl.videoIndex)
+	}
+	t.set("Probe", start)
+
+	encodeCtx, cancel := context.WithTimeout(r.Context(), encodeTime)
+	defer cancel()
+	start = time.Now()
+	var out, contentType string
+	var args []string
+	if pl.kind == "video" {
+		out, contentType = filepath.Join(dir, "output.mp4"), "video/mp4"
+		args = videoArgs(pl, threads, in, out)
+	} else {
+		out, contentType = filepath.Join(dir, "output.mp3"), "audio/mpeg"
+		args = audioArgs(pl, in, out)
+	}
+	cpu, err := runFFmpeg(encodeCtx, args)
+	if err != nil && pl.kind == "video" && (pl.icc || pl.primaries) && encodeCtx.Err() == nil {
+		// A profile iccdetect cannot use, or tags zscale cannot convert from: the video is encoded as before, with no
+		// conversion and its profile dropped.
+		pl.icc, pl.primaries = false, false
+		more, retried := runFFmpeg(encodeCtx, videoArgs(pl, threads, in, out))
+		cpu, err = cpu+more, retried
+	}
+	t.set("Encode", start)
+	w.Header().Set("Kopje-Encode-Cpu-Ms", strconv.FormatInt(cpu.Milliseconds(), 10))
+	if err != nil {
+		writeFailure(w, ffmpegFailure(encodeCtx, "encode_failed"))
+		return
+	}
+	if pl.kind == "video" {
+		if _, err := stripMoovMetadata(out); err != nil {
+			writeFailure(w, fail(http.StatusInternalServerError, "strip_failed"))
+			return
+		}
+		// The still is best effort within the encode time left: a video without one is still an output.
+		start = time.Now()
+		w.Header().Set("Kopje-Still", strconv.FormatBool(makeStill(encodeCtx, pl, in)))
+		t.set("Still", start)
+	}
+	setWrite()
+	serveFile(w, out, contentType, avOutputLimit, pl.kind)
+}
+
+func handleNormalizeStill(w http.ResponseWriter, _ *http.Request) {
+	if _, err := os.Stat(stillPath); err != nil {
+		writeFailure(w, fail(http.StatusNotFound, "no_still"))
+		return
+	}
+	normalizeDeadlines(w)()
+	serveFile(w, stillPath, "image/png", stillOutputLimit, "")
+}
+
+func handleStill(w http.ResponseWriter, r *http.Request) {
+	// One deadline for the whole job: the body, the work and the response.
+	job := time.Now().Add(stillTimeout)
+	setWrite := deadlines(w, job, func() time.Time { return job })
+	dir, err := os.MkdirTemp(workRoot, "job-")
+	if err != nil {
+		writeFailure(w, fail(http.StatusInternalServerError, "internal"))
+		return
+	}
+	defer os.RemoveAll(dir)
+	t := timings{w.Header()}
+	in := filepath.Join(dir, "input")
+	ctx, cancel := context.WithDeadline(r.Context(), job)
+	defer cancel()
+
+	start := time.Now()
+	n, f := receive(r, in)
+	t.set("Input", start)
+	w.Header().Set("Kopje-Input-Bytes", strconv.FormatInt(n, 10))
+	if f != nil {
+		writeFailure(w, f)
+		return
+	}
+	start = time.Now()
+	p, f := probe(ctx, in)
+	t.set("Probe", start)
+	if f != nil {
+		writeFailure(w, f)
+		return
+	}
+	video, _ := selectStreams(p)
+	if video == nil || video.CodecName == "" || video.Width <= 0 || video.Height <= 0 {
+		writeFailure(w, refuse(refuseNoVideo))
+		return
+	}
+	if video.Width*video.Height > maxSourcePixels {
+		writeFailure(w, refuse(refusePixels))
+		return
+	}
+	out := filepath.Join(dir, "still.png")
+	start = time.Now()
+	icc := streamICC(video) || frameICC(ctx, in, video.Index)
+	err = runStill(ctx, video.Index, isHDR(video), icc, stillSeek(boundedDuration(p, video)), in, out)
+	t.set("Encode", start)
+	if err == nil {
+		err = stripPNG(out)
+	}
+	if err != nil {
+		writeFailure(w, ffmpegFailure(ctx, "still_failed"))
+		return
+	}
+	setWrite()
+	serveFile(w, out, "image/png", stillOutputLimit, "")
+}
+
+// makeStill writes the video's still to stillPath, where GET /normalize/still finds it until the process ends.
+func makeStill(ctx context.Context, pl *plan, in string) bool {
+	tmp := stillPath + ".tmp"
+	defer os.Remove(tmp)
+	if runStill(ctx, pl.videoIndex, pl.hdr, pl.icc, stillSeek(pl.duration), in, tmp) != nil {
+		return false
+	}
+	if stripPNG(tmp) != nil {
+		return false
+	}
+	st, err := os.Stat(tmp)
+	if err != nil || st.Size() == 0 || st.Size() > stillOutputLimit {
+		return false
+	}
+	return os.Rename(tmp, stillPath) == nil
+}
+
+// runStill writes the still, reading the frame's ICC profile when it has one, and runs again without it when ffmpeg
+// fails then (a profile iccdetect cannot use): the still is made as before, its profile dropped.
+//
+// ffmpeg can succeed with no frame written: with another stream in the file, the seek can land past the video's only
+// keyframe. The still is then taken at 0.
+func runStill(ctx context.Context, videoIndex int, hdr, icc bool, seek float64, in, out string) error {
+	attempt := func(icc bool) error {
+		err := writeStill(ctx, stillArgs(videoIndex, hdr, icc, seek, in, out), out)
+		if errors.Is(err, errNoFrame) && seek > 0 && ctx.Err() == nil {
+			err = writeStill(ctx, stillArgs(videoIndex, hdr, icc, 0, in, out), out)
+		}
+		return err
+	}
+	err := attempt(icc)
+	if err != nil && !errors.Is(err, errNoFrame) && icc && ctx.Err() == nil {
+		err = attempt(false)
+	}
+	return err
+}
+
+var errNoFrame = errors.New("no frame written")
+
+func writeStill(ctx context.Context, args []string, out string) error {
+	_ = os.Remove(out)
+	if _, err := runFFmpeg(ctx, args); err != nil {
+		return err
+	}
+	if st, err := os.Stat(out); err != nil || st.Size() == 0 {
+		return errNoFrame
+	}
+	return nil
+}
+
+func ffmpegFailure(ctx context.Context, code string) *failure {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fail(http.StatusGatewayTimeout, "timeout")
+	}
+	return fail(http.StatusInternalServerError, code)
+}
+
+func serveFile(w http.ResponseWriter, path, contentType string, limit int64, kind string) {
+	f, err := os.Open(path)
+	if err != nil {
+		writeFailure(w, fail(http.StatusInternalServerError, "no_output"))
+		return
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || st.Size() == 0 {
+		writeFailure(w, fail(http.StatusInternalServerError, "no_output"))
+		return
+	}
+	if st.Size() > limit {
+		writeFailure(w, fail(http.StatusInternalServerError, "output_size"))
+		return
+	}
+	h := w.Header()
+	h.Set("Content-Type", contentType)
+	h.Set("Content-Length", strconv.FormatInt(st.Size(), 10))
+	if kind != "" {
+		h.Set("Kopje-Kind", kind)
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, f)
+}
+
+// receive writes the request body to path, refusing an empty one, more than avUploadLimit bytes, fewer than its
+// Content-Length declared, or one still arriving at the read deadline.
+func receive(r *http.Request, path string) (int64, *failure) {
+	if r.ContentLength > avUploadLimit {
+		return 0, fail(http.StatusRequestEntityTooLarge, "too_large")
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return 0, fail(http.StatusInternalServerError, "internal")
+	}
+	defer f.Close()
+	n, err := io.Copy(f, io.LimitReader(r.Body, avUploadLimit+1))
+	switch {
+	case n > avUploadLimit:
+		return n, fail(http.StatusRequestEntityTooLarge, "too_large")
+	case errors.Is(err, os.ErrDeadlineExceeded):
+		return n, fail(http.StatusRequestTimeout, "input_timeout")
+	case err != nil, r.ContentLength >= 0 && n != r.ContentLength:
+		return n, fail(http.StatusBadRequest, "truncated")
+	case n == 0:
+		return 0, fail(http.StatusBadRequest, "empty")
+	}
+	if err := f.Close(); err != nil {
+		return n, fail(http.StatusInternalServerError, "internal")
+	}
+	return n, nil
+}
+
+// probe reads the input's streams and format from its headers, decoding nothing (probeArgs). Only when the headers
+// leave a limit unknown (needsDiscovery: no duration, as a raw ADTS AAC; a video with no dimensions or frame rate)
+// does it read again with stream discovery, which may decode, within the decoder's pixel limit; the limits are checked
+// on the answer as on any other.
+func probe(ctx context.Context, path string) (*probeResult, *failure) {
+	p, f := runProbe(ctx, probeArgs(path, false))
+	if f == nil && needsDiscovery(p) {
+		return runProbe(ctx, probeArgs(path, true))
+	}
+	return p, f
+}
+
+func runProbe(ctx context.Context, args []string) (*probeResult, *failure) {
+	cmd := exec.CommandContext(ctx, probeBin, args...)
+	killGroup(cmd)
+	var stdout limitedBuffer
+	stdout.limit = 1 << 20
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, fail(http.StatusGatewayTimeout, "timeout")
+		}
+		return nil, refuse(refuseUnreadable)
+	}
+	var p probeResult
+	if stdout.over || json.Unmarshal(stdout.buf, &p) != nil {
+		return nil, refuse(refuseUnreadable)
+	}
+	if !allowedDemuxers[p.Format.FormatName] {
+		return nil, refuse(refuseFormat)
+	}
+	return &p, nil
+}
+
+// frameICC runs the frame probe, after the header probe's limits passed: whether the stream at index has an ICC
+// profile on its first frame. A probe that fails or times out answers false (the still and the encode run without
+// the profile then, as for a frame without one).
+func frameICC(ctx context.Context, path string, index int) bool {
+	cmd := exec.CommandContext(ctx, probeBin, frameProbeArgs(path, index)...)
+	killGroup(cmd)
+	var stdout limitedBuffer
+	stdout.limit = 1 << 20
+	cmd.Stdout = &stdout
+	if cmd.Run() != nil || stdout.over {
+		return false
+	}
+	return framesICC(stdout.buf, index)
+}
+
+// runFFmpeg runs ffmpeg until it exits or ctx ends, when its whole process group is killed. It returns the CPU time
+// ffmpeg used (user and system).
+func runFFmpeg(ctx context.Context, args []string) (time.Duration, error) {
+	cmd := exec.CommandContext(ctx, ffmpegBin, args...)
+	killGroup(cmd)
+	err := cmd.Run()
+	var cpu time.Duration
+	if cmd.ProcessState != nil {
+		cpu = cmd.ProcessState.UserTime() + cmd.ProcessState.SystemTime()
+	}
+	if err == nil && ctx.Err() != nil {
+		err = ctx.Err()
+	}
+	return cpu, err
+}
+
+// killGroup runs the command in its own process group and kills the group when its context ends. Its stderr is
+// discarded (nil), so no ffmpeg output reaches a response or a log.
+func killGroup(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 5 * time.Second
+}
+
+type limitedBuffer struct {
+	buf   []byte
+	limit int
+	over  bool
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if len(b.buf)+len(p) > b.limit {
+		b.over = true
+		return len(p), nil
+	}
+	b.buf = append(b.buf, p...)
+	return len(p), nil
+}
+
+func newID() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func envOr(k, d string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return d
+}

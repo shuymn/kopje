@@ -1,0 +1,25 @@
+// The media processor bench (worker.ts, measure.sh): a temporary Worker with the package's container image, deployed
+// by the orchestrator to measure P27 (design #1828) and removed afterwards. Not an instance: workers.dev only.
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "kopje-media-bench",
+  "main": "worker.ts",
+  // The package's own (packages/kopje/wrangler.jsonc), so the bench runs what instances run.
+  "compatibility_date": "2026-10-11",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+  "containers": [
+    {
+      "class_name": "BenchUnit",
+      "scheduling_policy": "durable_object",
+      "images": { "media": { "dockerfile": "../../container/Dockerfile", "build_context": "../../container" } },
+    },
+  ],
+  "durable_objects": { "bindings": [{ "name": "BENCH", "class_name": "BenchUnit" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["BenchUnit"] }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "kopje-media-bench" }],
+  "images": { "binding": "IMAGES" },
+  // BENCH_TOKEN is a secret (`wrangler secret put BENCH_TOKEN`, at least 32 characters).
+}

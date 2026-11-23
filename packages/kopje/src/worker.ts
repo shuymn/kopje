@@ -9,15 +9,17 @@ import {
   scheduledLinkCards,
   scheduledRemoteMedia,
 } from "./jobs/scheduled";
+import { processorClient } from "./media-processor";
 import { errorFields } from "./platform/error-message";
 import { defaultStore } from "./platform/store-client";
 import { generateRsaKeyPair } from "./security/key-wrap";
 import { buildOf } from "./version";
 
+export { MediaProcessor } from "./media-processor";
 export { Store } from "./store";
 
 const now = () => Date.now();
-const app = createApp({ build: buildOf, now });
+const app = createApp({ build: buildOf, now, mediaProcessor: (env) => processorClient(env, buildOf(env)) });
 const delivery = { now, fetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init) };
 const inboxDeps = {
   build: buildOf,

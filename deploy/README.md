@@ -78,6 +78,70 @@ service token and the variables it needs. Accounts besides the admin's are made 
 (`npm run admin -- invitation add <email> <username>`) together with an Access policy for the person:
 [setup.md](https://github.com/shuymn/kopje/blob/main/packages/kopje/docs/setup.md#adding-accounts).
 
+## Video and audio (optional)
+
+Kopje takes image uploads only. Video and audio need the media processor: a container with a pinned ffmpeg build,
+which Cloudflare runs next to the Worker and bills by use under the Workers Paid plan's container allowance. Its
+Dockerfile ships in the `kopje` package (`node_modules/kopje/container`), so the image always matches the installed
+version, and every deploy builds it: Workers Builds (the button's) needs no Docker on your machine, while
+`npx wrangler deploy` from your own machine needs Docker running there (GitHub's runners have it).
+
+In this release the processor can be added and checked, but nothing uses it yet: uploads stay image-only. To add it:
+
+1. Export `MediaProcessor` from `src/index.ts`. The template's file already does; an instance made from an earlier
+   template has `export { default, Store } from "kopje";`, and `wrangler deploy` then fails with "Your Worker depends
+   on the following Durable Objects, which are not exported in your entrypoint file: MediaProcessor". Change it to:
+
+   ```ts
+   export { default, MediaProcessor, Store } from "kopje";
+   ```
+
+2. In `wrangler.jsonc`, add the binding to `durable_objects.bindings`, the migration after `v1` in `"migrations"`, and
+   the `"containers"` entry. The template's `wrangler.jsonc` has them as a comment at its end; an instance made from
+   an earlier template has no such comment, and the three parts are these:
+
+   ```jsonc
+   "durable_objects": {
+     "bindings": [
+       { "name": "STORE", "class_name": "Store" },
+       { "name": "MEDIA_PROCESSOR", "class_name": "MediaProcessor" },
+     ],
+   },
+   "migrations": [
+     { "tag": "v1", "new_sqlite_classes": ["Store"] },
+     { "tag": "v2-media-processor", "new_sqlite_classes": ["MediaProcessor"] },
+   ],
+   "containers": [
+     {
+       "class_name": "MediaProcessor",
+       "scheduling_policy": "durable_object",
+       "images": {
+         "media": {
+           "dockerfile": "./node_modules/kopje/container/Dockerfile",
+           "build_context": "./node_modules/kopje/container",
+         },
+       },
+     },
+   ],
+   ```
+
+3. Deploy. The first deploy builds and pushes the image, which takes a few minutes. Then check it:
+
+   ```sh
+   npm run admin -- media-processor probe
+   ```
+
+It starts the container on each instance type Kopje uses (normalize on standard-4 with ffmpeg's threads at 4, the
+choice measured for #1828; stills on standard-1), runs one operation on a 2-second clip that ships in the package,
+destroys the container, and prints what it saw. Each image Kopje builds is about 300 MB in your account's
+container registry; delete the images of versions you no longer deploy (`npx wrangler containers images list`).
+
+The `v2-media-processor` migration is permanent: once deployed, it is never edited or removed. To turn the processor
+off, remove only the `"containers"` entry and deploy; keep the export, the binding and the migration, and the probe
+then answers `no-container`. Removing `MediaProcessor` altogether takes another migration that deletes the class
+(`{ "tag": "v3-remove-media-processor", "deleted_classes": ["MediaProcessor"] }`) along with the binding and the
+export.
+
 ## Updates
 
 The `kopje` version in `package.json` is the instance's version. On GitHub,

@@ -76,4 +76,21 @@
   "triggers": { "crons": ["*/5 * * * *"] },
   // The Store's schema migrations ship as text modules in the kopje package; the Store applies them itself.
   "rules": [{ "type": "Text", "globs": ["**/*.sql"], "fallthrough": true }],
+  // Video and audio (optional; README.md, "Video and audio"). The media processor is a container built from the
+  // installed kopje package's Dockerfile. To add it, uncomment "containers", add the binding to
+  // durable_objects.bindings and the migration after v1 in "migrations":
+  // "containers": [
+  //   {
+  //     "class_name": "MediaProcessor",
+  //     "scheduling_policy": "durable_object",
+  //     "images": {
+  //       "media": {
+  //         "dockerfile": "./node_modules/kopje/container/Dockerfile",
+  //         "build_context": "./node_modules/kopje/container",
+  //       },
+  //     },
+  //   },
+  // ],
+  // binding:   { "name": "MEDIA_PROCESSOR", "class_name": "MediaProcessor" }
+  // migration: { "tag": "v2-media-processor", "new_sqlite_classes": ["MediaProcessor"] }
 }
