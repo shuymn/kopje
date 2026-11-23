@@ -103,17 +103,28 @@ func iccIn(list []sideData) bool {
 	return false
 }
 
-// needsDiscovery: the headers leave a limit unknown, so the probe runs again with stream discovery and the limits apply
-// to what it found: no duration is declared, or the video stream declares no dimensions or no r_frame_rate (the
+// limitsUnknown: the headers leave a limit unknown, so the probe runs again with stream discovery and the limits
+// apply to what it found: no duration is declared, or the video stream declares no dimensions or no r_frame_rate (the
 // highest rate a stream can reach; avg_frame_rate can hide a VFR peak, so it does not stand in). An input that still
 // leaves one unknown is refused by planVideo, planAudio or the still's checks.
-func needsDiscovery(p *probeResult) bool {
+func limitsUnknown(p *probeResult) bool {
 	if !declaresDuration(p) {
 		return true
 	}
 	video, _ := selectStreams(p)
 	return video != nil && (video.Width <= 0 || video.Height <= 0 || parseRate(video.RFrameRate) == 0)
 }
+
+// colourUnknown: the video stream declares no transfer or no primaries. The header probe reads colour from the
+// container's colr box only; a file without one (a phone's HLG or PQ clip remuxed, say) carries it in the bitstream's
+// VUI, which discovery decodes, and planned without it an HDR video would be neither tone mapped nor estimated as HDR.
+// A video discovery still leaves untagged is untagged SDR.
+func colourUnknown(p *probeResult) bool {
+	video, _ := selectStreams(p)
+	return video != nil && (!knownColour(video.ColorTransfer) || !knownColour(video.ColorPrimaries))
+}
+
+func knownColour(v string) bool { return v != "" && v != "unknown" }
 
 // frameRate is the larger of the stream's declared rates (VFR and contradictory headers count at their largest); 0
 // when it declares no r_frame_rate, which the limit needs.
@@ -160,8 +171,7 @@ func framesICC(out []byte, index int) bool {
 // otherPrimaries: SDR video tagged with primaries other than BT.709 and a known transfer, which normalize converts
 // to BT.709 before labelling the output BT.709.
 func otherPrimaries(s *probeStream) bool {
-	known := func(v string) bool { return v != "" && v != "unknown" }
-	return !isHDR(s) && known(s.ColorPrimaries) && s.ColorPrimaries != "bt709" && known(s.ColorTransfer)
+	return !isHDR(s) && knownColour(s.ColorPrimaries) && s.ColorPrimaries != "bt709" && knownColour(s.ColorTransfer)
 }
 
 // A refusal of the input: the code the Worker records. Codes only, never ffmpeg's words.

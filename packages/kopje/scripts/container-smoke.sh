@@ -24,10 +24,10 @@
 # MP3 input gives an MP3 at exactly AUDIO_DURATION_LIMIT.
 # Decoded content (design #1828 4.11): a 128x72 frame with a white marker in its top-left corner, stored rotated by
 # 90, 180 and 270 degrees with the display matrix that turns it upright, decodes from normalize upright with the marker
-# top left; HLG and PQ frames of a black and a reference-white patch decode as BT.709 with the black at most 24 and the
-# white within 150-235 in luma, its chroma within 12 of neutral; a VFR input, audio longer than video and an MP4 whose
-# mvhd states 1 s or 10 s over 3 s of streams give an output whose streams decode as long as the input's, within
-# 0.15 s.
+# top left; HLG and PQ frames of a black and a reference-white patch, tagged by a colr box or only in the VUI, decode
+# as BT.709 with the black at most 24 and the white within 150-235 in luma, its chroma within 12 of neutral; a VFR
+# input, audio longer than video and an MP4 whose mvhd states 1 s or 10 s over 3 s of streams give an output whose
+# streams decode as long as the input's, within 0.15 s.
 # Every output and still of these runs is kept and then verified by Kopje's own verifier (src/platform/av-bytes.ts,
 # test/av-fresh/), with each output held to its input's duration. Prints a Markdown table with the server's
 # stage times and the wall time this script saw, and exits 1 when a check failed. Needs docker, node, pnpm (the
@@ -451,12 +451,21 @@ for turn in "90 transpose=clock" "180 hflip,vflip" "270 transpose=cclock"; do
   echo "| rotated$degrees.mp4 | normalize | $got | | | | | | | | |"
 done
 # HLG and PQ: left half black (code 64), right half reference white (HLG 75 %: 721; PQ 203 cd/m2: 573), 10-bit
-# BT.2020, the tags on the frames and in a colr box, as a camera writes them.
-for hdr in "arib-std-b67 721 hlg" "smpte2084 573 pq"; do
+# BT.2020, the tags on the frames and in a colr box, as a camera writes them; and the same file with its colr box
+# renamed free (<label>-vui.mp4), so the tags are only in the HEVC VUI, which the header probe does not read: it must
+# read unknown there, and discovery must find the transfer, so both are tone mapped alike.
+for hdr in "arib-std-b67 721 hlg" "smpte2084 573 pq" "arib-std-b67 721 hlg-vui" "smpte2084 573 pq-vui"; do
   read -r trc white label <<<"$hdr"
   ffm -f lavfi -i "nullsrc=s=128x72:r=30:d=2,format=yuv420p10le,geq=lum='if(lt(X,64),64,$white)':cb=512:cr=512,setparams=color_primaries=bt2020:color_trc=$trc:colorspace=bt2020nc" \
     -c:v libx265 -preset superfast -pix_fmt yuv420p10le -x265-params log-level=error -tag:v hvc1 -movflags +write_colr \
     "$label.mp4"
+  if [ "${label%-vui}" != "$label" ]; then
+    python3 -c 'import sys; p = sys.argv[1]; b = open(p, "rb").read(); assert b.count(b"colr") == 1; open(p, "wb").write(b.replace(b"colr", b"free"))' \
+      "$work/fixture/$label.mp4"
+    seen="$(docker run --rm --network none -v "$work/fixture:/i:ro" --entrypoint /ffprobe "$ffmpeg_image" -v error \
+      -nofind_stream_info -select_streams v:0 -show_entries stream=color_transfer -of csv=p=0 "/i/$label.mp4")"
+    check "$([ "$seen" = unknown ] && echo true)" "$label.mp4: the header probe reads transfer $seen, want unknown"
+  fi
   cp "$work/fixture/$label.mp4" "$work/in/"
   got="$(normalize "$label.mp4" "$label.out")"
   black="-" patch="- - -"

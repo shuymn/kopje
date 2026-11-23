@@ -466,15 +466,21 @@ func receive(r *http.Request, path string) (int64, *failure) {
 }
 
 // probe reads the input's streams and format from its headers, decoding nothing (probeArgs). Only when the headers
-// leave a limit unknown (needsDiscovery: no duration, as a raw ADTS AAC; a video with no dimensions or frame rate)
-// does it read again with stream discovery, which may decode, within the decoder's pixel limit; the limits are checked
-// on the answer as on any other.
+// leave a limit unknown (limitsUnknown: no duration, as a raw ADTS AAC; a video with no dimensions or frame rate) or
+// the video's colour unknown (colourUnknown: no colr box) does it read again with stream discovery, which may decode,
+// within the decoder's pixel limit and the same budget; the limits are checked on the answer as on any other. A
+// discovery run only for the colour that fails other than by the budget (a frame over the pixel limit, say) leaves the
+// header probe's answer, untagged: the encode then meets that frame and refuses the input as it would have.
 func probe(ctx context.Context, path string) (*probeResult, *failure) {
 	p, f := runProbe(ctx, probeArgs(path, false))
-	if f == nil && needsDiscovery(p) {
-		return runProbe(ctx, probeArgs(path, true))
+	if f != nil || (!limitsUnknown(p) && !colourUnknown(p)) {
+		return p, f
 	}
-	return p, f
+	found, f := runProbe(ctx, probeArgs(path, true))
+	if f != nil && !limitsUnknown(p) && f.code != "timeout" {
+		return p, nil
+	}
+	return found, f
 }
 
 func runProbe(ctx context.Context, args []string) (*probeResult, *failure) {

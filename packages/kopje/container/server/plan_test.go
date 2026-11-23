@@ -6,9 +6,14 @@ import (
 	"testing"
 )
 
+// A stream as the header probe reads it; a video tagged BT.709 (colour known, so no discovery for it).
 func stream(codecType, codec string, w, h int, rate, duration string) probeStream {
-	return probeStream{CodecType: codecType, CodecName: codec, Width: w, Height: h, RFrameRate: rate, AvgFrameRate: rate,
+	s := probeStream{CodecType: codecType, CodecName: codec, Width: w, Height: h, RFrameRate: rate, AvgFrameRate: rate,
 		Duration: duration}
+	if codecType == "video" {
+		s.ColorTransfer, s.ColorPrimaries = "bt709", "bt709"
+	}
+	return s
 }
 
 func probeOf(format string, streams ...probeStream) *probeResult {

@@ -31,6 +31,7 @@ echo "SECRET-PROBE-STDERR" >&2
 case "$*" in *output.*) [ -n "$FAKE_OUTPUT_PROBE" ] && { cat "$FAKE_OUTPUT_PROBE"; exit 0; } ;; esac
 case "$*" in *-show_frames*) [ -n "$FAKE_FRAME_SLEEP" ] && sleep "$FAKE_FRAME_SLEEP"; cat "${FAKE_FRAMES:-/dev/null}"; exit 0 ;; esac
 [ -n "$FAKE_PROBE_SLEEP" ] && sleep "$FAKE_PROBE_SLEEP"
+case "$*" in *-nofind_stream_info*) ;; */input) [ -n "$FAKE_DISCOVERY_FAIL" ] && exit 1 ;; esac
 case "$*" in *-nofind_stream_info*) [ -n "$FAKE_HEADERS" ] && { cat "$FAKE_HEADERS"; exit 0; } ;; esac
 cat "$FAKE_PROBE"
 `
@@ -77,6 +78,7 @@ func fakeTools(t *testing.T, probe *probeResult) {
 	t.Setenv("FAKE_FRAME_SLEEP", "")
 	t.Setenv("FAKE_OUTPUT_PROBE", "")
 	t.Setenv("FAKE_OVERSIZE", "")
+	t.Setenv("FAKE_DISCOVERY_FAIL", "")
 	oldProbe, oldFF, oldWork, oldStill := probeBin, ffmpegBin, workRoot, stillPath
 	probeBin, ffmpegBin = write("ffprobe", fakeProbe), write("ffmpeg", fakeFFmpeg)
 	workRoot = filepath.Join(dir, "work")

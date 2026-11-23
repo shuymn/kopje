@@ -227,8 +227,8 @@ func stillArgs(videoIndex int, hdr, icc bool, seek float64, in, out string) []st
 
 // probeArgs reads streams and format. Without discover, from the headers only (-nofind_stream_info): no packet is
 // decoded, so an image stream or a cover is not decoded before the limits are checked. With discover, stream
-// discovery reads and may decode packets, for an input whose headers leave a limit unknown (needsDiscovery). Either
-// way the decoder refuses a frame over maxSourcePixels.
+// discovery reads and may decode packets, for an input whose headers leave a limit or the colour unknown
+// (limitsUnknown, colourUnknown). Either way the decoder refuses a frame over maxSourcePixels.
 func probeArgs(path string, discover bool) []string {
 	args := cat([]string{"-v", "error"}, inputGuards, pixelGuard)
 	if !discover {
