@@ -75,7 +75,7 @@ jobs:
           base=$(jq --exit-status --raw-output .base packages/kopje/test/main-runtime/recorded.json)
           git fetch --quiet --no-tags --depth=1 origin "$base"
       # node and pnpm at the versions mise.lock pins; the hooks' tools are not needed here.
-      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         with:
           install_args: node pnpm
 
@@ -105,7 +105,7 @@ jobs:
           # release (packages/kopje/scripts/build-assets.mjs), and the migration check reads every release tag.
           fetch-depth: 0
       # node and pnpm at the versions mise.lock pins; the hooks' tools are not needed here.
-      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         with:
           install_args: node pnpm
 
@@ -170,7 +170,7 @@ jobs:
         with:
           persist-credentials: false
       # node and pnpm at the versions mise.lock pins; the hooks' tools are not needed here.
-      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
+      - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
         if: env.RUN == 'true'
         with:
           install_args: node pnpm
