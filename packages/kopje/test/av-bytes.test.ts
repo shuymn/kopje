@@ -4,6 +4,7 @@ import { MAX_MEDIA_BYTES } from "../src/jobs/backup";
 import {
   AV_OUTPUT_LIMIT,
   AUDIO_DURATION_LIMIT,
+  AUDIO_SAMPLE_LIMIT,
   avVerifier,
   AvRefusal,
   type AvRule,
@@ -236,6 +237,23 @@ const top = (file: Uint8Array, type: string, index = 0) =>
   topBoxes(file).filter(([t]) => t === type)[index]?.[1] ?? Number.NaN;
 
 const MP4_MUTATIONS: Mutation[] = [
+  {
+    name: "an audio stts declaring more samples than AUDIO_SAMPLE_LIMIT",
+    rule: "sample_cap",
+    make: () => mp4((m) => setBody(find(m, "trak#1/mdia/minf/stbl/stts"), 8, u32(AUDIO_SAMPLE_LIMIT + 1))),
+  },
+  {
+    name: "a fixed stsz size whose samples outgrow the mdat",
+    rule: "sample_count",
+    make: () =>
+      mp4((m) => {
+        const stbl = find(m, "trak/mdia/minf/stbl");
+        const count = u32At(find(stbl, "stsz").body as Uint8Array, 8);
+        stbl.children = (stbl.children ?? []).map((c) =>
+          c.type === "stsz" ? box("stsz", [...u32(0), ...u32(0x100000), ...u32(count)]) : c,
+        );
+      }),
+  },
   {
     name: "a byte after the mdat",
     rule: "top_level",
@@ -692,6 +710,16 @@ describe("a synthetic MP4", () => {
     expect(await verify({ samples: 36_001, size: 6, delta: 256, timescale: 61 * 256 })).toBe("sample_cap");
   });
 
+  it("is refused at a small moov declaring a huge sample count, before its tables are expanded", async () => {
+    const template = await avFixture("r1-silent.mp4");
+    // Four million one-tick 8-byte samples of one stsz size: the moov stays small, the tables would not.
+    const s = syntheticMp4(template, { samples: 4_000_000, size: 8, delta: 1, fixed: true });
+    expect(s.head.length).toBeLessThan(4096);
+    const v = await verifyStream("video/mp4", s.stream(65_536), s.length);
+    expect(v).toMatchObject({ ok: false, rule: "sample_cap" });
+    expect(v.peakHeld).toBeLessThan(65_536 + s.head.length);
+  });
+
   // RES-2: what the verifier holds depends on the moov, not on the mdat it streams.
   it("is walked holding the same bytes whatever the mdat's size", async () => {
     const template = await avFixture("r1-silent.mp4");
@@ -707,8 +735,9 @@ describe("a synthetic MP4", () => {
     const large = await held(6 * MIB);
     expect(large.length).toBeGreaterThan(60 * MIB);
     expect(large.peak).toBe(small.peak);
-    // The moov, a box header and each sample's size and kind (five bytes a sample).
-    expect(large.peak).toBe(large.moov + 8 + 10 * 5);
+    // The moov, a box header, each sample's size and kind in file order (five bytes a sample) and the parser's
+    // temporaries: the track's sizes and offsets (twelve bytes a sample) and its one stts run (two 8-byte numbers).
+    expect(large.peak).toBe(large.moov + 8 + 10 * 5 + 10 * 12 + 2 * 8);
     console.log({ heldBytes: large.peak, moovBytes: large.moov, smallFile: small.length, largeFile: large.length });
   });
 });

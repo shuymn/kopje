@@ -318,11 +318,11 @@ export function withSps(file: Uint8Array, nal: Uint8Array, width: number, height
 // ---- Synthetic MP4
 
 // A video-only MP4 from a silent fixture's moov: `samples` samples of `size` bytes, each one non-IDR slice NAL
-// filling it, `delta` ticks apart at the track's timescale, in one chunk. Its mdat is generated as it is read, so a
+// filling it, `delta` ticks apart at the track's timescale, in one chunk; `fixed` writes one stsz size for all. Its mdat is generated as it is read, so a
 // large one is never held. Returns the stream factory and the length.
 export function syntheticMp4(
   template: Uint8Array,
-  shape: { samples: number; size: number; delta: number; timescale?: number },
+  shape: { samples: number; size: number; delta: number; timescale?: number; fixed?: boolean },
 ): { length: number; stream: (chunk?: number) => ReadableStream<Uint8Array>; head: Uint8Array } {
   const { samples, size, delta } = shape;
   let head = new Uint8Array();
@@ -351,6 +351,9 @@ export function syntheticMp4(
               case "stsc":
                 return box("stsc", [...u32(0), ...u32(1), ...u32(1), ...u32(samples), ...u32(1)]);
               case "stsz": {
+                if (shape.fixed === true) {
+                  return box("stsz", [...u32(0), ...u32(size), ...u32(samples)]);
+                }
                 const body = new Uint8Array(12 + samples * 4);
                 view(body).setUint32(8, samples);
                 for (let i = 0; i < samples; i++) {

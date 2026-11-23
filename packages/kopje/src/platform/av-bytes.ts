@@ -55,6 +55,11 @@ export const VIDEO_DURATION_LIMIT = 600;
 export const AUDIO_DURATION_LIMIT = 20 * 60;
 // Mastodon 4.7.5's frame limit (app/models/media_attachment.rb), which the encoder also caps.
 export const VIDEO_SAMPLE_LIMIT = 36_000;
+// An AAC track's priming: at most one frame (#1828 A7).
+const AAC_PRIMING_LIMIT = 2048;
+// An AAC track's samples (1024 each at at most 48 kHz) within VIDEO_DURATION_LIMIT, its priming besides, and one more
+// for a last frame the rounding splits.
+export const AUDIO_SAMPLE_LIMIT = Math.ceil((VIDEO_DURATION_LIMIT * 48_000 + AAC_PRIMING_LIMIT) / 1024) + 1;
 // The output ladder's top rung (container/server/plan.go): its frame rate and geometry bound every rung's.
 export const FRAME_RATE_LIMIT = 60;
 export const OUTPUT_LONG_EDGE = 1920;
@@ -455,6 +460,8 @@ type Track = {
   samples: number;
   sizes: Uint32Array;
   offsets: Float64Array; // each sample's file offset
+  // The bytes its tables held while parsed.
+  held: number;
   minDelta: number;
   singleDelta: number | null;
   width: number;
@@ -470,6 +477,8 @@ type Mp4Layout = {
   video: Uint8Array;
   facts: Omit<VideoFacts, "sha256" | "bytes" | "bitrate">;
   durationMs: number;
+  // The bytes parseMoov's temporaries held at once: every track's tables and these.
+  parsed: number;
 };
 
 // Exp-Golomb and fixed-width reads over an RBSP, bounded: a code of more than 31 leading zeros is refused.
@@ -677,7 +686,6 @@ function parseMoov(b: Uint8Array, moovStart: number, moovEnd: number, fileEnd: n
   for (const t of tracks) {
     check(t.mediaDuration - t.mediaTime <= VIDEO_DURATION_LIMIT * t.timescale, "duration_limit");
   }
-  check(video.samples <= VIDEO_SAMPLE_LIMIT, "sample_cap");
   check(video.minDelta * FRAME_RATE_LIMIT >= video.timescale, "frame_rate");
 
   // The samples of all tracks in file order tile the mdat exactly: each track's offsets increase, and merged they
@@ -713,6 +721,7 @@ function parseMoov(b: Uint8Array, moovStart: number, moovEnd: number, fileEnd: n
     sizes,
     video: kinds,
     durationMs: movieDuration,
+    parsed: tracks.reduce((n, t) => n + t.held, sizes.byteLength + kinds.byteLength),
     facts: {
       kind: "video",
       width: video.width,
@@ -838,6 +847,8 @@ function parseTrak(
     const delta = view.getUint32(stts.start + 12 + i * 8);
     check(count > 0 && delta > 0, "sample_time");
     samples += count;
+    // Bounded before any table is expanded to the count.
+    check(samples <= (video ? VIDEO_SAMPLE_LIMIT : AUDIO_SAMPLE_LIMIT), "sample_cap");
     sampleTime += count * delta;
     minDelta = Math.min(minDelta, delta);
     deltas.push(count, delta);
@@ -850,6 +861,8 @@ function parseTrak(
   const fixedSize = view.getUint32(stsz.start + 4);
   check(view.getUint32(stsz.start + 8) === samples, "sample_count");
   check(stsz.end - stsz.start === (fixedSize === 0 ? 12 + samples * 4 : 12), "sample_count");
+  // A size for all samples states their total, which the mdat must hold.
+  check(fixedSize * samples <= fileEnd - mdatStart, "sample_count");
   const sizes = new Uint32Array(samples);
   for (let i = 0; i < samples; i++) {
     sizes[i] = fixedSize === 0 ? view.getUint32(stsz.start + 12 + i * 4) : fixedSize;
@@ -1009,6 +1022,8 @@ function parseTrak(
     samples,
     sizes,
     offsets,
+    // The stts runs as numbers (8 bytes each) besides the two tables.
+    held: sizes.byteLength + offsets.byteLength + deltas.length * 8,
     minDelta,
     singleDelta: sttsEntries === 1 ? minDelta : null,
     width,
@@ -1224,10 +1239,8 @@ class Mp4Walker implements Walker<Omit<VideoFacts, "sha256">> {
       return;
     }
     this.layout = parseMoov(body, this.bodyStart, this.bodyStart + body.length, this.contentLength);
-    // The moov and its tables at once, as parseMoov builds them.
-    this.body = body;
-    this.note();
-    this.body = null;
+    // The moov and parseMoov's temporaries at once, as it builds them.
+    this.most = Math.max(this.most, this.header.byteLength + body.byteLength + this.layout.parsed);
     this.stage = 2;
   }
 
@@ -1309,8 +1322,6 @@ const LAME_CRC_SPAN = 190;
 // AAC source, whose priming is decoded, gives more than one).
 const LAME_DELAY = 576;
 const LAME_PADDING_LIMIT = 2 * 1152;
-// An AAC track's priming: at most one frame (#1828 A7).
-const AAC_PRIMING_LIMIT = 2048;
 
 type FrameHeader = {
   version: 1 | 2;
