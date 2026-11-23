@@ -2,6 +2,9 @@
 import { AdminError, createClient } from "./client.js";
 import { dumpToFile, formatBytes, importFromFile, verifyBackup } from "./commands.js";
 
+// The media processor's execution profiles (src/platform/media-transcoder.ts PROBE_PROFILES).
+const PROBE_PROFILES = ["normalize@standard-3", "normalize@standard-4", "still@standard-1"];
+
 const USAGE = `Usage: kopje-admin <command> [options]
 
 Commands
@@ -51,6 +54,12 @@ Commands
                                 enough), one call at a time. Prints counts and the rows to look at; exits 3 when an original is
                                 missing, a type does not match, re-encoding failed, the Images quota or monthly budget
                                 stopped it, or the Store is not readonly (run it again later: made files are skipped)
+  media-processor probe [<profile>...]
+                                start the media processor's container for each profile (default: all of
+                                normalize@standard-3, normalize@standard-4 and still@standard-1), run its operation on
+                                the packaged fixture and destroy it; prints each report. A smoke check of the deploy
+                                path: the output is not verified. Exits 1 when a probe failed, 3 when the instance has
+                                no MediaProcessor binding (deploy/README.md, "Video and audio")
   emoji [--after <id>]          list the local custom emoji, enabled and disabled, oldest first
   emoji add <shortcode> <file> [--category <name>] [--unlisted] [--replace]
                                 add a custom emoji: a PNG, GIF or WebP below 256 KiB, at most 1024x1024 pixels, and
@@ -996,6 +1005,29 @@ export async function run({
           );
         }
         return stopped !== null || problems.length > 0 ? 3 : 0;
+      }
+      case "media-processor": {
+        const profiles = rest.slice(1);
+        if (rest[0] !== "probe" || !profiles.every((profile) => PROBE_PROFILES.includes(profile))) {
+          throw new UsageError(`media-processor probe [${PROBE_PROFILES.join(" | ")}]...`);
+        }
+        let failed = false;
+        for (const profile of profiles.length === 0 ? PROBE_PROFILES : profiles) {
+          out.progress(`media-processor: probing ${profile}`);
+          let result;
+          try {
+            result = await client.post("/admin/media-processor/probe", { profile });
+          } catch (error) {
+            if (error instanceof AdminError && error.code === "media-processor-unbound") {
+              out.info(error.message);
+              return 3;
+            }
+            throw error;
+          }
+          print(result.report);
+          failed ||= !result.report.ok;
+        }
+        return failed ? 1 : 0;
       }
       case "emoji": {
         const [action, ...args] = rest;

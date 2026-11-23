@@ -32,6 +32,7 @@ import { errorFields } from "../platform/error-message";
 import { type ImageCodec, imagesCodec } from "../platform/images";
 import { decidesHost, hostDecided, offDomain } from "../platform/instance-host";
 import { loggedMethod } from "../platform/log";
+import type { MediaProcessorClient } from "../platform/media-transcoder";
 import { callStore, defaultStore, type StoreResolver } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
 import { generateRsaKeyPair } from "../security/key-wrap";
@@ -68,6 +69,8 @@ export type AppDeps = {
   jobs?: (env: Env) => Promise<unknown>;
   // The memo of recorded activity (mastodon/activity.ts): one per app, so one per isolate in worker.ts.
   activity?: ActivityMemo;
+  // The media processor (src/media-processor.ts), null without its binding; worker.ts passes processorClient.
+  mediaProcessor?: (env: Env) => MediaProcessorClient | null;
 };
 
 // The admin API writes that leave moderation jobs (domain/suspension.ts): the action and the unsuspension of an
@@ -98,6 +101,7 @@ export function createApp({
   doorbell = (env) => ringDoorbell(env.QUEUE),
   jobs = (env) => requestInboundJobs(env.QUEUE),
   activity = new ActivityMemo(),
+  mediaProcessor = () => null,
   ...seams
 }: AppDeps) {
   const app = new Hono<AppEnv>();
@@ -226,7 +230,17 @@ export function createApp({
 
   app.route(
     ADMIN_PREFIX,
-    adminRoutes({ build, now, store, doorbell, jobs, loader, images, fetch: (input, init) => fetch(input, init) }),
+    adminRoutes({
+      build,
+      now,
+      store,
+      doorbell,
+      jobs,
+      loader,
+      images,
+      mediaProcessor,
+      fetch: (input, init) => fetch(input, init),
+    }),
   );
 
   // The inbox POSTs read the domain in their own gate (federation/inbox.ts processInbox), and the self-gated

@@ -16,6 +16,7 @@ import { serverDomain } from "../platform/domain-name";
 import { errorFields, errorMessage } from "../platform/error-message";
 import type { ImageCodec } from "../platform/images";
 import { loggedMethod } from "../platform/log";
+import { isProbeProfile, type MediaProcessorClient, PROBE_PROFILES } from "../platform/media-transcoder";
 import { readQueueBacklog } from "../platform/queue-backlog";
 import type { ImportAuthority } from "../platform/store-admin";
 import type { StoreResolver, StoreStub } from "../platform/store-client";
@@ -63,6 +64,8 @@ export type AdminDeps = AccessDeps & {
   jobs: (env: Env) => Promise<unknown>;
   // Re-encoding for the media rebuild.
   images: (env: Env) => ImageCodec;
+  // The media processor, null without its binding (src/media-processor.ts).
+  mediaProcessor: (env: Env) => MediaProcessorClient | null;
 };
 
 type AdminVariables = { auth: ImportAuthority };
@@ -231,7 +234,7 @@ function adminAllowed(identity: AccessIdentity, access: AccessSettings): string 
   return adminRefusal(access, identity);
 }
 
-export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, images }: AdminDeps) {
+export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, images, mediaProcessor }: AdminDeps) {
   const admin = new Hono<AdminEnv>();
   const stub = (c: Context<AdminEnv>): StoreStub => store(c.env);
 
@@ -575,6 +578,28 @@ export function adminRoutes({ build, store, fetch, now, doorbell, jobs, loader, 
       { after: typeof after === "string" ? after : null, dryRun: dryRun === true },
     );
     return reply(c, result);
+  });
+
+  // ---- media processor (src/media-processor.ts)
+
+  // The smoke probe of one execution profile: a container started on its instance type runs its operation on the
+  // packaged fixture. It reads and writes nothing of the instance; it answers once the container is destroyed.
+  admin.post("/media-processor/probe", async (c) => {
+    const { profile } = await jsonBody(c);
+    if (!isProbeProfile(profile)) {
+      return c.json({ error: `expected {"profile": ${PROBE_PROFILES.map((p) => `"${p}"`).join(" | ")}}` }, 400);
+    }
+    const processor = mediaProcessor(c.env);
+    if (processor === null) {
+      return c.json(
+        {
+          error: "the media processor is not bound: add the deploy template's MediaProcessor block",
+          code: "media-processor-unbound",
+        },
+        409,
+      );
+    }
+    return c.json({ report: await processor.probeNow(profile) });
   });
 
   // ---- local emoji administration (domain/local-emojis.ts; AUTH-5, MEDIA-5)
