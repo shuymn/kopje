@@ -24,8 +24,9 @@ import { decodeHTML, decodeHTMLAttribute } from "entities/decode";
 //     keeps MathML; a <template> or a stray end tag can leave it in HTML where the spec stays foreign): no rel=me after
 //     the first <svg> or <math> start tag is collected (relMeAfterForeign).
 //   - only elements in the HTML namespace count; SVG and MathML elements are skipped, and HTML elements inside an
-//     integration point are HTML. lol-html reports an integration point element itself (an SVG <title>, <desc> or
-//     <foreignObject>, a MathML <mi>) as XHTML, so no <title> after the first <svg> or <math> start tag is taken.
+//     integration point are HTML; an integration point element itself (an SVG <title>, <desc> or <foreignObject>, a
+//     MathML <mi>) is foreign, as in the spec. Where the foreign-content model differs (above), a foreign <title> can
+//     be reported as HTML, so no <title> after the first <svg> or <math> start tag is taken.
 //   - lol-html keeps a stack of open elements, and each start tag's attributes, within one shared 3 MiB budget: some
 //     50,000 unclosed elements, or a start tag of tens of thousands of attributes, fail the scan (memory). The budget is
 //     shared, so no attribute count is guaranteed to pass.
