@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1.29@sha256:572cebbc2b15e6f84c077742952674889cb63cd5e9b80abdffcbe587b6f19183
 # Kopje's media processor (#1828): a pinned static ffmpeg/ffprobe build and the Go server of server/, which offers
 # fixed operations only. An instance's Workers Builds (or `wrangler deploy`) builds this file from
 # node_modules/kopje/container, so the image is the installed kopje version's. Every base is pinned by digest

@@ -49,8 +49,10 @@ describe("the media processor's image in the kopje package", () => {
     expect(packedFiles()).toContain("container/Dockerfile");
   });
 
-  it("pins every base image by digest and copies only the server into the build", () => {
+  it("pins the frontend and every base image by digest and copies only the server into the build", () => {
     const dockerfile = readFileSync(new URL("Dockerfile", container), "utf8");
+    // The frontend that parses the file too.
+    expect(dockerfile.split("\n")[0]).toMatch(/^# syntax=docker\/dockerfile:[\d.]+@sha256:[0-9a-f]{64}$/);
     const from = dockerfile.split("\n").filter((line) => line.startsWith("FROM "));
     expect(from).toHaveLength(3);
     for (const line of from) {
