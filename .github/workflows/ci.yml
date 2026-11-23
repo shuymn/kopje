@@ -148,8 +148,10 @@ jobs:
         run: pnpm run test:scripts
 
   # The media processor's image (packages/kopje/container): the server's Go tests in the Go image its Dockerfile builds
-  # with, then the image built and its operations run on the probe fixture with no network
-  # (packages/kopje/scripts/container-smoke.sh). Instances build the same Dockerfile in Workers Builds.
+  # with, then the image built and its operations run with no network on the probe fixture and the WAV and EXIF-tagged
+  # MOV inputs the script makes, each answer checked for its status, media type, length, codec, full decode and the
+  # absence of seeded metadata (packages/kopje/scripts/container-smoke.sh). Instances build the same Dockerfile in
+  # Workers Builds.
   container:
     timeout-minutes: 15
     runs-on: ubuntu-latest
