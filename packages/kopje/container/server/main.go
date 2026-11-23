@@ -447,11 +447,12 @@ func receive(r *http.Request, path string) (int64, *failure) {
 }
 
 // probe reads the input's streams and format from its headers, decoding nothing (probeArgs). Only when the headers
-// give no duration at all (a raw ADTS AAC, say) does it read again with stream discovery, which may decode, within
-// the decoder's pixel limit; the limits are checked on the answer as on any other.
+// leave a limit unknown (needsDiscovery: no duration, as a raw ADTS AAC; a video with no dimensions or frame rate)
+// does it read again with stream discovery, which may decode, within the decoder's pixel limit; the limits are checked
+// on the answer as on any other.
 func probe(ctx context.Context, path string) (*probeResult, *failure) {
 	p, f := runProbe(ctx, probeArgs(path, false))
-	if f == nil && !declaresDuration(p) {
+	if f == nil && needsDiscovery(p) {
 		return runProbe(ctx, probeArgs(path, true))
 	}
 	return p, f

@@ -557,6 +557,50 @@ func TestTheProbeDiscoversOnlyWithoutADeclaredDuration(t *testing.T) {
 	}
 }
 
+// Headers that leave the video's dimensions or frame rate unknown (0) send the probe to discovery, and the limits apply
+// to what discovery found: an input it still leaves unknown is refused, one over a limit is refused by that limit.
+func TestUnknownVideoHeadersAreDiscoveredThenLimited(t *testing.T) {
+	cases := []struct {
+		name               string
+		header, discovered probeStream
+		code               int
+		refusal            string
+	}{
+		{"no dimensions", stream("video", "h264", 0, 0, "15/1", "2"), stream("video", "h264", 320, 240, "15/1", "2"), 200, ""},
+		{"no frame rate", stream("video", "h264", 320, 240, "0/0", "2"), stream("video", "h264", 320, 240, "15/1", "2"), 200, ""},
+		{"still no dimensions", stream("video", "h264", 0, 0, "15/1", "2"), stream("video", "h264", 0, 0, "15/1", "2"), 422, "no_video"},
+		{"still no frame rate", stream("video", "h264", 320, 240, "0/0", "2"), stream("video", "h264", 320, 240, "0/0", "2"), 422, "fps"},
+		{"larger than declared", stream("video", "h264", 0, 0, "15/1", "2"), stream("video", "h264", 3840, 2161, "15/1", "2"), 422, "pixels"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fakeTools(t, probeOf("2", c.discovered))
+			t.Setenv("FAKE_OUT", fakeMP4(t))
+			encoded, err := json.Marshal(probeOf("2", c.header))
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "headers.json")
+			if err := os.WriteFile(path, encoded, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("FAKE_HEADERS", path)
+			log := filepath.Join(t.TempDir(), "ffprobe.log")
+			t.Setenv("FAKE_PROBE_LOG", log)
+			rec := do(t, newMux(threadsDefault), "POST", normalizeURL, []byte("input"))
+			if rec.Code != c.code || rec.Header().Get("Kopje-Error") != c.refusal {
+				t.Fatalf("normalize %d %q", rec.Code, rec.Header().Get("Kopje-Error"))
+			}
+			runs, _ := os.ReadFile(log)
+			lines := strings.Split(strings.TrimSpace(string(runs)), "\n")
+			if len(lines) < 2 || !strings.Contains(lines[0], "-nofind_stream_info") ||
+				strings.Contains(lines[1], "-nofind_stream_info") || !strings.Contains(lines[1], "-max_pixels") {
+				t.Fatalf("probes: %q", lines)
+			}
+		})
+	}
+}
+
 // probe_ms bounds the header and frame probes together, and Kopje-Probe-Ms reports both.
 func TestOneProbeBudgetForBothProbes(t *testing.T) {
 	fakeTools(t, videoProbe())

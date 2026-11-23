@@ -5,6 +5,9 @@
 # and text). Inputs made here always follow the given ones: a WAV tone; a MOV of PNG frames that carry EXIF and text
 # chunks; a MOV of Display P3 PNG frames whose only colour tag is an ICC profile carrying a seeded marker; a MOV of
 # grayscale PNG frames with a gray ICC profile; an M4A with a 4096x4096 cover; a MOV of H.264 then PNG; and raw AAC.
+# One more input, an MP4 whose headers declare 320x240 but whose frames after the first are 4096x2160, is checked
+# apart: the decoder must refuse those frames (normalize keeps at most the first frame, and a still is the first
+# frame's 320x240), or the operation must fail.
 # Each input's kind (video or audio) is the fixture table's, never the server's Kopje-Kind: a given input's is its
 # `video:` or `audio:` prefix, else its extension's. Each operation is checked on its own: HTTP 200, Kopje-Kind equal
 # to the expected kind, the exact Content-Type (video/mp4 or audio/mpeg, image/png for a still), a Content-Length
@@ -132,6 +135,12 @@ ffm -f lavfi -i sine=d=3 -i cover.png -map 0 -map 1 -c:a aac -c:v copy -disposit
 ffm -f lavfi -i testsrc2=s=320x240:d=2 -f lavfi -i color=c=blue:s=64x48:d=2:r=1 -map 0 -map 1 -c:v:0 libx264 \
   -c:v:1 png twostream.mov
 ffm -f lavfi -i sine=d=3 -c:a aac tone.aac
+# lie.mp4: one 320x240 H.264 frame, then a second of 4096x2160 ones in the same stream; the MP4's headers carry only
+# the first parameters, so they declare 320x240.
+ffm -f lavfi -i testsrc2=s=320x240:d=0.04:r=25 -c:v libx264 -f h264 small.h264
+ffm -f lavfi -i testsrc2=s=4096x2160:d=1:r=25 -c:v libx264 -preset ultrafast -f h264 big.h264
+cat "$work/fixture/small.h264" "$work/fixture/big.h264" >"$work/fixture/lie.h264"
+ffm -r 25 -f h264 -i lie.h264 -c copy lie.mp4
 inputs+=("audio:$work/fixture/tone.wav" "video:$work/fixture/exif.mov" "video:$work/fixture/p3.mov"
   "video:$work/fixture/gray.mov" "audio:$work/fixture/cover.m4a" "video:$work/fixture/twostream.mov"
   "audio:$work/fixture/tone.aac")
@@ -320,6 +329,32 @@ for entry in "${inputs[@]}"; do
   fi
   rm -f "$work/in/$base" "$work/out/$base".*
 done
+
+# lie.mp4: no frame over the pixel limit is decoded, whatever its headers declared.
+cp "$work/fixture/lie.mp4" "$work/in/lie.mp4"
+h="$(req lie.normalized -X POST --data-binary @/in/lie.mp4 -H 'Content-Type: application/octet-stream' \
+  "http://127.0.0.1:8080/normalize?probe_ms=10000&encode_ms=$ENCODE_MS")"
+got="$(status "$h") $(header Kopje-Error "$h")"
+if [ "$(status "$h")" = 200 ]; then
+  got="$(status "$h"), $(ffprobe -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 \
+    /o/lie.normalized) frames"
+  check "$([ "$got" = "200, 1 frames" ] && echo true)" "lie.mp4 normalize: $got, want at most the first frame"
+  h="$(req lie.still.png http://127.0.0.1:8080/normalize/still)"
+  if [ "$(status "$h")" = 200 ]; then
+    dims="$(ffprobe -show_entries stream=width,height -of csv=p=0 /o/lie.still.png)"
+    check "$([ "$dims" = 320,240 ] && echo true)" "lie.mp4 normalize/still: $dims, want the first frame's 320,240"
+    got="$got; still $dims"
+  fi
+fi
+echo "| lie.mp4 | normalize | $got | | | | | | | | |"
+h="$(req lie.png -X POST --data-binary @/in/lie.mp4 -H 'Content-Type: application/octet-stream' \
+  http://127.0.0.1:8080/still)"
+got="$(status "$h") $(header Kopje-Error "$h")"
+if [ "$(status "$h")" = 200 ]; then
+  got="$(status "$h"), $(ffprobe -show_entries stream=width,height -of csv=p=0 /o/lie.png)"
+  check "$([ "$got" = "200, 320,240" ] && echo true)" "lie.mp4 still: $got, want the first frame's 320,240"
+fi
+echo "| lie.mp4 | still | $got | | | | | | | | |"
 
 # Refusals: one byte over AV_UPLOAD_LIMIT (94,371,840 bytes) is 413; text is 422 unreadable.
 head -c 94371841 /dev/zero >"$work/in/over-cap.bin"

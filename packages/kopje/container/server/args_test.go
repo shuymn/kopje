@@ -48,6 +48,11 @@ func TestEveryCommandGuardsItsInputAndStripsMetadata(t *testing.T) {
 		if valueOf(args, "-i") != "file:in" {
 			t.Fatalf("%s: input %q", name, valueOf(args, "-i"))
 		}
+		// The decoder refuses a frame over the pixel limit, whatever the headers declared.
+		guard := slices.Index(args, "-max_pixels")
+		if name != "audio" && (guard < 0 || guard > slices.Index(args, "-i") || args[guard+1] != "8294400") {
+			t.Fatalf("%s: no input pixel limit: %v", name, args)
+		}
 		for _, a := range args {
 			if strings.HasPrefix(a, "http") || strings.Contains(a, "lavfi") {
 				t.Fatalf("%s: %q", name, a)

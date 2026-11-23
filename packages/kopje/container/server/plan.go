@@ -100,6 +100,23 @@ func iccIn(list []sideData) bool {
 	return false
 }
 
+// needsDiscovery: the headers leave a limit unknown, so the probe runs again with stream discovery and the limits apply
+// to what it found: no duration is declared, or the video stream declares no dimensions or no frame rate. An input
+// that still leaves one unknown is refused by planVideo, planAudio or the still's checks.
+func needsDiscovery(p *probeResult) bool {
+	if !declaresDuration(p) {
+		return true
+	}
+	video, _ := selectStreams(p)
+	return video != nil && (video.Width <= 0 || video.Height <= 0 || frameRate(video) == 0)
+}
+
+// frameRate is the larger of the stream's declared rates (VFR and contradictory headers count at their largest); 0
+// when it declares neither.
+func frameRate(video *probeStream) float64 {
+	return math.Max(parseRate(video.RFrameRate), parseRate(video.AvgFrameRate))
+}
+
 // declaresDuration: the container or a stream declares a duration.
 func declaresDuration(p *probeResult) bool {
 	if parsePositive(p.Format.Duration) > 0 {
@@ -278,9 +295,8 @@ func planVideo(p *probeResult, video, audio *probeStream, encodeMs float64) (*pl
 	if video.Width*video.Height > maxSourcePixels {
 		return nil, refusePixels
 	}
-	// VFR and contradictory headers count at their largest.
-	fps := math.Max(parseRate(video.RFrameRate), parseRate(video.AvgFrameRate))
-	if fps > maxSourceFPS {
+	fps := frameRate(video)
+	if fps == 0 || fps > maxSourceFPS {
 		return nil, refuseFPS
 	}
 	duration := boundedDuration(p, video, audio)

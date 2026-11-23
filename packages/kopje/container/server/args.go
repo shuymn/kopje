@@ -26,6 +26,11 @@ var inputGuards = []string{"-protocol_whitelist", "file", "-format_whitelist", f
 
 var commonArgs = append([]string{"-hide_banner", "-nostdin", "-nostats", "-loglevel", "error", "-y"}, inputGuards...)
 
+// pixelGuard is an input option of every ffmpeg and ffprobe run that decodes video: the decoder refuses a frame over
+// maxSourcePixels whatever the headers declared (a stream whose first parameters are small can change them later),
+// so such a frame is dropped undecoded rather than scaled or encoded.
+var pixelGuard = []string{"-max_pixels", strconv.Itoa(maxSourcePixels)}
+
 // No container metadata, chapters or encoder strings reach the output.
 var stripMetadata = []string{"-map_metadata", "-1", "-map_chapters", "-1", "-fflags", "+bitexact"}
 
@@ -120,7 +125,7 @@ func videoArgs(p *plan, t threading, in, out string) []string {
 		fmt.Sprintf("scale=w='trunc(iw*%s/2)*2':h='trunc(ih*%s/2)*2':out_color_matrix=bt709:out_range=tv", fit, fit),
 		"setsar=1", "format=yuv420p")
 	maxrate := strconv.Itoa(p.maxrate)
-	args := cat(commonArgs, t.filterArgs(), []string{"-i", "file:" + in, "-map", fmt.Sprintf("0:%d", p.videoIndex)})
+	args := cat(commonArgs, pixelGuard, t.filterArgs(), []string{"-i", "file:" + in, "-map", fmt.Sprintf("0:%d", p.videoIndex)})
 	if p.audioIndex >= 0 {
 		args = append(args, "-map", fmt.Sprintf("0:%d", p.audioIndex))
 	}
@@ -179,7 +184,7 @@ func stillArgs(videoIndex int, hdr, icc bool, seek float64, in, out string) []st
 		vf = append(vf, tonemap)
 	}
 	vf = append(vf, "format=rgb24", "iccgen=force=1")
-	return cat(commonArgs,
+	return cat(commonArgs, pixelGuard,
 		[]string{"-skip_frame", "nokey", "-noaccurate_seek", "-ss", strconv.FormatFloat(seek, 'f', 3, 64),
 			"-i", "file:" + in, "-map", fmt.Sprintf("0:%d", videoIndex)},
 		stripMetadata,
@@ -189,10 +194,10 @@ func stillArgs(videoIndex int, hdr, icc bool, seek float64, in, out string) []st
 
 // probeArgs reads streams and format. Without discover, from the headers only (-nofind_stream_info): no packet is
 // decoded, so an image stream or a cover is not decoded before the limits are checked. With discover, stream
-// discovery reads and may decode packets, for an input whose headers declare no duration. Either way the decoder
-// refuses a frame over maxSourcePixels.
+// discovery reads and may decode packets, for an input whose headers leave a limit unknown (needsDiscovery). Either
+// way the decoder refuses a frame over maxSourcePixels.
 func probeArgs(path string, discover bool) []string {
-	args := cat([]string{"-v", "error"}, inputGuards, []string{"-max_pixels", strconv.Itoa(maxSourcePixels)})
+	args := cat([]string{"-v", "error"}, inputGuards, pixelGuard)
 	if !discover {
 		args = append(args, "-nofind_stream_info")
 	}
@@ -204,8 +209,7 @@ func probeArgs(path string, discover bool) []string {
 // decoder refuses a frame over maxSourcePixels as well. Only the first frame's profile is read: one that appears only
 // on a later frame (a keyframe at 1 s, say) is dropped like any profile, without its colour being used.
 func frameProbeArgs(path string, index int) []string {
-	return cat([]string{"-v", "error"}, inputGuards,
-		[]string{"-max_pixels", strconv.Itoa(maxSourcePixels), "-nofind_stream_info",
-			"-select_streams", strconv.Itoa(index), "-read_intervals", "%+#1", "-print_format", "json", "-show_frames",
-			"file:" + path})
+	return cat([]string{"-v", "error"}, inputGuards, pixelGuard,
+		[]string{"-nofind_stream_info", "-select_streams", strconv.Itoa(index), "-read_intervals", "%+#1",
+			"-print_format", "json", "-show_frames", "file:" + path})
 }
