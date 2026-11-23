@@ -444,15 +444,22 @@ normalize() {
     "http://127.0.0.1:8080/normalize?probe_ms=10000&encode_ms=$ENCODE_MS")"
   echo "$(status "$h") $(header Kopje-Error "$h")"
 }
-# A normalize's still and a /still of <input>, as <input>.still.png and <input>.png, kept for the verifier; prints the
-# ones answered 200.
+# A normalize's still and a /still of <input>, as <input>.still.png and <input>.png, kept for the verifier; sets made to
+# the ones answered 200. It runs in this shell (never in a command substitution), so keep's fresh_list entries stay.
 stills() { # <input>
   local h
+  made=""
   h="$(req "$1.still.png" http://127.0.0.1:8080/normalize/still)"
-  [ "$(status "$h")" = 200 ] && keep "$1.still.png" "$1.still.png" image/png && echo "$1.still.png"
+  [ "$(status "$h")" = 200 ] && keep "$1.still.png" "$1.still.png" image/png && made="$1.still.png"
   h="$(req "$1.png" -X POST --data-binary "@/in/$1" -H 'Content-Type: application/octet-stream' \
     http://127.0.0.1:8080/still)"
-  [ "$(status "$h")" = 200 ] && keep "$1.png" "$1.png" image/png && echo "$1.png"
+  [ "$(status "$h")" = 200 ] && keep "$1.png" "$1.png" image/png && made="$made $1.png"
+  return 0
+}
+# Whether both stills of <input> are in the verifier's list.
+both_listed() { # <input>
+  local entries="${fresh_list[*]}"
+  [[ $entries == *"\"file\": \"$1.still.png\""* && $entries == *"\"file\": \"$1.png\""* ]] && echo true
   return 0
 }
 # The marker: 128x72 black with a white 16x16 square top left, stored rotated with the matrix that shows it upright.
@@ -476,8 +483,8 @@ for turn in "90 transpose=clock" "180 hflip,vflip" "270 transpose=cclock"; do
     print (d == "128,72" && n == 4 && c[1] > 180 && c[2] < 60 && c[3] < 60 && c[4] < 60) ? "true" : "false"}')" \
     "rotated$degrees.mp4: $got, want 128,72 with the marker top left"
   echo "| rotated$degrees.mp4 | normalize | $got | | | | | | | | |"
-  made="$(stills "rotated$degrees.mp4")"
-  check "$([ "$(wc -w <<<"$made")" -eq 2 ] && echo true)" "rotated$degrees.mp4: stills $made, want both"
+  stills "rotated$degrees.mp4"
+  check "$(both_listed "rotated$degrees.mp4")" "rotated$degrees.mp4: stills $made, want both, listed for the verifier"
   for still in $made; do
     dims="$(ffprobe -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "/o/$still")"
     marks="$(block "$work/out" "$still" 0 0) $(block "$work/out" "$still" 120 0)"
@@ -519,8 +526,8 @@ for hdr in "arib-std-b67 721 hlg" "smpte2084 573 pq" "arib-std-b67 721 hlg-vui" 
     print (b <= 24 && w[1] >= 150 && w[1] <= 235 && (w[2]-128)^2 <= 144 && (w[3]-128)^2 <= 144) ? "true" : "false"}')" \
     "$label.mp4: $got, want black <= 24 and white 150-235 in luma, its chroma within 12 of 128"
   echo "| $label.mp4 | normalize | $got | | | | | | | | |"
-  made="$(stills "$label.mp4")"
-  check "$([ "$(wc -w <<<"$made")" -eq 2 ] && echo true)" "$label.mp4: stills $made, want both"
+  stills "$label.mp4"
+  check "$(both_listed "$label.mp4")" "$label.mp4: stills $made, want both, listed for the verifier"
   for still in $made; do
     black="$(block "$work/out" "$still" 24 32)"
     patch="$(block "$work/out" "$still" 96 32 yuv)"
