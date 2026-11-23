@@ -51,6 +51,7 @@ type RunResult = {
   status: number | null;
   error: string | null;
   mediaKind: string | null; // the server's Kopje-Kind
+  contentType: string | null;
   // Times in milliseconds: the object's clock, then the server's stage headers.
   startToReadyMs: number | null;
   operationMs: number | null; // the POST until its response headers (input streaming, probe, encode, still)
@@ -105,6 +106,7 @@ export class BenchUnit extends DurableObject<Env> {
       status: null,
       error: null,
       mediaKind: null,
+      contentType: null,
       startToReadyMs: null,
       operationMs: null,
       outputToR2Ms: null,
@@ -158,6 +160,7 @@ export class BenchUnit extends DurableObject<Env> {
       r.status = res.status;
       r.server = serverTimes(res.headers);
       r.mediaKind = res.headers.get("kopje-kind");
+      r.contentType = res.headers.get("content-type");
       const length = Number(res.headers.get("content-length"));
       if (res.status !== 200 || res.body === null || !Number.isSafeInteger(length)) {
         r.error = res.headers.get("kopje-error") ?? `status ${res.status}`;

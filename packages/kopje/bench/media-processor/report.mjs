@@ -96,6 +96,25 @@ export function timings(records) {
       `| ${first?.fixture} | ${first?.instance} | ${first?.threads} | ${ok.length}/${group.length} | ${cells} |`,
     );
   }
+  // Stills: every run counts, the failed ones in the denominator, as normalize's do.
+  lines.push(
+    "",
+    "## Stills (standard-1)",
+    "",
+    "| fixture | ok/runs | wall p95 | Images WebP p95 | Images RGBA p95 |",
+    "|---|---|---|---|---|",
+  );
+  for (const group of groupBy(
+    runs.filter((r) => r.op === "still"),
+    (r) => r.fixture,
+  ).values()) {
+    const ok = group.filter(succeeded);
+    /** @param {(r: RunRecord) => number | null | undefined} f */
+    const cell = (f) => (ok.length === 0 ? "-" : seconds(p95(ok.map((r) => f(r) ?? 0)), 2));
+    lines.push(
+      `| ${group[0]?.fixture} | ${ok.length}/${group.length} | ${cell((r) => r.wallMs)} | ${cell((r) => r.imagesWebpMs)} | ${cell((r) => r.imagesRgbaMs)} |`,
+    );
+  }
   const ok = runs.filter(succeeded);
   /** @param {string} name @param {(number | null | undefined)[]} values */
   const stage = (name, values) => {

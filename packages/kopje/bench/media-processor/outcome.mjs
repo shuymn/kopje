@@ -1,11 +1,12 @@
 // Whether a bench run (worker.ts) succeeded end to end, from what it recorded. `expect` is the fixture's kind from
-// measure.sh's table, never the server's answer: a normalize must answer that Kopje-Kind, its output must be in R2,
+// measure.sh's table, never the server's answer: the answer's Content-Type must be that kind's (video/mp4 or
+// audio/mpeg; image/png for a still) and a normalize's Kopje-Kind that kind, its output must be in R2,
 // and for a video both the still (in R2 for a normalize, the output itself for a still) and the two Images
 // transforms must have run. A run with an error (a destroy that failed included) is no success.
 
 /**
  * @typedef {{ op: "normalize" | "still", expect: "video" | "audio", status: number | null, error: string | null,
- *   mediaKind: string | null, outputToR2Ms: number | null, stillBytes: number | null, imagesWebpMs: number | null,
+ *   mediaKind: string | null, contentType: string | null, outputToR2Ms: number | null, stillBytes: number | null, imagesWebpMs: number | null,
  *   imagesRgbaMs: number | null }} Outcome
  */
 
@@ -15,6 +16,10 @@ export function endToEnd(r) {
     return false;
   }
   if (r.op === "normalize" && r.mediaKind !== r.expect) {
+    return false;
+  }
+  const type = r.op === "still" ? "image/png" : r.expect === "video" ? "video/mp4" : "audio/mpeg";
+  if (r.contentType !== type) {
     return false;
   }
   if (r.expect === "audio") {

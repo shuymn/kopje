@@ -26,17 +26,25 @@ describe("a bench run's outcome", () => {
     status: 200,
     error: null,
     mediaKind: "video",
+    contentType: "video/mp4",
     outputToR2Ms: 500,
     stillBytes: 300,
     imagesWebpMs: 20,
     imagesRgbaMs: 10,
   };
-  const audio: Outcome = { ...video, expect: "audio", mediaKind: "audio", stillBytes: null, imagesWebpMs: null };
+  const audio: Outcome = {
+    ...video,
+    expect: "audio",
+    mediaKind: "audio",
+    contentType: "audio/mpeg",
+    stillBytes: null,
+    imagesWebpMs: null,
+  };
 
   it("is a success only when every step ran for the fixture's kind", () => {
     expect(endToEnd(video)).toBe(true);
     expect(endToEnd(audio)).toBe(true);
-    expect(endToEnd({ ...video, op: "still", mediaKind: null })).toBe(true);
+    expect(endToEnd({ ...video, op: "still", mediaKind: null, contentType: "image/png" })).toBe(true);
   });
 
   it("is a failure for an answer without the expected Kopje-Kind, or a video without its still and Images", () => {
@@ -50,6 +58,10 @@ describe("a bench run's outcome", () => {
     expect(endToEnd({ ...video, error: "destroy: failed" })).toBe(false);
     expect(endToEnd({ ...video, status: 422 })).toBe(false);
     expect(endToEnd({ ...audio, op: "still" })).toBe(false);
+    // The answer's media type is the expected kind's: a 200 whose body is not that media is no success.
+    expect(endToEnd({ ...audio, contentType: "text/plain" })).toBe(false);
+    expect(endToEnd({ ...video, contentType: null })).toBe(false);
+    expect(endToEnd({ ...video, op: "still", mediaKind: null, contentType: "video/mp4" })).toBe(false);
   });
 });
 
@@ -67,6 +79,20 @@ describe("the media processor bench report", () => {
     expect(lines).toContain("| b.mp4 | standard-3 | default | 2/2 | 20.0 | 6.0 | 12.0 | 2.00 | 8.0 |");
     // The failed run's times enter no stage either: two samples, from b.mp4's runs.
     expect(lines).toContain("| output into R2 | 2 | 0.50 |");
+  });
+
+  it("shows the failed stills in the denominator", () => {
+    const still = (fields: Record<string, unknown>) =>
+      run({ op: "still", fixture: "a.mp4", instance: "standard-1", imagesWebpMs: 30, imagesRgbaMs: 10, ...fields });
+    const lines = timings(
+      parseLines(
+        [
+          still({ run: "s1", ok: true }),
+          ...Array.from({ length: 8 }, (_, i) => still({ run: `f${i}`, ok: false, error: "still: status 500" })),
+        ].join("\n"),
+      ),
+    );
+    expect(lines).toContain("| a.mp4 | 1/9 | 10.00 | 0.03 | 0.01 |");
   });
 
   // measure.sh records a request that failed before the bench answered with its operation, fixture, type and threading.
