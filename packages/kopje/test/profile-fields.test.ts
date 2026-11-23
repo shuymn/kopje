@@ -153,8 +153,10 @@ describe("profile fields over the API", () => {
     );
     const actor = await (
       await h.request("/ap/users/alice", { headers: { accept: "application/activity+json" } })
-    ).json<{ attachment: { type: string; name: string; value: string } }>();
-    expect(actor.attachment).toMatchObject({ type: "PropertyValue", name: "Site" });
-    expect(actor.attachment.value).toContain('href="https://alice.example/"');
+    ).json<{ attachment: { type: string; name: string; value: string }[] }>();
+    // An array even for one field, as Mastodon serves it and reads it (property_values): a single object is ignored.
+    expect(actor.attachment).toHaveLength(1);
+    expect(actor.attachment[0]).toMatchObject({ type: "PropertyValue", name: "Site" });
+    expect(actor.attachment[0]!.value).toContain('href="https://alice.example/"');
   });
 });
