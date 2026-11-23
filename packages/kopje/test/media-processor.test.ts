@@ -8,10 +8,12 @@ import { PROBE_FIXTURE_BASE64 } from "../src/media-probe-fixture";
 import {
   AV_OUTPUT_LIMIT,
   CLEANUP_RETRY_MS,
+  LEASE_MS,
   processorClient,
   ProcessorUnit,
   READY_MS,
   smokeProbe,
+  WATCHDOG_MS,
   type UnitState,
 } from "../src/media-processor";
 import { PROBE_PROFILES, type ProbeProfile, type ProbeReport } from "../src/platform/media-transcoder";
@@ -23,7 +25,15 @@ import { memoryIO } from "./ops-helpers";
 type Handler = (request: Request) => Response | Promise<Response>;
 
 // A container as ctx.container presents it, its port answering through `handler`. It records what the probe did.
-function fakeContainer(handler: Handler, options: { destroy?: () => Promise<void>; image?: string | null } = {}) {
+function fakeContainer(
+  handler: Handler,
+  options: {
+    destroy?: () => Promise<void>;
+    image?: string | null;
+    inspect?: () => Promise<ContainerInfo | null>;
+    onStart?: () => void;
+  } = {},
+) {
   const calls: string[] = [];
   const bodies: Uint8Array[] = [];
   let running = false;
@@ -35,6 +45,7 @@ function fakeContainer(handler: Handler, options: { destroy?: () => Promise<void
     },
     images: image === null ? {} : { media: image },
     start(startup: ContainerStartupOptions) {
+      options.onStart?.();
       calls.push("start");
       started = startup;
       running = true;
@@ -45,7 +56,7 @@ function fakeContainer(handler: Handler, options: { destroy?: () => Promise<void
       running = false;
     },
     inspect() {
-      return Promise.resolve({ image: `${image}-running`, labels: {} });
+      return options.inspect?.() ?? Promise.resolve({ image: `${image}-running`, labels: {} });
     },
     getTcpPort(port: number) {
       expect(port).toBe(8080);
@@ -94,12 +105,38 @@ function server(overrides: Partial<Record<string, Handler>> = {}): Handler {
   };
 }
 
+// A virtual clock: pending waits fire in the order of their due times, the earliest each time the test has been idle
+// for a few real milliseconds. So a call that settles at once wins its race against a deadline, one that never settles
+// loses it, and a short poll fires before a long deadline.
 function clock() {
   let t = 1_000_000;
+  const pending: { due: number; resolve: () => void }[] = [];
+  let pumping = false;
+  const pump = () => {
+    pumping = true;
+    setTimeout(() => {
+      pending.sort((a, b) => a.due - b.due);
+      const next = pending.shift();
+      if (next !== undefined) {
+        t = Math.max(t, next.due);
+        next.resolve();
+      }
+      if (pending.length > 0) {
+        pump();
+      } else {
+        pumping = false;
+      }
+    }, 10);
+  };
   return {
     now: () => t,
-    wait: (ms: number) => Promise.resolve(void (t += ms)),
-    advance: (ms: number) => void (t += ms),
+    wait: (ms: number) =>
+      new Promise<void>((resolve) => {
+        pending.push({ due: t + ms, resolve });
+        if (!pumping) {
+          pump();
+        }
+      }),
   };
 }
 
@@ -156,7 +193,7 @@ describe("smoke probe", () => {
     );
     const time = clock();
     const report = await smokeProbe(slow.container, "still@standard-1", time);
-    expect(report.ok).toBe(true);
+    expect(report).toMatchObject({ ok: true, failure: null });
     expect(report.startToReadyMs).toBe(750);
 
     const never = fakeContainer(
@@ -168,9 +205,29 @@ describe("smoke probe", () => {
     );
     const refused = await smokeProbe(never.container, "still@standard-1", clock());
     expect(refused).toMatchObject({ ok: false, failure: "ready", destroyed: true, outputBytes: null });
-    expect(refused.wallMs).toBeGreaterThan(READY_MS);
+    expect(refused.wallMs).toBe(READY_MS);
     expect(never.calls.at(-1)).toBe("destroy");
     expect(never.calls.filter((c) => c.startsWith("POST"))).toEqual([]);
+  });
+
+  // One absolute deadline covers a healthz call that never settles, the image inspection and the operation.
+  it("ends a stalled readiness call, inspection or operation at its deadline and destroys the container", async () => {
+    const never = () => new Promise<Response>(() => {});
+    const stalled = fakeContainer(server({ "/healthz": never }));
+    const time = clock();
+    const ready = await smokeProbe(stalled.container, "still@standard-1", time);
+    expect(ready).toMatchObject({ ok: false, failure: "ready", destroyed: true });
+    expect(ready.wallMs).toBe(READY_MS);
+    expect(stalled.calls).toEqual(["start", "GET /healthz", "destroy"]);
+
+    const inspecting = fakeContainer(server(), { inspect: () => new Promise(() => {}) });
+    const inspected = await smokeProbe(inspecting.container, "still@standard-1", clock());
+    expect(inspected).toMatchObject({ ok: true, image: { running: null }, destroyed: true });
+
+    const operating = fakeContainer(server({ "/still": never }));
+    const operated = await smokeProbe(operating.container, "still@standard-1", clock());
+    expect(operated).toMatchObject({ ok: false, failure: "operation-deadline", destroyed: true });
+    expect(operating.calls.at(-1)).toBe("destroy");
   });
 
   it("reports the server's error code and nothing of its body", async () => {
@@ -301,14 +358,25 @@ describe("smoke probe", () => {
 });
 
 // A Durable Object state with the parts MediaProcessor uses.
-function fakeState(container: Container | undefined) {
+// `setAlarm` fails from its `failAlarmFrom`-th call on.
+function fakeState(container: Container | undefined, options: { failAlarmFrom?: number } = {}) {
   const stored = new Map<string, unknown>();
   let alarm: number | null = null;
+  let alarms = 0;
   const blocked: Promise<unknown>[] = [];
   const storage = {
+    get: (key: string) => Promise.resolve(stored.get(key)),
     put: (key: string, value: unknown) => Promise.resolve(void stored.set(key, value)),
+    delete: (key: string) => Promise.resolve(stored.delete(key)),
     deleteAll: () => Promise.resolve(stored.clear()),
-    setAlarm: (at: number) => Promise.resolve(void (alarm = at)),
+    setAlarm: (at: number) => {
+      alarms++;
+      if (options.failAlarmFrom !== undefined && alarms >= options.failAlarmFrom) {
+        return Promise.reject(new Error("storage unavailable"));
+      }
+      alarm = at;
+      return Promise.resolve();
+    },
     deleteAlarm: () => Promise.resolve(void (alarm = null)),
   };
   const ctx = {
@@ -376,6 +444,41 @@ describe("MediaProcessor", () => {
     expect(state.alarm()).toBeNull();
   });
 
+  // The watchdog is stored before the container starts, so an invocation that ends after the start, or an alarm write
+  // that fails after it, still leaves an alarm that destroys the container.
+  it("stores a cleanup watchdog before the start and clears it only after a confirmed teardown", async () => {
+    let atStart: { alarm: number | null; cleanup: unknown } | undefined;
+    const fake = fakeContainer(server(), {
+      // Called at the start, after state below is set.
+      onStart: () => (atStart = { alarm: state.alarm(), cleanup: state.stored.get("cleanup") }),
+    });
+    const state = fakeState(fake.container);
+    const before = Date.now();
+    expect((await unit(state.ctx).probeNow("still@standard-1")).destroyed).toBe(true);
+    expect(atStart?.cleanup).toBe(true);
+    expect(atStart?.alarm).toBeGreaterThanOrEqual(before + WATCHDOG_MS);
+    expect(state.alarm()).toBeNull();
+    expect(state.stored.size).toBe(0);
+  });
+
+  it("keeps the watchdog when destroy throws and the sooner retry cannot be written", async () => {
+    const fake = fakeContainer(server(), { destroy: () => Promise.reject(new Error("destroy failed")) });
+    const state = fakeState(fake.container, { failAlarmFrom: 2 });
+    const before = Date.now();
+    const report = await unit(state.ctx).probeNow("still@standard-1");
+    expect(report.destroyed).toBe(false);
+    expect(fake.container.running).toBe(true);
+    expect(state.stored.get("cleanup")).toBe(true);
+    expect(state.alarm()).toBeGreaterThanOrEqual(before + WATCHDOG_MS);
+  });
+
+  it("starts nothing when the watchdog cannot be stored", async () => {
+    const fake = fakeContainer(server());
+    const state = fakeState(fake.container, { failAlarmFrom: 1 });
+    await expect(unit(state.ctx).probeNow("still@standard-1")).rejects.toThrow("storage unavailable");
+    expect(fake.calls).toEqual([]);
+  });
+
   it("destroys a container it finds running when it starts", async () => {
     const fake = fakeContainer(server());
     fake.container.start({ image: "x" });
@@ -393,19 +496,90 @@ describe("processorClient", () => {
     expect(processorClient(env, "build")).toBeNull();
   });
 
-  it("probes each profile on a fresh object named for the version, the profile and a nonce", async () => {
+  // A namespace of units over fake states, each name its own object; probes run on containers from `container`.
+  function fakeNamespace(container: () => Container) {
+    const objects = new Map<string, ProcessorUnit>();
     const names: string[] = [];
-    const namespace = {
-      getByName: (name: string) => {
-        names.push(name);
-        return { probeNow: (profile: ProbeProfile) => Promise.resolve({ ok: true, profile }) };
+    return {
+      names,
+      namespace: {
+        getByName(name: string) {
+          names.push(name);
+          let object = objects.get(name);
+          if (object === undefined) {
+            object = unit(fakeState(name.startsWith("p:") ? container() : undefined).ctx);
+            objects.set(name, object);
+          }
+          return object;
+        },
       },
     };
+  }
+
+  it("probes each profile on a fresh object named for the version, the profile and a nonce", async () => {
+    const { names, namespace } = fakeNamespace(() => fakeContainer(server()).container);
     let n = 0;
     const client = processorClient({ ...env, MEDIA_PROCESSOR: namespace } as never, "v1", () => `n${++n}`);
-    await client?.probeNow("still@standard-1");
-    await client?.probeNow("still@standard-1");
-    expect(names).toEqual(["p:v1:still@standard-1:n1", "p:v1:still@standard-1:n2"]);
+    expect((await client?.probeNow("still@standard-1"))?.ok).toBe(true);
+    expect((await client?.probeNow("still@standard-1"))?.ok).toBe(true);
+    expect(names.filter((name) => name.startsWith("p:"))).toEqual([
+      "p:v1:still@standard-1:n1",
+      "p:v1:still@standard-1:n2",
+    ]);
+  });
+
+  // One probe of a profile at a time: a second, while the first holds the profile's lease, starts nothing.
+  it("starts one container per profile for concurrent probes, and frees the profile after teardown", async () => {
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let starts = 0;
+    let gate = true;
+    const { namespace } = fakeNamespace(
+      () =>
+        fakeContainer(
+          server({
+            "/still": async () => {
+              if (gate) {
+                await held;
+              }
+              return ok(PNG, "image/png");
+            },
+          }),
+          { onStart: () => void starts++ },
+        ).container,
+    );
+    let n = 0;
+    const client = processorClient({ ...env, MEDIA_PROCESSOR: namespace } as never, "v1", () => `n${++n}`);
+    const first = client?.probeNow("still@standard-1");
+    await vi.waitFor(() => expect(starts).toBe(1));
+    const second = await client?.probeNow("still@standard-1");
+    expect(second).toMatchObject({ ok: false, failure: "busy" });
+    // Another profile is not held.
+    gate = false;
+    expect((await client?.probeNow("normalize@standard-3"))?.failure).not.toBe("busy");
+    gate = true;
+    release();
+    expect((await first)?.ok).toBe(true);
+    expect(starts).toBe(2);
+    gate = false;
+    expect((await client?.probeNow("still@standard-1"))?.ok).toBe(true);
+  });
+
+  it("keeps the lease of a probe whose container was not destroyed until LEASE_MS", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const { namespace } = fakeNamespace(
+        () => fakeContainer(server(), { destroy: () => Promise.reject(new Error("destroy failed")) }).container,
+      );
+      let n = 0;
+      const client = processorClient({ ...env, MEDIA_PROCESSOR: namespace } as never, "v1", () => `n${++n}`);
+      expect((await client?.probeNow("still@standard-1"))?.destroyed).toBe(false);
+      expect((await client?.probeNow("still@standard-1"))?.failure).toBe("busy");
+      vi.advanceTimersByTime(LEASE_MS + 1);
+      expect((await client?.probeNow("still@standard-1"))?.failure).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
