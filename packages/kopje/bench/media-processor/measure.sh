@@ -14,10 +14,11 @@
 #   FIXTURES="..."   the files of <fixtures dir> to run (default: every file fixtures.sh makes there)
 #   SKIP_UPLOAD=1    the fixtures are in the bucket already
 #
-# Writes bench-media-<time>/results.jsonl (one line per run) and results.md: per fixture, type and threading the
-# runs, wall p95, encode p95, ffmpeg's CPU seconds and utilisation (ffmpeg's CPU time over the encode's wall time,
-# measured in the container), and the stage p95s. Billed usage per type and threading comes from billing.sh over the
-# run's window, which the script prints at the end. Needs curl and jq.
+# Writes bench-media-<time>/results.jsonl (one line per run) and results.md (report.mjs): per fixture, type and
+# threading the runs that succeeded end to end out of all, and over those only the wall p95, encode p95, ffmpeg's CPU
+# seconds and utilisation (ffmpeg's CPU time over the encode's wall time, measured in the container), and the stage
+# p95s. Billed usage per fixture, type and threading comes from billing.sh, which joins it to these runs by run id; the
+# script prints its command at the end. Needs curl, jq and node.
 set -euo pipefail
 
 : "${BENCH_URL:?set BENCH_URL}" "${BENCH_TOKEN:?set BENCH_TOKEN}"
@@ -58,7 +59,7 @@ run() { # <op> <fixture> <instance> <threads>
   local r
   r="$(api -X POST "$BENCH_URL/run?op=$1&key=fixtures/$2&instance=$3&threads=$4" || echo '{"error":"request failed"}')"
   jq -c --arg f "$2" '. + {kind: "run", fixture: $f}' <<<"$r" >>"$jsonl"
-  log "$(jq -r '"\(.op) \(.fixture) \(.instance) \(.threads): status \(.status) wall \(.wallMs) ms ready \(.startToReadyMs) encode \(.server.encode // "-") cpu \(.server["encode-cpu"] // "-") \(.error // "")"' <<<"$(tail -1 "$jsonl")")"
+  log "$(jq -r '"\(.op) \(.fixture) \(.instance) \(.threads): ok \(.ok // false) status \(.status) wall \(.wallMs) ms ready \(.startToReadyMs) encode \(.server.encode // "-") cpu \(.server["encode-cpu"] // "-") \(.error // "")"' <<<"$(tail -1 "$jsonl")")"
 }
 
 for f in $FIXTURES; do
@@ -88,51 +89,15 @@ end="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 {
   echo "# Media processor bench ($start to $end)"
   echo
-  echo "Target $BENCH_URL. Times in seconds; p95 by nearest rank. Utilisation is ffmpeg's CPU time over the encode's"
-  echo "wall time inside the container (2.0 is two busy vCPUs). Raw: results.jsonl."
+  echo "Target $BENCH_URL. Times in seconds; p95 by nearest rank, over the runs that succeeded end to end (ok/runs)."
+  echo "Utilisation is ffmpeg's CPU time over the encode's wall time inside the container (2.0 is two busy vCPUs)."
+  echo "Raw: results.jsonl."
   echo
-  echo '| fixture | instance | threads | ok/runs | wall p95 | encode p95 | ffmpeg CPU s (mean) | utilisation (mean) | operation p95 |'
-  echo '|---|---|---|---|---|---|---|---|---|'
-  jq -rs '
-    def p95: sort | .[((length * 0.95) | ceil) - 1];
-    def s: . / 1000 * 10 | round / 10;
-    [.[] | select(.kind == "run" and .op == "normalize")] | group_by([.fixture, .instance, .threads])[]
-    | (map(select(.status == 200))) as $ok
-    | "| \(.[0].fixture) | \(.[0].instance) | \(.[0].threads) | \($ok | length)/\(length) | "
-      + (if ($ok | length) > 0 then
-          "\([$ok[].wallMs] | p95 | s) | \([$ok[].server.encode] | p95 | s) | \([$ok[].server["encode-cpu"]] | add / length | s) | \([$ok[] | .server["encode-cpu"] / .server.encode] | add / length * 100 | round / 100) | \([$ok[].operationMs] | p95 | s) |"
-        else "- | - | - | - | - |" end)' "$jsonl"
-  echo
-  echo '## Stage p95s (seconds)'
-  echo
-  jq -rs '
-    def p95: sort | .[((length * 0.95) | ceil) - 1];
-    def s: . / 1000 * 100 | round / 100;
-    def stage(name; f): ([.[] | f | select(. != null)]) as $v
-      | "| \(name) | \($v | length) | \(if ($v | length) > 0 then ($v | p95 | s) else "-" end) |";
-    [.[] | select(.kind == "run" and .status == 200)] as $runs
-    | [.[] | select(.kind == "dispatch")] as $dispatch
-    | "| stage | samples | p95 |", "|---|---|---|",
-      ($runs | stage("start to ready, normalize"; select(.op == "normalize") | .startToReadyMs)),
-      ($runs | stage("start to ready, still"; select(.op == "still") | .startToReadyMs)),
-      ($runs | stage("input into the container (server)"; .server.input)),
-      ($runs | stage("probe (server)"; .server.probe)),
-      ($runs | stage("still in normalize (server)"; .server.still)),
-      ($runs | stage("still operation (wall)"; select(.op == "still") | .wallMs)),
-      ($runs | stage("Images WebP"; .imagesWebpMs)),
-      ($runs | stage("Images RGBA"; .imagesRgbaMs)),
-      ($runs | stage("output into R2"; .outputToR2Ms)),
-      ($runs | stage("destroy"; .destroyMs)),
-      ($dispatch | stage("alarm dispatch"; .dispatchMs))' "$jsonl"
-  echo
-  jq -rs '[.[] | select(.kind == "ingress")] | if length > 0 then
-      "Ingress into R2 through the Worker: \((map(.bytes) | add) / (map(.ingressMs) | add) * 1000 / 1048576 * 10 | round / 10) MiB/s over \(length) fixtures (the client link included)."
-    else empty end' "$jsonl"
-  jq -r 'select(.kind == "hold") | "- headers held \(.seconds) s: HTTP \(.status)"' "$jsonl"
+  node "$(dirname "$0")/report.mjs" "$jsonl"
   echo
   echo "Not measured here: the Store's completion and the v1 reply (PR4's upload path)."
 } >"$out/results.md"
 cat "$out/results.md"
 echo
-echo "Billed usage of this run, per instance type and threading (Account Analytics: Read):"
-echo "  CF_ACCOUNT_ID=... CF_API_TOKEN=... START=$start END=$end bash $(dirname "$0")/billing.sh"
+echo "Billed usage of this run, per fixture, instance type and threading (Account Analytics: Read):"
+echo "  CF_ACCOUNT_ID=... CF_API_TOKEN=... START=$start END=$end RESULTS=$jsonl bash $(dirname "$0")/billing.sh"

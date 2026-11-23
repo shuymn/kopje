@@ -10,7 +10,9 @@
 //          one unit of work on a fresh object, as Kopje's MediaProcessor runs it: start with no Internet, /healthz,
 //          the input read once from R2 and streamed as the request body, the output streamed into R2 under out/,
 //          for a video normalize the still too, then the still through Images (WebP, long edge 640, and its RGBA
-//          output), then destroy. Answers JSON with each stage's time; spaces are sent every 10 s before it.
+//          output), then destroy. Answers JSON with each stage's time; spaces are sent every 10 s before it. `ok` is
+//          true only when every one of those steps succeeded; `run` is the id the container carries as its `run` label,
+//          which billing.sh joins the billed usage on.
 //   POST   /dispatch       how long an alarm set for now takes to run (the upload dispatch)
 //   GET    /hold?seconds=<n>
 //          answers 200 only after n seconds with no byte sent before (whether a Worker may hold its headers past
@@ -38,6 +40,7 @@ type RunResult = {
   threads: string;
   key: string;
   run: string;
+  ok: boolean;
   inputBytes: number;
   outputBytes: number | null;
   stillBytes: number | null;
@@ -83,6 +86,7 @@ export class BenchUnit extends DurableObject<Env> {
       threads,
       key,
       run: runId,
+      ok: false,
       inputBytes: 0,
       outputBytes: null,
       stillBytes: null,
@@ -157,6 +161,10 @@ export class BenchUnit extends DurableObject<Env> {
         still = new Uint8Array(await (await this.env.BUCKET.get(`out/${runId}/output`))!.arrayBuffer());
       } else if (r.kind === "video") {
         const s = await port.fetch("http://container/normalize/still");
+        if (s.status !== 200) {
+          await s.body?.cancel();
+          throw new Error(`still: status ${s.status}`);
+        }
         const t3 = Date.now();
         still = new Uint8Array(await s.arrayBuffer());
         await this.env.BUCKET.put(`out/${runId}/still.png`, still);
@@ -177,12 +185,14 @@ export class BenchUnit extends DurableObject<Env> {
         await new Response(rgba.image()).arrayBuffer();
         r.imagesRgbaMs = Date.now() - t5;
       }
+      r.ok = true;
     } catch (error) {
       r.error = error instanceof Error ? error.message : String(error);
     } finally {
       const t6 = Date.now();
       if (c?.running === true) {
         await c.destroy().catch((error: unknown) => {
+          r.ok = false;
           r.error ??= `destroy: ${String(error)}`;
         });
       }
