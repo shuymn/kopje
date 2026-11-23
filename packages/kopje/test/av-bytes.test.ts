@@ -115,10 +115,15 @@ describe("the shipped image's outputs", () => {
         "wav.mp3",
       ].toSorted(),
     );
+    // Every file whole and in 4093-byte chunks; the smallest MP4 and MP3 also in 3-byte chunks, which split every box
+    // and frame header (all of them so is slow: ~600k chunks).
+    const smallest = (kind: string) =>
+      manifest.filter((f) => f.kind === kind).reduce((a, b) => (b.bytes < a.bytes ? b : a)).name;
+    const fine = new Set([smallest("video"), smallest("audio")]);
     for (const f of manifest) {
       const bytes = await avFixture(f.name);
       const type = f.kind === "video" ? "video/mp4" : "audio/mpeg";
-      for (const chunk of [3, 4093, bytes.length]) {
+      for (const chunk of fine.has(f.name) ? [3, 4093, bytes.length] : [4093, bytes.length]) {
         const v = await verifyBytes(type, bytes, { chunk });
         expect(v.ok ? v.facts.sha256 : v.rule, `${f.name} in ${chunk}-byte chunks`).toBe(f.sha256);
         expect(v.passed).toBe(bytes.length);
