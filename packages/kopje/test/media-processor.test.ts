@@ -517,6 +517,30 @@ describe("MediaProcessor", () => {
     expect(atStart).toBe(9_000_000 + PROBE_MS + DESTROY_MS);
   });
 
+  // A commit held past the probe's deadline: the alarms meanwhile re-arm, and once it settles nothing is started.
+  it("starts nothing when the alarm's commit settles past the deadline", async () => {
+    const time = frozen(9_000_000);
+    let confirm = () => {};
+    const fake = counted();
+    const state = fakeState(fake.container, { sync: () => new Promise<void>((resolve) => (confirm = resolve)) });
+    const object = unit(state.ctx, time.deps);
+    const held = object.probeNow("still@standard-1");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    time.t += PROBE_MS + DESTROY_MS;
+    await state.fire(object);
+    expect(await object.probeNow("still@standard-1")).toMatchObject({ ok: false, failure: "busy" });
+    time.t += 1;
+    confirm();
+    expect(await held).toMatchObject({ ok: false, failure: "storage-late", destroyed: true });
+    expect(fake.starts()).toBe(0);
+    // The next probe runs as usual.
+    const next = object.probeNow("still@standard-1");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    confirm();
+    expect((await next).ok).toBe(true);
+    expect(fake.starts()).toBe(1);
+  });
+
   // An output that settles at the deadline, before the deadline's timer runs, is refused; one just before it is not.
   it("refuses an output that arrives at the deadline", async () => {
     for (const [late, failure] of [

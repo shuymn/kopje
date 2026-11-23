@@ -342,6 +342,10 @@ export class ProcessorUnit {
         console.warn({ event: "kopje.media.cleanup.failed", ...errorFields(error) });
         return unstarted(profile, "storage");
       }
+      // A commit that settled past the deadline leaves no time for the probe: nothing is started.
+      if (this.deps.now() >= deadline) {
+        return unstarted(profile, "storage-late");
+      }
       const report = await smokeProbe(container, profile, this.deps, deadline);
       // Nothing to clean up once the container is gone; otherwise the alarm comes sooner than its bound when it can.
       const after = report.destroyed
