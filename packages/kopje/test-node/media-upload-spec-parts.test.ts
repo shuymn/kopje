@@ -1,10 +1,14 @@
 // The parts the specification's checks are split into (media-upload-spec/checks.ts): each check of checks.json runs in
-// a part that has a file, and each part's file has a shard of its own among CI's test shards. That each part's file
-// declares its share is checked again where the checks run, against the titles vitest collected (checks.ts).
+// a part that has a file, the kopje-spec project collects every part's file, and each part's file has a shard of its
+// own among CI's test shards. That each part's file declares its share is checked again where the checks run, against
+// the titles vitest collected (checks.ts).
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
+import { basename, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
+import { createVitest } from "vitest/node";
 
 import { checks } from "../scripts/media-upload-plan.mjs";
 import { PARTS, PLACED, plan } from "./media-upload-spec/checks.js";
@@ -29,6 +33,23 @@ describe("the parts of the media upload specification's checks", () => {
     for (const file of files) {
       const source = readFileSync(new URL(`media-upload-spec/${file}`, import.meta.url), "utf8");
       expect(source, file).toMatch(/^tlaTsChecks\(import\.meta\.url\);$/m);
+    }
+  });
+
+  // A part's file the kopje-spec project does not collect (an include or exclude of vitest.spec.config.ts that misses
+  // it) runs nowhere, and the checks where the parts run cannot see that (Codex r4 CM6, D29).
+  it("are collected by the kopje-spec project", { timeout: 60_000 }, async () => {
+    const config = fileURLToPath(new URL("../vitest.spec.config.ts", import.meta.url));
+    const vitest = await createVitest({ config, watch: false, run: true });
+    try {
+      const collected = (await vitest.globTestSpecifications())
+        .map((spec) => spec.moduleId)
+        .filter((file) => dirname(file) === fileURLToPath(new URL("media-upload-spec", import.meta.url)))
+        .map((file) => basename(file))
+        .toSorted();
+      expect(collected).toEqual(files);
+    } finally {
+      await vitest.close();
     }
   });
 
