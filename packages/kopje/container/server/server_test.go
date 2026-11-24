@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"hash/crc32"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -519,6 +520,46 @@ func TestAnUnusableProfileFallsBackToDroppingIt(t *testing.T) {
 		if strings.Contains(lines[i], "iccdetect") != detect || !detect && !strings.Contains(lines[i], iccDrop) {
 			t.Fatalf("run %d (iccdetect %v): %q", i, detect, lines[i])
 		}
+	}
+}
+
+// An output that cannot be read back after an attempt with the profile is the container's failure, whatever a retry
+// without it would find: no retry turns it into no frame.
+func TestAnUnreadableStillIsNotRetriedIntoNoFrame(t *testing.T) {
+	fakeTools(t, videoProbe())
+	frames := filepath.Join(t.TempDir(), "frames.json")
+	if err := os.WriteFile(frames, []byte(`{"frames":[{"stream_index":0,"side_data_list":[{"side_data_type":"ICC profile"}]}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_FRAMES", frames)
+	old := statOutput
+	stats := 0
+	// The first attempt's output answers EIO; any later one would find nothing.
+	statOutput = func(string) (os.FileInfo, error) {
+		stats++
+		if stats == 1 {
+			return nil, syscall.EIO
+		}
+		return nil, fs.ErrNotExist
+	}
+	t.Cleanup(func() { statOutput = old })
+	rec := do(t, newMux(threadsDefault), "POST", "/still", []byte("input"))
+	if rec.Code != 500 || rec.Header().Get("Kopje-Error") != "internal" || stats != 1 {
+		t.Fatalf("%d %q after %d stats", rec.Code, rec.Header().Get("Kopje-Error"), stats)
+	}
+}
+
+// A still PNG that cannot be stripped answers still_failed.
+func TestAStillThatCannotBeStrippedFails(t *testing.T) {
+	fakeTools(t, videoProbe())
+	bad := filepath.Join(t.TempDir(), "bad.png")
+	if err := os.WriteFile(bad, []byte("not a png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_PNG", bad)
+	rec := do(t, newMux(threadsDefault), "POST", "/still", []byte("input"))
+	if rec.Code != 500 || rec.Header().Get("Kopje-Error") != "still_failed" {
+		t.Fatalf("%d %q", rec.Code, rec.Header().Get("Kopje-Error"))
 	}
 }
 

@@ -356,8 +356,10 @@ func handleStill(w http.ResponseWriter, r *http.Request) {
 	icc := streamICC(video) || frameICC(ctx, in, video.Index)
 	err = runStill(ctx, video.Index, isHDR(video), icc, stillSeek(boundedDuration(p, video)), in, out)
 	t.set("Encode", start)
-	if err == nil {
-		err = stripPNG(out)
+	// A still that cannot be stripped is still_failed, as before the start and kill failures were told apart.
+	if err == nil && stripPNG(out) != nil {
+		writeFailure(w, ffmpegFailure(ctx, "still_failed"))
+		return
 	}
 	// No frame at the seek nor at 0 from an input ffmpeg read without failing: the input has no still to give.
 	if errors.Is(err, errNoFrame) && ctx.Err() == nil {
@@ -396,7 +398,9 @@ func makeStill(ctx context.Context, pl *plan, in string) bool {
 }
 
 // runStill writes the still, reading the frame's ICC profile when it has one, and runs again without it when ffmpeg
-// fails then (a profile iccdetect cannot use): the still is made as before, its profile dropped.
+// exits with a status then (a profile iccdetect cannot use): the still is made as before, its profile dropped. Any
+// other failure (ffmpeg not starting or killed, an output that cannot be read back) is returned as it is, so a later
+// attempt cannot turn it into no frame.
 //
 // ffmpeg can succeed with no frame written: with another stream in the file, the seek can land past the video's only
 // keyframe. The still is then taken at 0.
@@ -409,7 +413,7 @@ func runStill(ctx context.Context, videoIndex int, hdr, icc bool, seek float64, 
 		return err
 	}
 	err := attempt(icc)
-	if err != nil && !errors.Is(err, errNoFrame) && icc && ctx.Err() == nil {
+	if exitedWithStatus(err) && icc && ctx.Err() == nil {
 		err = attempt(false)
 	}
 	return err
