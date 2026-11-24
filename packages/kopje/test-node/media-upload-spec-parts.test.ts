@@ -1,0 +1,76 @@
+// The parts the specification's checks are split into (media-upload-spec/checks.ts): each check of checks.json runs in
+// a part that has a file, the kopje-spec project collects every part's file, and CI's test shards hold the same number
+// of parts' files each. That each part's file declares its share is checked again where the checks run, against
+// the titles vitest collected (checks.ts).
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { basename, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { describe, expect, it } from "vitest";
+import { createVitest } from "vitest/node";
+
+import { checks } from "../scripts/media-upload-plan.mjs";
+import { PARTS, PLACED, plan } from "./media-upload-spec/checks.js";
+
+// The test job's matrix in .github/workflows/ci.yml.
+const SHARDS = 4;
+// How far from a shard's edge, as a share of the hash space, a part's file lies (below).
+const MARGIN = 0.05;
+const DIRECTORY = "packages/kopje/test-node/media-upload-spec/";
+
+const files = readdirSync(new URL("media-upload-spec/", import.meta.url))
+  .filter((file) => file.endsWith(".test.ts"))
+  .toSorted();
+
+describe("the parts of the media upload specification's checks", () => {
+  it("have a file each", () => {
+    expect(files).toEqual(PARTS.map((part) => `checks-${part}.test.ts`).toSorted());
+  });
+
+  // A part's file that did not declare its share would leave those checks unrun with every test passing.
+  it("declare their share of the checks", () => {
+    for (const file of files) {
+      const source = readFileSync(new URL(`media-upload-spec/${file}`, import.meta.url), "utf8");
+      expect(source, file).toMatch(/^tlaTsChecks\(import\.meta\.url\);$/m);
+    }
+  });
+
+  // A part's file the kopje-spec project does not collect (an include or exclude of vitest.spec.config.ts that misses
+  // it) runs nowhere, and the checks where the parts run cannot see that (Codex r4 CM6, D29).
+  it("are collected by the kopje-spec project", { timeout: 60_000 }, async () => {
+    const config = fileURLToPath(new URL("../vitest.spec.config.ts", import.meta.url));
+    const vitest = await createVitest({ config, watch: false, run: true });
+    try {
+      const collected = (await vitest.globTestSpecifications())
+        .map((spec) => spec.moduleId)
+        .filter((file) => dirname(file) === fileURLToPath(new URL("media-upload-spec", import.meta.url)))
+        .map((file) => basename(file))
+        .toSorted();
+      expect(collected).toEqual(files);
+    } finally {
+      await vitest.close();
+    }
+  });
+
+  it("are given by hand only for checks that exist", () => {
+    const titles = new Set(checks(plan).map((c) => `${c.kind} ${c.name}`));
+    expect([...PLACED.keys()].filter((title) => !titles.has(title))).toEqual([]);
+    expect([...PLACED.values()].filter((part) => !files.includes(`checks-${part}.test.ts`))).toEqual([]);
+  });
+
+  // `vitest --shard` sorts the run's test files by the SHA-1 of their path from the repository root and cuts the list
+  // into runs of equal length (BaseSequencer's shard in vitest), so with hundreds of files the edges between shards lie
+  // close to the quarters of the hash space. A part's file inside a quarter, at least MARGIN from its edges, lies in
+  // that quarter's shard, and each shard holds as many parts' files as the others.
+  it("lie evenly in the shards", () => {
+    const shards = files.map((file) => {
+      const at = createHash("sha1").update(`/${DIRECTORY}${file}`).digest().readUInt32BE(0) / 2 ** 32;
+      const shard = Math.floor(at * SHARDS);
+      return at - shard / SHARDS < MARGIN || (shard + 1) / SHARDS - at < MARGIN ? `${file} near an edge` : shard;
+    });
+    expect(shards.map(String).toSorted()).toEqual(
+      Array.from({ length: PARTS.length }, (_, i) => `${Math.floor((i * SHARDS) / PARTS.length)}`),
+    );
+  });
+});

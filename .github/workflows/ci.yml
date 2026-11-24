@@ -54,9 +54,10 @@ jobs:
           fi
 
   test:
-    # The slowest shard has taken up to 15.2 minutes on a hosted runner (14.8 on main). The shard names are required
-    # checks, so the count stays at four and the limit leaves room instead.
-    timeout-minutes: 25
+    # A change to the specifications runs their checks too, and the slowest shard then took 24.6 minutes on a hosted
+    # runner (#1839; 15.2 without them). The shard names are required checks, so the count stays at four and the limit
+    # leaves room instead.
+    timeout-minutes: 35
     runs-on: ubuntu-latest
     needs: changes
     permissions:

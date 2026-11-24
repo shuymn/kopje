@@ -1,0 +1,974 @@
+{
+  "$comment": "Expected outcomes of the checks of spec/media-upload/ (scripts/media-upload-plan.mjs explains each kind), under tla-ts (test-node/media-upload-spec/). A change of a count is a change of the state space: explain it in the commit.",
+  "scenarios": [
+    {
+      "name": "V1L",
+      "distinct": 736294,
+      "depth": 47
+    },
+    {
+      "name": "V1K",
+      "distinct": 231142,
+      "depth": 45
+    },
+    {
+      "name": "V1R",
+      "distinct": 667842,
+      "depth": 48
+    },
+    {
+      "name": "V2L",
+      "distinct": 459061,
+      "depth": 50
+    },
+    {
+      "name": "V2K",
+      "distinct": 334244,
+      "depth": 45
+    },
+    {
+      "name": "LK",
+      "distinct": 876810,
+      "depth": 48
+    },
+    {
+      "name": "V2D",
+      "distinct": 1569442,
+      "depth": 49
+    },
+    {
+      "name": "DLW",
+      "distinct": 1619219,
+      "depth": 57
+    },
+    {
+      "name": "MT",
+      "distinct": 1509930,
+      "depth": 54
+    },
+    {
+      "name": "MT2",
+      "distinct": 571678,
+      "depth": 56
+    },
+    {
+      "name": "MTX",
+      "distinct": 3578157,
+      "depth": 55
+    },
+    {
+      "name": "MTR",
+      "distinct": 297803,
+      "depth": 50
+    },
+    {
+      "name": "MTS",
+      "distinct": 8690,
+      "depth": 72
+    },
+    {
+      "name": "H1W",
+      "distinct": 812262,
+      "depth": 49
+    },
+    {
+      "name": "RS",
+      "distinct": 2189610,
+      "depth": 50
+    },
+    {
+      "name": "RSW",
+      "distinct": 109608,
+      "depth": 43
+    },
+    {
+      "name": "RS2",
+      "distinct": 2188601,
+      "depth": 44
+    },
+    {
+      "name": "RSB",
+      "distinct": 20228,
+      "depth": 31
+    },
+    {
+      "name": "RS12",
+      "distinct": 1936960,
+      "depth": 44
+    },
+    {
+      "name": "RST",
+      "distinct": 36395,
+      "depth": 31
+    },
+    {
+      "name": "RSL",
+      "distinct": 2661557,
+      "depth": 48
+    },
+    {
+      "name": "RSS",
+      "distinct": 20122,
+      "depth": 59
+    },
+    {
+      "name": "RSD",
+      "distinct": 295823,
+      "depth": 73
+    },
+    {
+      "name": "RS3",
+      "distinct": 2124,
+      "depth": 26
+    },
+    {
+      "name": "CAP",
+      "distinct": 203229,
+      "depth": 58
+    },
+    {
+      "name": "CAP2",
+      "distinct": 1919339,
+      "depth": 61
+    },
+    {
+      "name": "CAP3",
+      "distinct": 41865,
+      "depth": 57
+    },
+    {
+      "name": "CAP4",
+      "distinct": 892807,
+      "depth": 90
+    },
+    {
+      "name": "CAP5",
+      "distinct": 536129,
+      "depth": 94
+    },
+    {
+      "name": "CAP6",
+      "distinct": 15818,
+      "depth": 51
+    },
+    {
+      "name": "OR",
+      "distinct": 1723246,
+      "depth": 44
+    },
+    {
+      "name": "SK",
+      "distinct": 546835,
+      "depth": 49
+    }
+  ],
+  "liveness": [
+    {
+      "name": "L1",
+      "distinct": 1995,
+      "depth": 43
+    },
+    {
+      "name": "L2",
+      "distinct": 6294,
+      "depth": 51
+    },
+    {
+      "name": "L3",
+      "distinct": 166962,
+      "depth": 49
+    },
+    {
+      "name": "L4",
+      "distinct": 211,
+      "depth": 36
+    },
+    {
+      "name": "L5",
+      "distinct": 3845,
+      "depth": 55
+    }
+  ],
+  "variants": [
+    {
+      "name": "SlotBound-SlotNoCount",
+      "scenario": "CAP",
+      "variant": "SlotNoCount",
+      "property": "SlotBound",
+      "trace": 7,
+      "breaks": "S1 counts only processing slots, so a staging upload holds a slot the count misses (design 4.5 Capacity)"
+    },
+    {
+      "name": "ContainerCovered-DeleteFreesSlot",
+      "scenario": "CAP",
+      "variant": "DeleteFreesSlot",
+      "property": "ContainerCovered",
+      "trace": 14,
+      "breaks": "DELETE frees the slot with the row, while the container runs (design 4.7: slots do not cascade)"
+    },
+    {
+      "name": "MaxContainers-DeleteFreesSlot",
+      "scenario": "CAP",
+      "variant": "DeleteFreesSlot",
+      "property": "MaxContainers",
+      "trace": 26,
+      "breaks": "DELETE frees the slot with the row, so a second upload's container starts beside the first"
+    },
+    {
+      "name": "StartNeedsSlot-SlotById",
+      "scenario": "V1L",
+      "variant": "SlotById",
+      "property": "StartNeedsSlot",
+      "trace": 20,
+      "breaks": "the route's finally releases the slot by id after a lost queue reply (design 4.5's single release; C2-H2)"
+    },
+    {
+      "name": "SlotRelease-SlotById",
+      "scenario": "V1L",
+      "variant": "SlotById",
+      "property": "SlotRelease",
+      "trace": 14,
+      "breaks": "the route's finally releases a pending row's slot by id (C1, C2-H2, GM3)"
+    },
+    {
+      "name": "RouteDeleteAuthority-RouteCleansOnLost",
+      "scenario": "V1L",
+      "variant": "RouteCleansOnLost",
+      "property": "RouteDeleteAuthority",
+      "trace": 12,
+      "breaks": "the route deletes incoming/<id> after a lost queue reply (C1, C2-H3)"
+    },
+    {
+      "name": "InputKept-OrphanStagingUnheld",
+      "scenario": "OR",
+      "variant": "OrphanStagingUnheld",
+      "property": "InputKept",
+      "trace": 9,
+      "breaks": "the orphan pass takes a staging row's key as unheld"
+    },
+    {
+      "name": "InputKept-NoWriteWindow",
+      "scenario": "V2L",
+      "variant": "NoWriteWindow",
+      "property": "InputKept",
+      "trace": 11,
+      "breaks": "S1 stages past the reservation's write deadline, so the sweep takes a live input at gc_at"
+    },
+    {
+      "name": "NoPublishAfterDelete-DeleteKeepsRow",
+      "scenario": "V2D",
+      "variant": "DeleteKeepsRow",
+      "property": "NoPublishAfterDelete",
+      "trace": 18,
+      "breaks": "DELETE dooms but keeps the processing row, so S5 and S6 still authorize (K2)"
+    },
+    {
+      "name": "NoPublishAfterNon200-WaitForStoreDeadline",
+      "scenario": "V1L",
+      "variant": "WaitForStoreDeadline",
+      "property": "NoPublishAfterNon200",
+      "trace": 26,
+      "breaks": "S10 answers not_yet before deadline_at and the route answers 503 undoomed (Codex r4 H1)"
+    },
+    {
+      "name": "GrantBound-AbsGrant",
+      "scenario": "SK",
+      "variant": "AbsGrant",
+      "property": "GrantBound",
+      "trace": 17,
+      "breaks": "S5's grant compared as an absolute Store time on the processor's clock (C7)"
+    },
+    {
+      "name": "GrantGround-CompleteBeforeLanding",
+      "scenario": "V2D",
+      "variant": "CompleteBeforeLanding",
+      "property": "GrantGround",
+      "trace": 25,
+      "breaks": "S6 before the last write lands, so the URL is issued while a write can still land after DELETE (M3)"
+    },
+    {
+      "name": "V1Answer-CompleteBeforeLanding",
+      "scenario": "V1L",
+      "variant": "CompleteBeforeLanding",
+      "property": "V1Answer",
+      "trace": 21,
+      "breaks": "S6 before the last write lands, so v1 answers 200 for a file not yet stored"
+    },
+    {
+      "name": "ChargeOnce-ChargeTwice",
+      "scenario": "V1L",
+      "variant": "ChargeTwice",
+      "property": "ChargeOnce",
+      "trace": 11,
+      "breaks": "S3's repeat on a pending row charges the Store's counter again (Codex r1 CM5)"
+    },
+    {
+      "name": "RestoredInert-StartNoK3",
+      "scenario": "RS2",
+      "variant": "StartNoK3",
+      "property": "RestoredInert",
+      "trace": 14,
+      "breaks": "S4 without K3 starts a row reserved before the restore (C3, G5)"
+    },
+    {
+      "name": "Q4-RestoredAnswers500",
+      "scenario": "RS",
+      "variant": "RestoredAnswers500",
+      "property": "Q4",
+      "trace": 14,
+      "breaks": "S10 answers 500 for a restored row (Q4)"
+    },
+    {
+      "name": "RecordDropSafe-MaintDropsRecord",
+      "scenario": "MT",
+      "variant": "MaintDropsRecord",
+      "property": "RecordDropSafe",
+      "trace": 17,
+      "breaks": "S4 answering maint with no container ends in deleteAll without D9 (Codex r4 H4)"
+    },
+    {
+      "name": "RecordDropSafe-ReleaseK3Stops",
+      "scenario": "RS2",
+      "variant": "ReleaseK3Stops",
+      "property": "RecordDropSafe",
+      "trace": 19,
+      "breaks": "S8 stops at K3 for a restored live row and the processor deletes its record (Codex r4 H2, Gemini r4 GH1)"
+    },
+    {
+      "name": "RecordDropSafe-ShortRecord",
+      "scenario": "V2K",
+      "variant": "ShortRecord",
+      "property": "RecordDropSafe",
+      "trace": 15,
+      "breaks": "the record-age stop before held_until (W9)"
+    },
+    {
+      "name": "SingleStaging-NoStagedMark",
+      "scenario": "V1L",
+      "variant": "NoStagedMark",
+      "property": "SingleStaging",
+      "trace": 9,
+      "breaks": "S1 stages again after its staging row was removed (Codex r4 M1)"
+    },
+    {
+      "name": "PendingStarts-LongAlarm",
+      "scenario": "L1",
+      "variant": "LongAlarm",
+      "property": "PendingStarts",
+      "trace": 32,
+      "liveness": true,
+      "breaks": "D1's alarm at TEARDOWN_MS (Codex r4 H3)"
+    },
+    {
+      "name": "RecordsCleared-MaintNoRetry",
+      "scenario": "L2",
+      "variant": "MaintNoRetry",
+      "property": "RecordsCleared",
+      "trace": 32,
+      "liveness": true,
+      "breaks": "S4's maint answer ends the invocation with its alarm deleted (GM7)"
+    },
+    {
+      "name": "ContainersStopped-StopNoRetry",
+      "scenario": "L1",
+      "variant": "StopNoRetry",
+      "property": "ContainersStopped",
+      "trace": 32,
+      "liveness": true,
+      "breaks": "a stop that is not confirmed ends the invocation with its alarm deleted (Codex r4 M4, GM7)"
+    },
+    {
+      "name": "InputsDeleted-AgedKeepsInput",
+      "scenario": "L2",
+      "variant": "AgedKeepsInput",
+      "property": "InputsDeleted",
+      "trace": 50,
+      "liveness": true,
+      "breaks": "the record-age stop leaves incoming/<id> of a completed upload"
+    },
+    {
+      "name": "SlotsReleased-NoExpiry",
+      "scenario": "L3",
+      "variant": "NoExpiry",
+      "property": "SlotsReleased",
+      "trace": 38,
+      "liveness": true,
+      "breaks": "the dispatch round never deletes a slot past held_until (W2)"
+    },
+    {
+      "name": "ContainerCovered-K3FreesSlot",
+      "scenario": "RS2",
+      "variant": "K3FreesSlot",
+      "property": "ContainerCovered",
+      "trace": 16,
+      "breaks": "K3 deletes the slot of a restored pending or running row (C2-M1): the running container is no longer covered, and W3 does not excuse it, since the restore kept the slot (Gemini r1 GH1)"
+    },
+    {
+      "name": "SlotRelease-K3FreesSlot",
+      "scenario": "RS2",
+      "variant": "K3FreesSlot",
+      "property": "SlotRelease",
+      "trace": 11,
+      "breaks": "as above: a transaction other than S8 after the stop, or the expiry, removes a processing slot (Gemini r1 GH1)"
+    },
+    {
+      "name": "RestoredInert-QueueNoFence",
+      "scenario": "RS3",
+      "variant": "QueueNoFence",
+      "property": "RestoredInert",
+      "trace": 10,
+      "breaks": "S3 queues a staging row reserved before the restore, without K3 or refused_cleanup_yours(restored) (Gemini r1 GH3)"
+    },
+    {
+      "name": "StartNeedsSlot-AbsStart",
+      "scenario": "SK",
+      "variant": "AbsStart",
+      "property": "StartNeedsSlot",
+      "trace": 15,
+      "breaks": "the processor compares the Store's deadline_at with its own clock before the container start, so a processor behind the Store starts one at the deadline (Gemini r1 GH4)"
+    },
+    {
+      "name": "V1Answer-ShortGrace",
+      "scenario": "V1L",
+      "variant": "ShortGrace",
+      "property": "V1Answer",
+      "trace": 27,
+      "breaks": "completion's gc_at no longer outlasts the v1 wait, so the sweep takes the upload between S10's 200 and the route's answer (Codex r1 CH1)"
+    },
+    {
+      "name": "NoLateObject-EarlyRetire",
+      "scenario": "DLW",
+      "variant": "EarlyRetire",
+      "property": "NoLateObject",
+      "trace": 22,
+      "breaks": "the tombstone retires at the reservation + AV_WRITE_WINDOW_MS instead of + ORPHAN_GRACE_MS beyond it (Codex r4 M3; Gemini r1 GM1, Codex r1 CM4)"
+    },
+    {
+      "name": "InputsDeleted-SweepNoIncoming",
+      "scenario": "L2",
+      "variant": "SweepNoIncoming",
+      "property": "InputsDeleted",
+      "trace": 17,
+      "liveness": true,
+      "breaks": "the sweep, reconciliation and the retirement leave incoming/<id> (Gemini r1 GM5)"
+    },
+    {
+      "name": "CompletedSwept-DoneNeverSwept",
+      "scenario": "L2",
+      "variant": "DoneNeverSwept",
+      "property": "CompletedSwept",
+      "trace": 36,
+      "liveness": true,
+      "breaks": "the sweep never takes a completed unattached upload at its gc_at (D2)"
+    },
+    {
+      "name": "ChargeOnce-NoCharge",
+      "scenario": "V1L",
+      "variant": "NoCharge",
+      "property": "ChargeOnce",
+      "trace": 8,
+      "breaks": "S3 accepts an upload without charging it (Gemini r2 GM1, Codex r2 CM4, D10)"
+    },
+    {
+      "name": "SlotRelease-K3FreesSlotAtGrant",
+      "scenario": "RS2",
+      "variant": "K3FreesSlotAtGrant",
+      "property": "SlotRelease",
+      "trace": 17,
+      "breaks": "K3 deletes a restored row's slot in S5 alone (Codex r2 CM4, D10)"
+    },
+    {
+      "name": "V1Answer-Done503",
+      "scenario": "V1L",
+      "variant": "Done503",
+      "property": "V1Answer",
+      "trace": 22,
+      "breaks": "S10 decides 503 for a completed upload and leaves it completed (Codex r2 CM5, D11)"
+    },
+    {
+      "name": "V1Answer-RestoredAnswers200",
+      "scenario": "RS",
+      "variant": "RestoredAnswers200",
+      "property": "V1Answer",
+      "trace": 14,
+      "breaks": "S10 decides 200 for a restored reservation that never completed (Codex r2 CM6, D12)"
+    },
+    {
+      "name": "CompletedSwept-LateSweep",
+      "scenario": "L2",
+      "variant": "LateSweep",
+      "property": "CompletedSwept",
+      "trace": 37,
+      "liveness": true,
+      "breaks": "the sweep takes a completed unattached upload one unit after its gc_at instead of at it (Codex r2 CM5, D11)"
+    },
+    {
+      "name": "ContainerCovered-GrantedLapses",
+      "scenario": "CAP4",
+      "variant": "GrantedLapses",
+      "property": "ContainerCovered",
+      "trace": 31,
+      "breaks": "time frees a granted slot at its held_until, before HARD_HOLD_MS, so the container of a stop retried past the deadline runs without a counting slot (Codex r3 CH1, D16)"
+    },
+    {
+      "name": "MaxContainers-GrantedLapses",
+      "scenario": "CAP4",
+      "variant": "GrantedLapses",
+      "property": "MaxContainers",
+      "trace": 47,
+      "breaks": "as above: a later upload is admitted beside the container whose stop is retried (Codex r3 CH1, D16)"
+    },
+    {
+      "name": "ConfirmFenced-ConfirmNoFence",
+      "scenario": "CAP4",
+      "variant": "ConfirmNoFence",
+      "property": "ConfirmFenced",
+      "trace": 13,
+      "breaks": "S8, the stop confirmation, deletes the slot whatever its teardown_id, so a delayed call of another teardown frees it (Gemini r2 GM3, Codex r2 CM3, r3 CM2, D16, D20)"
+    },
+    {
+      "name": "RecordDropSafe-AgeBeforeHardHold",
+      "scenario": "MT",
+      "variant": "AgeBeforeHardHold",
+      "property": "RecordDropSafe",
+      "trace": 20,
+      "breaks": "the record-age stop at V2_PROCESS_MS + TEARDOWN_MS drops the record while the granted slot of a stop maintenance kept from confirming still counts (D16)"
+    },
+    {
+      "name": "V1Answer-LateRestored200",
+      "scenario": "RS",
+      "variant": "LateRestored200",
+      "property": "V1Answer",
+      "trace": 19,
+      "breaks": "S10 decides 200 for a restored reservation that never completed, once the route has answered: the late invalid 200 the r2 W12 excused (Codex r3 CM1, Gemini r3 GM1, D19)"
+    },
+    {
+      "name": "ContainerCovered-RestoreDropsGrant",
+      "scenario": "RSB",
+      "variant": "RestoreDropsGrant",
+      "property": "ContainerCovered",
+      "trace": 17,
+      "breaks": "a restore that brings back a grant an earlier restore forgot drops its slot, so the running container has no counting slot once W3 ends (Codex r4 CH1, D24)"
+    },
+    {
+      "name": "StartNeedsSlot-W3AbsStart",
+      "scenario": "RS2",
+      "variant": "W3AbsStart",
+      "property": "StartNeedsSlot",
+      "trace": 17,
+      "breaks": "a start W3 excuses compares the Store's deadline with the processor's clock, so a processor behind the Store starts a container at the deadline (Codex r4 CM2, D25)"
+    },
+    {
+      "name": "MaintInert-MaintConfirmsDone",
+      "scenario": "MT2",
+      "variant": "MaintConfirmsDone",
+      "property": "MaintInert",
+      "trace": 25,
+      "breaks": "S8 skips K1 for a completed upload, so a stop confirmation in maintenance deletes the slot (Codex r4 CM3, D26)"
+    },
+    {
+      "name": "NoLateObject-RetireIgnoresPurge",
+      "scenario": "DLW",
+      "variant": "RetireIgnoresPurge",
+      "property": "NoLateObject",
+      "trace": 23,
+      "breaks": "the tombstone is retired at the write cut + ORPHAN_GRACE_MS whatever the purge's time, before main's max(purge, write deadline) + ORPHAN_GRACE_MS (Codex r4 CM4, D27)"
+    },
+    {
+      "name": "NoLateObject-DeleteAfterNoPurge",
+      "scenario": "DLW",
+      "variant": "DeleteAfterNoPurge",
+      "property": "NoLateObject",
+      "trace": 23,
+      "breaks": "the tombstone's delete_after ignores a purge after the write deadline (Gemini r5 GH1, Codex r5 CM4: the check computes the authority's end from the purge's time, not from delete_after)"
+    },
+    {
+      "name": "NoLateObject-DeleteAfterNoLand",
+      "scenario": "DLW",
+      "variant": "DeleteAfterNoLand",
+      "property": "NoLateObject",
+      "trace": 22,
+      "breaks": "the tombstone's delete_after drops ORPHAN_GRACE_MS (Gemini r5 GH1)"
+    },
+    {
+      "name": "NoLateObject-QueueNoCap",
+      "scenario": "DLW",
+      "variant": "QueueNoCap",
+      "property": "NoLateObject",
+      "trace": 23,
+      "breaks": "deadline_at is not capped at the reservation + AV_WRITE_WINDOW_MS, so a write starts after the window the tombstone's authority assumes (Gemini r5 GH1: the r3 bound, ORPHAN_GRACE_MS after the write's start)"
+    },
+    {
+      "name": "NoLateObject-RetireNoDelete",
+      "scenario": "DLW",
+      "variant": "RetireNoDelete",
+      "property": "NoLateObject",
+      "trace": 24,
+      "breaks": "the tombstone is retired without its last deletion of the keys (Codex r5 CM4)"
+    },
+    {
+      "name": "MaintInert-DispatchInMaint",
+      "scenario": "MT2",
+      "variant": "DispatchInMaint",
+      "property": "MaintInert",
+      "trace": 7,
+      "breaks": "the dispatch round writes in maintenance (Codex r5 CM6: K1 checked for every step, not flagged per action)"
+    },
+    {
+      "name": "RestoreExact-RestoreMovesGrant",
+      "scenario": "RSB",
+      "variant": "RestoreMovesGrant",
+      "property": "RestoreExact",
+      "trace": 18,
+      "breaks": "a restore brings a granted slot back with granted_at moved to now (Codex r5 CM5)"
+    },
+    {
+      "name": "RestoreExact-RestoreDropsGrant",
+      "scenario": "RSB",
+      "variant": "RestoreDropsGrant",
+      "property": "RestoreExact",
+      "trace": 16,
+      "breaks": "a restore drops the slot of a grant an earlier restore forgot (Codex r4 CH1), caught by the restore's own check too"
+    },
+    {
+      "name": "V1Answer-Route503",
+      "scenario": "V1L",
+      "variant": "Route503",
+      "property": "V1Answer",
+      "trace": 23,
+      "breaks": "the route sends 503 for S10's 200 (Codex r5 CM3: the status sent is checked, not the reply received)"
+    },
+    {
+      "name": "V1Answer-S10IgnoresGc",
+      "scenario": "V1L",
+      "variant": "S10IgnoresGc",
+      "property": "V1Answer",
+      "trace": 28,
+      "breaks": "S10 answers 200 for a completed upload past its gc_at, whose files the sweep may have deleted before its row (Codex r5 CM2, D33)"
+    },
+    {
+      "name": "ContainerCovered-K3FreesSlot",
+      "scenario": "RSB",
+      "variant": "K3FreesSlot",
+      "property": "ContainerCovered",
+      "trace": 16,
+      "breaks": "K3 deletes the restored ungranted slot of a container whose grant the restore forgot (Gemini r5 GM2: W3 excuses only once that slot has passed its held_until)"
+    },
+    {
+      "name": "NoLateObject-SharedEarlyPurge",
+      "scenario": "V2D",
+      "variant": "SharedEarlyPurge",
+      "property": "NoLateObject",
+      "trace": 24,
+      "breaks": "the Store takes every purge as before the write deadline, so a late purge's tombstone is retired at the reservation + AV_WRITE_WINDOW_MS + ORPHAN_GRACE_MS, before its authority ends (D41, Codex r6 CA3, CB1)"
+    },
+    {
+      "name": "StartNeedsSlot-MoveStartDeadline",
+      "scenario": "V2K",
+      "variant": "MoveStartDeadline",
+      "property": "StartNeedsSlot",
+      "trace": 12,
+      "breaks": "S4 moves deadline_at at the start, so a container starts past the deadline S3 stored (Codex r6 CB1)"
+    },
+    {
+      "name": "V1Answer-GiveUp200",
+      "scenario": "V1L",
+      "variant": "GiveUp200",
+      "property": "V1Answer",
+      "trace": 6,
+      "breaks": "the route's give-up answers 200 for an upload not published (D42, Codex r6 CB2)"
+    },
+    {
+      "name": "NoPublishAfterNon200-NoDoomAtCut",
+      "scenario": "H1W",
+      "variant": "NoDoomAtCut",
+      "property": "NoPublishAfterNon200",
+      "trace": 23,
+      "breaks": "S10 answers 503 at the route's cut without dooming the upload, which then completes (D42, Gemini r6 GM2)"
+    },
+    {
+      "name": "OwnerGetHasFiles-CompleteBeforeLanding",
+      "scenario": "V2D",
+      "variant": "CompleteBeforeLanding",
+      "property": "OwnerGetHasFiles",
+      "trace": 22,
+      "breaks": "S6 completes the upload before its last write lands, so the owner's GET shows a URL without its file (D40)"
+    },
+    {
+      "name": "V1Answer-GiveUpOverReply",
+      "scenario": "V1L",
+      "variant": "GiveUpOverReply",
+      "property": "V1Answer",
+      "trace": 26,
+      "breaks": "the route's timeout answers 503 over an S10 decision it already received, a 200 included (D45, Codex r7)"
+    },
+    {
+      "name": "NoPublishAfterNon200-ClockOnlyW5",
+      "scenario": "V1L",
+      "variant": "ClockOnlyW5",
+      "property": "NoPublishAfterNon200",
+      "trace": 16,
+      "breaks": "W5 takes the route's clock past V1_TIME_MS as its ground whatever reply the route received, so a 503 S10 decided counts as one it did not (D45, Codex r7)"
+    }
+  ],
+  "goals": [
+    {
+      "name": "V2D-W1",
+      "scenario": "V2D",
+      "goal": "W1",
+      "trace": 18
+    },
+    {
+      "name": "RS-W1R",
+      "scenario": "RS",
+      "goal": "W1R",
+      "trace": 23
+    },
+    {
+      "name": "RS2-W3",
+      "scenario": "RS2",
+      "goal": "W3",
+      "trace": 15
+    },
+    {
+      "name": "OR-W4",
+      "scenario": "OR",
+      "goal": "W4",
+      "trace": 15
+    },
+    {
+      "name": "V1L-W5Lost",
+      "scenario": "V1L",
+      "goal": "W5Lost",
+      "trace": 23
+    },
+    {
+      "name": "V1L-W5Fail",
+      "scenario": "V1L",
+      "goal": "W5Fail",
+      "trace": 23
+    },
+    {
+      "name": "V1L-W5GiveUp",
+      "scenario": "V1L",
+      "goal": "W5GiveUp",
+      "trace": 23
+    },
+    {
+      "name": "H1W-W5Maint",
+      "scenario": "H1W",
+      "goal": "W5Maint",
+      "trace": 27
+    },
+    {
+      "name": "V1L-W5S3Lost",
+      "scenario": "V1L",
+      "goal": "W5S3Lost",
+      "trace": 24
+    },
+    {
+      "name": "V1L-W5Swept",
+      "scenario": "V1L",
+      "goal": "W5Swept",
+      "trace": 30
+    },
+    {
+      "name": "L2-W6",
+      "scenario": "L2",
+      "goal": "W6",
+      "trace": 10
+    },
+    {
+      "name": "L2-W9",
+      "scenario": "L2",
+      "goal": "W9",
+      "trace": 45
+    },
+    {
+      "name": "CAP3-W10",
+      "scenario": "CAP3",
+      "goal": "W10",
+      "trace": 20
+    },
+    {
+      "name": "RS-W11",
+      "scenario": "RS",
+      "goal": "W11",
+      "trace": 25
+    },
+    {
+      "name": "RS-W11Swept",
+      "scenario": "RS",
+      "goal": "W11Swept",
+      "trace": 31
+    },
+    {
+      "name": "RS-W11Forgotten",
+      "scenario": "RS",
+      "goal": "W11Forgotten",
+      "trace": 25
+    },
+    {
+      "name": "H1W-H1",
+      "scenario": "H1W",
+      "goal": "H1",
+      "trace": 17
+    },
+    {
+      "name": "V2K-H3",
+      "scenario": "V2K",
+      "goal": "H3",
+      "trace": 15
+    },
+    {
+      "name": "RS-GH3",
+      "scenario": "RS",
+      "goal": "GH3",
+      "trace": 11
+    },
+    {
+      "name": "RS-Q4Round",
+      "scenario": "RS",
+      "goal": "Q4Round",
+      "trace": 16
+    },
+    {
+      "name": "RS-Q4Route",
+      "scenario": "RS",
+      "goal": "Q4Route",
+      "trace": 15
+    },
+    {
+      "name": "MT-M5",
+      "scenario": "MT",
+      "goal": "M5",
+      "trace": 3
+    },
+    {
+      "name": "DLW-Published",
+      "scenario": "DLW",
+      "goal": "Published",
+      "trace": 28
+    },
+    {
+      "name": "DLW-LateLanding",
+      "scenario": "DLW",
+      "goal": "LateLanding",
+      "trace": 24
+    },
+    {
+      "name": "CAP6-W3Cap",
+      "scenario": "CAP6",
+      "goal": "W3Cap",
+      "trace": 30
+    },
+    {
+      "name": "RS2-Forgotten",
+      "scenario": "RS2",
+      "goal": "Forgotten",
+      "trace": 19
+    },
+    {
+      "name": "RSS-W3",
+      "scenario": "RSS",
+      "goal": "W3",
+      "trace": 26
+    },
+    {
+      "name": "CAP5-HoldSpansFaults",
+      "scenario": "CAP5",
+      "goal": "HoldSpansFaults",
+      "trace": 30
+    },
+    {
+      "name": "MTR-MaintLate",
+      "scenario": "MTR",
+      "goal": "MaintLate",
+      "trace": 19
+    },
+    {
+      "name": "MTS-MaintHolds",
+      "scenario": "MTS",
+      "goal": "MaintHolds",
+      "trace": 36
+    },
+    {
+      "name": "CAP3-W10Cap",
+      "scenario": "CAP3",
+      "goal": "W10Cap",
+      "trace": 32
+    },
+    {
+      "name": "RSD-W3Twice",
+      "scenario": "RSD",
+      "goal": "W3Twice",
+      "trace": 53
+    },
+    {
+      "name": "RSB-W3Cleared",
+      "scenario": "RSB",
+      "goal": "W3Cleared",
+      "trace": 17
+    },
+    {
+      "name": "CAP6-W3LateStart",
+      "scenario": "CAP6",
+      "goal": "W3LateStart",
+      "trace": 30
+    },
+    {
+      "name": "RST-W11Tick",
+      "scenario": "RST",
+      "goal": "W11Tick",
+      "trace": 27
+    },
+    {
+      "name": "RST-W11Doom",
+      "scenario": "RST",
+      "goal": "W11Doom",
+      "trace": 27
+    },
+    {
+      "name": "RST-W11DoomLate",
+      "scenario": "RST",
+      "goal": "W11DoomLate",
+      "trace": 27
+    },
+    {
+      "name": "H1W-S4Timeout",
+      "scenario": "H1W",
+      "goal": "S4Timeout",
+      "trace": 17
+    },
+    {
+      "name": "RS12-W12",
+      "scenario": "RS12",
+      "goal": "W12",
+      "trace": 33
+    },
+    {
+      "name": "RS12-W12Dead",
+      "scenario": "RS12",
+      "goal": "W12Dead",
+      "trace": 33
+    },
+    {
+      "name": "RST-W11Absent",
+      "scenario": "RST",
+      "goal": "W11Absent",
+      "trace": 27
+    },
+    {
+      "name": "RS3-W13",
+      "scenario": "RS3",
+      "goal": "W13",
+      "trace": 23
+    },
+    {
+      "name": "V1L-S10Swept",
+      "scenario": "V1L",
+      "goal": "S10Swept",
+      "trace": 29
+    }
+  ]
+}
