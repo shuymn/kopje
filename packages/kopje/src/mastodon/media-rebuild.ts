@@ -48,12 +48,13 @@ import { type AvCall, avComplete, MAX_AV_BUILDS_PER_CALL, rebuildAv } from "./me
 //
 // The accepted limit: R2 cannot check a generation, so a write already pending when its call's lease ended (its
 // heartbeats all delayed, or its Worker stopped) can land after a newer holder's write of the same key, for image rows
-// as it was on main. The bytes always pass the checks: an image's files are re-encodes through the same checks, and a
-// video's or audio's `full` is the original's bytes the verifier accepted. For video and audio rows the write is also
-// idempotent per key and the next run converges: a video's `small` carries its own {width, height, blurhash} metadata,
-// which the skip rule compares with the row and adopts again on a mismatch (media-rebuild-av.ts). For image rows it
-// does not: an overlapping write can leave the row's preview dimensions or blurhash disagreeing with the stored
-// `small`, which a later run skips (pre-existing, #1835).
+// as it was on main. Every such write passes the checks, and what an overlap leaves differs by file:
+//   - a video's or audio's `full`: every write is a byte-identical copy of the original the verifier accepted;
+//   - a video's `small`: two writes may differ, each carrying its own {width, height, blurhash} metadata; the next
+//     rebuild that processes the preview adopts the object stored last and brings the row's metadata into agreement
+//     (media-rebuild-av.ts), and a row left with the poster is processed again only by `--stills`;
+//   - an image's files: re-encodes through the same checks, but the row's preview dimensions or blurhash can be left
+//     disagreeing with the stored `small`, which a later run skips (pre-existing, #1835).
 // A call that gave up a step keeps the lease until it expires. The bound: per row, at most two R2 reads, six Images
 // calls (an emoji's: the preflight info() and processImage's five; any other row's: processImage's six, its preview's
 // RGBA included) and five Store calls, each given up within the lease, then at most three R2 writes, each awaited.

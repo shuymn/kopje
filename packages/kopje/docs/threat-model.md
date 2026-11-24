@@ -3212,13 +3212,14 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   already pending when its call's lease ended (a Worker terminated mid-write, which leaves no heartbeat and no record,
   or one whose heartbeats were all delayed) can land after a newer holder's write of the same key, for image rows as
   before #1828. It is bounded to a put already in flight, its file lands under the capability URL of a row that existed
-  when the rebuild started, and its bytes pass the checks: an image's files are re-encodes of the same original through
-  the same checks, and a video's or audio's `full` is the original's bytes the verifier accepted. For video and audio
-  rows the write is also idempotent per key and the next run converges: a video's `small` carries its own `{width,
-  height, blurhash}` metadata, which the skip rule compares with the row and adopts again on a mismatch:
-  `test/media-rebuild-av.test.ts` ("converges when an earlier holder's still put lands over the small a later call
-  recorded"). For image rows it does not: an overlapping write can leave the row's preview dimensions or blurhash
-  disagreeing with the stored `small`, which a later run skips; this is pre-existing (#1835).
+  when the rebuild started, and every such write passes the checks. What an overlap leaves differs by file. A video's or
+  audio's `full`: every write is a byte-identical copy of the original the verifier accepted. A video's `small`: two
+  writes may differ, each carrying its own `{width, height, blurhash}` metadata; the next rebuild that processes the
+  preview adopts the object stored last and brings the row's metadata into agreement, and a row left with the poster is
+  processed again only by `--stills`: `test/media-rebuild-av.test.ts` ("converges when an earlier holder's still put
+  lands over the small a later call recorded"). An image's files: re-encodes of the same original through the same
+  checks, but the row's preview dimensions or blurhash can be left disagreeing with the stored `small`, which a later
+  run skips; this is pre-existing (#1835).
   A video or audio row (`src/mastodon/media-rebuild-av.ts`, #1828) is rebuilt under the same lease and fences, one a
   call, within `REBUILD_AV_MS` (120 s, its stages bounded at 60, 60 and 75 s). Its `files/<token>/full` is the original
   read once and streamed through the output verifier (`avVerifier`, MEDIA-3) into the put; the last chunk is held until
