@@ -15,7 +15,7 @@
 # all Markdown sets kopje_code=false and runs only that suite, except the OAuth scope table that test/vectors.test.ts
 # imports. Markdown outside the package affects no suite.
 #
-# The specification's checks (kopje-spec, vitest.spec.config.ts, about 5 minutes) read only the specification, its
+# The specifications' checks (kopje-spec, vitest.spec.config.ts, about 10 minutes) read only the specifications, their
 # fixtures and drift record, the files that run and compare them, the dependencies and the test configuration, so only
 # a change to one of those sets kopje_spec=true.
 set -euo pipefail
@@ -33,7 +33,8 @@ suites() {
 		esac
 		case $path in
 			packages/kopje/spec/* | packages/kopje/test/fixtures/collection-consent/* | \
-				packages/kopje/test-node/collection-consent-spec/* | \
+				packages/kopje/test-node/collection-consent-spec/* | packages/kopje/test-node/media-upload-spec/* | \
+				packages/kopje/scripts/media-upload-plan.mjs | \
 				packages/kopje/test-node/collection-consent-fixtures.ts | packages/kopje/scripts/collection-consent-plan.mjs | \
 				packages/kopje/test/collection-consent-observe.ts | packages/kopje/test/collection-consent-replay.test.ts | \
 				package.json | packages/kopje/package.json | pnpm-lock.yaml | pnpm-workspace.yaml | mise.toml | mise.lock | \

@@ -1,0 +1,404 @@
+{
+  "$comment": "Expected outcomes of the checks of spec/media-upload/ (scripts/media-upload-plan.mjs explains each kind), under tla-ts (test-node/media-upload-spec/). A change of a count is a change of the state space: explain it in the commit.",
+  "scenarios": [
+    {
+      "name": "V1L",
+      "distinct": 246804,
+      "depth": 45
+    },
+    {
+      "name": "V1K",
+      "distinct": 135159,
+      "depth": 44
+    },
+    {
+      "name": "V1R",
+      "distinct": 346390,
+      "depth": 48
+    },
+    {
+      "name": "V2L",
+      "distinct": 205851,
+      "depth": 49
+    },
+    {
+      "name": "V2K",
+      "distinct": 166160,
+      "depth": 44
+    },
+    {
+      "name": "V2D",
+      "distinct": 362724,
+      "depth": 49
+    },
+    {
+      "name": "MT",
+      "distinct": 680597,
+      "depth": 48
+    },
+    {
+      "name": "MT2",
+      "distinct": 193884,
+      "depth": 50
+    },
+    {
+      "name": "RS",
+      "distinct": 2027455,
+      "depth": 49
+    },
+    {
+      "name": "RS2",
+      "distinct": 1147721,
+      "depth": 44
+    },
+    {
+      "name": "RS3",
+      "distinct": 2027941,
+      "depth": 46
+    },
+    {
+      "name": "CAP",
+      "distinct": 192593,
+      "depth": 58
+    },
+    {
+      "name": "CAP2",
+      "distinct": 1490727,
+      "depth": 61
+    },
+    {
+      "name": "CAP3",
+      "distinct": 26997,
+      "depth": 57
+    },
+    {
+      "name": "OR",
+      "distinct": 485018,
+      "depth": 41
+    },
+    {
+      "name": "SK",
+      "distinct": 242168,
+      "depth": 49
+    }
+  ],
+  "liveness": [
+    {
+      "name": "L1",
+      "distinct": 1473,
+      "depth": 43
+    },
+    {
+      "name": "L2",
+      "distinct": 3843,
+      "depth": 46
+    },
+    {
+      "name": "L3",
+      "distinct": 267969,
+      "depth": 51
+    },
+    {
+      "name": "L4",
+      "distinct": 167,
+      "depth": 34
+    }
+  ],
+  "variants": [
+    {
+      "name": "SlotBound-SlotNoCount",
+      "scenario": "CAP",
+      "variant": "SlotNoCount",
+      "property": "SlotBound",
+      "trace": 7,
+      "breaks": "S1 counts only processing slots, so a staging upload holds a slot the count misses (design 4.5 Capacity)"
+    },
+    {
+      "name": "ContainerCovered-DeleteFreesSlot",
+      "scenario": "CAP",
+      "variant": "DeleteFreesSlot",
+      "property": "ContainerCovered",
+      "trace": 14,
+      "breaks": "DELETE frees the slot with the row, while the container runs (design 4.7: slots do not cascade)"
+    },
+    {
+      "name": "MaxContainers-DeleteFreesSlot",
+      "scenario": "CAP",
+      "variant": "DeleteFreesSlot",
+      "property": "MaxContainers",
+      "trace": 26,
+      "breaks": "DELETE frees the slot with the row, so a second upload's container starts beside the first"
+    },
+    {
+      "name": "ContainerCovered-ShortHold",
+      "scenario": "CAP3",
+      "variant": "ShortHold",
+      "property": "ContainerCovered",
+      "trace": 20,
+      "breaks": "held_until is deadline_at, without TEARDOWN_MS for the stop (W10's bound)"
+    },
+    {
+      "name": "StartNeedsSlot-SlotById",
+      "scenario": "V1L",
+      "variant": "SlotById",
+      "property": "StartNeedsSlot",
+      "trace": 20,
+      "breaks": "the route's finally releases the slot by id after a lost queue reply (design 4.5's single release; C2-H2)"
+    },
+    {
+      "name": "SlotRelease-SlotById",
+      "scenario": "V1L",
+      "variant": "SlotById",
+      "property": "SlotRelease",
+      "trace": 14,
+      "breaks": "the route's finally releases a pending row's slot by id (C1, C2-H2, GM3)"
+    },
+    {
+      "name": "RouteDeleteAuthority-RouteCleansOnLost",
+      "scenario": "V1L",
+      "variant": "RouteCleansOnLost",
+      "property": "RouteDeleteAuthority",
+      "trace": 12,
+      "breaks": "the route deletes incoming/<id> after a lost queue reply (C1, C2-H3)"
+    },
+    {
+      "name": "InputKept-OrphanStagingUnheld",
+      "scenario": "OR",
+      "variant": "OrphanStagingUnheld",
+      "property": "InputKept",
+      "trace": 9,
+      "breaks": "the orphan pass takes a staging row's key as unheld"
+    },
+    {
+      "name": "InputKept-NoWriteWindow",
+      "scenario": "V2L",
+      "variant": "NoWriteWindow",
+      "property": "InputKept",
+      "trace": 11,
+      "breaks": "S1 stages past the reservation's write deadline, so the sweep takes a live input at gc_at"
+    },
+    {
+      "name": "NoPublishAfterDelete-DeleteKeepsRow",
+      "scenario": "V2D",
+      "variant": "DeleteKeepsRow",
+      "property": "NoPublishAfterDelete",
+      "trace": 18,
+      "breaks": "DELETE dooms but keeps the processing row, so S5 and S6 still authorize (K2)"
+    },
+    {
+      "name": "NoPublishAfterNon200-WaitForStoreDeadline",
+      "scenario": "V1L",
+      "variant": "WaitForStoreDeadline",
+      "property": "NoPublishAfterNon200",
+      "trace": 26,
+      "breaks": "S10 answers not_yet before deadline_at and the route answers 503 undoomed (Codex r4 H1)"
+    },
+    {
+      "name": "GrantBound-AbsGrant",
+      "scenario": "SK",
+      "variant": "AbsGrant",
+      "property": "GrantBound",
+      "trace": 17,
+      "breaks": "S5's grant compared as an absolute Store time on the processor's clock (C7)"
+    },
+    {
+      "name": "GrantGround-CompleteBeforeLanding",
+      "scenario": "V2D",
+      "variant": "CompleteBeforeLanding",
+      "property": "GrantGround",
+      "trace": 25,
+      "breaks": "S6 before the last write lands, so the URL is issued while a write can still land after DELETE (M3)"
+    },
+    {
+      "name": "V1Answer-CompleteBeforeLanding",
+      "scenario": "V1L",
+      "variant": "CompleteBeforeLanding",
+      "property": "V1Answer",
+      "trace": 21,
+      "breaks": "S6 before the last write lands, so v1 answers 200 for a file not yet stored"
+    },
+    {
+      "name": "ChargeOnce-ChargeTwice",
+      "scenario": "V1L",
+      "variant": "ChargeTwice",
+      "property": "ChargeOnce",
+      "trace": 11,
+      "breaks": "S3's repeat on a pending row charges again (H3, GH1, RES-6)"
+    },
+    {
+      "name": "RestoredInert-StartNoK3",
+      "scenario": "RS2",
+      "variant": "StartNoK3",
+      "property": "RestoredInert",
+      "trace": 14,
+      "breaks": "S4 without K3 starts a row reserved before the restore (C3, G5)"
+    },
+    {
+      "name": "Q4-RestoredAnswers500",
+      "scenario": "RS",
+      "variant": "RestoredAnswers500",
+      "property": "Q4",
+      "trace": 14,
+      "breaks": "S10 answers 500 for a restored row (Q4)"
+    },
+    {
+      "name": "RecordDropSafe-MaintDropsRecord",
+      "scenario": "MT",
+      "variant": "MaintDropsRecord",
+      "property": "RecordDropSafe",
+      "trace": 16,
+      "breaks": "S4 answering maint with no container ends in deleteAll without D9 (Codex r4 H4)"
+    },
+    {
+      "name": "RecordDropSafe-ReleaseK3Stops",
+      "scenario": "RS2",
+      "variant": "ReleaseK3Stops",
+      "property": "RecordDropSafe",
+      "trace": 18,
+      "breaks": "S8 stops at K3 for a restored live row and the processor deletes its record (Codex r4 H2, Gemini r4 GH1)"
+    },
+    {
+      "name": "RecordDropSafe-ShortRecord",
+      "scenario": "V2K",
+      "variant": "ShortRecord",
+      "property": "RecordDropSafe",
+      "trace": 14,
+      "breaks": "the record-age stop before held_until (W9)"
+    },
+    {
+      "name": "SingleStaging-NoStagedMark",
+      "scenario": "V1L",
+      "variant": "NoStagedMark",
+      "property": "SingleStaging",
+      "trace": 9,
+      "breaks": "S1 stages again after its staging row was removed (Codex r4 M1)"
+    },
+    {
+      "name": "NoLateObject-EarlyRetire",
+      "scenario": "V2D",
+      "variant": "EarlyRetire",
+      "property": "NoLateObject",
+      "trace": 22,
+      "breaks": "the tombstone is retired before a started write can land (Codex r4 M3)"
+    },
+    {
+      "name": "PendingStarts-LongAlarm",
+      "scenario": "L1",
+      "variant": "LongAlarm",
+      "property": "PendingStarts",
+      "trace": 32,
+      "liveness": true,
+      "breaks": "D1's alarm at TEARDOWN_MS (Codex r4 H3)"
+    },
+    {
+      "name": "RecordsCleared-MaintNoRetry",
+      "scenario": "L2",
+      "variant": "MaintNoRetry",
+      "property": "RecordsCleared",
+      "trace": 32,
+      "liveness": true,
+      "breaks": "S4's maint answer ends the invocation with its alarm deleted (GM7)"
+    },
+    {
+      "name": "ContainersStopped-StopNoRetry",
+      "scenario": "L1",
+      "variant": "StopNoRetry",
+      "property": "ContainersStopped",
+      "trace": 32,
+      "liveness": true,
+      "breaks": "a stop that is not confirmed ends the invocation with its alarm deleted (Codex r4 M4, GM7)"
+    },
+    {
+      "name": "InputsDeleted-AgedKeepsInput",
+      "scenario": "L2",
+      "variant": "AgedKeepsInput",
+      "property": "InputsDeleted",
+      "trace": 46,
+      "liveness": true,
+      "breaks": "the record-age stop leaves incoming/<id> of a completed upload"
+    },
+    {
+      "name": "SlotsReleased-NoExpiry",
+      "scenario": "L3",
+      "variant": "NoExpiry",
+      "property": "SlotsReleased",
+      "trace": 42,
+      "liveness": true,
+      "breaks": "the dispatch round never deletes a slot past held_until (W2)"
+    }
+  ],
+  "goals": [
+    {
+      "name": "V2D-W1",
+      "scenario": "V2D",
+      "goal": "W1",
+      "trace": 18
+    },
+    {
+      "name": "RS2-W3",
+      "scenario": "RS2",
+      "goal": "W3",
+      "trace": 15
+    },
+    {
+      "name": "V1L-W5",
+      "scenario": "V1L",
+      "goal": "W5",
+      "trace": 28
+    },
+    {
+      "name": "L2-W6",
+      "scenario": "L2",
+      "goal": "W6",
+      "trace": 10
+    },
+    {
+      "name": "MT-W9",
+      "scenario": "MT",
+      "goal": "W9",
+      "trace": 17
+    },
+    {
+      "name": "CAP3-W10",
+      "scenario": "CAP3",
+      "goal": "W10",
+      "trace": 24
+    },
+    {
+      "name": "V2K-H3",
+      "scenario": "V2K",
+      "goal": "H3",
+      "trace": 15
+    },
+    {
+      "name": "RS-GH3",
+      "scenario": "RS",
+      "goal": "GH3",
+      "trace": 11
+    },
+    {
+      "name": "RS-Q4Round",
+      "scenario": "RS",
+      "goal": "Q4Round",
+      "trace": 16
+    },
+    {
+      "name": "RS-Q4Route",
+      "scenario": "RS",
+      "goal": "Q4Route",
+      "trace": 15
+    },
+    {
+      "name": "MT-M5",
+      "scenario": "MT",
+      "goal": "M5",
+      "trace": 3
+    },
+    {
+      "name": "V2D-Published",
+      "scenario": "V2D",
+      "goal": "Published",
+      "trace": 24
+    }
+  ]
+}
