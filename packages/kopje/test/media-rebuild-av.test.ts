@@ -367,10 +367,14 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
   });
 
   it.each([
-    ["a failed probe", { probe: { ok: false, failure: "ready", image: null } as StillOutcome }, {}],
     [
-      "a still the processor refused",
-      { answer: { ok: false, failure: "still:decode", image: null } as StillOutcome },
+      "a probe whose clip the container refused",
+      { probe: { ok: false, failure: "still:no_video", image: null, input: "no_video" } as StillOutcome },
+      {},
+    ],
+    [
+      "a still whose input the container refused",
+      { answer: { ok: false, failure: "still:pixels", image: null, input: "pixels" } as StillOutcome },
       {},
     ],
     [
@@ -392,7 +396,7 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
   it("probes once per build: a pass is not probed again, a failure only after PROBE_RETRY_MS", async () => {
     const store = await setup();
     const first = await addAv(store, "video");
-    const failing = maker({ probe: { ok: false, failure: "ready", image: null } });
+    const failing = maker({ probe: { ok: false, failure: "still:format", image: null, input: "format" } });
     expect(await run(store, { stills: failing.stills })).toMatchObject({ counts: { fallback: 1 } });
     expect(JSON.parse((await stateValue(store, "media_probe:"))[0]!)).toMatchObject({ ok: false, version: BUILD });
     // Within the cooldown a failed probe is not run again, however many calls come: the rows fall back.
@@ -418,20 +422,47 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
     expect(later.calls).toEqual([`still originals/${fourth.id}`]);
   });
 
+  const failing = (answer: StillOutcome) => ({ answer });
+  const probing = (probe: StillOutcome) => ({ probe });
+  const failure = (code: string): StillOutcome => ({ ok: false, failure: code, image: null });
+  // A codec whose RGBA output (only) fails with `code`.
+  const rgbaFailing = (code: number) => {
+    const codec = new TestCodec();
+    codec.failRgba = code;
+    return codec;
+  };
+  // A codec whose WebP encode fails with `code` (the probe's Images step comes first).
+  const encodeFailing = (code: number) => {
+    const codec = new TestCodec();
+    codec.failEncode = code;
+    return codec;
+  };
   it.each([
-    ["the still answers busy", { answer: { ok: false, failure: "busy", image: null } as StillOutcome }],
-    ["the processor is unavailable", { answer: { ok: false, failure: "unavailable", image: null } as StillOutcome }],
-    ["the probe answers busy", { probe: { ok: false, failure: "busy", image: null } as StillOutcome }],
-  ])(
-    "stops for a retry when %s, keeps the row's preview and its full, and the next call makes the still",
-    async (_name, answers) => {
+    ["the still answers busy", failing(failure("busy")), null, "retry"],
+    ["the processor is unavailable", failing(failure("unavailable")), null, "retry"],
+    ["the probe answers busy", probing(failure("busy")), null, "retry"],
+    ["the container answers internal (500)", failing(failure("still:internal")), null, "retry"],
+    ["the container times out (504)", failing(failure("still:timeout")), null, "retry"],
+    ["the still's container is not ready", failing(failure("ready")), null, "retry"],
+    ["the probe's container is not ready", probing(failure("ready")), null, "retry"],
+    ["the probe's Images step fails as a service", {}, () => encodeFailing(9500), "retry"],
+    ["only the RGBA output is refused for quota", {}, () => rgbaFailing(9422), "quota"],
+    ["only the RGBA output fails as a service", {}, () => rgbaFailing(9500), "retry"],
+  ] as const)(
+    "stops when %s, keeps the row's preview and its full, writes nothing, and the next call makes the still",
+    async (_name, answers, codec, stopped) => {
       const store = await setup();
       const row = await addAv(store, "video", { blurhash: "U5D]o8-;9F00_3t7IUM{00RjoM-;00Rj%MWB" });
       const before = await rowOf(store, row.id);
-      const step = await run(store, { stills: maker(answers).stills });
+      const recording = recordingBucket();
+      const step = await run(store, {
+        stills: maker(answers).stills,
+        bucket: recording.bucket,
+        ...(codec === null ? {} : { codec: codec() }),
+      });
       expect(step).toMatchObject({
         ok: true,
-        stopped: "retry",
+        stopped,
         done: false,
         next: null,
         counts: { built: 0 },
@@ -439,10 +470,13 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
       expect((step as { counts: Record<string, number> }).counts.fallback).toBeUndefined();
       expect(await rowOf(store, row.id)).toEqual(before);
       expect(await bytesOf(`files/${row.token}/full`)).toEqual(row.original);
-      expect(await env.MEDIA.head(`files/${row.token}/small`)).toBeNull();
+      // Only `full` and the probe's own copy were written.
+      expect(recording.writes.filter((w) => !w.includes("incoming/probe-"))).toEqual([`put files/${row.token}/full`]);
       // No verdict is recorded for the processor's state.
-      if ("probe" in answers) {
-        expect(await stateValue(store, "media_probe:")).toEqual([]);
+      if ("probe" in answers || codec !== null) {
+        expect(
+          (await stateValue(store, "media_probe:")).map((v) => (JSON.parse(v) as { ok: boolean }).ok),
+        ).not.toContain(false);
       }
       // The processor recovers: the next call starts at that row and makes its still.
       const recovered = maker();
@@ -817,6 +851,28 @@ describe("media rebuild of video rows: interruptions and lease loss (#1828 P25)"
     expect(await rowOf(store, row.id)).toMatchObject({ meta: { small: { width: 320, height: 180 } }, blurhash: null });
     expect(await run(store, { stills: made.stills })).toMatchObject({ counts: { "skipped-existing": 1 } });
   });
+
+  it.each([
+    [9422, "quota"],
+    [9500, "retry"],
+  ] as const)(
+    "stops before putting an adopted small again when its RGBA output fails with %i",
+    async (code, stopped) => {
+      const store = await setup();
+      const row = await addAv(store, "video", { small: { width: 1, height: 1 } });
+      await env.MEDIA.put(`files/${row.token}/full`, row.original);
+      const webp = await new TestCodec().real.encode(STILL, { format: "image/webp", still: true });
+      await env.MEDIA.put(`files/${row.token}/small`, webp);
+      const before = await rowOf(store, row.id);
+      const codec = new TestCodec();
+      codec.failRgba = code;
+      const recording = recordingBucket();
+      expect(await run(store, { codec, bucket: recording.bucket })).toMatchObject({ stopped, next: null });
+      expect(recording.writes).toEqual([]);
+      expect((await env.MEDIA.head(`files/${row.token}/small`))!.customMetadata).toEqual({});
+      expect(await rowOf(store, row.id)).toEqual(before);
+    },
+  );
 
   it("adopts a small with no metadata after recomputing its blurhash, writing its metadata, and never adopts an invalid one", async () => {
     const store = await setup();

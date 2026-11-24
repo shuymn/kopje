@@ -30,7 +30,14 @@ import { DurableObject } from "cloudflare:workers";
 
 import { PROBE_FIXTURE_BASE64 } from "./media-probe-fixture";
 import { errorFields } from "./platform/error-message";
-import type { MediaProcessorClient, ProbeProfile, ProbeReport, StillOutcome } from "./platform/media-transcoder";
+import {
+  type MediaProcessorClient,
+  type ProbeProfile,
+  type ProbeReport,
+  STILL_INPUT_REFUSALS,
+  type StillInputRefusal,
+  type StillOutcome,
+} from "./platform/media-transcoder";
 
 // The port container/server listens on.
 const PORT = 8080;
@@ -100,9 +107,23 @@ async function before<T>(
 }
 
 class ProbeFailure extends Error {
-  constructor(readonly failure: string) {
+  constructor(
+    readonly failure: string,
+    // The container refused the input itself (readStill).
+    readonly input?: StillInputRefusal,
+  ) {
     super(failure);
   }
+}
+
+// A refusal of a still's input, from the response's status and code together: 422 with one of the plan's input
+// refusals, or 413 too_large. A code under any other status is not one.
+function inputRefusal(status: number, code: string | null): StillInputRefusal | undefined {
+  const refusal = STILL_INPUT_REFUSALS.find((known) => known === code);
+  if (refusal === undefined) {
+    return undefined;
+  }
+  return (refusal === "too_large" ? status === 413 : status === 422) ? refusal : undefined;
 }
 
 // Reads a response body of the declared length, at most `limit` bytes, counting as it reads: a body longer than its
@@ -137,7 +158,10 @@ async function readStill(response: Response): Promise<Uint8Array> {
   if (response.status !== 200 || response.headers.get("content-type") !== "image/png") {
     await response.body?.cancel();
     const code = response.headers.get("kopje-error");
-    throw new ProbeFailure(code !== null && /^[a-z_]{1,32}$/.test(code) ? `still:${code}` : "still-status");
+    throw new ProbeFailure(
+      code !== null && /^[a-z_]{1,32}$/.test(code) ? `still:${code}` : "still-status",
+      inputRefusal(response.status, code),
+    );
   }
   const declared = Number(response.headers.get("content-length"));
   if (!Number.isSafeInteger(declared) || declared <= 0 || declared > STILL_OUTPUT_LIMIT || response.body === null) {
@@ -364,7 +388,15 @@ async function runStill(
     }
     result = { ok: true, png, image };
   } catch (error) {
-    result = { ok: false, failure: error instanceof ProbeFailure ? error.failure : "operation", image };
+    result =
+      error instanceof ProbeFailure
+        ? {
+            ok: false,
+            failure: error.failure,
+            image,
+            ...(error.input === undefined ? {} : { input: error.input }),
+          }
+        : { ok: false, failure: "operation", image };
     if (!(error instanceof ProbeFailure)) {
       console.warn({ event: "kopje.media.still.failed", ...errorFields(error) });
     }

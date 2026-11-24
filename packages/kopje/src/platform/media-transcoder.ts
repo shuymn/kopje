@@ -44,9 +44,15 @@ export type MediaProcessorClient = {
 // length (not yet checked: the caller runs verifyStill and Images), the image the container reported, or the stage
 // that failed. `busy`: the object already runs an operation (a probe object's single owner, design 4.5). `pending`: the
 // container's destroy has not finished, so the caller keeps its lease until the object's alarm has cleaned up.
+// The container's refusals of a still's input itself (container/server: the plan's refusals /still answers with 422,
+// and 413 for an input past its limit). Only these are about the input; every other failure of a still is the
+// processor's or the platform's, and says nothing of the row.
+export const STILL_INPUT_REFUSALS = ["unreadable", "format", "no_stream", "no_video", "pixels", "too_large"] as const;
+export type StillInputRefusal = (typeof STILL_INPUT_REFUSALS)[number];
+
 export type StillOutcome =
   | { ok: true; png: Uint8Array; image: string | null }
-  | { ok: false; failure: string; image: string | null; pending?: true };
+  | { ok: false; failure: string; image: string | null; pending?: true; input?: StillInputRefusal };
 
 // What the media rebuild uses of the processor (design 4.16): a still of an original, and the `still@standard-1`
 // probe. Each runs on standard-1 in the caller's invocation, reads its one input key from the media bucket once and

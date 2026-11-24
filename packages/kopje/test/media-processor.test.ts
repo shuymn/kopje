@@ -780,6 +780,29 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
     expect(state.cleared()).toBe(1);
   });
 
+  it.each([
+    [422, "no_video", "no_video"],
+    [422, "pixels", "pixels"],
+    [413, "too_large", "too_large"],
+    [500, "internal", undefined],
+    [504, "timeout", undefined],
+    [500, "no_video", undefined],
+    [422, "still_failed", undefined],
+  ] as const)("types a %i %s answer as a refusal of the input only when it is one", async (status, code, refused) => {
+    await env.MEDIA.put("originals/140000000000000031", new Uint8Array([1]));
+    const fake = counted(undefined, {
+      "/still": () => new Response(null, { status, headers: { "kopje-error": code } }),
+    });
+    const object = unit({ ...fakeState(fake.container).ctx, bucket: bucket() });
+    const outcome = await object.stillNow("originals/140000000000000031", 75_000);
+    expect(outcome).toEqual({
+      ok: false,
+      failure: `still:${code}`,
+      image: expect.any(String) as string,
+      ...(refused === undefined ? {} : { input: refused }),
+    });
+  });
+
   it("is not ok when the PNG arrives past the operation's end, which keeps time for the destroy", async () => {
     await env.MEDIA.put("originals/140000000000000011", new Uint8Array([1]));
     const time = frozen(1_000_000);
