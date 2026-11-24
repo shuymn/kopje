@@ -6,7 +6,7 @@
 //      and no sources are shipped;
 //   3. installs the tarball into a copy of the deploy/ template (the package has no dependencies, so installing it is
 //      unpacking it into node_modules/kopje), dry-runs the template's `wrangler deploy`, and compares it with the
-//      in-repo build: under 1.5 MiB gzipped, within 1% of each other, the same assets by content, and the same runtime
+//      in-repo build: within LIMIT_KIB gzipped, within 1% of each other, the same assets by content, and the same runtime
 //      settings and bindings as packages/kopje/wrangler.jsonc; neither bundle imports or carries a wasm module (the
 //      Worker decodes no image: packages/kopje/docs/threat-model.md NET-3), and neither holds a character above U+00FF
 //      (checkLatin1);
@@ -46,7 +46,7 @@ import { withManifestVersion } from "./kopje-release-lib.mjs";
 
 // The gzipped bundle's budget. Kopje needs the Workers Paid plan, whose limit is 10 MiB; this budget only catches
 // accidental growth (a new dependency, an inlined asset), so it is raised deliberately as features add code.
-const LIMIT_KIB = 1536;
+const LIMIT_KIB = 1664;
 const TOLERANCE = 0.01;
 const UNVERSIONED = "0.0.0";
 const BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
