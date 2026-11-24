@@ -1,4 +1,3 @@
-import { ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { iso } from "../platform/iso-time";
 import { mediaUrl } from "../platform/media-files";
@@ -9,6 +8,7 @@ import { accessAdminRefusal } from "./admin-authority";
 import {
   chargeInstanceTransforms,
   chargeUploadJob,
+  ownerUri,
   uploadJobFits,
   TRANSFORMS_PER_EMOJI,
   TRANSFORMS_PER_UPLOAD,
@@ -412,15 +412,11 @@ export const recordAvStill = mediaRebuildOperation.atStoreTime("now")<
   if (!holds(db, holder, now)) {
     return { status: "lease-lost" };
   }
-  const owner = db.first<{ uri: string }>(
-    `SELECT a.uri FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX}
-			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = m.account_id WHERE m.id = ?`,
-    id,
-  );
-  if (owner === undefined) {
+  const uri = ownerUri(db, id);
+  if (uri === undefined) {
     return { status: "gone" };
   }
-  const preview = publish ? mediaUrl(new URL(owner.uri).origin, token, "small", "image/webp") : null;
+  const preview = publish ? mediaUrl(new URL(uri).origin, token, "small", "image/webp") : null;
   const meta = `json_set(COALESCE(meta, '{}'), '$.small', json(?1))`;
   const changed = db.run(
     `UPDATE media_attachments SET meta = ${meta}, blurhash = ?2, preview_url = COALESCE(?3, preview_url)

@@ -226,6 +226,15 @@ function processorHolds(db: Db, id: string): boolean {
   return db.first("SELECT 1 AS held FROM media_processing WHERE media_id = ?", id) !== undefined;
 }
 
+// The URI of the account that owns the attachment `id` (one seek of each primary key), or undefined when there is none.
+export function ownerUri(db: Db, id: string): string | undefined {
+  return db.first<{ uri: string }>(
+    `SELECT a.uri FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX}
+			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = m.account_id WHERE m.id = ?`,
+    id,
+  )?.uri;
+}
+
 // The row of a new reservation (step 1, and a custom emoji's, local-emojis.ts): processed = 0 with the Worker's token,
 // swept after RESERVATION_MS unless completed. Its id, or retry when the token is taken (inserted only while
 // MEDIA_TOKEN_FREE_SQL holds, so the database enforces the uniqueness, whatever the caller checked).
@@ -307,7 +316,7 @@ export function uploadJobsSpent(db: Db, now: number): number {
 
 // Whether one more upload unit fits `limit` in the month `now` is in (0 admits nothing).
 export function uploadJobFits(db: Db, limit: number, now: number): boolean {
-  return Number(state(db, uploadJobsName(now)) ?? "0") + 1 <= limit;
+  return uploadJobsSpent(db, now) + 1 <= limit;
 }
 
 // Charges one upload unit to the month `now` is in, pruning months before the previous one. False, and nothing

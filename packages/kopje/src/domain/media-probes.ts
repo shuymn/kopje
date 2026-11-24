@@ -1,4 +1,5 @@
 import type { Db } from "../db/sql";
+import { setState } from "./kopje-state";
 import { readOperation, writeOperation } from "./operation";
 
 // The media processor's probe records (#1828 design 4.15), one set per execution profile, kept in kopje_state (not
@@ -148,7 +149,7 @@ export function writeProbeValue(db: Db, name: string, value: unknown, valid: boo
   if (!valid || new TextEncoder().encode(text).byteLength > PROBE_VALUE_BYTES) {
     throw new Error("probe record out of bounds");
   }
-  db.run("INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)", name, text);
+  setState(db, name, text);
 }
 
 export type ProbeState = { record: ProbeRecord | null; attempt: ProbeAttempt | null; failure: ProbeFailure | null };

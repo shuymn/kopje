@@ -1,12 +1,12 @@
 import { selectSql } from "../db/columns";
-import { ACCOUNTS_ID_INDEX, MEDIA_ID_INDEX } from "../db/indexes";
+import { MEDIA_ID_INDEX } from "../db/indexes";
 import type { Db } from "../db/sql";
 import { type AudioFacts, isFrameRate, type VideoFacts } from "../platform/av-bytes";
 import { iso } from "../platform/iso-time";
 import { mediaUrl } from "../platform/media-files";
 import { storedBlurhash, storedMediaDescription, storedMediaMeta } from "../platform/stored-bounds";
 import { userMediaDeleteOperation } from "./auth";
-import { state, setState } from "./kopje-state";
+import { readState, writeState } from "./kopje-state";
 import {
   AV_CANDIDATE_TYPE,
   AV_WRITE_WINDOW_MS,
@@ -17,6 +17,7 @@ import {
   type MediaDeleted,
   setUp,
   uploadJobFits,
+  ownerUri,
   uploadJobsSpent,
   WRITE_WINDOW_MS,
 } from "./media";
@@ -812,15 +813,11 @@ export const completeAvUpload = writeOperation.atStoreTime("now")<
   const { att, row } = normalize(db, id, now, restoredAt);
   const mine = attachmentState(att, token);
   if (mine === "res" && row?.state === "running" && row.start_id === startId) {
-    const owner = db.first<{ uri: string }>(
-      `SELECT a.uri FROM media_attachments m INDEXED BY ${MEDIA_ID_INDEX}
-			CROSS JOIN accounts a INDEXED BY ${ACCOUNTS_ID_INDEX} ON a.id = m.account_id WHERE m.id = ?`,
-      id,
-    );
-    if (owner === undefined) {
+    const uri = ownerUri(db, id);
+    if (uri === undefined) {
       return { status: "refused" };
     }
-    const origin = new URL(owner.uri).origin;
+    const origin = new URL(uri).origin;
     db.run(
       `UPDATE media_attachments SET type = ?, content_type = ?, url = ?, preview_url = ?, meta = ?, blurhash = ?,
 				processed = 1, gc_at = ?
@@ -1121,7 +1118,7 @@ type SweepState = { at: number; cursor: string; claim: number | null };
 function sweepState(db: Db): SweepState {
   let value: unknown = null;
   try {
-    value = JSON.parse(state(db, INCOMING_SWEEP) ?? "null");
+    value = readState<unknown>(db, INCOMING_SWEEP);
   } catch {
     value = null;
   }
@@ -1146,7 +1143,7 @@ export const incomingSweepClaim = mediaDeleteOperation.atStoreTime("now")<
   if (!setUp(db) || (sweep.at > 0 && now - sweep.at < INCOMING_SWEEP_MS)) {
     return { status: "not_due" };
   }
-  setState(db, INCOMING_SWEEP, JSON.stringify({ at: now, cursor: sweep.cursor, claim: now }));
+  writeState(db, INCOMING_SWEEP, { at: now, cursor: sweep.cursor, claim: now });
   return { status: "claimed", claim: now, cursor: sweep.cursor };
 });
 
@@ -1192,6 +1189,6 @@ export const incomingSwept = mediaDeleteOperation<
     return { status: "stale" };
   }
   const next = typeof cursor === "string" && cursor.length <= INCOMING_CURSOR_BYTES ? cursor : "";
-  setState(db, INCOMING_SWEEP, JSON.stringify({ at: sweep.at, cursor: next, claim: null }));
+  writeState(db, INCOMING_SWEEP, { at: sweep.at, cursor: next, claim: null });
   return { status: "swept" };
 });
