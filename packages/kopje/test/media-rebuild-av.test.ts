@@ -524,41 +524,80 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
     expect(JSON.parse(lease!)).toMatchObject({ holder: "torn" });
   });
 
+  // A meta of `bytes` once meta.small of one-digit edges is set in it, as SQLite serializes it.
+  const metaOf = (bytes: number) => {
+    const pad = "x".repeat(bytes - JSON.stringify({ pad: "", small: { width: 0, height: 0 } }).length);
+    return JSON.stringify({ pad });
+  };
+
   it.each([
-    ["an array", "[]", "meta-not-object"],
-    // Its own bytes fit MEDIA_META_BYTES; with meta.small of the widest still they would not.
-    [
-      "an object the still would take past MEDIA_META_BYTES",
-      JSON.stringify({ pad: "x".repeat(MEDIA_META_BYTES - 44) }),
-      "meta-too-large",
-    ],
-  ])("reports a video row whose meta is %s and touches nothing of it", async (_name, meta, detail) => {
+    ["an array", "[]", true],
+    ["an array, and no processor bound", "[]", false],
+    ["an object with no room for any still", metaOf(MEDIA_META_BYTES + 1), true],
+  ])(
+    "writes the verified full of a video row whose meta is %s, and gives it the poster",
+    async (_name, meta, bound) => {
+      const store = await setup();
+      const row = await addAv(store, "video", { meta });
+      const made = maker();
+      const recording = recordingBucket();
+      const step = await run(store, { stills: bound ? made.stills : null, bucket: recording.bucket });
+      expect(step).toMatchObject({ ok: true, stopped: null, counts: { fallback: 1 }, problems: [] });
+      expect(made.calls).toEqual([]);
+      expect(recording.writes).toEqual([`put files/${row.token}/full`]);
+      expect(await bytesOf(`files/${row.token}/full`)).toEqual(row.original);
+      const [stored] = await sql<{ meta: string; preview_url: string | null }>(
+        store,
+        "SELECT meta, preview_url FROM media_attachments WHERE id = ?",
+        row.id,
+      );
+      expect(stored).toEqual({ meta, preview_url: null });
+      expect(await counters(store)).toEqual([[], []]);
+    },
+  );
+
+  it("records a still the meta has room for, and gives the poster when its own edges leave none", async () => {
+    // Room for two further digits: a 32×18 still fits, a 320×180 one does not.
+    const meta = metaOf(MEDIA_META_BYTES - 2);
     const store = await setup();
-    const row = await addAv(store, "video", { meta });
-    const made = maker();
+    const fits = await addAv(store, "video", { meta });
+    const small = maker({ answer: { ok: true, png: await pngOf(32, 18), image: null } });
+    expect(await run(store, { stills: small.stills })).toMatchObject({ counts: { built: 1 } });
+    expect((await rowOf(store, fits.id)).meta).toMatchObject({ small: { width: 32, height: 18 } });
+    const tight = await addAv(store, "video", { meta });
+    const wide = maker();
     const recording = recordingBucket();
-    const step = await run(store, { stills: made.stills, bucket: recording.bucket });
-    expect(step).toMatchObject({ ok: true, stopped: null, problems: [{ id: row.id, outcome: "failed", detail }] });
-    expect(made.calls).toEqual([]);
-    expect(recording.writes).toEqual([]);
-    const [stored] = await sql<{ meta: string }>(store, "SELECT meta FROM media_attachments WHERE id = ?", row.id);
-    expect(stored!.meta).toBe(meta);
-    expect(await counters(store)).toEqual([[], []]);
+    expect(await run(store, { stills: wide.stills, bucket: recording.bucket, after: fits.id })).toMatchObject({
+      counts: { fallback: 1 },
+    });
+    expect(wide.calls).toEqual([`still originals/${tight.id}`]);
+    expect(recording.writes).toEqual([`put files/${tight.token}/full`]);
+    expect(await rowOf(store, tight.id)).toMatchObject({ preview_url: null, blurhash: null });
+    // An existing small is held to the same room: not adopted, not put again, left as it is.
+    const adopted = await addAv(store, "video", { meta });
+    await env.MEDIA.put(`files/${adopted.token}/full`, adopted.original);
+    const webp = await new TestCodec().real.encode(STILL, { format: "image/webp", still: true });
+    await env.MEDIA.put(`files/${adopted.token}/small`, webp);
+    const left = recordingBucket();
+    expect(await run(store, { bucket: left.bucket, after: tight.id })).toMatchObject({ counts: { fallback: 1 } });
+    expect(left.writes).toEqual([]);
+    expect(await bytesOf(`files/${adopted.token}/small`)).toEqual(webp);
+    expect(await rowOf(store, adopted.id)).toMatchObject({ preview_url: null });
   });
 
-  it("reports a meta that grew past taking the still while it was made, not as a row that went", async () => {
+  it("gives the poster to a row whose meta grew past taking the still while it was made, not as a row that went", async () => {
     const store = await setup();
     const row = await addAv(store, "video");
-    const grown = JSON.stringify({ pad: "x".repeat(MEDIA_META_BYTES - 44) });
+    const grown = metaOf(MEDIA_META_BYTES);
     const made = maker({
       onStill: async () => {
         await sql(store, "UPDATE media_attachments SET meta = ? WHERE id = ?", grown, row.id);
       },
     });
     const step = await run(store, { stills: made.stills });
-    expect(step).toMatchObject({ problems: [{ id: row.id, outcome: "failed", detail: "meta-refused" }] });
+    expect(step).toMatchObject({ counts: { fallback: 1 }, problems: [] });
     expect((step as { counts: Record<string, number> }).counts.gone ?? 0).toBe(0);
-    expect((await rowOf(store, row.id)).meta).toEqual({ pad: "x".repeat(MEDIA_META_BYTES - 44) });
+    expect(await rowOf(store, row.id)).toMatchObject({ preview_url: null, blurhash: null, meta: JSON.parse(grown) });
   });
 
   it("writes no small Images made past STILL_LONG_EDGE or after the row's end, and stops", async () => {

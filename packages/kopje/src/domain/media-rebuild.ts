@@ -52,9 +52,9 @@ type StoredScalar = string | number | null;
 export type RebuildAv = {
   kind: "video" | "audio";
   preview: boolean;
-  // Whether a still can be recorded in the row's meta: it is a JSON object (or NULL), and with the largest meta.small
-  // a still may have it stays within MEDIA_META_BYTES.
-  meta: "ok" | "not-object" | "too-large";
+  // The bytes of the row's meta with meta.small set to {"width":0,"height":0}, as recordAvStill sets it; null when
+  // meta is not a JSON object (or NULL), which cannot take a still (avMetaFits).
+  metaBytes: number | null;
   small: { width: StoredScalar; height: StoredScalar } | null;
   blurhash: string | null;
 };
@@ -66,9 +66,15 @@ export type RebuildRow = {
   av: RebuildAv | null;
 };
 
-// The largest meta.small a still can have (its edges are at most STILL_LONG_EDGE, 640): what a row's meta must have
-// room for.
-const LARGEST_SMALL = JSON.stringify({ width: 640, height: 640 });
+// meta.small of one-digit edges: a still's meta.small is longer by its edges' further digits.
+const SMALLEST_SMALL = JSON.stringify({ width: 0, height: 0 });
+
+// Whether recordAvStill can record a still of `small` in the row's meta: an object, within MEDIA_META_BYTES as SQLite
+// serializes it with this meta.small (the length of SMALLEST_SMALL's form and the edges' further digits).
+export function avMetaFits(av: Pick<RebuildAv, "metaBytes">, small: Size): boolean {
+  const digits = (n: number) => String(n).length - 1;
+  return av.metaBytes !== null && av.metaBytes + digits(small.width) + digits(small.height) <= MEDIA_META_BYTES;
+}
 
 // A video or audio row by its served type and its kind, which must agree.
 const AV_SQL = `((type = 'video' AND content_type = 'video/mp4') OR (type = 'audio' AND content_type = 'audio/mpeg'))`;
@@ -97,7 +103,7 @@ export const rebuildCandidates = readOperation.atStoreTime("now")<{ after: strin
     emoji: number;
     kind: "video" | "audio" | null;
     preview: number;
-    meta: "ok" | "not-object" | "too-large";
+    metaBytes: number | null;
     smallWidth: SqlStorageValue;
     smallHeight: SqlStorageValue;
     hasSmall: number;
@@ -109,20 +115,18 @@ export const rebuildCandidates = readOperation.atStoreTime("now")<{ after: strin
 				EXISTS (SELECT 1 FROM custom_emojis e WHERE e.id = media_attachments.id) AS emoji,
 				CASE WHEN ${AV_SQL} THEN type END AS kind, preview_url IS NOT NULL AS preview,
 				json_type(meta, '$.small') IS NOT NULL AS hasSmall,
-				CASE WHEN meta IS NOT NULL AND json_type(meta) <> 'object' THEN 'not-object'
-					WHEN length(CAST(json_set(COALESCE(meta, '{}'), '$.small', json(?)) AS BLOB)) > ? THEN 'too-large'
-					ELSE 'ok' END AS meta,
+				CASE WHEN meta IS NULL OR json_type(meta) = 'object'
+					THEN length(CAST(json_set(COALESCE(meta, '{}'), '$.small', json(?)) AS BLOB)) END AS metaBytes,
 				json_extract(meta, '$.small.width') AS smallWidth, json_extract(meta, '$.small.height') AS smallHeight,
 				blurhash
 			FROM media_attachments WHERE ${ELIGIBLE} AND id > ? AND id <= ? ORDER BY id LIMIT ?`,
-      LARGEST_SMALL,
-      MEDIA_META_BYTES,
+      SMALLEST_SMALL,
       iso(now),
       after ?? "",
       last,
       REBUILD_PAGE,
     )
-    .map(({ emoji, kind, preview, meta, smallWidth, smallHeight, hasSmall, blurhash, ...row }) => ({
+    .map(({ emoji, kind, preview, metaBytes, smallWidth, smallHeight, hasSmall, blurhash, ...row }) => ({
       ...row,
       emoji: emoji === 1,
       av:
@@ -131,7 +135,7 @@ export const rebuildCandidates = readOperation.atStoreTime("now")<{ after: strin
           : {
               kind,
               preview: preview === 1,
-              meta,
+              metaBytes,
               small: hasSmall === 1 ? { width: smallWidth as StoredScalar, height: smallHeight as StoredScalar } : null,
               blurhash,
             },

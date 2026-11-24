@@ -3215,13 +3215,13 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   reported and left), or a still made by the media processor through the injected `StillMaker` (its one input key is
   `originals/<id>`; the PNG passes `verifyStill`, then Images' `encodeChecked`), put with custom metadata `{width,
   height, blurhash}`. The Store records the still (`recordAvStill`) only after that put, and with `--stills` sets the
-  preview URL in the same call; when no still can be made (no processor, a spent budget, a refused input) it clears the
-  preview, `meta.small` and the blurhash (`fallbackAvRebuild`) and writes nothing, and a processor or Images failing for
-  a moment stops the call with the row as it was. The `still@standard-1` probe the call runs first when its record is
-  not a pass for this build writes its input to `incoming/probe-<nonce>` (`probeInputKey`, never served) and deletes it
-  after; a copy left by a Worker that died in between, or by a call that lost its lease before the delete, stays until
-  removed by hand (the `incoming/` orphan pass is not built yet). Every one of these R2 writes and deletes starts only
-  after the Store confirms the lease.
+  preview URL in the same call; when no still can be made (no processor, a spent budget, a refused input, a meta that
+  cannot take it) it clears the preview, `meta.small` and the blurhash (`fallbackAvRebuild`) and writes nothing but the
+  verified `full`, and a processor or Images failing for a moment stops the call with the row as it was. The
+  `still@standard-1` probe the call runs first when its record is not a pass for this build writes its input to
+  `incoming/probe-<nonce>` (`probeInputKey`, never served) and deletes it after; a copy left by a Worker that died in
+  between, or by a call that lost its lease before the delete, stays until removed by hand (the `incoming/` orphan pass
+  is not built yet). Every one of these R2 writes and deletes starts only after the Store confirms the lease.
   `test/media-rebuild-av.test.ts` ("publishes nothing the verifier refuses", "a call that loses its lease after `full`",
   "a call held right after its still's put loses the lease", "a restored row whose preview metadata predates the
   small", "falls back without the processor"), `test/media-processor.test.ts` ("MediaProcessor stillNow").

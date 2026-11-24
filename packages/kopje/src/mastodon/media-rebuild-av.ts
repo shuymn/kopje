@@ -1,4 +1,5 @@
 import {
+  avMetaFits,
   type ProbeAttempt,
   probeImageTag,
   type ProbeRecord,
@@ -46,7 +47,9 @@ import { storedBlurhash } from "../platform/stored-bounds";
 //          the blurhash; with `--stills` it also sets preview_url in the same call.
 //   fallback  only when the small cannot be made for good: no processor bound, a failed probe, the configured budget
 //          spent, the container refusing this row's input (one of STILL_INPUT_REFUSALS, typed by the processor from
-//          the answer's status and code), verifyStill refusing its PNG, or Images refusing the still as input. The
+//          the answer's status and code), verifyStill refusing its PNG, Images refusing the still as input, or a meta
+//          that cannot take the still's meta.small (not a JSON object, or past MEDIA_META_BYTES with this still's
+//          edges, avMetaFits: checked before anything of the small is charged or put, and by the Store). The
 //          Store clears preview_url, meta.small and the blurhash, and nothing is written. A plain rebuild never
 //          revisits it; `--stills` does.
 //   stop   every other failure: the processor busy, unavailable, not ready, failing inside (500) or timing out (504),
@@ -173,10 +176,6 @@ export async function rebuildAv(
 ): Promise<AvOutcome> {
   const end = call.now() + REBUILD_AV_MS;
   const stage = (ms: number) => Math.min(end, call.now() + ms);
-  // A video whose still the call may record needs a meta that can hold it; otherwise nothing of the row is touched.
-  if (av.kind === "video" && (av.preview || call.publish) && av.meta !== "ok") {
-    return { kind: "problem", outcome: "failed", detail: `meta-${av.meta}` };
-  }
   if (full === null) {
     const copied = await copyFull(call, row, av, stage(AV_COPY_MS));
     if (copied !== null) {
@@ -186,38 +185,20 @@ export async function rebuildAv(
   if (av.kind === "audio" || (!av.preview && !call.publish)) {
     return { kind: "built" };
   }
+  // A meta that cannot take even the smallest still (not an object, or no room left): the poster, nothing made.
   let facts: StillFacts | AvOutcome | Fallback;
-  let quota = false;
-  if (small !== null) {
-    facts = await adopt(call, row, end);
+  if (!avMetaFits(av, { width: 1, height: 1 })) {
+    facts = new Fallback("meta");
+  } else if (small !== null) {
+    facts = await adopt(call, row, av, end);
   } else {
-    facts = await make(call, row, end, stage);
+    facts = await make(call, row, av, end, stage);
   }
   if (facts instanceof Fallback) {
-    if (av.preview) {
-      const cleared = await call.bounded<RebuildRecord>(
-        async () =>
-          await call.store.fallbackMediaRebuild(call.build, {
-            authority: call.authority,
-            holder: call.holder,
-            id: row.id,
-            token: row.token,
-          }),
-      );
-      if (cleared.status === "denied" || cleared.status === "lease-lost") {
-        return refusedBy(cleared);
-      }
-      if (cleared.status === "gone") {
-        return { kind: "gone" };
-      }
-    }
-    return { kind: "fallback", quota: facts.quota };
+    return fallBack(call, row, av, facts);
   }
   if ("kind" in facts) {
     return facts;
-  }
-  if ("quota" in facts) {
-    quota = facts.quota === true;
   }
   const recorded = await call.bounded<RebuildRecord>(
     async () =>
@@ -234,10 +215,33 @@ export async function rebuildAv(
   if (recorded.status === "denied" || recorded.status === "lease-lost") {
     return refusedBy(recorded);
   }
+  // The meta changed since it was listed and cannot take this still: the poster, as when it could not before.
   if (recorded.status === "meta") {
-    return { kind: "problem", outcome: "failed", detail: "meta-refused" };
+    return fallBack(call, row, av, new Fallback("meta"));
   }
-  return { kind: recorded.status === "gone" ? "gone" : "built", quota };
+  return { kind: recorded.status === "gone" ? "gone" : "built" };
+}
+
+// The fallback of a video row: a row with a preview has it cleared (fallbackAvRebuild); its `full` stays.
+async function fallBack(call: AvCall, row: RebuildRow, av: RebuildAv, fallback: Fallback): Promise<AvOutcome> {
+  if (av.preview) {
+    const cleared = await call.bounded<RebuildRecord>(
+      async () =>
+        await call.store.fallbackMediaRebuild(call.build, {
+          authority: call.authority,
+          holder: call.holder,
+          id: row.id,
+          token: row.token,
+        }),
+    );
+    if (cleared.status === "denied" || cleared.status === "lease-lost") {
+      return refusedBy(cleared);
+    }
+    if (cleared.status === "gone") {
+      return { kind: "gone" };
+    }
+  }
+  return { kind: "fallback", quota: fallback.quota };
 }
 
 function refusedBy(result: { status: "denied"; reason: string } | { status: "lease-lost" }): AvOutcome {
@@ -327,7 +331,12 @@ async function copyFull(call: AvCall, row: RebuildRow, av: RebuildAv, until: num
 
 // The facts of an existing small that passes its checks, its blurhash recomputed (and the object put again with its
 // metadata) when the metadata is missing or invalid.
-async function adopt(call: AvCall, row: RebuildRow, end: number): Promise<StillFacts | AvOutcome> {
+async function adopt(
+  call: AvCall,
+  row: RebuildRow,
+  av: RebuildAv,
+  end: number,
+): Promise<StillFacts | AvOutcome | Fallback> {
   const key = fileKey(row.token, "small");
   const object = await call.bounded(
     () => call.bucket.get(key, { range: { offset: 0, length: STILL_OUTPUT_LIMIT + 1 } }),
@@ -344,6 +353,9 @@ async function adopt(call: AvCall, row: RebuildRow, end: number): Promise<StillF
   const size = smallSize(bytes);
   if (size === null) {
     return { kind: "problem", outcome: "failed", detail: "small-invalid" };
+  }
+  if (!avMetaFits(av, size)) {
+    return new Fallback("meta");
   }
   const meta = object.customMetadata ?? {};
   const given = meta.blurhash;
@@ -415,6 +427,7 @@ function pngSize(png: Uint8Array): Size {
 async function make(
   call: AvCall,
   row: RebuildRow,
+  av: RebuildAv,
   end: number,
   stage: (ms: number) => number,
 ): Promise<StillFacts | AvOutcome | Fallback> {
@@ -476,6 +489,10 @@ async function make(
   const size = smallSize(preview.small.bytes);
   if (size === null || size.width !== preview.small.width || size.height !== preview.small.height) {
     return RETRY;
+  }
+  // The row's meta must take this still's own meta.small before anything is put.
+  if (!avMetaFits(av, size)) {
+    return new Fallback("meta");
   }
   const facts = { ...size, blurhash: preview.blurhash };
   await call.settled(() =>
