@@ -3218,7 +3218,7 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   height, blurhash}` metadata, which the skip rule compares with the row and adopts again on a mismatch:
   `test/media-rebuild-av.test.ts` ("converges when an earlier holder's still put lands over the small a later call
   recorded"). For image rows it does not: an overlapping write can leave the row's preview dimensions or blurhash
-  disagreeing with the stored `small`, which a later run skips; this is pre-existing (issue to follow).
+  disagreeing with the stored `small`, which a later run skips; this is pre-existing (#1835).
   A video or audio row (`src/mastodon/media-rebuild-av.ts`, #1828) is rebuilt under the same lease and fences, one a
   call, within `REBUILD_AV_MS` (120 s, its stages bounded at 60, 60 and 75 s). Its `files/<token>/full` is the original
   read once and streamed through the output verifier (`avVerifier`, MEDIA-3) into the put; the last chunk is held until

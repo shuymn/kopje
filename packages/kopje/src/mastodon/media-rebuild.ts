@@ -53,7 +53,7 @@ import { type AvCall, avComplete, MAX_AV_BUILDS_PER_CALL, rebuildAv } from "./me
 // idempotent per key and the next run converges: a video's `small` carries its own {width, height, blurhash} metadata,
 // which the skip rule compares with the row and adopts again on a mismatch (media-rebuild-av.ts). For image rows it
 // does not: an overlapping write can leave the row's preview dimensions or blurhash disagreeing with the stored
-// `small`, which a later run skips (pre-existing, issue to follow).
+// `small`, which a later run skips (pre-existing, #1835).
 // A call that gave up a step keeps the lease until it expires. The bound: per row, at most two R2 reads, six Images
 // calls (an emoji's: the preflight info() and processImage's five; any other row's: processImage's six, its preview's
 // RGBA included) and five Store calls, each given up within the lease, then at most three R2 writes, each awaited.
