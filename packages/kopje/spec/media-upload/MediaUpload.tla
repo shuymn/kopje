@@ -322,7 +322,9 @@ TakesInput(u) == r2[u].inc /\ LiveRow(Norm(st[u], now, ra), now) /\ ~IsFenced(u)
 \* it (D36, D42; GiveUp200): 200 exactly for an upload published when it is sent, except a 503 W5 excuses and either
 \* way once a restore since the decision rewrote the record (W11); and S10's decision as decided.
 Answer(u, code, kind, rcv, extra) ==
-  LET w5 == code = 503 /\ (rcv \in {"lost", "failed", "maint"} \/ (rcv = "none" /\ RNow >= rt[u].arr + V1))
+  LET \* ClockOnlyW5 lets the clock excuse any reply (Codex r7).
+      w5 == code = 503 /\ (rcv \in {"lost", "failed", "maint"}
+                           \/ ((rcv = "none" \/ Variant = "ClockOnlyW5") /\ RNow >= rt[u].arr + V1))
       decided == rt[u].pc = "s10" /\ rcv \notin {"none", "lost", "failed", "maint"}
       aRn == IF decided THEN rt[u].rep.rn ELSE rn
       pub == Published(u, st[u])
@@ -332,6 +334,8 @@ Answer(u, code, kind, rcv, extra) ==
                        ![u].left = 0]
   /\ gh' = [gh EXCEPT ![u].tok = gh[u].tok \/ code = 200, ![u].w5 = w5, ![u].aRn = aRn]
   /\ err' = err \cup extra \cup (IF wrong \/ (decided /\ code # DecisionCode(rcv)) THEN {"V1Answer"} ELSE {})
+             \* W5's ground: never a 503 the route answers holding S10's decision (D45).
+             \cup (IF w5 /\ decided THEN {"W5Decided"} ELSE {})
 
 \* The route deletes incoming/<id>: only with the Store's cleanup answer, recorded in the Store's transaction, and never
 \* once a queue the latest restore has not fenced has committed (RouteDeleteAuthority, DelFlags). A queue a restore
@@ -552,10 +556,15 @@ RouteCut(u) ==
   /\ UNCHANGED <<ev, now, st, sg, bm, ra, rn, dd, iv, nInv, runReq, r2, orp, bud, gh, err, sw>>
 
 \* A v1 request answers by arrival + V1: a call still out is left to commit or not (W5).
+\* An S10 reply the route received before its timeout fires is answered, not the timeout (D45, Codex r7):
+\* GiveUpOverReply gives up over it. The give-up passes S10's buffered reply on, so W5 is told from it; a reply to an
+\* earlier call is the Store's answer to that call, not to the upload's outcome, and leaves the give-up W5.
 RouteGiveUp(u) ==
   /\ rt[u].v1 /\ rt[u].pc \notin {"idle", "done", "dead"} /\ RNow >= rt[u].arr + V1
+  /\ ~(rt[u].pc = "s10" /\ rt[u].rep.a \notin {"none", "lost", "failed", "maint"}) \/ Variant = "GiveUpOverReply"
   \* GiveUp200: the give-up answers 200 (Codex r6 CB2).
-  /\ Answer(u, IF Variant = "GiveUp200" THEN 200 ELSE 503, "giveup", "none", {})
+  /\ Answer(u, IF Variant = "GiveUp200" THEN 200 ELSE 503, "giveup", IF rt[u].pc = "s10" THEN rt[u].rep.a ELSE "none",
+            {})
   /\ UNCHANGED <<ev, now, st, sg, bm, ra, rn, dd, iv, nInv, runReq, r2, orp, bud, sw>>
 
 RouteDie(u) ==
@@ -1159,10 +1168,12 @@ SlotRelease == "SlotFreedEarly" \notin err
 RouteDeleteAuthority == "RouteDeleteNoAuthority" \notin err
 InputKept == "InputTaken" \notin err
 NoPublishAfterDelete == "PublishAfterDelete" \notin err
-\* Also: no upload is published after such an answer unless a restore since its decision rewrote the record (W11 for a
-\* 503, D32: a restore to a bookmark that holds the upload completed).
+\* Also: W5 never excuses a 503 answered with S10's decision in hand (D45), and no upload is published after such an
+\* answer unless a restore since its decision rewrote the record (W11 for a 503, D32: a restore to a bookmark that holds
+\* the upload completed).
 NoPublishAfterNon200 ==
   /\ "PublishAfterNon200" \notin err
+  /\ "W5Decided" \notin err
   /\ \A u \in U : Non200(u) /\ Published(u, st[u]) => gh[u].rw > gh[u].aRn
 GrantBound == "GrantOverrun" \notin err
 GrantGround == "GrantGround" \notin err
@@ -1251,6 +1262,7 @@ Mutations ==
    <<"V1Answer", "S10IgnoresGc", "V1L">>, <<"ContainerCovered", "K3FreesSlot", "RSB">>,
    <<"NoLateObject", "SharedEarlyPurge", "V2D">>, <<"StartNeedsSlot", "MoveStartDeadline", "V2K">>,
    <<"V1Answer", "GiveUp200", "V1L">>, <<"NoPublishAfterNon200", "NoDoomAtCut", "H1W">>,
-   <<"OwnerGetHasFiles", "CompleteBeforeLanding", "V2D">>}
+   <<"OwnerGetHasFiles", "CompleteBeforeLanding", "V2D">>, <<"V1Answer", "GiveUpOverReply", "V1L">>,
+   <<"NoPublishAfterNon200", "ClockOnlyW5", "V1L">>}
 
 =============================================================================

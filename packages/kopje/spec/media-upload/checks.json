@@ -3,7 +3,7 @@
   "scenarios": [
     {
       "name": "V1L",
-      "distinct": 745010,
+      "distinct": 736294,
       "depth": 47
     },
     {
@@ -13,7 +13,7 @@
     },
     {
       "name": "V1R",
-      "distinct": 677956,
+      "distinct": 667842,
       "depth": 48
     },
     {
@@ -43,7 +43,7 @@
     },
     {
       "name": "MT",
-      "distinct": 1510220,
+      "distinct": 1509930,
       "depth": 54
     },
     {
@@ -68,17 +68,17 @@
     },
     {
       "name": "H1W",
-      "distinct": 827925,
+      "distinct": 812262,
       "depth": 49
     },
     {
       "name": "RS",
-      "distinct": 2237566,
+      "distinct": 2189610,
       "depth": 50
     },
     {
       "name": "RSW",
-      "distinct": 109896,
+      "distinct": 109608,
       "depth": 43
     },
     {
@@ -93,7 +93,7 @@
     },
     {
       "name": "RS12",
-      "distinct": 1966451,
+      "distinct": 1936960,
       "depth": 44
     },
     {
@@ -693,6 +693,22 @@
       "property": "OwnerGetHasFiles",
       "trace": 22,
       "breaks": "S6 completes the upload before its last write lands, so the owner's GET shows a URL without its file (D40)"
+    },
+    {
+      "name": "V1Answer-GiveUpOverReply",
+      "scenario": "V1L",
+      "variant": "GiveUpOverReply",
+      "property": "V1Answer",
+      "trace": 26,
+      "breaks": "the route's timeout answers 503 over an S10 decision it already received, a 200 included (D45, Codex r7)"
+    },
+    {
+      "name": "NoPublishAfterNon200-ClockOnlyW5",
+      "scenario": "V1L",
+      "variant": "ClockOnlyW5",
+      "property": "NoPublishAfterNon200",
+      "trace": 16,
+      "breaks": "W5 takes the route's clock past V1_TIME_MS as its ground whatever reply the route received, so a 503 S10 decided counts as one it did not (D45, Codex r7)"
     }
   ],
   "goals": [
