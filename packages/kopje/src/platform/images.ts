@@ -429,8 +429,8 @@ export async function processImage(
 }
 
 // The preview of a video from the media processor's PNG still (#1828 design 4.10, 4.16), which verifyStill has passed
-// (platform/av-bytes.ts): re-encoded as a still WebP within SMALL_EDGE (encodeChecked: stripped, no metadata left, one
-// frame, its real dimensions), and its blurhash from Images' RGBA output of the same input and transformation, given
+// (platform/av-bytes.ts): re-encoded as a still WebP within SMALL_EDGE (encodeBounded: read within `limit`, every call
+// under `guard`, stripped, no metadata left, one frame, its real dimensions), and its blurhash from Images' RGBA output of the same input and transformation, given
 // up as an upload's is (`blurhash`, ProcessOptions). A failure of the WebP is classified as processImage classifies
 // it; any failure of the RGBA output only leaves the blurhash null.
 export async function stillPreview(
@@ -438,13 +438,15 @@ export async function stillPreview(
   png: Uint8Array,
   size: Size,
   blurhash: { end: number; now: () => number },
+  limit: number,
+  guard: CallGuard,
 ): Promise<
   | { ok: true; small: EncodedImage; blurhash: string | null; blurhashStop: "quota" | "deadline" | null }
   | { ok: false; reason: ImageFailure; detail?: string }
 > {
   const preview = fit(size, SMALL_EDGE);
   try {
-    const small = await encodeChecked(codec, png, { ...preview, format: "image/webp", still: true });
+    const small = await encodeBounded(codec, png, { ...preview, format: "image/webp", still: true }, limit, guard);
     const hashed = await previewBlurhash(codec, png, preview, small, blurhash);
     return { ok: true, small, blurhash: hashed.blurhash, blurhashStop: hashed.stop };
   } catch (error) {

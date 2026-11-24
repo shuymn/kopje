@@ -158,6 +158,10 @@ export async function rebuildAv(
 ): Promise<AvOutcome> {
   const end = call.now() + REBUILD_AV_MS;
   const stage = (ms: number) => Math.min(end, call.now() + ms);
+  // A video whose still the call may record needs a meta that can hold it; otherwise nothing of the row is touched.
+  if (av.kind === "video" && (av.preview || call.publish) && av.meta !== "ok") {
+    return { kind: "problem", outcome: "failed", detail: `meta-${av.meta}` };
+  }
   if (full === null) {
     const copied = await copyFull(call, row, av, stage(AV_COPY_MS));
     if (copied !== null) {
@@ -214,6 +218,9 @@ export async function rebuildAv(
   );
   if (recorded.status === "denied" || recorded.status === "lease-lost") {
     return refusedBy(recorded);
+  }
+  if (recorded.status === "meta") {
+    return { kind: "problem", outcome: "failed", detail: "meta-refused" };
   }
   return { kind: recorded.status === "gone" ? "gone" : "built", quota };
 }
@@ -319,16 +326,8 @@ async function adopt(call: AvCall, row: RebuildRow, end: number): Promise<StillF
     return { kind: "problem", outcome: "failed", detail: "small-invalid" };
   }
   const bytes = new Uint8Array(await call.bounded(() => object.arrayBuffer(), end));
-  const size = sniffImageType(bytes) === "image/webp" ? webpSize(bytes) : null;
-  if (
-    size === null ||
-    walkWebp(bytes, () => undefined) === MALFORMED ||
-    retainedMetadata(bytes, "image/webp") !== null ||
-    isAnimated(bytes, "image/webp") ||
-    size.width < 1 ||
-    size.height < 1 ||
-    Math.max(size.width, size.height) > STILL_LONG_EDGE
-  ) {
+  const size = smallSize(bytes);
+  if (size === null) {
     return { kind: "problem", outcome: "failed", detail: "small-invalid" };
   }
   const meta = object.customMetadata ?? {};
@@ -369,6 +368,22 @@ async function adopt(call: AvCall, row: RebuildRow, end: number): Promise<StillF
     call.bucket.put(key, bytes, { httpMetadata: { contentType: "image/webp" }, customMetadata: metadataOf(facts) }),
   );
   return facts;
+}
+
+// The geometry of a `small` as Kopje serves one, whether adopted or just made: at most STILL_OUTPUT_LIMIT bytes, a
+// still WebP that walks, with no retained metadata and edges of 1 to STILL_LONG_EDGE. null when it is not one.
+function smallSize(bytes: Uint8Array): Size | null {
+  const size =
+    bytes.byteLength <= STILL_OUTPUT_LIMIT && sniffImageType(bytes) === "image/webp" ? webpSize(bytes) : null;
+  return size === null ||
+    walkWebp(bytes, () => undefined) === MALFORMED ||
+    retainedMetadata(bytes, "image/webp") !== null ||
+    isAnimated(bytes, "image/webp") ||
+    size.width < 1 ||
+    size.height < 1 ||
+    Math.max(size.width, size.height) > STILL_LONG_EDGE
+    ? null
+    : size;
 }
 
 // The PNG's dimensions from its IHDR, which verifyStill has walked.
@@ -416,8 +431,12 @@ async function make(
   if (verifyStill(made.png) !== null) {
     return new Fallback("still-invalid");
   }
+  // Images' output is read within STILL_OUTPUT_LIMIT and every call of it given up at the row's end.
   const preview = await call.bounded(
-    () => stillPreview(call.images, made.png, pngSize(made.png), { end, now: call.now }),
+    () =>
+      stillPreview(call.images, made.png, pngSize(made.png), { end, now: call.now }, STILL_OUTPUT_LIMIT, (work) =>
+        within(work, end, call.now),
+      ),
     end,
   );
   if (!preview.ok) {
@@ -427,7 +446,12 @@ async function make(
   if (preview.blurhashStop === "deadline") {
     throw new DeadlinePassed();
   }
-  const facts = { width: preview.small.width, height: preview.small.height, blurhash: preview.blurhash };
+  // Held to what an adopted small is held to, so a later call can adopt what this one writes.
+  const size = smallSize(preview.small.bytes);
+  if (size === null || size.width !== preview.small.width || size.height !== preview.small.height) {
+    return RETRY;
+  }
+  const facts = { ...size, blurhash: preview.blurhash };
   await call.settled(() =>
     call.bucket.put(fileKey(row.token, "small"), preview.small.bytes, {
       httpMetadata: { contentType: "image/webp" },

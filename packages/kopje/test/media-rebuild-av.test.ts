@@ -8,6 +8,7 @@ import { MAX_BUILDS_PER_CALL, rebuildMedia, type RebuildStep } from "../src/mast
 import { MAX_AV_BUILDS_PER_CALL, PROBE_RETRY_MS, REBUILD_AV_MS } from "../src/mastodon/media-rebuild-av";
 import type { StillMaker, StillOutcome } from "../src/platform/media-transcoder";
 import type { StoreStub } from "../src/platform/store-client";
+import { MEDIA_META_BYTES } from "../src/platform/stored-bounds";
 import { randomToken } from "../src/security/tokens";
 import { type AccessTeam, adminTeam, setTeamAccess } from "./access-helpers";
 import { sql } from "./api-helpers";
@@ -17,6 +18,7 @@ import { BUILD, migratedStore } from "./helpers";
 import { pngOf } from "./local-emoji-helpers";
 import { TestCodec } from "./media-helpers";
 import { ACCESS, memoryIO } from "./ops-helpers";
+import { encodeWebp } from "./webp-fixtures";
 
 // kopje-admin media-rebuild of video and audio rows (#1828 design 4.16, P25; MEDIA-2's rebuild steps): `full` from the
 // original through the output verifier, a video's `small` adopted or made by the media processor (a fake StillMaker
@@ -64,6 +66,8 @@ async function addAv(
     preview?: boolean;
     small?: { width: number; height: number };
     blurhash?: string;
+    // The stored meta as given, in place of the one made here.
+    meta?: string;
   } = {},
 ): Promise<AvRow> {
   const id = mediaId();
@@ -91,7 +95,7 @@ async function addAv(
       preview ? `${ORIGIN}/media/${token}/small.webp` : null,
       token,
       type,
-      JSON.stringify(meta),
+      options.meta ?? JSON.stringify(meta),
       options.blurhash ?? null,
     );
   });
@@ -472,6 +476,70 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
     expect(await run(store, { stills: pending.stills, holder: "torn" })).toMatchObject({ stopped: "deadline" });
     const [lease] = await stateValue(store, "media_rebuild_lease");
     expect(JSON.parse(lease!)).toMatchObject({ holder: "torn" });
+  });
+
+  it.each([
+    ["an array", "[]", "meta-not-object"],
+    // Its own bytes fit MEDIA_META_BYTES; with meta.small of the widest still they would not.
+    [
+      "an object the still would take past MEDIA_META_BYTES",
+      JSON.stringify({ pad: "x".repeat(MEDIA_META_BYTES - 44) }),
+      "meta-too-large",
+    ],
+  ])("reports a video row whose meta is %s and touches nothing of it", async (_name, meta, detail) => {
+    const store = await setup();
+    const row = await addAv(store, "video", { meta });
+    const made = maker();
+    const recording = recordingBucket();
+    const step = await run(store, { stills: made.stills, bucket: recording.bucket });
+    expect(step).toMatchObject({ ok: true, stopped: null, problems: [{ id: row.id, outcome: "failed", detail }] });
+    expect(made.calls).toEqual([]);
+    expect(recording.writes).toEqual([]);
+    const [stored] = await sql<{ meta: string }>(store, "SELECT meta FROM media_attachments WHERE id = ?", row.id);
+    expect(stored!.meta).toBe(meta);
+    expect(await counters(store)).toEqual([[], []]);
+  });
+
+  it("reports a meta that grew past taking the still while it was made, not as a row that went", async () => {
+    const store = await setup();
+    const row = await addAv(store, "video");
+    const grown = JSON.stringify({ pad: "x".repeat(MEDIA_META_BYTES - 44) });
+    const made = maker({
+      onStill: async () => {
+        await sql(store, "UPDATE media_attachments SET meta = ? WHERE id = ?", grown, row.id);
+      },
+    });
+    const step = await run(store, { stills: made.stills });
+    expect(step).toMatchObject({ problems: [{ id: row.id, outcome: "failed", detail: "meta-refused" }] });
+    expect((step as { counts: Record<string, number> }).counts.gone ?? 0).toBe(0);
+    expect((await rowOf(store, row.id)).meta).toEqual({ pad: "x".repeat(MEDIA_META_BYTES - 44) });
+  });
+
+  it("writes no small Images made past STILL_LONG_EDGE or after the row's end, and stops", async () => {
+    const store = await setup();
+    const row = await addAv(store, "video");
+    await sql(
+      store,
+      "INSERT INTO kopje_state (name, value) VALUES ('media_probe:still@standard-1', ?)",
+      JSON.stringify({ version: BUILD, imageTag: null, at: Date.now(), ok: true }),
+    );
+    const wide = await encodeWebp(700, 100, { fill: "flat" });
+    const codec = new TestCodec();
+    codec.encodeResponder = (options) => (options.format === "image/webp" ? wide : null);
+    expect(await run(store, { codec })).toMatchObject({ stopped: "retry", next: null });
+    expect(await env.MEDIA.head(`files/${row.token}/small`)).toBeNull();
+
+    // An encode that answers once the row's time is spent: nothing more is asked of Images, nothing written.
+    let clock = NOW;
+    const late = new TestCodec();
+    late.encodeResponder = () => {
+      clock = NOW + REBUILD_AV_MS + 1;
+      return null;
+    };
+    expect(await run(store, { codec: late, now: () => clock })).toMatchObject({ stopped: "deadline" });
+    expect(late.encodeCalls).toHaveLength(1);
+    expect(late.infoCalls).toBe(0);
+    expect(await env.MEDIA.head(`files/${row.token}/small`)).toBeNull();
   });
 
   it("kopje-admin media-rebuild exits 3 when a call stops for a retry", async () => {

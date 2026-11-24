@@ -52,6 +52,9 @@ type StoredScalar = string | number | null;
 export type RebuildAv = {
   kind: "video" | "audio";
   preview: boolean;
+  // Whether a still can be recorded in the row's meta: it is a JSON object (or NULL), and with the largest meta.small
+  // a still may have it stays within MEDIA_META_BYTES.
+  meta: "ok" | "not-object" | "too-large";
   small: { width: StoredScalar; height: StoredScalar } | null;
   blurhash: string | null;
 };
@@ -62,6 +65,10 @@ export type RebuildRow = {
   emoji: boolean;
   av: RebuildAv | null;
 };
+
+// The largest meta.small a still can have (its edges are at most STILL_LONG_EDGE, 640): what a row's meta must have
+// room for.
+const LARGEST_SMALL = JSON.stringify({ width: 640, height: 640 });
 
 // A video or audio row by its served type and its kind, which must agree.
 const AV_SQL = `((type = 'video' AND content_type = 'video/mp4') OR (type = 'audio' AND content_type = 'audio/mpeg'))`;
@@ -90,6 +97,7 @@ export const rebuildCandidates = readOperation.atStoreTime("now")<{ after: strin
     emoji: number;
     kind: "video" | "audio" | null;
     preview: number;
+    meta: "ok" | "not-object" | "too-large";
     smallWidth: SqlStorageValue;
     smallHeight: SqlStorageValue;
     hasSmall: number;
@@ -101,15 +109,20 @@ export const rebuildCandidates = readOperation.atStoreTime("now")<{ after: strin
 				EXISTS (SELECT 1 FROM custom_emojis e WHERE e.id = media_attachments.id) AS emoji,
 				CASE WHEN ${AV_SQL} THEN type END AS kind, preview_url IS NOT NULL AS preview,
 				json_type(meta, '$.small') IS NOT NULL AS hasSmall,
+				CASE WHEN meta IS NOT NULL AND json_type(meta) <> 'object' THEN 'not-object'
+					WHEN length(CAST(json_set(COALESCE(meta, '{}'), '$.small', json(?)) AS BLOB)) > ? THEN 'too-large'
+					ELSE 'ok' END AS meta,
 				json_extract(meta, '$.small.width') AS smallWidth, json_extract(meta, '$.small.height') AS smallHeight,
 				blurhash
 			FROM media_attachments WHERE ${ELIGIBLE} AND id > ? AND id <= ? ORDER BY id LIMIT ?`,
+      LARGEST_SMALL,
+      MEDIA_META_BYTES,
       iso(now),
       after ?? "",
       last,
       REBUILD_PAGE,
     )
-    .map(({ emoji, kind, preview, smallWidth, smallHeight, hasSmall, blurhash, ...row }) => ({
+    .map(({ emoji, kind, preview, meta, smallWidth, smallHeight, hasSmall, blurhash, ...row }) => ({
       ...row,
       emoji: emoji === 1,
       av:
@@ -118,6 +131,7 @@ export const rebuildCandidates = readOperation.atStoreTime("now")<{ after: strin
           : {
               kind,
               preview: preview === 1,
+              meta,
               small: hasSmall === 1 ? { width: smallWidth as StoredScalar, height: smallHeight as StoredScalar } : null,
               blurhash,
             },
@@ -284,6 +298,8 @@ type Size = { width: number; height: number };
 export type RebuildRecord =
   | { status: "ok" }
   | { status: "gone" }
+  // recordAvStill: the row is there, but its meta cannot take the still (not an object, or past MEDIA_META_BYTES).
+  | { status: "meta" }
   | { status: "lease-lost" }
   | { status: "denied"; reason: string };
 
@@ -332,8 +348,8 @@ export const recordRebuild = mediaRebuildOperation.atStoreTime("now")<
 // Records the still of a video row once its `small` exists in R2: meta.small its geometry and the blurhash as given
 // (null is stored as null: the still's metadata says it has none). `publish` (`--stills`) also sets the row's
 // preview_url, on the uploader's origin as completeMedia makes it, in the same update; otherwise the row must still
-// have one, so a row that fell back is not given a preview by a plain rebuild. A meta past MEDIA_META_BYTES is not
-// written (gone).
+// have one, so a row that fell back is not given a preview by a plain rebuild. A meta that is not an object, or that
+// the still would take past MEDIA_META_BYTES, is not written: "meta" while the row is there, "gone" once it is not.
 export const recordAvStill = mediaRebuildOperation.atStoreTime("now")<
   {
     authority: ImportAuthority;
@@ -368,6 +384,7 @@ export const recordAvStill = mediaRebuildOperation.atStoreTime("now")<
     `UPDATE media_attachments SET meta = ${meta}, blurhash = ?2, preview_url = COALESCE(?3, preview_url)
 		WHERE id = ?4 AND file_token = ?5 AND type = 'video' AND content_type = 'video/mp4'
 			AND (?3 IS NOT NULL OR preview_url IS NOT NULL)
+			AND (meta IS NULL OR json_type(meta) = 'object')
 			AND length(CAST(${meta} AS BLOB)) <= ?6
 			AND ${ELIGIBLE.replace("?", "?7")}`,
     JSON.stringify({ width: small.width, height: small.height }),
@@ -378,7 +395,18 @@ export const recordAvStill = mediaRebuildOperation.atStoreTime("now")<
     MEDIA_META_BYTES,
     iso(now),
   );
-  return changed === 0 ? { status: "gone" } : { status: "ok" };
+  if (changed > 0) {
+    return { status: "ok" };
+  }
+  const live = db.first(
+    `SELECT 1 AS found FROM media_attachments WHERE id = ?1 AND file_token = ?2 AND type = 'video'
+			AND content_type = 'video/mp4' AND (?3 IS NOT NULL OR preview_url IS NOT NULL) AND ${ELIGIBLE.replace("?", "?4")}`,
+    id,
+    token,
+    preview,
+    iso(now),
+  );
+  return live === undefined ? { status: "gone" } : { status: "meta" };
 });
 
 // The fallback of a video row whose still cannot be made (the processor unbound or failing, its probe failed, a
