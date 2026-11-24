@@ -3210,14 +3210,15 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   reads it after the reply, starts nothing: `test/media-rebuild.test.ts` ("starts no write on a confirmation whose reply
   arrives once the lease may have ended"). Accepted residual risk: R2 cannot check the lease's generation, so a write
   already pending when its call's lease ended (a Worker terminated mid-write, which leaves no heartbeat and no record,
-  or one whose heartbeats were all delayed) can land after a newer holder's write of the same key. This holds for image
-  rows as it did before #1828. It is bounded to a put already in flight, its file lands under the capability URL of a
-  row that existed when the rebuild started, and every rebuild write is idempotent per key: `full` is the verified copy
-  of the same original (an image's re-encode through the same checks, a video's or audio's original bytes the verifier
-  accepted), and a video's `small` carries its own `{width, height, blurhash}` metadata, which the skip rule compares
-  with the row and adopts again on a mismatch. An overlapping write therefore never publishes bytes the checks did not
-  accept, and the next run converges: `test/media-rebuild-av.test.ts` ("converges when an earlier holder's still put
-  lands over the small a later call recorded").
+  or one whose heartbeats were all delayed) can land after a newer holder's write of the same key, for image rows as
+  before #1828. It is bounded to a put already in flight, its file lands under the capability URL of a row that existed
+  when the rebuild started, and its bytes pass the checks: an image's files are re-encodes of the same original through
+  the same checks, and a video's or audio's `full` is the original's bytes the verifier accepted. For video and audio
+  rows the write is also idempotent per key and the next run converges: a video's `small` carries its own `{width,
+  height, blurhash}` metadata, which the skip rule compares with the row and adopts again on a mismatch:
+  `test/media-rebuild-av.test.ts` ("converges when an earlier holder's still put lands over the small a later call
+  recorded"). For image rows it does not: an overlapping write can leave the row's preview dimensions or blurhash
+  disagreeing with the stored `small`, which a later run skips; this is pre-existing (issue to follow).
   A video or audio row (`src/mastodon/media-rebuild-av.ts`, #1828) is rebuilt under the same lease and fences, one a
   call, within `REBUILD_AV_MS` (120 s, its stages bounded at 60, 60 and 75 s). Its `files/<token>/full` is the original
   read once and streamed through the output verifier (`avVerifier`, MEDIA-3) into the put; the last chunk is held until
