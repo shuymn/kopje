@@ -8,7 +8,7 @@ import { readBoundedBody } from "../platform/body";
 import { accountMonthlyTransforms, readConfig } from "../platform/config";
 import { errorFields } from "../platform/error-message";
 import { IMAGE_MATRIX_LIMIT, IMAGE_SIZE_LIMIT, processImage, type ProcessedImage } from "../platform/images";
-import { fileKey, mediaKeys, originalKey } from "../platform/media-files";
+import { deleteKeys, fileKey, mediaKeys, originalKey } from "../platform/media-files";
 import { callStore, type StoreResolver } from "../platform/store-client";
 import { StoreUnavailableError } from "../platform/store-errors";
 import { MAX_MEDIA_DESCRIPTION_LENGTH, yieldsMoreThan } from "../platform/stored-bounds";
@@ -549,7 +549,7 @@ export async function sweepMedia(env: Env, deps: SweepDeps): Promise<number> {
       return 0;
     }
     const keys = expired.flatMap((m) => (m.token === null ? [originalKey(m.id)] : mediaKeys(m.id, m.token)));
-    await env.MEDIA.delete(keys);
+    await deleteKeys(env.MEDIA, keys);
     return await callStore(() => store.purgeMedia(build, { ids: expired.map((m) => m.id), now: deps.now() }));
   } catch (error) {
     if (error instanceof StoreUnavailableError) {
@@ -581,7 +581,10 @@ export async function reconcileMedia(env: Env, deps: SweepDeps): Promise<number>
     if (due.length === 0) {
       return 0;
     }
-    await env.MEDIA.delete(due.flatMap((orphan) => mediaKeys(orphan.id, orphan.token)));
+    await deleteKeys(
+      env.MEDIA,
+      due.flatMap((orphan) => mediaKeys(orphan.id, orphan.token)),
+    );
     return await callStore(() => store.forgetOrphans(build, { tokens: due.map((orphan) => orphan.token) }));
   } catch (error) {
     if (error instanceof StoreUnavailableError) {

@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import { isAnimated, retainedMetadata, sniffImageType } from "../src/platform/image-bytes";
-import { keyOfPath, mediaKeys, mediaPath, originalKey } from "../src/platform/media-files";
+import {
+  deleteKeys,
+  incomingKey,
+  keyOfPath,
+  mediaKeys,
+  mediaPath,
+  originalKey,
+  R2_DELETE_KEYS,
+} from "../src/platform/media-files";
 import {
   ANIMATED_WEBP,
   APNG,
@@ -206,11 +214,23 @@ describe("media keys (MEDIA-2)", () => {
 
   it("builds keys from server ids and tokens only", () => {
     expect(mediaKeys("100000000000000001", token)).toEqual([
+      "incoming/100000000000000001",
       "originals/100000000000000001",
       `files/${token}/full`,
       `files/${token}/small`,
     ]);
     expect(() => originalKey("../x")).toThrow("media id is not a server id");
+    expect(() => incomingKey("../x")).toThrow("media id is not a server id");
+  });
+
+  it("deletes keys in calls of at most R2_DELETE_KEYS, in order", async () => {
+    const calls: string[][] = [];
+    const keys = Array.from({ length: 2 * R2_DELETE_KEYS + 1 }, (_, i) => `incoming/${i}`);
+    await deleteKeys({ delete: (batch) => (calls.push(batch), Promise.resolve()) }, keys);
+    expect(calls.map((c) => c.length)).toEqual([R2_DELETE_KEYS, R2_DELETE_KEYS, 1]);
+    expect(calls.flat()).toEqual(keys);
+    await deleteKeys({ delete: (batch) => (calls.push(batch), Promise.resolve()) }, []);
+    expect(calls).toHaveLength(3);
   });
 
   it("builds the paths of video and audio as full only", () => {
