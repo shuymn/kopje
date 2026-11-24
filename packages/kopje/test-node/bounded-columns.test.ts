@@ -759,10 +759,9 @@ const ALLOWED: Record<string, { count: number; reason: string }> = {
   "src/domain/remote-actors.ts accounts.uri": { count: 2, reason: IDENTITY },
   "src/domain/inbox.ts statuses.uri": { count: 2, reason: IDENTITY },
   "src/domain/local-emojis.ts accounts.uri": { count: 1, reason: IDENTITY },
-  "src/domain/media.ts accounts.uri": { count: 1, reason: IDENTITY },
-  "src/domain/media-processing.ts accounts.uri": { count: 1, reason: IDENTITY },
-  // The origin of a rebuilt video's preview URL, its uploader's actor uri, as completeMedia makes it (recordAvStill).
-  "src/domain/media-rebuild.ts accounts.uri": { count: 1, reason: IDENTITY },
+  // completeMedia's URL origin, and ownerUri's: the origin of a completed AV upload's URLs (S6) and of a rebuilt
+  // video's preview URL (recordAvStill), each its uploader's actor uri.
+  "src/domain/media.ts accounts.uri": { count: 2, reason: IDENTITY },
   // The poll refresh's reservation: the status to fetch and its author, sent and compared with the document.
   "src/domain/polls.ts statuses.uri": { count: 2, reason: IDENTITY },
   "src/domain/polls.ts accounts.uri": { count: 3, reason: IDENTITY },
