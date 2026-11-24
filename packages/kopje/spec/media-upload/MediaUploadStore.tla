@@ -10,7 +10,8 @@
 (* order:                                                                  *)
 (*  K1 maintenance: nothing changes and the answer is "maint"; a read      *)
 (*     answers from the record. S8, the stop confirmation, is a write like *)
-(*     any other (D8, D16); MaintInert checks every write (D26).           *)
+(*     any other (D8, D16); MaintInert checks every step's effect on the   *)
+(*     Store, the cron's included (D26, D31).                              *)
 (*  K3 restored (Fenced: the attachment was reserved at or before the last *)
 (*     restore): a staging row and its staging slot are deleted; a pending *)
 (*     or running row becomes failed "restored", its slot kept.            *)
@@ -36,21 +37,28 @@ V2P == P.c.v2p \* V2_PROCESS_MS
 TEARDOWN == P.c.teardown \* TEARDOWN_MS, the alarm's wall limit, at least V2_PROCESS_MS as in the design
 WW == P.c.ww \* AV_WRITE_WINDOW_MS from the reservation; caps deadline_at
 IW == WW - STAGING - 1 \* WRITE_WINDOW_MS, the reservation's write deadline before S1 sets the AV one
-MINLEFT == 1 \* T_FIXED + T_MIN_ENCODE, checked by S3
-MINENC == 1 \* T_MIN_ENCODE after the remaining fixed parts, checked by S4
+MINENC == P.c.me \* T_MIN_ENCODE after the remaining fixed parts, checked by S4
+MINLEFT == MINENC \* T_FIXED + T_MIN_ENCODE, checked by S3 (the fixed parts take no abstract unit)
 AV_GRANT == 1 \* AV_GRANT_MS
 DISPATCH == 1 \* DISPATCH_MS
 GC == WW \* gc_at of an unfinished reservation (RESERVATION_MS), after every write cut
-\* ORPHAN_GRACE_MS: how long after the write cut the tombstone keeps the authority to delete an upload's keys, as an
-\* image's does (src/domain/media.ts). The model lets a write land at most this long after it starts; one landing
-\* later stays, as an image's does (docs/threat-model.md, "stays for good").
+\* ORPHAN_GRACE_MS: how long after the later of the purge and the write deadline the tombstone keeps the authority to
+\* delete an upload's keys, as an image's does (src/domain/media.ts). A write may land at any time after it starts, or
+\* never (MediaUpload.tla, R2); one landing after the tombstone's retirement stays, as an image's does
+\* (docs/threat-model.md, "stays for good").
 LAND == 1
 RETIRE == WW + LAND \* the tombstone's authority after the reservation, for a purge before the write deadline (M3)
 \* The tombstone's delete_after, as purgeMedia stores it: max(purge, write deadline) + ORPHAN_GRACE_MS (D27), the write
 \* deadline the AV one, the reservation + AV_WRITE_WINDOW_MS, past every write cut (deadline_at). Only scenarios with
-\* purge keep a purge's time past the write deadline (it adds a state per purge time); the others take every purge as
-\* before it, so their tombstone retires no later than main's.
-DeleteAfter(x, t) == (IF P.purge /\ t > x.resAt + WW THEN t ELSE x.resAt + WW) + LAND
+\* purge keep a purge's time past the write deadline (it adds a state per purge time, +38% in V1K); the others take
+\* every purge as before it, in the Store and in NoLateObject's oracle alike, so they check the authority of an early
+\* purge only. DeleteAfterNoPurge ignores the purge's time, DeleteAfterNoLand drops ORPHAN_GRACE_MS (Gemini r5 GH1,
+\* Codex r5 CM4).
+PurgeAt(t, resAt) == IF P.purge /\ t > resAt + WW THEN t ELSE resAt + WW
+DeleteAfter(x, t) ==
+  CASE Variant = "DeleteAfterNoPurge" -> x.resAt + RETIRE
+    [] Variant = "DeleteAfterNoLand" -> PurgeAt(t, x.resAt)
+    [] OTHER -> PurgeAt(t, x.resAt) + LAND
 \* DETACHED_GRACE_MS: the gc_at completion gives an unattached upload (completeMedia), longer than the v1 wait.
 DGRACE == IF Variant = "ShortGrace" THEN V1 ELSE V1 + 1
 \* HARD_HOLD_MS: how long a granted slot counts at most, from the grant's stored time (D16, D17).
@@ -133,9 +141,10 @@ S2(x0, t, ra, maint, sAt) ==
   ELSE IF Variant = "SlotById" /\ x.slot.ph # "none" THEN Res([x EXCEPT !.slot = NoSlot], "not_staging")
   ELSE Res(x, "not_staging")
 
+\* deadline_at, capped at the reservation + AV_WRITE_WINDOW_MS (QueueNoCap drops the cap, Gemini r5 GH1).
 QueueDeadline(x, t) ==
   LET base == IF x.v1 THEN x.rb - T_REPLY ELSE t + V2P IN
-  IF base < x.resAt + WW THEN base ELSE x.resAt + WW
+  IF base < x.resAt + WW \/ Variant = "QueueNoCap" THEN base ELSE x.resAt + WW
 
 \* S3 queueNormalize(id, token, staged_at). A restored staging row (K3) answers refused_cleanup_yours(restored):
 \* its row and slot are deleted in this transaction, so the input is the route's to delete (Gemini r4 GH3).
@@ -225,7 +234,10 @@ S9(x0, t, ra) ==
 
 \* S10 v1Final: the v1 decision, made by the route at its own cut (arrival + V1_TIME_MS - T_REPLY on its clock) or
 \* once S9 shows an outcome. It decides now, whatever deadline_at says (Codex r4 H1): an unfinished upload is doomed.
-\* In maintenance it is a read: a completed upload answers 200, anything else the maintenance 503 with nothing doomed
+\* A completed upload answers 200 only before its gc_at: from then on the sweep may already have deleted its files and
+\* not yet its row (src/mastodon/media.ts, sweepMedia: R2 first, then purgeMedia), and main reads such a row as gone
+\* (liveMediaSql), so S10 answers 503 and changes nothing (Codex r5 CM2; S10IgnoresGc answers 200). In maintenance it
+\* is a read: a completed upload before its gc_at answers 200, anything else the maintenance 503 with nothing doomed
 \* (Codex r4 M5, Gemini r4 GM4).
 S10Code(c) ==
   IF c \in {"refused", "envelope"} THEN "422"
@@ -234,9 +246,11 @@ S10Code(c) ==
 
 S10(x0, t, ra, maint) ==
   LET x == Norm(x0, t, ra) IN
-  IF maint THEN Res(x0, IF x.att = "done" /\ ~x.doomed THEN "200" ELSE "maint")
+  LET live == x.att = "done" /\ ~x.doomed /\ (t < x.gcAt \/ Variant = "S10IgnoresGc") IN
+  IF maint THEN Res(x0, IF live THEN "200" ELSE "maint")
   \* Done503: S10 answers 503 for a completed upload and leaves it completed (Codex r2 CM5).
-  ELSE IF x.att = "done" /\ ~x.doomed THEN Res(x, IF Variant = "Done503" THEN "503" ELSE "200")
+  ELSE IF live THEN Res(x, IF Variant = "Done503" THEN "503" ELSE "200")
+  ELSE IF x.att = "done" /\ ~x.doomed THEN Res(x, "503")
   ELSE IF x.ps = "failed" /\ x.cause = "restored" /\ Variant = "RestoredAnswers500" THEN Res(x, "500")
   \* RestoredAnswers200: S10 answers 200 for a restored reservation that never completed (Codex r2 CM6).
   ELSE IF Fenced(x0, ra) /\ x.att = "res" /\ Variant = "RestoredAnswers200" THEN Res(x, "200")

@@ -3,62 +3,62 @@
   "scenarios": [
     {
       "name": "V1L",
-      "distinct": 549809,
-      "depth": 47
+      "distinct": 722950,
+      "depth": 48
     },
     {
       "name": "V1K",
-      "distinct": 224352,
+      "distinct": 221158,
       "depth": 46
     },
     {
       "name": "V1R",
-      "distinct": 648856,
+      "distinct": 642080,
       "depth": 48
     },
     {
       "name": "V2L",
-      "distinct": 421778,
+      "distinct": 376125,
       "depth": 51
     },
     {
       "name": "V2K",
-      "distinct": 327003,
+      "distinct": 279999,
       "depth": 46
     },
     {
       "name": "LK",
-      "distinct": 823883,
+      "distinct": 730481,
       "depth": 49
     },
     {
       "name": "V2D",
-      "distinct": 1025581,
+      "distinct": 876851,
       "depth": 49
     },
     {
       "name": "DLW",
-      "distinct": 2463942,
-      "depth": 59
+      "distinct": 1619450,
+      "depth": 57
     },
     {
       "name": "MT",
-      "distinct": 1513817,
+      "distinct": 1445223,
       "depth": 55
     },
     {
       "name": "MT2",
-      "distinct": 547131,
+      "distinct": 484085,
       "depth": 57
     },
     {
       "name": "MTX",
-      "distinct": 3564236,
+      "distinct": 3212293,
       "depth": 55
     },
     {
       "name": "MTR",
-      "distinct": 296876,
+      "distinct": 327801,
       "depth": 51
     },
     {
@@ -68,67 +68,72 @@
     },
     {
       "name": "H1W",
-      "distinct": 1549909,
-      "depth": 56
+      "distinct": 766230,
+      "depth": 49
     },
     {
       "name": "RS",
-      "distinct": 2372733,
+      "distinct": 2936536,
       "depth": 50
     },
     {
       "name": "RSW",
-      "distinct": 82956,
-      "depth": 43
+      "distinct": 118588,
+      "depth": 44
     },
     {
       "name": "RS2",
-      "distinct": 1844663,
+      "distinct": 2189749,
       "depth": 44
     },
     {
       "name": "RSB",
-      "distinct": 15493,
+      "distinct": 20228,
       "depth": 31
     },
     {
+      "name": "RS12",
+      "distinct": 2051933,
+      "depth": 44
+    },
+    {
       "name": "RST",
-      "distinct": 29208,
-      "depth": 30
+      "distinct": 36693,
+      "depth": 31
     },
     {
       "name": "RSL",
-      "distinct": 2398450,
+      "distinct": 2670225,
       "depth": 48
     },
     {
       "name": "RSS",
-      "distinct": 19150,
+      "distinct": 20122,
       "depth": 59
     },
     {
       "name": "RSD",
-      "distinct": 183549,
+      "distinct": 295823,
       "depth": 73
     },
     {
       "name": "RS3",
-      "distinct": 3424626,
+      "distinct": 3734537,
       "depth": 46
     },
     {
       "name": "CAP",
-      "distinct": 226731,
+      "distinct": 203229,
       "depth": 58
     },
     {
       "name": "CAP2",
-      "distinct": 2093365,
+      "distinct": 1919339,
       "depth": 61
     },
     {
       "name": "CAP3",
-      "distinct": 45701,
+      "distinct": 41865,
       "depth": 57
     },
     {
@@ -138,39 +143,39 @@
     },
     {
       "name": "CAP5",
-      "distinct": 544993,
+      "distinct": 536129,
       "depth": 94
     },
     {
       "name": "CAP6",
-      "distinct": 14665,
+      "distinct": 15818,
       "depth": 51
     },
     {
       "name": "OR",
-      "distinct": 1549657,
+      "distinct": 1933247,
       "depth": 45
     },
     {
       "name": "SK",
-      "distinct": 554535,
+      "distinct": 487315,
       "depth": 49
     }
   ],
   "liveness": [
     {
       "name": "L1",
-      "distinct": 2316,
+      "distinct": 2067,
       "depth": 44
     },
     {
       "name": "L2",
-      "distinct": 6216,
+      "distinct": 6349,
       "depth": 52
     },
     {
       "name": "L3",
-      "distinct": 198189,
+      "distinct": 202409,
       "depth": 50
     },
     {
@@ -180,7 +185,7 @@
     },
     {
       "name": "L5",
-      "distinct": 4166,
+      "distinct": 3917,
       "depth": 55
     }
   ],
@@ -386,7 +391,7 @@
       "scenario": "L3",
       "variant": "NoExpiry",
       "property": "SlotsReleased",
-      "trace": 40,
+      "trace": 35,
       "liveness": true,
       "breaks": "the dispatch round never deletes a slot past held_until (W2)"
     },
@@ -427,7 +432,7 @@
       "scenario": "V1L",
       "variant": "ShortGrace",
       "property": "V1Answer",
-      "trace": 28,
+      "trace": 27,
       "breaks": "completion's gc_at no longer outlasts the v1 wait, so the sweep takes the upload between S10's 200 and the route's answer (Codex r1 CH1)"
     },
     {
@@ -443,7 +448,7 @@
       "scenario": "L2",
       "variant": "SweepNoIncoming",
       "property": "InputsDeleted",
-      "trace": 21,
+      "trace": 17,
       "liveness": true,
       "breaks": "the sweep, reconciliation and the retirement leave incoming/<id> (Gemini r1 GM5)"
     },
@@ -568,6 +573,86 @@
       "property": "NoLateObject",
       "trace": 23,
       "breaks": "the tombstone is retired at the write cut + ORPHAN_GRACE_MS whatever the purge's time, before main's max(purge, write deadline) + ORPHAN_GRACE_MS (Codex r4 CM4, D27)"
+    },
+    {
+      "name": "NoLateObject-DeleteAfterNoPurge",
+      "scenario": "DLW",
+      "variant": "DeleteAfterNoPurge",
+      "property": "NoLateObject",
+      "trace": 23,
+      "breaks": "the tombstone's delete_after ignores a purge after the write deadline (Gemini r5 GH1, Codex r5 CM4: the check computes the authority's end from the purge's time, not from delete_after)"
+    },
+    {
+      "name": "NoLateObject-DeleteAfterNoLand",
+      "scenario": "DLW",
+      "variant": "DeleteAfterNoLand",
+      "property": "NoLateObject",
+      "trace": 22,
+      "breaks": "the tombstone's delete_after drops ORPHAN_GRACE_MS (Gemini r5 GH1)"
+    },
+    {
+      "name": "NoLateObject-QueueNoCap",
+      "scenario": "DLW",
+      "variant": "QueueNoCap",
+      "property": "NoLateObject",
+      "trace": 23,
+      "breaks": "deadline_at is not capped at the reservation + AV_WRITE_WINDOW_MS, so a write starts after the window the tombstone's authority assumes (Gemini r5 GH1: the r3 bound, ORPHAN_GRACE_MS after the write's start)"
+    },
+    {
+      "name": "NoLateObject-RetireNoDelete",
+      "scenario": "DLW",
+      "variant": "RetireNoDelete",
+      "property": "NoLateObject",
+      "trace": 24,
+      "breaks": "the tombstone is retired without its last deletion of the keys (Codex r5 CM4)"
+    },
+    {
+      "name": "MaintInert-DispatchInMaint",
+      "scenario": "MT2",
+      "variant": "DispatchInMaint",
+      "property": "MaintInert",
+      "trace": 7,
+      "breaks": "the dispatch round writes in maintenance (Codex r5 CM6: K1 checked for every step, not flagged per action)"
+    },
+    {
+      "name": "RestoreExact-RestoreMovesGrant",
+      "scenario": "RSB",
+      "variant": "RestoreMovesGrant",
+      "property": "RestoreExact",
+      "trace": 18,
+      "breaks": "a restore brings a granted slot back with granted_at moved to now (Codex r5 CM5)"
+    },
+    {
+      "name": "RestoreExact-RestoreDropsGrant",
+      "scenario": "RSB",
+      "variant": "RestoreDropsGrant",
+      "property": "RestoreExact",
+      "trace": 16,
+      "breaks": "a restore drops the slot of a grant an earlier restore forgot (Codex r4 CH1), caught by the restore's own check too"
+    },
+    {
+      "name": "V1Answer-Route503",
+      "scenario": "V1L",
+      "variant": "Route503",
+      "property": "V1Answer",
+      "trace": 23,
+      "breaks": "the route sends 503 for S10's 200 (Codex r5 CM3: the status sent is checked, not the reply received)"
+    },
+    {
+      "name": "V1Answer-S10IgnoresGc",
+      "scenario": "V1L",
+      "variant": "S10IgnoresGc",
+      "property": "V1Answer",
+      "trace": 28,
+      "breaks": "S10 answers 200 for a completed upload past its gc_at, whose files the sweep may have deleted before its row (Codex r5 CM2, D33)"
+    },
+    {
+      "name": "ContainerCovered-K3FreesSlot",
+      "scenario": "RSB",
+      "variant": "K3FreesSlot",
+      "property": "ContainerCovered",
+      "trace": 16,
+      "breaks": "K3 deletes the restored ungranted slot of a container whose grant the restore forgot (Gemini r5 GM2: W3 excuses only once that slot has passed its held_until)"
     }
   ],
   "goals": [
@@ -629,7 +714,7 @@
       "name": "V1L-W5Swept",
       "scenario": "V1L",
       "goal": "W5Swept",
-      "trace": 29
+      "trace": 30
     },
     {
       "name": "L2-W6",
@@ -746,12 +831,6 @@
       "trace": 19
     },
     {
-      "name": "RS-W12",
-      "scenario": "RS",
-      "goal": "W12",
-      "trace": 31
-    },
-    {
       "name": "MTS-MaintHolds",
       "scenario": "MTS",
       "goal": "MaintHolds",
@@ -785,13 +864,37 @@
       "name": "RST-W11Tick",
       "scenario": "RST",
       "goal": "W11Tick",
-      "trace": 26
+      "trace": 27
     },
     {
-      "name": "RSW-W12Dead",
-      "scenario": "RSW",
+      "name": "RST-W11Doom",
+      "scenario": "RST",
+      "goal": "W11Doom",
+      "trace": 27
+    },
+    {
+      "name": "RST-W11DoomLate",
+      "scenario": "RST",
+      "goal": "W11DoomLate",
+      "trace": 27
+    },
+    {
+      "name": "H1W-S4Timeout",
+      "scenario": "H1W",
+      "goal": "S4Timeout",
+      "trace": 17
+    },
+    {
+      "name": "RS12-W12",
+      "scenario": "RS12",
+      "goal": "W12",
+      "trace": 33
+    },
+    {
+      "name": "RS12-W12Dead",
+      "scenario": "RS12",
       "goal": "W12Dead",
-      "trace": 31
+      "trace": 33
     }
   ]
 }

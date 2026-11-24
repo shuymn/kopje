@@ -13,10 +13,13 @@
 (*  c       the durations (MediaUploadStore.tla, TIME): C0 for most; CW,    *)
 (*          where a delayed S1 still leaves STAGING_MS to write, so the     *)
 (*          Store's deadline falls after the route's cut (Codex r1 CM1);    *)
-(*          CD, where a v2 deadline reaches AV_WRITE_WINDOW_MS (D5); CT,    *)
+(*          CD, where V2_PROCESS_MS reaches past AV_WRITE_WINDOW_MS, so    *)
+(*          the write window caps a v2 deadline (D5, Gemini r5 GH1); CT,    *)
 (*          where a stop retried past the job's deadline fits the           *)
 (*          scenario's time and HARD_HOLD_MS lies beyond it, so a slot      *)
-(*          counts there by its grant alone (W10 is not reached)            *)
+(*          counts there by its grant alone (W10 is not reached); me is    *)
+(*          T_MIN_ENCODE, 2 in CW, so S4 can fail a job that S3 queued      *)
+(*          (Codex r5 CM7)                                                  *)
 (*  nw      the final writes of a job, each behind its own S5 (1: full;     *)
 (*          2: originals/<id> then full; 3: then small)                     *)
 (*  loss    lost replies, and RPCs that fail before their commit, on any    *)
@@ -45,9 +48,12 @@
 (*          gc_at)                                                          *)
 (*  gc      the sweep, reconciliation and the tombstone's retirement run    *)
 (*  purge   the tombstone keeps a purge's time past the write deadline in   *)
-(*          its delete_after, as main's does (D27); elsewhere every purge   *)
-(*          counts as before the write deadline, so the tombstone retires  *)
-(*          no later than main's                                            *)
+(*          its delete_after, as main's does (D27, D34); elsewhere every    *)
+(*          purge counts as before the write deadline, in the Store and in  *)
+(*          NoLateObject's oracle alike, so only the authority of an early  *)
+(*          purge is checked there                                          *)
+(*  split   the sweep's deletion of the keys and purgeMedia are two steps,  *)
+(*          as main's (D33); elsewhere one                                  *)
 (*  skd     the processor's clock offset from the Store's                   *)
 (*  skr     the route's clock offset from the Store's                       *)
 (*  prompt  the kinds of actor ("route", "do", "cron") whose steps that can *)
@@ -65,21 +71,22 @@ All == {"route", "do", "cron"}
 \* STAGING_MS, V1_TIME_MS, V2_PROCESS_MS, TEARDOWN_MS, AV_WRITE_WINDOW_MS and HARD_HOLD_MS in abstract units.
 \* HARD_HOLD_MS is V2_PROCESS_MS + TEARDOWN_MS at least, so that only a stop failing past every deadline reaches it
 \* (in production 24 hours against minutes).
-C0 == [staging |-> 1, v1 |-> 3, v2p |-> 2, teardown |-> 3, ww |-> 4, hh |-> 5]
-CW == [C0 EXCEPT !.staging = 2, !.ww = 5]
-CD == [C0 EXCEPT !.v2p = 3, !.hh = 6]
+C0 == [staging |-> 1, v1 |-> 3, v2p |-> 2, teardown |-> 3, ww |-> 4, hh |-> 5, me |-> 1]
+CW == [C0 EXCEPT !.staging = 2, !.ww = 5, !.me = 2]
+CD == [C0 EXCEPT !.v2p = 4, !.teardown = 4, !.hh = 8]
 CT == [C0 EXCEPT !.teardown = 2, !.hh = 10]
 
 Base ==
   [up |-> {"u1"}, v1 |-> {}, max |-> 2, arr |-> 0, late |-> {}, lateAt |-> 0, later |-> {}, laterAt |-> 0, c |-> C0, nw |-> 1, loss |-> 0, loseRun |-> FALSE, kill |-> 0,
    dfail |-> 0, gone |-> 0, lag |-> 0, stale |-> 0, perr |-> 0, rdie |-> 0, del |-> 0, mOn |-> 0, mAt |-> 0, bm |-> 0,
    rs |-> 0, rsAt |-> 0, rev |-> 0, bad |-> FALSE,
-   fails |-> FALSE, orphan |-> FALSE, kept |-> FALSE, gc |-> TRUE, purge |-> FALSE, skd |-> 0, skr |-> 0, prompt |-> {},
+   fails |-> FALSE, orphan |-> FALSE, kept |-> FALSE, gc |-> TRUE, purge |-> FALSE, split |-> FALSE, skd |-> 0, skr |-> 0,
+   prompt |-> {},
    tmax |-> 6]
 
 Params ==
   [\* v1 with lost replies and calls that fail before their commit, on every call.
-   V1L |-> [Base EXCEPT !.v1 = {"u1"}, !.loss = 2],
+   V1L |-> [Base EXCEPT !.v1 = {"u1"}, !.loss = 2, !.split = TRUE],
    \* v1 with a kill, a refused body or text field and a refused encode.
    V1K |-> [Base EXCEPT !.v1 = {"u1"}, !.kill = 1, !.bad = TRUE, !.fails = TRUE],
    \* v1 with the probe verdict revoked, DELETE after the 200 and a lost reply.
@@ -117,18 +124,24 @@ Params ==
    RSD |-> [Base EXCEPT !.up = {"u1", "u2", "u3"}, !.max = 1, !.c = CT, !.arr = 3, !.late = {"u2", "u3"}, !.lateAt = 2,
                         !.later = {"u3"}, !.laterAt = 3, !.bm = 1, !.rs = 2, !.rsAt = 1, !.dfail = 6, !.gc = FALSE,
                         !.prompt = All, !.tmax = 3],
-   \* v1 on the wider clock CW, across maintenance: the route's cut before the Store's deadline (Codex r1 CM1).
+   \* v1 on the wider clock CW, across maintenance: the route's cut before the Store's deadline (Codex r1 CM1), and
+   \* S4 failing a queued job with less than T_MIN_ENCODE left (Codex r5 CM7).
    H1W |-> [Base EXCEPT !.v1 = {"u1"}, !.c = CW, !.mOn = 1, !.tmax = 7],
    \* A PITR restore across a v1 upload.
    RS |-> [Base EXCEPT !.v1 = {"u1"}, !.bm = 1, !.rs = 1, !.prompt = {"cron"}],
    \* A PITR restore across a v1 upload whose route dies with its S10 still out (Codex r4 CM5, D28).
-   RSW |-> [Base EXCEPT !.v1 = {"u1"}, !.bm = 1, !.rs = 1, !.rdie = 1, !.prompt = {"cron", "do"}],
+   RSW |-> [Base EXCEPT !.v1 = {"u1"}, !.bm = 1, !.rs = 1, !.rdie = 1, !.split = TRUE, !.prompt = {"cron", "do"}],
    \* A PITR restore across a v2 upload whose processor runs on, with a kill, the processor's clock one unit behind the
    \* Store's (Codex r4 CM2: a start W3 excuses still meets the job's deadline).
    RS2 |-> [Base EXCEPT !.bm = 1, !.rs = 1, !.kill = 1, !.skd = -1, !.gc = FALSE],
    \* Two restores across a v2 upload, each to any of two bookmarks, with stops that are not confirmed: one before the
    \* grant and one after it, in either order (Codex r4 CH1: W3 ends when a restore brings the grant back, D24).
    RSB |-> [Base EXCEPT !.c = CT, !.bm = 2, !.rs = 2, !.dfail = 2, !.gc = FALSE, !.prompt = All, !.tmax = 3],
+   \* Two restores across a v1 upload whose route gives up or dies with its S10 still out, each to any of two
+   \* bookmarks, the sweep in two steps: a completed row a second restore brings back after the first one's
+   \* reservation was swept (Codex r5 CM2, D33: W12's provenance).
+   RS12 |-> [Base EXCEPT !.v1 = {"u1"}, !.bm = 2, !.rs = 2, !.rdie = 1, !.split = TRUE, !.prompt = {"cron", "do"},
+                         !.tmax = 4],
    \* Two restores in one time unit across a v1 upload, each to any of two bookmarks (Codex r4 CM5, D28).
    RST |-> [Base EXCEPT !.v1 = {"u1"}, !.bm = 2, !.rs = 2, !.tmax = 0],
    \* A PITR restore across a v2 upload, with a lost reply (Gemini r1 GH4).

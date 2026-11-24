@@ -32,25 +32,41 @@ invariant and property has a mutation that the checker is seen to violate (`vari
 fails for a property without one. `test-node/media-upload-spec-parts.test.ts` checks that the `kopje-spec` project
 collects every part's file and that each lies in a CI shard of its own.
 
+Each safety property and each exception it allows compares the step it checks against ghost state recorded at the
+event that grounds it (the reservation, the grant, the queue's deadline, the Store's cleanup answer, S10's decision and
+commit, the answer sent, each restore's bookmark and what it rewrote, the purge, the start of maintenance), never
+against a value that step computes, so a mutation of the step cannot also move its check. Two checks hold for every
+step without each action raising them: `MaintInert` compares the Store with its state when maintenance began, and
+`RestoreExact` compares the Store after a restore with the bookmark it chose.
+
 ## What the model abstracts
 
 - Time is a small integer clock; the constants keep the design's order (`STAGING_MS` < `V2_PROCESS_MS` <=
   `TEARDOWN_MS`, the reservation's write deadline plus `STAGING_MS` within `AV_WRITE_WINDOW_MS`, `gc_at` after it).
   Most scenarios use the narrowest durations (`C0` in `MediaUploadParams.tla`); `H1W` widens `STAGING_MS` so that a
-  delayed first S1 still leaves time to write and the Store's deadline falls after the route's cut, and `DLW` lengthens
-  `V2_PROCESS_MS` so that a v2 deadline reaches `AV_WRITE_WINDOW_MS`. Only durations cross a clock boundary, so the
+  delayed first S1 still leaves time to write and the Store's deadline falls after the route's cut, and lengthens
+  `T_MIN_ENCODE` so that S4 can fail a job S3 queued (the early timeout, v1 500), and `DLW` lengthens `V2_PROCESS_MS`
+  past `AV_WRITE_WINDOW_MS`, so that the write window caps a v2 deadline. Only durations cross a clock boundary, so the
   route's and the processor's constant offsets (`skr`, `skd`) cancel; drift is not modelled.
 - An R2 write may land at any time after it starts, or never. `LAND` stands for `ORPHAN_GRACE_MS`. Main's rule for an
   image (`src/domain/media.ts`, `purgeMedia`, `dueOrphans`) keeps the authority to delete an unfinished upload's keys
   until a successful reconciliation after the tombstone's `delete_after`, max(purge, write deadline) +
   `ORPHAN_GRACE_MS`. The model's tombstone keeps that `delete_after` and is retired, with a last deletion, once it is
-  due. `DLW` keeps a purge's time past the write deadline; the other scenarios count every purge as before it, which
-  retires the tombstone no later than main's and keeps their state space as it was. Neither Cloudflare nor main bounds
-  when a started put lands (the alarm's wall limit ends the writer, not the put), so the lasting residual is a key that
-  lands after that last deletion, or one a restore forgot (no row, no tombstone): it stays, as an image's does
-  (`docs/threat-model.md`). The goal `DLW-LateLanding` reaches the first, `RS2-Forgotten` the second, and
-  `NoLateObject` checks that nothing lands, and no write is in flight, between the retirement and the `delete_after`
-  (mutation `RetireIgnoresPurge`, retiring before it after a late purge).
+  due. `NoLateObject` computes the end of that authority itself, from the purge's time and the reservation's, and
+  also holds the retirement to `ORPHAN_GRACE_MS` after each write's start; it checks that nothing lands, and no write
+  is in flight, between the retirement and then, and that the retirement leaves no key behind (mutations
+  `EarlyRetire`, `RetireIgnoresPurge`, `DeleteAfterNoPurge`, `DeleteAfterNoLand`, `QueueNoCap`, `RetireNoDelete`, all
+  in `DLW`). Only `DLW` keeps a purge's time past the write deadline (it adds a state per purge time); the other
+  scenarios count every purge as before it, in the Store and in the check alike, so they check the authority of an
+  early purge only, not a stricter rule. Neither Cloudflare nor main bounds when a started put lands (the alarm's wall
+  limit ends the writer, not the put), so the lasting residual is a key that lands after that last deletion, between
+  it and the tombstone's removal included (main deletes the keys, then the tombstone; the model takes the two as one,
+  since the deletion commutes with the Store's steps), or one a restore forgot (no row, no tombstone): it stays, as an
+  image's does (`docs/threat-model.md`). The goal `DLW-LateLanding` reaches the first, `RS2-Forgotten` the second.
+- The sweep is main's two steps, the deletion of the upload's keys and then `purgeMedia`, which deletes the row only
+  if it is still sweepable, in the scenarios with `split` (`V1L`, `RSW`, `RS12`), where a late S10 or a restore
+  may come between them; elsewhere one step. Between the two, a completed row whose files are gone is past its
+  `gc_at`, so S10 answers 503 for it, as main reads such a row as gone (mutation `S10IgnoresGc`).
 - One to three uploads. `MAX_AV_INFLIGHT` is 1 where two or three uploads compete, so a later one meets a full
   instance, and 2 in `CAP4` and `CAP5`, where a third arrives while two stops are retried; the capacity rules do not
   depend on the number.

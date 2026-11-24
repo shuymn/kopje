@@ -64,8 +64,14 @@ Goals ==
    \* W11: the route sends a 200 for an upload a restore since S10's commit rewound; its keys are then deleted with
    \* the restored reservation, or forgotten (no row, no tombstone) when the bookmark predates the reservation.
    W11 |-> "W11" \in ev,
-   \* W11 across two restores in one time unit, the first before S10's commit and the second after it (D28).
+   \* W11 across two restores in one time unit, the first before S10's commit and the second after it, which rewound
+   \* the upload the 200 was for (D28, Codex r5 CM1).
    W11Tick |-> "W11Tick" \in ev,
+   \* W11 for a 503 (D32): S10 decided 503 and doomed the upload, and a restore before the route answered brought it
+   \* back completed, so the 503 goes to a client for a published upload (Codex r5 CM1).
+   W11Doom |-> "W11Doom" \in ev,
+   \* The same, with the restore after the answer.
+   W11DoomLate |-> "W11Doom" \notin ev /\ \E u \in U : Non200(u) /\ Published(u, st[u]) /\ rt[u].kind = "decided",
    W11Swept |-> "W11" \in ev /\ \E u \in U : rt[u].ans = 200 /\ st[u].att = "gone" /\ r2[u].obj = {},
    W11Forgotten |-> "W11" \in ev /\ \E u \in U : rt[u].ans = 200 /\ st[u].att = "none" /\ r2[u].obj # {},
    \* Keys a restore forgot (the bookmark predates the reservation) of an upload nobody was answered 200 for or shown
@@ -79,6 +85,8 @@ Goals ==
    H1 |-> "H1" \in ev,
    \* Codex r4 H3: a later invocation starts a job an earlier one did not.
    H3 |-> "H3" \in ev,
+   \* Codex r5 CM7: S4 fails a pending v1 job with less than T_MIN_ENCODE left, and the route answers 500.
+   S4Timeout |-> "S4Timeout" \in ev /\ \E u \in U : rt[u].v1 /\ rt[u].ans = 500,
    \* Gemini r4 GH3: S3 meets a restored staging row and hands the route its input.
    GH3 |-> "GH3" \in ev,
    \* Q4, the round first: S13 fails the restored row, then S10 answers 503 and dooms it.
