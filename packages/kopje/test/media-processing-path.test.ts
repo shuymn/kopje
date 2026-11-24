@@ -1,3 +1,4 @@
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -8,8 +9,9 @@ import { uploadEmoji } from "../src/mastodon/emoji-upload";
 import { reconcileMedia, sweepMedia } from "../src/mastodon/media";
 import { mediaKeys, restoreMarkerKey } from "../src/platform/media-files";
 import { sha256Hex } from "../src/security/tokens";
+import { startImagePath } from "../src/store";
 import { bearer, json, sql } from "./api-helpers";
-import { BUILD } from "./helpers";
+import { BUILD, testKernel } from "./helpers";
 import { base64, pngOf } from "./local-emoji-helpers";
 import { TestCodec } from "./media-helpers";
 import {
@@ -1221,5 +1223,66 @@ describe("publication judges its held media at the Store's time", () => {
     await publishScheduled(env, { ...sweepDeps(w), now: () => gcAt - SECOND, doorbell: () => Promise.resolve() });
     expect(await sql(w.store, "SELECT count(*) AS n FROM statuses WHERE source_text = 'later'")).toEqual([{ n: 0 }]);
     expect(await sql(w.store, "SELECT count(*) AS n FROM scheduled_statuses")).toEqual([{ n: 0 }]);
+  });
+});
+
+describe("the image start's two passes (store.ts startImagePath)", () => {
+  // Runs startImagePath on the Store's own kernel with an after-commit hook that counts, and a marker read that counts.
+  async function startCounted(w: AvWorld, id: string) {
+    const counted = { commits: 0, reads: 0 };
+    const answer = await runInDurableObject(w.store, (_instance, state) =>
+      startImagePath(
+        testKernel(state, undefined, { afterCommit: () => counted.commits++ }),
+        BUILD,
+        { credential: w.alice, id, monthlyTransforms: BUDGETS, now: Date.now() },
+        () => {
+          counted.reads++;
+          return Promise.resolve(null);
+        },
+      ),
+    );
+    return { answer, ...counted };
+  }
+
+  it("a candidate: the pass that asks for the marker runs no after-commit hook, the start that chooses the path does", async () => {
+    const w = await avWorld();
+    const up = await reserve(w, T0);
+    clock(T0 + SECOND);
+    expect(await startCounted(w, up.id)).toEqual({
+      answer: { status: "ok", value: { status: "ok" } },
+      commits: 1,
+      reads: 1,
+    });
+  });
+
+  it("an ordinary image: one pass, the marker unread", async () => {
+    const w = await avWorld();
+    clock(T0);
+    const reserved = await w.store.reserveMedia(BUILD, {
+      credential: w.alice,
+      token: fileToken(),
+      monthlyTransforms: BUDGETS,
+      now: T0,
+    });
+    if (reserved.status !== "ok" || reserved.value.status !== "ok") {
+      throw new Error("not reserved");
+    }
+    clock(T0 + SECOND);
+    expect(await startCounted(w, reserved.value.id)).toEqual({
+      answer: { status: "ok", value: { status: "ok" } },
+      commits: 1,
+      reads: 0,
+    });
+  });
+
+  it("answers an unknown token's refusal as it is, the marker unread", async () => {
+    const w = await avWorld();
+    const up = await reserve(w, T0);
+    clock(T0 + SECOND);
+    const credential = { ...w.alice, tokenHash: await sha256Hex("not a token") };
+    expect(
+      await w.store.startTransforms(BUILD, { credential, id: up.id, monthlyTransforms: BUDGETS, now: Date.now() }),
+    ).toEqual({ status: "unauthenticated" });
+    expect(await stateOf(w, up.id)).toBe("unknown 0 1h | - | - | -");
   });
 });

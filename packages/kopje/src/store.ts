@@ -3,7 +3,7 @@ import { DurableObject } from "cloudflare:workers";
 import { MIGRATIONS } from "./db/migrations";
 import { Db } from "./db/sql";
 import { announceConvertedProfiles } from "./domain/actor-update";
-import { checkCredential, type Credential, type Judged } from "./domain/auth";
+import { type Authorized, checkCredential, type Credential, type Judged } from "./domain/auth";
 import { HANDSHAKE_REPLAYS_PER_ROUND, handshakeReplaysDue, handshakeReplayStep } from "./domain/handshake-replays";
 import * as inbox from "./domain/inbox";
 import * as instanceActivity from "./domain/instance-activity";
@@ -35,6 +35,49 @@ import { StreamHub } from "./stream-hub";
 import { buildOf, PACKAGE_VERSION } from "./version";
 
 // When a PITR restore was last scheduled (store.ts pitrToBookmark), or null.
+type StartInput = Omit<OperationInput<typeof media.startTransforms>, "restoredAt">;
+
+const needsMarker = (output: Authorized<media.Started | { status: "needs_marker" }>) =>
+  output.status === "ok" && output.value.status === "needs_marker";
+
+// The image path's start (domain/media.ts startTransforms). The restore marker is read (`readMarker`) only when the
+// row is a candidate (`needs_marker`, a pass that writes nothing, so it runs no after-commit hook), and the start runs
+// again with it, so a candidate reserved at or before the last restore, or whose marker cannot be read, is refused as
+// S1 refuses it, and an ordinary image's start never depends on the marker.
+export async function startImagePath(
+  kernel: StoreKernel,
+  callerBuild: string,
+  input: StartInput,
+  readMarker: () => Promise<number | null>,
+): Promise<Authorized<media.Started>> {
+  const first = await kernel.executeQuiet(
+    callerBuild,
+    media.startTransforms,
+    { ...input, restoredAt: "unread" },
+    needsMarker,
+  );
+  if (first.status !== "ok") {
+    return first;
+  }
+  if (first.value.status !== "needs_marker") {
+    return { status: "ok", value: first.value };
+  }
+  let restoredAt: Exclude<media.RestoreMarker, "unread">;
+  try {
+    restoredAt = await readMarker();
+  } catch {
+    restoredAt = "unreadable";
+  }
+  const second = await kernel.execute(callerBuild, media.startTransforms, { ...input, restoredAt });
+  if (second.status !== "ok") {
+    return second;
+  }
+  if (second.value.status === "needs_marker") {
+    throw new Error("the start asked for the marker it was given");
+  }
+  return { status: "ok", value: second.value };
+}
+
 async function lastRestore(bucket: R2Bucket, key: string): Promise<number | null> {
   const marker = await bucket.get(key);
   if (marker === null) {
@@ -500,28 +543,9 @@ export class Store extends DurableObject<Env> {
     return this.#kernel.execute(callerBuild, mediaRebuild.rebuildLease, { ...input, restoredAt });
   }
 
-  // The image path's start (domain/media.ts startTransforms). The restore marker (restoreMarkerKey) is read only when
-  // the row is a candidate (`needs_marker`), and the start runs again with it, so a candidate reserved at or before the
-  // last restore, or whose marker cannot be read, is refused as S1 refuses it, and an ordinary image's start never
-  // depends on the marker.
-  async startTransforms(
-    callerBuild: string,
-    input: Omit<OperationInput<typeof media.startTransforms>, "restoredAt">,
-  ): Promise<Judged<media.Started>> {
-    const first = await this.#kernel.execute(callerBuild, media.startTransforms, { ...input, restoredAt: "unread" });
-    if (first.status !== "ok" || first.value.status !== "needs_marker") {
-      return first as Judged<media.Started>;
-    }
-    let restoredAt: media.RestoreMarker;
-    try {
-      restoredAt = await this.#restoredAt();
-    } catch {
-      restoredAt = "unreadable";
-    }
-    return (await this.#kernel.execute(callerBuild, media.startTransforms, {
-      ...input,
-      restoredAt,
-    })) as Judged<media.Started>;
+  // The image path's start (startImagePath), the restore marker read only for a candidate.
+  startTransforms(callerBuild: string, input: StartInput) {
+    return startImagePath(this.#kernel, callerBuild, input, () => this.#restoredAt());
   }
 
   // The media processor's upload operations (domain/media-processing.ts, S1-S13), each at the Store's own time after the
