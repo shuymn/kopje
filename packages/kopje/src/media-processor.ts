@@ -31,14 +31,20 @@
 import { DurableObject } from "cloudflare:workers";
 
 import { PROBE_FIXTURE_BASE64 } from "./media-probe-fixture";
+import { AV_OUTPUT_LIMIT, plannedDuration, STILL_OUTPUT_LIMIT } from "./platform/av-bytes";
 import { errorFields } from "./platform/error-message";
 import {
   type MediaProcessorClient,
+  NORMALIZE_INPUT_FAILURES,
+  NORMALIZE_REFUSALS,
+  type NormalizeJob,
+  type NormalizeResult,
   type ProbeProfile,
   type ProbeReport,
   STILL_INPUT_REFUSALS,
   type StillInputRefusal,
   type StillOutcome,
+  TranscoderUnavailable,
 } from "./platform/media-transcoder";
 
 // The port container/server listens on.
@@ -51,9 +57,9 @@ const READY_POLL_MS = 250;
 const PROBE_WORK_MS = 70_000;
 const PROBE_STILL_MS = 10_000;
 const OPERATION_MS = 120_000;
-// AV_OUTPUT_LIMIT and STILL_OUTPUT_LIMIT: the most read of a response body (container/server/main.go refuses first).
-export const AV_OUTPUT_LIMIT = 63 * 1024 * 1024;
-const STILL_OUTPUT_LIMIT = 2 * 1024 * 1024;
+// AV_OUTPUT_LIMIT and STILL_OUTPUT_LIMIT (platform/av-bytes.ts) bound what is read of a response body
+// (container/server/main.go refuses first).
+export { AV_OUTPUT_LIMIT };
 export const CLEANUP_RETRY_MS = 60_000;
 // The most a destroy is awaited; one that has not settled by then counts as failed.
 export const DESTROY_MS = 30_000;
@@ -214,6 +220,99 @@ function stageTimes(headers: Headers): Record<string, number> {
     }
   }
   return stages;
+}
+
+// The server's error code of a response, when it is one.
+function errorCode(response: Response): string | null {
+  const code = response.headers.get("kopje-error");
+  return code !== null && /^[a-z_]{1,32}$/.test(code) ? code : null;
+}
+
+// The normalize adapter (design 4.2; #1828 PR4 plan, section 3 "PR4-2"): one POST /normalize on a ready container with
+// the job's input as its body and its work deadline, its answer read against the server's contract
+// (container/server/main.go). An input refused, outside the envelope, failed as A5 states or past a stage's cut is the
+// input's outcome; anything else throws TranscoderUnavailable. The output is not read here: `file` streams it, for the
+// caller to read through the verifier within AV_OUTPUT_LIMIT.
+export async function normalize(port: Fetcher, job: NormalizeJob): Promise<NormalizeResult> {
+  let response: Response;
+  try {
+    response = await port.fetch(`http://container/normalize?work_ms=${job.workMs}&still_ms=${job.stillMs}`, {
+      method: "POST",
+      body: job.input.body.pipeThrough(new FixedLengthStream(job.input.size)),
+      headers: { "content-type": "application/octet-stream", "content-length": String(job.input.size) },
+      ...(job.signal === undefined ? {} : { signal: job.signal }),
+    });
+  } catch {
+    throw new TranscoderUnavailable("normalize-fetch");
+  }
+  const stages = stageTimes(response.headers);
+  const code = errorCode(response);
+  if (response.status !== 200) {
+    await response.body?.cancel();
+    const refused = NORMALIZE_REFUSALS.find((known) => known === code);
+    if (code === "envelope" && response.status === 422) {
+      return { ok: false, outcome: "envelope", code, stages };
+    }
+    if (refused !== undefined && response.status === (refused === "too_large" ? 413 : 422)) {
+      return { ok: false, outcome: "refused", code: refused, stages };
+    }
+    if (response.status === 500 && NORMALIZE_INPUT_FAILURES.some((known) => known === code)) {
+      return { ok: false, outcome: "refused", code: code as string, stages };
+    }
+    if (response.status === 504 && code === "timeout") {
+      return { ok: false, outcome: "timeout", code, stages };
+    }
+    throw new TranscoderUnavailable(`normalize:${code ?? response.status}`);
+  }
+  const type = response.headers.get("content-type");
+  const kind = response.headers.get("kopje-kind");
+  const length = Number(response.headers.get("content-length"));
+  const duration = plannedDuration(response.headers.get("kopje-duration-ms"));
+  const still = response.headers.get("kopje-still");
+  const typed =
+    (type === "video/mp4" && kind === "video" && (still === "true" || still === "false")) ||
+    (type === "audio/mpeg" && kind === "audio" && still === null);
+  if (
+    !typed ||
+    !Number.isSafeInteger(length) ||
+    length <= 0 ||
+    length > AV_OUTPUT_LIMIT ||
+    duration === undefined ||
+    response.body === null
+  ) {
+    await response.body?.cancel();
+    throw new TranscoderUnavailable("normalize-contract");
+  }
+  return {
+    ok: true,
+    kind,
+    type,
+    file: response.body as ReadableStream<Uint8Array>,
+    length,
+    duration,
+    stages,
+    still: async () => (still === "true" ? normalizeStill(port, job.signal) : null),
+  };
+}
+
+// The still a video's normalize kept (GET /normalize/still), read within STILL_OUTPUT_LIMIT and its declared length;
+// null when the server has none. Any other failure throws TranscoderUnavailable.
+async function normalizeStill(port: Fetcher, signal: AbortSignal | undefined): Promise<Uint8Array | null> {
+  let response: Response;
+  try {
+    response = await port.fetch("http://container/normalize/still", signal === undefined ? {} : { signal });
+  } catch {
+    throw new TranscoderUnavailable("still-fetch");
+  }
+  if (response.status === 404 && errorCode(response) === "no_still") {
+    await response.body?.cancel();
+    return null;
+  }
+  try {
+    return await readStill(response);
+  } catch (error) {
+    throw new TranscoderUnavailable(error instanceof ProbeFailure ? error.failure : "still-read");
+  }
 }
 
 // The smoke probe of one profile on a container that is not running: start, readiness, the operation on the fixture,

@@ -34,6 +34,71 @@ export type ProbeReport = {
   destroyed: boolean;
 };
 
+// ---- normalize (design 4.2, 4.3; #1828 PR4 plan, section 3 "PR4-2")
+
+// What the container is given for one upload: its one input, streamed with its length, and the work deadline in
+// milliseconds from the request (container/server/main.go), by which its response starts, of which it holds stillMs for
+// a video's still.
+export type NormalizeJob = {
+  input: { body: ReadableStream<Uint8Array>; size: number };
+  workMs: number;
+  stillMs: number;
+  signal?: AbortSignal;
+};
+
+// The container's refusals of the input itself: the plan's 422 codes (container/server/plan.go), envelope apart, and
+// 413 too_large.
+export const NORMALIZE_REFUSALS = [
+  "unreadable",
+  "format",
+  "no_stream",
+  "no_video",
+  "pixels",
+  "fps",
+  "frames",
+  "duration",
+  "unbounded",
+  "truncated",
+  "too_large",
+] as const;
+// A5 of #1828 PR2: a 500 with one of these JSON codes is a processing outcome of that input (it could not be
+// processed), not an infrastructure failure: the job fails `refused`, and nothing is recorded against the processor.
+export const NORMALIZE_INPUT_FAILURES = [
+  "encode_failed",
+  "strip_failed",
+  "still_failed",
+  "no_output",
+  "output_size",
+] as const;
+
+export type NormalizeResult =
+  // The output, unread: `file` streams `length` bytes of `type`, which the caller verifies with `duration` (seconds,
+  // the container's Kopje-Duration-Ms read by plannedDuration) as expectedDuration. still() answers a video's PNG,
+  // read within STILL_OUTPUT_LIMIT and its declared length (not yet checked: the caller runs verifyStill and Images),
+  // or null when the container made none (and always for audio).
+  | {
+      ok: true;
+      kind: "video" | "audio";
+      type: "video/mp4" | "audio/mpeg";
+      file: ReadableStream<Uint8Array>;
+      length: number;
+      duration: number;
+      still: () => Promise<Uint8Array | null>;
+      stages: Record<string, number>;
+    }
+  // The input's outcome: refused (a refusal code, or an A5 failure), outside the envelope, or a stage past its cut.
+  | { ok: false; outcome: "refused" | "envelope" | "timeout"; code: string; stages: Record<string, number> };
+
+// No answer, a failed connection, or an answer outside the /normalize contract (a status or code it does not give, a
+// 200 without its kind, length or declared duration): the processor is unavailable, whatever the input. `reason` is a
+// code, never a body.
+export class TranscoderUnavailable extends Error {
+  constructor(readonly reason: string) {
+    super(`media processor unavailable: ${reason}`);
+    this.name = "TranscoderUnavailable";
+  }
+}
+
 // The processor as the app layer reaches it, through the binding the instance template's optional block adds.
 export type MediaProcessorClient = {
   probeNow(profile: ProbeProfile): Promise<ProbeReport>;

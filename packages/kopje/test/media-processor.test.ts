@@ -9,6 +9,7 @@ import {
   AV_OUTPUT_LIMIT,
   CLEANUP_RETRY_MS,
   DESTROY_MS,
+  normalize,
   PROBE_MS,
   type ProbeDeps,
   processorClient,
@@ -19,7 +20,13 @@ import {
   STILL_TEARDOWN_MS,
   type UnitState,
 } from "../src/media-processor";
-import { PROBE_PROFILES, type ProbeProfile, type ProbeReport, type StillMaker } from "../src/platform/media-transcoder";
+import {
+  PROBE_PROFILES,
+  type ProbeProfile,
+  type ProbeReport,
+  type StillMaker,
+  TranscoderUnavailable,
+} from "../src/platform/media-transcoder";
 import { accessToken, adminClaims, adminTeam, serviceClaims, setTeamAccess } from "./access-helpers";
 import { NOW } from "./app-helpers";
 import { BUILD, deferred, migratedStore } from "./helpers";
@@ -380,6 +387,109 @@ describe("smoke probe", () => {
       destroyed: true,
     });
     expect(fake.calls).toEqual([]);
+  });
+});
+
+// The normalize adapter (#1828 PR4 plan, section 3 "PR4-2"): the work deadline protocol and the answer's contract.
+describe("normalize adapter", () => {
+  const input = (bytes: Uint8Array) => ({
+    body: new Response(bytes).body as ReadableStream<Uint8Array>,
+    size: bytes.byteLength,
+  });
+  const job = (bytes = fixtureBytes()) => ({ input: input(bytes), workMs: 41_000, stillMs: 1_000 });
+  const video = (headers: Record<string, string> = {}) =>
+    ok(MP4, "video/mp4", { "kopje-kind": "video", "kopje-still": "true", "kopje-duration-ms": "2000", ...headers });
+  const failure = (status: number, code: string) =>
+    new Response(`{"error":"${code}"}`, {
+      status,
+      headers: { "kopje-error": code, "content-type": "application/json" },
+    });
+
+  it("posts the input with its length and the work deadline, and reads the declared duration in seconds", async () => {
+    const fake = fakeContainer(server({ "/normalize": () => video() }));
+    fake.container.start({ enableInternet: false });
+    const result = await normalize(fake.container.getTcpPort(8080), job());
+    if (!result.ok) {
+      throw new Error("refused");
+    }
+    expect(result).toMatchObject({ kind: "video", type: "video/mp4", length: MP4.byteLength, duration: 2 });
+    expect(new Uint8Array(await new Response(result.file).arrayBuffer())).toEqual(MP4);
+    expect(await result.still()).toEqual(PNG);
+    expect(fake.calls).toEqual(["start", "POST /normalize?work_ms=41000&still_ms=1000", "GET /normalize/still"]);
+    expect(fake.bodies).toEqual([fixtureBytes()]);
+  });
+
+  it("answers no still for audio without asking, and none for a video the container made none for", async () => {
+    const audio = fakeContainer(
+      server({ "/normalize": () => ok(MP4, "audio/mpeg", { "kopje-kind": "audio", "kopje-duration-ms": "1500" }) }),
+    );
+    const heard = await normalize(audio.container.getTcpPort(8080), job());
+    expect(heard).toMatchObject({ ok: true, kind: "audio", duration: 1.5 });
+    expect(heard.ok && (await heard.still())).toBeNull();
+    expect(audio.calls).toEqual(["POST /normalize?work_ms=41000&still_ms=1000"]);
+    const none = fakeContainer(
+      server({ "/normalize": () => video(), "/normalize/still": () => failure(404, "no_still") }),
+    );
+    const seen = await normalize(none.container.getTcpPort(8080), job());
+    expect(seen.ok && (await seen.still())).toBeNull();
+    const unmade = fakeContainer(server({ "/normalize": () => video({ "kopje-still": "false" }) }));
+    const unseen = await normalize(unmade.container.getTcpPort(8080), job());
+    expect(unseen.ok && (await unseen.still())).toBeNull();
+    expect(unmade.calls).toEqual(["POST /normalize?work_ms=41000&still_ms=1000"]);
+  });
+
+  it.each([
+    [422, "envelope", { outcome: "envelope", code: "envelope" }],
+    [422, "pixels", { outcome: "refused", code: "pixels" }],
+    [422, "truncated", { outcome: "refused", code: "truncated" }],
+    [413, "too_large", { outcome: "refused", code: "too_large" }],
+    // A5: a well-formed 500 with a code is the input's outcome.
+    [500, "encode_failed", { outcome: "refused", code: "encode_failed" }],
+    [500, "output_size", { outcome: "refused", code: "output_size" }],
+    [504, "timeout", { outcome: "timeout", code: "timeout" }],
+  ])("answers %i %s as the input's outcome", async (status, code, expected) => {
+    const fake = fakeContainer(server({ "/normalize": () => failure(status, code) }));
+    expect(await normalize(fake.container.getTcpPort(8080), job())).toEqual({ ok: false, stages: {}, ...expected });
+  });
+
+  it.each([
+    [500, "internal"],
+    [429, "busy"],
+    [400, "bad_request"],
+    [408, "input_timeout"],
+    [404, "not_found"],
+    [422, "no_frame"],
+    [413, "pixels"],
+    [500, "not a code"],
+  ])("throws TranscoderUnavailable for %i %s, which says nothing of the input", async (status, code) => {
+    const fake = fakeContainer(server({ "/normalize": () => failure(status, code) }));
+    const thrown = await normalize(fake.container.getTcpPort(8080), job()).catch((error: unknown) => error);
+    expect(thrown).toBeInstanceOf(TranscoderUnavailable);
+    expect((thrown as TranscoderUnavailable).reason).not.toContain("error");
+  });
+
+  it.each([
+    ["no declared duration", video({ "kopje-duration-ms": "" })],
+    ["a duration that is not whole milliseconds", video({ "kopje-duration-ms": "2.5" })],
+    ["a zero duration", video({ "kopje-duration-ms": "0" })],
+    ["a kind that is not the type's", video({ "kopje-kind": "audio" })],
+    ["a video without its still flag", ok(MP4, "video/mp4", { "kopje-kind": "video", "kopje-duration-ms": "2000" })],
+    ["an output past AV_OUTPUT_LIMIT", video({ "content-length": String(AV_OUTPUT_LIMIT + 1) })],
+  ])("throws TranscoderUnavailable for a 200 with %s (the contract)", async (_name, response) => {
+    const fake = fakeContainer(server({ "/normalize": () => response }));
+    await expect(normalize(fake.container.getTcpPort(8080), job())).rejects.toBeInstanceOf(TranscoderUnavailable);
+  });
+
+  it("throws TranscoderUnavailable for a connection that fails and for a still the server cannot give", async () => {
+    const broken = {
+      fetch: () => Promise.reject(new Error("network connection lost")),
+    } as unknown as Fetcher;
+    await expect(normalize(broken, job())).rejects.toBeInstanceOf(TranscoderUnavailable);
+    const fake = fakeContainer(
+      server({ "/normalize": () => video(), "/normalize/still": () => failure(500, "internal") }),
+    );
+    const result = await normalize(fake.container.getTcpPort(8080), job());
+    await expect(result.ok && result.still()).rejects.toBeInstanceOf(TranscoderUnavailable);
   });
 });
 
