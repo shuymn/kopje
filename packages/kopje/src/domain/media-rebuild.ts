@@ -449,11 +449,43 @@ function probeName(profile: RecordedProfile): string {
   return `${PROBE_RECORD}${profile}`;
 }
 
-// The record and the Store's time, which its `at` is compared with.
+// A record's bounds as stored (RES-2): the build a Worker version id, and the image tag as the container reported it, both
+// printable ASCII; the tag is the processor's, so the Worker keeps one past its bound as null (probeImageTag).
+const PROBE_VERSION_BYTES = 64;
+const PROBE_IMAGE_TAG_BYTES = 512;
+const PRINTABLE = /^[\x21-\x7e]+$/;
+
+function printable(value: unknown, bytes: number): value is string {
+  return typeof value === "string" && value.length <= bytes && PRINTABLE.test(value);
+}
+
+export function probeImageTag(tag: string | null): string | null {
+  return printable(tag, PROBE_IMAGE_TAG_BYTES) ? tag : null;
+}
+
+function probeRecordValid(value: unknown): value is ProbeRecord {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    Object.keys(record).length === 4 &&
+    printable(record.version, PROBE_VERSION_BYTES) &&
+    (record.imageTag === null || printable(record.imageTag, PROBE_IMAGE_TAG_BYTES)) &&
+    Number.isSafeInteger(record.at) &&
+    typeof record.ok === "boolean"
+  );
+}
+
+// The record and the Store's time, which its `at` is compared with. A stored value out of bounds reads as no record, so
+// the profile is probed again.
 export const probeRecord = readOperation.atStoreTime("now")<
   { profile: RecordedProfile; now: number },
   { record: ProbeRecord | null; now: number }
->((db, { profile, now }) => ({ record: flag<ProbeRecord>(db, probeName(profile)), now }));
+>((db, { profile, now }) => {
+  const record = flag<unknown>(db, probeName(profile));
+  return { record: probeRecordValid(record) ? record : null, now };
+});
 
 // Records a probe the rebuild ran under its lease.
 export const recordProbe = mediaRebuildOperation.atStoreTime("now")<
@@ -476,6 +508,9 @@ export const recordProbe = mediaRebuildOperation.atStoreTime("now")<
     return { status: "lease-lost" };
   }
   const record: ProbeRecord = { version, imageTag, at: now, ok };
+  if (!probeRecordValid(record)) {
+    throw new Error("probe record out of bounds");
+  }
   db.run("INSERT OR REPLACE INTO kopje_state (name, value) VALUES (?, ?)", probeName(profile), JSON.stringify(record));
   return { status: "ok" };
 });

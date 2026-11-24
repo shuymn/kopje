@@ -1,4 +1,11 @@
-import type { ProbeRecord, RebuildAv, RebuildCharge, RebuildRecord, RebuildRow } from "../domain/media-rebuild";
+import {
+  probeImageTag,
+  type ProbeRecord,
+  type RebuildAv,
+  type RebuildCharge,
+  type RebuildRecord,
+  type RebuildRow,
+} from "../domain/media-rebuild";
 import {
   AV_OUTPUT_LIMIT,
   AvRefusal,
@@ -483,7 +490,7 @@ async function probe(call: AvCall, stills: StillMaker, stage: (ms: number) => nu
   let image: string | null = null;
   try {
     const out = await call.bounded(() => stills.probe(key, until - call.now()), until);
-    image = out.image;
+    image = probeImageTag(out.image);
     if (!out.ok) {
       verdict = PROBE_TRANSIENT.has(out.failure) || out.pending === true ? RETRY : "failed";
       if (out.pending === true) {

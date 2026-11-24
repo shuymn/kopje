@@ -3,6 +3,8 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { run as cliRun } from "../cli/lib/main.js";
+import { Db } from "../src/db/sql";
+import { chargeUploadJob } from "../src/domain/media";
 import { REBUILD_LEASE_MS, REBUILD_SETTLE_MS } from "../src/domain/media-rebuild";
 import { MAX_BUILDS_PER_CALL, rebuildMedia, type RebuildStep } from "../src/mastodon/media-rebuild";
 import { MAX_AV_BUILDS_PER_CALL, PROBE_RETRY_MS, REBUILD_AV_MS } from "../src/mastodon/media-rebuild-av";
@@ -17,7 +19,8 @@ import { avFixture, concat } from "./av-helpers";
 import { BUILD, migratedStore } from "./helpers";
 import { pngOf } from "./local-emoji-helpers";
 import { TestCodec } from "./media-helpers";
-import { ACCESS, memoryIO } from "./ops-helpers";
+import { ACCESS, dumpViaRpc, memoryIO } from "./ops-helpers";
+import { type PlannedStatement, plannedSql } from "./read-helpers";
 import { encodeWebp } from "./webp-fixtures";
 
 // kopje-admin media-rebuild of video and audio rows (#1828 design 4.16, P25; MEDIA-2's rebuild steps): `full` from the
@@ -541,6 +544,62 @@ describe("media rebuild of video and audio rows (#1828 P25)", () => {
     expect(late.infoCalls).toBe(0);
     expect(await env.MEDIA.head(`files/${row.token}/small`)).toBeNull();
   });
+
+  it("records no image tag past its bound, reads an out-of-bounds record as none, and never dumps the record", async () => {
+    const store = await setup();
+    const huge = "a".repeat(200_000);
+    const made = maker({ probe: { ok: true, png: STILL, image: huge } });
+    await addAv(store, "video");
+    expect(await run(store, { stills: made.stills })).toMatchObject({ counts: { built: 1 } });
+    const [stored] = await stateValue(store, "media_probe:");
+    expect(JSON.parse(stored!)).toMatchObject({ version: BUILD, imageTag: null, ok: true });
+    const { text } = await dumpViaRpc(store);
+    expect(text).not.toContain("media_probe:");
+
+    // A stored record past its bounds is no record: the next video row probes again.
+    await sql(
+      store,
+      "UPDATE kopje_state SET value = ? WHERE name = 'media_probe:still@standard-1'",
+      JSON.stringify({ version: BUILD, imageTag: huge, at: Date.now(), ok: true }),
+    );
+    await addAv(store, "video");
+    const again = maker();
+    await run(store, { stills: again.stills });
+    expect(again.calls[0]).toMatch(/^probe /);
+  });
+
+  it("prunes the upload counters by a range of kopje_state's key, with stale statistics and many state rows", async () => {
+    const store = await setup();
+    await sql(store, "ANALYZE");
+    await sql(
+      store,
+      `WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < 10000 - 1)
+			INSERT INTO kopje_state (name, value) SELECT 'unrelated:' || i, '1' FROM n`,
+    );
+    for (const month of ["2025-11", "2026-03", "2026-04", "2026-05"]) {
+      await sql(store, "INSERT INTO kopje_state (name, value) VALUES (?, '7')", `media_upload_jobs:${month}`);
+    }
+    const now = Date.parse("2026-05-10T00:00:00Z");
+    const plans = await runInDurableObject(store, (_instance, state) => {
+      const planned: PlannedStatement[] = [];
+      expect(chargeUploadJob(new Db(plannedSql(state.storage.sql, /^DELETE FROM kopje_state/, planned)), 10, now)).toBe(
+        true,
+      );
+      return planned;
+    });
+    expect(plans).toHaveLength(1);
+    expect(plans[0]!.plan.join(" | ")).toMatch(
+      /^SEARCH kopje_state USING (INDEX \w+|PRIMARY KEY) \(name>\? AND name<\?\)$/,
+    );
+    const left = await sql<{ name: string; value: string }>(
+      store,
+      "SELECT name, value FROM kopje_state WHERE name > 'media_upload_jobs:' AND name < 'media_upload_jobs;' ORDER BY name",
+    );
+    expect(left).toEqual([
+      { name: "media_upload_jobs:2026-04", value: "7" },
+      { name: "media_upload_jobs:2026-05", value: "8" },
+    ]);
+  }, 60_000);
 
   it("kopje-admin media-rebuild exits 3 when a call stops for a retry", async () => {
     const out: string[] = [];

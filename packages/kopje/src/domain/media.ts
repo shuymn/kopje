@@ -256,12 +256,8 @@ export function chargeUploadJob(db: Db, limit: number, now: number): boolean {
   if (used + 1 > limit) {
     return false;
   }
-  db.run(
-    "DELETE FROM kopje_state WHERE substr(name, 1, ?1) = ?2 AND substr(name, ?1 + 1, 7) < ?3",
-    UPLOAD_JOBS.length,
-    UPLOAD_JOBS,
-    previousMonth(now),
-  );
+  // A range of the primary key: every counter name is the prefix and a YYYY-MM, which sort as their months do.
+  db.run("DELETE FROM kopje_state WHERE name > ?1 AND name < ?2", UPLOAD_JOBS, `${UPLOAD_JOBS}${previousMonth(now)}`);
   setState(db, name, String(used + 1));
   return true;
 }
