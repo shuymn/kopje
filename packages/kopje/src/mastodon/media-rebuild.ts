@@ -51,8 +51,9 @@ import { type AvCall, avComplete, MAX_AV_BUILDS_PER_CALL, rebuildAv } from "./me
 // as it was on main. Every such write passes the checks, and what an overlap leaves differs by file:
 //   - a video's or audio's `full`: every write is a byte-identical copy of the original the verifier accepted;
 //   - a video's `small`: two writes may differ, each carrying its own {width, height, blurhash} metadata; the next
-//     rebuild that processes the preview adopts the object stored last and brings the row's metadata into agreement
-//     (media-rebuild-av.ts), and a row left with the poster is processed again only by `--stills`;
+//     rebuild that processes the preview adopts the object stored last and brings the row's metadata into agreement,
+//     or gives the row the poster when that object's size does not fit the row's metadata (media-rebuild-av.ts), and a
+//     row left with the poster is processed again only by `--stills`;
 //   - an image's files: re-encodes through the same checks, but the row's preview dimensions or blurhash can be left
 //     disagreeing with the stored `small`, which a later run skips (pre-existing, #1835).
 // A call that gave up a step keeps the lease until it expires. The bound: per row, at most two R2 reads, six Images

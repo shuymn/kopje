@@ -3215,8 +3215,9 @@ list). VIS-1 to VIS-4 are authorization; VIS-5 is filtering.
   when the rebuild started, and every such write passes the checks. What an overlap leaves differs by file. A video's or
   audio's `full`: every write is a byte-identical copy of the original the verifier accepted. A video's `small`: two
   writes may differ, each carrying its own `{width, height, blurhash}` metadata; the next rebuild that processes the
-  preview adopts the object stored last and brings the row's metadata into agreement, and a row left with the poster is
-  processed again only by `--stills`: `test/media-rebuild-av.test.ts` ("converges when an earlier holder's still put
+  preview adopts the object stored last and brings the row's metadata into agreement, or gives the row the poster when
+  that object's size does not fit the row's metadata, and a row left with the poster is processed again only by
+  `--stills`: `test/media-rebuild-av.test.ts` ("converges when an earlier holder's still put
   lands over the small a later call recorded"). An image's files: re-encodes of the same original through the same
   checks, but the row's preview dimensions or blurhash can be left disagreeing with the stored `small`, which a later
   run skips; this is pre-existing (#1835).
