@@ -25,7 +25,9 @@
 // standard-1 for the media rebuild (design 4.16, mastodon/media-rebuild-av.ts): its one input key is read from the
 // media bucket once and streamed as the request body, and the PNG comes back to the caller, which checks it. On a
 // probe object it is the rebuild's `still@standard-1` probe and follows the same single-owner rule as probeNow; on a
-// fresh object (rb:<nonce>) it is one rebuild still. Both answer only once the container is destroyed.
+// fresh object (rb:<nonce>) it is one rebuild still. Both answer only once the container is destroyed, and a still
+// only by its deadline: its destroy ends STILL_CLEANUP_MS before it, the removal of the object's storage and alarm is
+// awaited until it, and one that has not finished by then is left to the alarm, which repeats it until it is done.
 import { DurableObject } from "cloudflare:workers";
 
 import { PROBE_FIXTURE_BASE64 } from "./media-probe-fixture";
@@ -58,8 +60,10 @@ export const DESTROY_MS = 30_000;
 export const PROBE_MS = READY_MS + OPERATION_MS;
 // The most a stillNow call is given, readiness included: the rebuild's still stage (mastodon/media-rebuild-av.ts).
 export const STILL_CALL_MS = 75_000;
-// Of a stillNow call's time, what is kept for the destroy after the operation.
+// Of a stillNow call's time, what is kept for the destroy after the operation, and of that, what is kept after the
+// destroy for removing the object's alarm and storage before the call answers.
 export const STILL_TEARDOWN_MS = 10_000;
+export const STILL_CLEANUP_MS = 2_000;
 const STILL_PROFILE = "still@standard-1" satisfies ProbeProfile;
 
 const OPERATIONS = {
@@ -401,11 +405,11 @@ async function runStill(
       console.warn({ event: "kopje.media.still.failed", ...errorFields(error) });
     }
   }
-  const destroyed = await destroyContainer(container, deps, deadline);
+  const destroyed = await destroyContainer(container, deps, deadline - STILL_CLEANUP_MS);
   if (!destroyed) {
     return { ok: false, failure: "destroy", image, pending: true, destroyed };
   }
-  if (result.ok && deps.now() > deadline) {
+  if (result.ok && deps.now() > deadline - STILL_CLEANUP_MS) {
     return { ok: false, failure: "late", image, destroyed };
   }
   return { ...result, destroyed };
@@ -474,8 +478,12 @@ export class ProcessorUnit {
   }
 
   async probeNow(profile: ProbeProfile): Promise<ProbeReport> {
-    const owned = await this.#owned(PROBE_MS, (deadline, container) =>
-      smokeProbe(container, profile, this.deps, deadline),
+    const owned = await this.#owned(
+      PROBE_MS,
+      (deadline, container) => smokeProbe(container, profile, this.deps, deadline),
+      // smokeProbe's destroy may take DESTROY_MS past its deadline.
+      (deadline) => deadline + DESTROY_MS,
+      (report) => report,
     );
     return "refused" in owned ? { ...unstarted(profile, owned.refused), destroyed: owned.destroyed } : owned;
   }
@@ -484,10 +492,16 @@ export class ProcessorUnit {
   // STILL_CALL_MS.
   async stillNow(key: string, ms: number): Promise<StillOutcome> {
     const bucket = this.state.bucket;
-    const owned = await this.#owned(Math.min(ms, STILL_CALL_MS), async (deadline, container) =>
-      bucket === undefined
-        ? { ok: false as const, failure: "no-bucket", image: null, destroyed: true }
-        : runStill(container, bucket, key, this.deps, deadline),
+    const owned = await this.#owned<StillOutcome & { destroyed: boolean }>(
+      Math.min(ms, STILL_CALL_MS),
+      async (deadline, container) =>
+        bucket === undefined
+          ? { ok: false as const, failure: "no-bucket", image: null, destroyed: true }
+          : runStill(container, bucket, key, this.deps, deadline),
+      (deadline) => deadline,
+      // A still whose cleanup ran past the call's deadline is not used: the caller has given up on it.
+      (outcome) =>
+        outcome.ok ? { ok: false, failure: "late", image: outcome.image, destroyed: outcome.destroyed } : outcome,
     );
     if ("refused" in owned) {
       return { ok: false, failure: owned.refused, image: null };
@@ -497,11 +511,15 @@ export class ProcessorUnit {
   }
 
   // Runs one operation that owns this object's container (design 4.5): refused as busy while another runs here or an
-  // orphan still runs; the alarm set past its bound and confirmed durable before anything starts; then cleared once
-  // the container is destroyed, or brought forward to retry the destroy.
+  // orphan still runs; the alarm set past its bound and confirmed durable before anything starts; then, once the
+  // container is destroyed, its storage and alarm removed, or the alarm brought forward to retry the destroy. That
+  // cleanup is awaited only until `replyBy(deadline)`: one that has not finished by then leaves the alarm, which removes
+  // the storage itself (alarm), and the result goes through `late`.
   async #owned<R extends { destroyed: boolean }>(
     ms: number,
     run: (deadline: number, container: Container) => Promise<R>,
+    replyBy: (deadline: number) => number,
+    late: (report: R) => R,
   ): Promise<R | { refused: string; destroyed: boolean }> {
     const container = this.state.container;
     if (container === undefined) {
@@ -543,38 +561,52 @@ export class ProcessorUnit {
       // Nothing to clean up once the container is gone (the object's storage goes too, so a fresh object leaves
       // nothing billed behind); otherwise the alarm comes sooner than its bound when it can.
       const after = report.destroyed ? this.#clear() : this.state.storage.setAlarm(this.deps.now() + CLEANUP_RETRY_MS);
-      await after.catch((error: unknown) => {
-        console.warn({ event: "kopje.media.cleanup.failed", ...errorFields(error) });
-      });
-      return report;
+      const cleaned = await before(
+        after.then(
+          () => true,
+          (error: unknown) => {
+            console.warn({ event: "kopje.media.cleanup.failed", ...errorFields(error) });
+            return true;
+          },
+        ),
+        replyBy(deadline),
+        this.deps,
+      );
+      return cleaned === TIMED_OUT ? late(report) : report;
     } finally {
       this.#inFlight = null;
     }
   }
 
-  // No container runs: the alarm and the object's storage are removed.
+  // No container runs: the object's storage is removed, then its alarm. The alarm goes last, so a removal that fails or
+  // never finishes leaves it to run the removal again.
   async #clear(): Promise<void> {
-    await this.state.storage.deleteAlarm();
     await this.state.storage.deleteAll();
+    await this.state.storage.deleteAlarm();
   }
 
-  // The alarm: with a probe call in flight, again after its bound; otherwise any running container is an orphan.
+  // The alarm: with a probe call in flight, again after its bound; otherwise any running container is an orphan, and
+  // once none runs (destroyed here, or already stopped: a destroy that finished after its call answered) the object's
+  // storage is removed. A removal that fails sets the alarm again.
   async alarm(): Promise<void> {
     if (this.#inFlight !== null) {
       await this.state.storage.setAlarm(Math.max(this.#inFlight + DESTROY_MS, this.deps.now() + 1_000));
       return;
     }
     const container = this.state.container;
-    if (container?.running !== true || this.#cleaning) {
+    if (this.#cleaning) {
       return;
     }
     this.#cleaning = true;
     try {
-      if (await destroyContainer(container, this.deps)) {
-        await this.#clear();
-      } else {
+      if (container?.running === true && !(await destroyContainer(container, this.deps))) {
         await this.state.storage.setAlarm(this.deps.now() + CLEANUP_RETRY_MS);
+        return;
       }
+      await this.#clear().catch(async (error: unknown) => {
+        console.warn({ event: "kopje.media.cleanup.failed", ...errorFields(error) });
+        await this.state.storage.setAlarm(this.deps.now() + CLEANUP_RETRY_MS);
+      });
     } finally {
       this.#cleaning = false;
     }

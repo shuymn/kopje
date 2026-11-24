@@ -388,7 +388,12 @@ describe("smoke probe", () => {
 // alarm is consumed, and stays set only if the handler sets it again.
 function fakeState(
   container: Container | undefined,
-  options: { failAlarmOn?: number[]; failDeleteAlarm?: boolean; sync?: () => Promise<void> } = {},
+  options: {
+    failAlarmOn?: number[];
+    failDeleteAlarm?: boolean;
+    sync?: () => Promise<void>;
+    deleteAll?: () => Promise<void>;
+  } = {},
 ) {
   let alarm: number | null = null;
   let alarms = 0;
@@ -407,9 +412,9 @@ function fakeState(
       options.failDeleteAlarm === true
         ? Promise.reject(new Error("storage unavailable"))
         : Promise.resolve(void (alarm = null)),
-    deleteAll: () => {
+    deleteAll: async () => {
+      await options.deleteAll?.();
       cleared++;
-      return Promise.resolve();
     },
     sync: () => options.sync?.() ?? Promise.resolve(),
   };
@@ -835,6 +840,58 @@ describe("MediaProcessor stillNow (#1828 design 4.5, 4.6, 4.16)", () => {
     expect(outcome).toMatchObject({ ok: false, failure: "destroy", pending: true });
     expect(state.alarm()).not.toBeNull();
     expect(state.cleared()).toBe(0);
+  });
+
+  it("is not ok when removing its storage ends past the call's deadline", async () => {
+    await env.MEDIA.put("originals/140000000000000021", new Uint8Array([1]));
+    const time = frozen(1_000_000);
+    const state = fakeState(counted().container, {
+      deleteAll: () => {
+        time.t = 1_000_000 + 60_000 + 1;
+        return Promise.resolve();
+      },
+    });
+    const outcome = await unit({ ...state.ctx, bucket: bucket() }, time.deps).stillNow(
+      "originals/140000000000000021",
+      60_000,
+    );
+    expect(outcome).toMatchObject({ ok: false, failure: "late" });
+  });
+
+  it("answers by its deadline when removing its storage stalls, and the alarm removes it later", async () => {
+    await env.MEDIA.put("originals/140000000000000022", new Uint8Array([1]));
+    const time = clock();
+    let stalled = true;
+    const state = fakeState(counted().container, {
+      deleteAll: () => (stalled ? new Promise<void>(() => {}) : Promise.resolve()),
+    });
+    const object = unit({ ...state.ctx, bucket: bucket() }, time);
+    const outcome = await object.stillNow("originals/140000000000000022", 60_000);
+    expect(outcome).toMatchObject({ ok: false, failure: "late" });
+    // The alarm is kept: it is removed only after the storage.
+    expect(state.alarm()).not.toBeNull();
+    stalled = false;
+    await state.fire(object);
+    expect(state.cleared()).toBe(1);
+    expect(state.alarm()).toBeNull();
+  });
+
+  it("removes the storage at its alarm once a destroy that was pending at the answer has finished", async () => {
+    await env.MEDIA.put("originals/140000000000000023", new Uint8Array([1]));
+    const time = frozen(1_000_000);
+    const fake = counted(() => {
+      time.t = 1_000_000 + 60_000 + 1;
+      return Promise.resolve();
+    });
+    const state = fakeState(fake.container);
+    const object = unit({ ...state.ctx, bucket: bucket() }, time.deps);
+    expect(await object.stillNow("originals/140000000000000023", 60_000)).toMatchObject({ pending: true });
+    // The destroy finished after the answer: no container runs when the alarm comes.
+    expect(fake.container.running).toBe(false);
+    expect(state.cleared()).toBe(0);
+    await state.fire(object);
+    expect(state.cleared()).toBe(1);
+    expect(state.alarm()).toBeNull();
   });
 
   it("cancels a read of its input that answers past the operation's end, and gives the container nothing", async () => {
